@@ -17808,6 +17808,7 @@ pub const FormatValidator = struct {
 
         // Check extension-based detection
         const ext_format = detectFormatFromExtension(path);
+        const expected_format = getExpectedFormatForExtension(path);
 
         // If magic-based detection failed (or only detected plain text), try extension-based detection
         // This handles formats like Brotli (.br) that have no magic bytes, and JSONC files that
@@ -17873,6 +17874,18 @@ pub const FormatValidator = struct {
                     else => result,
                 };
             }
+        }
+
+        // Special handling for SVG files
+        // SVG is XML-based and often detected as generic XML by content scanning
+        // If extension is .svg, validate as SVG and report that format
+        if (expected_format == .svg and result.format == .xml) {
+            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+                result.format = .svg;
+                return result;
+            };
+            defer reopen_file.close();
+            result = validateSvg(reopen_file);
         }
 
         // Special handling for Adobe Illustrator files
@@ -25894,6 +25907,36 @@ test "FormatValidator accepts valid XML" {
     try std.testing.expectEqual(FileFormat.xml, result.format);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator accepts valid SVG without extension mismatch" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const svg_content =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+        \\  <rect x="0" y="0" width="10" height="10"/>
+        \\</svg>
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.svg", .{});
+    try file.writeAll(svg_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.svg");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(FileFormat.svg, result.format);
+    try std.testing.expect(!result.malformations.contains(.extension_mismatch));
 }
 
 test "FormatValidator rejects invalid XML with mismatched tags" {
