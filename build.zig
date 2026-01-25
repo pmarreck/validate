@@ -1,6 +1,21 @@
 const std = @import("std");
 const LibtoolStep = @import("src/build/LibtoolStep.zig");
 
+fn debugEnvEnabled(b: *std.Build) bool {
+    const raw = std.process.getEnvVarOwned(b.allocator, "DEBUG") catch return false;
+    defer b.allocator.free(raw);
+
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return false;
+
+    if (std.mem.eql(u8, trimmed, "1")) return true;
+    if (std.ascii.eqlIgnoreCase(trimmed, "true")) return true;
+    if (std.ascii.eqlIgnoreCase(trimmed, "yes")) return true;
+    if (std.ascii.eqlIgnoreCase(trimmed, "on")) return true;
+
+    return false;
+}
+
 pub fn build(b: *std.Build) void {
     // Standard target options - allows cross-compilation via -Dtarget=
     // Examples:
@@ -28,71 +43,73 @@ pub fn build(b: *std.Build) void {
     const target = b.resolveTargetQuery(target_query);
 
     const optimize = b.standardOptimizeOption(.{});
+    const deps_debug = debugEnvEnabled(b);
+    const deps_optimize: std.builtin.OptimizeMode = if (deps_debug) optimize else .ReleaseFast;
 
     // External dependencies from build.zig.zon
     const toml_dep = b.dependency("toml", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const toml_mod = toml_dep.module("toml");
 
     // Zigimg dependency for image format deep validation
     const zigimg_dep = b.dependency("zigimg", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const zigimg_mod = zigimg_dep.module("zigimg");
 
     // zig-xml dependency for XML validation (0BSD license, pure Zig)
     const zigxml_dep = b.dependency("zig-xml", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const zigxml_mod = zigxml_dep.module("xml");
 
     // Libwebp dependency for WebP deep validation (built from source)
     const libwebp_dep = b.dependency("libwebp", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const libwebp_lib = libwebp_dep.artifact("webp");
 
     // Libheif dependency for HEIC/AVIF deep validation (built from source with libde265 and dav1d)
     const libheif_dep = b.dependency("libheif", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const libheif_lib = libheif_dep.artifact("heif");
 
     // OpenH264 dependency for H.264/AVC video deep validation (BSD-2, Cisco pays MPEG-LA royalties)
     const openh264_dep = b.dependency("openh264", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const openh264_lib = openh264_dep.artifact("openh264");
 
     // libde265 and dav1d for direct include paths (used by video_validator.zig @cImport)
     const libde265_dep = b.dependency("libde265", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const libde265_lib = libde265_dep.artifact("de265");
 
     const dav1d_dep = b.dependency("dav1d", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const dav1d_lib = dav1d_dep.artifact("dav1d");
 
     // Libopus for Opus audio deep validation (BSD-3, IETF standard)
     const libopus_dep = b.dependency("libopus", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const libopus_lib = libopus_dep.artifact("opus");
 
     // libogg for OGG container support (required by libvorbis)
-    // Use ReleaseFast to avoid Zig's overflow checks triggering on libogg's bit manipulation
+    // Always ReleaseFast to avoid Zig's overflow checks triggering on libogg's bit manipulation
     const libogg_dep = b.dependency("libogg", .{
         .target = target,
         .optimize = .ReleaseFast,
@@ -100,7 +117,7 @@ pub fn build(b: *std.Build) void {
     const libogg_lib = libogg_dep.artifact("ogg");
 
     // Libvorbis for Vorbis audio deep validation (BSD-3, Xiph.org)
-    // Use ReleaseFast to avoid Zig's overflow checks triggering on libvorbis
+    // Always ReleaseFast to avoid Zig's overflow checks triggering on libvorbis
     const libvorbis_dep = b.dependency("libvorbis", .{
         .target = target,
         .optimize = .ReleaseFast,
@@ -110,49 +127,49 @@ pub fn build(b: *std.Build) void {
     // minimp3 for MP3 audio deep validation (Public Domain, header-only)
     const minimp3_dep = b.dependency("minimp3", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const minimp3_lib = minimp3_dep.artifact("minimp3");
 
     // libfdk-aac for AAC audio deep validation (FDK License)
     const libfdkaac_dep = b.dependency("libfdk-aac", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const libfdkaac_lib = libfdkaac_dep.artifact("fdk-aac");
 
     // libvpx for VP8/VP9 video deep validation (BSD-3, WebM Project)
     const libvpx_dep = b.dependency("libvpx", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const libvpx_lib = libvpx_dep.artifact("vpx");
 
     // OpenJPEG for JPEG2000 decode validation (BSD-2, used in PDFs and DCPs)
     const openjpeg_dep = b.dependency("openjpeg", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const openjpeg_lib = openjpeg_dep.artifact("openjp2");
 
     // libjxl for JPEG-XL decode validation (BSD-3, Google reference implementation)
     const libjxl_dep = b.dependency("libjxl", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const libjxl_lib = libjxl_dep.artifact("jxl");
 
     // Brotli for .br file decompression validation (MIT, Google)
     const brotli_dep = b.dependency("brotli", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const brotli_lib = brotli_dep.artifact("brotli");
 
     // PCRE2 for regex/glob pattern matching (BSD, renerocksai/pcre2 Zig build)
     const pcre2_dep = b.dependency("pcre2", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
         .linkage = .static, // Force static linking for cross-platform builds
         .@"code-unit-width" = .@"8", // UTF-8 support
     });
@@ -161,28 +178,28 @@ pub fn build(b: *std.Build) void {
     // libjpeg-turbo for JPEG decode validation (BSD-3, chearon/libjpeg-turbo Zig build)
     const libjpeg_turbo_dep = b.dependency("libjpeg_turbo", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const libjpeg_lib = libjpeg_turbo_dep.artifact("libjpeg_turbo");
 
     // zlib for deflate compression/decompression (zlib license, allyourcodebase/zlib)
     const zlib_dep = b.dependency("zlib", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const zlib_lib = zlib_dep.artifact("z");
 
     // sqlite3 for deep database validation (public domain, allyourcodebase/sqlite3)
     const sqlite3_dep = b.dependency("sqlite3", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const sqlite3_lib = sqlite3_dep.artifact("sqlite3");
 
     // libopenmpt for tracker format validation (BSD-3, pmarreck/openmpt Zig build)
     const libopenmpt_dep = b.dependency("libopenmpt", .{
         .target = target,
-        .optimize = optimize,
+        .optimize = deps_optimize,
     });
     const libopenmpt_lib = libopenmpt_dep.artifact("openmpt");
 

@@ -182,9 +182,11 @@ For clarity, the tables below use more specific labels:
 
 | Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
 |--------|------------|------------------|-----------------|-----------|-----|
-| **Word 97-2003** | .doc | OLE2/CFBF header, FAT structure, stream detection | FAT chain + directory validation | Integrity | — |
-| **Excel 97-2003** | .xls | OLE2/CFBF header, FAT structure, Workbook stream | FAT chain + directory validation | Integrity | 1 |
-| **PowerPoint 97-2003** | .ppt | OLE2/CFBF header, FAT structure, PowerPoint stream | FAT chain + directory validation | Integrity | 1 |
+| **Word 97-2003** | .doc | OLE2/CFBF header, FAT structure, stream detection | FAT/DIFAT/mini-FAT + directory validation (container only) | Structure | — |
+| **Excel 97-2003** | .xls | OLE2/CFBF header, FAT structure, Workbook stream | FAT/DIFAT/mini-FAT + directory validation (container only) | Structure | 1 |
+| **PowerPoint 97-2003** | .ppt | OLE2/CFBF header, FAT structure, PowerPoint stream | FAT/DIFAT/mini-FAT + directory validation (container only) | Structure | 1 |
+
+**Note:** Full byte-level validation of legacy Office streams is planned someday, but each format’s spec is roughly 600–1000 pages, so deeper support may take time.
 
 ## OpenDocument Formats (ZIP-based)
 
