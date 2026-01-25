@@ -6,6 +6,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] (empty)
 
 ## Recently Completed
+- [x] Pin zigimg URL ref in build.zig.zon for Zig 0.15+ compatibility (2026-01-25 16:11 EST)
 - [x] Accumulate sub-test failures in ./test exit code (2026-01-25 16:06 EST)
 - [x] Ensure ./test prints Zig output on failure (2026-01-25 16:04 EST)
 - [x] Treat .svg as SVG (no extension mismatch warning) (2026-01-25 15:46 EST)

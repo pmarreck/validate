@@ -11,7 +11,7 @@
             .hash = "xml-0.2.0-ZTbP3wE6AgCsnyZut_plzxi6WB2tzzh3kFRBOp3AL7n9",
         },
         .zigimg = .{
-            .url = "git+https://github.com/zigimg/zigimg",
+            .url = "git+https://github.com/zigimg/zigimg#fb74dfb7c6d83f2bd01a229826669451525a4ba8",
             .hash = "zigimg-0.1.0-8_eo2kSGFwADIkeZYTgfnLOV-khh6ZRoGmK6F2-s_QbY",
         },
         .libwebp = .{
