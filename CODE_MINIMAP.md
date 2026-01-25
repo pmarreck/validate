@@ -5,6 +5,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 ## Repository Layout
 ```
 ./
+├── .github/workflows/  CI workflows (cross-platform builds)
 ├── src/                Zig validation core
 ├── ffi/                C ABI exports + header
 ├── cli/                C CLI wrapper (validate)
@@ -12,6 +13,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 ├── bench/              Benchmarks
 ├── fuzz/               Fuzz targets
 ├── deps/               Zig dependency build helpers
+├── build               Build+test wrapper (nix develop aware)
 ├── build.zig           Zig build configuration
 ├── build.zig.zon       Zig dependency lock
 ├── flake.nix           Nix dev shell

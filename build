@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+if [[ -z "${VALIDATE_NIX:-}" ]]; then
+	exec env VALIDATE_NIX=1 nix develop -c "$0" "$@"
+fi
+
+set -euo pipefail
+
+unset LD
+unset SDKROOT
+
+is_debug=false
+case "${DEBUG:-}" in
+	1|true|TRUE|True|yes|YES|on|ON)
+		is_debug=true
+		;;
+	0|false|FALSE|False|no|NO|off|OFF|"")
+		is_debug=false
+		;;
+	*)
+		is_debug=false
+		;;
+esac
+
+zig_args=("$@")
+has_optimize=false
+for arg in "${zig_args[@]}"; do
+	if [[ "$arg" == -Doptimize=* ]]; then
+		has_optimize=true
+		break
+	fi
+done
+
+if [[ "$is_debug" == false && "$has_optimize" == false ]]; then
+	zig_args+=("-Doptimize=ReleaseFast")
+fi
+
+echo "=== Running tests ==="
+./test
+
+echo "=== Building ==="
+zig build "${zig_args[@]}"

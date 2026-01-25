@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-linux-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+      - name: Build (linux musl x86_64)
+        env:
+          VALIDATE_NIX: "1"
+          DEBUG: "0"
+        run: ./build -Dtarget=x86_64-linux-musl
+
+  build-macos-aarch64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+      - name: Build (macOS aarch64)
+        env:
+          VALIDATE_NIX: "1"
+          DEBUG: "0"
+        run: ./build -Dtarget=aarch64-macos
+
+  build-windows-x86_64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.2
+      - name: Build (windows x86_64)
+        env:
+          VALIDATE_NIX: "1"
+          DEBUG: "0"
+        shell: bash
+        run: ./build -Dtarget=x86_64-windows

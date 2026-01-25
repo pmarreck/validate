@@ -1,6 +1,6 @@
 # validate
 
-Deterministic, byte-level validation across a wide range of file formats.
+Deterministic, byte-level validation across a wide range of file formats (100+, see FORMAT_VERIFICATIONS.md).
 
 ## Components
 - Zig library (core validation)
@@ -12,8 +12,9 @@ The C FFI mirrors the current Zig validation API for ease of integration. It is 
 
 ## Build
 ```bash
-zig build
+./build
 ```
+Runs `./test` first. When `DEBUG` is unset/0, dependencies build in ReleaseFast and `./build` defaults to `-Doptimize=ReleaseFast`.
 
 ## Tests
 ```bash
