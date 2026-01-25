@@ -18,7 +18,10 @@ set -e
 printf '%s\n' "$zig_output"
 
 if [[ $zig_exit -ne 0 ]]; then
-	zig_failures=$(echo "$zig_output" | grep -oE '^[0-9]+ failed' | head -1 | grep -oE '[0-9]+' || echo "1")
+	zig_failures=$(printf '%s\n' "$zig_output" | grep -oE '[0-9]+ failed' | awk '{sum+=$1} END {print sum+0}')
+	if [[ $zig_failures -eq 0 ]]; then
+		zig_failures=1
+	fi
 	echo "=== Zig tests FAILED ($zig_failures failures) ==="
 	exit $zig_failures
 fi
