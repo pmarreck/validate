@@ -6,6 +6,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] (empty)
 
 ## Recently Completed
+- [x] Flatten ground_truth_examples directory structure (2026-01-25 15:40 EST)
 - [x] Remove PAR2/parity references from FORMAT_VERIFICATIONS (2026-01-25 15:35 EST)
 - [x] Add ./build wrapper (tests first, ReleaseFast default) (2026-01-25 15:33 EST)
 - [x] Add CI workflows for macOS aarch64, Windows x86_64, Linux musl x86_64 (2026-01-25 15:33 EST)
