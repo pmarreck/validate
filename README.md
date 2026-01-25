@@ -1,6 +1,6 @@
 # validate
 
-Deterministic, byte-level validation across a wide range of file formats (100+, see FORMAT_VERIFICATIONS.md).
+Deterministic, byte-level validation across a wide range of file formats (100+, see [FORMAT_VERIFICATIONS.md](FORMAT_VERIFICATIONS.md)).
 
 ## Components
 - Zig library (core validation)
