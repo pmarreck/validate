@@ -110,8 +110,17 @@ static int validate_path(const char* path, size_t jobs) {
 	int git_checked = 0;
 	int git_failed = 0;
 	{
-		char git_path[PATH_MAX];
-		snprintf(git_path, sizeof(git_path), "%s/.git", path);
+		const char* git_suffix = "/.git";
+		size_t path_len = strlen(path);
+		size_t suffix_len = strlen(git_suffix);
+		char* git_path = (char*)malloc(path_len + suffix_len + 1);
+		if (!git_path) {
+			fprintf(stderr, COLOR_RED "Error: Out of memory while building git path\n" COLOR_RESET);
+			es_format_validator_destroy(validator);
+			return 1;
+		}
+		memcpy(git_path, path, path_len);
+		memcpy(git_path + path_len, git_suffix, suffix_len + 1);
 		if (access(git_path, F_OK) == 0) {
 			git_checked = 1;
 			printf("\n" COLOR_CYAN "Git Repository Integrity Check:" COLOR_RESET "\n");
@@ -134,6 +143,7 @@ static int validate_path(const char* path, size_t jobs) {
 				git_failed = 1;
 			}
 		}
+		free(git_path);
 	}
 
 	printf("\n" COLOR_CYAN "Summary:" COLOR_RESET "\n");
