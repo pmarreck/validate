@@ -4,7 +4,11 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <limits.h>
+#include <time.h>
 #include <unistd.h>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 #include "validate_core.h"
 
 #define COLOR_GREEN  "\033[0;32m"
@@ -12,12 +16,35 @@
 #define COLOR_YELLOW "\033[1;33m"
 #define COLOR_CYAN   "\033[0;36m"
 #define COLOR_RESET  "\033[0m"
+#define SLOW_THRESHOLD_SECONDS 5.0
 
 typedef struct {
 	size_t valid_count;
 	size_t invalid_count;
 	size_t unknown_count;
 } validation_counts_t;
+
+static double monotonic_seconds(void) {
+#if defined(_WIN32)
+	static LARGE_INTEGER freq;
+	static int freq_inited = 0;
+	LARGE_INTEGER counter;
+	if (!freq_inited) {
+		QueryPerformanceFrequency(&freq);
+		freq_inited = 1;
+	}
+	QueryPerformanceCounter(&counter);
+	return (double)counter.QuadPart / (double)freq.QuadPart;
+#else
+	struct timespec ts;
+#if defined(CLOCK_MONOTONIC)
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+#else
+	timespec_get(&ts, TIME_UTC);
+#endif
+	return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+#endif
+}
 
 static const char* validation_depth_description(es_validation_depth_t depth) {
 	switch (depth) {
@@ -60,8 +87,13 @@ static void print_validation_result(const char* path, const es_validation_result
 }
 
 static int validate_one(const char* path, const char* display_path, es_format_validator_t* validator, validation_counts_t* counts) {
+	const double start = monotonic_seconds();
 	es_validation_result_ex_t result;
 	es_error_t err = es_format_validate_file_ex(validator, path, &result);
+	const double elapsed = monotonic_seconds() - start;
+	if (elapsed >= SLOW_THRESHOLD_SECONDS) {
+		fprintf(stderr, COLOR_YELLOW "SLOW" COLOR_RESET " %s: %.2fs\n", display_path, elapsed);
+	}
 	if (err != ES_OK) {
 		fprintf(stderr, COLOR_RED "Error: Validation failed: %s\n" COLOR_RESET,
 			es_core_last_error() ? es_core_last_error() : "unknown error");

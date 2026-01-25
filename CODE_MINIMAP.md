@@ -50,3 +50,4 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `RULES.md` | Non-negotiable project rules |
 | `DOCUMENTATION_GUIDE.md` | Doc locations and writing rules |
 | `ROADMAP.md` | Fairly certain future goals |
+| `ZIG_RECENT_API_CHANGES_2025.md` | Zig 0.14–0.15 API quick reference for current code |
