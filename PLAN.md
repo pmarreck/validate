@@ -3,7 +3,7 @@
 Checkbox-only list of specific work items. Keep recent completions with EST timestamps; prune older completed items regularly.
 
 ## Active
-- [ ] (empty)
+- [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
 
 ## Recently Completed
 - [x] Add CrossOver-based Windows test runner (test-windows + build.zig hook) (2026-01-25 17:14 EST)

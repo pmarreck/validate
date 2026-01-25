@@ -32,3 +32,4 @@ Runs `./test` first. When `DEBUG` is unset/0, dependencies build in ReleaseFast 
 ./test-windows
 ```
 Requires a CrossOver bottle named `windows-dev-test` (or set `CROSSOVER_BOTTLE`).
+Note: this is a temporary external dependency; we plan to make the runner self-contained via `flake.nix`.
