@@ -399,7 +399,7 @@ For clarity, the tables below use more specific labels:
 | **Encrypted PDF (with password)** | .pdf | Structure validated, /Encrypt detected | Skipped (password required) | Structure | — |
 | **Encrypted PDF (empty password)** | .pdf | Full validation via decryption | All embedded content decoded | Full Decode | — |
 
-**Note:** Encrypted files are validated structurally. We cannot verify internal checksums without the decryption key, but PAR2 parity still protects the encrypted bytes—allowing corruption detection and repair without ever exposing the plaintext.
+**Note:** Encrypted files are validated structurally. We cannot verify internal checksums without the decryption key. A separate upcoming product will offer parity-based protection/repair for encrypted bytes without exposing plaintext.
 
 ### Trivial Protection Circumvention Policy
 
@@ -430,7 +430,7 @@ This project intentionally circumvents trivial or ineffective protection mechani
 | Condition | Validation | Depth |
 |-----------|------------|-------|
 | Unknown format with valid UTF-8 | Character encoding validation | Structure |
-| Unknown format, not UTF-8 | No validation (PAR2 still protects) | — |
+| Unknown format, not UTF-8 | No validation (future parity product can cover this) | — |
 
 ---
 
