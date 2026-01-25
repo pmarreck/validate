@@ -6,6 +6,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] (empty)
 
 ## Recently Completed
+- [x] Add CrossOver-based Windows test runner (test-windows + build.zig hook) (2026-01-25 17:14 EST)
 - [x] Add core parallel path validation + CLI jobs flag (2026-01-25 16:52 EST)
 - [x] Fix CI issues: libde265 SSE4.1 gating + Windows tests (bzip2 temp + JPEG structural) (2026-01-25 16:52 EST)
 - [x] Audit Zig 0.15 API usage (no mismatches found) (2026-01-25 16:20 EST)

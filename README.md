@@ -26,3 +26,9 @@ Runs `./test` first. When `DEBUG` is unset/0, dependencies build in ReleaseFast 
 ```bash
 ./test
 ```
+
+## Windows Tests (CrossOver)
+```bash
+./test-windows
+```
+Requires a CrossOver bottle named `windows-dev-test` (or set `CROSSOVER_BOTTLE`).

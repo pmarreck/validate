@@ -14,6 +14,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 ├── fuzz/               Fuzz targets
 ├── deps/               Zig dependency build helpers
 ├── build               Build+test wrapper (nix develop aware)
+├── test-windows         Windows test runner via CrossOver/Wine
 ├── build.zig           Zig build configuration
 ├── build.zig.zon       Zig dependency lock
 ├── flake.nix           Nix dev shell

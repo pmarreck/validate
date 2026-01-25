@@ -500,6 +500,8 @@ pub fn build(b: *std.Build) void {
     if (test_filter) |filter| {
         test_filters = &.{filter};
     }
+    const windows_test_wine = b.option([]const u8, "windows-test-wine", "Path to CrossOver wine for Windows tests");
+    const windows_test_bottle = b.option([]const u8, "windows-test-bottle", "CrossOver bottle name for Windows tests") orelse "windows-dev-test";
 
     const core_tests = b.addTest(.{
         .root_module = core_mod,
@@ -541,7 +543,19 @@ pub fn build(b: *std.Build) void {
     core_tests.linkLibC();
     core_tests.linkLibCpp(); // Required for libheif, openh264, libjxl, libopenmpt (C++ libraries)
 
-    const run_core_tests = b.addRunArtifact(core_tests);
+    const host_is_windows = b.graph.host.result.os.tag == .windows;
+    const target_is_windows = target.result.os.tag == .windows;
+    const run_core_tests = if (target_is_windows and !host_is_windows and windows_test_wine != null) blk: {
+        const run = b.addSystemCommand(&.{
+            windows_test_wine.?,
+            "--bottle",
+            windows_test_bottle,
+            "--cx-app",
+        });
+        run.addFileArg(core_tests.getEmittedBin());
+        run.setEnvironmentVariable("WINEDEBUG", "-all");
+        break :blk run;
+    } else b.addRunArtifact(core_tests);
 
     const ffi_tests = b.addTest(.{
         .root_module = ffi_mod,
@@ -567,7 +581,17 @@ pub fn build(b: *std.Build) void {
     ffi_tests.linkLibC();
     ffi_tests.linkLibCpp();
 
-    const run_ffi_tests = b.addRunArtifact(ffi_tests);
+    const run_ffi_tests = if (target_is_windows and !host_is_windows and windows_test_wine != null) blk: {
+        const run = b.addSystemCommand(&.{
+            windows_test_wine.?,
+            "--bottle",
+            windows_test_bottle,
+            "--cx-app",
+        });
+        run.addFileArg(ffi_tests.getEmittedBin());
+        run.setEnvironmentVariable("WINEDEBUG", "-all");
+        break :blk run;
+    } else b.addRunArtifact(ffi_tests);
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_core_tests.step);

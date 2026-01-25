@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+if [[ -z "${VALIDATE_NIX:-}" ]]; then
+	exec env VALIDATE_NIX=1 nix develop -c "$0" "$@"
+fi
+
+set -euo pipefail
+
+unset LD
+unset SDKROOT
+
+default_wine="/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/CrossOver-Hosted Application/wine"
+wine_path="${CROSSOVER_WINE:-$default_wine}"
+bottle="${CROSSOVER_BOTTLE:-windows-dev-test}"
+bottle_dir="$HOME/Library/Application Support/CrossOver/Bottles/$bottle"
+
+if [[ ! -x "$wine_path" ]]; then
+	echo "Error: CrossOver wine not found at: $wine_path" >&2
+	exit 2
+fi
+
+if [[ ! -d "$bottle_dir" ]]; then
+	echo "Error: CrossOver bottle '$bottle' not found at: $bottle_dir" >&2
+	echo "Create the bottle in CrossOver UI, then re-run." >&2
+	exit 2
+fi
+
+zig build test \
+	-Dtarget=x86_64-windows-gnu \
+	-Dwindows-test-wine="$wine_path" \
+	-Dwindows-test-bottle="$bottle" \
+	--summary all \
+	"$@"
