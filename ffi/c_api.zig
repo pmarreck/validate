@@ -7,6 +7,7 @@ const core = @import("core");
 const errors = core.errors;
 const format_validation = core.format_validation;
 const git_validator = core.git_validator;
+const path_validation = core.path_validation;
 
 // Version string (null-terminated, static)
 const version_string: [:0]const u8 = core.version.string() ++ "";
@@ -86,8 +87,23 @@ pub const EsValidationResultEx = extern struct {
 	warning_message: ?[*:0]const u8,
 	validation_depth: EsValidationDepth,
 	malformation_bits: u64,
-	circumvented_trivial_protection: c_int,
+    circumvented_trivial_protection: c_int,
 };
+
+/// Aggregate validation counts
+pub const EsValidationCounts = extern struct {
+    valid_count: usize,
+    invalid_count: usize,
+    unknown_count: usize,
+};
+
+/// Per-file validation callback (strings valid until next callback on same validator)
+pub const EsValidationCallback = ?*const fn (
+    user_data: ?*anyopaque,
+    display_path: [*:0]const u8,
+    result: *const EsValidationResultEx,
+    elapsed_seconds: f64,
+) callconv(.c) void;
 
 /// Git repository validation result
 pub const EsGitValidationResult = extern struct {
@@ -110,6 +126,52 @@ fn copyZOpt(allocator: std.mem.Allocator, value: ?[]const u8) !?[*:0]const u8 {
 		return try copyZ(allocator, v);
 	}
 	return null;
+}
+
+const CallbackContext = struct {
+    validator: *EsFormatValidator,
+    callback: EsValidationCallback,
+    user_data: ?*anyopaque,
+};
+
+fn onValidation(
+    ctx: ?*anyopaque,
+    display_path: []const u8,
+    result: format_validation.ValidationResult,
+    elapsed_seconds: f64,
+) void {
+    const cb_ctx: *CallbackContext = @ptrCast(@alignCast(ctx orelse return));
+    const callback = cb_ctx.callback orelse return;
+
+    _ = cb_ctx.validator.arena.reset(.free_all);
+    const allocator = cb_ctx.validator.arena.allocator();
+
+    const display_z = copyZ(allocator, display_path) catch return;
+    const desc_z = copyZ(allocator, result.format.description()) catch return;
+    const err_z = copyZOpt(allocator, result.error_message) catch return;
+    const warning_z = copyZOpt(allocator, result.warning_message) catch return;
+
+    var malformation_bits: u64 = 0;
+    var iter = result.malformations.iterator();
+    while (iter.next()) |m| {
+        malformation_bits |= (@as(u64, 1) << @as(u6, @intCast(@intFromEnum(m))));
+    }
+
+    const ex_result = EsValidationResultEx{
+        .format_description = desc_z,
+        .is_valid = if (result.is_valid) 1 else 0,
+        .is_unknown = if (result.format == .unknown) 1 else 0,
+        .error_message = err_z,
+        .warning_message = warning_z,
+        .validation_depth = switch (result.validation_depth) {
+            .structural => .structural,
+            .full => .full,
+        },
+        .malformation_bits = malformation_bits,
+        .circumvented_trivial_protection = if (result.circumvented_trivial_protection) 1 else 0,
+    };
+
+    callback(cb_ctx.user_data, display_z, &ex_result, elapsed_seconds);
 }
 
 threadlocal var tl_desc_buf: [256]u8 = undefined;
@@ -282,6 +344,63 @@ export fn es_format_validate_file_ex(
 	return 0;
 }
 
+/// Validates a file or directory tree using parallel workers.
+export fn es_format_validate_path_parallel(
+	validator: ?*EsFormatValidator,
+	path: ?[*:0]const u8,
+	jobs: usize,
+	callback: EsValidationCallback,
+	user_data: ?*anyopaque,
+	out_counts: *EsValidationCounts,
+) i32 {
+	const v = validator orelse {
+		errors.setLastError(.internal_unexpected, "NULL validator handle", .{});
+		return 9001;
+	};
+
+	const p = path orelse {
+		errors.setLastError(.validation_invalid_path, "NULL path", .{});
+		return 9001;
+	};
+
+	var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+	defer _ = gpa.deinit();
+	const allocator = gpa.allocator();
+
+	const path_slice = std.mem.span(p);
+
+	var ctx = CallbackContext{
+		.validator = v,
+		.callback = callback,
+		.user_data = user_data,
+	};
+
+	const counts = path_validation.validatePathParallel(
+		allocator,
+		v.validator,
+		path_slice,
+		if (jobs == 0) null else jobs,
+		if (callback == null) null else onValidation,
+		if (callback == null) null else @as(?*anyopaque, @ptrCast(&ctx)),
+	) catch |err| {
+		switch (err) {
+			error.FileNotFound => errors.setLastError(.validation_invalid_path, "Path not found", .{}),
+			error.AccessDenied => errors.setLastError(.io_permission_denied, "Access denied", .{}),
+			error.Unsupported => errors.setLastError(.validation_invalid_path, "Unsupported path type", .{}),
+			else => errors.setLastError(.internal_unexpected, "Failed to validate path", .{}),
+		}
+		return 9001;
+	};
+
+	out_counts.* = .{
+		.valid_count = counts.valid,
+		.invalid_count = counts.invalid,
+		.unknown_count = counts.unknown,
+	};
+
+	return 0;
+}
+
 /// Gets description for a malformation type.
 export fn es_malformation_description(malformation: EsMalformation) [*:0]const u8 {
 	const desc: [:0]const u8 = switch (malformation) {
@@ -386,4 +505,3 @@ test "es_core_version" {
 	const version_slice = std.mem.span(v);
 	try std.testing.expectEqualStrings(core.version.string(), version_slice);
 }
-

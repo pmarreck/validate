@@ -25,6 +25,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 |------|---------|
 | `src/core/` | Validation logic and format support |
 | `src/build/` | Zig build helpers (libtool bundling) |
+| `src/core/path_validation.zig` | Parallel path validation and per-file callback reporting |
 
 ## FFI (ffi/)
 | Path | Purpose |

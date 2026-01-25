@@ -135,6 +135,26 @@ typedef struct {
 } es_validation_result_ex_t;
 
 /**
+ * Aggregate validation counts.
+ */
+typedef struct {
+    size_t valid_count;
+    size_t invalid_count;
+    size_t unknown_count;
+} es_validation_counts_t;
+
+/**
+ * Callback invoked for each validated file.
+ * Strings are valid until next callback on the same validator.
+ */
+typedef void (*es_validation_callback_t)(
+    void* user_data,
+    const char* display_path,
+    const es_validation_result_ex_t* result,
+    double elapsed_seconds
+);
+
+/**
  * Creates a new format validator.
  * @param out Pointer to receive the validator handle.
  * @return ES_OK on success.
@@ -193,6 +213,25 @@ es_error_t es_format_validate_file_ex(
     es_format_validator_t* validator,
     const char* path,
     es_validation_result_ex_t* out
+);
+
+/**
+ * Validates a file or directory tree using parallel workers.
+ * @param validator The validator handle.
+ * @param path File or directory path (null-terminated).
+ * @param jobs Number of worker threads (0 = auto).
+ * @param callback Callback invoked for each file (may be NULL).
+ * @param user_data User-provided callback context.
+ * @param out_counts Pointer to receive aggregate counts.
+ * @return ES_OK on success.
+ */
+es_error_t es_format_validate_path_parallel(
+    es_format_validator_t* validator,
+    const char* path,
+    size_t jobs,
+    es_validation_callback_t callback,
+    void* user_data,
+    es_validation_counts_t* out_counts
 );
 
 /**

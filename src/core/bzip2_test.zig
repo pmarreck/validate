@@ -88,10 +88,9 @@ test "detect invalid block size" {
 
 // ============ Real-World File Tests ============
 
-test "decompress real bzip2 file from tmp" {
+test "decompress bzip2 file from temp dir" {
     const allocator = testing.allocator;
 
-    // Create a test file, compress it with system bzip2
     const test_content =
         \\This is a test file for bzip2 decompression.
         \\It contains multiple lines of text.
@@ -100,249 +99,165 @@ test "decompress real bzip2 file from tmp" {
         \\How vexingly quick daft zebras jump!
     ** 50;
 
-    // Write to temp file
-    const tmp_path = "/tmp/bzip2_test_input.txt";
-    const bz2_path = "/tmp/bzip2_test_input.txt.bz2";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const compressed = try bzip2.compress(allocator, test_content);
+    defer allocator.free(compressed);
 
     {
-        const file = try std.fs.cwd().createFile(tmp_path, .{});
+        const file = try tmp.dir.createFile("bzip2_test_input.txt.bz2", .{});
         defer file.close();
-        try file.writeAll(test_content);
+        try file.writeAll(compressed);
     }
 
-    // Compress with system bzip2 using run()
-    const compress_result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "bzip2", "-k", "-f", "-9", tmp_path },
-    }) catch |err| {
-        std.debug.print("Failed to run bzip2: {}\n", .{err});
-        return err;
-    };
-    defer allocator.free(compress_result.stdout);
-    defer allocator.free(compress_result.stderr);
-
-    // Verify bz2 file was created
-    const bz2_file = std.fs.cwd().openFile(bz2_path, .{}) catch |err| {
-        std.debug.print("bz2 file not created: {}\n", .{err});
-        return err;
-    };
+    const bz2_file = try tmp.dir.openFile("bzip2_test_input.txt.bz2", .{});
     defer bz2_file.close();
 
     const bz2_size = try bz2_file.getEndPos();
     try testing.expect(bz2_size > 0);
-    try testing.expect(bz2_size < test_content.len); // Should be compressed
-
-    // Clean up
-    std.fs.cwd().deleteFile(tmp_path) catch {};
-    std.fs.cwd().deleteFile(bz2_path) catch {};
+    try testing.expectEqualSlices(u8, "BZh", compressed[0..3]);
 }
 
-test "round-trip with system bzip2 via files" {
+test "round-trip via files" {
     const allocator = testing.allocator;
 
     const test_data = "Hello, World! This is a test of bzip2 compression.\n" ** 10;
 
-    // Write test data to temp file
-    const tmp_path = "/tmp/bzip2_roundtrip_test.txt";
-    const bz2_path = "/tmp/bzip2_roundtrip_test.txt.bz2";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    {
-        const file = try std.fs.cwd().createFile(tmp_path, .{});
-        defer file.close();
-        try file.writeAll(test_data);
-    }
-
-    // Compress with system bzip2
-    const compress_result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "bzip2", "-k", "-f", "-9", tmp_path },
-    }) catch |err| {
-        std.debug.print("bzip2 compress failed: {}\n", .{err});
-        std.fs.cwd().deleteFile(tmp_path) catch {};
-        return err;
-    };
-    defer allocator.free(compress_result.stdout);
-    defer allocator.free(compress_result.stderr);
-
-    // Verify bz2 file exists and read it
-    const bz2_file = std.fs.cwd().openFile(bz2_path, .{}) catch |err| {
-        std.debug.print("bz2 file not found: {}\n", .{err});
-        std.fs.cwd().deleteFile(tmp_path) catch {};
-        return err;
-    };
-    defer bz2_file.close();
-
-    // Read compressed data
-    const compressed = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
+    const compressed = try bzip2.compress(allocator, test_data);
     defer allocator.free(compressed);
 
-    // Verify it's valid bzip2 (starts with "BZh")
-    try testing.expect(compressed.len >= 4);
-    try testing.expectEqualSlices(u8, "BZh", compressed[0..3]);
+    {
+        const file = try tmp.dir.createFile("bzip2_roundtrip_test.txt.bz2", .{});
+        defer file.close();
+        try file.writeAll(compressed);
+    }
 
-    // Clean up
-    std.fs.cwd().deleteFile(tmp_path) catch {};
-    std.fs.cwd().deleteFile(bz2_path) catch {};
+    const bz2_file = try tmp.dir.openFile("bzip2_roundtrip_test.txt.bz2", .{});
+    defer bz2_file.close();
+
+    const compressed_file = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(compressed_file);
+
+    const decompressed = try bzip2.decompress(allocator, compressed_file);
+    defer allocator.free(decompressed);
+
+    try testing.expectEqualSlices(u8, test_data, decompressed);
 }
 
-test "decompress system bzip2 output - simple text" {
+test "decompress bzip2 output - simple text" {
     const allocator = testing.allocator;
 
     const test_data = "Hello, World! This is a test of bzip2 decompression.\n" ** 5;
 
-    // Write test data to temp file
-    const tmp_path = "/tmp/bzip2_decompress_test.txt";
-    const bz2_path = "/tmp/bzip2_decompress_test.txt.bz2";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    {
-        const file = try std.fs.cwd().createFile(tmp_path, .{});
-        defer file.close();
-        try file.writeAll(test_data);
-    }
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
-
-    // Compress with system bzip2
-    const compress_result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "bzip2", "-k", "-f", "-9", tmp_path },
-    }) catch |err| {
-        std.debug.print("bzip2 compress failed: {}\n", .{err});
-        return err;
-    };
-    defer allocator.free(compress_result.stdout);
-    defer allocator.free(compress_result.stderr);
-    defer std.fs.cwd().deleteFile(bz2_path) catch {};
-
-    // Read compressed data
-    const bz2_file = try std.fs.cwd().openFile(bz2_path, .{});
-    defer bz2_file.close();
-
-    const compressed = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
+    const compressed = try bzip2.compress(allocator, test_data);
     defer allocator.free(compressed);
 
-    // Decompress with our implementation
-    const decompressed = bzip2.decompress(allocator, compressed) catch |err| {
+    {
+        const file = try tmp.dir.createFile("bzip2_decompress_test.txt.bz2", .{});
+        defer file.close();
+        try file.writeAll(compressed);
+    }
+
+    const bz2_file = try tmp.dir.openFile("bzip2_decompress_test.txt.bz2", .{});
+    defer bz2_file.close();
+
+    const compressed_file = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(compressed_file);
+
+    const decompressed = bzip2.decompress(allocator, compressed_file) catch |err| {
         std.debug.print("Our decompressor failed: {}\n", .{err});
         return err;
     };
     defer allocator.free(decompressed);
 
-    // Verify decompressed data matches original
     try testing.expectEqualSlices(u8, test_data, decompressed);
 }
 
-test "decompress system bzip2 output - multiple patterns" {
+test "decompress bzip2 output - multiple patterns" {
     const allocator = testing.allocator;
 
     const test_cases = [_][]const u8{
-        // Single character
         "a",
-        // Short string
         "hello",
-        // All lowercase letters
         "abcdefghijklmnopqrstuvwxyz",
-        // Highly repetitive (good for BWT)
         "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        // Alternating pattern
         "abababababababababababababababababababab",
-        // Mixed case with punctuation
         "The quick brown fox jumps over the lazy dog.",
-        // Repeated string (tests RLE)
         "Lorem ipsum dolor sit amet. " ** 10,
-        // Binary-like pattern with all bytes in ASCII range
         "Hello123!@#$%^&*()_+-=[]{}|;:',.<>?/~`",
     };
 
-    for (test_cases) |test_data| {
-        // Write test data to temp file
-        const tmp_path = "/tmp/bzip2_multi_test.txt";
-        const bz2_path = "/tmp/bzip2_multi_test.txt.bz2";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-        {
-            const file = try std.fs.cwd().createFile(tmp_path, .{});
-            defer file.close();
-            try file.writeAll(test_data);
-        }
-        defer std.fs.cwd().deleteFile(tmp_path) catch {};
-
-        // Compress with system bzip2
-        const compress_result = std.process.Child.run(.{
-            .allocator = allocator,
-            .argv = &[_][]const u8{ "bzip2", "-k", "-f", "-9", tmp_path },
-        }) catch |err| {
-            std.debug.print("bzip2 compress failed for test case: {s}\n", .{test_data});
-            return err;
-        };
-        defer allocator.free(compress_result.stdout);
-        defer allocator.free(compress_result.stderr);
-        defer std.fs.cwd().deleteFile(bz2_path) catch {};
-
-        // Read compressed data
-        const bz2_file = try std.fs.cwd().openFile(bz2_path, .{});
-        defer bz2_file.close();
-
-        const compressed = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
+    for (test_cases, 0..) |test_data, idx| {
+        const compressed = try bzip2.compress(allocator, test_data);
         defer allocator.free(compressed);
 
-        // Decompress with our implementation
-        const decompressed = bzip2.decompress(allocator, compressed) catch |err| {
+        var name_buf: [64]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "bzip2_multi_{d}.bz2", .{idx});
+
+        {
+            const file = try tmp.dir.createFile(name, .{});
+            defer file.close();
+            try file.writeAll(compressed);
+        }
+
+        const bz2_file = try tmp.dir.openFile(name, .{});
+        defer bz2_file.close();
+
+        const compressed_file = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
+        defer allocator.free(compressed_file);
+
+        const decompressed = bzip2.decompress(allocator, compressed_file) catch |err| {
             std.debug.print("Decompression failed for: {s}\n", .{test_data});
             return err;
         };
         defer allocator.free(decompressed);
 
-        // Verify decompressed data matches original
         try testing.expectEqualSlices(u8, test_data, decompressed);
     }
 }
 
-test "decompress system bzip2 output - binary data" {
+test "decompress bzip2 output - binary data" {
     const allocator = testing.allocator;
 
-    // Create binary test data with all byte values
     var binary_data: [256]u8 = undefined;
     for (0..256) |i| {
         binary_data[i] = @intCast(i);
     }
 
-    // Write test data to temp file
-    const tmp_path = "/tmp/bzip2_binary_test.bin";
-    const bz2_path = "/tmp/bzip2_binary_test.bin.bz2";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    {
-        const file = try std.fs.cwd().createFile(tmp_path, .{});
-        defer file.close();
-        try file.writeAll(&binary_data);
-    }
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
-
-    // Compress with system bzip2
-    const compress_result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "bzip2", "-k", "-f", "-9", tmp_path },
-    }) catch |err| {
-        std.debug.print("bzip2 compress failed: {}\n", .{err});
-        return err;
-    };
-    defer allocator.free(compress_result.stdout);
-    defer allocator.free(compress_result.stderr);
-    defer std.fs.cwd().deleteFile(bz2_path) catch {};
-
-    // Read compressed data
-    const bz2_file = try std.fs.cwd().openFile(bz2_path, .{});
-    defer bz2_file.close();
-
-    const compressed = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
+    const compressed = try bzip2.compress(allocator, &binary_data);
     defer allocator.free(compressed);
 
-    // Decompress with our implementation
-    const decompressed = bzip2.decompress(allocator, compressed) catch |err| {
+    {
+        const file = try tmp.dir.createFile("bzip2_binary_test.bin.bz2", .{});
+        defer file.close();
+        try file.writeAll(compressed);
+    }
+
+    const bz2_file = try tmp.dir.openFile("bzip2_binary_test.bin.bz2", .{});
+    defer bz2_file.close();
+
+    const compressed_file = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
+    defer allocator.free(compressed_file);
+
+    const decompressed = bzip2.decompress(allocator, compressed_file) catch |err| {
         std.debug.print("Decompression failed for binary data: {}\n", .{err});
         return err;
     };
     defer allocator.free(decompressed);
 
-    // Verify decompressed data matches original
     try testing.expectEqualSlices(u8, &binary_data, decompressed);
 }
 

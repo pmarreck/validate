@@ -97,9 +97,13 @@ pub fn build(b: *std.Build) void {
         lib.addIncludePath(libde265_src.path("extra"));
     }
 
-    // Add SIMD sources based on target architecture
+    // Add SIMD sources based on target architecture and feature set
     const cpu_arch = target.result.cpu.arch;
-    if (cpu_arch == .x86_64 or cpu_arch == .x86) {
+    const cpu_features = target.result.cpu.features;
+    const has_sse4_1 = (cpu_arch == .x86_64 or cpu_arch == .x86) and
+        std.Target.x86.featureSetHas(cpu_features, .sse4_1);
+
+    if (has_sse4_1) {
         const sse_flags: []const []const u8 = if (is_windows) &.{
             "-DLIBDE265_EXPORTS",
             "-DHAVE_STDINT_H",

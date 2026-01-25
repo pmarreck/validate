@@ -10,14 +10,14 @@
 //! - Scan data completeness
 //!
 //! Note: On Windows, libjpeg's setjmp/longjmp error handling doesn't work with
-//! Zig's cImport, so deep validation returns success (falls back to structural).
+//! Zig's cImport, so we fall back to a structural marker scan.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
 // On Windows, setjmp can't be translated by Zig - skip the libjpeg C imports
 const c = if (builtin.os.tag == .windows) struct {
-    // Stub types for Windows - deep validation will be skipped
+    // Stub types for Windows - libjpeg decode path is unavailable
 } else @cImport({
     @cInclude("stdio.h");
     @cInclude("stddef.h");
@@ -61,13 +61,62 @@ fn zigOutputMessage(_: c.j_common_ptr) callconv(std.builtin.CallingConvention.c)
     // Suppress output - we capture errors via error_exit
 }
 
+fn validateJpegStructurally(data: []const u8) JpegValidationResult {
+    if (data.len < 4) {
+        return JpegValidationResult.invalid("File too small");
+    }
+    if (data[0] != 0xFF or data[1] != 0xD8) {
+        return JpegValidationResult.invalid("Missing JPEG SOI marker");
+    }
+
+    var i: usize = 2;
+    var saw_eoi = false;
+    while (i < data.len) {
+        if (data[i] != 0xFF) {
+            return JpegValidationResult.invalid("Expected JPEG marker");
+        }
+        while (i < data.len and data[i] == 0xFF) {
+            i += 1;
+        }
+        if (i >= data.len) {
+            return JpegValidationResult.invalid("Truncated JPEG marker");
+        }
+        const marker = data[i];
+        i += 1;
+
+        if (marker == 0xD9) {
+            saw_eoi = true;
+            break;
+        }
+        if (marker == 0xD8 or (marker >= 0xD0 and marker <= 0xD7) or marker == 0x01) {
+            continue;
+        }
+
+        if (i + 2 > data.len) {
+            return JpegValidationResult.invalid("Truncated JPEG segment length");
+        }
+        const seg_len: usize = (@as(usize, data[i]) << 8) | data[i + 1];
+        i += 2;
+        if (seg_len < 2) {
+            return JpegValidationResult.invalid("Invalid JPEG segment length");
+        }
+        const payload_len = seg_len - 2;
+        if (i + payload_len > data.len) {
+            return JpegValidationResult.invalid("Truncated JPEG segment");
+        }
+        i += payload_len;
+    }
+
+    if (!saw_eoi) {
+        return JpegValidationResult.invalid("Missing JPEG EOI marker");
+    }
+    return JpegValidationResult.ok();
+}
+
 /// Validate a JPEG file by attempting full decompression.
 /// Returns validation result with error details if invalid.
-/// Note: On Windows, returns success (libjpeg setjmp doesn't work with Zig cImport).
+/// Note: On Windows, falls back to a structural marker scan.
 pub fn validateJpegDeep(file_path: []const u8) JpegValidationResult {
-    // On Windows, skip deep validation (setjmp/longjmp doesn't work with Zig's cImport)
-    if (comptime builtin.os.tag == .windows) return JpegValidationResult.ok();
-
     // Open file using Zig's stdlib
     const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
         return switch (err) {
@@ -155,10 +204,11 @@ fn validateJpegDeepFromMemory(file: std.fs.File) JpegValidationResult {
 }
 
 /// Validate JPEG from memory buffer.
-/// Note: On Windows, returns success (libjpeg setjmp doesn't work with Zig cImport).
+/// Note: On Windows, falls back to a structural marker scan.
 pub fn validateJpegDeepFromBuffer(data: []const u8) JpegValidationResult {
-    // On Windows, skip deep validation (setjmp/longjmp doesn't work with Zig's cImport)
-    if (comptime builtin.os.tag == .windows) return JpegValidationResult.ok();
+    if (comptime builtin.os.tag == .windows) {
+        return validateJpegStructurally(data);
+    }
 
     if (data.len < 2) {
         return JpegValidationResult.invalid("File too small");

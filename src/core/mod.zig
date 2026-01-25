@@ -77,6 +77,7 @@ pub const apm_parser = @import("apm_parser.zig");
 pub const hfsplus_parser = @import("hfsplus_parser.zig");
 pub const zlib = @import("zlib.zig");
 pub const git_validator = @import("git_validator.zig");
+pub const path_validation = @import("path_validation.zig");
 
 // Version information
 pub const version = struct {

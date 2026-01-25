@@ -16,6 +16,12 @@ The C FFI mirrors the current Zig validation API for ease of integration. It is 
 ```
 Runs `./test` first. When `DEBUG` is unset/0, dependencies build in ReleaseFast and `./build` defaults to `-Doptimize=ReleaseFast`.
 
+## CLI
+```bash
+./zig-out/bin/validate <path> [--jobs N]
+```
+`--jobs 0` (default) uses all available cores.
+
 ## Tests
 ```bash
 ./test

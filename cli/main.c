@@ -2,13 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <dirent.h>
-#include <limits.h>
-#include <time.h>
 #include <unistd.h>
-#if defined(_WIN32)
-#include <windows.h>
-#endif
 #include "validate_core.h"
 
 #define COLOR_GREEN  "\033[0;32m"
@@ -17,34 +11,6 @@
 #define COLOR_CYAN   "\033[0;36m"
 #define COLOR_RESET  "\033[0m"
 #define SLOW_THRESHOLD_SECONDS 5.0
-
-typedef struct {
-	size_t valid_count;
-	size_t invalid_count;
-	size_t unknown_count;
-} validation_counts_t;
-
-static double monotonic_seconds(void) {
-#if defined(_WIN32)
-	static LARGE_INTEGER freq;
-	static int freq_inited = 0;
-	LARGE_INTEGER counter;
-	if (!freq_inited) {
-		QueryPerformanceFrequency(&freq);
-		freq_inited = 1;
-	}
-	QueryPerformanceCounter(&counter);
-	return (double)counter.QuadPart / (double)freq.QuadPart;
-#else
-	struct timespec ts;
-#if defined(CLOCK_MONOTONIC)
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-#else
-	timespec_get(&ts, TIME_UTC);
-#endif
-	return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
-#endif
-}
 
 static const char* validation_depth_description(es_validation_depth_t depth) {
 	switch (depth) {
@@ -86,89 +52,23 @@ static void print_validation_result(const char* path, const es_validation_result
 	}
 }
 
-static int validate_one(const char* path, const char* display_path, es_format_validator_t* validator, validation_counts_t* counts) {
-	const double start = monotonic_seconds();
-	es_validation_result_ex_t result;
-	es_error_t err = es_format_validate_file_ex(validator, path, &result);
-	const double elapsed = monotonic_seconds() - start;
-	if (elapsed >= SLOW_THRESHOLD_SECONDS) {
-		fprintf(stderr, COLOR_YELLOW "SLOW" COLOR_RESET " %s: %.2fs\n", display_path, elapsed);
+static void on_validation(
+	void* user_data,
+	const char* display_path,
+	const es_validation_result_ex_t* result,
+	double elapsed_seconds
+) {
+	(void)user_data;
+	if (elapsed_seconds >= SLOW_THRESHOLD_SECONDS) {
+		fprintf(stderr, COLOR_YELLOW "SLOW" COLOR_RESET " %s: %.2fs\n", display_path, elapsed_seconds);
 	}
-	if (err != ES_OK) {
-		fprintf(stderr, COLOR_RED "Error: Validation failed: %s\n" COLOR_RESET,
-			es_core_last_error() ? es_core_last_error() : "unknown error");
-		counts->invalid_count++;
-		return 1;
+	if (result->is_unknown) {
+		return;
 	}
-
-	if (result.is_unknown) {
-		counts->unknown_count++;
-		return 0;
-	}
-
-	if (result.is_valid) {
-		counts->valid_count++;
-	} else {
-		counts->invalid_count++;
-	}
-
-	print_validation_result(display_path, &result);
-	return result.is_valid ? 0 : 1;
+	print_validation_result(display_path, result);
 }
 
-static int walk_directory(const char* root, const char* path, es_format_validator_t* validator, validation_counts_t* counts) {
-	DIR* dir = opendir(path);
-	if (!dir) {
-		fprintf(stderr, COLOR_RED "Error: Failed to open directory: %s\n" COLOR_RESET, path);
-		return 1;
-	}
-
-	struct dirent* entry;
-	int failures = 0;
-	while ((entry = readdir(dir)) != NULL) {
-		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-			continue;
-		}
-
-		char child_path[PATH_MAX];
-		int written = snprintf(child_path, sizeof(child_path), "%s/%s", path, entry->d_name);
-		if (written < 0 || (size_t)written >= sizeof(child_path)) {
-			fprintf(stderr, COLOR_RED "Error: Path too long: %s/%s\n" COLOR_RESET, path, entry->d_name);
-			continue;
-		}
-
-		struct stat st;
-		if (lstat(child_path, &st) != 0) {
-			fprintf(stderr, COLOR_YELLOW "Warning: Failed to stat: %s\n" COLOR_RESET, child_path);
-			continue;
-		}
-
-		if (S_ISDIR(st.st_mode)) {
-			failures |= walk_directory(root, child_path, validator, counts);
-			continue;
-		}
-
-		if (!S_ISREG(st.st_mode)) {
-			continue;
-		}
-
-		const char* display_path = child_path;
-		size_t root_len = strlen(root);
-		if (strncmp(child_path, root, root_len) == 0) {
-			display_path = child_path + root_len;
-			if (display_path[0] == '/') {
-				display_path++;
-			}
-		}
-
-		failures |= validate_one(child_path, display_path, validator, counts);
-	}
-
-	closedir(dir);
-	return failures;
-}
-
-static int validate_path(const char* path) {
+static int validate_path(const char* path, size_t jobs) {
 	struct stat st;
 	if (stat(path, &st) != 0) {
 		fprintf(stderr, COLOR_RED "Error: Cannot access path: %s\n" COLOR_RESET, path);
@@ -182,17 +82,24 @@ static int validate_path(const char* path) {
 		return 1;
 	}
 
-	validation_counts_t counts = {0};
+	es_validation_counts_t counts = {0};
 	int failures = 0;
 
 	if (S_ISDIR(st.st_mode)) {
 		printf("Validating: %s\n\n", path);
-		failures |= walk_directory(path, path, validator, &counts);
+		err = es_format_validate_path_parallel(validator, path, jobs, on_validation, NULL, &counts);
 	} else if (S_ISREG(st.st_mode)) {
 		printf("Checking: %s\n", path);
-		failures |= validate_one(path, path, validator, &counts);
+		err = es_format_validate_path_parallel(validator, path, jobs, on_validation, NULL, &counts);
 	} else {
 		fprintf(stderr, COLOR_RED "Error: Unsupported path type: %s\n" COLOR_RESET, path);
+		es_format_validator_destroy(validator);
+		return 1;
+	}
+
+	if (err != ES_OK) {
+		fprintf(stderr, COLOR_RED "Error: Validation failed: %s\n" COLOR_RESET,
+			es_core_last_error() ? es_core_last_error() : "unknown error");
 		es_format_validator_destroy(validator);
 		return 1;
 	}
@@ -260,6 +167,8 @@ static void print_usage(const char* program) {
 	printf("OPTIONS:\n");
 	printf("    --version   Print version\n");
 	printf("    --help      Show this help\n");
+	printf("    --jobs N    Number of parallel workers (0 = auto)\n");
+	printf("    -j N        Alias for --jobs\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -268,15 +177,38 @@ int main(int argc, char* argv[]) {
 		return 2;
 	}
 
-	if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+	size_t jobs = 0;
+	const char* path = NULL;
+
+	for (int i = 1; i < argc; i++) {
+		const char* arg = argv[i];
+		if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
+			print_usage(argv[0]);
+			return 0;
+		}
+		if (strcmp(arg, "--version") == 0) {
+			printf("%s\n", es_core_version());
+			return 0;
+		}
+		if (strcmp(arg, "--jobs") == 0 || strcmp(arg, "-j") == 0) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, COLOR_RED "Error: --jobs requires a value\n" COLOR_RESET);
+				return 2;
+			}
+			jobs = (size_t)strtoull(argv[++i], NULL, 10);
+			continue;
+		}
+		if (arg[0] == '-') {
+			fprintf(stderr, COLOR_RED "Error: Unknown option: %s\n" COLOR_RESET, arg);
+			return 2;
+		}
+		path = arg;
+	}
+
+	if (!path) {
 		print_usage(argv[0]);
-		return 0;
+		return 2;
 	}
 
-	if (strcmp(argv[1], "--version") == 0) {
-		printf("%s\n", es_core_version());
-		return 0;
-	}
-
-	return validate_path(argv[1]);
+	return validate_path(path, jobs);
 }

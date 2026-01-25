@@ -34,12 +34,29 @@ pub const H264ValidationResult = struct {
     }
 };
 
+fn hasAnnexBStartCode(data: []const u8) bool {
+    if (data.len < 3) return false;
+    var i: usize = 0;
+    while (i + 3 <= data.len) : (i += 1) {
+        if (data[i] == 0 and data[i + 1] == 0 and data[i + 2] == 1) {
+            return true;
+        }
+        if (i + 4 <= data.len and data[i] == 0 and data[i + 1] == 0 and data[i + 2] == 0 and data[i + 3] == 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Validate H.264 bitstream using OpenH264.
 /// Decodes up to max_frames to verify integrity.
 /// Input data should be in Annex B format (with 0x00000001 start codes).
 pub fn validateH264Stream(data: []const u8, max_frames: u32) H264ValidationResult {
     if (data.len < 4) {
         return H264ValidationResult.invalid("Data too small for H.264");
+    }
+    if (!hasAnnexBStartCode(data)) {
+        return H264ValidationResult.invalid("Missing Annex B start code");
     }
 
     // Create decoder

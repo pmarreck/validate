@@ -6,6 +6,8 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] (empty)
 
 ## Recently Completed
+- [x] Add core parallel path validation + CLI jobs flag (2026-01-25 16:52 EST)
+- [x] Fix CI issues: libde265 SSE4.1 gating + Windows tests (bzip2 temp + JPEG structural) (2026-01-25 16:52 EST)
 - [x] Audit Zig 0.15 API usage (no mismatches found) (2026-01-25 16:20 EST)
 - [x] Add CLI SLOW warning for validations >5s (2026-01-25 16:20 EST)
 - [x] Add Zig 0.14–0.15 API reference doc to CODE_MINIMAP (2026-01-25 16:16 EST)
