@@ -1,0 +1,169 @@
+//! Validate Core Library
+//!
+//! Architectural intent:
+//! - This is the single source of truth for validation logic.
+//! - Frontends (CLI, future wrappers) call into core via the C FFI.
+//! - The core remains platform-agnostic and deterministic; I/O and UX
+//!   concerns belong in adapter layers.
+//!
+//! Boundary summary:
+//!   Frontend (CLI) -> C FFI -> Zig Core
+//!
+//! This module is designed to be used across FFI boundaries with a stable
+//! C ABI surface and tests that enforce behavior at the core level.
+
+const std = @import("std");
+
+// Re-export submodules
+pub const types = @import("types.zig");
+pub const errors = @import("errors.zig");
+pub const compat = @import("compat.zig");
+pub const format_validation = @import("format_validation.zig");
+pub const jpeg_validator = @import("jpeg_validator.zig");
+pub const alac_validator = @import("alac_validator.zig");
+pub const ac3_validator = @import("ac3_validator.zig");
+pub const eac3_validator = @import("eac3_validator.zig");
+pub const prores_validator = @import("prores_validator.zig");
+pub const prores_decoder = @import("prores_decoder.zig");
+pub const video_validator = @import("video_validator.zig");
+pub const h264_validator = @import("h264_validator.zig");
+pub const ebml_parser = @import("ebml_parser.zig");
+pub const ogg_validator = @import("ogg_validator.zig");
+pub const mp3_validator = @import("mp3_validator.zig");
+pub const opus_validator = @import("opus_validator.zig");
+pub const vorbis_validator = @import("vorbis_validator.zig");
+pub const mp3_decode_validator = @import("mp3_decode_validator.zig");
+pub const vp9_validator = @import("vp9_validator.zig");
+pub const jpeg2000_validator = @import("jpeg2000_validator.zig");
+pub const jxl_validator = @import("jxl_validator.zig");
+pub const jbig2_decoder = @import("jbig2_decoder.zig");
+pub const ccitt_fax_decoder = @import("ccitt_fax_decoder.zig");
+pub const pdf_image_validator = @import("pdf_image_validator.zig");
+pub const resource_fork = @import("resource_fork.zig");
+pub const bzip2 = @import("bzip2.zig");
+pub const ascii_hex_decoder = @import("ascii_hex_decoder.zig");
+pub const ascii85_decoder = @import("ascii85_decoder.zig");
+pub const run_length_decoder = @import("run_length_decoder.zig");
+pub const lzw_decoder = @import("lzw_decoder.zig");
+pub const tiff_lzw_decoder = @import("tiff_lzw_decoder.zig");
+pub const bmp_decoder = @import("bmp_decoder.zig");
+pub const midi_validator = @import("midi_validator.zig");
+pub const ole2_validator = @import("ole2_validator.zig");
+pub const font_validator = @import("font_validator.zig");
+pub const pdf_font_validator = @import("pdf_font_validator.zig");
+pub const pdf_embedded_file_validator = @import("pdf_embedded_file_validator.zig");
+pub const brotli_validator = @import("brotli_validator.zig");
+pub const tracker_validator = @import("tracker_validator.zig");
+pub const libopenmpt = @import("libopenmpt.zig");
+pub const mpeg12_validator = @import("mpeg12_validator.zig");
+pub const mpeg12_decoder = @import("mpeg12_decoder.zig");
+pub const mpeg4p2_validator = @import("mpeg4p2_validator.zig");
+pub const mpeg4p2_decoder = @import("mpeg4p2_decoder.zig");
+pub const theora_validator = @import("theora_validator.zig");
+pub const theora_decoder = @import("theora_decoder.zig");
+pub const vp8_validator = @import("vp8_validator.zig");
+pub const vp8_decoder = @import("vp8_decoder.zig");
+pub const mpeg_ts_parser = @import("mpeg_ts_parser.zig");
+pub const mpeg_ps_parser = @import("mpeg_ps_parser.zig");
+pub const wavpack_decoder = @import("wavpack_decoder.zig");
+pub const dmg_validator = @import("dmg_validator.zig");
+pub const iso9660_parser = @import("iso9660_parser.zig");
+pub const udf_parser = @import("udf_parser.zig");
+pub const dvd_validator = @import("dvd_validator.zig");
+pub const blu_ray_validator = @import("blu_ray_validator.zig");
+pub const iso_validator = @import("iso_validator.zig");
+pub const gpt_parser = @import("gpt_parser.zig");
+pub const apm_parser = @import("apm_parser.zig");
+pub const hfsplus_parser = @import("hfsplus_parser.zig");
+pub const zlib = @import("zlib.zig");
+pub const git_validator = @import("git_validator.zig");
+
+// Version information
+pub const version = struct {
+    pub const major: u32 = 0;
+    pub const minor: u32 = 1;
+    pub const patch: u32 = 0;
+
+    pub fn string() []const u8 {
+        return "0.1.0";
+    }
+};
+
+/// Returns the library version string.
+pub fn getVersion() []const u8 {
+    return version.string();
+}
+
+test "version" {
+    const v = getVersion();
+    try std.testing.expectEqualStrings("0.1.0", v);
+}
+
+// Include integration tests
+test {
+    _ = @import("bzip2_test.zig");
+    // PDF filter decoders
+    _ = @import("ascii_hex_decoder.zig");
+    _ = @import("ascii85_decoder.zig");
+    _ = @import("run_length_decoder.zig");
+    _ = @import("lzw_decoder.zig");
+    _ = @import("tiff_lzw_decoder.zig");
+    // Font validator
+    _ = @import("font_validator.zig");
+    _ = @import("pdf_font_validator.zig");
+    _ = @import("pdf_embedded_file_validator.zig");
+    // Image format validators
+    _ = @import("jxl_validator.zig");
+    _ = @import("bmp_decoder.zig");
+    // Audio format validators
+    _ = @import("midi_validator.zig");
+    // Document format validators
+    _ = @import("ole2_validator.zig");
+    // Compression validators
+    _ = @import("brotli_validator.zig");
+    // Tracker/module validators
+    _ = @import("tracker_validator.zig");
+    // MPEG video validators
+    _ = @import("mpeg12_validator.zig");
+    _ = @import("mpeg12_decoder.zig");
+    // MPEG-4 Part 2 validator and decoder
+    _ = @import("mpeg4p2_validator.zig");
+    _ = @import("mpeg4p2_decoder.zig");
+    // Theora video validator
+    _ = @import("theora_validator.zig");
+    // Theora decoder
+    _ = @import("theora_decoder.zig");
+    // VP8 video validator
+    _ = @import("vp8_validator.zig");
+    // VP8 decoder
+    _ = @import("vp8_decoder.zig");
+    // MPEG container parsers
+    _ = @import("mpeg_ts_parser.zig");
+    _ = @import("mpeg_ps_parser.zig");
+    // WavPack decoder
+    _ = @import("wavpack_decoder.zig");
+    // DMG validator
+    _ = @import("dmg_validator.zig");
+    // ISO 9660 parser
+    _ = @import("iso9660_parser.zig");
+    // UDF parser
+    _ = @import("udf_parser.zig");
+    // DVD validator
+    _ = @import("dvd_validator.zig");
+    // Blu-ray validator
+    _ = @import("blu_ray_validator.zig");
+    // ISO validator (recursive file validation)
+    _ = @import("iso_validator.zig");
+    // ProRes decoder
+    _ = @import("prores_decoder.zig");
+    // GPT parser
+    _ = @import("gpt_parser.zig");
+    // APM parser
+    _ = @import("apm_parser.zig");
+    // HFS+ parser
+    _ = @import("hfsplus_parser.zig");
+    // zlib wrapper for robust deflate
+    _ = @import("zlib.zig");
+    // Git repository validator
+    _ = @import("git_validator.zig");
+}

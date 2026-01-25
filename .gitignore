@@ -1,0 +1,17 @@
+# Zig build artifacts
+.zig-cache/
+zig-out/
+zig-cache/
+
+# Nix
+.direnv/
+
+# Editor files
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Semantic search
+.codescan/

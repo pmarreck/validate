@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+
+if [[ -z "${VALIDATE_NIX:-}" ]]; then
+	exec env VALIDATE_NIX=1 nix develop -c "$0" "$@"
+fi
+
+set -euo pipefail
+
+unset LD
+unset SDKROOT
+
+echo "=== Running Zig tests ==="
+zig_output=$(zig build test --summary all 2>&1)
+zig_exit=$?
+
+printf '%s\n' "$zig_output"
+
+if [[ $zig_exit -ne 0 ]]; then
+	zig_failures=$(echo "$zig_output" | grep -oE '^[0-9]+ failed' | head -1 | grep -oE '[0-9]+' || echo "1")
+	echo "=== Zig tests FAILED ($zig_failures failures) ==="
+	exit $zig_failures
+fi
+
+zig_passed=$(echo "$zig_output" | grep -oE '[0-9]+/[0-9]+ tests passed' | head -1 || echo "? tests passed")
+echo "=== Zig tests passed ($zig_passed) ==="
+

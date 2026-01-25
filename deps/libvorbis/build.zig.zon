@@ -1,0 +1,18 @@
+.{
+    .name = .libvorbis,
+    .version = "1.3.7",
+    .fingerprint = 0xbe9c0933f710006f,
+    .dependencies = .{
+        .vorbis_src = .{
+            .url = "https://github.com/xiph/vorbis/archive/refs/tags/v1.3.7.tar.gz",
+            .hash = "N-V-__8AABFeSABbG3yTdgW9-VtmXuiKdz0cat3SbbtFzh5i",
+        },
+        .libogg = .{
+            .path = "../libogg",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}

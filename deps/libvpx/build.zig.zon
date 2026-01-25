@@ -1,0 +1,15 @@
+.{
+    .name = .libvpx,
+    .version = "1.15.0-vp9only",
+    .fingerprint = 0xea64d02c620bc77a,
+    .dependencies = .{
+        .libvpx_src = .{
+            .url = "https://github.com/webmproject/libvpx/archive/refs/tags/v1.15.0.tar.gz",
+            .hash = "N-V-__8AAJXEdgFIEP7Opxvy91SdyIwe7pwF33erFF9YY6In",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}

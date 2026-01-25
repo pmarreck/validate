@@ -1,0 +1,15 @@
+.{
+    .name = .libopus,
+    .version = "1.5.2",
+    .fingerprint = 0xb183a160d4623c4c,
+    .dependencies = .{
+        .opus_src = .{
+            .url = "https://github.com/xiph/opus/archive/refs/tags/v1.5.2.tar.gz",
+            .hash = "N-V-__8AAMEO5AA16T-SYUVA1ipB1ctBxSMowU_ZD3tzi54M",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}

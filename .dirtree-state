@@ -1,0 +1,5 @@
+# Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
+ver=1.1
+close=[
+	/^deps/[^/]*$/
+]

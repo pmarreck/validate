@@ -1,0 +1,15 @@
+.{
+    .name = .dav1d,
+    .version = "1.5.3",
+    .fingerprint = 0xf5f400e7dde81b36,
+    .dependencies = .{
+        .dav1d_src = .{
+            .url = "https://github.com/videolan/dav1d/archive/refs/tags/1.5.3.tar.gz",
+            .hash = "N-V-__8AAGPEswDhJviIdrQMQphpqvzV4vajBe-y2sZviPZl",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}

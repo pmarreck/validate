@@ -1,0 +1,15 @@
+.{
+    .name = .libde265,
+    .version = "1.0.15",
+    .fingerprint = 0x217e7feedc2dfc2c,
+    .dependencies = .{
+        .libde265_src = .{
+            .url = "https://github.com/strukturag/libde265/archive/refs/tags/v1.0.15.tar.gz",
+            .hash = "N-V-__8AABqGIQCrbow3HfVXekoLhoQrA-CjP1e1NdO5fvT-",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}

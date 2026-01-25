@@ -1,0 +1,15 @@
+.{
+    .name = .libogg,
+    .version = "1.3.5",
+    .fingerprint = 0x7118c1b0d13c777d,
+    .dependencies = .{
+        .ogg_src = .{
+            .url = "https://github.com/xiph/ogg/archive/refs/tags/v1.3.5.tar.gz",
+            .hash = "N-V-__8AAHMgCwApGphwuVpTjBXggpa3wjbssfH_IW7v3QND",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}

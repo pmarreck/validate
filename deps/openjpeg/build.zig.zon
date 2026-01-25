@@ -1,0 +1,15 @@
+.{
+    .name = .openjpeg,
+    .version = "2.5.4",
+    .fingerprint = 0x358cfebe7c181e37,
+    .dependencies = .{
+        .openjpeg_src = .{
+            .url = "https://github.com/uclouvain/openjpeg/archive/refs/tags/v2.5.4.tar.gz",
+            .hash = "N-V-__8AAHiEmgBjTa5rTtwbWMR9ZJJkN2_1NPJOZy6sURMC",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}

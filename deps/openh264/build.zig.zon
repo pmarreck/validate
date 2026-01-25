@@ -1,0 +1,15 @@
+.{
+    .name = .openh264,
+    .version = "2.6.0",
+    .fingerprint = 0x8f6f614242934b06,
+    .dependencies = .{
+        .openh264_src = .{
+            .url = "https://github.com/cisco/openh264/archive/refs/tags/v2.6.0.tar.gz",
+            .hash = "N-V-__8AALjwUwSnHjJzQeIxzk1njqiHAwEjKvC-eCay2HR0",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}

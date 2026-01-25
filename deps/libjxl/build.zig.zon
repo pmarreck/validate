@@ -1,0 +1,21 @@
+.{
+    .name = .libjxl,
+    .version = "0.11.1",
+    .fingerprint = 0x2d5bd44d134a31ec,
+    .dependencies = .{
+        .libjxl_src = .{
+            .url = "https://github.com/libjxl/libjxl/archive/refs/tags/v0.11.1.tar.gz",
+            .hash = "N-V-__8AAO_HbgBGkewsrsmQxPPUEzKNRtvZGlyafTky-zOf",
+        },
+        .brotli = .{
+            .path = "../brotli",
+        },
+        .highway = .{
+            .path = "../highway",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}
