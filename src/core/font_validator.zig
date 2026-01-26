@@ -94,7 +94,31 @@ pub const ValidationOptions = struct {
 	/// Skip table checksum verification.
 	/// Useful for PDF-embedded fonts where subsetters often break checksums.
 	skip_checksums: bool = false,
+	/// When a checksum mismatch is detected, attempt a structural parse fallback
+	/// to provide a more specific reason.
+	checksum_fallback: bool = true,
 };
+
+const CHECKSUM_FALLBACK_OK = "Table checksum mismatch; parsing fallback: no structural errors";
+const CHECKSUM_FALLBACK_INVALID_SIGNATURE = "Table checksum mismatch; parsing fallback: Invalid sfnt version";
+const CHECKSUM_FALLBACK_NO_TABLES = "Table checksum mismatch; parsing fallback: No tables in font";
+const CHECKSUM_FALLBACK_DIR_TOO_SMALL = "Table checksum mismatch; parsing fallback: File too small for table directory";
+const CHECKSUM_FALLBACK_TABLE_OOB = "Table checksum mismatch; parsing fallback: Table extends beyond file";
+const CHECKSUM_FALLBACK_HEAD_MISSING = "Table checksum mismatch; parsing fallback: Missing head table";
+const CHECKSUM_FALLBACK_HEAD_TOO_SMALL = "Table checksum mismatch; parsing fallback: head table too small";
+const CHECKSUM_FALLBACK_OTHER = "Table checksum mismatch; parsing fallback revealed structural errors";
+
+fn checksumMismatchMessage(fallback_error: ?[]const u8) []const u8 {
+	if (fallback_error == null) return CHECKSUM_FALLBACK_OK;
+	const msg = fallback_error.?;
+	if (std.mem.eql(u8, msg, "Invalid sfnt version")) return CHECKSUM_FALLBACK_INVALID_SIGNATURE;
+	if (std.mem.eql(u8, msg, "No tables in font")) return CHECKSUM_FALLBACK_NO_TABLES;
+	if (std.mem.eql(u8, msg, "File too small for table directory")) return CHECKSUM_FALLBACK_DIR_TOO_SMALL;
+	if (std.mem.eql(u8, msg, "Table extends beyond file")) return CHECKSUM_FALLBACK_TABLE_OOB;
+	if (std.mem.eql(u8, msg, "Missing head table")) return CHECKSUM_FALLBACK_HEAD_MISSING;
+	if (std.mem.eql(u8, msg, "head table too small")) return CHECKSUM_FALLBACK_HEAD_TOO_SMALL;
+	return CHECKSUM_FALLBACK_OTHER;
+}
 
 /// Validate a TrueType or OpenType font from memory.
 /// Uses strict validation by default.
@@ -157,12 +181,19 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 		}
 
 		// Verify table checksum (skip head table - it has special handling)
-		// Also skip if lenient mode is enabled (for PDF-embedded fonts)
 		if (!options.skip_checksums and !std.mem.eql(u8, &record.tag, "head")) {
 			const table_data = data[record.offset..][0..record.length];
 			const calc_sum = calcChecksum(table_data);
 
 			if (calc_sum != record.checksum) {
+				if (options.checksum_fallback) {
+					const fallback = validateTtfOtfWithOptions(data, .{
+						.skip_checksums = true,
+						.checksum_fallback = false,
+					});
+					const combined = checksumMismatchMessage(fallback.error_message);
+					return FontValidationResult.invalid(combined);
+				}
 				return FontValidationResult.invalid("Table checksum mismatch");
 			}
 		}
@@ -642,6 +673,85 @@ test "validateTtfOtf minimal valid structure" {
 	try std.testing.expect(result.valid);
 	try std.testing.expectEqual(FontType.truetype, result.font_type.?);
 	try std.testing.expectEqual(@as(u16, 1), result.num_tables);
+}
+
+test "validateTtfOtf checksum mismatch reports fallback detail" {
+	var data: [256]u8 = undefined;
+	@memset(&data, 0);
+
+	// sfnt version (TrueType)
+	data[0] = 0x00;
+	data[1] = 0x01;
+	data[2] = 0x00;
+	data[3] = 0x00;
+
+	// numTables = 2
+	data[4] = 0;
+	data[5] = 2;
+	// searchRange, entrySelector, rangeShift (placeholder values)
+	data[6] = 0;
+	data[7] = 32;
+	data[8] = 0;
+	data[9] = 1;
+	data[10] = 0;
+	data[11] = 0;
+
+	// Table record 0: 'head'
+	data[12] = 'h';
+	data[13] = 'e';
+	data[14] = 'a';
+	data[15] = 'd';
+	// checksum placeholder (head table skipped)
+	data[20] = 0;
+	data[21] = 0;
+	data[22] = 0;
+	data[23] = 44; // head offset (after 2 table records)
+	data[24] = 0;
+	data[25] = 0;
+	data[26] = 0;
+	data[27] = 54; // head length
+
+	// Table record 1: 'test'
+	data[28] = 't';
+	data[29] = 'e';
+	data[30] = 's';
+	data[31] = 't';
+	// checksum (intentionally wrong: 0)
+	data[32] = 0;
+	data[33] = 0;
+	data[34] = 0;
+	data[35] = 0;
+	// offset = 98 (44 + 54)
+	data[36] = 0;
+	data[37] = 0;
+	data[38] = 0;
+	data[39] = 98;
+	// length = 4
+	data[40] = 0;
+	data[41] = 0;
+	data[42] = 0;
+	data[43] = 4;
+
+	// head table at offset 44
+	data[44] = 0;
+	data[45] = 1;
+	data[46] = 0;
+	data[47] = 0;
+	// magicNumber in head table (offset 12 in head)
+	data[44 + 12] = 0x5F;
+	data[44 + 13] = 0x0F;
+	data[44 + 14] = 0x3C;
+	data[44 + 15] = 0xF5;
+
+	// test table data at offset 98 (arbitrary bytes)
+	data[98] = 1;
+	data[99] = 2;
+	data[100] = 3;
+	data[101] = 4;
+
+	const result = validateTtfOtf(&data);
+	try std.testing.expect(!result.valid);
+	try std.testing.expectEqualStrings(CHECKSUM_FALLBACK_OK, result.error_message.?);
 }
 
 // Type1 PFB tests

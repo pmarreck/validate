@@ -10753,9 +10753,9 @@ fn validatePdf(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.pdf, "File too small for valid PDF");
     }
 
-    // Tiered search for %%EOF: try small window first (fast path), expand if needed
-    const eof_marker = "%%EOF";
-    var malformations_local: std.EnumSet(MalformationType) = .{};
+	// Tiered search for %%EOF: try small window first (fast path), expand if needed
+	const eof_marker = "%%EOF";
+	var malformations_local: std.EnumSet(MalformationType) = .{};
     var buffer: [8192]u8 = undefined;
     var bytes_read: usize = 0;
 
@@ -16510,8 +16510,9 @@ fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	const structural_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
 
 	// Tiered search for %%EOF: try small window first (fast path), expand if needed
-    const eof_marker = "%%EOF";
-    var malformations_local: std.EnumSet(MalformationType) = .{};
+	const eof_marker = "%%EOF";
+	var malformations_local: std.EnumSet(MalformationType) = .{};
+	var warning_message: ?[]const u8 = null;
     var buffer: [8192]u8 = undefined;
     var bytes_read: usize = 0;
     var search_start: u64 = 0;
@@ -16708,6 +16709,10 @@ fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	if (!font_result.valid) {
 		return ValidationResult.invalidWithDepth(.pdf, font_result.error_message orelse "Embedded font validation failed", .full);
 	}
+	if (font_result.failed > 0 and warning_message == null) {
+		warning_message = font_result.first_error_message orelse
+			"Embedded fonts failed strict validation; accepted with warning";
+	}
 
 	// Validate embedded files (attachments)
 	const embed_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
@@ -16725,25 +16730,27 @@ fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
     if (image_result.decryption_succeeded) {
         // PDF was encrypted with empty password - flag as trivial protection
         malformations_local.insert(.pdf_trivial_encryption);
-        return ValidationResult{
-            .format = .pdf,
-            .is_valid = true,
-            .error_message = null,
-            .malformations = malformations_local,
-            .validation_depth = .full,
-            .circumvented_trivial_protection = true,
-            .has_encrypted_content = true,
-        };
+		return ValidationResult{
+			.format = .pdf,
+			.is_valid = true,
+			.error_message = null,
+			.malformations = malformations_local,
+			.warning_message = warning_message,
+			.validation_depth = .full,
+			.circumvented_trivial_protection = true,
+			.has_encrypted_content = true,
+		};
     }
-    if (malformations_local.count() > 0) {
-        return ValidationResult{
-            .format = .pdf,
-            .is_valid = true,
-            .error_message = null,
-            .malformations = malformations_local,
-            .validation_depth = .full,
-        };
-    }
+	if (malformations_local.count() > 0) {
+		return ValidationResult{
+			.format = .pdf,
+			.is_valid = true,
+			.error_message = null,
+			.malformations = malformations_local,
+			.warning_message = warning_message,
+			.validation_depth = .full,
+		};
+	}
     return ValidationResult.okWithDepth(.pdf, .full);
 }
 
@@ -16762,6 +16769,7 @@ fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Validat
 	}
 
 	var malformations_local: std.EnumSet(MalformationType) = .{};
+	var warning_message: ?[]const u8 = null;
 
 	const structural_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
 
@@ -16838,6 +16846,10 @@ fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Validat
 	if (!font_result.valid) {
 		return ValidationResult.invalidWithDepth(.pdf, font_result.error_message orelse "Embedded font validation failed", .full);
 	}
+	if (font_result.failed > 0 and warning_message == null) {
+		warning_message = font_result.first_error_message orelse
+			"Embedded fonts failed strict validation; accepted with warning";
+	}
 
 	// Validate embedded files (attachments)
 	const embed_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
@@ -16851,30 +16863,40 @@ fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Validat
 	logPdfSlow(telemetry, "<buffer>", total_ns, structural_ns, image_ns, font_ns, embed_ns, image_result, font_result, embed_result);
 
     // Check if we circumvented trivial encryption
-    if (image_result.decryption_succeeded) {
-        malformations_local.insert(.pdf_trivial_encryption);
-        return ValidationResult{
-            .format = .pdf,
-            .is_valid = true,
-            .error_message = null,
-            .malformations = malformations_local,
-            .validation_depth = .full,
-            .circumvented_trivial_protection = true,
-            .has_encrypted_content = true,
-        };
-    }
+	if (image_result.decryption_succeeded) {
+		malformations_local.insert(.pdf_trivial_encryption);
+		return ValidationResult{
+			.format = .pdf,
+			.is_valid = true,
+			.error_message = null,
+			.malformations = malformations_local,
+			.warning_message = warning_message,
+			.validation_depth = .full,
+			.circumvented_trivial_protection = true,
+			.has_encrypted_content = true,
+		};
+	}
 
-    if (malformations_local.count() > 0) {
-        return ValidationResult{
-            .format = .pdf,
-            .is_valid = true,
-            .error_message = null,
-            .malformations = malformations_local,
-            .validation_depth = .full,
-        };
-    }
-
-    return ValidationResult.okWithDepth(.pdf, .full);
+	if (malformations_local.count() > 0) {
+		return ValidationResult{
+			.format = .pdf,
+			.is_valid = true,
+			.error_message = null,
+			.malformations = malformations_local,
+			.warning_message = warning_message,
+			.validation_depth = .full,
+		};
+	}
+	if (warning_message != null) {
+		return ValidationResult{
+			.format = .pdf,
+			.is_valid = true,
+			.error_message = null,
+			.warning_message = warning_message,
+			.validation_depth = .full,
+		};
+	}
+	return ValidationResult.okWithDepth(.pdf, .full);
 }
 
 /// Parse the numeric value after startxref keyword

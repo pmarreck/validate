@@ -34,50 +34,54 @@ pub const PdfFontInfo = struct {
 };
 
 pub const FontValidationSummary = struct {
-    total_fonts: u32,
-    validated: u32,
-    skipped: u32,
-    failed: u32,
-    valid: bool,
-    error_message: ?[]const u8,
+	total_fonts: u32,
+	validated: u32,
+	skipped: u32,
+	failed: u32,
+	valid: bool,
+	error_message: ?[]const u8,
+	first_error_message: ?[]const u8 = null,
 
-    pub fn ok(total: u32, validated: u32, skipped: u32) FontValidationSummary {
-        return .{
-            .total_fonts = total,
-            .validated = validated,
-            .skipped = skipped,
-            .failed = 0,
-            .valid = true,
-            .error_message = null,
-        };
-    }
+	pub fn ok(total: u32, validated: u32, skipped: u32) FontValidationSummary {
+		return .{
+			.total_fonts = total,
+			.validated = validated,
+			.skipped = skipped,
+			.failed = 0,
+			.valid = true,
+			.error_message = null,
+			.first_error_message = null,
+		};
+	}
 
     /// For PDF embedded fonts, we don't fail the PDF validation when fonts
     /// fail validation - we just report stats. PDF embedded fonts use
     /// different formats than standalone font files and strict validation
     /// would reject many legitimate PDFs.
-    pub fn withWarnings(total: u32, validated: u32, skipped: u32, failed: u32) FontValidationSummary {
-        return .{
-            .total_fonts = total,
-            .validated = validated,
-            .skipped = skipped,
-            .failed = failed,
-            // Valid even if some fonts failed - PDF structure is what matters
-            .valid = true,
-            .error_message = null,
-        };
-    }
+	pub fn withWarnings(total: u32, validated: u32, skipped: u32, failed: u32, first_error: ?[]const u8) FontValidationSummary {
+		return .{
+			.total_fonts = total,
+			.validated = validated,
+			.skipped = skipped,
+			.failed = failed,
+			// Valid even if some fonts failed - PDF structure is what matters
+			.valid = true,
+			.error_message = null,
+			.first_error_message = first_error,
+		};
+	}
 
-    pub fn invalid(total: u32, validated: u32, failed: u32, msg: []const u8) FontValidationSummary {
-        return .{
-            .total_fonts = total,
-            .validated = validated,
-            .skipped = 0,
-            .failed = failed,
-            .valid = false,
-            .error_message = msg,
-        };
-    }
+	pub fn invalid(total: u32, validated: u32, failed: u32, msg: []const u8) FontValidationSummary {
+		return .{
+			.total_fonts = total,
+			.validated = validated,
+			.skipped = 0,
+			.failed = failed,
+			.valid = false,
+			.error_message = msg,
+			.first_error_message = null,
+		};
+	}
 };
 
 /// Extract embedded font streams from a PDF.
@@ -257,6 +261,7 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
     var validated: u32 = 0;
     var skipped: u32 = 0;
     var failed: u32 = 0;
+    var first_error: ?[]const u8 = null;
 
     for (fonts) |fnt| {
         const stream_data = pdf_data[fnt.stream_start..fnt.stream_end];
@@ -287,21 +292,24 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
             }
         };
 
-        // Validate based on font type
-        // Use lenient mode (skip checksums) for embedded fonts since
-        // PDF subsetters often break table checksums during embedding.
-        const lenient_options = font_validator.ValidationOptions{ .skip_checksums = true };
+        // Validate based on font type.
+        // We keep PDF-level lenience (warnings instead of invalid),
+        // but still compute checksums to validate every byte.
+        const strict_options = font_validator.ValidationOptions{ .skip_checksums = false };
         const result = switch (fnt.font_type) {
-            .truetype => font_validator.validateTtfOtfWithOptions(font_data, lenient_options),
+            .truetype => font_validator.validateTtfOtfWithOptions(font_data, strict_options),
             .type1 => font_validator.validateType1(font_data),
             .cff, .cid_cff => font_validator.validateCff(font_data),
-            .opentype => font_validator.validateTtfOtfWithOptions(font_data, lenient_options),
+            .opentype => font_validator.validateTtfOtfWithOptions(font_data, strict_options),
         };
 
         if (result.valid) {
             validated += 1;
         } else {
             failed += 1;
+            if (first_error == null) {
+                first_error = result.error_message;
+            }
         }
     }
 
@@ -310,7 +318,7 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
     // and many legitimate PDFs have fonts that don't pass strict validation.
     // The PDF structure validation is what matters for integrity.
     if (failed > 0) {
-        return FontValidationSummary.withWarnings(@intCast(fonts.len), validated, skipped, failed);
+        return FontValidationSummary.withWarnings(@intCast(fonts.len), validated, skipped, failed, first_error);
     }
 
     return FontValidationSummary.ok(@intCast(fonts.len), validated, skipped);

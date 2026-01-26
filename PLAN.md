@@ -4,8 +4,10 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ## Active
 - [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
+- [ ] Fix last failed CI build (inspect gh logs, resolve, rerun) (2026-01-26 04:22 EST)
 
 ## Recently Completed
+- [x] Add checksum mismatch fallback parsing for fonts and surface PDF font warnings without failing PDFs (2026-01-26 04:40 EST)
 - [x] Add PDF telemetry for slow deep validation and analyze Books outliers (2026-01-26 04:08 EST)
 - [x] Run post-optimization perf on ~/Documents (MAX_FILES=80000) and record results (2026-01-26 04:08 EST)
 - [x] Validate ground_truth_examples corpus after ZIP optimization (2026-01-26 04:08 EST)

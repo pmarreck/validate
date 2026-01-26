@@ -28,6 +28,8 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/build/` | Zig build helpers (libtool bundling) |
 | `src/core/path_validation.zig` | Parallel path validation and per-file callback reporting (honors `MAX_FILES`) |
 | `src/core/format_validation.zig` | Format validation logic including ZIP deep validation (central-directory parsing to avoid data-descriptor scans) plus ZIP/PDF telemetry (env `ZIP_TELEMETRY`, `PDF_TELEMETRY`) |
+| `src/core/font_validator.zig` | Standalone font validation (TTF/OTF/CFF/Type1) with checksum fallback to structural parsing for clearer errors |
+| `src/core/pdf_font_validator.zig` | Extracts/validates embedded PDF fonts using strict checksums while reporting warnings instead of failing PDFs |
 
 ## FFI (ffi/)
 | Path | Purpose |
