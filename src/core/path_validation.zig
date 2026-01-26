@@ -127,6 +127,19 @@ fn workerMain(shared: *Shared) void {
 	while (true) {
 		const item = shared.queue.pop() orelse break;
 		const start_ns = std.time.nanoTimestamp();
+		const full_path = std.fs.path.join(arena.allocator(), &.{ shared.root_path, item.rel_path }) catch {
+			const result = ValidationResult.invalid(.unknown, "Out of memory building path");
+			shared.counts.add(result);
+			if (shared.callback) |cb| {
+				shared.callback_mutex.lock();
+				cb(shared.callback_ctx, item.rel_path, result, 0.0);
+				shared.callback_mutex.unlock();
+			}
+			shared.allocator.free(item.rel_path);
+			_ = arena.reset(.free_all);
+			continue;
+		};
+
 		const result = if (validator.deep_validation)
 			validator.validateFileDeep(arena.allocator(), item.path)
 		else
