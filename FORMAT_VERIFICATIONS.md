@@ -459,6 +459,11 @@ Don't see a format you need? Contact us! We prioritize formats based on user dem
 - **Integrity**: Database-level or format-complete verification (every byte covered)
 - **GT (Ground Truth)**: Number of real-world example files we've verified our validator against
 
+### Lenience & Repairability (Future Work)
+
+Some formats are treated as **valid with warning** when the file is openable by popular readers but exhibits specific malformations. We do this because certain error types are **theoretically repairable** and may be automatically fixed in a future release (**not yet**).  
+Example: truncated JBIG2 streams may be repairable in principle, but we currently only warn and do not attempt repair.
+
 We don't perform **semantic validation**—we detect bitrot and corruption, not authoring errors. A valid JPEG with poor composition is still a valid JPEG.
 
 ### Deep Validation Trade-offs

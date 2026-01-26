@@ -7,6 +7,8 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] Fix last failed CI build (inspect gh logs, resolve, rerun) (2026-01-26 04:22 EST)
 
 ## Recently Completed
+- [x] Use OS logical CPU count for default worker threads and add a sanity test (2026-01-26 04:52 EST)
+- [x] Document lenience/repairability rationale (valid-with-warning for potentially repairable malformations) (2026-01-26 04:44 EST)
 - [x] Add checksum mismatch fallback parsing for fonts and surface PDF font warnings without failing PDFs (2026-01-26 04:40 EST)
 - [x] Add PDF telemetry for slow deep validation and analyze Books outliers (2026-01-26 04:08 EST)
 - [x] Run post-optimization perf on ~/Documents (MAX_FILES=80000) and record results (2026-01-26 04:08 EST)

@@ -199,6 +199,21 @@ fn getMaxFilesLimit() usize {
 	return parsed;
 }
 
+fn getDefaultJobCount() usize {
+	if (comptime builtin.os.tag == .macos) {
+		var count: c_int = 0;
+		var size: usize = @sizeOf(c_int);
+		if (std.c.sysctlbyname("hw.logicalcpu", @ptrCast(&count), &size, null, 0) == 0 and count > 0) {
+			return @intCast(count);
+		}
+	}
+	return std.Thread.getCpuCount() catch 1;
+}
+
+test "default job count is at least 1" {
+	try std.testing.expect(getDefaultJobCount() >= 1);
+}
+
 pub fn validatePathParallel(
 	allocator: Allocator,
 	validator_template: FormatValidator,
@@ -234,7 +249,7 @@ pub fn validatePathParallel(
 	};
 
 	const requested_jobs = jobs orelse 0;
-	const cpu_count = std.Thread.getCpuCount() catch 1;
+	const cpu_count = getDefaultJobCount();
 	const job_count = @max(@as(usize, 1), if (requested_jobs == 0) cpu_count else requested_jobs);
 
 	const threads = try allocator.alloc(std.Thread, job_count);
