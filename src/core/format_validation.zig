@@ -17852,14 +17852,18 @@ fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult {
 const DEFAULT_MAX_VIDEO_DEEP_SIZE: u64 = std.math.maxInt(u64);
 
 /// Get maximum file size for deep video validation from environment variable.
-/// Reads ES_MAX_VIDEO_SIZE env var (in MB). Defaults to unlimited.
+/// Reads MAX_VIDEO_SIZE env var (in MB). Defaults to unlimited.
 /// Set to a number to limit deep validation to files under that many MB.
 fn getMaxVideoDeepSize() u64 {
     // On Windows, posix.getenv is not available - use default (unlimited)
     if (comptime builtin.os.tag == .windows) return DEFAULT_MAX_VIDEO_DEEP_SIZE;
 
-    const env = std.posix.getenv("ES_MAX_VIDEO_SIZE") orelse return DEFAULT_MAX_VIDEO_DEEP_SIZE;
-    const mb = std.fmt.parseInt(u64, env, 10) catch return DEFAULT_MAX_VIDEO_DEEP_SIZE;
+    return parseMaxVideoDeepSize(std.posix.getenv("MAX_VIDEO_SIZE"));
+}
+
+fn parseMaxVideoDeepSize(env: ?[]const u8) u64 {
+    const value = env orelse return DEFAULT_MAX_VIDEO_DEEP_SIZE;
+    const mb = std.fmt.parseInt(u64, value, 10) catch return DEFAULT_MAX_VIDEO_DEEP_SIZE;
     return mb * 1024 * 1024; // Convert MB to bytes
 }
 
@@ -21235,6 +21239,12 @@ test "detectFormat GIF" {
 test "detectFormat unknown" {
     const random_data = [_]u8{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
     try std.testing.expectEqual(FileFormat.unknown, detectFormat(&random_data));
+}
+
+test "parseMaxVideoDeepSize defaults to unlimited and honors MAX_VIDEO_SIZE" {
+	try std.testing.expectEqual(std.math.maxInt(u64), parseMaxVideoDeepSize(null));
+	try std.testing.expectEqual(std.math.maxInt(u64), parseMaxVideoDeepSize("invalid"));
+	try std.testing.expectEqual(@as(u64, 1024 * 1024), parseMaxVideoDeepSize("1"));
 }
 
 test "FormatValidator init/deinit" {

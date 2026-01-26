@@ -202,6 +202,7 @@ static void on_validation(
 		fprintf(stderr, COLOR_YELLOW "SLOW" COLOR_RESET " %s: %.2fs\n", display_path, elapsed_seconds);
 	}
 	if (result->is_unknown) {
+		printf(COLOR_CYAN "UNKNOWN" COLOR_RESET " %s: Unknown\n", display_path);
 		log_mem_telemetry(display_path, result, elapsed_seconds);
 		return;
 	}

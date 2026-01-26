@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+source "$HOME/dotfiles/bin/src/capture.bash"
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_unknown.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+printf '\x00\xff\x00\xff\x01\x02\x03\x04' > "$tmpdir/unknown.bin"
+
+out="" err="" rc=0
+capture ./zig-out/bin/validate "$tmpdir/unknown.bin"
+
+if [[ $rc -ne 0 ]]; then
+	printf 'FAIL: validate exited with %s\n' "$rc" >&2
+	printf 'stdout:\n%s\n' "$out" >&2
+	printf 'stderr:\n%s\n' "$err" >&2
+	exit $rc
+fi
+
+if ! printf '%s\n%s' "$out" "$err" | grep -q "UNKNOWN"; then
+	printf 'FAIL: expected UNKNOWN output\n' >&2
+	printf 'stdout:\n%s\n' "$out" >&2
+	printf 'stderr:\n%s\n' "$err" >&2
+	exit 1
+fi

@@ -47,6 +47,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | Path | Purpose |
 |------|---------|
 | `tests/fixtures/` | Validation test fixtures |
+| `tests/cli/` | CLI integration tests (bash) |
 
 ## Documentation
 | File | Purpose |
