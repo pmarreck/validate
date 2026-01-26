@@ -446,6 +446,8 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
     var bitstream: std.ArrayListUnmanaged(u8) = .{};
     defer bitstream.deinit(allocator);
 
+    const max_bitstream_bytes: usize = 256 * 1024 * 1024; // 256MB safety cap
+
     // Add codec private data first (SPS/PPS must come before frames)
     if (codec_private != null) {
         bitstream.appendSlice(allocator, codec_private.?.data) catch {
@@ -453,61 +455,59 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
         };
     }
 
-    // Extract keyframes
-    var keyframes_extracted: u32 = 0;
-    const max_sample_size: u32 = 50 * 1024 * 1024; // 50MB max per sample
-    var sample_buffer: []u8 = allocator.alloc(u8, 1024 * 1024) catch {
-        return VideoValidationResult.invalid("Memory allocation failed", video_codec);
-    };
-    defer allocator.free(sample_buffer);
-
-    for (0..sample_table.sample_count) |sample_idx| {
-        if (keyframes_extracted >= max_frames) break;
-
-        if (!sample_table.isSyncSample(@intCast(sample_idx))) continue;
-
-        const location = sample_table.getSampleLocation(@intCast(sample_idx)) orelse continue;
-        if (location.size > max_sample_size) continue;
-
-        // Resize buffer if needed
-        if (location.size > sample_buffer.len) {
-            allocator.free(sample_buffer);
-            sample_buffer = allocator.alloc(u8, location.size) catch continue;
-        }
-
-        // Read sample data
-        file.seekTo(location.offset) catch continue;
-        const bytes_read = file.read(sample_buffer[0..location.size]) catch continue;
-        if (bytes_read < location.size) continue;
-
-        // Convert to Annex B format
-        if (video_codec == .av1) {
-            // AV1 uses OBUs directly, no conversion needed
-            bitstream.appendSlice(allocator, sample_buffer[0..location.size]) catch continue;
-        } else {
-            // H.264/HEVC need Annex B conversion
-            if (convertToAnnexB(allocator, sample_buffer[0..location.size], nal_length_size)) |annexb_data| {
-                defer allocator.free(annexb_data);
-                bitstream.appendSlice(allocator, annexb_data) catch continue;
-            } else {
-                continue;
-            }
-        }
-
-        keyframes_extracted += 1;
-    }
+    const keyframes_extracted = appendMp4SamplesToBitstream(
+        allocator,
+        file,
+        sample_table,
+        video_codec,
+        nal_length_size,
+        max_frames,
+        true,
+        &bitstream,
+        max_bitstream_bytes,
+    );
 
     if (keyframes_extracted == 0) {
         return VideoValidationResult.invalid("No keyframes extracted", video_codec);
     }
 
     // Decode the combined bitstream
-    const result = switch (video_codec) {
+    var result = switch (video_codec) {
         .hevc => validateHevcStream(bitstream.items, max_frames),
         .av1 => validateAv1Stream(allocator, bitstream.items, max_frames),
         .h264 => validateH264Stream(bitstream.items, max_frames),
         else => VideoValidationResult.skipped("Unsupported codec"),
     };
+
+    if (!result.valid and (std.mem.eql(u8, result.error_message orelse "", "No frames decoded from H.264 stream") or
+        std.mem.eql(u8, result.error_message orelse "", "No frames decoded from HEVC")))
+    {
+        bitstream.items.len = 0;
+        if (codec_private != null) {
+            bitstream.appendSlice(allocator, codec_private.?.data) catch {
+                return result;
+            };
+        }
+        const samples_extracted = appendMp4SamplesToBitstream(
+            allocator,
+            file,
+            sample_table,
+            video_codec,
+            nal_length_size,
+            max_frames,
+            false,
+            &bitstream,
+            max_bitstream_bytes,
+        );
+        if (samples_extracted > 0) {
+            result = switch (video_codec) {
+                .hevc => validateHevcStream(bitstream.items, max_frames),
+                .av1 => validateAv1Stream(allocator, bitstream.items, max_frames),
+                .h264 => validateH264Stream(bitstream.items, max_frames),
+                else => result,
+            };
+        }
+    }
 
     return result;
 }
@@ -1403,6 +1403,57 @@ const SampleTableInfo = struct {
         return false;
     }
 };
+
+fn appendMp4SamplesToBitstream(
+    allocator: Allocator,
+    file: std.fs.File,
+    sample_table: SampleTableInfo,
+    video_codec: VideoCodec,
+    nal_length_size: u8,
+    max_frames: u32,
+    only_sync_samples: bool,
+    bitstream: *std.ArrayListUnmanaged(u8),
+    max_bitstream_bytes: usize,
+) u32 {
+    var samples_appended: u32 = 0;
+    const max_sample_size: u32 = 50 * 1024 * 1024; // 50MB max per sample
+
+    var sample_buffer: []u8 = allocator.alloc(u8, 1024 * 1024) catch return 0;
+    defer allocator.free(sample_buffer);
+
+    for (0..sample_table.sample_count) |sample_idx| {
+        if (samples_appended >= max_frames) break;
+        if (only_sync_samples and !sample_table.isSyncSample(@intCast(sample_idx))) continue;
+        if (bitstream.items.len >= max_bitstream_bytes) break;
+
+        const location = sample_table.getSampleLocation(@intCast(sample_idx)) orelse continue;
+        if (location.size > max_sample_size) continue;
+
+        if (location.size > sample_buffer.len) {
+            allocator.free(sample_buffer);
+            sample_buffer = allocator.alloc(u8, location.size) catch break;
+        }
+
+        file.seekTo(location.offset) catch continue;
+        const bytes_read = file.read(sample_buffer[0..location.size]) catch continue;
+        if (bytes_read < location.size) continue;
+
+        if (video_codec == .av1) {
+            bitstream.appendSlice(allocator, sample_buffer[0..location.size]) catch continue;
+        } else {
+            if (convertToAnnexB(allocator, sample_buffer[0..location.size], nal_length_size)) |annexb_data| {
+                defer allocator.free(annexb_data);
+                bitstream.appendSlice(allocator, annexb_data) catch continue;
+            } else {
+                continue;
+            }
+        }
+
+        samples_appended += 1;
+    }
+
+    return samples_appended;
+}
 
 /// Parse stsz (sample size) box
 fn parseStsz(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size: u64) ?struct { sizes: []u32, default_size: u32, count: u32 } {

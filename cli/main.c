@@ -169,7 +169,7 @@ static void print_validation_result(const char* path, const es_validation_result
 		if (has_malformations || has_warning) {
 			printf(COLOR_YELLOW "WARN" COLOR_RESET " %s: %s (%s)\n", path, format_desc, depth_desc);
 			if (has_malformations) {
-				for (int i = 0; i <= ES_MALFORMATION_MIME_WRAPPED_CONTENT; i++) {
+				for (int i = 0; i <= ES_MALFORMATION_LAST; i++) {
 					if (result->malformation_bits & (1ULL << i)) {
 						const char* desc = es_malformation_description((es_malformation_t)i);
 						printf("  " COLOR_YELLOW "->" COLOR_RESET " %s\n", desc ? desc : "Unknown issue");

@@ -76,6 +76,11 @@ pub const EsMalformation = enum(c_int) {
 	extension_mismatch = 2,
 	pdf_trivial_encryption = 3,
 	mime_wrapped_content = 4,
+	pdf_jbig2_truncated = 5,
+	pdf_dct_not_jpeg = 6,
+	video_no_frames_decoded = 7,
+	xml_undefined_entity = 8,
+	rar_header_crc_mismatch = 9,
 };
 
 /// Extended validation result (strings valid until next call on same validator)
@@ -409,6 +414,11 @@ export fn es_malformation_description(malformation: EsMalformation) [*:0]const u
 		.extension_mismatch => "file extension doesn't match content" ++ "",
 		.pdf_trivial_encryption => "PDF encrypted with empty password (trivial protection)" ++ "",
 		.mime_wrapped_content => "MIME-WRAPPED GARBAGE: file has email/MIME headers prepended - some buggy web service returned multipart MIME instead of raw content!" ++ "",
+		.pdf_jbig2_truncated => "truncated JBIG2 data in PDF image" ++ "",
+		.pdf_dct_not_jpeg => "DCTDecode image data is not valid JPEG" ++ "",
+		.video_no_frames_decoded => "video decoder produced no frames (player-tolerated)" ++ "",
+		.xml_undefined_entity => "XML entity reference undefined (DTD not validated)" ++ "",
+		.rar_header_crc_mismatch => "RAR header CRC mismatch (player-tolerated)" ++ "",
 	};
 	return desc.ptr;
 }

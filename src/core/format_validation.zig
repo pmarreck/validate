@@ -658,6 +658,21 @@ pub const MalformationType = enum {
     /// File is wrapped in MIME multipart headers (e.g., email attachment saved incorrectly)
     /// REPAIRABLE: Extract content starting from the format's magic bytes
     mime_wrapped_content,
+    /// PDF embedded JBIG2 stream is truncated
+    /// REPAIRABLE: Reconstruct missing JBIG2 segments (future work)
+    pdf_jbig2_truncated,
+    /// PDF embedded DCTDecode data is not valid JPEG
+    /// REPAIRABLE: Re-encode or repair the embedded image stream (future work)
+    pdf_dct_not_jpeg,
+    /// Video decoder could not produce frames, but container/stream is openable
+    /// REPAIRABLE: Re-mux or re-encode the video stream (future work)
+    video_no_frames_decoded,
+    /// XML references undefined entity after DOCTYPE stripping
+    /// REPAIRABLE: Inline entity definitions or remove entity references (future work)
+    xml_undefined_entity,
+    /// RAR header CRC mismatch (archive still opens in tolerant tools)
+    /// REPAIRABLE: Recalculate and fix header CRCs (future work)
+    rar_header_crc_mismatch,
 
     pub fn description(self: MalformationType) []const u8 {
         return switch (self) {
@@ -666,6 +681,11 @@ pub const MalformationType = enum {
             .extension_mismatch => "file extension doesn't match content",
             .pdf_trivial_encryption => "PDF encrypted with empty password (trivial protection)",
             .mime_wrapped_content => "MIME-WRAPPED GARBAGE: file has email/MIME headers prepended - some buggy web service returned multipart MIME instead of raw content!",
+            .pdf_jbig2_truncated => "truncated JBIG2 data in PDF image",
+            .pdf_dct_not_jpeg => "DCTDecode image data is not valid JPEG",
+            .video_no_frames_decoded => "video decoder produced no frames (player-tolerated)",
+            .xml_undefined_entity => "XML entity reference undefined (DTD not validated)",
+            .rar_header_crc_mismatch => "RAR header CRC mismatch (player-tolerated)",
         };
     }
 };
@@ -807,6 +827,60 @@ pub const ValidationResult = struct {
         };
     }
 };
+
+const VideoDecodeTolerance = struct {
+	malformation: MalformationType,
+	warning: []const u8,
+};
+
+fn toleratedVideoDecodeFailure(result: video_validator.VideoValidationResult) ?VideoDecodeTolerance {
+	if (result.valid) return null;
+	const msg = result.error_message orelse return null;
+	if (std.mem.eql(u8, msg, "No frames decoded from H.264 stream") or
+		std.mem.eql(u8, msg, "No frames decoded from HEVC") or
+		std.mem.eql(u8, msg, "No frames decoded from AV1"))
+	{
+		return .{
+			.malformation = .video_no_frames_decoded,
+			.warning = msg,
+		};
+	}
+	return null;
+}
+
+const PdfImageTolerance = struct {
+	malformations: std.EnumSet(MalformationType),
+	warning: []const u8,
+};
+
+fn toleratedPdfImageFailures(result: pdf_image_validator.PdfImageValidationResult) ?PdfImageTolerance {
+	if (result.failed_images == 0) return null;
+
+	var malformations: std.EnumSet(MalformationType) = .{};
+	var first_warning: ?[]const u8 = null;
+
+	for (result.results) |res| {
+		if (res.valid) continue;
+		const msg = res.error_message orelse return null;
+		if (std.mem.indexOf(u8, msg, "Truncated JBIG2") != null) {
+			malformations.insert(.pdf_jbig2_truncated);
+		} else if (std.mem.startsWith(u8, msg, "Not a JPEG file")) {
+			malformations.insert(.pdf_dct_not_jpeg);
+		} else {
+			return null;
+		}
+		if (first_warning == null) {
+			first_warning = msg;
+		}
+	}
+
+	if (malformations.count() == 0) return null;
+
+	return .{
+		.malformations = malformations,
+		.warning = first_warning orelse "Embedded images failed strict validation; accepted with warning",
+	};
+}
 
 /// Validation errors.
 pub const ValidationError = error{
@@ -3050,7 +3124,7 @@ fn validateRar4Headers(file: std.fs.File) ValidationResult {
         // Calculate CRC16 of header (excluding the CRC field itself)
         const computed_crc = rarCrc16(header_buf[0..to_read]);
         if (computed_crc != stored_crc) {
-            return ValidationResult.invalid(.rar, "RAR4 header CRC mismatch");
+            return ValidationResult.okWithDepthAndMalformation(.rar, .full, .rar_header_crc_mismatch);
         }
 
         headers_validated += 1;
@@ -3159,7 +3233,7 @@ fn validateRar5Headers(file: std.fs.File) ValidationResult {
         // Calculate CRC32
         const computed_crc = std.hash.Crc32.hash(header_buf[0..to_read]);
         if (computed_crc != stored_crc) {
-            return ValidationResult.invalid(.rar, "RAR5 header CRC mismatch");
+            return ValidationResult.okWithDepthAndMalformation(.rar, .full, .rar_header_crc_mismatch);
         }
 
         headers_validated += 1;
@@ -16678,28 +16752,38 @@ fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	const image_ns = if (telemetry.enabled) std.time.nanoTimestamp() - image_start_ns else 0;
     defer image_result.deinit(allocator);
     if (!image_result.valid) {
-        // Print individual image errors to stderr for diagnostics
-        std.debug.print("PDF image validation failed. Total: {d}, Valid: {d}, Failed: {d}, Skipped: {d}\n", .{
-            image_result.total_images,
-            image_result.validated_images,
-            image_result.failed_images,
-            image_result.skipped_images,
-        });
-        var shown: usize = 0;
-        for (image_result.results) |res| {
-            if (!res.valid and shown < 10) { // Show first 10 failures
-                std.debug.print("  Image obj#{d} ({s}): {s}\n", .{
-                    res.object_num,
-                    @tagName(res.filter),
-                    res.error_message orelse "unknown error",
-                });
-                shown += 1;
+        if (toleratedPdfImageFailures(image_result)) |tolerated| {
+            var iter = tolerated.malformations.iterator();
+            while (iter.next()) |m| {
+                malformations_local.insert(m);
             }
+            if (warning_message == null) {
+                warning_message = tolerated.warning;
+            }
+        } else {
+            // Print individual image errors to stderr for diagnostics
+            std.debug.print("PDF image validation failed. Total: {d}, Valid: {d}, Failed: {d}, Skipped: {d}\n", .{
+                image_result.total_images,
+                image_result.validated_images,
+                image_result.failed_images,
+                image_result.skipped_images,
+            });
+            var shown: usize = 0;
+            for (image_result.results) |res| {
+                if (!res.valid and shown < 10) { // Show first 10 failures
+                    std.debug.print("  Image obj#{d} ({s}): {s}\n", .{
+                        res.object_num,
+                        @tagName(res.filter),
+                        res.error_message orelse "unknown error",
+                    });
+                    shown += 1;
+                }
+            }
+            if (image_result.failed_images > 10) {
+                std.debug.print("  ... and {d} more failures\n", .{image_result.failed_images - 10});
+            }
+            return ValidationResult.invalidWithDepth(.pdf, image_result.error_message orelse "Embedded image validation failed", .full);
         }
-        if (image_result.failed_images > 10) {
-            std.debug.print("  ... and {d} more failures\n", .{image_result.failed_images - 10});
-        }
-        return ValidationResult.invalidWithDepth(.pdf, image_result.error_message orelse "Embedded image validation failed", .full);
     }
 
 	// Validate embedded fonts
@@ -16836,7 +16920,17 @@ fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Validat
 	const image_ns = if (telemetry.enabled) std.time.nanoTimestamp() - image_start_ns else 0;
 	defer image_result.deinit(allocator);
     if (!image_result.valid) {
-        return ValidationResult.invalidWithDepth(.pdf, image_result.error_message orelse "Embedded image validation failed", .full);
+        if (toleratedPdfImageFailures(image_result)) |tolerated| {
+            var iter = tolerated.malformations.iterator();
+            while (iter.next()) |m| {
+                malformations_local.insert(m);
+            }
+            if (warning_message == null) {
+                warning_message = tolerated.warning;
+            }
+        } else {
+            return ValidationResult.invalidWithDepth(.pdf, image_result.error_message orelse "Embedded image validation failed", .full);
+        }
     }
 
 	// Validate embedded fonts
@@ -17856,6 +17950,11 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     // This parses the container to find video tracks and validates codec info
     const video_result = video_validator.validateMp4Video(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
+        if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
+			var result = ValidationResult.okWithDepthAndMalformation(.mp4, .full, tolerated.malformation);
+			result.warning_message = tolerated.warning;
+			return result;
+		}
         // Video codec validation failed
         return ValidationResult.invalidWithDepth(.mp4, video_result.error_message orelse "Video validation failed", .full);
     }
@@ -17977,6 +18076,11 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Structural validation passed - now do codec validation
     const video_result = video_validator.validateMkvVideo(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
+        if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
+			var result = ValidationResult.okWithDepthAndMalformation(.mkv, .full, tolerated.malformation);
+			result.warning_message = tolerated.warning;
+			return result;
+		}
         return ValidationResult.invalidWithDepth(.mkv, video_result.error_message orelse "Video validation failed", .full);
     }
 
@@ -18035,6 +18139,11 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Now do video frame validation
     const video_result = video_validator.validateAviVideo(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
+        if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
+			var result = ValidationResult.okWithDepthAndMalformation(.avi, .full, tolerated.malformation);
+			result.warning_message = tolerated.warning;
+			return result;
+		}
         return ValidationResult.invalidWithDepth(.avi, video_result.error_message orelse "Video validation failed", .full);
     }
 
@@ -19974,6 +20083,11 @@ fn validateXml(file: std.fs.File) ValidationResult {
                         .invalid_encoding => "invalid encoding",
                         .illegal_character => "illegal character",
                     };
+                    if (error_code == .entity_reference_undefined and preprocessed.had_doctype) {
+                        var tolerated = ValidationResult.okWithDepthAndMalformation(.xml, .full, .xml_undefined_entity);
+                        tolerated.warning_message = "DOCTYPE declaration skipped (DTD not validated); undefined entity reference tolerated";
+                        return tolerated;
+                    }
                     return ValidationResult.invalid(.xml, error_msg);
                 },
                 error.OutOfMemory => return ValidationResult.invalid(.xml, "Out of memory during parsing"),
@@ -26651,6 +26765,115 @@ test "FormatValidator rejects XML with unclosed tags" {
 
     try std.testing.expectEqual(FileFormat.xml, result.format);
     try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts XML with undefined entity when DOCTYPE was stripped" {
+	const allocator = std.testing.allocator;
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	const xml_content =
+		\\<?xml version="1.0" encoding="UTF-8"?>
+		\\<!DOCTYPE root [
+		\\  <!ENTITY demo "ok">
+		\\]>
+		\\<root>&demo;</root>
+	;
+
+	const file = try tmp_dir.dir.createFile("test.xml", .{});
+	try file.writeAll(xml_content);
+	file.close();
+
+	const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xml");
+	defer allocator.free(path);
+
+	var validator = FormatValidator.init();
+	defer validator.deinit();
+
+	const result = validator.validateFile(path);
+
+	try std.testing.expectEqual(FileFormat.xml, result.format);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expect(result.malformations.contains(.xml_undefined_entity));
+	try std.testing.expect(result.warning_message != null);
+}
+
+test "toleratedPdfImageFailures accepts truncated JBIG2 failures" {
+	const results = [_]pdf_image_validator.ImageValidationResult{
+		.{
+			.object_num = 1,
+			.filter = .jbig2_decode,
+			.valid = false,
+			.error_message = "Truncated JBIG2 globals",
+			.width = 0,
+			.height = 0,
+		},
+	};
+
+	const image_result = pdf_image_validator.PdfImageValidationResult{
+		.valid = false,
+		.total_images = 1,
+		.validated_images = 0,
+		.failed_images = 1,
+		.skipped_images = 0,
+		.results = &results,
+		.error_message = "Some images failed validation",
+	};
+
+	const tolerated = toleratedPdfImageFailures(image_result);
+	try std.testing.expect(tolerated != null);
+	try std.testing.expect(tolerated.?.malformations.contains(.pdf_jbig2_truncated));
+}
+
+test "toleratedVideoDecodeFailure accepts no-frames H.264" {
+	const video_result = video_validator.VideoValidationResult{
+		.valid = false,
+		.error_message = "No frames decoded from H.264 stream",
+		.codec = .h264,
+		.frames_decoded = 0,
+	};
+
+	const tolerated = toleratedVideoDecodeFailure(video_result);
+	try std.testing.expect(tolerated != null);
+	try std.testing.expectEqual(MalformationType.video_no_frames_decoded, tolerated.?.malformation);
+}
+
+test "validateRar tolerates RAR4 header CRC mismatch" {
+	const allocator = std.testing.allocator;
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	var data: [14]u8 = undefined;
+	@memset(&data, 0);
+
+	// RAR4 signature
+	std.mem.copyForwards(u8, data[0..7], &RAR4_SIGNATURE);
+
+	// RAR4 base header: CRC16 (2) + TYPE (1) + FLAGS (2) + SIZE (2)
+	const head_type: u8 = RAR4_HEAD_ENDARC;
+	const flags: u16 = 0;
+	const head_size: u16 = 7;
+
+	data[7] = 0; // CRC16 low (intentionally wrong)
+	data[8] = 0; // CRC16 high
+	data[9] = head_type;
+	std.mem.writeInt(u16, data[10..12], flags, .little);
+	std.mem.writeInt(u16, data[12..14], head_size, .little);
+
+	const file = try tmp_dir.dir.createFile("test.cbr", .{});
+	try file.writeAll(&data);
+	file.close();
+
+	const path = try tmp_dir.dir.realpathAlloc(allocator, "test.cbr");
+	defer allocator.free(path);
+
+	const reopen = try std.fs.cwd().openFile(path, .{});
+	defer reopen.close();
+
+	const result = validateRar(reopen);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expect(result.malformations.contains(.rar_header_crc_mismatch));
 }
 
 /// Helper to test XML well-formedness using zig-xml library
