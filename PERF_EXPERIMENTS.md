@@ -76,3 +76,13 @@ queue growth, and memory retention. Track outcomes using CPU time (user+sys).
 - Observation: slow ZIPs are overwhelmingly entries with general-purpose bit 3 set (data descriptor).
   Local header sizes are zero, forcing byte-by-byte scanning for the descriptor and causing huge read loops.
   This likely dominates slow ZIP/EPUB/CBZ validation time.
+
+## Telemetry: Books (post ZIP central directory parsing)
+- Date (EST): 2026-01-26
+- Path: `~/Documents/Books`
+- Env: `MEM_TELEMETRY=1 MEM_TELEMETRY_PATH=/tmp/validate_books_mem_after.log ZIP_TELEMETRY=1 ZIP_SLOW_SECONDS=0.5`
+- Counts: Valid 1179, Invalid 4, Unknown 7
+- CPU time (user+sys): 936.38s (user 923.24s, sys 13.14s; real 133.97s)
+- Max RSS: ~999.7MB; RSS at end ~673.3MB
+- ZIP_SLOW: none observed (0 lines)
+- Notes: CLI SLOW warnings now point to large PDFs (not ZIP/EPUB/CBZ).

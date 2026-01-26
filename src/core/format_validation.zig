@@ -15658,6 +15658,389 @@ fn isTruthy(value: []const u8) bool {
         std.ascii.eqlIgnoreCase(value, "yes") or std.ascii.eqlIgnoreCase(value, "on");
 }
 
+fn readLe(comptime T: type, slice: []const u8) T {
+    const ptr: *const [@sizeOf(T)]u8 = @ptrCast(slice.ptr);
+    return std.mem.readInt(T, ptr, .little);
+}
+
+const ZipCentralDirectoryInfo = struct {
+    offset: u64,
+    size: u64,
+    entries: u64,
+};
+
+const ZipCentralEntry = struct {
+    local_header_offset: u64,
+    compressed_size: u64,
+    uncompressed_size: u64,
+    crc32: u32,
+    flags: u16,
+    compression_method: u16,
+};
+
+fn findZipCentralDirectory(allocator: Allocator, file: std.fs.File, file_size: u64) ?ZipCentralDirectoryInfo {
+    if (file_size < 22) {
+        return null;
+    }
+    const max_comment: usize = 0xFFFF;
+    const search_len = @min(@as(u64, max_comment + 22), file_size);
+    const read_len: usize = @intCast(search_len);
+    const start_pos = file_size - search_len;
+
+    const buf = allocator.alloc(u8, read_len) catch return null;
+    defer allocator.free(buf);
+
+    file.seekTo(start_pos) catch return null;
+    const bytes_read = file.readAll(buf) catch return null;
+    if (bytes_read < 22) {
+        return null;
+    }
+
+    const eocd_sig = "PK\x05\x06";
+    const idx = std.mem.lastIndexOf(u8, buf[0..bytes_read], eocd_sig) orelse return null;
+    if (idx + 22 > bytes_read) {
+        return null;
+    }
+
+    const total_entries = readLe(u16, buf[idx + 10 .. idx + 12]);
+    const central_dir_size = readLe(u32, buf[idx + 12 .. idx + 16]);
+    const central_dir_offset = readLe(u32, buf[idx + 16 .. idx + 20]);
+
+    const needs_zip64 = total_entries == 0xFFFF or central_dir_size == 0xFFFFFFFF or central_dir_offset == 0xFFFFFFFF;
+    if (!needs_zip64) {
+        return .{
+            .offset = central_dir_offset,
+            .size = central_dir_size,
+            .entries = total_entries,
+        };
+    }
+
+    if (idx < 20) {
+        return null;
+    }
+    const locator_pos = start_pos + @as(u64, @intCast(idx - 20));
+    var locator: [20]u8 = undefined;
+    file.seekTo(locator_pos) catch return null;
+    const locator_read = file.readAll(&locator) catch return null;
+    if (locator_read != locator.len) {
+        return null;
+    }
+    if (!std.mem.eql(u8, locator[0..4], "PK\x06\x07")) {
+        return null;
+    }
+    const zip64_eocd_offset = readLe(u64, locator[8..16]);
+    if (zip64_eocd_offset + 56 > file_size) {
+        return null;
+    }
+
+    var zip64_eocd: [56]u8 = undefined;
+    file.seekTo(zip64_eocd_offset) catch return null;
+    const zip64_read = file.readAll(&zip64_eocd) catch return null;
+    if (zip64_read != zip64_eocd.len) {
+        return null;
+    }
+    if (!std.mem.eql(u8, zip64_eocd[0..4], "PK\x06\x06")) {
+        return null;
+    }
+
+    const zip64_entries = readLe(u64, zip64_eocd[32..40]);
+    const zip64_size = readLe(u64, zip64_eocd[40..48]);
+    const zip64_offset = readLe(u64, zip64_eocd[48..56]);
+    return .{
+        .offset = zip64_offset,
+        .size = zip64_size,
+        .entries = zip64_entries,
+    };
+}
+
+const Zip64Sizes = struct {
+    compressed_size: u64,
+    uncompressed_size: u64,
+    local_header_offset: u64,
+};
+
+fn readZip64Extra(
+    extra: []const u8,
+    compressed_size: u64,
+    uncompressed_size: u64,
+    local_header_offset: u64,
+) ?Zip64Sizes {
+    var offset: usize = 0;
+    var updated = false;
+    var new_compressed = compressed_size;
+    var new_uncompressed = uncompressed_size;
+    var new_local_offset = local_header_offset;
+
+    while (offset + 4 <= extra.len) {
+        const header_id = readLe(u16, extra[offset .. offset + 2]);
+        const data_size = readLe(u16, extra[offset + 2 .. offset + 4]);
+        offset += 4;
+        if (offset + data_size > extra.len) {
+            break;
+        }
+        if (header_id == 0x0001) {
+            var cursor: usize = 0;
+            if (uncompressed_size == 0xFFFFFFFF and cursor + 8 <= data_size) {
+                new_uncompressed = readLe(u64, extra[offset + cursor .. offset + cursor + 8]);
+                cursor += 8;
+                updated = true;
+            }
+            if (compressed_size == 0xFFFFFFFF and cursor + 8 <= data_size) {
+                new_compressed = readLe(u64, extra[offset + cursor .. offset + cursor + 8]);
+                cursor += 8;
+                updated = true;
+            }
+            if (local_header_offset == 0xFFFFFFFF and cursor + 8 <= data_size) {
+                new_local_offset = readLe(u64, extra[offset + cursor .. offset + cursor + 8]);
+                updated = true;
+            }
+            break;
+        }
+        offset += data_size;
+    }
+
+    if (!updated) {
+        return null;
+    }
+    return .{
+        .local_header_offset = new_local_offset,
+        .compressed_size = new_compressed,
+        .uncompressed_size = new_uncompressed,
+    };
+}
+
+fn validateZipDeepWithCentralDirectory(
+    allocator: Allocator,
+    file: std.fs.File,
+    format: FileFormat,
+    telemetry: ZipTelemetry,
+) ?ValidationResult {
+    const file_size = file.getEndPos() catch return null;
+    const central = findZipCentralDirectory(allocator, file, file_size) orelse return null;
+    if (central.entries == 0) {
+        return ValidationResult.invalidWithDepth(format, "No entries found", .full);
+    }
+    if (central.offset + central.size > file_size) {
+        return ValidationResult.invalidWithDepth(format, "Central directory extends beyond file", .full);
+    }
+
+    var entry_count: u64 = 0;
+    var encrypted_entry_count: u64 = 0;
+    var cdir_pos = central.offset;
+    const max_entries: u64 = 100000;
+
+    while (entry_count < central.entries and entry_count < max_entries) : (entry_count += 1) {
+        file.seekTo(cdir_pos) catch return ValidationResult.invalidWithDepth(format, "Failed to seek to central directory", .full);
+
+        var header: [46]u8 = undefined;
+        const header_read = file.readAll(&header) catch {
+            return ValidationResult.invalidWithDepth(format, "Failed to read central directory header", .full);
+        };
+        if (header_read != header.len) {
+            return ValidationResult.invalidWithDepth(format, "Truncated central directory header", .full);
+        }
+        if (!std.mem.eql(u8, header[0..4], "PK\x01\x02")) {
+            return ValidationResult.invalidWithDepth(format, "Invalid central directory signature", .full);
+        }
+
+        const flags = readLe(u16, header[8..10]);
+        const compression_method = readLe(u16, header[10..12]);
+        const stored_crc = readLe(u32, header[16..20]);
+        const compressed_size = readLe(u32, header[20..24]);
+        const uncompressed_size = readLe(u32, header[24..28]);
+        const filename_len = readLe(u16, header[28..30]);
+        const extra_len = readLe(u16, header[30..32]);
+        const comment_len = readLe(u16, header[32..34]);
+        const local_header_offset = readLe(u32, header[42..46]);
+
+        const name_len_usize: usize = @intCast(filename_len);
+        const extra_len_usize: usize = @intCast(extra_len);
+        const comment_len_usize: usize = @intCast(comment_len);
+
+        var name_buf: [ZIP_TELEMETRY_MAX_NAME]u8 = undefined;
+        var name_slice: []const u8 = "";
+        var name_truncated = false;
+        const to_read = @min(name_len_usize, name_buf.len);
+        if (to_read > 0) {
+            const name_read = file.readAll(name_buf[0..to_read]) catch {
+                return ValidationResult.invalidWithDepth(format, "Failed to read central directory filename", .full);
+            };
+            if (name_read != to_read) {
+                return ValidationResult.invalidWithDepth(format, "Truncated central directory filename", .full);
+            }
+            name_slice = name_buf[0..to_read];
+            if (name_len_usize > to_read) {
+                name_truncated = true;
+                const remaining: i64 = @intCast(name_len_usize - to_read);
+                file.seekBy(remaining) catch {
+                    return ValidationResult.invalidWithDepth(format, "Failed to skip central directory filename", .full);
+                };
+            }
+        } else if (name_len_usize > 0) {
+            const remaining: i64 = @intCast(name_len_usize);
+            file.seekBy(remaining) catch {
+                return ValidationResult.invalidWithDepth(format, "Failed to skip central directory filename", .full);
+            };
+        }
+
+        var extra_buf: []u8 = &[_]u8{};
+        if (extra_len_usize > 0) {
+            extra_buf = allocator.alloc(u8, extra_len_usize) catch {
+                return ValidationResult.invalidWithDepth(format, "Out of memory reading central directory extra", .full);
+            };
+            defer allocator.free(extra_buf);
+            const extra_read = file.readAll(extra_buf) catch {
+                return ValidationResult.invalidWithDepth(format, "Failed to read central directory extra", .full);
+            };
+            if (extra_read != extra_len_usize) {
+                return ValidationResult.invalidWithDepth(format, "Truncated central directory extra", .full);
+            }
+        }
+
+        if (comment_len_usize > 0) {
+            const skip_comment: i64 = @intCast(comment_len_usize);
+            file.seekBy(skip_comment) catch {
+                return ValidationResult.invalidWithDepth(format, "Failed to skip central directory comment", .full);
+            };
+        }
+
+        var entry = ZipCentralEntry{
+            .local_header_offset = local_header_offset,
+            .compressed_size = compressed_size,
+            .uncompressed_size = uncompressed_size,
+            .crc32 = stored_crc,
+            .flags = flags,
+            .compression_method = compression_method,
+        };
+
+        if (entry.local_header_offset == 0xFFFFFFFF or entry.compressed_size == 0xFFFFFFFF or entry.uncompressed_size == 0xFFFFFFFF) {
+            if (readZip64Extra(extra_buf, entry.compressed_size, entry.uncompressed_size, entry.local_header_offset)) |zip64| {
+                entry.local_header_offset = zip64.local_header_offset;
+                entry.compressed_size = zip64.compressed_size;
+                entry.uncompressed_size = zip64.uncompressed_size;
+            }
+        }
+
+        const next_cdir_pos = cdir_pos + 46 + name_len_usize + extra_len_usize + comment_len_usize;
+
+        var entry_telemetry = ZipEntryTelemetry.init(telemetry, @intCast(entry_count + 1));
+        entry_telemetry.setName(name_slice, name_truncated);
+        entry_telemetry.compression_method = entry.compression_method;
+        entry_telemetry.compressed_size = @intCast(@min(entry.compressed_size, @as(u64, std.math.maxInt(u32))));
+        entry_telemetry.uncompressed_size = @intCast(@min(entry.uncompressed_size, @as(u64, std.math.maxInt(u32))));
+        entry_telemetry.flags = entry.flags;
+        entry_telemetry.encrypted = (entry.flags & 0x0001) != 0;
+        entry_telemetry.has_descriptor = (entry.flags & 0x0008) != 0;
+        defer entry_telemetry.finish(telemetry, format);
+
+        file.seekTo(entry.local_header_offset) catch {
+            return ValidationResult.invalidWithDepth(format, "Failed to seek to local file header", .full);
+        };
+
+        var local_sig: [4]u8 = undefined;
+        const sig_read = file.readAll(&local_sig) catch {
+            return ValidationResult.invalidWithDepth(format, "Failed to read local file header signature", .full);
+        };
+        if (sig_read != local_sig.len or !std.mem.eql(u8, local_sig[0..], "PK\x03\x04")) {
+            return ValidationResult.invalidWithDepth(format, "Invalid local file header signature", .full);
+        }
+
+        var local_header: [26]u8 = undefined;
+        const local_header_read = file.readAll(&local_header) catch {
+            return ValidationResult.invalidWithDepth(format, "Failed to read local file header", .full);
+        };
+        if (local_header_read != local_header.len) {
+            return ValidationResult.invalidWithDepth(format, "Truncated local file header", .full);
+        }
+
+        const local_filename_len = readLe(u16, local_header[22..24]);
+        const local_extra_len = readLe(u16, local_header[24..26]);
+
+        const skip_local_name: i64 = @intCast(local_filename_len);
+        file.seekBy(skip_local_name) catch {
+            return ValidationResult.invalidWithDepth(format, "Failed to skip local filename", .full);
+        };
+        const skip_local_extra: i64 = @intCast(local_extra_len);
+        file.seekBy(skip_local_extra) catch {
+            return ValidationResult.invalidWithDepth(format, "Failed to skip local extra", .full);
+        };
+
+        if (entry_telemetry.encrypted) {
+            encrypted_entry_count += 1;
+            cdir_pos = next_cdir_pos;
+            continue;
+        }
+
+        if (entry.compressed_size == 0 and entry.uncompressed_size == 0) {
+            cdir_pos = next_cdir_pos;
+            continue;
+        }
+
+        if (entry.crc32 == 0) {
+            cdir_pos = next_cdir_pos;
+            continue;
+        }
+
+        if (entry.uncompressed_size > MAX_ZIP_ENTRY_SIZE) {
+            cdir_pos = next_cdir_pos;
+            continue;
+        }
+
+        if (entry.compressed_size > @as(u64, std.math.maxInt(u32)) or entry.uncompressed_size > @as(u64, std.math.maxInt(u32))) {
+            cdir_pos = next_cdir_pos;
+            continue;
+        }
+
+        const compressed_u32: u32 = @intCast(entry.compressed_size);
+        const uncompressed_u32: u32 = @intCast(entry.uncompressed_size);
+
+        switch (@as(ZipCompressionMethod, @enumFromInt(entry.compression_method))) {
+            .store => {
+                const result = validateZipStoredEntry(file, entry.crc32, compressed_u32);
+                if (!result.is_valid) {
+                    return ValidationResult.invalidWithDepth(format, result.error_message orelse "CRC mismatch", .full);
+                }
+            },
+            .deflate => {
+                const result = validateZipDeflatedEntry(allocator, file, entry.crc32, compressed_u32, uncompressed_u32);
+                if (!result.is_valid) {
+                    return ValidationResult.invalidWithDepth(format, result.error_message orelse "Deflate CRC mismatch", .full);
+                }
+            },
+            _ => {
+                // Unknown compression method - skip
+            },
+        }
+
+        cdir_pos = next_cdir_pos;
+    }
+
+    if (entry_count == 0) {
+        return ValidationResult.invalidWithDepth(format, "No entries found", .full);
+    }
+
+    if (encrypted_entry_count > 0 and encrypted_entry_count == entry_count) {
+        return ValidationResult{
+            .format = format,
+            .is_valid = true,
+            .error_message = null,
+            .validation_depth = .structural,
+            .has_encrypted_content = true,
+        };
+    }
+    if (encrypted_entry_count > 0) {
+        return ValidationResult{
+            .format = format,
+            .is_valid = true,
+            .error_message = null,
+            .validation_depth = .full,
+            .has_encrypted_content = true,
+        };
+    }
+
+    return ValidationResult.okWithDepth(format, .full);
+}
+
 /// Deep ZIP validation by verifying CRC-32 checksums for all entries.
 /// ZIP stores a CRC-32 for each file entry, computed over the uncompressed data.
 /// For stored files, we CRC the data directly. For deflated files, we decompress first.
@@ -15676,11 +16059,15 @@ fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(format, "Failed to seek to start", .full);
     };
 
+    const telemetry = ZipTelemetry.init();
+    if (validateZipDeepWithCentralDirectory(allocator, file, format, telemetry)) |result| {
+        return result;
+    }
+
     var entry_count: usize = 0;
     var encrypted_entry_count: usize = 0;
     const max_entries: usize = 100000;
     const max_uncompressed_size: u64 = 512 * 1024 * 1024; // 512 MiB max per entry
-    const telemetry = ZipTelemetry.init();
 
     while (true) : (entry_count += 1) {
         if (entry_count > max_entries) {
@@ -24144,17 +24531,23 @@ test "validateZipDeep rejects ZIP with corrupted stored entry CRC" {
         't',
         'H',  'e',  'l',  'l',  'o', // file data
         // Central directory header
-        'P',  'K',  1,    2,    0x14,
-        0x00, 0x0A, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00,
+        'P', 'K', 1, 2, // signature
+        0x14, 0x00, // version made by
+        0x0A, 0x00, // version needed
+        0x00, 0x00, // flags
+        0x00, 0x00, // compression
+        0x00, 0x00, // mod time
+        0x00, 0x00, // mod date
         0x82, 0x89, 0xD1, 0xFF, // corrupted CRC
-        0x05, 0x00, 0x00, 0x00,
-        0x05, 0x00, 0x00, 0x00,
-        0x09, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
+        0x05, 0x00, 0x00, 0x00, // compressed size
+        0x05, 0x00, 0x00, 0x00, // uncompressed size
+        0x09, 0x00, // filename length
+        0x00, 0x00, // extra length
+        0x00, 0x00, // comment length
+        0x00, 0x00, // disk number
+        0x00, 0x00, // internal attributes
+        0x00, 0x00, 0x00, 0x00, // external attributes
+        0x00, 0x00, 0x00, 0x00, // local header offset
         'h',  'e',  'l',  'l',
         'o',  '.',  't',  'x',
         't',
@@ -24206,16 +24599,25 @@ test "validateZipDeep rejects ZIP with bitrot in stored data" {
         'o',  '.',  't',  'x',
         't',
         'H',  'e',  'l',  'l',  'p', // BIT FLIPPED: 'o' (0x6F) -> 'p' (0x70)
-        // Central directory
-        'P',  'K',  1,    2,    0x14,
-        0x00, 0x0A, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x82, 0x89, 0xD1, 0xF7,
-        0x05, 0x00, 0x00, 0x00, 0x05,
-        0x00, 0x00, 0x00, 0x09, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 'h',
+        // Central directory header
+        'P', 'K', 1, 2, // signature
+        0x14, 0x00, // version made by
+        0x0A, 0x00, // version needed
+        0x00, 0x00, // flags
+        0x00, 0x00, // compression
+        0x00, 0x00, // mod time
+        0x00, 0x00, // mod date
+        0x82, 0x89, 0xD1, 0xF7, // CRC
+        0x05, 0x00, 0x00, 0x00, // compressed size
+        0x05, 0x00, 0x00, 0x00, // uncompressed size
+        0x09, 0x00, // filename length
+        0x00, 0x00, // extra length
+        0x00, 0x00, // comment length
+        0x00, 0x00, // disk number
+        0x00, 0x00, // internal attributes
+        0x00, 0x00, 0x00, 0x00, // external attributes
+        0x00, 0x00, 0x00, 0x00, // local header offset
+        'h',
         'e',  'l',  'l',  'o',  '.',
         't',  'x',  't',
         // End of central directory
@@ -24272,29 +24674,24 @@ test "validateZipDeep returns structural for encrypted ZIP entries" {
          0xDE,
         0xAD, 0xBE,
         0xEF, 0x00,
-        // Central directory
-        'P',  'K',
-        1,    2,
-        0x14, 0x00,
-        0x0A, 0x00,
+        // Central directory header
+        'P', 'K', 1, 2, // signature
+        0x14, 0x00, // version made by
+        0x0A, 0x00, // version needed
         0x01, 0x00, // encryption flag
-        0x00, 0x00,
-        0x00, 0x00,
-        0x00, 0x00,
-        0x82, 0x89,
-        0xD1, 0xF7,
-        0x05, 0x00,
-        0x00, 0x00,
-        0x05, 0x00,
-        0x00, 0x00,
-        0x09, 0x00,
-        0x00, 0x00,
-        0x00, 0x00,
-        0x00, 0x00,
-        0x00, 0x00,
-        0x00, 0x00,
-        0x00, 0x00,
-        0x00, 0x00,
+        0x00, 0x00, // compression
+        0x00, 0x00, // mod time
+        0x00, 0x00, // mod date
+        0x82, 0x89, 0xD1, 0xF7, // CRC
+        0x05, 0x00, 0x00, 0x00, // compressed size
+        0x05, 0x00, 0x00, 0x00, // uncompressed size
+        0x09, 0x00, // filename length
+        0x00, 0x00, // extra length
+        0x00, 0x00, // comment length
+        0x00, 0x00, // disk number
+        0x00, 0x00, // internal attributes
+        0x00, 0x00, 0x00, 0x00, // external attributes
+        0x00, 0x00, 0x00, 0x00, // local header offset
         'h',  'e',
         'l',  'l',
         'o',  '.',
