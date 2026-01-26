@@ -3,6 +3,12 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <mach/mach.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
+#endif
 #include "validate_core.h"
 
 #define COLOR_GREEN  "\033[0;32m"
@@ -11,6 +17,126 @@
 #define COLOR_CYAN   "\033[0;36m"
 #define COLOR_RESET  "\033[0m"
 #define SLOW_THRESHOLD_SECONDS 5.0
+
+static FILE* g_mem_telemetry_file = NULL;
+static int g_mem_telemetry_enabled = 0;
+static size_t g_mem_telemetry_every = 1;
+static size_t g_mem_telemetry_count = 0;
+static size_t g_mem_telemetry_last_rss = 0;
+
+static int env_truthy(const char* value) {
+	if (!value || value[0] == '\0') {
+		return 0;
+	}
+	if (strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "TRUE") == 0 ||
+		strcmp(value, "yes") == 0 || strcmp(value, "YES") == 0 || strcmp(value, "on") == 0 ||
+		strcmp(value, "ON") == 0) {
+		return 1;
+	}
+	return 0;
+}
+
+static size_t parse_env_size(const char* value, size_t fallback) {
+	if (!value || value[0] == '\0') {
+		return fallback;
+	}
+	char* end = NULL;
+	unsigned long long parsed = strtoull(value, &end, 10);
+	if (end == value || parsed == 0) {
+		return fallback;
+	}
+	return (size_t)parsed;
+}
+
+static size_t get_rss_bytes(void) {
+#if defined(__APPLE__)
+	mach_task_basic_info_data_t info;
+	mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+	if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) != KERN_SUCCESS) {
+		return 0;
+	}
+	return (size_t)info.resident_size;
+#elif defined(__linux__)
+	FILE* statm = fopen("/proc/self/statm", "r");
+	if (!statm) {
+		return 0;
+	}
+	long resident_pages = 0;
+	if (fscanf(statm, "%*s %ld", &resident_pages) != 1) {
+		fclose(statm);
+		return 0;
+	}
+	fclose(statm);
+	long page_size = sysconf(_SC_PAGESIZE);
+	if (page_size <= 0 || resident_pages <= 0) {
+		return 0;
+	}
+	return (size_t)resident_pages * (size_t)page_size;
+#elif defined(_WIN32)
+	PROCESS_MEMORY_COUNTERS pmc;
+	HANDLE process = GetCurrentProcess();
+	if (GetProcessMemoryInfo(process, &pmc, sizeof(pmc)) == 0) {
+		return 0;
+	}
+	return (size_t)pmc.WorkingSetSize;
+#else
+	return 0;
+#endif
+}
+
+static void init_mem_telemetry(void) {
+	const char* enabled = getenv("MEM_TELEMETRY");
+	if (!env_truthy(enabled)) {
+		return;
+	}
+	const char* every = getenv("MEM_TELEMETRY_EVERY");
+	g_mem_telemetry_every = parse_env_size(every, 1);
+
+	const char* path = getenv("MEM_TELEMETRY_PATH");
+	if (path && path[0] != '\0') {
+		g_mem_telemetry_file = fopen(path, "a");
+		if (!g_mem_telemetry_file) {
+			fprintf(stderr, COLOR_RED "Error: Failed to open MEM_TELEMETRY_PATH=%s\n" COLOR_RESET, path);
+			return;
+		}
+	} else {
+		g_mem_telemetry_file = stderr;
+	}
+	setvbuf(g_mem_telemetry_file, NULL, _IOLBF, 0);
+	g_mem_telemetry_enabled = 1;
+}
+
+static void shutdown_mem_telemetry(void) {
+	if (g_mem_telemetry_enabled && g_mem_telemetry_file && g_mem_telemetry_file != stderr) {
+		fclose(g_mem_telemetry_file);
+	}
+	g_mem_telemetry_file = NULL;
+	g_mem_telemetry_enabled = 0;
+}
+
+static void log_mem_telemetry(const char* path, const es_validation_result_ex_t* result, double elapsed_seconds) {
+	if (!g_mem_telemetry_enabled) {
+		return;
+	}
+	g_mem_telemetry_count += 1;
+	if (g_mem_telemetry_every > 1 && (g_mem_telemetry_count % g_mem_telemetry_every) != 0) {
+		return;
+	}
+	const size_t rss_bytes = get_rss_bytes();
+	if (rss_bytes == 0) {
+		return;
+	}
+	const double rss_mb = (double)rss_bytes / (1024.0 * 1024.0);
+	const long delta_bytes = (long)rss_bytes - (long)g_mem_telemetry_last_rss;
+	g_mem_telemetry_last_rss = rss_bytes;
+	fprintf(g_mem_telemetry_file,
+		"MEM rss=%.1fMB delta=%ldB elapsed=%.3fs format=%s path=%s\n",
+		rss_mb,
+		delta_bytes,
+		elapsed_seconds,
+		result->format_description ? result->format_description : "Unknown",
+		path);
+}
 
 static const char* validation_depth_description(es_validation_depth_t depth) {
 	switch (depth) {
@@ -76,9 +202,11 @@ static void on_validation(
 		fprintf(stderr, COLOR_YELLOW "SLOW" COLOR_RESET " %s: %.2fs\n", display_path, elapsed_seconds);
 	}
 	if (result->is_unknown) {
+		log_mem_telemetry(display_path, result, elapsed_seconds);
 		return;
 	}
 	print_validation_result(display_path, result);
+	log_mem_telemetry(display_path, result, elapsed_seconds);
 }
 
 static int validate_path(const char* path, size_t jobs) {
@@ -238,5 +366,8 @@ int main(int argc, char* argv[]) {
 		return 2;
 	}
 
-	return validate_path(path, jobs);
+	init_mem_telemetry();
+	int rc = validate_path(path, jobs);
+	shutdown_mem_telemetry();
+	return rc;
 }

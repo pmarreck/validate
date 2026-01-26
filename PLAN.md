@@ -4,8 +4,10 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ## Active
 - [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
+- [ ] Run performance experiments (baseline + A/B/C) and record CPU-time results in PERF_EXPERIMENTS.md (2026-01-26 00:12 EST)
 
 ## Recently Completed
+- [x] Add memory telemetry (CLI env-gated) and ZIP entry timing telemetry for slow-zip investigation (2026-01-26 02:18 EST)
 - [x] Add CrossOver-based Windows test runner (test-windows + build.zig hook) (2026-01-25 17:14 EST)
 - [x] Add core parallel path validation + CLI jobs flag (2026-01-25 16:52 EST)
 - [x] Fix CI issues: libde265 SSE4.1 gating + Windows tests (bzip2 temp + JPEG structural) (2026-01-25 16:52 EST)

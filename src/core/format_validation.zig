@@ -15570,6 +15570,94 @@ const ZipCompressionMethod = enum(u16) {
     _,
 };
 
+const ZIP_TELEMETRY_DEFAULT_SLOW_SECONDS: f64 = 2.0;
+const ZIP_TELEMETRY_MAX_NAME: usize = 256;
+
+const ZipTelemetry = struct {
+    enabled: bool,
+    slow_threshold_ns: i128,
+
+    fn init() ZipTelemetry {
+        if (comptime builtin.os.tag == .windows) {
+            return .{ .enabled = false, .slow_threshold_ns = 0 };
+        }
+        const env_ptr = std.posix.getenv("ZIP_TELEMETRY") orelse {
+            return .{ .enabled = false, .slow_threshold_ns = 0 };
+        };
+        const env = std.mem.sliceTo(env_ptr, 0);
+        if (!isTruthy(env)) {
+            return .{ .enabled = false, .slow_threshold_ns = 0 };
+        }
+        var threshold_seconds = ZIP_TELEMETRY_DEFAULT_SLOW_SECONDS;
+        if (std.posix.getenv("ZIP_SLOW_SECONDS")) |threshold_ptr| {
+            const threshold_slice = std.mem.sliceTo(threshold_ptr, 0);
+            threshold_seconds = std.fmt.parseFloat(f64, threshold_slice) catch threshold_seconds;
+        }
+        const threshold_ns = @as(i128, @intFromFloat(threshold_seconds * 1_000_000_000.0));
+        return .{ .enabled = true, .slow_threshold_ns = threshold_ns };
+    }
+};
+
+const ZipEntryTelemetry = struct {
+    enabled: bool,
+    start_ns: i128,
+    entry_index: usize,
+    name: []const u8 = "",
+    name_truncated: bool = false,
+    compression_method: u16 = 0,
+    compressed_size: u32 = 0,
+    uncompressed_size: u32 = 0,
+    flags: u16 = 0,
+    encrypted: bool = false,
+    has_descriptor: bool = false,
+    descriptor_reads: u64 = 0,
+
+    fn init(telemetry: ZipTelemetry, entry_index: usize) ZipEntryTelemetry {
+        return .{
+            .enabled = telemetry.enabled,
+            .start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0,
+            .entry_index = entry_index,
+        };
+    }
+
+    fn setName(self: *ZipEntryTelemetry, name: []const u8, truncated: bool) void {
+        self.name = name;
+        self.name_truncated = truncated;
+    }
+
+    fn finish(self: *ZipEntryTelemetry, telemetry: ZipTelemetry, format: FileFormat) void {
+        if (!self.enabled) return;
+        const elapsed_ns = std.time.nanoTimestamp() - self.start_ns;
+        if (elapsed_ns < telemetry.slow_threshold_ns) {
+            return;
+        }
+        const elapsed_seconds = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+        const name_suffix = if (self.name_truncated) "..." else "";
+        std.debug.print(
+            "ZIP_SLOW format={s} entry={d} name=\"{s}{s}\" method={d} comp={d} uncomp={d} flags=0x{x} encrypted={d} descriptor={d} descriptor_reads={d} elapsed={d:.2}s\n",
+            .{
+                format.description(),
+                self.entry_index,
+                self.name,
+                name_suffix,
+                self.compression_method,
+                self.compressed_size,
+                self.uncompressed_size,
+                self.flags,
+                @intFromBool(self.encrypted),
+                @intFromBool(self.has_descriptor),
+                self.descriptor_reads,
+                elapsed_seconds,
+            },
+        );
+    }
+};
+
+fn isTruthy(value: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(value, "1") or std.ascii.eqlIgnoreCase(value, "true") or
+        std.ascii.eqlIgnoreCase(value, "yes") or std.ascii.eqlIgnoreCase(value, "on");
+}
+
 /// Deep ZIP validation by verifying CRC-32 checksums for all entries.
 /// ZIP stores a CRC-32 for each file entry, computed over the uncompressed data.
 /// For stored files, we CRC the data directly. For deflated files, we decompress first.
@@ -15592,6 +15680,7 @@ fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult {
     var encrypted_entry_count: usize = 0;
     const max_entries: usize = 100000;
     const max_uncompressed_size: u64 = 512 * 1024 * 1024; // 512 MiB max per entry
+    const telemetry = ZipTelemetry.init();
 
     while (true) : (entry_count += 1) {
         if (entry_count > max_entries) {
@@ -15624,6 +15713,9 @@ fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult {
             return ValidationResult.invalidWithDepth(format, "Invalid local file header signature", .full);
         }
 
+        var entry_telemetry = ZipEntryTelemetry.init(telemetry, entry_count + 1);
+        defer entry_telemetry.finish(telemetry, format);
+
         // Read rest of local file header (26 bytes after signature)
         var header: [26]u8 = undefined;
         const header_bytes = file.read(&header) catch {
@@ -15648,20 +15740,61 @@ fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult {
         // When set, CRC and sizes are in a data descriptor AFTER the compressed data
         const has_data_descriptor = (general_purpose_flags & 0x0008) != 0;
 
+        entry_telemetry.compression_method = compression_method;
+        entry_telemetry.compressed_size = compressed_size;
+        entry_telemetry.uncompressed_size = uncompressed_size;
+        entry_telemetry.flags = general_purpose_flags;
+        entry_telemetry.encrypted = is_encrypted;
+        entry_telemetry.has_descriptor = has_data_descriptor;
+
+        const filename_len_usize = @as(usize, filename_len);
+        if (telemetry.enabled) {
+            var name_buf: [ZIP_TELEMETRY_MAX_NAME]u8 = undefined;
+            const to_read = @min(filename_len_usize, name_buf.len);
+            var truncated = false;
+            if (to_read > 0) {
+                const name_read = file.readAll(name_buf[0..to_read]) catch {
+                    return ValidationResult.invalidWithDepth(format, "Failed to read entry filename", .full);
+                };
+                if (name_read != to_read) {
+                    return ValidationResult.invalidWithDepth(format, "Truncated entry filename", .full);
+                }
+                entry_telemetry.setName(name_buf[0..to_read], false);
+            }
+            if (filename_len_usize > to_read) {
+                truncated = true;
+                const remaining: i64 = @intCast(filename_len_usize - to_read);
+                file.seekBy(remaining) catch {
+                    return ValidationResult.invalidWithDepth(format, "Failed to skip entry filename", .full);
+                };
+            }
+            if (to_read == 0) {
+                entry_telemetry.setName("", false);
+            } else if (truncated) {
+                entry_telemetry.name_truncated = true;
+            }
+        } else {
+            // Skip filename
+            const filename_len_i64: i64 = @intCast(filename_len_usize);
+            file.seekBy(filename_len_i64) catch {
+                return ValidationResult.invalidWithDepth(format, "Failed to skip entry filename", .full);
+            };
+        }
+
+        // Skip extra field
+        file.seekBy(@as(i64, extra_len)) catch {
+            return ValidationResult.invalidWithDepth(format, "Failed to skip filename/extra", .full);
+        };
+
         if (is_encrypted) {
             // Entry is encrypted - we cannot validate CRC without decryption key
             // Skip the compressed data and continue with structural validation
             encrypted_entry_count += 1;
-            file.seekBy(@as(i64, filename_len) + @as(i64, extra_len) + @as(i64, compressed_size)) catch {
+            file.seekBy(@as(i64, compressed_size)) catch {
                 return ValidationResult.invalidWithDepth(format, "Failed to skip encrypted entry", .structural);
             };
             continue;
         }
-
-        // Skip filename and extra field
-        file.seekBy(@as(i64, filename_len) + @as(i64, extra_len)) catch {
-            return ValidationResult.invalidWithDepth(format, "Failed to skip filename/extra", .full);
-        };
 
         // Handle data descriptor entries (bit 3 set) - sizes in header are 0
         // We need to scan forward to find the data descriptor or central directory
@@ -15684,6 +15817,7 @@ fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult {
             var found_next = false;
             while (!found_next) {
                 const bytes_read = file.read(&scan_buf) catch break;
+                entry_telemetry.descriptor_reads += 1;
                 if (bytes_read == 0) break;
                 if (bytes_read < 4) break;
 

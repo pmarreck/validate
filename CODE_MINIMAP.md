@@ -27,6 +27,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/` | Validation logic and format support |
 | `src/build/` | Zig build helpers (libtool bundling) |
 | `src/core/path_validation.zig` | Parallel path validation and per-file callback reporting (honors `MAX_FILES`) |
+| `src/core/format_validation.zig` | Format validation logic including ZIP deep validation and ZIP entry telemetry (env `ZIP_TELEMETRY`) |
 
 ## FFI (ffi/)
 | Path | Purpose |
@@ -37,7 +38,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 ## CLI (cli/)
 | Path | Purpose |
 |------|---------|
-| `cli/main.c` | CLI wrapper around the C FFI |
+| `cli/main.c` | CLI wrapper around the C FFI, SLOW warnings, and memory telemetry (env `MEM_TELEMETRY`) |
 
 ## Tests (tests/)
 | Path | Purpose |
@@ -52,4 +53,5 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `RULES.md` | Non-negotiable project rules |
 | `DOCUMENTATION_GUIDE.md` | Doc locations and writing rules |
 | `ROADMAP.md` | Fairly certain future goals |
+| `PERF_EXPERIMENTS.md` | Performance experiment log and results |
 | `ZIG_RECENT_API_CHANGES_2025.md` | Zig 0.14–0.15 API quick reference for current code |
