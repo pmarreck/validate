@@ -4,11 +4,14 @@
 //! and reports per-file results via a callback.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const format_validation = @import("format_validation.zig");
 
 const Allocator = std.mem.Allocator;
 const ValidationResult = format_validation.ValidationResult;
 const FormatValidator = format_validation.FormatValidator;
+
+const DEFAULT_MAX_FILES: usize = std.math.maxInt(usize);
 
 pub const ValidationCounts = struct {
 	valid: usize = 0,
@@ -187,6 +190,15 @@ fn openDirForPath(path: []const u8) !std.fs.Dir {
 	return std.fs.cwd().openDir(path, .{ .iterate = true });
 }
 
+fn getMaxFilesLimit() usize {
+	if (comptime builtin.os.tag == .windows) return DEFAULT_MAX_FILES;
+
+	const env = std.posix.getenv("MAX_FILES") orelse return DEFAULT_MAX_FILES;
+	const parsed = std.fmt.parseInt(usize, env, 10) catch return DEFAULT_MAX_FILES;
+	if (parsed == 0) return DEFAULT_MAX_FILES;
+	return parsed;
+}
+
 pub fn validatePathParallel(
 	allocator: Allocator,
 	validator_template: FormatValidator,
@@ -207,6 +219,8 @@ pub fn validatePathParallel(
 	if (stat.kind != .directory) {
 		return error.Unsupported;
 	}
+
+	const max_files_limit = getMaxFilesLimit();
 
 	var queue = WorkQueue.init(allocator);
 	defer queue.deinit();
@@ -236,9 +250,14 @@ pub fn validatePathParallel(
 	var walker = try dir.walk(allocator);
 	defer walker.deinit();
 
+	var queued_files: usize = 0;
+
 	while (try walker.next()) |entry| {
 		if (!shouldValidateFile(entry.kind)) {
 			continue;
+		}
+		if (queued_files >= max_files_limit) {
+			break;
 		}
 		const display_path = try allocator.dupe(u8, entry.path);
 		const full_path = try std.fs.path.join(allocator, &.{ path, entry.path });
@@ -246,6 +265,7 @@ pub fn validatePathParallel(
 			.path = full_path,
 			.display_path = display_path,
 		});
+		queued_files += 1;
 	}
 
 	queue.close();

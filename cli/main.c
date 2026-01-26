@@ -20,6 +20,19 @@ static const char* validation_depth_description(es_validation_depth_t depth) {
 	}
 }
 
+static size_t get_env_max_files(void) {
+	const char* env = getenv("MAX_FILES");
+	if (!env || env[0] == '\0') {
+		return 0;
+	}
+	char* end = NULL;
+	unsigned long long value = strtoull(env, &end, 10);
+	if (end == env || value == 0) {
+		return 0;
+	}
+	return (size_t)value;
+}
+
 static void print_validation_result(const char* path, const es_validation_result_ex_t* result) {
 	const char* format_desc = result->format_description ? result->format_description : "Unknown";
 	const char* depth_desc = validation_depth_description(result->validation_depth);
@@ -73,6 +86,11 @@ static int validate_path(const char* path, size_t jobs) {
 	if (stat(path, &st) != 0) {
 		fprintf(stderr, COLOR_RED "Error: Cannot access path: %s\n" COLOR_RESET, path);
 		return 1;
+	}
+
+	const size_t max_files = get_env_max_files();
+	if (max_files > 0 && S_ISDIR(st.st_mode)) {
+		printf(COLOR_YELLOW "Note:" COLOR_RESET " MAX_FILES=%zu (results may be truncated)\n", max_files);
 	}
 
 	es_format_validator_t* validator = NULL;
