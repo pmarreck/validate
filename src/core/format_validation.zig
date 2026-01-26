@@ -836,10 +836,7 @@ const VideoDecodeTolerance = struct {
 fn toleratedVideoDecodeFailure(result: video_validator.VideoValidationResult) ?VideoDecodeTolerance {
 	if (result.valid) return null;
 	const msg = result.error_message orelse return null;
-	if (std.mem.eql(u8, msg, "No frames decoded from H.264 stream") or
-		std.mem.eql(u8, msg, "No frames decoded from HEVC") or
-		std.mem.eql(u8, msg, "No frames decoded from AV1"))
-	{
+	if (std.mem.startsWith(u8, msg, "No frames decoded")) {
 		return .{
 			.malformation = .video_no_frames_decoded,
 			.warning = msg,
