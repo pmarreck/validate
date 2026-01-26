@@ -16408,6 +16408,79 @@ fn validateZipDeflatedEntry(allocator: Allocator, file: std.fs.File, stored_crc:
 
 // ============ PDF Deep Validation ============
 
+const PDF_TELEMETRY_DEFAULT_SLOW_SECONDS: f64 = 5.0;
+
+const PdfTelemetry = struct {
+    enabled: bool,
+    slow_threshold_ns: i128,
+
+    fn init() PdfTelemetry {
+        if (comptime builtin.os.tag == .windows) {
+            return .{ .enabled = false, .slow_threshold_ns = 0 };
+        }
+        const env_ptr = std.posix.getenv("PDF_TELEMETRY") orelse {
+            return .{ .enabled = false, .slow_threshold_ns = 0 };
+        };
+        const env = std.mem.sliceTo(env_ptr, 0);
+        if (!isTruthy(env)) {
+            return .{ .enabled = false, .slow_threshold_ns = 0 };
+        }
+        var threshold_seconds = PDF_TELEMETRY_DEFAULT_SLOW_SECONDS;
+        if (std.posix.getenv("PDF_SLOW_SECONDS")) |threshold_ptr| {
+            const threshold_slice = std.mem.sliceTo(threshold_ptr, 0);
+            threshold_seconds = std.fmt.parseFloat(f64, threshold_slice) catch threshold_seconds;
+        }
+        const threshold_ns = @as(i128, @intFromFloat(threshold_seconds * 1_000_000_000.0));
+        return .{ .enabled = true, .slow_threshold_ns = threshold_ns };
+    }
+};
+
+fn logPdfSlow(
+    telemetry: PdfTelemetry,
+    label: []const u8,
+    total_ns: i128,
+    structural_ns: i128,
+    image_ns: i128,
+    font_ns: i128,
+    embed_ns: i128,
+    image_result: pdf_image_validator.PdfImageValidationResult,
+    font_result: pdf_font_validator.FontValidationSummary,
+    embed_result: pdf_embedded_file_validator.EmbeddedFileValidationSummary,
+) void {
+    if (!telemetry.enabled) return;
+    if (total_ns < telemetry.slow_threshold_ns) return;
+
+    const total_seconds = @as(f64, @floatFromInt(total_ns)) / 1_000_000_000.0;
+    const structural_seconds = @as(f64, @floatFromInt(structural_ns)) / 1_000_000_000.0;
+    const image_seconds = @as(f64, @floatFromInt(image_ns)) / 1_000_000_000.0;
+    const font_seconds = @as(f64, @floatFromInt(font_ns)) / 1_000_000_000.0;
+    const embed_seconds = @as(f64, @floatFromInt(embed_ns)) / 1_000_000_000.0;
+
+    std.debug.print(
+        "PDF_SLOW path=\"{s}\" total={d:.2}s structural={d:.2}s images={d:.2}s fonts={d:.2}s embedded={d:.2}s images_total={d} images_validated={d} images_failed={d} images_skipped={d} fonts_total={d} fonts_validated={d} fonts_failed={d} fonts_skipped={d} embeds_total={d} embeds_validated={d} embeds_failed={d} embeds_skipped={d}\n",
+        .{
+            label,
+            total_seconds,
+            structural_seconds,
+            image_seconds,
+            font_seconds,
+            embed_seconds,
+            image_result.total_images,
+            image_result.validated_images,
+            image_result.failed_images,
+            image_result.skipped_images,
+            font_result.total_fonts,
+            font_result.validated,
+            font_result.failed,
+            font_result.skipped,
+            embed_result.total_files,
+            embed_result.validated,
+            embed_result.failed,
+            embed_result.skipped,
+        },
+    );
+}
+
 /// Deep PDF validation by parsing and verifying the cross-reference table structure.
 /// Checks:
 /// - startxref pointer validity
@@ -16415,9 +16488,11 @@ fn validateZipDeflatedEntry(allocator: Allocator, file: std.fs.File, stored_crc:
 /// - Trailer dictionary required keys (/Size, /Root)
 /// - FlateDecode stream decompression (if present)
 fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.pdf, "File not found", .structural),
+	const telemetry = PdfTelemetry.init();
+	const total_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+		return switch (err) {
+			error.FileNotFound => ValidationResult.invalidWithDepth(.pdf, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.pdf, "Access denied", .structural),
             else => ValidationResult.invalidWithDepth(.pdf, "Failed to open file", .structural),
         };
@@ -16428,11 +16503,13 @@ fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.pdf, "Failed to get file size", .structural);
     };
 
-    if (file_size < 50) {
-        return ValidationResult.invalidWithDepth(.pdf, "File too small for valid PDF", .structural);
-    }
+	if (file_size < 50) {
+		return ValidationResult.invalidWithDepth(.pdf, "File too small for valid PDF", .structural);
+	}
 
-    // Tiered search for %%EOF: try small window first (fast path), expand if needed
+	const structural_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+
+	// Tiered search for %%EOF: try small window first (fast path), expand if needed
     const eof_marker = "%%EOF";
     var malformations_local: std.EnumSet(MalformationType) = .{};
     var buffer: [8192]u8 = undefined;
@@ -16565,6 +16642,8 @@ fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
     // Note: xref stream encryption is also handled by pdf_image_validator
 
+	const structural_ns = if (telemetry.enabled) std.time.nanoTimestamp() - structural_start_ns else 0;
+
     // Deep validation: read entire file and validate embedded content
     file.seekTo(0) catch {
         return ValidationResult.okWithDepth(.pdf, .full); // Fallback if seek fails
@@ -16590,10 +16669,12 @@ fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.pdf, "Incomplete read of PDF", .full);
     }
 
-    // Validate embedded images
-    var image_result = pdf_image_validator.validatePdfImages(allocator, pdf_data) catch {
-        return ValidationResult.okWithDepth(.pdf, .full); // Image extraction failed, fall back
-    };
+	// Validate embedded images
+	const image_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	var image_result = pdf_image_validator.validatePdfImages(allocator, pdf_data) catch {
+		return ValidationResult.okWithDepth(.pdf, .full); // Image extraction failed, fall back
+	};
+	const image_ns = if (telemetry.enabled) std.time.nanoTimestamp() - image_start_ns else 0;
     defer image_result.deinit(allocator);
     if (!image_result.valid) {
         // Print individual image errors to stderr for diagnostics
@@ -16620,17 +16701,24 @@ fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.pdf, image_result.error_message orelse "Embedded image validation failed", .full);
     }
 
-    // Validate embedded fonts
-    const font_result = pdf_font_validator.validatePdfFonts(allocator, pdf_data);
-    if (!font_result.valid) {
-        return ValidationResult.invalidWithDepth(.pdf, font_result.error_message orelse "Embedded font validation failed", .full);
-    }
+	// Validate embedded fonts
+	const font_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const font_result = pdf_font_validator.validatePdfFonts(allocator, pdf_data);
+	const font_ns = if (telemetry.enabled) std.time.nanoTimestamp() - font_start_ns else 0;
+	if (!font_result.valid) {
+		return ValidationResult.invalidWithDepth(.pdf, font_result.error_message orelse "Embedded font validation failed", .full);
+	}
 
-    // Validate embedded files (attachments)
-    const embed_result = pdf_embedded_file_validator.validatePdfEmbeddedFilesBasic(allocator, pdf_data);
-    if (!embed_result.valid) {
-        return ValidationResult.invalidWithDepth(.pdf, embed_result.error_message orelse "Embedded file validation failed", .full);
-    }
+	// Validate embedded files (attachments)
+	const embed_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const embed_result = pdf_embedded_file_validator.validatePdfEmbeddedFilesBasic(allocator, pdf_data);
+	const embed_ns = if (telemetry.enabled) std.time.nanoTimestamp() - embed_start_ns else 0;
+	if (!embed_result.valid) {
+		return ValidationResult.invalidWithDepth(.pdf, embed_result.error_message orelse "Embedded file validation failed", .full);
+	}
+
+	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;
+	logPdfSlow(telemetry, path, total_ns, structural_ns, image_ns, font_ns, embed_ns, image_result, font_result, embed_result);
 
     // All validations passed
     // Check if we circumvented trivial encryption to validate
@@ -16662,16 +16750,20 @@ fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Deep PDF validation from a memory buffer (used for MIME-wrapped content).
 /// Performs the same checks as validatePdfDeep but without file I/O.
 fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) ValidationResult {
-    if (pdf_data.len < 50) {
-        return ValidationResult.invalidWithDepth(.pdf, "PDF too small for deep validation", .structural);
-    }
+	const telemetry = PdfTelemetry.init();
+	const total_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	if (pdf_data.len < 50) {
+		return ValidationResult.invalidWithDepth(.pdf, "PDF too small for deep validation", .structural);
+	}
 
     // Verify PDF header
-    if (!std.mem.startsWith(u8, pdf_data, "%PDF-")) {
-        return ValidationResult.invalidWithDepth(.pdf, "Invalid PDF header", .structural);
-    }
+	if (!std.mem.startsWith(u8, pdf_data, "%PDF-")) {
+		return ValidationResult.invalidWithDepth(.pdf, "Invalid PDF header", .structural);
+	}
 
-    var malformations_local: std.EnumSet(MalformationType) = .{};
+	var malformations_local: std.EnumSet(MalformationType) = .{};
+
+	const structural_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
 
     // Find %%EOF marker (search from end)
     const eof_marker = "%%EOF";
@@ -16722,30 +16814,41 @@ fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Validat
     const is_traditional_xref = xref_start + 4 <= pdf_data.len and std.mem.startsWith(u8, pdf_data[xref_start..], "xref");
     const is_xref_stream = xref_start < pdf_data.len and pdf_data[xref_start] >= '0' and pdf_data[xref_start] <= '9';
 
-    if (!is_traditional_xref and !is_xref_stream) {
-        return ValidationResult.invalidWithDepth(.pdf, "Invalid xref structure at startxref position", .full);
-    }
+	if (!is_traditional_xref and !is_xref_stream) {
+		return ValidationResult.invalidWithDepth(.pdf, "Invalid xref structure at startxref position", .full);
+	}
 
-    // Validate embedded images
-    var image_result = pdf_image_validator.validatePdfImages(allocator, pdf_data) catch {
-        return ValidationResult.okWithDepth(.pdf, .full); // Image extraction failed, fall back
-    };
-    defer image_result.deinit(allocator);
+	const structural_ns = if (telemetry.enabled) std.time.nanoTimestamp() - structural_start_ns else 0;
+
+	// Validate embedded images
+	const image_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	var image_result = pdf_image_validator.validatePdfImages(allocator, pdf_data) catch {
+		return ValidationResult.okWithDepth(.pdf, .full); // Image extraction failed, fall back
+	};
+	const image_ns = if (telemetry.enabled) std.time.nanoTimestamp() - image_start_ns else 0;
+	defer image_result.deinit(allocator);
     if (!image_result.valid) {
         return ValidationResult.invalidWithDepth(.pdf, image_result.error_message orelse "Embedded image validation failed", .full);
     }
 
-    // Validate embedded fonts
-    const font_result = pdf_font_validator.validatePdfFonts(allocator, pdf_data);
-    if (!font_result.valid) {
-        return ValidationResult.invalidWithDepth(.pdf, font_result.error_message orelse "Embedded font validation failed", .full);
-    }
+	// Validate embedded fonts
+	const font_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const font_result = pdf_font_validator.validatePdfFonts(allocator, pdf_data);
+	const font_ns = if (telemetry.enabled) std.time.nanoTimestamp() - font_start_ns else 0;
+	if (!font_result.valid) {
+		return ValidationResult.invalidWithDepth(.pdf, font_result.error_message orelse "Embedded font validation failed", .full);
+	}
 
-    // Validate embedded files (attachments)
-    const embed_result = pdf_embedded_file_validator.validatePdfEmbeddedFilesBasic(allocator, pdf_data);
-    if (!embed_result.valid) {
-        return ValidationResult.invalidWithDepth(.pdf, embed_result.error_message orelse "Embedded file validation failed", .full);
-    }
+	// Validate embedded files (attachments)
+	const embed_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const embed_result = pdf_embedded_file_validator.validatePdfEmbeddedFilesBasic(allocator, pdf_data);
+	const embed_ns = if (telemetry.enabled) std.time.nanoTimestamp() - embed_start_ns else 0;
+	if (!embed_result.valid) {
+		return ValidationResult.invalidWithDepth(.pdf, embed_result.error_message orelse "Embedded file validation failed", .full);
+	}
+
+	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;
+	logPdfSlow(telemetry, "<buffer>", total_ns, structural_ns, image_ns, font_ns, embed_ns, image_result, font_result, embed_result);
 
     // Check if we circumvented trivial encryption
     if (image_result.decryption_succeeded) {

@@ -37,6 +37,7 @@ Runs `./test` first. When `DEBUG` is unset/0, dependencies build in ReleaseFast 
 `MAX_FILES` limits the number of files scanned when validating a directory.
 `MEM_TELEMETRY=1` logs per-file RSS memory samples (use `MEM_TELEMETRY_PATH` to log to a file, `MEM_TELEMETRY_EVERY=N` to sample every N files).
 `ZIP_TELEMETRY=1` logs slow ZIP entry validation details to stderr (adjust threshold with `ZIP_SLOW_SECONDS`).
+`PDF_TELEMETRY=1` logs slow PDF deep-validation breakdowns to stderr (adjust threshold with `PDF_SLOW_SECONDS`).
 
 ## Tests
 ```bash

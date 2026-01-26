@@ -27,7 +27,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/` | Validation logic and format support |
 | `src/build/` | Zig build helpers (libtool bundling) |
 | `src/core/path_validation.zig` | Parallel path validation and per-file callback reporting (honors `MAX_FILES`) |
-| `src/core/format_validation.zig` | Format validation logic including ZIP deep validation (central-directory parsing to avoid data-descriptor scans) and ZIP entry telemetry (env `ZIP_TELEMETRY`) |
+| `src/core/format_validation.zig` | Format validation logic including ZIP deep validation (central-directory parsing to avoid data-descriptor scans) plus ZIP/PDF telemetry (env `ZIP_TELEMETRY`, `PDF_TELEMETRY`) |
 
 ## FFI (ffi/)
 | Path | Purpose |

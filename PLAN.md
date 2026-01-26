@@ -6,6 +6,9 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
 
 ## Recently Completed
+- [x] Add PDF telemetry for slow deep validation and analyze Books outliers (2026-01-26 04:08 EST)
+- [x] Run post-optimization perf on ~/Documents (MAX_FILES=80000) and record results (2026-01-26 04:08 EST)
+- [x] Validate ground_truth_examples corpus after ZIP optimization (2026-01-26 04:08 EST)
 - [x] Optimize ZIP data-descriptor handling (parse central directory for sizes/offsets) (2026-01-26 03:29 EST)
 - [x] Run performance experiments (baseline + A/B/C) and record CPU-time results in PERF_EXPERIMENTS.md (2026-01-26 03:29 EST)
 - [x] Add memory telemetry (CLI env-gated) and ZIP entry timing telemetry for slow-zip investigation (2026-01-26 02:18 EST)

@@ -86,3 +86,49 @@ queue growth, and memory retention. Track outcomes using CPU time (user+sys).
 - Max RSS: ~999.7MB; RSS at end ~673.3MB
 - ZIP_SLOW: none observed (0 lines)
 - Notes: CLI SLOW warnings now point to large PDFs (not ZIP/EPUB/CBZ).
+
+## Post-optimization: `~/Documents` (MAX_FILES=80000)
+- Date (EST): 2026-01-26
+- Path: `~/Documents`
+- Env: `MAX_FILES=80000 MEM_TELEMETRY=1 MEM_TELEMETRY_PATH=/tmp/validate_docs_mem_after.log`
+- Counts: Valid 72432, Invalid 36, Unknown 7532
+- CPU time (user+sys): 30.16s (user 20.13s, sys 10.03s; real 4.19s)
+- Max RSS: ~998.3MB; RSS at end ~761.8MB
+- Notes: Dramatic speedup vs baseline; likely dominated by page cache + removal of ZIP data-descriptor scan.
+
+## PDF Telemetry: Books (stage breakdown)
+- Date (EST): 2026-01-26
+- Path: `~/Documents/Books`
+- Env: `PDF_TELEMETRY=1 PDF_SLOW_SECONDS=5`
+- Counts: Valid 1179, Invalid 4, Unknown 7
+- Observations:
+  - Most slow PDFs are dominated by **image validation** time.
+  - Two extreme outliers are dominated by **font validation** time (thousands of fonts).
+- Slowest PDFs (total / images / fonts / embedded):
+  - 117.64s / 1.71s / 115.87s / 0.04s — The Ashley Book of Knots (fonts_total=2660, fonts_failed=2660)
+  - 79.86s / 3.19s / 76.60s / 0.06s — OPD - Oxford Picture Dictionary 3 ed. (fonts_total=2667)
+  - 79.70s / 79.63s / 0.03s / 0.03s — The Last Whole Earth Catalog Access to Tools
+  - 37.70s / 37.67s / 0.01s / 0.01s — Science Fiction - Contemporary Mythology (SFWA/SFRA)
+  - 31.35s / 31.08s / 0.12s / 0.12s — FIGHTING FANTASY COMPLETE COLLECTION
+
+## Ground Truth Validation (post ZIP optimization)
+- Date (EST): 2026-01-26
+- Path: `ground_truth_examples`
+- Counts: Valid 142, Invalid 3, Unknown 7
+- Invalid PDFs (all missing trailer dictionary):
+  - `pdf/Jbig2_042_01.pdf`
+  - `pdf/Jbig2_042_02.pdf`
+  - `pdf/Jbig2_042_03.pdf`
+
+## Memory & Concurrency Notes (Analysis)
+- RSS peaks ~1GB and stays elevated after runs; arenas reset but do not return memory to the OS.
+- Each worker uses an arena allocator for deep validation; large per-file allocations (PDF full-file buffers, image/font decode buffers) stay resident until file completion, then remain reserved by the arena.
+- Concurrency amplifies memory: multiple large PDFs in flight => multiple arenas at peak size, increasing memory pressure and potential paging/compression, which can slow later tasks.
+- Most long PDF times are image/font decode heavy (not structural parsing), so allocator pressure is dominated by large decode buffers and many small font allocations.
+- GC consideration (Boehm): 
+  - Pros: simplifies memory lifetime tracking for complex PDF parsing; could reduce fragmentation from many small allocations.
+  - Cons: adds dependency and runtime overhead, non-deterministic pauses, and would fight against existing per-file arena lifetimes; likely worse for CLI determinism and peak memory.
+- Practical next steps (if we want to reduce memory pressure without weakening validation):
+  - Route *large* buffers (e.g., full PDF `pdf_data`, large decode outputs) through a non-arena allocator so they can be freed back to OS.
+  - Add a size threshold to keep per-file arenas small while preserving fast small allocations.
+  - Consider streaming validation for image/font streams to avoid full-buffer materialization where possible.
