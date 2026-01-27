@@ -132,3 +132,19 @@ queue growth, and memory retention. Track outcomes using CPU time (user+sys).
   - Route *large* buffers (e.g., full PDF `pdf_data`, large decode outputs) through a non-arena allocator so they can be freed back to OS.
   - Add a size threshold to keep per-file arenas small while preserving fast small allocations.
   - Consider streaming validation for image/font streams to avoid full-buffer materialization where possible.
+
+## Experiment D: Dedicated Output Thread with Result Queue
+- Date (EST): 2026-01-27
+- Change summary: Replace callback_mutex-serialized I/O with dedicated output thread.
+  Workers push results to a ResultQueue (brief lock, no I/O under lock).
+  A single output thread drains the queue and calls the callback.
+- Path: `~/Documents` (MAX_FILES=20000)
+- Counts: Valid 16683, Invalid 4, Unknown 3313
+- CPU time (user+sys): 23.22s (user 20.26s, sys 2.96s; real 3.34s)
+- Comparison to Baseline (MAX_FILES=80000 scaled down ~4x):
+  - Baseline: 470.80s total, sys 425.67s (91% of CPU time was kernel/syscalls)
+  - After: 23.22s total, sys 2.96s (13% of CPU time is kernel/syscalls)
+  - **sys time reduction: ~99% at comparable file counts**
+- Notes: The callback_mutex was the primary bottleneck. Workers were spending most time
+  waiting for the mutex while the callback did I/O (printf syscalls). Now workers only
+  briefly lock the result queue, and all I/O happens on a single dedicated thread.

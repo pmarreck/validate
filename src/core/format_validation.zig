@@ -58,6 +58,15 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 
+/// Cross-platform getenv that returns null on Windows (where std.posix.getenv is unavailable).
+/// On POSIX systems, returns the environment variable value or null if not set.
+fn getenvCrossPlatform(comptime name: []const u8) ?[:0]const u8 {
+    if (comptime builtin.os.tag == .windows) {
+        return null;
+    }
+    return std.posix.getenv(name);
+}
+
 // Import SQLite3 for deep database validation
 const sqlite3 = @cImport({
     @cInclude("sqlite3.h");
@@ -15653,19 +15662,14 @@ const ZipTelemetry = struct {
     slow_threshold_ns: i128,
 
     fn init() ZipTelemetry {
-        if (comptime builtin.os.tag == .windows) {
-            return .{ .enabled = false, .slow_threshold_ns = 0 };
-        }
-        const env_ptr = std.posix.getenv("ZIP_TELEMETRY") orelse {
+        const env = getenvCrossPlatform("ZIP_TELEMETRY") orelse {
             return .{ .enabled = false, .slow_threshold_ns = 0 };
         };
-        const env = std.mem.sliceTo(env_ptr, 0);
         if (!isTruthy(env)) {
             return .{ .enabled = false, .slow_threshold_ns = 0 };
         }
         var threshold_seconds = ZIP_TELEMETRY_DEFAULT_SLOW_SECONDS;
-        if (std.posix.getenv("ZIP_SLOW_SECONDS")) |threshold_ptr| {
-            const threshold_slice = std.mem.sliceTo(threshold_ptr, 0);
+        if (getenvCrossPlatform("ZIP_SLOW_SECONDS")) |threshold_slice| {
             threshold_seconds = std.fmt.parseFloat(f64, threshold_slice) catch threshold_seconds;
         }
         const threshold_ns = @as(i128, @intFromFloat(threshold_seconds * 1_000_000_000.0));
@@ -16490,19 +16494,14 @@ const PdfTelemetry = struct {
     slow_threshold_ns: i128,
 
     fn init() PdfTelemetry {
-        if (comptime builtin.os.tag == .windows) {
-            return .{ .enabled = false, .slow_threshold_ns = 0 };
-        }
-        const env_ptr = std.posix.getenv("PDF_TELEMETRY") orelse {
+        const env = getenvCrossPlatform("PDF_TELEMETRY") orelse {
             return .{ .enabled = false, .slow_threshold_ns = 0 };
         };
-        const env = std.mem.sliceTo(env_ptr, 0);
         if (!isTruthy(env)) {
             return .{ .enabled = false, .slow_threshold_ns = 0 };
         }
         var threshold_seconds = PDF_TELEMETRY_DEFAULT_SLOW_SECONDS;
-        if (std.posix.getenv("PDF_SLOW_SECONDS")) |threshold_ptr| {
-            const threshold_slice = std.mem.sliceTo(threshold_ptr, 0);
+        if (getenvCrossPlatform("PDF_SLOW_SECONDS")) |threshold_slice| {
             threshold_seconds = std.fmt.parseFloat(f64, threshold_slice) catch threshold_seconds;
         }
         const threshold_ns = @as(i128, @intFromFloat(threshold_seconds * 1_000_000_000.0));
@@ -17859,13 +17858,10 @@ const DEFAULT_MAX_VIDEO_DEEP_SIZE: u64 = std.math.maxInt(u64);
 /// Reads MAX_VIDEO_SIZE env var (in MB). Defaults to unlimited.
 /// Set to a number to limit deep validation to files under that many MB.
 fn getMaxVideoDeepSize() u64 {
-    // On Windows, posix.getenv is not available - use default (unlimited)
-    if (comptime builtin.os.tag == .windows) return DEFAULT_MAX_VIDEO_DEEP_SIZE;
-
-    return parseMaxVideoDeepSize(std.posix.getenv("MAX_VIDEO_SIZE"));
+    return parseMaxVideoDeepSize(getenvCrossPlatform("MAX_VIDEO_SIZE"));
 }
 
-fn parseMaxVideoDeepSize(env: ?[]const u8) u64 {
+fn parseMaxVideoDeepSize(env: ?[:0]const u8) u64 {
     const value = env orelse return DEFAULT_MAX_VIDEO_DEEP_SIZE;
     const mb = std.fmt.parseInt(u64, value, 10) catch return DEFAULT_MAX_VIDEO_DEEP_SIZE;
     return mb * 1024 * 1024; // Convert MB to bytes

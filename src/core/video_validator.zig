@@ -20,6 +20,14 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
+/// Cross-platform getenv that returns null on Windows (where std.posix.getenv is unavailable).
+fn getenvCrossPlatform(comptime name: []const u8) ?[:0]const u8 {
+    if (comptime builtin.os.tag == .windows) {
+        return null;
+    }
+    return std.posix.getenv(name);
+}
+
 // Import EBML/Matroska parser
 const ebml = @import("ebml_parser.zig");
 
@@ -713,13 +721,11 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         const ok = parser.walkFrames(video_track.track_number, @intCast(max_frames), @ptrCast(&ctx), validateMkvFrameBytes);
         if (!ok) {
             if (builtin.mode == .Debug) {
-                if (std.posix.getenv("MKV_BYTE_DEBUG")) |env_ptr| {
-                    const env = std.mem.sliceTo(env_ptr, 0);
+                if (getenvCrossPlatform("MKV_BYTE_DEBUG")) |env| {
                     if (isTruthy(env)) {
                         const codec_private_len: usize = if (video_track.codec_private) |codec_private| codec_private.len else 0;
                         var frame_dump: ?std.fs.File = null;
-                        if (std.posix.getenv("MKV_BYTE_DEBUG_FRAME_OUT")) |dump_ptr| {
-                            const dump_path = std.mem.sliceTo(dump_ptr, 0);
+                        if (getenvCrossPlatform("MKV_BYTE_DEBUG_FRAME_OUT")) |dump_path| {
                             if (dump_path.len > 0) {
                                 if (std.fs.path.isAbsolute(dump_path)) {
                                     if (std.fs.createFileAbsolute(dump_path, .{})) |dump_file| {
@@ -733,8 +739,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
                             }
                         }
                         defer if (frame_dump) |dump_file| dump_file.close();
-                        if (std.posix.getenv("MKV_BYTE_DEBUG_OUT")) |out_ptr| {
-                            const out_path = std.mem.sliceTo(out_ptr, 0);
+                        if (getenvCrossPlatform("MKV_BYTE_DEBUG_OUT")) |out_path| {
                             if (out_path.len > 0) {
                                 const out_file_result = if (std.fs.path.isAbsolute(out_path))
                                     std.fs.createFileAbsolute(out_path, .{})

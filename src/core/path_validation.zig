@@ -13,6 +13,14 @@ const FormatValidator = format_validation.FormatValidator;
 
 const DEFAULT_MAX_FILES: usize = std.math.maxInt(usize);
 
+/// Cross-platform getenv that returns null on Windows (where std.posix.getenv is unavailable).
+fn getenvCrossPlatform(comptime name: []const u8) ?[:0]const u8 {
+    if (comptime builtin.os.tag == .windows) {
+        return null;
+    }
+    return std.posix.getenv(name);
+}
+
 pub const ValidationCounts = struct {
 	valid: usize = 0,
 	invalid: usize = 0,
@@ -57,6 +65,26 @@ const SharedCounts = struct {
 const WorkItem = struct {
 	path: []u8,
 	display_path: []u8,
+};
+
+/// Holds an owned copy of a validation result for the output queue.
+/// All string fields are heap-allocated and owned by this struct.
+const ResultItem = struct {
+	display_path: []u8,
+	format: format_validation.FileFormat,
+	is_valid: bool,
+	error_message: ?[]u8,
+	warning_message: ?[]u8,
+	malformations: std.EnumSet(format_validation.MalformationType),
+	validation_depth: format_validation.ValidationDepth,
+	circumvented_trivial_protection: bool,
+	elapsed_seconds: f64,
+
+	pub fn deinit(self: *ResultItem, allocator: Allocator) void {
+		allocator.free(self.display_path);
+		if (self.error_message) |msg| allocator.free(msg);
+		if (self.warning_message) |msg| allocator.free(msg);
+	}
 };
 
 const WorkQueue = struct {
@@ -105,13 +133,59 @@ const WorkQueue = struct {
 	}
 };
 
+/// Queue for validation results, consumed by a dedicated output thread.
+const ResultQueue = struct {
+	mutex: std.Thread.Mutex = .{},
+	cond: std.Thread.Condition = .{},
+	items: std.ArrayListUnmanaged(ResultItem) = .{},
+	closed: bool = false,
+	allocator: Allocator,
+
+	pub fn init(allocator: Allocator) ResultQueue {
+		return .{ .allocator = allocator };
+	}
+
+	pub fn deinit(self: *ResultQueue) void {
+		for (self.items.items) |*item| {
+			item.deinit(self.allocator);
+		}
+		self.items.deinit(self.allocator);
+	}
+
+	pub fn push(self: *ResultQueue, item: ResultItem) !void {
+		self.mutex.lock();
+		defer self.mutex.unlock();
+		try self.items.append(self.allocator, item);
+		self.cond.signal();
+	}
+
+	pub fn pop(self: *ResultQueue) ?ResultItem {
+		self.mutex.lock();
+		defer self.mutex.unlock();
+		while (self.items.items.len == 0 and !self.closed) {
+			self.cond.wait(&self.mutex);
+		}
+		if (self.items.items.len == 0) {
+			return null;
+		}
+		return self.items.pop();
+	}
+
+	pub fn close(self: *ResultQueue) void {
+		self.mutex.lock();
+		self.closed = true;
+		self.mutex.unlock();
+		self.cond.signal();
+	}
+};
+
 const Shared = struct {
 	validator_template: FormatValidator,
 	queue: *WorkQueue,
+	result_queue: *ResultQueue,
 	counts: SharedCounts = .{},
 	callback: ?ValidationCallback,
 	callback_ctx: ?*anyopaque,
-	callback_mutex: std.Thread.Mutex = .{},
 	allocator: Allocator,
 };
 
@@ -136,15 +210,54 @@ fn workerMain(shared: *Shared) void {
 
 		shared.counts.add(result);
 
-		if (shared.callback) |cb| {
-			shared.callback_mutex.lock();
-			cb(shared.callback_ctx, item.display_path, result, elapsed_seconds);
-			shared.callback_mutex.unlock();
+		// Push result to output queue if callback is registered (no I/O under lock)
+		if (shared.callback != null) {
+			const display_copy = shared.allocator.dupe(u8, item.display_path) catch {
+				shared.allocator.free(item.path);
+				shared.allocator.free(item.display_path);
+				_ = arena.reset(.free_all);
+				continue;
+			};
+			const result_item = ResultItem{
+				.display_path = display_copy,
+				.format = result.format,
+				.is_valid = result.is_valid,
+				.error_message = if (result.error_message) |m| shared.allocator.dupe(u8, m) catch null else null,
+				.warning_message = if (result.warning_message) |m| shared.allocator.dupe(u8, m) catch null else null,
+				.malformations = result.malformations,
+				.validation_depth = result.validation_depth,
+				.circumvented_trivial_protection = result.circumvented_trivial_protection,
+				.elapsed_seconds = elapsed_seconds,
+			};
+			shared.result_queue.push(result_item) catch {
+				var mutable = result_item;
+				mutable.deinit(shared.allocator);
+			};
 		}
 
 		shared.allocator.free(item.path);
 		shared.allocator.free(item.display_path);
 		_ = arena.reset(.free_all);
+	}
+}
+
+/// Dedicated output thread - drains result queue and calls callback (all I/O here).
+fn outputMain(shared: *Shared) void {
+	const callback = shared.callback orelse return;
+	while (true) {
+		var item = shared.result_queue.pop() orelse break;
+		defer item.deinit(shared.allocator);
+
+		const result = ValidationResult{
+			.format = item.format,
+			.is_valid = item.is_valid,
+			.error_message = item.error_message,
+			.warning_message = item.warning_message,
+			.malformations = item.malformations,
+			.validation_depth = item.validation_depth,
+			.circumvented_trivial_protection = item.circumvented_trivial_protection,
+		};
+		callback(shared.callback_ctx, item.display_path, result, item.elapsed_seconds);
 	}
 }
 
@@ -191,9 +304,7 @@ fn openDirForPath(path: []const u8) !std.fs.Dir {
 }
 
 fn getMaxFilesLimit() usize {
-	if (comptime builtin.os.tag == .windows) return DEFAULT_MAX_FILES;
-
-	const env = std.posix.getenv("MAX_FILES") orelse return DEFAULT_MAX_FILES;
+	const env = getenvCrossPlatform("MAX_FILES") orelse return DEFAULT_MAX_FILES;
 	const parsed = std.fmt.parseInt(usize, env, 10) catch return DEFAULT_MAX_FILES;
 	if (parsed == 0) return DEFAULT_MAX_FILES;
 	return parsed;
@@ -240,9 +351,13 @@ pub fn validatePathParallel(
 	var queue = WorkQueue.init(allocator);
 	defer queue.deinit();
 
+	var result_queue = ResultQueue.init(allocator);
+	defer result_queue.deinit();
+
 	var shared = Shared{
 		.validator_template = validator_template,
 		.queue = &queue,
+		.result_queue = &result_queue,
 		.callback = callback,
 		.callback_ctx = callback_ctx,
 		.allocator = allocator,
@@ -251,6 +366,12 @@ pub fn validatePathParallel(
 	const requested_jobs = jobs orelse 0;
 	const cpu_count = getDefaultJobCount();
 	const job_count = @max(@as(usize, 1), if (requested_jobs == 0) cpu_count else requested_jobs);
+
+	// Spawn output thread first (if callback is provided)
+	const output_thread: ?std.Thread = if (callback != null)
+		try std.Thread.spawn(.{}, outputMain, .{&shared})
+	else
+		null;
 
 	const threads = try allocator.alloc(std.Thread, job_count);
 	defer allocator.free(threads);
@@ -283,10 +404,20 @@ pub fn validatePathParallel(
 		queued_files += 1;
 	}
 
+	// Close work queue - workers exit when empty
 	queue.close();
 
+	// Wait for all workers to finish
 	for (threads) |thread| {
 		thread.join();
+	}
+
+	// Close result queue - output thread exits when empty
+	result_queue.close();
+
+	// Wait for output thread to finish (all I/O complete)
+	if (output_thread) |ot| {
+		ot.join();
 	}
 
 	return shared.counts.toCounts();
