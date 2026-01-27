@@ -33,7 +33,7 @@ Runs `./test` first. When `DEBUG` is unset/0, dependencies build in ReleaseFast 
 ```bash
 ./zig-out/bin/validate <path> [--jobs N]
 ```
-`--jobs 0` (default) uses all available cores.
+`--jobs 0` (default) uses all available cores (logical CPU count).
 `MAX_FILES` limits the number of files scanned when validating a directory.
 `MAX_VIDEO_SIZE` limits deep video validation to files under N MB (unset = no limit).
 `MEM_TELEMETRY=1` logs per-file RSS memory samples (use `MEM_TELEMETRY_PATH` to log to a file, `MEM_TELEMETRY_EVERY=N` to sample every N files).
