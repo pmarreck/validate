@@ -572,7 +572,7 @@ fn validateMkvFrameBytes(ctx_ptr: ?*anyopaque, data: []const u8) bool {
 	const ctx: *MkvFrameValidationContext = @ptrCast(@alignCast(ctx_ptr orelse return false));
 	return switch (ctx.codec) {
 		.av1 => validateAv1ObuStream(data),
-		.h264, .hevc => validateLengthPrefixedNals(data, ctx.nal_length_size),
+		.h264, .hevc => validateMkvNalFrame(data, ctx.nal_length_size),
 		else => false,
 	};
 }
@@ -1634,6 +1634,7 @@ fn validateAnnexBStream(data: []const u8) bool {
 
 	var pos: usize = 0;
 	var saw_start = false;
+	var last_start_end: usize = 0;
 
 	while (pos + 3 <= data.len) {
 		var start: ?struct { offset: usize, size: usize } = null;
@@ -1649,11 +1650,20 @@ fn validateAnnexBStream(data: []const u8) bool {
 			}
 		}
 		if (start == null) break;
+		if (saw_start and start.?.offset == last_start_end) {
+			return false; // empty NAL between start codes
+		}
 		saw_start = true;
-		pos = start.?.offset + start.?.size;
+		last_start_end = start.?.offset + start.?.size;
+		pos = last_start_end;
 	}
 
-	return saw_start;
+	return saw_start and last_start_end < data.len;
+}
+
+fn validateMkvNalFrame(data: []const u8, nal_length_size: u8) bool {
+	if (validateLengthPrefixedNals(data, nal_length_size)) return true;
+	return validateAnnexBStream(data);
 }
 
 fn validateMp4SamplesByteCoverage(
@@ -2570,7 +2580,17 @@ test "validateAnnexBStream accepts start codes" {
 	try std.testing.expect(validateAnnexBStream(&data));
 }
 
+test "validateAnnexBStream accepts multiple NALs" {
+	const data = [_]u8{ 0x00, 0x00, 0x00, 0x01, 0x67, 0x11, 0x22, 0x00, 0x00, 0x01, 0x68, 0x33 };
+	try std.testing.expect(validateAnnexBStream(&data));
+}
+
 test "validateAnnexBStream rejects missing start codes" {
 	const data = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+	try std.testing.expect(!validateAnnexBStream(&data));
+}
+
+test "validateAnnexBStream rejects empty NAL" {
+	const data = [_]u8{ 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x67 };
 	try std.testing.expect(!validateAnnexBStream(&data));
 }
