@@ -17972,7 +17972,7 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
         ValidationResult.structuralOnly(.mp4);
     if (video_result.mixed_nal_prefix) {
         result.malformations.insert(.video_mixed_nal_prefix);
-        result.warning_message = MalformationType.video_mixed_nal_prefix.description();
+        result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
     }
     return result;
 }
@@ -18098,7 +18098,7 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
         ValidationResult.structuralOnly(.mkv);
     if (video_result.mixed_nal_prefix) {
         result.malformations.insert(.video_mixed_nal_prefix);
-        result.warning_message = MalformationType.video_mixed_nal_prefix.description();
+        result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
     }
     return result;
 }
