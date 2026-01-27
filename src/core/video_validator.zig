@@ -673,7 +673,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
 
     // Extract codec_private and convert to Annex B format
     // MKV stores codec_private in the same format as MP4 (avcC/hvcC/av1C)
-    var nal_length_size: u8 = 4;
+    var nal_length_size: u8 = 0;
     if (video_track.codec_private) |codec_private| {
         if (video_codec == .h264 and codec_private.len >= 6) {
             if (parseMkvAvcC(allocator, codec_private)) |private_data| {
@@ -707,9 +707,9 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         };
         const ok = parser.walkFrames(video_track.track_number, @intCast(max_frames), @ptrCast(&ctx), validateMkvFrameBytes);
         if (!ok) {
-            return VideoValidationResult.invalid("Invalid MKV frame data", video_codec);
+        } else {
+            byte_validated = true;
         }
-        byte_validated = true;
     }
 
     const decode_frames_limit: usize = if (video_codec == .h264 or video_codec == .hevc or video_codec == .av1)
@@ -1577,7 +1577,9 @@ fn validateLengthPrefixedNals(sample_data: []const u8, nal_length_size: u8) bool
 		saw_nal = true;
 	}
 
-	return saw_nal and pos == sample_data.len;
+	if (!saw_nal) return false;
+	if (pos == sample_data.len) return true;
+	return std.mem.allEqual(u8, sample_data[pos..], 0);
 }
 
 fn readLeb128(data: []const u8, start: usize) ?struct { value: u64, bytes: usize } {
@@ -1662,6 +1664,12 @@ fn validateAnnexBStream(data: []const u8) bool {
 }
 
 fn validateMkvNalFrame(data: []const u8, nal_length_size: u8) bool {
+	if (nal_length_size == 0) {
+		if (validateLengthPrefixedNals(data, 4)) return true;
+		if (validateLengthPrefixedNals(data, 2)) return true;
+		if (validateLengthPrefixedNals(data, 1)) return true;
+		return validateAnnexBStream(data);
+	}
 	if (validateLengthPrefixedNals(data, nal_length_size)) return true;
 	return validateAnnexBStream(data);
 }

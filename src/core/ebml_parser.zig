@@ -151,6 +151,168 @@ pub fn readVint(data: []const u8) ?struct { value: u64, bytes: usize } {
     return .{ .value = value, .bytes = length };
 }
 
+fn readSignedVint(data: []const u8) ?struct { value: i64, bytes: usize } {
+    const vint = readVint(data) orelse return null;
+    const bits: u6 = @intCast(vint.bytes * 7);
+    const bias: i64 = (@as(i64, 1) << (bits - 1)) - 1;
+    const signed: i64 = @as(i64, @intCast(vint.value)) - bias;
+    return .{ .value = signed, .bytes = vint.bytes };
+}
+
+const BlockFrameConsumerFn = fn (ctx: ?*anyopaque, frame: []const u8, timestamp: i64) bool;
+
+fn parseBlockFramesFromBuffer(
+    data: []const u8,
+    target_track: u64,
+    cluster_timestamp: i64,
+    combine_laced_frames: bool,
+    ctx: ?*anyopaque,
+    consumer: BlockFrameConsumerFn,
+) ?usize {
+    if (data.len < 4) return null;
+
+    const track_vint = readVint(data) orelse return null;
+    if (track_vint.value != target_track) return 0;
+
+    var offset: usize = track_vint.bytes;
+    if (data.len < offset + 3) return null;
+
+    const rel_timestamp = std.mem.readInt(i16, data[offset..][0..2], .big);
+    offset += 2;
+
+    const flags = data[offset];
+    offset += 1;
+
+    const timestamp = cluster_timestamp + rel_timestamp;
+    const lacing: u2 = @intCast((flags >> 1) & 0x03);
+
+    const frame_data = data[offset..];
+    if (lacing == 0) {
+        if (frame_data.len == 0) return null;
+        if (!consumer(ctx, frame_data, timestamp)) return null;
+        return 1;
+    }
+
+    if (frame_data.len < 1) return null;
+
+    const lace_count: u8 = frame_data[0];
+    const num_frames: usize = @as(usize, lace_count) + 1;
+    if (num_frames > 256) return null;
+
+    var cursor: usize = 1;
+
+    if (combine_laced_frames) {
+        switch (lacing) {
+            1 => { // Xiph lacing
+                var i: usize = 0;
+                while (i + 1 < num_frames) : (i += 1) {
+                    while (true) {
+                        if (cursor >= frame_data.len) return null;
+                        const b = frame_data[cursor];
+                        cursor += 1;
+                        if (b != 0xFF) break;
+                    }
+                }
+            },
+            2 => {}, // Fixed-size lacing has no additional headers
+            3 => { // EBML lacing
+                if (num_frames > 1) {
+                    const first = readVint(frame_data[cursor..]) orelse return null;
+                    cursor += first.bytes;
+                    var i: usize = 1;
+                    while (i + 1 < num_frames) : (i += 1) {
+                        const diff = readSignedVint(frame_data[cursor..]) orelse return null;
+                        cursor += diff.bytes;
+                    }
+                }
+            },
+            else => return null,
+        }
+
+        if (cursor >= frame_data.len) return null;
+        if (!consumer(ctx, frame_data[cursor..], timestamp)) return null;
+        return 1;
+    }
+
+    var sizes: [256]u64 = undefined;
+    var sizes_total: u64 = 0;
+
+    switch (lacing) {
+        1 => { // Xiph lacing
+            var i: usize = 0;
+            while (i + 1 < num_frames) : (i += 1) {
+                var size: u64 = 0;
+                while (true) {
+                    if (cursor >= frame_data.len) return null;
+                    const b = frame_data[cursor];
+                    cursor += 1;
+                    size += b;
+                    if (b != 0xFF) break;
+                }
+                sizes[i] = size;
+                sizes_total += size;
+            }
+        },
+        2 => { // Fixed-size lacing
+            const remaining = frame_data.len - cursor;
+            if (num_frames == 0) return null;
+            if (remaining % num_frames != 0) return null;
+            const size = remaining / num_frames;
+            if (size == 0) return null;
+            var i: usize = 0;
+            while (i < num_frames) : (i += 1) {
+                sizes[i] = @intCast(size);
+            }
+            sizes_total = @as(u64, @intCast(size)) * @as(u64, @intCast(num_frames));
+        },
+        3 => { // EBML lacing
+            if (num_frames > 1) {
+                const first = readVint(frame_data[cursor..]) orelse return null;
+                cursor += first.bytes;
+                sizes[0] = first.value;
+                sizes_total += first.value;
+
+                var prev_size: i64 = @intCast(first.value);
+                var i: usize = 1;
+                while (i + 1 < num_frames) : (i += 1) {
+                    const diff = readSignedVint(frame_data[cursor..]) orelse return null;
+                    cursor += diff.bytes;
+                    const next_size = prev_size + diff.value;
+                    if (next_size < 0) return null;
+                    const next_u: u64 = @intCast(next_size);
+                    sizes[i] = next_u;
+                    sizes_total += next_u;
+                    prev_size = next_size;
+                }
+            }
+        },
+        else => return null,
+    }
+
+    const remaining_bytes: u64 = @intCast(frame_data.len - cursor);
+    if (sizes_total > remaining_bytes) return null;
+
+    const last_size: u64 = remaining_bytes - sizes_total;
+    sizes[num_frames - 1] = last_size;
+
+    var data_offset: usize = cursor;
+    var frame_index: usize = 0;
+    while (frame_index < num_frames) : (frame_index += 1) {
+        const size_u64 = sizes[frame_index];
+        if (size_u64 == 0) return null;
+        if (size_u64 > std.math.maxInt(usize)) return null;
+        const size = @as(usize, @intCast(size_u64));
+        if (data_offset + size > frame_data.len) return null;
+
+        const frame = frame_data[data_offset .. data_offset + size];
+        if (!consumer(ctx, frame, timestamp)) return null;
+        data_offset += size;
+    }
+
+    if (data_offset != frame_data.len) return null;
+    return num_frames;
+}
+
 /// Read an element ID (same format as VINT but we keep the marker bit for IDs).
 pub fn readElementId(data: []const u8) ?struct { id: u32, bytes: usize } {
     if (data.len == 0) return null;
@@ -853,64 +1015,41 @@ pub const MatroskaParser = struct {
         };
     }
 
-    /// Extract frame data from ANY SimpleBlock (not just keyframes)
-    fn extractSimpleBlockFrame(
+    fn walkBlockFrames(
         self: *MatroskaParser,
         block: EbmlElement,
         target_track: u64,
         cluster_timestamp: i64,
-    ) ?KeyframeData {
+        combine_laced_frames: bool,
+        ctx: ?*anyopaque,
+        consumer: BlockFrameConsumerFn,
+    ) ?usize {
         const size = block.size orelse return null;
         if (size < 4) return null;
 
+        const max_block_bytes: u64 = 50 * 1024 * 1024;
+        if (size > max_block_bytes) return null;
+        if (size > std.math.maxInt(usize)) return null;
+
+        const data = self.allocator.alloc(u8, @intCast(size)) catch return null;
+        defer self.allocator.free(data);
+
         _ = self.reader.seekTo(block.data_offset);
+        const bytes_read = self.reader.file.readAll(data) catch return null;
+        if (bytes_read != @as(usize, @intCast(size))) return null;
 
-        var header_buf: [16]u8 = undefined;
-        const header_read = self.reader.file.read(&header_buf) catch return null;
-        if (header_read < 4) return null;
-
-        const track_vint = readVint(&header_buf) orelse return null;
-        if (track_vint.value != target_track) return null;
-
-        const header_offset = track_vint.bytes;
-        if (header_read < header_offset + 3) return null;
-
-        const rel_timestamp = std.mem.readInt(i16, header_buf[header_offset..][0..2], .big);
-        // Note: NOT checking keyframe flag - we want ALL frames
-
-        const timestamp = cluster_timestamp + rel_timestamp;
-        const data_offset = header_offset + 3;
-        const data_size = size - data_offset;
-
-        if (data_size > 50 * 1024 * 1024) return null; // 50MB limit per frame
-
-        const data = self.allocator.alloc(u8, @intCast(data_size)) catch return null;
-        errdefer self.allocator.free(data);
-
-        _ = self.reader.seekTo(block.data_offset + data_offset);
-        const bytes_read = self.reader.file.readAll(data) catch {
-            self.allocator.free(data);
-            return null;
-        };
-        if (bytes_read != data_size) {
-            self.allocator.free(data);
-            return null;
-        }
-
-        return KeyframeData{
-            .data = data,
-            .timestamp = timestamp,
-            .allocator = self.allocator,
-        };
+        return parseBlockFramesFromBuffer(data, target_track, cluster_timestamp, combine_laced_frames, ctx, consumer);
     }
 
-    /// Extract frame data from ANY BlockGroup block (not just keyframes)
-    fn extractBlockGroupFrame(
+    fn walkBlockGroupFrames(
         self: *MatroskaParser,
         block_group: EbmlElement,
         target_track: u64,
         cluster_timestamp: i64,
-    ) ?KeyframeData {
+        combine_laced_frames: bool,
+        ctx: ?*anyopaque,
+        consumer: BlockFrameConsumerFn,
+    ) ?usize {
         const group_size = block_group.size orelse return null;
         const group_end = block_group.data_offset + group_size;
 
@@ -918,7 +1057,6 @@ pub const MatroskaParser = struct {
 
         var block_element: ?EbmlElement = null;
 
-        // Parse BlockGroup children to find Block (we want ALL frames, not just keyframes)
         while ((self.reader.getPos() orelse group_end) < group_end) {
             const child = self.reader.readElementHeader() orelse break;
 
@@ -933,48 +1071,10 @@ pub const MatroskaParser = struct {
             }
         }
 
-        const block = block_element orelse return null;
-        const size = block.size orelse return null;
-        if (size < 4) return null;
+        defer _ = self.reader.seekTo(group_end);
 
-        _ = self.reader.seekTo(block.data_offset);
-
-        var header_buf: [16]u8 = undefined;
-        const header_read = self.reader.file.read(&header_buf) catch return null;
-        if (header_read < 4) return null;
-
-        const track_vint = readVint(&header_buf) orelse return null;
-        if (track_vint.value != target_track) return null;
-
-        const header_offset = track_vint.bytes;
-        if (header_read < header_offset + 3) return null;
-
-        const rel_timestamp = std.mem.readInt(i16, header_buf[header_offset..][0..2], .big);
-
-        const timestamp = cluster_timestamp + rel_timestamp;
-        const data_offset = header_offset + 3;
-        const data_size = size - data_offset;
-
-        if (data_size > 50 * 1024 * 1024) return null;
-
-        const data = self.allocator.alloc(u8, @intCast(data_size)) catch return null;
-        errdefer self.allocator.free(data);
-
-        _ = self.reader.seekTo(block.data_offset + data_offset);
-        const bytes_read = self.reader.file.readAll(data) catch {
-            self.allocator.free(data);
-            return null;
-        };
-        if (bytes_read != data_size) {
-            self.allocator.free(data);
-            return null;
-        }
-
-        return KeyframeData{
-            .data = data,
-            .timestamp = timestamp,
-            .allocator = self.allocator,
-        };
+        const block = block_element orelse return 0;
+        return self.walkBlockFrames(block, target_track, cluster_timestamp, combine_laced_frames, ctx, consumer);
     }
 
     /// Collect ALL frames (not just keyframes) into a list for full validation.
@@ -984,6 +1084,29 @@ pub const MatroskaParser = struct {
         video_track_number: u64,
         max_frames: usize,
     ) ?[]KeyframeData {
+        const CollectContext = struct {
+            allocator: Allocator,
+            frames: *std.ArrayListUnmanaged(KeyframeData),
+        };
+
+        const Collector = struct {
+            pub fn consume(ctx: ?*anyopaque, frame: []const u8, timestamp: i64) bool {
+                const collect: *CollectContext = @ptrCast(@alignCast(ctx.?));
+                const data = collect.allocator.alloc(u8, frame.len) catch return false;
+                std.mem.copyForwards(u8, data, frame);
+                const kf = KeyframeData{
+                    .data = data,
+                    .timestamp = timestamp,
+                    .allocator = collect.allocator,
+                };
+                collect.frames.append(collect.allocator, kf) catch {
+                    collect.allocator.free(data);
+                    return false;
+                };
+                return true;
+            }
+        };
+
         if (self.segment_offset == 0) {
             if (!self.findSegment()) return null;
         }
@@ -999,6 +1122,10 @@ pub const MatroskaParser = struct {
             for (frames.items) |*f| f.deinit();
             frames.deinit(self.allocator);
         }
+        var collect_ctx = CollectContext{
+            .allocator = self.allocator,
+            .frames = &frames,
+        };
 
         var current_cluster_timestamp: i64 = 0;
 
@@ -1017,22 +1144,24 @@ pub const MatroskaParser = struct {
                             current_cluster_timestamp = @intCast(self.reader.readElementUint(cluster_child) orelse 0);
                         },
                         Cluster_ID.SimpleBlock => {
-                            if (self.extractSimpleBlockFrame(cluster_child, video_track_number, current_cluster_timestamp)) |frame| {
-                                frames.append(self.allocator, frame) catch {
-                                    var mutable_frame = frame;
-                                    mutable_frame.deinit();
-                                    continue;
-                                };
-                            }
+                            if (self.walkBlockFrames(
+                                cluster_child,
+                                video_track_number,
+                                current_cluster_timestamp,
+                                false,
+                                &collect_ctx,
+                                Collector.consume,
+                            ) == null) return null;
                         },
                         Cluster_ID.BlockGroup => {
-                            if (self.extractBlockGroupFrame(cluster_child, video_track_number, current_cluster_timestamp)) |frame| {
-                                frames.append(self.allocator, frame) catch {
-                                    var mutable_frame = frame;
-                                    mutable_frame.deinit();
-                                    continue;
-                                };
-                            }
+                            if (self.walkBlockGroupFrames(
+                                cluster_child,
+                                video_track_number,
+                                current_cluster_timestamp,
+                                false,
+                                &collect_ctx,
+                                Collector.consume,
+                            ) == null) return null;
                         },
                         else => {
                             _ = self.reader.skipElement(cluster_child);
@@ -1061,6 +1190,19 @@ pub const MatroskaParser = struct {
         ctx: ?*anyopaque,
         validator: FrameValidatorFn,
     ) bool {
+        const ValidateContext = struct {
+            ctx: ?*anyopaque,
+            validator: FrameValidatorFn,
+        };
+
+        const Adapter = struct {
+            pub fn consume(opaque_ctx: ?*anyopaque, frame: []const u8, timestamp: i64) bool {
+                _ = timestamp;
+                const validate: *ValidateContext = @ptrCast(@alignCast(opaque_ctx.?));
+                return validate.validator(validate.ctx, frame);
+            }
+        };
+
         if (self.segment_offset == 0) {
             if (!self.findSegment()) return false;
         }
@@ -1072,6 +1214,10 @@ pub const MatroskaParser = struct {
             self.reader.file_size;
 
         var frames_validated: usize = 0;
+        var validate_ctx = ValidateContext{
+            .ctx = ctx,
+            .validator = validator,
+        };
         var current_cluster_timestamp: i64 = 0;
 
         while ((self.reader.getPos() orelse segment_end) < segment_end and frames_validated < max_frames) {
@@ -1089,28 +1235,26 @@ pub const MatroskaParser = struct {
                             current_cluster_timestamp = @intCast(self.reader.readElementUint(cluster_child) orelse 0);
                         },
                         Cluster_ID.SimpleBlock => {
-                            if (self.extractSimpleBlockFrame(cluster_child, video_track_number, current_cluster_timestamp)) |frame| {
-                                if (!validator(ctx, frame.data)) {
-                                    var mutable_frame = frame;
-                                    mutable_frame.deinit();
-                                    return false;
-                                }
-                                var mutable_frame = frame;
-                                mutable_frame.deinit();
-                                frames_validated += 1;
-                            }
+                            const result = self.walkBlockFrames(
+                                cluster_child,
+                                video_track_number,
+                                current_cluster_timestamp,
+                                true,
+                                &validate_ctx,
+                                Adapter.consume,
+                            ) orelse return false;
+                            frames_validated += result;
                         },
                         Cluster_ID.BlockGroup => {
-                            if (self.extractBlockGroupFrame(cluster_child, video_track_number, current_cluster_timestamp)) |frame| {
-                                if (!validator(ctx, frame.data)) {
-                                    var mutable_frame = frame;
-                                    mutable_frame.deinit();
-                                    return false;
-                                }
-                                var mutable_frame = frame;
-                                mutable_frame.deinit();
-                                frames_validated += 1;
-                            }
+                            const result = self.walkBlockGroupFrames(
+                                cluster_child,
+                                video_track_number,
+                                current_cluster_timestamp,
+                                true,
+                                &validate_ctx,
+                                Adapter.consume,
+                            ) orelse return false;
+                            frames_validated += result;
                         },
                         else => {
                             _ = self.reader.skipElement(cluster_child);
@@ -1508,4 +1652,87 @@ test "Element ID constants" {
     try std.testing.expectEqual(@as(u32, 0x1A45DFA3), EBML_ID.EBML);
     try std.testing.expectEqual(@as(u32, 0x18538067), EBML_ID.Segment);
     try std.testing.expectEqual(@as(u32, 0x1654AE6B), Segment_ID.Tracks);
+}
+
+test "parseBlockFramesFromBuffer Xiph lacing" {
+    const data = [_]u8{
+        0x81, // track 1
+        0x00, 0x00, // timecode
+        0x02, // flags: Xiph lacing
+        0x01, // lace count (2 frames)
+        0x03, // size of first frame
+        0x11, 0x22, 0x33, // frame 1
+        0x44, 0x55, // frame 2
+    };
+
+    const Ctx = struct {
+        frames: [2][]const u8 = undefined,
+        count: usize = 0,
+        timestamp: i64 = 0,
+    };
+
+    const Collector = struct {
+        pub fn consume(ctx: ?*anyopaque, frame: []const u8, timestamp: i64) bool {
+            const collect: *Ctx = @ptrCast(@alignCast(ctx.?));
+            collect.frames[collect.count] = frame;
+            collect.count += 1;
+            collect.timestamp = timestamp;
+            return true;
+        }
+    };
+
+    var ctx = Ctx{};
+    const count = parseBlockFramesFromBuffer(&data, 1, 100, false, &ctx, Collector.consume) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+
+    try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqual(@as(usize, 2), ctx.count);
+    try std.testing.expectEqual(@as(i64, 100), ctx.timestamp);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x11, 0x22, 0x33 }, ctx.frames[0]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x44, 0x55 }, ctx.frames[1]);
+}
+
+test "parseBlockFramesFromBuffer EBML lacing" {
+    const data = [_]u8{
+        0x81, // track 1
+        0x00, 0x01, // timecode
+        0x06, // flags: EBML lacing
+        0x02, // lace count (3 frames)
+        0x84, // size 4
+        0xC0, // delta +1 (size 5)
+        0x01, 0x02, 0x03, 0x04, // frame 1 (4 bytes)
+        0x05, 0x06, 0x07, 0x08, 0x09, // frame 2 (5 bytes)
+        0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, // frame 3 (6 bytes)
+    };
+
+    const Ctx = struct {
+        frames: [3][]const u8 = undefined,
+        count: usize = 0,
+        timestamp: i64 = 0,
+    };
+
+    const Collector = struct {
+        pub fn consume(ctx: ?*anyopaque, frame: []const u8, timestamp: i64) bool {
+            const collect: *Ctx = @ptrCast(@alignCast(ctx.?));
+            collect.frames[collect.count] = frame;
+            collect.count += 1;
+            collect.timestamp = timestamp;
+            return true;
+        }
+    };
+
+    var ctx = Ctx{};
+    const count = parseBlockFramesFromBuffer(&data, 1, 100, false, &ctx, Collector.consume) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+
+    try std.testing.expectEqual(@as(usize, 3), count);
+    try std.testing.expectEqual(@as(usize, 3), ctx.count);
+    try std.testing.expectEqual(@as(i64, 101), ctx.timestamp);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x02, 0x03, 0x04 }, ctx.frames[0]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x05, 0x06, 0x07, 0x08, 0x09 }, ctx.frames[1]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F }, ctx.frames[2]);
 }
