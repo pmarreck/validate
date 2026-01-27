@@ -28,7 +28,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/build/` | Zig build helpers (libtool bundling) |
 | `src/core/path_validation.zig` | Parallel path validation and per-file callback reporting (honors `MAX_FILES`) |
 | `src/core/format_validation.zig` | Format validation logic incl. ZIP deep validation (central-directory parsing to avoid data-descriptor scans), PDF image lenience (JBIG2/DCT warnings), XML undefined-entity tolerance (after DOCTYPE stripping), and ZIP/PDF telemetry (env `ZIP_TELEMETRY`, `PDF_TELEMETRY`) |
-| `src/core/video_validator.zig` | Video container parsing + codec decode validation (MP4/MKV/AVI) with keyframe decode and MP4 all-samples fallback |
+| `src/core/video_validator.zig` | Video container parsing + codec decode validation (MP4/MKV/AVI), MKV byte-coverage with mixed NAL-length handling and debug envs (`MKV_BYTE_DEBUG`, `MKV_BYTE_DEBUG_OUT`, `MKV_BYTE_DEBUG_FRAME_OUT`) |
 | `src/core/font_validator.zig` | Standalone font validation (TTF/OTF/CFF/Type1) with checksum fallback to structural parsing for clearer errors |
 | `src/core/pdf_font_validator.zig` | Extracts/validates embedded PDF fonts using strict checksums while reporting warnings instead of failing PDFs |
 

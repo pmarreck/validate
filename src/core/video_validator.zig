@@ -17,6 +17,7 @@
 //! - ProRes (pure Zig structural validation)
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 // Import EBML/Matroska parser
@@ -572,7 +573,7 @@ fn validateMkvFrameBytes(ctx_ptr: ?*anyopaque, data: []const u8) bool {
 	const ctx: *MkvFrameValidationContext = @ptrCast(@alignCast(ctx_ptr orelse return false));
 	return switch (ctx.codec) {
 		.av1 => validateAv1ObuStream(data),
-		.h264, .hevc => validateMkvNalFrame(data, ctx.nal_length_size),
+		.h264, .hevc => validateMkvNalFrame(data, ctx.codec, ctx.nal_length_size),
 		else => false,
 	};
 }
@@ -707,6 +708,81 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         };
         const ok = parser.walkFrames(video_track.track_number, @intCast(max_frames), @ptrCast(&ctx), validateMkvFrameBytes);
         if (!ok) {
+            if (builtin.mode == .Debug) {
+                if (std.posix.getenv("MKV_BYTE_DEBUG")) |env_ptr| {
+                    const env = std.mem.sliceTo(env_ptr, 0);
+                    if (isTruthy(env)) {
+                        const codec_private_len: usize = if (video_track.codec_private) |codec_private| codec_private.len else 0;
+                        var frame_dump: ?std.fs.File = null;
+                        if (std.posix.getenv("MKV_BYTE_DEBUG_FRAME_OUT")) |dump_ptr| {
+                            const dump_path = std.mem.sliceTo(dump_ptr, 0);
+                            if (dump_path.len > 0) {
+                                if (std.fs.path.isAbsolute(dump_path)) {
+                                    if (std.fs.createFileAbsolute(dump_path, .{})) |dump_file| {
+                                        frame_dump = dump_file;
+                                    } else |_| {}
+                                } else {
+                                    if (std.fs.cwd().createFile(dump_path, .{})) |dump_file| {
+                                        frame_dump = dump_file;
+                                    } else |_| {}
+                                }
+                            }
+                        }
+                        defer if (frame_dump) |dump_file| dump_file.close();
+                        if (std.posix.getenv("MKV_BYTE_DEBUG_OUT")) |out_ptr| {
+                            const out_path = std.mem.sliceTo(out_ptr, 0);
+                            if (out_path.len > 0) {
+                                const out_file_result = if (std.fs.path.isAbsolute(out_path))
+                                    std.fs.createFileAbsolute(out_path, .{})
+                                else
+                                    std.fs.cwd().createFile(out_path, .{});
+                                if (out_file_result) |out_file| {
+                                    defer out_file.close();
+                                    writeMkvDebugHeader(out_file, video_codec, nal_length_size, codec_private_len);
+                                    parser.debugFirstInvalidFrame(
+                                        video_track.track_number,
+                                        @intCast(max_frames),
+                                        @ptrCast(&ctx),
+                                        validateMkvFrameBytes,
+                                        out_file,
+                                        frame_dump,
+                                    );
+                                } else |_| {
+                                    writeMkvDebugHeader(std.fs.File.stderr(), video_codec, nal_length_size, codec_private_len);
+                                    parser.debugFirstInvalidFrame(
+                                        video_track.track_number,
+                                        @intCast(max_frames),
+                                        @ptrCast(&ctx),
+                                        validateMkvFrameBytes,
+                                        std.fs.File.stderr(),
+                                        frame_dump,
+                                    );
+                                }
+                            } else {
+                                writeMkvDebugHeader(std.fs.File.stderr(), video_codec, nal_length_size, codec_private_len);
+                                parser.debugFirstInvalidFrame(
+                                    video_track.track_number,
+                                    @intCast(max_frames),
+                                    @ptrCast(&ctx),
+                                    validateMkvFrameBytes,
+                                    std.fs.File.stderr(),
+                                    frame_dump,
+                                );
+                            }
+                        } else {
+                            writeMkvDebugHeader(std.fs.File.stderr(), video_codec, nal_length_size, codec_private_len);
+                            parser.debugFirstInvalidFrame(
+                                video_track.track_number,
+                                @intCast(max_frames),
+                                @ptrCast(&ctx),
+                                validateMkvFrameBytes,
+                                std.fs.File.stderr(),
+                                frame_dump,
+                            );
+                        }
+                    }
+                }
+            }
         } else {
             byte_validated = true;
         }
@@ -1552,6 +1628,21 @@ const ByteCoverageResult = enum {
 	unavailable,
 };
 
+fn isTruthy(value: []const u8) bool {
+	return std.ascii.eqlIgnoreCase(value, "1") or std.ascii.eqlIgnoreCase(value, "true") or
+		std.ascii.eqlIgnoreCase(value, "yes") or std.ascii.eqlIgnoreCase(value, "on");
+}
+
+fn writeMkvDebugHeader(writer: std.fs.File, codec: VideoCodec, nal_length_size: u8, codec_private_len: usize) void {
+	var buf: [256]u8 = undefined;
+	const msg = std.fmt.bufPrint(
+		&buf,
+		"MKV debug context: codec={s} nal_length_size={} codec_private_len={}\n",
+		.{ @tagName(codec), nal_length_size, codec_private_len },
+	) catch return;
+	_ = writer.writeAll(msg) catch {};
+}
+
 fn validateLengthPrefixedNals(sample_data: []const u8, nal_length_size: u8) bool {
 	if (sample_data.len == 0) return false;
 
@@ -1563,6 +1654,10 @@ fn validateLengthPrefixedNals(sample_data: []const u8, nal_length_size: u8) bool
 			nal_len = std.mem.readInt(u32, sample_data[pos..][0..4], .big);
 		} else if (nal_length_size == 2) {
 			nal_len = std.mem.readInt(u16, sample_data[pos..][0..2], .big);
+		} else if (nal_length_size == 3) {
+			nal_len = (@as(u32, sample_data[pos]) << 16) |
+				(@as(u32, sample_data[pos + 1]) << 8) |
+				@as(u32, sample_data[pos + 2]);
 		} else if (nal_length_size == 1) {
 			nal_len = sample_data[pos];
 		} else {
@@ -1663,14 +1758,71 @@ fn validateAnnexBStream(data: []const u8) bool {
 	return saw_start and last_start_end < data.len;
 }
 
-fn validateMkvNalFrame(data: []const u8, nal_length_size: u8) bool {
-	if (nal_length_size == 0) {
-		if (validateLengthPrefixedNals(data, 4)) return true;
-		if (validateLengthPrefixedNals(data, 2)) return true;
-		if (validateLengthPrefixedNals(data, 1)) return true;
-		return validateAnnexBStream(data);
+fn looksValidNalHeader(codec: VideoCodec, header: u8) bool {
+	if ((header & 0x80) != 0) return false; // forbidden_zero_bit must be 0
+	return switch (codec) {
+		.h264 => (header & 0x1f) != 0,
+		.hevc => ((header >> 1) & 0x3f) != 0,
+		else => true,
+	};
+}
+
+fn validateLengthPrefixedNalsFlexible(sample_data: []const u8, preferred_size: u8, codec: VideoCodec) bool {
+	if (sample_data.len == 0) return false;
+
+	const sizes = [_]u8{ preferred_size, 4, 3, 2, 1 };
+	var pos: usize = 0;
+	var saw_nal = false;
+
+	while (pos < sample_data.len) {
+		var matched = false;
+		for (sizes) |nal_length_size| {
+			if (nal_length_size == 0 or nal_length_size > 4) continue;
+			if (pos + nal_length_size > sample_data.len) continue;
+			var nal_len: u32 = 0;
+			if (nal_length_size == 4) {
+				nal_len = std.mem.readInt(u32, sample_data[pos..][0..4], .big);
+			} else if (nal_length_size == 2) {
+				nal_len = std.mem.readInt(u16, sample_data[pos..][0..2], .big);
+			} else if (nal_length_size == 3) {
+				nal_len = (@as(u32, sample_data[pos]) << 16) |
+					(@as(u32, sample_data[pos + 1]) << 8) |
+					@as(u32, sample_data[pos + 2]);
+			} else if (nal_length_size == 1) {
+				nal_len = sample_data[pos];
+			} else {
+				continue;
+			}
+
+			const nal_start = pos + nal_length_size;
+			if (nal_len == 0 or nal_start + nal_len > sample_data.len) continue;
+			if (!looksValidNalHeader(codec, sample_data[nal_start])) continue;
+
+			pos = nal_start + nal_len;
+			saw_nal = true;
+			matched = true;
+			break;
+		}
+
+		if (!matched) {
+			break;
+		}
 	}
-	if (validateLengthPrefixedNals(data, nal_length_size)) return true;
+
+	if (!saw_nal) return false;
+	if (pos == sample_data.len) return true;
+	return std.mem.allEqual(u8, sample_data[pos..], 0);
+}
+
+fn validateMkvNalFrame(data: []const u8, codec: VideoCodec, nal_length_size: u8) bool {
+	if (nal_length_size != 0 and validateLengthPrefixedNals(data, nal_length_size)) return true;
+	if (nal_length_size != 4 and validateLengthPrefixedNals(data, 4)) return true;
+	if (nal_length_size != 2 and validateLengthPrefixedNals(data, 2)) return true;
+	if (nal_length_size != 1 and validateLengthPrefixedNals(data, 1)) return true;
+	if (nal_length_size != 3 and validateLengthPrefixedNals(data, 3)) return true;
+	if (codec == .h264 or codec == .hevc) {
+		if (validateLengthPrefixedNalsFlexible(data, nal_length_size, codec)) return true;
+	}
 	return validateAnnexBStream(data);
 }
 
@@ -1960,6 +2112,10 @@ fn convertToAnnexB(allocator: Allocator, sample_data: []const u8, nal_length_siz
             nal_len = std.mem.readInt(u32, sample_data[pos..][0..4], .big);
         } else if (nal_length_size == 2) {
             nal_len = std.mem.readInt(u16, sample_data[pos..][0..2], .big);
+        } else if (nal_length_size == 3) {
+            nal_len = (@as(u32, sample_data[pos]) << 16) |
+                (@as(u32, sample_data[pos + 1]) << 8) |
+                @as(u32, sample_data[pos + 2]);
         } else if (nal_length_size == 1) {
             nal_len = sample_data[pos];
         } else {
@@ -2558,12 +2714,41 @@ test "convertToAnnexB converts length-prefixed NALs" {
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x00, 0x00, 0x01 }, result.?[8..12]);
 }
 
+test "convertToAnnexB converts 3-byte length-prefixed NALs" {
+	const input = [_]u8{
+		0x00, 0x00, 0x02, // length = 2
+		0x65, 0x88, // NAL data
+	};
+
+	const result = convertToAnnexB(std.testing.allocator, &input, 3);
+	try std.testing.expect(result != null);
+	defer std.testing.allocator.free(result.?);
+
+	try std.testing.expectEqual(@as(usize, 6), result.?.len);
+	try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x00, 0x00, 0x01, 0x65, 0x88 }, result.?);
+}
+
 test "validateLengthPrefixedNals accepts valid NAL data" {
 	const data = [_]u8{
 		0x00, 0x00, 0x00, 0x02, 0xAA, 0xBB,
 		0x00, 0x00, 0x00, 0x01, 0xCC,
 	};
 	try std.testing.expect(validateLengthPrefixedNals(&data, 4));
+}
+
+test "validateLengthPrefixedNals accepts 3-byte length prefix" {
+	const data = [_]u8{
+		0x00, 0x00, 0x02, 0x06, 0x05,
+	};
+	try std.testing.expect(validateLengthPrefixedNals(&data, 3));
+}
+
+test "validateLengthPrefixedNalsFlexible accepts mixed prefix sizes" {
+	const data = [_]u8{
+		0x00, 0x00, 0x02, 0x06, 0x11,
+		0x00, 0x00, 0x00, 0x03, 0x65, 0x88, 0x99,
+	};
+	try std.testing.expect(validateLengthPrefixedNalsFlexible(&data, 4, .h264));
 }
 
 test "validateLengthPrefixedNals rejects truncated NAL data" {

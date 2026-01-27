@@ -161,6 +161,37 @@ fn readSignedVint(data: []const u8) ?struct { value: i64, bytes: usize } {
 
 const BlockFrameConsumerFn = fn (ctx: ?*anyopaque, frame: []const u8, timestamp: i64) bool;
 
+const BlockHeaderInfo = struct {
+    track_number: u64,
+    rel_timestamp: i16,
+    flags: u8,
+    lacing: u2,
+    header_bytes: usize,
+};
+
+fn writeFmt(writer: std.fs.File, comptime fmt: []const u8, args: anytype) void {
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+    _ = writer.writeAll(msg) catch {};
+}
+
+fn parseBlockHeader(data: []const u8) ?BlockHeaderInfo {
+    if (data.len < 4) return null;
+    const track_vint = readVint(data) orelse return null;
+    const offset = track_vint.bytes;
+    if (data.len < offset + 3) return null;
+    const rel_timestamp = std.mem.readInt(i16, data[offset..][0..2], .big);
+    const flags = data[offset + 2];
+    const lacing: u2 = @intCast((flags >> 1) & 0x03);
+    return .{
+        .track_number = track_vint.value,
+        .rel_timestamp = rel_timestamp,
+        .flags = flags,
+        .lacing = lacing,
+        .header_bytes = offset + 3,
+    };
+}
+
 fn parseBlockFramesFromBuffer(
     data: []const u8,
     target_track: u64,
@@ -1269,6 +1300,202 @@ pub const MatroskaParser = struct {
         return frames_validated > 0;
     }
 
+    /// Debug: emit details for the first frame that fails byte validation.
+    pub fn debugFirstInvalidFrame(
+        self: *MatroskaParser,
+        video_track_number: u64,
+        max_frames: usize,
+        ctx: ?*anyopaque,
+        validator: FrameValidatorFn,
+        writer: std.fs.File,
+        frame_dump: ?std.fs.File,
+    ) void {
+        if (self.segment_offset == 0) {
+            if (!self.findSegment()) {
+                writeFmt(writer, "MKV debug: failed to find Segment\n", .{});
+                return;
+            }
+        }
+
+        _ = self.reader.seekTo(self.segment_offset);
+        const segment_end = if (self.segment_size) |s|
+            self.segment_offset + s
+        else
+            self.reader.file_size;
+
+        var frames_validated: usize = 0;
+        var current_cluster_timestamp: i64 = 0;
+
+        const DebugContext = struct {
+            ctx: ?*anyopaque,
+            validator: FrameValidatorFn,
+            failed: bool = false,
+            failed_frame_index: usize = 0,
+            failed_frame_len: usize = 0,
+            preview: [64]u8 = [_]u8{0} ** 64,
+            preview_len: usize = 0,
+            failed_frame: ?[]const u8 = null,
+            frame_index: usize = 0,
+        };
+
+        const DebugConsumer = struct {
+            pub fn consume(opaque_ctx: ?*anyopaque, frame: []const u8, timestamp: i64) bool {
+                _ = timestamp;
+                const debug: *DebugContext = @ptrCast(@alignCast(opaque_ctx.?));
+                const ok = debug.validator(debug.ctx, frame);
+                if (!ok) {
+                    debug.failed = true;
+                    debug.failed_frame_index = debug.frame_index;
+                    debug.failed_frame_len = frame.len;
+                    debug.preview_len = @min(frame.len, debug.preview.len);
+                    std.mem.copyForwards(u8, debug.preview[0..debug.preview_len], frame[0..debug.preview_len]);
+                    debug.failed_frame = frame;
+                }
+                debug.frame_index += 1;
+                return ok;
+            }
+        };
+
+        while ((self.reader.getPos() orelse segment_end) < segment_end and frames_validated < max_frames) {
+            const element = self.reader.readElementHeader() orelse break;
+
+            if (element.id != Segment_ID.Cluster) {
+                _ = self.reader.skipElement(element);
+                continue;
+            }
+
+            const cluster_end = element.data_offset + (element.size orelse break);
+            _ = self.reader.seekTo(element.data_offset);
+
+            while ((self.reader.getPos() orelse cluster_end) < cluster_end and frames_validated < max_frames) {
+                const cluster_child = self.reader.readElementHeader() orelse break;
+
+                switch (cluster_child.id) {
+                    Cluster_ID.Timestamp => {
+                        current_cluster_timestamp = @intCast(self.reader.readElementUint(cluster_child) orelse 0);
+                    },
+                    Cluster_ID.SimpleBlock => {
+                        const size = cluster_child.size orelse return;
+                        if (size == 0 or size > 50 * 1024 * 1024) return;
+                        if (size > std.math.maxInt(usize)) return;
+
+                        const data = self.allocator.alloc(u8, @intCast(size)) catch return;
+                        defer self.allocator.free(data);
+
+                        _ = self.reader.seekTo(cluster_child.data_offset);
+                        const bytes_read = self.reader.file.readAll(data) catch return;
+                        if (bytes_read != @as(usize, @intCast(size))) return;
+
+                        var debug_ctx = DebugContext{ .ctx = ctx, .validator = validator };
+                        const result = parseBlockFramesFromBuffer(data, video_track_number, current_cluster_timestamp, true, &debug_ctx, DebugConsumer.consume);
+                        if (result == null) {
+                            writeFmt(writer, "MKV debug: SimpleBlock parse/validate failed\n", .{});
+                            if (parseBlockHeader(data)) |header| {
+                                writeFmt(
+                                    writer,
+                                    "  track={} rel_ts={} flags=0x{x:0>2} lacing={} header_bytes={}\n",
+                                    .{ header.track_number, header.rel_timestamp, header.flags, header.lacing, header.header_bytes },
+                                );
+                            } else {
+                                writeFmt(writer, "  header parse failed\n", .{});
+                            }
+                            if (debug_ctx.failed) {
+                                writeFmt(
+                                    writer,
+                                    "  failed_frame_index={} failed_frame_len={}\n",
+                                    .{ debug_ctx.failed_frame_index, debug_ctx.failed_frame_len },
+                                );
+                                writeFmt(writer, "  failed_frame_preview:", .{});
+                                for (debug_ctx.preview[0..debug_ctx.preview_len]) |b| {
+                                    writeFmt(writer, " {x:0>2}", .{b});
+                                }
+                                writeFmt(writer, "\n", .{});
+                                if (frame_dump) |dump| {
+                                    if (debug_ctx.failed_frame) |frame| {
+                                        _ = dump.writeAll(frame) catch {};
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                        frames_validated += result.?;
+                    },
+                    Cluster_ID.BlockGroup => {
+                        const group_size = cluster_child.size orelse return;
+                        const group_end = cluster_child.data_offset + group_size;
+
+                        _ = self.reader.seekTo(cluster_child.data_offset);
+                        var block_element: ?EbmlElement = null;
+                        while ((self.reader.getPos() orelse group_end) < group_end) {
+                            const child = self.reader.readElementHeader() orelse break;
+                            switch (child.id) {
+                                BlockGroup_ID.Block => {
+                                    block_element = child;
+                                    _ = self.reader.skipElement(child);
+                                },
+                                else => {
+                                    _ = self.reader.skipElement(child);
+                                },
+                            }
+                        }
+                        const block = block_element orelse continue;
+                        const size = block.size orelse continue;
+                        if (size == 0 or size > 50 * 1024 * 1024) return;
+                        if (size > std.math.maxInt(usize)) return;
+
+                        const data = self.allocator.alloc(u8, @intCast(size)) catch return;
+                        defer self.allocator.free(data);
+
+                        _ = self.reader.seekTo(block.data_offset);
+                        const bytes_read = self.reader.file.readAll(data) catch return;
+                        if (bytes_read != @as(usize, @intCast(size))) return;
+
+                        var debug_ctx = DebugContext{ .ctx = ctx, .validator = validator };
+                        const result = parseBlockFramesFromBuffer(data, video_track_number, current_cluster_timestamp, true, &debug_ctx, DebugConsumer.consume);
+                        if (result == null) {
+                            writeFmt(writer, "MKV debug: BlockGroup/Block parse/validate failed\n", .{});
+                            if (parseBlockHeader(data)) |header| {
+                                writeFmt(
+                                    writer,
+                                    "  track={} rel_ts={} flags=0x{x:0>2} lacing={} header_bytes={}\n",
+                                    .{ header.track_number, header.rel_timestamp, header.flags, header.lacing, header.header_bytes },
+                                );
+                            } else {
+                                writeFmt(writer, "  header parse failed\n", .{});
+                            }
+                            if (debug_ctx.failed) {
+                                writeFmt(
+                                    writer,
+                                    "  failed_frame_index={} failed_frame_len={}\n",
+                                    .{ debug_ctx.failed_frame_index, debug_ctx.failed_frame_len },
+                                );
+                                writeFmt(writer, "  failed_frame_preview:", .{});
+                                for (debug_ctx.preview[0..debug_ctx.preview_len]) |b| {
+                                    writeFmt(writer, " {x:0>2}", .{b});
+                                }
+                                writeFmt(writer, "\n", .{});
+                                if (frame_dump) |dump| {
+                                    if (debug_ctx.failed_frame) |frame| {
+                                        _ = dump.writeAll(frame) catch {};
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                        frames_validated += result.?;
+                    },
+                    else => {
+                        _ = self.reader.skipElement(cluster_child);
+                    },
+                }
+            }
+        }
+
+        if (frames_validated == 0) {
+            writeFmt(writer, "MKV debug: no frames validated for target track {}\n", .{video_track_number});
+        }
+    }
+
     /// Parse a SimpleBlock and call callback if it's a keyframe for the target track.
     fn parseSimpleBlock(
         self: *MatroskaParser,
@@ -1735,4 +1962,20 @@ test "parseBlockFramesFromBuffer EBML lacing" {
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x01, 0x02, 0x03, 0x04 }, ctx.frames[0]);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x05, 0x06, 0x07, 0x08, 0x09 }, ctx.frames[1]);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F }, ctx.frames[2]);
+}
+
+test "parseBlockHeader basic fields" {
+    const data = [_]u8{
+        0x81, // track 1
+        0xFF, 0xFE, // rel timestamp -2
+        0x02, // flags: Xiph lacing
+        0x00,
+    };
+
+    const header = parseBlockHeader(&data) orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(@as(u64, 1), header.track_number);
+    try std.testing.expectEqual(@as(i16, -2), header.rel_timestamp);
+    try std.testing.expectEqual(@as(u8, 0x02), header.flags);
+    try std.testing.expectEqual(@as(u2, 1), header.lacing);
+    try std.testing.expectEqual(@as(usize, 4), header.header_bytes);
 }
