@@ -81,6 +81,7 @@ pub const EsMalformation = enum(c_int) {
 	video_no_frames_decoded = 7,
 	xml_undefined_entity = 8,
 	rar_header_crc_mismatch = 9,
+	video_mixed_nal_prefix = 10,
 };
 
 /// Extended validation result (strings valid until next call on same validator)
@@ -417,6 +418,7 @@ export fn es_malformation_description(malformation: EsMalformation) [*:0]const u
 		.pdf_jbig2_truncated => "truncated JBIG2 data in PDF image" ++ "",
 		.pdf_dct_not_jpeg => "DCTDecode image data is not valid JPEG" ++ "",
 		.video_no_frames_decoded => "video decoder produced no frames (player-tolerated)" ++ "",
+		.video_mixed_nal_prefix => "mixed or nonstandard NAL length prefixes (repairable by remux)" ++ "",
 		.xml_undefined_entity => "XML entity reference undefined (DTD not validated)" ++ "",
 		.rar_header_crc_mismatch => "RAR header CRC mismatch (player-tolerated)" ++ "",
 	};

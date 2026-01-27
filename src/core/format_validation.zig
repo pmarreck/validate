@@ -673,6 +673,9 @@ pub const MalformationType = enum {
     /// RAR header CRC mismatch (archive still opens in tolerant tools)
     /// REPAIRABLE: Recalculate and fix header CRCs (future work)
     rar_header_crc_mismatch,
+    /// Video uses mixed or nonstandard NAL length prefixes
+    /// REPAIRABLE: Re-mux with normalized NAL length prefixes (future work)
+    video_mixed_nal_prefix,
 
     pub fn description(self: MalformationType) []const u8 {
         return switch (self) {
@@ -686,6 +689,7 @@ pub const MalformationType = enum {
             .video_no_frames_decoded => "video decoder produced no frames (player-tolerated)",
             .xml_undefined_entity => "XML entity reference undefined (DTD not validated)",
             .rar_header_crc_mismatch => "RAR header CRC mismatch (player-tolerated)",
+            .video_mixed_nal_prefix => "mixed or nonstandard NAL length prefixes (repairable by remux)",
         };
     }
 };
@@ -17962,10 +17966,15 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Return with appropriate depth based on validation level
-    if (video_result.byte_validated) {
-        return ValidationResult.okWithDepth(.mp4, .full);
+    var result = if (video_result.byte_validated)
+        ValidationResult.okWithDepth(.mp4, .full)
+    else
+        ValidationResult.structuralOnly(.mp4);
+    if (video_result.mixed_nal_prefix) {
+        result.malformations.insert(.video_mixed_nal_prefix);
+        result.warning_message = MalformationType.video_mixed_nal_prefix.description();
     }
-    return ValidationResult.structuralOnly(.mp4);
+    return result;
 }
 
 /// Deep MKV/EBML validation - validates element structure.
@@ -18083,10 +18092,15 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.mkv, video_result.error_message orelse "Video validation failed", .full);
     }
 
-    if (video_result.byte_validated) {
-        return ValidationResult.okWithDepth(.mkv, .full);
+    var result = if (video_result.byte_validated)
+        ValidationResult.okWithDepth(.mkv, .full)
+    else
+        ValidationResult.structuralOnly(.mkv);
+    if (video_result.mixed_nal_prefix) {
+        result.malformations.insert(.video_mixed_nal_prefix);
+        result.warning_message = MalformationType.video_mixed_nal_prefix.description();
     }
-    return ValidationResult.structuralOnly(.mkv);
+    return result;
 }
 
 /// Deep AVI validation - validates video frames by decoding.
@@ -26829,6 +26843,7 @@ test "toleratedVideoDecodeFailure accepts no-frames H.264" {
 		.codec = .h264,
 		.frames_decoded = 0,
 		.byte_validated = false,
+		.mixed_nal_prefix = false,
 	};
 
 	const tolerated = toleratedVideoDecodeFailure(video_result);

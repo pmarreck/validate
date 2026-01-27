@@ -6,6 +6,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
 - [ ] Fix last failed CI build (inspect gh logs, resolve, rerun) (2026-01-26 04:22 EST)
 ## Recently Completed
+- [x] Warn on mixed MKV NAL length prefixes (repairable) and add JOBS_DEBUG logging (2026-01-27 00:21 EST)
 - [x] Handle mixed NAL length prefixes in MKV H.264/HEVC byte validation (debug frame dump env added) (2026-01-27 00:02 EST)
 - [x] Tolerate MKV byte-validation failures (lacing-aware parsing + padding tolerance) to avoid false invalids (2026-01-26 20:13 EST)
 - [x] Route UNKNOWN entries via UNKNOWN_OUT and add CLI tests (2026-01-26 19:30 EST)

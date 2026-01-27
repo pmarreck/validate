@@ -72,27 +72,28 @@ pub const VideoCodec = enum {
 
 /// Result of video stream validation
 pub const VideoValidationResult = struct {
-    valid: bool,
-    error_message: ?[]const u8,
-    codec: VideoCodec,
-    frames_decoded: u32,
-    byte_validated: bool,
+	valid: bool,
+	error_message: ?[]const u8,
+	codec: VideoCodec,
+	frames_decoded: u32,
+	byte_validated: bool,
+	mixed_nal_prefix: bool = false,
 
-    pub fn okDecoded(codec: VideoCodec, frames: u32) VideoValidationResult {
-        return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = false };
-    }
+	pub fn okDecoded(codec: VideoCodec, frames: u32) VideoValidationResult {
+		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = false, .mixed_nal_prefix = false };
+	}
 
-    pub fn okByteValidated(codec: VideoCodec, frames: u32) VideoValidationResult {
-        return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = true };
-    }
+	pub fn okByteValidated(codec: VideoCodec, frames: u32) VideoValidationResult {
+		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = true, .mixed_nal_prefix = false };
+	}
 
-    pub fn invalid(message: []const u8, codec: VideoCodec) VideoValidationResult {
-        return .{ .valid = false, .error_message = message, .codec = codec, .frames_decoded = 0, .byte_validated = false };
-    }
+	pub fn invalid(message: []const u8, codec: VideoCodec) VideoValidationResult {
+		return .{ .valid = false, .error_message = message, .codec = codec, .frames_decoded = 0, .byte_validated = false, .mixed_nal_prefix = false };
+	}
 
-    pub fn skipped(message: []const u8) VideoValidationResult {
-        return .{ .valid = true, .error_message = message, .codec = .unknown, .frames_decoded = 0, .byte_validated = false };
-    }
+	pub fn skipped(message: []const u8) VideoValidationResult {
+		return .{ .valid = true, .error_message = message, .codec = .unknown, .frames_decoded = 0, .byte_validated = false, .mixed_nal_prefix = false };
+	}
 };
 
 /// Validate HEVC bitstream using libde265.
@@ -567,13 +568,14 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
 const MkvFrameValidationContext = struct {
 	codec: VideoCodec,
 	nal_length_size: u8,
+	mixed_nal_prefix: bool,
 };
 
 fn validateMkvFrameBytes(ctx_ptr: ?*anyopaque, data: []const u8) bool {
 	const ctx: *MkvFrameValidationContext = @ptrCast(@alignCast(ctx_ptr orelse return false));
 	return switch (ctx.codec) {
 		.av1 => validateAv1ObuStream(data),
-		.h264, .hevc => validateMkvNalFrame(data, ctx.codec, ctx.nal_length_size),
+		.h264, .hevc => validateMkvNalFrame(data, ctx.codec, ctx.nal_length_size, &ctx.mixed_nal_prefix),
 		else => false,
 	};
 }
@@ -701,10 +703,12 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
     }
 
     var byte_validated = false;
+    var mixed_nal_prefix = false;
     if (video_codec == .h264 or video_codec == .hevc or video_codec == .av1) {
         var ctx = MkvFrameValidationContext{
             .codec = video_codec,
             .nal_length_size = nal_length_size,
+            .mixed_nal_prefix = false,
         };
         const ok = parser.walkFrames(video_track.track_number, @intCast(max_frames), @ptrCast(&ctx), validateMkvFrameBytes);
         if (!ok) {
@@ -785,6 +789,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
             }
         } else {
             byte_validated = true;
+            mixed_nal_prefix = ctx.mixed_nal_prefix;
         }
     }
 
@@ -936,6 +941,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
     if (byte_validated) {
         result.byte_validated = true;
     }
+    result.mixed_nal_prefix = mixed_nal_prefix;
     return result;
 }
 
@@ -1767,12 +1773,13 @@ fn looksValidNalHeader(codec: VideoCodec, header: u8) bool {
 	};
 }
 
-fn validateLengthPrefixedNalsFlexible(sample_data: []const u8, preferred_size: u8, codec: VideoCodec) bool {
+fn validateLengthPrefixedNalsFlexible(sample_data: []const u8, preferred_size: u8, codec: VideoCodec, mixed_out: *bool) bool {
 	if (sample_data.len == 0) return false;
 
 	const sizes = [_]u8{ preferred_size, 4, 3, 2, 1 };
 	var pos: usize = 0;
 	var saw_nal = false;
+	var last_size: ?u8 = null;
 
 	while (pos < sample_data.len) {
 		var matched = false;
@@ -1798,6 +1805,16 @@ fn validateLengthPrefixedNalsFlexible(sample_data: []const u8, preferred_size: u
 			if (nal_len == 0 or nal_start + nal_len > sample_data.len) continue;
 			if (!looksValidNalHeader(codec, sample_data[nal_start])) continue;
 
+			if (preferred_size != 0 and nal_length_size != preferred_size) {
+				mixed_out.* = true;
+			}
+			if (last_size) |prev_size| {
+				if (prev_size != nal_length_size) {
+					mixed_out.* = true;
+				}
+			}
+			last_size = nal_length_size;
+
 			pos = nal_start + nal_len;
 			saw_nal = true;
 			matched = true;
@@ -1814,14 +1831,22 @@ fn validateLengthPrefixedNalsFlexible(sample_data: []const u8, preferred_size: u
 	return std.mem.allEqual(u8, sample_data[pos..], 0);
 }
 
-fn validateMkvNalFrame(data: []const u8, codec: VideoCodec, nal_length_size: u8) bool {
+fn validateMkvNalFrame(data: []const u8, codec: VideoCodec, nal_length_size: u8, mixed_out: *bool) bool {
 	if (nal_length_size != 0 and validateLengthPrefixedNals(data, nal_length_size)) return true;
-	if (nal_length_size != 4 and validateLengthPrefixedNals(data, 4)) return true;
-	if (nal_length_size != 2 and validateLengthPrefixedNals(data, 2)) return true;
-	if (nal_length_size != 1 and validateLengthPrefixedNals(data, 1)) return true;
-	if (nal_length_size != 3 and validateLengthPrefixedNals(data, 3)) return true;
+
+	const fallback_sizes = [_]u8{ 4, 3, 2, 1 };
+	for (fallback_sizes) |size| {
+		if (size == nal_length_size) continue;
+		if (validateLengthPrefixedNals(data, size)) {
+			if (nal_length_size != 0 and size != nal_length_size) {
+				mixed_out.* = true;
+			}
+			return true;
+		}
+	}
+
 	if (codec == .h264 or codec == .hevc) {
-		if (validateLengthPrefixedNalsFlexible(data, nal_length_size, codec)) return true;
+		if (validateLengthPrefixedNalsFlexible(data, nal_length_size, codec, mixed_out)) return true;
 	}
 	return validateAnnexBStream(data);
 }
@@ -2748,7 +2773,19 @@ test "validateLengthPrefixedNalsFlexible accepts mixed prefix sizes" {
 		0x00, 0x00, 0x02, 0x06, 0x11,
 		0x00, 0x00, 0x00, 0x03, 0x65, 0x88, 0x99,
 	};
-	try std.testing.expect(validateLengthPrefixedNalsFlexible(&data, 4, .h264));
+	var mixed = false;
+	try std.testing.expect(validateLengthPrefixedNalsFlexible(&data, 4, .h264, &mixed));
+	try std.testing.expect(mixed);
+}
+
+test "validateLengthPrefixedNalsFlexible respects preferred size without mixed flag" {
+	const data = [_]u8{
+		0x00, 0x00, 0x00, 0x02, 0x06, 0x11,
+		0x00, 0x00, 0x00, 0x03, 0x65, 0x88, 0x99,
+	};
+	var mixed = false;
+	try std.testing.expect(validateLengthPrefixedNalsFlexible(&data, 4, .h264, &mixed));
+	try std.testing.expect(!mixed);
 }
 
 test "validateLengthPrefixedNals rejects truncated NAL data" {

@@ -210,6 +210,17 @@ fn getDefaultJobCount() usize {
 	return std.Thread.getCpuCount() catch 1;
 }
 
+fn isTruthy(value: []const u8) bool {
+	return std.ascii.eqlIgnoreCase(value, "1") or std.ascii.eqlIgnoreCase(value, "true") or
+		std.ascii.eqlIgnoreCase(value, "yes") or std.ascii.eqlIgnoreCase(value, "on");
+}
+
+fn shouldLogJobs() bool {
+	if (comptime builtin.os.tag == .windows) return false;
+	const env = std.posix.getenv("JOBS_DEBUG") orelse return false;
+	return isTruthy(env);
+}
+
 test "default job count is at least 1" {
 	try std.testing.expect(getDefaultJobCount() >= 1);
 }
@@ -251,6 +262,9 @@ pub fn validatePathParallel(
 	const requested_jobs = jobs orelse 0;
 	const cpu_count = getDefaultJobCount();
 	const job_count = @max(@as(usize, 1), if (requested_jobs == 0) cpu_count else requested_jobs);
+	if (shouldLogJobs()) {
+		std.debug.print("validate jobs: requested={} cpu={} using={}\n", .{ requested_jobs, cpu_count, job_count });
+	}
 
 	const threads = try allocator.alloc(std.Thread, job_count);
 	defer allocator.free(threads);
