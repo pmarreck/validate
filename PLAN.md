@@ -6,6 +6,8 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
 - [ ] Fix last failed CI build (inspect gh logs, resolve, rerun) (2026-01-26 04:22 EST)
 ## Recently Completed
+- [x] Route UNKNOWN entries via UNKNOWN_OUT and add CLI tests (2026-01-26 19:20 EST)
+- [x] Add byte-coverage parsers for H.264/HEVC/AV1 across MP4/MKV/AVI (2026-01-26 19:20 EST)
 - [x] Audit FAIL results in ~/Movies and ~/Books and classify parser vs media issues (2026-01-26 15:33 EST)
 - [x] Cross-check FAIL items with Preview.app / CLI player and align lenience+warnings (2026-01-26 15:33 EST)
 - [x] Use OS logical CPU count for default worker threads and add a sanity test (2026-01-26 04:52 EST)

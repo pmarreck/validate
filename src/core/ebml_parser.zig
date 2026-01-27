@@ -722,6 +722,8 @@ pub const MatroskaParser = struct {
         }
     };
 
+    pub const FrameValidatorFn = *const fn (?*anyopaque, []const u8) bool;
+
     /// Collect keyframes into a list.
     /// Returns a list of keyframe data that must be freed by the caller.
     pub fn collectKeyframes(
@@ -1048,6 +1050,79 @@ pub const MatroskaParser = struct {
         }
 
         return frames.toOwnedSlice(self.allocator) catch null;
+    }
+
+    /// Walk ALL frames (not just keyframes) and validate each frame via callback.
+    /// Returns false if any frame fails validation or if no frames are found.
+    pub fn walkFrames(
+        self: *MatroskaParser,
+        video_track_number: u64,
+        max_frames: usize,
+        ctx: ?*anyopaque,
+        validator: FrameValidatorFn,
+    ) bool {
+        if (self.segment_offset == 0) {
+            if (!self.findSegment()) return false;
+        }
+
+        _ = self.reader.seekTo(self.segment_offset);
+        const segment_end = if (self.segment_size) |s|
+            self.segment_offset + s
+        else
+            self.reader.file_size;
+
+        var frames_validated: usize = 0;
+        var current_cluster_timestamp: i64 = 0;
+
+        while ((self.reader.getPos() orelse segment_end) < segment_end and frames_validated < max_frames) {
+            const element = self.reader.readElementHeader() orelse break;
+
+            if (element.id == Segment_ID.Cluster) {
+                const cluster_end = element.data_offset + (element.size orelse break);
+                _ = self.reader.seekTo(element.data_offset);
+
+                while ((self.reader.getPos() orelse cluster_end) < cluster_end and frames_validated < max_frames) {
+                    const cluster_child = self.reader.readElementHeader() orelse break;
+
+                    switch (cluster_child.id) {
+                        Cluster_ID.Timestamp => {
+                            current_cluster_timestamp = @intCast(self.reader.readElementUint(cluster_child) orelse 0);
+                        },
+                        Cluster_ID.SimpleBlock => {
+                            if (self.extractSimpleBlockFrame(cluster_child, video_track_number, current_cluster_timestamp)) |frame| {
+                                if (!validator(ctx, frame.data)) {
+                                    var mutable_frame = frame;
+                                    mutable_frame.deinit();
+                                    return false;
+                                }
+                                var mutable_frame = frame;
+                                mutable_frame.deinit();
+                                frames_validated += 1;
+                            }
+                        },
+                        Cluster_ID.BlockGroup => {
+                            if (self.extractBlockGroupFrame(cluster_child, video_track_number, current_cluster_timestamp)) |frame| {
+                                if (!validator(ctx, frame.data)) {
+                                    var mutable_frame = frame;
+                                    mutable_frame.deinit();
+                                    return false;
+                                }
+                                var mutable_frame = frame;
+                                mutable_frame.deinit();
+                                frames_validated += 1;
+                            }
+                        },
+                        else => {
+                            _ = self.reader.skipElement(cluster_child);
+                        },
+                    }
+                }
+            } else {
+                _ = self.reader.skipElement(element);
+            }
+        }
+
+        return frames_validated > 0;
     }
 
     /// Parse a SimpleBlock and call callback if it's a keyframe for the target track.

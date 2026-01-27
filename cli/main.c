@@ -23,6 +23,8 @@ static int g_mem_telemetry_enabled = 0;
 static size_t g_mem_telemetry_every = 1;
 static size_t g_mem_telemetry_count = 0;
 static size_t g_mem_telemetry_last_rss = 0;
+static FILE* g_unknown_out = NULL;
+static int g_unknown_out_enabled = 0;
 
 static int env_truthy(const char* value) {
 	if (!value || value[0] == '\0') {
@@ -82,6 +84,27 @@ static size_t get_rss_bytes(void) {
 #else
 	return 0;
 #endif
+}
+
+static void init_unknown_out(void) {
+	const char* path = getenv("UNKNOWN_OUT");
+	if (!path || path[0] == '\0') {
+		return;
+	}
+	g_unknown_out = fopen(path, "a");
+	if (!g_unknown_out) {
+		fprintf(stderr, COLOR_YELLOW "Warning: failed to open UNKNOWN_OUT path: %s\n" COLOR_RESET, path);
+		return;
+	}
+	g_unknown_out_enabled = 1;
+}
+
+static void shutdown_unknown_out(void) {
+	if (g_unknown_out) {
+		fclose(g_unknown_out);
+		g_unknown_out = NULL;
+	}
+	g_unknown_out_enabled = 0;
 }
 
 static void init_mem_telemetry(void) {
@@ -202,7 +225,12 @@ static void on_validation(
 		fprintf(stderr, COLOR_YELLOW "SLOW" COLOR_RESET " %s: %.2fs\n", display_path, elapsed_seconds);
 	}
 	if (result->is_unknown) {
-		printf(COLOR_CYAN "UNKNOWN" COLOR_RESET " %s: Unknown\n", display_path);
+		if (g_unknown_out_enabled && g_unknown_out) {
+			fprintf(g_unknown_out, "UNKNOWN %s\n", display_path);
+			fflush(g_unknown_out);
+		} else {
+			printf(COLOR_CYAN "UNKNOWN" COLOR_RESET " %s: Unknown\n", display_path);
+		}
 		log_mem_telemetry(display_path, result, elapsed_seconds);
 		return;
 	}
@@ -217,6 +245,8 @@ static int validate_path(const char* path, size_t jobs) {
 		return 1;
 	}
 
+	init_unknown_out();
+
 	const size_t max_files = get_env_max_files();
 	if (max_files > 0 && S_ISDIR(st.st_mode)) {
 		printf(COLOR_YELLOW "Note:" COLOR_RESET " MAX_FILES=%zu (results may be truncated)\n", max_files);
@@ -226,6 +256,7 @@ static int validate_path(const char* path, size_t jobs) {
 	es_error_t err = es_format_validator_create_deep(&validator);
 	if (err != ES_OK) {
 		fprintf(stderr, COLOR_RED "Error: Failed to create validator\n" COLOR_RESET);
+		shutdown_unknown_out();
 		return 1;
 	}
 
@@ -241,6 +272,7 @@ static int validate_path(const char* path, size_t jobs) {
 	} else {
 		fprintf(stderr, COLOR_RED "Error: Unsupported path type: %s\n" COLOR_RESET, path);
 		es_format_validator_destroy(validator);
+		shutdown_unknown_out();
 		return 1;
 	}
 
@@ -248,6 +280,7 @@ static int validate_path(const char* path, size_t jobs) {
 		fprintf(stderr, COLOR_RED "Error: Validation failed: %s\n" COLOR_RESET,
 			es_core_last_error() ? es_core_last_error() : "unknown error");
 		es_format_validator_destroy(validator);
+		shutdown_unknown_out();
 		return 1;
 	}
 
@@ -264,6 +297,7 @@ static int validate_path(const char* path, size_t jobs) {
 		if (!git_path) {
 			fprintf(stderr, COLOR_RED "Error: Out of memory while building git path\n" COLOR_RESET);
 			es_format_validator_destroy(validator);
+			shutdown_unknown_out();
 			return 1;
 		}
 		memcpy(git_path, path, path_len);
@@ -370,5 +404,6 @@ int main(int argc, char* argv[]) {
 	init_mem_telemetry();
 	int rc = validate_path(path, jobs);
 	shutdown_mem_telemetry();
+	shutdown_unknown_out();
 	return rc;
 }

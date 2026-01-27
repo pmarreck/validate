@@ -75,17 +75,22 @@ pub const VideoValidationResult = struct {
     error_message: ?[]const u8,
     codec: VideoCodec,
     frames_decoded: u32,
+    byte_validated: bool,
 
-    pub fn ok(codec: VideoCodec, frames: u32) VideoValidationResult {
-        return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames };
+    pub fn okDecoded(codec: VideoCodec, frames: u32) VideoValidationResult {
+        return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = false };
+    }
+
+    pub fn okByteValidated(codec: VideoCodec, frames: u32) VideoValidationResult {
+        return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = true };
     }
 
     pub fn invalid(message: []const u8, codec: VideoCodec) VideoValidationResult {
-        return .{ .valid = false, .error_message = message, .codec = codec, .frames_decoded = 0 };
+        return .{ .valid = false, .error_message = message, .codec = codec, .frames_decoded = 0, .byte_validated = false };
     }
 
     pub fn skipped(message: []const u8) VideoValidationResult {
-        return .{ .valid = true, .error_message = message, .codec = .unknown, .frames_decoded = 0 };
+        return .{ .valid = true, .error_message = message, .codec = .unknown, .frames_decoded = 0, .byte_validated = false };
     }
 };
 
@@ -139,7 +144,7 @@ pub fn validateHevcStream(data: []const u8, max_frames: u32) VideoValidationResu
         return VideoValidationResult.invalid("No frames decoded from HEVC", .hevc);
     }
 
-    return VideoValidationResult.ok(.hevc, frames_decoded);
+    return VideoValidationResult.okDecoded(.hevc, frames_decoded);
 }
 
 /// Validate AV1 bitstream using dav1d.
@@ -206,7 +211,7 @@ pub fn validateAv1Stream(allocator: Allocator, data: []const u8, max_frames: u32
         return VideoValidationResult.invalid("No frames decoded from AV1", .av1);
     }
 
-    return VideoValidationResult.ok(.av1, frames_decoded);
+    return VideoValidationResult.okDecoded(.av1, frames_decoded);
 }
 
 /// MP4 box parsing helpers
@@ -442,6 +447,24 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
     }
     defer if (codec_private != null) allocator.free(codec_private.?.data);
 
+    var byte_validated = false;
+
+    if (video_codec == .h264 or video_codec == .hevc or video_codec == .av1) {
+        const coverage = validateMp4SamplesByteCoverage(
+            allocator,
+            file,
+            sample_table,
+            video_codec,
+            nal_length_size,
+            max_frames,
+        );
+        switch (coverage) {
+            .ok => byte_validated = true,
+            .failed => return VideoValidationResult.invalid("Invalid MP4 video sample data", video_codec),
+            .unavailable => {},
+        }
+    }
+
     // Build combined bitstream: codec private + keyframe samples
     var bitstream: std.ArrayListUnmanaged(u8) = .{};
     defer bitstream.deinit(allocator);
@@ -468,7 +491,34 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
     );
 
     if (keyframes_extracted == 0) {
-        return VideoValidationResult.invalid("No keyframes extracted", video_codec);
+        bitstream.items.len = 0;
+        if (codec_private != null) {
+            bitstream.appendSlice(allocator, codec_private.?.data) catch {
+                return VideoValidationResult.invalid("Memory allocation failed", video_codec);
+            };
+        }
+        const samples_extracted = appendMp4SamplesToBitstream(
+            allocator,
+            file,
+            sample_table,
+            video_codec,
+            nal_length_size,
+            max_frames,
+            false,
+            &bitstream,
+            max_bitstream_bytes,
+        );
+        if (samples_extracted == 0) {
+            const msg = switch (video_codec) {
+                .h264 => "No frames decoded from H.264 stream",
+                .hevc => "No frames decoded from HEVC",
+                .av1 => "No frames decoded from AV1",
+                else => "No frames decoded from video stream",
+            };
+            var no_frames = VideoValidationResult.invalid(msg, video_codec);
+            no_frames.byte_validated = byte_validated;
+            return no_frames;
+        }
     }
 
     // Decode the combined bitstream
@@ -509,7 +559,22 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
         }
     }
 
+    result.byte_validated = byte_validated;
     return result;
+}
+
+const MkvFrameValidationContext = struct {
+	codec: VideoCodec,
+	nal_length_size: u8,
+};
+
+fn validateMkvFrameBytes(ctx_ptr: ?*anyopaque, data: []const u8) bool {
+	const ctx: *MkvFrameValidationContext = @ptrCast(@alignCast(ctx_ptr orelse return false));
+	return switch (ctx.codec) {
+		.av1 => validateAv1ObuStream(data),
+		.h264, .hevc => validateLengthPrefixedNals(data, ctx.nal_length_size),
+		else => false,
+	};
 }
 
 /// Deep validate MKV/WebM video file by decoding keyframes.
@@ -599,7 +664,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         video_codec != .theora and video_codec != .vp8)
     {
         // Return success with codec info but note we couldn't decode
-        return VideoValidationResult.ok(video_codec, 0);
+        return VideoValidationResult.okDecoded(video_codec, 0);
     }
 
     // Build combined bitstream: codec private + keyframe samples
@@ -634,8 +699,26 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         }
     }
 
-    // Collect ALL frames for full validation (not just keyframes)
-    const all_frames = parser.collectAllFrames(video_track.track_number, max_frames) orelse {
+    var byte_validated = false;
+    if (video_codec == .h264 or video_codec == .hevc or video_codec == .av1) {
+        var ctx = MkvFrameValidationContext{
+            .codec = video_codec,
+            .nal_length_size = nal_length_size,
+        };
+        const ok = parser.walkFrames(video_track.track_number, @intCast(max_frames), @ptrCast(&ctx), validateMkvFrameBytes);
+        if (!ok) {
+            return VideoValidationResult.invalid("Invalid MKV frame data", video_codec);
+        }
+        byte_validated = true;
+    }
+
+    const decode_frames_limit: usize = if (video_codec == .h264 or video_codec == .hevc or video_codec == .av1)
+        @min(@as(usize, max_frames), 64)
+    else
+        @as(usize, max_frames);
+
+    // Collect ALL frames (or a limited set for decode) for validation
+    const all_frames = parser.collectAllFrames(video_track.track_number, decode_frames_limit) orelse {
         if (bitstream.items.len > 0) {
             // We have codec_private but no frames - try decoding just that
             const result = switch (video_codec) {
@@ -669,7 +752,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         if (frames_validated == 0) {
             return VideoValidationResult.invalid("No valid MJPEG frames found", .mjpeg);
         }
-        return VideoValidationResult.ok(.mjpeg, frames_validated);
+        return VideoValidationResult.okByteValidated(.mjpeg, frames_validated);
     }
 
     // For MPEG-1/2, collect keyframes and validate the stream
@@ -698,7 +781,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
             .mpeg2 => .mpeg2,
             .unknown => video_codec,
         };
-        return VideoValidationResult.ok(detected_codec, mpeg_result.structural_result.pictures);
+        return VideoValidationResult.okByteValidated(detected_codec, mpeg_result.structural_result.pictures);
     }
 
     // For Theora, validate packets
@@ -724,7 +807,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
             }
 
             _ = info;
-            return VideoValidationResult.ok(.theora, keyframe_count + inter_count);
+            return VideoValidationResult.okByteValidated(.theora, keyframe_count + inter_count);
         } else {
             return VideoValidationResult.invalid("No Theora codec_private", .theora);
         }
@@ -746,7 +829,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         if (frames_validated == 0) {
             return VideoValidationResult.invalid("No VP8 frames validated", .vp8);
         }
-        return VideoValidationResult.ok(.vp8, frames_validated);
+        return VideoValidationResult.okByteValidated(.vp8, frames_validated);
     }
 
     // Add frame data to bitstream for other codecs
@@ -768,13 +851,15 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
     }
 
     // Decode the combined bitstream
-    const result = switch (video_codec) {
+    var result = switch (video_codec) {
         .hevc => validateHevcStream(bitstream.items, max_frames),
         .av1 => validateAv1Stream(allocator, bitstream.items, max_frames),
         .h264 => validateH264Stream(bitstream.items, max_frames),
         else => VideoValidationResult.skipped("Unsupported codec"),
     };
-
+    if (byte_validated) {
+        result.byte_validated = true;
+    }
     return result;
 }
 
@@ -1089,7 +1174,7 @@ fn validateMjpegFromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviSt
         return VideoValidationResult.invalid("No MJPEG frames found", .mjpeg);
     }
 
-    return VideoValidationResult.ok(.mjpeg, frames_validated);
+    return VideoValidationResult.okByteValidated(.mjpeg, frames_validated);
 }
 
 /// Validate MPEG-1/2 frames from AVI container
@@ -1146,7 +1231,7 @@ fn validateMpeg12FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviS
     // Validate the MPEG stream with deep DCT decode
     const result = mpeg12.validateMpeg12Deep(video_data.items, max_frames);
     if (result.valid) {
-        return VideoValidationResult.ok(codec, result.structural_result.pictures);
+        return VideoValidationResult.okByteValidated(codec, result.structural_result.pictures);
     } else {
         return VideoValidationResult.invalid(result.error_message orelse "MPEG decode failed", codec);
     }
@@ -1203,8 +1288,13 @@ fn validateH264FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStr
         return VideoValidationResult.invalid("No H.264 video data found", .h264);
     }
 
+    if (!validateAnnexBStream(video_data.items)) {
+        return VideoValidationResult.invalid("Invalid H.264 Annex B stream", .h264);
+    }
+
     // Validate the H.264 stream
-    const result = validateH264Stream(video_data.items, max_frames);
+    var result = validateH264Stream(video_data.items, max_frames);
+    result.byte_validated = true;
     return result;
 }
 
@@ -1272,7 +1362,7 @@ fn validateMpeg4P2FromAvi(allocator: Allocator, file: std.fs.File, avi_info: Avi
     // Validate the MPEG-4 Part 2 stream
     const result = mpeg4p2.validateMpeg4P2Stream(video_data.items, max_frames);
     if (result.valid) {
-        return VideoValidationResult.ok(.mpeg4p2, result.vop_count);
+        return VideoValidationResult.okByteValidated(.mpeg4p2, result.vop_count);
     } else {
         return VideoValidationResult.invalid(result.error_message orelse "MPEG-4 Part 2 validation failed", .mpeg4p2);
     }
@@ -1289,6 +1379,7 @@ pub fn validateH264Stream(data: []const u8, max_frames: u32) VideoValidationResu
         .error_message = result.error_message,
         .codec = .h264,
         .frames_decoded = result.frames_decoded,
+        .byte_validated = false,
     };
 }
 
@@ -1453,6 +1544,160 @@ fn appendMp4SamplesToBitstream(
     }
 
     return samples_appended;
+}
+
+const ByteCoverageResult = enum {
+	ok,
+	failed,
+	unavailable,
+};
+
+fn validateLengthPrefixedNals(sample_data: []const u8, nal_length_size: u8) bool {
+	if (sample_data.len == 0) return false;
+
+	var pos: usize = 0;
+	var saw_nal = false;
+	while (pos + nal_length_size <= sample_data.len) {
+		var nal_len: u32 = 0;
+		if (nal_length_size == 4) {
+			nal_len = std.mem.readInt(u32, sample_data[pos..][0..4], .big);
+		} else if (nal_length_size == 2) {
+			nal_len = std.mem.readInt(u16, sample_data[pos..][0..2], .big);
+		} else if (nal_length_size == 1) {
+			nal_len = sample_data[pos];
+		} else {
+			return false;
+		}
+		pos += nal_length_size;
+
+		if (nal_len == 0) return false;
+		if (pos + nal_len > sample_data.len) return false;
+
+		pos += nal_len;
+		saw_nal = true;
+	}
+
+	return saw_nal and pos == sample_data.len;
+}
+
+fn readLeb128(data: []const u8, start: usize) ?struct { value: u64, bytes: usize } {
+	var value: u64 = 0;
+	var shift: u6 = 0;
+	var i: usize = start;
+
+	while (i < data.len and shift <= 63) : (i += 1) {
+		const byte = data[i];
+		value |= (@as(u64, byte & 0x7f) << shift);
+		if ((byte & 0x80) == 0) {
+			return .{ .value = value, .bytes = (i - start) + 1 };
+		}
+		shift += 7;
+	}
+	return null;
+}
+
+fn validateAv1ObuStream(data: []const u8) bool {
+	if (data.len == 0) return false;
+
+	var pos: usize = 0;
+	var saw_obu = false;
+	while (pos < data.len) {
+		const header = data[pos];
+		pos += 1;
+
+		const has_extension = (header & 0x04) != 0;
+		const has_size = (header & 0x02) != 0;
+
+		if (has_extension) {
+			if (pos >= data.len) return false;
+			pos += 1;
+		}
+
+		if (has_size) {
+			const leb = readLeb128(data, pos) orelse return false;
+			pos += leb.bytes;
+			if (leb.value > data.len - pos) return false;
+			pos += @intCast(leb.value);
+		} else {
+			// No size field: remainder is the OBU payload
+			pos = data.len;
+		}
+
+		saw_obu = true;
+	}
+
+	return saw_obu;
+}
+
+fn validateAnnexBStream(data: []const u8) bool {
+	if (data.len < 4) return false;
+
+	var pos: usize = 0;
+	var saw_start = false;
+
+	while (pos + 3 <= data.len) {
+		var start: ?struct { offset: usize, size: usize } = null;
+		var i: usize = pos;
+		while (i + 3 <= data.len) : (i += 1) {
+			if (i + 4 <= data.len and data[i] == 0 and data[i + 1] == 0 and data[i + 2] == 0 and data[i + 3] == 1) {
+				start = .{ .offset = i, .size = 4 };
+				break;
+			}
+			if (data[i] == 0 and data[i + 1] == 0 and data[i + 2] == 1) {
+				start = .{ .offset = i, .size = 3 };
+				break;
+			}
+		}
+		if (start == null) break;
+		saw_start = true;
+		pos = start.?.offset + start.?.size;
+	}
+
+	return saw_start;
+}
+
+fn validateMp4SamplesByteCoverage(
+	allocator: Allocator,
+	file: std.fs.File,
+	sample_table: SampleTableInfo,
+	video_codec: VideoCodec,
+	nal_length_size: u8,
+	max_frames: u32,
+) ByteCoverageResult {
+	var samples_checked: u32 = 0;
+	const max_sample_size: u32 = 50 * 1024 * 1024; // 50MB max per sample
+
+	var sample_buffer: []u8 = allocator.alloc(u8, 1024 * 1024) catch return .unavailable;
+	defer allocator.free(sample_buffer);
+
+	for (0..sample_table.sample_count) |sample_idx| {
+		if (samples_checked >= max_frames) break;
+
+		const location = sample_table.getSampleLocation(@intCast(sample_idx)) orelse continue;
+		if (location.size == 0) continue;
+		if (location.size > max_sample_size) return .unavailable;
+
+		if (location.size > sample_buffer.len) {
+			allocator.free(sample_buffer);
+			sample_buffer = allocator.alloc(u8, location.size) catch return .unavailable;
+		}
+
+		file.seekTo(location.offset) catch return .failed;
+		const bytes_read = file.read(sample_buffer[0..location.size]) catch return .failed;
+		if (bytes_read < location.size) return .failed;
+
+		const ok = switch (video_codec) {
+			.av1 => validateAv1ObuStream(sample_buffer[0..location.size]),
+			.h264, .hevc => validateLengthPrefixedNals(sample_buffer[0..location.size], nal_length_size),
+			else => true,
+		};
+		if (!ok) return .failed;
+
+		samples_checked += 1;
+	}
+
+	if (samples_checked == 0) return .failed;
+	return .ok;
 }
 
 /// Parse stsz (sample size) box
@@ -2062,7 +2307,7 @@ fn validateMjpegFromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, m
         return VideoValidationResult.invalid("No valid MJPEG frames found", .mjpeg);
     }
 
-    return VideoValidationResult.ok(.mjpeg, frames_validated);
+    return VideoValidationResult.okByteValidated(.mjpeg, frames_validated);
 }
 
 /// Validate ProRes from MP4/MOV container.
@@ -2147,7 +2392,7 @@ fn validateProResFromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, 
         return VideoValidationResult.invalid("No valid ProRes frames found", .prores);
     }
 
-    return VideoValidationResult.ok(.prores, frames_validated);
+    return VideoValidationResult.okByteValidated(.prores, frames_validated);
 }
 
 /// Validate MPEG-1/2 from MP4/MOV container.
@@ -2223,7 +2468,7 @@ fn validateMpeg12FromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, 
         .unknown => codec,
     };
 
-    return VideoValidationResult.ok(detected_codec, result.structural_result.pictures);
+    return VideoValidationResult.okByteValidated(detected_codec, result.structural_result.pictures);
 }
 
 // Tests
@@ -2293,4 +2538,39 @@ test "convertToAnnexB converts length-prefixed NALs" {
     // Verify start codes
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x00, 0x00, 0x01 }, result.?[0..4]);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x00, 0x00, 0x00, 0x01 }, result.?[8..12]);
+}
+
+test "validateLengthPrefixedNals accepts valid NAL data" {
+	const data = [_]u8{
+		0x00, 0x00, 0x00, 0x02, 0xAA, 0xBB,
+		0x00, 0x00, 0x00, 0x01, 0xCC,
+	};
+	try std.testing.expect(validateLengthPrefixedNals(&data, 4));
+}
+
+test "validateLengthPrefixedNals rejects truncated NAL data" {
+	const data = [_]u8{
+		0x00, 0x00, 0x00, 0x03, 0xAA, 0xBB,
+	};
+	try std.testing.expect(!validateLengthPrefixedNals(&data, 4));
+}
+
+test "validateAv1ObuStream accepts sized OBU" {
+	const data = [_]u8{ 0x02, 0x01, 0x00 };
+	try std.testing.expect(validateAv1ObuStream(&data));
+}
+
+test "validateAv1ObuStream rejects oversized OBU" {
+	const data = [_]u8{ 0x02, 0x05, 0x00 };
+	try std.testing.expect(!validateAv1ObuStream(&data));
+}
+
+test "validateAnnexBStream accepts start codes" {
+	const data = [_]u8{ 0x00, 0x00, 0x00, 0x01, 0x67, 0x11, 0x22 };
+	try std.testing.expect(validateAnnexBStream(&data));
+}
+
+test "validateAnnexBStream rejects missing start codes" {
+	const data = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+	try std.testing.expect(!validateAnnexBStream(&data));
 }

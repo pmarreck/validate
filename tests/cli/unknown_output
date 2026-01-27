@@ -9,6 +9,7 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 printf '\x00\xff\x00\xff\x01\x02\x03\x04' > "$tmpdir/unknown.bin"
 
+unset UNKNOWN_OUT
 out="" err="" rc=0
 capture ./zig-out/bin/validate "$tmpdir/unknown.bin"
 

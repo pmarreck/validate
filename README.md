@@ -35,7 +35,9 @@ Runs `./test` first. When `DEBUG` is unset/0, dependencies build in ReleaseFast 
 ```
 `--jobs 0` (default) uses all available cores.
 `MAX_FILES` limits the number of files scanned when validating a directory.
+`MAX_VIDEO_SIZE` limits deep video validation to files under N MB (unset = no limit).
 `MEM_TELEMETRY=1` logs per-file RSS memory samples (use `MEM_TELEMETRY_PATH` to log to a file, `MEM_TELEMETRY_EVERY=N` to sample every N files).
+`UNKNOWN_OUT=/path` writes UNKNOWN entries to that path instead of stdout (supports `/dev/null`, `/dev/fd/1`, `/dev/fd/2`).
 `ZIP_TELEMETRY=1` logs slow ZIP entry validation details to stderr (adjust threshold with `ZIP_SLOW_SECONDS`).
 `PDF_TELEMETRY=1` logs slow PDF deep-validation breakdowns to stderr (adjust threshold with `PDF_SLOW_SECONDS`).
 

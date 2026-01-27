@@ -17883,7 +17883,7 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.mp4, "Failed to get file size", .structural);
     };
 
-    // Skip deep validation for large files (when ES_MAX_VIDEO_SIZE is set)
+    // Skip deep validation for large files (when MAX_VIDEO_SIZE is set)
     if (file_size > getMaxVideoDeepSize()) {
         return ValidationResult.structuralOnly(.mp4);
     }
@@ -17952,7 +17952,8 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     const video_result = video_validator.validateMp4Video(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
-			var result = ValidationResult.okWithDepthAndMalformation(.mp4, .full, tolerated.malformation);
+			const depth: ValidationDepth = if (video_result.byte_validated) .full else .structural;
+			var result = ValidationResult.okWithDepthAndMalformation(.mp4, depth, tolerated.malformation);
 			result.warning_message = tolerated.warning;
 			return result;
 		}
@@ -17961,13 +17962,9 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Return with appropriate depth based on validation level
-    if (video_result.frames_decoded > 0) {
+    if (video_result.byte_validated) {
         return ValidationResult.okWithDepth(.mp4, .full);
-    } else if (video_result.codec != .unknown) {
-        // Codec detected but not decoded (codec not supported or skipped)
-        return ValidationResult.structuralOnly(.mp4);
     }
-
     return ValidationResult.structuralOnly(.mp4);
 }
 
@@ -17987,7 +17984,7 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.mkv, "Failed to get file size", .structural);
     };
 
-    // Skip deep validation for large files (when ES_MAX_VIDEO_SIZE is set)
+    // Skip deep validation for large files (when MAX_VIDEO_SIZE is set)
     if (file_size > getMaxVideoDeepSize()) {
         return ValidationResult.structuralOnly(.mkv);
     }
@@ -18078,21 +18075,17 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const video_result = video_validator.validateMkvVideo(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
-			var result = ValidationResult.okWithDepthAndMalformation(.mkv, .full, tolerated.malformation);
+			const depth: ValidationDepth = if (video_result.byte_validated) .full else .structural;
+			var result = ValidationResult.okWithDepthAndMalformation(.mkv, depth, tolerated.malformation);
 			result.warning_message = tolerated.warning;
 			return result;
 		}
         return ValidationResult.invalidWithDepth(.mkv, video_result.error_message orelse "Video validation failed", .full);
     }
 
-    // Return with appropriate depth based on codec detection
-    if (video_result.frames_decoded > 0) {
+    if (video_result.byte_validated) {
         return ValidationResult.okWithDepth(.mkv, .full);
-    } else if (video_result.codec != .unknown) {
-        // Codec detected but not decoded
-        return ValidationResult.structuralOnly(.mkv);
     }
-
     return ValidationResult.structuralOnly(.mkv);
 }
 
@@ -18113,7 +18106,7 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.avi, "Failed to get file size", .structural);
     };
 
-    // Skip deep validation for large files (when ES_MAX_VIDEO_SIZE is set)
+    // Skip deep validation for large files (when MAX_VIDEO_SIZE is set)
     if (file_size > getMaxVideoDeepSize()) {
         return ValidationResult.structuralOnly(.avi);
     }
@@ -18141,21 +18134,17 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const video_result = video_validator.validateAviVideo(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
-			var result = ValidationResult.okWithDepthAndMalformation(.avi, .full, tolerated.malformation);
+			const depth: ValidationDepth = if (video_result.byte_validated) .full else .structural;
+			var result = ValidationResult.okWithDepthAndMalformation(.avi, depth, tolerated.malformation);
 			result.warning_message = tolerated.warning;
 			return result;
 		}
         return ValidationResult.invalidWithDepth(.avi, video_result.error_message orelse "Video validation failed", .full);
     }
 
-    // Return with appropriate depth based on validation level
-    if (video_result.frames_decoded > 0) {
+    if (video_result.byte_validated) {
         return ValidationResult.okWithDepth(.avi, .full);
-    } else if (video_result.codec != .unknown) {
-        // Codec detected but not decoded
-        return ValidationResult.structuralOnly(.avi);
     }
-
     return ValidationResult.structuralOnly(.avi);
 }
 
@@ -26839,6 +26828,7 @@ test "toleratedVideoDecodeFailure accepts no-frames H.264" {
 		.error_message = "No frames decoded from H.264 stream",
 		.codec = .h264,
 		.frames_decoded = 0,
+		.byte_validated = false,
 	};
 
 	const tolerated = toleratedVideoDecodeFailure(video_result);
