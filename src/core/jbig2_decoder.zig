@@ -1719,12 +1719,57 @@ pub fn validateJbig2(allocator: Allocator, data: []const u8) Jbig2ValidateResult
 
         // Skip segment data
         if (header.data_length != 0xFFFFFFFF) {
+            // Check if data_length would exceed remaining data
+            if (offset + header.data_length > data.len) {
+                // Truncated segment data - return appropriate result
+                if (page_count > 0) {
+                    return Jbig2ValidateResult.successWithWarning(
+                        page_width,
+                        page_height,
+                        page_count,
+                        "Truncated segment data (partial/embedded stream)",
+                    );
+                }
+                // Even if no pages yet, if header said we have pages, treat as truncated
+                if (header_result.header.page_count) |expected_pages| {
+                    if (expected_pages > 0) {
+                        return Jbig2ValidateResult.successWithWarning(
+                            0,
+                            0,
+                            0,
+                            "Truncated JBIG2 stream (header indicates pages but data truncated)",
+                        );
+                    }
+                }
+                return Jbig2ValidateResult.failure("Truncated segment data");
+            }
             offset += header.data_length;
         }
     }
 
     if (!found_eof) {
-        return Jbig2ValidateResult.failure("Missing end-of-file segment");
+        // If we parsed at least one page, treat as valid with warning
+        // (embedded JBIG2 streams often lack explicit EOF segments)
+        if (page_count > 0) {
+            return Jbig2ValidateResult.successWithWarning(
+                page_width,
+                page_height,
+                page_count,
+                "No explicit end-of-file segment (embedded/partial stream)",
+            );
+        }
+        // If header declared page count, use that info
+        if (header_result.header.page_count) |expected_pages| {
+            if (expected_pages > 0) {
+                return Jbig2ValidateResult.successWithWarning(
+                    0,
+                    0,
+                    expected_pages,
+                    "Truncated JBIG2 stream (no page segments parsed)",
+                );
+            }
+        }
+        return Jbig2ValidateResult.failure("Missing end-of-file segment and no pages found");
     }
 
     return Jbig2ValidateResult.success(page_width, page_height, page_count);

@@ -150,6 +150,9 @@ const wavpack_decoder = @import("wavpack_decoder.zig");
 // Import MP3 decode validator for full audio decode validation
 const mp3_decode_validator = @import("mp3_decode_validator.zig");
 
+// Import JBIG2 decoder for standalone JBIG2 file validation
+const jbig2_decoder = @import("jbig2_decoder.zig");
+
 // ============ Constants ============
 
 /// Maximum decompressed size for streaming validation (10 GiB).
@@ -248,6 +251,7 @@ pub const FileFormat = enum {
     eac3, // Dolby Digital Plus (E-AC-3) audio
     // Image formats (additional)
     jpeg2000, // JPEG2000 (.jp2, .j2k, .j2c)
+    jbig2, // JBIG2 bi-level image compression (.jbig2, .jb2)
     // Tracker/Module formats
     mod, // Amiga ProTracker MOD
     xm, // FastTracker 2 Extended Module
@@ -436,6 +440,7 @@ pub const FileFormat = enum {
             .ac3 => "Dolby Digital AC-3 Audio",
             .eac3 => "Dolby Digital Plus Audio",
             .jpeg2000 => "JPEG2000 Image",
+            .jbig2 => "JBIG2 Bi-level Image",
             .mod => "ProTracker Module",
             .xm => "FastTracker Module",
             .it => "Impulse Tracker Module",
@@ -539,7 +544,7 @@ pub const FileFormat = enum {
             .prores, .av1 => true, // Video codecs (detected within containers)
             .mp3, .flac, .wav, .m4a => true, // Audio
             .alac, .aiff, .ogg, .ogv, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .eac3 => true, // Additional audio/video formats
-            .jpeg2000 => true, // JPEG2000 image format
+            .jpeg2000, .jbig2 => true, // JPEG2000 and JBIG2 image formats
             .mod, .xm, .it, .s3m => true, // Tracker/module formats
             .als, .rpp, .flp, .song, .bwproject, .cpr, .ptx, .band, .reason => true, // DAW project formats
             .prproj => true, // Video editing project formats
@@ -1004,6 +1009,8 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20 }, .offset = 0, .format = .jpeg2000 },
     // JPEG2000 codestream: FF 4F FF 51 (SOC + SIZ markers)
     .{ .bytes = &[_]u8{ 0xFF, 0x4F, 0xFF, 0x51 }, .offset = 0, .format = .jpeg2000 },
+    // JBIG2: 97 4A 42 32 0D 0A 1A 0A (standalone file format)
+    .{ .bytes = &[_]u8{ 0x97, 0x4A, 0x42, 0x32, 0x0D, 0x0A, 0x1A, 0x0A }, .offset = 0, .format = .jbig2 },
     // DSF (DSD Stream File): "DSD " at offset 0
     .{ .bytes = "DSD ", .offset = 0, .format = .dsf },
     // DFF (DSDIFF): "FRM8" IFF header, form type "DSD " at offset 12
@@ -13822,6 +13829,29 @@ fn validateJpeg2000(file: std.fs.File) ValidationResult {
     return ValidationResult.invalid(.jpeg2000, "Invalid JPEG2000 signature");
 }
 
+// ============ JBIG2 Validator ============
+
+/// Validate standalone JBIG2 file structure (.jbig2, .jb2).
+/// JBIG2 files have signature: 97 4A 42 32 0D 0A 1A 0A (0x97 "JB2" CR LF SUB LF)
+fn validateJbig2File(file: std.fs.File) ValidationResult {
+    var header: [8]u8 = undefined;
+    const bytes_read = file.read(&header) catch {
+        return ValidationResult.invalid(.jbig2, "Failed to read JBIG2 header");
+    };
+
+    if (bytes_read < 8) {
+        return ValidationResult.invalid(.jbig2, "File too small for JBIG2");
+    }
+
+    // Check for JBIG2 file signature
+    if (!std.mem.eql(u8, &header, &jbig2_decoder.FILE_SIGNATURE)) {
+        return ValidationResult.invalid(.jbig2, "Invalid JBIG2 signature");
+    }
+
+    // Basic structural validation passed
+    return ValidationResult.ok(.jbig2);
+}
+
 // ============ Tracker/Module Format Validators ============
 
 /// Validate ProTracker MOD file structure.
@@ -15574,6 +15604,46 @@ fn validateJpeg2000Deep(allocator: Allocator, path: []const u8) ValidationResult
         return ValidationResult.okWithDepth(.jpeg2000, .full);
     } else {
         return ValidationResult.invalidWithDepth(.jpeg2000, result.error_message orelse "JPEG2000 decode failed", .full);
+    }
+}
+
+// ============ JBIG2 Deep Validation ============
+
+/// Deep JBIG2 validation by fully parsing segment structure and headers.
+/// This validates file header, segment headers, page info, and segment data.
+fn validateJbig2Deep(allocator: Allocator, path: []const u8) ValidationResult {
+    // Read the file into memory for JBIG2 decoder
+    const file = std.fs.cwd().openFile(path, .{}) catch {
+        return ValidationResult.invalidWithDepth(.jbig2, "Failed to open file", .full);
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidWithDepth(.jbig2, "Failed to get file size", .full);
+    };
+
+    if (file_size > 100 * 1024 * 1024) { // 100MB limit
+        return ValidationResult.invalidWithDepth(.jbig2, "File too large", .full);
+    }
+
+    const data = allocator.alloc(u8, @intCast(file_size)) catch {
+        return ValidationResult.invalidWithDepth(.jbig2, "Out of memory", .full);
+    };
+    defer allocator.free(data);
+
+    const bytes_read = file.readAll(data) catch {
+        return ValidationResult.invalidWithDepth(.jbig2, "Failed to read file", .full);
+    };
+
+    const result = jbig2_decoder.validateJbig2(allocator, data[0..bytes_read]);
+    if (result.valid) {
+        if (result.warning_message) |warning| {
+            // Return valid with warning if decoder reported non-fatal issues
+            return ValidationResult.okWithDepthAndWarning(.jbig2, .full, warning);
+        }
+        return ValidationResult.okWithDepth(.jbig2, .full);
+    } else {
+        return ValidationResult.invalidWithDepth(.jbig2, result.error_message orelse "JBIG2 decode failed", .full);
     }
 }
 
@@ -19219,6 +19289,7 @@ pub const FormatValidator = struct {
             .it => validateItDeep(path),
             .s3m => validateS3mDeep(path),
             .jpeg2000 => validateJpeg2000Deep(allocator, path),
+            .jbig2 => validateJbig2Deep(allocator, path),
             .ac3 => validateAc3Deep(path),
             .eac3 => validateEac3Deep(path),
             .prproj => validatePrprojDeep(allocator, path),
@@ -19436,6 +19507,7 @@ pub const FormatValidator = struct {
             .ac3 => validateAc3(file),
             .eac3 => validateEac3(file),
             .jpeg2000 => validateJpeg2000(file),
+            .jbig2 => validateJbig2File(file),
             .mod => validateMod(file),
             .xm => validateXm(file),
             .it => validateIt(file),
