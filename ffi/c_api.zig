@@ -85,6 +85,7 @@ pub const EsMalformation = enum(c_int) {
 	pdf_missing_trailer = 11,
 	pdf_trailer_missing_size = 12,
 	pdf_trailer_missing_root = 13,
+	magic_bytes_corrupted = 14,
 };
 
 /// Extended validation result (strings valid until next call on same validator)
@@ -427,6 +428,7 @@ export fn es_malformation_description(malformation: EsMalformation) [*:0]const u
 		.pdf_missing_trailer => "missing trailer dictionary (reader-tolerated)" ++ "",
 		.pdf_trailer_missing_size => "trailer missing /Size key (reader-tolerated)" ++ "",
 		.pdf_trailer_missing_root => "trailer missing /Root key (reader-tolerated)" ++ "",
+		.magic_bytes_corrupted => "magic bytes corrupted (identified via extension and secondary signatures)" ++ "",
 	};
 	return desc.ptr;
 }

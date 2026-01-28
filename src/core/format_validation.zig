@@ -694,6 +694,9 @@ pub const MalformationType = enum {
     /// PDF trailer missing required /Root key
     /// REPAIRABLE: Scan for catalog object and add /Root reference (future work)
     pdf_trailer_missing_root,
+    /// Magic bytes corrupted but format identified via extension and secondary signatures
+    /// REPAIRABLE: Restore correct magic bytes for the detected format
+    magic_bytes_corrupted,
 
     pub fn description(self: MalformationType) []const u8 {
         return switch (self) {
@@ -711,6 +714,7 @@ pub const MalformationType = enum {
             .pdf_missing_trailer => "missing trailer dictionary (reader-tolerated)",
             .pdf_trailer_missing_size => "trailer missing /Size key (reader-tolerated)",
             .pdf_trailer_missing_root => "trailer missing /Root key (reader-tolerated)",
+            .magic_bytes_corrupted => "magic bytes corrupted (identified via extension and secondary signatures)",
         };
     }
 };
@@ -1969,6 +1973,177 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "stl")) return .stl;
     if (std.mem.eql(u8, ext_lower, "step") or std.mem.eql(u8, ext_lower, "stp")) return .step;
     if (std.mem.eql(u8, ext_lower, "dxf")) return .dxf;
+
+    return .unknown;
+}
+
+/// Detect format by secondary signatures (trailers, internal patterns).
+/// Used as fallback when magic bytes are corrupted but extension hints at a format.
+/// Returns the format if secondary signatures confirm it, otherwise .unknown.
+fn detectFormatBySecondarySignatures(data: []const u8, hinted_format: FileFormat) FileFormat {
+    const len = data.len;
+    if (len < 8) return .unknown;
+
+    switch (hinted_format) {
+        .pdf => {
+            // PDF: Look for %%EOF, startxref, obj/endobj keywords
+            // Search in last 1KB and throughout file
+            const search_tail = if (len > 1024) data[len - 1024 ..] else data;
+            if (std.mem.indexOf(u8, search_tail, "%%EOF") != null) return .pdf;
+            if (std.mem.indexOf(u8, data, "startxref") != null) return .pdf;
+            if (std.mem.indexOf(u8, data, " obj") != null and std.mem.indexOf(u8, data, "endobj") != null) return .pdf;
+        },
+        .png => {
+            // PNG: Look for IEND chunk (49 45 4E 44 = "IEND")
+            // IEND appears near end with CRC
+            if (len >= 12) {
+                const search_tail = if (len > 32) data[len - 32 ..] else data;
+                if (std.mem.indexOf(u8, search_tail, "IEND") != null) return .png;
+                // Also check for IHDR chunk (should be first chunk after header)
+                if (std.mem.indexOf(u8, data[0..@min(len, 32)], "IHDR") != null) return .png;
+            }
+        },
+        .jpeg => {
+            // JPEG: Look for FFD9 trailer (End Of Image)
+            if (len >= 2 and data[len - 2] == 0xFF and data[len - 1] == 0xD9) return .jpeg;
+            // Also look for JFIF or Exif markers in first 32 bytes
+            const header_search = data[0..@min(len, 32)];
+            if (std.mem.indexOf(u8, header_search, "JFIF") != null) return .jpeg;
+            if (std.mem.indexOf(u8, header_search, "Exif") != null) return .jpeg;
+        },
+        .gif => {
+            // GIF: Look for 0x3B (;) trailer
+            if (data[len - 1] == 0x3B) return .gif;
+            // Also check for "GIF8" anywhere in first 16 bytes (covers GIF87a and GIF89a even if first byte corrupted)
+            if (len >= 4 and std.mem.indexOf(u8, data[0..@min(len, 16)], "IF8") != null) return .gif;
+        },
+        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp => {
+            // ZIP: Central directory signature PK\x01\x02 or EOCD PK\x05\x06
+            if (std.mem.indexOf(u8, data, &[_]u8{ 'P', 'K', 0x01, 0x02 }) != null) return hinted_format;
+            if (std.mem.indexOf(u8, data, &[_]u8{ 'P', 'K', 0x05, 0x06 }) != null) return hinted_format;
+            // Also check for local file header PK\x03\x04 after the corrupted first bytes
+            if (len > 8 and std.mem.indexOf(u8, data[1..], &[_]u8{ 'P', 'K', 0x03, 0x04 }) != null) return hinted_format;
+        },
+        .sqlite => {
+            // SQLite: "SQLite format" string should be at offset 0-15, check if partially visible
+            // Also check page size at offset 16-17 (must be power of 2 between 512 and 65536)
+            if (len >= 18) {
+                // Check for partial "SQLite format" string (may be corrupted at start)
+                if (std.mem.indexOf(u8, data[0..@min(len, 32)], "QLite format") != null) return .sqlite;
+                // Check page size - if valid, likely SQLite
+                const page_size = (@as(u16, data[16]) << 8) | data[17];
+                if (page_size >= 512 and page_size <= 65536 and (page_size & (page_size - 1)) == 0) {
+                    // Valid page size, check for more SQLite patterns
+                    if (std.mem.indexOf(u8, data[0..@min(len, 100)], "format") != null) return .sqlite;
+                }
+            }
+        },
+        .mp4, .mov, .m4a, .heic, .avif => {
+            // MP4/MOV: Look for box/atom signatures: ftyp, moov, mdat, free, wide
+            // These appear as 4-byte size followed by 4-byte type
+            const box_types = [_][]const u8{ "ftyp", "moov", "mdat", "free", "wide", "uuid", "meta" };
+            for (box_types) |box_type| {
+                if (std.mem.indexOf(u8, data, box_type) != null) return hinted_format;
+            }
+        },
+        .flac => {
+            // FLAC: Look for "fLaC" marker or METADATA_BLOCK_STREAMINFO (0x00 after fLaC)
+            // Even with corrupted first byte, might find "LaC" in first 8 bytes
+            if (std.mem.indexOf(u8, data[0..@min(len, 8)], "LaC") != null) return .flac;
+        },
+        .mp3 => {
+            // MP3: Look for frame sync (0xFF followed by 0xE* or 0xF*)
+            // Or ID3 tag ("ID3" or "TAG")
+            if (std.mem.indexOf(u8, data[0..@min(len, 16)], "ID3") != null) return .mp3;
+            if (len > 128 and std.mem.eql(u8, data[len - 128 ..][0..3], "TAG")) return .mp3;
+            // Look for frame sync
+            var i: usize = 0;
+            while (i + 1 < @min(len, 8192)) : (i += 1) {
+                if (data[i] == 0xFF and (data[i + 1] & 0xE0) == 0xE0) return .mp3;
+            }
+        },
+        .ogg => {
+            // Ogg: Page sync "OggS" - might find it after corrupted first bytes
+            if (std.mem.indexOf(u8, data[0..@min(len, 64)], "ggS") != null) return .ogg;
+            if (std.mem.indexOf(u8, data[0..@min(len, 64)], "OggS") != null) return .ogg;
+        },
+        .mkv, .webm => {
+            // Matroska/WebM: EBML header ID 0x1A45DFA3, or look for common element IDs
+            // Segment ID: 0x18538067, Cluster ID: 0x1F43B675
+            if (std.mem.indexOf(u8, data[0..@min(len, 64)], &[_]u8{ 0x45, 0xDF, 0xA3 }) != null) return hinted_format;
+            if (std.mem.indexOf(u8, data, &[_]u8{ 0x18, 0x53, 0x80, 0x67 }) != null) return hinted_format;
+        },
+        .avi => {
+            // AVI: RIFF....AVI - look for "AVI " after potential RIFF header
+            if (std.mem.indexOf(u8, data[0..@min(len, 16)], "AVI ") != null) return .avi;
+            if (std.mem.indexOf(u8, data[0..@min(len, 16)], "RIFF") != null) return .avi;
+        },
+        .wav => {
+            // WAV: RIFF....WAVE - look for "WAVE" after potential RIFF header
+            if (std.mem.indexOf(u8, data[0..@min(len, 16)], "WAVE") != null) return .wav;
+        },
+        .rar => {
+            // RAR: Look for "Rar!" signature or RAR5 signature
+            if (std.mem.indexOf(u8, data[0..@min(len, 16)], "ar!") != null) return .rar;
+            if (std.mem.indexOf(u8, data[0..@min(len, 16)], "Rar!") != null) return .rar;
+        },
+        .gzip => {
+            // GZIP: Look for common compressed data patterns or ISIZE at end
+            // GZIP files end with CRC32 (4 bytes) and ISIZE (4 bytes)
+            // Hard to detect without magic, but check for deflate stream markers
+            if (len >= 18) {
+                // Check if second byte is valid GZIP compression method (0x08 = deflate)
+                if (data[1] == 0x08) return .gzip;
+            }
+        },
+        .tiff => {
+            // TIFF: "II" (little endian) or "MM" (big endian) followed by 42 (0x002A)
+            // First bytes might be corrupted, check for 42 at offset 2-3
+            if (len >= 4) {
+                if ((data[2] == 0x2A and data[3] == 0x00) or (data[2] == 0x00 and data[3] == 0x2A)) return .tiff;
+            }
+        },
+        .bmp => {
+            // BMP: "BM" at start, but if corrupted, check for DIB header size at offset 14
+            // Common DIB header sizes: 40, 108, 124 (BITMAPINFOHEADER, BITMAPV4HEADER, BITMAPV5HEADER)
+            if (len >= 18) {
+                const dib_size = @as(u32, data[14]) | (@as(u32, data[15]) << 8) | (@as(u32, data[16]) << 16) | (@as(u32, data[17]) << 24);
+                if (dib_size == 40 or dib_size == 108 or dib_size == 124 or dib_size == 12) return .bmp;
+            }
+        },
+        else => {},
+    }
+
+    return .unknown;
+}
+
+/// Detect format by secondary signatures in file tail (last N bytes).
+/// Used for formats like PDF, JPEG, GIF that have distinctive end markers.
+fn detectFormatBySecondarySignaturesTail(tail_data: []const u8, hinted_format: FileFormat) FileFormat {
+    const len = tail_data.len;
+    if (len < 4) return .unknown;
+
+    switch (hinted_format) {
+        .pdf => {
+            // PDF: Look for %%EOF and startxref near end
+            if (std.mem.indexOf(u8, tail_data, "%%EOF") != null) return .pdf;
+            if (std.mem.indexOf(u8, tail_data, "startxref") != null) return .pdf;
+            if (std.mem.indexOf(u8, tail_data, "trailer") != null) return .pdf;
+        },
+        .jpeg => {
+            // JPEG: FFD9 (End of Image) at the very end
+            if (tail_data[len - 2] == 0xFF and tail_data[len - 1] == 0xD9) return .jpeg;
+        },
+        .gif => {
+            // GIF: 0x3B (;) trailer at the very end
+            if (tail_data[len - 1] == 0x3B) return .gif;
+        },
+        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp => {
+            // ZIP: End of Central Directory signature PK\x05\x06
+            if (std.mem.indexOf(u8, tail_data, &[_]u8{ 'P', 'K', 0x05, 0x06 }) != null) return hinted_format;
+        },
+        else => {},
+    }
 
     return .unknown;
 }
@@ -18608,6 +18783,83 @@ pub const FormatValidator = struct {
             }
         }
 
+        // If format is still unknown but extension suggests a binary format,
+        // try secondary signature detection (trailers, internal patterns).
+        // This handles corrupted magic bytes.
+        if (result.format == .unknown and expected_format != .unknown) {
+            // Check if this is a binary format that might have corrupted magic bytes
+            const is_binary_format = switch (expected_format) {
+                .png, .jpeg, .gif, .bmp, .tiff, .webp, .heic, .avif, .jxl, .exr => true,
+                .pdf, .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp => true,
+                .mp4, .mov, .m4a, .mkv, .webm, .avi, .flv => true,
+                .mp3, .flac, .wav, .ogg, .aiff => true,
+                .sqlite, .rar, .gzip, .bzip2, .xz, .zstd, .sevenz => true,
+                else => false,
+            };
+
+            if (is_binary_format) {
+                // Read file content for secondary signature detection
+                const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+                    return result;
+                };
+                defer reopen_file.close();
+
+                // Get file size to read tail for formats with end signatures (PDF, JPEG, GIF)
+                const file_size = reopen_file.getEndPos() catch {
+                    return result;
+                };
+
+                // Read up to 64KB from start for signature detection
+                var buffer: [65536]u8 = undefined;
+                const bytes_read = reopen_file.read(&buffer) catch {
+                    return result;
+                };
+
+                var secondary_format: FileFormat = .unknown;
+
+                if (bytes_read > 0) {
+                    const data = buffer[0..bytes_read];
+                    secondary_format = detectFormatBySecondarySignatures(data, expected_format);
+                }
+
+                // If not found in start, check file tail for formats with end signatures
+                if (secondary_format == .unknown and file_size > 65536) {
+                    const tail_formats_need_check = switch (expected_format) {
+                        .pdf, .jpeg, .gif, .zip, .epub, .docx, .xlsx, .pptx => true,
+                        else => false,
+                    };
+
+                    if (tail_formats_need_check) {
+                        // Read last 4KB from end of file
+                        var tail_buffer: [4096]u8 = undefined;
+                        const tail_offset = file_size - @min(file_size, 4096);
+                        reopen_file.seekTo(tail_offset) catch {
+                            return result;
+                        };
+                        const tail_read = reopen_file.read(&tail_buffer) catch {
+                            return result;
+                        };
+
+                        if (tail_read > 0) {
+                            const tail_data = tail_buffer[0..tail_read];
+                            secondary_format = detectFormatBySecondarySignaturesTail(tail_data, expected_format);
+                        }
+                    }
+                }
+
+                if (secondary_format != .unknown) {
+                    // Secondary signatures confirm the format despite corrupted magic bytes
+                    // Return valid-with-warning since we can't fully validate without correct magic
+                    // (most format validators check magic bytes and would fail)
+                    result = ValidationResult.ok(secondary_format);
+                    result.malformations.insert(.magic_bytes_corrupted);
+                    // Note: Full structural validation is skipped because validators
+                    // typically require valid magic bytes. The file format is identified
+                    // but may have additional corruption beyond magic bytes.
+                }
+            }
+        }
+
         // For text formats, extension is more reliable than content detection
         // (e.g., .toml file with [section] headers should be TOML, not INI)
         // (e.g., .app file with {} should be Erlang term, not JSON)
@@ -18775,7 +19027,9 @@ pub const FormatValidator = struct {
         }
 
         // If deep validation is enabled, do format-specific deep checks
-        if (self.deep_validation) {
+        // Skip deep validation for files with corrupted magic bytes, as deep validators
+        // typically require valid magic bytes to function correctly
+        if (self.deep_validation and !result.malformations.contains(.magic_bytes_corrupted)) {
             if (result.malformations.contains(.mime_wrapped_content)) {
                 // For MIME-wrapped files, extract content to temp file and validate that
                 const deep_result = validateMimeWrappedDeep(allocator, path, result.format);
@@ -18786,7 +19040,14 @@ pub const FormatValidator = struct {
                 }
                 // If extraction failed, keep structural result (already has mime warning)
             } else {
+                // Preserve malformations from structural validation
+                const structural_malformations = result.malformations;
                 result = self.performDeepValidation(allocator, path, result);
+                // Merge back any malformations from structural validation
+                var iter = structural_malformations.iterator();
+                while (iter.next()) |m| {
+                    result.malformations.insert(m);
+                }
             }
         }
 
