@@ -17,6 +17,12 @@ jobs:
           VALIDATE_NIX: "1"
           DEBUG: "0"
         run: ./build -Dtarget=x86_64-linux-musl
+      - name: Upload Linux binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-linux-x86_64-musl
+          path: zig-out/bin/validate
+          if-no-files-found: error
 
   build-macos-aarch64:
     runs-on: macos-14
@@ -30,6 +36,12 @@ jobs:
           VALIDATE_NIX: "1"
           DEBUG: "0"
         run: ./build -Dtarget=aarch64-macos
+      - name: Upload macOS binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-macos-aarch64
+          path: zig-out/bin/validate
+          if-no-files-found: error
 
   build-windows-x86_64:
     runs-on: windows-latest
@@ -44,3 +56,9 @@ jobs:
           DEBUG: "0"
         shell: bash
         run: ./build -Dtarget=x86_64-windows
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-windows-x86_64
+          path: zig-out/bin/validate.exe
+          if-no-files-found: error

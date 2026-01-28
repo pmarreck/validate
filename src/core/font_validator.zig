@@ -35,6 +35,7 @@ pub const FontValidationResult = struct {
 	num_tables: u16,
 	tables_verified: u16,
 	error_message: ?[]const u8,
+	warning_message: ?[]const u8,
 
 	pub fn ok(font_type: FontType, num_tables: u16, tables_verified: u16) FontValidationResult {
 		return .{
@@ -43,6 +44,18 @@ pub const FontValidationResult = struct {
 			.num_tables = num_tables,
 			.tables_verified = tables_verified,
 			.error_message = null,
+			.warning_message = null,
+		};
+	}
+
+	pub fn okWithWarning(font_type: FontType, num_tables: u16, tables_verified: u16, warning: []const u8) FontValidationResult {
+		return .{
+			.valid = true,
+			.font_type = font_type,
+			.num_tables = num_tables,
+			.tables_verified = tables_verified,
+			.error_message = null,
+			.warning_message = warning,
 		};
 	}
 
@@ -53,6 +66,7 @@ pub const FontValidationResult = struct {
 			.num_tables = 0,
 			.tables_verified = 0,
 			.error_message = msg,
+			.warning_message = null,
 		};
 	}
 };
@@ -163,6 +177,7 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 	var tables_verified: u16 = 0;
 	var head_offset: ?u32 = null;
 	var head_length: ?u32 = null;
+	var head_checksum: ?u32 = null;
 
 	for (0..num_tables) |i| {
 		const record_start = 12 + i * 16;
@@ -174,25 +189,40 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 			return FontValidationResult.invalid("Table extends beyond file");
 		}
 
-		// Remember head table location
+		// Remember head table location and its stored checksum
 		if (std.mem.eql(u8, &record.tag, "head")) {
 			head_offset = record.offset;
 			head_length = record.length;
+			head_checksum = record.checksum;
 		}
 
-		// Verify table checksum (skip head table - it has special handling)
+		// Verify table checksum (skip head table - it has special handling below)
 		if (!options.skip_checksums and !std.mem.eql(u8, &record.tag, "head")) {
 			const table_data = data[record.offset..][0..record.length];
 			const calc_sum = calcChecksum(table_data);
 
 			if (calc_sum != record.checksum) {
 				if (options.checksum_fallback) {
+					// Checksum failed - do structural parsing to determine if data is actually corrupt
 					const fallback = validateTtfOtfWithOptions(data, .{
 						.skip_checksums = true,
 						.checksum_fallback = false,
 					});
-					const combined = checksumMismatchMessage(fallback.error_message);
-					return FontValidationResult.invalid(combined);
+					if (fallback.valid) {
+						// Structural parsing succeeded despite checksum mismatch
+						// This indicates a build-time checksum error, not data corruption
+						// Return valid with warning (data is usable but checksums are wrong)
+						return FontValidationResult.okWithWarning(
+							fallback.font_type.?,
+							fallback.num_tables,
+							fallback.tables_verified,
+							CHECKSUM_FALLBACK_OK,
+						);
+					} else {
+						// Both checksum AND structural parsing failed - actual corruption
+						const combined = checksumMismatchMessage(fallback.error_message);
+						return FontValidationResult.invalid(combined);
+					}
 				}
 				return FontValidationResult.invalid("Table checksum mismatch");
 			}
@@ -218,41 +248,47 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 	// The checkSumAdjustment is at offset 8 in the head table
 	const head_data = data[h_off..][0..h_len];
 
-	// Calculate checksum with checkSumAdjustment zeroed
-	var head_copy: [54]u8 = undefined;
-	const copy_len = @min(54, h_len);
-	@memcpy(head_copy[0..copy_len], head_data[0..copy_len]);
-	// Zero out checkSumAdjustment (bytes 8-11)
-	head_copy[8] = 0;
-	head_copy[9] = 0;
-	head_copy[10] = 0;
-	head_copy[11] = 0;
+	// Verify head table checksum (special handling: checkSumAdjustment treated as 0)
+	// Calculate: actual_checksum - checkSumAdjustment_value = expected_checksum
+	// This is equivalent to computing checksum with bytes 8-11 zeroed
+	if (!options.skip_checksums) {
+		const stored_adjustment = std.mem.readInt(u32, head_data[8..12], .big);
+		const actual_head_sum = calcChecksum(head_data);
+		const expected_head_checksum = actual_head_sum -% stored_adjustment;
 
-	// For full validation, we'd verify the head table checksum
-	// and the whole-file checkSumAdjustment, but the table checksum
-	// verification above is the critical integrity check.
+		if (expected_head_checksum != head_checksum.?) {
+			// Head table checksum mismatch - but structure is valid at this point
+			// Return warning since we've already verified the structure
+			return FontValidationResult.okWithWarning(
+				font_type,
+				num_tables,
+				tables_verified,
+				"head table checksum mismatch (font may have been modified)",
+			);
+		}
+	}
 
-	// Verify whole-file checksum adjustment (optional but thorough)
-	const stored_adjustment = std.mem.readInt(u32, head_data[8..12], .big);
-	const whole_file_sum = calcChecksum(data);
+	// Verify whole-file checksum adjustment
+	if (!options.skip_checksums) {
+		const stored_adj = std.mem.readInt(u32, head_data[8..12], .big);
+		const whole_file_sum = calcChecksum(data);
 
-	// The magic value: whole_file_sum + stored_adjustment should equal 0xB1B0AFBA
-	const expected_sum: u32 = 0xB1B0AFBA;
+		// The magic value: whole_file_sum should equal 0xB1B0AFBA when font is correct.
+		// stored_adjustment = expected_sum - sum_without_adjustment
+		// where sum_without_adjustment = whole_file_sum - stored_adjustment
+		const expected_sum: u32 = 0xB1B0AFBA;
+		const sum_without_adj = whole_file_sum -% stored_adj;
+		const expected_adjustment = expected_sum -% sum_without_adj;
 
-	// If the font is valid, stored_adjustment = expected_sum - (whole_file_sum - stored_adjustment)
-	// This means: whole_file_sum - stored_adjustment + stored_adjustment = whole_file_sum
-	// And whole_file_sum should equal 0xB1B0AFBA when font is correct.
-	// Actually: stored_adjustment = expected_sum - sum_without_adjustment
-	// Let's compute sum without the adjustment field
-	const sum_without_adj = whole_file_sum -% stored_adjustment;
-	const expected_adjustment = expected_sum -% sum_without_adj;
-
-	if (stored_adjustment != expected_adjustment) {
-		// Note: Some fonts have incorrect checksumAdjustment but are still usable.
-		// For strict validation we'd return an error here.
-		// For now, we'll be lenient since table checksums passed.
-		// Uncomment the following line for strict mode:
-		// return FontValidationResult.invalid("Whole-file checksum adjustment invalid");
+		if (stored_adj != expected_adjustment) {
+			// Whole-file checksum adjustment is wrong but structure is valid
+			return FontValidationResult.okWithWarning(
+				font_type,
+				num_tables,
+				tables_verified,
+				"Whole-file checkSumAdjustment invalid (font may have been modified)",
+			);
+		}
 	}
 
 	return FontValidationResult.ok(font_type, num_tables, tables_verified);
@@ -750,8 +786,9 @@ test "validateTtfOtf checksum mismatch reports fallback detail" {
 	data[101] = 4;
 
 	const result = validateTtfOtf(&data);
-	try std.testing.expect(!result.valid);
-	try std.testing.expectEqualStrings(CHECKSUM_FALLBACK_OK, result.error_message.?);
+	// Checksum mismatch with valid structure now returns valid with warning
+	try std.testing.expect(result.valid);
+	try std.testing.expectEqualStrings(CHECKSUM_FALLBACK_OK, result.warning_message.?);
 }
 
 // Type1 PFB tests

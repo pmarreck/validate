@@ -3197,9 +3197,12 @@ fn validateXz(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.xz, "Invalid XZ magic number");
     }
 
-    // Bytes 6-7 are stream flags, should have reserved bits as 0
-    const stream_flags = std.mem.readInt(u16, header[6..8], .little);
-    if (stream_flags & 0xFF00 != 0) {
+    // Bytes 6-7 are stream flags
+    // Byte 6: reserved (must be 0)
+    // Byte 7: bits 0-3 = check type (0-15), bits 4-7 = reserved (must be 0)
+    const reserved_byte = header[6];
+    const check_byte = header[7];
+    if (reserved_byte != 0 or (check_byte & 0xF0) != 0) {
         return ValidationResult.invalid(.xz, "Invalid stream flags");
     }
 
@@ -14421,6 +14424,10 @@ fn validateFontFile(file: std.fs.File, format: FileFormat) ValidationResult {
     };
 
     if (result.valid) {
+        // Check for warnings (e.g., checksum mismatch but structural parsing succeeded)
+        if (result.warning_message) |warning| {
+            return ValidationResult.okWithDepthAndWarning(format, .full, warning);
+        }
         return ValidationResult.okWithDepth(format, .full);
     } else {
         return ValidationResult.invalid(format, result.error_message orelse "Font validation failed");
@@ -30090,4 +30097,79 @@ test "validateBlendFromBuffer matches file validation" {
     const result = validateBlendFromBuffer(&blend_data);
     try std.testing.expectEqual(FileFormat.blend, result.format);
     try std.testing.expect(result.is_valid);
+}
+
+test "PNG file with .ico extension should not hang (extension mismatch)" {
+    // Regression test: A PNG file saved with .ico extension was causing infinite hangs.
+    // This test ensures validation completes within a reasonable time.
+    // Uses a thread with timeout detection to make the test deterministic.
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid PNG (8x8 white image)
+    const png_data = [_]u8{
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+        0x00, 0x00, 0x00, 0x0D, // IHDR length
+        0x49, 0x48, 0x44, 0x52, // "IHDR"
+        0x00, 0x00, 0x00, 0x08, // width: 8
+        0x00, 0x00, 0x00, 0x08, // height: 8
+        0x08, 0x02, // bit depth: 8, color type: 2 (RGB)
+        0x00, 0x00, 0x00, // compression, filter, interlace
+        0x4B, 0x6D, 0x29, 0x53, // IHDR CRC
+        0x00, 0x00, 0x00, 0x00, // IEND length
+        0x49, 0x45, 0x4E, 0x44, // "IEND"
+        0xAE, 0x42, 0x60, 0x82, // IEND CRC
+    };
+
+    // Save PNG data with .ico extension (the problematic case)
+    const file = try tmp_dir.dir.createFile("test_image.ico", .{});
+    try file.writeAll(&png_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test_image.ico");
+    defer allocator.free(path);
+
+    // Use atomic flag to detect completion
+    var completed = std.atomic.Value(bool).init(false);
+    var validation_result: ?ValidationResult = null;
+
+    const ValidationThread = struct {
+        fn run(p: []const u8, result_ptr: *?ValidationResult, done_flag: *std.atomic.Value(bool)) void {
+            var validator = FormatValidator.init();
+            defer validator.deinit();
+            result_ptr.* = validator.validateFile(p);
+            done_flag.store(true, .release);
+        }
+    };
+
+    // Spawn validation in a separate thread
+    const thread = try std.Thread.spawn(.{}, ValidationThread.run, .{ path, &validation_result, &completed });
+
+    // Wait up to 5 seconds for validation to complete
+    const timeout_ns: u64 = 5 * std.time.ns_per_s;
+    const start = std.time.nanoTimestamp();
+
+    while (!completed.load(.acquire)) {
+        const elapsed = @as(u64, @intCast(std.time.nanoTimestamp() - start));
+        if (elapsed > timeout_ns) {
+            // Test fails: validation hung for more than 5 seconds
+            // Note: We can't kill the thread, but test failure is recorded
+            std.debug.print("\nFAILURE: PNG with .ico extension caused validation to hang (>5s)\n", .{});
+            return error.ValidationHung;
+        }
+        std.Thread.sleep(10 * std.time.ns_per_ms); // Check every 10ms
+    }
+
+    // Thread completed - join it
+    thread.join();
+
+    // Validation completed within timeout - verify we got a sensible result
+    // The file should be detected as PNG (magic bytes win) or reported as some kind of result
+    // The key thing is it didn't hang
+    const result = validation_result.?;
+
+    // Should detect as PNG based on magic bytes, not hang trying to validate as ICO
+    try std.testing.expectEqual(FileFormat.png, result.format);
 }

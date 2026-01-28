@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-source "$HOME/dotfiles/bin/src/capture.bash"
+# Source capture.bash from same directory
+source "$(dirname "${BASH_SOURCE[0]}")/capture.bash"
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_unknown.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT

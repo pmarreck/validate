@@ -21,6 +21,21 @@ fn getenvCrossPlatform(comptime name: []const u8) ?[:0]const u8 {
     return std.posix.getenv(name);
 }
 
+/// Check if debug tracing is enabled via VALIDATE_DEBUG env var.
+/// When set, prints each file path to stderr BEFORE validation starts.
+/// This helps identify which file causes hangs or crashes.
+fn isDebugTraceEnabled() bool {
+    const env = getenvCrossPlatform("VALIDATE_DEBUG") orelse return false;
+    return env.len > 0 and env[0] != '0';
+}
+
+/// Print debug trace to stderr (thread-safe via stderr's internal locking)
+fn debugTrace(comptime fmt: []const u8, args: anytype) void {
+    var buf: [4096]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "[DEBUG] " ++ fmt ++ "\n", args) catch return;
+    std.fs.File.stderr().writeAll(msg) catch {};
+}
+
 pub const ValidationCounts = struct {
 	valid: usize = 0,
 	invalid: usize = 0,
@@ -198,8 +213,17 @@ fn workerMain(shared: *Shared) void {
 	var arena = std.heap.ArenaAllocator.init(shared.allocator);
 	defer arena.deinit();
 
+	const debug_enabled = isDebugTraceEnabled();
+
 	while (true) {
 		const item = shared.queue.pop() orelse break;
+
+		// Debug trace: print file path BEFORE validation starts
+		// This helps identify which file causes hangs when VALIDATE_DEBUG=1
+		if (debug_enabled) {
+			debugTrace("START {s}", .{item.path});
+		}
+
 		const start_ns = std.time.nanoTimestamp();
 		const result = if (validator.deep_validation)
 			validator.validateFileDeep(arena.allocator(), item.path)
@@ -207,6 +231,12 @@ fn workerMain(shared: *Shared) void {
 			validator.validateFile(item.path);
 		const elapsed_ns = std.time.nanoTimestamp() - start_ns;
 		const elapsed_seconds = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+
+		// Debug trace: print completion with timing
+		// If you see START without END, that file caused the hang
+		if (debug_enabled) {
+			debugTrace("END   {s} ({d:.3}s)", .{ item.path, elapsed_seconds });
+		}
 
 		shared.counts.add(result);
 

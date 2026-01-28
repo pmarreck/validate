@@ -166,12 +166,45 @@ test_format "par2" "$GT_DIR/par2/sample.par2"
 test_format "pdf" "$GT_DIR/pdf/alice_in_wonderland_illustrated.pdf"
 test_format "xls" "$GT_DIR/ole2/sample.xls"
 test_format "ppt" "$GT_DIR/ole2/sample.ppt"
+test_format "docx" "$GT_DIR/docx/sample.docx"
+test_format "xlsx" "$GT_DIR/xlsx/sample.xlsx"
+test_format "pptx" "$GT_DIR/pptx/sample.pptx"
+test_format "odt" "$GT_DIR/odt/sample.odt"
+test_format "ods" "$GT_DIR/ods/sample.ods"
+test_format "odp" "$GT_DIR/odp/sample.odp"
+test_format "epub" "$GT_DIR/epub/sample.epub"
+test_format "rtf" "$GT_DIR/rtf/sample.rtf"
+
+# Compression
+test_format "gzip" "$GT_DIR/gzip/sample.gz"
+test_format "bzip2" "$GT_DIR/bzip2/sample.bz2"
+test_format "xz" "$GT_DIR/xz/sample.xz"
+test_format "zstd" "$GT_DIR/zstd/sample.zst"
+test_format "tar" "$GT_DIR/tar/sample.tar"
+test_format "7z" "$GT_DIR/7z/sample.7z"
 
 # Database
 test_format "sqlite" "$GT_DIR/sqlite/chinook.sqlite"
 
+# Fonts
+test_format "ttf" "$GT_DIR/ttf/sample.ttf"
+test_format "otf" "$GT_DIR/otf/sample.otf"
+test_format "woff" "$GT_DIR/woff/sample.woff"
+test_format "woff2" "$GT_DIR/woff2/sample.woff2"
+
+# Text/Data formats
+test_format "json" "$GT_DIR/json/sample.json"
+test_format "xml" "$GT_DIR/xml/sample.xml"
+test_format "yaml" "$GT_DIR/yaml/sample.yaml"
+test_format "toml" "$GT_DIR/toml/sample.toml"
+test_format "csv" "$GT_DIR/csv/sample.csv"
+test_format "ini" "$GT_DIR/ini/sample.ini"
+
 # Other
 test_format "jbig2" "$GT_DIR/jbig2/minimal_white_page.jbig2"
+test_format "ico" "$GT_DIR/ico/sample.ico"
+test_format "svg" "$GT_DIR/svg/sample.svg"
+test_format "eml" "$GT_DIR/eml/sample.eml"
 
 echo ""
 echo "==================================="

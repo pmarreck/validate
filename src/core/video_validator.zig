@@ -1200,10 +1200,16 @@ fn detectAviVideoCodec(fourcc: [4]u8) VideoCodec {
 
 /// Validate MJPEG frames from AVI container
 fn validateMjpegFromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStreamInfo, max_frames: u32) VideoValidationResult {
+    // Validate video_stream_id is in valid range (0-99 for two-digit chunk IDs)
+    if (avi_info.video_stream_id >= 100) {
+        return VideoValidationResult.invalid("Video stream ID out of range", .mjpeg);
+    }
+
     // Build the video stream chunk ID (e.g., "00dc" for stream 0)
     var video_chunk_id: [4]u8 = undefined;
-    video_chunk_id[0] = '0' + @as(u8, @intCast(avi_info.video_stream_id / 10));
-    video_chunk_id[1] = '0' + @as(u8, @intCast(avi_info.video_stream_id % 10));
+    const stream_id: u8 = @truncate(avi_info.video_stream_id);
+    video_chunk_id[0] = '0' + (stream_id / 10);
+    video_chunk_id[1] = '0' + (stream_id % 10);
     video_chunk_id[2] = 'd';
     video_chunk_id[3] = 'c'; // Compressed video
 
@@ -1266,10 +1272,16 @@ fn validateMjpegFromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviSt
 
 /// Validate MPEG-1/2 frames from AVI container
 fn validateMpeg12FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStreamInfo, max_frames: u32, codec: VideoCodec) VideoValidationResult {
+    // Validate video_stream_id is in valid range (0-99 for two-digit chunk IDs)
+    if (avi_info.video_stream_id >= 100) {
+        return VideoValidationResult.invalid("Video stream ID out of range", codec);
+    }
+
     // Build the video stream chunk ID
     var video_chunk_id: [4]u8 = undefined;
-    video_chunk_id[0] = '0' + @as(u8, @intCast(avi_info.video_stream_id / 10));
-    video_chunk_id[1] = '0' + @as(u8, @intCast(avi_info.video_stream_id % 10));
+    const stream_id: u8 = @truncate(avi_info.video_stream_id);
+    video_chunk_id[0] = '0' + (stream_id / 10);
+    video_chunk_id[1] = '0' + (stream_id % 10);
     video_chunk_id[2] = 'd';
     video_chunk_id[3] = 'c';
 
@@ -1282,8 +1294,10 @@ fn validateMpeg12FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviS
 
     var frames_collected: u32 = 0;
     const max_video_size: usize = 100 * 1024 * 1024; // 100MB max
+    // Use saturating arithmetic to avoid overflow when max_frames is very large
+    const max_chunks = if (max_frames > std.math.maxInt(u32) / 10) std.math.maxInt(u32) else max_frames * 10;
 
-    while (position < movi_end and frames_collected < max_frames * 10) { // Collect more chunks
+    while (position < movi_end and frames_collected < max_chunks) { // Collect more chunks
         file.seekTo(position) catch break;
 
         var chunk_header: [8]u8 = undefined;
@@ -1326,10 +1340,16 @@ fn validateMpeg12FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviS
 
 /// Validate H.264 frames from AVI container
 fn validateH264FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStreamInfo, max_frames: u32) VideoValidationResult {
+    // Validate video_stream_id is in valid range (0-99 for two-digit chunk IDs)
+    if (avi_info.video_stream_id >= 100) {
+        return VideoValidationResult.invalid("Video stream ID out of range", .h264);
+    }
+
     // Build the video stream chunk ID
     var video_chunk_id: [4]u8 = undefined;
-    video_chunk_id[0] = '0' + @as(u8, @intCast(avi_info.video_stream_id / 10));
-    video_chunk_id[1] = '0' + @as(u8, @intCast(avi_info.video_stream_id % 10));
+    const stream_id: u8 = @truncate(avi_info.video_stream_id);
+    video_chunk_id[0] = '0' + (stream_id / 10);
+    video_chunk_id[1] = '0' + (stream_id % 10);
     video_chunk_id[2] = 'd';
     video_chunk_id[3] = 'c';
 
@@ -1342,8 +1362,10 @@ fn validateH264FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStr
 
     var frames_collected: u32 = 0;
     const max_video_size: usize = 100 * 1024 * 1024; // 100MB max
+    // Use saturating arithmetic to avoid overflow when max_frames is very large
+    const max_chunks = if (max_frames > std.math.maxInt(u32) / 10) std.math.maxInt(u32) else max_frames * 10;
 
-    while (position < movi_end and frames_collected < max_frames * 10) {
+    while (position < movi_end and frames_collected < max_chunks) {
         file.seekTo(position) catch break;
 
         var chunk_header: [8]u8 = undefined;
@@ -1387,12 +1409,18 @@ fn validateH264FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStr
 
 /// Validate MPEG-4 Part 2 frames from AVI container
 fn validateMpeg4P2FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStreamInfo, max_frames: u32) VideoValidationResult {
+    // Validate video_stream_id is in valid range (0-99 for two-digit chunk IDs)
+    if (avi_info.video_stream_id >= 100) {
+        return VideoValidationResult.invalid("Video stream ID out of range", .mpeg4p2);
+    }
+
     // Build the video stream chunk IDs - both dc (compressed) and db (uncompressed/bitmap)
     // Some encoders use 'db' for compressed video despite the naming convention
     var video_chunk_dc: [4]u8 = undefined;
     var video_chunk_db: [4]u8 = undefined;
-    video_chunk_dc[0] = '0' + @as(u8, @intCast(avi_info.video_stream_id / 10));
-    video_chunk_dc[1] = '0' + @as(u8, @intCast(avi_info.video_stream_id % 10));
+    const stream_id: u8 = @truncate(avi_info.video_stream_id);
+    video_chunk_dc[0] = '0' + (stream_id / 10);
+    video_chunk_dc[1] = '0' + (stream_id % 10);
     video_chunk_dc[2] = 'd';
     video_chunk_dc[3] = 'c';
     video_chunk_db[0] = video_chunk_dc[0];
@@ -1409,8 +1437,10 @@ fn validateMpeg4P2FromAvi(allocator: Allocator, file: std.fs.File, avi_info: Avi
 
     var frames_collected: u32 = 0;
     const max_video_size: usize = 100 * 1024 * 1024; // 100MB max
+    // Use saturating arithmetic to avoid overflow when max_frames is very large
+    const max_chunks = if (max_frames > std.math.maxInt(u32) / 10) std.math.maxInt(u32) else max_frames * 10;
 
-    while (position < movi_end and frames_collected < max_frames * 10) {
+    while (position < movi_end and frames_collected < max_chunks) {
         file.seekTo(position) catch break;
 
         var chunk_header: [8]u8 = undefined;

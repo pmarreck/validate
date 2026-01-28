@@ -6,6 +6,20 @@ fi
 
 set -euo pipefail
 
+# Define glob function if not already a function (works with noglob environments)
+# Check specifically for "function" since there may be a glob command in PATH
+if [[ "$(type -t glob 2>/dev/null)" != "function" ]]; then
+	glob() {
+		# Temporarily enable globbing, expand pattern, restore state
+		local noglob_was_set=false
+		[[ $- == *f* ]] && noglob_was_set=true
+		set +f
+		local expanded=($@)
+		$noglob_was_set && set -f
+		printf '%s\n' "${expanded[@]}"
+	}
+fi
+
 unset LD
 unset SDKROOT
 
@@ -35,15 +49,22 @@ if [[ -d tests/cli ]]; then
 	zig build -Doptimize=ReleaseFast
 
 	echo "=== Running CLI tests ==="
+	cli_tests_found=0
 	set +e
 	for test in $(glob tests/cli/*); do
 		if [[ -x "$test" ]]; then
+			((cli_tests_found++))
 			bash "$test"
 			rc=$?
 			cli_failures=$((cli_failures + rc))
 		fi
 	done
 	set -e
+
+	if [[ $cli_tests_found -eq 0 ]]; then
+		echo "=== ERROR: No CLI tests found (glob may have failed) ==="
+		exit 1
+	fi
 
 	if [[ $cli_failures -ne 0 ]]; then
 		echo "=== CLI tests FAILED ($cli_failures failures) ==="
