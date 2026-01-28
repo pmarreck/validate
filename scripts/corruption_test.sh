@@ -171,7 +171,7 @@ test_format "ppt" "$GT_DIR/ole2/sample.ppt"
 test_format "sqlite" "$GT_DIR/sqlite/chinook.sqlite"
 
 # Other
-test_format "jbig2" "$GT_DIR/jbig2/annex-h.jbig2"
+test_format "jbig2" "$GT_DIR/jbig2/minimal_white_page.jbig2"
 
 echo ""
 echo "==================================="
