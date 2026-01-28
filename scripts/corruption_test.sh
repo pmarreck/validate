@@ -57,7 +57,9 @@ test_format() {
         create_corrupted "$src_file" "$corrupt_file" "$i"
 
         local corrupt_result=$($VALIDATE_BIN "$corrupt_file" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
-        if echo "$corrupt_result" | grep -qE "^FAIL|Invalid"; then
+        # Accept FAIL, Invalid, or UNKNOWN as successful corruption detection
+        # UNKNOWN means magic bytes were corrupted enough to prevent format identification
+        if echo "$corrupt_result" | grep -qE "^FAIL|^UNKNOWN|Invalid"; then
             echo "  [x] Corrupt $i rejected"
             ((corrupt_pass++)) || true
         else
@@ -76,6 +78,34 @@ test_format() {
 
     # Return results for checklist update
     echo "$format|$valid_pass|$corrupt_pass|$needs_inquiry" >> /tmp/corruption_results.txt
+}
+
+# Test magic byte corruption specifically
+# Corrupts byte 0 and verifies format becomes UNKNOWN
+test_magic_corruption() {
+    local format="$1"
+    local src_file="$2"
+    local ext="${src_file##*.}"
+    local basename=$(basename "$src_file" ".$ext")
+
+    echo "Testing magic byte corruption for $format: $src_file"
+
+    mkdir -p "$CORRUPT_DIR/$format"
+    local magic_file="$CORRUPT_DIR/$format/${basename}_magic_corrupt.${ext}"
+
+    # Corrupt byte 0 (first magic byte)
+    cp "$src_file" "$magic_file"
+    printf '\x00' | dd of="$magic_file" bs=1 seek=0 count=1 conv=notrunc 2>/dev/null
+
+    local result=$($VALIDATE_BIN "$magic_file" 2>&1 | sed 's/\x1b\[[0-9;]*m//g')
+    if echo "$result" | grep -qE "^UNKNOWN"; then
+        echo "  [x] Magic corruption -> UNKNOWN (expected)"
+    elif echo "$result" | grep -qE "^FAIL"; then
+        echo "  [x] Magic corruption -> FAIL (also acceptable)"
+    else
+        echo "  [?] Magic corruption -> unexpected result: $result"
+    fi
+    echo ""
 }
 
 # Main
@@ -142,6 +172,20 @@ test_format "sqlite" "$GT_DIR/sqlite/chinook.sqlite"
 
 # Other
 test_format "jbig2" "$GT_DIR/jbig2/annex-h.jbig2"
+
+echo ""
+echo "==================================="
+echo "Magic Byte Corruption Tests"
+echo "==================================="
+echo ""
+
+# Test magic byte corruption for key formats
+test_magic_corruption "png" "$GT_DIR/png/generated_text.png"
+test_magic_corruption "jpeg" "$GT_DIR/jpeg/generated_gradient.jpg"
+test_magic_corruption "gif" "$GT_DIR/gif/sample_1.gif"
+test_magic_corruption "zip" "$GT_DIR/zip/test_archive.zip"
+test_magic_corruption "pdf" "$GT_DIR/pdf/alice_in_wonderland_illustrated.pdf"
+test_magic_corruption "sqlite" "$GT_DIR/sqlite/chinook.sqlite"
 
 echo ""
 echo "==================================="
