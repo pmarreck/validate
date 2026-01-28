@@ -685,6 +685,15 @@ pub const MalformationType = enum {
     /// Video uses mixed or nonstandard NAL length prefixes
     /// REPAIRABLE: Re-mux with normalized NAL length prefixes (future work)
     video_mixed_nal_prefix,
+    /// PDF missing trailer dictionary (tolerated by most readers via fallback heuristics)
+    /// REPAIRABLE: Reconstruct trailer from xref stream or embedded hints (future work)
+    pdf_missing_trailer,
+    /// PDF trailer missing required /Size key
+    /// REPAIRABLE: Calculate /Size from xref table entry count (future work)
+    pdf_trailer_missing_size,
+    /// PDF trailer missing required /Root key
+    /// REPAIRABLE: Scan for catalog object and add /Root reference (future work)
+    pdf_trailer_missing_root,
 
     pub fn description(self: MalformationType) []const u8 {
         return switch (self) {
@@ -699,6 +708,9 @@ pub const MalformationType = enum {
             .xml_undefined_entity => "XML entity reference undefined (DTD not validated)",
             .rar_header_crc_mismatch => "RAR header CRC mismatch (player-tolerated)",
             .video_mixed_nal_prefix => "mixed or nonstandard NAL length prefixes (repairable by remux)",
+            .pdf_missing_trailer => "missing trailer dictionary (reader-tolerated)",
+            .pdf_trailer_missing_size => "trailer missing /Size key (reader-tolerated)",
+            .pdf_trailer_missing_root => "trailer missing /Root key (reader-tolerated)",
         };
     }
 };
@@ -16693,24 +16705,25 @@ fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Find and verify trailer dictionary (for traditional xref)
+    // Note: Missing trailer/keys are tolerated by most PDF readers, so we warn instead of fail
     if (is_traditional_xref) {
         // Search for trailer in the tail buffer (before startxref)
         // This is more robust than reading forward from xref_offset, since large PDFs
         // can have xref tables spanning megabytes (e.g., 100K objects = ~2MB xref)
         const trailer_keyword = std.mem.lastIndexOf(u8, trailer_data[0..startxref_pos.?], "trailer");
         if (trailer_keyword == null) {
-            return ValidationResult.invalidWithDepth(.pdf, "Missing trailer dictionary", .full);
-        }
-
-        // Look for required keys in trailer (between "trailer" and "startxref")
-        const after_trailer = trailer_data[trailer_keyword.?..startxref_pos.?];
-        if (std.mem.indexOf(u8, after_trailer, "/Size") == null) {
-            return ValidationResult.invalidWithDepth(.pdf, "Trailer missing /Size key", .full);
-        }
-        // Linearized PDFs have /Root in the main trailer (not the first-page xref trailer at end)
-        // So only check for /Root in non-linearized PDFs
-        if (!is_linearized and std.mem.indexOf(u8, after_trailer, "/Root") == null) {
-            return ValidationResult.invalidWithDepth(.pdf, "Trailer missing /Root key", .full);
+            malformations_local.insert(.pdf_missing_trailer);
+        } else {
+            // Look for required keys in trailer (between "trailer" and "startxref")
+            const after_trailer = trailer_data[trailer_keyword.?..startxref_pos.?];
+            if (std.mem.indexOf(u8, after_trailer, "/Size") == null) {
+                malformations_local.insert(.pdf_trailer_missing_size);
+            }
+            // Linearized PDFs have /Root in the main trailer (not the first-page xref trailer at end)
+            // So only check for /Root in non-linearized PDFs
+            if (!is_linearized and std.mem.indexOf(u8, after_trailer, "/Root") == null) {
+                malformations_local.insert(.pdf_trailer_missing_root);
+            }
         }
         // Note: Encryption is now handled by pdf_image_validator which attempts
         // decryption with empty password before giving up

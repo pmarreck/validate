@@ -82,6 +82,9 @@ pub const EsMalformation = enum(c_int) {
 	xml_undefined_entity = 8,
 	rar_header_crc_mismatch = 9,
 	video_mixed_nal_prefix = 10,
+	pdf_missing_trailer = 11,
+	pdf_trailer_missing_size = 12,
+	pdf_trailer_missing_root = 13,
 };
 
 /// Extended validation result (strings valid until next call on same validator)
@@ -421,6 +424,9 @@ export fn es_malformation_description(malformation: EsMalformation) [*:0]const u
 		.video_mixed_nal_prefix => "mixed or nonstandard NAL length prefixes (repairable by remux)" ++ "",
 		.xml_undefined_entity => "XML entity reference undefined (DTD not validated)" ++ "",
 		.rar_header_crc_mismatch => "RAR header CRC mismatch (player-tolerated)" ++ "",
+		.pdf_missing_trailer => "missing trailer dictionary (reader-tolerated)" ++ "",
+		.pdf_trailer_missing_size => "trailer missing /Size key (reader-tolerated)" ++ "",
+		.pdf_trailer_missing_root => "trailer missing /Root key (reader-tolerated)" ++ "",
 	};
 	return desc.ptr;
 }

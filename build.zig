@@ -452,7 +452,7 @@ pub fn build(b: *std.Build) void {
 
     // Bzip2 benchmark - compares Zig implementation vs system bzip2
     const bench_bzip2_mod = b.createModule(.{
-        .root_source_file = b.path("bench/bench_bzip2.zig"),
+        .root_source_file = b.path("bench/bench/bench_bzip2.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
