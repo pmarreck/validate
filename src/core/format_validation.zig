@@ -2696,13 +2696,19 @@ const PNG_IEND: u32 = 0x49454E44; // IEND
 
 /// Validate PNG file structure.
 fn validatePng(file: std.fs.File) ValidationResult {
-    // Check PNG signature
+    return validatePngWithOptions(file, false);
+}
+
+fn validatePngWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
+    // Check PNG signature (or skip past it if skip_magic is set)
     var signature: [8]u8 = undefined;
     _ = file.read(&signature) catch return ValidationResult.invalid(.png, "Failed to read PNG signature");
 
-    const expected_sig = [_]u8{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
-    if (!std.mem.eql(u8, &signature, &expected_sig)) {
-        return ValidationResult.invalid(.png, "Invalid PNG signature");
+    if (!skip_magic) {
+        const expected_sig = [_]u8{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+        if (!std.mem.eql(u8, &signature, &expected_sig)) {
+            return ValidationResult.invalid(.png, "Invalid PNG signature");
+        }
     }
 
     // Read and validate chunks
@@ -2777,12 +2783,18 @@ fn debugLog(comptime fmt: []const u8, args: anytype) void {
 
 /// Validate JPEG file structure.
 fn validateJpeg(file: std.fs.File) ValidationResult {
-    // Check SOI marker
+    return validateJpegWithOptions(file, false);
+}
+
+fn validateJpegWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
+    // Check SOI marker (or skip past it if skip_magic is set)
     var header: [2]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalid(.jpeg, "Failed to read JPEG header");
 
-    if (header[0] != 0xFF or header[1] != 0xD8) {
-        return ValidationResult.invalid(.jpeg, "Invalid JPEG SOI marker");
+    if (!skip_magic) {
+        if (header[0] != 0xFF or header[1] != 0xD8) {
+            return ValidationResult.invalid(.jpeg, "Invalid JPEG SOI marker");
+        }
     }
 
     // Scan through segments
@@ -2921,16 +2933,22 @@ const ZIP_END_CENTRAL_DIR: u32 = 0x06054B50;
 
 /// Validate ZIP file structure (also handles EPUB, DOCX, XLSX, PPTX).
 fn validateZip(file: std.fs.File, format: FileFormat) ValidationResult {
+    return validateZipWithOptions(file, format, false);
+}
+
+fn validateZipWithOptions(file: std.fs.File, format: FileFormat, skip_magic: bool) ValidationResult {
     // Reset to start
     file.seekTo(0) catch return ValidationResult.invalid(format, "Failed to seek to start");
 
-    // Read first 4 bytes for signature
+    // Read first 4 bytes for signature (or skip past if skip_magic is set)
     var sig: [4]u8 = undefined;
     _ = file.read(&sig) catch return ValidationResult.invalid(format, "Failed to read ZIP signature");
 
-    const signature = std.mem.readInt(u32, &sig, .little);
-    if (signature != ZIP_LOCAL_FILE_HEADER) {
-        return ValidationResult.invalid(format, "Invalid ZIP signature");
+    if (!skip_magic) {
+        const signature = std.mem.readInt(u32, &sig, .little);
+        if (signature != ZIP_LOCAL_FILE_HEADER) {
+            return ValidationResult.invalid(format, "Invalid ZIP signature");
+        }
     }
 
     // Seek to end to find End of Central Directory
@@ -11007,12 +11025,18 @@ fn validatePar2(file: std.fs.File) ValidationResult {
 
 /// Validate PDF file structure.
 fn validatePdf(file: std.fs.File) ValidationResult {
-    // Check header
+    return validatePdfWithOptions(file, false);
+}
+
+fn validatePdfWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
+    // Check header (or skip past it if skip_magic is set)
     var header: [8]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalid(.pdf, "Failed to read PDF header");
 
-    if (!std.mem.startsWith(u8, &header, "%PDF-")) {
-        return ValidationResult.invalid(.pdf, "Invalid PDF header");
+    if (!skip_magic) {
+        if (!std.mem.startsWith(u8, &header, "%PDF-")) {
+            return ValidationResult.invalid(.pdf, "Invalid PDF header");
+        }
     }
 
     // Check for %%EOF at end
@@ -11132,15 +11156,21 @@ fn validateJxl(file: std.fs.File) ValidationResult {
 
 /// Validate GIF file structure.
 fn validateGif(file: std.fs.File) ValidationResult {
-    // Check header (GIF87a or GIF89a)
+    return validateGifWithOptions(file, false);
+}
+
+fn validateGifWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
+    // Check header (GIF87a or GIF89a) - or skip past it if skip_magic is set
     var header: [6]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalid(.gif, "Failed to read GIF header");
 
-    const is_gif87a = std.mem.eql(u8, &header, "GIF87a");
-    const is_gif89a = std.mem.eql(u8, &header, "GIF89a");
+    if (!skip_magic) {
+        const is_gif87a = std.mem.eql(u8, &header, "GIF87a");
+        const is_gif89a = std.mem.eql(u8, &header, "GIF89a");
 
-    if (!is_gif87a and !is_gif89a) {
-        return ValidationResult.invalid(.gif, "Invalid GIF header");
+        if (!is_gif87a and !is_gif89a) {
+            return ValidationResult.invalid(.gif, "Invalid GIF header");
+        }
     }
 
     // Check for trailer (0x3B) near end of file
@@ -14765,6 +14795,10 @@ fn validateWordPerfect(file: std.fs.File) ValidationResult {
 
 /// Validate SQLite database file structure.
 fn validateSqlite(file: std.fs.File) ValidationResult {
+    return validateSqliteWithOptions(file, false);
+}
+
+fn validateSqliteWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
     var header: [100]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalid(.sqlite, "Failed to read SQLite header");
@@ -14774,9 +14808,11 @@ fn validateSqlite(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.sqlite, "File too small for SQLite");
     }
 
-    // Check magic signature: "SQLite format 3\0"
-    if (!std.mem.eql(u8, header[0..16], "SQLite format 3\x00")) {
-        return ValidationResult.invalid(.sqlite, "Invalid SQLite signature");
+    // Check magic signature: "SQLite format 3\0" (or skip if skip_magic is set)
+    if (!skip_magic) {
+        if (!std.mem.eql(u8, header[0..16], "SQLite format 3\x00")) {
+            return ValidationResult.invalid(.sqlite, "Invalid SQLite signature");
+        }
     }
 
     // Page size (bytes 16-17, big-endian): must be power of 2 between 512 and 65536
@@ -18848,14 +18884,40 @@ pub const FormatValidator = struct {
                 }
 
                 if (secondary_format != .unknown) {
-                    // Secondary signatures confirm the format despite corrupted magic bytes
-                    // Return valid-with-warning since we can't fully validate without correct magic
-                    // (most format validators check magic bytes and would fail)
-                    result = ValidationResult.ok(secondary_format);
-                    result.malformations.insert(.magic_bytes_corrupted);
-                    // Note: Full structural validation is skipped because validators
-                    // typically require valid magic bytes. The file format is identified
-                    // but may have additional corruption beyond magic bytes.
+                    // Secondary signatures confirm the format despite corrupted magic bytes.
+                    // Now run structural validation with skip_magic=true to check the rest.
+                    reopen_file.seekTo(0) catch {
+                        return result;
+                    };
+
+                    const skip_magic_result: ?ValidationResult = switch (secondary_format) {
+                        .png => validatePngWithOptions(reopen_file, true),
+                        .jpeg => validateJpegWithOptions(reopen_file, true),
+                        .gif => validateGifWithOptions(reopen_file, true),
+                        .pdf => validatePdfWithOptions(reopen_file, true),
+                        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp => validateZipWithOptions(reopen_file, secondary_format, true),
+                        .sqlite => validateSqliteWithOptions(reopen_file, true),
+                        // For formats without skip_magic support, we can only identify, not validate
+                        else => null,
+                    };
+
+                    if (skip_magic_result) |smr| {
+                        if (smr.is_valid) {
+                            // Structure is valid, only magic bytes are corrupted
+                            // File is INVALID (won't open in apps) but REPAIRABLE (fix magic bytes)
+                            result = ValidationResult.invalid(secondary_format, "magic bytes corrupted (structure valid, repairable)");
+                            result.malformations.insert(.magic_bytes_corrupted);
+                        } else {
+                            // Both magic bytes AND structure are corrupted
+                            result = ValidationResult.invalid(secondary_format, smr.error_message orelse "corrupted structure");
+                            result.malformations.insert(.magic_bytes_corrupted);
+                        }
+                    } else {
+                        // Format doesn't support skip_magic validation
+                        // Report as invalid with magic corruption, structure unknown
+                        result = ValidationResult.invalid(secondary_format, "magic bytes corrupted (structure not validated)");
+                        result.malformations.insert(.magic_bytes_corrupted);
+                    }
                 }
             }
         }

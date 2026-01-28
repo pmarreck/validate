@@ -211,6 +211,15 @@ static void print_validation_result(const char* path, const es_validation_result
 	} else {
 		printf(COLOR_RED "FAIL" COLOR_RESET " %s: %s - %s\n",
 			   path, format_desc, result->error_message ? result->error_message : "Unknown error");
+		// Also show malformations for invalid files (helps diagnose multiple issues)
+		if (has_malformations) {
+			for (int i = 0; i <= ES_MALFORMATION_LAST; i++) {
+				if (result->malformation_bits & (1ULL << i)) {
+					const char* desc = es_malformation_description((es_malformation_t)i);
+					printf("  " COLOR_YELLOW "->" COLOR_RESET " %s\n", desc ? desc : "Unknown issue");
+				}
+			}
+		}
 	}
 }
 
