@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+BIN="./zig-out/bin/validate"
+
+# Determine binary extension for Windows
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]] || [[ -f "$BIN.exe" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+fi
+
+# Create temp directory with test files
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_dir_test.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Create a known valid file (PNG)
+printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82' > "$tmpdir/test.png"
+
+# Test 1: Validate current directory using "."
+echo "Test 1: Validate using '.'"
+cd "$tmpdir"
+output=$("$OLDPWD/$BIN" . 2>&1) || exitcode=$?
+cd "$OLDPWD"
+
+if [[ "${exitcode:-0}" -ne 0 ]] && echo "$output" | grep -q "Failed to validate path"; then
+	printf 'FAIL: "." path failed with: %s\n' "$output" >&2
+	exit 1
+fi
+echo "  PASS: '.' path works"
+
+# Test 2: Validate directory by absolute path
+echo "Test 2: Validate directory by absolute path"
+output=$($BIN "$tmpdir" 2>&1) || exitcode=$?
+
+if [[ "${exitcode:-0}" -ne 0 ]] && echo "$output" | grep -q "Failed to validate path"; then
+	printf 'FAIL: Absolute directory path failed with: %s\n' "$output" >&2
+	exit 1
+fi
+echo "  PASS: Absolute directory path works"
+
+# Test 3: Validate single file
+echo "Test 3: Validate single file"
+output=$($BIN "$tmpdir/test.png" 2>&1) || true
+
+if ! echo "$output" | grep -qi "png\|valid"; then
+	printf 'FAIL: Single file validation failed: %s\n' "$output" >&2
+	exit 1
+fi
+echo "  PASS: Single file validation works"
+
+# Test 4: Path with spaces (create subdir with space)
+echo "Test 4: Path with spaces"
+mkdir "$tmpdir/path with spaces"
+cp "$tmpdir/test.png" "$tmpdir/path with spaces/"
+
+output=$($BIN "$tmpdir/path with spaces" 2>&1) || exitcode=$?
+
+if [[ "${exitcode:-0}" -ne 0 ]] && echo "$output" | grep -q "Failed to validate path"; then
+	printf 'FAIL: Path with spaces failed: %s\n' "$output" >&2
+	exit 1
+fi
+echo "  PASS: Path with spaces works"
+
+# Test 5: Windows-style tests (only on Windows)
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	echo "Test 5: Windows absolute path (C:\...)"
+	# Get Windows-style path
+	winpath=$(cygpath -w "$tmpdir" 2>/dev/null || echo "$tmpdir")
+	output=$($BIN "$winpath" 2>&1) || exitcode=$?
+
+	if [[ "${exitcode:-0}" -ne 0 ]] && echo "$output" | grep -q "Failed to validate path"; then
+		printf 'FAIL: Windows path failed: %s\n' "$output" >&2
+		exit 1
+	fi
+	echo "  PASS: Windows absolute path works"
+fi
+
+echo ""
+echo "All directory validation tests passed!"

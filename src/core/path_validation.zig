@@ -351,7 +351,15 @@ fn statPath(path: []const u8) !std.fs.File.Stat {
 		defer file.close();
 		return file.stat();
 	}
-	return std.fs.cwd().statFile(path);
+	// For relative paths, try as file first, then as directory
+	return std.fs.cwd().statFile(path) catch |err| switch (err) {
+		error.IsDir => {
+			var dir = try std.fs.cwd().openDir(path, .{});
+			defer dir.close();
+			return dir.stat();
+		},
+		else => return err,
+	};
 }
 
 fn getMaxFilesLimit() usize {
@@ -472,4 +480,48 @@ pub fn validatePathParallel(
 	}
 
 	return shared.counts.toCounts();
+}
+
+test "statPath handles current directory" {
+	// "." should work as a directory path
+	const stat = statPath(".") catch |err| {
+		std.debug.print("statPath(\".\") failed with: {}\n", .{err});
+		return err;
+	};
+	try std.testing.expectEqual(std.fs.File.Kind.directory, stat.kind);
+}
+
+test "statPath handles relative directory" {
+	// Create a temp directory to test
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	// Get the relative path name
+	const path = tmp_dir.sub_path[0..];
+
+	// stat should return directory
+	const stat = statPath(path) catch |err| {
+		std.debug.print("statPath relative dir failed with: {}\n", .{err});
+		return err;
+	};
+	try std.testing.expectEqual(std.fs.File.Kind.directory, stat.kind);
+}
+
+test "statPath handles files" {
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	// Create a test file
+	const file = try tmp_dir.dir.createFile("test.txt", .{});
+	file.close();
+
+	// Build the path
+	const full_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, "test.txt");
+	defer std.testing.allocator.free(full_path);
+
+	const stat = statPath(full_path) catch |err| {
+		std.debug.print("statPath file failed with: {}\n", .{err});
+		return err;
+	};
+	try std.testing.expectEqual(std.fs.File.Kind.file, stat.kind);
 }
