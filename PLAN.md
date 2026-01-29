@@ -6,6 +6,12 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
 - [ ] Fix last failed CI build (inspect gh logs, resolve, rerun) (2026-01-26 04:22 EST)
 ## Recently Completed
+- [x] Reach 100 format ground truth coverage with full decode + corruption tests (2026-01-28 23:55 EST)
+- [x] Add 9 new formats: beam, swf, flv, pe, ape, dsf, dff, wad, hdf5 (2026-01-28 23:50 EST)
+- [x] Add corrupted samples for all 10 missing formats (2026-01-28 23:40 EST)
+- [x] Fix DICOM detection priority over TIFF (check offset 128 before offset 0 signatures) (2026-01-28 21:15 EST)
+- [x] Add glTF format detection (distinguish from generic JSON via asset/version/scenes keys) (2026-01-28 21:12 EST)
+- [x] Add OBJ format detection (detect via v/vt/vn/f line patterns instead of plain text) (2026-01-28 21:08 EST)
 - [x] Fix concurrency slowdown: dedicated output thread with result queue (2026-01-27 17:03 EST)
 - [x] Remove JOBS_DEBUG logging hook after confirming 16-core usage (2026-01-27 00:33 EST)
 - [x] Warn on mixed MKV NAL length prefixes (repairable) and add JOBS_DEBUG logging (2026-01-27 00:21 EST)

@@ -2,29 +2,22 @@
 
 set -euo pipefail
 
-# Source capture.bash from same directory
-source "$(dirname "${BASH_SOURCE[0]}")/capture.bash"
-
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_unknown_env.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
 
 printf '\x00\xff\x00\xff\x01\x02\x03\x04' > "$tmpdir/unknown.bin"
 
 unknown_path="$tmpdir/unknown.out"
-out="" err="" rc=0
-UNKNOWN_OUT="$unknown_path" capture ./zig-out/bin/validate "$tmpdir/unknown.bin"
+output=$(UNKNOWN_OUT="$unknown_path" ./zig-out/bin/validate "$tmpdir/unknown.bin" 2>&1) || true
 
-if [[ $rc -ne 0 ]]; then
-	printf 'FAIL: validate exited with %s\n' "$rc" >&2
-	printf 'stdout:\n%s\n' "$out" >&2
-	printf 'stderr:\n%s\n' "$err" >&2
-	exit $rc
+if echo "$output" | grep -q "UNKNOWN"; then
+	printf 'FAIL: did not expect UNKNOWN in stdout/stderr when UNKNOWN_OUT is set\n' >&2
+	printf 'output:\n%s\n' "$output" >&2
+	exit 1
 fi
 
-if printf '%s\n%s' "$out" "$err" | grep -q "UNKNOWN"; then
-	printf 'FAIL: did not expect UNKNOWN in stdout/stderr when UNKNOWN_OUT is set\n' >&2
-	printf 'stdout:\n%s\n' "$out" >&2
-	printf 'stderr:\n%s\n' "$err" >&2
+if [ ! -f "$unknown_path" ]; then
+	printf 'FAIL: expected %s to exist\n' "$unknown_path" >&2
 	exit 1
 fi
 

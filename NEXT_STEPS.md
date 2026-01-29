@@ -2,7 +2,7 @@
 
 ## Completed This Session (2026-01-28)
 
-### 1. Ground Truth Examples Expanded (91 formats now covered)
+### 1. Ground Truth Examples Expanded (100 formats now covered)
 
 Added valid samples and corrupted variants for:
 - **Text formats**: markdown, plain_text, plist, erlang_term, eex
@@ -42,23 +42,48 @@ const depth: ValidationDepth = if (video_result.frames_decoded > 0 and video_res
 
 Applied to MP4, MKV, and AVI validators (lines ~18336, ~18464, ~18528).
 
+### 4. Format Detection Improvements (2026-01-28)
+
+**Fixed high-priority format detection issues:**
+
+1. **OBJ format detection** - ✅ FIXED
+   - Added `isWavefrontObj()` helper in `detectTextFormat()` (line ~2720)
+   - Detects OBJ files by scanning for "v " (vertex), "f " (face), "vt ", "vn ", etc.
+   - Requires at least 2 vertex lines OR (1 vertex + faces/other OBJ directives)
+   - OBJ files now correctly show "Wavefront OBJ 3D Model" instead of "Plain Text"
+
+2. **glTF format detection** - ✅ FIXED
+   - Added `isGltfJson()` helper in `detectTextFormat()` (line ~2820)
+   - Checks for required "asset" + "version" keys
+   - Also checks for glTF-specific keys: scenes, nodes, meshes, accessors, buffers, etc.
+   - glTF files now correctly show "glTF 3D Scene" instead of "JSON"
+
+3. **DICOM detection priority** - ✅ FIXED
+   - Added early check for DICM at offset 128 in `detectFormat()` (line ~1385)
+   - DICOM detection now runs before TIFF magic byte detection
+   - DICOM files with TIFF-like preambles now correctly detected as DICOM
+
+### 5. 100 Format Ground Truth Milestone (2026-01-28)
+
+**Achieved 100 formats with full decode validation + corruption testing!**
+
+**New formats added:**
+- **Bytecode/Executable**: beam (Erlang BEAM), pe (Windows PE executable)
+- **Flash**: swf (Flash SWF), flv (Flash Video)
+- **DSD Audio**: ape (Monkey's Audio), dsf (DSD Stream File), dff (DSDIFF)
+- **Game**: wad (DOOM WAD archive)
+- **Scientific**: hdf5 (HDF5 with h5py-generated sample)
+
+**Stats:**
+- 100 valid format directories
+- 106 corrupted format directories (some formats share base samples)
+- 96 format corruption tests in `scripts/corruption_test.sh`
+- All 791 Zig tests pass
+- All CLI tests pass
+
 ---
 
 ## Known Issues / TODO
-
-### High Priority
-
-1. **OBJ format detection** - Currently detected as "Plain Text" instead of "Wavefront OBJ"
-   - File: `src/core/format_validation.zig` (detectFormat function)
-   - Need to add OBJ-specific detection based on "v ", "vt ", "vn ", "f " lines
-
-2. **glTF format detection** - Currently detected as "JSON" instead of "glTF"
-   - File: `src/core/format_validation.zig`
-   - Need to check for `"asset"` and `"scene"` or `"scenes"` keys in JSON
-
-3. **DICOM detection priority** - Some DICOM files have TIFF-like preambles (II* at offset 0) causing misdetection
-   - DICM signature at offset 128 should take priority
-   - File: `src/core/format_validation.zig` (magic byte detection order)
 
 ### Medium Priority
 

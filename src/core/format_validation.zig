@@ -1380,6 +1380,13 @@ fn detectMatroskaSubformat(file: std.fs.File) FileFormat {
 
 /// Detect file format from first bytes (basic detection).
 pub fn detectFormat(header: []const u8) FileFormat {
+    // DICOM must be checked first: DICOM files have a 128-byte preamble that can contain
+    // arbitrary data (including TIFF-like signatures II* or MM*). The DICM signature at
+    // offset 128 is definitive, so we check it before any offset-0 signatures.
+    if (header.len >= 132 and std.mem.eql(u8, header[128..132], "DICM")) {
+        return .dicom;
+    }
+
     for (magic_signatures) |sig| {
         if (header.len >= sig.offset + sig.bytes.len) {
             if (std.mem.eql(u8, header[sig.offset..][0..sig.bytes.len], sig.bytes)) {
@@ -2527,6 +2534,11 @@ fn detectTextFormat(header: []const u8) ?FileFormat {
         if (j < header.len) {
             // JSON: next char after { and whitespace should be " for object key
             if (header[j] == '"') {
+                // Check for glTF format before returning generic JSON
+                // glTF files are JSON with required "asset" key containing "version"
+                if (isGltfJson(header, i)) {
+                    return .gltf;
+                }
                 return .json;
             }
             // Erlang: next char is lowercase letter (atom) or single quote (quoted atom)
@@ -2679,6 +2691,12 @@ fn detectTextFormat(header: []const u8) ?FileFormat {
         }
     }
 
+    // Wavefront OBJ: text-based 3D model format
+    // Check for OBJ-specific line patterns: "v " (vertex), "f " (face), "vt ", "vn ", etc.
+    if (isWavefrontObj(header, i)) {
+        return .obj;
+    }
+
     // If we get here, the content passed the binary check (few null bytes, mostly printable)
     // but doesn't match any specific text format. Classify as plain text for UTF-8 validation.
     return .plain_text;
@@ -2701,6 +2719,151 @@ fn isEmailHeader(name: []const u8) bool {
 
     // Also check for X- custom headers
     if (name.len >= 2 and (name[0] == 'X' or name[0] == 'x') and name[1] == '-') {
+        return true;
+    }
+
+    return false;
+}
+
+/// Check if header content looks like a Wavefront OBJ file.
+/// OBJ files contain lines starting with: v, vt, vn, f, o, g, mtllib, usemtl, s, #
+/// We look for definitive patterns: "v " followed by coordinates or "f " followed by face indices.
+fn isWavefrontObj(header: []const u8, start_pos: usize) bool {
+    // Count OBJ-specific line beginnings
+    var vertex_lines: u32 = 0;
+    var face_lines: u32 = 0;
+    var other_obj_lines: u32 = 0;
+
+    var i = start_pos;
+    var at_line_start = true;
+
+    while (i < header.len) {
+        if (at_line_start) {
+            const remaining = header.len - i;
+
+            // Check for OBJ line types
+            if (remaining >= 2) {
+                // "v " - vertex (must be followed by space, then numbers)
+                if (header[i] == 'v' and header[i + 1] == ' ') {
+                    // Verify it looks like coordinates: "v 1.0 2.0 3.0"
+                    var j = i + 2;
+                    while (j < header.len and (header[j] == ' ' or header[j] == '\t')) : (j += 1) {}
+                    if (j < header.len and (header[j] == '-' or (header[j] >= '0' and header[j] <= '9'))) {
+                        vertex_lines += 1;
+                    }
+                }
+                // "f " - face (indices)
+                else if (header[i] == 'f' and header[i + 1] == ' ') {
+                    // Verify it looks like indices: "f 1 2 3" or "f 1/1/1 2/2/2 3/3/3"
+                    var j = i + 2;
+                    while (j < header.len and (header[j] == ' ' or header[j] == '\t')) : (j += 1) {}
+                    if (j < header.len and (header[j] >= '0' and header[j] <= '9')) {
+                        face_lines += 1;
+                    }
+                }
+                // "vt " - texture coordinates
+                else if (remaining >= 3 and header[i] == 'v' and header[i + 1] == 't' and header[i + 2] == ' ') {
+                    other_obj_lines += 1;
+                }
+                // "vn " - vertex normals
+                else if (remaining >= 3 and header[i] == 'v' and header[i + 1] == 'n' and header[i + 2] == ' ') {
+                    other_obj_lines += 1;
+                }
+                // "o " - object name
+                else if (header[i] == 'o' and header[i + 1] == ' ') {
+                    other_obj_lines += 1;
+                }
+                // "g " - group name
+                else if (header[i] == 'g' and header[i + 1] == ' ') {
+                    other_obj_lines += 1;
+                }
+                // "s " - smoothing group
+                else if (header[i] == 's' and header[i + 1] == ' ') {
+                    other_obj_lines += 1;
+                }
+                // "# " - comment
+                else if (header[i] == '#' and header[i + 1] == ' ') {
+                    other_obj_lines += 1;
+                }
+            }
+            // Longer keywords
+            if (remaining >= 7 and std.mem.eql(u8, header[i..][0..7], "mtllib ")) {
+                other_obj_lines += 1;
+            } else if (remaining >= 7 and std.mem.eql(u8, header[i..][0..7], "usemtl ")) {
+                other_obj_lines += 1;
+            }
+        }
+
+        // Move to next character, track line starts
+        if (header[i] == '\n') {
+            at_line_start = true;
+        } else if (header[i] != '\r') {
+            at_line_start = false;
+        }
+        i += 1;
+    }
+
+    // OBJ files must have vertices; prefer files that also have faces
+    // Require at least 2 vertex lines OR (1 vertex + some other OBJ directives)
+    if (vertex_lines >= 2) {
+        return true;
+    }
+    if (vertex_lines >= 1 and (face_lines >= 1 or other_obj_lines >= 2)) {
+        return true;
+    }
+
+    return false;
+}
+
+/// Check if header content looks like a glTF (GL Transmission Format) JSON file.
+/// glTF files are JSON with required "asset" key containing "version".
+/// Often also contains "scene" or "scenes" keys.
+fn isGltfJson(header: []const u8, start_pos: usize) bool {
+    const search_area = header[start_pos..];
+
+    // glTF requires "asset" key with "version" field
+    // Look for "asset" key pattern: "asset" followed by colon
+    const has_asset = std.mem.indexOf(u8, search_area, "\"asset\"") != null;
+    if (!has_asset) return false;
+
+    // Must also have "version" somewhere (within the asset object)
+    const has_version = std.mem.indexOf(u8, search_area, "\"version\"") != null;
+    if (!has_version) return false;
+
+    // Additional confidence: check for glTF-specific keys
+    // These are common in glTF but not in generic JSON
+    const has_scene = std.mem.indexOf(u8, search_area, "\"scene\"") != null;
+    const has_scenes = std.mem.indexOf(u8, search_area, "\"scenes\"") != null;
+    const has_nodes = std.mem.indexOf(u8, search_area, "\"nodes\"") != null;
+    const has_meshes = std.mem.indexOf(u8, search_area, "\"meshes\"") != null;
+    const has_accessors = std.mem.indexOf(u8, search_area, "\"accessors\"") != null;
+    const has_bufferviews = std.mem.indexOf(u8, search_area, "\"bufferViews\"") != null;
+    const has_buffers = std.mem.indexOf(u8, search_area, "\"buffers\"") != null;
+    const has_materials = std.mem.indexOf(u8, search_area, "\"materials\"") != null;
+
+    // Count how many glTF-specific keys we found
+    var gltf_keys: u32 = 0;
+    if (has_scene) gltf_keys += 1;
+    if (has_scenes) gltf_keys += 1;
+    if (has_nodes) gltf_keys += 1;
+    if (has_meshes) gltf_keys += 1;
+    if (has_accessors) gltf_keys += 1;
+    if (has_bufferviews) gltf_keys += 1;
+    if (has_buffers) gltf_keys += 1;
+    if (has_materials) gltf_keys += 1;
+
+    // If we found asset + version + at least one glTF-specific key, it's likely glTF
+    // The combination of "asset" + "version" alone could be other formats,
+    // but with scene-related keys it's definitively glTF
+    if (gltf_keys >= 1) {
+        return true;
+    }
+
+    // If asset + version but no other glTF keys, check for generator mentioning glTF
+    // This handles minimal glTF files
+    if (std.mem.indexOf(u8, search_area, "\"generator\"") != null) {
+        // Many glTF exporters put their name in generator, often including "glTF"
+        // But even without that, asset + version + generator is a strong signal
         return true;
     }
 

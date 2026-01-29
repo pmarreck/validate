@@ -257,6 +257,27 @@ test_format "eex" "$GT_DIR/eex/sample.eex"
 
 # Scientific formats
 test_format "fits" "$GT_DIR/fits/sample.fits"
+test_format "hdf5" "$GT_DIR/hdf5/sample.h5"
+
+# 3D formats (additional with OBJ/glTF detection)
+test_format "obj" "$GT_DIR/obj/sample.obj"
+test_format "gltf" "$GT_DIR/gltf/sample.gltf"
+
+# Bytecode/Executable
+test_format "beam" "$GT_DIR/beam/sample.beam"
+test_format "pe" "$GT_DIR/pe/sample.exe"
+
+# Flash formats
+test_format "swf" "$GT_DIR/swf/sample.swf"
+test_format "flv" "$GT_DIR/flv/sample.flv"
+
+# DSD Audio
+test_format "ape" "$GT_DIR/ape/sample.ape"
+test_format "dsf" "$GT_DIR/dsf/sample.dsf"
+test_format "dff" "$GT_DIR/dff/sample.dff"
+
+# Game formats
+test_format "wad" "$GT_DIR/wad/sample.wad"
 
 echo ""
 echo "==================================="
