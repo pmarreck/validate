@@ -12690,7 +12690,7 @@ fn validatePostScript(file: std.fs.File, format: FileFormat) ValidationResult {
 
 /// Deep validation for AI files - validates PDF structure if PDF-based.
 fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.ai, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.ai, "Access denied"),
@@ -12729,7 +12729,7 @@ fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Deep validation for EPS files.
 fn validateEpsDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
-    const file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.eps, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.eps, "Access denied"),
@@ -12887,7 +12887,7 @@ fn validateAep(file: std.fs.File) ValidationResult {
 /// Deep validation for AEP files - validates chunk structure.
 fn validateAepDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
-    const file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.aep, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.aep, "Access denied"),

@@ -98,9 +98,11 @@ pub fn build(b: *std.Build) void {
     }
 
     // Add SIMD sources based on target architecture and feature set
+    // Note: Disable SSE on musl - libde265's SSE code causes GPF due to alignment issues
     const cpu_arch = target.result.cpu.arch;
     const cpu_features = target.result.cpu.features;
-    const has_sse4_1 = (cpu_arch == .x86_64 or cpu_arch == .x86) and
+    const is_musl = target.result.abi == .musl;
+    const has_sse4_1 = !is_musl and (cpu_arch == .x86_64 or cpu_arch == .x86) and
         std.Target.x86.featureSetHas(cpu_features, .sse4_1);
 
     if (has_sse4_1) {
