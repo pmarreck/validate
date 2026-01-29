@@ -18,7 +18,7 @@ jobs:
           path: |
             .zig-cache
             ~/.cache/zig
-          key: zig-linux-musl-${{ hashFiles('build.zig', 'build.zig.zon', 'cli/main.c', 'src/**/*.zig') }}
+          key: zig-linux-musl-${{ hashFiles('build.zig', 'build.zig.zon') }}
           restore-keys: |
             zig-linux-musl-
       - name: Build (linux musl x86_64)
@@ -46,7 +46,7 @@ jobs:
           path: |
             .zig-cache
             ~/Library/Caches/zig
-          key: zig-macos-aarch64-${{ hashFiles('build.zig', 'build.zig.zon', 'cli/main.c', 'src/**/*.zig') }}
+          key: zig-macos-aarch64-${{ hashFiles('build.zig', 'build.zig.zon') }}
           restore-keys: |
             zig-macos-aarch64-
       - name: Build (macOS aarch64)
@@ -74,7 +74,7 @@ jobs:
           path: |
             .zig-cache
             ~/AppData/Local/zig
-          key: zig-windows-x86_64-${{ hashFiles('build.zig', 'build.zig.zon', 'cli/main.c', 'src/**/*.zig') }}
+          key: zig-windows-x86_64-${{ hashFiles('build.zig', 'build.zig.zon') }}
           restore-keys: |
             zig-windows-x86_64-
       - name: Build (windows x86_64)
