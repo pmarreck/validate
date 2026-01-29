@@ -74,10 +74,23 @@ Applied to MP4, MKV, and AVI validators (lines ~18336, ~18464, ~18528).
 - **Game**: wad (DOOM WAD archive)
 - **Scientific**: hdf5 (HDF5 with h5py-generated sample)
 
+### 6. DS_Store Format Support (2026-01-29)
+
+**Added full macOS .DS_Store validation:**
+- Added `ds_store` to FileFormat enum with "macOS DS_Store" description
+- Magic signature detection: `0x00000001` + `"Bud1"`
+- Full structural validation including:
+  - Magic number and Bud1 signature verification
+  - Bookkeeping section offset/size consistency checks
+  - Redundant offset field comparison for corruption detection
+  - Allocation table size sanity checks
+- Ground truth samples added: valid sample + corrupted variants (bad_magic, bad_offset)
+- Added to corruption_test.sh for automated testing
+
 **Stats:**
-- 100 valid format directories
-- 106 corrupted format directories (some formats share base samples)
-- 96 format corruption tests in `scripts/corruption_test.sh`
+- 101 valid format directories (including ds_store)
+- 108 corrupted format directories (some formats share base samples)
+- 97 format corruption tests in `scripts/corruption_test.sh`
 - All 791 Zig tests pass
 - All CLI tests pass
 
