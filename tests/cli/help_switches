@@ -22,11 +22,16 @@ if ! echo "$output" | grep -qE "^[0-9]+\.[0-9]+"; then
 fi
 
 # Test Windows-style switches only on Windows
+# Note: MSYS_NO_PATHCONV prevents Git Bash from converting /help to a Windows path
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	export MSYS_NO_PATHCONV=1
+	export MSYS2_ARG_CONV_EXCL="*"
+
 	for switch in "/help" "/h" "/?"; do
 		output=$($BIN $switch 2>&1) || true
 		if ! echo "$output" | grep -q "USAGE:"; then
 			printf 'FAIL: %s did not show usage\n' "$switch" >&2
+			printf 'output was: %s\n' "$output" >&2
 			exit 1
 		fi
 	done
@@ -37,6 +42,8 @@ if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; t
 		printf 'output: %s\n' "$output" >&2
 		exit 1
 	fi
+
+	printf 'PASS: Windows-style switches work\n'
 fi
 
 printf 'PASS: All help and version switches work\n'
