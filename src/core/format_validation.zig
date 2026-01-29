@@ -684,6 +684,9 @@ pub const MalformationType = enum {
     /// Video decoder could not produce frames, but container/stream is openable
     /// REPAIRABLE: Re-mux or re-encode the video stream (future work)
     video_no_frames_decoded,
+    /// H.264 profile not supported by built-in decoder, ffmpeg not available
+    /// NOT REPAIRABLE: Install ffmpeg on system PATH for full validation
+    video_unsupported_profile_no_ffmpeg,
     /// XML references undefined entity after DOCTYPE stripping
     /// REPAIRABLE: Inline entity definitions or remove entity references (future work)
     xml_undefined_entity,
@@ -734,6 +737,7 @@ pub const MalformationType = enum {
             .pdf_jbig2_truncated => "truncated JBIG2 data in PDF image",
             .pdf_dct_not_jpeg => "DCTDecode image data is not valid JPEG",
             .video_no_frames_decoded => "video decoder produced no frames (player-tolerated)",
+            .video_unsupported_profile_no_ffmpeg => "full validation of this file requires ffmpeg (v4.0+) on PATH due to H.264 profile complexity",
             .xml_undefined_entity => "XML entity reference undefined (DTD not validated)",
             .rar_header_crc_mismatch => "RAR header CRC mismatch (player-tolerated)",
             .video_mixed_nal_prefix => "mixed or nonstandard NAL length prefixes (repairable by remux)",
@@ -18714,6 +18718,11 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
         result.malformations.insert(.video_mixed_nal_prefix);
         result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
     }
+    // Check for unsupported profile warning
+    if (video_result.unsupported_profile_no_ffmpeg) {
+        result.malformations.insert(.video_unsupported_profile_no_ffmpeg);
+        result.warning_message = "full validation of this file requires ffmpeg (v4.0+) on PATH due to H.264 profile complexity";
+    }
     return result;
 }
 
@@ -18841,6 +18850,11 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
         result.malformations.insert(.video_mixed_nal_prefix);
         result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
     }
+    // Check for unsupported profile warning
+    if (video_result.unsupported_profile_no_ffmpeg) {
+        result.malformations.insert(.video_unsupported_profile_no_ffmpeg);
+        result.warning_message = "full validation of this file requires ffmpeg (v4.0+) on PATH due to H.264 profile complexity";
+    }
     return result;
 }
 
@@ -18898,10 +18912,16 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.avi, video_result.error_message orelse "Video validation failed", .full);
     }
 
-    if (video_result.byte_validated) {
-        return ValidationResult.okWithDepth(.avi, .full);
+    var result = if (video_result.byte_validated)
+        ValidationResult.okWithDepth(.avi, .full)
+    else
+        ValidationResult.structuralOnly(.avi);
+    // Check for unsupported profile warning
+    if (video_result.unsupported_profile_no_ffmpeg) {
+        result.malformations.insert(.video_unsupported_profile_no_ffmpeg);
+        result.warning_message = "full validation of this file requires ffmpeg (v4.0+) on PATH due to H.264 profile complexity";
     }
-    return ValidationResult.structuralOnly(.avi);
+    return result;
 }
 
 // ============ UTF-8 Validation ============
@@ -21603,9 +21623,9 @@ fn validateCsv(file: std.fs.File) ValidationResult {
     return ValidationResult.okWithDepth(.csv, .full);
 }
 
-/// Validate plain text file as UTF-8.
-/// Reads entire file (up to 10MB) and validates UTF-8 encoding.
-/// Files larger than 10MB get partial validation with a warning.
+/// Validate plain text file as UTF-8 using streaming validation.
+/// Reads file in chunks and validates UTF-8 encoding throughout.
+/// This allows validating arbitrarily large text files without loading them entirely into memory.
 fn validatePlainText(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
         return ValidationResult.invalid(.plain_text, "Failed to stat file");
@@ -21616,48 +21636,97 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
         return ValidationResult.okWithDepth(.plain_text, .full);
     }
 
-    // For large files, validate a sample
-    const max_validate_size: usize = 10 * 1024 * 1024; // 10MB
-    const validate_size: usize = @intCast(@min(stat.size, max_validate_size));
-    const is_partial = stat.size > max_validate_size;
-
-    // Read file content
-    const content = std.heap.page_allocator.alloc(u8, validate_size) catch {
-        return ValidationResult.invalid(.plain_text, "Failed to allocate memory");
-    };
-    defer std.heap.page_allocator.free(content);
-
     file.seekTo(0) catch {
         return ValidationResult.invalid(.plain_text, "Failed to seek");
     };
 
-    const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.plain_text, "Failed to read file");
-    };
+    // Use a reasonable chunk size for streaming validation
+    const chunk_size: usize = 64 * 1024; // 64KB chunks
+    var buffer: [chunk_size + 4]u8 = undefined; // Extra 4 bytes for pending sequences
 
-    if (bytes_read == 0) {
-        return ValidationResult.okWithDepth(.plain_text, .full);
-    }
+    // Track incomplete multi-byte UTF-8 sequences at chunk boundaries
+    var pending_count: usize = 0;
+    var is_first_chunk = true;
 
-    // Check for BOM and validate UTF-8
-    var start_offset: usize = 0;
-    if (bytes_read >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
-        // UTF-8 BOM - skip it
-        start_offset = 3;
-    }
+    while (true) {
+        // Read into buffer after any pending bytes
+        const bytes_read = file.read(buffer[pending_count..chunk_size + pending_count]) catch {
+            return ValidationResult.invalid(.plain_text, "Failed to read file");
+        };
 
-    // Validate UTF-8 (bails early on first invalid byte)
-    if (isValidUtf8(content[start_offset..bytes_read])) {
-        if (is_partial) {
-            return ValidationResult.okWithDepthAndWarning(.plain_text, .full, "Large file - validated first 10MB only");
+        if (bytes_read == 0) {
+            // End of file - check for incomplete sequence
+            if (pending_count > 0) {
+                return ValidationResult.invalid(.plain_text, "Invalid UTF-8 encoding (truncated sequence at EOF)");
+            }
+            break;
         }
-        return ValidationResult.okWithDepth(.plain_text, .full);
+
+        var data_start: usize = 0;
+        const data_end = pending_count + bytes_read;
+
+        // Handle UTF-8 BOM at start of file
+        if (is_first_chunk) {
+            is_first_chunk = false;
+            if (data_end >= 3 and buffer[0] == 0xEF and buffer[1] == 0xBB and buffer[2] == 0xBF) {
+                data_start = 3;
+            }
+        }
+
+        // Find where complete UTF-8 sequences end
+        // We need to handle the case where a multi-byte sequence spans chunk boundaries
+        var validate_end = data_end;
+
+        // Check last few bytes for incomplete sequences
+        if (validate_end > data_start) {
+            var i = validate_end;
+            while (i > data_start and i > validate_end - 4) {
+                i -= 1;
+                const b = buffer[i];
+                if (b < 0x80) {
+                    // ASCII byte - everything before this is complete
+                    break;
+                } else if ((b & 0xC0) != 0x80) {
+                    // Start of multi-byte sequence
+                    const seq_len = utf8SequenceLength(b);
+                    const remaining = validate_end - i;
+                    if (remaining < seq_len) {
+                        // Incomplete sequence - don't validate past this point
+                        validate_end = i;
+                    }
+                    break;
+                }
+                // Continuation byte - keep going back
+            }
+        }
+
+        // Validate complete sequences
+        if (validate_end > data_start) {
+            if (!isValidUtf8(buffer[data_start..validate_end])) {
+                return ValidationResult.invalid(.plain_text, "Invalid UTF-8 encoding");
+            }
+        }
+
+        // Move any incomplete sequence to start of buffer for next iteration
+        pending_count = data_end - validate_end;
+        if (pending_count > 0) {
+            // Use a temp buffer to avoid overlap issues
+            var temp: [4]u8 = undefined;
+            @memcpy(temp[0..pending_count], buffer[validate_end..data_end]);
+            @memcpy(buffer[0..pending_count], temp[0..pending_count]);
+        }
     }
 
-    // Not valid UTF-8 - check if it might be another encoding
-    // Latin-1 (ISO-8859-1) accepts all byte values 0x00-0xFF, so any file is "valid" Latin-1
-    // We can't distinguish, so just report invalid UTF-8
-    return ValidationResult.invalid(.plain_text, "Invalid UTF-8 encoding");
+    return ValidationResult.okWithDepth(.plain_text, .full);
+}
+
+/// Get the expected length of a UTF-8 sequence from its first byte.
+fn utf8SequenceLength(first_byte: u8) u8 {
+    if (first_byte < 0x80) return 1;
+    if ((first_byte & 0xE0) == 0xC0) return 2;
+    if ((first_byte & 0xF0) == 0xE0) return 3;
+    if ((first_byte & 0xF8) == 0xF0) return 4;
+    return 1; // Invalid, but return 1 to avoid infinite loops
 }
 
 /// Detect CSV delimiter by analyzing first line
@@ -30780,44 +30849,57 @@ test "PNG file with .ico extension should not hang (extension mismatch)" {
     const path = try tmp_dir.dir.realpathAlloc(allocator, "test_image.ico");
     defer allocator.free(path);
 
-    // Use atomic flag to detect completion
-    var completed = std.atomic.Value(bool).init(false);
-    var validation_result: ?ValidationResult = null;
+    // Heap-allocated shared state to prevent use-after-free if timeout occurs.
+    // The thread owns this memory and frees it when done.
+    const SharedState = struct {
+        completed: std.atomic.Value(bool),
+        validation_result: ?ValidationResult,
+        path: []const u8,
 
-    const ValidationThread = struct {
-        fn run(p: []const u8, result_ptr: *?ValidationResult, done_flag: *std.atomic.Value(bool)) void {
+        fn run(self: *@This()) void {
             var validator = FormatValidator.init();
             defer validator.deinit();
-            result_ptr.* = validator.validateFile(p);
-            done_flag.store(true, .release);
+            self.validation_result = validator.validateFile(self.path);
+            self.completed.store(true, .release);
         }
     };
 
+    const shared = try allocator.create(SharedState);
+    shared.* = .{
+        .completed = std.atomic.Value(bool).init(false),
+        .validation_result = null,
+        .path = path,
+    };
+    // Note: shared is freed by the test after join, or leaked on timeout (acceptable for tests)
+
     // Spawn validation in a separate thread
-    const thread = try std.Thread.spawn(.{}, ValidationThread.run, .{ path, &validation_result, &completed });
+    const thread = try std.Thread.spawn(.{}, SharedState.run, .{shared});
 
     // Wait up to 5 seconds for validation to complete
     const timeout_ns: u64 = 5 * std.time.ns_per_s;
     const start = std.time.nanoTimestamp();
 
-    while (!completed.load(.acquire)) {
+    while (!shared.completed.load(.acquire)) {
         const elapsed = @as(u64, @intCast(std.time.nanoTimestamp() - start));
         if (elapsed > timeout_ns) {
             // Test fails: validation hung for more than 5 seconds
-            // Note: We can't kill the thread, but test failure is recorded
+            // Note: We detach the thread and leak shared state to avoid use-after-free.
+            // This is acceptable for a test that fails anyway.
+            thread.detach();
             std.debug.print("\nFAILURE: PNG with .ico extension caused validation to hang (>5s)\n", .{});
             return error.ValidationHung;
         }
         std.Thread.sleep(10 * std.time.ns_per_ms); // Check every 10ms
     }
 
-    // Thread completed - join it
+    // Thread completed - join it and free shared state
     thread.join();
+    defer allocator.destroy(shared);
 
     // Validation completed within timeout - verify we got a sensible result
     // The file should be detected as PNG (magic bytes win) or reported as some kind of result
     // The key thing is it didn't hang
-    const result = validation_result.?;
+    const result = shared.validation_result.?;
 
     // Should detect as PNG based on magic bytes, not hang trying to validate as ICO
     try std.testing.expectEqual(FileFormat.png, result.format);

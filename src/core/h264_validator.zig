@@ -7,8 +7,15 @@
 //! Supported inputs:
 //! - Raw H.264 NAL unit streams (Annex B format with start codes)
 //! - NAL units extracted from MP4/MKV containers
+//!
+//! Thread safety: Decoder operations are serialized via a global mutex from
+//! video_validator.zig to prevent potential thread safety issues with C libraries.
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+// Import video validator for the Windows mutex guard
+const video_validator = @import("video_validator.zig");
 
 // Import OpenH264 decoder API
 const openh264 = @cImport({
@@ -58,6 +65,10 @@ pub fn validateH264Stream(data: []const u8, max_frames: u32) H264ValidationResul
     if (!hasAnnexBStartCode(data)) {
         return H264ValidationResult.invalid("Missing Annex B start code");
     }
+
+    // Acquire mutex to prevent thread safety issues with OpenH264
+    const guard = video_validator.VideoDecoderGuard.acquire();
+    defer guard.release();
 
     // Create decoder
     // OpenH264 uses C++ vtable pattern. In C:

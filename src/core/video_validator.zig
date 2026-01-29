@@ -15,10 +15,170 @@
 //! - H.264/AVC (via OpenH264)
 //! - Motion JPEG (via libjpeg-turbo)
 //! - ProRes (pure Zig structural validation)
+//!
+//! Thread safety: Video codec operations are serialized via a global mutex to
+//! prevent potential thread safety issues with C library global state initialization.
+//! C libraries like libde265, dav1d, OpenH264 may not be fully thread-safe for
+//! concurrent decoder creation/destruction. This may reduce parallelism but ensures
+//! stability across all platforms.
 
 const std = @import("std");
 const builtin = @import("builtin");
+
+/// Global mutex for serializing video decoder operations.
+/// C libraries like libde265, dav1d, OpenH264 may have thread safety issues
+/// with global state initialization that can affect any platform.
+var video_decoder_mutex: std.Thread.Mutex = .{};
+
+/// RAII guard for holding the video decoder mutex.
+/// Ensures only one thread at a time can use video decoders.
+pub const VideoDecoderGuard = struct {
+    pub fn acquire() VideoDecoderGuard {
+        video_decoder_mutex.lock();
+        return .{};
+    }
+
+    pub fn release(self: VideoDecoderGuard) void {
+        _ = self;
+        video_decoder_mutex.unlock();
+    }
+};
 const Allocator = std.mem.Allocator;
+
+/// Minimum required ffmpeg major version
+const MIN_FFMPEG_VERSION: u32 = 4;
+
+/// Cached result of ffprobe availability check
+var ffprobe_available: ?bool = null;
+var ffprobe_check_mutex: std.Thread.Mutex = .{};
+
+/// Parse ffmpeg/ffprobe version from output string
+/// Expected format: "ffprobe version N.M ..." or "ffprobe version nN.M ..."
+fn parseFfmpegVersion(output: []const u8) ?u32 {
+    // Find "version " in output
+    const version_prefix = "version ";
+    const version_start = std.mem.indexOf(u8, output, version_prefix) orelse return null;
+    var pos = version_start + version_prefix.len;
+
+    // Skip optional 'n' prefix (e.g., "n6.1")
+    if (pos < output.len and output[pos] == 'n') {
+        pos += 1;
+    }
+
+    // Parse major version number
+    var major: u32 = 0;
+    while (pos < output.len and output[pos] >= '0' and output[pos] <= '9') {
+        major = major * 10 + (output[pos] - '0');
+        pos += 1;
+    }
+
+    if (major == 0) return null;
+    return major;
+}
+
+/// Check if ffprobe/ffmpeg is available on the system PATH with minimum version
+fn isFfprobeAvailable() bool {
+    ffprobe_check_mutex.lock();
+    defer ffprobe_check_mutex.unlock();
+
+    if (ffprobe_available) |available| {
+        return available;
+    }
+
+    // On Windows, explicitly use .exe extension for reliability
+    const ffprobe_cmd = if (comptime builtin.os.tag == .windows) "ffprobe.exe" else "ffprobe";
+
+    // Try to run ffprobe -version
+    // Note: ffprobe -version output can be very long due to configuration details
+    const result = std.process.Child.run(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &[_][]const u8{ ffprobe_cmd, "-version" },
+        .max_output_bytes = 16 * 1024, // 16KB to handle verbose config output
+    }) catch {
+        ffprobe_available = false;
+        return false;
+    };
+    defer std.heap.page_allocator.free(result.stdout);
+    defer std.heap.page_allocator.free(result.stderr);
+
+    // Check exit code
+    const exit_ok = switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+    if (!exit_ok) {
+        ffprobe_available = false;
+        return false;
+    }
+
+    // Check version is at least MIN_FFMPEG_VERSION
+    const version = parseFfmpegVersion(result.stdout) orelse {
+        ffprobe_available = false;
+        return false;
+    };
+
+    ffprobe_available = (version >= MIN_FFMPEG_VERSION);
+    return ffprobe_available.?;
+}
+
+/// Result of ffprobe validation
+const FfprobeValidationResult = struct {
+    valid: bool,
+    error_message: ?[]const u8,
+    frames_decoded: u32,
+};
+
+/// Validate video file using ffprobe/ffmpeg (for unsupported H.264 profiles)
+/// This does a full decode check by having ffmpeg decode the video to null output
+fn validateWithFfprobe(allocator: Allocator, file_path: []const u8) FfprobeValidationResult {
+    // Use ffmpeg to decode video to null - this validates the entire stream
+    // ffmpeg -v error -i input.mp4 -f null -
+    // If there are decode errors, they'll be in stderr
+
+    const path_z = allocator.dupeZ(u8, file_path) catch {
+        return .{ .valid = false, .error_message = "Memory allocation failed", .frames_decoded = 0 };
+    };
+    defer allocator.free(path_z);
+
+    // On Windows, explicitly use .exe extension for reliability
+    const ffmpeg_cmd = if (comptime builtin.os.tag == .windows) "ffmpeg.exe" else "ffmpeg";
+    // On Windows, null device is NUL, on Unix it's /dev/null, but -f null - works cross-platform
+    const null_output = if (comptime builtin.os.tag == .windows) "NUL" else "-";
+
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{
+            ffmpeg_cmd,
+            "-v", "error",           // Only show errors
+            "-i", path_z,            // Input file
+            "-f", "null",            // Output format null (discard)
+            null_output,             // Output destination
+        },
+        .max_output_bytes = 64 * 1024, // 64KB for error messages
+    }) catch |err| {
+        const msg = switch (err) {
+            error.FileNotFound => "ffmpeg not found on PATH",
+            else => "Failed to run ffmpeg",
+        };
+        return .{ .valid = false, .error_message = msg, .frames_decoded = 0 };
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Check exit status
+    const exit_code = switch (result.term) {
+        .Exited => |code| code,
+        else => 1,
+    };
+
+    if (exit_code == 0 and result.stderr.len == 0) {
+        // Success - ffmpeg decoded without errors
+        return .{ .valid = true, .error_message = null, .frames_decoded = 1 };
+    }
+
+    // There were errors - file is likely corrupt
+    return .{ .valid = false, .error_message = "ffmpeg decode failed (video may be corrupt)", .frames_decoded = 0 };
+}
 
 /// Cross-platform getenv that returns null on Windows (where std.posix.getenv is unavailable).
 fn getenvCrossPlatform(comptime name: []const u8) ?[:0]const u8 {
@@ -86,6 +246,9 @@ pub const VideoValidationResult = struct {
 	frames_decoded: u32,
 	byte_validated: bool,
 	mixed_nal_prefix: bool = false,
+	/// Set when H.264 profile is unsupported and ffmpeg is not available
+	/// This means only structural validation was performed
+	unsupported_profile_no_ffmpeg: bool = false,
 
 	pub fn okDecoded(codec: VideoCodec, frames: u32) VideoValidationResult {
 		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = false, .mixed_nal_prefix = false };
@@ -102,6 +265,18 @@ pub const VideoValidationResult = struct {
 	pub fn skipped(message: []const u8) VideoValidationResult {
 		return .{ .valid = true, .error_message = message, .codec = .unknown, .frames_decoded = 0, .byte_validated = false, .mixed_nal_prefix = false };
 	}
+
+	pub fn structuralOnlyUnsupportedProfile(codec: VideoCodec) VideoValidationResult {
+		return .{
+			.valid = true,
+			.error_message = null,
+			.codec = codec,
+			.frames_decoded = 0,
+			.byte_validated = false,
+			.mixed_nal_prefix = false,
+			.unsupported_profile_no_ffmpeg = true,
+		};
+	}
 };
 
 /// Validate HEVC bitstream using libde265.
@@ -110,6 +285,10 @@ pub fn validateHevcStream(data: []const u8, max_frames: u32) VideoValidationResu
     if (data.len < 4) {
         return VideoValidationResult.invalid("Data too small for HEVC", .hevc);
     }
+
+    // Acquire mutex to prevent thread safety issues with libde265
+    const guard = VideoDecoderGuard.acquire();
+    defer guard.release();
 
     // Create decoder context
     const ctx = de265.de265_new_decoder();
@@ -160,9 +339,14 @@ pub fn validateHevcStream(data: []const u8, max_frames: u32) VideoValidationResu
 /// Validate AV1 bitstream using dav1d.
 /// Decodes up to max_frames to verify integrity.
 pub fn validateAv1Stream(allocator: Allocator, data: []const u8, max_frames: u32) VideoValidationResult {
+    _ = allocator;
     if (data.len < 4) {
         return VideoValidationResult.invalid("Data too small for AV1", .av1);
     }
+
+    // Acquire mutex to prevent thread safety issues with dav1d
+    const guard = VideoDecoderGuard.acquire();
+    defer guard.release();
 
     // Initialize dav1d settings
     var settings: dav1d.Dav1dSettings = undefined;
@@ -456,6 +640,26 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
         }
     }
     defer if (codec_private != null) allocator.free(codec_private.?.data);
+
+    // Check for unsupported H.264 profile - use three-tier fallback
+    if (video_codec == .h264 and codec_private != null and !codec_private.?.isH264ProfileSupported()) {
+        // Tier 2: Try ffprobe/ffmpeg if available
+        if (isFfprobeAvailable()) {
+            const ffprobe_result = validateWithFfprobe(allocator, path);
+            if (ffprobe_result.valid) {
+                // ffmpeg performs full decoding, so this is byte-validated
+                return VideoValidationResult.okByteValidated(.h264, ffprobe_result.frames_decoded);
+            } else {
+                return VideoValidationResult.invalid(
+                    ffprobe_result.error_message orelse "ffmpeg validation failed",
+                    .h264,
+                );
+            }
+        }
+
+        // Tier 3: Structural validation only - set flag for warning message
+        return VideoValidationResult.structuralOnlyUnsupportedProfile(.h264);
+    }
 
     var byte_validated = false;
 
@@ -1504,6 +1708,32 @@ pub fn validateH264Stream(data: []const u8, max_frames: u32) VideoValidationResu
 pub const CodecPrivateData = struct {
     data: []u8,
     nal_length_size: u8,
+    /// H.264 profile indication (from avcC), 0 if not applicable
+    h264_profile: u8 = 0,
+
+    /// Check if H.264 profile is supported by OpenH264
+    pub fn isH264ProfileSupported(self: @This()) bool {
+        return switch (self.h264_profile) {
+            66, 77, 100 => true, // Baseline, Main, High
+            0 => true, // Not H.264 or unknown
+            else => false,
+        };
+    }
+
+    /// Get H.264 profile description
+    pub fn h264ProfileDescription(self: @This()) []const u8 {
+        return switch (self.h264_profile) {
+            66 => "Baseline",
+            77 => "Main",
+            88 => "Extended (unsupported)",
+            100 => "High",
+            110 => "High 10 (unsupported - 10-bit)",
+            122 => "High 4:2:2 (unsupported)",
+            244 => "High 4:4:4 (unsupported)",
+            0 => "unknown",
+            else => "unknown/unsupported",
+        };
+    }
 };
 
 /// MP4 Sample Table structures for frame extraction
@@ -2255,6 +2485,7 @@ fn parseAvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
     var header: [6]u8 = undefined;
     if ((file.read(&header) catch return null) < 6) return null;
 
+    const profile_idc: u8 = header[1]; // AVCProfileIndication
     const nal_length_size: u8 = (header[4] & 0x03) + 1;
     const num_sps = header[5] & 0x1F;
 
@@ -2300,6 +2531,7 @@ fn parseAvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
     return CodecPrivateData{
         .data = output.toOwnedSlice(allocator) catch return null,
         .nal_length_size = nal_length_size,
+        .h264_profile = profile_idc,
     };
 }
 
