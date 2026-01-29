@@ -4,7 +4,7 @@ set -euo pipefail
 
 BIN="./zig-out/bin/validate"
 
-# Test Unix-style help switches
+# Test Unix-style help switches (work on all platforms)
 for switch in "--help" "-h"; do
 	output=$($BIN $switch 2>&1) || true
 	if ! echo "$output" | grep -q "USAGE:"; then
@@ -13,23 +13,30 @@ for switch in "--help" "-h"; do
 	fi
 done
 
-# Test Windows-style help switches (accepted on all platforms)
-for switch in "/help" "/h" "/?"; do
-	output=$($BIN $switch 2>&1) || true
-	if ! echo "$output" | grep -q "USAGE:"; then
-		printf 'FAIL: %s did not show usage\n' "$switch" >&2
-		exit 1
-	fi
-done
+# Test Unix-style version switch
+output=$($BIN --version 2>&1) || true
+if ! echo "$output" | grep -qE "^[0-9]+\.[0-9]+"; then
+	printf 'FAIL: --version did not show version\n' >&2
+	printf 'output: %s\n' "$output" >&2
+	exit 1
+fi
 
-# Test version switches
-for switch in "--version" "/version"; do
-	output=$($BIN $switch 2>&1) || true
+# Test Windows-style switches only on Windows
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	for switch in "/help" "/h" "/?"; do
+		output=$($BIN $switch 2>&1) || true
+		if ! echo "$output" | grep -q "USAGE:"; then
+			printf 'FAIL: %s did not show usage\n' "$switch" >&2
+			exit 1
+		fi
+	done
+
+	output=$($BIN /version 2>&1) || true
 	if ! echo "$output" | grep -qE "^[0-9]+\.[0-9]+"; then
-		printf 'FAIL: %s did not show version\n' "$switch" >&2
+		printf 'FAIL: /version did not show version\n' >&2
 		printf 'output: %s\n' "$output" >&2
 		exit 1
 	fi
-done
+fi
 
 printf 'PASS: All help and version switches work\n'

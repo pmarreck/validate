@@ -388,20 +388,30 @@ int main(int argc, char* argv[]) {
 
 	for (int i = 1; i < argc; i++) {
 		const char* arg = argv[i];
-		/* Help: --help, -h, /help, /h, /? */
-		if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0 ||
-		    strcmp(arg, "/help") == 0 || strcmp(arg, "/h") == 0 || strcmp(arg, "/?") == 0) {
+		/* Help: --help, -h (and /help, /h, /? on Windows) */
+		if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0
+#ifdef _WIN32
+		    || strcmp(arg, "/help") == 0 || strcmp(arg, "/h") == 0 || strcmp(arg, "/?") == 0
+#endif
+		) {
 			print_usage(argv[0]);
 			return 0;
 		}
-		/* Version: --version, /version */
-		if (strcmp(arg, "--version") == 0 || strcmp(arg, "/version") == 0) {
+		/* Version: --version (and /version on Windows) */
+		if (strcmp(arg, "--version") == 0
+#ifdef _WIN32
+		    || strcmp(arg, "/version") == 0
+#endif
+		) {
 			printf("%s\n", es_core_version());
 			return 0;
 		}
-		/* Jobs: --jobs, -j, /jobs, /j */
-		if (strcmp(arg, "--jobs") == 0 || strcmp(arg, "-j") == 0 ||
-		    strcmp(arg, "/jobs") == 0 || strcmp(arg, "/j") == 0) {
+		/* Jobs: --jobs, -j (and /jobs, /j on Windows) */
+		if (strcmp(arg, "--jobs") == 0 || strcmp(arg, "-j") == 0
+#ifdef _WIN32
+		    || strcmp(arg, "/jobs") == 0 || strcmp(arg, "/j") == 0
+#endif
+		) {
 			if (i + 1 >= argc) {
 				fprintf(stderr, COLOR_RED "Error: --jobs requires a value\n" COLOR_RESET);
 				return 2;
@@ -409,7 +419,7 @@ int main(int argc, char* argv[]) {
 			jobs = (size_t)strtoull(argv[++i], NULL, 10);
 			continue;
 		}
-		/* Unknown option check - Unix style always, Windows (/) style only on Windows */
+		/* Unknown option check */
 		if (arg[0] == '-') {
 			fprintf(stderr, COLOR_RED "Error: Unknown option: %s\n" COLOR_RESET, arg);
 			return 2;
