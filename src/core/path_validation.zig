@@ -452,11 +452,61 @@ test "default job count is at least 1" {
 	try std.testing.expect(getDefaultJobCount() >= 1);
 }
 
+/// Options for parallel path validation
+pub const ValidationOptions = struct {
+	/// Number of worker threads (0 = auto-detect based on CPU count)
+	jobs: usize = 0,
+	/// Shuffle file order before validation (helps expose race conditions)
+	shuffle: bool = false,
+	/// Random seed for shuffling (0 = use system time)
+	seed: u64 = 0,
+};
+
+/// Fisher-Yates shuffle for work items
+fn shuffleWorkItems(items: []WorkItem, seed: u64) void {
+	if (items.len <= 1) return;
+
+	// Use provided seed or generate from timestamp
+	const actual_seed = if (seed != 0) seed else blk: {
+		const ts = std.time.nanoTimestamp();
+		// Truncate i128 to u64 - we only need entropy, not the full value
+		break :blk @as(u64, @truncate(@as(u128, @bitCast(ts))));
+	};
+
+	var prng = std.Random.DefaultPrng.init(actual_seed);
+	const random = prng.random();
+
+	var i: usize = items.len - 1;
+	while (i > 0) : (i -= 1) {
+		const j = random.uintLessThan(usize, i + 1);
+		const tmp = items[i];
+		items[i] = items[j];
+		items[j] = tmp;
+	}
+}
+
+/// Backwards-compatible wrapper for validatePathParallelEx
 pub fn validatePathParallel(
 	allocator: Allocator,
 	validator_template: FormatValidator,
 	path: []const u8,
 	jobs: ?usize,
+	callback: ?ValidationCallback,
+	callback_ctx: ?*anyopaque,
+) !ValidationCounts {
+	return validatePathParallelEx(allocator, validator_template, path, .{
+		.jobs = jobs orelse 0,
+		.shuffle = false,
+		.seed = 0,
+	}, callback, callback_ctx);
+}
+
+/// Validates a file or directory tree using parallel workers with extended options.
+pub fn validatePathParallelEx(
+	allocator: Allocator,
+	validator_template: FormatValidator,
+	path: []const u8,
+	options: ValidationOptions,
 	callback: ?ValidationCallback,
 	callback_ctx: ?*anyopaque,
 ) !ValidationCounts {
@@ -490,9 +540,8 @@ pub fn validatePathParallel(
 		.allocator = allocator,
 	};
 
-	const requested_jobs = jobs orelse 0;
 	const cpu_count = getDefaultJobCount();
-	const job_count = @max(@as(usize, 1), if (requested_jobs == 0) cpu_count else requested_jobs);
+	const job_count = @max(@as(usize, 1), if (options.jobs == 0) cpu_count else options.jobs);
 
 	// Spawn output thread first (if callback is provided)
 	const output_thread: ?std.Thread = if (callback != null)
@@ -513,23 +562,43 @@ pub fn validatePathParallel(
 	var walker = try dir.walk(allocator);
 	defer walker.deinit();
 
-	var queued_files: usize = 0;
+	// Collect files into a list first (needed for shuffling)
+	var work_items: std.ArrayListUnmanaged(WorkItem) = .{};
+	defer {
+		// Free any items that weren't pushed (e.g., on error)
+		for (work_items.items) |item| {
+			allocator.free(item.path);
+			allocator.free(item.display_path);
+		}
+		work_items.deinit(allocator);
+	}
 
 	while (try walker.next()) |entry| {
 		if (!shouldValidateFile(entry.kind)) {
 			continue;
 		}
-		if (queued_files >= max_files_limit) {
+		if (work_items.items.len >= max_files_limit) {
 			break;
 		}
 		const display_path = try allocator.dupe(u8, entry.path);
 		const full_path = try std.fs.path.join(allocator, &.{ path, entry.path });
-		try queue.push(.{
+		try work_items.append(allocator, .{
 			.path = full_path,
 			.display_path = display_path,
 		});
-		queued_files += 1;
 	}
+
+	// Shuffle if requested
+	if (options.shuffle and work_items.items.len > 1) {
+		shuffleWorkItems(work_items.items, options.seed);
+	}
+
+	// Push all items to the work queue
+	for (work_items.items) |item| {
+		try queue.push(item);
+	}
+	// Clear the list so we don't double-free in defer
+	work_items.clearRetainingCapacity();
 
 	// Close work queue - workers exit when empty
 	queue.close();

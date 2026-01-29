@@ -413,6 +413,80 @@ export fn es_format_validate_path_parallel(
 	return 0;
 }
 
+/// Validation options for parallel path validation
+pub const EsValidationOptions = extern struct {
+	/// Number of worker threads (0 = auto-detect based on CPU count)
+	jobs: usize = 0,
+	/// Shuffle file order before validation (helps expose race conditions)
+	shuffle: c_int = 0,
+	/// Random seed for shuffling (0 = use system time)
+	seed: u64 = 0,
+};
+
+/// Validates a file or directory tree using parallel workers with extended options.
+export fn es_format_validate_path_parallel_ex(
+	validator: ?*EsFormatValidator,
+	path: ?[*:0]const u8,
+	options: *const EsValidationOptions,
+	callback: EsValidationCallback,
+	user_data: ?*anyopaque,
+	out_counts: *EsValidationCounts,
+) i32 {
+	const v = validator orelse {
+		errors.setLastError(.internal_unexpected, "NULL validator handle", .{});
+		return 9001;
+	};
+
+	const p = path orelse {
+		errors.setLastError(.validation_invalid_path, "NULL path", .{});
+		return 9001;
+	};
+
+	var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+	defer _ = gpa.deinit();
+	const allocator = gpa.allocator();
+
+	const path_slice = std.mem.span(p);
+
+	var ctx = CallbackContext{
+		.validator = v,
+		.callback = callback,
+		.user_data = user_data,
+	};
+
+	const zig_options = path_validation.ValidationOptions{
+		.jobs = options.jobs,
+		.shuffle = options.shuffle != 0,
+		.seed = options.seed,
+	};
+
+	const counts = path_validation.validatePathParallelEx(
+		allocator,
+		v.validator,
+		path_slice,
+		zig_options,
+		if (callback == null) null else onValidation,
+		if (callback == null) null else @as(?*anyopaque, @ptrCast(&ctx)),
+	) catch |err| {
+		const err_name = @errorName(err);
+		switch (err) {
+			error.FileNotFound => errors.setLastError(.validation_invalid_path, "Path not found", .{}),
+			error.AccessDenied => errors.setLastError(.io_permission_denied, "Access denied ({s})", .{err_name}),
+			error.Unsupported => errors.setLastError(.validation_invalid_path, "Unsupported path type", .{}),
+			else => errors.setLastError(.internal_unexpected, "Failed to validate path ({s})", .{err_name}),
+		}
+		return 9001;
+	};
+
+	out_counts.* = .{
+		.valid_count = counts.valid,
+		.invalid_count = counts.invalid,
+		.unknown_count = counts.unknown,
+	};
+
+	return 0;
+}
+
 /// Gets description for a malformation type.
 export fn es_malformation_description(malformation: EsMalformation) [*:0]const u8 {
 	const desc: [:0]const u8 = switch (malformation) {

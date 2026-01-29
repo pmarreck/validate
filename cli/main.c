@@ -303,7 +303,7 @@ static void on_validation(
 	log_mem_telemetry(display_path, result, elapsed_seconds);
 }
 
-static int validate_path(const char* path, size_t jobs) {
+static int validate_path(const char* path, size_t jobs, int shuffle, size_t stress_iterations) {
 	struct stat st;
 	if (stat(path, &st) != 0) {
 		fprintf(stderr, "%sError: Cannot access path: %s\n%s", COLOR_RED, path, COLOR_RESET);
@@ -326,43 +326,74 @@ static int validate_path(const char* path, size_t jobs) {
 	}
 
 	es_validation_counts_t counts = {0};
+	es_validation_counts_t total_counts = {0};
 	int failures = 0;
 
-	if (S_ISDIR(st.st_mode)) {
-		printf("Validating: %s\n\n", path);
-		err = es_format_validate_path_parallel(validator, path, jobs, on_validation, NULL, &counts);
-	} else if (S_ISREG(st.st_mode)) {
-		printf("Checking: %s\n", path);
-		err = es_format_validate_path_parallel(validator, path, jobs, on_validation, NULL, &counts);
-	} else {
-		fprintf(stderr, "%sError: Unsupported path type: %s\n%s", COLOR_RED, path, COLOR_RESET);
-		es_format_validator_destroy(validator);
-		shutdown_unknown_out();
-		return 1;
-	}
+	/* Prepare options */
+	es_validation_options_t options = {0};
+	options.jobs = jobs;
+	options.shuffle = shuffle || (stress_iterations > 1); /* Always shuffle in stress mode */
+	options.seed = 0; /* Use system time */
 
-	if (err != ES_OK) {
-		fprintf(stderr, "%sError: Validation failed: %s\n%s", COLOR_RED,
-			es_core_last_error() ? es_core_last_error() : "unknown error", COLOR_RESET);
-		fflush(stderr);
-		es_format_validator_destroy(validator);
-		shutdown_unknown_out();
-		return 1;
+	const size_t iterations = (stress_iterations > 0) ? stress_iterations : 1;
+
+	for (size_t iter = 0; iter < iterations; iter++) {
+		if (stress_iterations > 1) {
+			printf("%s=== Stress iteration %zu/%zu ===%s\n", COLOR_CYAN, iter + 1, iterations, COLOR_RESET);
+			/* Use different seed each iteration */
+			options.seed = (uint64_t)iter + 1;
+		}
+
+		counts = (es_validation_counts_t){0};
+
+		if (S_ISDIR(st.st_mode)) {
+			if (iter == 0) {
+				printf("Validating: %s%s\n\n", path, options.shuffle ? " (shuffled)" : "");
+			}
+			err = es_format_validate_path_parallel_ex(validator, path, &options, on_validation, NULL, &counts);
+		} else if (S_ISREG(st.st_mode)) {
+			printf("Checking: %s\n", path);
+			err = es_format_validate_path_parallel_ex(validator, path, &options, on_validation, NULL, &counts);
+		} else {
+			fprintf(stderr, "%sError: Unsupported path type: %s\n%s", COLOR_RED, path, COLOR_RESET);
+			es_format_validator_destroy(validator);
+			shutdown_unknown_out();
+			return 1;
+		}
+
+		if (err != ES_OK) {
+			fprintf(stderr, "%sError: Validation failed: %s\n%s", COLOR_RED,
+				es_core_last_error() ? es_core_last_error() : "unknown error", COLOR_RESET);
+			fflush(stderr);
+			es_format_validator_destroy(validator);
+			shutdown_unknown_out();
+			return 1;
+		}
+
+		total_counts.valid_count += counts.valid_count;
+		total_counts.invalid_count += counts.invalid_count;
+		total_counts.unknown_count += counts.unknown_count;
+
+		if (counts.invalid_count > 0) {
+			failures = 1;
+		}
 	}
 
 	es_format_validator_destroy(validator);
 
-	/* Git repository validation (only if .git exists at root) */
+	/* Use total_counts for summary in stress mode, otherwise use last counts */
+	es_validation_counts_t* summary_counts = (stress_iterations > 1) ? &total_counts : &counts;
+
+	/* Git repository validation (only if .git exists at root, and not in stress mode) */
 	int git_checked = 0;
 	int git_failed = 0;
-	{
+	if (stress_iterations <= 1) {
 		const char* git_suffix = "/.git";
 		size_t path_len = strlen(path);
 		size_t suffix_len = strlen(git_suffix);
 		char* git_path = (char*)malloc(path_len + suffix_len + 1);
 		if (!git_path) {
 			fprintf(stderr, "%sError: Out of memory while building git path\n%s", COLOR_RED, COLOR_RESET);
-			es_format_validator_destroy(validator);
 			shutdown_unknown_out();
 			return 1;
 		}
@@ -394,13 +425,16 @@ static int validate_path(const char* path, size_t jobs) {
 	}
 
 	printf("\n%sSummary:%s\n", COLOR_CYAN, COLOR_RESET);
-	printf("  Valid:   %s%zu%s\n", COLOR_GREEN, counts.valid_count, COLOR_RESET);
-	if (counts.invalid_count > 0) {
-		printf("  Invalid: %s%zu%s\n", COLOR_RED, counts.invalid_count, COLOR_RESET);
-	} else {
-		printf("  Invalid: %zu\n", counts.invalid_count);
+	if (stress_iterations > 1) {
+		printf("  Iterations: %zu\n", stress_iterations);
 	}
-	printf("  Unknown: %zu\n", counts.unknown_count);
+	printf("  Valid:   %s%zu%s\n", COLOR_GREEN, summary_counts->valid_count, COLOR_RESET);
+	if (summary_counts->invalid_count > 0) {
+		printf("  Invalid: %s%zu%s\n", COLOR_RED, summary_counts->invalid_count, COLOR_RESET);
+	} else {
+		printf("  Invalid: %zu\n", summary_counts->invalid_count);
+	}
+	printf("  Unknown: %zu\n", summary_counts->unknown_count);
 	if (git_checked) {
 		if (git_failed) {
 			printf("  Git repo: %sCORRUPT%s\n", COLOR_RED, COLOR_RESET);
@@ -409,10 +443,11 @@ static int validate_path(const char* path, size_t jobs) {
 		}
 	}
 
-	if (counts.invalid_count > 0 || git_failed) {
+	if (summary_counts->invalid_count > 0 || git_failed) {
 		failures = 1;
 	}
 
+	shutdown_unknown_out();
 	return failures;
 }
 
@@ -427,12 +462,16 @@ static void print_usage(const char* program) {
 	printf("    /?, /h, /help, --help Show this help\n");
 	printf("    /j N, /jobs N         Number of parallel workers (0 = auto)\n");
 	printf("    --no-color            Disable colored output\n");
+	printf("    --shuffle             Shuffle file order (helps expose race conditions)\n");
+	printf("    --stress N            Repeat validation N times with shuffling\n");
 #else
 	printf("    --version    Print version\n");
 	printf("    --help       Show this help\n");
 	printf("    --jobs N     Number of parallel workers (0 = auto)\n");
 	printf("    -j N         Alias for --jobs\n");
 	printf("    --no-color   Disable colored output\n");
+	printf("    --shuffle    Shuffle file order (helps expose race conditions)\n");
+	printf("    --stress N   Repeat validation N times with shuffling\n");
 #endif
 	printf("\n");
 	printf("ENVIRONMENT:\n");
@@ -452,6 +491,8 @@ int main(int argc, char* argv[]) {
 	}
 
 	size_t jobs = 0;
+	int shuffle = 0;
+	size_t stress_iterations = 0;
 	const char* path = NULL;
 
 	for (int i = 1; i < argc; i++) {
@@ -473,6 +514,24 @@ int main(int argc, char* argv[]) {
 		) {
 			printf("%s\n", es_core_version());
 			return 0;
+		}
+		/* Shuffle: --shuffle */
+		if (strcmp(arg, "--shuffle") == 0) {
+			shuffle = 1;
+			continue;
+		}
+		/* Stress: --stress N */
+		if (strcmp(arg, "--stress") == 0) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "%sError: --stress requires a value\n%s", COLOR_RED, COLOR_RESET);
+				return 2;
+			}
+			stress_iterations = (size_t)strtoull(argv[++i], NULL, 10);
+			if (stress_iterations == 0) {
+				fprintf(stderr, "%sError: --stress value must be > 0\n%s", COLOR_RED, COLOR_RESET);
+				return 2;
+			}
+			continue;
 		}
 		/* Jobs: --jobs, -j (and /jobs, /j on Windows) */
 		if (strcmp(arg, "--jobs") == 0 || strcmp(arg, "-j") == 0
@@ -513,8 +572,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	init_mem_telemetry();
-	int rc = validate_path(path, jobs);
+	int rc = validate_path(path, jobs, shuffle, stress_iterations);
 	shutdown_mem_telemetry();
-	shutdown_unknown_out();
 	return rc;
 }

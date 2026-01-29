@@ -246,6 +246,34 @@ es_error_t es_format_validate_path_parallel(
 );
 
 /**
+ * Validation options for parallel path validation.
+ */
+typedef struct {
+    size_t jobs;    /**< Number of worker threads (0 = auto) */
+    int shuffle;    /**< Shuffle file order before validation (helps expose race conditions) */
+    uint64_t seed;  /**< Random seed for shuffling (0 = use system time) */
+} es_validation_options_t;
+
+/**
+ * Validates a file or directory tree using parallel workers with extended options.
+ * @param validator The validator handle.
+ * @param path File or directory path (null-terminated).
+ * @param options Validation options.
+ * @param callback Callback invoked for each file (may be NULL).
+ * @param user_data User-provided callback context.
+ * @param out_counts Pointer to receive aggregate counts.
+ * @return ES_OK on success.
+ */
+es_error_t es_format_validate_path_parallel_ex(
+    es_format_validator_t* validator,
+    const char* path,
+    const es_validation_options_t* options,
+    es_validation_callback_t callback,
+    void* user_data,
+    es_validation_counts_t* out_counts
+);
+
+/**
  * Gets description for a malformation type.
  * @param malformation The malformation enum.
  * @return Null-terminated description string.
