@@ -279,6 +279,9 @@ test_format "dff" "$GT_DIR/dff/sample.dff"
 # Game formats
 test_format "wad" "$GT_DIR/wad/sample.wad"
 
+# Apple system formats
+test_format "ds_store" "$GT_DIR/ds_store/sample.ds_store"
+
 echo ""
 echo "==================================="
 echo "Magic Byte Corruption Tests"
@@ -292,6 +295,7 @@ test_magic_corruption "gif" "$GT_DIR/gif/sample_1.gif"
 test_magic_corruption "zip" "$GT_DIR/zip/test_archive.zip"
 test_magic_corruption "pdf" "$GT_DIR/pdf/alice_in_wonderland_illustrated.pdf"
 test_magic_corruption "sqlite" "$GT_DIR/sqlite/chinook.sqlite"
+test_magic_corruption "ds_store" "$GT_DIR/ds_store/sample.ds_store"
 
 echo ""
 echo "==================================="
