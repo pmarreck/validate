@@ -364,6 +364,7 @@ pub const FileFormat = enum {
     csv, // Comma-Separated Values
     // Apple formats
     plist, // Apple Property List (XML or binary)
+    ds_store, // macOS .DS_Store (Desktop Services Store)
     // Executable formats
     pe, // Windows PE (Portable Executable) - .exe, .dll, .sys, .scr
 
@@ -525,6 +526,7 @@ pub const FileFormat = enum {
             .ico => "Windows Icon",
             .csv => "CSV Data",
             .plist => "Apple Property List",
+            .ds_store => "macOS DS_Store",
             .pe => "Windows PE Executable",
         };
     }
@@ -577,6 +579,7 @@ pub const FileFormat = enum {
             .ico => true, // Windows ICO icon format
             .csv => true, // CSV structural validation
             .plist => true, // Apple Property List (XML or binary)
+            .ds_store => true, // macOS DS_Store (structural only)
             .pe => true, // Windows PE executable
             .unknown => false,
         };
@@ -1209,6 +1212,8 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x00, 0x00, 0x01, 0x00 }, .offset = 0, .format = .ico },
     // Binary plist: "bplist00" (version 00)
     .{ .bytes = "bplist00", .offset = 0, .format = .plist },
+    // macOS .DS_Store: 0x00000001 + "Bud1"
+    .{ .bytes = &[_]u8{ 0x00, 0x00, 0x00, 0x01 } ++ "Bud1", .offset = 0, .format = .ds_store },
 };
 
 /// Extended format detection for formats that need more than magic bytes.
@@ -19850,6 +19855,7 @@ pub const FormatValidator = struct {
             .csv => validateCsv(file),
             // Apple formats
             .plist => validatePlist(file),
+            .ds_store => validateDsStore(file),
             // Executable formats
             .pe => validatePe(file),
             .unknown => validateUnknownWithUtf8Fallback(file),
@@ -21433,6 +21439,105 @@ fn validatePlist(file: std.fs.File) ValidationResult {
 
     // Otherwise, assume XML plist
     return validateXmlPlist(file, stat.size);
+}
+
+/// Validate macOS .DS_Store file (Desktop Services Store)
+/// DS_Store files store custom folder attributes (icon positions, view settings, etc.)
+/// Format: 0x00000001 (big-endian) + "Bud1" magic + allocator + B-tree structure
+fn validateDsStore(file: std.fs.File) ValidationResult {
+    const stat = file.stat() catch {
+        return ValidationResult.invalid(.ds_store, "Failed to stat file");
+    };
+
+    // Minimum size: header (32 bytes minimum)
+    if (stat.size < 32) {
+        return ValidationResult.invalid(.ds_store, "File too small for DS_Store format");
+    }
+
+    // Read header
+    var header: [32]u8 = undefined;
+    file.seekTo(0) catch {
+        return ValidationResult.invalid(.ds_store, "Failed to seek to start");
+    };
+    const bytes_read = file.readAll(&header) catch {
+        return ValidationResult.invalid(.ds_store, "Failed to read header");
+    };
+
+    if (bytes_read < 32) {
+        return ValidationResult.invalid(.ds_store, "Truncated header");
+    }
+
+    // Verify magic: 0x00000001 (big-endian) + "Bud1"
+    if (!std.mem.eql(u8, header[0..4], &[_]u8{ 0x00, 0x00, 0x00, 0x01 })) {
+        return ValidationResult.invalid(.ds_store, "Invalid DS_Store magic number");
+    }
+    if (!std.mem.eql(u8, header[4..8], "Bud1")) {
+        return ValidationResult.invalid(.ds_store, "Invalid DS_Store Bud1 signature");
+    }
+
+    // Header structure (all big-endian):
+    // 0-3: magic (0x00000001)
+    // 4-7: "Bud1"
+    // 8-11: offset to bookkeeping section
+    // 12-15: size of bookkeeping section
+    // 16-19: offset to bookkeeping section (redundant copy)
+    // 20-31: additional header fields
+
+    const bookkeeping_offset = std.mem.readInt(u32, header[8..12], .big);
+    const bookkeeping_size = std.mem.readInt(u32, header[12..16], .big);
+    const bookkeeping_offset_copy = std.mem.readInt(u32, header[16..20], .big);
+
+    // Sanity checks
+    if (bookkeeping_offset > stat.size) {
+        return ValidationResult.invalid(.ds_store, "Bookkeeping offset exceeds file size");
+    }
+    if (bookkeeping_size > stat.size) {
+        return ValidationResult.invalid(.ds_store, "Bookkeeping size exceeds file size");
+    }
+    if (bookkeeping_offset != bookkeeping_offset_copy) {
+        // The two offset fields should match - if not, file might be corrupted
+        return ValidationResult.okWithWarning(.ds_store, "Bookkeeping offset mismatch (possible corruption)");
+    }
+
+    // Read bookkeeping section header
+    // Bookkeeping section structure:
+    // 0-3: unknown (usually 0)
+    // 4-7: number of block allocations
+    // 8+: block allocation table entries
+
+    if (bookkeeping_offset + 8 > stat.size) {
+        return ValidationResult.invalid(.ds_store, "Bookkeeping section truncated");
+    }
+
+    file.seekTo(bookkeeping_offset) catch {
+        return ValidationResult.invalid(.ds_store, "Failed to seek to bookkeeping");
+    };
+
+    var bk_header: [16]u8 = undefined;
+    const bk_read = file.read(&bk_header) catch {
+        return ValidationResult.invalid(.ds_store, "Failed to read bookkeeping");
+    };
+
+    if (bk_read < 8) {
+        return ValidationResult.invalid(.ds_store, "Truncated bookkeeping header");
+    }
+
+    // Block allocation count at offset 4
+    const num_allocations = std.mem.readInt(u32, bk_header[4..8], .big);
+
+    // Sanity check - a DS_Store shouldn't have millions of allocations
+    if (num_allocations > 100000) {
+        return ValidationResult.invalid(.ds_store, "Unreasonably large allocation count");
+    }
+
+    // Each allocation entry is 4 bytes, so verify we have enough room
+    const alloc_table_size = num_allocations * 4;
+    if (bookkeeping_offset + 8 + alloc_table_size > stat.size) {
+        return ValidationResult.invalid(.ds_store, "Allocation table extends beyond file");
+    }
+
+    // Full validation passed - magic verified, header consistent, allocation table size reasonable
+    return ValidationResult.okWithDepth(.ds_store, .full);
 }
 
 /// Validate binary plist format (bplist00/bplist01)
