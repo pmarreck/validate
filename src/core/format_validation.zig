@@ -702,6 +702,24 @@ pub const MalformationType = enum {
     /// Magic bytes corrupted but format identified via extension and secondary signatures
     /// REPAIRABLE: Restore correct magic bytes for the detected format
     magic_bytes_corrupted,
+    /// PDF embedded DCTDecode JPEG is truncated (incomplete scan data)
+    /// REPAIRABLE: Re-fetch or reconstruct missing JPEG tail bytes (future work)
+    pdf_dct_truncated,
+    /// PDF embedded JPEG2000 (JPXDecode) validation failed
+    /// REPAIRABLE: Re-encode or repair the J2K codestream (future work)
+    pdf_jpx_decode_failed,
+    /// PDF embedded CCITT fax (CCITTFaxDecode) validation failed
+    /// REPAIRABLE: Re-encode as CCITT G4 or convert to lossless format (future work)
+    pdf_ccitt_decode_failed,
+    /// PDF embedded FlateDecode stream decompression failed
+    /// REPAIRABLE: Re-fetch or reconstruct zlib stream (future work)
+    pdf_flate_decode_failed,
+    /// PDF embedded LZW stream decompression failed
+    /// REPAIRABLE: Re-encode with FlateDecode or repair LZW data (future work)
+    pdf_lzw_decode_failed,
+    /// PDF embedded JBIG2 decode failed (other than truncation)
+    /// REPAIRABLE: Re-encode as CCITT G4 or repair JBIG2 segments (future work)
+    pdf_jbig2_decode_failed,
 
     pub fn description(self: MalformationType) []const u8 {
         return switch (self) {
@@ -720,6 +738,12 @@ pub const MalformationType = enum {
             .pdf_trailer_missing_size => "trailer missing /Size key (reader-tolerated)",
             .pdf_trailer_missing_root => "trailer missing /Root key (reader-tolerated)",
             .magic_bytes_corrupted => "magic bytes corrupted (identified via extension and secondary signatures)",
+            .pdf_dct_truncated => "embedded JPEG is truncated (reader-tolerated)",
+            .pdf_jpx_decode_failed => "embedded JPEG2000 decode failed (reader-tolerated)",
+            .pdf_ccitt_decode_failed => "embedded CCITT fax decode failed (reader-tolerated)",
+            .pdf_flate_decode_failed => "embedded FlateDecode stream corrupted (reader-tolerated)",
+            .pdf_lzw_decode_failed => "embedded LZW stream corrupted (reader-tolerated)",
+            .pdf_jbig2_decode_failed => "embedded JBIG2 decode failed (reader-tolerated)",
         };
     }
 };
@@ -893,13 +917,69 @@ fn toleratedPdfImageFailures(result: pdf_image_validator.PdfImageValidationResul
 	for (result.results) |res| {
 		if (res.valid) continue;
 		const msg = res.error_message orelse return null;
-		if (std.mem.indexOf(u8, msg, "Truncated JBIG2") != null) {
-			malformations.insert(.pdf_jbig2_truncated);
-		} else if (std.mem.startsWith(u8, msg, "Not a JPEG file")) {
-			malformations.insert(.pdf_dct_not_jpeg);
+
+		// Categorize the error for potential future repair
+		// Each category represents a specific type of corruption that could be fixed
+		const malformation_type: ?MalformationType = blk: {
+			// JBIG2 errors
+			if (std.mem.indexOf(u8, msg, "Truncated JBIG2") != null) {
+				break :blk .pdf_jbig2_truncated;
+			}
+			if (std.mem.indexOf(u8, msg, "JBIG2") != null) {
+				break :blk .pdf_jbig2_decode_failed;
+			}
+
+			// DCT/JPEG errors - "Not a JPEG file" means wrong magic bytes or encrypted
+			if (std.mem.startsWith(u8, msg, "Not a JPEG file")) {
+				break :blk .pdf_dct_not_jpeg;
+			}
+			// Other JPEG errors (truncation, Huffman errors, etc.) from libjpeg-turbo
+			if (res.filter == .dct_decode) {
+				// Check for specific truncation indicators
+				if (std.mem.indexOf(u8, msg, "Truncated") != null or
+				    std.mem.indexOf(u8, msg, "truncated") != null or
+				    std.mem.indexOf(u8, msg, "Premature end") != null or
+				    std.mem.indexOf(u8, msg, "Incomplete") != null or
+				    std.mem.indexOf(u8, msg, "Unexpected end") != null or
+				    std.mem.indexOf(u8, msg, "suspended") != null) {
+					break :blk .pdf_dct_truncated;
+				}
+				// Any other DCT decode error is still tolerated but categorized as "not JPEG"
+				break :blk .pdf_dct_not_jpeg;
+			}
+
+			// JPEG2000 errors
+			if (res.filter == .jpx_decode) {
+				break :blk .pdf_jpx_decode_failed;
+			}
+
+			// CCITT fax errors
+			if (res.filter == .ccitt_fax_decode) {
+				break :blk .pdf_ccitt_decode_failed;
+			}
+
+			// FlateDecode errors
+			if (std.mem.indexOf(u8, msg, "FlateDecode") != null or
+			    std.mem.indexOf(u8, msg, "decompression failed") != null) {
+				break :blk .pdf_flate_decode_failed;
+			}
+
+			// LZW errors
+			if (std.mem.indexOf(u8, msg, "LZW") != null) {
+				break :blk .pdf_lzw_decode_failed;
+			}
+
+			// Unknown error - don't tolerate
+			break :blk null;
+		};
+
+		if (malformation_type) |mt| {
+			malformations.insert(mt);
 		} else {
+			// Unknown error type - fail validation
 			return null;
 		}
+
 		if (first_warning == null) {
 			first_warning = msg;
 		}
@@ -18253,7 +18333,8 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     const video_result = video_validator.validateMp4Video(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
-			const depth: ValidationDepth = if (video_result.byte_validated) .full else .structural;
+			// When no frames decoded, always use structural depth - we didn't actually decode video
+			const depth: ValidationDepth = if (video_result.frames_decoded > 0 and video_result.byte_validated) .full else .structural;
 			var result = ValidationResult.okWithDepthAndMalformation(.mp4, depth, tolerated.malformation);
 			result.warning_message = tolerated.warning;
 			return result;
@@ -18381,7 +18462,8 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const video_result = video_validator.validateMkvVideo(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
-			const depth: ValidationDepth = if (video_result.byte_validated) .full else .structural;
+			// When no frames decoded, always use structural depth - we didn't actually decode video
+			const depth: ValidationDepth = if (video_result.frames_decoded > 0 and video_result.byte_validated) .full else .structural;
 			var result = ValidationResult.okWithDepthAndMalformation(.mkv, depth, tolerated.malformation);
 			result.warning_message = tolerated.warning;
 			return result;
@@ -18445,7 +18527,8 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const video_result = video_validator.validateAviVideo(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
-			const depth: ValidationDepth = if (video_result.byte_validated) .full else .structural;
+			// When no frames decoded, always use structural depth - we didn't actually decode video
+			const depth: ValidationDepth = if (video_result.frames_decoded > 0 and video_result.byte_validated) .full else .structural;
 			var result = ValidationResult.okWithDepthAndMalformation(.avi, depth, tolerated.malformation);
 			result.warning_message = tolerated.warning;
 			return result;

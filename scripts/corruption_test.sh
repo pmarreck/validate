@@ -206,6 +206,58 @@ test_format "ico" "$GT_DIR/ico/sample.ico"
 test_format "svg" "$GT_DIR/svg/sample.svg"
 test_format "eml" "$GT_DIR/eml/sample.eml"
 
+# Scientific/Bioinformatics
+test_format "fasta" "$GT_DIR/fasta/sample.fasta"
+test_format "fastq" "$GT_DIR/fastq/sample.fastq"
+
+# 3D/CAD
+test_format "stl" "$GT_DIR/stl/sample.stl"
+test_format "dxf" "$GT_DIR/dxf/sample.dxf"
+# Note: OBJ and glTF currently detected as plain text/JSON - needs format detection fix
+
+# Geographic
+test_format "kml" "$GT_DIR/kml/sample.kml"
+
+# Email/Archive
+test_format "mbox" "$GT_DIR/mbox/sample.mbox"
+
+# Audio (additional)
+test_format "aiff" "$GT_DIR/aiff/sample.aiff"
+
+# Text formats (additional)
+test_format "markdown" "$GT_DIR/markdown/sample.md"
+test_format "plist" "$GT_DIR/plist/sample.plist"
+
+# 3D formats (additional)
+test_format "ply" "$GT_DIR/ply/sample.ply"
+
+# Archive/Preservation formats
+test_format "warc" "$GT_DIR/warc/sample.warc"
+
+# CAD formats (additional)
+test_format "step" "$GT_DIR/step/sample.stp"
+
+# PostScript
+test_format "eps" "$GT_DIR/eps/sample.eps"
+
+# IFF-based formats
+test_format "iff" "$GT_DIR/iff/sample.iff"
+
+# Compressed containers
+test_format "kmz" "$GT_DIR/kmz/sample.kmz"
+test_format "3mf" "$GT_DIR/3mf/sample.3mf"
+
+# 3D formats (binary)
+test_format "glb" "$GT_DIR/glb/box.glb"
+
+# Text formats (additional)
+test_format "plain_text" "$GT_DIR/plain_text/sample.txt"
+test_format "erlang_term" "$GT_DIR/erlang_term/sample.app"
+test_format "eex" "$GT_DIR/eex/sample.eex"
+
+# Scientific formats
+test_format "fits" "$GT_DIR/fits/sample.fits"
+
 echo ""
 echo "==================================="
 echo "Magic Byte Corruption Tests"
