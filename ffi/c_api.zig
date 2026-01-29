@@ -393,11 +393,13 @@ export fn es_format_validate_path_parallel(
 		if (callback == null) null else onValidation,
 		if (callback == null) null else @as(?*anyopaque, @ptrCast(&ctx)),
 	) catch |err| {
+		// Always include error name in the message for better debugging
+		const err_name = @errorName(err);
 		switch (err) {
 			error.FileNotFound => errors.setLastError(.validation_invalid_path, "Path not found", .{}),
-			error.AccessDenied => errors.setLastError(.io_permission_denied, "Access denied", .{}),
+			error.AccessDenied => errors.setLastError(.io_permission_denied, "Access denied ({s})", .{err_name}),
 			error.Unsupported => errors.setLastError(.validation_invalid_path, "Unsupported path type", .{}),
-			else => errors.setLastError(.internal_unexpected, "Failed to validate path", .{}),
+			else => errors.setLastError(.internal_unexpected, "Failed to validate path ({s})", .{err_name}),
 		}
 		return 9001;
 	};
