@@ -7,7 +7,6 @@
 #include <psapi.h>
 #include <io.h>
 #define isatty _isatty
-#define fileno _fileno
 #else
 #include <unistd.h>
 #endif
@@ -33,9 +32,15 @@ static void init_colors(void) {
 	}
 
 	/* Check if stdout is a terminal */
-	if (!isatty(fileno(stdout))) {
+#ifdef _WIN32
+	if (!isatty(_fileno(stdout))) {
 		return;
 	}
+#else
+	if (!isatty(STDOUT_FILENO)) {
+		return;
+	}
+#endif
 
 #ifdef _WIN32
 	/* On Windows, try to enable ANSI escape sequences */
