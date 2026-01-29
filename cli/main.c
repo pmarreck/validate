@@ -344,6 +344,7 @@ static int validate_path(const char* path, size_t jobs) {
 	if (err != ES_OK) {
 		fprintf(stderr, "%sError: Validation failed: %s\n%s", COLOR_RED,
 			es_core_last_error() ? es_core_last_error() : "unknown error", COLOR_RESET);
+		fflush(stderr);
 		es_format_validator_destroy(validator);
 		shutdown_unknown_out();
 		return 1;

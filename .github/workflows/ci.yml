@@ -84,6 +84,9 @@ jobs:
           DEBUG: "0"
         shell: bash
         run: ./build -Dtarget=x86_64-windows
+      - name: Run Windows path validation tests
+        shell: cmd
+        run: tests\cli\windows_path_validation.bat
       - name: Upload Windows binary
         uses: actions/upload-artifact@v4
         with:

@@ -336,50 +336,98 @@ fn openDirForPath(path: []const u8) !std.fs.Dir {
 /// Stat a path, handling both absolute and relative paths correctly.
 /// This is necessary on Windows where absolute paths (e.g., C:\folder) need
 /// special handling when the current directory is on a different drive.
-/// On Windows, opening a directory as a file can return AccessDenied instead of IsDir,
-/// so we try directory first if the file open fails.
+/// On Windows, we use GetFileAttributesW for initial type detection since it
+/// works for protected folders like Documents without requiring file open permissions.
 fn statPath(path: []const u8) !std.fs.File.Stat {
-	if (std.fs.path.isAbsolute(path)) {
-		// For absolute paths, open the file directly with absolute path
-		var file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
-			// Directory - try opening as directory to stat it
-			error.IsDir, error.AccessDenied => {
-				// On Windows, AccessDenied can mean "this is a directory"
-				var dir = std.fs.openDirAbsolute(path, .{}) catch |dir_err| {
-					// If directory open also fails with AccessDenied, it's a real permission error
-					if (dir_err == error.AccessDenied and err == error.AccessDenied) {
-						return error.AccessDenied;
-					}
-					// If original error was IsDir but we can't open as dir, return original
-					if (err == error.IsDir) return error.AccessDenied;
-					return dir_err;
-				};
-				defer dir.close();
-				return dir.stat();
-			},
-			else => return err,
-		};
-		defer file.close();
-		return file.stat();
-	}
-	// For relative paths, try as file first, then as directory
-	return std.fs.cwd().statFile(path) catch |err| switch (err) {
-		error.IsDir, error.AccessDenied => {
-			// On Windows, AccessDenied can mean "this is a directory"
-			var dir = std.fs.cwd().openDir(path, .{}) catch |dir_err| {
-				// If directory open also fails with AccessDenied, it's a real permission error
-				if (dir_err == error.AccessDenied and err == error.AccessDenied) {
-					return error.AccessDenied;
-				}
-				// If original error was IsDir but we can't open as dir, return original
-				if (err == error.IsDir) return error.AccessDenied;
-				return dir_err;
-			};
-			defer dir.close();
-			return dir.stat();
-		},
-		else => return err,
-	};
+    if (comptime builtin.os.tag == .windows) {
+        return statPathWindows(path);
+    }
+    return statPathPosix(path);
+}
+
+/// Windows-specific path stat using GetFileAttributesW for type detection.
+/// This avoids the AccessDenied errors that occur when trying to open
+/// protected Windows folders (Documents, Downloads, etc.) with Zig's std lib.
+fn statPathWindows(path: []const u8) !std.fs.File.Stat {
+    const windows = std.os.windows;
+
+    // Convert path to null-terminated wide string
+    // Use the Windows path utilities to handle the conversion
+    var path_w_buf: [std.fs.max_path_bytes]u16 = undefined;
+    const path_w = blk: {
+        // For absolute paths, convert directly
+        if (std.fs.path.isAbsolute(path)) {
+            const len = std.unicode.utf8ToUtf16Le(&path_w_buf, path) catch
+                return error.InvalidUtf8;
+            if (len >= path_w_buf.len) return error.NameTooLong;
+            path_w_buf[len] = 0;
+            break :blk @as([*:0]const u16, @ptrCast(&path_w_buf));
+        } else {
+            // For relative paths, resolve relative to cwd
+            const len = std.unicode.utf8ToUtf16Le(&path_w_buf, path) catch
+                return error.InvalidUtf8;
+            if (len >= path_w_buf.len) return error.NameTooLong;
+            path_w_buf[len] = 0;
+            break :blk @as([*:0]const u16, @ptrCast(&path_w_buf));
+        }
+    };
+
+    // Use GetFileAttributesW to check if path exists and get type
+    // This works for protected folders without requiring open permissions
+    const attrs = windows.kernel32.GetFileAttributesW(path_w);
+    if (attrs == windows.INVALID_FILE_ATTRIBUTES) {
+        const err = windows.kernel32.GetLastError();
+        return switch (err) {
+            .FILE_NOT_FOUND, .PATH_NOT_FOUND => error.FileNotFound,
+            .ACCESS_DENIED => error.AccessDenied,
+            else => error.Unexpected,
+        };
+    }
+
+    const is_dir = (attrs & windows.FILE_ATTRIBUTE_DIRECTORY) != 0;
+
+    // Return a minimal stat with just the kind field populated
+    // On Windows, time fields are i128 FILETIME values
+    return std.fs.File.Stat{
+        .inode = 0,
+        .size = 0,
+        .mode = 0,
+        .kind = if (is_dir) .directory else .file,
+        .atime = 0,
+        .mtime = 0,
+        .ctime = 0,
+    };
+}
+
+/// POSIX path stat - works on macOS, Linux, etc.
+fn statPathPosix(path: []const u8) !std.fs.File.Stat {
+    if (std.fs.path.isAbsolute(path)) {
+        // For absolute paths, open the file directly with absolute path
+        var file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+            // Directory - try opening as directory to stat it
+            error.IsDir => {
+                var dir = std.fs.openDirAbsolute(path, .{}) catch |dir_err| {
+                    return dir_err;
+                };
+                defer dir.close();
+                return dir.stat();
+            },
+            else => return err,
+        };
+        defer file.close();
+        return file.stat();
+    }
+    // For relative paths, try as file first, then as directory
+    return std.fs.cwd().statFile(path) catch |err| switch (err) {
+        error.IsDir => {
+            var dir = std.fs.cwd().openDir(path, .{}) catch |dir_err| {
+                return dir_err;
+            };
+            defer dir.close();
+            return dir.stat();
+        },
+        else => return err,
+    };
 }
 
 fn getMaxFilesLimit() usize {
