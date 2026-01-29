@@ -2,21 +2,72 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
-#if defined(__APPLE__)
-#include <mach/mach.h>
-#elif defined(_WIN32)
+#if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
+#include <io.h>
+#define isatty _isatty
+#define fileno _fileno
+#else
+#include <unistd.h>
+#endif
+#if defined(__APPLE__)
+#include <mach/mach.h>
 #endif
 #include "validate_core.h"
 
-#define COLOR_GREEN  "\033[0;32m"
-#define COLOR_RED    "\033[0;31m"
-#define COLOR_YELLOW "\033[1;33m"
-#define COLOR_CYAN   "\033[0;36m"
-#define COLOR_RESET  "\033[0m"
+/* Color support - these get set to empty strings if colors are disabled */
+static const char* COLOR_GREEN = "\033[0;32m";
+static const char* COLOR_RED = "\033[0;31m";
+static const char* COLOR_YELLOW = "\033[1;33m";
+static const char* COLOR_CYAN = "\033[0;36m";
+static const char* COLOR_RESET = "\033[0m";
 #define SLOW_THRESHOLD_SECONDS 5.0
+
+static int g_colors_enabled = 0;
+
+static void init_colors(void) {
+	/* Respect NO_COLOR environment variable (https://no-color.org/) */
+	if (getenv("NO_COLOR") != NULL) {
+		return;
+	}
+
+	/* Check if stdout is a terminal */
+	if (!isatty(fileno(stdout))) {
+		return;
+	}
+
+#ifdef _WIN32
+	/* On Windows, try to enable ANSI escape sequences */
+	HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+	if (hOut == INVALID_HANDLE_VALUE) {
+		return;
+	}
+
+	DWORD dwMode = 0;
+	if (!GetConsoleMode(hOut, &dwMode)) {
+		return;
+	}
+
+	/* ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004 */
+	dwMode |= 0x0004;
+	if (!SetConsoleMode(hOut, dwMode)) {
+		/* Failed to enable ANSI - older Windows or unsupported terminal */
+		return;
+	}
+#endif
+
+	/* Colors are supported */
+	g_colors_enabled = 1;
+}
+
+static void disable_colors(void) {
+	COLOR_GREEN = "";
+	COLOR_RED = "";
+	COLOR_YELLOW = "";
+	COLOR_CYAN = "";
+	COLOR_RESET = "";
+}
 
 static FILE* g_mem_telemetry_file = NULL;
 static int g_mem_telemetry_enabled = 0;
@@ -93,7 +144,7 @@ static void init_unknown_out(void) {
 	}
 	g_unknown_out = fopen(path, "a");
 	if (!g_unknown_out) {
-		fprintf(stderr, COLOR_YELLOW "Warning: failed to open UNKNOWN_OUT path: %s\n" COLOR_RESET, path);
+		fprintf(stderr, "%sWarning: failed to open UNKNOWN_OUT path: %s\n%s", COLOR_YELLOW, path, COLOR_RESET);
 		return;
 	}
 	g_unknown_out_enabled = 1;
@@ -119,7 +170,7 @@ static void init_mem_telemetry(void) {
 	if (path && path[0] != '\0') {
 		g_mem_telemetry_file = fopen(path, "a");
 		if (!g_mem_telemetry_file) {
-			fprintf(stderr, COLOR_RED "Error: Failed to open MEM_TELEMETRY_PATH=%s\n" COLOR_RESET, path);
+			fprintf(stderr, "%sError: Failed to open MEM_TELEMETRY_PATH=%s\n%s", COLOR_RED, path, COLOR_RESET);
 			return;
 		}
 	} else {
@@ -190,33 +241,33 @@ static void print_validation_result(const char* path, const es_validation_result
 
 	if (result->is_valid) {
 		if (has_malformations || has_warning) {
-			printf(COLOR_YELLOW "WARN" COLOR_RESET " %s: %s (%s)\n", path, format_desc, depth_desc);
+			printf("%sWARN%s %s: %s (%s)\n", COLOR_YELLOW, COLOR_RESET, path, format_desc, depth_desc);
 			if (has_malformations) {
 				for (int i = 0; i <= ES_MALFORMATION_LAST; i++) {
 					if (result->malformation_bits & (1ULL << i)) {
 						const char* desc = es_malformation_description((es_malformation_t)i);
-						printf("  " COLOR_YELLOW "->" COLOR_RESET " %s\n", desc ? desc : "Unknown issue");
+						printf("  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, desc ? desc : "Unknown issue");
 					}
 				}
 			}
 			if (has_warning) {
-				printf("  " COLOR_YELLOW "->" COLOR_RESET " %s\n", result->warning_message);
+				printf("  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, result->warning_message);
 			}
 		} else if (result->circumvented_trivial_protection) {
-			printf(COLOR_YELLOW "NOTICE" COLOR_RESET " %s: %s (%s) - trivial protection circumvented\n",
-				   path, format_desc, depth_desc);
+			printf("%sNOTICE%s %s: %s (%s) - trivial protection circumvented\n",
+				   COLOR_YELLOW, COLOR_RESET, path, format_desc, depth_desc);
 		} else {
-			printf(COLOR_GREEN "OK" COLOR_RESET " %s: %s (%s)\n", path, format_desc, depth_desc);
+			printf("%sOK%s %s: %s (%s)\n", COLOR_GREEN, COLOR_RESET, path, format_desc, depth_desc);
 		}
 	} else {
-		printf(COLOR_RED "FAIL" COLOR_RESET " %s: %s - %s\n",
-			   path, format_desc, result->error_message ? result->error_message : "Unknown error");
+		printf("%sFAIL%s %s: %s - %s\n",
+			   COLOR_RED, COLOR_RESET, path, format_desc, result->error_message ? result->error_message : "Unknown error");
 		// Also show malformations for invalid files (helps diagnose multiple issues)
 		if (has_malformations) {
 			for (int i = 0; i <= ES_MALFORMATION_LAST; i++) {
 				if (result->malformation_bits & (1ULL << i)) {
 					const char* desc = es_malformation_description((es_malformation_t)i);
-					printf("  " COLOR_YELLOW "->" COLOR_RESET " %s\n", desc ? desc : "Unknown issue");
+					printf("  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, desc ? desc : "Unknown issue");
 				}
 			}
 		}
@@ -231,14 +282,14 @@ static void on_validation(
 ) {
 	(void)user_data;
 	if (elapsed_seconds >= SLOW_THRESHOLD_SECONDS) {
-		fprintf(stderr, COLOR_YELLOW "SLOW" COLOR_RESET " %s: %.2fs\n", display_path, elapsed_seconds);
+		fprintf(stderr, "%sSLOW%s %s: %.2fs\n", COLOR_YELLOW, COLOR_RESET, display_path, elapsed_seconds);
 	}
 	if (result->is_unknown) {
 		if (g_unknown_out_enabled && g_unknown_out) {
 			fprintf(g_unknown_out, "UNKNOWN %s\n", display_path);
 			fflush(g_unknown_out);
 		} else {
-			printf(COLOR_CYAN "UNKNOWN" COLOR_RESET " %s: Unknown\n", display_path);
+			printf("%sUNKNOWN%s %s: Unknown\n", COLOR_CYAN, COLOR_RESET, display_path);
 		}
 		log_mem_telemetry(display_path, result, elapsed_seconds);
 		return;
@@ -250,7 +301,7 @@ static void on_validation(
 static int validate_path(const char* path, size_t jobs) {
 	struct stat st;
 	if (stat(path, &st) != 0) {
-		fprintf(stderr, COLOR_RED "Error: Cannot access path: %s\n" COLOR_RESET, path);
+		fprintf(stderr, "%sError: Cannot access path: %s\n%s", COLOR_RED, path, COLOR_RESET);
 		return 1;
 	}
 
@@ -258,13 +309,13 @@ static int validate_path(const char* path, size_t jobs) {
 
 	const size_t max_files = get_env_max_files();
 	if (max_files > 0 && S_ISDIR(st.st_mode)) {
-		printf(COLOR_YELLOW "Note:" COLOR_RESET " MAX_FILES=%zu (results may be truncated)\n", max_files);
+		printf("%sNote:%s MAX_FILES=%zu (results may be truncated)\n", COLOR_YELLOW, COLOR_RESET, max_files);
 	}
 
 	es_format_validator_t* validator = NULL;
 	es_error_t err = es_format_validator_create_deep(&validator);
 	if (err != ES_OK) {
-		fprintf(stderr, COLOR_RED "Error: Failed to create validator\n" COLOR_RESET);
+		fprintf(stderr, "%sError: Failed to create validator\n%s", COLOR_RED, COLOR_RESET);
 		shutdown_unknown_out();
 		return 1;
 	}
@@ -279,15 +330,15 @@ static int validate_path(const char* path, size_t jobs) {
 		printf("Checking: %s\n", path);
 		err = es_format_validate_path_parallel(validator, path, jobs, on_validation, NULL, &counts);
 	} else {
-		fprintf(stderr, COLOR_RED "Error: Unsupported path type: %s\n" COLOR_RESET, path);
+		fprintf(stderr, "%sError: Unsupported path type: %s\n%s", COLOR_RED, path, COLOR_RESET);
 		es_format_validator_destroy(validator);
 		shutdown_unknown_out();
 		return 1;
 	}
 
 	if (err != ES_OK) {
-		fprintf(stderr, COLOR_RED "Error: Validation failed: %s\n" COLOR_RESET,
-			es_core_last_error() ? es_core_last_error() : "unknown error");
+		fprintf(stderr, "%sError: Validation failed: %s\n%s", COLOR_RED,
+			es_core_last_error() ? es_core_last_error() : "unknown error", COLOR_RESET);
 		es_format_validator_destroy(validator);
 		shutdown_unknown_out();
 		return 1;
@@ -304,7 +355,7 @@ static int validate_path(const char* path, size_t jobs) {
 		size_t suffix_len = strlen(git_suffix);
 		char* git_path = (char*)malloc(path_len + suffix_len + 1);
 		if (!git_path) {
-			fprintf(stderr, COLOR_RED "Error: Out of memory while building git path\n" COLOR_RESET);
+			fprintf(stderr, "%sError: Out of memory while building git path\n%s", COLOR_RED, COLOR_RESET);
 			es_format_validator_destroy(validator);
 			shutdown_unknown_out();
 			return 1;
@@ -313,19 +364,19 @@ static int validate_path(const char* path, size_t jobs) {
 		memcpy(git_path + path_len, git_suffix, suffix_len + 1);
 		if (access(git_path, F_OK) == 0) {
 			git_checked = 1;
-			printf("\n" COLOR_CYAN "Git Repository Integrity Check:" COLOR_RESET "\n");
+			printf("\n%sGit Repository Integrity Check:%s\n", COLOR_CYAN, COLOR_RESET);
 			es_git_validation_result_t git_result;
 			char git_error[256];
 			err = es_git_validate_repository(path, &git_result, git_error, sizeof(git_error));
 			if (err != ES_OK) {
-				printf("  " COLOR_RED "FAIL" COLOR_RESET " Failed to validate: %s\n",
+				printf("  %sFAIL%s Failed to validate: %s\n", COLOR_RED, COLOR_RESET,
 					es_core_last_error() ? es_core_last_error() : "unknown error");
 				git_failed = 1;
 			} else if (git_result.is_valid) {
-				printf("  " COLOR_GREEN "OK" COLOR_RESET " Repository valid (%u objects, %u pack files)\n",
-					git_result.objects_checked, git_result.packs_checked);
+				printf("  %sOK%s Repository valid (%u objects, %u pack files)\n",
+					COLOR_GREEN, COLOR_RESET, git_result.objects_checked, git_result.packs_checked);
 			} else {
-				printf("  " COLOR_RED "FAIL" COLOR_RESET " Repository corrupt: %s\n",
+				printf("  %sFAIL%s Repository corrupt: %s\n", COLOR_RED, COLOR_RESET,
 					git_error[0] ? git_error : "unknown error");
 				if (git_result.objects_corrupt > 0) {
 					printf("    %u corrupt objects detected\n", git_result.objects_corrupt);
@@ -336,19 +387,19 @@ static int validate_path(const char* path, size_t jobs) {
 		free(git_path);
 	}
 
-	printf("\n" COLOR_CYAN "Summary:" COLOR_RESET "\n");
-	printf("  Valid:   " COLOR_GREEN "%zu" COLOR_RESET "\n", counts.valid_count);
+	printf("\n%sSummary:%s\n", COLOR_CYAN, COLOR_RESET);
+	printf("  Valid:   %s%zu%s\n", COLOR_GREEN, counts.valid_count, COLOR_RESET);
 	if (counts.invalid_count > 0) {
-		printf("  Invalid: " COLOR_RED "%zu" COLOR_RESET "\n", counts.invalid_count);
+		printf("  Invalid: %s%zu%s\n", COLOR_RED, counts.invalid_count, COLOR_RESET);
 	} else {
 		printf("  Invalid: %zu\n", counts.invalid_count);
 	}
 	printf("  Unknown: %zu\n", counts.unknown_count);
 	if (git_checked) {
 		if (git_failed) {
-			printf("  Git repo: " COLOR_RED "CORRUPT" COLOR_RESET "\n");
+			printf("  Git repo: %sCORRUPT%s\n", COLOR_RED, COLOR_RESET);
 		} else {
-			printf("  Git repo: " COLOR_GREEN "valid" COLOR_RESET "\n");
+			printf("  Git repo: %svalid%s\n", COLOR_GREEN, COLOR_RESET);
 		}
 	}
 
@@ -369,15 +420,26 @@ static void print_usage(const char* program) {
 	printf("    /version, --version   Print version\n");
 	printf("    /?, /h, /help, --help Show this help\n");
 	printf("    /j N, /jobs N         Number of parallel workers (0 = auto)\n");
+	printf("    --no-color            Disable colored output\n");
 #else
-	printf("    --version   Print version\n");
-	printf("    --help      Show this help\n");
-	printf("    --jobs N    Number of parallel workers (0 = auto)\n");
-	printf("    -j N        Alias for --jobs\n");
+	printf("    --version    Print version\n");
+	printf("    --help       Show this help\n");
+	printf("    --jobs N     Number of parallel workers (0 = auto)\n");
+	printf("    -j N         Alias for --jobs\n");
+	printf("    --no-color   Disable colored output\n");
 #endif
+	printf("\n");
+	printf("ENVIRONMENT:\n");
+	printf("    NO_COLOR     Set to disable colored output\n");
 }
 
 int main(int argc, char* argv[]) {
+	/* Initialize color support based on terminal capabilities */
+	init_colors();
+	if (!g_colors_enabled) {
+		disable_colors();
+	}
+
 	if (argc < 2) {
 		print_usage(argv[0]);
 		return 2;
@@ -413,21 +475,26 @@ int main(int argc, char* argv[]) {
 #endif
 		) {
 			if (i + 1 >= argc) {
-				fprintf(stderr, COLOR_RED "Error: --jobs requires a value\n" COLOR_RESET);
+				fprintf(stderr, "%sError: --jobs requires a value\n%s", COLOR_RED, COLOR_RESET);
 				return 2;
 			}
 			jobs = (size_t)strtoull(argv[++i], NULL, 10);
 			continue;
 		}
+		/* No color: --no-color */
+		if (strcmp(arg, "--no-color") == 0) {
+			disable_colors();
+			continue;
+		}
 		/* Unknown option check */
 		if (arg[0] == '-') {
-			fprintf(stderr, COLOR_RED "Error: Unknown option: %s\n" COLOR_RESET, arg);
+			fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 			return 2;
 		}
 #ifdef _WIN32
 		/* On Windows, / is an option prefix (but allow paths like C:\ or \\server) */
 		if (arg[0] == '/' && arg[1] != '\0' && arg[1] != '/' && arg[1] != '\\') {
-			fprintf(stderr, COLOR_RED "Error: Unknown option: %s\n" COLOR_RESET, arg);
+			fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 			return 2;
 		}
 #endif
