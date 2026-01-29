@@ -2280,10 +2280,95 @@ fn isFormatCompatibleWithExtension(detected: FileFormat, extension_format: FileF
     return false;
 }
 
+/// Convert UTF-16 LE to UTF-8 in a stack buffer.
+/// Returns the slice of converted UTF-8 data, or null if conversion fails.
+fn convertUtf16LeToUtf8(utf16_data: []const u8, out_buf: []u8) ?[]const u8 {
+    if (utf16_data.len < 2 or utf16_data.len % 2 != 0) return null;
+
+    var out_idx: usize = 0;
+    var in_idx: usize = 0;
+
+    while (in_idx + 1 < utf16_data.len and out_idx < out_buf.len) {
+        const lo = utf16_data[in_idx];
+        const hi = utf16_data[in_idx + 1];
+        const code_unit: u16 = @as(u16, lo) | (@as(u16, hi) << 8);
+        in_idx += 2;
+
+        // Handle surrogate pairs
+        if (code_unit >= 0xD800 and code_unit <= 0xDBFF) {
+            // High surrogate - need low surrogate
+            if (in_idx + 1 >= utf16_data.len) return null;
+            const lo2 = utf16_data[in_idx];
+            const hi2 = utf16_data[in_idx + 1];
+            const low_surrogate: u16 = @as(u16, lo2) | (@as(u16, hi2) << 8);
+            in_idx += 2;
+
+            if (low_surrogate < 0xDC00 or low_surrogate > 0xDFFF) return null;
+
+            // Decode surrogate pair to code point
+            const high_part: u21 = @as(u21, code_unit - 0xD800) << 10;
+            const low_part: u21 = @as(u21, low_surrogate - 0xDC00);
+            const code_point: u21 = high_part + low_part + 0x10000;
+
+            // Encode as UTF-8 (4 bytes)
+            if (out_idx + 4 > out_buf.len) break;
+            out_buf[out_idx] = @intCast(0xF0 | (code_point >> 18));
+            out_buf[out_idx + 1] = @intCast(0x80 | ((code_point >> 12) & 0x3F));
+            out_buf[out_idx + 2] = @intCast(0x80 | ((code_point >> 6) & 0x3F));
+            out_buf[out_idx + 3] = @intCast(0x80 | (code_point & 0x3F));
+            out_idx += 4;
+        } else if (code_unit >= 0xDC00 and code_unit <= 0xDFFF) {
+            // Unexpected low surrogate
+            return null;
+        } else if (code_unit < 0x80) {
+            // ASCII
+            out_buf[out_idx] = @intCast(code_unit);
+            out_idx += 1;
+        } else if (code_unit < 0x800) {
+            // 2-byte UTF-8
+            if (out_idx + 2 > out_buf.len) break;
+            out_buf[out_idx] = @intCast(0xC0 | (code_unit >> 6));
+            out_buf[out_idx + 1] = @intCast(0x80 | (code_unit & 0x3F));
+            out_idx += 2;
+        } else {
+            // 3-byte UTF-8
+            if (out_idx + 3 > out_buf.len) break;
+            out_buf[out_idx] = @intCast(0xE0 | (code_unit >> 12));
+            out_buf[out_idx + 1] = @intCast(0x80 | ((code_unit >> 6) & 0x3F));
+            out_buf[out_idx + 2] = @intCast(0x80 | (code_unit & 0x3F));
+            out_idx += 3;
+        }
+    }
+
+    return out_buf[0..out_idx];
+}
+
 /// Detect text-based formats (JSON, XML, TOML, INI, YAML) by content patterns.
 /// Only called after magic bytes detection fails, so we need to be careful
 /// not to misclassify other text-based formats that have their own validators.
 fn detectTextFormat(header: []const u8) ?FileFormat {
+    if (header.len == 0) return null;
+
+    // Check for UTF-16 LE BOM (0xFF 0xFE) - common on Windows
+    if (header.len >= 2 and header[0] == 0xFF and header[1] == 0xFE) {
+        // UTF-16 LE - convert to UTF-8 and detect
+        var utf8_buf: [4096]u8 = undefined;
+        const utf8_data = convertUtf16LeToUtf8(header[2..], &utf8_buf) orelse return null;
+        return detectTextFormatUtf8(utf8_data);
+    }
+
+    // Check for UTF-16 BE BOM (0xFE 0xFF) - less common but possible
+    if (header.len >= 2 and header[0] == 0xFE and header[1] == 0xFF) {
+        // UTF-16 BE - swap bytes and convert to UTF-8
+        // For now, just return null - UTF-16 BE is rare
+        return null;
+    }
+
+    return detectTextFormatUtf8(header);
+}
+
+/// Detect text-based formats from UTF-8 encoded content.
+fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
     if (header.len == 0) return null;
 
     // Binary check: if header contains null bytes, high proportion of
@@ -20574,6 +20659,7 @@ fn validateToml(file: std.fs.File) ValidationResult {
 /// Validate INI file structure.
 /// INI files have [section] headers and key=value pairs.
 /// Detection already verified basic structure, so we just do a simple parse check.
+/// Handles UTF-8 and UTF-16 LE encoded INI files (common on Windows).
 fn validateIni(file: std.fs.File) ValidationResult {
     // Get file size
     const stat = file.stat() catch {
@@ -20604,48 +20690,68 @@ fn validateIni(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.ini, "Empty INI file");
     }
 
+    // Check for UTF-16 LE BOM and convert if needed
+    var content: []const u8 = buffer[0..bytes_read];
+    var utf8_buf: [4096]u8 = undefined;
+
+    if (bytes_read >= 2 and buffer[0] == 0xFF and buffer[1] == 0xFE) {
+        // UTF-16 LE BOM detected - convert to UTF-8
+        if (convertUtf16LeToUtf8(buffer[2..bytes_read], &utf8_buf)) |utf8_content| {
+            content = utf8_content;
+        } else {
+            // Conversion failed - not valid UTF-16
+            return ValidationResult.invalid(.ini, "Invalid UTF-16 encoding");
+        }
+    } else if (bytes_read >= 3 and buffer[0] == 0xEF and buffer[1] == 0xBB and buffer[2] == 0xBF) {
+        // UTF-8 BOM - skip it
+        content = buffer[3..bytes_read];
+    }
+
     // Verify we can find at least one [section] or key=value pattern
+    return validateIniContent(content);
+}
+
+/// Check INI content (UTF-8) for valid structure.
+fn validateIniContent(content: []const u8) ValidationResult {
     var found_structure = false;
     var i: usize = 0;
-    while (i < bytes_read) {
+    while (i < content.len) {
         // Skip whitespace and newlines
-        while (i < bytes_read and (buffer[i] == ' ' or buffer[i] == '\t' or buffer[i] == '\n' or buffer[i] == '\r')) : (i += 1) {}
-        if (i >= bytes_read) break;
+        while (i < content.len and (content[i] == ' ' or content[i] == '\t' or content[i] == '\n' or content[i] == '\r')) : (i += 1) {}
+        if (i >= content.len) break;
 
         // Check for comment (# or ;)
-        if (buffer[i] == '#' or buffer[i] == ';') {
+        if (content[i] == '#' or content[i] == ';') {
             // Skip to end of line
-            while (i < bytes_read and buffer[i] != '\n') : (i += 1) {}
+            while (i < content.len and content[i] != '\n') : (i += 1) {}
             continue;
         }
 
         // Check for [section]
-        if (buffer[i] == '[') {
+        if (content[i] == '[') {
             found_structure = true;
             // Skip to end of line
-            while (i < bytes_read and buffer[i] != '\n') : (i += 1) {}
+            while (i < content.len and content[i] != '\n') : (i += 1) {}
             continue;
         }
 
         // Check for key=value (key starts with letter/underscore)
-        if ((buffer[i] >= 'a' and buffer[i] <= 'z') or
-            (buffer[i] >= 'A' and buffer[i] <= 'Z') or
-            buffer[i] == '_')
+        if ((content[i] >= 'a' and content[i] <= 'z') or
+            (content[i] >= 'A' and content[i] <= 'Z') or
+            content[i] == '_')
         {
             // Look for = on this line
-            const line_start = i;
-            while (i < bytes_read and buffer[i] != '\n' and buffer[i] != '=') : (i += 1) {}
-            if (i < bytes_read and buffer[i] == '=') {
+            while (i < content.len and content[i] != '\n' and content[i] != '=') : (i += 1) {}
+            if (i < content.len and content[i] == '=') {
                 found_structure = true;
             }
             // Skip to end of line
-            _ = line_start;
-            while (i < bytes_read and buffer[i] != '\n') : (i += 1) {}
+            while (i < content.len and content[i] != '\n') : (i += 1) {}
             continue;
         }
 
         // Unknown line - skip
-        while (i < bytes_read and buffer[i] != '\n') : (i += 1) {}
+        while (i < content.len and content[i] != '\n') : (i += 1) {}
     }
 
     if (!found_structure) {
@@ -30523,4 +30629,100 @@ test "PNG file with .ico extension should not hang (extension mismatch)" {
 
     // Should detect as PNG based on magic bytes, not hang trying to validate as ICO
     try std.testing.expectEqual(FileFormat.png, result.format);
+}
+
+test "UTF-16 LE INI detection" {
+    // UTF-16 LE BOM + "[section]\r\nkey=value\r\n"
+    const utf16_ini = [_]u8{
+        0xFF, 0xFE, // BOM
+        '[', 0x00, 's', 0x00, 'e', 0x00, 'c', 0x00, 't', 0x00, 'i', 0x00, 'o', 0x00, 'n', 0x00, ']', 0x00,
+        0x0D, 0x00, 0x0A, 0x00, // \r\n
+        'k', 0x00, 'e', 0x00, 'y', 0x00, '=', 0x00, 'v', 0x00, 'a', 0x00, 'l', 0x00, 'u', 0x00, 'e', 0x00,
+        0x0D, 0x00, 0x0A, 0x00, // \r\n
+    };
+    
+    const format = detectTextFormat(&utf16_ini);
+    try std.testing.expect(format != null);
+    try std.testing.expectEqual(FileFormat.ini, format.?);
+}
+
+test "validateIni handles UTF-16 LE with BOM" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create UTF-16 LE INI file with BOM
+    const file = try tmp_dir.dir.createFile("test.ini", .{});
+    // BOM + "[section]\r\nkey=value\r\n" in UTF-16 LE
+    const utf16_content = [_]u8{
+        0xFF, 0xFE, // BOM
+        '[', 0x00, 's', 0x00, 'e', 0x00, 'c', 0x00, 't', 0x00, 'i', 0x00, 'o', 0x00, 'n', 0x00, ']', 0x00,
+        0x0D, 0x00, 0x0A, 0x00,
+        'k', 0x00, 'e', 0x00, 'y', 0x00, '=', 0x00, 'v', 0x00, 'a', 0x00, 'l', 0x00, 'u', 0x00, 'e', 0x00,
+        0x0D, 0x00, 0x0A, 0x00,
+    };
+    try file.writeAll(&utf16_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ini");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.ini, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateIni handles UTF-16 LE without BOM" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create UTF-16 LE INI file without BOM
+    const file = try tmp_dir.dir.createFile("test.ini", .{});
+    // "[section]\r\nkey=value\r\n" in UTF-16 LE (no BOM)
+    const utf16_content = [_]u8{
+        '[', 0x00, 's', 0x00, 'e', 0x00, 'c', 0x00, 't', 0x00, 'i', 0x00, 'o', 0x00, 'n', 0x00, ']', 0x00,
+        0x0D, 0x00, 0x0A, 0x00,
+        'k', 0x00, 'e', 0x00, 'y', 0x00, '=', 0x00, 'v', 0x00, 'a', 0x00, 'l', 0x00, 'u', 0x00, 'e', 0x00,
+        0x0D, 0x00, 0x0A, 0x00,
+    };
+    try file.writeAll(&utf16_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ini");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.ini, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateIni handles CRLF line endings" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create INI file with CRLF line endings
+    const file = try tmp_dir.dir.createFile("test.ini", .{});
+    try file.writeAll("[section]\r\nkey=value\r\nanother=test\r\n");
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ini");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.ini, result.format);
+    try std.testing.expect(result.is_valid);
 }
