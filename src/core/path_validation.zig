@@ -333,6 +333,27 @@ fn openDirForPath(path: []const u8) !std.fs.Dir {
 	return std.fs.cwd().openDir(path, .{ .iterate = true });
 }
 
+/// Stat a path, handling both absolute and relative paths correctly.
+/// This is necessary on Windows where absolute paths (e.g., C:\folder) need
+/// special handling when the current directory is on a different drive.
+fn statPath(path: []const u8) !std.fs.File.Stat {
+	if (std.fs.path.isAbsolute(path)) {
+		// For absolute paths, open the file directly with absolute path
+		var file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+			// Directory - try opening as directory to stat it
+			error.IsDir => {
+				var dir = try std.fs.openDirAbsolute(path, .{});
+				defer dir.close();
+				return dir.stat();
+			},
+			else => return err,
+		};
+		defer file.close();
+		return file.stat();
+	}
+	return std.fs.cwd().statFile(path);
+}
+
 fn getMaxFilesLimit() usize {
 	const env = getenvCrossPlatform("MAX_FILES") orelse return DEFAULT_MAX_FILES;
 	const parsed = std.fmt.parseInt(usize, env, 10) catch return DEFAULT_MAX_FILES;
@@ -363,7 +384,7 @@ pub fn validatePathParallel(
 	callback: ?ValidationCallback,
 	callback_ctx: ?*anyopaque,
 ) !ValidationCounts {
-	const stat = std.fs.cwd().statFile(path) catch |err| switch (err) {
+	const stat = statPath(path) catch |err| switch (err) {
 		error.FileNotFound => return error.FileNotFound,
 		error.AccessDenied => return error.AccessDenied,
 		else => return err,
