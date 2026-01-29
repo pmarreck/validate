@@ -2280,6 +2280,115 @@ fn isFormatCompatibleWithExtension(detected: FileFormat, extension_format: FileF
     return false;
 }
 
+/// Result of reading text content with encoding detection.
+const TextContentResult = struct {
+    /// The UTF-8 content (either original or converted)
+    content: []const u8,
+    /// Whether the content was converted from UTF-16
+    was_utf16: bool,
+    /// The conversion buffer (only valid if was_utf16 is true)
+    converted_buf: []u8,
+
+    /// For UTF-8 content, just returns content. For converted content, returns the buffer.
+    pub fn getContent(self: TextContentResult) []const u8 {
+        return self.content;
+    }
+};
+
+/// Read text content from a buffer, detecting and converting UTF-16 LE/BE to UTF-8.
+/// Returns the UTF-8 content and whether conversion was performed.
+/// For UTF-16 content, the conversion is done into conv_buf.
+///
+/// TODO: For large files, consider implementing a streaming UTF-16 to UTF-8 converter
+/// that wraps a std.io.Reader interface. This would avoid allocating the full converted
+/// content in memory. However, the current parsers (std.json.Scanner, zig-xml, zig-toml)
+/// expect slices, so this would require either:
+/// 1. A buffered reader wrapper that converts on-the-fly and provides chunks
+/// 2. Changes to how the parsers consume data
+/// For now, full conversion is acceptable since UTF-16 files are typically small config files.
+fn getTextContent(raw_data: []const u8, conv_buf: []u8) TextContentResult {
+    // Check for UTF-16 LE BOM (0xFF 0xFE) - common on Windows
+    if (raw_data.len >= 2 and raw_data[0] == 0xFF and raw_data[1] == 0xFE) {
+        if (convertUtf16LeToUtf8(raw_data[2..], conv_buf)) |utf8_content| {
+            return .{ .content = utf8_content, .was_utf16 = true, .converted_buf = conv_buf };
+        }
+        // Conversion failed - return empty
+        return .{ .content = &[_]u8{}, .was_utf16 = true, .converted_buf = conv_buf };
+    }
+
+    // Check for UTF-16 BE BOM (0xFE 0xFF)
+    if (raw_data.len >= 2 and raw_data[0] == 0xFE and raw_data[1] == 0xFF) {
+        if (convertUtf16BeToUtf8(raw_data[2..], conv_buf)) |utf8_content| {
+            return .{ .content = utf8_content, .was_utf16 = true, .converted_buf = conv_buf };
+        }
+        return .{ .content = &[_]u8{}, .was_utf16 = true, .converted_buf = conv_buf };
+    }
+
+    // Check for UTF-8 BOM (0xEF 0xBB 0xBF) - skip it
+    if (raw_data.len >= 3 and raw_data[0] == 0xEF and raw_data[1] == 0xBB and raw_data[2] == 0xBF) {
+        return .{ .content = raw_data[3..], .was_utf16 = false, .converted_buf = conv_buf };
+    }
+
+    // No BOM - assume UTF-8 or ASCII
+    return .{ .content = raw_data, .was_utf16 = false, .converted_buf = conv_buf };
+}
+
+/// Convert UTF-16 BE to UTF-8 in a stack buffer.
+fn convertUtf16BeToUtf8(utf16_data: []const u8, out_buf: []u8) ?[]const u8 {
+    if (utf16_data.len < 2 or utf16_data.len % 2 != 0) return null;
+
+    var out_idx: usize = 0;
+    var in_idx: usize = 0;
+
+    while (in_idx + 1 < utf16_data.len and out_idx < out_buf.len) {
+        // Big-endian: high byte first
+        const hi = utf16_data[in_idx];
+        const lo = utf16_data[in_idx + 1];
+        const code_unit: u16 = @as(u16, lo) | (@as(u16, hi) << 8);
+        in_idx += 2;
+
+        // Handle surrogate pairs
+        if (code_unit >= 0xD800 and code_unit <= 0xDBFF) {
+            if (in_idx + 1 >= utf16_data.len) return null;
+            const hi2 = utf16_data[in_idx];
+            const lo2 = utf16_data[in_idx + 1];
+            const low_surrogate: u16 = @as(u16, lo2) | (@as(u16, hi2) << 8);
+            in_idx += 2;
+
+            if (low_surrogate < 0xDC00 or low_surrogate > 0xDFFF) return null;
+
+            const high_part: u21 = @as(u21, code_unit - 0xD800) << 10;
+            const low_part: u21 = @as(u21, low_surrogate - 0xDC00);
+            const code_point: u21 = high_part + low_part + 0x10000;
+
+            if (out_idx + 4 > out_buf.len) break;
+            out_buf[out_idx] = @intCast(0xF0 | (code_point >> 18));
+            out_buf[out_idx + 1] = @intCast(0x80 | ((code_point >> 12) & 0x3F));
+            out_buf[out_idx + 2] = @intCast(0x80 | ((code_point >> 6) & 0x3F));
+            out_buf[out_idx + 3] = @intCast(0x80 | (code_point & 0x3F));
+            out_idx += 4;
+        } else if (code_unit >= 0xDC00 and code_unit <= 0xDFFF) {
+            return null;
+        } else if (code_unit < 0x80) {
+            out_buf[out_idx] = @intCast(code_unit);
+            out_idx += 1;
+        } else if (code_unit < 0x800) {
+            if (out_idx + 2 > out_buf.len) break;
+            out_buf[out_idx] = @intCast(0xC0 | (code_unit >> 6));
+            out_buf[out_idx + 1] = @intCast(0x80 | (code_unit & 0x3F));
+            out_idx += 2;
+        } else {
+            if (out_idx + 3 > out_buf.len) break;
+            out_buf[out_idx] = @intCast(0xE0 | (code_unit >> 12));
+            out_buf[out_idx + 1] = @intCast(0x80 | ((code_unit >> 6) & 0x3F));
+            out_buf[out_idx + 2] = @intCast(0x80 | (code_unit & 0x3F));
+            out_idx += 3;
+        }
+    }
+
+    return out_buf[0..out_idx];
+}
+
 /// Convert UTF-16 LE to UTF-8 in a stack buffer.
 /// Returns the slice of converted UTF-8 data, or null if conversion fails.
 fn convertUtf16LeToUtf8(utf16_data: []const u8, out_buf: []u8) ?[]const u8 {
@@ -20442,7 +20551,27 @@ fn validateJson(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.json, "Empty JSON file");
     }
 
-    const data = content[0..bytes_read];
+    // Handle UTF-16 LE/BE encoding (common on Windows)
+    var conv_buf: []u8 = undefined;
+    var conv_buf_allocated = false;
+    defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
+
+    const text_result = blk: {
+        // Allocate conversion buffer if needed (UTF-16 -> UTF-8 can be same size or smaller)
+        if (bytes_read >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
+            (content[0] == 0xFE and content[1] == 0xFF)))
+        {
+            conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
+                return ValidationResult.invalid(.json, "Failed to allocate conversion buffer");
+            };
+            conv_buf_allocated = true;
+        } else {
+            conv_buf = &[_]u8{};
+        }
+        break :blk getTextContent(content[0..bytes_read], conv_buf);
+    };
+
+    const data = text_result.content;
 
     // Try to parse the JSON using Scanner
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -20639,6 +20768,29 @@ fn validateToml(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.toml, "Empty TOML file");
     }
 
+    // Handle UTF-16 LE/BE encoding (less common for TOML but possible on Windows)
+    var conv_buf: []u8 = undefined;
+    var conv_buf_allocated = false;
+    defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
+
+    const data = blk: {
+        if (bytes_read >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
+            (content[0] == 0xFE and content[1] == 0xFF)))
+        {
+            conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
+                return ValidationResult.invalid(.toml, "Failed to allocate conversion buffer");
+            };
+            conv_buf_allocated = true;
+            const text_result = getTextContent(content[0..bytes_read], conv_buf);
+            break :blk text_result.content;
+        }
+        // Handle UTF-8 BOM
+        if (bytes_read >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
+            break :blk content[3..bytes_read];
+        }
+        break :blk content[0..bytes_read];
+    };
+
     // Use the sam701/zig-toml parser to parse as a generic Table
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -20647,7 +20799,7 @@ fn validateToml(file: std.fs.File) ValidationResult {
     var parser = toml.Parser(toml.Table).init(allocator);
     defer parser.deinit();
 
-    const parsed = parser.parseString(content[0..bytes_read]) catch {
+    const parsed = parser.parseString(data) catch {
         return ValidationResult.invalid(.toml, "TOML parse error");
     };
     defer parsed.deinit();
@@ -20797,9 +20949,28 @@ fn validateXml(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.xml, "Empty XML file");
     }
 
+    // Handle UTF-16 LE/BE encoding (Windows sometimes uses this for XML)
+    var conv_buf: []u8 = undefined;
+    var conv_buf_allocated = false;
+    defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
+
+    const raw_data = blk: {
+        if (bytes_read >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
+            (content[0] == 0xFE and content[1] == 0xFF)))
+        {
+            conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
+                return ValidationResult.invalid(.xml, "Failed to allocate conversion buffer");
+            };
+            conv_buf_allocated = true;
+            const text_result = getTextContent(content[0..bytes_read], conv_buf);
+            break :blk text_result.content;
+        }
+        break :blk content[0..bytes_read];
+    };
+
     // Normalize ASCII-compatible encodings (us-ascii, iso-8859-1, etc.) to UTF-8
     // These are byte-compatible for ASCII range which is what most XML files use
-    const encoding_normalized = normalizeXmlEncoding(content[0..bytes_read]);
+    const encoding_normalized = normalizeXmlEncoding(raw_data);
     defer if (encoding_normalized.allocated) std.heap.page_allocator.free(@constCast(encoding_normalized.data));
 
     // Strip DOCTYPE declaration if present (zig-xml doesn't support DTD validation)
@@ -21333,7 +21504,28 @@ fn validateCsv(file: std.fs.File) ValidationResult {
         return ValidationResult.ok(.csv);
     }
 
-    const data = content[0..bytes_read];
+    // Handle UTF-16 LE/BE encoding (Excel sometimes saves CSV as UTF-16)
+    var conv_buf: []u8 = undefined;
+    var conv_buf_allocated = false;
+    defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
+
+    const data = blk: {
+        if (bytes_read >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
+            (content[0] == 0xFE and content[1] == 0xFF)))
+        {
+            conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
+                return ValidationResult.invalid(.csv, "Failed to allocate conversion buffer");
+            };
+            conv_buf_allocated = true;
+            const text_result = getTextContent(content[0..bytes_read], conv_buf);
+            break :blk text_result.content;
+        }
+        // Handle UTF-8 BOM
+        if (bytes_read >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
+            break :blk content[3..bytes_read];
+        }
+        break :blk content[0..bytes_read];
+    };
 
     // Check for UTF-8 validity
     if (!std.unicode.utf8ValidateSlice(data)) {
