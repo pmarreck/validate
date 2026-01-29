@@ -15,3 +15,8 @@ zig-cache/
 
 # Semantic search
 .codescan/
+
+# Cloned source for analysis
+deps/*-src/
+deps/*_src/
+deps/*_source/
