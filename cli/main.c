@@ -365,10 +365,16 @@ static void print_usage(const char* program) {
 	printf("    %s <path>\n", program);
 	printf("\n");
 	printf("OPTIONS:\n");
+#ifdef _WIN32
+	printf("    /version, --version   Print version\n");
+	printf("    /?, /h, /help, --help Show this help\n");
+	printf("    /j N, /jobs N         Number of parallel workers (0 = auto)\n");
+#else
 	printf("    --version   Print version\n");
 	printf("    --help      Show this help\n");
 	printf("    --jobs N    Number of parallel workers (0 = auto)\n");
 	printf("    -j N        Alias for --jobs\n");
+#endif
 }
 
 int main(int argc, char* argv[]) {
@@ -382,15 +388,20 @@ int main(int argc, char* argv[]) {
 
 	for (int i = 1; i < argc; i++) {
 		const char* arg = argv[i];
-		if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
+		/* Help: --help, -h, /help, /h, /? */
+		if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0 ||
+		    strcmp(arg, "/help") == 0 || strcmp(arg, "/h") == 0 || strcmp(arg, "/?") == 0) {
 			print_usage(argv[0]);
 			return 0;
 		}
-		if (strcmp(arg, "--version") == 0) {
+		/* Version: --version, /version */
+		if (strcmp(arg, "--version") == 0 || strcmp(arg, "/version") == 0) {
 			printf("%s\n", es_core_version());
 			return 0;
 		}
-		if (strcmp(arg, "--jobs") == 0 || strcmp(arg, "-j") == 0) {
+		/* Jobs: --jobs, -j, /jobs, /j */
+		if (strcmp(arg, "--jobs") == 0 || strcmp(arg, "-j") == 0 ||
+		    strcmp(arg, "/jobs") == 0 || strcmp(arg, "/j") == 0) {
 			if (i + 1 >= argc) {
 				fprintf(stderr, COLOR_RED "Error: --jobs requires a value\n" COLOR_RESET);
 				return 2;
@@ -398,10 +409,18 @@ int main(int argc, char* argv[]) {
 			jobs = (size_t)strtoull(argv[++i], NULL, 10);
 			continue;
 		}
+		/* Unknown option check - Unix style always, Windows (/) style only on Windows */
 		if (arg[0] == '-') {
 			fprintf(stderr, COLOR_RED "Error: Unknown option: %s\n" COLOR_RESET, arg);
 			return 2;
 		}
+#ifdef _WIN32
+		/* On Windows, / is an option prefix (but allow paths like C:\ or \\server) */
+		if (arg[0] == '/' && arg[1] != '\0' && arg[1] != '/' && arg[1] != '\\') {
+			fprintf(stderr, COLOR_RED "Error: Unknown option: %s\n" COLOR_RESET, arg);
+			return 2;
+		}
+#endif
 		path = arg;
 	}
 
