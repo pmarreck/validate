@@ -13,6 +13,7 @@
 //! This module uses std.once to ensure initialization happens exactly once.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const c = @cImport({
     @cInclude("libheif/heif.h");
@@ -23,8 +24,19 @@ var heif_init_once = std.once(initHeif);
 var heif_init_success: bool = false;
 
 fn initHeif() void {
+    // Debug: log before init
+    if (comptime builtin.os.tag != .windows) {
+        if (std.posix.getenv("VALIDATE_DEBUG") != null) {
+            std.debug.print("[HEIF] Calling heif_init()...\n", .{});
+        }
+    }
     const err = c.heif_init(null);
     heif_init_success = (err.code == c.heif_error_Ok);
+    if (comptime builtin.os.tag != .windows) {
+        if (std.posix.getenv("VALIDATE_DEBUG") != null) {
+            std.debug.print("[HEIF] heif_init() returned: success={}\n", .{heif_init_success});
+        }
+    }
 }
 
 /// Ensure libheif is initialized. Safe to call from multiple threads.
@@ -170,6 +182,12 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
     }
 
     // Attempt to decode the image (this validates the bitstream)
+    // Debug: flush stderr before decode in case of crash
+    const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
+    if (builtin.mode == .Debug or debug_enabled) {
+        std.debug.print("[HEIF] About to decode image: {d}x{d}\n", .{ width, height });
+    }
+
     var image: ?*c.struct_heif_image = null;
     err = c.heif_decode_image(handle, &image, c.heif_colorspace_RGB, c.heif_chroma_interleaved_RGBA, null);
     if (err.code != c.heif_error_Ok or image == null) {
@@ -182,6 +200,9 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
     defer c.heif_image_release(image);
 
     // Full decode succeeded!
+    if (builtin.mode == .Debug or debug_enabled) {
+        std.debug.print("[HEIF] Decode succeeded!\n", .{});
+    }
     return HeifValidationResult.ok(is_heic);
 }
 
