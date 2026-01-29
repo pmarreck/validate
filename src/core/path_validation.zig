@@ -336,13 +336,24 @@ fn openDirForPath(path: []const u8) !std.fs.Dir {
 /// Stat a path, handling both absolute and relative paths correctly.
 /// This is necessary on Windows where absolute paths (e.g., C:\folder) need
 /// special handling when the current directory is on a different drive.
+/// On Windows, opening a directory as a file can return AccessDenied instead of IsDir,
+/// so we try directory first if the file open fails.
 fn statPath(path: []const u8) !std.fs.File.Stat {
 	if (std.fs.path.isAbsolute(path)) {
 		// For absolute paths, open the file directly with absolute path
 		var file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
 			// Directory - try opening as directory to stat it
-			error.IsDir => {
-				var dir = try std.fs.openDirAbsolute(path, .{});
+			error.IsDir, error.AccessDenied => {
+				// On Windows, AccessDenied can mean "this is a directory"
+				var dir = std.fs.openDirAbsolute(path, .{}) catch |dir_err| {
+					// If directory open also fails with AccessDenied, it's a real permission error
+					if (dir_err == error.AccessDenied and err == error.AccessDenied) {
+						return error.AccessDenied;
+					}
+					// If original error was IsDir but we can't open as dir, return original
+					if (err == error.IsDir) return error.AccessDenied;
+					return dir_err;
+				};
 				defer dir.close();
 				return dir.stat();
 			},
@@ -353,8 +364,17 @@ fn statPath(path: []const u8) !std.fs.File.Stat {
 	}
 	// For relative paths, try as file first, then as directory
 	return std.fs.cwd().statFile(path) catch |err| switch (err) {
-		error.IsDir => {
-			var dir = try std.fs.cwd().openDir(path, .{});
+		error.IsDir, error.AccessDenied => {
+			// On Windows, AccessDenied can mean "this is a directory"
+			var dir = std.fs.cwd().openDir(path, .{}) catch |dir_err| {
+				// If directory open also fails with AccessDenied, it's a real permission error
+				if (dir_err == error.AccessDenied and err == error.AccessDenied) {
+					return error.AccessDenied;
+				}
+				// If original error was IsDir but we can't open as dir, return original
+				if (err == error.IsDir) return error.AccessDenied;
+				return dir_err;
+			};
 			defer dir.close();
 			return dir.stat();
 		},
