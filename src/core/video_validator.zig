@@ -1736,6 +1736,12 @@ pub const CodecPrivateData = struct {
     }
 };
 
+/// Sample location (offset and size) for bulk precomputation
+const SampleLocation = struct {
+    offset: u64,
+    size: u32,
+};
+
 /// MP4 Sample Table structures for frame extraction
 const SampleTableInfo = struct {
     /// Sample sizes (from stsz box)
@@ -1836,6 +1842,64 @@ const SampleTableInfo = struct {
         }
 
         return null; // Sample not found
+    }
+
+    /// Precompute all sample locations in a single O(samples) pass
+    /// This is much faster than calling getSampleLocation() for each sample
+    /// which would be O(samples × stsc_entries)
+    pub fn getAllSampleLocations(self: *const SampleTableInfo, alloc: Allocator) ?[]SampleLocation {
+        if (self.sample_count == 0) return null;
+        if (self.chunk_offsets.len == 0) return null;
+        if (self.stsc_entries.len == 0) return null;
+
+        const locations = alloc.alloc(SampleLocation, self.sample_count) catch return null;
+        errdefer alloc.free(locations);
+
+        var sample_idx: u32 = 0;
+        var stsc_idx: usize = 0;
+        var samples_per_chunk: u32 = self.stsc_entries[0].samples_per_chunk;
+
+        // Iterate through chunks in order
+        for (self.chunk_offsets, 0..) |chunk_offset, chunk_idx| {
+            // Update samples_per_chunk if we've entered a new stsc run
+            while (stsc_idx + 1 < self.stsc_entries.len and
+                self.stsc_entries[stsc_idx + 1].first_chunk <= chunk_idx + 1)
+            {
+                stsc_idx += 1;
+                samples_per_chunk = self.stsc_entries[stsc_idx].samples_per_chunk;
+            }
+
+            // Process all samples in this chunk
+            var offset_in_chunk: u64 = 0;
+            var sample_in_chunk: u32 = 0;
+            while (sample_in_chunk < samples_per_chunk and sample_idx < self.sample_count) {
+                const size = if (self.default_sample_size > 0)
+                    self.default_sample_size
+                else if (sample_idx < self.sample_sizes.len)
+                    self.sample_sizes[sample_idx]
+                else {
+                    alloc.free(locations);
+                    return null;
+                };
+
+                locations[sample_idx] = .{
+                    .offset = chunk_offset + offset_in_chunk,
+                    .size = size,
+                };
+
+                offset_in_chunk += size;
+                sample_idx += 1;
+                sample_in_chunk += 1;
+            }
+        }
+
+        // Verify we processed all samples
+        if (sample_idx != self.sample_count) {
+            alloc.free(locations);
+            return null;
+        }
+
+        return locations;
     }
 
     /// Check if a sample is a sync sample (keyframe)
@@ -2134,16 +2198,18 @@ fn validateMp4SamplesByteCoverage(
 	nal_length_size: u8,
 	max_frames: u32,
 ) ByteCoverageResult {
-	var samples_checked: u32 = 0;
 	const max_sample_size: u32 = 50 * 1024 * 1024; // 50MB max per sample
+
+	// Precompute all sample locations in O(n) instead of O(n × stsc_entries)
+	const locations = sample_table.getAllSampleLocations(allocator) orelse return .unavailable;
+	defer allocator.free(locations);
 
 	var sample_buffer: []u8 = allocator.alloc(u8, 1024 * 1024) catch return .unavailable;
 	defer allocator.free(sample_buffer);
 
-	for (0..sample_table.sample_count) |sample_idx| {
+	var samples_checked: u32 = 0;
+	for (locations) |location| {
 		if (samples_checked >= max_frames) break;
-
-		const location = sample_table.getSampleLocation(@intCast(sample_idx)) orelse continue;
 		if (location.size == 0) continue;
 		if (location.size > max_sample_size) return .unavailable;
 
