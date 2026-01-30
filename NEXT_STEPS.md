@@ -145,10 +145,13 @@ VALIDATE_DEBUG=1 ./zig-out/bin/validate <dir>  # Debug mode (prints START/END fo
 ### Investigate O(n) and O(n²) bottlenecks
 
 Found during stress testing:
-- `video_validator.SampleTableInfo.getSampleLocation` - O(n) sample table lookup causing 30+ minute hangs on 2.5 hour movies. Should be O(log n) with binary search or O(1) with precomputed index.
+- ✅ `video_validator.SampleTableInfo.getSampleLocation` - FIXED (2026-01-30)
+  - Added `getAllSampleLocations()` for O(n) bulk precomputation
+  - Changed `validateMp4SamplesByteCoverage` to use bulk method
+  - Result: Stalingrad.1993 (2.5 hours) validates in ~1 second vs 30+ minutes
 
-Action items:
-1. Profile all sample table operations in video_validator.zig
+Remaining action items:
+1. ~~Profile all sample table operations in video_validator.zig~~ ✅ Done
 2. Check EBML parser for linear scans that could use binary search
 3. Review PDF validation for linear searches in large documents
 4. Audit any loops over file samples/chunks/atoms
