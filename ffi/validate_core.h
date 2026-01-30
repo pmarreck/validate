@@ -66,6 +66,14 @@ const char* es_core_last_error(void);
  */
 void es_core_clear_error(void);
 
+/**
+ * Pre-initialize all decoder libraries for thread safety.
+ * Call this ONCE from the main thread BEFORE spawning worker threads.
+ * This triggers lazy SIMD detection and global state initialization
+ * in all C libraries, preventing race conditions during parallel validation.
+ */
+void es_core_preinit(void);
+
 /* ========== Format Validation ========== */
 
 /**

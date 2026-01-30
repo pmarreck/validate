@@ -199,6 +199,14 @@ export fn es_core_version() [*:0]const u8 {
 	return version_string.ptr;
 }
 
+/// Pre-initialize all decoder libraries for thread safety.
+/// Call this ONCE from the main thread BEFORE spawning worker threads.
+/// This triggers lazy SIMD detection and global state initialization
+/// in all C libraries, preventing race conditions during parallel validation.
+export fn es_core_preinit() void {
+	core.preInit();
+}
+
 /// Returns the last error message.
 export fn es_core_last_error() ?[*:0]const u8 {
 	if (errors.last_error) |err| {

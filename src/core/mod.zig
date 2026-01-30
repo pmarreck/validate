@@ -78,6 +78,8 @@ pub const hfsplus_parser = @import("hfsplus_parser.zig");
 pub const zlib = @import("zlib.zig");
 pub const git_validator = @import("git_validator.zig");
 pub const path_validation = @import("path_validation.zig");
+pub const heif_validator = @import("heif_validator.zig");
+pub const webp_validator = @import("webp_validator.zig");
 
 // Version information
 pub const version = struct {
@@ -93,6 +95,27 @@ pub const version = struct {
 /// Returns the library version string.
 pub fn getVersion() []const u8 {
     return version.string();
+}
+
+/// Pre-initialize all decoder libraries for thread safety.
+/// Call this ONCE from the main thread BEFORE spawning worker threads.
+/// This triggers lazy SIMD detection and global state initialization
+/// in all C libraries, preventing race conditions during parallel validation.
+pub fn preInit() void {
+    // libheif - triggers heif_init() via std.once
+    _ = heif_validator.validateHeifDeep("/nonexistent");
+
+    // libjpeg-turbo - triggers SIMD detection on first jpeg_create_decompress()
+    _ = jpeg_validator.validateJpegDeep("/nonexistent");
+
+    // libwebp - triggers DSP function initialization
+    _ = webp_validator.validateWebpDeep("/nonexistent");
+
+    // libjxl - triggers Highway SIMD dispatch selection
+    _ = jxl_validator.validateJxlDeep("/nonexistent");
+
+    // Note: Other decoders (libde265, dav1d, OpenH264) are protected by
+    // video_decoder_mutex and don't need pre-init.
 }
 
 test "version" {

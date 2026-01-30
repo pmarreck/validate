@@ -572,6 +572,12 @@ int main(int argc, char* argv[]) {
 	}
 
 	init_mem_telemetry();
+
+	/* Pre-initialize decoder libraries for thread safety.
+	 * This must be called ONCE from main thread BEFORE spawning workers.
+	 * Triggers SIMD detection and global state init in all C libraries. */
+	es_core_preinit();
+
 	int rc = validate_path(path, jobs, shuffle, stress_iterations);
 	shutdown_mem_telemetry();
 	return rc;
