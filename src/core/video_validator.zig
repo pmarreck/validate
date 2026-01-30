@@ -1712,10 +1712,14 @@ pub const CodecPrivateData = struct {
     h264_profile: u8 = 0,
 
     /// Check if H.264 profile is supported by OpenH264
+    /// OpenH264 was designed for video conferencing (WebRTC), not professional video.
+    /// High profile support is incomplete - especially at levels 4.0+ (1080p content).
+    /// Baseline and Main profiles are reliably supported.
     pub fn isH264ProfileSupported(self: @This()) bool {
         return switch (self.h264_profile) {
-            66, 77, 100 => true, // Baseline, Main, High
-            0 => true, // Not H.264 or unknown
+            66, 77 => true, // Baseline, Main - reliably supported
+            0 => true, // Not H.264 or unknown - let it try
+            // High profile (100) NOT included - requires ffmpeg for reliable decoding
             else => false,
         };
     }
