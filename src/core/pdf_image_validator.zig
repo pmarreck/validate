@@ -23,6 +23,10 @@ const run_length_decoder = @import("run_length_decoder.zig");
 const lzw_decoder = @import("lzw_decoder.zig");
 const pdf_decryptor = @import("pdf_decryptor.zig");
 const zlib = @import("zlib.zig");
+const thread_pool = @import("thread_pool.zig");
+
+/// Minimum number of images to trigger parallel validation
+const PARALLEL_IMAGE_THRESHOLD: usize = 10;
 
 // ============ Types ============
 
@@ -688,13 +692,6 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
     const images = try findPdfImages(allocator, pdf_data);
     defer freePdfImages(allocator, images);
 
-    var results: std.ArrayListUnmanaged(ImageValidationResult) = .{};
-    errdefer results.deinit(allocator);
-
-    var validated: u32 = 0;
-    var failed: u32 = 0;
-    var skipped: u32 = 0;
-
     // Check for encryption and attempt decryption with empty password
     var is_encrypted = false;
     var decryption_succeeded = false;
@@ -718,13 +715,35 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
                 .validated_images = 0,
                 .failed_images = 0,
                 .skipped_images = @intCast(images.len),
-                .results = try results.toOwnedSlice(allocator),
+                .results = &.{},
                 .error_message = "PDF encrypted with password - images not validated",
                 .is_encrypted = true,
                 .decryption_succeeded = false,
             };
         }
     }
+
+    // Use parallel validation for PDFs with many images
+    if (images.len >= PARALLEL_IMAGE_THRESHOLD) {
+        return validatePdfImagesParallel(
+            allocator,
+            images,
+            pdf_data,
+            encryption_key,
+            key_length,
+            use_aes,
+            decryption_succeeded,
+            is_encrypted,
+        );
+    }
+
+    // Sequential validation for small image counts
+    var results: std.ArrayListUnmanaged(ImageValidationResult) = .{};
+    errdefer results.deinit(allocator);
+
+    var validated: u32 = 0;
+    var failed: u32 = 0;
+    var skipped: u32 = 0;
 
     for (images) |img| {
 
@@ -929,6 +948,322 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
         .skipped_images = skipped,
         .results = try results.toOwnedSlice(allocator),
         .error_message = if (failed > 0) "Some images failed validation" else null,
+        .is_encrypted = is_encrypted,
+        .decryption_succeeded = decryption_succeeded,
+    };
+}
+
+// ============ Parallel Image Validation ============
+
+/// Task for parallel image validation
+const ImageTask = struct {
+    /// Index into images array
+    image_index: usize,
+};
+
+/// Result from parallel image validation
+const ImageTaskResult = struct {
+    result: ?ImageValidationResult,
+    status: enum { validated, failed, skipped },
+};
+
+/// Shared context for parallel validation workers
+const ParallelContext = struct {
+    images: []const PdfImageInfo,
+    pdf_data: []const u8,
+    encryption_key: ?[16]u8,
+    key_length: u8,
+    use_aes: bool,
+    decryption_succeeded: bool,
+};
+
+/// Execute a single image validation task (called by worker threads)
+fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
+    const ctx: *const ParallelContext = @ptrCast(@alignCast(ctx_ptr orelse return .{
+        .result = null,
+        .status = .skipped,
+    }));
+
+    const img = ctx.images[task.image_index];
+
+    // Use page_allocator for temporary work
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Get the primary image filter (last in chain)
+    if (img.filters.len == 0) {
+        return .{ .result = null, .status = .skipped };
+    }
+
+    const primary_filter = img.filters[img.filters.len - 1];
+
+    // Get the raw stream data
+    var raw_data = ctx.pdf_data[img.stream_start..img.stream_end];
+
+    // Decrypt if needed
+    if (ctx.decryption_succeeded) {
+        if (ctx.encryption_key) |key| {
+            const decrypted = pdf_decryptor.decryptStream(
+                allocator,
+                raw_data,
+                key[0..ctx.key_length],
+                img.object_num,
+                img.gen_num,
+                ctx.use_aes,
+            ) catch {
+                return .{ .result = null, .status = .skipped };
+            };
+            raw_data = decrypted;
+        }
+    }
+
+    // Apply filter chain if there are multiple filters
+    const image_data: []const u8 = if (img.filters.len > 1) blk: {
+        const preprocessing_filters = img.filters[0 .. img.filters.len - 1];
+        if (applyFilterChain(allocator, raw_data, preprocessing_filters)) |decoded| {
+            break :blk decoded;
+        } else {
+            return .{ .result = null, .status = .skipped };
+        }
+    } else raw_data;
+
+    // Validate based on filter type
+    const validation_result: ImageTaskResult = switch (primary_filter) {
+        .jbig2_decode => blk: {
+            const globals_data: ?[]const u8 = if (img.jbig2_globals_obj) |globals_obj|
+                findObjectStream(ctx.pdf_data, globals_obj, img.jbig2_globals_gen orelse 0)
+            else
+                null;
+
+            if (image_data.len < 5) {
+                break :blk .{
+                    .result = .{
+                        .object_num = img.object_num,
+                        .filter = primary_filter,
+                        .valid = false,
+                        .error_message = "JBIG2 stream too short",
+                        .width = 0,
+                        .height = 0,
+                    },
+                    .status = .failed,
+                };
+            }
+
+            const jbig2_result = jbig2_decoder.validatePdfJbig2(allocator, globals_data, image_data, img.width, img.height);
+            break :blk .{
+                .result = .{
+                    .object_num = img.object_num,
+                    .filter = primary_filter,
+                    .valid = jbig2_result.valid,
+                    .error_message = jbig2_result.error_message orelse jbig2_result.warning_message,
+                    .width = jbig2_result.width,
+                    .height = jbig2_result.height,
+                },
+                .status = if (jbig2_result.valid) .validated else .failed,
+            };
+        },
+        .dct_decode, .jpx_decode, .ccitt_fax_decode => blk: {
+            var result = validateExtractedImage(allocator, image_data, primary_filter);
+            result.object_num = img.object_num;
+            break :blk .{
+                .result = result,
+                .status = if (result.valid) .validated else .failed,
+            };
+        },
+        .flate_decode => blk: {
+            if (decompressFlate(allocator, image_data)) |decompressed| {
+                if (detectDecompressedFormat(decompressed)) |nested_format| {
+                    var result = validateExtractedImage(allocator, decompressed, nested_format);
+                    result.object_num = img.object_num;
+                    break :blk .{
+                        .result = result,
+                        .status = if (result.valid) .validated else .failed,
+                    };
+                } else {
+                    break :blk .{
+                        .result = .{
+                            .object_num = img.object_num,
+                            .filter = .flate_decode,
+                            .valid = true,
+                            .error_message = null,
+                            .width = img.width orelse 0,
+                            .height = img.height orelse 0,
+                        },
+                        .status = .validated,
+                    };
+                }
+            } else |_| {
+                break :blk .{
+                    .result = .{
+                        .object_num = img.object_num,
+                        .filter = .flate_decode,
+                        .valid = false,
+                        .error_message = "FlateDecode decompression failed",
+                        .width = 0,
+                        .height = 0,
+                    },
+                    .status = .failed,
+                };
+            }
+        },
+        .lzw_decode => blk: {
+            if (lzw_decoder.decode(allocator, image_data)) |decompressed| {
+                if (detectDecompressedFormat(decompressed)) |nested_format| {
+                    var result = validateExtractedImage(allocator, decompressed, nested_format);
+                    result.object_num = img.object_num;
+                    break :blk .{
+                        .result = result,
+                        .status = if (result.valid) .validated else .failed,
+                    };
+                } else {
+                    break :blk .{
+                        .result = .{
+                            .object_num = img.object_num,
+                            .filter = .lzw_decode,
+                            .valid = true,
+                            .error_message = null,
+                            .width = img.width orelse 0,
+                            .height = img.height orelse 0,
+                        },
+                        .status = .validated,
+                    };
+                }
+            } else |_| {
+                break :blk .{
+                    .result = .{
+                        .object_num = img.object_num,
+                        .filter = .lzw_decode,
+                        .valid = false,
+                        .error_message = "LZW decode failed",
+                        .width = 0,
+                        .height = 0,
+                    },
+                    .status = .failed,
+                };
+            }
+        },
+        else => .{ .result = null, .status = .skipped },
+    };
+
+    return validation_result;
+}
+
+/// Validate PDF images in parallel using thread pool
+fn validatePdfImagesParallel(
+    allocator: Allocator,
+    images: []const PdfImageInfo,
+    pdf_data: []const u8,
+    encryption_key: ?[16]u8,
+    key_length: u8,
+    use_aes: bool,
+    decryption_succeeded: bool,
+    is_encrypted: bool,
+) !PdfImageValidationResult {
+    // Use a small fixed number of threads to avoid over-subscription
+    // when already running in parallel at the batch level.
+    // 4 threads provides good parallelism without massive contention.
+    const job_count: usize = 4;
+
+    // Shared context for all workers
+    var ctx = ParallelContext{
+        .images = images,
+        .pdf_data = pdf_data,
+        .encryption_key = encryption_key,
+        .key_length = key_length,
+        .use_aes = use_aes,
+        .decryption_succeeded = decryption_succeeded,
+    };
+
+    // IMPORTANT: Use page_allocator for thread pool internals because:
+    // 1. The passed-in allocator may be an arena allocator (not thread-safe)
+    // 2. Thread pool's work queue and result queue are accessed from multiple threads
+    // 3. page_allocator is thread-safe
+    const pool_allocator = std.heap.page_allocator;
+
+    // Collect results thread-safely
+    var results_mutex: std.Thread.Mutex = .{};
+    var collected_results: std.ArrayListUnmanaged(ImageValidationResult) = .{};
+    errdefer collected_results.deinit(pool_allocator);
+
+    var validated = std.atomic.Value(u32).init(0);
+    var failed = std.atomic.Value(u32).init(0);
+    var skipped = std.atomic.Value(u32).init(0);
+
+    const ResultContext = struct {
+        mutex: *std.Thread.Mutex,
+        results: *std.ArrayListUnmanaged(ImageValidationResult),
+        allocator: Allocator,
+        validated: *std.atomic.Value(u32),
+        failed: *std.atomic.Value(u32),
+        skipped: *std.atomic.Value(u32),
+    };
+
+    var result_ctx = ResultContext{
+        .mutex = &results_mutex,
+        .results = &collected_results,
+        .allocator = pool_allocator,
+        .validated = &validated,
+        .failed = &failed,
+        .skipped = &skipped,
+    };
+
+    // Create thread pool with thread-safe allocator
+    const Pool = thread_pool.ThreadPool(ImageTask, ImageTaskResult);
+    const pool = try Pool.create(
+        pool_allocator,
+        job_count,
+        executeImageTask,
+        @ptrCast(&ctx),
+        struct {
+            fn callback(task_result: ImageTaskResult, cb_ctx: ?*anyopaque) void {
+                const rc: *ResultContext = @ptrCast(@alignCast(cb_ctx orelse return));
+
+                switch (task_result.status) {
+                    .validated => _ = rc.validated.fetchAdd(1, .seq_cst),
+                    .failed => _ = rc.failed.fetchAdd(1, .seq_cst),
+                    .skipped => _ = rc.skipped.fetchAdd(1, .seq_cst),
+                }
+
+                if (task_result.result) |result| {
+                    rc.mutex.lock();
+                    defer rc.mutex.unlock();
+                    rc.results.append(rc.allocator, result) catch {};
+                }
+            }
+        }.callback,
+        @ptrCast(&result_ctx),
+    );
+    defer pool.destroy();
+
+    // Submit all image tasks
+    for (0..images.len) |i| {
+        try pool.submit(.{ .image_index = i });
+    }
+
+    // Wait for completion
+    pool.shutdown();
+    pool.wait();
+
+    const final_validated = validated.load(.seq_cst);
+    const final_failed = failed.load(.seq_cst);
+    const final_skipped = skipped.load(.seq_cst);
+
+    // Get results from pool_allocator, then copy to caller's allocator
+    const pool_results = try collected_results.toOwnedSlice(pool_allocator);
+    defer pool_allocator.free(pool_results);
+
+    // Copy to caller's allocator (so they can free with their allocator)
+    const caller_results = try allocator.dupe(ImageValidationResult, pool_results);
+
+    return .{
+        .valid = final_failed == 0,
+        .total_images = @intCast(images.len),
+        .validated_images = final_validated,
+        .failed_images = final_failed,
+        .skipped_images = final_skipped,
+        .results = caller_results,
+        .error_message = if (final_failed > 0) "Some images failed validation" else null,
         .is_encrypted = is_encrypted,
         .decryption_succeeded = decryption_succeeded,
     };

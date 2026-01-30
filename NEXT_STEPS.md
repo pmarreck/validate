@@ -100,29 +100,38 @@ Applied to MP4, MKV, and AVI validators (lines ~18336, ~18464, ~18528).
 
 ### HIGH PRIORITY - Architecture Fix Required
 
-1. **Hexagonal Architecture Violation** - CLI bypasses C FFI
-   - **Problem**: `cli/main.c` currently calls Zig `path_validation` directly, violating the principle that all clients must go through the C FFI boundary.
-   - **Solution**: Implement `es_validate_batch()` in the C FFI (see `ARCHITECTURE.md`)
-   - **New API**:
-     ```c
-     es_error_t es_validate_batch(
-         const char** paths,
-         size_t count,
-         int num_threads,           // 0 = auto-detect
-         es_validation_callback cb,
-         void* context
-     );
-     ```
-   - **Design decisions** (documented in `ARCHITECTURE.md`):
-     - Two error classes: "halt" (OOM, disk full) vs "continue" (per-file failures)
-     - Callbacks serialized to one thread (provides backpressure)
-     - Caller takes ownership of results, must call `es_free_result()`
-     - `num_threads` is a "parallelism budget" shared by all validators
+1. **Hexagonal Architecture Violation** - ✅ FIXED (2026-01-30)
+   - CLI now uses `es_validate_batch()` through C FFI
+   - CLI is format-agnostic (enumerates files, calls core, displays results)
+   - See `ARCHITECTURE.md` for design details
 
-2. **PDF Image Validation Parallelization** - Blocked by #1
-   - Large PDFs (Ashley Book of Knots, 139MB) drop CPU usage to 210% vs 1600%
-   - Format-specific parallelism should use the shared thread pool
-   - See `ARCHITECTURE.md` "Format-Specific Parallelism" section
+2. **Bundle Validation** - NEW REQUIREMENT
+   - **Problem**: Directories can be "bundles" that need holistic validation (not just file-by-file)
+   - **Solution**: When core receives a directory path, check if it matches a known bundle pattern
+   - **Bundle types to support**:
+     - `.git` directory → Git repository integrity (refs, objects, packs)
+       - Existing implementation: `src/core/git_validator.zig`
+       - FFI export: `es_git_validate_repository()` in `ffi/c_api.zig`
+       - Validates: object checksums, ref consistency, pack file integrity
+     - `.app` bundle → macOS application bundle structure
+     - `.framework` bundle → macOS framework structure
+     - `.bundle` → generic macOS bundle
+     - `.xcodeproj`, `.xcworkspace` → Xcode project bundles
+   - **Behavior**:
+     - If directory matches known bundle → perform bundle-specific validation
+     - If directory is unknown bundle type → return continuable error "unknown directory/bundle type"
+     - Bundle validation returns a single result for the entire bundle (not per-file)
+   - **Implementation approach**:
+     - Add `BundleFormat` enum similar to `FileFormat`
+     - Add `detectBundleFormat(path)` that checks directory name patterns
+     - Route to bundle-specific validators (git_validator, app_validator, etc.)
+     - Return `ValidationResult` with bundle-specific format description
+
+3. **PDF Image Validation Parallelization** - ✅ DONE (2026-01-30)
+   - PDFs with 10+ images now validated in parallel using thread pool
+   - ~/Documents/Books benchmark: 2m30s → 1m36s (36% faster)
+   - Implementation: `pdf_image_validator.validatePdfImagesParallel()`
+   - Uses LIFO task queue for natural sub-task priority
 
 ### Medium Priority
 

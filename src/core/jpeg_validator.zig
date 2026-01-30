@@ -228,11 +228,9 @@ pub fn validateJpegDeepFromBuffer(data: []const u8) JpegValidationResult {
     if (c.setjmp(&err_mgr.setjmp_buffer) != 0) {
         // We jumped here from error_exit - clean up and return error
         c.jpeg_destroy_decompress(&cinfo);
-        // Extract error message
-        const msg_end = std.mem.indexOfScalar(u8, &err_mgr.error_message, 0) orelse err_mgr.error_message.len;
-        if (msg_end > 0) {
-            return JpegValidationResult.invalid(err_mgr.error_message[0..msg_end]);
-        }
+        // NOTE: We return a static error message here instead of err_mgr.error_message
+        // because err_mgr is stack-local and the slice would be invalid after return.
+        // The specific libjpeg error message is lost, but we avoid use-after-free.
         return JpegValidationResult.invalid("JPEG decompression error");
     }
 

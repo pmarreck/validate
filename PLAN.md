@@ -6,12 +6,20 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ### HIGH PRIORITY: Hexagonal Architecture FFI Refactor
 - [x] Add es_validate(), es_validate_batch(), es_free_result(), es_get_default_threads() to C FFI (2026-01-30)
-- [ ] Verify new FFI functions compile and basic tests pass
-- [ ] Refactor cli/main.c to use new es_validate_batch() instead of direct Zig imports
-- [ ] Add directory enumeration to CLI (CLI enumerates, passes paths to es_validate_batch)
+- [x] Verify new FFI functions compile and basic tests pass (2026-01-30)
+- [x] Refactor cli/main.c to use new es_validate_batch() instead of direct Zig imports (2026-01-30)
+- [x] Add directory enumeration to CLI (CLI enumerates, passes paths to es_validate_batch) (2026-01-30)
+- [x] Make CLI format-agnostic (removed git-specific logic, CLI is now a dumb pipe) (2026-01-30)
+- [x] Parallel PDF image validation using thread pool (36% faster on ~/Documents/Books) (2026-01-30)
 - [ ] Deprecate old handle-based API (es_format_validator_create, etc.) - add DEPRECATED comments
-- [ ] Remove path_validation direct imports from CLI after es_validate_batch works
 - [ ] Future: Remove deprecated handle-based API in next major version
+
+### Bundle Validation (directories as single validation units)
+- [ ] Add BundleFormat enum and detectBundleFormat() to core
+- [ ] Route .git directories to existing git_validator.zig
+- [ ] Add macOS bundle validation (.app, .framework, .bundle)
+- [ ] Return continuable error for unknown directory types
+- [ ] See NEXT_STEPS.md for full design
 
 ### Other
 - [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
