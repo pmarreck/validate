@@ -1767,8 +1767,11 @@ const SampleTableInfo = struct {
     }
 
     /// Get the file offset and size for a given sample index (0-indexed)
+    /// Optimized: O(stsc_entries) instead of O(chunks) - critical for long videos
     pub fn getSampleLocation(self: *const SampleTableInfo, sample_index: u32) ?struct { offset: u64, size: u32 } {
         if (sample_index >= self.sample_count) return null;
+        if (self.chunk_offsets.len == 0) return null;
+        if (self.stsc_entries.len == 0) return null;
 
         // Get sample size
         const size = if (self.default_sample_size > 0)
@@ -1778,54 +1781,61 @@ const SampleTableInfo = struct {
         else
             return null;
 
-        // Find which chunk this sample is in and its position within the chunk
-        var chunk_index: u32 = 0;
-        var samples_before: u32 = 0;
-        var samples_in_this_chunk: u32 = 0;
-        var current_stsc_idx: usize = 0;
+        // Optimized chunk lookup: iterate through stsc runs, not individual chunks
+        // Each stsc entry defines a run of chunks with the same samples_per_chunk
+        // This is O(stsc_entries) instead of O(chunks)
+        var samples_before_run: u32 = 0;
+        var chunk_at_run_start: u32 = 0;
+        var samples_per_chunk: u32 = self.stsc_entries[0].samples_per_chunk;
 
-        while (chunk_index < self.chunk_offsets.len) {
-            // Determine samples_per_chunk for this chunk
-            var samples_per_chunk: u32 = 1; // default
-            for (self.stsc_entries, 0..) |entry, i| {
-                if (entry.first_chunk <= chunk_index + 1) {
-                    samples_per_chunk = entry.samples_per_chunk;
-                    current_stsc_idx = i;
+        for (self.stsc_entries, 0..) |entry, i| {
+            // Calculate chunks in this run
+            const run_start_chunk = entry.first_chunk - 1; // Convert to 0-indexed
+            const next_run_start_chunk: u32 = if (i + 1 < self.stsc_entries.len)
+                self.stsc_entries[i + 1].first_chunk - 1
+            else
+                @intCast(self.chunk_offsets.len);
+
+            const chunks_in_run = next_run_start_chunk - run_start_chunk;
+            const samples_in_run = chunks_in_run * entry.samples_per_chunk;
+
+            if (samples_before_run + samples_in_run > sample_index) {
+                // Sample is in this run - calculate exact chunk
+                samples_per_chunk = entry.samples_per_chunk;
+                chunk_at_run_start = run_start_chunk;
+
+                // Find which chunk within this run
+                const sample_in_run = sample_index - samples_before_run;
+                const chunk_in_run = sample_in_run / samples_per_chunk;
+                const chunk_index = chunk_at_run_start + chunk_in_run;
+
+                if (chunk_index >= self.chunk_offsets.len) return null;
+
+                // Calculate samples before our chunk (within this run)
+                const samples_before_chunk = samples_before_run + chunk_in_run * samples_per_chunk;
+                const sample_in_chunk = sample_index - samples_before_chunk;
+
+                // Calculate offset within chunk
+                var offset = self.chunk_offsets[chunk_index];
+                if (self.default_sample_size > 0) {
+                    offset += @as(u64, sample_in_chunk) * @as(u64, self.default_sample_size);
                 } else {
-                    break;
+                    // Variable sample sizes - need to sum previous samples in chunk
+                    var s: u32 = samples_before_chunk;
+                    while (s < sample_index) : (s += 1) {
+                        if (s < self.sample_sizes.len) {
+                            offset += self.sample_sizes[s];
+                        }
+                    }
                 }
+
+                return .{ .offset = offset, .size = size };
             }
 
-            samples_in_this_chunk = samples_per_chunk;
-
-            if (samples_before + samples_in_this_chunk > sample_index) {
-                // Sample is in this chunk
-                break;
-            }
-
-            samples_before += samples_in_this_chunk;
-            chunk_index += 1;
+            samples_before_run += samples_in_run;
         }
 
-        if (chunk_index >= self.chunk_offsets.len) return null;
-
-        // Calculate offset within chunk
-        const sample_in_chunk = sample_index - samples_before;
-        var offset = self.chunk_offsets[chunk_index];
-
-        // Add sizes of previous samples in this chunk
-        if (self.default_sample_size > 0) {
-            offset += @as(u64, sample_in_chunk) * @as(u64, self.default_sample_size);
-        } else {
-            var i: u32 = samples_before;
-            while (i < sample_index) : (i += 1) {
-                if (i < self.sample_sizes.len) {
-                    offset += self.sample_sizes[i];
-                }
-            }
-        }
-
-        return .{ .offset = offset, .size = size };
+        return null; // Sample not found
     }
 
     /// Check if a sample is a sync sample (keyframe)
@@ -3090,4 +3100,315 @@ test "validateAnnexBStream rejects missing start codes" {
 test "validateAnnexBStream rejects empty NAL" {
 	const data = [_]u8{ 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x67 };
 	try std.testing.expect(!validateAnnexBStream(&data));
+}
+
+// ============ SampleTableInfo.getSampleLocation Tests ============
+// These tests verify correct sample-to-file-offset mapping for MP4/MOV containers.
+// Critical for validating video frame extraction from containers.
+
+test "getSampleLocation: uniform samples per chunk" {
+    // Simple case: 3 chunks, 2 samples per chunk, fixed sample size
+    // Chunk 0: samples 0,1 at offset 1000
+    // Chunk 1: samples 2,3 at offset 2000
+    // Chunk 2: samples 4,5 at offset 3000
+    const allocator = std.testing.allocator;
+
+    var stsc_entries = try allocator.alloc(SampleTableInfo.StscEntry, 1);
+    defer allocator.free(stsc_entries);
+    stsc_entries[0] = .{ .first_chunk = 1, .samples_per_chunk = 2, .sample_description_index = 1 };
+
+    var chunk_offsets = try allocator.alloc(u64, 3);
+    defer allocator.free(chunk_offsets);
+    chunk_offsets[0] = 1000;
+    chunk_offsets[1] = 2000;
+    chunk_offsets[2] = 3000;
+
+    const table = SampleTableInfo{
+        .sample_sizes = &[_]u32{},
+        .default_sample_size = 100, // Each sample is 100 bytes
+        .sample_count = 6,
+        .sync_samples = &[_]u32{},
+        .chunk_offsets = chunk_offsets,
+        .stsc_entries = stsc_entries,
+        .allocator = allocator,
+    };
+
+    // Sample 0: chunk 0, offset 0 within chunk
+    const loc0 = table.getSampleLocation(0).?;
+    try std.testing.expectEqual(@as(u64, 1000), loc0.offset);
+    try std.testing.expectEqual(@as(u32, 100), loc0.size);
+
+    // Sample 1: chunk 0, offset 100 within chunk
+    const loc1 = table.getSampleLocation(1).?;
+    try std.testing.expectEqual(@as(u64, 1100), loc1.offset);
+
+    // Sample 2: chunk 1, offset 0 within chunk
+    const loc2 = table.getSampleLocation(2).?;
+    try std.testing.expectEqual(@as(u64, 2000), loc2.offset);
+
+    // Sample 3: chunk 1, offset 100 within chunk
+    const loc3 = table.getSampleLocation(3).?;
+    try std.testing.expectEqual(@as(u64, 2100), loc3.offset);
+
+    // Sample 4: chunk 2, offset 0 within chunk
+    const loc4 = table.getSampleLocation(4).?;
+    try std.testing.expectEqual(@as(u64, 3000), loc4.offset);
+
+    // Sample 5: chunk 2, offset 100 within chunk
+    const loc5 = table.getSampleLocation(5).?;
+    try std.testing.expectEqual(@as(u64, 3100), loc5.offset);
+
+    // Out of bounds
+    try std.testing.expect(table.getSampleLocation(6) == null);
+}
+
+test "getSampleLocation: variable samples per chunk" {
+    // More complex: stsc changes samples_per_chunk mid-stream
+    // Chunk 0 (first_chunk=1): 1 sample per chunk -> sample 0
+    // Chunk 1 (first_chunk=2): 3 samples per chunk -> samples 1,2,3
+    // Chunk 2: 3 samples per chunk -> samples 4,5,6
+    const allocator = std.testing.allocator;
+
+    var stsc_entries = try allocator.alloc(SampleTableInfo.StscEntry, 2);
+    defer allocator.free(stsc_entries);
+    stsc_entries[0] = .{ .first_chunk = 1, .samples_per_chunk = 1, .sample_description_index = 1 };
+    stsc_entries[1] = .{ .first_chunk = 2, .samples_per_chunk = 3, .sample_description_index = 1 };
+
+    var chunk_offsets = try allocator.alloc(u64, 3);
+    defer allocator.free(chunk_offsets);
+    chunk_offsets[0] = 1000;
+    chunk_offsets[1] = 2000;
+    chunk_offsets[2] = 5000;
+
+    const table = SampleTableInfo{
+        .sample_sizes = &[_]u32{},
+        .default_sample_size = 500,
+        .sample_count = 7,
+        .sync_samples = &[_]u32{},
+        .chunk_offsets = chunk_offsets,
+        .stsc_entries = stsc_entries,
+        .allocator = allocator,
+    };
+
+    // Sample 0: chunk 0 (1 sample)
+    const loc0 = table.getSampleLocation(0).?;
+    try std.testing.expectEqual(@as(u64, 1000), loc0.offset);
+
+    // Sample 1: chunk 1 (3 samples), first sample
+    const loc1 = table.getSampleLocation(1).?;
+    try std.testing.expectEqual(@as(u64, 2000), loc1.offset);
+
+    // Sample 2: chunk 1, second sample
+    const loc2 = table.getSampleLocation(2).?;
+    try std.testing.expectEqual(@as(u64, 2500), loc2.offset);
+
+    // Sample 3: chunk 1, third sample
+    const loc3 = table.getSampleLocation(3).?;
+    try std.testing.expectEqual(@as(u64, 3000), loc3.offset);
+
+    // Sample 4: chunk 2, first sample
+    const loc4 = table.getSampleLocation(4).?;
+    try std.testing.expectEqual(@as(u64, 5000), loc4.offset);
+
+    // Sample 6: chunk 2, third sample
+    const loc6 = table.getSampleLocation(6).?;
+    try std.testing.expectEqual(@as(u64, 6000), loc6.offset);
+}
+
+test "getSampleLocation: variable sample sizes" {
+    // Test with individual sample sizes instead of default
+    const allocator = std.testing.allocator;
+
+    var stsc_entries = try allocator.alloc(SampleTableInfo.StscEntry, 1);
+    defer allocator.free(stsc_entries);
+    stsc_entries[0] = .{ .first_chunk = 1, .samples_per_chunk = 3, .sample_description_index = 1 };
+
+    var chunk_offsets = try allocator.alloc(u64, 2);
+    defer allocator.free(chunk_offsets);
+    chunk_offsets[0] = 1000;
+    chunk_offsets[1] = 2000;
+
+    var sample_sizes = try allocator.alloc(u32, 6);
+    defer allocator.free(sample_sizes);
+    sample_sizes[0] = 100;
+    sample_sizes[1] = 200;
+    sample_sizes[2] = 150;
+    sample_sizes[3] = 300;
+    sample_sizes[4] = 250;
+    sample_sizes[5] = 175;
+
+    const table = SampleTableInfo{
+        .sample_sizes = sample_sizes,
+        .default_sample_size = 0, // Use individual sizes
+        .sample_count = 6,
+        .sync_samples = &[_]u32{},
+        .chunk_offsets = chunk_offsets,
+        .stsc_entries = stsc_entries,
+        .allocator = allocator,
+    };
+
+    // Sample 0: chunk 0, offset 0
+    const loc0 = table.getSampleLocation(0).?;
+    try std.testing.expectEqual(@as(u64, 1000), loc0.offset);
+    try std.testing.expectEqual(@as(u32, 100), loc0.size);
+
+    // Sample 1: chunk 0, offset = size of sample 0 = 100
+    const loc1 = table.getSampleLocation(1).?;
+    try std.testing.expectEqual(@as(u64, 1100), loc1.offset);
+    try std.testing.expectEqual(@as(u32, 200), loc1.size);
+
+    // Sample 2: chunk 0, offset = 100 + 200 = 300
+    const loc2 = table.getSampleLocation(2).?;
+    try std.testing.expectEqual(@as(u64, 1300), loc2.offset);
+    try std.testing.expectEqual(@as(u32, 150), loc2.size);
+
+    // Sample 3: chunk 1, first sample
+    const loc3 = table.getSampleLocation(3).?;
+    try std.testing.expectEqual(@as(u64, 2000), loc3.offset);
+    try std.testing.expectEqual(@as(u32, 300), loc3.size);
+}
+
+test "getSampleLocation: single chunk with many samples" {
+    // Edge case: all samples in one chunk
+    const allocator = std.testing.allocator;
+
+    var stsc_entries = try allocator.alloc(SampleTableInfo.StscEntry, 1);
+    defer allocator.free(stsc_entries);
+    stsc_entries[0] = .{ .first_chunk = 1, .samples_per_chunk = 1000, .sample_description_index = 1 };
+
+    var chunk_offsets = try allocator.alloc(u64, 1);
+    defer allocator.free(chunk_offsets);
+    chunk_offsets[0] = 5000;
+
+    const table = SampleTableInfo{
+        .sample_sizes = &[_]u32{},
+        .default_sample_size = 50,
+        .sample_count = 1000,
+        .sync_samples = &[_]u32{},
+        .chunk_offsets = chunk_offsets,
+        .stsc_entries = stsc_entries,
+        .allocator = allocator,
+    };
+
+    // First sample
+    const loc0 = table.getSampleLocation(0).?;
+    try std.testing.expectEqual(@as(u64, 5000), loc0.offset);
+
+    // Sample 500
+    const loc500 = table.getSampleLocation(500).?;
+    try std.testing.expectEqual(@as(u64, 5000 + 500 * 50), loc500.offset);
+
+    // Last sample
+    const loc999 = table.getSampleLocation(999).?;
+    try std.testing.expectEqual(@as(u64, 5000 + 999 * 50), loc999.offset);
+}
+
+test "getSampleLocation: many chunks one sample each" {
+    // Edge case: 1000 chunks, 1 sample each (like some audio tracks)
+    const allocator = std.testing.allocator;
+
+    var stsc_entries = try allocator.alloc(SampleTableInfo.StscEntry, 1);
+    defer allocator.free(stsc_entries);
+    stsc_entries[0] = .{ .first_chunk = 1, .samples_per_chunk = 1, .sample_description_index = 1 };
+
+    var chunk_offsets = try allocator.alloc(u64, 1000);
+    defer allocator.free(chunk_offsets);
+    for (0..1000) |i| {
+        chunk_offsets[i] = 1000 + i * 200; // Chunks at 1000, 1200, 1400, ...
+    }
+
+    const table = SampleTableInfo{
+        .sample_sizes = &[_]u32{},
+        .default_sample_size = 100,
+        .sample_count = 1000,
+        .sync_samples = &[_]u32{},
+        .chunk_offsets = chunk_offsets,
+        .stsc_entries = stsc_entries,
+        .allocator = allocator,
+    };
+
+    // Sample 0 -> chunk 0
+    const loc0 = table.getSampleLocation(0).?;
+    try std.testing.expectEqual(@as(u64, 1000), loc0.offset);
+
+    // Sample 500 -> chunk 500
+    const loc500 = table.getSampleLocation(500).?;
+    try std.testing.expectEqual(@as(u64, 1000 + 500 * 200), loc500.offset);
+
+    // Sample 999 -> chunk 999
+    const loc999 = table.getSampleLocation(999).?;
+    try std.testing.expectEqual(@as(u64, 1000 + 999 * 200), loc999.offset);
+}
+
+test "getSampleLocation: performance with movie-sized sample table" {
+    // Performance test: simulate a 2.5 hour movie at 24fps = 216,000 frames
+    // With 10,000 chunks (typical), old O(chunks) would do 216K * 10K = 2.16B iterations
+    // New O(stsc_entries) does 216K * ~3 = 648K iterations (3333x faster)
+    const allocator = std.testing.allocator;
+
+    const num_chunks: u32 = 10_000;
+
+    // Typical movie has 2-3 stsc entries
+    var stsc_entries = try allocator.alloc(SampleTableInfo.StscEntry, 3);
+    defer allocator.free(stsc_entries);
+    stsc_entries[0] = .{ .first_chunk = 1, .samples_per_chunk = 20, .sample_description_index = 1 };
+    stsc_entries[1] = .{ .first_chunk = 1001, .samples_per_chunk = 22, .sample_description_index = 1 };
+    stsc_entries[2] = .{ .first_chunk = 5001, .samples_per_chunk = 24, .sample_description_index = 1 };
+
+    var chunk_offsets = try allocator.alloc(u64, num_chunks);
+    defer allocator.free(chunk_offsets);
+    for (0..num_chunks) |i| {
+        chunk_offsets[i] = 1000 + i * 50000; // Each chunk ~50KB apart
+    }
+
+    // Recalculate actual total samples based on stsc entries
+    // First 1000 chunks: 20 samples each = 20,000
+    // Next 4000 chunks: 22 samples each = 88,000
+    // Last 5000 chunks: 24 samples each = 120,000
+    // Total: 228,000 samples
+    const actual_total: u32 = 1000 * 20 + 4000 * 22 + 5000 * 24;
+
+    const table = SampleTableInfo{
+        .sample_sizes = &[_]u32{},
+        .default_sample_size = 2000, // ~2KB per frame
+        .sample_count = actual_total,
+        .sync_samples = &[_]u32{},
+        .chunk_offsets = chunk_offsets,
+        .stsc_entries = stsc_entries,
+        .allocator = allocator,
+    };
+
+    // Time lookups for all samples (or a representative subset)
+    const start = std.time.nanoTimestamp();
+
+    // Look up every 100th sample to keep test fast but representative
+    var lookups: u32 = 0;
+    var sample_idx: u32 = 0;
+    while (sample_idx < actual_total) : (sample_idx += 100) {
+        const loc = table.getSampleLocation(sample_idx);
+        try std.testing.expect(loc != null);
+        lookups += 1;
+    }
+
+    const elapsed = std.time.nanoTimestamp() - start;
+    const elapsed_ms = @as(f64, @floatFromInt(elapsed)) / 1_000_000.0;
+
+    // With optimized O(stsc_entries), this should complete in <100ms
+    // Old O(chunks) version would take several seconds
+    // We're doing ~2280 lookups; each should be O(3) not O(10000)
+    try std.testing.expect(lookups > 2000); // Sanity check we did lookups
+    try std.testing.expect(elapsed_ms < 500); // Should complete in <500ms
+
+    // Verify correctness at boundaries
+    // Sample 0 is in first chunk (stsc entry 0)
+    const loc0 = table.getSampleLocation(0).?;
+    try std.testing.expectEqual(@as(u64, 1000), loc0.offset);
+
+    // Sample 20,000 is first sample of second stsc run (chunk 1001)
+    const loc_run2 = table.getSampleLocation(20_000).?;
+    try std.testing.expectEqual(@as(u64, 1000 + 1000 * 50000), loc_run2.offset);
+
+    // Sample in third stsc run (after 20000 + 88000 = 108000)
+    const loc_run3 = table.getSampleLocation(108_000).?;
+    try std.testing.expectEqual(@as(u64, 1000 + 5000 * 50000), loc_run3.offset);
 }
