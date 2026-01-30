@@ -1710,17 +1710,21 @@ pub const CodecPrivateData = struct {
     nal_length_size: u8,
     /// H.264 profile indication (from avcC), 0 if not applicable
     h264_profile: u8 = 0,
+    /// H.264 level indication (from avcC), 0 if not applicable
+    /// Level is encoded as level * 10 (e.g., 31 = level 3.1, 40 = level 4.0)
+    h264_level: u8 = 0,
 
-    /// Check if H.264 profile is supported by OpenH264
+    /// Check if H.264 profile/level is supported by OpenH264
     /// OpenH264 was designed for video conferencing (WebRTC), not professional video.
-    /// High profile support is incomplete - especially at levels 4.0+ (1080p content).
-    /// Baseline and Main profiles are reliably supported.
+    /// - Baseline (66) and Main (77): reliably supported at all levels
+    /// - High (100): supported at levels <= 3.1 (720p), problematic at 4.0+ (1080p)
+    /// - High 10/4:2:2/4:4:4: not supported (10-bit or chroma subsampling)
     pub fn isH264ProfileSupported(self: @This()) bool {
         return switch (self.h264_profile) {
             66, 77 => true, // Baseline, Main - reliably supported
+            100 => self.h264_level <= 31, // High profile: only levels <= 3.1
             0 => true, // Not H.264 or unknown - let it try
-            // High profile (100) NOT included - requires ffmpeg for reliable decoding
-            else => false,
+            else => false, // High 10, High 4:2:2, etc. - require ffmpeg
         };
     }
 
@@ -2566,6 +2570,7 @@ fn parseAvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
     if ((file.read(&header) catch return null) < 6) return null;
 
     const profile_idc: u8 = header[1]; // AVCProfileIndication
+    const level_idc: u8 = header[3]; // AVCLevelIndication (level * 10, e.g., 31 = 3.1, 40 = 4.0)
     const nal_length_size: u8 = (header[4] & 0x03) + 1;
     const num_sps = header[5] & 0x1F;
 
@@ -2612,6 +2617,7 @@ fn parseAvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
         .data = output.toOwnedSlice(allocator) catch return null,
         .nal_length_size = nal_length_size,
         .h264_profile = profile_idc,
+        .h264_level = level_idc,
     };
 }
 
