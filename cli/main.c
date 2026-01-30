@@ -240,7 +240,15 @@ static size_t get_env_max_files(void) {
 
 static void print_validation_result(const char* path, const es_validation_result_ex_t* result) {
 	const char* format_desc = result->format_description ? result->format_description : "Unknown";
-	const char* depth_desc = validation_depth_description(result->validation_depth);
+	const char* base_depth_desc = validation_depth_description(result->validation_depth);
+	// Build depth description with optional ffmpeg suffix
+	char depth_desc_buf[64];
+	if (result->validated_via_ffmpeg) {
+		snprintf(depth_desc_buf, sizeof(depth_desc_buf), "%s, via ffmpeg", base_depth_desc);
+	} else {
+		snprintf(depth_desc_buf, sizeof(depth_desc_buf), "%s", base_depth_desc);
+	}
+	const char* depth_desc = depth_desc_buf;
 	int has_malformations = result->malformation_bits != 0;
 	int has_warning = result->warning_message != NULL;
 

@@ -150,6 +150,7 @@ fn validateWithFfprobe(allocator: Allocator, file_path: []const u8) FfprobeValid
         .argv = &[_][]const u8{
             ffmpeg_cmd,
             "-v", "error",           // Only show errors
+            "-threads", "0",         // Auto-detect optimal thread count for parallel decoding
             "-i", path_z,            // Input file
             "-f", "null",            // Output format null (discard)
             null_output,             // Output destination
@@ -249,6 +250,8 @@ pub const VideoValidationResult = struct {
 	/// Set when H.264 profile is unsupported and ffmpeg is not available
 	/// This means only structural validation was performed
 	unsupported_profile_no_ffmpeg: bool = false,
+	/// Set when validation was performed via external ffmpeg CLI
+	validated_via_ffmpeg: bool = false,
 
 	pub fn okDecoded(codec: VideoCodec, frames: u32) VideoValidationResult {
 		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = false, .mixed_nal_prefix = false };
@@ -256,6 +259,10 @@ pub const VideoValidationResult = struct {
 
 	pub fn okByteValidated(codec: VideoCodec, frames: u32) VideoValidationResult {
 		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = true, .mixed_nal_prefix = false };
+	}
+
+	pub fn okByteValidatedViaFfmpeg(codec: VideoCodec, frames: u32) VideoValidationResult {
+		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = true, .mixed_nal_prefix = false, .validated_via_ffmpeg = true };
 	}
 
 	pub fn invalid(message: []const u8, codec: VideoCodec) VideoValidationResult {
@@ -642,23 +649,30 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
     defer if (codec_private != null) allocator.free(codec_private.?.data);
 
     // Check for unsupported H.264 profile - use three-tier fallback
-    if (video_codec == .h264 and codec_private != null and !codec_private.?.isH264ProfileSupported()) {
-        // Tier 2: Try ffprobe/ffmpeg if available
-        if (isFfprobeAvailable()) {
-            const ffprobe_result = validateWithFfprobe(allocator, path);
-            if (ffprobe_result.valid) {
-                // ffmpeg performs full decoding, so this is byte-validated
-                return VideoValidationResult.okByteValidated(.h264, ffprobe_result.frames_decoded);
-            } else {
-                return VideoValidationResult.invalid(
-                    ffprobe_result.error_message orelse "ffmpeg validation failed",
-                    .h264,
-                );
-            }
+    const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
+    if (video_codec == .h264 and codec_private != null) {
+        const profile_supported = codec_private.?.isH264ProfileSupported();
+        if (debug_enabled) {
+            std.debug.print("[H264] Profile support check: profile={d}, level={d}, supported={}\n", .{ codec_private.?.h264_profile, codec_private.?.h264_level, profile_supported });
         }
+        if (!profile_supported) {
+            // Tier 2: Try ffprobe/ffmpeg if available
+            if (isFfprobeAvailable()) {
+                const ffprobe_result = validateWithFfprobe(allocator, path);
+                if (ffprobe_result.valid) {
+                    // ffmpeg performs full decoding, so this is byte-validated
+                    return VideoValidationResult.okByteValidatedViaFfmpeg(.h264, ffprobe_result.frames_decoded);
+                } else {
+                    return VideoValidationResult.invalid(
+                        ffprobe_result.error_message orelse "ffmpeg validation failed",
+                        .h264,
+                    );
+                }
+            }
 
-        // Tier 3: Structural validation only - set flag for warning message
-        return VideoValidationResult.structuralOnlyUnsupportedProfile(.h264);
+            // Tier 3: Structural validation only - set flag for warning message
+            return VideoValidationResult.structuralOnlyUnsupportedProfile(.h264);
+        }
     }
 
     var byte_validated = false;
@@ -2611,6 +2625,22 @@ fn parseAvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
 
         output.appendSlice(allocator, &[_]u8{ 0x00, 0x00, 0x00, 0x01 }) catch return null;
         output.appendSlice(allocator, pps_data) catch return null;
+    }
+
+    // Debug: log H.264 profile and level
+    const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
+    if (debug_enabled) {
+        std.debug.print("[H264] Parsed avcC: profile={d} (", .{profile_idc});
+        switch (profile_idc) {
+            66 => std.debug.print("Baseline", .{}),
+            77 => std.debug.print("Main", .{}),
+            100 => std.debug.print("High", .{}),
+            110 => std.debug.print("High 10", .{}),
+            122 => std.debug.print("High 4:2:2", .{}),
+            244 => std.debug.print("High 4:4:4", .{}),
+            else => std.debug.print("Unknown", .{}),
+        }
+        std.debug.print("), level={d} ({d}.{d})\n", .{ level_idc, level_idc / 10, level_idc % 10 });
     }
 
     return CodecPrivateData{

@@ -151,6 +151,7 @@ typedef struct {
     es_validation_depth_t validation_depth; /**< Depth of validation performed */
     uint64_t malformation_bits;     /**< Bitset of es_malformation_t values */
     int circumvented_trivial_protection; /**< 1 if trivial protection was bypassed */
+    int validated_via_ffmpeg;       /**< 1 if video validation used external ffmpeg CLI */
 } es_validation_result_ex_t;
 
 /**

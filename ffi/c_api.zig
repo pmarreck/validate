@@ -98,6 +98,7 @@ pub const EsValidationResultEx = extern struct {
 	validation_depth: EsValidationDepth,
 	malformation_bits: u64,
     circumvented_trivial_protection: c_int,
+    validated_via_ffmpeg: c_int,
 };
 
 /// Aggregate validation counts
@@ -179,6 +180,7 @@ fn onValidation(
         },
         .malformation_bits = malformation_bits,
         .circumvented_trivial_protection = if (result.circumvented_trivial_protection) 1 else 0,
+        .validated_via_ffmpeg = if (result.validated_via_ffmpeg) 1 else 0,
     };
 
     callback(cb_ctx.user_data, display_z, &ex_result, elapsed_seconds);
@@ -357,6 +359,7 @@ export fn es_format_validate_file_ex(
 		},
 		.malformation_bits = malformation_bits,
 		.circumvented_trivial_protection = if (result.circumvented_trivial_protection) 1 else 0,
+		.validated_via_ffmpeg = if (result.validated_via_ffmpeg) 1 else 0,
 	};
 
 	return 0;

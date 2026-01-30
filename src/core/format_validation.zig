@@ -780,6 +780,8 @@ pub const ValidationResult = struct {
     /// Whether trivial protection was circumvented to validate (e.g., empty-password PDF encryption).
     /// These files are valid but could be "repaired" by removing the pointless protection.
     circumvented_trivial_protection: bool = false,
+    /// Whether validation was performed via external ffmpeg CLI (for video formats).
+    validated_via_ffmpeg: bool = false,
 
     /// Check if there are any malformations (warnings)
     pub fn hasMalformations(self: ValidationResult) bool {
@@ -18714,6 +18716,9 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
         ValidationResult.okWithDepth(.mp4, .full)
     else
         ValidationResult.structuralOnly(.mp4);
+    if (video_result.validated_via_ffmpeg) {
+        result.validated_via_ffmpeg = true;
+    }
     if (video_result.mixed_nal_prefix) {
         result.malformations.insert(.video_mixed_nal_prefix);
         result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
@@ -18846,6 +18851,9 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
         ValidationResult.okWithDepth(.mkv, .full)
     else
         ValidationResult.structuralOnly(.mkv);
+    if (video_result.validated_via_ffmpeg) {
+        result.validated_via_ffmpeg = true;
+    }
     if (video_result.mixed_nal_prefix) {
         result.malformations.insert(.video_mixed_nal_prefix);
         result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
@@ -18916,6 +18924,9 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
         ValidationResult.okWithDepth(.avi, .full)
     else
         ValidationResult.structuralOnly(.avi);
+    if (video_result.validated_via_ffmpeg) {
+        result.validated_via_ffmpeg = true;
+    }
     // Check for unsupported profile warning
     if (video_result.unsupported_profile_no_ffmpeg) {
         result.malformations.insert(.video_unsupported_profile_no_ffmpeg);
