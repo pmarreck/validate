@@ -137,3 +137,30 @@ bash scripts/corruption_test.sh     # Run corruption detection tests
 ./zig-out/bin/validate <file>        # Validate a single file
 VALIDATE_DEBUG=1 ./zig-out/bin/validate <dir>  # Debug mode (prints START/END for each file)
 ```
+
+## Performance Optimization TODO
+
+### Investigate O(n) and O(n²) bottlenecks
+
+Found during stress testing:
+- `video_validator.SampleTableInfo.getSampleLocation` - O(n) sample table lookup causing 30+ minute hangs on 2.5 hour movies. Should be O(log n) with binary search or O(1) with precomputed index.
+
+Action items:
+1. Profile all sample table operations in video_validator.zig
+2. Check EBML parser for linear scans that could use binary search
+3. Review PDF validation for linear searches in large documents
+4. Audit any loops over file samples/chunks/atoms
+
+**IMPORTANT**: When optimizing O(n) → O(log n), write isolated unit tests for the optimized functions first. Naive O(n) algorithms are easy to get correct; optimizations introduce edge case bugs.
+
+### PDF Validation Parallelization
+
+Currently PDF validation is single-threaded per file. When validating large PDFs (139MB Ashley Book of Knots), CPU usage drops to 210% instead of 1600% because other workers are waiting.
+
+Proposed solution:
+1. For PDFs > N MB (e.g., 10MB), spawn internal worker threads
+2. Each worker validates embedded images from different pages concurrently
+3. Collect results and aggregate validation status
+4. Preview.app opens the same PDF instantly - that's our performance target
+
+Note: This requires careful thread pool design to avoid nested parallelism issues (workers spawning workers).
