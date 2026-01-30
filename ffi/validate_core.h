@@ -331,6 +331,96 @@ es_error_t es_git_validate_repository(
     size_t error_buf_len
 );
 
+/* ========== New Simplified API (Hexagonal Architecture) ========== */
+/*
+ * These functions provide a simpler interface that doesn't require
+ * validator handles. Results are heap-allocated and caller takes ownership.
+ * See ARCHITECTURE.md for design rationale.
+ */
+
+/**
+ * Owned validation result - caller must free with es_free_result().
+ * All strings are heap-allocated and owned by this struct.
+ */
+typedef struct {
+    char* format_description;       /**< Human-readable format description (heap-allocated) */
+    int is_valid;                   /**< 1 if valid, 0 if invalid */
+    int is_unknown;                 /**< 1 if format unknown */
+    char* error_message;            /**< Error message if invalid, NULL if valid (heap-allocated) */
+    char* warning_message;          /**< Warning message if any, NULL otherwise (heap-allocated) */
+    es_validation_depth_t validation_depth; /**< Depth of validation performed */
+    uint64_t malformation_bits;     /**< Bitset of es_malformation_t values */
+    int circumvented_trivial_protection; /**< 1 if trivial protection was bypassed */
+    int validated_via_ffmpeg;       /**< 1 if video validation used external ffmpeg CLI */
+    double elapsed_seconds;         /**< Time taken to validate */
+} es_owned_result_t;
+
+/**
+ * Batch validation callback.
+ * Called once per file, serialized to one thread (provides natural backpressure).
+ *
+ * IMPORTANT: Caller takes ownership of result and MUST call es_free_result().
+ *
+ * @param context User-provided context pointer
+ * @param path The file path that was validated (borrowed, valid only during callback)
+ * @param result Validation result (CALLER TAKES OWNERSHIP - must call es_free_result)
+ */
+typedef void (*es_batch_callback_t)(
+    void* context,
+    const char* path,
+    es_owned_result_t* result
+);
+
+/**
+ * Validate a single file.
+ *
+ * @param path File path (null-terminated)
+ * @param num_threads Parallelism budget for format-specific work (0 = auto-detect)
+ * @return Heap-allocated result. Caller MUST call es_free_result() when done.
+ *         Returns NULL on allocation failure (check es_core_last_error).
+ */
+es_owned_result_t* es_validate(
+    const char* path,
+    int num_threads
+);
+
+/**
+ * Validate multiple files in parallel with streaming callback.
+ *
+ * Callbacks are serialized to a single thread for backpressure and simplicity.
+ * Per-file errors are reported through the callback; this function only returns
+ * "halt" errors (OOM, disk full, etc.).
+ *
+ * @param paths Array of file paths (null-terminated strings)
+ * @param count Number of paths
+ * @param num_threads Total parallelism budget (0 = auto-detect)
+ * @param callback Called once per file as validation completes
+ * @param context User-provided context passed to callback
+ * @return ES_OK on completion, or halt error code
+ */
+es_error_t es_validate_batch(
+    const char** paths,
+    size_t count,
+    int num_threads,
+    es_batch_callback_t callback,
+    void* context
+);
+
+/**
+ * Free an owned validation result.
+ * MUST be called for every result returned by es_validate() or passed to callback.
+ *
+ * @param result The result to free (NULL is safe to pass)
+ */
+void es_free_result(es_owned_result_t* result);
+
+/**
+ * Get default thread count based on CPU cores.
+ *
+ * @return Number of CPU cores, or 4 if detection fails
+ */
+int es_get_default_threads(void);
+
 #ifdef __cplusplus
 }
 #endif

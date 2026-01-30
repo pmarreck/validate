@@ -607,8 +607,289 @@ export fn es_git_validate_repository(
 	return 0;
 }
 
+// ========== New Simplified API (Hexagonal Architecture) ==========
+// See ARCHITECTURE.md for design rationale.
+
+const thread_pool = core.thread_pool;
+
+/// Owned validation result - caller must free with es_free_result().
+pub const EsOwnedResult = extern struct {
+    format_description: ?[*:0]u8,
+    is_valid: c_int,
+    is_unknown: c_int,
+    error_message: ?[*:0]u8,
+    warning_message: ?[*:0]u8,
+    validation_depth: EsValidationDepth,
+    malformation_bits: u64,
+    circumvented_trivial_protection: c_int,
+    validated_via_ffmpeg: c_int,
+    elapsed_seconds: f64,
+};
+
+/// Batch callback type
+pub const EsBatchCallback = ?*const fn (
+    context: ?*anyopaque,
+    path: [*:0]const u8,
+    result: *EsOwnedResult,
+) callconv(.c) void;
+
+/// Allocate and copy a string for owned result
+fn allocOwnedString(allocator: std.mem.Allocator, value: []const u8) ?[*:0]u8 {
+    const buf = allocator.allocSentinel(u8, value.len, 0) catch return null;
+    @memcpy(buf, value);
+    return buf.ptr;
+}
+
+/// Allocate and copy an optional string for owned result
+fn allocOwnedStringOpt(allocator: std.mem.Allocator, value: ?[]const u8) ?[*:0]u8 {
+    if (value) |v| {
+        return allocOwnedString(allocator, v);
+    }
+    return null;
+}
+
+/// Create an owned result from a validation result
+fn createOwnedResult(allocator: std.mem.Allocator, result: format_validation.ValidationResult, elapsed: f64) ?*EsOwnedResult {
+    const owned = allocator.create(EsOwnedResult) catch return null;
+
+    const desc = allocOwnedString(allocator, result.format.description()) orelse {
+        allocator.destroy(owned);
+        return null;
+    };
+
+    var malformation_bits: u64 = 0;
+    var iter = result.malformations.iterator();
+    while (iter.next()) |m| {
+        malformation_bits |= (@as(u64, 1) << @as(u6, @intCast(@intFromEnum(m))));
+    }
+
+    owned.* = .{
+        .format_description = desc,
+        .is_valid = if (result.is_valid) 1 else 0,
+        .is_unknown = if (result.format == .unknown) 1 else 0,
+        .error_message = allocOwnedStringOpt(allocator, result.error_message),
+        .warning_message = allocOwnedStringOpt(allocator, result.warning_message),
+        .validation_depth = switch (result.validation_depth) {
+            .structural => .structural,
+            .full => .full,
+        },
+        .malformation_bits = malformation_bits,
+        .circumvented_trivial_protection = if (result.circumvented_trivial_protection) 1 else 0,
+        .validated_via_ffmpeg = if (result.validated_via_ffmpeg) 1 else 0,
+        .elapsed_seconds = elapsed,
+    };
+
+    return owned;
+}
+
+/// Validate a single file (new simplified API).
+export fn es_validate(
+    path: ?[*:0]const u8,
+    num_threads: c_int,
+) ?*EsOwnedResult {
+    _ = num_threads; // TODO: Use for format-specific parallelism
+
+    const p = path orelse {
+        errors.setLastError(.validation_invalid_path, "NULL path", .{});
+        return null;
+    };
+
+    const path_slice = std.mem.span(p);
+
+    // Use arena for intermediate allocations during validation
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const start_ns = std.time.nanoTimestamp();
+    var validator = format_validation.FormatValidator.initDeep();
+    const result = validator.validateFileDeep(arena.allocator(), path_slice);
+    const elapsed_ns = std.time.nanoTimestamp() - start_ns;
+    const elapsed_seconds = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+
+    // Create owned result (uses page_allocator for the result itself)
+    return createOwnedResult(std.heap.page_allocator, result, elapsed_seconds);
+}
+
+/// Batch validation context
+const BatchContext = struct {
+    callback: EsBatchCallback,
+    user_context: ?*anyopaque,
+    allocator: std.mem.Allocator,
+    halt_error: ?errors.ErrorCode = null,
+};
+
+/// Task for batch validation
+const BatchTask = struct {
+    path: []const u8,
+};
+
+/// Execute a single validation task
+fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
+    const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return));
+    const callback = ctx.callback orelse return;
+
+    // Check for halt condition
+    if (ctx.halt_error != null) return;
+
+    var arena = std.heap.ArenaAllocator.init(ctx.allocator);
+    defer arena.deinit();
+
+    const start_ns = std.time.nanoTimestamp();
+    var validator = format_validation.FormatValidator.initDeep();
+    const result = validator.validateFileDeep(arena.allocator(), task.path);
+    const elapsed_ns = std.time.nanoTimestamp() - start_ns;
+    const elapsed_seconds = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
+
+    // Create owned result
+    const owned = createOwnedResult(std.heap.page_allocator, result, elapsed_seconds) orelse {
+        ctx.halt_error = .internal_out_of_memory;
+        return;
+    };
+
+    // Create null-terminated path for callback
+    const path_z = ctx.allocator.allocSentinel(u8, task.path.len, 0) catch {
+        es_free_result(owned);
+        ctx.halt_error = .internal_out_of_memory;
+        return;
+    };
+    defer ctx.allocator.free(path_z[0 .. task.path.len + 1]);
+    @memcpy(path_z, task.path);
+
+    // Call user callback (serialized - ThreadPool handles this)
+    callback(ctx.user_context, path_z.ptr, owned);
+}
+
+/// Validate multiple files in parallel (new simplified API).
+export fn es_validate_batch(
+    paths: ?[*]const [*:0]const u8,
+    count: usize,
+    num_threads: c_int,
+    callback: EsBatchCallback,
+    context: ?*anyopaque,
+) c_int {
+    const path_array = paths orelse {
+        errors.setLastError(.validation_invalid_path, "NULL paths array", .{});
+        return 5001;
+    };
+
+    if (count == 0) {
+        return 0; // Nothing to do
+    }
+
+    const actual_threads: usize = if (num_threads <= 0)
+        thread_pool.getDefaultJobCount()
+    else
+        @intCast(num_threads);
+
+    // Pre-init decoder libraries
+    core.preInit();
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var batch_ctx = BatchContext{
+        .callback = callback,
+        .user_context = context,
+        .allocator = std.heap.page_allocator,
+        .halt_error = null,
+    };
+
+    // Use ThreadPool for parallel execution
+    const Pool = thread_pool.ThreadPool(BatchTask, void);
+    const pool = Pool.create(
+        allocator,
+        actual_threads,
+        executeBatchTask,
+        @ptrCast(&batch_ctx),
+        {}, // No result callback (void result type)
+        {},
+    ) catch {
+        errors.setLastError(.internal_out_of_memory, "Failed to create thread pool", .{});
+        return 9002;
+    };
+    defer pool.destroy();
+
+    // Submit all tasks
+    for (0..count) |i| {
+        const path_ptr = path_array[i];
+        const path_slice = std.mem.span(path_ptr);
+        pool.submit(.{ .path = path_slice }) catch {
+            pool.shutdown();
+            pool.wait();
+            errors.setLastError(.internal_out_of_memory, "Failed to submit task", .{});
+            return 9002;
+        };
+
+        // Check for halt error
+        if (batch_ctx.halt_error != null) {
+            break;
+        }
+    }
+
+    pool.shutdown();
+    pool.wait();
+
+    // Check if we halted due to error
+    if (batch_ctx.halt_error) |halt_err| {
+        switch (halt_err) {
+            .internal_out_of_memory => {
+                errors.setLastError(.internal_out_of_memory, "Out of memory during batch validation", .{});
+                return 9002;
+            },
+            else => {
+                errors.setLastError(.internal_unexpected, "Batch validation halted", .{});
+                return 9001;
+            },
+        }
+    }
+
+    return 0;
+}
+
+/// Free an owned validation result.
+export fn es_free_result(result: ?*EsOwnedResult) void {
+    const r = result orelse return;
+    const allocator = std.heap.page_allocator;
+
+    if (r.format_description) |desc| {
+        const len = std.mem.len(desc);
+        allocator.free(desc[0 .. len + 1]);
+    }
+    if (r.error_message) |msg| {
+        const len = std.mem.len(msg);
+        allocator.free(msg[0 .. len + 1]);
+    }
+    if (r.warning_message) |msg| {
+        const len = std.mem.len(msg);
+        allocator.free(msg[0 .. len + 1]);
+    }
+    allocator.destroy(r);
+}
+
+/// Get default thread count based on CPU cores.
+export fn es_get_default_threads() c_int {
+    return @intCast(thread_pool.getDefaultJobCount());
+}
+
+// ========== Tests ==========
+
 test "es_core_version" {
-	const v = es_core_version();
-	const version_slice = std.mem.span(v);
-	try std.testing.expectEqualStrings(core.version.string(), version_slice);
+    const v = es_core_version();
+    const version_slice = std.mem.span(v);
+    try std.testing.expectEqualStrings(core.version.string(), version_slice);
+}
+
+test "es_validate single file" {
+    // Just test that the function doesn't crash with a nonexistent file
+    const result = es_validate("/nonexistent/path/test.txt", 0);
+    if (result) |r| {
+        try std.testing.expectEqual(@as(c_int, 0), r.is_valid);
+        es_free_result(r);
+    }
+}
+
+test "es_get_default_threads" {
+    const threads = es_get_default_threads();
+    try std.testing.expect(threads >= 1);
 }
