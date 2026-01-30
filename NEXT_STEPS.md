@@ -98,6 +98,32 @@ Applied to MP4, MKV, and AVI validators (lines ~18336, ~18464, ~18528).
 
 ## Known Issues / TODO
 
+### HIGH PRIORITY - Architecture Fix Required
+
+1. **Hexagonal Architecture Violation** - CLI bypasses C FFI
+   - **Problem**: `cli/main.c` currently calls Zig `path_validation` directly, violating the principle that all clients must go through the C FFI boundary.
+   - **Solution**: Implement `es_validate_batch()` in the C FFI (see `ARCHITECTURE.md`)
+   - **New API**:
+     ```c
+     es_error_t es_validate_batch(
+         const char** paths,
+         size_t count,
+         int num_threads,           // 0 = auto-detect
+         es_validation_callback cb,
+         void* context
+     );
+     ```
+   - **Design decisions** (documented in `ARCHITECTURE.md`):
+     - Two error classes: "halt" (OOM, disk full) vs "continue" (per-file failures)
+     - Callbacks serialized to one thread (provides backpressure)
+     - Caller takes ownership of results, must call `es_free_result()`
+     - `num_threads` is a "parallelism budget" shared by all validators
+
+2. **PDF Image Validation Parallelization** - Blocked by #1
+   - Large PDFs (Ashley Book of Knots, 139MB) drop CPU usage to 210% vs 1600%
+   - Format-specific parallelism should use the shared thread pool
+   - See `ARCHITECTURE.md` "Format-Specific Parallelism" section
+
 ### Medium Priority
 
 4. **More ground truth examples needed** for:
