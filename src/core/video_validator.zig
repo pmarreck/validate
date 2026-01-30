@@ -3478,3 +3478,41 @@ test "getSampleLocation: performance with movie-sized sample table" {
     const loc_run3 = table.getSampleLocation(108_000).?;
     try std.testing.expectEqual(@as(u64, 1000 + 5000 * 50000), loc_run3.offset);
 }
+
+test "getAllSampleLocations matches getSampleLocation" {
+    // Verify bulk computation matches individual lookups
+    const allocator = std.testing.allocator;
+
+    var stsc_entries = try allocator.alloc(SampleTableInfo.StscEntry, 2);
+    defer allocator.free(stsc_entries);
+    stsc_entries[0] = .{ .first_chunk = 1, .samples_per_chunk = 3, .sample_description_index = 1 };
+    stsc_entries[1] = .{ .first_chunk = 3, .samples_per_chunk = 2, .sample_description_index = 1 };
+
+    var chunk_offsets = try allocator.alloc(u64, 4);
+    defer allocator.free(chunk_offsets);
+    chunk_offsets[0] = 1000;
+    chunk_offsets[1] = 2000;
+    chunk_offsets[2] = 3000;
+    chunk_offsets[3] = 4000;
+
+    // Chunk 0: 3 samples, Chunk 1: 3 samples, Chunk 2: 2 samples, Chunk 3: 2 samples = 10 samples
+    const table = SampleTableInfo{
+        .sample_sizes = &[_]u32{},
+        .default_sample_size = 100,
+        .sample_count = 10,
+        .sync_samples = &[_]u32{},
+        .chunk_offsets = chunk_offsets,
+        .stsc_entries = stsc_entries,
+        .allocator = allocator,
+    };
+
+    const bulk_locations = table.getAllSampleLocations(allocator).?;
+    defer allocator.free(bulk_locations);
+
+    // Verify each bulk location matches individual lookup
+    for (0..table.sample_count) |i| {
+        const individual = table.getSampleLocation(@intCast(i)).?;
+        try std.testing.expectEqual(individual.offset, bulk_locations[i].offset);
+        try std.testing.expectEqual(individual.size, bulk_locations[i].size);
+    }
+}

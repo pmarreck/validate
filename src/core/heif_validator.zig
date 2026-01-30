@@ -184,7 +184,7 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
     // Attempt to decode the image (this validates the bitstream)
     // Debug: flush stderr before decode in case of crash
     const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
-    if (builtin.mode == .Debug or debug_enabled) {
+    if (debug_enabled) {
         std.debug.print("[HEIF] About to decode image: {d}x{d}\n", .{ width, height });
     }
 
@@ -200,7 +200,7 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
     defer c.heif_image_release(image);
 
     // Full decode succeeded!
-    if (builtin.mode == .Debug or debug_enabled) {
+    if (debug_enabled) {
         std.debug.print("[HEIF] Decode succeeded!\n", .{});
     }
     return HeifValidationResult.ok(is_heic);
