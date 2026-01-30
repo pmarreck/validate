@@ -78,6 +78,7 @@ pub const hfsplus_parser = @import("hfsplus_parser.zig");
 pub const zlib = @import("zlib.zig");
 pub const git_validator = @import("git_validator.zig");
 pub const path_validation = @import("path_validation.zig");
+pub const thread_pool = @import("thread_pool.zig");
 pub const heif_validator = @import("heif_validator.zig");
 pub const webp_validator = @import("webp_validator.zig");
 
@@ -190,4 +191,6 @@ test {
     _ = @import("zlib.zig");
     // Git repository validator
     _ = @import("git_validator.zig");
+    // Thread pool for parallel task execution
+    _ = @import("thread_pool.zig");
 }
