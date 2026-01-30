@@ -107,9 +107,11 @@ Applied to MP4, MKV, and AVI validators (lines ~18336, ~18464, ~18528).
    - Game formats: wad, pak, nes, snes, gb, gba
    - DAW projects: als, flp, logicx, etc.
 
-5. **Video decoder limitations** - openh264 can't decode some valid H.264 streams
-   - Consider adding ffmpeg/libavcodec as alternative decoder
-   - Or document which H.264 profiles are supported
+5. **Video decoder limitations** - ✅ PARTIALLY ADDRESSED (2026-01-30)
+   - OpenH264 now used for Baseline, Main, and High profile ≤ level 3.1
+   - High profile level 4.0+ (1080p BluRay content) falls back to ffmpeg
+   - ffmpeg must be installed on system PATH for full validation of complex H.264
+   - Future: Consider support matrix data structure for more granular control
 
 ### Low Priority
 
@@ -164,3 +166,134 @@ Proposed solution:
 4. Preview.app opens the same PDF instantly - that's our performance target
 
 Note: This requires careful thread pool design to avoid nested parallelism issues (workers spawning workers).
+
+## Rich Metadata Extraction Feature
+
+### Overview
+
+Validation output should include comprehensive metadata about the file being validated, not just validity status. This metadata must be returned through the C FFI from the Zig core so that any client/wrapper (CLI, GUI, other language bindings) can use it.
+
+**Architecture principle**: The Zig core should only deal with input values and output values (structured data). No stdout/stderr should be emitted from the Zig core except in debug mode (`VALIDATE_DEBUG=1`). Formatting metadata for terminal display is the responsibility of the C CLI wrapper, not the Zig core.
+
+### Proposed MediaMetadata Structure
+
+```zig
+pub const MediaMetadata = struct {
+    // Video
+    width: ?u32 = null,
+    height: ?u32 = null,
+    frame_rate_num: ?u32 = null,      // e.g., 24000
+    frame_rate_den: ?u32 = null,      // e.g., 1001 (for 23.976 fps)
+    duration_ms: ?u64 = null,
+    video_codec: ?[*:0]const u8 = null,      // "H.264", "HEVC", "AV1"
+    video_profile: ?[*:0]const u8 = null,    // "High", "Main", "Baseline"
+    video_level: ?[*:0]const u8 = null,      // "4.0", "5.1"
+    video_bitrate_bps: ?u64 = null,
+    color_primaries: ?[*:0]const u8 = null,  // "BT.709", "BT.2020"
+    transfer_characteristics: ?[*:0]const u8 = null,
+
+    // Audio
+    audio_codec: ?[*:0]const u8 = null,      // "AAC", "AC3", "FLAC"
+    audio_channels: ?u8 = null,
+    audio_sample_rate: ?u32 = null,
+    audio_bitrate_bps: ?u64 = null,
+
+    // Image
+    color_space: ?[*:0]const u8 = null,      // "sRGB", "Adobe RGB", "P3"
+    bit_depth: ?u8 = null,
+    has_alpha: ?bool = null,
+
+    // Container/General
+    container_format: ?[*:0]const u8 = null, // "QuickTime", "Matroska"
+    creation_time: ?i64 = null,              // Unix timestamp
+    title: ?[*:0]const u8 = null,
+    artist: ?[*:0]const u8 = null,
+    album: ?[*:0]const u8 = null,
+};
+```
+
+### MP4/MOV Atoms to Parse
+
+Currently we parse: `ftyp`, `moov`, `mdat`, `trak`, `mdia`, `minf`, `stbl`, `stsd`, `avcC`, `hvcC`
+
+Additional atoms needed for metadata:
+- `mvhd` - Movie header: duration, timescale, creation/modification time
+- `tkhd` - Track header: dimensions, track ID
+- `mdhd` - Media header: timescale, duration, language
+- `hdlr` - Handler: track type (video, audio, subtitle)
+- `elst` - Edit list: timing adjustments
+- `stts` - Time-to-sample: frame timing for accurate frame rate
+- `ctts` - Composition time offset: B-frame timing
+- `colr` - Color information: primaries, transfer, matrix
+- `pasp` - Pixel aspect ratio
+- `udta`/`meta`/`ilst` - User data: title, artist, etc. (iTunes metadata)
+
+### Other Format Metadata
+
+**Images (JPEG, TIFF, PNG, HEIC, WebP):**
+- EXIF data: camera make/model, GPS coordinates, date taken, exposure settings
+- ICC color profiles
+- XMP metadata
+- IPTC metadata (captions, keywords, copyright)
+
+**Audio (MP3, FLAC, AAC, OGG):**
+- ID3v1/ID3v2 tags: title, artist, album, year, genre, track number
+- Vorbis comments (OGG, FLAC)
+- APE tags
+- Album art (embedded images)
+
+**Documents (PDF):**
+- Title, author, subject, keywords
+- Creation/modification dates
+- Producer application
+- Page count, page dimensions
+
+**Archives (ZIP, TAR):**
+- File count
+- Total uncompressed size
+- Compression method
+
+### C FFI Design
+
+```c
+// New struct to return from validation
+typedef struct {
+    es_validation_result_t validation;  // Existing validation result
+    es_media_metadata_t* metadata;       // Optional, may be NULL
+} es_full_result_t;
+
+// Metadata struct (C-compatible)
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+    // ... all fields with has_* flags for optionality
+    bool has_width;
+    bool has_height;
+    // ...
+} es_media_metadata_t;
+
+// New API function
+es_full_result_t es_validate_with_metadata(const char* path);
+void es_free_metadata(es_media_metadata_t* metadata);
+```
+
+### CLI Display (C Wrapper Responsibility)
+
+The C CLI would format metadata for terminal output:
+```
+OK video.mp4: MP4 Video (fully validated)
+    Container:  QuickTime (ftyp: mp42)
+    Video:      H.264 High @ L4.0, 1920x1080, 23.976 fps
+    Audio:      AAC LC, 48000 Hz, stereo
+    Duration:   2:34:17
+    Bitrate:    8.5 Mbps (video), 256 kbps (audio)
+```
+
+### Implementation Phases
+
+1. **Phase 1**: Add MediaMetadata to ValidationResult, populate for MP4/MKV video
+2. **Phase 2**: Add C FFI exports for metadata
+3. **Phase 3**: Update CLI to display metadata
+4. **Phase 4**: Add EXIF parsing for images
+5. **Phase 5**: Add ID3/Vorbis parsing for audio
+6. **Phase 6**: Add PDF metadata extraction
