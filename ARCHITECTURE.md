@@ -77,62 +77,98 @@ typedef enum {
     // Per-file errors reported through callback, batch continues
     // (permission denied, file not found, validation failures)
     // These are NOT returned from es_validate_batch - they appear
-    // in individual es_validation_result_t.is_valid = false
+    // in individual es_owned_result_t.is_valid = false
 } es_error_t;
 
 // Validation result (caller takes ownership, must call es_free_result)
 typedef struct {
+    char* format_description;        // heap-allocated
     int is_valid;
-    int format;                      // es_file_format enum
-    int validation_depth;            // structural, full, etc.
+    int is_unknown;
     char* error_message;             // NULL if valid, heap-allocated
     char* warning_message;           // NULL if none, heap-allocated
+    es_validation_depth_t validation_depth;
+    uint64_t malformation_bits;
     int circumvented_trivial_protection;
     int validated_via_ffmpeg;
-    // ... other fields
-} es_validation_result_t;
+    double elapsed_seconds;
+} es_owned_result_t;
 
-// Callback for batch validation (called once per file, serialized to one thread)
-typedef void (*es_validation_callback)(
+// Batch item - file path with caller-provided ID
+// The ID is echoed in callbacks so caller can map results to their data structures
+typedef struct {
+    const char* path;   // borrowed
+    uint32_t id;        // caller-provided, echoed in callbacks
+} es_batch_item_t;
+
+// Progress callback - called many times per file for jumbo files (PDFs, videos)
+// May be called from worker threads - caller must synchronize
+typedef void (*es_progress_callback_t)(
     void* context,
-    const char* path,
-    es_validation_result_t* result,  // CALLER TAKES OWNERSHIP - must call es_free_result()
-    double elapsed_seconds
+    uint32_t file_id,   // echoes id from es_batch_item_t
+    size_t current,     // current progress
+    size_t total,       // total expected (0 if unknown)
+    const char* unit    // "bytes", "frames", "pages", "images"
+);
+
+// Result callback - called once per file when validation completes
+// Serialized to one thread (provides backpressure)
+typedef void (*es_result_callback_t)(
+    void* context,
+    uint32_t file_id,                // echoes id from es_batch_item_t
+    const char* path,                // borrowed, valid only during callback
+    es_owned_result_t* result        // CALLER TAKES OWNERSHIP - must call es_free_result()
 );
 ```
 
 ### API Functions
 
 ```c
-// Single file validation
+// Single file validation with optional progress reporting
+// - file_id: caller-provided ID, passed to progress_callback (for API consistency)
 // - num_threads: parallelism budget for format-specific work (0 = auto-detect)
+// - progress_callback: called during validation for progress (may be NULL)
 // - Returns heap-allocated result, caller must call es_free_result()
-es_validation_result_t* es_validate(
+es_owned_result_t* es_validate(
     const char* path,
-    int num_threads
+    uint32_t file_id,
+    int num_threads,
+    es_progress_callback_t progress_callback,
+    void* context
 );
 
-// Batch validation with streaming callback
-// - paths: array of file paths
-// - count: number of paths
+// Batch validation with streaming callbacks
+// - items: array of {path, id} pairs
+// - count: number of items
 // - num_threads: total parallelism budget (0 = auto-detect)
-// - callback: called once per file as validation completes (serialized to one thread)
-// - context: opaque pointer passed to callback
+// - result_callback: called once per file when complete (serialized to one thread)
+// - progress_callback: called during validation for progress (may be NULL)
+// - context: opaque pointer passed to both callbacks
 // - Returns: ES_OK on completion, or halt error code
 es_error_t es_validate_batch(
-    const char** paths,
+    const es_batch_item_t* items,
     size_t count,
     int num_threads,
-    es_validation_callback callback,
+    es_result_callback_t result_callback,
+    es_progress_callback_t progress_callback,
     void* context
 );
 
 // Free a validation result (MUST be called for every result received)
-void es_free_result(es_validation_result_t* result);
+void es_free_result(es_owned_result_t* result);
 
 // Get default thread count (CPU cores)
 int es_get_default_threads(void);
 ```
+
+### File IDs
+
+The `uint32_t file_id` pattern provides several benefits:
+
+1. **Cheap to copy** - No string allocation or ownership management
+2. **Caller-meaningful** - Caller provides IDs, maps them to their own data structures
+3. **Concurrency-friendly** - When caller manages higher-level concurrency, IDs help correlate progress/results
+4. **API consistency** - Same pattern for single-file and batch APIs
 
 ---
 

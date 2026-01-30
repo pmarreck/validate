@@ -336,6 +336,12 @@ es_error_t es_git_validate_repository(
  * These functions provide a simpler interface that doesn't require
  * validator handles. Results are heap-allocated and caller takes ownership.
  * See ARCHITECTURE.md for design rationale.
+ *
+ * Key design points:
+ * - Caller provides uint32_t file IDs (cheap to copy, caller maps to their data)
+ * - Progress callbacks for jumbo files (PDFs, videos)
+ * - Result callbacks serialized to one thread (backpressure)
+ * - Caller owns results and must call es_free_result()
  */
 
 /**
@@ -356,53 +362,93 @@ typedef struct {
 } es_owned_result_t;
 
 /**
- * Batch validation callback.
- * Called once per file, serialized to one thread (provides natural backpressure).
+ * Batch item - file path with caller-provided ID.
+ * The ID is echoed in callbacks so caller can map results to their data structures.
+ */
+typedef struct {
+    const char* path;   /**< File path (null-terminated, borrowed) */
+    uint32_t id;        /**< Caller-provided ID, echoed in callbacks */
+} es_batch_item_t;
+
+/**
+ * Progress callback - may be called many times per file during validation.
+ * Used for jumbo files (large PDFs, long videos) to report progress.
+ *
+ * Thread safety: May be called from worker threads. Caller must handle synchronization.
+ *
+ * @param context User-provided context pointer
+ * @param file_id The caller-provided ID from es_batch_item_t or es_validate()
+ * @param current Current progress (interpretation depends on unit)
+ * @param total Total expected (0 if unknown)
+ * @param unit Progress unit: "bytes", "frames", "pages", "images", etc.
+ */
+typedef void (*es_progress_callback_t)(
+    void* context,
+    uint32_t file_id,
+    size_t current,
+    size_t total,
+    const char* unit
+);
+
+/**
+ * Result callback - called once per file when validation completes.
+ * Serialized to a single thread (provides natural backpressure).
  *
  * IMPORTANT: Caller takes ownership of result and MUST call es_free_result().
  *
  * @param context User-provided context pointer
- * @param path The file path that was validated (borrowed, valid only during callback)
+ * @param file_id The caller-provided ID from es_batch_item_t
+ * @param path The file path (borrowed, valid only during callback)
  * @param result Validation result (CALLER TAKES OWNERSHIP - must call es_free_result)
  */
-typedef void (*es_batch_callback_t)(
+typedef void (*es_result_callback_t)(
     void* context,
+    uint32_t file_id,
     const char* path,
     es_owned_result_t* result
 );
 
 /**
- * Validate a single file.
+ * Validate a single file with optional progress reporting.
  *
  * @param path File path (null-terminated)
+ * @param file_id Caller-provided ID, passed to progress_callback (for API consistency)
  * @param num_threads Parallelism budget for format-specific work (0 = auto-detect)
+ * @param progress_callback Called during validation for progress updates (may be NULL)
+ * @param context User-provided context passed to progress_callback
  * @return Heap-allocated result. Caller MUST call es_free_result() when done.
  *         Returns NULL on allocation failure (check es_core_last_error).
  */
 es_owned_result_t* es_validate(
     const char* path,
-    int num_threads
+    uint32_t file_id,
+    int num_threads,
+    es_progress_callback_t progress_callback,
+    void* context
 );
 
 /**
- * Validate multiple files in parallel with streaming callback.
+ * Validate multiple files in parallel with streaming callbacks.
  *
- * Callbacks are serialized to a single thread for backpressure and simplicity.
- * Per-file errors are reported through the callback; this function only returns
+ * Result callbacks are serialized to a single thread for backpressure and simplicity.
+ * Progress callbacks may come from any worker thread - caller must synchronize.
+ * Per-file errors are reported through result_callback; this function only returns
  * "halt" errors (OOM, disk full, etc.).
  *
- * @param paths Array of file paths (null-terminated strings)
- * @param count Number of paths
+ * @param items Array of batch items (path + caller-provided ID)
+ * @param count Number of items
  * @param num_threads Total parallelism budget (0 = auto-detect)
- * @param callback Called once per file as validation completes
- * @param context User-provided context passed to callback
+ * @param result_callback Called once per file when validation completes
+ * @param progress_callback Called during validation for progress updates (may be NULL)
+ * @param context User-provided context passed to both callbacks
  * @return ES_OK on completion, or halt error code
  */
 es_error_t es_validate_batch(
-    const char** paths,
+    const es_batch_item_t* items,
     size_t count,
     int num_threads,
-    es_batch_callback_t callback,
+    es_result_callback_t result_callback,
+    es_progress_callback_t progress_callback,
     void* context
 );
 

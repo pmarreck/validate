@@ -626,9 +626,25 @@ pub const EsOwnedResult = extern struct {
     elapsed_seconds: f64,
 };
 
-/// Batch callback type
-pub const EsBatchCallback = ?*const fn (
+/// Batch item - file path with caller-provided ID
+pub const EsBatchItem = extern struct {
+    path: ?[*:0]const u8,
+    id: u32,
+};
+
+/// Progress callback type - may be called many times per file
+pub const EsProgressCallback = ?*const fn (
     context: ?*anyopaque,
+    file_id: u32,
+    current: usize,
+    total: usize,
+    unit: [*:0]const u8,
+) callconv(.c) void;
+
+/// Result callback type - called once per file when complete
+pub const EsResultCallback = ?*const fn (
+    context: ?*anyopaque,
+    file_id: u32,
     path: [*:0]const u8,
     result: *EsOwnedResult,
 ) callconv(.c) void;
@@ -685,9 +701,15 @@ fn createOwnedResult(allocator: std.mem.Allocator, result: format_validation.Val
 /// Validate a single file (new simplified API).
 export fn es_validate(
     path: ?[*:0]const u8,
+    file_id: u32,
     num_threads: c_int,
+    progress_callback: EsProgressCallback,
+    context: ?*anyopaque,
 ) ?*EsOwnedResult {
     _ = num_threads; // TODO: Use for format-specific parallelism
+    _ = file_id; // TODO: Pass to progress callback
+    _ = progress_callback; // TODO: Implement progress reporting
+    _ = context;
 
     const p = path orelse {
         errors.setLastError(.validation_invalid_path, "NULL path", .{});
@@ -712,7 +734,8 @@ export fn es_validate(
 
 /// Batch validation context
 const BatchContext = struct {
-    callback: EsBatchCallback,
+    result_callback: EsResultCallback,
+    progress_callback: EsProgressCallback,
     user_context: ?*anyopaque,
     allocator: std.mem.Allocator,
     halt_error: ?errors.ErrorCode = null,
@@ -721,18 +744,22 @@ const BatchContext = struct {
 /// Task for batch validation
 const BatchTask = struct {
     path: []const u8,
+    file_id: u32,
 };
 
 /// Execute a single validation task
 fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return));
-    const callback = ctx.callback orelse return;
+    const result_callback = ctx.result_callback orelse return;
 
     // Check for halt condition
     if (ctx.halt_error != null) return;
 
     var arena = std.heap.ArenaAllocator.init(ctx.allocator);
     defer arena.deinit();
+
+    // TODO: Pass progress_callback to validator for per-file progress
+    _ = ctx.progress_callback;
 
     const start_ns = std.time.nanoTimestamp();
     var validator = format_validation.FormatValidator.initDeep();
@@ -755,20 +782,21 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     defer ctx.allocator.free(path_z[0 .. task.path.len + 1]);
     @memcpy(path_z, task.path);
 
-    // Call user callback (serialized - ThreadPool handles this)
-    callback(ctx.user_context, path_z.ptr, owned);
+    // Call user callback with file_id (serialized - ThreadPool handles this)
+    result_callback(ctx.user_context, task.file_id, path_z.ptr, owned);
 }
 
 /// Validate multiple files in parallel (new simplified API).
 export fn es_validate_batch(
-    paths: ?[*]const [*:0]const u8,
+    items: ?[*]const EsBatchItem,
     count: usize,
     num_threads: c_int,
-    callback: EsBatchCallback,
+    result_callback: EsResultCallback,
+    progress_callback: EsProgressCallback,
     context: ?*anyopaque,
 ) c_int {
-    const path_array = paths orelse {
-        errors.setLastError(.validation_invalid_path, "NULL paths array", .{});
+    const item_array = items orelse {
+        errors.setLastError(.validation_invalid_path, "NULL items array", .{});
         return 5001;
     };
 
@@ -789,7 +817,8 @@ export fn es_validate_batch(
     const allocator = gpa.allocator();
 
     var batch_ctx = BatchContext{
-        .callback = callback,
+        .result_callback = result_callback,
+        .progress_callback = progress_callback,
         .user_context = context,
         .allocator = std.heap.page_allocator,
         .halt_error = null,
@@ -812,9 +841,10 @@ export fn es_validate_batch(
 
     // Submit all tasks
     for (0..count) |i| {
-        const path_ptr = path_array[i];
+        const item = item_array[i];
+        const path_ptr = item.path orelse continue; // Skip null paths
         const path_slice = std.mem.span(path_ptr);
-        pool.submit(.{ .path = path_slice }) catch {
+        pool.submit(.{ .path = path_slice, .file_id = item.id }) catch {
             pool.shutdown();
             pool.wait();
             errors.setLastError(.internal_out_of_memory, "Failed to submit task", .{});
@@ -882,7 +912,7 @@ test "es_core_version" {
 
 test "es_validate single file" {
     // Just test that the function doesn't crash with a nonexistent file
-    const result = es_validate("/nonexistent/path/test.txt", 0);
+    const result = es_validate("/nonexistent/path/test.txt", 0, 0, null, null);
     if (result) |r| {
         try std.testing.expectEqual(@as(c_int, 0), r.is_valid);
         es_free_result(r);
