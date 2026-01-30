@@ -805,7 +805,7 @@ export fn es_validate_batch(
     }
 
     const actual_threads: usize = if (num_threads <= 0)
-        thread_pool.getDefaultJobCount()
+        thread_pool.getOuterJobCount() // Use 2/3 of CPUs, leaving room for inner parallelism
     else
         @intCast(num_threads);
 
@@ -897,9 +897,11 @@ export fn es_free_result(result: ?*EsOwnedResult) void {
     allocator.destroy(r);
 }
 
-/// Get default thread count based on CPU cores.
+/// Get default thread count for batch validation.
+/// Returns 2/3 of CPU cores, leaving room for inner parallelism (PDF image validation).
+/// Pass 0 or negative to es_validate_batch() to use this default.
 export fn es_get_default_threads() c_int {
-    return @intCast(thread_pool.getDefaultJobCount());
+    return @intCast(thread_pool.getOuterJobCount());
 }
 
 // ========== Tests ==========

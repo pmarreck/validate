@@ -301,9 +301,31 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
 
 // ============ Utility Functions ============
 
-/// Get the default number of jobs based on CPU count.
-pub fn getDefaultJobCount() usize {
+/// Get the total CPU count.
+pub fn getCpuCount() usize {
     return std.Thread.getCpuCount() catch 4;
+}
+
+/// Get the default number of jobs based on CPU count.
+/// Returns full CPU count for backwards compatibility.
+pub fn getDefaultJobCount() usize {
+    return getCpuCount();
+}
+
+/// Get the recommended job count for the outer/batch level.
+/// Uses 2/3 of CPUs to leave room for inner parallelism (e.g., PDF image validation).
+pub fn getOuterJobCount() usize {
+    const cpus = getCpuCount();
+    // 2/3 of CPUs, minimum 2
+    return @max(2, (cpus * 2) / 3);
+}
+
+/// Get the recommended job count for inner/nested parallelism.
+/// Uses 1/3 of CPUs (half of outer), designed so outer + inner ≈ total CPUs.
+pub fn getInnerJobCount() usize {
+    const cpus = getCpuCount();
+    // 1/3 of CPUs, minimum 2
+    return @max(2, cpus / 3);
 }
 
 // ============ Tests ============

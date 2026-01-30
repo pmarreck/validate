@@ -1160,10 +1160,10 @@ fn validatePdfImagesParallel(
     decryption_succeeded: bool,
     is_encrypted: bool,
 ) !PdfImageValidationResult {
-    // Use a small fixed number of threads to avoid over-subscription
-    // when already running in parallel at the batch level.
-    // 4 threads provides good parallelism without massive contention.
-    const job_count: usize = 4;
+    // Use inner job count (1/3 of CPUs) to avoid over-subscription
+    // when already running in parallel at the batch level (2/3 of CPUs).
+    // This way, outer + inner ≈ total CPUs when one PDF is being validated.
+    const job_count = thread_pool.getInnerJobCount();
 
     // Shared context for all workers
     var ctx = ParallelContext{
