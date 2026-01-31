@@ -349,6 +349,7 @@ pub const FileFormat = enum {
     markdown, // Markdown text format (.md, .markdown)
     plain_text, // Plain text file (validated as UTF-8)
     plain_text_utf16, // Plain text file in UTF-16 encoding
+    plain_text_latin1, // Plain text file in ISO-8859-1/Latin-1 encoding
     // Font formats
     ttf, // TrueType Font
     otf, // OpenType Font (CFF or TrueType outlines)
@@ -518,6 +519,7 @@ pub const FileFormat = enum {
             .markdown => "Markdown Text",
             .plain_text => "Plain Text (UTF-8)",
             .plain_text_utf16 => "Plain Text (UTF-16)",
+            .plain_text_latin1 => "Plain Text (ISO-8859-1/Latin-1)",
             .ttf => "TrueType Font",
             .otf => "OpenType Font",
             .woff => "WOFF Font",
@@ -575,6 +577,7 @@ pub const FileFormat = enum {
             .markdown => false, // Markdown - no validation, just text
             .plain_text => true, // Plain text - UTF-8 validation
             .plain_text_utf16 => true, // Plain text - UTF-16 validation
+            .plain_text_latin1 => true, // Plain text - Latin-1 (always valid, just text detection)
             .ttf, .otf, .woff, .woff2 => true, // Font formats with checksum validation
             .type1 => true, // Type 1 font structural validation
             .par2 => true, // PAR2 parity archive CRC validation
@@ -20069,6 +20072,7 @@ pub const FormatValidator = struct {
             .markdown => ValidationResult.ok(.markdown), // Text format, no validation
             .plain_text => validatePlainText(file), // UTF-8 validation
             .plain_text_utf16 => validatePlainTextUtf16(file), // UTF-16 validation
+            .plain_text_latin1 => ValidationResult.okWithDepth(.plain_text_latin1, .full), // Latin-1 always valid
             // Font formats
             .ttf => validateTtf(file),
             .otf => validateOtf(file),
@@ -21642,6 +21646,7 @@ fn validateCsv(file: std.fs.File) ValidationResult {
 /// Reads file in chunks and validates UTF-8 encoding throughout.
 /// This allows validating arbitrarily large text files without loading them entirely into memory.
 /// If file has UTF-16 BOM, delegates to UTF-16 validation.
+/// If UTF-8 validation fails but content looks like text, falls back to Latin-1.
 fn validatePlainText(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
         return ValidationResult.invalid(.plain_text, "Failed to stat file");
@@ -21673,7 +21678,11 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
         if (bytes_read == 0) {
             // End of file - check for incomplete sequence
             if (pending_count > 0) {
-                return ValidationResult.invalid(.plain_text, "Invalid UTF-8 encoding (truncated sequence at EOF)");
+                // Invalid UTF-8, try Latin-1 fallback
+                file.seekTo(0) catch {
+                    return ValidationResult.invalid(.plain_text, "Failed to seek for Latin-1 check");
+                };
+                return validatePlainTextLatin1Fallback(file);
             }
             break;
         }
@@ -21736,7 +21745,11 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
         // Validate complete sequences
         if (validate_end > data_start) {
             if (!isValidUtf8(buffer[data_start..validate_end])) {
-                return ValidationResult.invalid(.plain_text, "Invalid UTF-8 encoding");
+                // Invalid UTF-8, try Latin-1 fallback
+                file.seekTo(0) catch {
+                    return ValidationResult.invalid(.plain_text, "Failed to seek for Latin-1 check");
+                };
+                return validatePlainTextLatin1Fallback(file);
             }
         }
 
@@ -21751,6 +21764,61 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
     }
 
     return ValidationResult.okWithDepth(.plain_text, .full);
+}
+
+/// Check if a file looks like Latin-1 text (fallback when UTF-8 validation fails).
+/// Latin-1 is always "valid" since every byte 0x00-0xFF maps to a character,
+/// but we check for text-like characteristics to avoid misidentifying binary files.
+fn validatePlainTextLatin1Fallback(file: std.fs.File) ValidationResult {
+    const chunk_size: usize = 64 * 1024;
+    var buffer: [chunk_size]u8 = undefined;
+
+    var total_bytes: usize = 0;
+    var control_bytes: usize = 0;
+    var has_null: bool = false;
+    var has_high_bytes: bool = false;
+
+    while (true) {
+        const bytes_read = file.read(&buffer) catch {
+            return ValidationResult.invalid(.plain_text, "Failed to read file for Latin-1 check");
+        };
+
+        if (bytes_read == 0) break;
+        total_bytes += bytes_read;
+
+        for (buffer[0..bytes_read]) |b| {
+            if (b == 0x00) {
+                has_null = true;
+                // NULL bytes strongly suggest binary, not text
+                return ValidationResult.invalid(.plain_text, "Invalid UTF-8 encoding");
+            } else if (b >= 0x80) {
+                has_high_bytes = true;
+            }
+            // Count problematic control characters (except common whitespace)
+            // 0x00-0x08: NUL, SOH, STX, ETX, EOT, ENQ, ACK, BEL, BS
+            // 0x0B: VT (vertical tab)
+            // 0x0C: FF (form feed) - sometimes used
+            // 0x0E-0x1F: SO, SI, DLE, DC1-DC4, NAK, SYN, ETB, CAN, EM, SUB, ESC, FS, GS, RS, US
+            // Allow: 0x09 (tab), 0x0A (LF), 0x0D (CR)
+            if ((b >= 0x00 and b <= 0x08) or b == 0x0B or (b >= 0x0E and b <= 0x1F)) {
+                control_bytes += 1;
+            }
+        }
+    }
+
+    // If no high bytes, it would have passed UTF-8 validation, so this shouldn't happen
+    // But just in case, still accept it
+    if (!has_high_bytes) {
+        return ValidationResult.okWithDepth(.plain_text, .full);
+    }
+
+    // Heuristic: if more than 5% control characters, probably binary
+    if (total_bytes > 0 and control_bytes * 100 / total_bytes > 5) {
+        return ValidationResult.invalid(.plain_text, "Invalid UTF-8 encoding");
+    }
+
+    // Looks like Latin-1 text
+    return ValidationResult.okWithDepth(.plain_text_latin1, .full);
 }
 
 /// Validate plain text file as UTF-16 using streaming validation.
