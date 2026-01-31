@@ -47,24 +47,24 @@ typedef enum {
 
     /* Cancelled (10000+) */
     ES_ERR_CANCELLED = 10000,
-} es_error_t;
+} error_t;
 
 /**
  * Returns the library version string.
  * @return Version string (e.g., "0.1.0"). Valid for lifetime of library.
  */
-const char* es_core_version(void);
+const char* core_version(void);
 
 /**
  * Returns the last error message for the current thread.
  * @return Error message or NULL if no error. Valid until next error on this thread.
  */
-const char* es_core_last_error(void);
+const char* core_last_error(void);
 
 /**
  * Clears the last error for the current thread.
  */
-void es_core_clear_error(void);
+void core_clear_error(void);
 
 /**
  * Pre-initialize all decoder libraries for thread safety.
@@ -72,14 +72,14 @@ void es_core_clear_error(void);
  * This triggers lazy SIMD detection and global state initialization
  * in all C libraries, preventing race conditions during parallel validation.
  */
-void es_core_preinit(void);
+void core_preinit(void);
 
 /* ========== Format Validation ========== */
 
 /**
  * Opaque format validator handle.
  */
-typedef struct es_format_validator es_format_validator_t;
+typedef struct format_validator format_validator_t;
 
 /**
  * File format enumeration.
@@ -98,16 +98,16 @@ typedef enum {
     ES_FORMAT_XLSX = 10,
     ES_FORMAT_PPTX = 11,
     ES_FORMAT_PDF = 12
-} es_file_format_t;
+} file_format_t;
 
 /**
  * Validation result structure.
  */
 typedef struct {
-    es_file_format_t format;     /**< Detected file format */
+    file_format_t format;     /**< Detected file format */
     int is_valid;                /**< 1 if valid, 0 if invalid */
     const char* error_message;   /**< Error message if invalid, NULL if valid */
-} es_validation_result_t;
+} validation_result_t;
 
 /**
  * Validation depth.
@@ -115,7 +115,7 @@ typedef struct {
 typedef enum {
     ES_VALIDATION_DEPTH_STRUCTURAL = 0,
     ES_VALIDATION_DEPTH_FULL = 1
-} es_validation_depth_t;
+} validation_depth_t;
 
 /**
  * Malformation types (bit positions for malformation bitset).
@@ -137,7 +137,7 @@ typedef enum {
     ES_MALFORMATION_PDF_TRAILER_MISSING_ROOT = 13,
     ES_MALFORMATION_MAGIC_BYTES_CORRUPTED = 14,
     ES_MALFORMATION_LAST = ES_MALFORMATION_MAGIC_BYTES_CORRUPTED
-} es_malformation_t;
+} malformation_t;
 
 /**
  * Extended validation result (strings valid until next call on same validator).
@@ -148,11 +148,11 @@ typedef struct {
     int is_unknown;                 /**< 1 if format unknown */
     const char* error_message;      /**< Error message if invalid, NULL if valid */
     const char* warning_message;    /**< Warning message if any, NULL otherwise */
-    es_validation_depth_t validation_depth; /**< Depth of validation performed */
-    uint64_t malformation_bits;     /**< Bitset of es_malformation_t values */
+    validation_depth_t validation_depth; /**< Depth of validation performed */
+    uint64_t malformation_bits;     /**< Bitset of malformation_t values */
     int circumvented_trivial_protection; /**< 1 if trivial protection was bypassed */
     int validated_via_ffmpeg;       /**< 1 if video validation used external ffmpeg CLI */
-} es_validation_result_ex_t;
+} validation_result_ex_t;
 
 /**
  * Aggregate validation counts.
@@ -161,16 +161,16 @@ typedef struct {
     size_t valid_count;
     size_t invalid_count;
     size_t unknown_count;
-} es_validation_counts_t;
+} validation_counts_t;
 
 /**
  * Callback invoked for each validated file.
  * Strings are valid until next callback on the same validator.
  */
-typedef void (*es_validation_callback_t)(
+typedef void (*validation_callback_t)(
     void* user_data,
     const char* display_path,
-    const es_validation_result_ex_t* result,
+    const validation_result_ex_t* result,
     double elapsed_seconds
 );
 
@@ -179,34 +179,34 @@ typedef void (*es_validation_callback_t)(
  * @param out Pointer to receive the validator handle.
  * @return ES_OK on success.
  */
-es_error_t es_format_validator_create(es_format_validator_t** out);
+error_t format_validator_create(format_validator_t** out);
 
 /**
  * Creates a new deep format validator.
  * @param out Pointer to receive the validator handle.
  * @return ES_OK on success.
  */
-es_error_t es_format_validator_create_deep(es_format_validator_t** out);
+error_t format_validator_create_deep(format_validator_t** out);
 
 /**
  * Destroys a format validator.
  * @param validator The validator handle.
  */
-void es_format_validator_destroy(es_format_validator_t* validator);
+void format_validator_destroy(format_validator_t* validator);
 
 /**
  * Enables or disables format validation.
  * @param validator The validator handle.
  * @param enabled 1 to enable, 0 to disable.
  */
-void es_format_validator_set_enabled(es_format_validator_t* validator, int enabled);
+void format_validator_set_enabled(format_validator_t* validator, int enabled);
 
 /**
  * Checks if format validation is enabled.
  * @param validator The validator handle.
  * @return 1 if enabled, 0 if disabled.
  */
-int es_format_validator_is_enabled(const es_format_validator_t* validator);
+int format_validator_is_enabled(const format_validator_t* validator);
 
 /**
  * Validates a file at the given path.
@@ -215,10 +215,10 @@ int es_format_validator_is_enabled(const es_format_validator_t* validator);
  * @param out Pointer to receive the validation result.
  * @return ES_OK on success.
  */
-es_error_t es_format_validate_file(
-    es_format_validator_t* validator,
+error_t format_validate_file(
+    format_validator_t* validator,
     const char* path,
-    es_validation_result_t* out
+    validation_result_t* out
 );
 
 /**
@@ -229,10 +229,10 @@ es_error_t es_format_validate_file(
  * @param out Pointer to receive the extended validation result.
  * @return ES_OK on success.
  */
-es_error_t es_format_validate_file_ex(
-    es_format_validator_t* validator,
+error_t format_validate_file_ex(
+    format_validator_t* validator,
     const char* path,
-    es_validation_result_ex_t* out
+    validation_result_ex_t* out
 );
 
 /**
@@ -245,13 +245,13 @@ es_error_t es_format_validate_file_ex(
  * @param out_counts Pointer to receive aggregate counts.
  * @return ES_OK on success.
  */
-es_error_t es_format_validate_path_parallel(
-    es_format_validator_t* validator,
+error_t format_validate_path_parallel(
+    format_validator_t* validator,
     const char* path,
     size_t jobs,
-    es_validation_callback_t callback,
+    validation_callback_t callback,
     void* user_data,
-    es_validation_counts_t* out_counts
+    validation_counts_t* out_counts
 );
 
 /**
@@ -261,7 +261,7 @@ typedef struct {
     size_t jobs;    /**< Number of worker threads (0 = auto) */
     int shuffle;    /**< Shuffle file order before validation (helps expose race conditions) */
     uint64_t seed;  /**< Random seed for shuffling (0 = use system time) */
-} es_validation_options_t;
+} validation_options_t;
 
 /**
  * Validates a file or directory tree using parallel workers with extended options.
@@ -273,13 +273,13 @@ typedef struct {
  * @param out_counts Pointer to receive aggregate counts.
  * @return ES_OK on success.
  */
-es_error_t es_format_validate_path_parallel_ex(
-    es_format_validator_t* validator,
+error_t format_validate_path_parallel_ex(
+    format_validator_t* validator,
     const char* path,
-    const es_validation_options_t* options,
-    es_validation_callback_t callback,
+    const validation_options_t* options,
+    validation_callback_t callback,
     void* user_data,
-    es_validation_counts_t* out_counts
+    validation_counts_t* out_counts
 );
 
 /**
@@ -287,21 +287,21 @@ es_error_t es_format_validate_path_parallel_ex(
  * @param malformation The malformation enum.
  * @return Null-terminated description string.
  */
-const char* es_malformation_description(es_malformation_t malformation);
+const char* malformation_description(malformation_t malformation);
 
 /**
  * Gets the description for a file format.
  * @param format The file format.
  * @return Null-terminated description string.
  */
-const char* es_file_format_description(es_file_format_t format);
+const char* file_format_description(file_format_t format);
 
 /**
  * Checks if a format has a validator.
  * @param format The file format.
  * @return 1 if a validator exists, 0 otherwise.
  */
-int es_file_format_has_validator(es_file_format_t format);
+int file_format_has_validator(file_format_t format);
 
 /* ========== Git Repository Validation ========== */
 
@@ -315,7 +315,7 @@ typedef struct {
     uint32_t objects_corrupt;
     uint32_t packs_checked;
     uint32_t packs_valid;
-} es_git_validation_result_t;
+} git_validation_result_t;
 
 /**
  * Validate a Git repository.
@@ -324,9 +324,9 @@ typedef struct {
  * @param error_buf Optional buffer to receive error message (UTF-8).
  * @param error_buf_len Buffer length.
  */
-es_error_t es_git_validate_repository(
+error_t git_validate_repository(
     const char* path,
-    es_git_validation_result_t* out,
+    git_validation_result_t* out,
     char* error_buf,
     size_t error_buf_len
 );
@@ -341,11 +341,11 @@ es_error_t es_git_validate_repository(
  * - Caller provides uint32_t file IDs (cheap to copy, caller maps to their data)
  * - Progress callbacks for jumbo files (PDFs, videos)
  * - Result callbacks serialized to one thread (backpressure)
- * - Caller owns results and must call es_free_result()
+ * - Caller owns results and must call free_result()
  */
 
 /**
- * Owned validation result - caller must free with es_free_result().
+ * Owned validation result - caller must free with free_result().
  * All strings are heap-allocated and owned by this struct.
  */
 typedef struct {
@@ -354,12 +354,12 @@ typedef struct {
     int is_unknown;                 /**< 1 if format unknown */
     char* error_message;            /**< Error message if invalid, NULL if valid (heap-allocated) */
     char* warning_message;          /**< Warning message if any, NULL otherwise (heap-allocated) */
-    es_validation_depth_t validation_depth; /**< Depth of validation performed */
-    uint64_t malformation_bits;     /**< Bitset of es_malformation_t values */
+    validation_depth_t validation_depth; /**< Depth of validation performed */
+    uint64_t malformation_bits;     /**< Bitset of malformation_t values */
     int circumvented_trivial_protection; /**< 1 if trivial protection was bypassed */
     int validated_via_ffmpeg;       /**< 1 if video validation used external ffmpeg CLI */
     double elapsed_seconds;         /**< Time taken to validate */
-} es_owned_result_t;
+} owned_result_t;
 
 /**
  * Batch item - file path with caller-provided ID.
@@ -368,7 +368,7 @@ typedef struct {
 typedef struct {
     const char* path;   /**< File path (null-terminated, borrowed) */
     uint32_t id;        /**< Caller-provided ID, echoed in callbacks */
-} es_batch_item_t;
+} batch_item_t;
 
 /**
  * Progress callback - may be called many times per file during validation.
@@ -377,12 +377,12 @@ typedef struct {
  * Thread safety: May be called from worker threads. Caller must handle synchronization.
  *
  * @param context User-provided context pointer
- * @param file_id The caller-provided ID from es_batch_item_t or es_validate()
+ * @param file_id The caller-provided ID from batch_item_t or validate()
  * @param current Current progress (interpretation depends on unit)
  * @param total Total expected (0 if unknown)
  * @param unit Progress unit: "bytes", "frames", "pages", "images", etc.
  */
-typedef void (*es_progress_callback_t)(
+typedef void (*progress_callback_t)(
     void* context,
     uint32_t file_id,
     size_t current,
@@ -394,18 +394,18 @@ typedef void (*es_progress_callback_t)(
  * Result callback - called once per file when validation completes.
  * Serialized to a single thread (provides natural backpressure).
  *
- * IMPORTANT: Caller takes ownership of result and MUST call es_free_result().
+ * IMPORTANT: Caller takes ownership of result and MUST call free_result().
  *
  * @param context User-provided context pointer
- * @param file_id The caller-provided ID from es_batch_item_t
+ * @param file_id The caller-provided ID from batch_item_t
  * @param path The file path (borrowed, valid only during callback)
- * @param result Validation result (CALLER TAKES OWNERSHIP - must call es_free_result)
+ * @param result Validation result (CALLER TAKES OWNERSHIP - must call free_result)
  */
-typedef void (*es_result_callback_t)(
+typedef void (*result_callback_t)(
     void* context,
     uint32_t file_id,
     const char* path,
-    es_owned_result_t* result
+    owned_result_t* result
 );
 
 /**
@@ -416,14 +416,14 @@ typedef void (*es_result_callback_t)(
  * @param num_threads Parallelism budget for format-specific work (0 = auto-detect)
  * @param progress_callback Called during validation for progress updates (may be NULL)
  * @param context User-provided context passed to progress_callback
- * @return Heap-allocated result. Caller MUST call es_free_result() when done.
- *         Returns NULL on allocation failure (check es_core_last_error).
+ * @return Heap-allocated result. Caller MUST call free_result() when done.
+ *         Returns NULL on allocation failure (check core_last_error).
  */
-es_owned_result_t* es_validate(
+owned_result_t* validate(
     const char* path,
     uint32_t file_id,
     int num_threads,
-    es_progress_callback_t progress_callback,
+    progress_callback_t progress_callback,
     void* context
 );
 
@@ -443,29 +443,29 @@ es_owned_result_t* es_validate(
  * @param context User-provided context passed to both callbacks
  * @return ES_OK on completion, or halt error code
  */
-es_error_t es_validate_batch(
-    const es_batch_item_t* items,
+error_t validate_batch(
+    const batch_item_t* items,
     size_t count,
     int num_threads,
-    es_result_callback_t result_callback,
-    es_progress_callback_t progress_callback,
+    result_callback_t result_callback,
+    progress_callback_t progress_callback,
     void* context
 );
 
 /**
  * Free an owned validation result.
- * MUST be called for every result returned by es_validate() or passed to callback.
+ * MUST be called for every result returned by validate() or passed to callback.
  *
  * @param result The result to free (NULL is safe to pass)
  */
-void es_free_result(es_owned_result_t* result);
+void free_result(owned_result_t* result);
 
 /**
  * Get default thread count based on CPU cores.
  *
  * @return Number of CPU cores, or 4 if detection fails
  */
-int es_get_default_threads(void);
+int get_default_threads(void);
 
 #ifdef __cplusplus
 }

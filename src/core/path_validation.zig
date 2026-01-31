@@ -209,6 +209,82 @@ fn shouldValidateFile(kind: std.fs.File.Kind) bool {
 	return kind == .file;
 }
 
+/// Check if a path is a bundle directory that should be validated as a unit.
+fn isBundleDirectory(entry_path: []const u8) bool {
+	return format_validation.isBundleDirectory(entry_path);
+}
+
+/// Recursively enumerate files and bundle directories, adding them to work_items.
+/// Bundle directories are added as work items and NOT recursed into.
+fn enumerateWithBundles(
+	allocator: Allocator,
+	dir: std.fs.Dir,
+	base_path: []const u8,
+	relative_prefix: []const u8,
+	work_items: *std.ArrayListUnmanaged(WorkItem),
+	max_files_limit: usize,
+) !void {
+	var iter = dir.iterate();
+	while (try iter.next()) |entry| {
+		if (work_items.items.len >= max_files_limit) break;
+
+		// Build the relative path for display
+		const display_path = if (relative_prefix.len > 0)
+			try std.fs.path.join(allocator, &.{ relative_prefix, entry.name })
+		else
+			try allocator.dupe(u8, entry.name);
+		errdefer allocator.free(display_path);
+
+		// Build the full path
+		const full_path = try std.fs.path.join(allocator, &.{ base_path, entry.name });
+		errdefer allocator.free(full_path);
+
+		if (entry.kind == .file) {
+			// Regular file - add to work items
+			try work_items.append(allocator, .{
+				.path = full_path,
+				.display_path = display_path,
+			});
+		} else if (entry.kind == .directory) {
+			// Check if this is a bundle directory
+			if (isBundleDirectory(display_path)) {
+				// Bundle directory - add as work item, don't recurse
+				try work_items.append(allocator, .{
+					.path = full_path,
+					.display_path = display_path,
+				});
+			} else {
+				// Regular directory - recurse into it
+				// Free paths since we won't use them (recursion will create new ones)
+				allocator.free(full_path);
+
+				var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch {
+					allocator.free(display_path);
+					continue;
+				};
+				defer subdir.close();
+
+				enumerateWithBundles(
+					allocator,
+					subdir,
+					try std.fs.path.join(allocator, &.{ base_path, entry.name }),
+					display_path,
+					work_items,
+					max_files_limit,
+				) catch {
+					allocator.free(display_path);
+					continue;
+				};
+				allocator.free(display_path);
+			}
+		} else {
+			// Other types (symlinks, etc.) - skip
+			allocator.free(full_path);
+			allocator.free(display_path);
+		}
+	}
+}
+
 fn workerMain(shared: *Shared) void {
 	var validator = shared.validator_template;
 	var arena = std.heap.ArenaAllocator.init(shared.allocator);
@@ -526,6 +602,12 @@ pub fn validatePathParallelEx(
 		return error.Unsupported;
 	}
 
+	// If the path itself is a bundle directory (e.g., .git), validate it as a single item
+	// Don't enumerate its contents - treat the whole bundle as one validation unit
+	if (isBundleDirectory(path)) {
+		return validateSingleFile(allocator, validator_template, path, callback, callback_ctx);
+	}
+
 	const max_files_limit = getMaxFilesLimit();
 
 	var queue = WorkQueue.init(allocator);
@@ -562,10 +644,9 @@ pub fn validatePathParallelEx(
 	var dir = try openDirForPath(path);
 	defer dir.close();
 
-	var walker = try dir.walk(allocator);
-	defer walker.deinit();
-
-	// Collect files into a list first (needed for shuffling)
+	// Collect files and bundle directories into a list (needed for shuffling)
+	// Uses bundle-aware enumeration: .git directories are added as work items
+	// and NOT recursed into.
 	var work_items: std.ArrayListUnmanaged(WorkItem) = .{};
 	defer {
 		// Free any items that weren't pushed (e.g., on error)
@@ -576,20 +657,7 @@ pub fn validatePathParallelEx(
 		work_items.deinit(allocator);
 	}
 
-	while (try walker.next()) |entry| {
-		if (!shouldValidateFile(entry.kind)) {
-			continue;
-		}
-		if (work_items.items.len >= max_files_limit) {
-			break;
-		}
-		const display_path = try allocator.dupe(u8, entry.path);
-		const full_path = try std.fs.path.join(allocator, &.{ path, entry.path });
-		try work_items.append(allocator, .{
-			.path = full_path,
-			.display_path = display_path,
-		});
-	}
+	try enumerateWithBundles(allocator, dir, path, "", &work_items, max_files_limit);
 
 	// Shuffle if requested
 	if (options.shuffle and work_items.items.len > 1) {
@@ -636,8 +704,9 @@ test "statPath handles relative directory" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	// Get the relative path name
-	const path = tmp_dir.sub_path[0..];
+	// Get the absolute path to avoid cwd-relative issues in test environments
+	const path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+	defer std.testing.allocator.free(path);
 
 	// stat should return directory
 	const stat = statPath(path) catch |err| {
@@ -664,4 +733,104 @@ test "statPath handles files" {
 		return err;
 	};
 	try std.testing.expectEqual(std.fs.File.Kind.file, stat.kind);
+}
+
+test "parallel validation does not recurse into .git directories" {
+	// TDD: This test verifies that when validating a directory containing .git,
+	// the parallel validator treats .git as a bundle (validates it as a unit)
+	// rather than recursing into .git/objects/ and validating individual files.
+	//
+	// The test creates a minimal git repo structure and validates the parent directory.
+	// It tracks which paths are validated via callback and asserts that:
+	// 1. The .git directory itself IS validated (as a bundle)
+	// 2. Files inside .git/objects/ are NOT individually validated
+
+	const allocator = std.testing.allocator;
+
+	// Create a temp directory
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	// Get the full path
+	const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(tmp_path);
+
+	// Create a minimal .git directory structure
+	try tmp_dir.dir.makePath(".git/objects/ab");
+	try tmp_dir.dir.makePath(".git/objects/pack");
+	try tmp_dir.dir.makePath(".git/refs/heads");
+
+	// Create HEAD file
+	const head_file = try tmp_dir.dir.createFile(".git/HEAD", .{});
+	try head_file.writeAll("ref: refs/heads/master\n");
+	head_file.close();
+
+	// Create a fake loose object file (to test that we DON'T recurse into it)
+	const object_file = try tmp_dir.dir.createFile(".git/objects/ab/cdef1234567890", .{});
+	try object_file.writeAll("fake object content");
+	object_file.close();
+
+	// Create a regular file outside .git
+	const regular_file = try tmp_dir.dir.createFile("README.md", .{});
+	try regular_file.writeAll("# Test\n");
+	regular_file.close();
+
+	// Track validated paths
+	const TrackingContext = struct {
+		validated_paths: std.ArrayListUnmanaged([]u8),
+		allocator: std.mem.Allocator,
+
+		fn callback(ctx: ?*anyopaque, display_path: []const u8, _: ValidationResult, _: f64) void {
+			const self: *@This() = @ptrCast(@alignCast(ctx.?));
+			const path_copy = self.allocator.dupe(u8, display_path) catch return;
+			self.validated_paths.append(self.allocator, path_copy) catch {
+				self.allocator.free(path_copy);
+			};
+		}
+
+		fn deinit(self: *@This()) void {
+			for (self.validated_paths.items) |p| {
+				self.allocator.free(p);
+			}
+			self.validated_paths.deinit(self.allocator);
+		}
+
+		fn containsPath(self: *@This(), needle: []const u8) bool {
+			for (self.validated_paths.items) |p| {
+				if (std.mem.indexOf(u8, p, needle) != null) return true;
+			}
+			return false;
+		}
+	};
+
+	var tracking_ctx = TrackingContext{
+		.validated_paths = .{},
+		.allocator = allocator,
+	};
+	defer tracking_ctx.deinit();
+
+	// Create a validator and run parallel validation on the temp directory
+	const validator = FormatValidator.initDeep();
+
+	_ = try validatePathParallel(
+		allocator,
+		validator,
+		tmp_path,
+		1, // Single thread for determinism
+		TrackingContext.callback,
+		&tracking_ctx,
+	);
+
+	// Check assertions:
+	// 1. Should validate .git as a bundle (the path ".git" should appear)
+	const validated_git_bundle = tracking_ctx.containsPath(".git");
+	try std.testing.expect(validated_git_bundle);
+
+	// 2. Should NOT have recursed into .git/objects/ (no paths containing ".git/objects/ab")
+	const recursed_into_objects = tracking_ctx.containsPath(".git/objects/ab");
+	try std.testing.expect(!recursed_into_objects);
+
+	// 3. Should have validated regular files (README.md)
+	const validated_readme = tracking_ctx.containsPath("README.md");
+	try std.testing.expect(validated_readme);
 }

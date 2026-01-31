@@ -5,18 +5,23 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 ## Active
 
 ### HIGH PRIORITY: Hexagonal Architecture FFI Refactor
-- [x] Add es_validate(), es_validate_batch(), es_free_result(), es_get_default_threads() to C FFI (2026-01-30)
+- [x] Add validate(), validate_batch(), free_result(), get_default_threads() to C FFI (2026-01-30)
 - [x] Verify new FFI functions compile and basic tests pass (2026-01-30)
-- [x] Refactor cli/main.c to use new es_validate_batch() instead of direct Zig imports (2026-01-30)
-- [x] Add directory enumeration to CLI (CLI enumerates, passes paths to es_validate_batch) (2026-01-30)
+- [x] Refactor cli/main.c to use new validate_batch() instead of direct Zig imports (2026-01-30)
+- [x] Add directory enumeration to CLI (CLI enumerates, passes paths to validate_batch) (2026-01-30)
 - [x] Make CLI format-agnostic (removed git-specific logic, CLI is now a dumb pipe) (2026-01-30)
 - [x] Parallel PDF image validation using thread pool (36% faster on ~/Documents/Books) (2026-01-30)
-- [ ] Deprecate old handle-based API (es_format_validator_create, etc.) - add DEPRECATED comments
+- [x] Remove es_* prefix from all FFI functions (project is validate, not entropy_shield) (2026-01-31)
+- [ ] Deprecate old handle-based API (format_validator_create, etc.) - add DEPRECATED comments
 - [ ] Future: Remove deprecated handle-based API in next major version
 
 ### Bundle Validation (directories as single validation units)
-- [ ] Add BundleFormat enum and detectBundleFormat() to core
-- [ ] Route .git directories to existing git_validator.zig
+- [x] Add BundleType enum and detectBundleType() to format_validation.zig (2026-01-31)
+- [x] Add bundle patterns API to C FFI (validate_get_bundle_patterns) (2026-01-31)
+- [x] Route .git directories to existing git_validator.zig via validateGitRepositoryDeep() (2026-01-31)
+- [x] Add bundle-aware enumeration to path_validation.zig (enumerateWithBundles) (2026-01-31)
+- [x] Add bundle detection to CLI enumerate_path() and main loop (2026-01-31)
+- [x] Add TDD tests for bundle validation (Zig unit tests + CLI bash tests) (2026-01-31)
 - [ ] Add macOS bundle validation (.app, .framework, .bundle)
 - [ ] Return continuable error for unknown directory types
 - [ ] See NEXT_STEPS.md for full design
@@ -24,6 +29,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 ### Other
 - [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
 - [ ] Fix last failed CI build (inspect gh logs, resolve, rerun) (2026-01-26 04:22 EST)
+- [ ] Create utility script to check forked dependencies for upstream updates (cj5, openmpt, etc.)
 ## Recently Completed
 - [x] Reach 100 format ground truth coverage with full decode + corruption tests (2026-01-28 23:55 EST)
 - [x] Add 9 new formats: beam, swf, flv, pe, ape, dsf, dff, wad, hdf5 (2026-01-28 23:50 EST)

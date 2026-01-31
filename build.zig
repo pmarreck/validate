@@ -203,6 +203,14 @@ pub fn build(b: *std.Build) void {
     });
     const libopenmpt_lib = libopenmpt_dep.artifact("openmpt");
 
+    // cj5 dependency for JSON5 validation (C library with Zig bindings)
+    const cj5_dep = b.dependency("cj5", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const cj5_lib = cj5_dep.artifact("cj5");
+    const cj5_mod = cj5_dep.module("cj5");
+
     // Core module - validation logic
     const core_mod = b.addModule("validate_core", .{
         .root_source_file = b.path("src/core/mod.zig"),
@@ -212,6 +220,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "toml", .module = toml_mod }, // External TOML parser for validation
             .{ .name = "zigimg", .module = zigimg_mod }, // Image format decoding for deep validation
             .{ .name = "xml", .module = zigxml_mod }, // XML validation (0BSD, ianprime0509/zig-xml)
+            .{ .name = "cj5", .module = cj5_mod }, // JSON5 validation (MIT, septag/cj5 fork)
         },
     });
 
@@ -318,6 +327,8 @@ pub fn build(b: *std.Build) void {
     lib.linkLibrary(brotli_lib);
     // Link libopenmpt for tracker format (MOD/XM/IT/S3M) deep validation (Zig-built)
     lib.linkLibrary(libopenmpt_lib);
+    // Link cj5 for JSON5 validation (Zig-built C library)
+    lib.linkLibrary(cj5_lib);
     lib.linkLibC();
     lib.linkLibCpp(); // Required for libheif, libjxl, libopenmpt (C++ libraries)
     lib.installHeadersDirectory(b.path("ffi"), "", .{
@@ -349,6 +360,7 @@ pub fn build(b: *std.Build) void {
             libopenmpt_lib.getEmittedBin(),
             libde265_lib.getEmittedBin(),
             dav1d_lib.getEmittedBin(),
+            cj5_lib.getEmittedBin(),
         };
 
         const libtool = LibtoolStep.create(b, .{

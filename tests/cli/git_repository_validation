@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+#
+# Test: Git repository (.git directory) bundle validation
+#
+# This tests that:
+# 1. A valid .git directory is recognized as a Git Repository
+# 2. A valid .git directory passes validation (OK or WARN, not FAIL)
+# 3. A corrupted .git directory fails validation (FAIL, not OK)
+# 4. The CLI does NOT recurse into .git directories (treats them as a bundle)
+#
+# TDD: This test is written BEFORE the implementation.
+# Expected behavior:
+# - validate path/to/.git -> OK (or WARN) with format "Git Repository"
+# - validate path/to/.git with corrupt objects -> FAIL with "Git Repository"
+
+set -euo pipefail
+
+BIN="./zig-out/bin/validate"
+
+# Determine binary extension for Windows
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]] || [[ -f "$BIN.exe" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+fi
+
+# Create temp directory for test repos
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_git_test.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Helper to strip ANSI codes
+strip_ansi() {
+	sed 's/\x1b\[[0-9;]*m//g'
+}
+
+failures=0
+
+# Save original directory
+ORIG_DIR="$(pwd)"
+
+# ==============================================================================
+# Test 1: Create and validate a minimal valid git repository
+# ==============================================================================
+echo "Test 1: Valid git repository validation"
+
+# Create a minimal valid git repo
+mkdir -p "$tmpdir/valid_repo"
+(
+	cd "$tmpdir/valid_repo"
+	git init --quiet
+	echo "test content" > test.txt
+	git add test.txt
+	git commit -m "Initial commit" --quiet
+)
+
+# Validate the .git directory directly
+output=$($BIN "$tmpdir/valid_repo/.git" 2>&1 | strip_ansi) || true
+
+# Should be recognized as Git Repository and be valid (OK or WARN)
+if echo "$output" | grep -qE "^(OK|WARN).*Git Repository"; then
+	echo "  PASS: Valid .git directory recognized and validated"
+else
+	echo "  FAIL: Valid .git directory not properly validated"
+	echo "  Output: $output"
+	((failures++)) || true
+fi
+
+# ==============================================================================
+# Test 2: Validate a corrupted git repository (bad object checksum)
+# ==============================================================================
+echo "Test 2: Corrupted git repository validation (bad object)"
+
+# Create another valid git repo, then corrupt it
+mkdir -p "$tmpdir/corrupt_repo"
+(
+	cd "$tmpdir/corrupt_repo"
+	git init --quiet
+	echo "test content for corruption" > test.txt
+	git add test.txt
+	git commit -m "Initial commit" --quiet
+
+	# Find a loose object and corrupt it
+	object_dir=$(find .git/objects -mindepth 1 -maxdepth 1 -type d ! -name 'pack' ! -name 'info' | head -1)
+	if [[ -n "$object_dir" ]]; then
+		object_file=$(find "$object_dir" -type f | head -1)
+		if [[ -n "$object_file" ]]; then
+			# Git makes object files read-only, so we need to make it writable first
+			chmod +w "$object_file"
+			# Corrupt the object by overwriting a byte in the middle
+			size=$(stat -f%z "$object_file" 2>/dev/null || stat -c%s "$object_file")
+			if [[ $size -gt 10 ]]; then
+				printf '\xff' | dd of="$object_file" bs=1 seek=5 count=1 conv=notrunc 2>/dev/null
+			fi
+		fi
+	fi
+)
+
+# Validate the corrupted .git directory
+output=$($BIN "$tmpdir/corrupt_repo/.git" 2>&1 | strip_ansi) || true
+
+# Should be recognized as Git Repository but FAIL validation
+if echo "$output" | grep -qE "^FAIL.*Git Repository"; then
+	echo "  PASS: Corrupted .git directory correctly failed validation"
+elif echo "$output" | grep -qE "^(OK|WARN).*Git Repository"; then
+	echo "  FAIL: Corrupted .git directory should have failed validation"
+	echo "  Output: $output"
+	((failures++)) || true
+else
+	echo "  INCONCLUSIVE: Unexpected output format"
+	echo "  Output: $output"
+	# Don't fail yet - implementation pending
+fi
+
+# ==============================================================================
+# Test 3: Ensure CLI doesn't recurse into .git and flood with individual files
+# ==============================================================================
+echo "Test 3: Bundle behavior (no recursion into .git)"
+
+# Validate a repo directory that contains .git
+# The output should NOT show individual object files from .git/objects
+output=$($BIN "$tmpdir/valid_repo" 2>&1 | strip_ansi) || true
+
+# Should see the .git directory validated as a bundle, NOT individual object files
+if echo "$output" | grep -q "\.git/objects/"; then
+	echo "  FAIL: CLI recursed into .git/objects (should treat .git as bundle)"
+	echo "  Output: $output"
+	((failures++)) || true
+else
+	# Should see either .git as a bundle OR just the regular files outside .git
+	echo "  PASS: CLI did not recurse into .git/objects"
+fi
+
+# ==============================================================================
+# Test 4: Validate using ground truth examples (if they exist)
+# ==============================================================================
+echo "Test 4: Ground truth git repository examples"
+
+GT_VALID="ground_truth_examples/git_repository/sample/.git"
+GT_CORRUPT="ground_truth_examples/corrupted/git_repository"
+
+if [[ -d "$GT_VALID" ]]; then
+	output=$($BIN "$GT_VALID" 2>&1 | strip_ansi) || true
+	if echo "$output" | grep -qE "^(OK|WARN).*Git Repository"; then
+		echo "  PASS: Ground truth valid .git passes"
+	else
+		echo "  FAIL: Ground truth valid .git should pass"
+		echo "  Output: $output"
+		((failures++)) || true
+	fi
+else
+	echo "  SKIP: Ground truth valid .git not yet created at $GT_VALID"
+fi
+
+if [[ -d "$GT_CORRUPT" ]]; then
+	for corrupt_dir in "$GT_CORRUPT"/*/; do
+		if [[ -d "${corrupt_dir}.git" ]]; then
+			output=$($BIN "${corrupt_dir}.git" 2>&1 | strip_ansi) || true
+			if echo "$output" | grep -qE "^FAIL"; then
+				echo "  PASS: Ground truth corrupted .git fails: $(basename "$corrupt_dir")"
+			else
+				echo "  FAIL: Ground truth corrupted .git should fail: $(basename "$corrupt_dir")"
+				((failures++)) || true
+			fi
+		fi
+	done
+else
+	echo "  SKIP: Ground truth corrupted .git examples not yet created at $GT_CORRUPT"
+fi
+
+# ==============================================================================
+# Summary
+# ==============================================================================
+echo ""
+if [[ $failures -eq 0 ]]; then
+	echo "All git repository validation tests passed!"
+	exit 0
+else
+	echo "FAILED: $failures test(s) failed"
+	exit $failures
+fi

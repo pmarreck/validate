@@ -76,6 +76,10 @@
             .url = "https://github.com/pmarreck/openmpt/archive/refs/heads/master.tar.gz",
             .hash = "libopenmpt-0.8.0-5ozQWF9EGQts1u9ku3WqarDOuSyUw9TsSTwGFssLkyS6",
         },
+        .cj5 = .{
+            .url = "git+https://github.com/pmarreck/cj5#532ca7b19f23a4d6f50c042b6eb109d2d03b634a",
+            .hash = "cj5-1.0.0-wO-emzjcAACw1lf_PjPeWK0G7Dvd0_bsGFPeJq2GDOW-",
+        },
     },
     .paths = .{""},
     .fingerprint = 0x421232542dfe208d,

@@ -65,6 +65,23 @@ static int path_list_add(path_list_t* list, const char* path) {
 /* Recursive directory enumeration */
 static int enumerate_directory(const char* dir_path, path_list_t* list);
 
+/* Check if a path is a bundle directory (e.g., .git) that should be
+ * validated as a single unit rather than recursed into. */
+static int is_bundle_directory(const char* path) {
+	size_t len = strlen(path);
+	/* Check for path ending in "/.git" or exactly ".git" */
+	if (len >= 4) {
+		const char* last4 = path + len - 4;
+		if (strcmp(last4, ".git") == 0) {
+			/* Either exactly ".git" or ends with "/.git" */
+			if (len == 4 || path[len - 5] == '/') {
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
 static int enumerate_path(const char* path, path_list_t* list) {
 	struct stat st;
 	if (stat(path, &st) != 0) {
@@ -76,6 +93,11 @@ static int enumerate_path(const char* path, path_list_t* list) {
 	if (S_ISREG(st.st_mode)) {
 		return path_list_add(list, path);
 	} else if (S_ISDIR(st.st_mode)) {
+		/* Check if this is a bundle directory (e.g., .git) */
+		if (is_bundle_directory(path)) {
+			/* Add bundle directory as a single validation item - don't recurse */
+			return path_list_add(list, path);
+		}
 		return enumerate_directory(path, list);
 	}
 	/* Skip other types (symlinks, devices, etc.) */
@@ -306,7 +328,7 @@ static void shutdown_mem_telemetry(void) {
 	g_mem_telemetry_enabled = 0;
 }
 
-static void log_mem_telemetry(const char* path, const es_owned_result_t* result, double elapsed_seconds) {
+static void log_mem_telemetry(const char* path, const owned_result_t* result, double elapsed_seconds) {
 	if (!g_mem_telemetry_enabled) {
 		return;
 	}
@@ -330,7 +352,7 @@ static void log_mem_telemetry(const char* path, const es_owned_result_t* result,
 		path);
 }
 
-static const char* validation_depth_description(es_validation_depth_t depth) {
+static const char* validation_depth_description(validation_depth_t depth) {
 	switch (depth) {
 		case ES_VALIDATION_DEPTH_STRUCTURAL: return "structural";
 		case ES_VALIDATION_DEPTH_FULL: return "fully validated";
@@ -351,7 +373,7 @@ static size_t get_env_max_files(void) {
 	return (size_t)value;
 }
 
-static void print_validation_result(const char* path, const es_owned_result_t* result) {
+static void print_validation_result(const char* path, const owned_result_t* result) {
 	const char* format_desc = result->format_description ? result->format_description : "Unknown";
 	const char* base_depth_desc = validation_depth_description(result->validation_depth);
 	/* Build depth description with optional ffmpeg suffix */
@@ -371,7 +393,7 @@ static void print_validation_result(const char* path, const es_owned_result_t* r
 			if (has_malformations) {
 				for (int i = 0; i <= ES_MALFORMATION_LAST; i++) {
 					if (result->malformation_bits & (1ULL << i)) {
-						const char* desc = es_malformation_description((es_malformation_t)i);
+						const char* desc = malformation_description((malformation_t)i);
 						printf("  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, desc ? desc : "Unknown issue");
 					}
 				}
@@ -392,7 +414,7 @@ static void print_validation_result(const char* path, const es_owned_result_t* r
 		if (has_malformations) {
 			for (int i = 0; i <= ES_MALFORMATION_LAST; i++) {
 				if (result->malformation_bits & (1ULL << i)) {
-					const char* desc = es_malformation_description((es_malformation_t)i);
+					const char* desc = malformation_description((malformation_t)i);
 					printf("  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, desc ? desc : "Unknown issue");
 				}
 			}
@@ -400,19 +422,14 @@ static void print_validation_result(const char* path, const es_owned_result_t* r
 	}
 }
 
-/* Callback context for batch validation */
-typedef struct {
-	size_t valid_count;
-	size_t invalid_count;
-	size_t unknown_count;
-} validation_counts_t;
+/* Callback context for batch validation - uses validation_counts_t from header */
 
 /* New batch validation callback (hexagonal architecture) */
 static void on_validation_result(
 	void* context,
 	uint32_t file_id,
 	const char* path,
-	es_owned_result_t* result
+	owned_result_t* result
 ) {
 	validation_counts_t* counts = (validation_counts_t*)context;
 	(void)file_id;  /* Not currently used, but available for future features */
@@ -445,7 +462,7 @@ static void on_validation_result(
 	}
 
 	/* IMPORTANT: We take ownership of result, must free it */
-	es_free_result(result);
+	free_result(result);
 }
 
 /* Shuffle array using Fisher-Yates algorithm */
@@ -487,7 +504,16 @@ static int validate_path(const char* path, size_t jobs, int shuffle, size_t stre
 
 	if (S_ISDIR(st.st_mode)) {
 		printf("Validating: %s%s\n\n", path, (shuffle || stress_iterations > 1) ? " (shuffled)" : "");
-		if (enumerate_directory(path, &file_list) != 0) {
+		/* Check if the directory itself is a bundle (e.g., .git) */
+		if (is_bundle_directory(path)) {
+			/* Bundle directory - validate as single item, don't enumerate */
+			if (path_list_add(&file_list, path) != 0) {
+				fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
+				path_list_free(&file_list);
+				shutdown_unknown_out();
+				return 1;
+			}
+		} else if (enumerate_directory(path, &file_list) != 0) {
 			fprintf(stderr, "%sError: Failed to enumerate directory: %s\n%s", COLOR_RED, path, COLOR_RESET);
 			path_list_free(&file_list);
 			shutdown_unknown_out();
@@ -516,7 +542,7 @@ static int validate_path(const char* path, size_t jobs, int shuffle, size_t stre
 	}
 
 	/* Build batch items array */
-	es_batch_item_t* items = (es_batch_item_t*)malloc(file_list.count * sizeof(es_batch_item_t));
+	batch_item_t* items = (batch_item_t*)malloc(file_list.count * sizeof(batch_item_t));
 	if (!items) {
 		fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
 		path_list_free(&file_list);
@@ -550,7 +576,7 @@ static int validate_path(const char* path, size_t jobs, int shuffle, size_t stre
 		counts = (validation_counts_t){0};
 
 		/* Call new hexagonal API */
-		es_error_t err = es_validate_batch(
+		error_t err = validate_batch(
 			items,
 			file_list.count,
 			(int)jobs,
@@ -561,7 +587,7 @@ static int validate_path(const char* path, size_t jobs, int shuffle, size_t stre
 
 		if (err != ES_OK) {
 			fprintf(stderr, "%sError: Validation failed: %s\n%s", COLOR_RED,
-				es_core_last_error() ? es_core_last_error() : "unknown error", COLOR_RESET);
+				core_last_error() ? core_last_error() : "unknown error", COLOR_RESET);
 			fflush(stderr);
 			free(items);
 			path_list_free(&file_list);
@@ -665,7 +691,7 @@ int main(int argc, char* argv[]) {
 		    || strcmp(arg, "/version") == 0
 #endif
 		) {
-			printf("%s\n", es_core_version());
+			printf("%s\n", core_version());
 			return 0;
 		}
 		/* Shuffle: --shuffle */
@@ -729,7 +755,7 @@ int main(int argc, char* argv[]) {
 	/* Pre-initialize decoder libraries for thread safety.
 	 * This must be called ONCE from main thread BEFORE spawning workers.
 	 * Triggers SIMD detection and global state init in all C libraries. */
-	es_core_preinit();
+	core_preinit();
 
 	int rc = validate_path(path, jobs, shuffle, stress_iterations);
 	shutdown_mem_telemetry();

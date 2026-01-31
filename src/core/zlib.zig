@@ -354,6 +354,67 @@ pub fn version() []const u8 {
     return "unknown";
 }
 
+/// Validate zlib-compressed data by streaming decompression with fixed buffer.
+/// Returns true if decompression completes successfully, false on data error.
+/// Uses no heap allocation - only a fixed stack buffer for streaming.
+/// This is ideal for integrity validation when you don't need the decompressed result.
+pub fn validateZlib(compressed: []const u8) ZlibError!void {
+    var stream: c.z_stream = .{
+        .next_in = @constCast(compressed.ptr),
+        .avail_in = @intCast(compressed.len),
+        .next_out = undefined,
+        .avail_out = 0,
+        .zalloc = null,
+        .zfree = null,
+        .@"opaque" = null,
+        .total_in = 0,
+        .total_out = 0,
+        .msg = null,
+        .state = null,
+        .data_type = 0,
+        .adler = 0,
+        .reserved = 0,
+    };
+
+    // Initialize for zlib format
+    const init_ret = c.inflateInit(&stream);
+    if (init_ret != c.Z_OK) {
+        return ZlibError.InitFailed;
+    }
+    defer _ = c.inflateEnd(&stream);
+
+    // Use fixed stack buffer - decompress and discard
+    var discard_buf: [65536]u8 = undefined;
+
+    while (true) {
+        stream.next_out = &discard_buf;
+        stream.avail_out = discard_buf.len;
+
+        const ret = c.inflate(&stream, c.Z_NO_FLUSH);
+
+        switch (ret) {
+            c.Z_STREAM_END => return, // Success - decompression complete
+            c.Z_OK => {
+                // Continue decompressing
+                if (stream.avail_in == 0 and stream.avail_out > 0) {
+                    // No more input but not at stream end
+                    return ZlibError.UnexpectedEof;
+                }
+            },
+            c.Z_BUF_ERROR => {
+                // Need more input or output space
+                if (stream.avail_in == 0) {
+                    return ZlibError.UnexpectedEof;
+                }
+                // Output buffer full - just continue (we discard anyway)
+            },
+            c.Z_DATA_ERROR => return ZlibError.DataError,
+            c.Z_MEM_ERROR => return ZlibError.OutOfMemory,
+            else => return ZlibError.ZlibError,
+        }
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

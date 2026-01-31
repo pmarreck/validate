@@ -193,4 +193,6 @@ test {
     _ = @import("git_validator.zig");
     // Thread pool for parallel task execution
     _ = @import("thread_pool.zig");
+    // Path validation (parallel directory traversal)
+    _ = @import("path_validation.zig");
 }
