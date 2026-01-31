@@ -45,6 +45,7 @@
 							libopenmptStatic.dev
 							sqlite
 							zlib
+							ffmpeg  # For testing ffmpeg fallback validation paths
 						];
 						shellHook = ''
 							unset LD

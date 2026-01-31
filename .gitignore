@@ -20,3 +20,6 @@ zig-cache/
 deps/*-src/
 deps/*_src/
 deps/*_source/
+
+# Test-generated ffmpeg symlinks
+scripts/ffmpeg-bin/
