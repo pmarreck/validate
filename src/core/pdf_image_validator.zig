@@ -12,6 +12,7 @@
 //! validates their embedded image data.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const jpeg_validator = @import("jpeg_validator.zig");
 const jpeg2000_validator = @import("jpeg2000_validator.zig");
@@ -1001,6 +1002,10 @@ const ParallelContext = struct {
 
 /// Check if PDF image timing debug is enabled
 fn isPdfTimingDebug() bool {
+    // std.posix.getenv is unavailable on Windows
+    if (comptime builtin.os.tag == .windows) {
+        return false;
+    }
     return std.posix.getenv("PDF_IMAGE_TIMING") != null;
 }
 
