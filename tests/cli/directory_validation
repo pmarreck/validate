@@ -61,9 +61,30 @@ if [[ "${exitcode:-0}" -ne 0 ]] && echo "$output" | grep -q "Failed to validate 
 fi
 echo "  PASS: Path with spaces works"
 
-# Test 5: Windows-style tests (only on Windows)
+# Test 5: Broken symlinks should not fail enumeration (Unix only)
+if [[ "$OSTYPE" != "msys" && "$OSTYPE" != "cygwin" && "$OSTYPE" != "win32" ]]; then
+	echo "Test 5: Directory with broken symlinks"
+	mkdir -p "$tmpdir/with_broken_symlink"
+	cp "$tmpdir/test.png" "$tmpdir/with_broken_symlink/"
+	ln -s "/nonexistent/path/that/does/not/exist" "$tmpdir/with_broken_symlink/broken_link"
+
+	output=$($BIN "$tmpdir/with_broken_symlink" 2>&1) || exitcode=$?
+
+	if [[ "${exitcode:-0}" -ne 0 ]] && echo "$output" | grep -q "Failed to enumerate directory"; then
+		printf 'FAIL: Broken symlink caused enumeration failure: %s\n' "$output" >&2
+		exit 1
+	fi
+	# Should still validate the PNG
+	if ! echo "$output" | grep -qi "png"; then
+		printf 'FAIL: PNG not validated in dir with broken symlink: %s\n' "$output" >&2
+		exit 1
+	fi
+	echo "  PASS: Broken symlinks are skipped gracefully"
+fi
+
+# Test 6: Windows-style tests (only on Windows)
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
-	echo "Test 5: Windows absolute path (C:\...)"
+	echo "Test 6: Windows absolute path (C:\...)"
 	# Get Windows-style path
 	winpath=$(cygpath -w "$tmpdir" 2>/dev/null || echo "$tmpdir")
 	output=$($BIN "$winpath" 2>&1) || exitcode=$?

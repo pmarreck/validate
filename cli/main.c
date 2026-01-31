@@ -68,7 +68,9 @@ static int enumerate_directory(const char* dir_path, path_list_t* list);
 static int enumerate_path(const char* path, path_list_t* list) {
 	struct stat st;
 	if (stat(path, &st) != 0) {
-		return -1;
+		/* Skip inaccessible files (broken symlinks, permission denied, etc.)
+		 * rather than failing the entire enumeration */
+		return 0;
 	}
 
 	if (S_ISREG(st.st_mode)) {
