@@ -348,6 +348,7 @@ pub const FileFormat = enum {
     eex, // EEx/ERB templates (embedded Elixir/Ruby)
     markdown, // Markdown text format (.md, .markdown)
     plain_text, // Plain text file (validated as UTF-8)
+    plain_text_utf16, // Plain text file in UTF-16 encoding
     // Font formats
     ttf, // TrueType Font
     otf, // OpenType Font (CFF or TrueType outlines)
@@ -516,6 +517,7 @@ pub const FileFormat = enum {
             .eex => "EEx/ERB Template",
             .markdown => "Markdown Text",
             .plain_text => "Plain Text (UTF-8)",
+            .plain_text_utf16 => "Plain Text (UTF-16)",
             .ttf => "TrueType Font",
             .otf => "OpenType Font",
             .woff => "WOFF Font",
@@ -572,6 +574,7 @@ pub const FileFormat = enum {
             .eex => false, // EEx/ERB templates - structural detection only
             .markdown => false, // Markdown - no validation, just text
             .plain_text => true, // Plain text - UTF-8 validation
+            .plain_text_utf16 => true, // Plain text - UTF-16 validation
             .ttf, .otf, .woff, .woff2 => true, // Font formats with checksum validation
             .type1 => true, // Type 1 font structural validation
             .par2 => true, // PAR2 parity archive CRC validation
@@ -20065,6 +20068,7 @@ pub const FormatValidator = struct {
             .eex => ValidationResult.ok(.eex), // Structural detection only
             .markdown => ValidationResult.ok(.markdown), // Text format, no validation
             .plain_text => validatePlainText(file), // UTF-8 validation
+            .plain_text_utf16 => validatePlainTextUtf16(file), // UTF-16 validation
             // Font formats
             .ttf => validateTtf(file),
             .otf => validateOtf(file),
@@ -21637,6 +21641,7 @@ fn validateCsv(file: std.fs.File) ValidationResult {
 /// Validate plain text file as UTF-8 using streaming validation.
 /// Reads file in chunks and validates UTF-8 encoding throughout.
 /// This allows validating arbitrarily large text files without loading them entirely into memory.
+/// If file has UTF-16 BOM, delegates to UTF-16 validation.
 fn validatePlainText(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
         return ValidationResult.invalid(.plain_text, "Failed to stat file");
@@ -21676,9 +21681,26 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
         var data_start: usize = 0;
         const data_end = pending_count + bytes_read;
 
-        // Handle UTF-8 BOM at start of file
+        // Handle BOMs at start of file
         if (is_first_chunk) {
             is_first_chunk = false;
+            // Check for UTF-16 LE BOM (0xFF 0xFE) - common on Windows
+            if (data_end >= 2 and buffer[0] == 0xFF and buffer[1] == 0xFE) {
+                // This is UTF-16 LE, not UTF-8 - delegate to UTF-16 validator
+                file.seekTo(0) catch {
+                    return ValidationResult.invalid(.plain_text_utf16, "Failed to seek");
+                };
+                return validatePlainTextUtf16(file);
+            }
+            // Check for UTF-16 BE BOM (0xFE 0xFF)
+            if (data_end >= 2 and buffer[0] == 0xFE and buffer[1] == 0xFF) {
+                // This is UTF-16 BE, not UTF-8 - delegate to UTF-16 validator
+                file.seekTo(0) catch {
+                    return ValidationResult.invalid(.plain_text_utf16, "Failed to seek");
+                };
+                return validatePlainTextUtf16(file);
+            }
+            // Check for UTF-8 BOM (0xEF 0xBB 0xBF)
             if (data_end >= 3 and buffer[0] == 0xEF and buffer[1] == 0xBB and buffer[2] == 0xBF) {
                 data_start = 3;
             }
@@ -21729,6 +21751,118 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
     }
 
     return ValidationResult.okWithDepth(.plain_text, .full);
+}
+
+/// Validate plain text file as UTF-16 using streaming validation.
+/// Supports both UTF-16 LE (0xFF 0xFE BOM) and UTF-16 BE (0xFE 0xFF BOM).
+fn validatePlainTextUtf16(file: std.fs.File) ValidationResult {
+    const stat = file.stat() catch {
+        return ValidationResult.invalid(.plain_text_utf16, "Failed to stat file");
+    };
+
+    if (stat.size == 0) {
+        return ValidationResult.okWithDepth(.plain_text_utf16, .full);
+    }
+
+    // UTF-16 files should have even number of bytes (after BOM)
+    if (stat.size < 2) {
+        return ValidationResult.invalid(.plain_text_utf16, "File too small for UTF-16");
+    }
+
+    file.seekTo(0) catch {
+        return ValidationResult.invalid(.plain_text_utf16, "Failed to seek");
+    };
+
+    // Read BOM to determine endianness
+    var bom: [2]u8 = undefined;
+    const bom_read = file.read(&bom) catch {
+        return ValidationResult.invalid(.plain_text_utf16, "Failed to read BOM");
+    };
+
+    if (bom_read < 2) {
+        return ValidationResult.invalid(.plain_text_utf16, "Failed to read BOM");
+    }
+
+    const is_little_endian = (bom[0] == 0xFF and bom[1] == 0xFE);
+    const is_big_endian = (bom[0] == 0xFE and bom[1] == 0xFF);
+
+    if (!is_little_endian and !is_big_endian) {
+        // No BOM - assume it was already detected as UTF-16 some other way
+        // Try little-endian (more common)
+        file.seekTo(0) catch {
+            return ValidationResult.invalid(.plain_text_utf16, "Failed to seek");
+        };
+    }
+
+    // Streaming validation of UTF-16 content
+    const chunk_size: usize = 64 * 1024; // 64KB chunks (must be even)
+    var buffer: [chunk_size + 2]u8 = undefined; // Extra 2 bytes for pending code unit
+
+    var pending_byte: ?u8 = null;
+    var pending_high_surrogate: ?u16 = null;
+
+    while (true) {
+        const read_start: usize = if (pending_byte != null) 1 else 0;
+        if (pending_byte) |b| {
+            buffer[0] = b;
+        }
+
+        const bytes_read = file.read(buffer[read_start..chunk_size + read_start]) catch {
+            return ValidationResult.invalid(.plain_text_utf16, "Failed to read file");
+        };
+
+        if (bytes_read == 0) {
+            // End of file
+            if (pending_byte != null) {
+                return ValidationResult.invalid(.plain_text_utf16, "Invalid UTF-16 (odd byte count)");
+            }
+            if (pending_high_surrogate != null) {
+                return ValidationResult.invalid(.plain_text_utf16, "Invalid UTF-16 (unpaired high surrogate at EOF)");
+            }
+            break;
+        }
+
+        const data_end = read_start + bytes_read;
+
+        // Handle odd byte at end of chunk
+        const validate_end = if (data_end % 2 == 1) blk: {
+            pending_byte = buffer[data_end - 1];
+            break :blk data_end - 1;
+        } else blk: {
+            pending_byte = null;
+            break :blk data_end;
+        };
+
+        // Validate UTF-16 code units
+        var i: usize = 0;
+        while (i + 1 < validate_end) {
+            const code_unit: u16 = if (is_big_endian)
+                (@as(u16, buffer[i]) << 8) | buffer[i + 1]
+            else
+                (@as(u16, buffer[i + 1]) << 8) | buffer[i];
+
+            if (pending_high_surrogate) |_| {
+                // Expecting low surrogate (0xDC00-0xDFFF)
+                if (code_unit >= 0xDC00 and code_unit <= 0xDFFF) {
+                    // Valid surrogate pair
+                    pending_high_surrogate = null;
+                } else {
+                    return ValidationResult.invalid(.plain_text_utf16, "Invalid UTF-16 (missing low surrogate)");
+                }
+            } else if (code_unit >= 0xD800 and code_unit <= 0xDBFF) {
+                // High surrogate - expect low surrogate next
+                pending_high_surrogate = code_unit;
+            } else if (code_unit >= 0xDC00 and code_unit <= 0xDFFF) {
+                // Unexpected low surrogate
+                return ValidationResult.invalid(.plain_text_utf16, "Invalid UTF-16 (unexpected low surrogate)");
+            }
+            // Other values are valid BMP code points
+
+            i += 2;
+        }
+    }
+
+    return ValidationResult.okWithDepth(.plain_text_utf16, .full);
 }
 
 /// Get the expected length of a UTF-8 sequence from its first byte.
