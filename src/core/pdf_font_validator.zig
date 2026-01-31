@@ -86,38 +86,51 @@ pub const FontValidationSummary = struct {
 
 /// Extract embedded font streams from a PDF.
 /// Returns list of font info structs with stream locations.
+/// Uses O(n) indexing pass + O(1) lookups instead of O(n²) linear scans.
 pub fn extractFontStreams(allocator: Allocator, pdf_data: []const u8) ![]PdfFontInfo {
-    var fonts: std.ArrayListUnmanaged(PdfFontInfo) = .{};
-    errdefer fonts.deinit(allocator);
+    // First, collect all font object references (fast linear scan for /FontFile*)
+    var font_refs: std.ArrayListUnmanaged(struct { obj_num: u32, font_type: PdfFontType }) = .{};
+    defer font_refs.deinit(allocator);
 
-    // Find all /FontDescriptor objects
     var pos: usize = 0;
     while (pos < pdf_data.len) {
-        // Look for /FontFile, /FontFile2, or /FontFile3 references
         const fontfile_pos = std.mem.indexOfPos(u8, pdf_data, pos, "/FontFile") orelse break;
 
-        // Determine font type
         const font_type_result = determineFontType(pdf_data, fontfile_pos);
         if (font_type_result.font_type) |font_type| {
-            // Find the referenced object number
             const obj_ref_start = fontfile_pos + font_type_result.keyword_len;
             if (obj_ref_start < pdf_data.len) {
                 if (parseObjectReference(pdf_data, obj_ref_start)) |obj_num| {
-                    // Find the object's stream
-                    if (findObjectStream(pdf_data, obj_num)) |stream_info| {
-                        fonts.append(allocator, .{
-                            .object_num = obj_num,
-                            .font_type = font_type,
-                            .stream_start = stream_info.start,
-                            .stream_end = stream_info.end,
-                            .filter = stream_info.filter,
-                        }) catch return error.OutOfMemory;
-                    }
+                    font_refs.append(allocator, .{ .obj_num = obj_num, .font_type = font_type }) catch return error.OutOfMemory;
                 }
             }
         }
-
         pos = fontfile_pos + 9;
+    }
+
+    if (font_refs.items.len == 0) {
+        return allocator.alloc(PdfFontInfo, 0) catch return error.OutOfMemory;
+    }
+
+    // Build object index once (O(n) scan of PDF)
+    var index = ObjectIndex.init(allocator);
+    defer index.deinit();
+    index.build(pdf_data) catch return error.OutOfMemory;
+
+    // Now look up each font object using the index (O(1) per lookup)
+    var fonts: std.ArrayListUnmanaged(PdfFontInfo) = .{};
+    errdefer fonts.deinit(allocator);
+
+    for (font_refs.items) |ref| {
+        if (findObjectStreamIndexed(pdf_data, ref.obj_num, &index)) |stream_info| {
+            fonts.append(allocator, .{
+                .object_num = ref.obj_num,
+                .font_type = ref.font_type,
+                .stream_start = stream_info.start,
+                .stream_end = stream_info.end,
+                .filter = stream_info.filter,
+            }) catch return error.OutOfMemory;
+        }
     }
 
     return fonts.toOwnedSlice(allocator) catch return error.OutOfMemory;
@@ -199,7 +212,143 @@ const StreamInfo = struct {
     filter: ?pdf_image_validator.ImageFilter,
 };
 
-/// Find an object's stream by object number.
+/// Object index for O(1) lookups instead of O(n) linear scans.
+/// Built once, then used for all object lookups.
+const ObjectIndex = struct {
+    /// Maps object_num -> offset in PDF data where "N 0 obj" starts
+    offsets: std.AutoHashMapUnmanaged(u32, usize),
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator) ObjectIndex {
+        return .{
+            .offsets = .{},
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ObjectIndex) void {
+        self.offsets.deinit(self.allocator);
+    }
+
+    /// Build index by scanning PDF once for all object definitions.
+    pub fn build(self: *ObjectIndex, data: []const u8) !void {
+        var pos: usize = 0;
+        while (pos < data.len) {
+            // Look for " obj" or start of line followed by digits
+            const obj_marker = std.mem.indexOfPos(u8, data, pos, " obj") orelse break;
+
+            // Backtrack to find "N G obj" pattern
+            // We need to find the object number before " obj"
+            if (obj_marker < 3) {
+                pos = obj_marker + 4;
+                continue;
+            }
+
+            // Find the start of this line/object definition
+            var line_start = obj_marker;
+            while (line_start > 0 and data[line_start - 1] != '\n' and data[line_start - 1] != '\r') {
+                line_start -= 1;
+            }
+
+            // Try to parse "N G obj" from line_start
+            var parse_pos = line_start;
+
+            // Skip leading whitespace
+            while (parse_pos < obj_marker and (data[parse_pos] == ' ' or data[parse_pos] == '\t')) {
+                parse_pos += 1;
+            }
+
+            // Parse object number
+            const num_start = parse_pos;
+            while (parse_pos < obj_marker and data[parse_pos] >= '0' and data[parse_pos] <= '9') {
+                parse_pos += 1;
+            }
+
+            if (parse_pos > num_start) {
+                if (std.fmt.parseInt(u32, data[num_start..parse_pos], 10)) |obj_num| {
+                    // Skip whitespace
+                    while (parse_pos < obj_marker and (data[parse_pos] == ' ' or data[parse_pos] == '\t')) {
+                        parse_pos += 1;
+                    }
+
+                    // Skip generation number
+                    while (parse_pos < obj_marker and data[parse_pos] >= '0' and data[parse_pos] <= '9') {
+                        parse_pos += 1;
+                    }
+
+                    // Skip whitespace before "obj"
+                    while (parse_pos < obj_marker and (data[parse_pos] == ' ' or data[parse_pos] == '\t')) {
+                        parse_pos += 1;
+                    }
+
+                    // Verify we're at " obj"
+                    if (parse_pos == obj_marker) {
+                        try self.offsets.put(self.allocator, obj_num, line_start);
+                    }
+                } else |_| {}
+            }
+
+            pos = obj_marker + 4;
+        }
+    }
+
+    /// Look up object offset by number.
+    pub fn getOffset(self: *const ObjectIndex, obj_num: u32) ?usize {
+        return self.offsets.get(obj_num);
+    }
+};
+
+/// Thread-local object index for the current PDF being validated.
+threadlocal var current_object_index: ?*ObjectIndex = null;
+
+/// Find an object's stream by object number using the pre-built index.
+fn findObjectStreamIndexed(data: []const u8, obj_num: u32, index: *const ObjectIndex) ?StreamInfo {
+    const obj_pos = index.getOffset(obj_num) orelse return null;
+    return findObjectStreamAtOffset(data, obj_pos);
+}
+
+/// Find stream info starting at a known object offset.
+fn findObjectStreamAtOffset(data: []const u8, obj_pos: usize) ?StreamInfo {
+    // Find the stream within this object
+    const obj_end_search_limit = @min(obj_pos + 65536, data.len);
+    const stream_start_marker = std.mem.indexOfPos(u8, data[0..obj_end_search_limit], obj_pos, "stream") orelse return null;
+
+    // Skip past "stream" and any whitespace (CRLF or LF)
+    var stream_data_start = stream_start_marker + 6;
+    if (stream_data_start < data.len and data[stream_data_start] == '\r') {
+        stream_data_start += 1;
+    }
+    if (stream_data_start < data.len and data[stream_data_start] == '\n') {
+        stream_data_start += 1;
+    }
+
+    // Find endstream
+    const endstream_pos = std.mem.indexOfPos(u8, data, stream_data_start, "endstream") orelse return null;
+
+    // Determine filter by looking in object dictionary
+    var filter: ?pdf_image_validator.ImageFilter = null;
+    const dict_data = data[obj_pos..stream_start_marker];
+
+    if (std.mem.indexOf(u8, dict_data, "/FlateDecode") != null) {
+        filter = .flate_decode;
+    } else if (std.mem.indexOf(u8, dict_data, "/ASCIIHexDecode") != null) {
+        filter = .ascii_hex_decode;
+    } else if (std.mem.indexOf(u8, dict_data, "/ASCII85Decode") != null) {
+        filter = .ascii85_decode;
+    } else if (std.mem.indexOf(u8, dict_data, "/LZWDecode") != null) {
+        filter = .lzw_decode;
+    } else if (std.mem.indexOf(u8, dict_data, "/RunLengthDecode") != null) {
+        filter = .run_length_decode;
+    }
+
+    return .{
+        .start = stream_data_start,
+        .end = endstream_pos,
+        .filter = filter,
+    };
+}
+
+/// Find an object's stream by object number (legacy O(n) version for compatibility).
 fn findObjectStream(data: []const u8, obj_num: u32) ?StreamInfo {
     // Build search pattern "N 0 obj" where N is object number
     var pattern_buf: [32]u8 = undefined;

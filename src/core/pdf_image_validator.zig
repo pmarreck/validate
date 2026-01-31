@@ -689,8 +689,22 @@ pub fn validateExtractedImage(allocator: Allocator, data: []const u8, filter: Im
 
 /// Validate all images in a PDF
 pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageValidationResult {
+    const timing_debug = isPdfTimingDebug();
+    const total_start = if (timing_debug) std.time.nanoTimestamp() else 0;
+    const parse_start = total_start;
+
     const images = try findPdfImages(allocator, pdf_data);
     defer freePdfImages(allocator, images);
+
+    if (timing_debug) {
+        const parse_end = std.time.nanoTimestamp();
+        const parse_ms = @as(f64, @floatFromInt(parse_end - parse_start)) / 1_000_000.0;
+        std.debug.print("PDF parsing: found {d} images in {d:.1}ms ({d:.2}MB PDF)\n", .{
+            images.len,
+            parse_ms,
+            @as(f64, @floatFromInt(pdf_data.len)) / (1024.0 * 1024.0),
+        });
+    }
 
     // Check for encryption and attempt decryption with empty password
     var is_encrypted = false;
@@ -725,7 +739,8 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
 
     // Use parallel validation for PDFs with many images
     if (images.len >= PARALLEL_IMAGE_THRESHOLD) {
-        return validatePdfImagesParallel(
+        const parallel_start = if (timing_debug) std.time.nanoTimestamp() else 0;
+        const result = try validatePdfImagesParallel(
             allocator,
             images,
             pdf_data,
@@ -735,6 +750,13 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
             decryption_succeeded,
             is_encrypted,
         );
+        if (timing_debug) {
+            const parallel_end = std.time.nanoTimestamp();
+            const parallel_ms = @as(f64, @floatFromInt(parallel_end - parallel_start)) / 1_000_000.0;
+            const total_ms = @as(f64, @floatFromInt(parallel_end - total_start)) / 1_000_000.0;
+            std.debug.print("PDF parallel validation: {d:.1}ms, TOTAL: {d:.1}ms\n", .{ parallel_ms, total_ms });
+        }
+        return result;
     }
 
     // Sequential validation for small image counts
@@ -977,8 +999,16 @@ const ParallelContext = struct {
     decryption_succeeded: bool,
 };
 
+/// Check if PDF image timing debug is enabled
+fn isPdfTimingDebug() bool {
+    return std.posix.getenv("PDF_IMAGE_TIMING") != null;
+}
+
 /// Execute a single image validation task (called by worker threads)
 fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
+    const timing_debug = isPdfTimingDebug();
+    const task_start = if (timing_debug) std.time.nanoTimestamp() else 0;
+
     const ctx: *const ParallelContext = @ptrCast(@alignCast(ctx_ptr orelse return .{
         .result = null,
         .status = .skipped,
@@ -1000,6 +1030,7 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
 
     // Get the raw stream data
     var raw_data = ctx.pdf_data[img.stream_start..img.stream_end];
+    const raw_size = raw_data.len;
 
     // Decrypt if needed
     if (ctx.decryption_succeeded) {
@@ -1072,15 +1103,41 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
             };
         },
         .flate_decode => blk: {
+            const decomp_start = if (timing_debug) std.time.nanoTimestamp() else 0;
             if (decompressFlate(allocator, image_data)) |decompressed| {
+                const decomp_end = if (timing_debug) std.time.nanoTimestamp() else 0;
+                const decomp_ms = if (timing_debug) @as(f64, @floatFromInt(decomp_end - decomp_start)) / 1_000_000.0 else 0;
+
+                if (timing_debug) {
+                    std.debug.print("PDF img#{d}: FlateDecode {d}KB -> {d}KB in {d:.1}ms\n", .{
+                        img.object_num,
+                        raw_size / 1024,
+                        decompressed.len / 1024,
+                        decomp_ms,
+                    });
+                }
+
                 if (detectDecompressedFormat(decompressed)) |nested_format| {
+                    const validate_start = if (timing_debug) std.time.nanoTimestamp() else 0;
                     var result = validateExtractedImage(allocator, decompressed, nested_format);
+                    const validate_end = if (timing_debug) std.time.nanoTimestamp() else 0;
                     result.object_num = img.object_num;
+
+                    if (timing_debug) {
+                        const validate_ms = @as(f64, @floatFromInt(validate_end - validate_start)) / 1_000_000.0;
+                        std.debug.print("  -> nested format validation: {d:.1}ms\n", .{validate_ms});
+                    }
+
                     break :blk .{
                         .result = result,
                         .status = if (result.valid) .validated else .failed,
                     };
                 } else {
+                    // Raw pixel data - decompression succeeded, consider valid
+                    if (timing_debug) {
+                        const total_ms = @as(f64, @floatFromInt(std.time.nanoTimestamp() - task_start)) / 1_000_000.0;
+                        std.debug.print("  -> raw pixels, total: {d:.1}ms\n", .{total_ms});
+                    }
                     break :blk .{
                         .result = .{
                             .object_num = img.object_num,
