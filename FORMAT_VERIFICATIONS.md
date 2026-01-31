@@ -356,10 +356,22 @@ For clarity, the tables below use more specific labels:
 |--------|------------|------------------|-----------------|-----------|-----|
 | **JSON** | .json | Full parse via std.json | — | Integrity | — |
 | **TOML** | .toml | Full parse via TOML parser | — | Integrity | — |
+| **INI** | .ini | Strict line-by-line syntax check | UTF-16 LE auto-detection | Integrity | 1 |
 | **XML** | .xml, .xhtml, .xsl | Well-formed parse, tag stack validation | — | Integrity | — |
 | **YAML** | .yaml, .yml | Structure detection only | — | Structure | — |
 | **CSV** | .csv, .tsv | Delimiter detection, UTF-8 validation | Column consistency, quote escaping | Integrity | — |
 | **Apple plist** | .plist | XML or binary detection | Binary: trailer/offset table; XML: full parse | Integrity | — |
+
+## Plain Text Encodings
+
+| Format | Extensions | Detection Method | Validation | Max Depth | GT |
+|--------|------------|------------------|------------|-----------|-----|
+| **Plain Text (UTF-8)** | .txt, .md, etc. | Valid UTF-8 sequences | Full UTF-8 validation | Integrity | 1 |
+| **Plain Text (UTF-16)** | .txt | UTF-16 BOM or heuristic | UTF-16 codepoint validation | Integrity | — |
+| **Plain Text (Latin-1)** | .txt | UTF-8 fallback | Byte validity (all 0x00-0xFF valid) | Integrity | — |
+| **Plain Text (CP437)** | .nfo | Box-drawing chars (0xB0-0xDF) | Demoscene ASCII art detection | Integrity | 1 |
+
+*CP437 detection looks for the characteristic box-drawing characters used in demoscene NFO files.*
 
 ## VM/Bytecode Formats
 

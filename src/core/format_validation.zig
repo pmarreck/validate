@@ -2530,17 +2530,24 @@ fn detectTextFormat(header: []const u8) ?FileFormat {
 
     // Check for UTF-16 LE BOM (0xFF 0xFE) - common on Windows
     if (header.len >= 2 and header[0] == 0xFF and header[1] == 0xFE) {
-        // UTF-16 LE - convert to UTF-8 and detect
+        // UTF-16 LE - convert to UTF-8 and detect format
         var utf8_buf: [4096]u8 = undefined;
         const utf8_data = convertUtf16LeToUtf8(header[2..], &utf8_buf) orelse return null;
-        return detectTextFormatUtf8(utf8_data);
+        const format = detectTextFormatUtf8(utf8_data);
+        // If plain text detected, mark it as UTF-16 encoding
+        if (format == .plain_text) return .plain_text_utf16;
+        return format;
     }
 
     // Check for UTF-16 BE BOM (0xFE 0xFF) - less common but possible
     if (header.len >= 2 and header[0] == 0xFE and header[1] == 0xFF) {
-        // UTF-16 BE - swap bytes and convert to UTF-8
-        // For now, just return null - UTF-16 BE is rare
-        return null;
+        // UTF-16 BE - convert to UTF-8 and detect format
+        var utf8_buf: [4096]u8 = undefined;
+        const utf8_data = convertUtf16BeToUtf8(header[2..], &utf8_buf) orelse return null;
+        const format = detectTextFormatUtf8(utf8_data);
+        // If plain text detected, mark it as UTF-16 encoding
+        if (format == .plain_text) return .plain_text_utf16;
+        return format;
     }
 
     return detectTextFormatUtf8(header);
@@ -2569,11 +2576,16 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
     if (check_len > 0 and non_printable_count * 10 > check_len) return null;
 
     // Check for valid UTF-8 - if it contains high bytes that aren't valid UTF-8,
-    // check if it might be CP437 (demoscene NFO files use this encoding)
+    // check if it might be CP437 (demoscene NFO files) or Latin-1 (fallback)
     if (!isValidUtf8(header[0..check_len])) {
         if (looksLikeCp437(header[0..check_len])) {
             return .plain_text_cp437;
         }
+        // Check if it looks like Latin-1 text (mostly ASCII with some accented chars)
+        if (looksLikeLatin1(header[0..check_len])) {
+            return .plain_text_latin1;
+        }
+        // Not recognizable as text - return null (unknown)
         return null;
     }
 
@@ -14904,6 +14916,52 @@ fn looksLikeCp437(bytes: []const u8) bool {
     // Very lenient: just need 2% recognizable text/whitespace
     // (demoscene NFO headers can be almost pure box-drawing with minimal whitespace)
     if (bytes.len > 0 and printable_count * 100 / bytes.len < 2) {
+        return false;
+    }
+
+    return true;
+}
+
+/// Check if content looks like Latin-1 (ISO-8859-1) encoded text.
+/// Latin-1 text is mostly ASCII with some accented characters in 0xA0-0xFF range.
+/// The 0x80-0x9F range are control characters in Latin-1, rarely used in text.
+fn looksLikeLatin1(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+
+    var printable_ascii: usize = 0;
+    var latin1_extended: usize = 0; // 0xA0-0xFF (printable Latin-1 supplement)
+    var control_chars: usize = 0; // 0x80-0x9F (C1 control codes)
+    var high_byte_count: usize = 0;
+
+    for (bytes) |b| {
+        // Count printable ASCII (space through ~, plus common whitespace)
+        if ((b >= 0x20 and b <= 0x7E) or b == 0x09 or b == 0x0A or b == 0x0D) {
+            printable_ascii += 1;
+        }
+
+        // Count high bytes
+        if (b >= 0x80) {
+            high_byte_count += 1;
+            if (b >= 0xA0) {
+                latin1_extended += 1; // Printable Latin-1 supplement
+            } else {
+                control_chars += 1; // C1 control codes (0x80-0x9F)
+            }
+        }
+    }
+
+    // Must have some high bytes (otherwise it would be valid UTF-8/ASCII)
+    if (high_byte_count == 0) return false;
+
+    // Real Latin-1 text should be mostly printable ASCII with few high bytes
+    // Require at least 50% printable ASCII
+    if (bytes.len > 0 and printable_ascii * 100 / bytes.len < 50) {
+        return false;
+    }
+
+    // Latin-1 text rarely uses C1 control codes (0x80-0x9F)
+    // If most high bytes are in this range, it's probably not Latin-1 text
+    if (high_byte_count > 0 and control_chars * 100 / high_byte_count > 50) {
         return false;
     }
 
