@@ -2873,38 +2873,24 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
         return .yaml;
     }
 
-    // INI/TOML: Look for [section] pattern
-    // INI files have [section] headers with key=value pairs
-    // TOML is a superset of INI with stricter syntax
-    // We detect as INI by default (more common: git config, Windows INI, etc.)
-    // TOML detection requires .toml extension (handled elsewhere)
-    if (first_char == '[') {
-        // Check if this looks like a section: [word] or [word.word]
-        var j = i + 1;
-        // Skip whitespace after [
-        while (j < header.len and (header[j] == ' ' or header[j] == '\t')) : (j += 1) {}
-        // Check for identifier start (letter or underscore)
-        if (j < header.len and ((header[j] >= 'a' and header[j] <= 'z') or
-            (header[j] >= 'A' and header[j] <= 'Z') or header[j] == '_'))
-        {
-            // Skip identifier (allow dots for subsections like [section.subsection])
-            while (j < header.len and ((header[j] >= 'a' and header[j] <= 'z') or
-                (header[j] >= 'A' and header[j] <= 'Z') or
-                (header[j] >= '0' and header[j] <= '9') or
-                header[j] == '_' or header[j] == '-' or header[j] == '.' or header[j] == ' ' or header[j] == '"'))
-            {
-                j += 1;
-            }
-            // Skip whitespace before ]
-            while (j < header.len and (header[j] == ' ' or header[j] == '\t')) : (j += 1) {}
-            // Check for ]
-            if (j < header.len and header[j] == ']') {
-                return .ini; // Default to INI - more conservative than TOML
-            }
+    // INI/TOML: Use heuristic to check if content looks like INI
+    // INI files have [section] headers and/or key=value pairs
+    // We check the first ~10 lines - at least half should look like INI syntax
+    // This avoids false positives on files like NFO (BBCode) that start with [tag]
+    if (first_char == '[' or ((first_char >= 'a' and first_char <= 'z') or
+        (first_char >= 'A' and first_char <= 'Z') or first_char == '_'))
+    {
+        if (looksLikeIni(header[i..])) {
+            return .ini;
         }
+        // Not INI - fall through to check other formats
+    }
+
+    // JSON/Erlang detection for [ character (only if not detected as INI above)
+    if (first_char == '[') {
         // Not INI section - could be JSON array or Erlang list
         // Check for [{ pattern
-        j = i + 1;
+        var j = i + 1;
         // Skip whitespace
         while (j < header.len and (header[j] == ' ' or header[j] == '\t' or header[j] == '\n' or header[j] == '\r')) : (j += 1) {}
 
@@ -14966,6 +14952,159 @@ fn looksLikeLatin1(bytes: []const u8) bool {
     }
 
     return true;
+}
+
+/// Check if content looks like INI format by examining the first ~10 non-comment lines.
+/// INI files have [section] headers and key=value pairs.
+/// Requirements:
+/// - At least half of non-empty, non-comment lines should match INI syntax
+/// - At least ONE key=value line must be present (section headers alone aren't enough)
+fn looksLikeIni(content: []const u8) bool {
+    if (content.len == 0) return false;
+
+    var ini_like_lines: usize = 0;
+    var key_value_lines: usize = 0; // Must have at least one
+    var total_content_lines: usize = 0;
+    var line_start: usize = 0;
+    const max_content_lines_to_check: usize = 10;
+
+    var pos: usize = 0;
+    while (pos <= content.len and total_content_lines < max_content_lines_to_check) {
+        // Find end of line
+        var line_end = pos;
+        while (line_end < content.len and content[line_end] != '\n' and content[line_end] != '\r') {
+            line_end += 1;
+        }
+
+        const line = content[line_start..line_end];
+
+        // Skip to next line
+        if (line_end < content.len and content[line_end] == '\r') line_end += 1;
+        if (line_end < content.len and content[line_end] == '\n') line_end += 1;
+        line_start = line_end;
+        pos = line_end;
+
+        // Skip empty lines
+        var trimmed_start: usize = 0;
+        while (trimmed_start < line.len and (line[trimmed_start] == ' ' or line[trimmed_start] == '\t')) {
+            trimmed_start += 1;
+        }
+        if (trimmed_start >= line.len) continue;
+
+        const trimmed = line[trimmed_start..];
+
+        // Skip comment lines (;comment or #comment) - don't count towards max_content_lines
+        if (trimmed[0] == ';' or trimmed[0] == '#') continue;
+
+        total_content_lines += 1;
+
+        // Check for [section] header - must have valid identifier inside brackets
+        if (trimmed[0] == '[') {
+            // Section name must start with letter or underscore (not digit, comma, etc.)
+            if (trimmed.len > 1 and ((trimmed[1] >= 'a' and trimmed[1] <= 'z') or
+                (trimmed[1] >= 'A' and trimmed[1] <= 'Z') or trimmed[1] == '_'))
+            {
+                // Find the closing ] - content must be valid identifier chars
+                var j: usize = 2;
+                while (j < trimmed.len) : (j += 1) {
+                    const c = trimmed[j];
+                    if (c == ']') {
+                        // Check that only whitespace/comment follows the ]
+                        var k = j + 1;
+                        while (k < trimmed.len and (trimmed[k] == ' ' or trimmed[k] == '\t')) : (k += 1) {}
+                        if (k >= trimmed.len or trimmed[k] == ';' or trimmed[k] == '#') {
+                            ini_like_lines += 1;
+                        }
+                        break;
+                    }
+                    // Valid section name chars: alphanumeric, underscore, dash, dot, space (for subsections)
+                    if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                        (c >= '0' and c <= '9') or c == '_' or c == '-' or c == '.' or c == ' ' or c == '"'))
+                    {
+                        break; // Invalid char in section name - not an INI section
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Check for key=value or key = value pattern
+        // Key must start with letter or underscore
+        if ((trimmed[0] >= 'a' and trimmed[0] <= 'z') or
+            (trimmed[0] >= 'A' and trimmed[0] <= 'Z') or
+            trimmed[0] == '_')
+        {
+            // Look for = sign
+            var j: usize = 1;
+            // Skip key characters (alphanumeric, underscore, dash, dot)
+            while (j < trimmed.len and ((trimmed[j] >= 'a' and trimmed[j] <= 'z') or
+                (trimmed[j] >= 'A' and trimmed[j] <= 'Z') or
+                (trimmed[j] >= '0' and trimmed[j] <= '9') or
+                trimmed[j] == '_' or trimmed[j] == '-' or trimmed[j] == '.'))
+            {
+                j += 1;
+            }
+            // Skip whitespace before =
+            while (j < trimmed.len and (trimmed[j] == ' ' or trimmed[j] == '\t')) : (j += 1) {}
+            // Check for =
+            if (j < trimmed.len and trimmed[j] == '=') {
+                ini_like_lines += 1;
+                key_value_lines += 1;
+            }
+        }
+    }
+
+    // Must have at least one key=value line
+    if (key_value_lines == 0) return false;
+
+    // Need at least 2 content lines to make a determination
+    if (total_content_lines < 2) {
+        // For single-line content, require it to be a key=value line
+        return total_content_lines == 1 and key_value_lines == 1;
+    }
+
+    // At least half of content lines should look like INI
+    return ini_like_lines * 2 >= total_content_lines;
+}
+
+test "looksLikeIni detects valid INI content" {
+    // Simple key=value pairs
+    const simple_ini = "key=value\nother=stuff\n";
+    try std.testing.expect(looksLikeIni(simple_ini));
+
+    // With section headers
+    const sectioned_ini = "[section]\nkey=value\nother=stuff\n";
+    try std.testing.expect(looksLikeIni(sectioned_ini));
+
+    // With comments
+    const commented_ini = "; comment\n[section]\nkey=value\n";
+    try std.testing.expect(looksLikeIni(commented_ini));
+
+    // With spaces around =
+    const spaced_ini = "key = value\nother = stuff\n";
+    try std.testing.expect(looksLikeIni(spaced_ini));
+}
+
+test "looksLikeIni rejects non-INI content" {
+    // BBCode (like NFO files)
+    const bbcode = "[img]http://example.com/image.jpg[/img]\nSome text here\n";
+    try std.testing.expect(!looksLikeIni(bbcode));
+
+    // Plain text
+    const plain = "Hello World\nThis is just text\nNo equals signs here\n";
+    try std.testing.expect(!looksLikeIni(plain));
+
+    // JSON array
+    const json_array = "[1, 2, 3]\n[4, 5, 6]\n";
+    try std.testing.expect(!looksLikeIni(json_array));
+
+    // Broken section (no closing bracket) - this should not match
+    const broken = "[broken\nkey=value\n";
+    try std.testing.expect(!looksLikeIni(broken));
+
+    // Only section headers (no key=value pairs) - should not match
+    const only_sections = "[section1]\n[section2]\n[section3]\n";
+    try std.testing.expect(!looksLikeIni(only_sections));
 }
 
 test "looksLikeCp437 detects box-drawing characters" {
