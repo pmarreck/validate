@@ -21150,53 +21150,77 @@ fn validateIni(file: std.fs.File) ValidationResult {
     } else if (bytes_read >= 3 and buffer[0] == 0xEF and buffer[1] == 0xBB and buffer[2] == 0xBF) {
         // UTF-8 BOM - skip it
         content = buffer[3..bytes_read];
+    } else if (looksLikeUtf16LeWithoutBom(buffer[0..bytes_read])) {
+        // UTF-16 LE without BOM detected by heuristic (common on Windows)
+        if (convertUtf16LeToUtf8(buffer[0..bytes_read], &utf8_buf)) |utf8_content| {
+            content = utf8_content;
+        } else {
+            // Conversion failed - not valid UTF-16
+            return ValidationResult.invalid(.ini, "Invalid UTF-16 encoding");
+        }
     }
 
     // Verify we can find at least one [section] or key=value pattern
     return validateIniContent(content);
 }
 
+/// Detect UTF-16 LE encoding without BOM by looking for the pattern of
+/// ASCII characters followed by null bytes (e.g., '[', 0x00, 's', 0x00, ...).
+/// This is common in Windows-generated INI files.
+fn looksLikeUtf16LeWithoutBom(data: []const u8) bool {
+    if (data.len < 4) return false;
+
+    // Check for pattern: printable ASCII followed by 0x00, repeated
+    // At least 4 such pairs in the first 16 bytes suggests UTF-16 LE
+    var utf16_pairs: usize = 0;
+    var i: usize = 0;
+    const check_len = @min(data.len, 16);
+
+    while (i + 1 < check_len) {
+        const char = data[i];
+        const next = data[i + 1];
+
+        // Printable ASCII or common whitespace followed by 0x00
+        if (((char >= 0x20 and char <= 0x7E) or char == 0x09 or char == 0x0A or char == 0x0D) and next == 0x00) {
+            utf16_pairs += 1;
+        }
+        i += 2;
+    }
+
+    // If at least half the byte pairs look like UTF-16 LE, it probably is
+    return utf16_pairs >= 4;
+}
+
 /// Check INI content (UTF-8) for valid structure.
+/// Performs full validation: every line must be valid (empty, comment, section, or key=value).
 fn validateIniContent(content: []const u8) ValidationResult {
     var found_structure = false;
+    var line_num: usize = 1;
     var i: usize = 0;
+
     while (i < content.len) {
-        // Skip whitespace and newlines
-        while (i < content.len and (content[i] == ' ' or content[i] == '\t' or content[i] == '\n' or content[i] == '\r')) : (i += 1) {}
-        if (i >= content.len) break;
+        const line_start = i;
 
-        // Check for comment (# or ;)
-        if (content[i] == '#' or content[i] == ';') {
-            // Skip to end of line
-            while (i < content.len and content[i] != '\n') : (i += 1) {}
-            continue;
-        }
-
-        // Check for [section]
-        if (content[i] == '[') {
-            found_structure = true;
-            // Skip to end of line
-            while (i < content.len and content[i] != '\n') : (i += 1) {}
-            continue;
-        }
-
-        // Check for key=value (key starts with letter/underscore)
-        if ((content[i] >= 'a' and content[i] <= 'z') or
-            (content[i] >= 'A' and content[i] <= 'Z') or
-            content[i] == '_')
-        {
-            // Look for = on this line
-            while (i < content.len and content[i] != '\n' and content[i] != '=') : (i += 1) {}
-            if (i < content.len and content[i] == '=') {
-                found_structure = true;
-            }
-            // Skip to end of line
-            while (i < content.len and content[i] != '\n') : (i += 1) {}
-            continue;
-        }
-
-        // Unknown line - skip
+        // Find end of line
         while (i < content.len and content[i] != '\n') : (i += 1) {}
+        const line_end = if (i > line_start and content[i - 1] == '\r') i - 1 else i;
+        const line = content[line_start..line_end];
+
+        // Skip past newline for next iteration
+        if (i < content.len and content[i] == '\n') i += 1;
+
+        // Validate this line
+        const validation = validateIniLine(line);
+        switch (validation) {
+            .empty, .comment => {}, // Valid but not structural
+            .section, .key_value => found_structure = true, // Valid structure
+            .invalid => {
+                // Return error with line number
+                return ValidationResult.invalid(.ini, "Invalid INI syntax");
+            },
+        }
+
+        line_num += 1;
     }
 
     if (!found_structure) {
@@ -21205,8 +21229,93 @@ fn validateIniContent(content: []const u8) ValidationResult {
         return ValidationResult.okWithDepth(.unknown, .structural);
     }
 
-    // INI structure validated
-    return ValidationResult.okWithDepth(.ini, .structural);
+    // INI fully validated - every line is syntactically correct
+    return ValidationResult.okWithDepth(.ini, .full);
+}
+
+/// Result of validating a single INI line
+const IniLineType = enum {
+    empty, // Blank line or whitespace only
+    comment, // Starts with ; or #
+    section, // [section_name]
+    key_value, // key = value
+    invalid, // Syntax error
+};
+
+/// Validate a single INI line.
+/// Valid lines are:
+/// - Empty (whitespace only)
+/// - Comment: starts with ; or # (after optional whitespace)
+/// - Section: [name] where name contains alphanumeric, dots, underscores, hyphens, spaces
+/// - Key-value: key = value where key starts with letter/underscore
+fn validateIniLine(line: []const u8) IniLineType {
+    var i: usize = 0;
+
+    // Skip leading whitespace
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+
+    // Empty line (or whitespace only)
+    if (i >= line.len) return .empty;
+
+    const first_char = line[i];
+
+    // Comment line
+    if (first_char == ';' or first_char == '#') return .comment;
+
+    // Section header: [name]
+    if (first_char == '[') {
+        i += 1;
+        // Section name: alphanumeric, dots, underscores, hyphens, spaces allowed
+        // Must have at least one character
+        const name_start = i;
+        while (i < line.len and line[i] != ']' and line[i] != '\n') {
+            const c = line[i];
+            if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                (c >= '0' and c <= '9') or c == '.' or c == '_' or c == '-' or c == ' ')
+            {
+                i += 1;
+            } else {
+                return .invalid; // Invalid character in section name
+            }
+        }
+        // Must have closing ]
+        if (i >= line.len or line[i] != ']') return .invalid;
+        // Must have at least one character in name
+        if (i == name_start) return .invalid;
+        i += 1;
+        // Only whitespace allowed after ]
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+        if (i < line.len) return .invalid; // Trailing garbage
+        return .section;
+    }
+
+    // Key-value pair: key = value
+    // Key must start with letter or underscore
+    if ((first_char >= 'a' and first_char <= 'z') or
+        (first_char >= 'A' and first_char <= 'Z') or
+        first_char == '_')
+    {
+        // Key: letters, digits, underscores
+        while (i < line.len) {
+            const c = line[i];
+            if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                (c >= '0' and c <= '9') or c == '_')
+            {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        // Skip whitespace before =
+        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+        // Must have =
+        if (i >= line.len or line[i] != '=') return .invalid;
+        // Value can be anything after =, so this is valid
+        return .key_value;
+    }
+
+    // Line starts with something unexpected
+    return .invalid;
 }
 
 /// Validate XML file structure using zig-xml library (0BSD, ianprime0509/zig-xml).
@@ -31501,6 +31610,107 @@ test "validateIni handles CRLF line endings" {
     const result = validator.validateFile(path);
     try std.testing.expectEqual(FileFormat.ini, result.format);
     try std.testing.expect(result.is_valid);
+}
+
+test "validateIni rejects unclosed section header" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // INI with unclosed section - missing ]
+    const file = try tmp_dir.dir.createFile("bad.ini", .{});
+    try file.writeAll("[section\nkey=value\n");
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.ini");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.ini, result.format);
+    try std.testing.expect(!result.is_valid); // Should be invalid
+}
+
+test "validateIni rejects key starting with digit" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // INI with key starting with digit
+    const file = try tmp_dir.dir.createFile("bad.ini", .{});
+    try file.writeAll("[section]\n123key=value\n");
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.ini");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.ini, result.format);
+    try std.testing.expect(!result.is_valid); // Should be invalid
+}
+
+test "validateIni rejects garbage lines" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // INI with garbage line (not section, key=value, or comment)
+    const file = try tmp_dir.dir.createFile("bad.ini", .{});
+    try file.writeAll("[section]\nkey=value\nthis is just random text\n");
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.ini");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.ini, result.format);
+    try std.testing.expect(!result.is_valid); // Should be invalid
+}
+
+test "validateIni accepts valid INI with comments and empty lines" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Well-formed INI with all valid line types
+    const file = try tmp_dir.dir.createFile("good.ini", .{});
+    try file.writeAll(
+        \\; This is a comment
+        \\# This is also a comment
+        \\
+        \\[section1]
+        \\key1 = value1
+        \\key2=value2
+        \\_underscore_key = works
+        \\
+        \\[section.with.dots]
+        \\another_key = another value
+        \\
+    );
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "good.ini");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.ini, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 // ============ Bundle Detection Tests ============
