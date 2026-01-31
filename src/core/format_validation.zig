@@ -398,6 +398,7 @@ pub const FileFormat = enum {
     plain_text, // Plain text file (validated as UTF-8)
     plain_text_utf16, // Plain text file in UTF-16 encoding
     plain_text_latin1, // Plain text file in ISO-8859-1/Latin-1 encoding
+    plain_text_cp437, // Plain text file in CP437/DOS encoding (demoscene NFO files)
     // Font formats
     ttf, // TrueType Font
     otf, // OpenType Font (CFF or TrueType outlines)
@@ -570,6 +571,7 @@ pub const FileFormat = enum {
             .plain_text => "Plain Text (UTF-8)",
             .plain_text_utf16 => "Plain Text (UTF-16)",
             .plain_text_latin1 => "Plain Text (ISO-8859-1/Latin-1)",
+            .plain_text_cp437 => "Plain Text (CP437/DOS)",
             .ttf => "TrueType Font",
             .otf => "OpenType Font",
             .woff => "WOFF Font",
@@ -629,6 +631,7 @@ pub const FileFormat = enum {
             .plain_text => true, // Plain text - UTF-8 validation
             .plain_text_utf16 => true, // Plain text - UTF-16 validation
             .plain_text_latin1 => true, // Plain text - Latin-1 (always valid, just text detection)
+            .plain_text_cp437 => true, // Plain text - CP437 (always valid, demoscene NFO)
             .ttf, .otf, .woff, .woff2 => true, // Font formats with checksum validation
             .type1 => true, // Type 1 font structural validation
             .par2 => true, // PAR2 parity archive CRC validation
@@ -2565,8 +2568,14 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
     // If more than 10% non-printable, likely binary
     if (check_len > 0 and non_printable_count * 10 > check_len) return null;
 
-    // Check for valid UTF-8 - if it contains high bytes that aren't valid UTF-8, it's binary
-    if (!isValidUtf8(header[0..check_len])) return null;
+    // Check for valid UTF-8 - if it contains high bytes that aren't valid UTF-8,
+    // check if it might be CP437 (demoscene NFO files use this encoding)
+    if (!isValidUtf8(header[0..check_len])) {
+        if (looksLikeCp437(header[0..check_len])) {
+            return .plain_text_cp437;
+        }
+        return null;
+    }
 
     var i: usize = 0;
 
@@ -2962,8 +2971,7 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
                 return .json;
             }
         }
-        // Can't determine
-        return null;
+        // Can't determine INI or JSON, but we passed binary check - fall through to plain_text
     }
 
     // Check for EML headers only (removed overly-broad TOML key=value detection)
@@ -14847,6 +14855,79 @@ fn validateRppDeep(allocator: Allocator, path: []const u8) ValidationResult {
     return ValidationResult.okWithDepth(.rpp, .structural);
 }
 
+/// Check if content looks like CP437-encoded text (demoscene NFO files).
+/// CP437 is the classic IBM PC/DOS character set used for ASCII art.
+/// Key indicators: box-drawing characters (0xB0-0xDF), block elements (0xDB-0xDF),
+/// and absence of truly "weird" byte patterns that suggest binary data.
+fn looksLikeCp437(bytes: []const u8) bool {
+    if (bytes.len == 0) return false;
+
+    var box_drawing_count: usize = 0;
+    var high_byte_count: usize = 0;
+    var printable_count: usize = 0;
+
+    for (bytes) |b| {
+        // Count box-drawing and block characters (0xB0-0xDF in CP437)
+        // These are the most distinctive CP437 characters used in ASCII art:
+        // 0xB0-0xB2: ░▒▓ (shading)
+        // 0xB3-0xDA: │┤╡╢╖╕╣║╗╝╜╛┐└┴┬├─┼╞╟╚╔╩╦╠═╬╧╨╤╥╙╘╒╓╫╪┘┌ (box drawing)
+        // 0xDB-0xDF: █▄▌▐▀ (block elements)
+        if (b >= 0xB0 and b <= 0xDF) {
+            box_drawing_count += 1;
+        }
+
+        // Count all high bytes (0x80-0xFF)
+        if (b >= 0x80) {
+            high_byte_count += 1;
+        }
+
+        // Count printable ASCII (space through ~, plus common whitespace)
+        if ((b >= 0x20 and b <= 0x7E) or b == 0x09 or b == 0x0A or b == 0x0D) {
+            printable_count += 1;
+        }
+    }
+
+    // Must have some high bytes (otherwise it would be valid UTF-8/ASCII)
+    if (high_byte_count == 0) return false;
+
+    // For CP437, we expect a significant portion of high bytes to be box-drawing
+    // Real CP437 NFO files use these heavily for borders and art
+    // Require at least 30% of high bytes to be box-drawing characters
+    if (high_byte_count > 0 and box_drawing_count * 100 / high_byte_count < 30) {
+        // Could be Latin-1 or other encoding with accented characters
+        // but not the distinctive box-drawing of CP437 NFO files
+        return false;
+    }
+
+    // Should have some basic text structure (newlines, spaces, or ASCII)
+    // NFO files can be heavy on art but usually have SOME text structure
+    // Very lenient: just need 2% recognizable text/whitespace
+    // (demoscene NFO headers can be almost pure box-drawing with minimal whitespace)
+    if (bytes.len > 0 and printable_count * 100 / bytes.len < 2) {
+        return false;
+    }
+
+    return true;
+}
+
+test "looksLikeCp437 detects box-drawing characters" {
+    // Pure box-drawing characters (like demoscene NFO headers)
+    const box_art = [_]u8{
+        0xDB, 0xDB, 0xDF, 0xDF, 0x20, 0x20, // ██▀▀ (with spaces for 5% printable)
+        0xDB, 0xB2, 0xB0, 0xB1, 0x0D, 0x0A, // █▓░▒\r\n
+    };
+    try std.testing.expect(looksLikeCp437(&box_art));
+
+    // Regular ASCII should not be CP437 (no high bytes)
+    const ascii = "Hello, World!\r\n";
+    try std.testing.expect(!looksLikeCp437(ascii));
+
+    // Latin-1 accented chars without box-drawing should not match
+    // (0xE9 = é, 0xE0 = à - these are in 0xE0-0xEF range, not 0xB0-0xDF box-drawing)
+    const latin1 = [_]u8{ 'C', 'a', 'f', 0xE9, ' ', 0xE0, ' ', 'l', 'a', ' ', 'c', 'a', 'r', 't', 'e' };
+    try std.testing.expect(!looksLikeCp437(&latin1));
+}
+
 /// Check if a byte slice is valid UTF-8.
 fn isValidUtf8(bytes: []const u8) bool {
     var i: usize = 0;
@@ -20230,6 +20311,7 @@ pub const FormatValidator = struct {
             .plain_text => validatePlainText(file), // UTF-8 validation
             .plain_text_utf16 => validatePlainTextUtf16(file), // UTF-16 validation
             .plain_text_latin1 => ValidationResult.okWithDepth(.plain_text_latin1, .full), // Latin-1 always valid
+            .plain_text_cp437 => ValidationResult.okWithDepth(.plain_text_cp437, .full), // CP437 always valid (demoscene NFO)
             // Font formats
             .ttf => validateTtf(file),
             .otf => validateOtf(file),
@@ -27908,6 +27990,41 @@ test "UTF-8 fallback validates multi-byte UTF-8" {
     const result = validator.validateFile(path);
 
     try std.testing.expectEqual(FileFormat.plain_text, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "CP437 detection for demoscene NFO files" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Classic demoscene/warez NFO ASCII art using CP437 box-drawing characters
+    // These bytes are: ██▓▓░░ followed by newline and more box chars
+    // 0xDB = █ (full block), 0xB2 = ▓ (dark shade), 0xB0 = ░ (light shade)
+    // 0xC4 = ─ (horizontal line), 0xB3 = │ (vertical line)
+    const cp437_content = [_]u8{
+        0xDB, 0xDB, 0xB2, 0xB2, 0xB0, 0xB0, 0x20, 'H', 'E', 'L', 'L', 'O', 0x20, 0xB0, 0xB0, 0xB2, 0xB2, 0xDB, 0xDB, 0x0D, 0x0A, // ██▓▓░░ HELLO ░░▓▓██\r\n
+        0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0x0D, 0x0A, // ───────────────────\r\n
+        0xB3, 0x20, 'D', 'E', 'M', 'O', 'S', 'C', 'E', 'N', 'E', 0x20, 'N', 'F', 'O', 0x20, 0x20, 0xB3, 0x0D, 0x0A, // │ DEMOSCENE NFO  │\r\n
+        0xC0, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xD9, 0x0D, 0x0A, // └─────────────────┘\r\n
+    };
+
+    const file = try tmp_dir.dir.createFile("release.nfo", .{});
+    try file.writeAll(&cp437_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "release.nfo");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should be detected as CP437 text (demoscene NFO)
+    try std.testing.expectEqual(FileFormat.plain_text_cp437, result.format);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
