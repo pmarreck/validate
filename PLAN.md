@@ -31,6 +31,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] Fix last failed CI build (inspect gh logs, resolve, rerun) (2026-01-26 04:22 EST)
 - [ ] Create utility script to check forked dependencies for upstream updates (cj5, openmpt, etc.)
 ## Recently Completed
+- [x] Add CP437/DOS text encoding detection for demoscene NFO files (2026-01-31 ~15:30 EST)
 - [x] Reach 100 format ground truth coverage with full decode + corruption tests (2026-01-28 23:55 EST)
 - [x] Add 9 new formats: beam, swf, flv, pe, ape, dsf, dff, wad, hdf5 (2026-01-28 23:50 EST)
 - [x] Add corrupted samples for all 10 missing formats (2026-01-28 23:40 EST)
