@@ -1,8 +1,11 @@
 //! zlib wrapper for robust deflate decompression.
 //!
-//! Uses the system zlib library instead of Zig's std.compress.flate,
-//! which has known bugs (ziglang/zig#24963) that cause crashes on valid
-//! deflate streams.
+//! Uses bundled zlib (allyourcodebase/zlib) built from source via Zig's
+//! build system. This avoids Zig's std.compress.flate which has known bugs
+//! (ziglang/zig#24963) that cause crashes on valid deflate streams.
+//!
+//! The bundled zlib is fully portable across macOS, Linux, and Windows
+//! with no system library dependencies.
 //!
 //! This module provides a simple interface for raw deflate decompression
 //! (no zlib/gzip headers) suitable for ZIP file entry decompression.

@@ -300,7 +300,7 @@ pub fn validatePdfEmbeddedFilesBasic(allocator: Allocator, pdf_data: []const u8)
 }
 
 /// Decompress FlateDecode data.
-/// Uses system zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
+/// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
 fn decompressFlate(allocator: Allocator, compressed: []const u8) ?[]u8 {
     const max_output: usize = 256 * 1024 * 1024; // 256MB max for embedded files
 

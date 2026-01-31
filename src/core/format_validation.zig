@@ -17168,7 +17168,7 @@ fn validateZipStoredEntry(file: std.fs.File, stored_crc: u32, size: u32) Validat
 }
 
 /// Validate a deflated ZIP entry by decompressing and computing CRC-32.
-/// Uses system zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
+/// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
 fn validateZipDeflatedEntry(allocator: Allocator, file: std.fs.File, stored_crc: u32, compressed_size: u32, uncompressed_size: u32) ValidationResult {
     // Skip if uncompressed size exceeds limit (zip bomb protection)
     if (uncompressed_size > MAX_ZIP_ENTRY_SIZE) {
@@ -17835,7 +17835,7 @@ fn validateFlacDeep(allocator: Allocator, path: []const u8) ValidationResult {
 // ============ Gzip Deep Validation ============
 
 /// Deep gzip validation - decompresses and verifies CRC32.
-/// Uses system zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
+/// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
 /// Validates:
 /// - Header structure and flags
 /// - Full decompression of deflate stream

@@ -127,7 +127,7 @@ pub fn validateLooseObject(allocator: Allocator, object_path: []const u8, expect
 
 /// Decompress zlib-compressed data (git uses zlib, not gzip)
 fn decompressZlib(allocator: Allocator, compressed: []const u8) ![]u8 {
-    // Use system zlib for decompression
+    // Use bundled zlib for decompression
     // Max 100MB output (same as loose object limit)
     const zlib = @import("zlib.zig");
     return zlib.inflateZlibAlloc(allocator, compressed, 100 * 1024 * 1024) catch |err| {

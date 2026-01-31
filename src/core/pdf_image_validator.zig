@@ -94,7 +94,7 @@ pub const PdfImageValidationResult = struct {
 // ============ Decompression ============
 
 /// Decompress FlateDecode (zlib) data
-/// Uses system zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
+/// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
 /// Returns allocated buffer that caller must free
 pub fn decompressFlate(allocator: Allocator, compressed: []const u8) ![]u8 {
     if (compressed.len < 2) return error.DataTooShort;
