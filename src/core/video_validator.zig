@@ -172,12 +172,14 @@ fn validateWithFfprobe(allocator: Allocator, file_path: []const u8) FfprobeValid
         else => 1,
     };
 
-    if (exit_code == 0 and result.stderr.len == 0) {
-        // Success - ffmpeg decoded without errors
+    // Exit code 0 means ffmpeg successfully decoded the file
+    // Note: stderr may contain warnings (e.g., DTS timestamp issues from null muxer)
+    // that don't indicate corruption - only exit code matters for validity
+    if (exit_code == 0) {
         return .{ .valid = true, .error_message = null, .frames_decoded = 1 };
     }
 
-    // There were errors - file is likely corrupt
+    // Non-zero exit code - actual decode failure
     return .{ .valid = false, .error_message = "ffmpeg decode failed (video may be corrupt)", .frames_decoded = 0 };
 }
 
