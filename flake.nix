@@ -11,51 +11,125 @@
 			allSystems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" ];
 			forAllSystems = nixpkgs.lib.genAttrs allSystems;
 
-			# Darwin only for packages/checks (Zig deps need network, Linux sandbox blocks it)
-			darwinSystems = [ "aarch64-darwin" "x86_64-darwin" ];
-			forDarwinSystems = nixpkgs.lib.genAttrs darwinSystems;
+			# Build systems (where we run builds - Linux for CI, Darwin for local)
+			buildSystems = [ "x86_64-linux" "aarch64-darwin" "x86_64-darwin" ];
+			forBuildSystems = nixpkgs.lib.genAttrs buildSystems;
+
+			# Zig target triples for cross-compilation
+			zigTargets = {
+				"x86_64-linux" = "x86_64-linux-gnu";
+				"aarch64-linux" = "aarch64-linux-gnu";
+				"x86_64-windows" = "x86_64-windows-gnu";
+				"x86_64-darwin" = "x86_64-macos";
+				"aarch64-darwin" = "aarch64-macos";
+			};
+
+			# Pre-fetched Zig dependencies (fixed-output derivation)
+			# This hash must be updated when build.zig.zon changes
+			zigDepsHash = "sha256-gIQCcvhvi7+1tZmoi4rbCLqoPiVA1FlLQo9bG1bw38E=";
 		in {
 			# Packages for Garnix/Nix builds
-			# NOTE: Darwin only - Linux sandbox blocks Zig's network dep fetching
-			packages = forDarwinSystems (system:
+			packages = forBuildSystems (buildSystem:
 				let
-					pkgs = import nixpkgs { inherit system; };
+					pkgs = import nixpkgs { system = buildSystem; };
 					isDarwin = pkgs.stdenv.isDarwin;
-				in {
-					default = pkgs.stdenv.mkDerivation {
-						pname = "validate";
+
+					# Fixed-output derivation to fetch Zig dependencies
+					# Runs with network access due to known output hash
+					zigDeps = pkgs.stdenv.mkDerivation {
+						pname = "validate-zig-deps";
 						version = "0.1.0";
 						src = ./.;
 
-						# libtool needed on Darwin for bundling static libraries
-						# git/cacert needed for fetching zig dependencies
-						nativeBuildInputs = with pkgs; [ zig git cacert ]
-							++ pkgs.lib.optionals isDarwin [ darwin.cctools ];
+						nativeBuildInputs = with pkgs; [ zig git cacert ];
 
-						# Zig handles all C deps internally via build.zig
+						outputHashMode = "recursive";
+						outputHashAlgo = "sha256";
+						outputHash = zigDepsHash;
+
 						buildPhase = ''
 							export HOME=$TMPDIR
-							export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+							export ZIG_GLOBAL_CACHE_DIR=$out
 							export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
 							export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-							zig build -Doptimize=ReleaseFast --release=fast
+							zig build --fetch=all
 						'';
 
-						installPhase = ''
-							mkdir -p $out/bin
-							cp zig-out/bin/validate $out/bin/
-						'';
-
-						# Skip fixup that breaks static binaries
+						dontInstall = true;
 						dontFixup = true;
 					};
-				});
+
+					# Build function for a specific target
+					mkValidate = { targetSystem ? buildSystem, cross ? false }:
+						let
+							zigTarget = zigTargets.${targetSystem};
+							targetIsDarwin = builtins.match ".*darwin" targetSystem != null;
+							targetIsWindows = builtins.match ".*windows" targetSystem != null;
+							binaryName = if targetIsWindows then "validate.exe" else "validate";
+						in pkgs.stdenv.mkDerivation {
+							pname = "validate-${targetSystem}";
+							version = "0.1.0";
+							src = ./.;
+
+							nativeBuildInputs = with pkgs; [ zig ]
+								++ pkgs.lib.optionals (isDarwin && !cross) [ darwin.cctools ];
+
+							buildPhase = ''
+								export HOME=$TMPDIR
+								export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+								mkdir -p $ZIG_GLOBAL_CACHE_DIR
+								cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+								chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+								zig build -Doptimize=ReleaseFast --release=fast ${if cross then "-Dtarget=${zigTarget}" else ""}
+							'';
+
+							installPhase = ''
+								mkdir -p $out/bin
+								cp zig-out/bin/${binaryName} $out/bin/
+							'';
+
+							dontFixup = true;
+						};
+				in {
+					# Default: native build for this system
+					default = mkValidate { };
+				} // (if buildSystem == "x86_64-linux" then {
+					# Cross-compiled builds from Linux (for CI artifacts)
+					linux-x86_64 = mkValidate { targetSystem = "x86_64-linux"; };
+					linux-aarch64 = mkValidate { targetSystem = "aarch64-linux"; cross = true; };
+					windows-x86_64 = mkValidate { targetSystem = "x86_64-windows"; cross = true; };
+					macos-x86_64 = mkValidate { targetSystem = "x86_64-darwin"; cross = true; };
+					macos-aarch64 = mkValidate { targetSystem = "aarch64-darwin"; cross = true; };
+				} else { }));
 
 			# Checks for `nix flake check` / Garnix
-			# NOTE: Darwin only - Linux sandbox blocks Zig's network dep fetching
-			checks = forDarwinSystems (system:
+			checks = forBuildSystems (system:
 				let
 					pkgs = import nixpkgs { inherit system; };
+					isDarwin = pkgs.stdenv.isDarwin;
+
+					zigDeps = pkgs.stdenv.mkDerivation {
+						pname = "validate-zig-deps";
+						version = "0.1.0";
+						src = ./.;
+
+						nativeBuildInputs = with pkgs; [ zig git cacert ];
+
+						outputHashMode = "recursive";
+						outputHashAlgo = "sha256";
+						outputHash = zigDepsHash;
+
+						buildPhase = ''
+							export HOME=$TMPDIR
+							export ZIG_GLOBAL_CACHE_DIR=$out
+							export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+							export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+							zig build --fetch=all
+						'';
+
+						dontInstall = true;
+						dontFixup = true;
+					};
 				in {
 					build = self.packages.${system}.default;
 
@@ -64,13 +138,15 @@
 						version = "0.1.0";
 						src = ./.;
 
-						nativeBuildInputs = with pkgs; [ zig ffmpeg git cacert ];
+						nativeBuildInputs = with pkgs; [ zig ffmpeg ]
+							++ pkgs.lib.optionals isDarwin [ darwin.cctools ];
 
 						buildPhase = ''
 							export HOME=$TMPDIR
 							export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
-							export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
-							export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+							mkdir -p $ZIG_GLOBAL_CACHE_DIR
+							cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+							chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
 							zig build test
 						'';
 
