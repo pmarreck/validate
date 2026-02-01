@@ -279,6 +279,25 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
         std.debug.print("[HEIF] About to decode image: {d}x{d}\n", .{ width, height });
     }
 
+    // In test mode, always print pre-decode diagnostics to help debug CI crashes
+    if (comptime @import("builtin").is_test) {
+        if (comptime builtin.os.tag != .windows) {
+            std.debug.print("[HEIF PRE-DECODE] Image: {d}x{d}, data size: {d} bytes\n", .{ width, height, data.len });
+
+            // Print stack limit right before decode (will show in truncated logs)
+            const RLIM_INFINITY: std.posix.rlim_t = std.math.maxInt(std.posix.rlim_t);
+            if (std.posix.getrlimit(.STACK)) |limit| {
+                if (limit.cur == RLIM_INFINITY) {
+                    std.debug.print("[HEIF PRE-DECODE] Stack limit: unlimited\n", .{});
+                } else {
+                    std.debug.print("[HEIF PRE-DECODE] Stack limit: {d} MB (soft), {d} MB (hard)\n", .{
+                        limit.cur / (1024 * 1024), limit.max / (1024 * 1024)
+                    });
+                }
+            } else |_| {}
+        }
+    }
+
     // Allocate decoding options to control threading behavior.
     // We explicitly set num_codec_threads=0 to force single-threaded decoding
     // in the calling thread. This avoids GPF crashes in libde265 worker threads
