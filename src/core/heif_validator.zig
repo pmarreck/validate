@@ -111,87 +111,8 @@ pub fn validateHeifDeep(file_path: []const u8) HeifValidationResult {
     return validateHeifDeepFromBuffer(buf_slice);
 }
 
-/// Print diagnostic info about resource limits (for debugging CI crashes)
-fn printResourceDiagnostics() void {
-    if (comptime builtin.os.tag == .windows) return;
-
-    // Only print if debug enabled or in test mode
-    const in_test = @import("builtin").is_test;
-    const debug_enabled = std.posix.getenv("VALIDATE_DEBUG") != null;
-    if (!in_test and !debug_enabled) return;
-
-    std.debug.print("[HEIF DIAG] Resource diagnostics:\n", .{});
-
-    // RLIM_INFINITY is the max value of rlim_t
-    const RLIM_INFINITY: std.posix.rlim_t = std.math.maxInt(std.posix.rlim_t);
-
-    // Get stack limit
-    if (std.posix.getrlimit(.STACK)) |limit| {
-        if (limit.cur == RLIM_INFINITY) {
-            std.debug.print("[HEIF DIAG]   Stack soft limit: unlimited\n", .{});
-        } else {
-            std.debug.print("[HEIF DIAG]   Stack soft limit: {d} bytes ({d} MB)\n", .{
-                limit.cur, limit.cur / (1024 * 1024)
-            });
-        }
-        if (limit.max == RLIM_INFINITY) {
-            std.debug.print("[HEIF DIAG]   Stack hard limit: unlimited\n", .{});
-        } else {
-            std.debug.print("[HEIF DIAG]   Stack hard limit: {d} bytes ({d} MB)\n", .{
-                limit.max, limit.max / (1024 * 1024)
-            });
-        }
-    } else |_| {
-        std.debug.print("[HEIF DIAG]   Stack limit: unavailable\n", .{});
-    }
-
-    // Get address space limit (Linux-specific)
-    if (comptime builtin.os.tag == .linux) {
-        if (std.posix.getrlimit(.AS)) |limit| {
-            if (limit.cur == RLIM_INFINITY) {
-                std.debug.print("[HEIF DIAG]   Address space: unlimited\n", .{});
-            } else {
-                std.debug.print("[HEIF DIAG]   Address space soft: {d} bytes ({d} GB)\n", .{
-                    limit.cur, limit.cur / (1024 * 1024 * 1024)
-                });
-            }
-        } else |_| {
-            std.debug.print("[HEIF DIAG]   Address space limit: unavailable\n", .{});
-        }
-    }
-
-    // Get data segment limit
-    if (std.posix.getrlimit(.DATA)) |limit| {
-        if (limit.cur == RLIM_INFINITY) {
-            std.debug.print("[HEIF DIAG]   Data segment: unlimited\n", .{});
-        } else {
-            std.debug.print("[HEIF DIAG]   Data segment soft: {d} bytes ({d} MB)\n", .{
-                limit.cur, limit.cur / (1024 * 1024)
-            });
-        }
-    } else |_| {
-        std.debug.print("[HEIF DIAG]   Data segment limit: unavailable\n", .{});
-    }
-
-    // Check if running in Nix sandbox
-    if (std.posix.getenv("NIX_BUILD_TOP")) |_| {
-        std.debug.print("[HEIF DIAG]   Running in Nix build sandbox\n", .{});
-    }
-
-    std.debug.print("[HEIF DIAG] End diagnostics\n", .{});
-}
-
-/// Track if diagnostics have been printed
-var diagnostics_printed = false;
-
 /// Validate HEIF from memory buffer.
 pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
-    // Print diagnostics once on first call (helps debug CI issues)
-    if (!diagnostics_printed) {
-        diagnostics_printed = true;
-        printResourceDiagnostics();
-    }
-
     // Ensure libheif is initialized (thread-safe, only runs once)
     if (!ensureInitialized()) {
         return HeifValidationResult.invalid("Failed to initialize libheif", true);
@@ -279,25 +200,6 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
         std.debug.print("[HEIF] About to decode image: {d}x{d}\n", .{ width, height });
     }
 
-    // In test mode, always print pre-decode diagnostics to help debug CI crashes
-    if (comptime @import("builtin").is_test) {
-        if (comptime builtin.os.tag != .windows) {
-            std.debug.print("[HEIF PRE-DECODE] Image: {d}x{d}, data size: {d} bytes\n", .{ width, height, data.len });
-
-            // Print stack limit right before decode (will show in truncated logs)
-            const RLIM_INFINITY: std.posix.rlim_t = std.math.maxInt(std.posix.rlim_t);
-            if (std.posix.getrlimit(.STACK)) |limit| {
-                if (limit.cur == RLIM_INFINITY) {
-                    std.debug.print("[HEIF PRE-DECODE] Stack limit: unlimited\n", .{});
-                } else {
-                    std.debug.print("[HEIF PRE-DECODE] Stack limit: {d} MB (soft), {d} MB (hard)\n", .{
-                        limit.cur / (1024 * 1024), limit.max / (1024 * 1024)
-                    });
-                }
-            } else |_| {}
-        }
-    }
-
     // Allocate decoding options to control threading behavior.
     // We explicitly set num_codec_threads=0 to force single-threaded decoding
     // in the calling thread. This avoids GPF crashes in libde265 worker threads
@@ -309,28 +211,7 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
     }
 
     var image: ?*c.struct_heif_image = null;
-
-    // CRITICAL: Print marker right before decode to help diagnose Garnix SIGABRT crashes
-    // This marker will appear in logs right before the crash location
-    if (comptime @import("builtin").is_test) {
-        if (comptime builtin.os.tag != .windows) {
-            const RLIM_INFINITY: std.posix.rlim_t = std.math.maxInt(std.posix.rlim_t);
-            var stack_mb: u64 = 0;
-            if (std.posix.getrlimit(.STACK)) |limit| {
-                stack_mb = if (limit.cur == RLIM_INFINITY) 9999 else limit.cur / (1024 * 1024);
-            } else |_| {}
-            std.debug.print(">>> HEIF_DECODE_START img={d}x{d} stack={d}MB\n", .{ width, height, stack_mb });
-        }
-    }
-
     err = c.heif_decode_image(handle, &image, c.heif_colorspace_RGB, c.heif_chroma_interleaved_RGBA, decode_options);
-
-    // Print marker after decode (if we get here)
-    if (comptime @import("builtin").is_test) {
-        if (comptime builtin.os.tag != .windows) {
-            std.debug.print(">>> HEIF_DECODE_END result={d}\n", .{err.code});
-        }
-    }
 
     if (err.code != c.heif_error_Ok or image == null) {
         // For unsupported variants, decode failure is expected - accept as structural

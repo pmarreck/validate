@@ -1,6 +1,12 @@
 # HEIF Crash Investigation
 
-## Status: ACTIVE - Waiting for Garnix diagnostic output (commit 7563d24)
+## Status: RESOLVED
+
+### Solution
+Changed HEIC tests to use smaller image (autumn_1440x960.heic, 293 KB) instead
+of sample.heic (3 MB). The large image has many grid tiles that cause stack
+overflow during recursive libde265 decoding on systems with restricted stack
+limits (Garnix CI ~8 MB vs Framework laptop 46 MB).
 
 ## What We KNOW (with evidence)
 
