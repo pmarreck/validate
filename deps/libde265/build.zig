@@ -21,18 +21,21 @@ pub fn build(b: *std.Build) void {
     });
 
     // Platform-specific C++ flags
+    // Note: -UNDEBUG enables assertions for debugging crashes on Linux
     const cxxflags: []const []const u8 = if (is_windows) &.{
         "-DLIBDE265_EXPORTS",
         "-DHAVE_STDINT_H",
         "-DHAVE_ALIGNED_ALLOC", // Use aligned_alloc on Windows
         "-fvisibility=hidden",
         "-fno-exceptions", // libde265 doesn't use exceptions
+        "-UNDEBUG", // Enable assertions for debugging
     } else &.{
         "-DLIBDE265_EXPORTS",
         "-DHAVE_STDINT_H",
         "-DHAVE_POSIX_MEMALIGN", // Use posix_memalign on POSIX (macOS/Linux)
         "-fvisibility=hidden",
         "-fno-exceptions", // libde265 doesn't use exceptions
+        "-UNDEBUG", // Enable assertions for debugging
     };
 
     // Core decoder sources
