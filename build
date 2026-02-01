@@ -6,8 +6,35 @@ fi
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 unset LD
 unset SDKROOT
+
+# Check for --update-deps flag
+update_deps=false
+remaining_args=()
+for arg in "$@"; do
+	if [[ "$arg" == "--update-deps" ]]; then
+		update_deps=true
+	else
+		remaining_args+=("$arg")
+	fi
+done
+set -- "${remaining_args[@]+"${remaining_args[@]}"}"
+
+# Update Zig deps hash if requested or if build.zig.zon is newer than flake.nix
+if [[ "$update_deps" == true ]]; then
+	echo "=== Updating Zig dependencies hash ==="
+	"$SCRIPT_DIR/scripts/update-zig-deps-hash.sh"
+elif [[ -f "$SCRIPT_DIR/build.zig.zon" && -f "$SCRIPT_DIR/flake.nix" ]]; then
+	if [[ "$SCRIPT_DIR/build.zig.zon" -nt "$SCRIPT_DIR/flake.nix" ]]; then
+		echo "=== build.zig.zon is newer than flake.nix, checking deps hash ==="
+		"$SCRIPT_DIR/scripts/update-zig-deps-hash.sh"
+		# Touch flake.nix to update mtime even if hash unchanged
+		touch "$SCRIPT_DIR/flake.nix"
+	fi
+fi
 
 is_debug=false
 case "${DEBUG:-}" in
