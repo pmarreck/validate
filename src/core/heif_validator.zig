@@ -143,17 +143,6 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
         return HeifValidationResult.structural_valid(is_heic);
     }
 
-    // WORKAROUND: Skip full decode on Linux x86_64 due to Intel-specific crashes
-    // in libde265 that cause SIGABRT. The crash occurs during HEVC grid tile decoding
-    // and affects Intel CPUs but not AMD. Root cause is likely heap corruption or
-    // memory alignment issues in libde265's fallback C++ code.
-    // See PLAN.md "HEIC/Intel Crash Investigation" for investigation details.
-    // Full validation works on: macOS (ARM/Intel), Windows, Linux ARM64, Linux x86_64 AMD.
-    if (comptime builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
-        // Return structural validation - we've verified the file type is valid
-        return HeifValidationResult.structural_valid(is_heic);
-    }
-
     // Create context
     const ctx = c.heif_context_alloc();
     if (ctx == null) {
@@ -257,14 +246,6 @@ test "stress test: concurrent HEIC decode" {
     // Stress test: smash the HEIC decoder with concurrent operations to expose
     // any threading bugs in libheif/libde265. This follows the "run toward problems"
     // debugging philosophy - force race conditions to manifest statistically.
-    //
-    // Skip on Linux x86_64 where we use structural-only validation due to
-    // Intel-specific crashes in libde265.
-    if (comptime builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
-        std.debug.print("\n[STRESS TEST] Skipping on Linux x86_64 (structural-only validation)\n", .{});
-        return;
-    }
-
     const allocator = std.testing.allocator;
 
     std.debug.print("\n[STRESS TEST] Starting concurrent HEIC decode stress test...\n", .{});
