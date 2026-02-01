@@ -1,20 +1,40 @@
 //! Git Repository Validator
 //!
-//! Pure Zig implementation of git repository integrity validation.
-//! Validates all SHA-1 checksums without shelling out to git.
+//! Validates git repository integrity using `git fsck` when available,
+//! falling back to pure Zig checksum validation when git is not installed.
 //!
-//! Git object store integrity:
+//! Full validation (requires git on PATH):
+//! - All object SHA-1 checksums (loose + packed)
+//! - Ref validity (branches/tags point to real objects)
+//! - Commit graph traversal for reachability
+//! - Tree structure validation
+//! - Dangling object detection
+//!
+//! Fallback validation (no git required):
 //! - Loose objects: SHA-1(decompress(file)) == filename
 //! - Pack files: SHA-1 trailer covers entire pack
 //! - Pack index: SHA-1 of pack contents + SHA-1 of index
 //! - Index file (.git/index): SHA-1 trailer
 //!
-//! This catches bitrot, transmission errors, and filesystem corruption
-//! that would otherwise go undetected until git tries to read the object.
+//! The fallback catches bitrot, transmission errors, and filesystem corruption
+//! but cannot verify ref consistency or object graph integrity.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Sha1 = std.crypto.hash.Sha1;
+
+/// Cached git availability check
+var git_available: ?bool = null;
+var git_check_mutex: std.Thread.Mutex = .{};
+
+/// Validation depth achieved
+pub const GitValidationDepth = enum {
+    /// Full validation via git fsck (refs, graph, all objects)
+    full,
+    /// Checksum-only validation (no git installed)
+    checksum_only,
+};
 
 /// Result of git repository validation
 pub const GitValidationResult = struct {
@@ -31,6 +51,10 @@ pub const GitValidationResult = struct {
     packs_valid: u32,
     /// Error message if validation failed
     error_message: ?[]const u8,
+    /// Warning message (e.g., git not available for full validation)
+    warning_message: ?[]const u8,
+    /// Validation depth achieved
+    validation_depth: GitValidationDepth,
 
     pub fn ok(checked: u32, valid: u32, packs: u32) GitValidationResult {
         return .{
@@ -41,6 +65,22 @@ pub const GitValidationResult = struct {
             .packs_checked = packs,
             .packs_valid = packs,
             .error_message = null,
+            .warning_message = null,
+            .validation_depth = .full,
+        };
+    }
+
+    pub fn okChecksumOnly(checked: u32, valid: u32, packs: u32) GitValidationResult {
+        return .{
+            .is_valid = true,
+            .objects_checked = checked,
+            .objects_valid = valid,
+            .objects_corrupt = 0,
+            .packs_checked = packs,
+            .packs_valid = packs,
+            .error_message = null,
+            .warning_message = "full validation requires git on PATH (only checksums verified)",
+            .validation_depth = .checksum_only,
         };
     }
 
@@ -53,6 +93,8 @@ pub const GitValidationResult = struct {
             .packs_checked = 0,
             .packs_valid = 0,
             .error_message = msg,
+            .warning_message = null,
+            .validation_depth = .checksum_only,
         };
     }
 
@@ -65,6 +107,8 @@ pub const GitValidationResult = struct {
             .packs_checked = 0,
             .packs_valid = 0,
             .error_message = msg,
+            .warning_message = null,
+            .validation_depth = .checksum_only,
         };
     }
 };
@@ -87,6 +131,122 @@ pub const ObjectType = enum(u3) {
         return null;
     }
 };
+
+/// Check if git is available on the system PATH
+fn isGitAvailable() bool {
+    git_check_mutex.lock();
+    defer git_check_mutex.unlock();
+
+    if (git_available) |available| {
+        return available;
+    }
+
+    // On Windows, explicitly use .exe extension for reliability
+    const git_cmd = if (comptime builtin.os.tag == .windows) "git.exe" else "git";
+
+    // Try to run git --version
+    const result = std.process.Child.run(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &[_][]const u8{ git_cmd, "--version" },
+        .max_output_bytes = 1024,
+    }) catch {
+        git_available = false;
+        return false;
+    };
+    defer std.heap.page_allocator.free(result.stdout);
+    defer std.heap.page_allocator.free(result.stderr);
+
+    // Check exit code
+    const exit_ok = switch (result.term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+
+    git_available = exit_ok;
+    return exit_ok;
+}
+
+/// Validate git repository using `git fsck --full --strict`
+/// Returns null if git is not available, otherwise returns validation result
+fn validateWithGitFsck(allocator: Allocator, repo_path: []const u8) ?GitValidationResult {
+    if (!isGitAvailable()) {
+        return null;
+    }
+
+    const git_cmd = if (comptime builtin.os.tag == .windows) "git.exe" else "git";
+
+    // Run git fsck from the repository directory
+    // --full: check all objects including alternates
+    // --strict: enable stricter checking
+    // --no-progress: suppress progress output
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{
+            git_cmd,
+            "-C", repo_path, // Run in repo directory
+            "fsck",
+            "--full",
+            "--strict",
+            "--no-progress",
+        },
+        .max_output_bytes = 256 * 1024, // 256KB for error messages
+    }) catch {
+        // If we can't run git, return null to fall back to checksum validation
+        return null;
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Check exit status
+    const exit_code = switch (result.term) {
+        .Exited => |code| code,
+        else => 1,
+    };
+
+    if (exit_code == 0) {
+        // git fsck passed - repository is fully valid
+        return .{
+            .is_valid = true,
+            .objects_checked = 0, // git fsck doesn't report counts
+            .objects_valid = 0,
+            .objects_corrupt = 0,
+            .packs_checked = 0,
+            .packs_valid = 0,
+            .error_message = null,
+            .warning_message = null,
+            .validation_depth = .full,
+        };
+    }
+
+    // git fsck failed - parse output for error info
+    // stderr contains the actual error messages
+    const error_output = if (result.stderr.len > 0) result.stderr else result.stdout;
+
+    // Count corrupt objects from output (lines starting with "error" or "broken")
+    var corrupt_count: u32 = 0;
+    var lines = std.mem.splitScalar(u8, error_output, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "error") or
+            std.mem.startsWith(u8, line, "broken") or
+            std.mem.startsWith(u8, line, "missing") or
+            std.mem.startsWith(u8, line, "dangling"))
+        {
+            corrupt_count += 1;
+        }
+    }
+
+    return .{
+        .is_valid = false,
+        .objects_checked = 0,
+        .objects_valid = 0,
+        .objects_corrupt = corrupt_count,
+        .packs_checked = 0,
+        .packs_valid = 0,
+        .error_message = "git fsck detected repository errors",
+        .warning_message = null,
+        .validation_depth = .full,
+    };
+}
 
 /// Validate a loose git object file.
 /// Returns true if SHA-1 of decompressed content matches the expected hash.
@@ -327,7 +487,8 @@ pub fn validateIndexFile(allocator: Allocator, index_path: []const u8) !bool {
 }
 
 /// Validate an entire git repository.
-/// Checks all loose objects, pack files, and the index.
+/// Uses `git fsck` for full validation when git is available,
+/// falls back to checksum-only validation otherwise.
 pub fn validateRepository(allocator: Allocator, repo_path: []const u8) !GitValidationResult {
     var git_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const git_dir = try std.fmt.bufPrint(&git_dir_buf, "{s}/.git", .{repo_path});
@@ -336,6 +497,20 @@ pub fn validateRepository(allocator: Allocator, repo_path: []const u8) !GitValid
     std.fs.cwd().access(git_dir, .{}) catch {
         return GitValidationResult.invalid("Not a git repository (no .git directory)");
     };
+
+    // Try full validation with git fsck first
+    if (validateWithGitFsck(allocator, repo_path)) |fsck_result| {
+        return fsck_result;
+    }
+
+    // Git not available - fall back to checksum-only validation
+    return validateRepositoryChecksumOnly(allocator, repo_path, git_dir);
+}
+
+/// Checksum-only validation (used when git is not available).
+/// Validates SHA-1 checksums of loose objects, pack files, and index.
+fn validateRepositoryChecksumOnly(allocator: Allocator, repo_path: []const u8, git_dir: []const u8) !GitValidationResult {
+    _ = repo_path;
 
     var objects_checked: u32 = 0;
     var objects_valid: u32 = 0;
@@ -449,7 +624,8 @@ pub fn validateRepository(allocator: Allocator, repo_path: []const u8) !GitValid
         return GitValidationResult.corrupt(objects_checked, objects_valid, objects_corrupt, "Corrupt objects detected");
     }
 
-    return GitValidationResult.ok(objects_checked, objects_valid, packs_checked);
+    // Return OK with warning about checksum-only validation
+    return GitValidationResult.okChecksumOnly(objects_checked, objects_valid, packs_checked);
 }
 
 // ============ Tests ============
