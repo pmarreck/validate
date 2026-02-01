@@ -16,9 +16,10 @@
 			forBuildSystems = nixpkgs.lib.genAttrs buildSystems;
 
 			# Zig target triples for cross-compilation
+			# Using musl for Linux cross-compilation (better static linking support)
 			zigTargets = {
-				"x86_64-linux" = "x86_64-linux-gnu";
-				"aarch64-linux" = "aarch64-linux-gnu";
+				"x86_64-linux" = "x86_64-linux-musl";
+				"aarch64-linux" = "aarch64-linux-musl";
 				"x86_64-windows" = "x86_64-windows-gnu";
 				"x86_64-darwin" = "x86_64-macos";
 				"aarch64-darwin" = "aarch64-macos";
