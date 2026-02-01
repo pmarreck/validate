@@ -139,7 +139,7 @@
 						version = "0.1.0";
 						src = ./.;
 
-						nativeBuildInputs = with pkgs; [ zig ffmpeg ]
+						nativeBuildInputs = with pkgs; [ zig ffmpeg coreutils ]
 							++ pkgs.lib.optionals isDarwin [ darwin.cctools ];
 
 						buildPhase = ''
@@ -148,7 +148,11 @@
 							mkdir -p $ZIG_GLOBAL_CACHE_DIR
 							cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
 							chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
-							zig build test
+							# Timeout after 10 minutes to prevent CI hangs
+							timeout 600 zig build test || {
+							  echo "Tests timed out or failed after 10 minutes"
+							  exit 1
+							}
 						'';
 
 						installPhase = ''
