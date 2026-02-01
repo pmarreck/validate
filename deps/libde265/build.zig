@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Platform-specific C++ flags
-    // Note: Assertions are disabled (-DNDEBUG implied by default release builds).
+    // -DNDEBUG explicitly disables assertions which cause SIGABRT on Intel Linux x86_64.
     // Previous testing showed that -UNDEBUG caused SIGABRT on Intel CPUs due to
     // assertions that fire for non-fatal conditions (possibly alignment-related).
     const cxxflags: []const []const u8 = if (is_windows) &.{
@@ -30,12 +30,14 @@ pub fn build(b: *std.Build) void {
         "-DHAVE_ALIGNED_ALLOC", // Use aligned_alloc on Windows
         "-fvisibility=hidden",
         "-fno-exceptions", // libde265 doesn't use exceptions
+        "-DNDEBUG", // Disable assertions
     } else &.{
         "-DLIBDE265_EXPORTS",
         "-DHAVE_STDINT_H",
         "-DHAVE_POSIX_MEMALIGN", // Use posix_memalign on POSIX (macOS/Linux)
         "-fvisibility=hidden",
         "-fno-exceptions", // libde265 doesn't use exceptions
+        "-DNDEBUG", // Disable assertions
     };
 
     // Core decoder sources

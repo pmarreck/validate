@@ -29,6 +29,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // C++ flags - libheif requires C++20 for defaulted comparison operators and std::map::contains
+    // -DNDEBUG disables C assertions which can cause SIGABRT on Intel Linux x86_64
     const cxxflags: []const []const u8 = &.{
         "-DLIBHEIF_EXPORTS",
         "-DHAVE_VISIBILITY",
@@ -36,6 +37,7 @@ pub fn build(b: *std.Build) void {
         "-DHAVE_DAV1D=1",
         "-std=c++20",
         "-fvisibility=hidden",
+        "-DNDEBUG",
     };
 
     // Core sources
