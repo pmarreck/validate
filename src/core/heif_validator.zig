@@ -111,8 +111,87 @@ pub fn validateHeifDeep(file_path: []const u8) HeifValidationResult {
     return validateHeifDeepFromBuffer(buf_slice);
 }
 
+/// Print diagnostic info about resource limits (for debugging CI crashes)
+fn printResourceDiagnostics() void {
+    if (comptime builtin.os.tag == .windows) return;
+
+    // Only print if debug enabled or in test mode
+    const in_test = @import("builtin").is_test;
+    const debug_enabled = std.posix.getenv("VALIDATE_DEBUG") != null;
+    if (!in_test and !debug_enabled) return;
+
+    std.debug.print("[HEIF DIAG] Resource diagnostics:\n", .{});
+
+    // RLIM_INFINITY is the max value of rlim_t
+    const RLIM_INFINITY: std.posix.rlim_t = std.math.maxInt(std.posix.rlim_t);
+
+    // Get stack limit
+    if (std.posix.getrlimit(.STACK)) |limit| {
+        if (limit.cur == RLIM_INFINITY) {
+            std.debug.print("[HEIF DIAG]   Stack soft limit: unlimited\n", .{});
+        } else {
+            std.debug.print("[HEIF DIAG]   Stack soft limit: {d} bytes ({d} MB)\n", .{
+                limit.cur, limit.cur / (1024 * 1024)
+            });
+        }
+        if (limit.max == RLIM_INFINITY) {
+            std.debug.print("[HEIF DIAG]   Stack hard limit: unlimited\n", .{});
+        } else {
+            std.debug.print("[HEIF DIAG]   Stack hard limit: {d} bytes ({d} MB)\n", .{
+                limit.max, limit.max / (1024 * 1024)
+            });
+        }
+    } else |_| {
+        std.debug.print("[HEIF DIAG]   Stack limit: unavailable\n", .{});
+    }
+
+    // Get address space limit (Linux-specific)
+    if (comptime builtin.os.tag == .linux) {
+        if (std.posix.getrlimit(.AS)) |limit| {
+            if (limit.cur == RLIM_INFINITY) {
+                std.debug.print("[HEIF DIAG]   Address space: unlimited\n", .{});
+            } else {
+                std.debug.print("[HEIF DIAG]   Address space soft: {d} bytes ({d} GB)\n", .{
+                    limit.cur, limit.cur / (1024 * 1024 * 1024)
+                });
+            }
+        } else |_| {
+            std.debug.print("[HEIF DIAG]   Address space limit: unavailable\n", .{});
+        }
+    }
+
+    // Get data segment limit
+    if (std.posix.getrlimit(.DATA)) |limit| {
+        if (limit.cur == RLIM_INFINITY) {
+            std.debug.print("[HEIF DIAG]   Data segment: unlimited\n", .{});
+        } else {
+            std.debug.print("[HEIF DIAG]   Data segment soft: {d} bytes ({d} MB)\n", .{
+                limit.cur, limit.cur / (1024 * 1024)
+            });
+        }
+    } else |_| {
+        std.debug.print("[HEIF DIAG]   Data segment limit: unavailable\n", .{});
+    }
+
+    // Check if running in Nix sandbox
+    if (std.posix.getenv("NIX_BUILD_TOP")) |_| {
+        std.debug.print("[HEIF DIAG]   Running in Nix build sandbox\n", .{});
+    }
+
+    std.debug.print("[HEIF DIAG] End diagnostics\n", .{});
+}
+
+/// Track if diagnostics have been printed
+var diagnostics_printed = false;
+
 /// Validate HEIF from memory buffer.
 pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
+    // Print diagnostics once on first call (helps debug CI issues)
+    if (!diagnostics_printed) {
+        diagnostics_printed = true;
+        printResourceDiagnostics();
+    }
+
     // Ensure libheif is initialized (thread-safe, only runs once)
     if (!ensureInitialized()) {
         return HeifValidationResult.invalid("Failed to initialize libheif", true);
