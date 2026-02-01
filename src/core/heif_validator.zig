@@ -298,6 +298,42 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
         }
     }
 
+    // On Linux, ensure sufficient stack size for deep grid tile decoding.
+    // Large HEIC images (e.g., 4000x3000 with 30+ tiles) require significant stack
+    // during recursive decode. The default 8 MB stack on some systems is insufficient.
+    // We temporarily increase to 48 MB (matching systems where decoding succeeds).
+    var original_stack_limit: ?std.posix.rlimit = null;
+    if (comptime builtin.os.tag == .linux) {
+        const MIN_STACK_MB = 48; // 48 MB - matches Framework laptop where decodes succeed
+        const MIN_STACK_BYTES: std.posix.rlim_t = MIN_STACK_MB * 1024 * 1024;
+
+        if (std.posix.getrlimit(.STACK)) |current| {
+            if (current.cur < MIN_STACK_BYTES and current.max >= MIN_STACK_BYTES) {
+                // Save original and increase
+                original_stack_limit = current;
+                var new_limit = current;
+                new_limit.cur = MIN_STACK_BYTES;
+                std.posix.setrlimit(.STACK, new_limit) catch |set_err| {
+                    if (debug_enabled) {
+                        std.debug.print("[HEIF] Failed to increase stack limit: {}\n", .{set_err});
+                    }
+                    original_stack_limit = null; // Don't restore if we failed to set
+                };
+                if (debug_enabled and original_stack_limit != null) {
+                    std.debug.print("[HEIF] Increased stack limit from {d}MB to {d}MB\n", .{
+                        current.cur / (1024 * 1024), MIN_STACK_BYTES / (1024 * 1024)
+                    });
+                }
+            }
+        } else |_| {}
+    }
+    defer {
+        // Restore original stack limit if we changed it
+        if (original_stack_limit) |orig| {
+            std.posix.setrlimit(.STACK, orig) catch {};
+        }
+    }
+
     // Allocate decoding options to control threading behavior.
     // We explicitly set num_codec_threads=0 to force single-threaded decoding
     // in the calling thread. This avoids GPF crashes in libde265 worker threads

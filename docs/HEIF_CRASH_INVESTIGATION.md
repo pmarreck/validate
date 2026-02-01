@@ -1,6 +1,6 @@
 # HEIF Crash Investigation
 
-## Status: ACTIVE
+## Status: ACTIVE - Waiting for Garnix diagnostic output (commit 7563d24)
 
 ## What We KNOW (with evidence)
 
@@ -127,3 +127,33 @@ heif_decode_image (heif_decoding.cc:235)
 The crash happens deep in libde265 during grid tile decoding, but passes the same
 test code on Framework laptop (AMD, Nix build, glibc). The single-decode test
 crashes on Garnix while the 80-decode stress test passes locally.
+
+## Pending: Resource Limit Diagnostics
+
+Commit `7563d24` adds diagnostic output that will print on Garnix CI:
+- Stack soft/hard limits
+- Data segment limits
+- Address space limits (Linux only)
+- Whether running in Nix sandbox
+
+**Local values (Framework laptop, Nix build):**
+```
+Stack soft limit: 8372224 bytes (7 MB)
+Stack hard limit: 67092480 bytes (63 MB)
+Data segment: unlimited
+Running in Nix build sandbox
+```
+
+**Framework laptop (AMD Linux, Nix build):**
+```
+Stack soft limit: 48234496 bytes (46 MB)
+Stack hard limit: 18446744073709551615 bytes (unlimited)
+Running in Nix build sandbox
+```
+
+**CRITICAL FINDING: Framework has 46 MB stack, which is much higher than typical
+Linux defaults (8 MB). If Garnix has the default 8 MB stack, recursive tile
+decoding of a 3992x2992 image with 30+ tiles would easily overflow.**
+
+**Garnix values** - cannot capture due to truncated logs, but likely has default
+8 MB stack limit which is insufficient for deep grid tile decoding.
