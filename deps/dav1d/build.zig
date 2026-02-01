@@ -138,6 +138,8 @@ pub fn build(b: *std.Build) void {
     lib.addIncludePath(dav1d_src.path("include/dav1d"));
     lib.addIncludePath(dav1d_src.path("src"));
 
+    const is_macos = target.result.os.tag == .macos;
+
     // Define architecture-specific flags
     if (cpu_arch == .aarch64) {
         // ARM64 specific flags
@@ -182,12 +184,19 @@ pub fn build(b: *std.Build) void {
             "-DBITDEPTH=16",
         };
 
-        const asm_flags: []const []const u8 = &.{
+        // PREFIX adds underscore to symbols - only needed on macOS (Mach-O format)
+        // Linux ELF uses undecorated symbol names
+        const asm_flags: []const []const u8 = if (is_macos) &.{
             "-DHAVE_ASM=1",
             "-DARCH_AARCH64=1",
             "-DCONFIG_8BPC=1",
             "-DCONFIG_16BPC=1",
             "-DPREFIX",
+        } else &.{
+            "-DHAVE_ASM=1",
+            "-DARCH_AARCH64=1",
+            "-DCONFIG_8BPC=1",
+            "-DCONFIG_16BPC=1",
         };
 
         // Add core sources
