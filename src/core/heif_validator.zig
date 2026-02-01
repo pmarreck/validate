@@ -309,7 +309,29 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
     }
 
     var image: ?*c.struct_heif_image = null;
+
+    // CRITICAL: Print marker right before decode to help diagnose Garnix SIGABRT crashes
+    // This marker will appear in logs right before the crash location
+    if (comptime @import("builtin").is_test) {
+        if (comptime builtin.os.tag != .windows) {
+            const RLIM_INFINITY: std.posix.rlim_t = std.math.maxInt(std.posix.rlim_t);
+            var stack_mb: u64 = 0;
+            if (std.posix.getrlimit(.STACK)) |limit| {
+                stack_mb = if (limit.cur == RLIM_INFINITY) 9999 else limit.cur / (1024 * 1024);
+            } else |_| {}
+            std.debug.print(">>> HEIF_DECODE_START img={d}x{d} stack={d}MB\n", .{ width, height, stack_mb });
+        }
+    }
+
     err = c.heif_decode_image(handle, &image, c.heif_colorspace_RGB, c.heif_chroma_interleaved_RGBA, decode_options);
+
+    // Print marker after decode (if we get here)
+    if (comptime @import("builtin").is_test) {
+        if (comptime builtin.os.tag != .windows) {
+            std.debug.print(">>> HEIF_DECODE_END result={d}\n", .{err.code});
+        }
+    }
+
     if (err.code != c.heif_error_Ok or image == null) {
         // For unsupported variants, decode failure is expected - accept as structural
         if (is_unsupported_variant) {
