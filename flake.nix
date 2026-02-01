@@ -1,5 +1,5 @@
 {
-	description = "Entropy Shield dev shell";
+	description = "Validate - Deterministic file format validation";
 
 	inputs = {
 		nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -7,9 +7,68 @@
 
 	outputs = { self, nixpkgs }:
 		let
-			systems = [ "aarch64-darwin" "x86_64-darwin" ];
+			systems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" ];
 			forAllSystems = nixpkgs.lib.genAttrs systems;
 		in {
+			# Packages for Garnix/Nix builds
+			packages = forAllSystems (system:
+				let
+					pkgs = import nixpkgs { inherit system; };
+					isDarwin = pkgs.stdenv.isDarwin;
+				in {
+					default = pkgs.stdenv.mkDerivation {
+						pname = "validate";
+						version = "0.1.0";
+						src = ./.;
+
+						# libtool needed on Darwin for bundling static libraries
+						nativeBuildInputs = with pkgs; [ zig ]
+							++ pkgs.lib.optionals isDarwin [ darwin.cctools ];
+
+						# Zig handles all C deps internally via build.zig
+						buildPhase = ''
+							export HOME=$TMPDIR
+							export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+							zig build -Doptimize=ReleaseFast --release=fast
+						'';
+
+						installPhase = ''
+							mkdir -p $out/bin
+							cp zig-out/bin/validate $out/bin/
+						'';
+
+						# Skip fixup that breaks static binaries
+						dontFixup = true;
+					};
+				});
+
+			# Checks for `nix flake check` / Garnix
+			checks = forAllSystems (system:
+				let
+					pkgs = import nixpkgs { inherit system; };
+				in {
+					build = self.packages.${system}.default;
+
+					test = pkgs.stdenv.mkDerivation {
+						pname = "validate-test";
+						version = "0.1.0";
+						src = ./.;
+
+						nativeBuildInputs = with pkgs; [ zig ffmpeg ];
+
+						buildPhase = ''
+							export HOME=$TMPDIR
+							export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+							zig build test
+						'';
+
+						installPhase = ''
+							mkdir -p $out
+							echo "tests passed" > $out/result
+						'';
+					};
+				});
+
 			devShells = forAllSystems (system:
 				let
 					pkgs = import nixpkgs { inherit system; };
