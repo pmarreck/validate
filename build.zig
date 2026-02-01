@@ -337,8 +337,10 @@ pub fn build(b: *std.Build) void {
 
     // On macOS, use libtool to bundle all dependencies into a single "fat" static library
     // This is required for Xcode integration since static libraries don't embed their dependencies
+    // Note: Only do this for native macOS builds - libtool isn't available when cross-compiling
     const is_macos = target.result.os.tag == .macos;
-    if (is_macos) {
+    const is_native_macos = is_macos and @import("builtin").os.tag == .macos;
+    if (is_native_macos) {
         // Collect all static library dependencies for bundling
         const lib_sources: []const std.Build.LazyPath = &.{
             lib.getEmittedBin(),

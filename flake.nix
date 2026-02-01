@@ -98,8 +98,8 @@
 					linux-x86_64 = mkValidate { targetSystem = "x86_64-linux"; };
 					linux-aarch64 = mkValidate { targetSystem = "aarch64-linux"; cross = true; };
 					windows-x86_64 = mkValidate { targetSystem = "x86_64-windows"; cross = true; };
-					# Note: macOS cross-compilation requires SDK headers not available on Linux
-					# Build macOS binaries natively with: nix build .#default (on a Mac)
+					macos-x86_64 = mkValidate { targetSystem = "x86_64-darwin"; cross = true; };
+					macos-aarch64 = mkValidate { targetSystem = "aarch64-darwin"; cross = true; };
 				} else { }));
 
 			# Checks for `nix flake check` / Garnix
