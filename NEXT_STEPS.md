@@ -205,22 +205,25 @@ Proposed solution:
 
 Note: This requires careful thread pool design to avoid nested parallelism issues (workers spawning workers).
 
-### libde265 SSE Optimization (BLOCKED)
+### libde265 Threading Fix (DONE - 2026-02-01)
 
-**Status**: SSE disabled on Linux due to upstream bug
+**Problem**: libde265 worker threads caused General Protection Faults (GPF) on Linux x86_64 during HEIC decode. The crash occurred in `intra_prediction_angular()` during multi-threaded decode.
 
-libde265 (the H.265/HEVC decoder used for HEIC validation) has SSE4.1-optimized code paths that cause General Protection Faults (GPF) on Linux. The crash occurs in `intra_prediction_angular()` during multi-threaded HEIC decode.
+**Solution**: Two-part fix:
+1. **Single-threaded decode**: Forked libheif to `pmarreck/libheif` (tag `v1.21.1-fix-zero-threads`) with a fix that respects `num_threads=0` as "no worker threads" instead of defaulting to 1.
+2. **Explicit thread control**: Updated `heif_validator.zig` to explicitly set `num_codec_threads=0` in decoding options, forcing single-threaded decode in the calling thread.
 
-**Current workaround**: SSE is disabled for ALL Linux builds in `deps/libde265/build.zig`. This forces the use of fallback C++ code paths which are slower but work correctly.
+**Files changed**:
+- `deps/libheif/build.zig.zon`: Points to pmarreck/libheif fork
+- `src/core/heif_validator.zig`: Uses heif_decoding_options with num_codec_threads=0
+- `deps/libde265/build.zig`: SSE still disabled on Linux as additional safety measure
 
-**Performance impact**: HEIC validation is slower on Linux than it could be with SSE. For single-file validation this is negligible, but for bulk HEIC processing it may be noticeable.
+**Performance impact**: HEIC validation runs single-threaded, which is slightly slower than multi-threaded but avoids the GPF crash. For file validation purposes, this is acceptable.
 
-**To re-enable SSE** (after upstream fix):
-1. Change `is_linux` back to `is_musl` in `deps/libde265/build.zig` line ~104
-2. File/reference upstream bug: https://github.com/strukturag/libde265/issues
-3. Test on Garnix CI (x86_64-linux) to verify fix
-
-**Technical details**: The GPF happens in the template function `intra_prediction_angular<unsigned char>` at intrapred.h:387. The negative array indexing pattern (`border[-x]`) relies on allocated memory before the pointer position. This works on macOS but fails on Linux, possibly due to different memory alignment or threading behavior.
+**To re-enable multi-threading** (if upstream libde265 fixes the GPF):
+1. Change `decode_options.*.num_codec_threads = 0` in heif_validator.zig to use a positive value
+2. Optionally re-enable SSE in deps/libde265/build.zig
+3. Test thoroughly on Linux CI
 
 ## Rich Metadata Extraction Feature
 

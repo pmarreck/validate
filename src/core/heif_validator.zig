@@ -188,8 +188,18 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
         std.debug.print("[HEIF] About to decode image: {d}x{d}\n", .{ width, height });
     }
 
+    // Allocate decoding options to control threading behavior.
+    // We explicitly set num_codec_threads=0 to force single-threaded decoding
+    // in the calling thread. This avoids GPF crashes in libde265 worker threads
+    // on Linux (see deps/libheif/build.zig.zon comment for details).
+    const decode_options = c.heif_decoding_options_alloc();
+    defer c.heif_decoding_options_free(decode_options);
+    if (decode_options != null) {
+        decode_options.*.num_codec_threads = 0; // Single-threaded decode
+    }
+
     var image: ?*c.struct_heif_image = null;
-    err = c.heif_decode_image(handle, &image, c.heif_colorspace_RGB, c.heif_chroma_interleaved_RGBA, null);
+    err = c.heif_decode_image(handle, &image, c.heif_colorspace_RGB, c.heif_chroma_interleaved_RGBA, decode_options);
     if (err.code != c.heif_error_Ok or image == null) {
         // For unsupported variants, decode failure is expected - accept as structural
         if (is_unsupported_variant) {
