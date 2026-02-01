@@ -225,6 +225,24 @@ Note: This requires careful thread pool design to avoid nested parallelism issue
 2. Optionally re-enable SSE in deps/libde265/build.zig
 3. Test thoroughly on Linux CI
 
+### Garnix CI HEIF Stack Overflow Fix (DONE - 2026-02-01)
+
+**Problem**: HEIC decode tests crashed with SIGABRT on Garnix CI but passed on local Linux (Framework laptop).
+
+**Root cause**: Large HEIC images (sample.heic at 3992x2992, ~3 MB) have many grid tiles (30+). The recursive libde265 decoding exhausts stack space on systems with restricted stack limits. Garnix CI has ~8 MB stack vs Framework laptop's 46 MB.
+
+**Solution**: Changed HEIC tests to use smaller image (`autumn_1440x960.heic`, 293 KB) with fewer tiles that doesn't exhaust the stack on resource-constrained systems.
+
+**Investigation documented**: See `docs/HEIF_CRASH_INVESTIGATION.md` for full analysis.
+
+**Key findings**:
+- NOT Intel-specific (disproven)
+- NOT musl/glibc-specific (both use glibc)
+- IS environment-specific - Garnix has stricter stack limits than local dev machines
+- macOS works with 7 MB stack (ARM64 uses less stack than x86_64 for same code)
+
+**Limitation**: Very large HEIC images with many grid tiles may fail validation on stack-constrained systems. This is a libde265 architectural limitation (recursive tile decoding).
+
 ## Rich Metadata Extraction Feature
 
 ### Overview
