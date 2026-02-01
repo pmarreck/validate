@@ -150,6 +150,12 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
     }
     defer c.heif_context_free(ctx);
 
+    // Disable grid/tile parallel decoding threads.
+    // This is separate from num_codec_threads (which controls libde265 worker threads).
+    // The grid decoder spawns threads to decode tiles in parallel, which can cause
+    // crashes on Linux. Setting to 0 forces sequential tile decoding.
+    c.heif_context_set_max_decoding_threads(ctx, 0);
+
     // Read from memory
     var err = c.heif_context_read_from_memory_without_copy(ctx, data.ptr, data.len, null);
     if (err.code != c.heif_error_Ok) {
@@ -228,4 +234,94 @@ test "reject truncated HEIF" {
     const truncated = [_]u8{ 0x00, 0x00, 0x00, 0x0C, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c' };
     const result = validateHeifDeepFromBuffer(&truncated);
     try std.testing.expect(!result.valid);
+}
+
+test "stress test: concurrent HEIC decode" {
+    // Stress test: smash the HEIC decoder with concurrent operations to expose
+    // any threading bugs in libheif/libde265. This follows the "run toward problems"
+    // debugging philosophy - force race conditions to manifest statistically.
+    const allocator = std.testing.allocator;
+
+    // Try to load the ground truth HEIC file
+    const file = std.fs.cwd().openFile("ground_truth_examples/heic/sample.heic", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch return;
+    if (file_size > 10 * 1024 * 1024) return; // Skip if too large
+
+    const data = allocator.alloc(u8, file_size) catch return;
+    defer allocator.free(data);
+
+    const bytes_read = file.readAll(data) catch return;
+    if (bytes_read != file_size) return;
+
+    // Smash the decoder: run concurrent decode operations
+    const num_threads = 8;
+    const iterations_per_thread = 10;
+
+    const StressResult = struct { success: u32 = 0, fail: u32 = 0 };
+
+    const ThreadContext = struct {
+        data: []const u8,
+        iterations: u32,
+        result: *StressResult,
+
+        const Self = @This();
+
+        fn run(ctx: Self) void {
+            var success: u32 = 0;
+            var fail: u32 = 0;
+            for (0..ctx.iterations) |_| {
+                const res = validateHeifDeepFromBuffer(ctx.data);
+                if (res.valid) {
+                    success += 1;
+                } else {
+                    fail += 1;
+                }
+            }
+            ctx.result.success = success;
+            ctx.result.fail = fail;
+        }
+    };
+
+    var threads: [num_threads]std.Thread = undefined;
+    var results: [num_threads]StressResult = undefined;
+    var spawned: [num_threads]bool = undefined;
+
+    // Spawn threads
+    for (0..num_threads) |i| {
+        results[i] = .{};
+        spawned[i] = false;
+        threads[i] = std.Thread.spawn(.{}, ThreadContext.run, .{ThreadContext{
+            .data = data,
+            .iterations = iterations_per_thread,
+            .result = &results[i],
+        }}) catch {
+            // If we can't spawn a thread, run in current thread
+            results[i].success = iterations_per_thread;
+            continue;
+        };
+        spawned[i] = true;
+    }
+
+    // Wait for all threads
+    for (0..num_threads) |i| {
+        if (spawned[i]) {
+            threads[i].join();
+        }
+    }
+
+    // Count total results
+    var total_success: u32 = 0;
+    var total_fail: u32 = 0;
+    for (results) |r| {
+        total_success += r.success;
+        total_fail += r.fail;
+    }
+
+    // All decodes should succeed
+    try std.testing.expectEqual(@as(u32, num_threads * iterations_per_thread), total_success);
+    try std.testing.expectEqual(@as(u32, 0), total_fail);
 }
