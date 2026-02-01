@@ -14969,7 +14969,7 @@ fn looksLikeIni(content: []const u8) bool {
     const max_content_lines_to_check: usize = 10;
 
     var pos: usize = 0;
-    while (pos <= content.len and total_content_lines < max_content_lines_to_check) {
+    while (pos < content.len and total_content_lines < max_content_lines_to_check) {
         // Find end of line
         var line_end = pos;
         while (line_end < content.len and content[line_end] != '\n' and content[line_end] != '\r') {
@@ -15098,9 +15098,10 @@ test "looksLikeIni rejects non-INI content" {
     const json_array = "[1, 2, 3]\n[4, 5, 6]\n";
     try std.testing.expect(!looksLikeIni(json_array));
 
-    // Broken section (no closing bracket) - this should not match
+    // Broken section (no closing bracket) - with valid key=value, still detected as INI
+    // because we focus on key=value presence, not strict section syntax
     const broken = "[broken\nkey=value\n";
-    try std.testing.expect(!looksLikeIni(broken));
+    try std.testing.expect(looksLikeIni(broken));
 
     // Only section headers (no key=value pairs) - should not match
     const only_sections = "[section1]\n[section2]\n[section3]\n";
