@@ -205,6 +205,23 @@ Proposed solution:
 
 Note: This requires careful thread pool design to avoid nested parallelism issues (workers spawning workers).
 
+### libde265 SSE Optimization (BLOCKED)
+
+**Status**: SSE disabled on Linux due to upstream bug
+
+libde265 (the H.265/HEVC decoder used for HEIC validation) has SSE4.1-optimized code paths that cause General Protection Faults (GPF) on Linux. The crash occurs in `intra_prediction_angular()` during multi-threaded HEIC decode.
+
+**Current workaround**: SSE is disabled for ALL Linux builds in `deps/libde265/build.zig`. This forces the use of fallback C++ code paths which are slower but work correctly.
+
+**Performance impact**: HEIC validation is slower on Linux than it could be with SSE. For single-file validation this is negligible, but for bulk HEIC processing it may be noticeable.
+
+**To re-enable SSE** (after upstream fix):
+1. Change `is_linux` back to `is_musl` in `deps/libde265/build.zig` line ~104
+2. File/reference upstream bug: https://github.com/strukturag/libde265/issues
+3. Test on Garnix CI (x86_64-linux) to verify fix
+
+**Technical details**: The GPF happens in the template function `intra_prediction_angular<unsigned char>` at intrapred.h:387. The negative array indexing pattern (`border[-x]`) relies on allocated memory before the pointer position. This works on macOS but fails on Linux, possibly due to different memory alignment or threading behavior.
+
 ## Rich Metadata Extraction Feature
 
 ### Overview

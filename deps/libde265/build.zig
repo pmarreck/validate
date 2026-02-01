@@ -98,11 +98,21 @@ pub fn build(b: *std.Build) void {
     }
 
     // Add SIMD sources based on target architecture and feature set
-    // Note: Disable SSE on musl - libde265's SSE code causes GPF due to alignment issues
+    //
+    // IMPORTANT: SSE is disabled on Linux due to a bug in libde265 v1.0.15 that causes
+    // General Protection Faults (GPF) during HEIC decoding. The crash occurs in
+    // intra_prediction_angular() in intrapred.h during multi-threaded decode.
+    // This affects both musl and glibc builds on x86_64 Linux.
+    //
+    // Upstream issue: https://github.com/strukturag/libde265/issues (needs filing)
+    //
+    // FUTURE OPTIMIZATION: Re-enable SSE on Linux once the upstream bug is fixed.
+    // The fallback C++ code works correctly but is slower than SSE-optimized paths.
+    // To re-enable, change `is_linux` below back to just checking for musl.
     const cpu_arch = target.result.cpu.arch;
     const cpu_features = target.result.cpu.features;
-    const is_musl = target.result.abi == .musl;
-    const has_sse4_1 = !is_musl and (cpu_arch == .x86_64 or cpu_arch == .x86) and
+    const is_linux = target.result.os.tag == .linux;
+    const has_sse4_1 = !is_linux and (cpu_arch == .x86_64 or cpu_arch == .x86) and
         std.Target.x86.featureSetHas(cpu_features, .sse4_1);
 
     if (has_sse4_1) {
