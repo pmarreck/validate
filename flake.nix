@@ -7,11 +7,17 @@
 
 	outputs = { self, nixpkgs }:
 		let
-			systems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" ];
-			forAllSystems = nixpkgs.lib.genAttrs systems;
+			# All systems for devShells (local development)
+			allSystems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" ];
+			forAllSystems = nixpkgs.lib.genAttrs allSystems;
+
+			# Darwin only for packages/checks (Zig deps need network, Linux sandbox blocks it)
+			darwinSystems = [ "aarch64-darwin" "x86_64-darwin" ];
+			forDarwinSystems = nixpkgs.lib.genAttrs darwinSystems;
 		in {
 			# Packages for Garnix/Nix builds
-			packages = forAllSystems (system:
+			# NOTE: Darwin only - Linux sandbox blocks Zig's network dep fetching
+			packages = forDarwinSystems (system:
 				let
 					pkgs = import nixpkgs { inherit system; };
 					isDarwin = pkgs.stdenv.isDarwin;
@@ -22,13 +28,9 @@
 						src = ./.;
 
 						# libtool needed on Darwin for bundling static libraries
-						# git needed for fetching zig dependencies
+						# git/cacert needed for fetching zig dependencies
 						nativeBuildInputs = with pkgs; [ zig git cacert ]
 							++ pkgs.lib.optionals isDarwin [ darwin.cctools ];
-
-						# Zig's package manager needs network access to fetch dependencies
-						# This makes the build impure but is necessary for zon dependencies
-						__noChroot = true;
 
 						# Zig handles all C deps internally via build.zig
 						buildPhase = ''
@@ -50,7 +52,8 @@
 				});
 
 			# Checks for `nix flake check` / Garnix
-			checks = forAllSystems (system:
+			# NOTE: Darwin only - Linux sandbox blocks Zig's network dep fetching
+			checks = forDarwinSystems (system:
 				let
 					pkgs = import nixpkgs { inherit system; };
 				in {
@@ -62,9 +65,6 @@
 						src = ./.;
 
 						nativeBuildInputs = with pkgs; [ zig ffmpeg git cacert ];
-
-						# Zig's package manager needs network access
-						__noChroot = true;
 
 						buildPhase = ''
 							export HOME=$TMPDIR
