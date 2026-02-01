@@ -22,13 +22,20 @@
 						src = ./.;
 
 						# libtool needed on Darwin for bundling static libraries
-						nativeBuildInputs = with pkgs; [ zig ]
+						# git needed for fetching zig dependencies
+						nativeBuildInputs = with pkgs; [ zig git cacert ]
 							++ pkgs.lib.optionals isDarwin [ darwin.cctools ];
+
+						# Zig's package manager needs network access to fetch dependencies
+						# This makes the build impure but is necessary for zon dependencies
+						__noChroot = true;
 
 						# Zig handles all C deps internally via build.zig
 						buildPhase = ''
 							export HOME=$TMPDIR
 							export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+							export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+							export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
 							zig build -Doptimize=ReleaseFast --release=fast
 						'';
 
@@ -54,11 +61,16 @@
 						version = "0.1.0";
 						src = ./.;
 
-						nativeBuildInputs = with pkgs; [ zig ffmpeg ];
+						nativeBuildInputs = with pkgs; [ zig ffmpeg git cacert ];
+
+						# Zig's package manager needs network access
+						__noChroot = true;
 
 						buildPhase = ''
 							export HOME=$TMPDIR
 							export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+							export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
+							export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
 							zig build test
 						'';
 
