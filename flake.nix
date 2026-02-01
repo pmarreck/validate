@@ -72,6 +72,7 @@
 			devShells = forAllSystems (system:
 				let
 					pkgs = import nixpkgs { inherit system; };
+					isDarwin = pkgs.stdenv.isDarwin;
 					pcre2Static = pkgs.pcre2.overrideAttrs (old: {
 						dontDisableStatic = true;
 					});
@@ -92,7 +93,6 @@
 				in {
 					default = pkgs.mkShell {
 						packages = with pkgs; [
-							xcodegen
 							zig
 							git
 							ripgrep
@@ -105,7 +105,7 @@
 							sqlite
 							zlib
 							ffmpeg  # For testing ffmpeg fallback validation paths
-						];
+						] ++ pkgs.lib.optionals isDarwin [ xcodegen ];
 						shellHook = ''
 							unset LD
 							unset SDKROOT
