@@ -26,6 +26,21 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] Return continuable error for unknown directory types
 - [ ] See NEXT_STEPS.md for full design
 
+### HEIC/Intel Crash Investigation (SIGABRT on Garnix CI)
+- [x] Disabled SSE on Linux libde265 build (crash persisted in fallback C++ code)
+- [x] Set num_codec_threads=0 to disable libde265 internal worker threads
+- [x] Set heif_context_set_max_decoding_threads(ctx, 0) to disable grid tile parallelism
+- [x] Forked libheif to fix num_threads=0 handling in decoder_libde265.cc
+- [x] Added -UNDEBUG to libde265 to enable C assertions
+- [x] Added concurrent stress test (8 threads × 10 iterations)
+- [x] Verified stress test passes on AMD Ryzen 9 (Framework laptop)
+- [x] Added verbose progress output to stress test for crash diagnosis
+- [ ] **WAITING**: Garnix CI to run with verbose output - will show crash location
+- [ ] If warmup single-decode crashes: issue is in basic decode path
+- [ ] If concurrent decode crashes: possible race condition in shared state
+- [ ] Consider forking libde265 to add more assertions/debug output
+- Note: Crash is SIGABRT (assertion failure), Intel-specific, affects Garnix CI but not AMD
+
 ### Other
 - [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
 - [ ] Fix last failed CI build (inspect gh logs, resolve, rerun) (2026-01-26 04:22 EST)
