@@ -150,6 +150,14 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
     }
     defer c.heif_context_free(ctx);
 
+    // Debug flag for tracing execution (helps diagnose CI crashes)
+    const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
+
+    // Debug: print context creation success
+    if (debug_enabled) {
+        std.debug.print("[HEIF] Context allocated successfully, data size: {d} bytes\n", .{data.len});
+    }
+
     // Disable grid/tile parallel decoding threads.
     // This is separate from num_codec_threads (which controls libde265 worker threads).
     // The grid decoder spawns threads to decode tiles in parallel, which can cause
@@ -188,8 +196,6 @@ pub fn validateHeifDeepFromBuffer(data: []const u8) HeifValidationResult {
     }
 
     // Attempt to decode the image (this validates the bitstream)
-    // Debug: flush stderr before decode in case of crash
-    const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
     if (debug_enabled) {
         std.debug.print("[HEIF] About to decode image: {d}x{d}\n", .{ width, height });
     }
