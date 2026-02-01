@@ -248,8 +248,11 @@ test "stress test: concurrent HEIC decode" {
     // debugging philosophy - force race conditions to manifest statistically.
     const allocator = std.testing.allocator;
 
+    std.debug.print("\n[STRESS TEST] Starting concurrent HEIC decode stress test...\n", .{});
+
     // Try to load the ground truth HEIC file
     const file = std.fs.cwd().openFile("ground_truth_examples/heic/sample.heic", .{}) catch {
+        std.debug.print("[STRESS TEST] Skipping: sample.heic not found\n", .{});
         return; // Skip if file doesn't exist
     };
     defer file.close();
@@ -263,9 +266,23 @@ test "stress test: concurrent HEIC decode" {
     const bytes_read = file.readAll(data) catch return;
     if (bytes_read != file_size) return;
 
+    std.debug.print("[STRESS TEST] Loaded {d} bytes from sample.heic\n", .{file_size});
+
+    // First, run a single decode to verify it works at all
+    std.debug.print("[STRESS TEST] Running single decode warmup...\n", .{});
+    const warmup_result = validateHeifDeepFromBuffer(data);
+    std.debug.print("[STRESS TEST] Warmup result: valid={}, structural_only={}\n", .{ warmup_result.valid, warmup_result.structural_only });
+    if (!warmup_result.valid) {
+        std.debug.print("[STRESS TEST] Warmup failed: {s}\n", .{warmup_result.error_message orelse "unknown"});
+        try std.testing.expect(warmup_result.valid);
+        return;
+    }
+
     // Smash the decoder: run concurrent decode operations
     const num_threads = 8;
     const iterations_per_thread = 10;
+
+    std.debug.print("[STRESS TEST] Starting {d} threads x {d} iterations = {d} total decodes\n", .{ num_threads, iterations_per_thread, num_threads * iterations_per_thread });
 
     const StressResult = struct { success: u32 = 0, fail: u32 = 0 };
 
@@ -273,22 +290,26 @@ test "stress test: concurrent HEIC decode" {
         data: []const u8,
         iterations: u32,
         result: *StressResult,
+        thread_id: u32,
 
         const Self = @This();
 
         fn run(ctx: Self) void {
+            std.debug.print("[THREAD {d}] Starting {d} iterations\n", .{ ctx.thread_id, ctx.iterations });
             var success: u32 = 0;
             var fail: u32 = 0;
-            for (0..ctx.iterations) |_| {
+            for (0..ctx.iterations) |i| {
                 const res = validateHeifDeepFromBuffer(ctx.data);
                 if (res.valid) {
                     success += 1;
                 } else {
                     fail += 1;
+                    std.debug.print("[THREAD {d}] Iteration {d} FAILED: {s}\n", .{ ctx.thread_id, i, res.error_message orelse "unknown" });
                 }
             }
             ctx.result.success = success;
             ctx.result.fail = fail;
+            std.debug.print("[THREAD {d}] Completed: {d} success, {d} fail\n", .{ ctx.thread_id, success, fail });
         }
     };
 
@@ -304,13 +325,17 @@ test "stress test: concurrent HEIC decode" {
             .data = data,
             .iterations = iterations_per_thread,
             .result = &results[i],
+            .thread_id = @intCast(i),
         }}) catch {
             // If we can't spawn a thread, run in current thread
+            std.debug.print("[STRESS TEST] Failed to spawn thread {d}, running in main\n", .{i});
             results[i].success = iterations_per_thread;
             continue;
         };
         spawned[i] = true;
     }
+
+    std.debug.print("[STRESS TEST] All threads spawned, waiting for completion...\n", .{});
 
     // Wait for all threads
     for (0..num_threads) |i| {
@@ -319,6 +344,8 @@ test "stress test: concurrent HEIC decode" {
         }
     }
 
+    std.debug.print("[STRESS TEST] All threads completed\n", .{});
+
     // Count total results
     var total_success: u32 = 0;
     var total_fail: u32 = 0;
@@ -326,6 +353,8 @@ test "stress test: concurrent HEIC decode" {
         total_success += r.success;
         total_fail += r.fail;
     }
+
+    std.debug.print("[STRESS TEST] Final results: {d} success, {d} fail\n", .{ total_success, total_fail });
 
     // All decodes should succeed
     try std.testing.expectEqual(@as(u32, num_threads * iterations_per_thread), total_success);
