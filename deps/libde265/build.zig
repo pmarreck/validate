@@ -24,6 +24,9 @@ pub fn build(b: *std.Build) void {
     // -DNDEBUG explicitly disables assertions which cause SIGABRT on Intel Linux x86_64.
     // Previous testing showed that -UNDEBUG caused SIGABRT on Intel CPUs due to
     // assertions that fire for non-fatal conditions (possibly alignment-related).
+    //
+    // WORKAROUND: On Linux x86_64, we skip full HEIC decode due to Intel-specific crashes
+    // in libde265. See HEIC/Intel Crash Investigation in PLAN.md for details.
     const cxxflags: []const []const u8 = if (is_windows) &.{
         "-DLIBDE265_EXPORTS",
         "-DHAVE_STDINT_H",
