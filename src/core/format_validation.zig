@@ -25183,6 +25183,17 @@ test "FormatValidator deep validates real HEIC from ground truth" {
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/heic/sample.heic") catch return;
     defer allocator.free(path);
 
+    // Diagnostic output for Garnix SIGABRT debugging - print stack limit
+    if (comptime @import("builtin").os.tag == .linux) {
+        const RLIM_INF: std.posix.rlim_t = std.math.maxInt(std.posix.rlim_t);
+        if (std.posix.getrlimit(.STACK)) |lim| {
+            const stack_mb = if (lim.cur == RLIM_INF) 9999 else lim.cur / (1024 * 1024);
+            std.debug.print("\n*** TEST START: FormatValidator HEIC ground truth, stack_limit={d}MB ***\n", .{stack_mb});
+        } else |_| {
+            std.debug.print("\n*** TEST START: FormatValidator HEIC ground truth, stack_limit=UNKNOWN ***\n", .{});
+        }
+    }
+
     var validator = FormatValidator.initDeep();
     defer validator.deinit();
 
