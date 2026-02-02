@@ -183,6 +183,8 @@
 							"--enable-static"
 						];
 					});
+					isLinux = pkgs.stdenv.isLinux;
+					isX86_64Linux = system == "x86_64-linux";
 				in {
 					default = pkgs.mkShell {
 						packages = with pkgs; [
@@ -198,7 +200,8 @@
 							sqlite
 							zlib
 							ffmpeg  # For testing ffmpeg fallback validation paths
-						] ++ pkgs.lib.optionals isDarwin [ xcodegen ];
+						] ++ pkgs.lib.optionals isDarwin [ xcodegen ]
+						  ++ pkgs.lib.optionals isX86_64Linux [ wineWowPackages.stable ];  # For Windows cross-testing
 						shellHook = ''
 							unset LD
 							unset SDKROOT

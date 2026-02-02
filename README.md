@@ -46,9 +46,10 @@ Runs `./test` first. When `DEBUG` is unset/0, dependencies build in ReleaseFast 
 ./test
 ```
 
-## Windows Tests (CrossOver)
+## Windows Tests
 ```bash
 ./test-windows
 ```
-Requires a CrossOver bottle named `windows-dev-test` (or set `CROSSOVER_BOTTLE`).
-Note: this is a temporary external dependency; we plan to make the runner self-contained via `flake.nix`.
+**On Linux (x86_64):** Uses Wine from the Nix flake devShell (automatically provided).
+
+**On macOS:** Uses CrossOver. Requires a bottle named `windows-dev-test` (or set `CROSSOVER_BOTTLE`).

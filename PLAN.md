@@ -42,7 +42,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - Note: Crash is SIGABRT (assertion failure), Intel-specific, affects Garnix CI but not AMD
 
 ### Other
-- [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
+- [x] Add flake-provided Wine for Windows tests on Linux (CrossOver still needed on macOS) (2026-02-02)
 - [x] Fix last failed CI build (git identity in tests) (2026-02-01 ~20:45 EST)
 - [x] Create utility script to check forked dependencies for upstream updates (scripts/check-fork-updates) (2026-02-01 ~21:15 EST)
 ## Recently Completed

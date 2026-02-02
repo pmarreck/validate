@@ -9,25 +9,53 @@ set -euo pipefail
 unset LD
 unset SDKROOT
 
-default_wine="/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/CrossOver-Hosted Application/wine"
-wine_path="${CROSSOVER_WINE:-$default_wine}"
-bottle="${CROSSOVER_BOTTLE:-windows-dev-test}"
-bottle_dir="$HOME/Library/Application Support/CrossOver/Bottles/$bottle"
+# Detect platform and configure wine accordingly
+case "$(uname -s)" in
+	Linux)
+		# Use nixpkgs-provided Wine on Linux
+		wine_path="$(command -v wine64 2>/dev/null || command -v wine 2>/dev/null || true)"
+		if [[ -z "$wine_path" || ! -x "$wine_path" ]]; then
+			echo "Error: Wine not found in PATH" >&2
+			echo "On NixOS/nix, Wine should be provided by the flake devShell (x86_64-linux only)" >&2
+			exit 2
+		fi
+		# Wine on Linux uses a prefix directory
+		export WINEPREFIX="${WINEPREFIX:-$HOME/.wine}"
+		echo "Using Wine from: $wine_path"
+		echo "Wine prefix: $WINEPREFIX"
+		;;
+	Darwin)
+		# Use CrossOver's Wine on macOS (fallback to user-specified path)
+		default_wine="/Applications/CrossOver.app/Contents/SharedSupport/CrossOver/CrossOver-Hosted Application/wine"
+		wine_path="${CROSSOVER_WINE:-$default_wine}"
+		bottle="${CROSSOVER_BOTTLE:-windows-dev-test}"
+		bottle_dir="$HOME/Library/Application Support/CrossOver/Bottles/$bottle"
 
-if [[ ! -x "$wine_path" ]]; then
-	echo "Error: CrossOver wine not found at: $wine_path" >&2
-	exit 2
-fi
+		if [[ ! -x "$wine_path" ]]; then
+			echo "Error: CrossOver wine not found at: $wine_path" >&2
+			echo "Install CrossOver (https://www.codeweavers.com/crossover), or set CROSSOVER_WINE" >&2
+			echo "Alternatively, run tests on Linux where nixpkgs provides Wine" >&2
+			exit 2
+		fi
 
-if [[ ! -d "$bottle_dir" ]]; then
-	echo "Error: CrossOver bottle '$bottle' not found at: $bottle_dir" >&2
-	echo "Create the bottle in CrossOver UI, then re-run." >&2
-	exit 2
-fi
+		if [[ ! -d "$bottle_dir" ]]; then
+			echo "Error: CrossOver bottle '$bottle' not found at: $bottle_dir" >&2
+			echo "Create the bottle in CrossOver UI, then re-run." >&2
+			exit 2
+		fi
+		echo "Using CrossOver Wine: $wine_path"
+		echo "Using bottle: $bottle"
+		;;
+	*)
+		echo "Error: Unsupported platform: $(uname -s)" >&2
+		exit 2
+		;;
+esac
 
+# Build and run Windows tests
 zig build test \
 	-Dtarget=x86_64-windows-gnu \
 	-Dwindows-test-wine="$wine_path" \
-	-Dwindows-test-bottle="$bottle" \
+	${bottle:+-Dwindows-test-bottle="$bottle"} \
 	--summary all \
 	"$@"
