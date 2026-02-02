@@ -74,10 +74,22 @@ void core_clear_error(void);
  */
 void core_preinit(void);
 
-/* ========== Format Validation ========== */
+/* ========== Format Validation (DEPRECATED) ========== */
+/*
+ * DEPRECATED: The handle-based API below is deprecated as of v0.2.0.
+ * Use the new simplified API instead:
+ *   - validate() for single file validation
+ *   - validate_batch() for parallel batch validation
+ *   - free_result() to free owned results
+ *   - get_default_threads() for CPU core count
+ *
+ * The handle-based API will be removed in v1.0.0.
+ * See ARCHITECTURE.md for migration guidance.
+ */
 
 /**
- * Opaque format validator handle.
+ * DEPRECATED: Opaque format validator handle.
+ * Use validate() or validate_batch() instead.
  */
 typedef struct format_validator format_validator_t;
 
@@ -175,41 +187,47 @@ typedef void (*validation_callback_t)(
 );
 
 /**
- * Creates a new format validator.
+ * DEPRECATED: Creates a new format validator.
+ * Use validate() or validate_batch() instead.
  * @param out Pointer to receive the validator handle.
  * @return ES_OK on success.
  */
 error_t format_validator_create(format_validator_t** out);
 
 /**
- * Creates a new deep format validator.
+ * DEPRECATED: Creates a new deep format validator.
+ * Use validate() or validate_batch() instead.
  * @param out Pointer to receive the validator handle.
  * @return ES_OK on success.
  */
 error_t format_validator_create_deep(format_validator_t** out);
 
 /**
- * Destroys a format validator.
+ * DEPRECATED: Destroys a format validator.
+ * Use free_result() to free results from the new API.
  * @param validator The validator handle.
  */
 void format_validator_destroy(format_validator_t* validator);
 
 /**
- * Enables or disables format validation.
+ * DEPRECATED: Enables or disables format validation.
+ * The new API always performs deep validation.
  * @param validator The validator handle.
  * @param enabled 1 to enable, 0 to disable.
  */
 void format_validator_set_enabled(format_validator_t* validator, int enabled);
 
 /**
- * Checks if format validation is enabled.
+ * DEPRECATED: Checks if format validation is enabled.
+ * The new API always performs validation.
  * @param validator The validator handle.
  * @return 1 if enabled, 0 if disabled.
  */
 int format_validator_is_enabled(const format_validator_t* validator);
 
 /**
- * Validates a file at the given path.
+ * DEPRECATED: Validates a file at the given path.
+ * Use validate() instead.
  * @param validator The validator handle.
  * @param path The file path (null-terminated).
  * @param out Pointer to receive the validation result.
@@ -222,7 +240,8 @@ error_t format_validate_file(
 );
 
 /**
- * Validates a file and returns extended results.
+ * DEPRECATED: Validates a file and returns extended results.
+ * Use validate() instead.
  * Strings are valid until next call on same validator.
  * @param validator The validator handle.
  * @param path The file path (null-terminated).
@@ -236,7 +255,8 @@ error_t format_validate_file_ex(
 );
 
 /**
- * Validates a file or directory tree using parallel workers.
+ * DEPRECATED: Validates a file or directory tree using parallel workers.
+ * Use validate_batch() instead (caller enumerates files).
  * @param validator The validator handle.
  * @param path File or directory path (null-terminated).
  * @param jobs Number of worker threads (0 = auto).
@@ -255,7 +275,8 @@ error_t format_validate_path_parallel(
 );
 
 /**
- * Validation options for parallel path validation.
+ * DEPRECATED: Validation options for parallel path validation.
+ * Use validate_batch() with caller-managed file enumeration.
  */
 typedef struct {
     size_t jobs;    /**< Number of worker threads (0 = auto) */
@@ -264,7 +285,8 @@ typedef struct {
 } validation_options_t;
 
 /**
- * Validates a file or directory tree using parallel workers with extended options.
+ * DEPRECATED: Validates a file or directory tree using parallel workers with extended options.
+ * Use validate_batch() instead (caller enumerates files).
  * @param validator The validator handle.
  * @param path File or directory path (null-terminated).
  * @param options Validation options.

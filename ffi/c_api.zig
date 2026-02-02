@@ -265,7 +265,9 @@ export fn core_clear_error() void {
 	errors.clearLastError();
 }
 
-/// Creates a new format validator.
+/// DEPRECATED: Creates a new format validator.
+/// Use validate() or validate_batch() instead.
+/// Will be removed in v1.0.0.
 export fn format_validator_create(out: *?*FormatValidator) i32 {
 	const v = std.heap.page_allocator.create(FormatValidator) catch {
 		errors.setLastError(.internal_out_of_memory, "Failed to allocate format validator", .{});
@@ -280,7 +282,9 @@ export fn format_validator_create(out: *?*FormatValidator) i32 {
 	return 0;
 }
 
-/// Creates a new deep format validator.
+/// DEPRECATED: Creates a new deep format validator.
+/// Use validate() or validate_batch() instead.
+/// Will be removed in v1.0.0.
 export fn format_validator_create_deep(out: *?*FormatValidator) i32 {
 	const v = std.heap.page_allocator.create(FormatValidator) catch {
 		errors.setLastError(.internal_out_of_memory, "Failed to allocate format validator", .{});
@@ -295,7 +299,9 @@ export fn format_validator_create_deep(out: *?*FormatValidator) i32 {
 	return 0;
 }
 
-/// Destroys a format validator.
+/// DEPRECATED: Destroys a format validator.
+/// Use free_result() to free results from the new API.
+/// Will be removed in v1.0.0.
 export fn format_validator_destroy(validator: ?*FormatValidator) void {
 	const v = validator orelse return;
 	v.validator.deinit();
@@ -303,19 +309,25 @@ export fn format_validator_destroy(validator: ?*FormatValidator) void {
 	std.heap.page_allocator.destroy(v);
 }
 
-/// Enables or disables format validation.
+/// DEPRECATED: Enables or disables format validation.
+/// The new API always performs deep validation.
+/// Will be removed in v1.0.0.
 export fn format_validator_set_enabled(validator: ?*FormatValidator, enabled: c_int) void {
 	const v = validator orelse return;
 	v.validator.setEnabled(enabled != 0);
 }
 
-/// Checks if format validation is enabled.
+/// DEPRECATED: Checks if format validation is enabled.
+/// The new API always performs validation.
+/// Will be removed in v1.0.0.
 export fn format_validator_is_enabled(validator: ?*const FormatValidator) c_int {
 	const v = validator orelse return 0;
 	return if (v.validator.enabled) 1 else 0;
 }
 
-/// Validates a file at the given path.
+/// DEPRECATED: Validates a file at the given path.
+/// Use validate() instead.
+/// Will be removed in v1.0.0.
 export fn format_validate_file(
 	validator: ?*FormatValidator,
 	path: ?[*:0]const u8,
@@ -343,7 +355,9 @@ export fn format_validate_file(
 	return 0;
 }
 
-/// Validates a file and returns extended results.
+/// DEPRECATED: Validates a file and returns extended results.
+/// Use validate() instead.
+/// Will be removed in v1.0.0.
 /// Strings in ValidationResultEx are valid until next call on same validator.
 export fn format_validate_file_ex(
 	validator: ?*FormatValidator,
@@ -408,7 +422,9 @@ export fn format_validate_file_ex(
 	return 0;
 }
 
-/// Validates a file or directory tree using parallel workers.
+/// DEPRECATED: Validates a file or directory tree using parallel workers.
+/// Use validate_batch() instead (caller enumerates files).
+/// Will be removed in v1.0.0.
 export fn format_validate_path_parallel(
 	validator: ?*FormatValidator,
 	path: ?[*:0]const u8,
@@ -477,7 +493,9 @@ pub const ValidationOptions = extern struct {
 	seed: u64 = 0,
 };
 
-/// Validates a file or directory tree using parallel workers with extended options.
+/// DEPRECATED: Validates a file or directory tree using parallel workers with extended options.
+/// Use validate_batch() instead (caller enumerates files).
+/// Will be removed in v1.0.0.
 export fn format_validate_path_parallel_ex(
 	validator: ?*FormatValidator,
 	path: ?[*:0]const u8,
