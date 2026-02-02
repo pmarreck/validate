@@ -179,12 +179,18 @@ pub const MAX_ZIP_ENTRY_SIZE: u64 = 512 * 1024 * 1024; // 512 MiB
 pub const BundleType = enum {
     none, // Not a bundle directory
     git, // .git directory - git repository
-    // Future: app, framework, bundle (macOS), xcodeproj, xcworkspace
+    macos_app, // .app bundle - macOS application
+    macos_framework, // .framework bundle - macOS framework
+    macos_bundle, // .bundle - macOS plugin/bundle
+    // Future: xcodeproj, xcworkspace
 
     pub fn description(self: BundleType) []const u8 {
         return switch (self) {
             .none => "Not a bundle",
             .git => "Git Repository",
+            .macos_app => "macOS Application Bundle",
+            .macos_framework => "macOS Framework",
+            .macos_bundle => "macOS Bundle",
         };
     }
 };
@@ -204,7 +210,18 @@ pub fn detectBundleType(path: []const u8) BundleType {
             }
         }
     }
-    // TODO: Add macOS bundle detection (.app, .framework, .bundle)
+    // Check for .app bundle (macOS application) - must end with ".app"
+    if (std.mem.endsWith(u8, path, ".app")) {
+        return .macos_app;
+    }
+    // Check for .framework bundle (macOS framework)
+    if (std.mem.endsWith(u8, path, ".framework")) {
+        return .macos_framework;
+    }
+    // Check for .bundle (macOS plugin/bundle)
+    if (std.mem.endsWith(u8, path, ".bundle")) {
+        return .macos_bundle;
+    }
     return .none;
 }
 
@@ -420,6 +437,9 @@ pub const FileFormat = enum {
     pe, // Windows PE (Portable Executable) - .exe, .dll, .sys, .scr
     // Bundle formats (directories validated as a unit)
     git_repository, // Git repository (.git directory)
+    macos_app, // macOS application bundle (.app)
+    macos_framework, // macOS framework bundle (.framework)
+    macos_bundle, // macOS bundle/plugin (.bundle)
 
     pub fn description(self: FileFormat) []const u8 {
         return switch (self) {
@@ -585,6 +605,9 @@ pub const FileFormat = enum {
             .ds_store => "macOS DS_Store",
             .pe => "Windows PE Executable",
             .git_repository => "Git Repository",
+            .macos_app => "macOS Application Bundle",
+            .macos_framework => "macOS Framework",
+            .macos_bundle => "macOS Bundle",
         };
     }
 
@@ -642,6 +665,9 @@ pub const FileFormat = enum {
             .ds_store => true, // macOS DS_Store (structural only)
             .pe => true, // Windows PE executable
             .git_repository => true, // Git repository validation
+            .macos_app => true, // macOS application bundle validation
+            .macos_framework => true, // macOS framework validation
+            .macos_bundle => true, // macOS bundle validation
             .unknown => false,
         };
     }
@@ -19724,6 +19750,9 @@ pub const FormatValidator = struct {
             // Return a result indicating this is a bundle that needs deep validation.
             return switch (bundle_type) {
                 .git => ValidationResult.okWithDepth(.git_repository, .structural),
+                .macos_app => ValidationResult.okWithDepth(.macos_app, .structural),
+                .macos_framework => ValidationResult.okWithDepth(.macos_framework, .structural),
+                .macos_bundle => ValidationResult.okWithDepth(.macos_bundle, .structural),
                 .none => unreachable,
             };
         }
@@ -20211,6 +20240,9 @@ pub const FormatValidator = struct {
             .obj => validateObjDeep(allocator, path),
             .sketch => validateSketchDeep(allocator, path),
             .git_repository => validateGitRepositoryDeep(allocator, path),
+            .macos_app => validateMacosAppDeep(allocator, path),
+            .macos_framework => validateMacosFrameworkDeep(allocator, path),
+            .macos_bundle => validateMacosBundleDeep(allocator, path),
             else => initial_result, // No deep validation available
         };
     }
@@ -20243,6 +20275,98 @@ pub const FormatValidator = struct {
             // Use the error message from git validation if available
             const error_msg = git_result.error_message orelse "Git repository validation failed";
             return ValidationResult.invalidWithDepth(.git_repository, error_msg, .full);
+        }
+    }
+
+    /// Deep validation for macOS application bundles (.app).
+    /// Validates bundle structure: Contents/Info.plist must exist and be valid.
+    fn validateMacosAppDeep(allocator: Allocator, path: []const u8) ValidationResult {
+        _ = allocator;
+        // Check for Contents/Info.plist
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const info_plist_path = std.fmt.bufPrint(&path_buf, "{s}/Contents/Info.plist", .{path}) catch {
+            return ValidationResult.invalidWithDepth(.macos_app, "Path too long", .structural);
+        };
+
+        // Check if Info.plist exists
+        std.fs.cwd().access(info_plist_path, .{}) catch {
+            return ValidationResult.invalidWithDepth(.macos_app, "Missing Contents/Info.plist", .structural);
+        };
+
+        // Check for Contents/MacOS directory
+        const macos_dir_path = std.fmt.bufPrint(&path_buf, "{s}/Contents/MacOS", .{path}) catch {
+            return ValidationResult.invalidWithDepth(.macos_app, "Path too long", .structural);
+        };
+
+        std.fs.cwd().access(macos_dir_path, .{}) catch {
+            return ValidationResult.invalidWithDepth(.macos_app, "Missing Contents/MacOS directory", .structural);
+        };
+
+        return ValidationResult.okWithDepth(.macos_app, .structural);
+    }
+
+    /// Deep validation for macOS framework bundles (.framework).
+    /// Validates bundle structure: must have Headers or Versions directory.
+    fn validateMacosFrameworkDeep(allocator: Allocator, path: []const u8) ValidationResult {
+        _ = allocator;
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+        // Frameworks can have either flat structure (Headers/ directly) or versioned (Versions/Current/)
+        // Check for Versions directory first (more common)
+        const versions_path = std.fmt.bufPrint(&path_buf, "{s}/Versions", .{path}) catch {
+            return ValidationResult.invalidWithDepth(.macos_framework, "Path too long", .structural);
+        };
+
+        // Try Versions first
+        if (std.fs.cwd().access(versions_path, .{})) |_| {
+            return ValidationResult.okWithDepth(.macos_framework, .structural);
+        } else |_| {}
+
+        // Check for flat structure with Headers
+        const headers_path = std.fmt.bufPrint(&path_buf, "{s}/Headers", .{path}) catch {
+            return ValidationResult.invalidWithDepth(.macos_framework, "Path too long", .structural);
+        };
+
+        if (std.fs.cwd().access(headers_path, .{})) |_| {
+            return ValidationResult.okWithDepth(.macos_framework, .structural);
+        } else |_| {}
+
+        // Try Resources
+        const resources_path = std.fmt.bufPrint(&path_buf, "{s}/Resources", .{path}) catch {
+            return ValidationResult.invalidWithDepth(.macos_framework, "Path too long", .structural);
+        };
+
+        if (std.fs.cwd().access(resources_path, .{})) |_| {
+            return ValidationResult.okWithDepth(.macos_framework, .structural);
+        } else |_| {
+            return ValidationResult.invalidWithDepth(.macos_framework, "Missing Versions, Headers, or Resources directory", .structural);
+        }
+    }
+
+    /// Deep validation for macOS bundles (.bundle).
+    /// Validates bundle structure: Contents/Info.plist should exist.
+    fn validateMacosBundleDeep(allocator: Allocator, path: []const u8) ValidationResult {
+        _ = allocator;
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+        // Check for Contents/Info.plist (standard bundle structure)
+        const info_plist_path = std.fmt.bufPrint(&path_buf, "{s}/Contents/Info.plist", .{path}) catch {
+            return ValidationResult.invalidWithDepth(.macos_bundle, "Path too long", .structural);
+        };
+
+        if (std.fs.cwd().access(info_plist_path, .{})) |_| {
+            return ValidationResult.okWithDepth(.macos_bundle, .structural);
+        } else |_| {}
+
+        // Some bundles have flat structure with Info.plist at root
+        const flat_info_path = std.fmt.bufPrint(&path_buf, "{s}/Info.plist", .{path}) catch {
+            return ValidationResult.invalidWithDepth(.macos_bundle, "Path too long", .structural);
+        };
+
+        if (std.fs.cwd().access(flat_info_path, .{})) |_| {
+            return ValidationResult.okWithDepth(.macos_bundle, .structural);
+        } else |_| {
+            return ValidationResult.invalidWithDepth(.macos_bundle, "Missing Info.plist", .structural);
         }
     }
 
@@ -20531,6 +20655,9 @@ pub const FormatValidator = struct {
             // Bundle formats (directories) - should be handled before reaching this switch
             // If we get here, it means something went wrong - return invalid to make it obvious
             .git_repository => ValidationResult.invalid(.git_repository, "Git repositories must be validated as directories, not files"),
+            .macos_app => ValidationResult.invalid(.macos_app, "macOS app bundles must be validated as directories, not files"),
+            .macos_framework => ValidationResult.invalid(.macos_framework, "macOS frameworks must be validated as directories, not files"),
+            .macos_bundle => ValidationResult.invalid(.macos_bundle, "macOS bundles must be validated as directories, not files"),
             .unknown => validateUnknownWithUtf8Fallback(file),
         };
 
@@ -31945,6 +32072,37 @@ test "isBundleDirectory convenience function" {
     try std.testing.expect(isBundleDirectory("/repo/.git"));
     try std.testing.expect(!isBundleDirectory(".gitignore"));
     try std.testing.expect(!isBundleDirectory("/path/to/file.txt"));
+}
+
+test "detectBundleType identifies macOS .app bundles" {
+    // Exact ".app" suffix
+    try std.testing.expectEqual(BundleType.macos_app, detectBundleType("MyApp.app"));
+    try std.testing.expectEqual(BundleType.macos_app, detectBundleType("/Applications/Safari.app"));
+    try std.testing.expectEqual(BundleType.macos_app, detectBundleType("/Users/test/Desktop/MyApp.app"));
+
+    // NOT an .app bundle (just has .app in the name)
+    try std.testing.expectEqual(BundleType.none, detectBundleType("MyApp.app.bak"));
+    try std.testing.expectEqual(BundleType.none, detectBundleType("/path/to/MyApp.application"));
+    try std.testing.expectEqual(BundleType.none, detectBundleType("webapp"));
+}
+
+test "detectBundleType identifies macOS .framework bundles" {
+    try std.testing.expectEqual(BundleType.macos_framework, detectBundleType("CoreFoundation.framework"));
+    try std.testing.expectEqual(BundleType.macos_framework, detectBundleType("/System/Library/Frameworks/AppKit.framework"));
+    try std.testing.expectEqual(BundleType.macos_framework, detectBundleType("/Library/Frameworks/MyLib.framework"));
+
+    // NOT a .framework bundle
+    try std.testing.expectEqual(BundleType.none, detectBundleType("framework"));
+    try std.testing.expectEqual(BundleType.none, detectBundleType("MyLib.framework.old"));
+}
+
+test "detectBundleType identifies macOS .bundle bundles" {
+    try std.testing.expectEqual(BundleType.macos_bundle, detectBundleType("MyPlugin.bundle"));
+    try std.testing.expectEqual(BundleType.macos_bundle, detectBundleType("/Library/Audio/Plug-Ins/Components/MyPlugin.bundle"));
+
+    // NOT a .bundle
+    try std.testing.expectEqual(BundleType.none, detectBundleType("bundle"));
+    try std.testing.expectEqual(BundleType.none, detectBundleType("MyPlugin.bundle.disabled"));
 }
 
 test "git_repository format has correct description" {
