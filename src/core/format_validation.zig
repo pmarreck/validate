@@ -19757,6 +19757,15 @@ pub const FormatValidator = struct {
             };
         }
 
+        // Check if path is a directory (but not a known bundle)
+        const stat = std.fs.cwd().statFile(path) catch {
+            return ValidationResult.invalid(.unknown, "Failed to open file");
+        };
+        if (stat.kind == .directory) {
+            // Directory that is not a known bundle type - return continuable error
+            return ValidationResult.invalid(.unknown, "Unknown directory type (not a recognized bundle)");
+        }
+
         // Open the file
         const file = std.fs.cwd().openFile(path, .{}) catch {
             return ValidationResult.invalid(.unknown, "Failed to open file");
@@ -32103,6 +32112,28 @@ test "detectBundleType identifies macOS .bundle bundles" {
     // NOT a .bundle
     try std.testing.expectEqual(BundleType.none, detectBundleType("bundle"));
     try std.testing.expectEqual(BundleType.none, detectBundleType("MyPlugin.bundle.disabled"));
+}
+
+test "validateFile returns error for unknown directory type" {
+    // Create a temporary directory that is NOT a known bundle type
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Get the path to the temp directory
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = tmp_dir.dir.realpath(".", &path_buf) catch return;
+
+    // Validate the directory (which is not a bundle)
+    var validator = FormatValidator.init();
+
+    const result = validator.validateFile(tmp_path);
+
+    // Should return invalid with "Unknown directory type" error
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqualStrings(
+        "Unknown directory type (not a recognized bundle)",
+        result.error_message orelse "no error",
+    );
 }
 
 test "git_repository format has correct description" {

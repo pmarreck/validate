@@ -23,7 +23,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Add bundle detection to CLI enumerate_path() and main loop (2026-01-31)
 - [x] Add TDD tests for bundle validation (Zig unit tests + CLI bash tests) (2026-01-31)
 - [x] Add macOS bundle validation (.app, .framework, .bundle) (2026-02-02)
-- [ ] Return continuable error for unknown directory types
+- [x] Return continuable error for unknown directory types (2026-02-02)
 - [ ] See NEXT_STEPS.md for full design
 
 ### HEIC/Intel Crash Investigation (SIGABRT on Garnix CI)
