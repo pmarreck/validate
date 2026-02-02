@@ -46,6 +46,8 @@ mkdir -p "$tmpdir/valid_repo"
 (
 	cd "$tmpdir/valid_repo"
 	git init --quiet
+	git config user.email "test@example.com"
+	git config user.name "Test User"
 	echo "test content" > test.txt
 	git add test.txt
 	git commit -m "Initial commit" --quiet
@@ -73,6 +75,8 @@ mkdir -p "$tmpdir/corrupt_repo"
 (
 	cd "$tmpdir/corrupt_repo"
 	git init --quiet
+	git config user.email "test@example.com"
+	git config user.name "Test User"
 	echo "test content for corruption" > test.txt
 	git add test.txt
 	git commit -m "Initial commit" --quiet
