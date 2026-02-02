@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <time.h>
@@ -113,6 +114,9 @@ static int enumerate_directory(const char* dir_path, path_list_t* list) {
 		/* Skip inaccessible directories (permission denied, etc.)
 		 * rather than failing the entire enumeration.
 		 * This matches how enumerate_path() handles inaccessible files. */
+		int saved_errno = errno;
+		fprintf(stderr, "\033[1;33mWARN\033[0m Skipping inaccessible directory: %s (%s)\n",
+		        dir_path, strerror(saved_errno));
 		return 0;
 	}
 
