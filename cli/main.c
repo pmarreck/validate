@@ -69,20 +69,32 @@ static int path_list_add(path_list_t* list, const char* path) {
 /* Recursive directory enumeration */
 static int enumerate_directory(const char* dir_path, path_list_t* list);
 
-/* Check if a path is a bundle directory (e.g., .git) that should be
- * validated as a single unit rather than recursed into. */
+/* Helper to check if path ends with a suffix */
+static int ends_with(const char* path, size_t len, const char* suffix) {
+	size_t suffix_len = strlen(suffix);
+	if (len < suffix_len) return 0;
+	return strcmp(path + len - suffix_len, suffix) == 0;
+}
+
+/* Check if a path is a bundle directory that should be
+ * validated as a single unit rather than recursed into.
+ * Bundles: .git, .app, .framework, .bundle */
 static int is_bundle_directory(const char* path) {
 	size_t len = strlen(path);
-	/* Check for path ending in "/.git" or exactly ".git" */
-	if (len >= 4) {
-		const char* last4 = path + len - 4;
-		if (strcmp(last4, ".git") == 0) {
-			/* Either exactly ".git" or ends with "/.git" */
-			if (len == 4 || path[len - 5] == '/') {
-				return 1;
-			}
+
+	/* Check for .git (special case: must be standalone component) */
+	if (len >= 4 && ends_with(path, len, ".git")) {
+		/* Either exactly ".git" or ends with "/.git" */
+		if (len == 4 || path[len - 5] == '/') {
+			return 1;
 		}
 	}
+
+	/* macOS bundles - directory extensions */
+	if (ends_with(path, len, ".app")) return 1;
+	if (ends_with(path, len, ".framework")) return 1;
+	if (ends_with(path, len, ".bundle")) return 1;
+
 	return 0;
 }
 
