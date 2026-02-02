@@ -12,7 +12,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Make CLI format-agnostic (removed git-specific logic, CLI is now a dumb pipe) (2026-01-30)
 - [x] Parallel PDF image validation using thread pool (36% faster on ~/Documents/Books) (2026-01-30)
 - [x] Remove es_* prefix from all FFI functions (project is validate, not entropy_shield) (2026-01-31)
-- [ ] Deprecate old handle-based API (format_validator_create, etc.) - add DEPRECATED comments
+- [x] Deprecate old handle-based API (format_validator_create, etc.) - add DEPRECATED comments (2026-02-01 ~21:00 EST)
 - [ ] Future: Remove deprecated handle-based API in next major version
 
 ### Bundle Validation (directories as single validation units)
@@ -43,9 +43,14 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ### Other
 - [ ] Replace external CrossOver dependency with flake-provided Windows test runner (e.g., Wine package) (2026-01-25 17:17 EST)
-- [ ] Fix last failed CI build (inspect gh logs, resolve, rerun) (2026-01-26 04:22 EST)
-- [ ] Create utility script to check forked dependencies for upstream updates (cj5, openmpt, etc.)
+- [x] Fix last failed CI build (git identity in tests) (2026-02-01 ~20:45 EST)
+- [x] Create utility script to check forked dependencies for upstream updates (scripts/check-fork-updates) (2026-02-01 ~21:15 EST)
 ## Recently Completed
+- [x] Add utility script to check forked dependencies (scripts/check-fork-updates) (2026-02-01 ~21:15 EST)
+- [x] Deprecate handle-based API with DEPRECATED comments in C header and Zig FFI (2026-02-01 ~21:00 EST)
+- [x] Fix CI: configure git identity in git repository tests (2026-02-01 ~20:45 EST)
+- [x] Add warning when skipping inaccessible directories (TCC/permissions) (2026-02-01 ~20:30 EST)
+- [x] Skip inaccessible directories during enumeration (macOS Photos Library fix) (2026-02-01 ~20:15 EST)
 - [x] Add CP437/DOS text encoding detection for demoscene NFO files (2026-01-31 ~15:30 EST)
 - [x] Reach 100 format ground truth coverage with full decode + corruption tests (2026-01-28 23:55 EST)
 - [x] Add 9 new formats: beam, swf, flv, pe, ape, dsf, dff, wad, hdf5 (2026-01-28 23:50 EST)
