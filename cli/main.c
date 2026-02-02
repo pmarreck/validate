@@ -109,7 +109,12 @@ static int enumerate_path(const char* path, path_list_t* list) {
 
 static int enumerate_directory(const char* dir_path, path_list_t* list) {
 	DIR* dir = opendir(dir_path);
-	if (!dir) return -1;
+	if (!dir) {
+		/* Skip inaccessible directories (permission denied, etc.)
+		 * rather than failing the entire enumeration.
+		 * This matches how enumerate_path() handles inaccessible files. */
+		return 0;
+	}
 
 	struct dirent* entry;
 	while ((entry = readdir(dir)) != NULL) {
