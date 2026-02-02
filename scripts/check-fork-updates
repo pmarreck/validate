@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+#
+# Check forked dependencies for upstream updates
+#
+# This script compares our forked dependencies against their upstream
+# repositories to identify when new versions are available.
+#
+# Usage: ./scripts/check-fork-updates
+#
+
+set -euo pipefail
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Define forks: "fork_repo upstream_repo description"
+FORKS=(
+	"pmarreck/libheif strukturag/libheif Fix for num_threads=0 single-threaded mode"
+	"pmarreck/openmpt OpenMPT/openmpt Zig build system wrapper"
+	"pmarreck/cj5 ojroques/cj5 Zig build system wrapper for JSON5 parser"
+)
+
+# Third-party Zig wrappers (may have their own update cadence)
+ZIG_WRAPPERS=(
+	"qaptoR-support/pcre2 PCRE2Project/pcre2 Zig wrapper for PCRE2"
+	"chearon/libjpeg-turbo libjpeg-turbo/libjpeg-turbo Zig wrapper for libjpeg-turbo"
+	"allyourcodebase/zlib madler/zlib Zig wrapper for zlib"
+	"allyourcodebase/sqlite3 sqlite/sqlite Zig wrapper for SQLite3"
+	"sam701/zig-toml - Zig TOML parser (no upstream)"
+	"ianprime0509/zig-xml - Zig XML parser (no upstream)"
+	"zigimg/zigimg - Zig image library (no upstream)"
+)
+
+get_latest_tag() {
+	local repo="$1"
+	if [[ "$repo" == "-" ]]; then
+		echo "N/A"
+		return
+	fi
+	# Use gh api to get latest release or tag
+	local latest=""
+	local response=""
+	response=$(gh api "repos/$repo/releases/latest" 2>/dev/null) || response=""
+	if [[ -n "$response" && "$response" != *"Not Found"* && "$response" != *"message"* ]]; then
+		latest=$(echo "$response" | jq -r '.tag_name // empty' 2>/dev/null) || latest=""
+	fi
+	if [[ -z "$latest" ]]; then
+		# No release, try tags
+		response=$(gh api "repos/$repo/tags" 2>/dev/null) || response=""
+		if [[ -n "$response" && "$response" != *"Not Found"* && "$response" != *"message"* ]]; then
+			latest=$(echo "$response" | jq -r '.[0].name // empty' 2>/dev/null) || latest=""
+		fi
+	fi
+	if [[ -z "$latest" ]]; then
+		echo "unknown"
+	else
+		echo "$latest"
+	fi
+}
+
+get_fork_version() {
+	local repo="$1"
+	# Get the latest tag from our fork
+	local latest=""
+	local response=""
+	response=$(gh api "repos/$repo/tags" 2>/dev/null) || response=""
+	if [[ -n "$response" && "$response" != *"message"* ]]; then
+		latest=$(echo "$response" | jq -r '.[0].name // empty' 2>/dev/null) || latest=""
+	fi
+	if [[ -z "$latest" ]]; then
+		echo "unknown"
+	else
+		echo "$latest"
+	fi
+}
+
+echo -e "${CYAN}=== Checking Forked Dependencies ===${NC}"
+echo ""
+
+for fork_entry in "${FORKS[@]}"; do
+	read -r fork upstream desc <<< "$fork_entry"
+
+	fork_ver=$(get_fork_version "$fork")
+	upstream_ver=$(get_latest_tag "$upstream")
+
+	echo -e "${YELLOW}$fork${NC}"
+	echo "  Description: $desc"
+	echo "  Upstream:    $upstream"
+	echo -n "  Fork:        $fork_ver"
+
+	if [[ "$upstream_ver" != "unknown" && "$fork_ver" != "unknown" ]]; then
+		# Strip 'v' prefix for comparison
+		fork_clean="${fork_ver#v}"
+		upstream_clean="${upstream_ver#v}"
+
+		# Check if fork version contains upstream version (handles suffixes like -fix-zero-threads)
+		if [[ "$fork_clean" == "$upstream_clean" ]] || [[ "$fork_clean" == "$upstream_clean"-* ]]; then
+			echo -e " ${GREEN}(up to date with $upstream_ver)${NC}"
+		else
+			# Extract base version from fork (strip custom suffixes)
+			# Common patterns: 1.21.1-fix-zero-threads -> 1.21.1
+			fork_base=$(echo "$fork_clean" | sed -E 's/(-fix-|-patch-|-zig-|-custom-).*//')
+			if [[ "$fork_base" == "$upstream_clean" ]]; then
+				echo -e " ${GREEN}(up to date with $upstream_ver)${NC}"
+			else
+				echo -e " ${RED}(upstream has $upstream_ver)${NC}"
+			fi
+		fi
+	else
+		echo ""
+	fi
+	echo "  Latest upstream: $upstream_ver"
+	echo ""
+done
+
+echo -e "${CYAN}=== Zig Wrapper Dependencies ===${NC}"
+echo "(These wrap upstream C libraries with Zig build systems)"
+echo ""
+
+for wrapper_entry in "${ZIG_WRAPPERS[@]}"; do
+	read -r wrapper upstream desc <<< "$wrapper_entry"
+
+	wrapper_ver=$(get_fork_version "$wrapper")
+	upstream_ver=$(get_latest_tag "$upstream")
+
+	echo -e "${YELLOW}$wrapper${NC}"
+	echo "  Description: $desc"
+	if [[ "$upstream" != "-" ]]; then
+		echo "  Upstream:    $upstream -> $upstream_ver"
+	fi
+	echo "  Wrapper:     $wrapper_ver"
+	echo ""
+done
+
+echo -e "${CYAN}=== Summary ===${NC}"
+echo "Run 'gh browse <repo>' to view any repository on GitHub."
+echo "To update a fork:"
+echo "  1. Clone the fork locally"
+echo "  2. Add upstream remote: git remote add upstream https://github.com/<upstream>"
+echo "  3. Fetch upstream: git fetch upstream"
+echo "  4. Merge or rebase: git merge upstream/main (or rebase)"
+echo "  5. Resolve conflicts, test, push"
+echo "  6. Update build.zig.zon URL and hash"
