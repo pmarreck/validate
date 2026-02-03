@@ -306,10 +306,10 @@ pub fn validateHevcStream(data: []const u8, max_frames: u32) VideoValidationResu
     }
     defer _ = de265.de265_free_decoder(ctx);
 
-    // Start decoder with multiple threads for better performance.
-    // The VideoDecoderGuard ensures only one decoder runs at a time,
-    // so internal threading is safe and beneficial.
-    _ = de265.de265_start_worker_threads(ctx, 4);
+    // Start decoder with single thread to avoid memory corruption.
+    // libde265's internal threading has known stability issues that cause
+    // heap corruption (crashes in context_model_table::decouple).
+    _ = de265.de265_start_worker_threads(ctx, 1);
 
     // Push Annex B data to decoder (data contains start codes 0x00000001)
     const push_err = de265.de265_push_data(ctx, data.ptr, @intCast(data.len), 0, null);
