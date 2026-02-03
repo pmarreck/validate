@@ -28,11 +28,15 @@
  * Where <US> = 0x1F, <RS> = 0x1E
  */
 
+/* Stateful parser for iterating through all key-value pairs.
+ * Used for rich metadata extraction where we need to enumerate
+ * all returned fields rather than look up specific keys. */
 typedef struct {
 	const char* data;      /* Original string (not owned) */
 	const char* pos;       /* Current position */
 } kv_parser_t;
 
+__attribute__((unused))
 static void kv_parser_init(kv_parser_t* parser, const char* data) {
 	parser->data = data;
 	parser->pos = data;
@@ -195,7 +199,7 @@ static void show_enum_progress(size_t count) {
 	}
 }
 
-static void finish_enum_progress(size_t count) {
+static void finish_enum_progress(void) {
 	if (!g_show_enum_progress) return;
 	/* Clear the progress line */
 	fprintf(stderr, "\r\033[K");
@@ -595,20 +599,20 @@ static int validate_path(const char* path, size_t jobs, int shuffle, size_t stre
 		if (is_bundle_directory(path)) {
 			/* Bundle directory - validate as single item, don't enumerate */
 			if (path_list_add(&file_list, path) != 0) {
-				finish_enum_progress(file_list.count);
+				finish_enum_progress();
 				fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
 				path_list_free(&file_list);
 				shutdown_unknown_out();
 				return 1;
 			}
 		} else if (enumerate_directory(path, &file_list) != 0) {
-			finish_enum_progress(file_list.count);
+			finish_enum_progress();
 			fprintf(stderr, "%sError: Failed to enumerate directory: %s\n%s", COLOR_RED, path, COLOR_RESET);
 			path_list_free(&file_list);
 			shutdown_unknown_out();
 			return 1;
 		}
-		finish_enum_progress(file_list.count);
+		finish_enum_progress();
 		printf("Found %zu files to validate.\n\n", file_list.count);
 	} else if (S_ISREG(st.st_mode)) {
 		printf("Checking: %s\n", path);
