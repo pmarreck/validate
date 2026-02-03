@@ -19134,11 +19134,6 @@ fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Default maximum file size for deep video validation (unlimited)
 const DEFAULT_MAX_VIDEO_DEEP_SIZE: u64 = std.math.maxInt(u64);
 
-/// Maximum frames to validate per video file.
-/// 300 frames = ~10 seconds at 30fps, enough to catch most corruption.
-/// Decoding ALL frames is too slow for routine validation.
-const MAX_VIDEO_FRAMES: u32 = 300;
-
 /// Get maximum file size for deep video validation from environment variable.
 /// Reads MAX_VIDEO_SIZE env var (in MB). Defaults to unlimited.
 /// Set to a number to limit deep validation to files under that many MB.
@@ -19240,7 +19235,7 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Structural validation passed - now attempt video stream validation
     // This parses the container to find video tracks and validates codec info
-    const video_result = video_validator.validateMp4Video(allocator, path, MAX_VIDEO_FRAMES);
+    const video_result = video_validator.validateMp4Video(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
 			// When no frames decoded, always use structural depth - we didn't actually decode video
@@ -19377,7 +19372,7 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Structural validation passed - now do codec validation
-    const video_result = video_validator.validateMkvVideo(allocator, path, MAX_VIDEO_FRAMES);
+    const video_result = video_validator.validateMkvVideo(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
 			// When no frames decoded, always use structural depth - we didn't actually decode video
@@ -19450,7 +19445,7 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Now do video frame validation
-    const video_result = video_validator.validateAviVideo(allocator, path, MAX_VIDEO_FRAMES);
+    const video_result = video_validator.validateAviVideo(allocator, path, std.math.maxInt(u32));
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
 			// When no frames decoded, always use structural depth - we didn't actually decode video
