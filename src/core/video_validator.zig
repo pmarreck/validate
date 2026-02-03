@@ -235,21 +235,12 @@ const use_videotoolbox = builtin.os.tag == .macos;
 /// This allows disabling VideoToolbox via environment variable for testing.
 /// Set VALIDATE_DISABLE_VIDEOTOOLBOX=1 (or true/yes/on) to force the non-VideoToolbox code path.
 fn shouldUseVideoToolbox() bool {
-    // VideoToolbox integration is disabled due to threading issues.
-    // The framework has thread-safety requirements that cause bus errors
-    // when called from worker threads. This requires dispatch_sync to main
-    // queue which is complex to implement with Zig's FFI.
-    // Using libde265/dav1d/OpenH264 instead, which work reliably on all threads.
+    // VideoToolbox is disabled - crashes occur during framework symbol resolution
+    // when the videotoolbox_validator module is accessed, even before any VT
+    // functions are called. This appears to be a dyld/framework loading issue
+    // that happens at module import time, not at function call time.
+    // Using libde265/dav1d/ffmpeg fallback instead.
     return false;
-
-    // Original implementation (for future reference when VideoToolbox is fixed):
-    // if (!use_videotoolbox) return false;
-    // if (comptime builtin.os.tag != .windows) {
-    //     if (std.posix.getenv("VALIDATE_DISABLE_VIDEOTOOLBOX")) |val| {
-    //         return !isTruthy(val);
-    //     }
-    // }
-    // return true;
 }
 
 const videotoolbox = if (use_videotoolbox) @import("videotoolbox_validator.zig") else struct {};

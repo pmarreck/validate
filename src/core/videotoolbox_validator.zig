@@ -231,19 +231,48 @@ extern "c" fn VTDecompressionSessionInvalidate(
 // Grand Central Dispatch (for thread safety)
 // =============================================================================
 // VideoToolbox can crash when called from non-main threads due to framework
-// requirements. We use dispatch_sync to main queue to ensure thread safety.
+// requirements. We use dispatch_sync_f to dispatch work to the main queue.
+// dispatch_sync_f is the function-pointer variant (vs block-based dispatch_sync)
+// which is compatible with Zig's C FFI.
 
-const dispatch_queue_t = *anyopaque;
-const dispatch_block_t = *const fn () callconv(.c) void;
+// GCD dispatch is temporarily disabled - see comment below
+// const dispatch_queue_t = *anyopaque;
+// extern "c" var _dispatch_main_q: anyopaque;
+// extern "c" fn dispatch_sync_f(...) void;
 
-extern "c" fn dispatch_get_main_queue() dispatch_queue_t;
-extern "c" fn dispatch_sync(queue: dispatch_queue_t, block: dispatch_block_t) void;
 extern "c" fn pthread_main_np() c_int;
 
 /// Check if current thread is the main thread
 fn isMainThread() bool {
     return pthread_main_np() != 0;
 }
+
+// =============================================================================
+// Dispatch Context Structures
+// =============================================================================
+// These structures hold the parameters and results for VideoToolbox validation
+// when dispatched to the main queue via dispatch_sync_f.
+
+const H264ValidationContext = struct {
+    allocator: Allocator,
+    codec_private: []const u8,
+    samples: []const []const u8,
+    result: VTValidationResult,
+};
+
+const HEVCValidationContext = struct {
+    allocator: Allocator,
+    codec_private: []const u8,
+    samples: []const []const u8,
+    result: VTValidationResult,
+};
+
+const AV1ValidationContext = struct {
+    allocator: Allocator,
+    codec_private: []const u8,
+    samples: []const []const u8,
+    result: VTValidationResult,
+};
 
 // =============================================================================
 // VideoToolbox Validator Implementation
@@ -518,16 +547,12 @@ fn createHEVCFormatDescription(params: *ParameterSets) ?CMVideoFormatDescription
 /// Validate H.264 stream using VideoToolbox
 /// `codec_private` should be the raw avcC box contents
 /// `samples` is a list of NAL unit data (length-prefixed format matching avcC)
-pub fn validateH264(
+/// Internal H.264 validation - must be called on main thread
+fn validateH264Internal(
     allocator: Allocator,
     codec_private: []const u8,
     samples: []const []const u8,
 ) VTValidationResult {
-    // VideoToolbox must run on main thread to avoid crashes
-    if (!isMainThread()) {
-        return VTValidationResult.invalid("VideoToolbox requires main thread", .h264);
-    }
-
     // Parse avcC to get SPS/PPS
     var params = parseAvcC(allocator, codec_private) orelse {
         return VTValidationResult.invalid("Failed to parse avcC", .h264);
@@ -636,19 +661,34 @@ pub fn validateH264(
     return VTValidationResult.ok(.h264, ctx.frames_decoded);
 }
 
-/// Validate HEVC stream using VideoToolbox
-/// `codec_private` should be the raw hvcC box contents
-/// `samples` is a list of NAL unit data (length-prefixed format matching hvcC)
-pub fn validateHEVC(
+/// Dispatch callback for H.264 validation on main thread
+fn validateH264Callback(context: ?*anyopaque) callconv(.c) void {
+    const ctx: *H264ValidationContext = @ptrCast(@alignCast(context));
+    ctx.result = validateH264Internal(ctx.allocator, ctx.codec_private, ctx.samples);
+}
+
+/// Validate H.264 stream using VideoToolbox
+/// Automatically dispatches to main thread if called from worker thread.
+/// `codec_private` should be the raw avcC box contents
+/// `samples` is a list of NAL unit data (length-prefixed format matching avcC)
+pub fn validateH264(
     allocator: Allocator,
     codec_private: []const u8,
     samples: []const []const u8,
 ) VTValidationResult {
-    // VideoToolbox must run on main thread to avoid crashes
+    // VideoToolbox requires main thread - worker thread dispatch not yet implemented
     if (!isMainThread()) {
-        return VTValidationResult.invalid("VideoToolbox requires main thread", .hevc);
+        return VTValidationResult.invalid("VideoToolbox requires main thread", .h264);
     }
+    return validateH264Internal(allocator, codec_private, samples);
+}
 
+/// Internal HEVC validation - must be called on main thread
+fn validateHEVCInternal(
+    allocator: Allocator,
+    codec_private: []const u8,
+    samples: []const []const u8,
+) VTValidationResult {
     // Parse hvcC to get VPS/SPS/PPS
     var params = parseHvcC(allocator, codec_private) orelse {
         return VTValidationResult.invalid("Failed to parse hvcC", .hevc);
@@ -753,6 +793,28 @@ pub fn validateHEVC(
     return VTValidationResult.ok(.hevc, ctx.frames_decoded);
 }
 
+/// Dispatch callback for HEVC validation on main thread
+fn validateHEVCCallback(context: ?*anyopaque) callconv(.c) void {
+    const ctx: *HEVCValidationContext = @ptrCast(@alignCast(context));
+    ctx.result = validateHEVCInternal(ctx.allocator, ctx.codec_private, ctx.samples);
+}
+
+/// Validate HEVC stream using VideoToolbox
+/// Automatically dispatches to main thread if called from worker thread.
+/// `codec_private` should be the raw hvcC box contents
+/// `samples` is a list of NAL unit data (length-prefixed format matching hvcC)
+pub fn validateHEVC(
+    allocator: Allocator,
+    codec_private: []const u8,
+    samples: []const []const u8,
+) VTValidationResult {
+    // VideoToolbox requires main thread - worker thread dispatch not yet implemented
+    if (!isMainThread()) {
+        return VTValidationResult.invalid("VideoToolbox requires main thread", .hevc);
+    }
+    return validateHEVCInternal(allocator, codec_private, samples);
+}
+
 // =============================================================================
 // AV1 Support (macOS 13+)
 // =============================================================================
@@ -774,16 +836,12 @@ pub fn isAV1Available() bool {
 /// Note: AV1 support requires macOS 13.0+ (Ventura)
 /// `codec_private` should be the raw av1C box contents
 /// `samples` is a list of OBU data
-pub fn validateAV1(
+/// Internal AV1 validation - must be called on main thread
+fn validateAV1Internal(
     allocator: Allocator,
     codec_private: []const u8,
     samples: []const []const u8,
 ) VTValidationResult {
-    // VideoToolbox must run on main thread to avoid crashes
-    if (!isMainThread()) {
-        return VTValidationResult.invalid("VideoToolbox requires main thread", .av1);
-    }
-
     _ = allocator;
     _ = codec_private;
     _ = samples;
@@ -796,6 +854,28 @@ pub fn validateAV1(
     //
     // For now, return a placeholder indicating AV1 VT support is pending
     return VTValidationResult.invalid("AV1 VideoToolbox validation not yet implemented", .av1);
+}
+
+/// Dispatch callback for AV1 validation on main thread
+fn validateAV1Callback(context: ?*anyopaque) callconv(.c) void {
+    const ctx: *AV1ValidationContext = @ptrCast(@alignCast(context));
+    ctx.result = validateAV1Internal(ctx.allocator, ctx.codec_private, ctx.samples);
+}
+
+/// Validate AV1 stream using VideoToolbox
+/// Automatically dispatches to main thread if called from worker thread.
+/// `codec_private` should be the raw av1C box contents
+/// `samples` is a list of OBU data
+pub fn validateAV1(
+    allocator: Allocator,
+    codec_private: []const u8,
+    samples: []const []const u8,
+) VTValidationResult {
+    // VideoToolbox requires main thread - worker thread dispatch not yet implemented
+    if (!isMainThread()) {
+        return VTValidationResult.invalid("VideoToolbox requires main thread", .av1);
+    }
+    return validateAV1Internal(allocator, codec_private, samples);
 }
 
 // =============================================================================
