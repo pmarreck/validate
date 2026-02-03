@@ -1,0 +1,21 @@
+LibRaw
+License: LGPL-2.1-only OR CDDL-1.0
+SPDX-License-Identifier: LGPL-2.1-only OR CDDL-1.0
+
+LibRaw is dual-licensed. You may choose either license:
+
+1. GNU Lesser General Public License (LGPL) version 2.1
+2. Common Development and Distribution License (CDDL) version 1.0
+
+The LGPL allows use in proprietary applications if the library is dynamically
+linked or complete object files are provided for relinking.
+
+The CDDL is a file-based copyleft license that allows combining CDDL-licensed
+files with proprietary code.
+
+Copyright (C) 2008-2024 LibRaw LLC (info@libraw.org)
+
+LibRaw uses code from dcraw.c by Dave Coffin (public domain).
+
+For full LGPL-2.1 text: https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+For full CDDL-1.0 text: https://opensource.org/licenses/CDDL-1.0

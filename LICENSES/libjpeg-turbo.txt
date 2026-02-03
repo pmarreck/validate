@@ -1,0 +1,28 @@
+libjpeg-turbo
+License: IJG License AND BSD-3-Clause AND Zlib
+SPDX-License-Identifier: IJG AND BSD-3-Clause AND Zlib
+
+libjpeg-turbo uses multiple compatible BSD-style licenses:
+- IJG License: libjpeg API library and inherited code
+- Modified BSD-3-Clause: TurboJPEG API and build system
+- zlib License: Portions derived from zlib
+
+Copyright (C) 2009-2024 D. R. Commander. All Rights Reserved.
+Copyright (C) 2015 Viktor Szathmary. All Rights Reserved.
+Copyright (C) 1991-2020 Thomas G. Lane, Guido Vollbeding (Independent JPEG Group)
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice.
+
+2. Redistributions in binary form must reproduce the above copyright notice
+   in the documentation and/or other materials provided with the distribution.
+
+3. Neither the libjpeg-turbo name nor the names of its contributors may be
+   used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+This software is based in part on the work of the Independent JPEG Group.
+
+THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND.

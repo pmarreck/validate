@@ -565,149 +565,6 @@ static void shuffle_paths(path_list_t* list, uint64_t seed) {
 	}
 }
 
-static int validate_path(const char* path, size_t jobs, int shuffle, size_t stress_iterations) {
-	struct stat st;
-	if (stat(path, &st) != 0) {
-		fprintf(stderr, "%sError: Cannot access path: %s\n%s", COLOR_RED, path, COLOR_RESET);
-		return 1;
-	}
-
-	init_unknown_out();
-
-	const size_t max_files = get_env_max_files();
-	if (max_files > 0 && S_ISDIR(st.st_mode)) {
-		printf("%sNote:%s MAX_FILES=%zu (results may be truncated)\n", COLOR_YELLOW, COLOR_RESET, max_files);
-	}
-
-	/* Enumerate files */
-	path_list_t file_list;
-	if (path_list_init(&file_list, 1024, max_files) != 0) {
-		fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
-		shutdown_unknown_out();
-		return 1;
-	}
-
-	if (S_ISDIR(st.st_mode)) {
-		printf("Validating: %s%s\n", path, (shuffle || stress_iterations > 1) ? " (shuffled)" : "");
-		/* Enable progress display for directory enumeration (only if stderr is a tty) */
-#ifdef _WIN32
-		g_show_enum_progress = isatty(_fileno(stderr));
-#else
-		g_show_enum_progress = isatty(STDERR_FILENO);
-#endif
-		/* Check if the directory itself is a bundle (e.g., .git) */
-		if (is_bundle_directory(path)) {
-			/* Bundle directory - validate as single item, don't enumerate */
-			if (path_list_add(&file_list, path) != 0) {
-				finish_enum_progress();
-				fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
-				path_list_free(&file_list);
-				shutdown_unknown_out();
-				return 1;
-			}
-		} else if (enumerate_directory(path, &file_list) != 0) {
-			finish_enum_progress();
-			fprintf(stderr, "%sError: Failed to enumerate directory: %s\n%s", COLOR_RED, path, COLOR_RESET);
-			path_list_free(&file_list);
-			shutdown_unknown_out();
-			return 1;
-		}
-		finish_enum_progress();
-		printf("Found %zu files to validate.\n\n", file_list.count);
-	} else if (S_ISREG(st.st_mode)) {
-		printf("Checking: %s\n", path);
-		if (path_list_add(&file_list, path) != 0) {
-			fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
-			path_list_free(&file_list);
-			shutdown_unknown_out();
-			return 1;
-		}
-	} else {
-		fprintf(stderr, "%sError: Unsupported path type: %s\n%s", COLOR_RED, path, COLOR_RESET);
-		path_list_free(&file_list);
-		shutdown_unknown_out();
-		return 1;
-	}
-
-	if (file_list.count == 0) {
-		printf("No files found.\n");
-		path_list_free(&file_list);
-		shutdown_unknown_out();
-		return 0;
-	}
-
-	validation_counts_t counts = {0};
-	validation_counts_t total_counts = {0};
-	int failures = 0;
-
-	const size_t iterations = (stress_iterations > 0) ? stress_iterations : 1;
-	int should_shuffle = shuffle || (stress_iterations > 1);
-
-	for (size_t iter = 0; iter < iterations; iter++) {
-		if (stress_iterations > 1) {
-			printf("%s=== Stress iteration %zu/%zu ===%s\n", COLOR_CYAN, iter + 1, iterations, COLOR_RESET);
-		}
-
-		/* Shuffle if requested */
-		if (should_shuffle) {
-			shuffle_paths(&file_list, iter + 1);
-		}
-
-		counts = (validation_counts_t){0};
-
-		/* Call new API */
-		validate_error_t err = validate_batch(
-			(const char* const*)file_list.paths,
-			file_list.ids,
-			file_list.count,
-			(int)jobs,
-			on_validation_result,
-			&counts
-		);
-
-		if (err != VALIDATE_OK) {
-			fprintf(stderr, "%sError: Validation failed: %s\n%s", COLOR_RED,
-				validate_last_error() ? validate_last_error() : "unknown error", COLOR_RESET);
-			fflush(stderr);
-			path_list_free(&file_list);
-			shutdown_unknown_out();
-			return 1;
-		}
-
-		total_counts.valid_count += counts.valid_count;
-		total_counts.invalid_count += counts.invalid_count;
-		total_counts.unknown_count += counts.unknown_count;
-
-		if (counts.invalid_count > 0) {
-			failures = 1;
-		}
-	}
-
-	path_list_free(&file_list);
-
-	/* Use total_counts for summary in stress mode, otherwise use last counts */
-	validation_counts_t* summary_counts = (stress_iterations > 1) ? &total_counts : &counts;
-
-	printf("\n%sSummary:%s\n", COLOR_CYAN, COLOR_RESET);
-	if (stress_iterations > 1) {
-		printf("  Iterations: %zu\n", stress_iterations);
-	}
-	printf("  Valid:   %s%zu%s\n", COLOR_GREEN, summary_counts->valid_count, COLOR_RESET);
-	if (summary_counts->invalid_count > 0) {
-		printf("  Invalid: %s%zu%s\n", COLOR_RED, summary_counts->invalid_count, COLOR_RESET);
-	} else {
-		printf("  Invalid: %zu\n", summary_counts->invalid_count);
-	}
-	printf("  Unknown: %zu\n", summary_counts->unknown_count);
-
-	if (summary_counts->invalid_count > 0) {
-		failures = 1;
-	}
-
-	shutdown_unknown_out();
-	return failures;
-}
-
 static void print_usage(const char* program) {
 	printf("validate - Deterministic file format validation\n\n");
 	printf("USAGE:\n");
@@ -750,7 +607,11 @@ int main(int argc, char* argv[]) {
 	size_t jobs = 0;
 	int shuffle = 0;
 	size_t stress_iterations = 0;
-	const char* path = NULL;
+
+	/* Collect positional arguments (paths) */
+	const char** paths = NULL;
+	size_t path_count = 0;
+	size_t path_capacity = 0;
 
 	for (int i = 1; i < argc; i++) {
 		const char* arg = argv[i];
@@ -761,6 +622,7 @@ int main(int argc, char* argv[]) {
 #endif
 		) {
 			print_usage(argv[0]);
+			free(paths);
 			return 0;
 		}
 		/* Version: --version (and /version on Windows) */
@@ -770,6 +632,7 @@ int main(int argc, char* argv[]) {
 #endif
 		) {
 			printf("%s\n", validate_version());
+			free(paths);
 			return 0;
 		}
 		/* Shuffle: --shuffle */
@@ -781,11 +644,13 @@ int main(int argc, char* argv[]) {
 		if (strcmp(arg, "--stress") == 0) {
 			if (i + 1 >= argc) {
 				fprintf(stderr, "%sError: --stress requires a value\n%s", COLOR_RED, COLOR_RESET);
+				free(paths);
 				return 2;
 			}
 			stress_iterations = (size_t)strtoull(argv[++i], NULL, 10);
 			if (stress_iterations == 0) {
 				fprintf(stderr, "%sError: --stress value must be > 0\n%s", COLOR_RED, COLOR_RESET);
+				free(paths);
 				return 2;
 			}
 			continue;
@@ -798,6 +663,7 @@ int main(int argc, char* argv[]) {
 		) {
 			if (i + 1 >= argc) {
 				fprintf(stderr, "%sError: --jobs requires a value\n%s", COLOR_RED, COLOR_RESET);
+				free(paths);
 				return 2;
 			}
 			jobs = (size_t)strtoull(argv[++i], NULL, 10);
@@ -811,20 +677,35 @@ int main(int argc, char* argv[]) {
 		/* Unknown option check */
 		if (arg[0] == '-') {
 			fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
+			free(paths);
 			return 2;
 		}
 #ifdef _WIN32
 		/* On Windows, / is an option prefix (but allow paths like C:\ or \\server) */
 		if (arg[0] == '/' && arg[1] != '\0' && arg[1] != '/' && arg[1] != '\\') {
 			fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
+			free(paths);
 			return 2;
 		}
 #endif
-		path = arg;
+		/* Add positional argument to paths list */
+		if (path_count >= path_capacity) {
+			size_t new_capacity = path_capacity == 0 ? 8 : path_capacity * 2;
+			const char** new_paths = realloc(paths, new_capacity * sizeof(const char*));
+			if (!new_paths) {
+				fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
+				free(paths);
+				return 1;
+			}
+			paths = new_paths;
+			path_capacity = new_capacity;
+		}
+		paths[path_count++] = arg;
 	}
 
-	if (!path) {
+	if (path_count == 0) {
 		print_usage(argv[0]);
+		free(paths);
 		return 2;
 	}
 
@@ -832,6 +713,127 @@ int main(int argc, char* argv[]) {
 	 * This must be called ONCE from main thread BEFORE spawning workers. */
 	validate_init();
 
-	int rc = validate_path(path, jobs, shuffle, stress_iterations);
-	return rc;
+	init_unknown_out();
+
+	const size_t max_files = get_env_max_files();
+
+	/* Collect ALL files from ALL paths into a single list */
+	path_list_t file_list;
+	if (path_list_init(&file_list, 1024, max_files) != 0) {
+		fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
+		free(paths);
+		shutdown_unknown_out();
+		return 1;
+	}
+
+	int any_directories = 0;
+	for (size_t i = 0; i < path_count; i++) {
+		struct stat st;
+		if (stat(paths[i], &st) != 0) {
+			fprintf(stderr, "%sError: Cannot access path: %s\n%s", COLOR_RED, paths[i], COLOR_RESET);
+			continue;
+		}
+
+		if (S_ISDIR(st.st_mode)) {
+			any_directories = 1;
+			if (max_files > 0 && file_list.count == 0) {
+				printf("%sNote:%s MAX_FILES=%zu (results may be truncated)\n", COLOR_YELLOW, COLOR_RESET, max_files);
+			}
+			/* Enable progress display for directory enumeration */
+#ifdef _WIN32
+			g_show_enum_progress = isatty(_fileno(stderr));
+#else
+			g_show_enum_progress = isatty(STDERR_FILENO);
+#endif
+			if (is_bundle_directory(paths[i])) {
+				path_list_add(&file_list, paths[i]);
+			} else {
+				enumerate_directory(paths[i], &file_list);
+			}
+		} else if (S_ISREG(st.st_mode)) {
+			path_list_add(&file_list, paths[i]);
+		} else {
+			fprintf(stderr, "%sWarning: Skipping unsupported path type: %s\n%s", COLOR_YELLOW, paths[i], COLOR_RESET);
+		}
+	}
+	finish_enum_progress();
+	free(paths);
+
+	if (file_list.count == 0) {
+		printf("No files found.\n");
+		path_list_free(&file_list);
+		shutdown_unknown_out();
+		return 0;
+	}
+
+	if (any_directories || file_list.count > 1) {
+		printf("Found %zu files to validate.%s\n\n", file_list.count,
+			(shuffle || stress_iterations > 1) ? " (shuffled)" : "");
+	} else {
+		printf("Checking: %s\n", file_list.paths[0]);
+	}
+
+	validation_counts_t counts = {0};
+	validation_counts_t total_counts = {0};
+	int failures = 0;
+
+	const size_t iterations = (stress_iterations > 0) ? stress_iterations : 1;
+	int should_shuffle = shuffle || (stress_iterations > 1);
+
+	for (size_t iter = 0; iter < iterations; iter++) {
+		if (stress_iterations > 1) {
+			printf("%s=== Stress iteration %zu/%zu ===%s\n", COLOR_CYAN, iter + 1, iterations, COLOR_RESET);
+		}
+
+		if (should_shuffle) {
+			shuffle_paths(&file_list, iter + 1);
+		}
+
+		counts = (validation_counts_t){0};
+
+		validate_error_t err = validate_batch(
+			(const char* const*)file_list.paths,
+			file_list.ids,
+			file_list.count,
+			(int)jobs,
+			on_validation_result,
+			&counts
+		);
+
+		if (err != VALIDATE_OK) {
+			fprintf(stderr, "%sError: Validation failed: %s\n%s", COLOR_RED,
+				validate_last_error() ? validate_last_error() : "unknown error", COLOR_RESET);
+			path_list_free(&file_list);
+			shutdown_unknown_out();
+			return 1;
+		}
+
+		total_counts.valid_count += counts.valid_count;
+		total_counts.invalid_count += counts.invalid_count;
+		total_counts.unknown_count += counts.unknown_count;
+
+		if (counts.invalid_count > 0) {
+			failures = 1;
+		}
+	}
+
+	path_list_free(&file_list);
+
+	/* Use total_counts for summary in stress mode, otherwise use last counts */
+	validation_counts_t* summary_counts = (stress_iterations > 1) ? &total_counts : &counts;
+
+	printf("\n%sSummary:%s\n", COLOR_CYAN, COLOR_RESET);
+	if (stress_iterations > 1) {
+		printf("  Iterations: %zu\n", stress_iterations);
+	}
+	printf("  Valid:   %s%zu%s\n", COLOR_GREEN, summary_counts->valid_count, COLOR_RESET);
+	if (summary_counts->invalid_count > 0) {
+		printf("  Invalid: %s%zu%s\n", COLOR_RED, summary_counts->invalid_count, COLOR_RESET);
+	} else {
+		printf("  Invalid: %zu\n", summary_counts->invalid_count);
+	}
+	printf("  Unknown: %zu\n", summary_counts->unknown_count);
+
+	shutdown_unknown_out();
+	return failures ? 1 : 0;
 }

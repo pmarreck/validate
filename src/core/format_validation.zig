@@ -114,6 +114,9 @@ const libopenmpt = @import("libopenmpt.zig");
 // Import HEIF validator for libheif deep validation (HEIC/AVIF)
 const heif_validator = @import("heif_validator.zig");
 
+// Import LibRaw validator for camera RAW format deep validation (ARW, CR2, NEF)
+const libraw_validator = @import("libraw_validator.zig");
+
 // Import video validator for video stream deep validation (MP4/MKV with HEVC/AV1)
 const video_validator = @import("video_validator.zig");
 
@@ -15931,6 +15934,20 @@ fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// This catches decompression errors in LZW/Deflate/PackBits/etc and corrupted IFD data
 /// that structural validation would miss.
 fn validateTiffDeep(allocator: Allocator, path: []const u8, format: FileFormat) ValidationResult {
+    // For camera RAW formats (ARW, CR2, NEF), try LibRaw first
+    // LibRaw handles proprietary vendor compression that zigimg can't decode
+    if (format == .arw or format == .cr2 or format == .nef) {
+        const libraw_result = libraw_validator.validateRawFile(path);
+        if (libraw_result.valid) {
+            return ValidationResult.okWithDepth(format, .full);
+        }
+        // LibRaw failed - return its specific error
+        if (libraw_result.error_message) |msg| {
+            return ValidationResult.invalidWithDepth(format, msg, .full);
+        }
+        return ValidationResult.invalidWithDepth(format, "LibRaw decode failed", .full);
+    }
+
     // Check if this TIFF contains special tags that need different handling
     const tag_check = checkTiffTagSupport(path);
     if (tag_check.has_dng_tags) {

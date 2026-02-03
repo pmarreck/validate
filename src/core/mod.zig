@@ -13,6 +13,7 @@
 //! C ABI surface and tests that enforce behavior at the core level.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 // Re-export submodules
 pub const types = @import("types.zig");
@@ -81,6 +82,8 @@ pub const path_validation = @import("path_validation.zig");
 pub const thread_pool = @import("thread_pool.zig");
 pub const heif_validator = @import("heif_validator.zig");
 pub const webp_validator = @import("webp_validator.zig");
+pub const libraw_validator = @import("libraw_validator.zig");
+pub const videotoolbox_validator = @import("videotoolbox_validator.zig");
 
 // Version information
 pub const version = struct {
@@ -114,6 +117,13 @@ pub fn preInit() void {
 
     // libjxl - triggers Highway SIMD dispatch selection
     _ = jxl_validator.validateJxlDeep("/nonexistent");
+
+    // VideoToolbox on macOS - triggers dyld lazy symbol binding
+    // MUST happen on main thread before worker threads use VideoToolbox
+    // NOTE: Temporarily disabled for debugging
+    // if (comptime builtin.os.tag == .macos) {
+    //     videotoolbox_validator.preInit();
+    // }
 
     // Note: Other decoders (libde265, dav1d, OpenH264) are protected by
     // video_decoder_mutex and don't need pre-init.

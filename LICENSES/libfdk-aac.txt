@@ -1,0 +1,20 @@
+Fraunhofer FDK AAC Codec Library
+License: FDK-AAC (custom permissive license)
+SPDX-License-Identifier: FDK-AAC
+
+Copyright (c) 1995-2018 Fraunhofer-Gesellschaft zur Foerderung der angewandten
+Forschung e.V. All rights reserved.
+
+Redistribution in source and binary forms is permitted without copyright fee,
+provided that:
+- The complete license text is retained
+- Source code is made available to recipients
+- The Fraunhofer name is not used for endorsement without permission
+- No copyright license fees are charged for use/distribution
+- Modified versions must be clearly marked and renamed
+
+PATENT NOTICE: No express or implied licenses to any patent claims are granted.
+Users must obtain separate patent licenses through Via Licensing or direct
+patent holders for AAC encoding/decoding activities.
+
+THIS SOFTWARE IS PROVIDED "AS IS" WITHOUT WARRANTIES OF ANY KIND.

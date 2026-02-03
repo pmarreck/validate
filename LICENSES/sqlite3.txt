@@ -1,0 +1,25 @@
+SQLite
+License: Public Domain
+SPDX-License-Identifier: blessing
+
+SQLite is in the public domain. No claim of copyright is made.
+
+All code and documentation in SQLite has been dedicated to the public domain
+by the authors. All contributors have signed affidavits dedicating their
+contributions to the public domain.
+
+Anyone is free to:
+- Copy, modify, publish, use, compile, sell, or distribute the original SQLite code
+- Use in source code form or as a compiled binary
+- Use for any purpose, commercial or non-commercial
+- Use by any means
+
+No attribution is required, though it is appreciated.
+
+The SQLite source code contains the following blessing:
+
+    May you do good and not evil.
+    May you find forgiveness for yourself and forgive others.
+    May you share freely, never taking more than you give.
+
+For more information: https://www.sqlite.org/copyright.html

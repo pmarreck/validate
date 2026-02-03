@@ -211,6 +211,14 @@ pub fn build(b: *std.Build) void {
     const cj5_lib = cj5_dep.artifact("cj5");
     const cj5_mod = cj5_dep.module("cj5");
 
+    // LibRaw for camera RAW format validation (LGPL-2.1, phcreery/LibRaw-zig)
+    const libraw_dep = b.dependency("libraw", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const libraw_lib = libraw_dep.artifact("libraw_clib");
+    const libraw_mod = libraw_dep.module("libraw");
+
     // Core module - validation logic
     const core_mod = b.addModule("validate_core", .{
         .root_source_file = b.path("src/core/mod.zig"),
@@ -221,6 +229,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zigimg", .module = zigimg_mod }, // Image format decoding for deep validation
             .{ .name = "xml", .module = zigxml_mod }, // XML validation (0BSD, ianprime0509/zig-xml)
             .{ .name = "cj5", .module = cj5_mod }, // JSON5 validation (MIT, septag/cj5 fork)
+            .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (LGPL-2.1)
         },
     });
 
@@ -279,6 +288,9 @@ pub fn build(b: *std.Build) void {
     // Add zlib include path (Zig-built dependency, used in zlib.zig wrapper)
     core_mod.addIncludePath(zlib_lib.getEmittedIncludeTree());
 
+    // Add libraw include path (for camera RAW validation)
+    core_mod.addIncludePath(libraw_lib.getEmittedIncludeTree());
+
     // FFI module - C ABI exports
     const ffi_mod = b.addModule("validate_ffi", .{
         .root_source_file = b.path("ffi/c_api.zig"),
@@ -329,8 +341,26 @@ pub fn build(b: *std.Build) void {
     lib.linkLibrary(libopenmpt_lib);
     // Link cj5 for JSON5 validation (Zig-built C library)
     lib.linkLibrary(cj5_lib);
+    // Link libraw for camera RAW format validation (LGPL-2.1/CDDL dual license)
+    lib.linkLibrary(libraw_lib);
     lib.linkLibC();
     lib.linkLibCpp(); // Required for libheif, libjxl, libopenmpt (C++ libraries)
+
+    // On macOS, link VideoToolbox and CoreMedia frameworks for hardware video decoding
+    // VideoToolbox provides complete H.264/HEVC/AV1 profile support with hardware acceleration
+    // Note: On modern macOS (11+), system frameworks are in dyld shared cache, so we need
+    // to use the Xcode SDK which contains .tbd stub files for linking
+    if (target.result.os.tag == .macos) {
+        // Use Xcode SDK frameworks path (has .tbd stubs that modern macOS requires)
+        // The actual framework binaries are in the dyld shared cache at runtime
+        const sdk_frameworks_path = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks";
+        lib.addFrameworkPath(.{ .cwd_relative = sdk_frameworks_path });
+        lib.linkFramework("VideoToolbox");
+        lib.linkFramework("CoreMedia");
+        lib.linkFramework("CoreVideo");
+        lib.linkFramework("CoreFoundation");
+    }
+
     lib.installHeadersDirectory(b.path("ffi"), "", .{
         .include_extensions = &.{".h"},
     });
@@ -424,6 +454,17 @@ pub fn build(b: *std.Build) void {
     lib_shared.linkLibrary(libopenmpt_lib);
     lib_shared.linkLibC();
     lib_shared.linkLibCpp(); // Required for libheif, libjxl, libopenmpt (C++ libraries)
+
+    // On macOS, link VideoToolbox frameworks for hardware video decoding
+    if (target.result.os.tag == .macos) {
+        const sdk_frameworks_path = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks";
+        lib_shared.addFrameworkPath(.{ .cwd_relative = sdk_frameworks_path });
+        lib_shared.linkFramework("VideoToolbox");
+        lib_shared.linkFramework("CoreMedia");
+        lib_shared.linkFramework("CoreVideo");
+        lib_shared.linkFramework("CoreFoundation");
+    }
+
     lib_shared.installHeadersDirectory(b.path("ffi"), "", .{
         .include_extensions = &.{".h"},
     });
@@ -449,6 +490,16 @@ pub fn build(b: *std.Build) void {
     });
     cli_c.linkLibrary(lib);
     cli_c.linkLibrary(sqlite3_lib);
+
+    // On macOS, link VideoToolbox frameworks for hardware video decoding
+    if (target.result.os.tag == .macos) {
+        const sdk_frameworks_path = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks";
+        cli_c.addFrameworkPath(.{ .cwd_relative = sdk_frameworks_path });
+        cli_c.linkFramework("VideoToolbox");
+        cli_c.linkFramework("CoreMedia");
+        cli_c.linkFramework("CoreVideo");
+        cli_c.linkFramework("CoreFoundation");
+    }
 
     const install_cli = b.addInstallArtifact(cli_c, .{});
     b.getInstallStep().dependOn(&install_cli.step);
@@ -557,6 +608,16 @@ pub fn build(b: *std.Build) void {
     core_tests.linkLibC();
     core_tests.linkLibCpp(); // Required for libheif, openh264, libjxl, libopenmpt (C++ libraries)
 
+    // On macOS, link VideoToolbox frameworks for hardware video decoding tests
+    if (target.result.os.tag == .macos) {
+        const sdk_frameworks_path = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks";
+        core_tests.addFrameworkPath(.{ .cwd_relative = sdk_frameworks_path });
+        core_tests.linkFramework("VideoToolbox");
+        core_tests.linkFramework("CoreMedia");
+        core_tests.linkFramework("CoreVideo");
+        core_tests.linkFramework("CoreFoundation");
+    }
+
     const host_is_windows = b.graph.host.result.os.tag == .windows;
     const target_is_windows = target.result.os.tag == .windows;
     const run_core_tests = if (target_is_windows and !host_is_windows and windows_test_wine != null) blk: {
@@ -594,6 +655,16 @@ pub fn build(b: *std.Build) void {
     ffi_tests.linkLibrary(libopenmpt_lib);
     ffi_tests.linkLibC();
     ffi_tests.linkLibCpp();
+
+    // On macOS, link VideoToolbox frameworks for hardware video decoding tests
+    if (target.result.os.tag == .macos) {
+        const sdk_frameworks_path = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks";
+        ffi_tests.addFrameworkPath(.{ .cwd_relative = sdk_frameworks_path });
+        ffi_tests.linkFramework("VideoToolbox");
+        ffi_tests.linkFramework("CoreMedia");
+        ffi_tests.linkFramework("CoreVideo");
+        ffi_tests.linkFramework("CoreFoundation");
+    }
 
     const run_ffi_tests = if (target_is_windows and !host_is_windows and windows_test_wine != null) blk: {
         const run = b.addSystemCommand(&.{

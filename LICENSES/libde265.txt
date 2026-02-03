@@ -1,0 +1,18 @@
+libde265
+License: LGPL-3.0-or-later
+SPDX-License-Identifier: LGPL-3.0-or-later
+
+Copyright (c) struktur AG, Dirk Farin <farin@struktur.de>
+
+libde265 is distributed under the terms of the GNU Lesser General Public
+License v3 (LGPL-3.0-or-later).
+
+The LGPL permits use of the library in proprietary applications provided that:
+- The library is dynamically linked or the complete object files are provided
+- Attribution is given to the original authors
+- Source code modifications to the library itself are made available
+- Users can replace the library with a modified version
+
+Sample applications use the MIT License.
+
+For full license text, see: https://www.gnu.org/licenses/lgpl-3.0.html
