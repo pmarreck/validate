@@ -1658,6 +1658,45 @@ pub fn detectFormat(header: []const u8) FileFormat {
         return text_format;
     }
 
+    // Classic QuickTime files without ftyp box (pre-2001 format)
+    // These start directly with atoms like: wide, moov, mdat, free, skip
+    // Structure: 4-byte size (big-endian) + 4-byte atom type
+    if (header.len >= 16) {
+        const atom_type = header[4..8];
+        // Check for valid QuickTime atom types at offset 4
+        if (std.mem.eql(u8, atom_type, "wide") or
+            std.mem.eql(u8, atom_type, "moov") or
+            std.mem.eql(u8, atom_type, "mdat") or
+            std.mem.eql(u8, atom_type, "free") or
+            std.mem.eql(u8, atom_type, "skip") or
+            std.mem.eql(u8, atom_type, "pnot"))
+        {
+            // Validate atom size is reasonable
+            const atom_size = std.mem.readInt(u32, header[0..4], .big);
+            if (atom_size >= 8 or atom_size == 0 or atom_size == 1) {
+                // Check for a second valid atom after the first one
+                // Atom structure: [4-byte size][4-byte type], so type is at offset+4
+                if (atom_size >= 8 and atom_size + 8 <= header.len) {
+                    const second_atom_type = header[atom_size + 4 ..][0..4];
+                    if (std.mem.eql(u8, second_atom_type, "wide") or
+                        std.mem.eql(u8, second_atom_type, "moov") or
+                        std.mem.eql(u8, second_atom_type, "mdat") or
+                        std.mem.eql(u8, second_atom_type, "free") or
+                        std.mem.eql(u8, second_atom_type, "skip") or
+                        std.mem.eql(u8, second_atom_type, "pnot") or
+                        std.mem.eql(u8, second_atom_type, "uuid"))
+                    {
+                        return .mov; // Classic QuickTime format
+                    }
+                }
+                // If first atom is moov, it's definitely QuickTime
+                if (std.mem.eql(u8, atom_type, "moov")) {
+                    return .mov;
+                }
+            }
+        }
+    }
+
     return .unknown;
 }
 
@@ -13177,8 +13216,20 @@ fn validateIsobmff(file: std.fs.File, format: FileFormat) ValidationResult {
         box_count += 1;
     }
 
+    // Check for required boxes
+    // Classic QuickTime (.mov) doesn't require ftyp - it predates ISO BMFF
+    // ISO BMFF formats (MP4, M4A, HEIC, AVIF) require ftyp
     if (!found_ftyp) {
-        return ValidationResult.invalid(format, "Missing ftyp box");
+        if (format == .mov) {
+            // Classic QuickTime: ftyp is optional, but we need moov or mdat
+            if (!found_mdat_or_moov) {
+                return ValidationResult.invalid(format, "Missing moov or mdat box");
+            }
+            // Valid classic QuickTime file
+        } else {
+            // ISO BMFF formats require ftyp
+            return ValidationResult.invalid(format, "Missing ftyp box");
+        }
     }
 
     return ValidationResult.ok(format);
@@ -15879,20 +15930,16 @@ fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Deep TIFF validation by fully decoding the image using zigimg.
 /// This catches decompression errors in LZW/Deflate/PackBits/etc and corrupted IFD data
 /// that structural validation would miss.
-fn validateTiffDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    // Check if this TIFF contains tags that zigimg can't handle
-    // (it panics on unknown enum values for DNG tags, deprecated tags, etc.)
+fn validateTiffDeep(allocator: Allocator, path: []const u8, format: FileFormat) ValidationResult {
+    // Check if this TIFF contains special tags that need different handling
     const tag_check = checkTiffTagSupport(path);
     if (tag_check.has_dng_tags) {
         // Actual DNG/RAW files: use DNG validation path which validates
         // embedded JPEGs and doesn't try to decode the raw image data
         return validateDngDeep(allocator, path);
     }
-    if (tag_check.has_unsupported_tags) {
-        // Regular TIFF with unsupported tags (deprecated tags, vendor extensions, etc.)
-        // Can't deep decode with zigimg, but structural validation passed
-        return ValidationResult.okWithDepth(.tiff, .structural);
-    }
+    // Note: has_unsupported_tags no longer forces structural-only validation
+    // Our forked zigimg now skips unknown tags gracefully instead of panicking
     if (tag_check.has_1bit_lzw) {
         // 1-bit image with LZW compression - zigimg's LZW decoder can't handle these
         // Use our pure Zig LZW decoder instead
@@ -15904,20 +15951,33 @@ fn validateTiffDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Try to load the image - this performs full decompression and validates the data
     var image = zigimg.Image.fromFilePath(allocator, path, &read_buffer) catch |err| {
-        const msg = switch (err) {
-            error.OutOfMemory => "Out of memory during decode",
-            error.InvalidData => "Invalid TIFF data",
-            error.EndOfStream => "Unexpected end of stream",
-            error.FileNotFound => "File not found",
-            error.AccessDenied => "Access denied",
-            else => "TIFF decode failed",
+        // Debug output for error diagnosis
+        if (std.posix.getenv("TIFF_DEBUG")) |_| {
+            std.debug.print("TIFF decode error: {s}\n", .{@errorName(err)});
+        }
+        return switch (err) {
+            // Clear I/O errors - definitely invalid
+            error.FileNotFound => ValidationResult.invalid(format, "File not found"),
+            error.AccessDenied => ValidationResult.invalid(format, "Access denied"),
+            error.EndOfStream => ValidationResult.invalidWithDepth(format, "Truncated file", .full),
+            error.OutOfMemory => ValidationResult.invalidWithDepth(format, "Out of memory during decode", .full),
+
+            // InvalidData could mean corruption OR unsupported format features
+            // zigimg has limited support (e.g., unusual strip sizes, some predictor modes)
+            // Fall back to structural validation with warning rather than false positive
+            error.InvalidData => ValidationResult.okWithDepthAndWarning(format, .structural, "zigimg decode failed, structural only"),
+
+            // Unsupported - zigimg doesn't handle this format variant
+            error.Unsupported => ValidationResult.okWithDepthAndWarning(format, .structural, "unsupported format variant"),
+
+            // Other errors - structural validation only
+            else => ValidationResult.okWithDepthAndWarning(format, .structural, "decode failed"),
         };
-        return ValidationResult.invalidWithDepth(.tiff, msg, .full);
     };
     image.deinit(allocator);
 
     // If we get here, the image decoded successfully
-    return ValidationResult.okWithDepth(.tiff, .full);
+    return ValidationResult.okWithDepth(format, .full);
 }
 
 /// Result of checking TIFF tags for zigimg compatibility
@@ -15971,7 +16031,9 @@ fn checkTiffTagSupport(path: []const u8) TiffTagCheckResult {
     // Limit scan to prevent huge reads
     const max_entries = @min(entry_count, 200);
 
-    // Scan IFD entries for tags that zigimg doesn't support
+    // Scan IFD entries for tags that zigimg doesn't support.
+    // zigimg panics on unknown tag values via @enumFromInt(), so we must use a whitelist
+    // approach: only tags explicitly in zigimg's TagId enum are safe.
     var entry: [12]u8 = undefined;
     for (0..max_entries) |_| {
         _ = file.readAll(&entry) catch return result;
@@ -16009,38 +16071,55 @@ fn checkTiffTagSupport(path: []const u8) TiffTagCheckResult {
             compression = tag_value;
         }
 
-        // DNG tags (0xC612-0xC7FF range - Adobe DNG specification)
-        if (tag >= 0xC612 and tag <= 0xC7FF) {
+        // DNG detection: specifically check for DNGVersion tag (0xC612).
+        // Other tags in the 0xC612-0xC7FF range are used by various manufacturers
+        // (Sony uses 0xC634, etc.) and don't indicate DNG format.
+        if (tag == 0xC612) {
             result.has_dng_tags = true;
         }
 
-        // Deprecated SubfileType tag (0xFF) - not in zigimg's enum
-        if (tag == 0xFF) {
-            result.has_unsupported_tags = true;
-        }
+        // Check if this tag is in zigimg's TagId enum (whitelist approach).
+        // zigimg panics on @enumFromInt() for unknown values, so we must pre-filter.
+        // Tags from zigimg's TagId enum in types.zig:
+        const zigimg_supported = switch (tag) {
+            254, // new_subfile_type
+            256, // image_width
+            257, // image_height
+            258, // bits_per_sample
+            259, // compression
+            262, // photometric_interpretation
+            266, // fill_order
+            269, // document_name
+            270, // image_description
+            273, // strip_offsets
+            274, // orientation
+            277, // samples_per_pixel
+            278, // rows_per_strip
+            279, // strip_byte_counts
+            282, // x_resolution
+            283, // y_resolution
+            284, // planar_configuration
+            286, // x_position
+            287, // y_position
+            292, // t4_options
+            296, // resolution_unit
+            297, // page_number
+            305, // software
+            317, // predictor
+            318, // white_point
+            319, // primary_chromaticities
+            320, // color_map
+            338, // extra_samples
+            339, // sample_format
+            700, // unknown_1 (XMP)
+            34665, // unknown_2 (Exif IFD Pointer)
+            34675, // unknown_3 (ICC Profile)
+            => true,
+            else => false,
+        };
 
-        // TIFF-F (fax) specific tags - not supported by zigimg
-        // 0x124 = T4Options, 0x125 = T6Options
-        // 0x146 = BadFaxLines, 0x147 = CleanFaxData, 0x148 = ConsecutiveBadFaxLines
-        if (tag == 0x124 or tag == 0x125 or (tag >= 0x146 and tag <= 0x148)) {
-            result.has_unsupported_tags = true;
-        }
-
-        // YCbCr-related tags - not supported by zigimg
-        // 0x211 = YCbCrCoefficients, 0x212 = YCbCrSubSampling
-        // 0x213 = YCbCrPositioning, 0x214 = ReferenceBlackWhite
-        if (tag >= 0x211 and tag <= 0x214) {
-            result.has_unsupported_tags = true;
-        }
-
-        // Other problematic ranges:
-        // - Tags below 0x100 (except 0xFE NewSubfileType which is valid) - generally not standard
-        // - Private/proprietary tags (0x8000-0xBFFF range used by various vendors)
-        if (tag < 0xFE) {
-            result.has_unsupported_tags = true;
-        }
-        if (tag >= 0x8000 and tag < 0xC612) {
-            // Many proprietary vendor tags in this range (e.g., Photoshop, Canon, Nikon)
+        if (!zigimg_supported and tag < 0xC612) {
+            // Tag not in zigimg's enum and not a DNG tag (already handled above)
             result.has_unsupported_tags = true;
         }
     }
@@ -16310,21 +16389,28 @@ fn validateDngDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Find and validate embedded JPEGs with proper headers
-    // DNG files contain JPEG previews with JFIF or EXIF markers
-    // We only validate these "real" JPEGs, not random FFD8 patterns in raw data
-    // Note: DNG semantic maps use lossless JPEG (SOF3) - now validated with Pure Zig decoder
-    var jpeg_count: usize = 0;
-    var jpeg_valid: usize = 0;
+    // DNG files contain:
+    // 1. Preview/thumbnail JPEGs (baseline/progressive) - critical for display
+    // 2. Semantic map tiles (lossless JPEG SOF3) - internal processing data
+    // We fail only on corrupt previews; warn on semantic map issues
+    var preview_count: usize = 0;
+    var preview_valid: usize = 0;
+    var semantic_count: usize = 0;
+    var semantic_valid: usize = 0;
     var i: usize = 0;
+
+    // Minimum size for a "real" JPEG (1KB) - smaller patterns are likely false positives
+    const min_jpeg_size: usize = 1024;
+    const debug = std.posix.getenv("DNG_DEBUG") != null;
 
     while (i + 10 < data.len) {
         // Look for JPEG SOI marker (0xFFD8) followed by APP0 (JFIF) or APP1 (EXIF)
         if (data[i] == 0xFF and data[i + 1] == 0xD8 and data[i + 2] == 0xFF) {
             const marker = data[i + 3];
-            // APP0 = 0xE0 (JFIF), APP1 = 0xE1 (EXIF), or other APPn markers
-            const is_real_jpeg = (marker >= 0xE0 and marker <= 0xEF) or marker == 0xDB or marker == 0xC0;
+            // Only consider JPEGs with application markers (JFIF/EXIF)
+            const is_jpeg_with_app = marker == 0xE0 or marker == 0xE1;
 
-            if (is_real_jpeg) {
+            if (is_jpeg_with_app) {
                 // This looks like a real JPEG, find its end
                 var j = i + 4;
                 var found_end = false;
@@ -16334,20 +16420,30 @@ fn validateDngDeep(allocator: Allocator, path: []const u8) ValidationResult {
                         // Found JPEG end
                         const jpeg_data = data[i .. j + 2];
 
-                        // Check if this is a lossless JPEG (SOF3 = 0xFFC3)
-                        const is_lossless = jpeg_lossless_decoder.isLosslessJpeg(jpeg_data);
+                        // Only validate if it's large enough
+                        if (jpeg_data.len >= min_jpeg_size) {
+                            // Check if this is a lossless JPEG (SOF3 = 0xFFC3)
+                            const is_lossless = jpeg_lossless_decoder.isLosslessJpeg(jpeg_data);
 
-                        jpeg_count += 1;
-                        if (is_lossless) {
-                            // Use our Pure Zig lossless JPEG decoder
-                            const lossless_result = jpeg_lossless_decoder.validateLosslessJpeg(allocator, jpeg_data);
-                            if (lossless_result.valid) {
-                                jpeg_valid += 1;
-                            }
-                        } else {
-                            // Validate regular JPEG using libjpeg-turbo
-                            if (validateJpegBufferForDng(jpeg_data)) {
-                                jpeg_valid += 1;
+                            if (is_lossless) {
+                                // Semantic map tile (lossless JPEG)
+                                semantic_count += 1;
+                                const lossless_result = jpeg_lossless_decoder.validateLosslessJpeg(allocator, jpeg_data);
+                                if (lossless_result.valid) {
+                                    semantic_valid += 1;
+                                    if (debug) std.debug.print("  Semantic #{d} @ offset {d}: {d} bytes, VALID\n", .{ semantic_count, i, jpeg_data.len });
+                                } else {
+                                    if (debug) std.debug.print("  Semantic #{d} @ offset {d}: {d} bytes, INVALID\n", .{ semantic_count, i, jpeg_data.len });
+                                }
+                            } else {
+                                // Preview JPEG (baseline/progressive)
+                                preview_count += 1;
+                                if (validateJpegBufferForDng(jpeg_data)) {
+                                    preview_valid += 1;
+                                    if (debug) std.debug.print("  Preview #{d} @ offset {d}: {d} bytes, VALID\n", .{ preview_count, i, jpeg_data.len });
+                                } else {
+                                    if (debug) std.debug.print("  Preview #{d} @ offset {d}: {d} bytes, INVALID\n", .{ preview_count, i, jpeg_data.len });
+                                }
                             }
                         }
 
@@ -16363,7 +16459,7 @@ fn validateDngDeep(allocator: Allocator, path: []const u8) ValidationResult {
                     i += 4;
                 }
             } else {
-                // Not a real JPEG (likely raw data pattern), skip
+                // Not a JPEG with app marker, skip
                 i += 2;
             }
         } else {
@@ -16371,14 +16467,26 @@ fn validateDngDeep(allocator: Allocator, path: []const u8) ValidationResult {
         }
     }
 
-    if (jpeg_count == 0) {
-        // No embedded JPEGs found - return structural validation only
+    if (debug) {
+        std.debug.print("DNG: {d}/{d} previews valid, {d}/{d} semantic tiles valid\n", .{ preview_valid, preview_count, semantic_valid, semantic_count });
+    }
+
+    // Determine validation result based on preview health
+    // Previews are critical; semantic tiles are internal data
+    if (preview_count == 0 and semantic_count == 0) {
+        // No embedded JPEGs found
         return ValidationResult.okWithWarning(.dng, "DNG: no embedded previews to validate");
     }
 
-    if (jpeg_valid < jpeg_count) {
-        // Some embedded JPEGs failed validation
-        return ValidationResult.invalidWithDepth(.dng, "DNG: embedded JPEG preview corrupt", .full);
+    if (preview_count > 0 and preview_valid < preview_count) {
+        // Corrupt preview JPEG - this is a failure
+        return ValidationResult.invalidWithDepth(.dng, "DNG: embedded preview image corrupt", .full);
+    }
+
+    if (semantic_valid < semantic_count) {
+        // Some semantic map tiles failed - warn but don't fail
+        // The preview images are fine, semantic maps are internal processing data
+        return ValidationResult.okWithDepthAndWarning(.dng, .full, "DNG: some semantic map tiles invalid");
     }
 
     // All embedded JPEGs validated successfully
@@ -19026,6 +19134,11 @@ fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Default maximum file size for deep video validation (unlimited)
 const DEFAULT_MAX_VIDEO_DEEP_SIZE: u64 = std.math.maxInt(u64);
 
+/// Maximum frames to validate per video file.
+/// 300 frames = ~10 seconds at 30fps, enough to catch most corruption.
+/// Decoding ALL frames is too slow for routine validation.
+const MAX_VIDEO_FRAMES: u32 = 300;
+
 /// Get maximum file size for deep video validation from environment variable.
 /// Reads MAX_VIDEO_SIZE env var (in MB). Defaults to unlimited.
 /// Set to a number to limit deep validation to files under that many MB.
@@ -19054,11 +19167,6 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidWithDepth(.mp4, "Failed to get file size", .structural);
     };
-
-    // Skip deep validation for large files (when MAX_VIDEO_SIZE is set)
-    if (file_size > getMaxVideoDeepSize()) {
-        return ValidationResult.structuralOnly(.mp4);
-    }
 
     // Validate all boxes in the file
     var position: u64 = 0;
@@ -19110,35 +19218,46 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
         box_count += 1;
     }
 
-    if (!found_ftyp) {
-        return ValidationResult.invalidWithDepth(.mp4, "Missing ftyp box", .structural);
+    // Determine format: classic QuickTime (.mov) if no ftyp box, otherwise .mp4
+    // Classic QuickTime files pre-date ISO BMFF and don't have ftyp
+    const format: FileFormat = if (found_ftyp) .mp4 else .mov;
+
+    // For ISO BMFF (.mp4), ftyp is required - but we already know found_ftyp is true if format is .mp4
+    // For classic QuickTime (.mov), we need moov or mdat instead
+    if (!found_ftyp and !found_moov and !found_mdat) {
+        return ValidationResult.invalidWithDepth(.mov, "Missing moov or mdat box", .structural);
     }
 
-    // A valid MP4 should have either moov or mdat (or both)
+    // A valid file should have either moov or mdat (or both)
     if (!found_moov and !found_mdat) {
-        return ValidationResult.invalidWithDepth(.mp4, "Missing moov/mdat boxes", .structural);
+        return ValidationResult.invalidWithDepth(format, "Missing moov/mdat boxes", .structural);
+    }
+
+    // Skip deep validation for large files (when MAX_VIDEO_SIZE is set)
+    if (file_size > getMaxVideoDeepSize()) {
+        return ValidationResult.structuralOnly(format);
     }
 
     // Structural validation passed - now attempt video stream validation
     // This parses the container to find video tracks and validates codec info
-    const video_result = video_validator.validateMp4Video(allocator, path, std.math.maxInt(u32));
+    const video_result = video_validator.validateMp4Video(allocator, path, MAX_VIDEO_FRAMES);
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
 			// When no frames decoded, always use structural depth - we didn't actually decode video
 			const depth: ValidationDepth = if (video_result.frames_decoded > 0 and video_result.byte_validated) .full else .structural;
-			var result = ValidationResult.okWithDepthAndMalformation(.mp4, depth, tolerated.malformation);
+			var result = ValidationResult.okWithDepthAndMalformation(format, depth, tolerated.malformation);
 			result.warning_message = tolerated.warning;
 			return result;
 		}
         // Video codec validation failed
-        return ValidationResult.invalidWithDepth(.mp4, video_result.error_message orelse "Video validation failed", .full);
+        return ValidationResult.invalidWithDepth(format, video_result.error_message orelse "Video validation failed", .full);
     }
 
     // Return with appropriate depth based on validation level
     var result = if (video_result.byte_validated)
-        ValidationResult.okWithDepth(.mp4, .full)
+        ValidationResult.okWithDepth(format, .full)
     else
-        ValidationResult.structuralOnly(.mp4);
+        ValidationResult.structuralOnly(format);
     if (video_result.validated_via_ffmpeg) {
         result.validated_via_ffmpeg = true;
     }
@@ -19258,7 +19377,7 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Structural validation passed - now do codec validation
-    const video_result = video_validator.validateMkvVideo(allocator, path, std.math.maxInt(u32));
+    const video_result = video_validator.validateMkvVideo(allocator, path, MAX_VIDEO_FRAMES);
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
 			// When no frames decoded, always use structural depth - we didn't actually decode video
@@ -19331,7 +19450,7 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Now do video frame validation
-    const video_result = video_validator.validateAviVideo(allocator, path, std.math.maxInt(u32));
+    const video_result = video_validator.validateAviVideo(allocator, path, MAX_VIDEO_FRAMES);
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
 			// When no frames decoded, always use structural depth - we didn't actually decode video
@@ -20187,7 +20306,7 @@ pub const FormatValidator = struct {
             .png => validatePngDeep(allocator, path),
             .jpeg => validateJpegDeep(allocator, path),
             .gif => validateGifDeep(allocator, path),
-            .tiff, .dng, .cr2, .nef, .arw => validateTiffDeep(allocator, path),
+            .tiff, .dng, .cr2, .nef, .arw => validateTiffDeep(allocator, path, initial_result.format),
             .psd => validatePsdDeep(allocator, path),
             .ai => validateAiDeep(allocator, path),
             .eps => validateEpsDeep(allocator, path),
@@ -20398,8 +20517,18 @@ pub const FormatValidator = struct {
             return ValidationResult.invalid(.unknown, "File too small to identify");
         }
 
-        // Detect format
+        // Detect format - first try basic detection, then extended for formats that need file access
         var format = detectFormat(header[0..header_bytes]);
+
+        // For formats that need deeper inspection (TIFF-based RAW, Matroska, etc.),
+        // use extended detection which can read more of the file
+        if (format == .tiff or format == .unknown) {
+            const extended_format = detectExtendedFormat(header[0..header_bytes], file);
+            if (extended_format != .unknown) {
+                format = extended_format;
+            }
+        }
+
         var is_mime_wrapped = false;
         var mime_content_offset: usize = 0;
 

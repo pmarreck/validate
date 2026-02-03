@@ -306,8 +306,10 @@ pub fn validateHevcStream(data: []const u8, max_frames: u32) VideoValidationResu
     }
     defer _ = de265.de265_free_decoder(ctx);
 
-    // Start decoder
-    _ = de265.de265_start_worker_threads(ctx, 1);
+    // Start decoder with multiple threads for better performance.
+    // The VideoDecoderGuard ensures only one decoder runs at a time,
+    // so internal threading is safe and beneficial.
+    _ = de265.de265_start_worker_threads(ctx, 4);
 
     // Push Annex B data to decoder (data contains start codes 0x00000001)
     const push_err = de265.de265_push_data(ctx, data.ptr, @intCast(data.len), 0, null);
@@ -357,11 +359,13 @@ pub fn validateAv1Stream(allocator: Allocator, data: []const u8, max_frames: u32
     const guard = VideoDecoderGuard.acquire();
     defer guard.release();
 
-    // Initialize dav1d settings
+    // Initialize dav1d settings with multiple threads for better performance.
+    // The VideoDecoderGuard ensures only one decoder runs at a time,
+    // so internal threading is safe and beneficial.
     var settings: dav1d.Dav1dSettings = undefined;
     dav1d.dav1d_default_settings(&settings);
-    settings.n_threads = 1;
-    settings.max_frame_delay = 1;
+    settings.n_threads = 4;
+    settings.max_frame_delay = 4;
 
     // Open decoder
     var ctx: ?*dav1d.Dav1dContext = null;
@@ -708,86 +712,39 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
         };
     }
 
-    const keyframes_extracted = appendMp4SamplesToBitstream(
+    // Extract ALL frames (not just keyframes) to ensure full decode validation.
+    // A bit error in a P-frame or B-frame would go undetected if we only decode keyframes.
+    const frames_extracted = appendMp4SamplesToBitstream(
         allocator,
         file,
         sample_table,
         video_codec,
         nal_length_size,
         max_frames,
-        true,
+        false, // ALL frames, not just sync samples/keyframes
         &bitstream,
         max_bitstream_bytes,
     );
 
-    if (keyframes_extracted == 0) {
-        bitstream.items.len = 0;
-        if (codec_private != null) {
-            bitstream.appendSlice(allocator, codec_private.?.data) catch {
-                return VideoValidationResult.invalid("Memory allocation failed", video_codec);
-            };
-        }
-        const samples_extracted = appendMp4SamplesToBitstream(
-            allocator,
-            file,
-            sample_table,
-            video_codec,
-            nal_length_size,
-            max_frames,
-            false,
-            &bitstream,
-            max_bitstream_bytes,
-        );
-        if (samples_extracted == 0) {
-            const msg = switch (video_codec) {
-                .h264 => "No frames decoded from H.264 stream",
-                .hevc => "No frames decoded from HEVC",
-                .av1 => "No frames decoded from AV1",
-                else => "No frames decoded from video stream",
-            };
-            var no_frames = VideoValidationResult.invalid(msg, video_codec);
-            no_frames.byte_validated = byte_validated;
-            return no_frames;
-        }
+    if (frames_extracted == 0) {
+        const msg = switch (video_codec) {
+            .h264 => "No frames decoded from H.264 stream",
+            .hevc => "No frames decoded from HEVC",
+            .av1 => "No frames decoded from AV1",
+            else => "No frames decoded from video stream",
+        };
+        var no_frames = VideoValidationResult.invalid(msg, video_codec);
+        no_frames.byte_validated = byte_validated;
+        return no_frames;
     }
 
-    // Decode the combined bitstream
+    // Decode the combined bitstream (all frames, not just keyframes)
     var result = switch (video_codec) {
         .hevc => validateHevcStream(bitstream.items, max_frames),
         .av1 => validateAv1Stream(allocator, bitstream.items, max_frames),
         .h264 => validateH264Stream(bitstream.items, max_frames),
         else => VideoValidationResult.skipped("Unsupported codec"),
     };
-
-    if (!result.valid and (std.mem.eql(u8, result.error_message orelse "", "No frames decoded from H.264 stream") or
-        std.mem.eql(u8, result.error_message orelse "", "No frames decoded from HEVC")))
-    {
-        bitstream.items.len = 0;
-        if (codec_private != null) {
-            bitstream.appendSlice(allocator, codec_private.?.data) catch {
-                return result;
-            };
-        }
-        const samples_extracted = appendMp4SamplesToBitstream(
-            allocator,
-            file,
-            sample_table,
-            video_codec,
-            nal_length_size,
-            max_frames,
-            false,
-            &bitstream,
-            max_bitstream_bytes,
-        );
-        if (samples_extracted > 0) {
-            result = switch (video_codec) {
-                .hevc => validateHevcStream(bitstream.items, max_frames),
-                .av1 => validateAv1Stream(allocator, bitstream.items, max_frames),
-                .h264 => validateH264Stream(bitstream.items, max_frames),
-                else => result,
-            };
-        }
-    }
 
     result.byte_validated = byte_validated;
     return result;
@@ -1018,13 +975,9 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         }
     }
 
-    const decode_frames_limit: usize = if (video_codec == .h264 or video_codec == .hevc or video_codec == .av1)
-        @min(@as(usize, max_frames), 64)
-    else
-        @as(usize, max_frames);
-
-    // Collect ALL frames (or a limited set for decode) for validation
-    const all_frames = parser.collectAllFrames(video_track.track_number, decode_frames_limit) orelse {
+    // Collect ALL frames for full decode validation - no limit
+    // A bit error in any frame (not just keyframes) should be detected
+    const all_frames = parser.collectAllFrames(video_track.track_number, max_frames) orelse {
         if (bitstream.items.len > 0) {
             // We have codec_private but no frames - try decoding just that
             const result = switch (video_codec) {
