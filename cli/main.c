@@ -21,10 +21,135 @@
 #endif
 #include "validate_core.h"
 
+/* ========== KV-US-RS Parser ========== */
+/*
+ * Simple parser for KV-US-RS format (Key-Value with Unit/Record Separators).
+ * Format: key1<US>value1<RS>key2<US>value2<RS>...
+ * Where <US> = 0x1F, <RS> = 0x1E
+ */
+
+typedef struct {
+	const char* data;      /* Original string (not owned) */
+	const char* pos;       /* Current position */
+} kv_parser_t;
+
+static void kv_parser_init(kv_parser_t* parser, const char* data) {
+	parser->data = data;
+	parser->pos = data;
+}
+
+/* Find a value by key. Returns pointer to value (within data), or NULL if not found.
+ * Sets *value_len to the length of the value. */
+static const char* kv_find(const char* data, const char* key, size_t* value_len) {
+	if (!data || !key) return NULL;
+	size_t key_len = strlen(key);
+	const char* p = data;
+
+	while (*p) {
+		/* Find end of key (US or end of string) */
+		const char* key_end = p;
+		while (*key_end && *key_end != VALIDATE_US && *key_end != VALIDATE_RS) {
+			key_end++;
+		}
+
+		size_t this_key_len = key_end - p;
+
+		/* Check if this is our key */
+		if (this_key_len == key_len && memcmp(p, key, key_len) == 0) {
+			/* Found it! Value starts after US */
+			if (*key_end == VALIDATE_US) {
+				const char* value_start = key_end + 1;
+				const char* value_end = value_start;
+				while (*value_end && *value_end != VALIDATE_RS) {
+					value_end++;
+				}
+				if (value_len) *value_len = value_end - value_start;
+				return value_start;
+			}
+			/* Key with no value (shouldn't happen in well-formed data) */
+			if (value_len) *value_len = 0;
+			return key_end;
+		}
+
+		/* Skip to next record */
+		p = key_end;
+		if (*p == VALIDATE_US) {
+			/* Skip value */
+			p++;
+			while (*p && *p != VALIDATE_RS) p++;
+		}
+		if (*p == VALIDATE_RS) p++;
+	}
+
+	return NULL;
+}
+
+/* Get string value, copying to provided buffer. Returns 0 on success. */
+static int kv_get_str(const char* data, const char* key, char* buf, size_t buf_size) {
+	size_t value_len = 0;
+	const char* value = kv_find(data, key, &value_len);
+	if (!value) {
+		if (buf_size > 0) buf[0] = '\0';
+		return -1;
+	}
+	size_t copy_len = (value_len < buf_size - 1) ? value_len : buf_size - 1;
+	memcpy(buf, value, copy_len);
+	buf[copy_len] = '\0';
+	return 0;
+}
+
+/* Get boolean value. Returns 0 (false) or 1 (true). */
+static int kv_get_bool(const char* data, const char* key) {
+	size_t value_len = 0;
+	const char* value = kv_find(data, key, &value_len);
+	if (!value || value_len == 0) return 0;
+	/* Falsy: "F", "0", empty */
+	if (value_len == 1 && (value[0] == 'F' || value[0] == '0')) return 0;
+	/* Everything else is truthy */
+	return 1;
+}
+
+/* Get uint64 value. Returns 0 on error or if not found. */
+static uint64_t kv_get_u64(const char* data, const char* key) {
+	size_t value_len = 0;
+	const char* value = kv_find(data, key, &value_len);
+	if (!value || value_len == 0) return 0;
+
+	/* Copy to temp buffer for strtoul */
+	char buf[32];
+	size_t copy_len = (value_len < sizeof(buf) - 1) ? value_len : sizeof(buf) - 1;
+	memcpy(buf, value, copy_len);
+	buf[copy_len] = '\0';
+
+	/* Support hex (0x) and binary (0b) */
+	if (copy_len >= 2 && buf[0] == '0' && buf[1] == 'x') {
+		return strtoull(buf + 2, NULL, 16);
+	}
+	if (copy_len >= 2 && buf[0] == '0' && buf[1] == 'b') {
+		return strtoull(buf + 2, NULL, 2);
+	}
+	return strtoull(buf, NULL, 10);
+}
+
+/* Get int64 value. Returns 0 on error or if not found. */
+static int64_t kv_get_i64(const char* data, const char* key) {
+	size_t value_len = 0;
+	const char* value = kv_find(data, key, &value_len);
+	if (!value || value_len == 0) return 0;
+
+	char buf[32];
+	size_t copy_len = (value_len < sizeof(buf) - 1) ? value_len : sizeof(buf) - 1;
+	memcpy(buf, value, copy_len);
+	buf[copy_len] = '\0';
+
+	return strtoll(buf, NULL, 10);
+}
+
 /* ========== File Path Collection ========== */
 
 typedef struct {
 	char** paths;
+	uint32_t* ids;
 	size_t count;
 	size_t capacity;
 	size_t max_files;  /* 0 = unlimited */
@@ -32,7 +157,12 @@ typedef struct {
 
 static int path_list_init(path_list_t* list, size_t initial_capacity, size_t max_files) {
 	list->paths = (char**)malloc(initial_capacity * sizeof(char*));
-	if (!list->paths) return -1;
+	list->ids = (uint32_t*)malloc(initial_capacity * sizeof(uint32_t));
+	if (!list->paths || !list->ids) {
+		free(list->paths);
+		free(list->ids);
+		return -1;
+	}
 	list->count = 0;
 	list->capacity = initial_capacity;
 	list->max_files = max_files;
@@ -44,9 +174,33 @@ static void path_list_free(path_list_t* list) {
 		free(list->paths[i]);
 	}
 	free(list->paths);
+	free(list->ids);
 	list->paths = NULL;
+	list->ids = NULL;
 	list->count = 0;
 	list->capacity = 0;
+}
+
+/* Progress display for file enumeration */
+static int g_show_enum_progress = 0;
+static size_t g_last_progress_count = 0;
+
+static void show_enum_progress(size_t count) {
+	if (!g_show_enum_progress) return;
+	/* Only update every 100 files or if count changed significantly to reduce flicker */
+	if (count - g_last_progress_count >= 100 || count < 100) {
+		fprintf(stderr, "\rScanning... %zu files found", count);
+		fflush(stderr);
+		g_last_progress_count = count;
+	}
+}
+
+static void finish_enum_progress(size_t count) {
+	if (!g_show_enum_progress) return;
+	/* Clear the progress line */
+	fprintf(stderr, "\r\033[K");
+	fflush(stderr);
+	g_last_progress_count = 0;
 }
 
 static int path_list_add(path_list_t* list, const char* path) {
@@ -56,13 +210,17 @@ static int path_list_add(path_list_t* list, const char* path) {
 	if (list->count >= list->capacity) {
 		size_t new_capacity = list->capacity * 2;
 		char** new_paths = (char**)realloc(list->paths, new_capacity * sizeof(char*));
-		if (!new_paths) return -1;
+		uint32_t* new_ids = (uint32_t*)realloc(list->ids, new_capacity * sizeof(uint32_t));
+		if (!new_paths || !new_ids) return -1;
 		list->paths = new_paths;
+		list->ids = new_ids;
 		list->capacity = new_capacity;
 	}
 	list->paths[list->count] = strdup(path);
 	if (!list->paths[list->count]) return -1;
+	list->ids[list->count] = (uint32_t)list->count;
 	list->count++;
+	show_enum_progress(list->count);
 	return 0;
 }
 
@@ -124,8 +282,7 @@ static int enumerate_directory(const char* dir_path, path_list_t* list) {
 	DIR* dir = opendir(dir_path);
 	if (!dir) {
 		/* Skip inaccessible directories (permission denied, etc.)
-		 * rather than failing the entire enumeration.
-		 * This matches how enumerate_path() handles inaccessible files. */
+		 * rather than failing the entire enumeration. */
 		int saved_errno = errno;
 		fprintf(stderr, "\033[1;33mWARN\033[0m Skipping inaccessible directory: %s (%s)\n",
 		        dir_path, strerror(saved_errno));
@@ -180,7 +337,7 @@ static const char* COLOR_RED = "\033[0;31m";
 static const char* COLOR_YELLOW = "\033[1;33m";
 static const char* COLOR_CYAN = "\033[0;36m";
 static const char* COLOR_RESET = "\033[0m";
-#define SLOW_THRESHOLD_SECONDS 5.0
+#define SLOW_THRESHOLD_NS (5LL * 1000000000LL)  /* 5 seconds in nanoseconds */
 
 static int g_colors_enabled = 0;
 
@@ -233,73 +390,8 @@ static void disable_colors(void) {
 	COLOR_RESET = "";
 }
 
-static FILE* g_mem_telemetry_file = NULL;
-static int g_mem_telemetry_enabled = 0;
-static size_t g_mem_telemetry_every = 1;
-static size_t g_mem_telemetry_count = 0;
-static size_t g_mem_telemetry_last_rss = 0;
 static FILE* g_unknown_out = NULL;
 static int g_unknown_out_enabled = 0;
-
-static int env_truthy(const char* value) {
-	if (!value || value[0] == '\0') {
-		return 0;
-	}
-	if (strcmp(value, "1") == 0 || strcmp(value, "true") == 0 || strcmp(value, "TRUE") == 0 ||
-		strcmp(value, "yes") == 0 || strcmp(value, "YES") == 0 || strcmp(value, "on") == 0 ||
-		strcmp(value, "ON") == 0) {
-		return 1;
-	}
-	return 0;
-}
-
-static size_t parse_env_size(const char* value, size_t fallback) {
-	if (!value || value[0] == '\0') {
-		return fallback;
-	}
-	char* end = NULL;
-	unsigned long long parsed = strtoull(value, &end, 10);
-	if (end == value || parsed == 0) {
-		return fallback;
-	}
-	return (size_t)parsed;
-}
-
-static size_t get_rss_bytes(void) {
-#if defined(__APPLE__)
-	mach_task_basic_info_data_t info;
-	mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-	if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, (task_info_t)&info, &count) != KERN_SUCCESS) {
-		return 0;
-	}
-	return (size_t)info.resident_size;
-#elif defined(__linux__)
-	FILE* statm = fopen("/proc/self/statm", "r");
-	if (!statm) {
-		return 0;
-	}
-	long resident_pages = 0;
-	if (fscanf(statm, "%*s %ld", &resident_pages) != 1) {
-		fclose(statm);
-		return 0;
-	}
-	fclose(statm);
-	long page_size = sysconf(_SC_PAGESIZE);
-	if (page_size <= 0 || resident_pages <= 0) {
-		return 0;
-	}
-	return (size_t)resident_pages * (size_t)page_size;
-#elif defined(_WIN32)
-	PROCESS_MEMORY_COUNTERS pmc;
-	HANDLE process = GetCurrentProcess();
-	if (GetProcessMemoryInfo(process, &pmc, sizeof(pmc)) == 0) {
-		return 0;
-	}
-	return (size_t)pmc.WorkingSetSize;
-#else
-	return 0;
-#endif
-}
 
 static void init_unknown_out(void) {
 	const char* path = getenv("UNKNOWN_OUT");
@@ -322,68 +414,6 @@ static void shutdown_unknown_out(void) {
 	g_unknown_out_enabled = 0;
 }
 
-static void init_mem_telemetry(void) {
-	const char* enabled = getenv("MEM_TELEMETRY");
-	if (!env_truthy(enabled)) {
-		return;
-	}
-	const char* every = getenv("MEM_TELEMETRY_EVERY");
-	g_mem_telemetry_every = parse_env_size(every, 1);
-
-	const char* path = getenv("MEM_TELEMETRY_PATH");
-	if (path && path[0] != '\0') {
-		g_mem_telemetry_file = fopen(path, "a");
-		if (!g_mem_telemetry_file) {
-			fprintf(stderr, "%sError: Failed to open MEM_TELEMETRY_PATH=%s\n%s", COLOR_RED, path, COLOR_RESET);
-			return;
-		}
-	} else {
-		g_mem_telemetry_file = stderr;
-	}
-	setvbuf(g_mem_telemetry_file, NULL, _IOLBF, 0);
-	g_mem_telemetry_enabled = 1;
-}
-
-static void shutdown_mem_telemetry(void) {
-	if (g_mem_telemetry_enabled && g_mem_telemetry_file && g_mem_telemetry_file != stderr) {
-		fclose(g_mem_telemetry_file);
-	}
-	g_mem_telemetry_file = NULL;
-	g_mem_telemetry_enabled = 0;
-}
-
-static void log_mem_telemetry(const char* path, const owned_result_t* result, double elapsed_seconds) {
-	if (!g_mem_telemetry_enabled) {
-		return;
-	}
-	g_mem_telemetry_count += 1;
-	if (g_mem_telemetry_every > 1 && (g_mem_telemetry_count % g_mem_telemetry_every) != 0) {
-		return;
-	}
-	const size_t rss_bytes = get_rss_bytes();
-	if (rss_bytes == 0) {
-		return;
-	}
-	const double rss_mb = (double)rss_bytes / (1024.0 * 1024.0);
-	const long delta_bytes = (long)rss_bytes - (long)g_mem_telemetry_last_rss;
-	g_mem_telemetry_last_rss = rss_bytes;
-	fprintf(g_mem_telemetry_file,
-		"MEM rss=%.1fMB delta=%ldB elapsed=%.3fs format=%s path=%s\n",
-		rss_mb,
-		delta_bytes,
-		elapsed_seconds,
-		result->format_description ? result->format_description : "Unknown",
-		path);
-}
-
-static const char* validation_depth_description(validation_depth_t depth) {
-	switch (depth) {
-		case ES_VALIDATION_DEPTH_STRUCTURAL: return "structural";
-		case ES_VALIDATION_DEPTH_FULL: return "fully validated";
-	}
-	return "unknown";
-}
-
 static size_t get_env_max_files(void) {
 	const char* env = getenv("MAX_FILES");
 	if (!env || env[0] == '\0') {
@@ -397,48 +427,73 @@ static size_t get_env_max_files(void) {
 	return (size_t)value;
 }
 
-static void print_validation_result(const char* path, const owned_result_t* result) {
-	const char* format_desc = result->format_description ? result->format_description : "Unknown";
-	const char* base_depth_desc = validation_depth_description(result->validation_depth);
-	/* Build depth description with optional ffmpeg suffix */
-	char depth_desc_buf[64];
-	if (result->validated_via_ffmpeg) {
-		snprintf(depth_desc_buf, sizeof(depth_desc_buf), "%s, via ffmpeg", base_depth_desc);
-	} else {
-		snprintf(depth_desc_buf, sizeof(depth_desc_buf), "%s", base_depth_desc);
-	}
-	const char* depth_desc = depth_desc_buf;
-	int has_malformations = result->malformation_bits != 0;
-	int has_warning = result->warning_message != NULL;
+/* ========== Validation Counts ========== */
 
-	if (result->is_valid) {
+typedef struct {
+	size_t valid_count;
+	size_t invalid_count;
+	size_t unknown_count;
+} validation_counts_t;
+
+/* ========== Result Printing ========== */
+
+static void print_validation_result(const char* path, const char* result) {
+	char fmt_desc[256];
+	char err_msg[1024];
+	char warn_msg[1024];
+
+	kv_get_str(result, "fmt_desc", fmt_desc, sizeof(fmt_desc));
+	kv_get_str(result, "err", err_msg, sizeof(err_msg));
+	kv_get_str(result, "warn", warn_msg, sizeof(warn_msg));
+
+	int is_valid = kv_get_bool(result, "valid");
+	int depth = (int)kv_get_u64(result, "depth_u8");
+	uint64_t malform_bits = kv_get_u64(result, "malform_u64");
+	int bypass_prot = kv_get_bool(result, "bypass_prot");
+	int via_ffmpeg = kv_get_bool(result, "via_ffmpeg");
+
+	const char* depth_str = (depth == 1) ? "fully validated" : "structural";
+
+	/* Build depth description with optional ffmpeg suffix */
+	char depth_desc[64];
+	if (via_ffmpeg) {
+		snprintf(depth_desc, sizeof(depth_desc), "%s, via ffmpeg", depth_str);
+	} else {
+		snprintf(depth_desc, sizeof(depth_desc), "%s", depth_str);
+	}
+
+	int has_malformations = (malform_bits != 0);
+	int has_warning = (warn_msg[0] != '\0');
+
+	if (is_valid) {
 		if (has_malformations || has_warning) {
-			printf("%sWARN%s %s: %s (%s)\n", COLOR_YELLOW, COLOR_RESET, path, format_desc, depth_desc);
+			printf("%sWARN%s %s: %s (%s)\n", COLOR_YELLOW, COLOR_RESET, path, fmt_desc, depth_desc);
 			if (has_malformations) {
-				for (int i = 0; i <= ES_MALFORMATION_LAST; i++) {
-					if (result->malformation_bits & (1ULL << i)) {
-						const char* desc = malformation_description((malformation_t)i);
+				for (int i = 0; i < 15; i++) {
+					if (malform_bits & (1ULL << i)) {
+						const char* desc = validate_malform_desc(i);
 						printf("  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, desc ? desc : "Unknown issue");
 					}
 				}
 			}
 			if (has_warning) {
-				printf("  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, result->warning_message);
+				printf("  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, warn_msg);
 			}
-		} else if (result->circumvented_trivial_protection) {
+		} else if (bypass_prot) {
 			printf("%sNOTICE%s %s: %s (%s) - trivial protection circumvented\n",
-				   COLOR_YELLOW, COLOR_RESET, path, format_desc, depth_desc);
+				   COLOR_YELLOW, COLOR_RESET, path, fmt_desc, depth_desc);
 		} else {
-			printf("%sOK%s %s: %s (%s)\n", COLOR_GREEN, COLOR_RESET, path, format_desc, depth_desc);
+			printf("%sOK%s %s: %s (%s)\n", COLOR_GREEN, COLOR_RESET, path, fmt_desc, depth_desc);
 		}
 	} else {
 		printf("%sFAIL%s %s: %s - %s\n",
-			   COLOR_RED, COLOR_RESET, path, format_desc, result->error_message ? result->error_message : "Unknown error");
-		/* Also show malformations for invalid files (helps diagnose multiple issues) */
+			   COLOR_RED, COLOR_RESET, path, fmt_desc,
+			   err_msg[0] ? err_msg : "Unknown error");
+		/* Also show malformations for invalid files */
 		if (has_malformations) {
-			for (int i = 0; i <= ES_MALFORMATION_LAST; i++) {
-				if (result->malformation_bits & (1ULL << i)) {
-					const char* desc = malformation_description((malformation_t)i);
+			for (int i = 0; i < 15; i++) {
+				if (malform_bits & (1ULL << i)) {
+					const char* desc = validate_malform_desc(i);
 					printf("  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, desc ? desc : "Unknown issue");
 				}
 			}
@@ -446,27 +501,29 @@ static void print_validation_result(const char* path, const owned_result_t* resu
 	}
 }
 
-/* Callback context for batch validation - uses validation_counts_t from header */
-
-/* New batch validation callback (hexagonal architecture) */
+/* Batch validation callback */
 static void on_validation_result(
 	void* context,
 	uint32_t file_id,
 	const char* path,
-	owned_result_t* result
+	char* result
 ) {
 	validation_counts_t* counts = (validation_counts_t*)context;
-	(void)file_id;  /* Not currently used, but available for future features */
+	(void)file_id;
 
-	/* elapsed_seconds is now part of the result */
-	double elapsed_seconds = result->elapsed_seconds;
+	/* Get elapsed time in nanoseconds */
+	int64_t elapsed_ns = kv_get_i64(result, "elapsed_ns_u64");
 
-	if (elapsed_seconds >= SLOW_THRESHOLD_SECONDS) {
-		fprintf(stderr, "%sSLOW%s %s: %.2fs\n", COLOR_YELLOW, COLOR_RESET, path, elapsed_seconds);
+	if (elapsed_ns >= SLOW_THRESHOLD_NS) {
+		double elapsed_s = (double)elapsed_ns / 1000000000.0;
+		fprintf(stderr, "%sSLOW%s %s: %.2fs\n", COLOR_YELLOW, COLOR_RESET, path, elapsed_s);
 	}
 
-	/* Update counts */
-	if (result->is_unknown) {
+	/* Check if unknown */
+	int is_unknown = kv_get_bool(result, "unknown");
+	int is_valid = kv_get_bool(result, "valid");
+
+	if (is_unknown) {
 		if (counts) counts->unknown_count++;
 		if (g_unknown_out_enabled && g_unknown_out) {
 			fprintf(g_unknown_out, "UNKNOWN %s\n", path);
@@ -474,19 +531,16 @@ static void on_validation_result(
 		} else {
 			printf("%sUNKNOWN%s %s: Unknown\n", COLOR_CYAN, COLOR_RESET, path);
 		}
-		log_mem_telemetry(path, result, elapsed_seconds);
-	} else if (result->is_valid) {
+	} else if (is_valid) {
 		if (counts) counts->valid_count++;
 		print_validation_result(path, result);
-		log_mem_telemetry(path, result, elapsed_seconds);
 	} else {
 		if (counts) counts->invalid_count++;
 		print_validation_result(path, result);
-		log_mem_telemetry(path, result, elapsed_seconds);
 	}
 
 	/* IMPORTANT: We take ownership of result, must free it */
-	free_result(result);
+	validate_free(result);
 }
 
 /* Shuffle array using Fisher-Yates algorithm */
@@ -501,6 +555,9 @@ static void shuffle_paths(path_list_t* list, uint64_t seed) {
 		char* tmp = list->paths[i];
 		list->paths[i] = list->paths[j];
 		list->paths[j] = tmp;
+		uint32_t tmp_id = list->ids[i];
+		list->ids[i] = list->ids[j];
+		list->ids[j] = tmp_id;
 	}
 }
 
@@ -527,22 +584,32 @@ static int validate_path(const char* path, size_t jobs, int shuffle, size_t stre
 	}
 
 	if (S_ISDIR(st.st_mode)) {
-		printf("Validating: %s%s\n\n", path, (shuffle || stress_iterations > 1) ? " (shuffled)" : "");
+		printf("Validating: %s%s\n", path, (shuffle || stress_iterations > 1) ? " (shuffled)" : "");
+		/* Enable progress display for directory enumeration (only if stderr is a tty) */
+#ifdef _WIN32
+		g_show_enum_progress = isatty(_fileno(stderr));
+#else
+		g_show_enum_progress = isatty(STDERR_FILENO);
+#endif
 		/* Check if the directory itself is a bundle (e.g., .git) */
 		if (is_bundle_directory(path)) {
 			/* Bundle directory - validate as single item, don't enumerate */
 			if (path_list_add(&file_list, path) != 0) {
+				finish_enum_progress(file_list.count);
 				fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
 				path_list_free(&file_list);
 				shutdown_unknown_out();
 				return 1;
 			}
 		} else if (enumerate_directory(path, &file_list) != 0) {
+			finish_enum_progress(file_list.count);
 			fprintf(stderr, "%sError: Failed to enumerate directory: %s\n%s", COLOR_RED, path, COLOR_RESET);
 			path_list_free(&file_list);
 			shutdown_unknown_out();
 			return 1;
 		}
+		finish_enum_progress(file_list.count);
+		printf("Found %zu files to validate.\n\n", file_list.count);
 	} else if (S_ISREG(st.st_mode)) {
 		printf("Checking: %s\n", path);
 		if (path_list_add(&file_list, path) != 0) {
@@ -565,15 +632,6 @@ static int validate_path(const char* path, size_t jobs, int shuffle, size_t stre
 		return 0;
 	}
 
-	/* Build batch items array */
-	batch_item_t* items = (batch_item_t*)malloc(file_list.count * sizeof(batch_item_t));
-	if (!items) {
-		fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
-		path_list_free(&file_list);
-		shutdown_unknown_out();
-		return 1;
-	}
-
 	validation_counts_t counts = {0};
 	validation_counts_t total_counts = {0};
 	int failures = 0;
@@ -591,29 +649,22 @@ static int validate_path(const char* path, size_t jobs, int shuffle, size_t stre
 			shuffle_paths(&file_list, iter + 1);
 		}
 
-		/* Build batch items (file_id = index for now) */
-		for (size_t i = 0; i < file_list.count; i++) {
-			items[i].path = file_list.paths[i];
-			items[i].id = (uint32_t)i;
-		}
-
 		counts = (validation_counts_t){0};
 
-		/* Call new hexagonal API */
-		error_t err = validate_batch(
-			items,
+		/* Call new API */
+		validate_error_t err = validate_batch(
+			(const char* const*)file_list.paths,
+			file_list.ids,
 			file_list.count,
 			(int)jobs,
 			on_validation_result,
-			NULL,  /* No progress callback for now */
 			&counts
 		);
 
-		if (err != ES_OK) {
+		if (err != VALIDATE_OK) {
 			fprintf(stderr, "%sError: Validation failed: %s\n%s", COLOR_RED,
-				core_last_error() ? core_last_error() : "unknown error", COLOR_RESET);
+				validate_last_error() ? validate_last_error() : "unknown error", COLOR_RESET);
 			fflush(stderr);
-			free(items);
 			path_list_free(&file_list);
 			shutdown_unknown_out();
 			return 1;
@@ -628,7 +679,6 @@ static int validate_path(const char* path, size_t jobs, int shuffle, size_t stre
 		}
 	}
 
-	free(items);
 	path_list_free(&file_list);
 
 	/* Use total_counts for summary in stress mode, otherwise use last counts */
@@ -715,7 +765,7 @@ int main(int argc, char* argv[]) {
 		    || strcmp(arg, "/version") == 0
 #endif
 		) {
-			printf("%s\n", core_version());
+			printf("%s\n", validate_version());
 			return 0;
 		}
 		/* Shuffle: --shuffle */
@@ -774,14 +824,10 @@ int main(int argc, char* argv[]) {
 		return 2;
 	}
 
-	init_mem_telemetry();
-
 	/* Pre-initialize decoder libraries for thread safety.
-	 * This must be called ONCE from main thread BEFORE spawning workers.
-	 * Triggers SIMD detection and global state init in all C libraries. */
-	core_preinit();
+	 * This must be called ONCE from main thread BEFORE spawning workers. */
+	validate_init();
 
 	int rc = validate_path(path, jobs, shuffle, stress_iterations);
-	shutdown_mem_telemetry();
 	return rc;
 }
