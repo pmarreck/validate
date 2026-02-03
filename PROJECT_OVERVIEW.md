@@ -1,5 +1,28 @@
 # Project Overview (validate)
 
+## CRITICAL DESIGN PRINCIPLE: EXHAUSTIVE VALIDATION
+
+**This is an archival-quality validation tool.** The entire purpose is to verify
+data integrity BEFORE applying parity protection (in a separate application).
+There is no point protecting corrupt data with parity - you'd just be preserving
+corruption.
+
+Therefore:
+- **NEVER skip frames, samples, or bytes** to improve performance
+- **NEVER limit validation to a subset** (e.g., "first 300 frames")
+- **ALWAYS decode/verify the ENTIRE file** when full validation is possible
+- Performance optimizations must ONLY come from parallelism or faster algorithms,
+  NEVER from reducing coverage
+
+If validation is slow, the solutions are:
+- Increase decoder thread counts (internal parallelism)
+- Use faster libraries (e.g., ffmpeg when available)
+- Parallelize across files (thread pool)
+- Accept that thorough validation takes time
+
+**DO NOT** propose "validating a sample" or "limiting frames" - this defeats
+the entire purpose of the tool.
+
 ## Goals
 - Provide deterministic, byte-level validation across a wide range of file formats (at least 100 thus far).
 - Maximize auditability and reproducibility (same bytes => same result).
