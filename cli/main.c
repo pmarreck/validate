@@ -641,7 +641,14 @@ static void print_usage(const char* program) {
 	printf("    UNKNOWN_OUT   Path to append unknown file paths\n");
 	printf("    MAX_FILES     Limit number of files to validate\n");
 	printf("\n");
-	printf("FAILs are written to stderr for easy redirection (2>fails.log).\n");
+	printf("OUTPUT:\n");
+	printf("    OK      Valid file (stdout)\n");
+	printf("    WARN    Valid file with non-fatal issues (stdout)\n");
+	printf("    FAIL    Invalid file (stderr)\n");
+	printf("    UNKNOWN Unrecognized format (stdout, or UNKNOWN_OUT if set)\n");
+	printf("\n");
+	printf("FAILs go to stderr for easy redirection (2>fails.log).\n");
+	printf("OK, WARN, and UNKNOWN go to stdout.\n");
 }
 
 int main(int argc, char* argv[]) {
