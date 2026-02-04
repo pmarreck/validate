@@ -15,6 +15,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// Threshold for warning about large image files (200MB)
+const large_image_threshold: u64 = 200 * 1024 * 1024;
+
 // On Windows, setjmp can't be translated by Zig - skip the libjpeg C imports
 const c = if (builtin.os.tag == .windows) struct {
     // Stub types for Windows - libjpeg decode path is unavailable
@@ -30,13 +33,18 @@ const c = if (builtin.os.tag == .windows) struct {
 pub const JpegValidationResult = struct {
     valid: bool,
     error_message: ?[]const u8,
+    warning_message: ?[]const u8 = null,
 
     pub fn ok() JpegValidationResult {
-        return .{ .valid = true, .error_message = null };
+        return .{ .valid = true, .error_message = null, .warning_message = null };
+    }
+
+    pub fn okWithWarning(warning: []const u8) JpegValidationResult {
+        return .{ .valid = true, .error_message = null, .warning_message = warning };
     }
 
     pub fn invalid(message: []const u8) JpegValidationResult {
-        return .{ .valid = false, .error_message = message };
+        return .{ .valid = false, .error_message = message, .warning_message = null };
     }
 };
 
@@ -132,10 +140,8 @@ pub fn validateJpegDeep(file_path: []const u8) JpegValidationResult {
         return JpegValidationResult.invalid("Failed to get file size");
     };
 
-    // Limit to reasonable size (100MB)
-    if (file_size > 100 * 1024 * 1024) {
-        return JpegValidationResult.invalid("File too large for deep validation");
-    }
+    // Track large files for warning (but don't reject them)
+    const is_large_file = file_size > large_image_threshold;
 
     if (file_size < 2) {
         return JpegValidationResult.invalid("File too small");
@@ -156,7 +162,13 @@ pub fn validateJpegDeep(file_path: []const u8) JpegValidationResult {
         return JpegValidationResult.invalid("Incomplete file read");
     }
 
-    return validateJpegDeepFromBuffer(buf_slice);
+    const result = validateJpegDeepFromBuffer(buf_slice);
+
+    // Add warning for large files if validation passed
+    if (result.valid and is_large_file) {
+        return JpegValidationResult.okWithWarning("Large image file (>200MB)");
+    }
+    return result;
 }
 
 /// Validate JPEG from a file handle (seeks to start first).
@@ -180,10 +192,8 @@ fn validateJpegDeepFromMemory(file: std.fs.File) JpegValidationResult {
         return JpegValidationResult.invalid("Failed to get file size");
     };
 
-    // Limit to reasonable size (100MB)
-    if (file_size > 100 * 1024 * 1024) {
-        return JpegValidationResult.invalid("File too large for deep validation");
-    }
+    // Track large files for warning (but don't reject them)
+    const is_large_file = file_size > large_image_threshold;
 
     // Allocate buffer
     const buffer = std.c.malloc(file_size) orelse {
@@ -200,7 +210,13 @@ fn validateJpegDeepFromMemory(file: std.fs.File) JpegValidationResult {
         return JpegValidationResult.invalid("Incomplete file read");
     }
 
-    return validateJpegDeepFromBuffer(buf_slice);
+    const result = validateJpegDeepFromBuffer(buf_slice);
+
+    // Add warning for large files if validation passed
+    if (result.valid and is_large_file) {
+        return JpegValidationResult.okWithWarning("Large image file (>200MB)");
+    }
+    return result;
 }
 
 /// Validate JPEG from memory buffer.

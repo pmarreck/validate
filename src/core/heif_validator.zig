@@ -15,6 +15,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+/// Threshold for warning about large image files (200MB)
+const large_image_threshold: u64 = 200 * 1024 * 1024;
+
 const c = @cImport({
     @cInclude("libheif/heif.h");
 });
@@ -50,19 +53,24 @@ pub const HeifValidationResult = struct {
     valid: bool,
     structural_only: bool, // true if we could only do structural validation (not full decode)
     error_message: ?[]const u8,
+    warning_message: ?[]const u8 = null,
     is_heic: bool, // true for HEIC, false for AVIF
 
     pub fn ok(is_heic: bool) HeifValidationResult {
-        return .{ .valid = true, .structural_only = false, .error_message = null, .is_heic = is_heic };
+        return .{ .valid = true, .structural_only = false, .error_message = null, .warning_message = null, .is_heic = is_heic };
+    }
+
+    pub fn okWithWarning(is_heic: bool, warning: []const u8) HeifValidationResult {
+        return .{ .valid = true, .structural_only = false, .error_message = null, .warning_message = warning, .is_heic = is_heic };
     }
 
     pub fn invalid(message: []const u8, is_heic: bool) HeifValidationResult {
-        return .{ .valid = false, .structural_only = false, .error_message = message, .is_heic = is_heic };
+        return .{ .valid = false, .structural_only = false, .error_message = message, .warning_message = null, .is_heic = is_heic };
     }
 
     /// Valid structure but couldn't do full decode (ambiguous file type)
     pub fn structural_valid(is_heic: bool) HeifValidationResult {
-        return .{ .valid = true, .structural_only = true, .error_message = null, .is_heic = is_heic };
+        return .{ .valid = true, .structural_only = true, .error_message = null, .warning_message = null, .is_heic = is_heic };
     }
 };
 
@@ -84,10 +92,8 @@ pub fn validateHeifDeep(file_path: []const u8) HeifValidationResult {
         return HeifValidationResult.invalid("Failed to get file size", true);
     };
 
-    // Limit to reasonable size (200MB for high-res photos)
-    if (file_size > 200 * 1024 * 1024) {
-        return HeifValidationResult.invalid("File too large for deep validation", true);
-    }
+    // Track large files for warning (but don't reject them)
+    const is_large_file = file_size > large_image_threshold;
 
     if (file_size < 12) {
         return HeifValidationResult.invalid("File too small", true);
@@ -108,7 +114,13 @@ pub fn validateHeifDeep(file_path: []const u8) HeifValidationResult {
         return HeifValidationResult.invalid("Incomplete file read", true);
     }
 
-    return validateHeifDeepFromBuffer(buf_slice);
+    const result = validateHeifDeepFromBuffer(buf_slice);
+
+    // Add warning for large files if validation passed
+    if (result.valid and is_large_file) {
+        return HeifValidationResult.okWithWarning(result.is_heic, "Large image file (>200MB)");
+    }
+    return result;
 }
 
 /// Validate HEIF from memory buffer.

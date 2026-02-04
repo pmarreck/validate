@@ -15897,6 +15897,9 @@ fn validateJpegDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const result = jpeg_validator.validateJpegDeep(path);
     if (result.valid) {
+        if (result.warning_message) |warning| {
+            return ValidationResult.okWithDepthAndWarning(.jpeg, .full, warning);
+        }
         return ValidationResult.okWithDepth(.jpeg, .full);
     } else {
         return ValidationResult.invalidWithDepth(.jpeg, result.error_message orelse "JPEG decompression failed", .full);
@@ -16542,6 +16545,9 @@ fn validateWebpDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const result = webp_validator.validateWebpDeep(path);
     if (result.valid) {
+        if (result.warning_message) |warning| {
+            return ValidationResult.okWithDepthAndWarning(.webp, .full, warning);
+        }
         return ValidationResult.okWithDepth(.webp, .full);
     } else {
         return ValidationResult.invalidWithDepth(.webp, result.error_message orelse "WebP decode failed", .full);
@@ -16557,6 +16563,9 @@ fn validateJxlDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const result = jxl_validator.validateJxlDeep(path);
     if (result.valid) {
+        if (result.warning_message) |warning| {
+            return ValidationResult.okWithDepthAndWarning(.jxl, .full, warning);
+        }
         return ValidationResult.okWithDepth(.jxl, .full);
     } else {
         return ValidationResult.invalidWithDepth(.jxl, result.error_message orelse "JPEG-XL decode failed", .full);
@@ -16809,6 +16818,9 @@ fn validateHeifDeep(allocator: Allocator, path: []const u8, format: FileFormat) 
         // report structural depth - we didn't actually decode/verify the image data
         if (result.structural_only) {
             return ValidationResult.okWithDepth(format, .structural);
+        }
+        if (result.warning_message) |warning| {
+            return ValidationResult.okWithDepthAndWarning(format, .full, warning);
         }
         return ValidationResult.okWithDepth(format, .full);
     } else {

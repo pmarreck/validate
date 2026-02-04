@@ -10,6 +10,10 @@
 //! - Image dimension consistency
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+/// Threshold for warning about large image files (200MB)
+const large_image_threshold: u64 = 200 * 1024 * 1024;
 
 const c = @cImport({
     @cInclude("webp/decode.h");
@@ -20,13 +24,18 @@ const c = @cImport({
 pub const WebpValidationResult = struct {
     valid: bool,
     error_message: ?[]const u8,
+    warning_message: ?[]const u8 = null,
 
     pub fn ok() WebpValidationResult {
-        return .{ .valid = true, .error_message = null };
+        return .{ .valid = true, .error_message = null, .warning_message = null };
+    }
+
+    pub fn okWithWarning(warning: []const u8) WebpValidationResult {
+        return .{ .valid = true, .error_message = null, .warning_message = warning };
     }
 
     pub fn invalid(message: []const u8) WebpValidationResult {
-        return .{ .valid = false, .error_message = message };
+        return .{ .valid = false, .error_message = message, .warning_message = null };
     }
 };
 
@@ -48,10 +57,8 @@ pub fn validateWebpDeep(file_path: []const u8) WebpValidationResult {
         return WebpValidationResult.invalid("Failed to get file size");
     };
 
-    // Limit to reasonable size (100MB)
-    if (file_size > 100 * 1024 * 1024) {
-        return WebpValidationResult.invalid("File too large for deep validation");
-    }
+    // Track large files for warning (but don't reject them)
+    const is_large_file = file_size > large_image_threshold;
 
     if (file_size < 12) {
         return WebpValidationResult.invalid("File too small");
@@ -72,7 +79,13 @@ pub fn validateWebpDeep(file_path: []const u8) WebpValidationResult {
         return WebpValidationResult.invalid("Incomplete file read");
     }
 
-    return validateWebpDeepFromBuffer(buf_slice);
+    const result = validateWebpDeepFromBuffer(buf_slice);
+
+    // Add warning for large files if validation passed
+    if (result.valid and is_large_file) {
+        return WebpValidationResult.okWithWarning("Large image file (>200MB)");
+    }
+    return result;
 }
 
 /// Validate WebP from memory buffer.

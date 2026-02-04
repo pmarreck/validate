@@ -20,6 +20,10 @@
 //! concurrently.
 
 const std = @import("std");
+const builtin = @import("builtin");
+
+/// Threshold for warning about large image files (200MB)
+const large_image_threshold: u64 = 200 * 1024 * 1024;
 
 const c = @cImport({
     @cInclude("jxl/decode.h");
@@ -31,13 +35,18 @@ const c = @cImport({
 pub const JxlValidationResult = struct {
     valid: bool,
     error_message: ?[]const u8,
+    warning_message: ?[]const u8 = null,
 
     pub fn ok() JxlValidationResult {
-        return .{ .valid = true, .error_message = null };
+        return .{ .valid = true, .error_message = null, .warning_message = null };
+    }
+
+    pub fn okWithWarning(warning: []const u8) JxlValidationResult {
+        return .{ .valid = true, .error_message = null, .warning_message = warning };
     }
 
     pub fn invalid(message: []const u8) JxlValidationResult {
-        return .{ .valid = false, .error_message = message };
+        return .{ .valid = false, .error_message = message, .warning_message = null };
     }
 };
 
@@ -59,10 +68,8 @@ pub fn validateJxlDeep(file_path: []const u8) JxlValidationResult {
         return JxlValidationResult.invalid("Failed to get file size");
     };
 
-    // Limit to reasonable size (500MB - JXL can be quite large for high-res images)
-    if (file_size > 500 * 1024 * 1024) {
-        return JxlValidationResult.invalid("File too large for deep validation");
-    }
+    // Track large files for warning (but don't reject them)
+    const is_large_file = file_size > large_image_threshold;
 
     if (file_size < 2) {
         return JxlValidationResult.invalid("File too small");
@@ -83,7 +90,13 @@ pub fn validateJxlDeep(file_path: []const u8) JxlValidationResult {
         return JxlValidationResult.invalid("Incomplete file read");
     }
 
-    return validateJxlDeepFromBuffer(buf_slice);
+    const result = validateJxlDeepFromBuffer(buf_slice);
+
+    // Add warning for large files if validation passed
+    if (result.valid and is_large_file) {
+        return JxlValidationResult.okWithWarning("Large image file (>200MB)");
+    }
+    return result;
 }
 
 /// Validate JPEG-XL from memory buffer.
