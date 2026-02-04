@@ -156,11 +156,17 @@ fn validateWithFfprobe(allocator: Allocator, file_path: []const u8) FfprobeValid
     // On Windows, null device is NUL, on Unix it's /dev/null, but -f null - works cross-platform
     const null_output = if (comptime builtin.os.tag == .windows) "NUL" else "-";
 
+    // Hardware acceleration: -hwaccel auto doesn't reliably select the best option,
+    // so we use platform-specific accelerators for much faster decoding.
+    // macOS VideoToolbox: ~5 min for 4K movie vs ~41 min with software decode
+    const hwaccel = if (comptime builtin.os.tag == .macos) "videotoolbox" else "auto";
+
     const result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &[_][]const u8{
             ffmpeg_cmd,
             "-v", "error",           // Only show errors
+            "-hwaccel", hwaccel,     // Use hardware acceleration (VideoToolbox on macOS)
             "-threads", "0",         // Auto-detect optimal thread count for parallel decoding
             "-i", path_z,            // Input file
             "-f", "null",            // Output format null (discard)
