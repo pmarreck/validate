@@ -83,8 +83,19 @@ pub const thread_pool = @import("thread_pool.zig");
 pub const heif_validator = @import("heif_validator.zig");
 pub const webp_validator = @import("webp_validator.zig");
 pub const libraw_validator = @import("libraw_validator.zig");
-// VideoToolbox validator disabled - extern declarations cause dyld crashes
-// pub const videotoolbox_validator = @import("videotoolbox_validator.zig");
+// VideoToolbox validator - uses dlopen/dlsym for runtime loading (macOS only)
+pub const videotoolbox_validator = if (builtin.os.tag == .macos)
+    @import("videotoolbox_validator.zig")
+else
+    struct {
+        pub fn init() bool {
+            return false;
+        }
+        pub fn isAvailable() bool {
+            return false;
+        }
+        pub fn preInit() void {}
+    };
 
 // Version information
 pub const version = struct {
@@ -119,12 +130,9 @@ pub fn preInit() void {
     // libjxl - triggers Highway SIMD dispatch selection
     _ = jxl_validator.validateJxlDeep("/nonexistent");
 
-    // VideoToolbox on macOS - triggers dyld lazy symbol binding
+    // VideoToolbox on macOS - loads framework via dlopen
     // MUST happen on main thread before worker threads use VideoToolbox
-    // NOTE: Temporarily disabled for debugging
-    // if (comptime builtin.os.tag == .macos) {
-    //     videotoolbox_validator.preInit();
-    // }
+    videotoolbox_validator.preInit();
 
     // Note: Other decoders (libde265, dav1d, OpenH264) are protected by
     // video_decoder_mutex and don't need pre-init.

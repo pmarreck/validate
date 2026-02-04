@@ -1,15 +1,13 @@
 /**
- * VideoToolbox C Shim for Thread-Safe Video Validation
+ * VideoToolbox C Shim with Runtime Dynamic Loading
  *
- * This shim exists because Zig's extern declarations for macOS frameworks
- * cause dyld symbol resolution at module load time, leading to crashes.
- * By keeping all VideoToolbox code in C, we get predictable symbol resolution
- * and can use GCD's dispatch_sync for thread safety.
+ * This shim uses dlopen/dlsym to load VideoToolbox at runtime rather than
+ * link time. This avoids dyld symbol resolution issues when the module is
+ * loaded from worker threads.
  *
  * THREAD SAFETY:
- * All VideoToolbox calls are dispatched to the main queue via dispatch_sync.
- * This ensures the framework's thread requirements are met regardless of
- * which thread calls these functions.
+ * - vt_shim_init() must be called from the main thread before any validation
+ * - All VideoToolbox calls are dispatched to the main queue via dispatch_sync
  *
  * macOS only - this file is not compiled on other platforms.
  */
@@ -20,19 +18,312 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
 #include <dispatch/dispatch.h>
 #include <pthread.h>
+#include <stdio.h>
 
-#include <VideoToolbox/VideoToolbox.h>
-#include <CoreMedia/CoreMedia.h>
-#include <CoreVideo/CoreVideo.h>
+// =============================================================================
+// Type Definitions (matching Apple's headers, but declared locally)
+// =============================================================================
 
-// Result structure passed back to Zig
+// CoreFoundation types
+typedef const void* CFTypeRef;
+typedef const void* CFAllocatorRef;
+typedef signed long CFIndex;
+typedef uint32_t OSStatus;
+typedef struct __CFDictionary* CFDictionaryRef;
+
+// CoreMedia types
+typedef struct opaqueCMFormatDescription* CMFormatDescriptionRef;
+typedef CMFormatDescriptionRef CMVideoFormatDescriptionRef;
+typedef struct opaqueCMBlockBuffer* CMBlockBufferRef;
+typedef struct opaqueCMSampleBuffer* CMSampleBufferRef;
+typedef uint32_t CMBlockBufferFlags;
+typedef uint32_t FourCharCode;
+typedef FourCharCode CMVideoCodecType;
+
+typedef struct {
+    int64_t value;
+    int32_t timescale;
+    uint32_t flags;
+    int64_t epoch;
+} CMTime;
+
+typedef struct {
+    CMTime start;
+    CMTime duration;
+} CMTimeRange;
+
+typedef struct {
+    uint32_t width;
+    uint32_t height;
+} CMVideoDimensions;
+
+// CoreVideo types
+typedef struct __CVBuffer* CVBufferRef;
+typedef CVBufferRef CVImageBufferRef;
+
+// VideoToolbox types
+typedef struct OpaqueVTDecompressionSession* VTDecompressionSessionRef;
+typedef uint32_t VTDecodeFrameFlags;
+typedef uint32_t VTDecodeInfoFlags;
+
+typedef void (*VTDecompressionOutputCallback)(
+    void* decompressionOutputRefCon,
+    void* sourceFrameRefCon,
+    OSStatus status,
+    VTDecodeInfoFlags infoFlags,
+    CVImageBufferRef imageBuffer,
+    CMTime presentationTimeStamp,
+    CMTime presentationDuration
+);
+
+typedef struct {
+    VTDecompressionOutputCallback decompressionOutputCallback;
+    void* decompressionOutputRefCon;
+} VTDecompressionOutputCallbackRecord;
+
+// Constants (values from Apple headers)
+#define kCMVideoCodecType_H264  0x61766331  // 'avc1'
+#define kCMVideoCodecType_HEVC  0x68766331  // 'hvc1'
+#define kVTDecodeFrame_EnableAsynchronousDecompression  (1 << 0)
+#define noErr 0
+
+// =============================================================================
+// Function Pointer Types
+// =============================================================================
+
+// CoreFoundation
+typedef void (*CFRelease_fn)(CFTypeRef cf);
+typedef CFAllocatorRef (*CFAllocatorGetDefault_fn)(void);
+
+// CoreMedia - Format Description
+typedef OSStatus (*CMVideoFormatDescriptionCreateFromH264ParameterSets_fn)(
+    CFAllocatorRef allocator,
+    size_t parameterSetCount,
+    const uint8_t* const* parameterSetPointers,
+    const size_t* parameterSetSizes,
+    int NALUnitHeaderLength,
+    CMFormatDescriptionRef* formatDescriptionOut
+);
+
+typedef OSStatus (*CMVideoFormatDescriptionCreateFromHEVCParameterSets_fn)(
+    CFAllocatorRef allocator,
+    size_t parameterSetCount,
+    const uint8_t* const* parameterSetPointers,
+    const size_t* parameterSetSizes,
+    int NALUnitHeaderLength,
+    CFDictionaryRef extensions,
+    CMFormatDescriptionRef* formatDescriptionOut
+);
+
+// CoreMedia - Block Buffer
+typedef OSStatus (*CMBlockBufferCreateWithMemoryBlock_fn)(
+    CFAllocatorRef structureAllocator,
+    void* memoryBlock,
+    size_t blockLength,
+    CFAllocatorRef blockAllocator,
+    void* customBlockSource,
+    size_t offsetToData,
+    size_t dataLength,
+    CMBlockBufferFlags flags,
+    CMBlockBufferRef* blockBufferOut
+);
+
+// CoreMedia - Sample Buffer
+typedef OSStatus (*CMSampleBufferCreate_fn)(
+    CFAllocatorRef allocator,
+    CMBlockBufferRef dataBuffer,
+    bool dataReady,
+    void* makeDataReadyCallback,
+    void* makeDataReadyRefcon,
+    CMFormatDescriptionRef formatDescription,
+    CFIndex numSamples,
+    CFIndex numSampleTimingEntries,
+    void* sampleTimingArray,
+    CFIndex numSampleSizeEntries,
+    const size_t* sampleSizeArray,
+    CMSampleBufferRef* sampleBufferOut
+);
+
+// VideoToolbox
+typedef OSStatus (*VTDecompressionSessionCreate_fn)(
+    CFAllocatorRef allocator,
+    CMVideoFormatDescriptionRef videoFormatDescription,
+    CFDictionaryRef videoDecoderSpecification,
+    CFDictionaryRef destinationImageBufferAttributes,
+    const VTDecompressionOutputCallbackRecord* outputCallback,
+    VTDecompressionSessionRef* decompressionSessionOut
+);
+
+typedef OSStatus (*VTDecompressionSessionDecodeFrame_fn)(
+    VTDecompressionSessionRef session,
+    CMSampleBufferRef sampleBuffer,
+    VTDecodeFrameFlags decodeFlags,
+    void* sourceFrameRefCon,
+    VTDecodeInfoFlags* infoFlagsOut
+);
+
+typedef OSStatus (*VTDecompressionSessionWaitForAsynchronousFrames_fn)(
+    VTDecompressionSessionRef session
+);
+
+typedef void (*VTDecompressionSessionInvalidate_fn)(
+    VTDecompressionSessionRef session
+);
+
+// =============================================================================
+// Global State
+// =============================================================================
+
+static bool g_initialized = false;
+static bool g_available = false;
+static void* g_cf_handle = NULL;
+static void* g_cm_handle = NULL;
+static void* g_vt_handle = NULL;
+
+// Function pointers
+static CFRelease_fn fp_CFRelease = NULL;
+static CMVideoFormatDescriptionCreateFromH264ParameterSets_fn fp_CMVideoFormatDescriptionCreateFromH264ParameterSets = NULL;
+static CMVideoFormatDescriptionCreateFromHEVCParameterSets_fn fp_CMVideoFormatDescriptionCreateFromHEVCParameterSets = NULL;
+static CMBlockBufferCreateWithMemoryBlock_fn fp_CMBlockBufferCreateWithMemoryBlock = NULL;
+static CMSampleBufferCreate_fn fp_CMSampleBufferCreate = NULL;
+static VTDecompressionSessionCreate_fn fp_VTDecompressionSessionCreate = NULL;
+static VTDecompressionSessionDecodeFrame_fn fp_VTDecompressionSessionDecodeFrame = NULL;
+static VTDecompressionSessionWaitForAsynchronousFrames_fn fp_VTDecompressionSessionWaitForAsynchronousFrames = NULL;
+static VTDecompressionSessionInvalidate_fn fp_VTDecompressionSessionInvalidate = NULL;
+
+// kCFAllocatorDefault is a global variable, not a function
+static CFAllocatorRef g_kCFAllocatorDefault = NULL;
+
+// =============================================================================
+// Initialization (must be called from main thread)
+// =============================================================================
+
+static bool load_symbol(void* handle, const char* name, void** out) {
+    *out = dlsym(handle, name);
+    if (*out == NULL) {
+        fprintf(stderr, "[VT Shim] Failed to load symbol: %s - %s\n", name, dlerror());
+        return false;
+    }
+    return true;
+}
+
+bool vt_shim_init(void) {
+    if (g_initialized) {
+        return g_available;
+    }
+
+    // Must be called from main thread
+    if (pthread_main_np() == 0) {
+        fprintf(stderr, "[VT Shim] vt_shim_init must be called from main thread\n");
+        g_initialized = true;
+        g_available = false;
+        return false;
+    }
+
+    fprintf(stderr, "[VT Shim] Initializing with dlopen...\n");
+
+    // Load CoreFoundation
+    g_cf_handle = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
+    if (!g_cf_handle) {
+        fprintf(stderr, "[VT Shim] Failed to load CoreFoundation: %s\n", dlerror());
+        g_initialized = true;
+        g_available = false;
+        return false;
+    }
+
+    // Load CoreMedia
+    g_cm_handle = dlopen("/System/Library/Frameworks/CoreMedia.framework/CoreMedia", RTLD_LAZY);
+    if (!g_cm_handle) {
+        fprintf(stderr, "[VT Shim] Failed to load CoreMedia: %s\n", dlerror());
+        dlclose(g_cf_handle);
+        g_cf_handle = NULL;
+        g_initialized = true;
+        g_available = false;
+        return false;
+    }
+
+    // Load VideoToolbox
+    g_vt_handle = dlopen("/System/Library/Frameworks/VideoToolbox.framework/VideoToolbox", RTLD_LAZY);
+    if (!g_vt_handle) {
+        fprintf(stderr, "[VT Shim] Failed to load VideoToolbox: %s\n", dlerror());
+        dlclose(g_cm_handle);
+        dlclose(g_cf_handle);
+        g_cm_handle = NULL;
+        g_cf_handle = NULL;
+        g_initialized = true;
+        g_available = false;
+        return false;
+    }
+
+    // Load function pointers
+    bool ok = true;
+
+    // CoreFoundation
+    ok = ok && load_symbol(g_cf_handle, "CFRelease", (void**)&fp_CFRelease);
+
+    // Get kCFAllocatorDefault (it's a global variable)
+    CFAllocatorRef* p_kCFAllocatorDefault = dlsym(g_cf_handle, "kCFAllocatorDefault");
+    if (p_kCFAllocatorDefault) {
+        g_kCFAllocatorDefault = *p_kCFAllocatorDefault;
+    } else {
+        fprintf(stderr, "[VT Shim] Failed to get kCFAllocatorDefault\n");
+        ok = false;
+    }
+
+    // CoreMedia
+    ok = ok && load_symbol(g_cm_handle, "CMVideoFormatDescriptionCreateFromH264ParameterSets",
+                           (void**)&fp_CMVideoFormatDescriptionCreateFromH264ParameterSets);
+    ok = ok && load_symbol(g_cm_handle, "CMVideoFormatDescriptionCreateFromHEVCParameterSets",
+                           (void**)&fp_CMVideoFormatDescriptionCreateFromHEVCParameterSets);
+    ok = ok && load_symbol(g_cm_handle, "CMBlockBufferCreateWithMemoryBlock",
+                           (void**)&fp_CMBlockBufferCreateWithMemoryBlock);
+    ok = ok && load_symbol(g_cm_handle, "CMSampleBufferCreate",
+                           (void**)&fp_CMSampleBufferCreate);
+
+    // VideoToolbox
+    ok = ok && load_symbol(g_vt_handle, "VTDecompressionSessionCreate",
+                           (void**)&fp_VTDecompressionSessionCreate);
+    ok = ok && load_symbol(g_vt_handle, "VTDecompressionSessionDecodeFrame",
+                           (void**)&fp_VTDecompressionSessionDecodeFrame);
+    ok = ok && load_symbol(g_vt_handle, "VTDecompressionSessionWaitForAsynchronousFrames",
+                           (void**)&fp_VTDecompressionSessionWaitForAsynchronousFrames);
+    ok = ok && load_symbol(g_vt_handle, "VTDecompressionSessionInvalidate",
+                           (void**)&fp_VTDecompressionSessionInvalidate);
+
+    if (!ok) {
+        dlclose(g_vt_handle);
+        dlclose(g_cm_handle);
+        dlclose(g_cf_handle);
+        g_vt_handle = NULL;
+        g_cm_handle = NULL;
+        g_cf_handle = NULL;
+        g_initialized = true;
+        g_available = false;
+        return false;
+    }
+
+    fprintf(stderr, "[VT Shim] Successfully loaded all symbols\n");
+    g_initialized = true;
+    g_available = true;
+    return true;
+}
+
+// =============================================================================
+// Result Structure
+// =============================================================================
+
 typedef struct {
     bool valid;
     uint32_t frames_decoded;
     const char* error_message;  // Static string, don't free
 } VTShimResult;
+
+// =============================================================================
+// Internal Structures
+// =============================================================================
 
 // Context for decode callback
 typedef struct {
@@ -41,7 +332,21 @@ typedef struct {
     OSStatus last_status;
 } DecodeContext;
 
-// Decode callback - called for each decoded frame
+// Internal validation context for dispatch
+typedef struct {
+    const uint8_t* codec_private;
+    size_t codec_private_size;
+    const uint8_t* const* samples;
+    const size_t* sample_sizes;
+    size_t num_samples;
+    VTShimResult result;
+    CMVideoCodecType codec_type;
+} ValidationContext;
+
+// =============================================================================
+// Decode Callback
+// =============================================================================
+
 static void decode_callback(
     void* decompressionOutputRefCon,
     void* sourceFrameRefCon,
@@ -66,19 +371,10 @@ static void decode_callback(
     }
 }
 
-// Internal validation context for dispatch
-typedef struct {
-    const uint8_t* codec_private;
-    size_t codec_private_size;
-    const uint8_t* const* samples;
-    const size_t* sample_sizes;
-    size_t num_samples;
-    VTShimResult result;
-    CMVideoCodecType codec_type;
-} ValidationContext;
+// =============================================================================
+// Parameter Set Parsing
+// =============================================================================
 
-// Parse avcC/hvcC to extract parameter sets
-// Returns array of parameter set data, sets count and nal_length_size
 static uint8_t** parse_parameter_sets(
     const uint8_t* codec_private,
     size_t codec_private_size,
@@ -220,9 +516,19 @@ static void free_parameter_sets(uint8_t** sets, size_t* sizes, size_t count) {
     free(sizes);
 }
 
-// Internal validation function - runs on main thread
+// =============================================================================
+// Core Validation Logic
+// =============================================================================
+
 static void do_validate(void* context) {
     ValidationContext* ctx = (ValidationContext*)context;
+
+    if (!g_available) {
+        ctx->result.valid = false;
+        ctx->result.error_message = "VideoToolbox not initialized";
+        ctx->result.frames_decoded = 0;
+        return;
+    }
 
     // Parse parameter sets
     size_t* param_sizes = NULL;
@@ -248,8 +554,8 @@ static void do_validate(void* context) {
     OSStatus status;
 
     if (is_hevc) {
-        status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
-            kCFAllocatorDefault,
+        status = fp_CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+            g_kCFAllocatorDefault,
             param_count,
             (const uint8_t* const*)param_sets,
             param_sizes,
@@ -258,8 +564,8 @@ static void do_validate(void* context) {
             &format_desc
         );
     } else {
-        status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
-            kCFAllocatorDefault,
+        status = fp_CMVideoFormatDescriptionCreateFromH264ParameterSets(
+            g_kCFAllocatorDefault,
             param_count,
             (const uint8_t* const*)param_sets,
             param_sizes,
@@ -285,8 +591,8 @@ static void do_validate(void* context) {
     };
 
     VTDecompressionSessionRef session = NULL;
-    status = VTDecompressionSessionCreate(
-        kCFAllocatorDefault,
+    status = fp_VTDecompressionSessionCreate(
+        g_kCFAllocatorDefault,
         format_desc,
         NULL,  // videoDecoderSpecification
         NULL,  // destinationImageBufferAttributes
@@ -295,7 +601,7 @@ static void do_validate(void* context) {
     );
 
     if (status != noErr || session == NULL) {
-        CFRelease(format_desc);
+        fp_CFRelease(format_desc);
         ctx->result.valid = false;
         ctx->result.error_message = "Failed to create decoder session";
         ctx->result.frames_decoded = 0;
@@ -310,11 +616,11 @@ static void do_validate(void* context) {
         if (sample_size == 0) continue;
 
         CMBlockBufferRef block_buffer = NULL;
-        status = CMBlockBufferCreateWithMemoryBlock(
-            kCFAllocatorDefault,
+        status = fp_CMBlockBufferCreateWithMemoryBlock(
+            g_kCFAllocatorDefault,
             (void*)sample_data,
             sample_size,
-            kCFAllocatorNull,  // Don't free the data
+            NULL,  // kCFAllocatorNull - don't free the data
             NULL,
             0,
             sample_size,
@@ -326,8 +632,8 @@ static void do_validate(void* context) {
 
         CMSampleBufferRef sample_buffer = NULL;
         size_t sample_size_array[1] = {sample_size};
-        status = CMSampleBufferCreate(
-            kCFAllocatorDefault,
+        status = fp_CMSampleBufferCreate(
+            g_kCFAllocatorDefault,
             block_buffer,
             true,
             NULL,
@@ -341,11 +647,11 @@ static void do_validate(void* context) {
             &sample_buffer
         );
 
-        CFRelease(block_buffer);
+        fp_CFRelease(block_buffer);
 
         if (status != noErr || sample_buffer == NULL) continue;
 
-        status = VTDecompressionSessionDecodeFrame(
+        status = fp_VTDecompressionSessionDecodeFrame(
             session,
             sample_buffer,
             kVTDecodeFrame_EnableAsynchronousDecompression,
@@ -353,7 +659,7 @@ static void do_validate(void* context) {
             NULL
         );
 
-        CFRelease(sample_buffer);
+        fp_CFRelease(sample_buffer);
 
         if (status != noErr) {
             decode_ctx.decode_error = true;
@@ -362,12 +668,12 @@ static void do_validate(void* context) {
     }
 
     // Wait for async frames
-    VTDecompressionSessionWaitForAsynchronousFrames(session);
+    fp_VTDecompressionSessionWaitForAsynchronousFrames(session);
 
     // Cleanup
-    VTDecompressionSessionInvalidate(session);
-    CFRelease(session);
-    CFRelease(format_desc);
+    fp_VTDecompressionSessionInvalidate(session);
+    fp_CFRelease(session);
+    fp_CFRelease(format_desc);
 
     // Set result
     if (decode_ctx.decode_error && decode_ctx.frames_decoded == 0) {
@@ -385,13 +691,18 @@ static void do_validate(void* context) {
     }
 }
 
-// Check if we're on the main thread
+// =============================================================================
+// Thread Safety Helpers
+// =============================================================================
+
 static bool is_main_thread(void) {
     return pthread_main_np() != 0;
 }
 
-// Public API: Validate H.264 stream
-// Thread-safe: automatically dispatches to main thread if needed
+// =============================================================================
+// Public API
+// =============================================================================
+
 void vt_shim_validate_h264(
     const uint8_t* codec_private,
     size_t codec_private_size,
@@ -400,6 +711,13 @@ void vt_shim_validate_h264(
     size_t num_samples,
     VTShimResult* result
 ) {
+    if (!g_initialized || !g_available) {
+        result->valid = false;
+        result->frames_decoded = 0;
+        result->error_message = "VideoToolbox not initialized - call vt_shim_init() first";
+        return;
+    }
+
     ValidationContext ctx = {
         .codec_private = codec_private,
         .codec_private_size = codec_private_size,
@@ -419,8 +737,6 @@ void vt_shim_validate_h264(
     *result = ctx.result;
 }
 
-// Public API: Validate HEVC stream
-// Thread-safe: automatically dispatches to main thread if needed
 void vt_shim_validate_hevc(
     const uint8_t* codec_private,
     size_t codec_private_size,
@@ -429,6 +745,13 @@ void vt_shim_validate_hevc(
     size_t num_samples,
     VTShimResult* result
 ) {
+    if (!g_initialized || !g_available) {
+        result->valid = false;
+        result->frames_decoded = 0;
+        result->error_message = "VideoToolbox not initialized - call vt_shim_init() first";
+        return;
+    }
+
     ValidationContext ctx = {
         .codec_private = codec_private,
         .codec_private_size = codec_private_size,
@@ -448,9 +771,12 @@ void vt_shim_validate_hevc(
     *result = ctx.result;
 }
 
-// Public API: Check if VideoToolbox is available
 bool vt_shim_is_available(void) {
-    return true;  // Always available on macOS
+    return g_available;
+}
+
+bool vt_shim_is_initialized(void) {
+    return g_initialized;
 }
 
 #endif // __APPLE__

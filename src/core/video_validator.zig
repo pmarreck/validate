@@ -235,35 +235,63 @@ const use_videotoolbox = builtin.os.tag == .macos;
 /// This allows disabling VideoToolbox via environment variable for testing.
 /// Set VALIDATE_DISABLE_VIDEOTOOLBOX=1 (or true/yes/on) to force the non-VideoToolbox code path.
 fn shouldUseVideoToolbox() bool {
-    // VideoToolbox is disabled due to dyld symbol resolution issues.
-    // Even with a C shim, the extern declarations cause bus errors
-    // at library load time. Using libde265/dav1d/ffmpeg instead.
+    // VideoToolbox is currently disabled due to dispatch_sync deadlock:
+    // When worker threads try to dispatch_sync to main queue while
+    // main thread is blocked waiting for workers, we get a deadlock.
+    // TODO: Fix by running VideoToolbox validation on main thread only,
+    // or use dispatch_async + semaphore instead of dispatch_sync.
     return false;
+
+    // Original implementation for when threading is fixed:
+    // if (comptime !use_videotoolbox) {
+    //     return false;
+    // }
+    //
+    // // Check environment variable override
+    // const override = std.process.getEnvVarOwned(std.heap.page_allocator, "VALIDATE_DISABLE_VIDEOTOOLBOX") catch {
+    //     // No override, check if VideoToolbox is available
+    //     return videotoolbox.isAvailable();
+    // };
+    // defer std.heap.page_allocator.free(override);
+    //
+    // const trimmed = std.mem.trim(u8, override, " \t\r\n");
+    // if (std.mem.eql(u8, trimmed, "1") or
+    //     std.ascii.eqlIgnoreCase(trimmed, "true") or
+    //     std.ascii.eqlIgnoreCase(trimmed, "yes") or
+    //     std.ascii.eqlIgnoreCase(trimmed, "on"))
+    // {
+    //     return false; // Disabled via env var
+    // }
+    //
+    // return videotoolbox.isAvailable();
 }
 
-// Don't import videotoolbox_validator - the extern declarations cause crashes
-// at library load time due to dyld symbol resolution issues on macOS.
-// The C shim (videotoolbox_shim.c) is preserved for future use when we
-// implement dynamic loading via dlopen/dlsym.
-const videotoolbox = struct {
-    // Define VideoCodec first to avoid ambiguous reference with outer VideoCodec
-    pub const VTVideoCodec = enum { h264, hevc, av1 };
-    pub const VTValidationResult = struct {
-        valid: bool,
-        frames_decoded: u32,
-        error_message: ?[]const u8,
-        codec: VTVideoCodec,
+// Import videotoolbox_validator - uses dlopen/dlsym for runtime loading
+const videotoolbox = if (use_videotoolbox)
+    @import("videotoolbox_validator.zig")
+else
+    struct {
+        // Note: This stub is only used on non-macOS platforms
+        pub const VideoCodec = enum { h264, hevc, av1 };
+        pub const VTValidationResult = struct {
+            valid: bool,
+            frames_decoded: u32,
+            error_message: ?[]const u8,
+            codec: @This().VideoCodec,
+        };
+        pub fn isAvailable() bool {
+            return false;
+        }
+        pub fn validateH264(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
+            return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox not available on this platform", .codec = .h264 };
+        }
+        pub fn validateHEVC(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
+            return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox not available on this platform", .codec = .hevc };
+        }
+        pub fn validateAV1(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
+            return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox not available on this platform", .codec = .av1 };
+        }
     };
-    pub fn validateH264(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
-        return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox disabled", .codec = .h264 };
-    }
-    pub fn validateHEVC(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
-        return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox disabled", .codec = .hevc };
-    }
-    pub fn validateAV1(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
-        return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox disabled", .codec = .av1 };
-    }
-};
 
 // Import libde265 for HEVC decoding (non-macOS only)
 // On macOS, VideoToolbox handles HEVC with better profile support
@@ -972,14 +1000,18 @@ fn validateMp4VideoWithVideoToolbox(
 
     // Read samples (limit to max_frames for memory efficiency)
     const samples_to_read = @min(locations.len, max_frames);
-    var read_buffer: [16 * 1024 * 1024]u8 = undefined; // 16MB max sample size
+    const max_sample_size: usize = 16 * 1024 * 1024; // 16MB max sample size
 
     for (0..samples_to_read) |i| {
         const loc = locations[i];
-        if (loc.size > read_buffer.len) continue; // Skip oversized samples
+        if (loc.size > max_sample_size) continue; // Skip oversized samples
+
+        // Allocate buffer on heap to avoid stack overflow (worker threads have small stacks)
+        const read_buffer = allocator.alloc(u8, loc.size) catch continue;
+        defer allocator.free(read_buffer);
 
         file.seekTo(loc.offset) catch continue;
-        const bytes_read = file.read(read_buffer[0..loc.size]) catch continue;
+        const bytes_read = file.read(read_buffer) catch continue;
         if (bytes_read < loc.size) continue;
 
         // Duplicate the sample data for VideoToolbox
@@ -996,7 +1028,7 @@ fn validateMp4VideoWithVideoToolbox(
 
     // Call VideoToolbox validator
     std.debug.print("[VideoToolbox] About to call videotoolbox.validate* with {d} samples\n", .{samples.items.len});
-    const vt_codec: videotoolbox.VTVideoCodec = switch (video_codec) {
+    const vt_codec: videotoolbox.VideoCodec = switch (video_codec) {
         .h264 => .h264,
         .hevc => .hevc,
         .av1 => .av1,

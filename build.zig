@@ -349,22 +349,11 @@ pub fn build(b: *std.Build) void {
     lib.linkLibC();
     lib.linkLibCpp(); // Required for libheif, libjxl, libopenmpt (C++ libraries)
 
-    // On macOS, link VideoToolbox and CoreMedia frameworks for hardware video decoding
-    // VideoToolbox provides complete H.264/HEVC/AV1 profile support with hardware acceleration
-    // Note: On modern macOS (11+), system frameworks are in dyld shared cache, so we need
-    // to use the Xcode SDK which contains .tbd stub files for linking
+    // On macOS, compile VideoToolbox C shim for hardware video decoding
+    // The shim uses dlopen/dlsym to load VideoToolbox at runtime, avoiding dyld
+    // symbol resolution issues when the module is loaded from worker threads.
+    // No framework linking needed - frameworks are loaded dynamically.
     if (target.result.os.tag == .macos) {
-        // Use Xcode SDK frameworks path (has .tbd stubs that modern macOS requires)
-        // The actual framework binaries are in the dyld shared cache at runtime
-        const sdk_frameworks_path = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks";
-        lib.addFrameworkPath(.{ .cwd_relative = sdk_frameworks_path });
-        lib.linkFramework("VideoToolbox");
-        lib.linkFramework("CoreMedia");
-        lib.linkFramework("CoreVideo");
-        lib.linkFramework("CoreFoundation");
-
-        // Compile VideoToolbox C shim for thread-safe framework access
-        // This shim handles all VideoToolbox calls and dispatches them to the main thread
         lib.addCSourceFile(.{
             .file = b.path("src/core/videotoolbox_shim.c"),
             .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
@@ -465,15 +454,8 @@ pub fn build(b: *std.Build) void {
     lib_shared.linkLibC();
     lib_shared.linkLibCpp(); // Required for libheif, libjxl, libopenmpt (C++ libraries)
 
-    // On macOS, link VideoToolbox frameworks for hardware video decoding
-    if (target.result.os.tag == .macos) {
-        const sdk_frameworks_path = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks";
-        lib_shared.addFrameworkPath(.{ .cwd_relative = sdk_frameworks_path });
-        lib_shared.linkFramework("VideoToolbox");
-        lib_shared.linkFramework("CoreMedia");
-        lib_shared.linkFramework("CoreVideo");
-        lib_shared.linkFramework("CoreFoundation");
-    }
+    // Note: VideoToolbox is loaded dynamically via dlopen in the C shim,
+    // so no framework linking is needed here.
 
     lib_shared.installHeadersDirectory(b.path("ffi"), "", .{
         .include_extensions = &.{".h"},
@@ -501,15 +483,8 @@ pub fn build(b: *std.Build) void {
     cli_c.linkLibrary(lib);
     cli_c.linkLibrary(sqlite3_lib);
 
-    // On macOS, link VideoToolbox frameworks for hardware video decoding
-    if (target.result.os.tag == .macos) {
-        const sdk_frameworks_path = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks";
-        cli_c.addFrameworkPath(.{ .cwd_relative = sdk_frameworks_path });
-        cli_c.linkFramework("VideoToolbox");
-        cli_c.linkFramework("CoreMedia");
-        cli_c.linkFramework("CoreVideo");
-        cli_c.linkFramework("CoreFoundation");
-    }
+    // Note: VideoToolbox is loaded dynamically via dlopen in the C shim,
+    // so no framework linking is needed here.
 
     const install_cli = b.addInstallArtifact(cli_c, .{});
     b.getInstallStep().dependOn(&install_cli.step);
@@ -618,15 +593,8 @@ pub fn build(b: *std.Build) void {
     core_tests.linkLibC();
     core_tests.linkLibCpp(); // Required for libheif, openh264, libjxl, libopenmpt (C++ libraries)
 
-    // On macOS, link VideoToolbox frameworks for hardware video decoding tests
-    if (target.result.os.tag == .macos) {
-        const sdk_frameworks_path = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks";
-        core_tests.addFrameworkPath(.{ .cwd_relative = sdk_frameworks_path });
-        core_tests.linkFramework("VideoToolbox");
-        core_tests.linkFramework("CoreMedia");
-        core_tests.linkFramework("CoreVideo");
-        core_tests.linkFramework("CoreFoundation");
-    }
+    // Note: VideoToolbox C shim is added via core module for lib, not needed in tests
+    // since VideoToolbox validation is currently disabled
 
     const host_is_windows = b.graph.host.result.os.tag == .windows;
     const target_is_windows = target.result.os.tag == .windows;
@@ -666,15 +634,7 @@ pub fn build(b: *std.Build) void {
     ffi_tests.linkLibC();
     ffi_tests.linkLibCpp();
 
-    // On macOS, link VideoToolbox frameworks for hardware video decoding tests
-    if (target.result.os.tag == .macos) {
-        const sdk_frameworks_path = "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/System/Library/Frameworks";
-        ffi_tests.addFrameworkPath(.{ .cwd_relative = sdk_frameworks_path });
-        ffi_tests.linkFramework("VideoToolbox");
-        ffi_tests.linkFramework("CoreMedia");
-        ffi_tests.linkFramework("CoreVideo");
-        ffi_tests.linkFramework("CoreFoundation");
-    }
+    // Note: ffi_tests gets the VideoToolbox C shim via core module
 
     const run_ffi_tests = if (target_is_windows and !host_is_windows and windows_test_wine != null) blk: {
         const run = b.addSystemCommand(&.{
