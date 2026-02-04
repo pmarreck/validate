@@ -205,6 +205,38 @@ Proposed solution:
 
 Note: This requires careful thread pool design to avoid nested parallelism issues (workers spawning workers).
 
+### VideoToolbox Integration for macOS (IN PROGRESS - 2026-02-03)
+
+**Goal**: Use Apple's VideoToolbox framework on macOS for complete H.264/HEVC/AV1 profile support with hardware acceleration, eliminating the need for libde265/OpenH264/dav1d on macOS.
+
+**Platform Strategy**:
+- **macOS**: VideoToolbox for H.264/HEVC/AV1 (system framework, no licensing concerns, hardware accelerated)
+- **Linux/Windows**: ffmpeg as primary decoder (user must install), fallback to built-in decoders
+
+**Why VideoToolbox on macOS**:
+- Complete H.264 profile support (ALL profiles including High 4:4:4, 10-bit)
+- Complete HEVC profile support (Main, Main 10)
+- AV1 support on macOS 13+ (hardware decode on Apple Silicon)
+- No licensing concerns (system framework, not vendored)
+- Hardware acceleration = faster than software decode
+
+**Files Created**:
+- `src/core/videotoolbox_validator.zig` - macOS-only VideoToolbox decoder
+  - Uses manual FFI bindings (not @cImport) for portability
+  - Implements H.264 and HEVC validation
+  - AV1 support pending implementation
+  - Includes avcC/hvcC parameter set parsing
+
+**Next Steps**:
+1. Integrate into `video_validator.zig` with comptime OS detection
+2. Test with real video files
+3. Implement AV1 support (macOS 13+ requirement accepted)
+4. Update build.zig to link VideoToolbox/CoreMedia frameworks on macOS
+5. Make ffmpeg primary decoder on Linux/Windows
+
+**Nix Hermeticity Note**:
+VideoToolbox is a macOS system framework (like CoreFoundation). In Nix, handled via `darwin.apple_sdk.frameworks`. Not a vendored dependency - guaranteed to exist on deployment target.
+
 ### libde265 Threading Fix (DONE - 2026-02-01)
 
 **Problem**: libde265 worker threads caused General Protection Faults (GPF) on Linux x86_64 during HEIC decode. The crash occurred in `intra_prediction_angular()` during multi-threaded decode.

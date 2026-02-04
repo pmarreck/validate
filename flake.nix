@@ -73,7 +73,11 @@
 							src = ./.;
 
 							nativeBuildInputs = with pkgs; [ zig ]
-								++ pkgs.lib.optionals (isDarwin && !cross) [ darwin.cctools ];
+								++ pkgs.lib.optionals (isDarwin && !cross) [
+									darwin.cctools
+									# macOS SDK for VideoToolbox hardware video decoding
+									apple-sdk
+								];
 
 							buildPhase = ''
 								export HOME=$TMPDIR
@@ -140,7 +144,11 @@
 						src = ./.;
 
 						nativeBuildInputs = with pkgs; [ zig ffmpeg coreutils ]
-							++ pkgs.lib.optionals isDarwin [ darwin.cctools ];
+							++ pkgs.lib.optionals isDarwin [
+								darwin.cctools
+								# macOS SDK for VideoToolbox hardware video decoding
+								apple-sdk
+							];
 
 						buildPhase = ''
 							export HOME=$TMPDIR
@@ -200,8 +208,12 @@
 							sqlite
 							zlib
 							ffmpeg  # For testing ffmpeg fallback validation paths
-						] ++ pkgs.lib.optionals isDarwin [ xcodegen ]
-						  ++ pkgs.lib.optionals isX86_64Linux [ wineWowPackages.stable ];  # For Windows cross-testing
+						] ++ pkgs.lib.optionals isDarwin [
+							xcodegen
+							# macOS SDK for VideoToolbox hardware video decoding
+							# The apple-sdk provides all frameworks needed for building
+							apple-sdk
+						] ++ pkgs.lib.optionals isX86_64Linux [ wineWowPackages.stable ];  # For Windows cross-testing
 						shellHook = ''
 							unset LD
 							unset SDKROOT

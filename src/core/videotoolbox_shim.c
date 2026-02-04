@@ -196,6 +196,8 @@ static VTDecompressionSessionInvalidate_fn fp_VTDecompressionSessionInvalidate =
 
 // kCFAllocatorDefault is a global variable, not a function
 static CFAllocatorRef g_kCFAllocatorDefault = NULL;
+// kCFAllocatorNull - special allocator that doesn't free memory
+static CFAllocatorRef g_kCFAllocatorNull = NULL;
 
 // =============================================================================
 // Initialization (must be called from main thread)
@@ -223,7 +225,8 @@ bool vt_shim_init(void) {
         return false;
     }
 
-    fprintf(stderr, "[VT Shim] Initializing with dlopen...\n");
+    // Silent initialization - enable debug output by setting VALIDATE_DEBUG=1
+    bool debug = getenv("VALIDATE_DEBUG") != NULL;
 
     // Load CoreFoundation
     g_cf_handle = dlopen("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", RTLD_LAZY);
@@ -273,6 +276,15 @@ bool vt_shim_init(void) {
         ok = false;
     }
 
+    // Get kCFAllocatorNull (special allocator that doesn't free memory)
+    CFAllocatorRef* p_kCFAllocatorNull = dlsym(g_cf_handle, "kCFAllocatorNull");
+    if (p_kCFAllocatorNull) {
+        g_kCFAllocatorNull = *p_kCFAllocatorNull;
+    } else {
+        fprintf(stderr, "[VT Shim] Failed to get kCFAllocatorNull\n");
+        ok = false;
+    }
+
     // CoreMedia
     ok = ok && load_symbol(g_cm_handle, "CMVideoFormatDescriptionCreateFromH264ParameterSets",
                            (void**)&fp_CMVideoFormatDescriptionCreateFromH264ParameterSets);
@@ -305,7 +317,9 @@ bool vt_shim_init(void) {
         return false;
     }
 
-    fprintf(stderr, "[VT Shim] Successfully loaded all symbols\n");
+    if (debug) {
+        fprintf(stderr, "[VT Shim] Successfully loaded VideoToolbox\n");
+    }
     g_initialized = true;
     g_available = true;
     return true;
@@ -620,7 +634,7 @@ static void do_validate(void* context) {
             g_kCFAllocatorDefault,
             (void*)sample_data,
             sample_size,
-            NULL,  // kCFAllocatorNull - don't free the data
+            g_kCFAllocatorNull,  // Don't free the data - we manage it
             NULL,
             0,
             sample_size,
@@ -728,11 +742,10 @@ void vt_shim_validate_h264(
         .result = {.valid = false, .frames_decoded = 0, .error_message = "Not executed"}
     };
 
-    if (is_main_thread()) {
-        do_validate(&ctx);
-    } else {
-        dispatch_sync_f(dispatch_get_main_queue(), &ctx, do_validate);
-    }
+    // Try calling VideoToolbox directly from any thread.
+    // The original crash was dyld symbol resolution (fixed with dlopen),
+    // not VideoToolbox thread safety. Modern VT should handle this.
+    do_validate(&ctx);
 
     *result = ctx.result;
 }
@@ -762,11 +775,8 @@ void vt_shim_validate_hevc(
         .result = {.valid = false, .frames_decoded = 0, .error_message = "Not executed"}
     };
 
-    if (is_main_thread()) {
-        do_validate(&ctx);
-    } else {
-        dispatch_sync_f(dispatch_get_main_queue(), &ctx, do_validate);
-    }
+    // Try calling VideoToolbox directly from any thread.
+    do_validate(&ctx);
 
     *result = ctx.result;
 }

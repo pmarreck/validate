@@ -4,6 +4,13 @@ set -euo pipefail
 
 BIN="./zig-out/bin/validate"
 
+# Test that --color switch is accepted (doesn't error)
+output=$($BIN --color --help 2>&1) || true
+if ! echo "$output" | grep -q "USAGE:"; then
+	printf 'FAIL: --color --help did not show usage\n' >&2
+	exit 1
+fi
+
 # Test Unix-style help switches (work on all platforms)
 for switch in "--help" "-h"; do
 	output=$($BIN $switch 2>&1) || true

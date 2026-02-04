@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+BIN="./zig-out/bin/validate"
+
+# When piping without --color, output should NOT have ANSI codes
+output_no_color=$($BIN --help 2>&1 | cat) || true
+if echo "$output_no_color" | grep -q $'\033\['; then
+	printf 'FAIL: piped output should not contain ANSI codes by default\n' >&2
+	exit 1
+fi
+
+# With --color flag, output SHOULD have ANSI codes even when piping
+output_with_color=$($BIN --color --help 2>&1 | cat) || true
+# The help text itself won't have colors, but let's verify --color is accepted
+# and test with actual validation output
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_color.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Create a valid PNG file (minimal 1x1 white PNG)
+printf '\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82' > "$tmpdir/test.png"
+
+# Without --color, piped output should not have ANSI codes
+output_pipe=$($BIN "$tmpdir/test.png" 2>&1 | cat) || true
+if echo "$output_pipe" | grep -q $'\033\['; then
+	printf 'FAIL: piped validation output should not contain ANSI codes by default\n' >&2
+	exit 1
+fi
+
+# With --color, piped output SHOULD have ANSI codes
+output_color=$($BIN --color "$tmpdir/test.png" 2>&1 | cat) || true
+if ! echo "$output_color" | grep -q $'\033\['; then
+	printf 'FAIL: --color flag should force ANSI codes in piped output\n' >&2
+	printf 'output: %s\n' "$output_color" >&2
+	exit 1
+fi
+
+printf 'PASS: --color flag works correctly\n'

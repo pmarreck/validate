@@ -13,7 +13,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Parallel PDF image validation using thread pool (36% faster on ~/Documents/Books) (2026-01-30)
 - [x] Remove es_* prefix from all FFI functions (project is validate, not entropy_shield) (2026-01-31)
 - [x] Deprecate old handle-based API (format_validator_create, etc.) - add DEPRECATED comments (2026-02-01 ~21:00 EST)
-- [ ] Future: Remove deprecated handle-based API in next major version
+- [x] Remove deprecated handle-based API and implement KV-US-RS format (2026-02-02)
 
 ### Bundle Validation (directories as single validation units)
 - [x] Add BundleType enum and detectBundleType() to format_validation.zig (2026-01-31)

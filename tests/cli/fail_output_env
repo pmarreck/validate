@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_fail_env.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Create an invalid file (truncated/corrupt data)
+printf '\xff\xd8\xff\xe0JFIF' > "$tmpdir/corrupt.jpg"
+
+fail_path="$tmpdir/fail.out"
+
+# Run with FAIL_OUT set
+output=$(FAIL_OUT="$fail_path" ./zig-out/bin/validate "$tmpdir/corrupt.jpg" 2>&1) || true
+
+# Verify FAIL_OUT file was created
+if [ ! -f "$fail_path" ]; then
+	printf 'FAIL: expected %s to exist\n' "$fail_path" >&2
+	exit 1
+fi
+
+# Verify FAIL is recorded in the file
+if ! grep -q "FAIL" "$fail_path"; then
+	printf 'FAIL: expected FAIL in %s\n' "$fail_path" >&2
+	printf 'file contents:\n%s\n' "$(cat "$fail_path")" >&2
+	exit 1
+fi
+
+# Verify the file path is in the output
+if ! grep -q "corrupt.jpg" "$fail_path"; then
+	printf 'FAIL: expected file path in %s\n' "$fail_path" >&2
+	printf 'file contents:\n%s\n' "$(cat "$fail_path")" >&2
+	exit 1
+fi
+
+# Verify no ANSI codes in the file (should be plain text)
+if grep -q $'\033\[' "$fail_path"; then
+	printf 'FAIL: FAIL_OUT should not contain ANSI codes\n' >&2
+	printf 'file contents:\n%s\n' "$(cat "$fail_path")" >&2
+	exit 1
+fi
+
+printf 'PASS: FAIL_OUT environment variable works correctly\n'

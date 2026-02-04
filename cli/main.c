@@ -394,6 +394,15 @@ static void disable_colors(void) {
 	COLOR_RESET = "";
 }
 
+static void enable_colors(void) {
+	COLOR_GREEN = "\033[0;32m";
+	COLOR_RED = "\033[0;31m";
+	COLOR_YELLOW = "\033[1;33m";
+	COLOR_CYAN = "\033[0;36m";
+	COLOR_RESET = "\033[0m";
+	g_colors_enabled = 1;
+}
+
 static FILE* g_unknown_out = NULL;
 static int g_unknown_out_enabled = 0;
 
@@ -416,6 +425,30 @@ static void shutdown_unknown_out(void) {
 		g_unknown_out = NULL;
 	}
 	g_unknown_out_enabled = 0;
+}
+
+static FILE* g_fail_out = NULL;
+static int g_fail_out_enabled = 0;
+
+static void init_fail_out(void) {
+	const char* path = getenv("FAIL_OUT");
+	if (!path || path[0] == '\0') {
+		return;
+	}
+	g_fail_out = fopen(path, "a");
+	if (!g_fail_out) {
+		fprintf(stderr, "%sWarning: failed to open FAIL_OUT path: %s\n%s", COLOR_YELLOW, path, COLOR_RESET);
+		return;
+	}
+	g_fail_out_enabled = 1;
+}
+
+static void shutdown_fail_out(void) {
+	if (g_fail_out) {
+		fclose(g_fail_out);
+		g_fail_out = NULL;
+	}
+	g_fail_out_enabled = 0;
 }
 
 static size_t get_env_max_files(void) {
@@ -455,12 +488,15 @@ static void print_validation_result(const char* path, const char* result) {
 	uint64_t malform_bits = kv_get_u64(result, "malform_u64");
 	int bypass_prot = kv_get_bool(result, "bypass_prot");
 	int via_ffmpeg = kv_get_bool(result, "via_ffmpeg");
+	int via_videotoolbox = kv_get_bool(result, "via_videotoolbox");
 
 	const char* depth_str = (depth == 1) ? "fully validated" : "structural";
 
-	/* Build depth description with optional ffmpeg suffix */
+	/* Build depth description with optional ffmpeg/videotoolbox suffix */
 	char depth_desc[64];
-	if (via_ffmpeg) {
+	if (via_videotoolbox) {
+		snprintf(depth_desc, sizeof(depth_desc), "%s, via VideoToolbox", depth_str);
+	} else if (via_ffmpeg) {
 		snprintf(depth_desc, sizeof(depth_desc), "%s, via ffmpeg", depth_str);
 	} else {
 		snprintf(depth_desc, sizeof(depth_desc), "%s", depth_str);
@@ -490,15 +526,24 @@ static void print_validation_result(const char* path, const char* result) {
 			printf("%sOK%s %s: %s (%s)\n", COLOR_GREEN, COLOR_RESET, path, fmt_desc, depth_desc);
 		}
 	} else {
-		printf("%sFAIL%s %s: %s - %s\n",
+		/* FAILs go to stderr for easy redirection */
+		fprintf(stderr, "%sFAIL%s %s: %s - %s\n",
 			   COLOR_RED, COLOR_RESET, path, fmt_desc,
 			   err_msg[0] ? err_msg : "Unknown error");
+		/* Also write to FAIL_OUT file if configured (without colors) */
+		if (g_fail_out_enabled && g_fail_out) {
+			fprintf(g_fail_out, "FAIL %s: %s - %s\n", path, fmt_desc,
+				   err_msg[0] ? err_msg : "Unknown error");
+		}
 		/* Also show malformations for invalid files */
 		if (has_malformations) {
 			for (int i = 0; i < 15; i++) {
 				if (malform_bits & (1ULL << i)) {
 					const char* desc = validate_malform_desc(i);
-					printf("  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, desc ? desc : "Unknown issue");
+					fprintf(stderr, "  %s->%s %s\n", COLOR_YELLOW, COLOR_RESET, desc ? desc : "Unknown issue");
+					if (g_fail_out_enabled && g_fail_out) {
+						fprintf(g_fail_out, "  -> %s\n", desc ? desc : "Unknown issue");
+					}
 				}
 			}
 		}
@@ -576,6 +621,7 @@ static void print_usage(const char* program) {
 	printf("    /?, /h, /help, --help Show this help\n");
 	printf("    /j N, /jobs N         Number of parallel workers (0 = auto)\n");
 	printf("    --no-color            Disable colored output\n");
+	printf("    --color               Force colored output (even when piping)\n");
 	printf("    --shuffle             Shuffle file order (helps expose race conditions)\n");
 	printf("    --stress N            Repeat validation N times with shuffling\n");
 #else
@@ -584,12 +630,18 @@ static void print_usage(const char* program) {
 	printf("    --jobs N     Number of parallel workers (0 = auto)\n");
 	printf("    -j N         Alias for --jobs\n");
 	printf("    --no-color   Disable colored output\n");
+	printf("    --color      Force colored output (even when piping)\n");
 	printf("    --shuffle    Shuffle file order (helps expose race conditions)\n");
 	printf("    --stress N   Repeat validation N times with shuffling\n");
 #endif
 	printf("\n");
 	printf("ENVIRONMENT:\n");
-	printf("    NO_COLOR     Set to disable colored output\n");
+	printf("    NO_COLOR      Disable colored output\n");
+	printf("    FAIL_OUT      Path to append failed validation results\n");
+	printf("    UNKNOWN_OUT   Path to append unknown file paths\n");
+	printf("    MAX_FILES     Limit number of files to validate\n");
+	printf("\n");
+	printf("FAILs are written to stderr for easy redirection (2>fails.log).\n");
 }
 
 int main(int argc, char* argv[]) {
@@ -674,6 +726,11 @@ int main(int argc, char* argv[]) {
 			disable_colors();
 			continue;
 		}
+		/* Force color: --color */
+		if (strcmp(arg, "--color") == 0) {
+			enable_colors();  /* Force colors on even if not TTY */
+			continue;
+		}
 		/* Unknown option check */
 		if (arg[0] == '-') {
 			fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
@@ -714,6 +771,7 @@ int main(int argc, char* argv[]) {
 	validate_init();
 
 	init_unknown_out();
+	init_fail_out();
 
 	const size_t max_files = get_env_max_files();
 
@@ -723,6 +781,7 @@ int main(int argc, char* argv[]) {
 		fprintf(stderr, "%sError: Out of memory\n%s", COLOR_RED, COLOR_RESET);
 		free(paths);
 		shutdown_unknown_out();
+		shutdown_fail_out();
 		return 1;
 	}
 
@@ -763,6 +822,7 @@ int main(int argc, char* argv[]) {
 		printf("No files found.\n");
 		path_list_free(&file_list);
 		shutdown_unknown_out();
+		shutdown_fail_out();
 		return 0;
 	}
 
@@ -805,6 +865,7 @@ int main(int argc, char* argv[]) {
 				validate_last_error() ? validate_last_error() : "unknown error", COLOR_RESET);
 			path_list_free(&file_list);
 			shutdown_unknown_out();
+		shutdown_fail_out();
 			return 1;
 		}
 
@@ -835,5 +896,6 @@ int main(int argc, char* argv[]) {
 	printf("  Unknown: %zu\n", summary_counts->unknown_count);
 
 	shutdown_unknown_out();
+		shutdown_fail_out();
 	return failures ? 1 : 0;
 }

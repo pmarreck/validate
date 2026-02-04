@@ -222,6 +222,7 @@ fn buildValidationResult(
     // Flags as individual booleans
     try builder.addBool("bypass_prot", result.circumvented_trivial_protection);
     try builder.addBool("via_ffmpeg", result.validated_via_ffmpeg);
+    try builder.addBool("via_videotoolbox", result.validated_via_videotoolbox);
 
     // Timing
     try builder.addI64("elapsed_ns_u64", elapsed_ns);

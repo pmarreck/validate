@@ -235,35 +235,27 @@ const use_videotoolbox = builtin.os.tag == .macos;
 /// This allows disabling VideoToolbox via environment variable for testing.
 /// Set VALIDATE_DISABLE_VIDEOTOOLBOX=1 (or true/yes/on) to force the non-VideoToolbox code path.
 fn shouldUseVideoToolbox() bool {
-    // VideoToolbox is currently disabled due to dispatch_sync deadlock:
-    // When worker threads try to dispatch_sync to main queue while
-    // main thread is blocked waiting for workers, we get a deadlock.
-    // TODO: Fix by running VideoToolbox validation on main thread only,
-    // or use dispatch_async + semaphore instead of dispatch_sync.
-    return false;
+    if (comptime !use_videotoolbox) {
+        return false;
+    }
 
-    // Original implementation for when threading is fixed:
-    // if (comptime !use_videotoolbox) {
-    //     return false;
-    // }
-    //
-    // // Check environment variable override
-    // const override = std.process.getEnvVarOwned(std.heap.page_allocator, "VALIDATE_DISABLE_VIDEOTOOLBOX") catch {
-    //     // No override, check if VideoToolbox is available
-    //     return videotoolbox.isAvailable();
-    // };
-    // defer std.heap.page_allocator.free(override);
-    //
-    // const trimmed = std.mem.trim(u8, override, " \t\r\n");
-    // if (std.mem.eql(u8, trimmed, "1") or
-    //     std.ascii.eqlIgnoreCase(trimmed, "true") or
-    //     std.ascii.eqlIgnoreCase(trimmed, "yes") or
-    //     std.ascii.eqlIgnoreCase(trimmed, "on"))
-    // {
-    //     return false; // Disabled via env var
-    // }
-    //
-    // return videotoolbox.isAvailable();
+    // Check environment variable override
+    const override = std.process.getEnvVarOwned(std.heap.page_allocator, "VALIDATE_DISABLE_VIDEOTOOLBOX") catch {
+        // No override, check if VideoToolbox is available
+        return videotoolbox.isAvailable();
+    };
+    defer std.heap.page_allocator.free(override);
+
+    const trimmed = std.mem.trim(u8, override, " \t\r\n");
+    if (std.mem.eql(u8, trimmed, "1") or
+        std.ascii.eqlIgnoreCase(trimmed, "true") or
+        std.ascii.eqlIgnoreCase(trimmed, "yes") or
+        std.ascii.eqlIgnoreCase(trimmed, "on"))
+    {
+        return false; // Disabled via env var
+    }
+
+    return videotoolbox.isAvailable();
 }
 
 // Import videotoolbox_validator - uses dlopen/dlsym for runtime loading
@@ -403,6 +395,8 @@ pub const VideoValidationResult = struct {
 	unsupported_profile_no_ffmpeg: bool = false,
 	/// Set when validation was performed via external ffmpeg CLI
 	validated_via_ffmpeg: bool = false,
+	/// Set when validation was performed via macOS VideoToolbox hardware decoder
+	validated_via_videotoolbox: bool = false,
 
 	pub fn okDecoded(codec: VideoCodec, frames: u32) VideoValidationResult {
 		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = false, .mixed_nal_prefix = false };
@@ -414,6 +408,10 @@ pub const VideoValidationResult = struct {
 
 	pub fn okByteValidatedViaFfmpeg(codec: VideoCodec, frames: u32) VideoValidationResult {
 		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = true, .mixed_nal_prefix = false, .validated_via_ffmpeg = true };
+	}
+
+	pub fn okByteValidatedViaVideoToolbox(codec: VideoCodec, frames: u32) VideoValidationResult {
+		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = true, .mixed_nal_prefix = false, .validated_via_videotoolbox = true };
 	}
 
 	pub fn invalid(message: []const u8, codec: VideoCodec) VideoValidationResult {
@@ -1027,7 +1025,6 @@ fn validateMp4VideoWithVideoToolbox(
     }
 
     // Call VideoToolbox validator
-    std.debug.print("[VideoToolbox] About to call videotoolbox.validate* with {d} samples\n", .{samples.items.len});
     const vt_codec: videotoolbox.VideoCodec = switch (video_codec) {
         .h264 => .h264,
         .hevc => .hevc,
@@ -1035,24 +1032,15 @@ fn validateMp4VideoWithVideoToolbox(
         else => return VideoValidationResult.invalid("Unsupported codec for VideoToolbox", video_codec),
     };
 
-    std.debug.print("[VideoToolbox] Calling videotoolbox validation for codec {}\n", .{vt_codec});
     const vt_result = switch (vt_codec) {
         .h264 => videotoolbox.validateH264(allocator, raw_codec_private.data, samples.items),
         .hevc => videotoolbox.validateHEVC(allocator, raw_codec_private.data, samples.items),
         .av1 => videotoolbox.validateAV1(allocator, raw_codec_private.data, samples.items),
     };
-    std.debug.print("[VideoToolbox] Validation returned\n", .{});
 
     // Convert VideoToolbox result to VideoValidationResult
     if (vt_result.valid) {
-        return VideoValidationResult{
-            .valid = true,
-            .error_message = null,
-            .codec = video_codec,
-            .frames_decoded = vt_result.frames_decoded,
-            .byte_validated = true, // VideoToolbox does full decode
-            .validated_via_ffmpeg = false,
-        };
+        return VideoValidationResult.okByteValidatedViaVideoToolbox(video_codec, vt_result.frames_decoded);
     } else {
         // VideoToolbox failed - try ffmpeg as fallback
         const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);

@@ -872,6 +872,8 @@ pub const ValidationResult = struct {
     circumvented_trivial_protection: bool = false,
     /// Whether validation was performed via external ffmpeg CLI (for video formats).
     validated_via_ffmpeg: bool = false,
+    /// Whether validation was performed via macOS VideoToolbox hardware decoder.
+    validated_via_videotoolbox: bool = false,
 
     /// Check if there are any malformations (warnings)
     pub fn hasMalformations(self: ValidationResult) bool {
@@ -19273,6 +19275,9 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     if (video_result.validated_via_ffmpeg) {
         result.validated_via_ffmpeg = true;
     }
+    if (video_result.validated_via_videotoolbox) {
+        result.validated_via_videotoolbox = true;
+    }
     if (video_result.mixed_nal_prefix) {
         result.malformations.insert(.video_mixed_nal_prefix);
         result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
@@ -19408,6 +19413,9 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
     if (video_result.validated_via_ffmpeg) {
         result.validated_via_ffmpeg = true;
     }
+    if (video_result.validated_via_videotoolbox) {
+        result.validated_via_videotoolbox = true;
+    }
     if (video_result.mixed_nal_prefix) {
         result.malformations.insert(.video_mixed_nal_prefix);
         result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
@@ -19480,6 +19488,9 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
         ValidationResult.structuralOnly(.avi);
     if (video_result.validated_via_ffmpeg) {
         result.validated_via_ffmpeg = true;
+    }
+    if (video_result.validated_via_videotoolbox) {
+        result.validated_via_videotoolbox = true;
     }
     // Check for unsupported profile warning
     if (video_result.unsupported_profile_no_ffmpeg) {
