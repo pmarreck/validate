@@ -94,7 +94,10 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                 if (self.items.items.len == 0) {
                     return null;
                 }
-                return self.items.pop();
+                // Use FIFO ordering to preserve submission order.
+                // This is important for frontloading where large files
+                // are placed at the front and should be processed first.
+                return self.items.orderedRemove(0);
             }
 
             pub fn close(self: *WorkQueue) void {

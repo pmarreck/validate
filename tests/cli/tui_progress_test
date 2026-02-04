@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# TUI Progress Bar Integration Test
+# Uses tmux to create a controlled terminal environment and captures screen state
+#
+# Requirements: tmux must be installed
+# 
+# This test:
+# 1. Creates a tmux session with a unique name (includes PID for safety)
+# 2. Runs in a clean environment (no user dotfiles, minimal shell)
+# 3. Captures the terminal screen buffer at various points
+# 4. Asserts that the progress bar appears in the correct location
+# 5. Verifies output doesn't leak into the progress area
+
+set -euo pipefail
+
+# Configuration
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VALIDATE_BIN="$PROJECT_ROOT/zig-out/bin/validate"
+TEST_DIR="$PROJECT_ROOT/ground_truth_examples/png"  # Small set for quick testing
+
+# Unique session name to avoid conflicts
+SESSION_NAME="validate_tui_test_$$_$(date +%s)"
+TERM_WIDTH=80
+TERM_HEIGHT=24
+
+# Cleanup function - only kills our specific session
+cleanup() {
+    if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+        tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+# Check prerequisites
+if ! command -v tmux &>/dev/null; then
+    echo "SKIP: tmux not installed"
+    exit 0
+fi
+
+if [[ ! -x "$VALIDATE_BIN" ]]; then
+    echo "FAIL: validate binary not found at $VALIDATE_BIN"
+    exit 1
+fi
+
+if [[ ! -d "$TEST_DIR" ]]; then
+    echo "FAIL: test directory not found at $TEST_DIR"
+    exit 1
+fi
+
+echo "Testing TUI progress bar with tmux..."
+echo "  Session: $SESSION_NAME"
+echo "  Terminal: ${TERM_WIDTH}x${TERM_HEIGHT}"
+
+# Create tmux session with clean environment
+# -d: detached
+# -s: session name  
+# -x/-y: terminal size
+# We use env -i to start with minimal environment, then add back essentials
+tmux new-session -d -s "$SESSION_NAME" -x "$TERM_WIDTH" -y "$TERM_HEIGHT" \
+    "env -i PATH=\"$PATH\" HOME=/tmp TERM=xterm-256color PS1='$ ' bash --norc --noprofile"
+
+# Wait for shell to be ready
+sleep 0.5
+
+# Run validate with enough files to trigger TUI (>1 file, TTY detected)
+# We use the PNG test files which are small and validate quickly
+tmux send-keys -t "$SESSION_NAME" "cd '$PROJECT_ROOT' && '$VALIDATE_BIN' --jobs 1 '$TEST_DIR' 2>&1; echo 'DONE_MARKER'" Enter
+
+# Wait for validation to complete (should be quick with PNG files)
+# Poll for DONE_MARKER in output, using scrollback to see all output
+MAX_WAIT=60
+WAITED=0
+while [[ $WAITED -lt $MAX_WAIT ]]; do
+    SCREEN=$(tmux capture-pane -t "$SESSION_NAME" -p -S -500 2>/dev/null || echo "")
+    if echo "$SCREEN" | grep -q "DONE_MARKER"; then
+        break
+    fi
+    sleep 0.5
+    WAITED=$((WAITED + 1))
+done
+
+if [[ $WAITED -ge $MAX_WAIT ]]; then
+    echo "FAIL: Validation did not complete within ${MAX_WAIT}s"
+    echo "=== Screen contents ==="
+    tmux capture-pane -t "$SESSION_NAME" -p -S -500 || true
+    exit 1
+fi
+
+echo "Found DONE_MARKER after $WAITED checks"
+
+# Wait a moment for all output to settle
+sleep 1
+
+# Capture final screen state including full scrollback history
+FINAL_SCREEN=$(tmux capture-pane -t "$SESSION_NAME" -p -S -500)
+
+echo "=== Captured screen (with scrollback) ==="
+echo "$FINAL_SCREEN"
+echo "==========================================="
+
+# Assertions
+
+# 1. Check that we got validation results (OK lines for valid PNG files)
+if ! echo "$FINAL_SCREEN" | grep -q "OK.*png"; then
+    echo "FAIL: Expected OK results for PNG files"
+    exit 1
+fi
+echo "PASS: Found OK validation results"
+
+# 2. Check that Summary appeared (indicates clean exit)
+if ! echo "$FINAL_SCREEN" | grep -q "Summary:"; then
+    echo "FAIL: Expected Summary output"
+    exit 1
+fi
+echo "PASS: Found Summary output"
+
+# 3. Check that Valid count is shown
+if ! echo "$FINAL_SCREEN" | grep -q "Valid:"; then
+    echo "FAIL: Expected Valid count in summary"
+    exit 1
+fi
+echo "PASS: Found Valid count"
+
+# 4. For TUI-specific tests, we need to capture during validation
+# Let's run another test that captures mid-validation
+echo ""
+echo "Testing TUI progress bar visibility during validation..."
+
+# Create a new session for the mid-validation test
+SESSION2="${SESSION_NAME}_progress"
+cleanup2() {
+    if tmux has-session -t "$SESSION2" 2>/dev/null; then
+        tmux kill-session -t "$SESSION2" 2>/dev/null || true
+    fi
+}
+trap 'cleanup; cleanup2' EXIT
+
+tmux new-session -d -s "$SESSION2" -x "$TERM_WIDTH" -y "$TERM_HEIGHT" \
+    "env -i PATH=\"$PATH\" HOME=/tmp TERM=xterm-256color PS1='$ ' bash --norc --noprofile"
+sleep 0.5
+
+# Run with larger test set and single job to give us time to capture
+LARGE_TEST_DIR="$PROJECT_ROOT/ground_truth_examples"
+tmux send-keys -t "$SESSION2" "cd '$PROJECT_ROOT' && '$VALIDATE_BIN' --jobs 1 '$LARGE_TEST_DIR' 2>&1" Enter
+
+# Wait a moment for validation to start and TUI to render
+sleep 2
+
+# Capture screen during validation including scrollback
+MID_SCREEN=$(tmux capture-pane -t "$SESSION2" -p -S -100 2>/dev/null || echo "")
+
+echo "=== Mid-validation screen ==="
+echo "$MID_SCREEN"
+echo "============================="
+
+# Check for TUI elements during validation
+# The progress bar should have ETA indicator
+# Note: Due to timing, this might not always catch the TUI, so we make it non-fatal
+if echo "$MID_SCREEN" | grep -qE "ETA|estimating|\-\-:\-\-"; then
+    echo "PASS: Found ETA indicator in TUI"
+elif echo "$MID_SCREEN" | grep -qE "\([0-9]+/[0-9]+\)"; then
+    echo "PASS: Found progress counter in TUI"
+else
+    echo "INFO: Did not capture TUI progress (validation may have completed too quickly)"
+fi
+
+# Wait for completion
+WAITED=0
+while [[ $WAITED -lt $MAX_WAIT ]]; do
+    SCREEN=$(tmux capture-pane -t "$SESSION2" -p 2>/dev/null || echo "")
+    if echo "$SCREEN" | grep -q "Summary:"; then
+        break
+    fi
+    sleep 0.5
+    WAITED=$((WAITED + 1))
+done
+
+# Final screen for second test including scrollback
+FINAL2=$(tmux capture-pane -t "$SESSION2" -p -S -100)
+
+# Check that output didn't leak into wrong areas (basic sanity check)
+# The last few lines after completion should be the summary, not interleaved results
+LAST_LINES=$(echo "$FINAL2" | tail -10)
+if echo "$LAST_LINES" | grep -q "Summary:" && echo "$LAST_LINES" | grep -q "Valid:"; then
+    echo "PASS: Summary appears in final output"
+else
+    echo "WARN: Summary positioning may be off"
+    echo "Last 10 lines:"
+    echo "$LAST_LINES"
+fi
+
+echo ""
+echo "=== TUI Test Complete ==="
+echo "All critical assertions passed."

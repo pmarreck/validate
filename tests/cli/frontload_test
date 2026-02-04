@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_frontload.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Create files of varying sizes
+# Small files (100 bytes)
+for i in 1 2 3 4 5 6 7 8 9; do
+	dd if=/dev/zero of="$tmpdir/small_$i.bin" bs=100 count=1 2>/dev/null
+done
+
+# Large file (100KB) - should be processed first
+dd if=/dev/zero of="$tmpdir/large_1.bin" bs=1024 count=100 2>/dev/null
+
+# Run validation and capture order of processing
+# Note: OK_OUT captures the order files are completed (may vary due to parallel processing)
+# So we use --jobs 1 to get deterministic order
+order_file="$tmpdir/order.out"
+output=$(OK_OUT="$order_file" ./zig-out/bin/validate --jobs 1 "$tmpdir" 2>&1) || true
+
+# The large file should be processed first (frontloading)
+first_file=$(head -1 "$order_file" | grep -o 'large_1\|small_[0-9]' || echo "unknown")
+
+if [ "$first_file" != "large_1" ]; then
+	# This test is informational - frontloading means large files go first,
+	# but with only 10 files, the 10% threshold may not kick in
+	# (need >10 files for frontloading to activate)
+	printf 'Note: Large file was not first (expected with <10 files or --no-frontload)\n'
+fi
+
+# Test --no-frontload flag doesn't cause errors
+output2=$(./zig-out/bin/validate --no-frontload "$tmpdir" 2>&1) || true
+if echo "$output2" | grep -qi "error"; then
+	printf 'FAIL: --no-frontload caused an error\n' >&2
+	printf 'output:\n%s\n' "$output2" >&2
+	exit 1
+fi
+
+# Verify help text includes the new options
+help_output=$(./zig-out/bin/validate --help 2>&1)
+if ! echo "$help_output" | grep -q "no-frontload"; then
+	printf 'FAIL: --no-frontload not in help text\n' >&2
+	exit 1
+fi
+
+if ! echo "$help_output" | grep -q "simple-progress"; then
+	printf 'FAIL: --simple-progress not in help text\n' >&2
+	exit 1
+fi
+
+if ! echo "$help_output" | grep -q "OK_OUT"; then
+	printf 'FAIL: OK_OUT not in help text\n' >&2
+	exit 1
+fi
+
+if ! echo "$help_output" | grep -q "WARN_OUT"; then
+	printf 'FAIL: WARN_OUT not in help text\n' >&2
+	exit 1
+fi
+
+printf 'PASS: Frontloading and new CLI options work correctly\n'

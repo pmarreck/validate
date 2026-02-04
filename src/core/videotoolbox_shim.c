@@ -22,6 +22,7 @@
 #include <dispatch/dispatch.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <sys/sysctl.h>
 
 // =============================================================================
 // Type Definitions (matching Apple's headers, but declared locally)
@@ -173,6 +174,25 @@ typedef void (*VTDecompressionSessionInvalidate_fn)(
     VTDecompressionSessionRef session
 );
 
+// VTSessionSetProperty - for setting thread count
+typedef OSStatus (*VTSessionSetProperty_fn)(
+    VTDecompressionSessionRef session,
+    CFTypeRef propertyKey,
+    CFTypeRef propertyValue
+);
+
+// CoreFoundation CFNumber functions
+typedef const void* CFNumberRef;
+typedef enum {
+    kCFNumberSInt32Type = 3
+} CFNumberType;
+
+typedef CFNumberRef (*CFNumberCreate_fn)(
+    CFAllocatorRef allocator,
+    CFNumberType theType,
+    const void* valuePtr
+);
+
 // =============================================================================
 // Global State
 // =============================================================================
@@ -193,6 +213,11 @@ static VTDecompressionSessionCreate_fn fp_VTDecompressionSessionCreate = NULL;
 static VTDecompressionSessionDecodeFrame_fn fp_VTDecompressionSessionDecodeFrame = NULL;
 static VTDecompressionSessionWaitForAsynchronousFrames_fn fp_VTDecompressionSessionWaitForAsynchronousFrames = NULL;
 static VTDecompressionSessionInvalidate_fn fp_VTDecompressionSessionInvalidate = NULL;
+static VTSessionSetProperty_fn fp_VTSessionSetProperty = NULL;
+static CFNumberCreate_fn fp_CFNumberCreate = NULL;
+
+// Property key for thread count
+static CFTypeRef g_kVTDecompressionPropertyKey_ThreadCount = NULL;
 
 // kCFAllocatorDefault is a global variable, not a function
 static CFAllocatorRef g_kCFAllocatorDefault = NULL;
@@ -266,6 +291,7 @@ bool vt_shim_init(void) {
 
     // CoreFoundation
     ok = ok && load_symbol(g_cf_handle, "CFRelease", (void**)&fp_CFRelease);
+    ok = ok && load_symbol(g_cf_handle, "CFNumberCreate", (void**)&fp_CFNumberCreate);
 
     // Get kCFAllocatorDefault (it's a global variable)
     CFAllocatorRef* p_kCFAllocatorDefault = dlsym(g_cf_handle, "kCFAllocatorDefault");
@@ -304,6 +330,19 @@ bool vt_shim_init(void) {
                            (void**)&fp_VTDecompressionSessionWaitForAsynchronousFrames);
     ok = ok && load_symbol(g_vt_handle, "VTDecompressionSessionInvalidate",
                            (void**)&fp_VTDecompressionSessionInvalidate);
+    ok = ok && load_symbol(g_vt_handle, "VTSessionSetProperty",
+                           (void**)&fp_VTSessionSetProperty);
+
+    // Get kVTDecompressionPropertyKey_ThreadCount (it's a global CFString variable)
+    CFTypeRef* p_kVTDecompressionPropertyKey_ThreadCount = dlsym(g_vt_handle, "kVTDecompressionPropertyKey_ThreadCount");
+    if (p_kVTDecompressionPropertyKey_ThreadCount) {
+        g_kVTDecompressionPropertyKey_ThreadCount = *p_kVTDecompressionPropertyKey_ThreadCount;
+    } else {
+        // Not fatal - thread count configuration just won't work
+        if (debug) {
+            fprintf(stderr, "[VT Shim] Warning: kVTDecompressionPropertyKey_ThreadCount not found\n");
+        }
+    }
 
     if (!ok) {
         dlclose(g_vt_handle);
@@ -620,6 +659,58 @@ static void do_validate(void* context) {
         ctx->result.error_message = "Failed to create decoder session";
         ctx->result.frames_decoded = 0;
         return;
+    }
+
+    // Configure thread count for software decoding
+    // Note: This is a "suggestion" - hardware decoders may ignore it
+    if (g_kVTDecompressionPropertyKey_ThreadCount != NULL && 
+        fp_VTSessionSetProperty != NULL && 
+        fp_CFNumberCreate != NULL) {
+        
+        // Get CPU count
+        int cpu_count = 0;
+        size_t size = sizeof(cpu_count);
+        if (sysctlbyname("hw.ncpu", &cpu_count, &size, NULL, 0) == 0 && cpu_count > 0) {
+            // Use all available cores
+            int32_t thread_count = (int32_t)cpu_count;
+            
+            // Check for environment variable override
+            const char* env_threads = getenv("VALIDATE_VT_THREADS");
+            if (env_threads != NULL) {
+                int env_count = atoi(env_threads);
+                if (env_count > 0) {
+                    thread_count = (int32_t)env_count;
+                }
+            }
+            
+            CFNumberRef thread_count_ref = fp_CFNumberCreate(
+                g_kCFAllocatorDefault,
+                kCFNumberSInt32Type,
+                &thread_count
+            );
+            
+            if (thread_count_ref != NULL) {
+                OSStatus prop_status = fp_VTSessionSetProperty(
+                    session,
+                    g_kVTDecompressionPropertyKey_ThreadCount,
+                    thread_count_ref
+                );
+                
+                bool debug = getenv("VALIDATE_DEBUG") != NULL;
+                if (debug) {
+                    if (prop_status == noErr) {
+                        fprintf(stderr, "[VT Shim] Set thread count to %d\n", thread_count);
+                    } else if (prop_status == -12900) {
+                        // kVTPropertyNotSupportedErr - hardware decoder doesn't use CPU threads
+                        fprintf(stderr, "[VT Shim] Thread count not applicable (hardware decoder)\n");
+                    } else {
+                        fprintf(stderr, "[VT Shim] Failed to set thread count (status=%d)\n", (int)prop_status);
+                    }
+                }
+                
+                fp_CFRelease(thread_count_ref);
+            }
+        }
     }
 
     // Decode samples

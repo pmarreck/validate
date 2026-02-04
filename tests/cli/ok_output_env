@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_ok_env.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Create a valid file
+printf '\x89PNG\r\n\x1a\n' > "$tmpdir/valid_header.png"
+
+ok_path="$tmpdir/ok.out"
+
+# Test 1: OK_OUT redirects valid results to file
+# Use ground_truth_examples/png which has valid PNG files
+output=$(OK_OUT="$ok_path" ./zig-out/bin/validate ground_truth_examples/png 2>&1) || true
+
+# Verify OK_OUT file was created
+if [ ! -f "$ok_path" ]; then
+	printf 'FAIL: expected %s to exist\n' "$ok_path" >&2
+	exit 1
+fi
+
+# Verify OK is recorded in the file
+if ! grep -q "OK" "$ok_path"; then
+	printf 'FAIL: expected OK in %s\n' "$ok_path" >&2
+	printf 'file contents:\n%s\n' "$(cat "$ok_path")" >&2
+	exit 1
+fi
+
+# Verify no ANSI codes in the file (should be plain text for file output)
+if grep -q $'\033\[' "$ok_path"; then
+	printf 'FAIL: OK_OUT should not contain ANSI codes\n' >&2
+	printf 'file contents:\n%s\n' "$(cat "$ok_path")" >&2
+	exit 1
+fi
+
+# Test 2: Multi-output syntax - file AND stdout
+ok_multi="$tmpdir/ok_multi.out"
+output2=$(OK_OUT="$ok_multi:@stdout" ./zig-out/bin/validate ground_truth_examples/png 2>&1) || true
+
+# Both file and stdout should have received OK results
+if [ ! -f "$ok_multi" ]; then
+	printf 'FAIL: expected %s to exist with multi-output\n' "$ok_multi" >&2
+	exit 1
+fi
+
+if ! grep -q "OK" "$ok_multi"; then
+	printf 'FAIL: expected OK in multi-output file %s\n' "$ok_multi" >&2
+	exit 1
+fi
+
+# Output2 should also contain OK (from @stdout)
+if ! echo "$output2" | grep -q "OK"; then
+	printf 'FAIL: expected OK in stdout with multi-output\n' >&2
+	exit 1
+fi
+
+printf 'PASS: OK_OUT environment variable works correctly\n'
