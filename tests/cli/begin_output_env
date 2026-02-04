@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Test BEGIN_OUT environment variable - shows which files are starting validation
+# Useful for debugging crashes (shows "in-flight" files)
+
+set -euo pipefail
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_begin_env.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+begin_path="$tmpdir/begin.out"
+
+# Test 1: BEGIN_OUT captures file starts
+# Use a small directory with known files
+output=$(BEGIN_OUT="$begin_path" ./zig-out/bin/validate ground_truth_examples/png 2>&1) || true
+
+# Verify BEGIN_OUT file was created
+if [ ! -f "$begin_path" ]; then
+	printf 'FAIL: expected %s to exist\n' "$begin_path" >&2
+	exit 1
+fi
+
+# Verify BEGIN is recorded in the file
+if ! grep -q "BEGIN" "$begin_path"; then
+	printf 'FAIL: expected BEGIN in %s\n' "$begin_path" >&2
+	printf 'file contents:\n%s\n' "$(cat "$begin_path")" >&2
+	exit 1
+fi
+
+# Verify file paths are included
+if ! grep -q "\.png" "$begin_path"; then
+	printf 'FAIL: expected .png file paths in BEGIN output\n' >&2
+	printf 'file contents:\n%s\n' "$(cat "$begin_path")" >&2
+	exit 1
+fi
+
+# Test 2: BEGIN_OUT defaults to @null (muted) - should NOT appear in normal output
+normal_output=$(./zig-out/bin/validate ground_truth_examples/png 2>&1) || true
+
+if echo "$normal_output" | grep -q "^BEGIN"; then
+	printf 'FAIL: BEGIN should not appear in normal output (should default to @null)\n' >&2
+	exit 1
+fi
+
+# Test 3: BEGIN_OUT=@stdout shows BEGIN in stdout
+stdout_output=$(BEGIN_OUT="@stdout" ./zig-out/bin/validate ground_truth_examples/png 2>&1) || true
+
+if ! echo "$stdout_output" | grep -q "BEGIN"; then
+	printf 'FAIL: expected BEGIN in stdout when BEGIN_OUT=@stdout\n' >&2
+	printf 'stdout output:\n%s\n' "$stdout_output" >&2
+	exit 1
+fi
+
+printf 'PASS: BEGIN_OUT environment variable works correctly\n'

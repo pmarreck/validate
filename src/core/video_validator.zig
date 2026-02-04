@@ -233,14 +233,14 @@ const use_videotoolbox = builtin.os.tag == .macos;
 
 /// Check if VideoToolbox should be used at runtime.
 /// This allows disabling VideoToolbox via environment variable for testing.
-/// Set VALIDATE_DISABLE_VIDEOTOOLBOX=1 (or true/yes/on) to force the non-VideoToolbox code path.
+/// Set DISABLE_VIDEOTOOLBOX=1 (or true/yes/on) to force the non-VideoToolbox code path.
 fn shouldUseVideoToolbox() bool {
     if (comptime !use_videotoolbox) {
         return false;
     }
 
     // Check environment variable override
-    const override = std.process.getEnvVarOwned(std.heap.page_allocator, "VALIDATE_DISABLE_VIDEOTOOLBOX") catch {
+    const override = std.process.getEnvVarOwned(std.heap.page_allocator, "DISABLE_VIDEOTOOLBOX") catch {
         // No override, check if VideoToolbox is available
         return videotoolbox.isAvailable();
     };
@@ -457,6 +457,13 @@ pub fn validateHevcStream(data: []const u8, max_frames: u32) VideoValidationResu
     // libde265's internal threading has known stability issues that cause
     // heap corruption (crashes in context_model_table::decouple).
     _ = de265.de265_start_worker_threads(ctx, 1);
+
+    // Safety check: de265 API uses c_int for length, which is 32-bit signed.
+    // If data is larger than 2GB, we can't process it with this decoder.
+    const max_data_len: usize = @intCast(std.math.maxInt(c_int));
+    if (data.len > max_data_len) {
+        return VideoValidationResult.invalid("HEVC data too large for decoder (>2GB)", .hevc);
+    }
 
     // Push Annex B data to decoder (data contains start codes 0x00000001)
     const push_err = de265.de265_push_data(ctx, data.ptr, @intCast(data.len), 0, null);
@@ -1399,8 +1406,79 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         return VideoValidationResult.okByteValidated(.vp8, frames_validated);
     }
 
+    // ==========================================================================
+    // PLATFORM-SPECIFIC VIDEO DECODING FOR MKV
+    // ==========================================================================
+    // On macOS: Use VideoToolbox for H.264/HEVC/AV1 (complete profile support)
+    // On other platforms: Use built-in decoders with ffmpeg fallback
+    // ==========================================================================
+
+    if (shouldUseVideoToolbox() and (video_codec == .h264 or video_codec == .hevc or video_codec == .av1)) {
+        // Use VideoToolbox for hardware-accelerated decoding
+        if (video_track.codec_private) |codec_private| {
+            // Build samples array for VideoToolbox (it needs raw length-prefixed data)
+            var samples: std.ArrayListUnmanaged([]const u8) = .{};
+            defer {
+                for (samples.items) |sample| {
+                    allocator.free(sample);
+                }
+                samples.deinit(allocator);
+            }
+
+            for (all_frames) |kf| {
+                const sample_copy = allocator.dupe(u8, kf.data) catch continue;
+                samples.append(allocator, sample_copy) catch {
+                    allocator.free(sample_copy);
+                    continue;
+                };
+            }
+
+            if (samples.items.len > 0) {
+                const vt_result = switch (video_codec) {
+                    .h264 => videotoolbox.validateH264(allocator, codec_private, samples.items),
+                    .hevc => videotoolbox.validateHEVC(allocator, codec_private, samples.items),
+                    .av1 => videotoolbox.validateAV1(allocator, codec_private, samples.items),
+                    else => unreachable,
+                };
+
+                if (vt_result.valid) {
+                    var result = VideoValidationResult.okByteValidatedViaVideoToolbox(video_codec, vt_result.frames_decoded);
+                    result.byte_validated = byte_validated;
+                    result.mixed_nal_prefix = mixed_nal_prefix;
+                    return result;
+                } else {
+                    // VideoToolbox failed - fall through to ffmpeg fallback below
+                    const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
+                    if (debug_enabled) {
+                        std.debug.print("[VideoToolbox MKV] Decode failed: {s}, trying ffmpeg fallback\n", .{vt_result.error_message orelse "unknown error"});
+                    }
+
+                    // Try ffmpeg fallback
+                    if (isFfprobeAvailable()) {
+                        const ffprobe_result = validateWithFfprobe(allocator, path);
+                        if (ffprobe_result.valid) {
+                            var ffmpeg_result = VideoValidationResult.okByteValidatedViaFfmpeg(video_codec, ffprobe_result.frames_decoded);
+                            ffmpeg_result.byte_validated = byte_validated;
+                            ffmpeg_result.mixed_nal_prefix = mixed_nal_prefix;
+                            return ffmpeg_result;
+                        }
+                    }
+
+                    // Both VideoToolbox and ffmpeg failed
+                    return VideoValidationResult.invalid(
+                        vt_result.error_message orelse "VideoToolbox decode failed",
+                        video_codec,
+                    );
+                }
+            }
+        }
+    }
+
     // Add frame data to bitstream for other codecs
+    // Safety cap: 256MB max to avoid integer overflow in decoder APIs
+    const max_mkv_bitstream_bytes: usize = 256 * 1024 * 1024;
     for (all_frames) |kf| {
+        if (bitstream.items.len >= max_mkv_bitstream_bytes) break;
         if (video_codec == .av1) {
             // AV1 uses OBUs directly
             bitstream.appendSlice(allocator, kf.data) catch continue;

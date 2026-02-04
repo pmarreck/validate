@@ -70,6 +70,13 @@ pub fn validateH264Stream(data: []const u8, max_frames: u32) H264ValidationResul
     const guard = video_validator.VideoDecoderGuard.acquire();
     defer guard.release();
 
+    // Safety check: OpenH264 API uses c_int for length, which is 32-bit signed.
+    // If data is larger than 2GB, we can't process it with this decoder.
+    const max_data_len: usize = std.math.maxInt(c_int);
+    if (data.len > max_data_len) {
+        return H264ValidationResult.invalid("H.264 data too large for decoder (>2GB)");
+    }
+
     // Create decoder
     // OpenH264 uses C++ vtable pattern. In C:
     //   ISVCDecoder is typedef const ISVCDecoderVtbl* - single pointer to vtable

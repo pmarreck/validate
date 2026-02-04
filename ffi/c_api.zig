@@ -368,14 +368,61 @@ const BatchTask = struct {
     index: usize,
 };
 
+/// Global interrupt flag - set by validate_interrupt(), checked by workers
+var g_interrupt_flag = std.atomic.Value(bool).init(false);
+
+/// Signal batch validation to stop.
+/// Workers will finish their current file and then stop.
+/// Call this from signal handlers (async-signal-safe: just sets an atomic flag).
+export fn validate_interrupt() void {
+    g_interrupt_flag.store(true, .seq_cst);
+}
+
+/// Check if interrupt was requested.
+export fn validate_is_interrupted() bool {
+    return g_interrupt_flag.load(.seq_cst);
+}
+
+/// Reset interrupt flag (call before starting a new batch).
+export fn validate_reset_interrupt() void {
+    g_interrupt_flag.store(false, .seq_cst);
+}
+
+/// Begin callback type
+const BeginCallback = ?*const fn (
+    ctx: ?*anyopaque,
+    id: u32,
+    path: [*:0]const u8,
+) callconv(.c) void;
+
+/// Global begin callback - called when validation of a file starts
+var g_begin_callback: BeginCallback = null;
+var g_begin_callback_ctx: ?*anyopaque = null;
+
+/// Set the begin callback (called when validation starts for each file)
+export fn validate_set_begin_callback(callback: BeginCallback, ctx: ?*anyopaque) void {
+    g_begin_callback = callback;
+    g_begin_callback_ctx = ctx;
+}
+
 /// Execute a single validation task
 fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
+    // Check interrupt flag before starting
+    if (g_interrupt_flag.load(.seq_cst)) {
+        return; // Don't process this file, just exit
+    }
+
     const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return));
     const callback = ctx.callback orelse return;
 
     const path_ptr = ctx.paths[task.index] orelse return;
     const id = ctx.ids[task.index];
     const path_slice = std.mem.span(path_ptr);
+
+    // Call begin callback if set (useful for debugging crashes)
+    if (g_begin_callback) |begin_cb| {
+        begin_cb(g_begin_callback_ctx, id, path_ptr);
+    }
 
     // Validate
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);

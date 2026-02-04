@@ -137,6 +137,29 @@ typedef void (*validate_callback_t)(
 );
 
 /**
+ * Begin callback type - called when validation of a file starts.
+ * Useful for debugging crashes (shows which files are "in flight").
+ *
+ * @param ctx User-provided context
+ * @param id Caller-provided file ID
+ * @param path The file path about to be validated
+ */
+typedef void (*validate_begin_callback_t)(
+    void* ctx,
+    uint32_t id,
+    const char* path
+);
+
+/**
+ * Set a callback to be called when each file begins validation.
+ * Pass NULL to disable. The callback and context are stored globally.
+ *
+ * @param callback Called when validation starts (NULL to disable)
+ * @param ctx User context passed to callback
+ */
+void validate_set_begin_callback(validate_begin_callback_t callback, void* ctx);
+
+/**
  * Validate multiple files in parallel.
  *
  * @param paths Array of file paths (null-terminated UTF-8 strings)
@@ -155,6 +178,27 @@ validate_error_t validate_batch(
     validate_callback_t callback,
     void* ctx
 );
+
+/* ========== Interrupt Control ========== */
+
+/**
+ * Signal batch validation to stop gracefully.
+ * Workers will finish their current file and then stop.
+ * Safe to call from signal handlers (just sets an atomic flag).
+ */
+void validate_interrupt(void);
+
+/**
+ * Check if interrupt was requested.
+ * @return Non-zero if validate_interrupt() was called.
+ */
+int validate_is_interrupted(void);
+
+/**
+ * Reset interrupt flag.
+ * Call before starting a new batch to clear any previous interrupt.
+ */
+void validate_reset_interrupt(void);
 
 /* ========== Git Repository Validation ========== */
 
