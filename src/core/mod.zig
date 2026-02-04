@@ -83,7 +83,8 @@ pub const thread_pool = @import("thread_pool.zig");
 pub const heif_validator = @import("heif_validator.zig");
 pub const webp_validator = @import("webp_validator.zig");
 pub const libraw_validator = @import("libraw_validator.zig");
-pub const videotoolbox_validator = @import("videotoolbox_validator.zig");
+// VideoToolbox validator disabled - extern declarations cause dyld crashes
+// pub const videotoolbox_validator = @import("videotoolbox_validator.zig");
 
 // Version information
 pub const version = struct {

@@ -235,15 +235,35 @@ const use_videotoolbox = builtin.os.tag == .macos;
 /// This allows disabling VideoToolbox via environment variable for testing.
 /// Set VALIDATE_DISABLE_VIDEOTOOLBOX=1 (or true/yes/on) to force the non-VideoToolbox code path.
 fn shouldUseVideoToolbox() bool {
-    // VideoToolbox is disabled - crashes occur during framework symbol resolution
-    // when the videotoolbox_validator module is accessed, even before any VT
-    // functions are called. This appears to be a dyld/framework loading issue
-    // that happens at module import time, not at function call time.
-    // Using libde265/dav1d/ffmpeg fallback instead.
+    // VideoToolbox is disabled due to dyld symbol resolution issues.
+    // Even with a C shim, the extern declarations cause bus errors
+    // at library load time. Using libde265/dav1d/ffmpeg instead.
     return false;
 }
 
-const videotoolbox = if (use_videotoolbox) @import("videotoolbox_validator.zig") else struct {};
+// Don't import videotoolbox_validator - the extern declarations cause crashes
+// at library load time due to dyld symbol resolution issues on macOS.
+// The C shim (videotoolbox_shim.c) is preserved for future use when we
+// implement dynamic loading via dlopen/dlsym.
+const videotoolbox = struct {
+    // Define VideoCodec first to avoid ambiguous reference with outer VideoCodec
+    pub const VTVideoCodec = enum { h264, hevc, av1 };
+    pub const VTValidationResult = struct {
+        valid: bool,
+        frames_decoded: u32,
+        error_message: ?[]const u8,
+        codec: VTVideoCodec,
+    };
+    pub fn validateH264(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
+        return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox disabled", .codec = .h264 };
+    }
+    pub fn validateHEVC(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
+        return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox disabled", .codec = .hevc };
+    }
+    pub fn validateAV1(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
+        return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox disabled", .codec = .av1 };
+    }
+};
 
 // Import libde265 for HEVC decoding (non-macOS only)
 // On macOS, VideoToolbox handles HEVC with better profile support
@@ -976,7 +996,7 @@ fn validateMp4VideoWithVideoToolbox(
 
     // Call VideoToolbox validator
     std.debug.print("[VideoToolbox] About to call videotoolbox.validate* with {d} samples\n", .{samples.items.len});
-    const vt_codec: videotoolbox.VideoCodec = switch (video_codec) {
+    const vt_codec: videotoolbox.VTVideoCodec = switch (video_codec) {
         .h264 => .h264,
         .hevc => .hevc,
         .av1 => .av1,

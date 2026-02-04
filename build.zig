@@ -291,6 +291,9 @@ pub fn build(b: *std.Build) void {
     // Add libraw include path (for camera RAW validation)
     core_mod.addIncludePath(libraw_lib.getEmittedIncludeTree());
 
+    // Add VideoToolbox C shim include path (macOS only, for thread-safe VT access)
+    core_mod.addIncludePath(b.path("src/core"));
+
     // FFI module - C ABI exports
     const ffi_mod = b.addModule("validate_ffi", .{
         .root_source_file = b.path("ffi/c_api.zig"),
@@ -359,6 +362,13 @@ pub fn build(b: *std.Build) void {
         lib.linkFramework("CoreMedia");
         lib.linkFramework("CoreVideo");
         lib.linkFramework("CoreFoundation");
+
+        // Compile VideoToolbox C shim for thread-safe framework access
+        // This shim handles all VideoToolbox calls and dispatches them to the main thread
+        lib.addCSourceFile(.{
+            .file = b.path("src/core/videotoolbox_shim.c"),
+            .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
+        });
     }
 
     lib.installHeadersDirectory(b.path("ffi"), "", .{
