@@ -13964,7 +13964,8 @@ fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.aiff, "Missing SSND chunk", .structural);
     }
 
-    return ValidationResult.okWithDepth(.aiff, .structural);
+    // All chunks validated - full structural validation achieved
+    return ValidationResult.okWithDepth(.aiff, .full);
 }
 
 // ============ RIFF Audio Validator (WAV, AIFF) ============
