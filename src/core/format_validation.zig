@@ -10916,6 +10916,191 @@ fn validateGlbChunkReadable(file: std.fs.File, offset: u64, length: u32) Validat
     return ValidationResult.okWithDepth(.glb, .full);
 }
 
+
+/// Deep GLB validation - parses JSON and validates accessor/buffer relationships.
+fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const file = std.fs.cwd().openFile(path, .{}) catch {
+        return ValidationResult.invalid(.glb, "Failed to open GLB file");
+    };
+    defer file.close();
+
+    // Read GLB header
+    var header: [12]u8 = undefined;
+    _ = file.read(&header) catch return ValidationResult.invalid(.glb, "Failed to read header");
+
+    if (!std.mem.eql(u8, header[0..4], "glTF")) {
+        return ValidationResult.invalid(.glb, "Invalid GLB magic");
+    }
+
+    const total_length = std.mem.readInt(u32, header[8..12], .little);
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.glb, "Failed to get file size");
+
+    if (total_length > file_size) {
+        return ValidationResult.invalid(.glb, "GLB length exceeds file size");
+    }
+
+    // Find JSON chunk
+    var json_offset: u64 = 0;
+    var json_length: u32 = 0;
+    var bin_length: u32 = 0;
+    var position: u64 = 12;
+
+    while (position + 8 <= total_length) {
+        var chunk_header: [8]u8 = undefined;
+        file.seekTo(position) catch break;
+        _ = file.read(&chunk_header) catch break;
+
+        const chunk_length = std.mem.readInt(u32, chunk_header[0..4], .little);
+        const chunk_type = std.mem.readInt(u32, chunk_header[4..8], .little);
+
+        if (chunk_type == 0x4E4F534A) { // "JSON"
+            json_offset = position + 8;
+            json_length = chunk_length;
+        } else if (chunk_type == 0x004E4942) { // "BIN\0"
+            bin_length = chunk_length;
+        }
+
+        position += 8 + chunk_length;
+        position = (position + 3) & ~@as(u64, 3);
+    }
+
+    if (json_length == 0) {
+        return ValidationResult.invalid(.glb, "Missing JSON chunk");
+    }
+
+    // Read and parse JSON chunk (limit to 50MB)
+    if (json_length > 50 * 1024 * 1024) {
+        return ValidationResult.okWithDepthAndWarning(.glb, .structural, "JSON chunk too large to parse");
+    }
+
+    const json_data = allocator.alloc(u8, json_length) catch {
+        return ValidationResult.okWithDepth(.glb, .structural);
+    };
+    defer allocator.free(json_data);
+
+    file.seekTo(json_offset) catch return ValidationResult.invalid(.glb, "Failed to seek to JSON");
+    const read_len = file.readAll(json_data) catch return ValidationResult.invalid(.glb, "Failed to read JSON");
+    if (read_len < json_length) {
+        return ValidationResult.invalid(.glb, "Truncated JSON chunk");
+    }
+
+    // Parse JSON using std.json
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_data, .{}) catch {
+        return ValidationResult.invalid(.glb, "Invalid JSON in GLB");
+    };
+    defer parsed.deinit();
+
+    const root = parsed.value;
+    if (root != .object) {
+        return ValidationResult.invalid(.glb, "JSON root is not an object");
+    }
+
+    // Extract arrays
+    const buffers = root.object.get("buffers");
+    const buffer_views = root.object.get("bufferViews");
+    const accessors_val = root.object.get("accessors");
+
+    // Count elements
+    const buffer_count: usize = if (buffers) |b| if (b == .array) b.array.items.len else 0 else 0;
+    const buffer_view_count: usize = if (buffer_views) |bv| if (bv == .array) bv.array.items.len else 0 else 0;
+
+    // Validate buffer byte lengths
+    var total_buffer_bytes: u64 = 0;
+    if (buffers) |b| {
+        if (b == .array) {
+            for (b.array.items) |buffer| {
+                if (buffer == .object) {
+                    if (buffer.object.get("byteLength")) |bl| {
+                        if (bl == .integer) {
+                            const byte_len = bl.integer;
+                            if (byte_len < 0) {
+                                return ValidationResult.invalid(.glb, "Buffer has negative byteLength");
+                            }
+                            total_buffer_bytes += @intCast(byte_len);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // For GLB, first buffer should be embedded - verify BIN chunk is large enough
+    if (buffer_count > 0 and bin_length > 0) {
+        if (buffers) |b| {
+            if (b == .array and b.array.items.len > 0) {
+                const first_buffer = b.array.items[0];
+                if (first_buffer == .object) {
+                    if (first_buffer.object.get("byteLength")) |bl| {
+                        if (bl == .integer) {
+                            const expected_size: u64 = @intCast(bl.integer);
+                            if (bin_length < expected_size) {
+                                return ValidationResult.invalid(.glb, "BIN chunk smaller than first buffer byteLength");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Validate bufferView references
+    if (buffer_views) |bv| {
+        if (bv == .array) {
+            for (bv.array.items) |view| {
+                if (view == .object) {
+                    if (view.object.get("buffer")) |buf_idx| {
+                        if (buf_idx == .integer) {
+                            const idx: i64 = buf_idx.integer;
+                            if (idx < 0 or idx >= @as(i64, @intCast(buffer_count))) {
+                                return ValidationResult.invalid(.glb, "bufferView references invalid buffer index");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Validate accessor references
+    if (accessors_val) |acc| {
+        if (acc == .array) {
+            for (acc.array.items) |accessor| {
+                if (accessor == .object) {
+                    if (accessor.object.get("bufferView")) |bv_idx| {
+                        if (bv_idx == .integer) {
+                            const idx: i64 = bv_idx.integer;
+                            if (idx < 0 or idx >= @as(i64, @intCast(buffer_view_count))) {
+                                return ValidationResult.invalid(.glb, "accessor references invalid bufferView index");
+                            }
+                        }
+                    }
+                    // Accessors must have count > 0
+                    if (accessor.object.get("count")) |cnt| {
+                        if (cnt == .integer and cnt.integer <= 0) {
+                            return ValidationResult.invalid(.glb, "accessor has invalid count");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Validate required asset field
+    if (root.object.get("asset")) |asset| {
+        if (asset == .object) {
+            if (asset.object.get("version") == null) {
+                return ValidationResult.invalid(.glb, "Missing asset.version");
+            }
+        } else {
+            return ValidationResult.invalid(.glb, "asset is not an object");
+        }
+    } else {
+        return ValidationResult.invalid(.glb, "Missing required asset field");
+    }
+
+    return ValidationResult.okWithDepth(.glb, .full);
+}
+
 // ============ EML/MBOX Validators ============
 
 /// Base64 decoding table (RFC 4648)
@@ -20834,6 +21019,7 @@ pub const FormatValidator = struct {
             .avi => validateAviDeep(allocator, path),
             .heic, .avif => validateHeifDeep(allocator, path, initial_result.format),
             .exr => validateExrDeep(allocator, path),
+            .glb => validateGlbDeep(allocator, path),
             .doc, .xls, .ppt => validateOle2Deep(allocator, path, initial_result.format),
             .br => validateBrotliDeep(path),
             .mod => validateModDeep(path),
