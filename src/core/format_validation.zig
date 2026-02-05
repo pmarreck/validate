@@ -159,6 +159,9 @@ const wavpack_decoder = @import("wavpack_decoder.zig");
 // Import MP3 decode validator for full audio decode validation
 const mp3_decode_validator = @import("mp3_decode_validator.zig");
 
+// Import MP3 CRC validator for protected frame CRC verification
+const mp3_validator = @import("mp3_validator.zig");
+
 // Import JBIG2 decoder for standalone JBIG2 file validation
 const jbig2_decoder = @import("jbig2_decoder.zig");
 
@@ -19154,9 +19157,23 @@ fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.mp3, "No valid MP3 frames found", .structural);
     }
 
-    // If CRC frames exist, use CRC validation (full)
+    // If CRC frames exist, verify them with the dedicated MP3 CRC validator
     if (frames_with_crc > 0) {
-        return ValidationResult.okWithDepth(.mp3, .full);
+        const crc_result = mp3_validator.validateMp3CrcPath(path);
+        if (crc_result.valid) {
+            // CRCs verified successfully
+            return ValidationResult.okWithDepth(.mp3, .full);
+        } else if (crc_result.error_message) |msg| {
+            // CRC mismatch detected - corruption
+            return ValidationResult.invalidWithDepth(.mp3, msg, .full);
+        } else {
+            // Fallback to decode validation if CRC check had issues
+            const decode_result = mp3_decode_validator.validateMp3DecodePath(path);
+            if (decode_result.valid and decode_result.frames_decoded > 0) {
+                return ValidationResult.okWithDepth(.mp3, .full);
+            }
+            return ValidationResult.structuralOnly(.mp3);
+        }
     }
 
     // No CRC present - do full decode validation to catch corruption
