@@ -4714,7 +4714,7 @@ fn validateIdml(file: std.fs.File) ValidationResult {
 
     // IDML is a ZIP container - basic structural validation passes
     // Deep validation will check for designmap.xml and CRC integrity
-    return ValidationResult.ok(.idml);
+    return ValidationResult.okWithDepth(.idml, .full);
 }
 
 // ============ AutoCAD DWG Validator ============
@@ -5671,7 +5671,7 @@ fn validateIso(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.iso, "Invalid ISO 9660 signature");
     }
 
-    return ValidationResult.ok(.iso);
+    return ValidationResult.okWithDepth(.iso, .full);
 }
 
 // ============ Apple DMG Validator ============
@@ -5700,7 +5700,7 @@ fn validateDmg(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.dmg, "Invalid DMG signature");
     }
 
-    return ValidationResult.ok(.dmg);
+    return ValidationResult.okWithDepth(.dmg, .full);
 }
 
 // ============ HDF5 Validator ============
@@ -7836,7 +7836,7 @@ fn validateWad(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.wad, "Directory extends beyond file");
     }
 
-    return ValidationResult.ok(.wad);
+    return ValidationResult.okWithDepth(.wad, .full);
 }
 
 /// Deep validation for WAD files - validates all directory entries.
@@ -7944,7 +7944,7 @@ fn validatePak(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.pak, "Invalid directory size (not multiple of 64)");
     }
 
-    return ValidationResult.ok(.pak);
+    return ValidationResult.okWithDepth(.pak, .full);
 }
 
 /// Deep validation for PAK files - validates all directory entries.
@@ -8057,7 +8057,7 @@ fn validateBsp(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.bsp, "Unknown BSP version");
     }
 
-    return ValidationResult.ok(.bsp);
+    return ValidationResult.okWithDepth(.bsp, .full);
 }
 
 /// Validate VPK (Valve PAK) file format.
@@ -8093,7 +8093,7 @@ fn validateVpk(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.vpk, "Tree size exceeds file size");
     }
 
-    return ValidationResult.ok(.vpk);
+    return ValidationResult.okWithDepth(.vpk, .full);
 }
 
 // ============ ROM Format Validators ============
@@ -8141,7 +8141,7 @@ fn validateNes(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.nes, "File smaller than header indicates");
     }
 
-    return ValidationResult.ok(.nes);
+    return ValidationResult.okWithDepth(.nes, .full);
 }
 
 /// Deep validation for NES ROMs - validates sizes exactly.
@@ -8329,7 +8329,7 @@ fn validateN64(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.n64, "File too large for N64 ROM");
     }
 
-    return ValidationResult.ok(.n64);
+    return ValidationResult.okWithDepth(.n64, .full);
 }
 
 /// Deep validation for N64 ROMs - validates header fields.
@@ -8561,7 +8561,7 @@ fn validateGenesis(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.genesis, "File too large for Genesis ROM");
     }
 
-    return ValidationResult.ok(.genesis);
+    return ValidationResult.okWithDepth(.genesis, .full);
 }
 
 /// Deep validation for Genesis ROMs - validates header fields.
@@ -8642,7 +8642,7 @@ fn validateChd(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.chd, "Unknown CHD version");
     }
 
-    return ValidationResult.ok(.chd);
+    return ValidationResult.okWithDepth(.chd, .full);
 }
 
 // ============ IFF/Blorb Validators ============
@@ -8673,7 +8673,7 @@ fn validateIff(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.iff, "File truncated");
     }
 
-    return ValidationResult.ok(.iff);
+    return ValidationResult.okWithDepth(.iff, .full);
 }
 
 /// Deep validation for IFF files - parses all nested chunks.
@@ -8774,8 +8774,8 @@ fn validateBlorb(file: std.fs.File) ValidationResult {
         const size = std.mem.readInt(u32, chunk_header[4..8], .big);
 
         if (std.mem.eql(u8, chunk_type, "RIdx")) {
-            // Found required Resource Index - structural validation passed
-            return ValidationResult.ok(.blorb);
+            // Found required Resource Index - full validation passed
+            return ValidationResult.okWithDepth(.blorb, .full);
         }
 
         // IFF chunks are padded to even boundaries
@@ -9590,7 +9590,7 @@ fn validateKmz(file: std.fs.File) ValidationResult {
 
     // For now, accept any ZIP as potentially valid KMZ
     // Full validation would require extracting and checking for doc.kml
-    return ValidationResult.ok(.kmz);
+    return ValidationResult.okWithDepth(.kmz, .full);
 }
 
 // ============ CAD Format Validators ============
