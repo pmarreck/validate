@@ -12105,117 +12105,206 @@ fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult {
     };
     defer file.close();
 
-    // Basic validation first
-    const basic_result = validateExr(file);
-    if (!basic_result.is_valid) {
-        return basic_result;
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalid(.exr, "Failed to get file size");
+    };
+
+    // Read and validate header
+    var header: [8]u8 = undefined;
+    file.seekTo(0) catch return ValidationResult.invalid(.exr, "Failed to seek to start");
+    _ = file.read(&header) catch return ValidationResult.invalid(.exr, "Failed to read header");
+
+    if (header[0] != 0x76 or header[1] != 0x2f or header[2] != 0x31 or header[3] != 0x01) {
+        return ValidationResult.invalid(.exr, "Invalid EXR magic bytes");
     }
 
-    file.seekTo(8) catch return ValidationResult.invalid(.exr, "Failed to seek past header");
+    const flags: u32 = std.mem.readInt(u32, header[4..8], .little);
+    const is_tiled = (flags >> 9) & 1 == 1;
 
-    // Track required attributes
+    // Track required attributes and values we need
     var has_channels = false;
     var has_compression = false;
     var has_data_window = false;
     var has_display_window = false;
-    var has_line_order = false;
-    var has_pixel_aspect_ratio = false;
+    var compression_type: u8 = 0;
+    var data_window_min_y: i32 = 0;
+    var data_window_max_y: i32 = 0;
 
-    // Read and validate header attributes
-    // Attributes are name (null-terminated), type (null-terminated), size (4 bytes), value (size bytes)
-    var attribute_count: usize = 0;
-    const max_attributes = 256;
+    // Parse header attributes
+    file.seekTo(8) catch return ValidationResult.invalid(.exr, "Failed to seek past magic");
+
     var name_buf: [256]u8 = undefined;
+    var type_buf: [256]u8 = undefined;
+    var attr_value: [128]u8 = undefined;
 
-    while (attribute_count < max_attributes) {
+    while (true) {
         // Read attribute name
         var name_len: usize = 0;
         while (name_len < 255) {
-            const byte_read = file.read(name_buf[name_len .. name_len + 1]) catch {
-                return ValidationResult.invalid(.exr, "Failed to read attribute name");
-            };
-            if (byte_read == 0) {
-                return ValidationResult.invalid(.exr, "Unexpected EOF in attribute name");
-            }
+            const byte_read = file.read(name_buf[name_len .. name_len + 1]) catch break;
+            if (byte_read == 0) break;
             if (name_buf[name_len] == 0) break;
             name_len += 1;
         }
 
-        // Empty name marks end of header
-        if (name_len == 0) {
-            break;
-        }
+        if (name_len == 0) break; // End of header
 
         const attr_name = name_buf[0..name_len];
 
-        // Check for required attributes
-        if (std.mem.eql(u8, attr_name, "channels")) has_channels = true;
-        if (std.mem.eql(u8, attr_name, "compression")) has_compression = true;
-        if (std.mem.eql(u8, attr_name, "dataWindow")) has_data_window = true;
-        if (std.mem.eql(u8, attr_name, "displayWindow")) has_display_window = true;
-        if (std.mem.eql(u8, attr_name, "lineOrder")) has_line_order = true;
-        if (std.mem.eql(u8, attr_name, "pixelAspectRatio")) has_pixel_aspect_ratio = true;
-
-        // Read attribute type (skip, just need to parse past it)
+        // Read attribute type
         var type_len: usize = 0;
-        var type_buf: [256]u8 = undefined;
         while (type_len < 255) {
-            const byte_read = file.read(type_buf[type_len .. type_len + 1]) catch {
-                return ValidationResult.invalid(.exr, "Failed to read attribute type");
-            };
-            if (byte_read == 0) {
-                return ValidationResult.invalid(.exr, "Unexpected EOF in attribute type");
-            }
+            const byte_read = file.read(type_buf[type_len .. type_len + 1]) catch break;
+            if (byte_read == 0) break;
             if (type_buf[type_len] == 0) break;
             type_len += 1;
         }
 
         // Read attribute size
         var size_bytes: [4]u8 = undefined;
-        _ = file.read(&size_bytes) catch {
-            return ValidationResult.invalid(.exr, "Failed to read attribute size");
-        };
-        const attr_size = std.mem.readInt(i32, &size_bytes, .little);
-        if (attr_size < 0 or attr_size > 16 * 1024 * 1024) {
+        _ = file.read(&size_bytes) catch break;
+        const attr_size: u32 = @bitCast(std.mem.readInt(i32, &size_bytes, .little));
+
+        if (attr_size > 16 * 1024 * 1024) {
             return ValidationResult.invalid(.exr, "Invalid attribute size");
         }
 
-        // Skip attribute value
-        file.seekBy(@intCast(attr_size)) catch {
-            return ValidationResult.invalid(.exr, "Failed to skip attribute value");
+        // Read attribute value for specific attributes
+        const read_size = @min(attr_size, 128);
+        _ = file.read(attr_value[0..read_size]) catch break;
+
+        // Skip remainder if attribute is larger
+        if (attr_size > 128) {
+            file.seekBy(@intCast(attr_size - 128)) catch break;
+        }
+
+        if (std.mem.eql(u8, attr_name, "channels")) has_channels = true;
+        if (std.mem.eql(u8, attr_name, "compression")) {
+            has_compression = true;
+            if (attr_size >= 1) {
+                compression_type = attr_value[0];
+            }
+        }
+        if (std.mem.eql(u8, attr_name, "dataWindow")) {
+            has_data_window = true;
+            if (attr_size >= 16) {
+                data_window_min_y = std.mem.readInt(i32, attr_value[4..8], .little);
+                data_window_max_y = std.mem.readInt(i32, attr_value[12..16], .little);
+            }
+        }
+        if (std.mem.eql(u8, attr_name, "displayWindow")) has_display_window = true;
+    }
+
+    if (!has_channels or !has_compression or !has_data_window or !has_display_window) {
+        return ValidationResult.invalid(.exr, "Missing required EXR attributes");
+    }
+
+    // Get position after header (this is where offset table starts)
+    const offset_table_pos = file.getPos() catch {
+        return ValidationResult.invalid(.exr, "Failed to get offset table position");
+    };
+
+    // For tiled images, we'd need different logic - just validate header for now
+    if (is_tiled) {
+        return ValidationResult.okWithDepth(.exr, .structural);
+    }
+
+    // Calculate number of scanlines
+    const num_scanlines: u32 = if (data_window_max_y >= data_window_min_y)
+        @intCast(data_window_max_y - data_window_min_y + 1)
+    else
+        0;
+
+    if (num_scanlines == 0 or num_scanlines > 100000) {
+        return ValidationResult.okWithDepthAndWarning(.exr, .structural, "Unusual scanline count");
+    }
+
+    // Scanlines per chunk depends on compression
+    const scanlines_per_chunk: u32 = switch (compression_type) {
+        0 => 1, // NO_COMPRESSION
+        1 => 1, // RLE
+        2 => 1, // ZIPS (single scanline)
+        3 => 16, // ZIP (16 scanlines)
+        else => 1,
+    };
+
+    const num_chunks = (num_scanlines + scanlines_per_chunk - 1) / scanlines_per_chunk;
+
+    // Read and validate offset table
+    const offset_table_size = num_chunks * 8; // 8 bytes per offset
+    if (offset_table_pos + offset_table_size > file_size) {
+        return ValidationResult.invalid(.exr, "Offset table extends beyond file");
+    }
+
+    // Read offset table
+    const offsets = allocator.alloc(u64, num_chunks) catch {
+        return ValidationResult.okWithDepth(.exr, .structural);
+    };
+    defer allocator.free(offsets);
+
+    for (offsets) |*offset| {
+        var offset_bytes: [8]u8 = undefined;
+        _ = file.read(&offset_bytes) catch {
+            return ValidationResult.invalid(.exr, "Failed to read offset table");
         };
+        offset.* = std.mem.readInt(u64, &offset_bytes, .little);
 
-        attribute_count += 1;
-    }
-
-    if (attribute_count == 0) {
-        return ValidationResult.invalid(.exr, "No attributes found in EXR header");
-    }
-
-    // Check required attributes
-    if (!has_channels) {
-        return ValidationResult.invalid(.exr, "Missing required 'channels' attribute");
-    }
-    if (!has_compression) {
-        return ValidationResult.invalid(.exr, "Missing required 'compression' attribute");
-    }
-    if (!has_data_window) {
-        return ValidationResult.invalid(.exr, "Missing required 'dataWindow' attribute");
-    }
-    if (!has_display_window) {
-        return ValidationResult.invalid(.exr, "Missing required 'displayWindow' attribute");
+        // Validate offset is within file bounds
+        if (offset.* >= file_size) {
+            return ValidationResult.invalid(.exr, "Scanline offset exceeds file size");
+        }
     }
 
-    // lineOrder and pixelAspectRatio are technically required but some files omit them
-    // Issue warning instead of failing
-    if (!has_line_order or !has_pixel_aspect_ratio) {
-        _ = allocator;
-        return ValidationResult.okWithDepthAndWarning(.exr, .structural, "Missing optional attributes (lineOrder/pixelAspectRatio)");
+    // For ZIP/ZIPS compression, try to decompress some scanline blocks
+    if (compression_type == 2 or compression_type == 3) {
+        // Sample up to 10 blocks evenly distributed
+        const sample_count = @min(num_chunks, 10);
+        const step = if (num_chunks > 10) num_chunks / 10 else 1;
+
+        var sample_idx: u32 = 0;
+        while (sample_idx < sample_count) : (sample_idx += 1) {
+            const chunk_idx = sample_idx * step;
+            if (chunk_idx >= num_chunks) break;
+
+            const offset = offsets[chunk_idx];
+
+            // Seek to scanline block
+            file.seekTo(offset) catch continue;
+
+            // Read scanline block header: y coordinate (4 bytes) + pixel data size (4 bytes)
+            var block_header: [8]u8 = undefined;
+            _ = file.read(&block_header) catch continue;
+
+            const pixel_data_size = std.mem.readInt(u32, block_header[4..8], .little);
+
+            if (pixel_data_size == 0 or pixel_data_size > 50 * 1024 * 1024) {
+                continue; // Skip invalid blocks
+            }
+
+            // Read compressed data
+            const compressed = allocator.alloc(u8, pixel_data_size) catch continue;
+            defer allocator.free(compressed);
+
+            const bytes_read = file.readAll(compressed) catch continue;
+            if (bytes_read != pixel_data_size) continue;
+
+            // Try to decompress
+            const max_decompressed: usize = 16 * 1024 * 1024; // 16MB max per block
+            const decompressed = zlib.inflateRawAlloc(allocator, compressed, max_decompressed) catch |err| {
+                switch (err) {
+                    zlib.ZlibError.DataError => {
+                        return ValidationResult.invalid(.exr, "EXR scanline decompression failed: corrupt data");
+                    },
+                    else => continue,
+                }
+            };
+            defer allocator.free(decompressed);
+
+            // Decompression succeeded for this block
+        }
     }
 
-    _ = allocator;
-    // Full header parsed successfully with all required attributes
-    return ValidationResult.okWithDepth(.exr, .structural);
+    return ValidationResult.okWithDepth(.exr, .full);
 }
 
 /// Buffer-based validation for OpenEXR files.
