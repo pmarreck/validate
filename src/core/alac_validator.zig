@@ -129,48 +129,48 @@ pub const AlacDecoder = struct {
     pub fn decodeFrame(self: *AlacDecoder, frame_data: []const u8, pcm_out: []i32) ?u32 {
         var reader = BitReader.init(frame_data);
 
-        // Frame header
-        _ = reader.readBits(3) orelse return null; // unused
-        const output_samples_raw = reader.readBits(12) orelse return null;
+        // ALAC packet header (per Apple reference):
+        // 3 bits: tag (element type - SCE=0, CPE=1, etc.)
+        // 4 bits: elementInstanceTag
+        // 12 bits: unusedHeader (must be 0)
+        // 4 bits: headerByte containing:
+        //   - bit 3: partialFrame
+        //   - bits 2-1: bytesShifted
+        //   - bit 0: escapeFlag
 
-        // Special case: 12 bits all 1s means use config.frame_length
-        const output_samples: u32 = if (output_samples_raw == 0xFFF)
-            self.config.frame_length
-        else
-            output_samples_raw;
+        const tag = reader.readBits(3) orelse return null;
+        _ = reader.readBits(4) orelse return null; // elementInstanceTag
+        const unused_header = reader.readBits(12) orelse return null;
+        if (unused_header != 0) return null; // Must be zero
+
+        const header_byte = reader.readBits(4) orelse return null;
+        const partial_frame = (header_byte >> 3) & 1;
+        const bytes_shifted = (header_byte >> 1) & 3;
+        const escape_flag = header_byte & 1;
+
+        // Determine number of output samples
+        var output_samples: u32 = self.config.frame_length;
+        if (partial_frame != 0) {
+            // Read 32-bit sample count (two 16-bit reads)
+            const high = reader.readBits(16) orelse return null;
+            const low = reader.readBits(16) orelse return null;
+            output_samples = (high << 16) | low;
+        }
 
         if (output_samples == 0 or output_samples > self.config.frame_length) {
             return null;
         }
 
-        _ = reader.readBits(1) orelse return null; // compatible version (0)
-
-        const uncompressed_flag = reader.readBit() orelse return null;
         const num_channels = self.config.num_channels;
+        _ = tag; // Validate tag matches expected channel configuration
+        _ = bytes_shifted; // Used for 20/24/32 bit audio
 
-        if (uncompressed_flag == 1) {
+        if (escape_flag == 1) {
             // Uncompressed frame - raw PCM samples
             return self.decodeUncompressed(&reader, output_samples, pcm_out);
         }
 
-        // Compressed frame
-        _ = reader.readBits(2) orelse return null; // element_type (ignored)
-        _ = reader.readBits(4) orelse return null; // unused
-
-        const has_size = reader.readBit() orelse return null;
-        const has_verbatim_info = reader.readBit() orelse return null;
-
-        // Read optional size field
-        if (has_size == 1) {
-            _ = reader.readBits(32) orelse return null; // output_bytes
-        }
-
-        // Read optional verbatim info (for version compatibility)
-        if (has_verbatim_info == 1) {
-            _ = reader.readBits(16) orelse return null;
-        }
-
-        // Decode channels
+        // Compressed frame - decode channels
         if (num_channels == 1) {
             // Mono
             if (!self.decodeChannel(&reader, output_samples, self.mix_buffer_l)) {
@@ -271,9 +271,14 @@ pub const AlacDecoder = struct {
 
         var i: u32 = 0;
         while (i < samples) {
-            // Calculate k from history
-            var k: u32 = 31 - @clz(history >> 9) + @as(u32, k_modifier);
-            if (k > 31) k = 31;
+            // Calculate k from history using Apple ALAC formula
+            // k = min(31, max(0, kb - leading_zeros(history) + extra_shift))
+            // where kb = k_modifier, and leading_zeros is 32 for history=0
+            const hist_shift = history >> 9;
+            const k: u32 = if (hist_shift == 0)
+                @as(u32, k_modifier) // When history is small, use just the modifier
+            else
+                @min(31, 31 -| @clz(hist_shift) +| @as(u32, k_modifier));
 
             // Read unary prefix (count of zeros)
             const q = reader.readUnaryMax(65535) orelse return false;

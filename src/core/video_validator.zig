@@ -405,7 +405,8 @@ pub const VideoValidationResult = struct {
 	validated_via_videotoolbox: bool = false,
 
 	pub fn okDecoded(codec: VideoCodec, frames: u32) VideoValidationResult {
-		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = false, .mixed_nal_prefix = false };
+		// Decoding frames means bytes were validated - decoder would fail on corrupt data
+		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = frames > 0, .mixed_nal_prefix = false };
 	}
 
 	pub fn okByteValidated(codec: VideoCodec, frames: u32) VideoValidationResult {
@@ -1365,6 +1366,8 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
     }
 
     // For Theora, validate packets
+    // NOTE: We only do structural validation (header parsing, frame counting).
+    // Full Theora bitstream decoding requires libtheora which is not integrated.
     if (video_codec == .theora) {
         // Theora in MKV has headers in codec_private
         if (video_track.codec_private) |codec_private| {
@@ -1373,7 +1376,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
                 return VideoValidationResult.invalid("Invalid Theora info header", .theora);
             };
 
-            // Count frames from collected frames
+            // Count frames from collected frames (structural check only - not full decode)
             var keyframe_count: u32 = 0;
             var inter_count: u32 = 0;
             for (all_frames) |kf| {
@@ -1387,15 +1390,23 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
             }
 
             _ = info;
-            return VideoValidationResult.okByteValidated(.theora, keyframe_count + inter_count);
+            // Theora frames were counted but NOT decoded (no libtheora integration)
+            // Return valid but explicitly NOT byte_validated
+            return .{
+                .valid = true,
+                .error_message = null,
+                .codec = .theora,
+                .frames_decoded = keyframe_count + inter_count,
+                .byte_validated = false, // Only structural - no actual decode
+            };
         } else {
             return VideoValidationResult.invalid("No Theora codec_private", .theora);
         }
     }
 
     // For VP8, use deep validation with boolean decoder parsing
-    // Note: libvpx full decode not available (built with VP9 only)
-    // The pure Zig boolean decoder validates arithmetic-coded header structure
+    // Note: libvpx full decode not available - boolean decoder parses header structure
+    // but does NOT decode DCT coefficients or reconstruct pixels
     if (video_codec == .vp8) {
         var frames_validated: u32 = 0;
         for (all_frames) |kf| {
@@ -1409,7 +1420,14 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         if (frames_validated == 0) {
             return VideoValidationResult.invalid("No VP8 frames validated", .vp8);
         }
-        return VideoValidationResult.okByteValidated(.vp8, frames_validated);
+        // NOT byte_validated: only header parsing, no DCT coefficient decode
+        return .{
+            .valid = true,
+            .error_message = null,
+            .codec = .vp8,
+            .frames_decoded = frames_validated,
+            .byte_validated = false, // Header-only validation, no pixel decode
+        };
     }
 
     // ==========================================================================
@@ -2081,7 +2099,8 @@ pub fn validateH264Stream(data: []const u8, max_frames: u32) VideoValidationResu
         .error_message = result.error_message,
         .codec = .h264,
         .frames_decoded = result.frames_decoded,
-        .byte_validated = false,
+        // Only byte-validated if we actually decoded frames
+        .byte_validated = result.valid and result.frames_decoded > 0,
     };
 }
 

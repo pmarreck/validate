@@ -831,8 +831,8 @@ pub const MatroskaParser = struct {
             }
         }
 
-        // Only return video tracks
-        if (track_type != @intFromEnum(TrackType.video)) {
+        // Return video and audio tracks (filter out subtitle, logo, complex, etc.)
+        if (track_type != @intFromEnum(TrackType.video) and track_type != @intFromEnum(TrackType.audio)) {
             result.deinit(); // Clean up any allocated codec_private
             return null;
         }
@@ -1106,6 +1106,152 @@ pub const MatroskaParser = struct {
 
         const block = block_element orelse return 0;
         return self.walkBlockFrames(block, target_track, cluster_timestamp, combine_laced_frames, ctx, consumer);
+    }
+
+    /// Result of frame collection with parsing status
+    pub const FrameCollectionResult = struct {
+        frames: []KeyframeData,
+        completed_normally: bool, // True if parsing reached end of segment
+        position_reached: u64, // Position where parsing stopped
+        segment_end: u64, // Expected end position
+
+        pub fn deinit(self: *FrameCollectionResult, allocator: Allocator) void {
+            for (self.frames) |*f| {
+                @constCast(f).deinit();
+            }
+            allocator.free(self.frames);
+        }
+    };
+
+    /// Collect ALL frames (not just keyframes) into a list for full validation.
+    /// Returns a result struct with frames and parsing status.
+    pub fn collectAllFramesWithStatus(
+        self: *MatroskaParser,
+        target_track_number: u64,
+        max_frames: usize,
+    ) ?FrameCollectionResult {
+        const CollectContext = struct {
+            allocator: Allocator,
+            frames: *std.ArrayListUnmanaged(KeyframeData),
+        };
+
+        const Collector = struct {
+            pub fn consume(ctx: ?*anyopaque, frame: []const u8, timestamp: i64) bool {
+                const collect: *CollectContext = @ptrCast(@alignCast(ctx.?));
+                const data = collect.allocator.alloc(u8, frame.len) catch return false;
+                std.mem.copyForwards(u8, data, frame);
+                const kf = KeyframeData{
+                    .data = data,
+                    .timestamp = timestamp,
+                    .allocator = collect.allocator,
+                };
+                collect.frames.append(collect.allocator, kf) catch {
+                    collect.allocator.free(data);
+                    return false;
+                };
+                return true;
+            }
+        };
+
+        if (self.segment_offset == 0) {
+            if (!self.findSegment()) return null;
+        }
+
+        _ = self.reader.seekTo(self.segment_offset);
+        const segment_end = if (self.segment_size) |s|
+            self.segment_offset + s
+        else
+            self.reader.file_size;
+
+        var frames: std.ArrayListUnmanaged(KeyframeData) = .{};
+        errdefer {
+            for (frames.items) |*f| f.deinit();
+            frames.deinit(self.allocator);
+        }
+        var collect_ctx = CollectContext{
+            .allocator = self.allocator,
+            .frames = &frames,
+        };
+
+        var current_cluster_timestamp: i64 = 0;
+        var parsing_error = false;
+
+        while ((self.reader.getPos() orelse segment_end) < segment_end and frames.items.len < max_frames) {
+            const element = self.reader.readElementHeader() orelse {
+                parsing_error = true;
+                break;
+            };
+
+            if (element.id == Segment_ID.Cluster) {
+                const cluster_end = element.data_offset + (element.size orelse {
+                    parsing_error = true;
+                    break;
+                });
+                _ = self.reader.seekTo(element.data_offset);
+
+                while ((self.reader.getPos() orelse cluster_end) < cluster_end and frames.items.len < max_frames) {
+                    const cluster_child = self.reader.readElementHeader() orelse {
+                        parsing_error = true;
+                        break;
+                    };
+
+                    switch (cluster_child.id) {
+                        Cluster_ID.Timestamp => {
+                            current_cluster_timestamp = @intCast(self.reader.readElementUint(cluster_child) orelse 0);
+                        },
+                        Cluster_ID.SimpleBlock => {
+                            if (self.walkBlockFrames(
+                                cluster_child,
+                                target_track_number,
+                                current_cluster_timestamp,
+                                false,
+                                &collect_ctx,
+                                Collector.consume,
+                            ) == null) {
+                                parsing_error = true;
+                                break;
+                            }
+                        },
+                        Cluster_ID.BlockGroup => {
+                            if (self.walkBlockGroupFrames(
+                                cluster_child,
+                                target_track_number,
+                                current_cluster_timestamp,
+                                false,
+                                &collect_ctx,
+                                Collector.consume,
+                            ) == null) {
+                                parsing_error = true;
+                                break;
+                            }
+                        },
+                        else => {
+                            _ = self.reader.skipElement(cluster_child);
+                        },
+                    }
+                }
+                if (parsing_error) break;
+                // Move to end of cluster after processing
+                _ = self.reader.seekTo(cluster_end);
+            } else {
+                _ = self.reader.skipElement(element);
+            }
+        }
+
+        const final_pos = self.reader.getPos() orelse 0;
+        const completed = !parsing_error and (final_pos >= segment_end or frames.items.len >= max_frames);
+
+        if (frames.items.len == 0) {
+            frames.deinit(self.allocator);
+            return null;
+        }
+
+        return FrameCollectionResult{
+            .frames = frames.toOwnedSlice(self.allocator) catch return null,
+            .completed_normally = completed,
+            .position_reached = final_pos,
+            .segment_end = segment_end,
+        };
     }
 
     /// Collect ALL frames (not just keyframes) into a list for full validation.

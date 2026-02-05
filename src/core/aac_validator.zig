@@ -186,6 +186,85 @@ pub fn validateAacRaw(data: []const u8, asc: []const u8) AacDecodeResult {
     return decodeAacBuffer(data, &decoder);
 }
 
+/// Validate raw AAC access units from MP4/MOV containers.
+/// Each access unit is decoded individually (required for TT_MP4_RAW).
+/// data: concatenated access unit data
+/// au_sizes: size of each access unit
+/// asc: Audio Specific Config from esds box
+pub fn validateAacAccessUnits(data: []const u8, au_sizes: []const u32, asc: []const u8) AacDecodeResult {
+    var decoder = AacDecoder.init(.raw) orelse {
+        return AacDecodeResult.invalid("Failed to create AAC decoder", 0);
+    };
+    defer decoder.deinit();
+
+    // Configure with ASC
+    if (!decoder.configureRaw(asc)) {
+        return AacDecodeResult.invalid("Failed to configure AAC decoder with ASC", 0);
+    }
+
+    var frames_decoded: u32 = 0;
+    var samples_decoded: u64 = 0;
+    var channels: u8 = 0;
+    var sample_rate: u32 = 0;
+    var pcm: [MAX_PCM_BUFFER_SIZE]i16 = undefined;
+
+    var offset: usize = 0;
+    for (au_sizes) |au_size| {
+        if (offset + au_size > data.len) {
+            break; // Not enough data
+        }
+
+        const au_data = data[offset..][0..au_size];
+        offset += au_size;
+
+        // Fill decoder with this single access unit
+        const consumed = decoder.fill(au_data) orelse {
+            return AacDecodeResult.invalid("Failed to fill decoder buffer", frames_decoded);
+        };
+        if (consumed != au_size) {
+            // Decoder didn't accept all data - might be internal buffer issue
+            continue;
+        }
+
+        // Decode the access unit
+        const result = decoder.decodeFrame(&pcm);
+        switch (result) {
+            .success => |info| {
+                frames_decoded += 1;
+                samples_decoded += info.samples;
+                if (channels == 0) {
+                    channels = info.channels;
+                    sample_rate = info.sample_rate;
+                }
+            },
+            .need_more_bits => {
+                // Access unit incomplete? This shouldn't happen for valid data
+                continue;
+            },
+            .sync_error => {
+                // Skip this frame, try next
+                continue;
+            },
+            .decode_error => |err| {
+                if (err == aac.AAC_DEC_CRC_ERROR) {
+                    return AacDecodeResult.invalid("AAC CRC error", frames_decoded);
+                }
+                if (err == aac.AAC_DEC_DECODE_FRAME_ERROR) {
+                    return AacDecodeResult.invalid("AAC frame decode error", frames_decoded);
+                }
+                // Other errors, try to continue
+                continue;
+            },
+        }
+    }
+
+    if (frames_decoded == 0) {
+        return AacDecodeResult.invalid("No valid AAC frames found", 0);
+    }
+
+    return AacDecodeResult.ok(frames_decoded, samples_decoded, channels, sample_rate);
+}
+
 /// Internal: decode AAC stream from file
 fn decodeAacStream(file: std.fs.File, decoder: *AacDecoder) AacDecodeResult {
     var frames_decoded: u32 = 0;

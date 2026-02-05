@@ -120,6 +120,9 @@ const libraw_validator = @import("libraw_validator.zig");
 // Import video validator for video stream deep validation (MP4/MKV with HEVC/AV1)
 const video_validator = @import("video_validator.zig");
 
+// Import video+audio validator for combined media validation
+const video_audio_validator = @import("video_audio_validator.zig");
+
 // Import bzip2 decompressor for CRC verification
 const bzip2 = @import("bzip2.zig");
 
@@ -4007,7 +4010,9 @@ fn validateRar4Headers(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.rar, "No valid RAR4 headers found");
     }
 
-    return ValidationResult.okWithDepth(.rar, .full);
+    // Note: Only header CRCs are verified, NOT file content CRCs
+    // Full validation would require decompressing and verifying each file's CRC32
+    return ValidationResult.okWithDepthAndWarning(.rar, .structural, "header CRCs verified, file content CRCs not checked");
 }
 
 /// Read RAR5 variable-length integer
@@ -4125,7 +4130,9 @@ fn validateRar5Headers(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.rar, "No valid RAR5 headers found");
     }
 
-    return ValidationResult.okWithDepth(.rar, .full);
+    // Note: Only header CRCs are verified, NOT file content CRCs
+    // Full validation would require decompressing and verifying each file's CRC32
+    return ValidationResult.okWithDepthAndWarning(.rar, .structural, "header CRCs verified, file content CRCs not checked");
 }
 
 // ============ FL Studio Validator ============
@@ -14142,7 +14149,7 @@ fn validateOggDeep(allocator: Allocator, path: []const u8) ValidationResult {
     if (first_packet.len >= 7 and first_packet[0] == 0x80 and std.mem.eql(u8, first_packet[1..7], "theora")) {
         // Theora video - we verify CRC but don't have a full decoder
         // TODO: Add libtheora for full bitstream validation
-        return ValidationResult.okWithDepthAndWarning(.ogv, .full, "Theora video codec - CRC verified, no bitstream decode");
+        return ValidationResult.okWithDepthAndWarning(.ogv, .structural, "Theora video codec - CRC verified only, bitstream decode not implemented");
     }
 
     // Check for FLAC in OGG: 0x7F followed by "FLAC"
@@ -15933,10 +15940,11 @@ fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult {
             // These are definite file access errors
             error.FileNotFound => ValidationResult.invalidWithDepth(.gif, "File not found", .full),
             error.AccessDenied => ValidationResult.invalidWithDepth(.gif, "Access denied", .full),
-            // zigimg may not support all valid GIF features (complex animations, etc.)
-            // If structural validation passed, fall back to that result
-            error.InvalidData, error.EndOfStream, error.OutOfMemory => ValidationResult.okWithDepth(.gif, .structural),
-            else => ValidationResult.okWithDepth(.gif, .structural),
+            // InvalidData means the GIF is corrupt - report as failure!
+            error.InvalidData => ValidationResult.invalidWithDepth(.gif, "GIF decode failed - data may be corrupt", .full),
+            error.EndOfStream => ValidationResult.invalidWithDepth(.gif, "GIF truncated - unexpected end of data", .full),
+            error.OutOfMemory => ValidationResult.okWithDepthAndWarning(.gif, .structural, "GIF too large to fully decode in memory"),
+            else => ValidationResult.invalidWithDepth(.gif, "GIF decode error", .full),
         };
     };
     image.deinit(allocator);
@@ -18960,8 +18968,8 @@ fn validate7zDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Note: Full file entry CRC validation would require LZMA decompression
-    // of the encoded header, which is complex. For now, we validate header CRCs.
-    return ValidationResult.okWithDepth(.sevenz, .full);
+    // of the encoded header, which is complex. For now, we validate header CRCs only.
+    return ValidationResult.okWithDepthAndWarning(.sevenz, .structural, "header CRCs verified, file entry decompression not implemented");
 }
 
 // ============ MP3 Deep Validation ============
@@ -19229,6 +19237,7 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     var found_ftyp = false;
     var found_moov = false;
     var found_mdat = false;
+    var ftyp_brand: [4]u8 = undefined; // Major brand from ftyp box
     const max_boxes: usize = 1000; // Sanity limit
 
     while (position < file_size and box_count < max_boxes) {
@@ -19265,7 +19274,11 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
         }
 
         // Track important boxes
-        if (std.mem.eql(u8, box_type, "ftyp")) found_ftyp = true;
+        if (std.mem.eql(u8, box_type, "ftyp")) {
+            found_ftyp = true;
+            // Read the major brand (first 4 bytes after box header)
+            _ = file.read(&ftyp_brand) catch {};
+        }
         if (std.mem.eql(u8, box_type, "moov")) found_moov = true;
         if (std.mem.eql(u8, box_type, "mdat")) found_mdat = true;
 
@@ -19273,9 +19286,9 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
         box_count += 1;
     }
 
-    // Determine format: classic QuickTime (.mov) if no ftyp box, otherwise .mp4
+    // Determine format from ftyp major brand
     // Classic QuickTime files pre-date ISO BMFF and don't have ftyp
-    const format: FileFormat = if (found_ftyp) .mp4 else .mov;
+    const format: FileFormat = if (!found_ftyp) .mov else if (std.mem.eql(u8, &ftyp_brand, "M4A ") or std.mem.eql(u8, &ftyp_brand, "M4B ")) .m4a else if (std.mem.eql(u8, &ftyp_brand, "qt  ")) .mov else .mp4;
 
     // For ISO BMFF (.mp4), ftyp is required - but we already know found_ftyp is true if format is .mp4
     // For classic QuickTime (.mov), we need moov or mdat instead
@@ -19296,7 +19309,12 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     // Structural validation passed - now attempt video stream validation
     // This parses the container to find video tracks and validates codec info
     const video_result = video_validator.validateMp4Video(allocator, path, std.math.maxInt(u32));
-    if (!video_result.valid) {
+    
+    // Check if this is an audio-only file (M4A) - no video track is expected
+    const is_audio_only = video_result.error_message != null and
+        std.mem.indexOf(u8, video_result.error_message.?, "No video track found") != null;
+    
+    if (!video_result.valid and !is_audio_only) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
 			// When no frames decoded, always use structural depth - we didn't actually decode video
 			const depth: ValidationDepth = if (video_result.frames_decoded > 0 and video_result.byte_validated) .full else .structural;
@@ -19308,11 +19326,43 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(format, video_result.error_message orelse "Video validation failed", .full);
     }
 
+    // Video validation passed - now validate audio track if present
+    const audio_result = video_audio_validator.validateMp4Audio(allocator, path);
+
+    // Audio validation failure is a real failure (corruption), not just "unsupported codec"
+    if (!audio_result.valid and audio_result.error_message != null) {
+        // Check if it's an actual failure vs just unsupported codec
+        const err_msg = audio_result.error_message.?;
+        const is_unsupported = std.mem.indexOf(u8, err_msg, "not supported") != null or
+            std.mem.indexOf(u8, err_msg, "Unsupported") != null;
+        if (!is_unsupported) {
+            return ValidationResult.invalidWithDepth(format, err_msg, .full);
+        }
+    }
+
     // Return with appropriate depth based on validation level
-    var result = if (video_result.byte_validated)
-        ValidationResult.okWithDepth(format, .full)
-    else
-        ValidationResult.structuralOnly(format);
+    // For video files: video byte-validation is the primary indicator
+    // For audio-only files (M4A): audio validation is the primary indicator
+    const audio_validated = audio_result.valid and audio_result.frames_decoded > 0;
+    const has_audio = audio_result.codec != .unknown;
+    
+    // Determine validation depth
+    var result = if (is_audio_only) blk: {
+        // Audio-only file (M4A): audio validation determines depth
+        // Adjust format to m4a for correct output
+        break :blk if (audio_validated)
+            ValidationResult.okWithDepth(.m4a, .full)
+        else if (audio_result.valid)
+            ValidationResult.structuralOnly(.m4a) // Audio track found but not decoded
+        else
+            ValidationResult.invalidWithDepth(.m4a, audio_result.error_message orelse "Audio validation failed", .full);
+    } else blk: {
+        // Video file: video validation determines depth
+        break :blk if (video_result.byte_validated)
+            ValidationResult.okWithDepth(format, .full)
+        else
+            ValidationResult.structuralOnly(format);
+    };
     if (video_result.validated_via_ffmpeg) {
         result.validated_via_ffmpeg = true;
     }
@@ -19327,6 +19377,10 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     if (video_result.unsupported_profile_no_ffmpeg) {
         result.malformations.insert(.video_unsupported_profile_no_ffmpeg);
         result.warning_message = "full validation of this file requires ffmpeg (v4.0+) on PATH due to H.264 profile complexity";
+    }
+    // Note if audio couldn't be fully validated
+    if (has_audio and !audio_validated and result.warning_message == null) {
+        result.warning_message = "audio track not fully decoded (decode validation not yet implemented for this codec)";
     }
     return result;
 }
@@ -19434,38 +19488,54 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.mkv, "Missing Segment element", .structural);
     }
 
-    // Structural validation passed - now do codec validation
-    const video_result = video_validator.validateMkvVideo(allocator, path, std.math.maxInt(u32));
-    if (!video_result.valid) {
-        if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
-			// When no frames decoded, always use structural depth - we didn't actually decode video
-			const depth: ValidationDepth = if (video_result.frames_decoded > 0 and video_result.byte_validated) .full else .structural;
-			var result = ValidationResult.okWithDepthAndMalformation(.mkv, depth, tolerated.malformation);
-			result.warning_message = tolerated.warning;
-			return result;
-		}
-        return ValidationResult.invalidWithDepth(.mkv, video_result.error_message orelse "Video validation failed", .full);
+    // Structural validation passed - now do codec validation (video + audio)
+    const media_result = video_audio_validator.validateMkvMedia(allocator, path, std.math.maxInt(u32));
+
+    // Handle video validation results
+    if (media_result.has_video_track) {
+        // Get the video-specific result from the media result
+        const video_result = video_validator.VideoValidationResult{
+            .valid = media_result.video_valid,
+            .error_message = media_result.video_message,
+            .frames_decoded = media_result.video_frames_decoded,
+            .byte_validated = media_result.video_valid and media_result.video_frames_decoded > 0,
+            .codec = media_result.video_codec,
+            .validated_via_ffmpeg = false, // Not available in MediaValidationResult
+            .validated_via_videotoolbox = false,
+            .mixed_nal_prefix = false,
+            .unsupported_profile_no_ffmpeg = false,
+        };
+
+        if (!video_result.valid) {
+            if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
+                // When no frames decoded, always use structural depth - we didn't actually decode video
+                const depth: ValidationDepth = if (video_result.frames_decoded > 0 and video_result.byte_validated) .full else .structural;
+                var result = ValidationResult.okWithDepthAndMalformation(.mkv, depth, tolerated.malformation);
+                result.warning_message = tolerated.warning;
+                return result;
+            }
+            return ValidationResult.invalidWithDepth(.mkv, video_result.error_message orelse "Video validation failed", .full);
+        }
     }
 
-    var result = if (video_result.byte_validated)
+    // Handle audio validation results
+    if (media_result.has_audio_track and !media_result.audio_valid) {
+        // Audio validation failed
+        return ValidationResult.invalidWithDepth(.mkv, media_result.audio_message orelse "Audio validation failed", .full);
+    }
+
+    // Determine overall validation depth
+    const video_byte_validated = media_result.has_video_track and media_result.video_valid and media_result.video_frames_decoded > 0;
+    const audio_byte_validated = media_result.has_audio_track and media_result.audio_valid and media_result.audio_frames_decoded > 0;
+
+    // Full validation requires at least one track to be byte-validated
+    const byte_validated = video_byte_validated or audio_byte_validated;
+
+    const result = if (byte_validated)
         ValidationResult.okWithDepth(.mkv, .full)
     else
         ValidationResult.structuralOnly(.mkv);
-    if (video_result.validated_via_ffmpeg) {
-        result.validated_via_ffmpeg = true;
-    }
-    if (video_result.validated_via_videotoolbox) {
-        result.validated_via_videotoolbox = true;
-    }
-    if (video_result.mixed_nal_prefix) {
-        result.malformations.insert(.video_mixed_nal_prefix);
-        result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
-    }
-    // Check for unsupported profile warning
-    if (video_result.unsupported_profile_no_ffmpeg) {
-        result.malformations.insert(.video_unsupported_profile_no_ffmpeg);
-        result.warning_message = "full validation of this file requires ffmpeg (v4.0+) on PATH due to H.264 profile complexity";
-    }
+
     return result;
 }
 
@@ -20391,7 +20461,7 @@ pub const FormatValidator = struct {
             .mp3 => validateMp3Deep(allocator, path),
             .ogg => validateOggDeep(allocator, path),
             .midi => validateMidiDeep(path),
-            .mp4, .mov => validateMp4Deep(allocator, path),
+            .mp4, .mov, .m4a => validateMp4Deep(allocator, path),
             .mkv, .webm => validateMkvDeep(allocator, path),
             .avi => validateAviDeep(allocator, path),
             .heic, .avif => validateHeifDeep(allocator, path, initial_result.format),
@@ -27838,7 +27908,9 @@ test "validate7zDeep accepts valid 7z with correct CRC" {
 
     try std.testing.expectEqual(FileFormat.sevenz, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // 7-Zip validation is structural only (header CRC verified, but not per-file CRCs)
+    // Full validation would require LZMA decompression of encoded header + per-file CRC checks
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validateMp3Deep accepts valid MP3 with frame sync" {

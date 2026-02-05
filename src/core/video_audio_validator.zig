@@ -308,13 +308,14 @@ fn validateMkvCrc(allocator: Allocator, path: []const u8) MkvCrcResult {
             const entry = parser.reader.readElementHeader() orelse break;
             if (entry.id == ebml.Tracks_ID.TrackEntry) {
                 if (parser.parseTrackEntry(entry)) |track| {
-                    defer track.deinit();
-                    if (track.track_type == 1) { // Video
+                    defer @constCast(&track).deinit();
+                    const codec_id = track.codecId();
+                    if (std.mem.startsWith(u8, codec_id, "V_")) { // Video
                         has_video = true;
                         if (track.isHevc()) video_codec = .hevc else if (track.isAv1()) video_codec = .av1 else if (track.isH264()) video_codec = .h264 else if (track.isVp9()) video_codec = .vp9;
-                    } else if (track.track_type == 2) { // Audio
+                    } else if (std.mem.startsWith(u8, codec_id, "A_")) { // Audio
                         has_audio = true;
-                        audio_codec = detectMkvAudioCodec(track.codec_id);
+                        audio_codec = detectMkvAudioCodec(codec_id);
                     }
                 }
             } else {
@@ -437,7 +438,7 @@ fn detectMp4aSubtype(file: std.fs.File, stsd_offset: u64) AudioCodec {
 }
 
 /// Validate audio track from MP4 file
-fn validateMp4Audio(allocator: Allocator, path: []const u8) AudioValidationResult {
+pub fn validateMp4Audio(allocator: Allocator, path: []const u8) AudioValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
         return AudioValidationResult.invalid("Failed to open file", .unknown);
     };
@@ -745,7 +746,7 @@ fn extractAlacConfig(file: std.fs.File, stsd: Mp4Box) ?[24]u8 {
 
         if (std.mem.eql(u8, box_type, "alac") and box_size >= 36) {
             // Skip version/flags (4 bytes), then read 24-byte config
-            file.seekTo(file.getPos() catch return null + 4) catch return null;
+            file.seekTo((file.getPos() catch return null) + 4) catch return null;
 
             var config: [24]u8 = undefined;
             const read = file.read(&config) catch return null;
@@ -757,7 +758,7 @@ fn extractAlacConfig(file: std.fs.File, stsd: Mp4Box) ?[24]u8 {
 
         // Skip to next box
         if (box_size < 8) break;
-        file.seekTo(file.getPos() catch return null + box_size - 8) catch return null;
+        file.seekTo((file.getPos() catch return null) + box_size - 8) catch return null;
         pos += box_size;
     }
 
@@ -850,7 +851,7 @@ fn validateMp4Ac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
 }
 
 /// Validate AC-3 track from MKV container
-fn validateMkvAc3Track(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.AudioTrackInfo) AudioValidationResult {
+fn validateMkvAc3Track(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.VideoTrackInfo) AudioValidationResult {
     // Collect some audio frames using keyframe collection
     const keyframes = parser.collectKeyframes(track.track_number, 10) orelse {
         return AudioValidationResult.invalid("Failed to collect AC-3 frames", .ac3);
@@ -961,7 +962,7 @@ fn validateMp4Eac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
 }
 
 /// Validate E-AC-3 track from MKV container
-fn validateMkvEac3Track(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.AudioTrackInfo) AudioValidationResult {
+fn validateMkvEac3Track(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.VideoTrackInfo) AudioValidationResult {
     // Collect some audio frames using keyframe collection
     const keyframes = parser.collectKeyframes(track.track_number, 10) orelse {
         return AudioValidationResult.invalid("Failed to collect E-AC-3 frames", .eac3);
@@ -1026,12 +1027,12 @@ fn validateMkvAudio(allocator: Allocator, path: []const u8) AudioValidationResul
         const entry = parser.reader.readElementHeader() orelse break;
         if (entry.id == ebml.Tracks_ID.TrackEntry) {
             if (parser.parseTrackEntry(entry)) |track| {
-                // Check if this is an audio track
-                if (track.track_type == 2) { // Audio
+                // Check if this is an audio track (codec_id starts with "A_")
+                if (std.mem.startsWith(u8, track.codecId(), "A_")) {
                     audio_track = track;
                     break;
                 }
-                track.deinit();
+                @constCast(&track).deinit();
             }
         } else {
             _ = parser.reader.skipElement(entry);
@@ -1042,10 +1043,10 @@ fn validateMkvAudio(allocator: Allocator, path: []const u8) AudioValidationResul
         return AudioValidationResult.noTrack();
     }
 
-    defer audio_track.?.deinit();
+    defer @constCast(&audio_track.?).deinit();
 
     // Detect audio codec from codec ID
-    const audio_codec = detectMkvAudioCodec(audio_track.?.codec_id);
+    const audio_codec = detectMkvAudioCodec(audio_track.?.codecId());
 
     // Validate based on codec
     return switch (audio_codec) {
@@ -1089,8 +1090,6 @@ fn detectMkvAudioCodec(codec_id: ?[]const u8) AudioCodec {
 
 /// Validate Opus track from MKV
 fn validateMkvOpusTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.VideoTrackInfo) AudioValidationResult {
-    _ = parser;
-
     // Opus in MKV stores codec_private as OpusHead
     // Extract sample rate and channels from codec_private
     const codec_private = track.codec_private orelse {
@@ -1111,21 +1110,39 @@ fn validateMkvOpusTrack(allocator: Allocator, parser: *ebml.MatroskaParser, trac
     // Opus always decodes to 48kHz
     const sample_rate: i32 = 48000;
 
-    // Create Opus decoder
-    const decoder = opus_validator.createDecoder(sample_rate, channels) catch {
-        return AudioValidationResult.invalid("Failed to create Opus decoder", .opus);
+    // Collect all frames for this Opus track from MKV clusters
+    var frame_result = parser.collectAllFramesWithStatus(track.track_number, std.math.maxInt(usize)) orelse {
+        return AudioValidationResult.invalid("Failed to extract Opus packets from MKV", .opus);
     };
-    defer opus_validator.destroyDecoder(decoder);
+    defer frame_result.deinit(allocator);
 
-    // For full validation, we would:
-    // 1. Iterate through Clusters
-    // 2. Extract SimpleBlocks for this track
-    // 3. Decode each packet
+    if (frame_result.frames.len == 0) {
+        return AudioValidationResult.invalid("No Opus packets found in MKV", .opus);
+    }
 
-    // For now, just verify we can create the decoder with the track's parameters
-    _ = allocator;
+    // Check if parsing completed normally - if not, file is corrupted
+    if (!frame_result.completed_normally) {
+        return AudioValidationResult.invalid("MKV parsing error - file may be corrupted", .opus);
+    }
 
-    return AudioValidationResult.ok(.opus, 0);
+    // Convert KeyframeData to packet slices for validation
+    const packets = allocator.alloc([]const u8, frame_result.frames.len) catch {
+        return AudioValidationResult.invalid("Failed to allocate packet array", .opus);
+    };
+    defer allocator.free(packets);
+
+    for (frame_result.frames, 0..) |frame, i| {
+        packets[i] = frame.data;
+    }
+
+    // Validate all Opus packets through the decoder
+    const result = opus_validator.validateOpusPackets(allocator, packets, sample_rate, channels);
+
+    if (!result.valid) {
+        return AudioValidationResult.invalid(result.error_message orelse "Opus decode error", .opus);
+    }
+
+    return AudioValidationResult.ok(.opus, result.packets_decoded);
 }
 
 /// Validate Vorbis track from MKV
@@ -1187,13 +1204,13 @@ fn validateMkvVorbisTrack(allocator: Allocator, parser: *ebml.MatroskaParser, tr
 // ============ Tests ============
 
 test "MediaValidationResult getMessage for video only" {
-    var result = MediaValidationResult.videoOnly(video_validator.VideoValidationResult.ok(.hevc, 5));
+    var result = MediaValidationResult.videoOnly(video_validator.VideoValidationResult.okDecoded(.hevc, 5));
     try std.testing.expectEqualStrings("Video validated (no audio track)", result.getMessage());
 }
 
 test "MediaValidationResult getMessage for video and audio" {
     var result = MediaValidationResult.combined(
-        video_validator.VideoValidationResult.ok(.hevc, 5),
+        video_validator.VideoValidationResult.okDecoded(.hevc, 5),
         AudioValidationResult.ok(.aac, 10),
     );
     try std.testing.expectEqualStrings("Video and audio validated", result.getMessage());
