@@ -2279,6 +2279,62 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "step") or std.mem.eql(u8, ext_lower, "stp")) return .step;
     if (std.mem.eql(u8, ext_lower, "dxf")) return .dxf;
 
+    // Game data/ROM formats
+    if (std.mem.eql(u8, ext_lower, "wad")) return .wad;
+    if (std.mem.eql(u8, ext_lower, "pak")) return .pak;
+    if (std.mem.eql(u8, ext_lower, "bsp")) return .bsp;
+    if (std.mem.eql(u8, ext_lower, "vpk")) return .vpk;
+    if (std.mem.eql(u8, ext_lower, "nes")) return .nes;
+    if (std.mem.eql(u8, ext_lower, "sfc") or std.mem.eql(u8, ext_lower, "smc")) return .snes;
+    if (std.mem.eql(u8, ext_lower, "z64") or std.mem.eql(u8, ext_lower, "n64") or std.mem.eql(u8, ext_lower, "v64")) return .n64;
+    if (std.mem.eql(u8, ext_lower, "md") or std.mem.eql(u8, ext_lower, "gen") or std.mem.eql(u8, ext_lower, "smd")) return .genesis;
+    if (std.mem.eql(u8, ext_lower, "chd")) return .chd;
+
+    // Scientific/data formats
+    if (std.mem.eql(u8, ext_lower, "h5") or std.mem.eql(u8, ext_lower, "hdf5") or std.mem.eql(u8, ext_lower, "hdf")) return .hdf5;
+    if (std.mem.eql(u8, ext_lower, "parquet")) return .parquet;
+    if (std.mem.eql(u8, ext_lower, "nc") or std.mem.eql(u8, ext_lower, "netcdf")) return .netcdf;
+    if (std.mem.eql(u8, ext_lower, "fits") or std.mem.eql(u8, ext_lower, "fit")) return .fits;
+    if (std.mem.eql(u8, ext_lower, "dcm") or std.mem.eql(u8, ext_lower, "dicom")) return .dicom;
+    if (std.mem.eql(u8, ext_lower, "fasta") or std.mem.eql(u8, ext_lower, "fa") or std.mem.eql(u8, ext_lower, "fna")) return .fasta;
+    if (std.mem.eql(u8, ext_lower, "fastq") or std.mem.eql(u8, ext_lower, "fq")) return .fastq;
+
+    // MPEG streams
+    if (std.mem.eql(u8, ext_lower, "mpg") or std.mem.eql(u8, ext_lower, "mpeg") or std.mem.eql(u8, ext_lower, "vob")) return .mpeg_ps;
+    if (std.mem.eql(u8, ext_lower, "ts") or std.mem.eql(u8, ext_lower, "mts") or std.mem.eql(u8, ext_lower, "m2ts")) return .mpeg_ts;
+    if (std.mem.eql(u8, ext_lower, "ivf")) return .ivf;
+
+    // Additional audio
+    if (std.mem.eql(u8, ext_lower, "ac3")) return .ac3;
+    if (std.mem.eql(u8, ext_lower, "eac3") or std.mem.eql(u8, ext_lower, "ec3")) return .eac3;
+    if (std.mem.eql(u8, ext_lower, "dsf")) return .dsf;
+    if (std.mem.eql(u8, ext_lower, "dff")) return .dff;
+
+    // IFF/Blorb
+    if (std.mem.eql(u8, ext_lower, "iff")) return .iff;
+    if (std.mem.eql(u8, ext_lower, "blorb") or std.mem.eql(u8, ext_lower, "blb")) return .blorb;
+
+    // DS_Store (macOS)
+    if (std.mem.eql(u8, ext_lower, "ds_store")) return .ds_store;
+
+    // DAW formats
+    if (std.mem.eql(u8, ext_lower, "als")) return .als;
+    if (std.mem.eql(u8, ext_lower, "rpp")) return .rpp;
+    if (std.mem.eql(u8, ext_lower, "flp")) return .flp;
+
+    // GIS
+    if (std.mem.eql(u8, ext_lower, "kml")) return .kml;
+    if (std.mem.eql(u8, ext_lower, "kmz")) return .kmz;
+    if (std.mem.eql(u8, ext_lower, "shp")) return .shapefile;
+
+    // Email
+    if (std.mem.eql(u8, ext_lower, "eml")) return .eml;
+    if (std.mem.eql(u8, ext_lower, "mbox")) return .mbox;
+
+    // Disk images
+    if (std.mem.eql(u8, ext_lower, "iso")) return .iso;
+    if (std.mem.eql(u8, ext_lower, "dmg")) return .dmg;
+
     return .unknown;
 }
 
@@ -21122,13 +21178,13 @@ pub const FormatValidator = struct {
         // This handles corrupted magic bytes.
         if (result.format == .unknown and expected_format != .unknown) {
             // Check if this is a binary format that might have corrupted magic bytes
-            const is_binary_format = switch (expected_format) {
-                .png, .jpeg, .gif, .bmp, .tiff, .webp, .heic, .avif, .jxl, .exr => true,
-                .pdf, .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp => true,
-                .mp4, .mov, .m4a, .mkv, .webm, .avi, .flv => true,
-                .mp3, .flac, .wav, .ogg, .aiff => true,
-                .sqlite, .rar, .gzip, .bzip2, .xz, .zstd, .sevenz => true,
-                else => false,
+            // Any format with a validator is worth trying secondary detection
+            const is_binary_format = expected_format.hasValidator() and switch (expected_format) {
+                // Exclude text/extension-only formats already handled above
+                .json, .toml, .ini, .xml, .yaml, .erlang_term, .eex, .markdown => false,
+                .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437 => false,
+                .br => false, // Brotli has no magic, extension-only
+                else => true,
             };
 
             if (is_binary_format) {
@@ -21218,6 +21274,15 @@ pub const FormatValidator = struct {
                     }
                 }
             }
+        }
+
+        // Final fallback: if still unknown but extension maps to a known format,
+        // report as that format with invalid status (detected via extension only).
+        // This catches corrupted files where both magic bytes AND secondary
+        // signatures are destroyed, but the extension is still informative.
+        if (result.format == .unknown and expected_format != .unknown and expected_format.hasValidator()) {
+            result = ValidationResult.invalid(expected_format, "detected via extension, magic bytes corrupted");
+            result.malformations.insert(.magic_bytes_corrupted);
         }
 
         // For text formats, extension is more reliable than content detection
@@ -25954,8 +26019,9 @@ test "FormatValidator rejects invalid JPEG XL" {
 
     const result = validator.validateFile(path);
 
-    // Won't be detected as JXL at all, just unknown
-    try std.testing.expectEqual(FileFormat.unknown, result.format);
+    // Detected as JXL via extension fallback, reported as invalid
+    try std.testing.expectEqual(FileFormat.jxl, result.format);
+    try std.testing.expect(!result.is_valid);
 }
 
 // ============ GIF Tests ============
@@ -26953,8 +27019,9 @@ test "FormatValidator rejects invalid EBML" {
 
     const result = validator.validateFile(path);
 
-    // Won't be detected as MKV, just unknown
-    try std.testing.expectEqual(FileFormat.unknown, result.format);
+    // Detected as MKV via extension fallback, reported as invalid
+    try std.testing.expectEqual(FileFormat.mkv, result.format);
+    try std.testing.expect(!result.is_valid);
 }
 
 // ============ AVI Tests ============
@@ -27127,8 +27194,9 @@ test "FormatValidator rejects invalid SWF signature" {
 
     const result = validator.validateFile(path);
 
-    // Should not detect as SWF
-    try std.testing.expect(result.format != .swf);
+    // Detected as SWF via extension fallback, reported as invalid
+    try std.testing.expectEqual(FileFormat.swf, result.format);
+    try std.testing.expect(!result.is_valid);
 }
 
 test "detectFormat SWF variants" {
@@ -29759,8 +29827,9 @@ test "FormatValidator rejects invalid RPP" {
 
     const result = validator.validateFile(path);
 
-    // File doesn't match RPP signature, so it's detected as unknown
-    try std.testing.expectEqual(FileFormat.unknown, result.format);
+    // Detected as RPP via extension fallback, reported as invalid
+    try std.testing.expectEqual(FileFormat.rpp, result.format);
+    try std.testing.expect(!result.is_valid);
 }
 
 test "FormatValidator accepts valid ALS (gzip-based)" {
