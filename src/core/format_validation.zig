@@ -1883,7 +1883,11 @@ fn validateDataBufferFormat(data: []const u8, format: FileFormat) ValidationResu
         .png => validatePngFromBuffer(data),
         .jpeg => validateJpegFromBuffer(data),
         .gif => validateGifFromBuffer(data),
+        .bmp => validateBmpFromBuffer(data),
+        .tiff => validateTiffFromBuffer(data),
+        .webp => validateWebpFromBuffer(data),
         .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => validateZipFromBuffer(data, format),
+        .mp4, .mov, .m4a => validateMp4FromBuffer(data),
         else => ValidationResult.ok(format), // Format not supported for buffer validation
     };
 }
@@ -11238,40 +11242,26 @@ fn validateBase64Attachment(allocator: Allocator, body: []const u8, headers: []c
     // Detect format of decoded content
     const format = detectFormat(decoded);
 
-    // If format is unknown or doesn't have a validator, accept it
-    if (format == .unknown or !format.hasValidator()) {
+    // If format is unknown, accept as structurally valid
+    if (format == .unknown) {
         return ValidationResult.okWithDepth(.eml, .structural);
     }
 
-    // Create a temporary file to validate the decoded content
-    // For now, we'll just do format detection which is sufficient for most cases
-    // Full validation would require writing to temp file and running validator
+    // Use the buffer validation function to fully validate the attachment
+    const attachment_result = validateDataBufferFormat(decoded, format);
 
-    // Check for obviously corrupt headers based on format
-    if (format == .png) {
-        // PNG should have valid chunk structure after signature
-        if (decoded_len < 16) {
-            return ValidationResult.invalid(.eml, "Attachment validation failed: PNG too small");
-        }
-        // Check IHDR chunk type
-        if (!std.mem.eql(u8, decoded[12..16], "IHDR")) {
-            return ValidationResult.invalid(.eml, "Attachment validation failed: Invalid PNG structure");
-        }
-    } else if (format == .jpeg) {
-        // JPEG should end with FFD9
-        if (decoded_len < 4) {
-            return ValidationResult.invalid(.eml, "Attachment validation failed: JPEG too small");
-        }
-        // Note: We don't require FFD9 at end since we might have truncated decode
-    } else if (format == .zip) {
-        // ZIP should have valid local file header
-        if (decoded_len < 30) {
-            return ValidationResult.invalid(.eml, "Attachment validation failed: ZIP too small");
-        }
+    // If the attachment is invalid, report it
+    if (!attachment_result.is_valid) {
+        return ValidationResult.invalid(.eml, attachment_result.error_message orelse "Attachment validation failed");
     }
 
-    // Format detected and basic checks passed
-    return ValidationResult.ok(.eml);
+    // Attachment validated successfully - return full depth if attachment was fully validated
+    if (attachment_result.validation_depth == .full) {
+        return ValidationResult.okWithDepth(.eml, .full);
+    }
+
+    // Return structural if attachment could only be structurally validated
+    return ValidationResult.okWithDepth(.eml, .structural);
 }
 
 /// Validate MBOX (Unix mailbox) file structure.
