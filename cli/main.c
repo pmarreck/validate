@@ -1390,19 +1390,32 @@ static void sigwinch_handler(int sig) {
 	g_resize_signal = 1;
 }
 
-/* Global flag to track if we're in the middle of handling SIGINT */
-static volatile sig_atomic_t g_sigint_received = 0;
+/* Global flag to track SIGINT count - first is graceful, second is force */
+static volatile sig_atomic_t g_sigint_count = 0;
 
-/* SIGINT handler - signal graceful shutdown */
+/* SIGINT handler - graceful on first, force exit on second */
 static void sigint_handler(int sig) {
 	(void)sig;
-	g_sigint_received = 1;
+	g_sigint_count++;
 
-	/* Signal the Zig thread pool to stop accepting new work */
-	validate_interrupt();
+	if (g_sigint_count == 1) {
+		/* First Ctrl+C: signal graceful shutdown */
+		validate_interrupt();
 
-	/* Note: We don't clean up terminal here - let the main loop handle it
-	 * after the batch finishes so we can show partial results. */
+		/* Write message directly (async-signal-safe using write()) */
+		const char* msg = "\n\033[33mInterrupted - finishing current files (Ctrl+C again to force quit)...\033[0m\n";
+		(void)write(STDERR_FILENO, msg, strlen(msg));
+	} else {
+		/* Second Ctrl+C: force exit immediately */
+		/* Clean up terminal state before exiting */
+		const char* cleanup = "\033[r\033[?25h\033[999;1H\n";
+		(void)write(STDERR_FILENO, cleanup, strlen(cleanup));
+
+		const char* msg = "\033[31mForce quit.\033[0m\n";
+		(void)write(STDERR_FILENO, msg, strlen(msg));
+
+		_exit(130);  /* 128 + SIGINT(2) = standard interrupted exit code */
+	}
 }
 #endif
 
@@ -2092,7 +2105,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	/* Check if we were interrupted */
-	int was_interrupted = g_sigint_received || validate_is_interrupted();
+	int was_interrupted = (g_sigint_count > 0) || validate_is_interrupted();
 
 	/* Save file count before freeing */
 	size_t total_file_count = file_list.count;
