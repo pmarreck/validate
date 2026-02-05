@@ -1700,6 +1700,7 @@ pub fn detectFormat(header: []const u8) FileFormat {
                         std.mem.eql(u8, second_atom_type, "free") or
                         std.mem.eql(u8, second_atom_type, "skip") or
                         std.mem.eql(u8, second_atom_type, "pnot") or
+                        std.mem.eql(u8, second_atom_type, "PICT") or // Classic Mac PICT resource
                         std.mem.eql(u8, second_atom_type, "uuid"))
                     {
                         return .mov; // Classic QuickTime format
