@@ -21207,11 +21207,164 @@ fn validateBmpFromBuffer(data: []const u8) ValidationResult {
 }
 
 fn validateTiffFromBuffer(data: []const u8) ValidationResult {
-    if (data.len < 4) return ValidationResult.invalid(.tiff, "File too small");
-    if ((data[0] == 'I' and data[1] == 'I') or (data[0] == 'M' and data[1] == 'M')) {
-        return ValidationResult.ok(.tiff);
+    // TIFF header: 8 bytes minimum
+    // - Byte order: "II" (little-endian) or "MM" (big-endian)
+    // - Magic: 42 (0x002A)
+    // - Offset to first IFD
+
+    if (data.len < 8) return ValidationResult.invalid(.tiff, "File too small for TIFF header");
+
+    // Check byte order
+    const is_big_endian = std.mem.eql(u8, data[0..2], "MM");
+    const is_little_endian = std.mem.eql(u8, data[0..2], "II");
+    if (!is_big_endian and !is_little_endian) {
+        return ValidationResult.invalid(.tiff, "Invalid TIFF byte order");
     }
-    return ValidationResult.invalid(.tiff, "Invalid TIFF signature");
+
+    // Check magic number (42)
+    const magic = if (is_big_endian)
+        std.mem.readInt(u16, data[2..4], .big)
+    else
+        std.mem.readInt(u16, data[2..4], .little);
+
+    if (magic != 42) {
+        return ValidationResult.invalid(.tiff, "Invalid TIFF magic number");
+    }
+
+    // Read IFD offset
+    const ifd_offset = if (is_big_endian)
+        std.mem.readInt(u32, data[4..8], .big)
+    else
+        std.mem.readInt(u32, data[4..8], .little);
+
+    // Validate IFD offset is within bounds
+    if (ifd_offset >= data.len or ifd_offset + 2 > data.len) {
+        return ValidationResult.invalidWithDepth(.tiff, "IFD offset out of bounds", .full);
+    }
+
+    // Read number of IFD entries
+    const entry_count = if (is_big_endian)
+        std.mem.readInt(u16, data[ifd_offset..][0..2], .big)
+    else
+        std.mem.readInt(u16, data[ifd_offset..][0..2], .little);
+
+    // Validate IFD entries fit within buffer
+    const ifd_entries_end = ifd_offset + 2 + @as(usize, entry_count) * 12;
+    if (ifd_entries_end > data.len) {
+        return ValidationResult.invalidWithDepth(.tiff, "IFD entries truncated", .full);
+    }
+
+    // Track important tags for validation
+    var strip_offsets: ?u32 = null;
+    var strip_byte_counts: ?u32 = null;
+    var strip_count: u32 = 0;
+    var image_width: u32 = 0;
+    var image_height: u32 = 0;
+
+    // Parse IFD entries
+    var pos = ifd_offset + 2;
+    for (0..entry_count) |_| {
+        if (pos + 12 > data.len) break;
+
+        const entry = data[pos..][0..12];
+        const tag = if (is_big_endian)
+            std.mem.readInt(u16, entry[0..2], .big)
+        else
+            std.mem.readInt(u16, entry[0..2], .little);
+        const tag_type = if (is_big_endian)
+            std.mem.readInt(u16, entry[2..4], .big)
+        else
+            std.mem.readInt(u16, entry[2..4], .little);
+        const count = if (is_big_endian)
+            std.mem.readInt(u32, entry[4..8], .big)
+        else
+            std.mem.readInt(u32, entry[4..8], .little);
+        const value_offset = if (is_big_endian)
+            std.mem.readInt(u32, entry[8..12], .big)
+        else
+            std.mem.readInt(u32, entry[8..12], .little);
+
+        // Get inline value for small entries
+        const inline_value: u32 = if (count == 1) blk: {
+            if (tag_type == 3) { // SHORT
+                break :blk if (is_big_endian)
+                    std.mem.readInt(u16, entry[8..10], .big)
+                else
+                    std.mem.readInt(u16, entry[8..10], .little);
+            } else if (tag_type == 4) { // LONG
+                break :blk value_offset;
+            } else break :blk 0;
+        } else 0;
+
+        switch (tag) {
+            256 => image_width = inline_value, // ImageWidth
+            257 => image_height = inline_value, // ImageLength
+            273 => { // StripOffsets
+                strip_count = count;
+                if (count == 1) {
+                    strip_offsets = value_offset;
+                } else {
+                    // Multiple strips - value_offset points to array
+                    if (value_offset < data.len) {
+                        strip_offsets = value_offset;
+                    }
+                }
+            },
+            279 => { // StripByteCounts
+                if (count == 1) {
+                    strip_byte_counts = value_offset;
+                } else if (value_offset < data.len) {
+                    strip_byte_counts = value_offset;
+                }
+            },
+            else => {},
+        }
+
+        pos += 12;
+    }
+
+    // Validate strip data if present
+    if (strip_offsets) |offsets| {
+        if (strip_count == 1) {
+            // Single strip - offsets is the direct offset
+            if (offsets >= data.len) {
+                return ValidationResult.invalidWithDepth(.tiff, "Strip offset out of bounds", .full);
+            }
+            if (strip_byte_counts) |bytes| {
+                if (offsets + bytes > data.len) {
+                    return ValidationResult.invalidWithDepth(.tiff, "Strip data truncated", .full);
+                }
+            }
+        } else if (strip_count > 1) {
+            // Multiple strips - offsets points to offset array
+            // Validate first offset in array as a sanity check
+            const type_size: usize = 4; // Assuming LONG offsets
+            if (offsets + strip_count * type_size > data.len) {
+                return ValidationResult.invalidWithDepth(.tiff, "Strip offset array truncated", .full);
+            }
+
+            // Check first strip offset
+            const first_strip = if (is_big_endian)
+                std.mem.readInt(u32, data[offsets..][0..4], .big)
+            else
+                std.mem.readInt(u32, data[offsets..][0..4], .little);
+
+            if (first_strip >= data.len) {
+                return ValidationResult.invalidWithDepth(.tiff, "Strip data out of bounds", .full);
+            }
+        }
+    }
+
+    // If we have dimensions, validate they're reasonable
+    if (image_width > 0 and image_height > 0) {
+        if (image_width > 65535 or image_height > 65535) {
+            // Very large dimensions - could be corrupted but still structurally valid
+            return ValidationResult.okWithDepthAndWarning(.tiff, .full, "unusual dimensions");
+        }
+    }
+
+    // All structural checks passed
+    return ValidationResult.okWithDepth(.tiff, .full);
 }
 
 fn validateWebpFromBuffer(data: []const u8) ValidationResult {
