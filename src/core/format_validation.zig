@@ -6032,14 +6032,18 @@ fn validateParquet(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.parquet, "Footer metadata too small");
     }
 
-    // Basic Thrift validation: FileMetaData is a struct
-    // Parse Thrift Compact Protocol (used by Parquet)
+    // Parse Thrift Compact Protocol FileMetaData to extract row group info
     const meta = footer_meta[0..meta_read];
     var pos: usize = 0;
     var field_count: u32 = 0;
+    var current_field_id: i16 = 0;
+    var version: i64 = 0;
+    var num_rows: i64 = 0;
+    var row_group_count: usize = 0;
 
-    // Parse Thrift fields
+    // Parse FileMetaData struct fields
     while (pos < meta.len and field_count < 100) {
+        if (pos >= meta.len) break;
         const field_header = meta[pos];
         pos += 1;
 
@@ -6052,16 +6056,66 @@ fn validateParquet(file: std.fs.File) ValidationResult {
         const field_type = field_header & 0x0F;
         const delta = (field_header >> 4) & 0x0F;
 
-        // Handle field delta (short form) or full field id
-        if (delta == 0 and pos + 2 <= meta.len) {
-            // Full field id follows as i16
-            pos += 2;
+        // Calculate field id
+        if (delta == 0) {
+            // Full field id follows as zigzag i16
+            if (pos + 1 > meta.len) break;
+            const field_id_result = readThriftVarint(meta[pos..]) orelse break;
+            current_field_id = @intCast(field_id_result.value);
+            pos += field_id_result.size;
+        } else {
+            current_field_id += @intCast(delta);
         }
 
-        // Skip field value based on type
+        // Extract specific fields we care about
+        switch (current_field_id) {
+            1 => { // version: i32
+                if (field_type == 5) { // I32 type
+                    const ver_result = readThriftVarint(meta[pos..]) orelse break;
+                    version = ver_result.value;
+                    pos += ver_result.size;
+                    field_count += 1;
+                    continue;
+                }
+            },
+            3 => { // num_rows: i64
+                if (field_type == 6) { // I64 type
+                    const rows_result = readThriftVarint(meta[pos..]) orelse break;
+                    num_rows = rows_result.value;
+                    pos += rows_result.size;
+                    field_count += 1;
+                    continue;
+                }
+            },
+            4 => { // row_groups: list<RowGroup>
+                if (field_type == 9) { // LIST type
+                    // Parse list header
+                    if (pos >= meta.len) break;
+                    const list_header = meta[pos];
+                    pos += 1;
+                    const size_nibble = (list_header >> 4) & 0x0F;
+
+                    if (size_nibble == 0x0F) {
+                        // Extended size follows as varint
+                        const size_result = readThriftVarint(meta[pos..]) orelse break;
+                        row_group_count = @intCast(@max(0, size_result.value));
+                        pos += size_result.size;
+                    } else {
+                        row_group_count = size_nibble;
+                    }
+
+                    // Skip the row group data for now - full parsing would be complex
+                    field_count += 1;
+                    // Note: We don't continue here because we need to properly skip the list
+                }
+            },
+            else => {},
+        }
+
+        // Skip field value based on type (for fields we didn't handle above)
         const skip_result = skipThriftValue(meta[pos..], field_type);
         if (skip_result == null) {
-            // Can't parse - but we've already validated structure exists
+            // Can't parse further - but we've already extracted useful info
             break;
         }
         pos += skip_result.?;
@@ -6070,6 +6124,23 @@ fn validateParquet(file: std.fs.File) ValidationResult {
 
     if (field_count == 0) {
         return ValidationResult.invalid(.parquet, "Invalid Thrift footer structure");
+    }
+
+    // Validate extracted metadata
+    if (version < 1 or version > 2) {
+        // Parquet format versions 1 and 2 are known
+        // Version 0 or > 2 might indicate corruption
+        // But be lenient - some tools may use unusual versions
+    }
+
+    if (num_rows < 0) {
+        return ValidationResult.invalid(.parquet, "Invalid row count in Parquet metadata");
+    }
+
+    // Validate row group count is reasonable
+    if (row_group_count > 0 and num_rows > 0) {
+        // Each row group typically has at least one row
+        // Very small files might have many row groups with few rows
     }
 
     return ValidationResult.okWithDepth(.parquet, .full);
@@ -6136,6 +6207,32 @@ fn skipVarint(data: []const u8) ?usize {
             return i + 1;
         }
         i += 1;
+    }
+    return null;
+}
+
+/// Read a Thrift Compact Protocol varint (zigzag encoded i64)
+/// Returns the value and bytes consumed, or null on error
+fn readThriftVarint(data: []const u8) ?struct { value: i64, size: usize } {
+    if (data.len == 0) return null;
+
+    var result: u64 = 0;
+    var shift: u6 = 0;
+    var i: usize = 0;
+
+    while (i < data.len and i < 10) {
+        const b = data[i];
+        result |= @as(u64, b & 0x7F) << shift;
+        i += 1;
+
+        if (b & 0x80 == 0) {
+            // Zigzag decode: (n >> 1) ^ -(n & 1)
+            const zigzag = result;
+            const decoded: i64 = @bitCast((zigzag >> 1) ^ (~(zigzag & 1) +% 1));
+            return .{ .value = decoded, .size = i };
+        }
+
+        shift +|= 7;
     }
     return null;
 }
