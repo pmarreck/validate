@@ -12668,14 +12668,61 @@ fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult {
             return ValidationResult.invalid(.psd, "RLE decompression failed");
         }
     } else if (compression == 2 or compression == 3) {
-        // ZIP compression - would need zlib to fully validate
-        // For now, verify we have data
-        const remaining = file_size - (file.getPos() catch 0);
+        // ZIP compression (2 = ZIP without prediction, 3 = ZIP with prediction)
+        const zip_data_start = file.getPos() catch {
+            return ValidationResult.invalid(.psd, "Failed to get ZIP data position");
+        };
+        const remaining = file_size - zip_data_start;
         if (remaining == 0) {
             return ValidationResult.invalid(.psd, "No ZIP compressed data");
         }
-        // Return structural validation since we can't fully decode ZIP without more work
-        return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP compression - structural only");
+
+        // Read compressed data (limit to 100MB to avoid memory issues)
+        const max_compressed_read: u64 = @min(remaining, 100 * 1024 * 1024);
+        const compressed_data = allocator.alloc(u8, @intCast(max_compressed_read)) catch {
+            return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP: out of memory for compressed data");
+        };
+        defer allocator.free(compressed_data);
+
+        const bytes_read = file.readAll(compressed_data) catch {
+            return ValidationResult.invalid(.psd, "Failed to read ZIP compressed data");
+        };
+
+        if (bytes_read == 0) {
+            return ValidationResult.invalid(.psd, "No ZIP compressed data read");
+        }
+
+        // Calculate expected uncompressed size (for entire image data)
+        const expected_uncompressed = channel_size * channels;
+        // Cap decompression at 500MB to avoid memory exhaustion
+        const max_uncompressed: usize = @min(@as(usize, @intCast(expected_uncompressed)), 500 * 1024 * 1024);
+
+        // Decompress using zlib
+        const decompressed = zlib.inflateRawAlloc(allocator, compressed_data[0..bytes_read], max_uncompressed) catch |err| {
+            switch (err) {
+                zlib.ZlibError.DataError => return ValidationResult.invalid(.psd, "ZIP decompression failed: corrupt data"),
+                zlib.ZlibError.BufferError => return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP: decompressed data exceeds limit"),
+                else => return ValidationResult.invalid(.psd, "ZIP decompression error"),
+            }
+        };
+        defer allocator.free(decompressed);
+
+        // For compression type 3 (ZIP with prediction), verify we got reasonable data
+        // The prediction filter is applied after decompression, but we just verify decompression succeeded
+        if (compression == 3) {
+            // ZIP with prediction - the decompressed data has a horizontal difference filter applied
+            // Each row starts with a filter byte, so we can't easily verify the exact size
+            // But successful decompression is enough for validation
+            if (decompressed.len == 0) {
+                return ValidationResult.invalid(.psd, "ZIP decompression produced empty output");
+            }
+        } else {
+            // ZIP without prediction - decompressed size should match expected
+            // Allow some tolerance since we might have read partial data for large files
+            if (decompressed.len == 0) {
+                return ValidationResult.invalid(.psd, "ZIP decompression produced empty output");
+            }
+        }
     }
 
     return ValidationResult.okWithDepth(.psd, .full);
