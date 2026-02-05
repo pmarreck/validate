@@ -4928,7 +4928,7 @@ fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Scan through file blocks looking for DNA1 and ENDB
     var found_endb = false;
     var found_dna1 = false;
-    var dna1_valid = false;
+    var dna_fully_valid = false;
     var block_count: usize = 0;
     const max_blocks: usize = 1000000; // Sanity limit
 
@@ -4956,35 +4956,28 @@ fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResult {
         // Check for DNA1 block - contains the schema
         if (std.mem.eql(u8, code, "DNA1")) {
             found_dna1 = true;
-            // Validate DNA1 block structure
-            if (data_size >= 8) {
-                // DNA1 should start with "SDNA" identifier
-                var dna_header: [4]u8 = undefined;
-                if (file.read(&dna_header)) |bytes| {
-                    if (bytes == 4 and std.mem.eql(u8, &dna_header, "SDNA")) {
-                        // Read NAME identifier
-                        var name_id: [4]u8 = undefined;
-                        if (file.read(&name_id)) |nb| {
-                            if (nb == 4 and std.mem.eql(u8, &name_id, "NAME")) {
-                                // Read name count (4 bytes)
-                                var name_count_bytes: [4]u8 = undefined;
-                                if (file.read(&name_count_bytes)) |ncb| {
-                                    if (ncb == 4) {
-                                        const name_count = std.mem.readInt(u32, &name_count_bytes, endian);
-                                        // Valid DNA1 has at least some names defined
-                                        if (name_count > 0 and name_count < 100000) {
-                                            dna1_valid = true;
-                                        }
-                                    }
-                                } else |_| {}
-                            }
-                        } else |_| {}
-                    }
-                } else |_| {}
-                // Seek back and skip full block
-                file.seekBy(-12) catch {};
+
+            // Read entire DNA1 block for full validation
+            if (data_size > 0 and data_size < 50 * 1024 * 1024) { // Cap at 50MB
+                const dna_data = allocator.alloc(u8, data_size) catch {
+                    file.seekBy(@intCast(data_size)) catch break;
+                    block_count += 1;
+                    continue;
+                };
+                defer allocator.free(dna_data);
+
+                const dna_read = file.readAll(dna_data) catch {
+                    block_count += 1;
+                    continue;
+                };
+
+                if (dna_read == data_size) {
+                    // Full DNA1 block parsing
+                    dna_fully_valid = validateDNA1Block(dna_data, endian);
+                }
+            } else {
+                file.seekBy(@intCast(data_size)) catch break;
             }
-            file.seekBy(@intCast(data_size)) catch break;
         } else {
             // Skip block data
             file.seekBy(@intCast(data_size)) catch break;
@@ -5000,13 +4993,121 @@ fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalid(.blend, "Missing DNA1 schema block");
     }
 
-    if (!dna1_valid) {
+    if (!dna_fully_valid) {
         return ValidationResult.okWithDepthAndWarning(.blend, .structural, "DNA1 block has invalid structure");
     }
 
-    // Successfully validated: header + DNA1 schema + ENDB terminator
-    // This covers the essential structure - corruption would break block parsing
-    return ValidationResult.okWithDepth(.blend, .structural);
+    // Successfully validated: header + DNA1 full schema + ENDB terminator
+    return ValidationResult.okWithDepth(.blend, .full);
+}
+
+
+/// Validate the full DNA1 block structure.
+/// DNA1 format: SDNA -> NAME (names) -> TYPE (types) -> TLEN (lengths) -> STRC (structures)
+fn validateDNA1Block(data: []const u8, endian: std.builtin.Endian) bool {
+    if (data.len < 12) return false;
+
+    var pos: usize = 0;
+
+    // Check SDNA identifier
+    if (!std.mem.eql(u8, data[pos..][0..4], "SDNA")) return false;
+    pos += 4;
+
+    // NAME section
+    if (pos + 8 > data.len) return false;
+    if (!std.mem.eql(u8, data[pos..][0..4], "NAME")) return false;
+    pos += 4;
+
+    const name_count = std.mem.readInt(u32, data[pos..][0..4], endian);
+    pos += 4;
+
+    if (name_count == 0 or name_count > 100000) return false;
+
+    // Skip name strings (null-terminated)
+    var names_read: u32 = 0;
+    while (names_read < name_count and pos < data.len) {
+        // Find null terminator
+        while (pos < data.len and data[pos] != 0) {
+            pos += 1;
+        }
+        if (pos >= data.len) return false;
+        pos += 1; // Skip null
+        names_read += 1;
+    }
+
+    if (names_read < name_count) return false;
+
+    // Align to 4-byte boundary
+    pos = (pos + 3) & ~@as(usize, 3);
+
+    // TYPE section
+    if (pos + 8 > data.len) return false;
+    if (!std.mem.eql(u8, data[pos..][0..4], "TYPE")) return false;
+    pos += 4;
+
+    const type_count = std.mem.readInt(u32, data[pos..][0..4], endian);
+    pos += 4;
+
+    if (type_count == 0 or type_count > 100000) return false;
+
+    // Skip type names (null-terminated)
+    var types_read: u32 = 0;
+    while (types_read < type_count and pos < data.len) {
+        while (pos < data.len and data[pos] != 0) {
+            pos += 1;
+        }
+        if (pos >= data.len) return false;
+        pos += 1;
+        types_read += 1;
+    }
+
+    if (types_read < type_count) return false;
+
+    // Align to 4-byte boundary
+    pos = (pos + 3) & ~@as(usize, 3);
+
+    // TLEN section (type lengths)
+    if (pos + 4 > data.len) return false;
+    if (!std.mem.eql(u8, data[pos..][0..4], "TLEN")) return false;
+    pos += 4;
+
+    // Type lengths are 2 bytes each
+    const tlen_size = type_count * 2;
+    if (pos + tlen_size > data.len) return false;
+    pos += tlen_size;
+
+    // Align to 4-byte boundary
+    pos = (pos + 3) & ~@as(usize, 3);
+
+    // STRC section (structures)
+    if (pos + 8 > data.len) return false;
+    if (!std.mem.eql(u8, data[pos..][0..4], "STRC")) return false;
+    pos += 4;
+
+    const struct_count = std.mem.readInt(u32, data[pos..][0..4], endian);
+    pos += 4;
+
+    if (struct_count > 100000) return false;
+
+    // Validate structure entries
+    var structs_read: u32 = 0;
+    while (structs_read < struct_count and pos + 4 <= data.len) {
+        // Structure: type_index (2) + field_count (2)
+        const field_count = std.mem.readInt(u16, data[pos + 2 ..][0..2], endian);
+        pos += 4;
+
+        // Each field: type_index (2) + name_index (2)
+        const field_size: usize = @as(usize, field_count) * 4;
+        if (pos + field_size > data.len) return false;
+        pos += field_size;
+
+        structs_read += 1;
+    }
+
+    if (structs_read < struct_count) return false;
+
+    // All DNA1 components validated
+    return true;
 }
 
 /// Buffer-based validation for Blender files.
