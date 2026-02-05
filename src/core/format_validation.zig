@@ -165,6 +165,9 @@ const jbig2_decoder = @import("jbig2_decoder.zig");
 // Import git validator for .git directory validation
 const git_validator = @import("git_validator.zig");
 
+// Import 7-Zip validator for deep archive validation
+const sevenz_validator = @import("sevenz_validator.zig");
+
 // ============ Constants ============
 
 /// Maximum decompressed size for streaming validation (10 GiB).
@@ -18890,86 +18893,22 @@ fn discardSendFile(w: *std.Io.Writer, file_reader: *std.fs.File.Reader, limit: s
 
 // ============ 7-Zip Deep Validation ============
 
-/// Deep 7-Zip validation by verifying header CRCs.
-/// Full file entry CRC validation requires LZMA decompression of the header.
+/// Deep 7-Zip validation using the sevenz_validator module.
+/// This validates header CRCs and uses the system's 7z command for full integrity testing.
 fn validate7zDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    _ = allocator;
+    const result = sevenz_validator.validateSevenZDeep(allocator, path);
 
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.sevenz, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.sevenz, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.sevenz, "Failed to open file", .structural),
-        };
-    };
-    defer file.close();
-
-    // Read 32-byte start header
-    var header: [32]u8 = undefined;
-    const header_read = file.read(&header) catch {
-        return ValidationResult.invalidWithDepth(.sevenz, "Failed to read header", .structural);
-    };
-    if (header_read < 32) {
-        return ValidationResult.invalidWithDepth(.sevenz, "Truncated header", .structural);
+    if (!result.valid) {
+        return ValidationResult.invalidWithDepth(.sevenz, result.error_message orelse "7z validation failed", .full);
     }
 
-    // Verify signature
-    if (!std.mem.eql(u8, header[0..6], &SEVENZ_SIGNATURE)) {
-        return ValidationResult.invalidWithDepth(.sevenz, "Invalid signature", .structural);
+    // If files were checked via 7z command, report full validation
+    if (result.files_checked > 0) {
+        return ValidationResult.okWithDepth(.sevenz, .full);
     }
 
-    // Verify start header CRC (bytes 8-11, covers bytes 12-31)
-    const stored_start_crc = std.mem.readInt(u32, header[8..12], .little);
-    const computed_start_crc = std.hash.Crc32.hash(header[12..32]);
-
-    if (stored_start_crc != computed_start_crc) {
-        return ValidationResult.invalidWithDepth(.sevenz, "Start header CRC mismatch", .full);
-    }
-
-    // Get next header info
-    const next_header_offset = std.mem.readInt(u64, header[12..20], .little);
-    const next_header_size = std.mem.readInt(u64, header[20..28], .little);
-    const next_header_crc = std.mem.readInt(u32, header[28..32], .little);
-
-    // Validate file size
-    const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.sevenz, "Failed to get file size", .structural);
-    };
-
-    const expected_min_size = 32 + next_header_offset + next_header_size;
-    if (file_size < expected_min_size) {
-        return ValidationResult.invalidWithDepth(.sevenz, "File truncated", .structural);
-    }
-
-    // Read and verify next header CRC
-    if (next_header_size > 0 and next_header_size <= 10 * 1024 * 1024) { // Limit to 10MB header
-        file.seekTo(32 + next_header_offset) catch {
-            return ValidationResult.invalidWithDepth(.sevenz, "Failed to seek to next header", .structural);
-        };
-
-        const next_header_buf = std.heap.page_allocator.alloc(u8, @intCast(next_header_size)) catch {
-            // Can't allocate, just return structural validation
-            return ValidationResult.okWithDepth(.sevenz, .structural);
-        };
-        defer std.heap.page_allocator.free(next_header_buf);
-
-        const bytes_read = file.readAll(next_header_buf) catch {
-            return ValidationResult.invalidWithDepth(.sevenz, "Failed to read next header", .structural);
-        };
-
-        if (bytes_read != next_header_size) {
-            return ValidationResult.invalidWithDepth(.sevenz, "Incomplete next header", .structural);
-        }
-
-        const computed_next_crc = std.hash.Crc32.hash(next_header_buf);
-        if (computed_next_crc != next_header_crc) {
-            return ValidationResult.invalidWithDepth(.sevenz, "Next header CRC mismatch", .full);
-        }
-    }
-
-    // Note: Full file entry CRC validation would require LZMA decompression
-    // of the encoded header, which is complex. For now, we validate header CRCs only.
-    return ValidationResult.okWithDepthAndWarning(.sevenz, .structural, "header CRCs verified, file entry decompression not implemented");
+    // Otherwise header CRCs were verified but no file decompression
+    return ValidationResult.okWithDepth(.sevenz, .structural);
 }
 
 // ============ MP3 Deep Validation ============
