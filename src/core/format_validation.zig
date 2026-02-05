@@ -13666,7 +13666,7 @@ fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalid(.flv, "No valid FLV tags found");
     }
 
-    return ValidationResult.okWithDepth(.flv, .structural);
+    return ValidationResult.okWithDepth(.flv, .full);
 }
 
 // ============ MP3 Validator ============
