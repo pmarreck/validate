@@ -168,6 +168,9 @@ const git_validator = @import("git_validator.zig");
 // Import 7-Zip validator for deep archive validation
 const sevenz_validator = @import("sevenz_validator.zig");
 
+// Import RAR validator for deep archive validation
+const rar_validator = @import("rar_validator.zig");
+
 // ============ Constants ============
 
 /// Maximum decompressed size for streaming validation (10 GiB).
@@ -18911,6 +18914,26 @@ fn validate7zDeep(allocator: Allocator, path: []const u8) ValidationResult {
     return ValidationResult.okWithDepth(.sevenz, .structural);
 }
 
+// ============ RAR Deep Validation ============
+
+/// Deep RAR validation using the rar_validator module.
+/// This validates header CRCs and uses unrar or 7z for full integrity testing.
+fn validateRarDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const result = rar_validator.validateRarDeep(allocator, path);
+
+    if (!result.valid) {
+        return ValidationResult.invalidWithDepth(.rar, result.error_message orelse "RAR validation failed", .full);
+    }
+
+    // If files were checked via unrar/7z command, report full validation
+    if (result.files_checked > 0) {
+        return ValidationResult.okWithDepth(.rar, .full);
+    }
+
+    // Otherwise only header validation was possible (no unrar/7z available)
+    return ValidationResult.okWithDepth(.rar, .structural);
+}
+
 // ============ MP3 Deep Validation ============
 
 /// CRC-16 polynomial for MPEG audio: X^16 + X^15 + X^2 + 1 (0x8005)
@@ -20397,6 +20420,7 @@ pub const FormatValidator = struct {
             .xz => validateXzDeep(allocator, path),
             .zstd => validateZstdDeep(allocator, path),
             .sevenz => validate7zDeep(allocator, path),
+            .rar => validateRarDeep(allocator, path),
             .mp3 => validateMp3Deep(allocator, path),
             .ogg => validateOggDeep(allocator, path),
             .midi => validateMidiDeep(path),
