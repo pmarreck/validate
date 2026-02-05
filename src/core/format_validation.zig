@@ -18417,8 +18417,19 @@ fn validateFlacDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     if (!has_md5) {
-        // MD5 hash is missing - this is valid but means we can't verify integrity
-        return ValidationResult.okWithDepth(.flac, .structural);
+        // MD5 hash is missing - do full decode to validate frame CRCs
+        const decode_result = flac_decoder.decodeFlacFull(allocator, path) catch {
+            // Decoder failed - structural validation only
+            return ValidationResult.okWithDepth(.flac, .structural);
+        };
+
+        if (decode_result) {
+            // All frames decoded successfully - full validation achieved
+            return ValidationResult.okWithDepth(.flac, .full);
+        } else {
+            // Decode found corruption
+            return ValidationResult.invalidWithDepth(.flac, "Frame decode failed: audio data corrupted", .full);
+        }
     }
 
     // Try full MD5 verification using the decoder

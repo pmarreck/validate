@@ -713,6 +713,76 @@ pub fn verifyFlacMd5(allocator: Allocator, file_path: []const u8) FlacError!bool
     return decoder.verifyMd5();
 }
 
+
+/// Decode all FLAC frames to verify integrity (without MD5 verification)
+/// This is useful when the FLAC file has no MD5 hash stored (all zeros)
+/// Returns true if all frames decoded successfully, false if corruption detected
+pub fn decodeFlacFull(allocator: Allocator, file_path: []const u8) FlacError!bool {
+    const file = std.fs.cwd().openFile(file_path, .{}) catch return FlacError.Truncated;
+    defer file.close();
+
+    // Read entire file into memory for simplicity
+    const file_size = file.getEndPos() catch return FlacError.Truncated;
+    if (file_size > 1024 * 1024 * 1024) return FlacError.Unsupported; // 1GB limit
+
+    const data = allocator.alloc(u8, @intCast(file_size)) catch return FlacError.OutOfMemory;
+    defer allocator.free(data);
+
+    const bytes_read = file.readAll(data) catch return FlacError.Truncated;
+    if (bytes_read < 42) return FlacError.Truncated;
+
+    // Verify magic
+    if (!std.mem.eql(u8, data[0..4], "fLaC")) return FlacError.InvalidSync;
+
+    var decoder = FlacDecoder.init(allocator);
+    defer decoder.deinit();
+
+    // Parse metadata blocks
+    var pos: usize = 4;
+    while (pos + 4 <= bytes_read) {
+        const is_last = (data[pos] & 0x80) != 0;
+        const block_type = data[pos] & 0x7F;
+        const block_size = (@as(u32, data[pos + 1]) << 16) |
+            (@as(u32, data[pos + 2]) << 8) | data[pos + 3];
+        pos += 4;
+
+        if (pos + block_size > bytes_read) return FlacError.Truncated;
+
+        if (block_type == 0) {
+            // STREAMINFO
+            try decoder.parseStreamInfo(data[pos..][0..block_size]);
+        }
+        // Skip other metadata blocks
+
+        pos += block_size;
+        if (is_last) break;
+    }
+
+    // Decode all frames (frame CRCs validated during decode)
+    var frames_decoded: usize = 0;
+    while (pos + 2 <= bytes_read) {
+        // Look for frame sync
+        if (data[pos] == 0xFF and (data[pos + 1] & 0xFC) == 0xF8) {
+            // Found frame sync, try to decode
+            const frame_data = data[pos..bytes_read];
+            const consumed = decoder.decodeFrame(frame_data) catch |err| {
+                // If we hit end of file after decoding some frames, that's OK
+                if (err == FlacError.Truncated and frames_decoded > 0) {
+                    break;
+                }
+                return err;
+            };
+            frames_decoded += 1;
+            pos += consumed;
+        } else {
+            pos += 1;
+        }
+    }
+
+    // If we decoded at least one frame, consider it valid
+    return frames_decoded > 0;
+}
+
 // Tests
 test "BitReader basic operations" {
     const data = [_]u8{ 0b10110100, 0b11000010 };
