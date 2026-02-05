@@ -88,7 +88,7 @@ fn parseFfmpegVersion(output: []const u8) ?u32 {
 }
 
 /// Check if ffprobe/ffmpeg is available on the system PATH with minimum version
-fn isFfprobeAvailable() bool {
+pub fn isFfprobeAvailable() bool {
     ffprobe_check_mutex.lock();
     defer ffprobe_check_mutex.unlock();
 
@@ -139,9 +139,9 @@ const FfprobeValidationResult = struct {
     frames_decoded: u32,
 };
 
-/// Validate video file using ffprobe/ffmpeg (for unsupported H.264 profiles)
-/// This does a full decode check by having ffmpeg decode the video to null output
-fn validateWithFfprobe(allocator: Allocator, file_path: []const u8) FfprobeValidationResult {
+/// Validate file using ffmpeg - does full decode to null output.
+/// Works for videos and images (TIFF, etc.) that ffmpeg supports.
+pub fn validateWithFfprobe(allocator: Allocator, file_path: []const u8) FfprobeValidationResult {
     // Use ffmpeg to decode video to null - this validates the entire stream
     // ffmpeg -v error -i input.mp4 -f null -
     // If there are decode errors, they'll be in stderr

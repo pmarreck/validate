@@ -906,6 +906,17 @@ pub const ValidationResult = struct {
         };
     }
 
+    /// Return valid with full depth, validated via external ffmpeg
+    pub fn okWithDepthViaFfmpeg(format: FileFormat, depth: ValidationDepth) ValidationResult {
+        return .{
+            .format = format,
+            .is_valid = true,
+            .error_message = null,
+            .validation_depth = depth,
+            .validated_via_ffmpeg = true,
+        };
+    }
+
     /// Return valid with an informational warning (not a repairable malformation)
     pub fn okWithWarning(format: FileFormat, warning: []const u8) ValidationResult {
         return .{
@@ -15986,11 +15997,28 @@ fn validateTiffDeep(allocator: Allocator, path: []const u8, format: FileFormat) 
 
             // InvalidData could mean corruption OR unsupported format features
             // zigimg has limited support (e.g., unusual strip sizes, some predictor modes)
-            // Fall back to structural validation with warning rather than false positive
-            error.InvalidData => ValidationResult.okWithDepthAndWarning(format, .structural, "zigimg decode failed, structural only"),
+            // Try ffmpeg fallback before giving up
+            error.InvalidData => {
+                if (video_validator.isFfprobeAvailable()) {
+                    const ffmpeg_result = video_validator.validateWithFfprobe(allocator, path);
+                    if (ffmpeg_result.valid) {
+                        return ValidationResult.okWithDepthViaFfmpeg(format, .full);
+                    }
+                }
+                return ValidationResult.okWithDepthAndWarning(format, .structural, "zigimg decode failed, structural only");
+            },
 
-            // Unsupported - zigimg doesn't handle this format variant
-            error.Unsupported => ValidationResult.okWithDepthAndWarning(format, .structural, "unsupported format variant"),
+            // Unsupported - zigimg doesn't handle this format variant (e.g., 16-bit TIFF)
+            // Try ffmpeg fallback which supports more variants
+            error.Unsupported => {
+                if (video_validator.isFfprobeAvailable()) {
+                    const ffmpeg_result = video_validator.validateWithFfprobe(allocator, path);
+                    if (ffmpeg_result.valid) {
+                        return ValidationResult.okWithDepthViaFfmpeg(format, .full);
+                    }
+                }
+                return ValidationResult.okWithDepthAndWarning(format, .structural, "unsupported format variant");
+            },
 
             // Other errors - structural validation only
             else => ValidationResult.okWithDepthAndWarning(format, .structural, "decode failed"),
