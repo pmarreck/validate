@@ -5948,8 +5948,8 @@ fn validateNetcdf(file: std.fs.File) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalid(.netcdf, "Failed to seek to start");
 
     // Read enough for header and dimension/variable arrays
-    const max_header_size: usize = @min(@as(usize, @intCast(file_size)), 65536);
-    var header_buf: [65536]u8 = undefined;
+    const max_header_size: usize = @min(@as(usize, @intCast(file_size)), 256 * 1024);
+    var header_buf: [256 * 1024]u8 = undefined;
     const header_read = file.read(header_buf[0..max_header_size]) catch {
         return ValidationResult.invalid(.netcdf, "Failed to read NetCDF header");
     };
@@ -5971,28 +5971,25 @@ fn validateNetcdf(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.netcdf, "Invalid NetCDF version");
     }
 
-    // Offset size for version 2 and 5
-    const is_64bit = version == 2 or version == 5;
+    // Offset/size width depends on version
+    const is_cdf5 = version == 5;
+    const offset_64bit = version == 2 or version == 5;
 
     if (header_read < 8) {
         return ValidationResult.invalid(.netcdf, "Truncated NetCDF header");
     }
 
-    // numrecs field (4 bytes, big-endian) or 8 bytes for CDF-5
+    // numrecs field
     var pos: usize = 4;
-    if (version == 5) {
+    if (is_cdf5) {
         if (header_read < 12) {
             return ValidationResult.invalid(.netcdf, "Truncated CDF-5 header");
         }
-        // 8-byte numrecs for CDF-5
         pos = 12;
     } else {
         const numrecs = std.mem.readInt(u32, header[4..8], .big);
-        // Special value 0xFFFFFFFF means "streaming" - unlimited
-        if (numrecs != 0xFFFFFFFF) {
-            if (numrecs > 1_000_000_000) {
-                return ValidationResult.invalid(.netcdf, "Implausible record count");
-            }
+        if (numrecs != 0xFFFFFFFF and numrecs > 1_000_000_000) {
+            return ValidationResult.invalid(.netcdf, "Implausible record count");
         }
         pos = 8;
     }
@@ -6005,7 +6002,6 @@ fn validateNetcdf(file: std.fs.File) ValidationResult {
     const dim_tag = std.mem.readInt(u32, header[pos..][0..4], .big);
     pos += 4;
 
-    // Tag should be NC_DIMENSION (0x0000000A) or ABSENT (0x00000000)
     if (dim_tag != 0x0000000A and dim_tag != 0x00000000) {
         return ValidationResult.invalid(.netcdf, "Invalid dimension list tag");
     }
@@ -6025,26 +6021,18 @@ fn validateNetcdf(file: std.fs.File) ValidationResult {
         // Skip dimension entries
         var dim_i: u32 = 0;
         while (dim_i < num_dims and pos < header_read) : (dim_i += 1) {
-            // Each dimension: name_len (4), name (padded), dim_length (4 or 8)
             if (pos + 4 > header_read) break;
             const name_len = std.mem.readInt(u32, header[pos..][0..4], .big);
             pos += 4;
-
             const padded_name_len = (name_len + 3) & ~@as(u32, 3);
             pos += padded_name_len;
-
-            // Dimension length
-            if (is_64bit) {
-                pos += 8;
-            } else {
-                pos += 4;
-            }
+            pos += if (is_cdf5) 8 else 4; // dim_length
         }
     }
 
-    // Parse global attributes (NC_ATTRIBUTE = 0x0000000C)
+    // Skip global attributes
     if (pos + 4 > header_read) {
-        return ValidationResult.okWithDepth(.netcdf, .full); // Minimal file
+        return ValidationResult.okWithDepth(.netcdf, .full);
     }
 
     const gatt_tag = std.mem.readInt(u32, header[pos..][0..4], .big);
@@ -6061,28 +6049,128 @@ fn validateNetcdf(file: std.fs.File) ValidationResult {
             return ValidationResult.invalid(.netcdf, "Too many attributes");
         }
 
-        // Skip attribute entries (simplified)
-        // Each attribute: name_len, name, nc_type, nelems, values
+        // Skip each attribute
+        var att_i: u32 = 0;
+        while (att_i < num_atts and pos + 12 <= header_read) : (att_i += 1) {
+            const att_name_len = std.mem.readInt(u32, header[pos..][0..4], .big);
+            pos += 4;
+            pos += (att_name_len + 3) & ~@as(u32, 3); // padded name
+            if (pos + 8 > header_read) break;
+            const nc_type = std.mem.readInt(u32, header[pos..][0..4], .big);
+            pos += 4;
+            const nelems = std.mem.readInt(u32, header[pos..][0..4], .big);
+            pos += 4;
+            // Type sizes: 1=byte, 2=char, 3=short, 4=int, 5=float, 6=double
+            const type_size: u32 = switch (nc_type) {
+                1, 2 => 1,
+                3 => 2,
+                4, 5 => 4,
+                6 => 8,
+                else => 4,
+            };
+            const values_size = (nelems * type_size + 3) & ~@as(u32, 3);
+            pos += values_size;
+        }
     } else if (gatt_tag != 0x00000000) {
         return ValidationResult.invalid(.netcdf, "Invalid attribute list tag");
     }
 
-    // Parse variable list (NC_VARIABLE = 0x0000000B)
+    // Parse variable list and verify offsets
     if (pos + 4 > header_read) {
-        return ValidationResult.okWithDepth(.netcdf, .full); // No variables
+        return ValidationResult.okWithDepth(.netcdf, .full);
     }
 
     const var_tag = std.mem.readInt(u32, header[pos..][0..4], .big);
+    pos += 4;
 
     if (var_tag == 0x0000000B) {
-        if (pos + 8 > header_read) {
+        if (pos + 4 > header_read) {
             return ValidationResult.invalid(.netcdf, "Truncated variable count");
         }
-        pos += 4;
         const num_vars = std.mem.readInt(u32, header[pos..][0..4], .big);
+        pos += 4;
 
         if (num_vars > 100000) {
             return ValidationResult.invalid(.netcdf, "Too many variables");
+        }
+
+        // Parse each variable and verify offsets
+        var var_i: u32 = 0;
+        while (var_i < num_vars and pos < header_read) : (var_i += 1) {
+            // Variable name
+            if (pos + 4 > header_read) break;
+            const var_name_len = std.mem.readInt(u32, header[pos..][0..4], .big);
+            pos += 4;
+            pos += (var_name_len + 3) & ~@as(u32, 3);
+
+            // Number of dimensions for this variable
+            if (pos + 4 > header_read) break;
+            const var_nelems = std.mem.readInt(u32, header[pos..][0..4], .big);
+            pos += 4;
+
+            // Skip dimension IDs
+            pos += var_nelems * 4;
+
+            // Skip variable attributes (same format as global attributes)
+            if (pos + 4 > header_read) break;
+            const vatt_tag = std.mem.readInt(u32, header[pos..][0..4], .big);
+            pos += 4;
+
+            if (vatt_tag == 0x0000000C) {
+                if (pos + 4 > header_read) break;
+                const vatt_count = std.mem.readInt(u32, header[pos..][0..4], .big);
+                pos += 4;
+
+                var vatt_i: u32 = 0;
+                while (vatt_i < vatt_count and pos + 12 <= header_read) : (vatt_i += 1) {
+                    const vatt_name_len = std.mem.readInt(u32, header[pos..][0..4], .big);
+                    pos += 4;
+                    pos += (vatt_name_len + 3) & ~@as(u32, 3);
+                    if (pos + 8 > header_read) break;
+                    const vatt_type = std.mem.readInt(u32, header[pos..][0..4], .big);
+                    pos += 4;
+                    const vatt_nelems = std.mem.readInt(u32, header[pos..][0..4], .big);
+                    pos += 4;
+                    const vatt_type_size: u32 = switch (vatt_type) {
+                        1, 2 => 1,
+                        3 => 2,
+                        4, 5 => 4,
+                        6 => 8,
+                        else => 4,
+                    };
+                    pos += (vatt_nelems * vatt_type_size + 3) & ~@as(u32, 3);
+                }
+            }
+
+            // nc_type (4 bytes)
+            if (pos + 4 > header_read) break;
+            pos += 4;
+
+            // vsize (variable size - 4 or 8 bytes)
+            if (is_cdf5) {
+                if (pos + 8 > header_read) break;
+                pos += 8;
+            } else {
+                if (pos + 4 > header_read) break;
+                pos += 4;
+            }
+
+            // begin (offset to data)
+            var var_begin: u64 = 0;
+            if (offset_64bit) {
+                if (pos + 8 > header_read) break;
+                var_begin = std.mem.readInt(u64, header[pos..][0..8], .big);
+                pos += 8;
+            } else {
+                if (pos + 4 > header_read) break;
+                var_begin = std.mem.readInt(u32, header[pos..][0..4], .big);
+                pos += 4;
+            }
+
+            // Verify offset is within file bounds
+            if (var_begin > file_size) {
+                return ValidationResult.invalid(.netcdf, "Variable data offset exceeds file size");
+            }
         }
     } else if (var_tag != 0x00000000) {
         return ValidationResult.invalid(.netcdf, "Invalid variable list tag");
