@@ -126,7 +126,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .png, .jpeg, .jxl, .gif, .bmp, .webp, .tiff, .heic, .avif, .exr, .svg, .psd, .ai, .eps, .sketch, .aep, .dng, .cr2, .nef, .arw, .jpeg2000, .jbig2, .ico => "image",
 
         // Video
-        .mp4, .mov, .mkv, .webm, .avi, .swf, .flv, .prores, .av1, .ogv => "video",
+        .mp4, .mov, .mkv, .webm, .avi, .swf, .flv, .prores, .av1, .ogv, .mpeg_ps, .mpeg_ts, .mpeg_es, .ivf => "video",
 
         // Audio
         .mp3, .flac, .wav, .m4a, .alac, .aiff, .ogg, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .eac3, .mod, .xm, .it, .s3m => "audio",

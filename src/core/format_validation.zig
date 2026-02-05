@@ -319,6 +319,10 @@ pub const FileFormat = enum {
     flv, // Adobe Flash Video container
     prores, // Apple ProRes (in MOV/MP4 container)
     av1, // AV1 video (in MP4/MKV/WebM container)
+    mpeg_ps, // MPEG Program Stream (.mpg, .mpeg, .vob)
+    mpeg_ts, // MPEG Transport Stream (.ts, .mts, .m2ts)
+    mpeg_es, // MPEG Elementary Stream (raw MPEG-1/2 video)
+    ivf, // IVF container (VP8/VP9/AV1)
     // Audio
     mp3,
     flac,
@@ -519,6 +523,10 @@ pub const FileFormat = enum {
             .flv => "Flash Video",
             .prores => "Apple ProRes Video",
             .av1 => "AV1 Video",
+            .mpeg_ps => "MPEG Program Stream",
+            .mpeg_ts => "MPEG Transport Stream",
+            .mpeg_es => "MPEG Elementary Stream",
+            .ivf => "IVF Video Container",
             .mp3 => "MP3 Audio",
             .flac => "FLAC Audio",
             .wav => "WAV Audio",
@@ -644,6 +652,7 @@ pub const FileFormat = enum {
             .pdf, .rtf => true, // Document formats
             .wpd, .cwk, .mwd => true, // Legacy word processors
             .mp4, .mov, .mkv, .webm, .avi, .swf, .flv => true, // Video containers
+            .mpeg_ps, .mpeg_ts, .mpeg_es, .ivf => true, // MPEG streams and IVF container
             .prores, .av1 => true, // Video codecs (detected within containers)
             .mp3, .flac, .wav, .m4a => true, // Audio
             .alac, .aiff, .ogg, .ogv, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .eac3 => true, // Additional audio/video formats
@@ -1197,6 +1206,12 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "%PDF-", .offset = 0, .format = .pdf },
     // Matroska/WebM: EBML header 1A 45 DF A3
     .{ .bytes = &[_]u8{ 0x1A, 0x45, 0xDF, 0xA3 }, .offset = 0, .format = .mkv }, // WebM is subset, detect later
+    // MPEG Program Stream: 00 00 01 BA (pack start code)
+    .{ .bytes = &[_]u8{ 0x00, 0x00, 0x01, 0xBA }, .offset = 0, .format = .mpeg_ps },
+    // MPEG Transport Stream: 47 sync byte (checked with additional validation)
+    .{ .bytes = &[_]u8{0x47}, .offset = 0, .format = .mpeg_ts },
+    // IVF container: DKIF signature
+    .{ .bytes = "DKIF", .offset = 0, .format = .ivf },
     // FLAC: fLaC
     .{ .bytes = "fLaC", .offset = 0, .format = .flac },
     // MP3 with ID3v2 tag
@@ -1574,6 +1589,23 @@ pub fn detectFormat(header: []const u8) FileFormat {
                         }
                     }
                     continue; // Not enough data or invalid bsid
+                }
+                // Special case: MPEG TS detection (single 0x47 sync byte)
+                // Need to verify there are additional sync bytes at packet intervals
+                if (sig.format == .mpeg_ts) {
+                    if (header.len >= 376) {
+                        // Check for sync bytes at common packet sizes: 188, 192, 204 bytes
+                        if (header[188] == 0x47) {
+                            return .mpeg_ts; // 188-byte packets (standard)
+                        }
+                        if (header[192] == 0x47) {
+                            return .mpeg_ts; // 192-byte packets (with timestamp)
+                        }
+                        if (header[204] == 0x47) {
+                            return .mpeg_ts; // 204-byte packets (with FEC)
+                        }
+                    }
+                    continue; // Not enough data or no sync pattern
                 }
                 // Special case: TrueType fonts need validation of numTables
                 // The 00 01 00 00 signature can match other binary formats
@@ -14372,6 +14404,164 @@ fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult {
     return ValidationResult.okWithDepth(.flv, .full);
 }
 
+// ============ MPEG PS/TS/ES/IVF Validators ============
+
+/// Validate MPEG Program Stream file structure.
+/// Pack start code: 00 00 01 BA followed by SCR and mux rate
+fn validateMpegPs(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.mpeg_ps, "Failed to seek to start");
+
+    var header: [14]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.mpeg_ps, "Failed to read header");
+
+    if (bytes_read < 14) {
+        return ValidationResult.invalid(.mpeg_ps, "File too small for MPEG PS");
+    }
+
+    // Check pack start code: 00 00 01 BA
+    if (!std.mem.eql(u8, header[0..4], &[_]u8{ 0x00, 0x00, 0x01, 0xBA })) {
+        return ValidationResult.invalid(.mpeg_ps, "Invalid MPEG PS pack start code");
+    }
+
+    // Check MPEG version based on next 2 bits after start code
+    // MPEG-1: starts with 0010xxxx (bits 4-5 are 00)
+    // MPEG-2: starts with 01xxxxxx (bit 6 is 0, bit 7 is 1)
+    const marker = header[4];
+    if ((marker & 0xF0) == 0x20) {
+        // MPEG-1 PS
+        return ValidationResult.okWithDepth(.mpeg_ps, .full);
+    } else if ((marker & 0xC0) == 0x40) {
+        // MPEG-2 PS
+        return ValidationResult.okWithDepth(.mpeg_ps, .full);
+    }
+
+    return ValidationResult.invalid(.mpeg_ps, "Invalid MPEG PS marker bits");
+}
+
+/// Validate MPEG Transport Stream file structure.
+/// 188-byte packets starting with 0x47 sync byte
+fn validateMpegTs(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.mpeg_ts, "Failed to seek to start");
+
+    // Read enough to check multiple sync bytes
+    var buffer: [376]u8 = undefined;
+    const bytes_read = file.read(&buffer) catch return ValidationResult.invalid(.mpeg_ts, "Failed to read header");
+
+    if (bytes_read < 188) {
+        return ValidationResult.invalid(.mpeg_ts, "File too small for MPEG TS");
+    }
+
+    // First byte must be sync byte
+    if (buffer[0] != 0x47) {
+        return ValidationResult.invalid(.mpeg_ts, "Invalid MPEG TS sync byte");
+    }
+
+    // Determine packet size by checking for sync at different intervals
+    // Valid packet sizes: 188 (standard), 192 (with timestamp), 204 (with FEC)
+    const has_valid_packets = (bytes_read >= 376 and buffer[188] == 0x47) or
+        (bytes_read >= 384 and buffer[192] == 0x47) or
+        (bytes_read >= 408 and buffer[204] == 0x47);
+
+    if (!has_valid_packets) {
+        return ValidationResult.invalid(.mpeg_ts, "Cannot determine MPEG TS packet size");
+    }
+
+    // Verify PID field (bits 0-12 of bytes 1-2) is valid
+    const pid = ((@as(u16, buffer[1] & 0x1F) << 8) | @as(u16, buffer[2]));
+    if (pid > 0x1FFF) {
+        return ValidationResult.invalid(.mpeg_ts, "Invalid MPEG TS PID");
+    }
+
+    return ValidationResult.okWithDepth(.mpeg_ts, .full);
+}
+
+/// Validate MPEG Elementary Stream (raw MPEG-1/2 video).
+/// Video sequence header: 00 00 01 B3
+fn validateMpegEs(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.mpeg_es, "Failed to seek to start");
+
+    var header: [12]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.mpeg_es, "Failed to read header");
+
+    if (bytes_read < 12) {
+        return ValidationResult.invalid(.mpeg_es, "File too small for MPEG ES");
+    }
+
+    // Check for sequence header (video) or system start code
+    // Video sequence: 00 00 01 B3
+    // Pack start code (PS): 00 00 01 BA - shouldn't match ES
+    if (std.mem.eql(u8, header[0..4], &[_]u8{ 0x00, 0x00, 0x01, 0xB3 })) {
+        // MPEG video sequence header
+        return ValidationResult.okWithDepth(.mpeg_es, .full);
+    }
+
+    // Could also start with picture start code or GOP
+    if (std.mem.eql(u8, header[0..4], &[_]u8{ 0x00, 0x00, 0x01, 0x00 })) {
+        // Picture start code
+        return ValidationResult.okWithDepth(.mpeg_es, .full);
+    }
+
+    if (std.mem.eql(u8, header[0..4], &[_]u8{ 0x00, 0x00, 0x01, 0xB8 })) {
+        // GOP header
+        return ValidationResult.okWithDepth(.mpeg_es, .full);
+    }
+
+    return ValidationResult.invalid(.mpeg_es, "Invalid MPEG ES start code");
+}
+
+/// Validate IVF container file structure.
+/// IVF header: DKIF + version + header_size + codec + dimensions + frame rate
+fn validateIvf(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.ivf, "Failed to seek to start");
+
+    var header: [32]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ivf, "Failed to read header");
+
+    if (bytes_read < 32) {
+        return ValidationResult.invalid(.ivf, "File too small for IVF header");
+    }
+
+    // Check signature "DKIF"
+    if (!std.mem.eql(u8, header[0..4], "DKIF")) {
+        return ValidationResult.invalid(.ivf, "Invalid IVF signature");
+    }
+
+    // Version (should be 0)
+    const version = std.mem.readInt(u16, header[4..6], .little);
+    if (version != 0) {
+        return ValidationResult.invalid(.ivf, "Unsupported IVF version");
+    }
+
+    // Header size (should be 32)
+    const header_size = std.mem.readInt(u16, header[6..8], .little);
+    if (header_size != 32) {
+        return ValidationResult.invalid(.ivf, "Invalid IVF header size");
+    }
+
+    // Codec FourCC at offset 8-12 (VP80, VP90, AV01, etc.)
+    const codec = header[8..12];
+    const valid_codecs = [_][]const u8{ "VP80", "VP90", "AV01" };
+    var valid_codec = false;
+    for (valid_codecs) |vc| {
+        if (std.mem.eql(u8, codec, vc)) {
+            valid_codec = true;
+            break;
+        }
+    }
+    if (!valid_codec) {
+        // Unknown codec but structure is valid
+    }
+
+    // Width and height (sanity check)
+    const width = std.mem.readInt(u16, header[12..14], .little);
+    const height = std.mem.readInt(u16, header[14..16], .little);
+    if (width == 0 or height == 0 or width > 8192 or height > 8192) {
+        return ValidationResult.invalid(.ivf, "Invalid IVF dimensions");
+    }
+
+    return ValidationResult.okWithDepth(.ivf, .full);
+}
+
 // ============ MP3 Validator ============
 
 /// Validate MP3 file structure.
@@ -21674,6 +21864,10 @@ pub const FormatValidator = struct {
             .avi => validateAvi(file),
             .swf => validateSwf(file),
             .flv => validateFlv(file),
+            .mpeg_ps => validateMpegPs(file),
+            .mpeg_ts => validateMpegTs(file),
+            .mpeg_es => validateMpegEs(file),
+            .ivf => validateIvf(file),
             .mp3 => validateMp3(file),
             .flac => validateFlac(file),
             .wav, .aiff => validateRiffAudio(file, format),
