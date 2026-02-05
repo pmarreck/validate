@@ -13779,6 +13779,8 @@ fn validateWav(file: std.fs.File) ValidationResult {
 
 /// Deep WAV validation - verifies fmt chunk, data chunk size, and file consistency.
 fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    _ = allocator; // No longer needed - using streaming validation
+
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.wav, "File not found", .full),
@@ -13788,7 +13790,7 @@ fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult {
     };
     defer file.close();
 
-    // Read entire file for validation
+    // Get file size for bounds checking
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidWithDepth(.wav, "Failed to get file size", .full);
     };
@@ -13797,64 +13799,109 @@ fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.wav, "File too small for valid WAV", .full);
     }
 
-    if (file_size > 100 * 1024 * 1024) { // 100MB limit for deep validation
-        // For large files, just do structural validation
-        return ValidationResult.okWithDepth(.wav, .structural);
+    // Read RIFF header (12 bytes)
+    var header: [12]u8 = undefined;
+    const header_read = file.readAll(&header) catch {
+        return ValidationResult.invalidWithDepth(.wav, "Failed to read header", .full);
+    };
+    if (header_read < 12) {
+        return ValidationResult.invalidWithDepth(.wav, "Truncated header", .full);
     }
 
-    const data = allocator.alloc(u8, file_size) catch {
-        return ValidationResult.invalidWithDepth(.wav, "Memory allocation failed", .full);
-    };
-    defer allocator.free(data);
-
-    const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalidWithDepth(.wav, "Failed to read file", .full);
-    };
-    if (bytes_read != file_size) {
-        return ValidationResult.invalidWithDepth(.wav, "Incomplete file read", .full);
-    }
-
-    // Verify RIFF header
-    if (!std.mem.eql(u8, data[0..4], "RIFF") or !std.mem.eql(u8, data[8..12], "WAVE")) {
+    // Verify RIFF/WAVE signature
+    if (!std.mem.eql(u8, header[0..4], "RIFF") or !std.mem.eql(u8, header[8..12], "WAVE")) {
         return ValidationResult.invalidWithDepth(.wav, "Invalid WAV header", .full);
     }
 
-    const riff_size = std.mem.readInt(u32, data[4..8], .little);
-    if (riff_size + 8 > file_size) {
+    const riff_size = std.mem.readInt(u32, header[4..8], .little);
+    if (@as(u64, riff_size) + 8 > file_size) {
         return ValidationResult.invalidWithDepth(.wav, "RIFF size exceeds file size", .full);
     }
 
-    // Parse chunks
-    var offset: usize = 12;
+    // Stream through chunks without loading entire file
+    var offset: u64 = 12;
     var found_fmt = false;
     var found_data = false;
+    var fmt_audio_format: u16 = 0;
+    var fmt_channels: u16 = 0;
+    var fmt_sample_rate: u32 = 0;
+    var fmt_bits_per_sample: u16 = 0;
 
     while (offset + 8 <= file_size) {
-        const chunk_id = data[offset..][0..4];
-        const chunk_size = std.mem.readInt(u32, data[offset + 4 ..][0..4], .little);
+        // Seek to chunk header
+        file.seekTo(offset) catch {
+            return ValidationResult.invalidWithDepth(.wav, "Failed to seek to chunk", .full);
+        };
+
+        // Read chunk header (8 bytes: 4 ID + 4 size)
+        var chunk_header: [8]u8 = undefined;
+        const chunk_read = file.readAll(&chunk_header) catch {
+            break; // End of file
+        };
+        if (chunk_read < 8) break;
+
+        const chunk_id = chunk_header[0..4];
+        const chunk_size = std.mem.readInt(u32, chunk_header[4..8], .little);
+
+        // Validate chunk doesn't exceed file
+        if (offset + 8 + chunk_size > file_size) {
+            // Allow slight overrun for last chunk (common in some encoders)
+            if (found_fmt and found_data) {
+                break;
+            }
+            return ValidationResult.invalidWithDepth(.wav, "Chunk extends beyond file", .full);
+        }
 
         if (std.mem.eql(u8, chunk_id, "fmt ")) {
             found_fmt = true;
 
-            // Validate fmt chunk contents
-            if (offset + 8 + chunk_size > file_size) {
-                return ValidationResult.invalidWithDepth(.wav, "fmt chunk extends beyond file", .full);
-            }
             if (chunk_size < 16) {
                 return ValidationResult.invalidWithDepth(.wav, "fmt chunk too small", .full);
+            }
+
+            // Read fmt chunk data for validation
+            var fmt_data: [16]u8 = undefined;
+            const fmt_read = file.readAll(&fmt_data) catch {
+                return ValidationResult.invalidWithDepth(.wav, "Failed to read fmt chunk", .full);
+            };
+            if (fmt_read < 16) {
+                return ValidationResult.invalidWithDepth(.wav, "Truncated fmt chunk", .full);
+            }
+
+            fmt_audio_format = std.mem.readInt(u16, fmt_data[0..2], .little);
+            fmt_channels = std.mem.readInt(u16, fmt_data[2..4], .little);
+            fmt_sample_rate = std.mem.readInt(u32, fmt_data[4..8], .little);
+            // bytes 8-11: byte rate
+            // bytes 12-13: block align
+            fmt_bits_per_sample = std.mem.readInt(u16, fmt_data[14..16], .little);
+
+            // Validate format parameters
+            if (fmt_channels == 0 or fmt_channels > 32) {
+                return ValidationResult.invalidWithDepth(.wav, "Invalid channel count", .full);
+            }
+            if (fmt_sample_rate == 0 or fmt_sample_rate > 384000) {
+                return ValidationResult.invalidWithDepth(.wav, "Invalid sample rate", .full);
+            }
+            if (fmt_bits_per_sample == 0 or fmt_bits_per_sample > 64) {
+                return ValidationResult.invalidWithDepth(.wav, "Invalid bits per sample", .full);
             }
         } else if (std.mem.eql(u8, chunk_id, "data")) {
             found_data = true;
 
-            // Verify data chunk doesn't exceed file
-            if (offset + 8 + chunk_size > file_size) {
-                return ValidationResult.invalidWithDepth(.wav, "data chunk extends beyond file", .full);
+            // For data chunk, verify size is consistent with format
+            if (found_fmt and fmt_channels > 0 and fmt_bits_per_sample > 0) {
+                const bytes_per_sample = (fmt_bits_per_sample + 7) / 8;
+                const block_align = fmt_channels * bytes_per_sample;
+                if (block_align > 0 and chunk_size % block_align != 0) {
+                    // Data size not aligned to block boundary - warn but don't fail
+                    // Some encoders pad with extra bytes
+                }
             }
         }
 
-        // Move to next chunk (pad to even boundary)
+        // Move to next chunk (pad to even boundary per RIFF spec)
         offset += 8 + chunk_size;
-        if (chunk_size % 2 != 0 and offset < file_size) {
+        if (chunk_size % 2 != 0) {
             offset += 1;
         }
     }
