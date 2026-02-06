@@ -323,6 +323,8 @@ pub const FileFormat = enum {
     mpeg_ts, // MPEG Transport Stream (.ts, .mts, .m2ts)
     mpeg_es, // MPEG Elementary Stream (raw MPEG-1/2 video)
     ivf, // IVF container (VP8/VP9/AV1)
+    asf, // ASF/WMV/WMA (Advanced Systems Format - Microsoft)
+    dv, // DV (Digital Video)
     // Audio
     mp3,
     flac,
@@ -339,9 +341,17 @@ pub const FileFormat = enum {
     dff, // DSDIFF - DSD Interchange File Format (hi-res audio)
     ac3, // Dolby Digital AC-3 audio
     eac3, // Dolby Digital Plus (E-AC-3) audio
+    amr, // AMR (Adaptive Multi-Rate) audio
+    au, // AU/SND (Sun/NeXT audio)
+    tta, // TTA (True Audio) lossless
+    caf, // CAF (Core Audio Format - Apple)
     // Image formats (additional)
     jpeg2000, // JPEG2000 (.jp2, .j2k, .j2c)
     jbig2, // JBIG2 bi-level image compression (.jbig2, .jb2)
+    qoi, // QOI (Quite OK Image)
+    pam, // Portable Anymap (PBM/PGM/PPM/PAM)
+    dpx, // DPX (Digital Picture Exchange)
+    tga, // TGA (Truevision TGA/TARGA)
     // Tracker/Module formats
     mod, // Amiga ProTracker MOD
     xm, // FastTracker 2 Extended Module
@@ -458,6 +468,7 @@ pub const FileFormat = enum {
     // Apple formats
     plist, // Apple Property List (XML or binary)
     ds_store, // macOS .DS_Store (Desktop Services Store)
+    spotlight, // macOS Spotlight index (proprietary)
     // Executable formats
     pe, // Windows PE (Portable Executable) - .exe, .dll, .sys, .scr
     // Bundle formats (directories validated as a unit)
@@ -527,6 +538,8 @@ pub const FileFormat = enum {
             .mpeg_ts => "MPEG Transport Stream",
             .mpeg_es => "MPEG Elementary Stream",
             .ivf => "IVF Video Container",
+            .asf => "ASF Media",
+            .dv => "DV Video",
             .mp3 => "MP3 Audio",
             .flac => "FLAC Audio",
             .wav => "WAV Audio",
@@ -542,8 +555,16 @@ pub const FileFormat = enum {
             .dff => "DSDIFF Audio",
             .ac3 => "Dolby Digital AC-3 Audio",
             .eac3 => "Dolby Digital Plus Audio",
+            .amr => "AMR Audio",
+            .au => "AU/SND Audio",
+            .tta => "True Audio (TTA)",
+            .caf => "CAF Audio",
             .jpeg2000 => "JPEG2000 Image",
             .jbig2 => "JBIG2 Bi-level Image",
+            .qoi => "QOI Image",
+            .pam => "Portable Anymap Image",
+            .dpx => "DPX Image",
+            .tga => "TGA Image",
             .mod => "ProTracker Module",
             .xm => "FastTracker Module",
             .it => "Impulse Tracker Module",
@@ -632,6 +653,7 @@ pub const FileFormat = enum {
             .csv => "CSV Data",
             .plist => "Apple Property List",
             .ds_store => "macOS DS_Store",
+            .spotlight => "macOS Spotlight Index",
             .pe => "Windows PE Executable",
             .git_repository => "Git Repository",
             .macos_app => "macOS Application Bundle",
@@ -653,10 +675,13 @@ pub const FileFormat = enum {
             .wpd, .cwk, .mwd => true, // Legacy word processors
             .mp4, .mov, .mkv, .webm, .avi, .swf, .flv => true, // Video containers
             .mpeg_ps, .mpeg_ts, .mpeg_es, .ivf => true, // MPEG streams and IVF container
+            .asf, .dv => true, // ASF/WMV/WMA and DV
             .prores, .av1 => true, // Video codecs (detected within containers)
             .mp3, .flac, .wav, .m4a => true, // Audio
             .alac, .aiff, .ogg, .ogv, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .eac3 => true, // Additional audio/video formats
+            .amr, .au, .tta, .caf => true, // AMR, AU/SND, TTA, CAF audio
             .jpeg2000, .jbig2 => true, // JPEG2000 and JBIG2 image formats
+            .qoi, .pam, .dpx, .tga => true, // QOI, Portable Anymap, DPX, TGA image formats
             .mod, .xm, .it, .s3m => true, // Tracker/module formats
             .als, .rpp, .flp, .song, .bwproject, .cpr, .ptx, .band, .reason => true, // DAW project formats
             .prproj => true, // Video editing project formats
@@ -693,6 +718,7 @@ pub const FileFormat = enum {
             .csv => true, // CSV structural validation
             .plist => true, // Apple Property List (XML or binary)
             .ds_store => true, // macOS DS_Store (structural only)
+            .spotlight => true, // macOS Spotlight index (structural only)
             .pe => true, // Windows PE executable
             .git_repository => true, // Git repository validation
             .macos_app => true, // macOS application bundle validation
@@ -1356,6 +1382,25 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "bplist00", .offset = 0, .format = .plist },
     // macOS .DS_Store: 0x00000001 + "Bud1"
     .{ .bytes = &[_]u8{ 0x00, 0x00, 0x00, 0x01 } ++ "Bud1", .offset = 0, .format = .ds_store },
+    // macOS Spotlight index: "8tsd" magic
+    .{ .bytes = "8tsd", .offset = 0, .format = .spotlight },
+    // AMR (Adaptive Multi-Rate): "#!AMR\n" (narrow-band) or "#!AMR-WB\n" (wide-band)
+    .{ .bytes = "#!AMR-WB\n", .offset = 0, .format = .amr },
+    .{ .bytes = "#!AMR\n", .offset = 0, .format = .amr },
+    // AU/SND (Sun/NeXT audio): ".snd" (0x2E736E64)
+    .{ .bytes = ".snd", .offset = 0, .format = .au },
+    // TTA (True Audio): "TTA1"
+    .{ .bytes = "TTA1", .offset = 0, .format = .tta },
+    // QOI (Quite OK Image): "qoif"
+    .{ .bytes = "qoif", .offset = 0, .format = .qoi },
+    // DPX (Digital Picture Exchange): "SDPX" (LE) or "XPDS" (BE)
+    .{ .bytes = "SDPX", .offset = 0, .format = .dpx },
+    .{ .bytes = "XPDS", .offset = 0, .format = .dpx },
+    // ASF/WMV/WMA: ASF Header Object GUID (16 bytes)
+    .{ .bytes = &[_]u8{ 0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C }, .offset = 0, .format = .asf },
+    // CAF (Core Audio Format): "caff"
+    .{ .bytes = "caff", .offset = 0, .format = .caf },
+    // Note: DV, TGA, PAM/PBM/PGM/PPM have no reliable magic bytes - detected by extension and/or structure
 };
 
 /// Extended format detection for formats that need more than magic bytes.
@@ -1718,6 +1763,13 @@ pub fn detectFormat(header: []const u8) FileFormat {
         }
     }
 
+    // PBM/PGM/PPM/PAM: "P1"-"P7" followed by whitespace
+    if (header.len >= 3 and header[0] == 'P' and header[1] >= '1' and header[1] <= '7') {
+        if (header[2] == ' ' or header[2] == '\t' or header[2] == '\n' or header[2] == '\r') {
+            return .pam;
+        }
+    }
+
     // Text-based format detection (JSON, XML, TOML, YAML)
     // These don't have magic bytes, so we detect by content patterns
     if (detectTextFormat(header)) |text_format| {
@@ -1944,6 +1996,8 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
 
     // Extension-only formats (no magic bytes)
     if (std.mem.eql(u8, ext_lower, "br")) return .br;
+    if (std.mem.eql(u8, ext_lower, "dv") or std.mem.eql(u8, ext_lower, "dif")) return .dv;
+    if (std.mem.eql(u8, ext_lower, "tga") or std.mem.eql(u8, ext_lower, "targa")) return .tga;
 
     // Adobe Illustrator - extension needed to distinguish from PDF/EPS
     // AI files are PDF or PostScript internally, but should be treated as AI
@@ -2182,6 +2236,11 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "exr")) return .exr;
     if (std.mem.eql(u8, ext_lower, "jxl")) return .jxl;
     if (std.mem.eql(u8, ext_lower, "svg")) return .svg;
+    if (std.mem.eql(u8, ext_lower, "apng")) return .png; // APNG validated by PNG validator
+    if (std.mem.eql(u8, ext_lower, "qoi")) return .qoi;
+    if (std.mem.eql(u8, ext_lower, "pbm") or std.mem.eql(u8, ext_lower, "pgm") or std.mem.eql(u8, ext_lower, "ppm") or std.mem.eql(u8, ext_lower, "pam") or std.mem.eql(u8, ext_lower, "pnm")) return .pam;
+    if (std.mem.eql(u8, ext_lower, "dpx")) return .dpx;
+    if (std.mem.eql(u8, ext_lower, "tga") or std.mem.eql(u8, ext_lower, "targa")) return .tga;
     if (std.mem.eql(u8, ext_lower, "psd") or std.mem.eql(u8, ext_lower, "psb")) return .psd;
     if (std.mem.eql(u8, ext_lower, "ai")) return .ai;
     if (std.mem.eql(u8, ext_lower, "eps") or std.mem.eql(u8, ext_lower, "epsf")) return .eps;
@@ -2239,6 +2298,9 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "avi")) return .avi;
     if (std.mem.eql(u8, ext_lower, "flv")) return .flv;
     if (std.mem.eql(u8, ext_lower, "swf")) return .swf;
+    if (std.mem.eql(u8, ext_lower, "3gp") or std.mem.eql(u8, ext_lower, "3g2") or std.mem.eql(u8, ext_lower, "3gpp")) return .mp4; // 3GP uses MP4/ISOBMFF
+    if (std.mem.eql(u8, ext_lower, "asf") or std.mem.eql(u8, ext_lower, "wmv") or std.mem.eql(u8, ext_lower, "wma")) return .asf;
+    if (std.mem.eql(u8, ext_lower, "dv") or std.mem.eql(u8, ext_lower, "dif")) return .dv;
 
     // Audio
     if (std.mem.eql(u8, ext_lower, "mp3")) return .mp3;
@@ -2251,6 +2313,10 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "mid") or std.mem.eql(u8, ext_lower, "midi")) return .midi;
     if (std.mem.eql(u8, ext_lower, "ape")) return .ape;
     if (std.mem.eql(u8, ext_lower, "wv")) return .wavpack;
+    if (std.mem.eql(u8, ext_lower, "amr") or std.mem.eql(u8, ext_lower, "awb")) return .amr; // .awb = AMR-WB
+    if (std.mem.eql(u8, ext_lower, "au") or std.mem.eql(u8, ext_lower, "snd")) return .au;
+    if (std.mem.eql(u8, ext_lower, "tta")) return .tta;
+    if (std.mem.eql(u8, ext_lower, "caf")) return .caf;
 
     // Tracker/module formats
     if (std.mem.eql(u8, ext_lower, "mod")) return .mod;
@@ -2265,7 +2331,9 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "woff2")) return .woff2;
 
     // Database
-    if (std.mem.eql(u8, ext_lower, "sqlite") or std.mem.eql(u8, ext_lower, "db") or std.mem.eql(u8, ext_lower, "sqlite3")) return .sqlite;
+    if (std.mem.eql(u8, ext_lower, "sqlite") or std.mem.eql(u8, ext_lower, "sqlite3")) return .sqlite;
+    // Note: .db is intentionally NOT mapped to sqlite - too ambiguous
+    // (Spotlight, Core Data, Berkeley DB, etc. all use .db)
 
     // 3D printing/modeling formats
     if (std.mem.eql(u8, ext_lower, "3mf")) return .@"3mf";
@@ -2504,6 +2572,15 @@ fn detectFormatBySecondarySignaturesTail(tail_data: []const u8, hinted_format: F
             if (std.mem.indexOf(u8, tail_data, &[_]u8{ 'P', 'K', 0x05, 0x06 }) != null) return hinted_format;
         },
         else => {},
+    }
+
+    // TGA v2 footer: "TRUEVISION-XFILE.\0" in last 26 bytes (extension-independent detection)
+    if (len >= 26) {
+        const footer_start = len - 26;
+        const tga_sig = "TRUEVISION-XFILE.\x00";
+        if (std.mem.eql(u8, tail_data[footer_start + 8 .. footer_start + 26], tga_sig)) {
+            return .tga;
+        }
     }
 
     return .unknown;
@@ -20352,6 +20429,18 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
         const box_size = std.mem.readInt(u32, box_header[0..4], .big);
         const box_type = box_header[4..8];
 
+        // Validate box type is printable ASCII (0x20-0x7E).
+        // Apple MP4 files can have trailing non-box metadata after the last
+        // real box. If we hit non-ASCII, stop parsing rather than failing.
+        var valid_type = true;
+        for (box_type) |c| {
+            if (c < 0x20 or c > 0x7E) {
+                valid_type = false;
+                break;
+            }
+        }
+        if (!valid_type) break; // Trailing data, not a real box
+
         // Handle extended size (size == 1 means 64-bit size follows)
         var actual_size: u64 = box_size;
         if (box_size == 1) {
@@ -21167,9 +21256,27 @@ pub const FormatValidator = struct {
                     else => ValidationResult.ok(ext_format),
                 };
             } else {
-                // For extension-only formats without content validators
-                // (like Brotli), mark as valid (will be deep-validated)
-                result = ValidationResult.ok(ext_format);
+                // For extension-only formats (like Brotli, DV, TGA) that lack
+                // magic bytes, trust the extension and validate with the
+                // format-specific validator directly.
+                const ext_has_no_magic = switch (ext_format) {
+                    .br, .dv, .tga => true,
+                    else => false,
+                };
+                if (ext_has_no_magic and ext_format.hasValidator()) {
+                    const reopen_ext = std.fs.cwd().openFile(path, .{}) catch {
+                        result = ValidationResult.ok(ext_format);
+                        return result;
+                    };
+                    defer reopen_ext.close();
+                    result = switch (ext_format) {
+                        .dv => validateDv(reopen_ext),
+                        .tga => validateTga(reopen_ext),
+                        else => ValidationResult.ok(ext_format),
+                    };
+                } else {
+                    result = ValidationResult.ok(ext_format);
+                }
             }
         }
 
@@ -21184,6 +21291,8 @@ pub const FormatValidator = struct {
                 .json, .toml, .ini, .xml, .yaml, .erlang_term, .eex, .markdown => false,
                 .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437 => false,
                 .br => false, // Brotli has no magic, extension-only
+                .dv => false, // DV has no magic bytes, extension-only
+                .tga => false, // TGA has no magic bytes at start, extension-only
                 else => true,
             };
 
@@ -22039,6 +22148,20 @@ pub const FormatValidator = struct {
             // Apple formats
             .plist => validatePlist(file),
             .ds_store => validateDsStore(file),
+            .spotlight => validateSpotlight(file),
+            // New audio formats
+            .amr => validateAmr(file),
+            .au => validateAu(file),
+            .tta => validateTta(file),
+            .caf => validateCaf(file),
+            // New image formats
+            .qoi => validateQoi(file),
+            .pam => validatePam(file),
+            .dpx => validateDpx(file),
+            .tga => validateTga(file),
+            // New container formats
+            .asf => validateAsf(file),
+            .dv => validateDv(file),
             // Executable formats
             .pe => validatePe(file),
             // Bundle formats (directories) - should be handled before reaching this switch
@@ -24348,6 +24471,591 @@ fn validateDsStore(file: std.fs.File) ValidationResult {
 
     // Full validation passed - magic verified, header consistent, allocation table size reasonable
     return ValidationResult.okWithDepth(.ds_store, .full);
+}
+
+/// Validate macOS Spotlight index file (proprietary Apple format)
+/// Magic: "8tsd" at offset 0. Deep validation is not possible since the format
+/// is proprietary and undocumented, so we verify the magic and return structural.
+fn validateSpotlight(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch {
+        return ValidationResult.invalid(.spotlight, "Failed to seek");
+    };
+
+    var header: [8]u8 = undefined;
+    const bytes_read = file.read(&header) catch {
+        return ValidationResult.invalid(.spotlight, "Failed to read header");
+    };
+    if (bytes_read < 8) {
+        return ValidationResult.invalid(.spotlight, "Truncated header");
+    }
+
+    // Verify "8tsd" magic
+    if (!std.mem.eql(u8, header[0..4], "8tsd")) {
+        return ValidationResult.invalid(.spotlight, "Invalid magic bytes");
+    }
+
+    // Proprietary format - structural validation only (magic verified)
+    return ValidationResult.structuralOnly(.spotlight);
+}
+
+// ============ AMR Validator ============
+
+/// Validate AMR (Adaptive Multi-Rate) audio file structure.
+/// AMR-NB (narrow-band): magic "#!AMR\n" (6 bytes)
+/// AMR-WB (wide-band): magic "#!AMR-WB\n" (9 bytes)
+/// Multi-channel variants: "#!AMR_MC1.0\n" (12) and "#!AMR-WB_MC1.0\n" (15)
+fn validateAmr(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.amr, "Failed to seek");
+
+    var header: [15]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.amr, "Failed to read header");
+
+    if (bytes_read < 6) return ValidationResult.invalid(.amr, "Truncated header");
+
+    // Check for AMR-WB multi-channel: "#!AMR-WB_MC1.0\n"
+    if (bytes_read >= 15 and std.mem.eql(u8, header[0..15], "#!AMR-WB_MC1.0\n")) {
+        return ValidationResult.structuralOnly(.amr);
+    }
+
+    // Check for AMR-NB multi-channel: "#!AMR_MC1.0\n"
+    if (bytes_read >= 12 and std.mem.eql(u8, header[0..12], "#!AMR_MC1.0\n")) {
+        return ValidationResult.structuralOnly(.amr);
+    }
+
+    // Check for AMR-WB single channel: "#!AMR-WB\n"
+    if (bytes_read >= 9 and std.mem.eql(u8, header[0..9], "#!AMR-WB\n")) {
+        if (bytes_read > 9) {
+            const frame_header = header[9];
+            const ft = (frame_header >> 3) & 0x0F;
+            // AMR-WB valid frame types: 0-9, 14 (speech lost), 15 (NO_DATA)
+            if (ft > 9 and ft != 14 and ft != 15) {
+                return ValidationResult.invalid(.amr, "Invalid AMR-WB frame type");
+            }
+        }
+        return ValidationResult.structuralOnly(.amr);
+    }
+
+    // Check for AMR-NB single channel: "#!AMR\n"
+    if (std.mem.eql(u8, header[0..6], "#!AMR\n")) {
+        if (bytes_read > 6) {
+            const frame_header = header[6];
+            const ft = (frame_header >> 3) & 0x0F;
+            // AMR-NB valid frame types: 0-8 (speech + SID), 15 (NO_DATA)
+            if (ft > 8 and ft != 15) {
+                return ValidationResult.invalid(.amr, "Invalid AMR-NB frame type");
+            }
+        }
+        return ValidationResult.structuralOnly(.amr);
+    }
+
+    return ValidationResult.invalid(.amr, "Invalid AMR magic bytes");
+}
+
+// ============ AU/SND Validator ============
+
+/// Validate AU/SND (Sun/NeXT audio) file structure.
+/// 24-byte header, all big-endian: magic ".snd", data_offset, data_size, encoding, sample_rate, channels.
+fn validateAu(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.au, "Failed to seek");
+
+    var header: [24]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.au, "Failed to read header");
+
+    if (bytes_read < 24) return ValidationResult.invalid(.au, "Truncated header (need 24 bytes)");
+
+    if (!std.mem.eql(u8, header[0..4], ".snd")) {
+        return ValidationResult.invalid(.au, "Invalid AU magic (expected .snd)");
+    }
+
+    const data_offset = std.mem.readInt(u32, header[4..8], .big);
+    const data_size = std.mem.readInt(u32, header[8..12], .big);
+    const encoding = std.mem.readInt(u32, header[12..16], .big);
+    const sample_rate = std.mem.readInt(u32, header[16..20], .big);
+    const channels = std.mem.readInt(u32, header[20..24], .big);
+
+    if (data_offset < 24) {
+        return ValidationResult.invalid(.au, "Invalid data offset (must be >= 24)");
+    }
+
+    if (encoding == 0 or encoding > 27) {
+        return ValidationResult.invalid(.au, "Invalid encoding format (must be 1-27)");
+    }
+
+    if (sample_rate == 0) {
+        return ValidationResult.invalid(.au, "Invalid sample rate (must be > 0)");
+    }
+
+    if (sample_rate > 768000) {
+        return ValidationResult.invalid(.au, "Unreasonable sample rate (> 768000 Hz)");
+    }
+
+    if (channels == 0) {
+        return ValidationResult.invalid(.au, "Invalid channel count (must be > 0)");
+    }
+    if (channels > 128) {
+        return ValidationResult.invalid(.au, "Unreasonable channel count (> 128)");
+    }
+
+    // Cross-check: if data_size is specified, verify against file size
+    if (data_size != 0xFFFFFFFF and data_size != 0) {
+        const file_size = file.getEndPos() catch {
+            return ValidationResult.structuralOnly(.au);
+        };
+        const expected_min: u64 = @as(u64, data_offset) + @as(u64, data_size);
+        if (expected_min > file_size) {
+            return ValidationResult.invalid(.au, "Data size exceeds file size (truncated)");
+        }
+    }
+
+    return ValidationResult.structuralOnly(.au);
+}
+
+// ============ TTA Validator ============
+
+/// Validate TTA (True Audio) lossless file structure.
+/// TTA1 header: magic "TTA1"(4) + format(2,LE) + channels(2,LE) + bps(2,LE) + rate(4,LE) + samples(4,LE) + CRC32(4,LE) = 22 bytes.
+fn validateTta(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.tta, "Failed to seek");
+
+    var header: [22]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.tta, "Failed to read header");
+
+    if (bytes_read < 22) return ValidationResult.invalid(.tta, "Truncated header (need 22 bytes)");
+
+    if (!std.mem.eql(u8, header[0..4], "TTA1")) {
+        return ValidationResult.invalid(.tta, "Invalid TTA magic (expected TTA1)");
+    }
+
+    const audio_format = std.mem.readInt(u16, header[4..6], .little);
+    const num_channels = std.mem.readInt(u16, header[6..8], .little);
+    const bits_per_sample = std.mem.readInt(u16, header[8..10], .little);
+    const sample_rate = std.mem.readInt(u32, header[10..14], .little);
+    const total_samples = std.mem.readInt(u32, header[14..18], .little);
+
+    if (audio_format != 1) {
+        return ValidationResult.invalid(.tta, "Invalid audio format (expected 1 for lossless)");
+    }
+
+    if (num_channels == 0 or num_channels > 8) {
+        return ValidationResult.invalid(.tta, "Invalid channel count (must be 1-8)");
+    }
+
+    if (bits_per_sample != 8 and bits_per_sample != 16 and bits_per_sample != 24) {
+        return ValidationResult.invalid(.tta, "Invalid bits per sample (must be 8, 16, or 24)");
+    }
+
+    if (sample_rate == 0 or sample_rate > 768000) {
+        return ValidationResult.invalid(.tta, "Invalid sample rate");
+    }
+
+    if (total_samples == 0) {
+        return ValidationResult.invalid(.tta, "Invalid total samples (must be > 0)");
+    }
+
+    // Verify CRC32 of header bytes 0-17
+    const stored_crc = std.mem.readInt(u32, header[18..22], .little);
+    const computed_crc = std.hash.Crc32.hash(header[0..18]);
+    if (stored_crc != computed_crc) {
+        return ValidationResult.invalid(.tta, "Header CRC32 mismatch");
+    }
+
+    // Validate seek table fits
+    const frame_length: u64 = @as(u64, sample_rate) * 256 / 245;
+    if (frame_length > 0) {
+        const fl32: u32 = @intCast(@min(frame_length, std.math.maxInt(u32)));
+        if (fl32 > 0) {
+            const num_frames = (total_samples + fl32 - 1) / fl32;
+            const seek_table_size: u64 = @as(u64, num_frames) * 4 + 4;
+            const file_size = file.getEndPos() catch {
+                return ValidationResult.structuralOnly(.tta);
+            };
+            if (file_size < 22 + seek_table_size) {
+                return ValidationResult.invalid(.tta, "File too small for seek table");
+            }
+        }
+    }
+
+    return ValidationResult.structuralOnly(.tta);
+}
+
+// ============ CAF Validator ============
+
+/// Validate CAF (Core Audio Format) file structure.
+/// File header: "caff"(4) + version(2,BE) + flags(2,BE) = 8 bytes.
+/// First chunk should be "desc" (Audio Description) with size 32.
+fn validateCaf(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.caf, "Failed to seek");
+
+    var header: [20]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.caf, "Failed to read CAF header");
+
+    if (bytes_read < 20) {
+        return ValidationResult.invalid(.caf, "File too small for CAF header");
+    }
+
+    if (!std.mem.eql(u8, header[0..4], "caff")) {
+        return ValidationResult.invalid(.caf, "Invalid CAF magic bytes");
+    }
+
+    const version = std.mem.readInt(u16, header[4..6], .big);
+    if (version != 1) {
+        return ValidationResult.invalid(.caf, "Unsupported CAF version (expected 1)");
+    }
+
+    const flags = std.mem.readInt(u16, header[6..8], .big);
+    if (flags != 0) {
+        return ValidationResult.invalid(.caf, "Invalid CAF flags (expected 0)");
+    }
+
+    // First chunk should be "desc"
+    if (!std.mem.eql(u8, header[8..12], "desc")) {
+        return ValidationResult.invalid(.caf, "First CAF chunk is not 'desc' (Audio Description)");
+    }
+
+    const chunk_size = std.mem.readInt(i64, header[12..20], .big);
+    if (chunk_size != -1 and chunk_size != 32) {
+        return ValidationResult.invalid(.caf, "Unexpected CAF Audio Description chunk size");
+    }
+
+    return ValidationResult.structuralOnly(.caf);
+}
+
+// ============ QOI Validator ============
+
+/// Validate QOI (Quite OK Image) file structure.
+/// Header: "qoif"(4) + width(4,BE) + height(4,BE) + channels(1) + colorspace(1) = 14 bytes.
+fn validateQoi(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.qoi, "Failed to seek");
+
+    var header: [14]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.qoi, "Failed to read QOI header");
+
+    if (bytes_read < 14) {
+        return ValidationResult.invalid(.qoi, "File too small for QOI header (need 14 bytes)");
+    }
+
+    if (!std.mem.eql(u8, header[0..4], "qoif")) {
+        return ValidationResult.invalid(.qoi, "Invalid QOI magic bytes");
+    }
+
+    const width = std.mem.readInt(u32, header[4..8], .big);
+    if (width == 0) {
+        return ValidationResult.invalid(.qoi, "QOI width is zero");
+    }
+
+    const height = std.mem.readInt(u32, header[8..12], .big);
+    if (height == 0) {
+        return ValidationResult.invalid(.qoi, "QOI height is zero");
+    }
+
+    const channels = header[12];
+    if (channels != 3 and channels != 4) {
+        return ValidationResult.invalid(.qoi, "QOI channels must be 3 or 4");
+    }
+
+    const colorspace = header[13];
+    if (colorspace > 1) {
+        return ValidationResult.invalid(.qoi, "QOI colorspace must be 0 (sRGB) or 1 (linear)");
+    }
+
+    return ValidationResult.structuralOnly(.qoi);
+}
+
+// ============ PAM/PBM/PGM/PPM Validator ============
+
+/// Validate Portable Anymap (PBM/PGM/PPM/PAM) file structure.
+/// P1=PBM ASCII, P2=PGM ASCII, P3=PPM ASCII, P4=PBM binary, P5=PGM binary, P6=PPM binary, P7=PAM.
+fn validatePam(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.pam, "Failed to seek");
+
+    var header: [256]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.pam, "Failed to read PAM header");
+
+    if (bytes_read < 3) {
+        return ValidationResult.invalid(.pam, "File too small for Portable Anymap header");
+    }
+
+    if (header[0] != 'P') {
+        return ValidationResult.invalid(.pam, "Invalid Portable Anymap magic (expected 'P')");
+    }
+
+    if (header[1] < '1' or header[1] > '7') {
+        return ValidationResult.invalid(.pam, "Invalid Portable Anymap type (expected P1-P7)");
+    }
+
+    if (header[2] != ' ' and header[2] != '\t' and header[2] != '\n' and header[2] != '\r') {
+        return ValidationResult.invalid(.pam, "Portable Anymap magic not followed by whitespace");
+    }
+
+    // For P7 (PAM), check for ENDHDR keyword
+    if (header[1] == '7') {
+        const header_data = header[0..bytes_read];
+        if (std.mem.indexOf(u8, header_data, "ENDHDR") == null) {
+            // Could be a very large header; not necessarily invalid
+        }
+    } else {
+        // P1-P6: Try to parse width/height
+        var pos: usize = 3;
+        var number_count: u32 = 0;
+
+        while (pos < bytes_read and number_count < 2) {
+            if (header[pos] == '#') {
+                while (pos < bytes_read and header[pos] != '\n') : (pos += 1) {}
+                if (pos < bytes_read) pos += 1;
+                continue;
+            }
+            if (header[pos] == ' ' or header[pos] == '\t' or header[pos] == '\n' or header[pos] == '\r') {
+                pos += 1;
+                continue;
+            }
+            if (header[pos] >= '0' and header[pos] <= '9') {
+                var value: u32 = 0;
+                while (pos < bytes_read and header[pos] >= '0' and header[pos] <= '9') {
+                    value = value *% 10 +% @as(u32, header[pos] - '0');
+                    pos += 1;
+                }
+                number_count += 1;
+                if (value == 0) {
+                    if (number_count == 1) {
+                        return ValidationResult.invalid(.pam, "Portable Anymap width is zero");
+                    } else {
+                        return ValidationResult.invalid(.pam, "Portable Anymap height is zero");
+                    }
+                }
+            } else {
+                return ValidationResult.invalid(.pam, "Invalid character in Portable Anymap header");
+            }
+        }
+    }
+
+    return ValidationResult.structuralOnly(.pam);
+}
+
+// ============ DPX Validator ============
+
+/// Validate DPX (Digital Picture Exchange) file structure.
+/// Magic: "SDPX" (LE) or "XPDS" (BE). Minimum header 2048 bytes in practice.
+fn validateDpx(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.dpx, "Failed to seek");
+
+    var header: [32]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.dpx, "Failed to read DPX header");
+
+    if (bytes_read < 32) {
+        return ValidationResult.invalid(.dpx, "File too small for DPX header");
+    }
+
+    // DPX spec: "SDPX" (0x53445058) = big-endian, "XPDS" (0x58504453) = little-endian
+    const is_be = std.mem.eql(u8, header[0..4], "SDPX");
+    const is_le = std.mem.eql(u8, header[0..4], "XPDS");
+
+    if (!is_le and !is_be) {
+        return ValidationResult.invalid(.dpx, "Invalid DPX magic bytes (expected SDPX or XPDS)");
+    }
+
+    const endian: std.builtin.Endian = if (is_le) .little else .big;
+
+    const image_offset = std.mem.readInt(u32, header[4..8], endian);
+    if (image_offset < 1024) {
+        return ValidationResult.invalid(.dpx, "DPX image offset too small");
+    }
+
+    // Version string at offset 8 should start with 'V'
+    if (header[8] != 'V') {
+        return ValidationResult.invalid(.dpx, "DPX version string does not start with 'V'");
+    }
+
+    const declared_size = std.mem.readInt(u32, header[16..20], endian);
+    const actual_size = file.getEndPos() catch {
+        return ValidationResult.structuralOnly(.dpx);
+    };
+
+    if (declared_size != 0xFFFFFFFF) {
+        if (declared_size > actual_size) {
+            return ValidationResult.invalid(.dpx, "DPX declared file size exceeds actual size (truncated)");
+        }
+    }
+
+    if (image_offset > actual_size) {
+        return ValidationResult.invalid(.dpx, "DPX image offset beyond end of file");
+    }
+
+    return ValidationResult.structuralOnly(.dpx);
+}
+
+// ============ TGA Validator ============
+
+/// Validate TGA (Truevision TGA/TARGA) file structure.
+/// No magic bytes - 18-byte header with: id_length(1) + color_map_type(1) + image_type(1) + color_map_spec(5) + image_spec(10).
+fn validateTga(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.tga, "Failed to seek");
+
+    var header: [18]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.tga, "Failed to read TGA header");
+
+    if (bytes_read < 18) {
+        return ValidationResult.invalid(.tga, "File too small for TGA header (need 18 bytes)");
+    }
+
+    const color_map_type = header[1];
+    if (color_map_type > 1) {
+        return ValidationResult.invalid(.tga, "TGA color map type must be 0 or 1");
+    }
+
+    const image_type = header[2];
+    const valid_image_types = [_]u8{ 0, 1, 2, 3, 9, 10, 11, 32, 33 };
+    var type_valid = false;
+    for (valid_image_types) |vt| {
+        if (image_type == vt) {
+            type_valid = true;
+            break;
+        }
+    }
+    if (!type_valid) {
+        return ValidationResult.invalid(.tga, "Invalid TGA image type");
+    }
+
+    // Color-mapped image types require color map type 1
+    if (color_map_type == 0 and (image_type == 1 or image_type == 9 or image_type == 32 or image_type == 33)) {
+        return ValidationResult.invalid(.tga, "TGA color-mapped image type requires color map type 1");
+    }
+
+    const width = std.mem.readInt(u16, header[12..14], .little);
+    const height = std.mem.readInt(u16, header[14..16], .little);
+
+    if (image_type != 0) {
+        if (width == 0) {
+            return ValidationResult.invalid(.tga, "TGA image width is zero");
+        }
+        if (height == 0) {
+            return ValidationResult.invalid(.tga, "TGA image height is zero");
+        }
+    }
+
+    const pixel_depth = header[16];
+    if (image_type != 0) {
+        if (pixel_depth != 1 and pixel_depth != 8 and pixel_depth != 15 and
+            pixel_depth != 16 and pixel_depth != 24 and pixel_depth != 32)
+        {
+            return ValidationResult.invalid(.tga, "Invalid TGA pixel depth");
+        }
+    }
+
+    // Check for TGA v2 footer
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.structuralOnly(.tga);
+    };
+
+    if (file_size >= 26) {
+        file.seekTo(file_size - 26) catch {
+            return ValidationResult.structuralOnly(.tga);
+        };
+
+        var footer: [26]u8 = undefined;
+        const footer_bytes = file.read(&footer) catch {
+            return ValidationResult.structuralOnly(.tga);
+        };
+
+        if (footer_bytes == 26) {
+            const tga_sig = "TRUEVISION-XFILE.\x00";
+            if (std.mem.eql(u8, footer[8..26], tga_sig)) {
+                return ValidationResult.structuralOnly(.tga);
+            }
+        }
+    }
+
+    return ValidationResult.structuralOnly(.tga);
+}
+
+// ============ ASF/WMV/WMA Validator ============
+
+/// Validate ASF (Advanced Systems Format) file structure. Used by WMV video and WMA audio.
+/// 16-byte GUID header + object size(8,LE) + num_objects(4,LE) + reserved(2) = 30 bytes minimum.
+fn validateAsf(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.asf, "Failed to seek");
+
+    var header: [30]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.asf, "Failed to read ASF header");
+
+    if (bytes_read < 30) {
+        return ValidationResult.invalid(.asf, "File too small for ASF header");
+    }
+
+    // ASF Header Object GUID
+    const asf_header_guid = [_]u8{ 0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C };
+    if (!std.mem.eql(u8, header[0..16], &asf_header_guid)) {
+        return ValidationResult.invalid(.asf, "Invalid ASF Header Object GUID");
+    }
+
+    const object_size = std.mem.readInt(u64, header[16..24], .little);
+    if (object_size < 30) {
+        return ValidationResult.invalid(.asf, "ASF Header Object size too small");
+    }
+
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.structuralOnly(.asf);
+    };
+    if (object_size > file_size) {
+        return ValidationResult.invalid(.asf, "ASF Header Object size exceeds file size (truncated)");
+    }
+
+    const num_header_objects = std.mem.readInt(u32, header[24..28], .little);
+    if (num_header_objects == 0) {
+        return ValidationResult.invalid(.asf, "ASF header contains no sub-objects");
+    }
+    if (num_header_objects > 10000) {
+        return ValidationResult.invalid(.asf, "ASF header object count unreasonably large");
+    }
+
+    return ValidationResult.structuralOnly(.asf);
+}
+
+// ============ DV Validator ============
+
+/// Validate DV (Digital Video) raw stream.
+/// DV uses 80-byte DIF (Digital Interface Format) blocks.
+/// First block: section type = 000 (header section) in high 3 bits of byte 0.
+fn validateDv(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.dv, "Failed to seek");
+
+    var header: [80]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.dv, "Failed to read DV header");
+
+    if (bytes_read < 80) {
+        return ValidationResult.invalid(.dv, "File too small for DV DIF block (need 80 bytes)");
+    }
+
+    // Section type in high 3 bits of byte 0: should be 000 (header section)
+    const section_type = (header[0] >> 5) & 0x07;
+    if (section_type != 0) {
+        return ValidationResult.invalid(.dv, "First DIF block is not a header section");
+    }
+
+    // DIF block number (byte 2) should be 0 for first block
+    if (header[2] != 0) {
+        return ValidationResult.invalid(.dv, "First DIF block number is not 0");
+    }
+
+    // Check for a second DIF block at offset 80
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.structuralOnly(.dv);
+    };
+
+    if (file_size >= 160) {
+        var second_block: [3]u8 = undefined;
+        file.seekTo(80) catch return ValidationResult.structuralOnly(.dv);
+        const second_read = file.read(&second_block) catch return ValidationResult.structuralOnly(.dv);
+
+        if (second_read >= 1) {
+            const second_section_type = (second_block[0] >> 5) & 0x07;
+            // Second block should be subcode section (001)
+            if (second_section_type != 1) {
+                return ValidationResult.structuralOnly(.dv);
+            }
+        }
+    }
+
+    return ValidationResult.structuralOnly(.dv);
 }
 
 /// Validate binary plist format (bplist00/bplist01)

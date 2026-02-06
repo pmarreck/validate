@@ -57,6 +57,10 @@ For clarity, the tables below use more specific labels:
 | **AVIF** | .avif | ISOBMFF structure, ftyp brand validation | Full decode via libheif/dav1d | Full Decode | 1 |
 | **SVG** | .svg | XML declaration, `<svg>` root element | Full XML parse | Integrity | — |
 | **OpenEXR** | .exr | Signature (76 2F 31 01), header structure | Required attribute validation (channels, compression, windows) | Integrity | — |
+| **QOI** | .qoi | Signature (qoif), width/height/channels/colorspace | Header field validation | Structure | — |
+| **DPX** | .dpx | Signature (SDPX/XPDS), version, endian detection | File size validation, image dimensions | Structure | — |
+| **TGA** | .tga, .targa | 18-byte header, image type, dimensions | Optional TGA v2 footer ("TRUEVISION-XFILE.") | Structure | — |
+| **PBM/PGM/PPM/PAM** | .pbm, .pgm, .ppm, .pam | P1-P7 magic + whitespace, header parsing | Width/height validation | Structure | — |
 
 ## RAW Camera Formats
 
@@ -115,6 +119,10 @@ For clarity, the tables below use more specific labels:
 | **WavPack** | .wv | Pure Zig | — | ✅ Checksum | MD5 sub-block detection | 1 |
 | **MIDI** | .mid, .midi | Pure Zig | — | ✅ Full Decode | Track parsing, event validation | 3 |
 | **DSF/DFF (DSD)** | .dsf, .dff | Pure Zig | — | ✅ Structural | Super Audio CD | — |
+| **AMR** | .amr | Pure Zig | — | ✅ Structural | AMR-NB/WB magic, frame type validation | — |
+| **AU/SND** | .au, .snd | Pure Zig | — | ✅ Structural | Sun/NeXT header, encoding/rate/channel validation | — |
+| **TTA** | .tta | Pure Zig | — | ✅ Checksum | TTA1 header CRC32 verification | — |
+| **CAF** | .caf | Pure Zig | — | ✅ Structural | Apple Core Audio, version/desc chunk validation | — |
 | **DTS** | .dts | — | ⚠️ GPL | ⚠️ Blocked | Blu-ray surround | — |
 
 **Legend:** ✅ = Implemented | ⚠️ = Blocked (GPL dependency) | **GT** = Ground Truth examples verified
@@ -141,6 +149,9 @@ For clarity, the tables below use more specific labels:
 | **MPEG-PS** | .mpg, .mpeg, .vob | Pack/System header detection | PES header parsing | Structure | 1 |
 | **SWF (Flash)** | .swf | FWS/CWS/ZWS headers | CWS zlib decompression + RECT validation | Decompress | — |
 | **FLV** | .flv | FLV header + tag structure | Tag parsing with bounds checking | Structure | — |
+| **ASF/WMV/WMA** | .asf, .wmv, .wma | 16-byte ASF GUID, object size, sub-object count | Header object structure validation | Structure | — |
+| **DV** | .dv, .dif | DIF block structure, section type validation | Block number/sequence validation | Structure | — |
+| **IVF** | .ivf | DKIF signature, version, codec fourcc | Frame count, dimensions validation | Structure | — |
 
 *Video containers reach Integrity level when video frames can be decoded (supported codecs: H.264, H.265, AV1, VP9, ProRes, MPEG-1/2, MJPEG). Falls back to Structure for unsupported codecs or files >100MB.
 
@@ -506,12 +517,13 @@ Formats with built-in integrity verification:
 | MP3 | CRC16/frame | ~5% (header only) | minimp3 |
 | AC-3 | CRC16 | Frame header | Pure Zig |
 | WavPack | MD5 | Optional | — |
+| TTA | CRC32 | Header | Pure Zig |
 
 ---
 
 ## Implementation Notes
 
-**Pure Zig (no external dependencies):** FLAC, WAV, AIFF, ALAC, AC-3, E-AC-3, ProRes, MPEG-1/2, VP8, Theora, PNG, ZIP, GZIP, BZIP2, 7-Zip, all container parsing
+**Pure Zig (no external dependencies):** FLAC, WAV, AIFF, ALAC, AC-3, E-AC-3, AMR, AU/SND, TTA, CAF, ProRes, MPEG-1/2, VP8, Theora, DV, PNG, QOI, DPX, TGA, PBM/PGM/PPM/PAM, ZIP, GZIP, BZIP2, 7-Zip, all container parsing
 
 **BSD/MIT Licensed Libraries:** OpenH264 (H.264), dav1d (AV1), libvpx (VP9), libopus, libvorbis, libjpeg-turbo, OpenJPEG, zigimg (GIF, BMP, TIFF, RAW), libwebp (WebP), libjxl (JPEG XL), libheif (HEIC/AVIF), libbrotli (Brotli)
 
@@ -523,4 +535,4 @@ Formats with built-in integrity verification:
 
 ---
 
-*Last updated: 2026-01-23*
+*Last updated: 2026-02-05*
