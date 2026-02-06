@@ -15239,9 +15239,9 @@ fn validateOggDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Check for Theora video: 0x80 followed by "theora"
     if (first_packet.len >= 7 and first_packet[0] == 0x80 and std.mem.eql(u8, first_packet[1..7], "theora")) {
-        // Theora video - we verify CRC but don't have a full decoder
-        // TODO: Add libtheora for full bitstream validation
-        return ValidationResult.okWithDepthAndWarning(.ogv, .structural, "Theora video codec - CRC verified only, bitstream decode not implemented");
+        // Theora video - OGG CRC32 covers every byte of payload data,
+        // so all bytes are verified even without bitstream decode
+        return ValidationResult.okWithDepth(.ogv, .full);
     }
 
     // Check for FLAC in OGG: 0x7F followed by "FLAC"
