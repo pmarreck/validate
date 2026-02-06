@@ -24,7 +24,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Add TDD tests for bundle validation (Zig unit tests + CLI bash tests) (2026-01-31)
 - [x] Add macOS bundle validation (.app, .framework, .bundle) (2026-02-02)
 - [x] Return continuable error for unknown directory types (2026-02-02)
-- [ ] See NEXT_STEPS.md for full design
+- [x] Bundle validation complete (see ARCHITECTURE.md)
 
 ### HEIC/Intel Crash Investigation (SIGABRT on Garnix CI)
 - [x] Disabled SSE on Linux libde265 build (crash persisted in fallback C++ code)

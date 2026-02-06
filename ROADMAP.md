@@ -3,16 +3,14 @@
 ## High Priority (Current Sprint)
 
 1. **Ground Truth Examples**: Complete valid + corrupted samples for ALL claimed formats
-   - Many formats still missing ground truth examples
+   - ~100 formats now have ground truth examples
    - Each format needs: 1 valid sample + 5 corrupted variants
    - Run `scripts/corruption_test.sh` to verify coverage
    - See `ground_truth_examples/` for current state
 
-2. **Investigate Remaining Hang Issues**: ~/Documents validation sometimes hangs
-   - Observed: validation stops making progress after ~34k files
+2. ~~**Investigate Remaining Hang Issues**~~: RESOLVED
    - Added regression test: "PNG with .ico extension should not hang"
-   - Need to identify if issue is threading-related or specific file-related
-   - Consider adding progress heartbeat/timeout detection
+   - Fixed via dedicated output thread (2026-01-27)
 
 ## Medium Priority
 
