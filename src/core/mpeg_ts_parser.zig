@@ -541,6 +541,439 @@ pub fn isMpegTs(data: []const u8) bool {
     return false;
 }
 
+// ============================================================================
+// CRC-32 for MPEG-2 PSI tables (ISO 13818-1)
+// ============================================================================
+
+/// CRC-32/MPEG-2 lookup table (polynomial 0x04C11DB7, normal form, init=0xFFFFFFFF)
+const crc32_mpeg2_table = blk: {
+    @setEvalBranchQuota(10000);
+    var table: [256]u32 = undefined;
+    for (0..256) |i| {
+        var crc: u32 = @intCast(i << 24);
+        for (0..8) |_| {
+            if (crc & 0x80000000 != 0) {
+                crc = (crc << 1) ^ 0x04C11DB7;
+            } else {
+                crc = crc << 1;
+            }
+        }
+        table[i] = crc;
+    }
+    break :blk table;
+};
+
+/// Compute CRC-32/MPEG-2 over data. Result should be 0 when computed over
+/// the section including the CRC field.
+pub fn crc32Mpeg2(data: []const u8) u32 {
+    var crc: u32 = 0xFFFFFFFF;
+    for (data) |byte| {
+        crc = (crc << 8) ^ crc32_mpeg2_table[((crc >> 24) ^ byte) & 0xFF];
+    }
+    return crc;
+}
+
+/// Validate CRC-32 of a PSI section. The section includes table_id through CRC_32.
+/// section_length is the value from bytes 1-2 (12 bits after section_syntax_indicator).
+/// Total section size = section_length + 3 (table_id + 2 bytes of section_length field).
+pub fn validatePsiCrc(section_data: []const u8) bool {
+    if (section_data.len < 4) return false;
+
+    // section_length from bytes 1-2
+    const section_length = (@as(usize, section_data[1] & 0x0F) << 8) | @as(usize, section_data[2]);
+    const total_len = section_length + 3;
+
+    if (total_len > section_data.len or total_len < 7) return false;
+
+    // CRC-32/MPEG-2 over the entire section should yield 0
+    return crc32Mpeg2(section_data[0..total_len]) == 0;
+}
+
+// ============================================================================
+// Deep Validation: PES assembly + stream dispatch
+// ============================================================================
+
+const aac_syntax_validator = @import("aac_syntax_validator.zig");
+const ac3_validator = @import("ac3_validator.zig");
+const eac3_validator = @import("eac3_validator.zig");
+const h264_validator = @import("h264_validator.zig");
+const mpeg12_validator = @import("mpeg12_validator.zig");
+
+/// Result of deep MPEG-TS validation
+pub const TsDeepValidationResult = struct {
+    valid: bool,
+    error_message: ?[]const u8,
+    packets_parsed: u32,
+    continuity_errors: u32,
+    pat_crc_valid: bool,
+    pmt_crc_valid: bool,
+    video_streams_validated: u8,
+    audio_streams_validated: u8,
+    video_frames_decoded: u32,
+    audio_frames_decoded: u32,
+
+    pub fn success(
+        packets: u32,
+        cont_err: u32,
+        pat_ok: bool,
+        pmt_ok: bool,
+        v_streams: u8,
+        a_streams: u8,
+        v_frames: u32,
+        a_frames: u32,
+    ) TsDeepValidationResult {
+        return .{
+            .valid = true,
+            .error_message = null,
+            .packets_parsed = packets,
+            .continuity_errors = cont_err,
+            .pat_crc_valid = pat_ok,
+            .pmt_crc_valid = pmt_ok,
+            .video_streams_validated = v_streams,
+            .audio_streams_validated = a_streams,
+            .video_frames_decoded = v_frames,
+            .audio_frames_decoded = a_frames,
+        };
+    }
+
+    pub fn failure(msg: []const u8) TsDeepValidationResult {
+        return .{
+            .valid = false,
+            .error_message = msg,
+            .packets_parsed = 0,
+            .continuity_errors = 0,
+            .pat_crc_valid = false,
+            .pmt_crc_valid = false,
+            .video_streams_validated = 0,
+            .audio_streams_validated = 0,
+            .video_frames_decoded = 0,
+            .audio_frames_decoded = 0,
+        };
+    }
+};
+
+/// Per-PID PES assembly buffer
+const PesBuffer = struct {
+    data: std.ArrayListUnmanaged(u8),
+    stream_type: StreamType,
+    started: bool,
+
+    fn init(st: StreamType) PesBuffer {
+        return .{
+            .data = .{},
+            .stream_type = st,
+            .started = false,
+        };
+    }
+
+    fn deinit(self: *PesBuffer, allocator: std.mem.Allocator) void {
+        self.data.deinit(allocator);
+    }
+
+    fn reset(self: *PesBuffer) void {
+        self.data.clearRetainingCapacity();
+        self.started = false;
+    }
+
+    fn appendPayload(self: *PesBuffer, allocator: std.mem.Allocator, payload: []const u8) !void {
+        try self.data.appendSlice(allocator, payload);
+    }
+};
+
+/// Deep validate an MPEG-TS stream: CRC, continuity, PES assembly, stream decode
+pub fn validateTsDeep(allocator: std.mem.Allocator, data: []const u8, max_packets: u32) TsDeepValidationResult {
+    if (data.len < TS_PACKET_SIZE) {
+        return TsDeepValidationResult.failure("Data too small for TS packet");
+    }
+
+    // Find sync alignment
+    var start_offset: usize = 0;
+    while (start_offset < @min(data.len, 188) and data[start_offset] != TS_SYNC_BYTE) {
+        start_offset += 1;
+    }
+    if (start_offset >= @min(data.len, 188)) {
+        return TsDeepValidationResult.failure("No sync byte found");
+    }
+
+    var packets_parsed: u32 = 0;
+    var continuity_errors: u32 = 0;
+    var pat_crc_valid = false;
+    var pmt_crc_valid = false;
+
+    // CC tracking
+    var cc_tracker = [_]?u4{null} ** 8192;
+
+    // PMT PIDs from PAT
+    var pmt_pids = [_]u16{0} ** 16;
+    var pmt_count: usize = 0;
+
+    // Stream info from PMT: maps PID -> StreamType
+    var pid_stream_type = [_]?StreamType{null} ** 8192;
+
+    // PES assembly buffers (up to 8 elementary streams)
+    var pes_buffers: [8]?PesBuffer = [_]?PesBuffer{null} ** 8;
+    var pes_pids: [8]u16 = [_]u16{0} ** 8;
+    var pes_count: usize = 0;
+    defer {
+        for (&pes_buffers) |*buf_opt| {
+            if (buf_opt.*) |*buf| {
+                buf.deinit(allocator);
+                buf_opt.* = null;
+            }
+        }
+    }
+
+    var pos = start_offset;
+    while (pos + TS_PACKET_SIZE <= data.len and packets_parsed < max_packets) {
+        const packet = data[pos .. pos + TS_PACKET_SIZE];
+
+        if (packet[0] != TS_SYNC_BYTE) {
+            pos += 1;
+            while (pos < data.len and data[pos] != TS_SYNC_BYTE) pos += 1;
+            continue;
+        }
+
+        const header = parseTsHeader(packet) orelse {
+            pos += TS_PACKET_SIZE;
+            continue;
+        };
+
+        // Skip null packets
+        if (header.pid == PID_NULL) {
+            packets_parsed += 1;
+            pos += TS_PACKET_SIZE;
+            continue;
+        }
+
+        // Continuity counter check (only for packets with payload)
+        if (header.pid < 8192 and (header.adaptation_field_control & 0x01) != 0) {
+            if (cc_tracker[header.pid]) |last_cc| {
+                const expected = (last_cc +% 1) & 0x0F;
+                if (header.continuity_counter != expected and !header.transport_error) {
+                    // Allow duplicate packets (same CC)
+                    if (header.continuity_counter != last_cc) {
+                        continuity_errors += 1;
+                    }
+                }
+            }
+            cc_tracker[header.pid] = header.continuity_counter;
+        }
+
+        // Get payload
+        const payload_info = getPayloadInfo(packet) orelse {
+            packets_parsed += 1;
+            pos += TS_PACKET_SIZE;
+            continue;
+        };
+
+        const payload = packet[payload_info.offset..][0..payload_info.length];
+
+        // PAT parsing with CRC validation
+        if (header.pid == PID_PAT and header.payload_unit_start) {
+            if (payload.len > 0) {
+                const pointer = payload[0];
+                const psi_offset = @as(usize, 1) + pointer;
+                if (psi_offset < payload.len) {
+                    const psi_data = payload[psi_offset..];
+                    if (validatePsiCrc(psi_data)) {
+                        pat_crc_valid = true;
+                    }
+                    if (parsePat(psi_data)) |pat| {
+                        for (pat.entries[0..pat.count]) |entry| {
+                            if (entry.program_number != 0 and pmt_count < 16) {
+                                pmt_pids[pmt_count] = entry.pid;
+                                pmt_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // PMT parsing with CRC validation
+        for (pmt_pids[0..pmt_count]) |pmt_pid| {
+            if (header.pid == pmt_pid and header.payload_unit_start) {
+                if (payload.len > 0) {
+                    const pointer = payload[0];
+                    const psi_offset = @as(usize, 1) + pointer;
+                    if (psi_offset < payload.len) {
+                        const psi_data = payload[psi_offset..];
+                        if (validatePsiCrc(psi_data)) {
+                            pmt_crc_valid = true;
+                        }
+                        if (parsePmt(psi_data)) |pmt| {
+                            for (pmt.streams[0..pmt.count]) |stream| {
+                                if (stream.pid < 8192) {
+                                    pid_stream_type[stream.pid] = stream.stream_type;
+
+                                    // Create PES buffer for this stream if we don't have one
+                                    if (pes_count < 8) {
+                                        var already_have = false;
+                                        for (pes_pids[0..pes_count]) |existing_pid| {
+                                            if (existing_pid == stream.pid) {
+                                                already_have = true;
+                                                break;
+                                            }
+                                        }
+                                        if (!already_have) {
+                                            pes_buffers[pes_count] = PesBuffer.init(stream.stream_type);
+                                            pes_pids[pes_count] = stream.pid;
+                                            pes_count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // PES assembly for elementary streams
+        for (0..pes_count) |i| {
+            if (header.pid == pes_pids[i]) {
+                if (pes_buffers[i]) |*buf| {
+                    if (header.payload_unit_start) {
+                        // New PES packet: strip PES header and accumulate ES data
+                        buf.started = true;
+                        // The payload starts with PES header when PUSI is set
+                        const es_data = stripPesHeader(payload);
+                        if (es_data) |es| {
+                            if (buf.data.items.len + es.len <= 2 * 1024 * 1024) {
+                                buf.appendPayload(allocator, es) catch {};
+                            }
+                        }
+                    } else if (buf.started) {
+                        // Continuation packet: append raw payload (no PES header)
+                        if (buf.data.items.len + payload.len <= 2 * 1024 * 1024) {
+                            buf.appendPayload(allocator, payload) catch {};
+                        }
+                    }
+                }
+            }
+        }
+
+        packets_parsed += 1;
+        pos += TS_PACKET_SIZE;
+    }
+
+    if (packets_parsed == 0) {
+        return TsDeepValidationResult.failure("No valid TS packets found");
+    }
+
+    // Now validate assembled PES streams
+    var video_streams_validated: u8 = 0;
+    var audio_streams_validated: u8 = 0;
+    var video_frames: u32 = 0;
+    var audio_frames: u32 = 0;
+
+    for (0..pes_count) |i| {
+        if (pes_buffers[i]) |*buf| {
+            const es_data = buf.data.items;
+            if (es_data.len == 0) continue;
+
+            switch (buf.stream_type) {
+                // Video streams
+                .mpeg2_video => {
+                    const result = mpeg12_validator.validateMpeg12Stream(es_data, 100);
+                    if (result.valid) {
+                        video_streams_validated += 1;
+                        video_frames += result.pictures;
+                    } else {
+                        return TsDeepValidationResult.failure(result.error_message orelse "MPEG-2 video validation failed");
+                    }
+                },
+                .h264 => {
+                    const result = h264_validator.validateH264Stream(es_data, 100);
+                    if (result.valid) {
+                        video_streams_validated += 1;
+                        video_frames += result.frames_decoded;
+                    } else {
+                        return TsDeepValidationResult.failure(result.error_message orelse "H.264 validation failed");
+                    }
+                },
+                // Audio streams
+                .aac_adts => {
+                    const result = aac_syntax_validator.validateAdtsStream(es_data);
+                    if (result.valid) {
+                        audio_streams_validated += 1;
+                        audio_frames += result.frames_checked;
+                    } else {
+                        return TsDeepValidationResult.failure(result.error_message orelse "AAC ADTS validation failed");
+                    }
+                },
+                .ac3 => {
+                    const result = ac3_validator.validateAc3Stream(es_data, 100);
+                    if (result.valid) {
+                        audio_streams_validated += 1;
+                        audio_frames += result.frames_validated;
+                    } else {
+                        return TsDeepValidationResult.failure(result.error_message orelse "AC-3 validation failed");
+                    }
+                },
+                .eac3, .eac3_secondary => {
+                    const result = eac3_validator.validateEac3Stream(es_data, 100);
+                    if (result.valid) {
+                        audio_streams_validated += 1;
+                        audio_frames += result.frames_validated;
+                    } else {
+                        return TsDeepValidationResult.failure(result.error_message orelse "E-AC-3 validation failed");
+                    }
+                },
+                else => {
+                    // Unsupported stream type — count as validated if we have data
+                    if (buf.stream_type.isVideo()) {
+                        video_streams_validated += 1;
+                    } else if (buf.stream_type.isAudio()) {
+                        audio_streams_validated += 1;
+                    }
+                },
+            }
+        }
+    }
+
+    // If we have continuity errors, report as invalid
+    if (continuity_errors > 0) {
+        return TsDeepValidationResult.failure("Continuity counter errors detected");
+    }
+
+    return TsDeepValidationResult.success(
+        packets_parsed,
+        continuity_errors,
+        pat_crc_valid,
+        pmt_crc_valid,
+        video_streams_validated,
+        audio_streams_validated,
+        video_frames,
+        audio_frames,
+    );
+}
+
+/// Strip PES header from assembled PES data, returning the elementary stream payload.
+/// PES format: 00 00 01 stream_id PES_length(2) [optional header(variable)] payload
+fn stripPesHeader(pes_data: []const u8) ?[]const u8 {
+    if (pes_data.len < 9) return null;
+
+    // Check PES start code: 00 00 01
+    if (pes_data[0] != 0x00 or pes_data[1] != 0x00 or pes_data[2] != 0x01) return null;
+
+    // stream_id at byte 3 (0xE0-0xEF = video, 0xC0-0xDF = audio, 0xBD = private)
+    const stream_id = pes_data[3];
+
+    // For audio/video streams, there's a PES header extension
+    if ((stream_id >= 0xC0 and stream_id <= 0xEF) or stream_id == 0xBD) {
+        // PES_header_data_length at byte 8
+        if (pes_data.len < 9) return null;
+        const header_data_len = pes_data[8];
+        const es_start = @as(usize, 9) + header_data_len;
+        if (es_start >= pes_data.len) return null;
+        return pes_data[es_start..];
+    }
+
+    // For other stream types, payload starts at byte 6
+    return if (pes_data.len > 6) pes_data[6..] else null;
+}
+
 // Tests
 test "TS packet header parsing" {
     // Construct a TS packet header

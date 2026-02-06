@@ -289,6 +289,7 @@ test_format "amr" "$GT_DIR/amr/sample.amr"
 test_format "au" "$GT_DIR/au/sample.au"
 test_format "tta" "$GT_DIR/tta/sample.tta"
 test_format "caf" "$GT_DIR/caf/sample.caf"
+test_format "aac_adts" "$GT_DIR/aac_adts/sample.aac"
 
 # Image
 test_format "qoi" "$GT_DIR/qoi/sample.qoi"
@@ -299,6 +300,7 @@ test_format "tga" "$GT_DIR/tga/sample.tga"
 # Video containers
 test_format "asf" "$GT_DIR/asf/sample.asf"
 test_format "dv" "$GT_DIR/dv/sample.dv"
+test_format "mpeg_ts" "$GT_DIR/mpeg_ts/sample.ts"
 
 echo ""
 echo "==================================="

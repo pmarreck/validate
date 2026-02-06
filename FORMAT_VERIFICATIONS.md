@@ -104,7 +104,7 @@ For clarity, the tables below use more specific labels:
 |--------|------------|---------|---------|------------|-------|-----|
 | **FLAC** | .flac | Pure Zig | — | ✅ Full Decode | MD5 audio hash | — |
 | **MP3** | .mp3 | minimp3 | Public Domain | ✅ Full Decode | CRC + decode | — |
-| **AAC** | .m4a, .aac | libfdk-aac | FDK License | ✅ Full Decode | Fraunhofer decoder | — |
+| **AAC** | .m4a, .aac, .mka | Pure Zig | — | ✅ Syntax Validated | AAC-LC bitstream syntax + spectral Huffman validation | — |
 | **Opus** | .opus, .ogg | libopus | BSD-3 | ✅ Full Decode | Full libopus decode + OGG page CRC32 | — |
 | **Vorbis** | .ogg | libvorbis | BSD-3 | ✅ Full Decode | Full libvorbis decode + OGG page CRC32 | — |
 | **Theora Video** | .ogv | Pure Zig | — | ✅ CRC Verified | OGG page CRC32 (no bitstream decode) | 1 |

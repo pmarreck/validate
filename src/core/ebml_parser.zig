@@ -1927,6 +1927,8 @@ pub const MatroskaParser = struct {
                     clusters_with_crc += 1;
 
                     // Read stored CRC value (4 bytes, little-endian)
+                    // Must seek to data_offset since readElementHeader leaves file position past it
+                    _ = self.reader.seekTo(first_child.data_offset);
                     var crc_buf: [4]u8 = undefined;
                     const crc_read = self.reader.file.read(&crc_buf) catch continue;
                     if (crc_read < 4) continue;

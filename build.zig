@@ -131,13 +131,6 @@ pub fn build(b: *std.Build) void {
     });
     const minimp3_lib = minimp3_dep.artifact("minimp3");
 
-    // libfdk-aac for AAC audio deep validation (FDK License)
-    const libfdkaac_dep = b.dependency("libfdk-aac", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const libfdkaac_lib = libfdkaac_dep.artifact("fdk-aac");
-
     // libvpx for VP8/VP9 video deep validation (BSD-3, WebM Project)
     const libvpx_dep = b.dependency("libvpx", .{
         .target = target,
@@ -264,9 +257,6 @@ pub fn build(b: *std.Build) void {
     // Add minimp3 include path (for mp3_decode_validator.zig @cImport)
     core_mod.addIncludePath(minimp3_lib.getEmittedIncludeTree());
 
-    // Add libfdk-aac include path (for aac_validator.zig @cImport)
-    core_mod.addIncludePath(libfdkaac_lib.getEmittedIncludeTree());
-
     // Add libvpx include path (for vp8_vp9_validator.zig @cImport)
     core_mod.addIncludePath(libvpx_lib.getEmittedIncludeTree());
 
@@ -330,8 +320,6 @@ pub fn build(b: *std.Build) void {
     lib.linkLibrary(libvorbis_lib);
     // Link minimp3 for MP3 audio deep validation
     lib.linkLibrary(minimp3_lib);
-    // Link libfdk-aac for AAC audio deep validation
-    lib.linkLibrary(libfdkaac_lib);
     // Link libvpx for VP8/VP9 video deep validation
     lib.linkLibrary(libvpx_lib);
     // Link OpenJPEG for JPEG2000 decode validation
@@ -383,7 +371,6 @@ pub fn build(b: *std.Build) void {
             libogg_lib.getEmittedBin(),
             libvorbis_lib.getEmittedBin(),
             minimp3_lib.getEmittedBin(),
-            libfdkaac_lib.getEmittedBin(),
             libvpx_lib.getEmittedBin(),
             openjpeg_lib.getEmittedBin(),
             libjxl_lib.getEmittedBin(),
@@ -439,8 +426,6 @@ pub fn build(b: *std.Build) void {
     lib_shared.linkLibrary(libvorbis_lib);
     // Link minimp3 for MP3 audio deep validation
     lib_shared.linkLibrary(minimp3_lib);
-    // Link libfdk-aac for AAC audio deep validation
-    lib_shared.linkLibrary(libfdkaac_lib);
     // Link libvpx for VP8/VP9 video deep validation
     lib_shared.linkLibrary(libvpx_lib);
     // Link OpenJPEG for JPEG2000 decode validation
@@ -578,8 +563,6 @@ pub fn build(b: *std.Build) void {
     core_tests.linkLibrary(libvorbis_lib);
     // Link minimp3 for MP3 audio deep validation tests
     core_tests.linkLibrary(minimp3_lib);
-    // Link libfdk-aac for AAC audio deep validation tests
-    core_tests.linkLibrary(libfdkaac_lib);
     // Link libvpx for VP8/VP9 video deep validation tests
     core_tests.linkLibrary(libvpx_lib);
     // Link OpenJPEG for JPEG2000 decode validation tests
@@ -625,7 +608,6 @@ pub fn build(b: *std.Build) void {
     ffi_tests.linkLibrary(libogg_lib);
     ffi_tests.linkLibrary(libvorbis_lib);
     ffi_tests.linkLibrary(minimp3_lib);
-    ffi_tests.linkLibrary(libfdkaac_lib);
     ffi_tests.linkLibrary(libvpx_lib);
     ffi_tests.linkLibrary(openjpeg_lib);
     ffi_tests.linkLibrary(libjxl_lib);

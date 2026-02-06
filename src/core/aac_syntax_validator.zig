@@ -773,6 +773,123 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
     return AacSyntaxResult.ok(frames);
 }
 
+/// ADTS frame header (7 or 9 bytes)
+const AdtsFrameHeader = struct {
+    profile: u2, // 0=Main, 1=LC, 2=SSR, 3=LTP (NOTE: ADTS profile = AOT - 1)
+    sampling_frequency_index: u4,
+    channel_configuration: u3,
+    frame_length: u13, // includes header
+    protection_absent: bool, // true = no CRC (7-byte header), false = CRC present (9-byte header)
+    num_raw_data_blocks: u2, // 0 = 1 raw data block
+
+    fn headerSize(self: AdtsFrameHeader) usize {
+        return if (self.protection_absent) 7 else 9;
+    }
+};
+
+fn parseAdtsHeader(data: []const u8) ?AdtsFrameHeader {
+    if (data.len < 7) return null;
+
+    // Sync word: 12 bits = 0xFFF
+    if (data[0] != 0xFF) return null;
+    if ((data[1] & 0xF0) != 0xF0) return null;
+
+    // Byte 1 bits 3-0: ID(1), layer(2), protection_absent(1)
+    const protection_absent = (data[1] & 0x01) == 1;
+
+    // Byte 2: profile(2), sampling_frequency_index(4), private(1), channel_config high bit(1)
+    const profile: u2 = @intCast((data[2] >> 6) & 0x03);
+    const freq_idx: u4 = @intCast((data[2] >> 2) & 0x0F);
+    const channel_cfg_high: u3 = @intCast((data[2] & 0x01));
+
+    // Byte 3: channel_config low 2 bits(2), originality(1), home(1), copyright_id(1), copyright_start(1), frame_length high 2 bits(2)
+    const channel_cfg_low: u3 = @intCast((data[3] >> 6) & 0x03);
+    const channel_cfg: u3 = (channel_cfg_high << 2) | channel_cfg_low;
+
+    // Frame length: 13 bits across bytes 3-5
+    const fl_high: u13 = @intCast(data[3] & 0x03);
+    const fl_mid: u13 = @intCast(data[4]);
+    const fl_low: u13 = @intCast((data[5] >> 5) & 0x07);
+    const frame_length: u13 = (fl_high << 11) | (fl_mid << 3) | fl_low;
+
+    // Byte 5 bits 4-0 + byte 6 bits 7-2: buffer fullness (11 bits)
+    // Byte 6 bits 1-0: num_raw_data_blocks (2 bits)
+    const num_raw: u2 = @intCast(data[6] & 0x03);
+
+    // Validate fields
+    if (freq_idx > 12) return null;
+    if (frame_length < 7) return null;
+
+    if (!protection_absent and data.len < 9) return null;
+
+    return AdtsFrameHeader{
+        .profile = profile,
+        .sampling_frequency_index = freq_idx,
+        .channel_configuration = channel_cfg,
+        .frame_length = frame_length,
+        .protection_absent = protection_absent,
+        .num_raw_data_blocks = num_raw,
+    };
+}
+
+/// Validate a standalone ADTS stream (.aac file)
+pub fn validateAdtsStream(data: []const u8) AacSyntaxResult {
+    if (data.len < 7) return AacSyntaxResult.invalid("Data too short for ADTS", 0);
+
+    // Parse first ADTS header to get config
+    const first_header = parseAdtsHeader(data) orelse
+        return AacSyntaxResult.invalid("Invalid ADTS header", 0);
+
+    // ADTS profile is AOT - 1, so LC (AOT=2) has profile=1
+    if (first_header.profile != 1)
+        return AacSyntaxResult.invalid("Unsupported ADTS profile (not AAC-LC)", 0);
+
+    // Synthesize AudioSpecificConfig from ADTS header
+    // ASC: 5 bits AOT + 4 bits freq_idx + 4 bits channel_cfg + padding
+    const aot: u8 = @as(u8, first_header.profile) + 1; // profile + 1 = AOT (LC = 2)
+    const freq: u8 = @as(u8, first_header.sampling_frequency_index);
+    const chan: u8 = @as(u8, first_header.channel_configuration);
+    // Byte 0: AOT(5 bits) | freq_idx high 3 bits
+    // Byte 1: freq_idx low 1 bit | channel_cfg(4 bits) | 000
+    const asc_bytes = [2]u8{
+        (aot << 3) | (freq >> 1),
+        (freq << 7) | (chan << 3),
+    };
+
+    const config = parseAudioSpecificConfig(&asc_bytes) orelse
+        return AacSyntaxResult.invalid("Failed to parse synthesized ASC", 0);
+
+    // Iterate ADTS frames and validate each raw AU
+    var offset: usize = 0;
+    var frames: u32 = 0;
+
+    while (offset + 7 <= data.len) {
+        const header = parseAdtsHeader(data[offset..]) orelse {
+            if (frames > 0) break; // Allow trailing garbage after valid frames
+            return AacSyntaxResult.invalid("Invalid ADTS frame header", frames);
+        };
+
+        const fl = @as(usize, header.frame_length);
+        if (offset + fl > data.len) break;
+
+        const hdr_size = header.headerSize();
+        if (fl <= hdr_size) {
+            return AacSyntaxResult.invalid("ADTS frame too short for payload", frames);
+        }
+
+        const au_data = data[offset + hdr_size .. offset + fl];
+        if (!validateAccessUnit(au_data, &config)) {
+            return AacSyntaxResult.invalid("AAC syntax error in ADTS frame", frames);
+        }
+
+        frames += 1;
+        offset += fl;
+    }
+
+    if (frames == 0) return AacSyntaxResult.invalid("No ADTS frames validated", 0);
+    return AacSyntaxResult.ok(frames);
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

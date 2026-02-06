@@ -5,7 +5,7 @@
 //! validation using the appropriate codec validators.
 //!
 //! Audio codecs supported:
-//! - AAC (via libfdk-aac)
+//! - AAC (pure Zig syntax validator)
 //! - MP3 (via minimp3)
 //! - Opus (via libopus) - from MKV/WebM
 //! - Vorbis (via libvorbis) - from MKV
@@ -19,7 +19,6 @@ const Allocator = std.mem.Allocator;
 
 // Import existing validators
 const video_validator = @import("video_validator.zig");
-const aac_validator = @import("aac_validator.zig");
 const aac_syntax_validator = @import("aac_syntax_validator.zig");
 const alac_validator = @import("alac_validator.zig");
 const ac3_validator = @import("ac3_validator.zig");
@@ -726,7 +725,7 @@ fn validateMp4AacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
         return AudioValidationResult.invalid("No frames extracted", .aac);
     }
 
-    // Validate using pure-Zig AAC syntax validator (replaces fdk-aac for MP4 path)
+    // Validate using pure-Zig AAC syntax validator
     const syntax_result = aac_syntax_validator.validateAacSyntax(
         frame_data.items,
         frame_sizes.items,
@@ -1200,6 +1199,65 @@ fn validateMkvAc3Track(allocator: Allocator, parser: *ebml.MatroskaParser, track
     return AudioValidationResult.ok(.ac3, total_frames);
 }
 
+/// Validate AAC track from MKV container using pure-Zig syntax validator
+fn validateMkvAacTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.VideoTrackInfo) AudioValidationResult {
+    // codec_private in MKV for A_AAC contains the AudioSpecificConfig
+    const codec_private = track.codec_private orelse {
+        return AudioValidationResult.invalid("No AudioSpecificConfig in MKV AAC track", .aac);
+    };
+
+    if (codec_private.len < 2) {
+        return AudioValidationResult.invalid("AudioSpecificConfig too short", .aac);
+    }
+
+    // Collect audio frames (use collectAllFrames since audio may not be flagged as keyframes)
+    const frames = parser.collectAllFrames(track.track_number, 10) orelse {
+        return AudioValidationResult.invalid("Failed to collect AAC frames from MKV", .aac);
+    };
+    defer {
+        for (frames) |*f| {
+            var mutable_f = @constCast(f);
+            mutable_f.deinit();
+        }
+        allocator.free(frames);
+    }
+
+    if (frames.len == 0) {
+        return AudioValidationResult.invalid("No AAC frames found in MKV", .aac);
+    }
+
+    // Build concatenated frame data and size array
+    var total_size: usize = 0;
+    for (frames) |f| {
+        total_size += f.data.len;
+    }
+
+    const frame_data = allocator.alloc(u8, total_size) catch {
+        return AudioValidationResult.invalid("Out of memory assembling AAC frames", .aac);
+    };
+    defer allocator.free(frame_data);
+
+    const au_sizes = allocator.alloc(u32, frames.len) catch {
+        return AudioValidationResult.invalid("Out of memory for AAC frame sizes", .aac);
+    };
+    defer allocator.free(au_sizes);
+
+    var offset: usize = 0;
+    for (frames, 0..) |f, i| {
+        @memcpy(frame_data[offset..][0..f.data.len], f.data);
+        au_sizes[i] = @intCast(f.data.len);
+        offset += f.data.len;
+    }
+
+    // Validate using pure-Zig AAC syntax validator
+    const result = aac_syntax_validator.validateAacSyntax(frame_data, au_sizes, codec_private);
+    if (!result.valid) {
+        return AudioValidationResult.invalid(result.error_message orelse "AAC syntax validation failed", .aac);
+    }
+
+    return AudioValidationResult.ok(.aac, result.frames_checked);
+}
+
 /// Validate E-AC-3 track from MP4 container
 fn validateMp4Eac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) AudioValidationResult {
     // Parse sample table for frame extraction
@@ -1372,7 +1430,7 @@ fn validateMkvAudio(allocator: Allocator, path: []const u8) AudioValidationResul
     return switch (audio_codec) {
         .opus => validateMkvOpusTrack(allocator, &parser, audio_track.?),
         .vorbis => validateMkvVorbisTrack(allocator, &parser, audio_track.?),
-        .aac => AudioValidationResult.unsupported(.aac), // AAC in MKV needs different handling
+        .aac => validateMkvAacTrack(allocator, &parser, audio_track.?),
         .mp3 => AudioValidationResult.unsupported(.mp3),
         .flac => AudioValidationResult.unsupported(.flac), // Could use existing FLAC validator
         .ac3 => validateMkvAc3Track(allocator, &parser, audio_track.?),

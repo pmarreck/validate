@@ -41,9 +41,6 @@
         .minimp3 = .{
             .path = "deps/minimp3",
         },
-        .@"libfdk-aac" = .{
-            .path = "deps/libfdk-aac",
-        },
         .libvpx = .{
             .path = "deps/libvpx",
         },

@@ -138,6 +138,12 @@ const ogg_validator = @import("ogg_validator.zig");
 const vorbis_validator = @import("vorbis_validator.zig");
 const opus_validator = @import("opus_validator.zig");
 
+// Import AAC syntax validator for ADTS deep validation
+const aac_syntax_validator = @import("aac_syntax_validator.zig");
+
+// Import MPEG-TS parser for deep TS validation
+const mpeg_ts_parser = @import("mpeg_ts_parser.zig");
+
 // Import font validator for TTF/OTF/WOFF/WOFF2 validation
 const font_validator = @import("font_validator.zig");
 
@@ -345,6 +351,7 @@ pub const FileFormat = enum {
     au, // AU/SND (Sun/NeXT audio)
     tta, // TTA (True Audio) lossless
     caf, // CAF (Core Audio Format - Apple)
+    aac_adts, // AAC-LC Audio (ADTS framing)
     // Image formats (additional)
     jpeg2000, // JPEG2000 (.jp2, .j2k, .j2c)
     jbig2, // JBIG2 bi-level image compression (.jbig2, .jb2)
@@ -559,6 +566,7 @@ pub const FileFormat = enum {
             .au => "AU/SND Audio",
             .tta => "True Audio (TTA)",
             .caf => "CAF Audio",
+            .aac_adts => "AAC-LC Audio (ADTS)",
             .jpeg2000 => "JPEG2000 Image",
             .jbig2 => "JBIG2 Bi-level Image",
             .qoi => "QOI Image",
@@ -679,7 +687,7 @@ pub const FileFormat = enum {
             .prores, .av1 => true, // Video codecs (detected within containers)
             .mp3, .flac, .wav, .m4a => true, // Audio
             .alac, .aiff, .ogg, .ogv, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .eac3 => true, // Additional audio/video formats
-            .amr, .au, .tta, .caf => true, // AMR, AU/SND, TTA, CAF audio
+            .amr, .au, .tta, .caf, .aac_adts => true, // AMR, AU/SND, TTA, CAF, AAC ADTS audio
             .jpeg2000, .jbig2 => true, // JPEG2000 and JBIG2 image formats
             .qoi, .pam, .dpx, .tga => true, // QOI, Portable Anymap, DPX, TGA image formats
             .mod, .xm, .it, .s3m => true, // Tracker/module formats
@@ -1247,6 +1255,12 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0xFF, 0xFA }, .offset = 0, .format = .mp3 },
     .{ .bytes = &[_]u8{ 0xFF, 0xF3 }, .offset = 0, .format = .mp3 },
     .{ .bytes = &[_]u8{ 0xFF, 0xF2 }, .offset = 0, .format = .mp3 },
+    // AAC ADTS frame sync - layer=00 distinguishes from MP3 (layer=01/10/11)
+    // MPEG-4: FF F1 (no CRC) / FF F0 (CRC), MPEG-2: FF F9 (no CRC) / FF F8 (CRC)
+    .{ .bytes = &[_]u8{ 0xFF, 0xF1 }, .offset = 0, .format = .aac_adts },
+    .{ .bytes = &[_]u8{ 0xFF, 0xF0 }, .offset = 0, .format = .aac_adts },
+    .{ .bytes = &[_]u8{ 0xFF, 0xF9 }, .offset = 0, .format = .aac_adts },
+    .{ .bytes = &[_]u8{ 0xFF, 0xF8 }, .offset = 0, .format = .aac_adts },
     // AIFF: FORM....AIFF (IFF container)
     .{ .bytes = "FORM", .offset = 0, .format = .aiff }, // Extended check for AIFF at offset 8
     // Ogg: OggS
@@ -1634,6 +1648,35 @@ pub fn detectFormat(header: []const u8) FileFormat {
                         }
                     }
                     continue; // Not enough data or invalid bsid
+                }
+                // Special case: ADTS AAC - verify with frame_length and second sync
+                if (sig.format == .aac_adts) {
+                    if (header.len >= 7) {
+                        // Validate sampling_frequency_index (4 bits at byte 2, bits 2-5)
+                        const freq_idx = (header[2] >> 2) & 0x0F;
+                        if (freq_idx > 12) continue; // Invalid frequency index
+
+                        // Extract frame_length (13 bits across bytes 3-5)
+                        const fl_high: u16 = @as(u16, header[3] & 0x03);
+                        const fl_mid: u16 = @as(u16, header[4]);
+                        const fl_low: u16 = @as(u16, (header[5] >> 5) & 0x07);
+                        const frame_length = (fl_high << 11) | (fl_mid << 3) | fl_low;
+
+                        if (frame_length < 7 or frame_length > 8192) continue; // Invalid frame length
+
+                        // Confirm with second ADTS sync at frame_length offset
+                        if (header.len > frame_length + 1) {
+                            if (header[frame_length] == 0xFF and (header[frame_length + 1] & 0xF0) == 0xF0 and
+                                (header[frame_length + 1] & 0x06) == 0x00)
+                            { // layer == 00
+                                return .aac_adts;
+                            }
+                            continue; // Second sync not found
+                        }
+                        // Not enough data for second sync, trust first header
+                        return .aac_adts;
+                    }
+                    continue;
                 }
                 // Special case: MPEG TS detection (single 0x47 sync byte)
                 // Need to verify there are additional sync bytes at packet intervals
@@ -2317,6 +2360,7 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "au") or std.mem.eql(u8, ext_lower, "snd")) return .au;
     if (std.mem.eql(u8, ext_lower, "tta")) return .tta;
     if (std.mem.eql(u8, ext_lower, "caf")) return .caf;
+    if (std.mem.eql(u8, ext_lower, "aac")) return .aac_adts;
 
     // Tracker/module formats
     if (std.mem.eql(u8, ext_lower, "mod")) return .mod;
@@ -14608,7 +14652,60 @@ fn validateMpegTs(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.mpeg_ts, "Invalid MPEG TS PID");
     }
 
-    return ValidationResult.okWithDepth(.mpeg_ts, .full);
+    return ValidationResult.structuralOnly(.mpeg_ts);
+}
+
+/// Deep MPEG-TS validation: CRC-32 for PAT/PMT, continuity counters, PES assembly + stream validation
+fn validateMpegTsDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const file = std.fs.cwd().openFile(path, .{}) catch {
+        return ValidationResult.invalid(.mpeg_ts, "Failed to open file");
+    };
+    defer file.close();
+
+    file.seekTo(0) catch return ValidationResult.invalid(.mpeg_ts, "Failed to seek");
+
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.mpeg_ts, "Failed to get file size");
+    if (file_size < mpeg_ts_parser.TS_PACKET_SIZE) {
+        return ValidationResult.invalid(.mpeg_ts, "File too small for MPEG-TS");
+    }
+
+    // Read up to 4MB for deep validation
+    const max_read: usize = 4 * 1024 * 1024;
+    const read_size: usize = @min(file_size, max_read);
+
+    const data = allocator.alloc(u8, read_size) catch {
+        return ValidationResult.invalid(.mpeg_ts, "Out of memory for TS data");
+    };
+    defer allocator.free(data);
+
+    const bytes_read = file.readAll(data) catch {
+        return ValidationResult.invalid(.mpeg_ts, "Failed to read TS data");
+    };
+
+    if (bytes_read < mpeg_ts_parser.TS_PACKET_SIZE) {
+        return ValidationResult.invalid(.mpeg_ts, "Incomplete TS data");
+    }
+
+    const result = mpeg_ts_parser.validateTsDeep(allocator, data[0..bytes_read], 50000);
+
+    if (!result.valid) {
+        return ValidationResult.invalid(.mpeg_ts, result.error_message orelse "MPEG-TS validation failed");
+    }
+
+    // If we have CRC validation and stream validation, report full depth
+    if (result.pat_crc_valid and result.pmt_crc_valid and
+        (result.video_streams_validated > 0 or result.audio_streams_validated > 0))
+    {
+        return ValidationResult.okWithDepth(.mpeg_ts, .full);
+    }
+
+    // If we have stream validation but no CRC, still report full
+    if (result.video_streams_validated > 0 or result.audio_streams_validated > 0) {
+        return ValidationResult.okWithDepth(.mpeg_ts, .full);
+    }
+
+    // Structural validation with continuity check passed
+    return ValidationResult.okWithDepth(.mpeg_ts, .structural);
 }
 
 /// Validate MPEG Elementary Stream (raw MPEG-1/2 video).
@@ -21713,6 +21810,7 @@ pub const FormatValidator = struct {
             .svg => validateSvgDeep(allocator, path),
             .kml => validateKmlDeep(allocator, path),
             .rtf => validateRtfDeep(allocator, path),
+            .mpeg_ts => validateMpegTsDeep(allocator, path),
             .flv => validateFlvDeep(allocator, path),
             .mbox => validateMboxDeep(allocator, path),
             .wad => validateWadDeep(allocator, path),
@@ -22157,6 +22255,7 @@ pub const FormatValidator = struct {
             .au => validateAu(file),
             .tta => validateTta(file),
             .caf => validateCaf(file),
+            .aac_adts => validateAacAdts(file),
             // New image formats
             .qoi => validateQoi(file),
             .pam => validatePam(file),
@@ -24721,6 +24820,30 @@ fn validateCaf(file: std.fs.File) ValidationResult {
     }
 
     return ValidationResult.structuralOnly(.caf);
+}
+
+// ============ AAC ADTS Validator ============
+
+/// Validate standalone AAC ADTS (.aac) file using pure-Zig bitstream validator.
+fn validateAacAdts(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.aac_adts, "Failed to seek");
+
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.aac_adts, "Failed to get file size");
+    if (file_size < 7) return ValidationResult.invalid(.aac_adts, "File too small for ADTS");
+
+    // Read up to 1MB for validation (covers many ADTS frames)
+    const max_read: usize = 1024 * 1024;
+    const read_size: usize = @min(file_size, max_read);
+    var buf: [max_read]u8 = undefined;
+    const bytes_read = file.readAll(buf[0..read_size]) catch return ValidationResult.invalid(.aac_adts, "Failed to read ADTS data");
+    if (bytes_read < 7) return ValidationResult.invalid(.aac_adts, "Incomplete ADTS data");
+
+    const result = aac_syntax_validator.validateAdtsStream(buf[0..bytes_read]);
+    if (!result.valid) {
+        return ValidationResult.invalid(.aac_adts, result.error_message orelse "ADTS validation failed");
+    }
+
+    return ValidationResult.okWithDepth(.aac_adts, .full);
 }
 
 // ============ QOI Validator ============
