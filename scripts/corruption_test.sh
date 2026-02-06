@@ -282,6 +282,23 @@ test_format "wad" "$GT_DIR/wad/sample.wad"
 # Apple system formats
 test_format "ds_store" "$GT_DIR/ds_store/sample.ds_store"
 
+# New format validators (2026-02-05)
+# Audio
+test_format "amr" "$GT_DIR/amr/sample.amr"
+test_format "au" "$GT_DIR/au/sample.au"
+test_format "tta" "$GT_DIR/tta/sample.tta"
+test_format "caf" "$GT_DIR/caf/sample.caf"
+
+# Image
+test_format "qoi" "$GT_DIR/qoi/sample.qoi"
+test_format "pam" "$GT_DIR/pam/sample.ppm"
+test_format "dpx" "$GT_DIR/dpx/sample.dpx"
+test_format "tga" "$GT_DIR/tga/sample.tga"
+
+# Video containers
+test_format "asf" "$GT_DIR/asf/sample.asf"
+test_format "dv" "$GT_DIR/dv/sample.dv"
+
 echo ""
 echo "==================================="
 echo "Magic Byte Corruption Tests"
@@ -296,6 +313,13 @@ test_magic_corruption "zip" "$GT_DIR/zip/test_archive.zip"
 test_magic_corruption "pdf" "$GT_DIR/pdf/alice_in_wonderland_illustrated.pdf"
 test_magic_corruption "sqlite" "$GT_DIR/sqlite/chinook.sqlite"
 test_magic_corruption "ds_store" "$GT_DIR/ds_store/sample.ds_store"
+test_magic_corruption "amr" "$GT_DIR/amr/sample.amr"
+test_magic_corruption "au" "$GT_DIR/au/sample.au"
+test_magic_corruption "tta" "$GT_DIR/tta/sample.tta"
+test_magic_corruption "caf" "$GT_DIR/caf/sample.caf"
+test_magic_corruption "qoi" "$GT_DIR/qoi/sample.qoi"
+test_magic_corruption "dpx" "$GT_DIR/dpx/sample.dpx"
+test_magic_corruption "asf" "$GT_DIR/asf/sample.asf"
 
 echo ""
 echo "==================================="
