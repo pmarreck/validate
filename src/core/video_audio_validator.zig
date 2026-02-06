@@ -20,6 +20,7 @@ const Allocator = std.mem.Allocator;
 // Import existing validators
 const video_validator = @import("video_validator.zig");
 const aac_validator = @import("aac_validator.zig");
+const aac_syntax_validator = @import("aac_syntax_validator.zig");
 const alac_validator = @import("alac_validator.zig");
 const ac3_validator = @import("ac3_validator.zig");
 const eac3_validator = @import("eac3_validator.zig");
@@ -347,6 +348,27 @@ const Mp4Box = struct {
     header_size: u8,
 };
 
+const StscEntry = struct {
+    first_chunk: u32,
+    samples_per_chunk: u32,
+};
+
+fn getSamplesPerChunk(stsc_entries: []const StscEntry, chunk_number: u32) u32 {
+    // stsc entries are sorted by first_chunk; find the applicable entry for this chunk
+    // Default to 1 sample per chunk if no stsc data
+    if (stsc_entries.len == 0) return 1;
+
+    var result: u32 = stsc_entries[0].samples_per_chunk;
+    for (stsc_entries) |entry| {
+        if (entry.first_chunk <= chunk_number) {
+            result = entry.samples_per_chunk;
+        } else {
+            break;
+        }
+    }
+    return result;
+}
+
 /// Read MP4 box header at current position
 fn readMp4BoxHeader(file: std.fs.File) ?Mp4Box {
     var header: [16]u8 = undefined;
@@ -536,26 +558,186 @@ pub fn validateMp4Audio(allocator: Allocator, path: []const u8) AudioValidationR
 
 /// Validate AAC track from MP4 by extracting and decoding samples
 fn validateMp4AacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) AudioValidationResult {
-    _ = allocator;
-
-    // For now, just verify we found the track
-    // Full implementation would:
-    // 1. Extract esds box for AAC decoder config (ASC)
-    // 2. Parse sample table to get sample locations
-    // 3. Read and decode audio samples
-
     // Get stsd to extract AAC config
     const stsd = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stsd");
     if (stsd == null) {
         return AudioValidationResult.invalid("No sample description found", .aac);
     }
 
-    // For now, return success if we found the track
-    // This is a placeholder - full decode validation requires:
-    // - Extracting ASC from esds
-    // - Parsing stsz/stco/stsc for sample locations
-    // - Reading and feeding samples to aac_validator
-    return AudioValidationResult.ok(.aac, 0);
+    // Extract AAC AudioSpecificConfig from stsd > mp4a > esds
+    const asc = extractAacConfig(allocator, file, stsd.?) orelse {
+        return AudioValidationResult.invalid("Failed to extract AAC config from esds", .aac);
+    };
+    defer allocator.free(asc);
+
+    // Parse sample table for frame locations
+    const stsz = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stsz");
+    if (stsz == null) {
+        return AudioValidationResult.invalid("No sample size table found", .aac);
+    }
+
+    const stco = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stco");
+    const co64 = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "co64");
+    if (stco == null and co64 == null) {
+        return AudioValidationResult.invalid("No chunk offset table found", .aac);
+    }
+
+    // Parse sample sizes
+    // stsz is a FullBox: skip header + 4 bytes version/flags, then read sample_size + sample_count
+    file.seekTo(stsz.?.offset + stsz.?.header_size + 4) catch {
+        return AudioValidationResult.invalid("Failed to read sample sizes", .aac);
+    };
+
+    var stsz_header: [8]u8 = undefined;
+    _ = file.read(&stsz_header) catch {
+        return AudioValidationResult.invalid("Failed to read sample sizes", .aac);
+    };
+
+    const default_size = std.mem.readInt(u32, stsz_header[0..4], .big);
+    const sample_count = std.mem.readInt(u32, stsz_header[4..8], .big);
+
+    if (sample_count > 10_000_000) {
+        return AudioValidationResult.invalid("Too many samples", .aac);
+    }
+
+    var sample_sizes: std.ArrayListUnmanaged(u32) = .{};
+    defer sample_sizes.deinit(allocator);
+
+    if (default_size == 0) {
+        // Variable size samples
+        sample_sizes.ensureTotalCapacity(allocator, sample_count) catch {
+            return AudioValidationResult.invalid("Memory allocation failed", .aac);
+        };
+        for (0..sample_count) |_| {
+            var size_buf: [4]u8 = undefined;
+            _ = file.read(&size_buf) catch break;
+            const size = std.mem.readInt(u32, &size_buf, .big);
+            sample_sizes.append(allocator, size) catch break;
+        }
+    }
+
+    // Parse chunk offsets
+    var chunk_offsets: std.ArrayListUnmanaged(u64) = .{};
+    defer chunk_offsets.deinit(allocator);
+
+    const chunk_box = if (stco != null) stco.? else co64.?;
+    const is_64bit = stco == null;
+
+    file.seekTo(chunk_box.offset + chunk_box.header_size + 4) catch {
+        return AudioValidationResult.invalid("Failed to read chunk offsets", .aac);
+    };
+
+    var chunk_count_buf: [4]u8 = undefined;
+    _ = file.read(&chunk_count_buf) catch {
+        return AudioValidationResult.invalid("Failed to read chunk offsets", .aac);
+    };
+    const chunk_count = std.mem.readInt(u32, &chunk_count_buf, .big);
+
+    chunk_offsets.ensureTotalCapacity(allocator, chunk_count) catch {
+        return AudioValidationResult.invalid("Memory allocation failed", .aac);
+    };
+
+    for (0..chunk_count) |_| {
+        if (is_64bit) {
+            var offset_buf: [8]u8 = undefined;
+            _ = file.read(&offset_buf) catch break;
+            chunk_offsets.append(allocator, std.mem.readInt(u64, &offset_buf, .big)) catch break;
+        } else {
+            var offset_buf: [4]u8 = undefined;
+            _ = file.read(&offset_buf) catch break;
+            chunk_offsets.append(allocator, std.mem.readInt(u32, &offset_buf, .big)) catch break;
+        }
+    }
+
+    if (chunk_offsets.items.len == 0) {
+        return AudioValidationResult.invalid("No chunk offsets found", .aac);
+    }
+
+    // Parse stsc (sample-to-chunk) to know how many samples are in each chunk
+    const stsc = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stsc");
+
+    var stsc_entries: std.ArrayListUnmanaged(StscEntry) = .{};
+    defer stsc_entries.deinit(allocator);
+
+    if (stsc != null) {
+        // stsc is a FullBox: skip header + 4 bytes version/flags
+        file.seekTo(stsc.?.offset + stsc.?.header_size + 4) catch {};
+        var stsc_count_buf: [4]u8 = undefined;
+        if (file.read(&stsc_count_buf)) |bytes| {
+            if (bytes == 4) {
+                const stsc_count = std.mem.readInt(u32, &stsc_count_buf, .big);
+                stsc_entries.ensureTotalCapacity(allocator, stsc_count) catch {};
+                for (0..stsc_count) |_| {
+                    var entry_buf: [12]u8 = undefined;
+                    const read = file.read(&entry_buf) catch break;
+                    if (read != 12) break;
+                    stsc_entries.append(allocator, .{
+                        .first_chunk = std.mem.readInt(u32, entry_buf[0..4], .big),
+                        .samples_per_chunk = std.mem.readInt(u32, entry_buf[4..8], .big),
+                    }) catch break;
+                }
+            }
+        } else |_| {}
+    }
+
+    // Collect frame data and sizes using proper chunk-based reading
+    const max_frames: u32 = 10;
+    var frame_data: std.ArrayListUnmanaged(u8) = .{};
+    defer frame_data.deinit(allocator);
+    var frame_sizes: std.ArrayListUnmanaged(u32) = .{};
+    defer frame_sizes.deinit(allocator);
+
+    var sample_index: u32 = 0;
+    var frames_collected: u32 = 0;
+
+    for (chunk_offsets.items, 0..) |chunk_offset, chunk_idx| {
+        if (frames_collected >= max_frames) break;
+
+        // Determine how many samples are in this chunk via stsc
+        const samples_in_chunk = getSamplesPerChunk(stsc_entries.items, @intCast(chunk_idx + 1));
+
+        file.seekTo(chunk_offset) catch break;
+
+        for (0..samples_in_chunk) |_| {
+            if (frames_collected >= max_frames) break;
+            if (sample_index >= sample_count) break;
+
+            const size = if (default_size > 0) default_size else if (sample_index < sample_sizes.items.len) sample_sizes.items[sample_index] else break;
+            sample_index += 1;
+
+            if (size > 10 * 1024 * 1024) continue; // Skip unreasonably large samples
+
+            const start_offset = frame_data.items.len;
+            frame_data.ensureTotalCapacity(allocator, frame_data.items.len + size) catch continue;
+
+            const slice = frame_data.addManyAsSlice(allocator, size) catch continue;
+            const bytes_read = file.read(slice) catch continue;
+            if (bytes_read != size) {
+                frame_data.shrinkRetainingCapacity(start_offset);
+                continue;
+            }
+
+            frame_sizes.append(allocator, size) catch continue;
+            frames_collected += 1;
+        }
+    }
+
+    if (frames_collected == 0) {
+        return AudioValidationResult.invalid("No frames extracted", .aac);
+    }
+
+    // Validate using pure-Zig AAC syntax validator (replaces fdk-aac for MP4 path)
+    const syntax_result = aac_syntax_validator.validateAacSyntax(
+        frame_data.items,
+        frame_sizes.items,
+        asc,
+    );
+
+    if (!syntax_result.valid) {
+        return AudioValidationResult.invalid(syntax_result.error_message orelse "AAC syntax error", .aac);
+    }
+
+    return AudioValidationResult.ok(.aac, syntax_result.frames_checked);
 }
 
 /// Validate ALAC track from MP4/M4A by extracting and decoding samples
@@ -587,7 +769,8 @@ fn validateMp4AlacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
     var sample_sizes: std.ArrayListUnmanaged(u32) = .{};
     defer sample_sizes.deinit(allocator);
 
-    file.seekTo(stsz.?.offset + stsz.?.header_size) catch {
+    // stsz is a FullBox: skip header + 4 bytes version/flags, then read sample_size + sample_count
+    file.seekTo(stsz.?.offset + stsz.?.header_size + 4) catch {
         return AudioValidationResult.invalid("Failed to read sample sizes", .alac);
     };
 
@@ -765,6 +948,141 @@ fn extractAlacConfig(file: std.fs.File, stsd: Mp4Box) ?[24]u8 {
     return null;
 }
 
+fn extractAacConfig(allocator: Allocator, file: std.fs.File, stsd: Mp4Box) ?[]u8 {
+    // stsd structure: version (1) + flags (3) + entry_count (4) + entries
+    // For AAC: mp4a entry > esds box (or wave > esds for QuickTime)
+
+    file.seekTo(stsd.offset + stsd.header_size + 8) catch return null;
+
+    // Read entry header
+    var entry_buf: [8]u8 = undefined;
+    _ = file.read(&entry_buf) catch return null;
+
+    const entry_size = std.mem.readInt(u32, entry_buf[0..4], .big);
+    const entry_type = entry_buf[4..8];
+
+    if (!std.mem.eql(u8, entry_type, "mp4a")) {
+        return null;
+    }
+
+    // Read version from AudioSampleEntry (at offset 8 into the 28-byte fields)
+    var ase_buf: [28]u8 = undefined;
+    _ = file.read(&ase_buf) catch return null;
+    const ase_version = std.mem.readInt(u16, ase_buf[8..10], .big);
+
+    // Skip extra bytes for QT Sound Sample Description versions
+    const extra_bytes: u32 = switch (ase_version) {
+        1 => 16, // v1 has 16 extra bytes (samplesPerPacket, bytesPerPacket, bytesPerFrame, bytesPerSample)
+        2 => 36, // v2 has 36 extra bytes
+        else => 0, // v0 (standard ISO) has no extra bytes
+    };
+    if (extra_bytes > 0) {
+        file.seekTo((file.getPos() catch return null) + extra_bytes) catch return null;
+    }
+
+    // Search child boxes for "esds" or "wave" (which contains esds)
+    const header_overhead = 8 + 28 + extra_bytes;
+    const remaining: u32 = if (entry_size > header_overhead) @as(u32, @intCast(entry_size - header_overhead)) else return null;
+    var pos: u32 = 0;
+
+    while (pos + 8 <= remaining) {
+        var box_header: [8]u8 = undefined;
+        _ = file.read(&box_header) catch return null;
+
+        const box_size = std.mem.readInt(u32, box_header[0..4], .big);
+        const box_type = box_header[4..8];
+
+        if (std.mem.eql(u8, box_type, "esds")) {
+            // esds directly inside mp4a
+            file.seekTo((file.getPos() catch return null) + 4) catch return null;
+            const esds_data_size = if (box_size > 12) box_size - 12 else return null;
+            return parseEsdsAudioConfig(allocator, file, esds_data_size);
+        } else if (std.mem.eql(u8, box_type, "wave")) {
+            // QuickTime: esds is inside a wave box — search within it
+            const wave_data_start = file.getPos() catch return null;
+            const wave_data_size: u32 = if (box_size > 8) @as(u32, @intCast(box_size - 8)) else return null;
+            var wave_pos: u32 = 0;
+            while (wave_pos + 8 <= wave_data_size) {
+                var inner_header: [8]u8 = undefined;
+                _ = file.read(&inner_header) catch return null;
+
+                const inner_size = std.mem.readInt(u32, inner_header[0..4], .big);
+                const inner_type = inner_header[4..8];
+
+                if (std.mem.eql(u8, inner_type, "esds")) {
+                    file.seekTo((file.getPos() catch return null) + 4) catch return null;
+                    const esds_data_size = if (inner_size > 12) inner_size - 12 else return null;
+                    return parseEsdsAudioConfig(allocator, file, esds_data_size);
+                }
+
+                if (inner_size < 8) break;
+                file.seekTo(wave_data_start + wave_pos + inner_size) catch return null;
+                wave_pos += inner_size;
+            }
+            return null;
+        }
+
+        // Skip to next box
+        if (box_size < 8) break;
+        file.seekTo((file.getPos() catch return null) + box_size - 8) catch return null;
+        pos += box_size;
+    }
+
+    return null;
+}
+
+fn parseEsdsAudioConfig(allocator: Allocator, file: std.fs.File, max_size: u32) ?[]u8 {
+    // ES descriptor parsing - look for tag 0x05 (DecoderSpecificInfo) which contains the ASC
+    var bytes_read: u32 = 0;
+    while (bytes_read < max_size) {
+        var tag: [1]u8 = undefined;
+        _ = file.read(&tag) catch return null;
+        bytes_read += 1;
+
+        // Read size (variable length, up to 4 bytes with continuation bit)
+        var size: u32 = 0;
+        var size_bytes: u8 = 0;
+        while (size_bytes < 4) {
+            var b: [1]u8 = undefined;
+            _ = file.read(&b) catch return null;
+            bytes_read += 1;
+            size = (size << 7) | (b[0] & 0x7F);
+            size_bytes += 1;
+            if ((b[0] & 0x80) == 0) break;
+        }
+
+        if (tag[0] == 0x05) {
+            // DecoderSpecificInfo - contains AudioSpecificConfig
+            if (size > max_size - bytes_read) return null;
+            if (size == 0) return null;
+            const config = allocator.alloc(u8, size) catch return null;
+            const read = file.read(config) catch {
+                allocator.free(config);
+                return null;
+            };
+            if (read != size) {
+                allocator.free(config);
+                return null;
+            }
+            return config;
+        } else if (tag[0] == 0x03) {
+            // ES_Descriptor: skip ES_ID (2) + flags (1)
+            file.seekTo((file.getPos() catch return null) + 3) catch return null;
+            bytes_read += 3;
+        } else if (tag[0] == 0x04) {
+            // DecoderConfigDescriptor: skip objectTypeIndication(1) + streamType/bufferSize(4) + maxBitrate(4) + avgBitrate(4)
+            file.seekTo((file.getPos() catch return null) + 13) catch return null;
+            bytes_read += 13;
+        } else {
+            // Skip unknown tag
+            file.seekTo((file.getPos() catch return null) + size) catch return null;
+            bytes_read += size;
+        }
+    }
+
+    return null;
+}
+
 /// Validate AC-3 track from MP4 container
 fn validateMp4Ac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) AudioValidationResult {
     // Parse sample table for frame extraction
@@ -780,7 +1098,8 @@ fn validateMp4Ac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
     }
 
     // Read sample sizes
-    file.seekTo(stsz.?.offset + stsz.?.header_size) catch {
+    // stsz is a FullBox: skip header + 4 bytes version/flags, then read sample_size + sample_count
+    file.seekTo(stsz.?.offset + stsz.?.header_size + 4) catch {
         return AudioValidationResult.invalid("Failed to read sample sizes", .ac3);
     };
 
@@ -896,7 +1215,8 @@ fn validateMp4Eac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
     }
 
     // Read sample sizes
-    file.seekTo(stsz.?.offset + stsz.?.header_size) catch {
+    // stsz is a FullBox: skip header + 4 bytes version/flags, then read sample_size + sample_count
+    file.seekTo(stsz.?.offset + stsz.?.header_size + 4) catch {
         return AudioValidationResult.invalid("Failed to read sample sizes", .eac3);
     };
 

@@ -121,6 +121,10 @@ pub const AacDecoder = struct {
             samples: u32,
             channels: u8,
             sample_rate: u32,
+            num_bad_bytes: i64,
+            num_total_bytes: i64,
+            num_bad_access_units: i64,
+            num_total_access_units: i64,
         },
         need_more_bits,
         sync_error,
@@ -146,6 +150,10 @@ pub const AacDecoder = struct {
                     .samples = @intCast(info.*.frameSize),
                     .channels = @intCast(info.*.numChannels),
                     .sample_rate = @intCast(info.*.sampleRate),
+                    .num_bad_bytes = info.*.numBadBytes,
+                    .num_total_bytes = info.*.numTotalBytes,
+                    .num_bad_access_units = info.*.numBadAccessUnits,
+                    .num_total_access_units = info.*.numTotalAccessUnits,
                 },
             };
         } else if (err == aac.AAC_DEC_NOT_ENOUGH_BITS) {
@@ -222,14 +230,21 @@ pub fn validateAacAccessUnits(data: []const u8, au_sizes: []const u32, asc: []co
             return AacDecodeResult.invalid("Failed to fill decoder buffer", frames_decoded);
         };
         if (consumed != au_size) {
-            // Decoder didn't accept all data - might be internal buffer issue
-            continue;
+            return AacDecodeResult.invalid("AAC decoder rejected frame data", frames_decoded);
         }
 
         // Decode the access unit
         const result = decoder.decodeFrame(&pcm);
         switch (result) {
             .success => |info| {
+                // Check if fdk-aac detected errors it concealed rather than reported
+                if (info.num_bad_access_units > 0) {
+                    return AacDecodeResult.invalid("AAC concealed error detected", frames_decoded);
+                }
+                if (info.num_bad_bytes > 0) {
+                    return AacDecodeResult.invalid("AAC bad bytes detected", frames_decoded);
+                }
+
                 frames_decoded += 1;
                 samples_decoded += info.samples;
                 if (channels == 0) {
@@ -238,22 +253,16 @@ pub fn validateAacAccessUnits(data: []const u8, au_sizes: []const u32, asc: []co
                 }
             },
             .need_more_bits => {
-                // Access unit incomplete? This shouldn't happen for valid data
-                continue;
+                return AacDecodeResult.invalid("AAC frame incomplete", frames_decoded);
             },
             .sync_error => {
-                // Skip this frame, try next
-                continue;
+                return AacDecodeResult.invalid("AAC sync error", frames_decoded);
             },
             .decode_error => |err| {
                 if (err == aac.AAC_DEC_CRC_ERROR) {
                     return AacDecodeResult.invalid("AAC CRC error", frames_decoded);
                 }
-                if (err == aac.AAC_DEC_DECODE_FRAME_ERROR) {
-                    return AacDecodeResult.invalid("AAC frame decode error", frames_decoded);
-                }
-                // Other errors, try to continue
-                continue;
+                return AacDecodeResult.invalid("AAC frame decode error", frames_decoded);
             },
         }
     }
@@ -295,7 +304,6 @@ fn decodeAacStream(file: std.fs.File, decoder: *AacDecoder) AacDecodeResult {
     const chunk_size: usize = 64 * 1024; // 64KB chunks
     var buffer: [chunk_size]u8 = undefined;
     var pcm: [MAX_PCM_BUFFER_SIZE]i16 = undefined;
-    var consecutive_sync_errors: u32 = 0;
 
     while (true) {
         // Read more data
@@ -320,9 +328,16 @@ fn decodeAacStream(file: std.fs.File, decoder: *AacDecoder) AacDecodeResult {
                 const result = decoder.decodeFrame(&pcm);
                 switch (result) {
                     .success => |info| {
+                        // Check if fdk-aac detected errors it concealed
+                        if (info.num_bad_access_units > 0) {
+                            return AacDecodeResult.invalid("AAC concealed error detected", frames_decoded);
+                        }
+                        if (info.num_bad_bytes > 0) {
+                            return AacDecodeResult.invalid("AAC bad bytes detected", frames_decoded);
+                        }
+
                         frames_decoded += 1;
                         samples_decoded += info.samples;
-                        consecutive_sync_errors = 0;
 
                         // Capture format info from first successful decode
                         if (channels == 0) {
@@ -332,22 +347,13 @@ fn decodeAacStream(file: std.fs.File, decoder: *AacDecoder) AacDecodeResult {
                     },
                     .need_more_bits => break,
                     .sync_error => {
-                        consecutive_sync_errors += 1;
-                        if (consecutive_sync_errors > 100) {
-                            return AacDecodeResult.invalid("Too many sync errors", frames_decoded);
-                        }
-                        break;
+                        return AacDecodeResult.invalid("AAC sync error", frames_decoded);
                     },
                     .decode_error => |err| {
-                        // Some errors are recoverable
                         if (err == aac.AAC_DEC_CRC_ERROR) {
                             return AacDecodeResult.invalid("AAC CRC error", frames_decoded);
                         }
-                        if (err == aac.AAC_DEC_DECODE_FRAME_ERROR) {
-                            return AacDecodeResult.invalid("AAC frame decode error", frames_decoded);
-                        }
-                        // Try to continue for other errors
-                        break;
+                        return AacDecodeResult.invalid("AAC frame decode error", frames_decoded);
                     },
                 }
             }
