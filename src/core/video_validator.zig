@@ -817,7 +817,7 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
     if (shouldUseVideoToolbox()) {
         // macOS: Use VideoToolbox for hardware-accelerated decoding
         if (video_codec == .h264 or video_codec == .hevc or video_codec == .av1) {
-            return validateMp4VideoWithVideoToolbox(allocator, file, stbl, video_codec, max_frames);
+            return validateMp4VideoWithVideoToolbox(allocator, file, stbl, video_codec, max_frames, path);
         }
     }
 
@@ -942,7 +942,8 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
         const is_decoder_capability_issue =
             std.mem.indexOf(u8, err_msg, "Failed to create") != null or
             std.mem.indexOf(u8, err_msg, "Failed to open") != null or
-            std.mem.indexOf(u8, err_msg, "not supported") != null;
+            std.mem.indexOf(u8, err_msg, "not supported") != null or
+            std.mem.indexOf(u8, err_msg, "no parameter sets") != null;
 
         if (is_decoder_capability_issue and isFfprobeAvailable()) {
             const ffprobe_result = validateWithFfprobe(allocator, path);
@@ -968,6 +969,7 @@ fn validateMp4VideoWithVideoToolbox(
     stbl: Mp4Box,
     video_codec: VideoCodec,
     max_frames: u32,
+    path: []const u8,
 ) VideoValidationResult {
     // This function is only compiled on macOS
     if (comptime !use_videotoolbox) {
@@ -1062,9 +1064,15 @@ fn validateMp4VideoWithVideoToolbox(
             std.debug.print("[VideoToolbox] Decode failed: {s}, trying ffmpeg fallback\n", .{vt_result.error_message orelse "unknown error"});
         }
 
-        // Note: We can't easily get the file path here since we only have the file handle.
-        // For now, return the VideoToolbox error. In practice, VideoToolbox should handle
-        // all profiles correctly, so this fallback is mainly for edge cases.
+        // Try ffmpeg as fallback for VideoToolbox failures
+        if (isFfprobeAvailable()) {
+            const ffprobe_result = validateWithFfprobe(allocator, path);
+            if (ffprobe_result.valid) {
+                return VideoValidationResult.okByteValidatedViaFfmpeg(video_codec, ffprobe_result.frames_decoded);
+            }
+        }
+
+        // Both VideoToolbox and ffmpeg failed
         return VideoValidationResult.invalid(
             vt_result.error_message orelse "VideoToolbox decode failed",
             video_codec,
@@ -1533,7 +1541,8 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         const is_decoder_capability_issue =
             std.mem.indexOf(u8, err_msg, "Failed to create") != null or
             std.mem.indexOf(u8, err_msg, "Failed to open") != null or
-            std.mem.indexOf(u8, err_msg, "not supported") != null;
+            std.mem.indexOf(u8, err_msg, "not supported") != null or
+            std.mem.indexOf(u8, err_msg, "no parameter sets") != null;
 
         if (is_decoder_capability_issue and isFfprobeAvailable()) {
             const ffprobe_result = validateWithFfprobe(allocator, path);
