@@ -138,14 +138,14 @@ pub const AlacDecoder = struct {
         //   - bits 2-1: bytesShifted
         //   - bit 0: escapeFlag
 
-        const tag = reader.readBits(3) orelse return null;
+        _ = reader.readBits(3) orelse return null; // tag (element type)
         _ = reader.readBits(4) orelse return null; // elementInstanceTag
         const unused_header = reader.readBits(12) orelse return null;
         if (unused_header != 0) return null; // Must be zero
 
         const header_byte = reader.readBits(4) orelse return null;
         const partial_frame = (header_byte >> 3) & 1;
-        const bytes_shifted = (header_byte >> 1) & 3;
+        _ = (header_byte >> 1) & 3; // bytes_shifted (used for 20/24/32 bit audio)
         const escape_flag = header_byte & 1;
 
         // Determine number of output samples
@@ -162,8 +162,6 @@ pub const AlacDecoder = struct {
         }
 
         const num_channels = self.config.num_channels;
-        _ = tag; // Validate tag matches expected channel configuration
-        _ = bytes_shifted; // Used for 20/24/32 bit audio
 
         if (escape_flag == 1) {
             // Uncompressed frame - raw PCM samples
@@ -239,9 +237,12 @@ pub const AlacDecoder = struct {
         const pred_order_raw = reader.readBits(5) orelse return false;
         const pred_order: u5 = @intCast(pred_order_raw);
 
+        // Compute effective rice history multiplier (per FFmpeg: per_frame * config.pb / 4)
+        const rice_hist_mult: u32 = @as(u32, rice_modifier) * @as(u32, self.config.pb) / 4;
+
         if (pred_type == 0) {
             // No prediction - decode residuals directly
-            return self.decodeRiceResiduals(reader, samples, rice_modifier, extra_bits, output);
+            return self.decodeRiceResiduals(reader, samples, rice_hist_mult, extra_bits, output);
         } else if (pred_type == 1) {
             // FIR prediction
             if (pred_order > 31) return false;
@@ -254,7 +255,7 @@ pub const AlacDecoder = struct {
             }
 
             // Decode residuals
-            if (!self.decodeRiceResiduals(reader, samples, rice_modifier, extra_bits, self.predictor_buffer)) {
+            if (!self.decodeRiceResiduals(reader, samples, rice_hist_mult, extra_bits, self.predictor_buffer)) {
                 return false;
             }
 
@@ -265,94 +266,121 @@ pub const AlacDecoder = struct {
         return false;
     }
 
-    fn decodeRiceResiduals(self: *AlacDecoder, reader: *BitReader, samples: u32, k_modifier: u8, extra_bits: u4, output: []i32) bool {
-        var history: u32 = @intCast(self.config.pb); // History starts at pb
+    /// Decode ALAC-specific Rice/Golomb coded residuals.
+    /// Based on FFmpeg's rice_decompress and Apple's ag_decode.
+    fn decodeRiceResiduals(self: *AlacDecoder, reader: *BitReader, samples: u32, rice_hist_mult: u32, extra_bits: u4, output: []i32) bool {
+        var history: u32 = @intCast(self.config.mb); // Initial history = mb (rice_initial_history)
         var sign_modifier: u32 = 0;
+        const rice_limit: u32 = @intCast(self.config.kb);
+        const bps: u32 = @intCast(self.config.bits_per_sample);
 
         var i: u32 = 0;
         while (i < samples) {
-            // Calculate k from history using Apple ALAC formula
-            // k = min(31, max(0, kb - leading_zeros(history) + extra_shift))
-            // where kb = k_modifier, and leading_zeros is 32 for history=0
-            const hist_shift = history >> 9;
-            const k: u32 = if (hist_shift == 0)
-                @as(u32, k_modifier) // When history is small, use just the modifier
-            else
-                @min(31, 31 -| @clz(hist_shift) +| @as(u32, k_modifier));
+            // Calculate Rice parameter k = floor(log2((history >> 9) + 3))
+            const k_arg: u32 = (history >> 9) + 3;
+            var k: u32 = 31 - @as(u32, @clz(k_arg));
+            k = @min(k, rice_limit);
 
-            // Read unary prefix (count of zeros)
-            const q = reader.readUnaryMax(65535) orelse return false;
+            // Decode scalar value using ALAC-specific Rice variant
+            var x = decodeScalar(reader, k, bps) orelse return false;
 
-            // Read binary suffix
-            var r: u32 = 0;
-            if (k > 0) {
-                r = reader.readBits(@intCast(k)) orelse return false;
-            }
-
-            // Combine
-            var value: u32 = (q << @intCast(k)) + r;
-
-            // Apply sign modifier
-            value +%= sign_modifier;
+            // Apply sign modifier (from previous zero-run)
+            x +%= sign_modifier;
             sign_modifier = 0;
 
-            // Handle escape code
-            if (value == 0xFFFF) {
-                // Read extra bits directly
-                const extra_val = reader.readBits(@intCast(self.config.bits_per_sample)) orelse return false;
-                output[i] = signExtend(extra_val, self.config.bits_per_sample);
-            } else {
-                // Convert unsigned to signed (low bit is sign)
-                const signed: i32 = if ((value & 1) == 1)
-                    -@as(i32, @intCast((value + 1) >> 1))
-                else
-                    @intCast(value >> 1);
+            // Convert unsigned to signed: (x >> 1) ^ -(x & 1)
+            const signed_val: i32 = @as(i32, @intCast(x >> 1)) ^ -@as(i32, @intCast(x & 1));
 
-                // Add extra bits if present
-                if (extra_bits > 0) {
-                    const extra = reader.readBits(extra_bits) orelse return false;
-                    output[i] = (signed << extra_bits) | @as(i32, @intCast(extra));
-                } else {
-                    output[i] = signed;
-                }
+            // Apply extra bits shift if present
+            if (extra_bits > 0) {
+                const extra = reader.readBits(extra_bits) orelse return false;
+                output[i] = (signed_val << extra_bits) | @as(i32, @intCast(extra));
+            } else {
+                output[i] = signed_val;
             }
 
             // Update history
-            if (value > 0xFFFF) {
+            if (x > 0xFFFF) {
                 history = 0xFFFF;
             } else {
-                history +%= (value * @as(u32, self.config.pb)) -% ((history * @as(u32, self.config.pb)) >> 9);
+                history +%= x * rice_hist_mult -% ((history * rice_hist_mult) >> 9);
             }
 
-            // Check for run-length encoding
+            // Zero-run detection: when history is small, check for run of zeros
             if ((history < 128) and (i + 1 < samples)) {
-                // Potential RLE - read run length
-                var run_k: u32 = 31 - @clz((@as(u32, self.config.max_run) -| 1) >> 9);
-                if (run_k > 31) run_k = 31;
-                const run_q = reader.readUnaryMax(self.config.max_run) orelse return false;
-                var run_r: u32 = 0;
-                if (run_k > 0) {
-                    run_r = reader.readBits(@intCast(run_k)) orelse return false;
+                // Calculate k for zero block using FFmpeg formula:
+                // k = 7 - av_log2(history) + ((history + 16) >> 6)
+                var zk: u32 = 0;
+                if (history > 0) {
+                    const log2_hist: u32 = 31 - @as(u32, @clz(history));
+                    zk = 7 -| log2_hist;
+                    zk += (history + 16) >> 6;
+                } else {
+                    // history == 0: av_log2(0) is undefined, but 7 - 0 + (16 >> 6) = 7
+                    zk = 7 + ((0 + 16) >> 6);
                 }
-                const run_length = (run_q << @intCast(run_k)) + run_r;
+                zk = @min(zk, rice_limit);
 
-                if (run_length > 0) {
+                const block_size = decodeScalar(reader, zk, 16) orelse return false;
+
+                if (block_size > 0) {
+                    // Clamp to remaining samples
+                    const max_block = samples - i - 1;
+                    const actual_block = @min(block_size, max_block);
                     // Fill with zeros
-                    const run_end = @min(i + 1 + run_length, samples);
+                    const run_end = i + 1 + actual_block;
                     for (i + 1..run_end) |j| {
                         output[j] = 0;
                     }
-                    i = @intCast(run_end);
-                    history = 0;
-                    sign_modifier = 1;
-                    continue;
+                    i = run_end;
                 }
+
+                // sign_modifier = 1 when block_size <= 0xFFFF (includes block_size=0)
+                if (block_size <= 0xFFFF) {
+                    sign_modifier = 1;
+                }
+                history = 0;
+
+                if (block_size > 0) continue;
             }
 
             i += 1;
         }
 
         return true;
+    }
+
+    /// ALAC-specific scalar decode (per FFmpeg's decode_scalar / Apple's dyn_get).
+    /// Reads a unary prefix of 1-bits (max 9), then a binary suffix based on k.
+    fn decodeScalar(reader: *BitReader, k: u32, bps: u32) ?u32 {
+        // Read unary: count of consecutive 1-bits before a 0-bit, max 9
+        var x: u32 = 0;
+        while (x < 9) {
+            const bit = reader.readBit() orelse return null;
+            if (bit == 0) break;
+            x += 1;
+        }
+
+        if (x > 8) {
+            // Escape: read bps bits directly
+            return reader.readBits(@intCast(bps));
+        } else if (k != 1 and k > 0) {
+            // ALAC-specific binary suffix encoding
+            const extrabits = reader.peekBits(@intCast(k)) orelse return null;
+            // x = x * (2^k - 1)
+            x = (x << @intCast(k)) - x;
+            if (extrabits > 1) {
+                x += extrabits - 1;
+                _ = reader.readBits(@intCast(k)) orelse return null; // consume k bits
+            } else {
+                // consume k-1 bits (leave last bit for next code)
+                if (k > 1) {
+                    _ = reader.readBits(@intCast(k - 1)) orelse return null;
+                }
+            }
+        }
+        // When k == 0 or k == 1: x is just the unary value
+        return x;
     }
 
     fn applyPrediction(self: *AlacDecoder, samples: u32, order: u5, coefs: *const [32]i16, output: []i32) bool {

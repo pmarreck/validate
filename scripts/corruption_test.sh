@@ -141,6 +141,7 @@ test_format "midi" "$GT_DIR/midi/fur_elise.mid"
 test_format "ac3" "$GT_DIR/ac3/sample.ac3"
 test_format "eac3" "$GT_DIR/eac3/sample.eac3"
 test_format "alac" "$GT_DIR/alac/sample.m4a"
+test_format "aac" "$GT_DIR/aac/sample.m4a"
 
 # Tracker
 test_format "mod" "$GT_DIR/tracker/otm.mod"
@@ -320,6 +321,7 @@ test_magic_corruption "caf" "$GT_DIR/caf/sample.caf"
 test_magic_corruption "qoi" "$GT_DIR/qoi/sample.qoi"
 test_magic_corruption "dpx" "$GT_DIR/dpx/sample.dpx"
 test_magic_corruption "asf" "$GT_DIR/asf/sample.asf"
+test_magic_corruption "aac" "$GT_DIR/aac/sample.m4a"
 
 echo ""
 echo "==================================="

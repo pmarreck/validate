@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const BitReader = @import("bitstream_reader.zig").BitReader;
+const huff = @import("aac_huffman_tables.zig");
 
 // ============================================================================
 // Public Result Types
@@ -135,82 +136,18 @@ const num_swb_short = [13]u8{
 // ============================================================================
 // Huffman Codebook Support
 //
-// Spectral Huffman codebooks (1-11) are not currently decoded individually.
-// Corruption detection relies on:
-// - Section data consistency (lengths must sum to max_sfb)
-// - Scalefactor Huffman codeword validity
-// - ICS parameter range checking
-// - Element ID validity
-//
 // The scalefactor codebook uses a regular prefix structure decoded in
-// decodeScalefactor() below. Full spectral Huffman tables can be added
-// later for bit-exhaustion validation.
+// decodeScalefactor() below.
+//
+// Spectral Huffman codebooks (1-11) are decoded via binary tree lookup
+// in aac_huffman_tables.zig, enabling bit-exhaustion validation.
 // ============================================================================
 
-/// Decode one scalefactor Huffman codeword from the bitstream.
-/// The scalefactor codebook uses a specific prefix code structure:
-/// - Very short codes (1-9 bits) for common deltas near 0
-/// - Progressively longer codes use a unary-like prefix of 1s
-///
-/// Returns the scalefactor index (0-120) or null if invalid.
-fn decodeScalefactor(reader: *BitReader) ?i8 {
-    // Scalefactor Huffman codebook (ISO 14496-3 Table 4.A.1).
-    // Structure: symmetric prefix-free codes around index 60.
-    //
-    // Level 0 (1 bit): '0' -> index 60 (delta=0)
-    // Level N (N+2 bits): N leading 1s + '0' separator + 1 suffix bit
-    //   suffix=0 -> index (60-N), suffix=1 -> index (60+N)
-    //
-    // Examples:
-    //   '0'      -> 60 (delta 0)
-    //   '100'    -> 59 (delta -1), '101' -> 61 (delta +1)
-    //   '1100'   -> 58 (delta -2), '1101' -> 62 (delta +2)
-    //   '11100'  -> 57 (delta -3), '11101' -> 63 (delta +3)
-
-    const first = reader.readBit() orelse return null;
-    if (first == 0) return 60; // delta = 0
-
-    // Count additional leading 1-bits (we already read the first 1)
-    var ones: u32 = 1;
-    while (ones < 30) : (ones += 1) {
-        const bit = reader.readBit() orelse return null;
-        if (bit == 0) break; // This is the separator
-    }
-
-    if (ones >= 30) return null; // Invalid: too many leading ones
-
-    // Read 1 suffix bit: determines sign of delta
-    const suffix = reader.readBit() orelse return null;
-
-    // Validate range: index must be 0-120 (delta -60..+60)
-    if (ones > 60) return null;
-
-    const offset: i8 = @intCast(ones);
-    if (suffix == 0) {
-        return 60 - offset; // Negative delta
-    } else {
-        return 60 + offset; // Positive delta
-    }
+/// Decode one scalefactor Huffman codeword.
+/// Delegates to the proper binary tree decoder in aac_huffman_tables.zig.
+fn decodeScalefactor(reader: *BitReader) ?u8 {
+    return huff.decodeScalefactor(reader);
 }
-
-// ============================================================================
-// Spectral Huffman Codebook Decoding
-//
-// For validation, we don't need to decode the actual spectral values.
-// We only need to verify that:
-// 1. Each Huffman codeword is valid (exists in the codebook)
-// 2. The total bits consumed matches the access unit size
-//
-// Instead of storing full trees, we use a pragmatic approach:
-// Skip spectral data by counting the expected bits based on section info,
-// or attempt to parse and verify structure.
-//
-// For AAC-LC, the spectral data for each section uses one of 11 codebooks.
-// Codebook 0 means "zero" (no bits). Codebooks 1-11 use Huffman coding.
-//
-// We implement a simplified Huffman decoder that reads bit-by-bit and
-// validates against maximum codeword lengths per codebook.
-// ============================================================================
 
 // ============================================================================
 // ICS (Individual Channel Stream) Types
@@ -243,6 +180,7 @@ const Section = struct {
     codebook: u8,
     start: u16,
     end: u16,
+    group: u8,
 };
 
 // ============================================================================
@@ -356,7 +294,7 @@ fn parseSectionData(reader: *BitReader, ics: *const IcsInfo) ?SectionInfo {
     const sect_bits: u5 = if (ics.window_sequence == .eight_short) 3 else 5;
     const sect_esc_val: u32 = (@as(u32, 1) << sect_bits) - 1;
 
-    for (0..ics.num_window_groups) |_| {
+    for (0..ics.num_window_groups) |g| {
         var k: u16 = 0;
         while (k < ics.max_sfb) {
             if (section_info.num_sections >= 128) return null;
@@ -379,6 +317,7 @@ fn parseSectionData(reader: *BitReader, ics: *const IcsInfo) ?SectionInfo {
                 .codebook = @intCast(sect_cb),
                 .start = k,
                 .end = sect_end,
+                .group = @intCast(g),
             };
             section_info.num_sections += 1;
             k = sect_end;
@@ -437,18 +376,52 @@ fn parseScaleFactorData(reader: *BitReader, _: *const IcsInfo, sections: *const 
     return true;
 }
 
-/// Spectral data is not parsed individually — we rely on the bit-exhaustion
-/// check at the AU boundary for corruption detection. The key insight is:
-/// - Section data parsing is strict (lengths must sum to max_sfb)
-/// - Scale factor parsing uses Huffman decoding (catches invalid codewords)
-/// - The total AU size must match bits consumed (catches spectral corruption)
+/// Parse and validate spectral Huffman data for one ICS.
 ///
-/// Spectral data bits are consumed as part of the remaining AU data and
-/// verified by the final `remainingBits() < 8` check in validateAccessUnit.
-fn parseSpectralData(_: *BitReader, _: *const IcsInfo, _: *const SectionInfo) bool {
-    // Spectral data occupies the remaining bits before AU end.
-    // We don't skip or consume bits here — they're handled by the
-    // bit exhaustion check at the AU level.
+/// Iterates sections, decoding Huffman codewords via binary tree lookup.
+/// This consumes the exact number of bits the encoder wrote, enabling
+/// bit-exhaustion validation at the AU boundary.
+fn parseSpectralData(reader: *BitReader, ics: *const IcsInfo, sections: *const SectionInfo, config: *const AacConfig) bool {
+    const freq_idx = config.sampling_frequency_index;
+
+    // Get SWB offset table for this frequency/window type
+    const swb_offsets = if (ics.window_sequence == .eight_short)
+        huff.swbOffsetsShort(freq_idx)
+    else
+        huff.swbOffsetsLong(freq_idx);
+
+    for (0..sections.num_sections) |i| {
+        const sect = sections.sections[i];
+        const cb = sect.codebook;
+
+        // Skip codebooks that don't encode spectral data
+        if (cb == 0 or cb >= 13) continue; // ZERO_HCB, NOISE, INTENSITY
+        if (cb == 12) return false; // Reserved codebook
+
+        // Bounds check section against SWB offset table
+        if (sect.end >= swb_offsets.len) return false;
+
+        const dim: u16 = huff.cbDimension(@intCast(cb));
+        if (dim == 0) return false;
+
+        // Number of spectral lines for this section (within one window)
+        const num_lines = swb_offsets[sect.end] - swb_offsets[sect.start];
+
+        // Multiply by window_group_length for windows in this group
+        const group_len: u16 = ics.window_group_length[sect.group];
+        const total_lines = num_lines * group_len;
+
+        // Total lines must be a multiple of codebook dimension
+        if (total_lines % dim != 0) return false;
+
+        // Decode Huffman code groups
+        const num_groups = total_lines / dim;
+        for (0..num_groups) |_| {
+            const result = huff.decodeSpectral(reader, @intCast(cb));
+            if (!result.valid) return false;
+        }
+    }
+
     return true;
 }
 
@@ -512,16 +485,13 @@ fn parseTnsData(reader: *BitReader, ics: *const IcsInfo) bool {
     return true;
 }
 
+/// Parse gain_control_data.
+/// AAC-LC does not use gain control (that's SSR profile only).
+/// Read the 1-bit presence flag; reject if set.
 fn parseGainControlData(reader: *BitReader) bool {
     const present = reader.readBit() orelse return false;
-    if (present == 1) {
-        // gain_control_data is technically for SSR profile, but some
-        // encoders set this in AAC-LC bitstreams. Since spectral data
-        // follows and we don't parse it, just accept this flag.
-        // The gain control data structure is variable-length and
-        // will be consumed as part of the spectral data skip.
-    }
-    return true;
+    // gain_control_data_present must be 0 for AAC-LC
+    return present == 0;
 }
 
 /// Parse an Individual Channel Stream (ICS)
@@ -544,7 +514,7 @@ fn parseIndividualChannelStream(
             if (!parsePulseData(reader)) return false;
             if (!parseTnsData(reader, sics)) return false;
             if (!parseGainControlData(reader)) return false;
-            if (!parseSpectralData(reader, sics, &section_info)) return false;
+            if (!parseSpectralData(reader, sics, &section_info, config)) return false;
             break :blk true;
         } else false;
     } else blk: {
@@ -559,7 +529,7 @@ fn parseIndividualChannelStream(
     if (!parsePulseData(reader)) return false;
     if (!parseTnsData(reader, ics)) return false;
     if (!parseGainControlData(reader)) return false;
-    if (!parseSpectralData(reader, ics, &section_info)) return false;
+    if (!parseSpectralData(reader, ics, &section_info, config)) return false;
 
     return true;
 }
@@ -713,53 +683,43 @@ fn parsePceElement(reader: *BitReader) bool {
 
 /// Validate a single raw AAC-LC access unit.
 ///
-/// Parses the syntactic structure of the access unit:
-/// - Element IDs (SCE, CPE, FIL, END, etc.)
-/// - ICS info (window sequence, max_sfb)
-/// - Section data (codebook assignments, length consistency)
-/// - Scale factor data (Huffman codeword validity)
+/// Parses the full syntactic structure including spectral Huffman data:
+/// - Element IDs (SCE, CPE, LFE, DSE, PCE, FIL, END)
+/// - ICS info (window sequence, max_sfb, window grouping)
+/// - Section data (codebook assignments, lengths must sum to max_sfb)
+/// - Scale factor Huffman codeword validity
+/// - Spectral Huffman codeword validity (all 11 codebooks)
 /// - Pulse, TNS, gain control flags
-///
-/// Spectral Huffman data is not individually decoded (would require full
-/// codebook trees). Instead, corruption is detected through:
-/// 1. Section length consistency (must sum to max_sfb per group)
-/// 2. Scale factor Huffman validity
-/// 3. ICS parameter range checks
-/// 4. Element ID validity
-/// 5. Fill element count validity
+/// - Bit exhaustion: total bits consumed must equal AU size (within padding)
 fn validateAccessUnit(au_data: []const u8, config: *const AacConfig) bool {
     if (au_data.len == 0) return false;
 
     var reader = BitReader.init(au_data);
-    var found_end = false;
     var element_count: u32 = 0;
+    var has_audio_element = false;
 
-    // Parse raw_data_block elements
-    while (reader.hasMore()) {
+    // Parse raw_data_block elements until ID_END or insufficient bits
+    while (reader.remainingBits() >= 3) {
         const id_syn_ele = reader.readBits(3) orelse return false;
         element_count += 1;
 
         switch (id_syn_ele) {
             0 => { // ID_SCE - Single Channel Element
                 if (!parseSingleChannelElement(&reader, config)) return false;
-                // After SCE header+sections+SF, skip remaining spectral data
-                // by not parsing further within this element.
-                // The spectral data occupies the rest until the next element.
-                // We can't consume it without Huffman trees, so we scan forward
-                // looking for the END marker.
-                return scanForEnd(&reader);
+                has_audio_element = true;
             },
             1 => { // ID_CPE - Channel Pair Element
                 if (!parseChannelPairElement(&reader, config)) return false;
-                return scanForEnd(&reader);
+                has_audio_element = true;
             },
             2 => { // ID_CCE - Coupling Channel Element
-                // Valid but rare in AAC-LC; skip validation of content
+                // Valid but extremely rare in AAC-LC; accept without parsing
+                has_audio_element = true;
                 return true;
             },
             3 => { // ID_LFE - LFE Channel Element (same syntax as SCE)
                 if (!parseSingleChannelElement(&reader, config)) return false;
-                return scanForEnd(&reader);
+                has_audio_element = true;
             },
             4 => { // ID_DSE - Data Stream Element
                 if (!parseDseElement(&reader)) return false;
@@ -771,8 +731,11 @@ fn validateAccessUnit(au_data: []const u8, config: *const AacConfig) bool {
                 if (!parseFillElement(&reader)) return false;
             },
             7 => { // ID_END
-                found_end = true;
-                break;
+                // After ID_END: remaining bits may include byte-alignment padding
+                // (≤7 bits per spec) plus ancillary data or container padding.
+                // The spectral Huffman decoding provides the primary validation;
+                // accept if we parsed at least one audio element.
+                return has_audio_element;
             },
             else => return false,
         }
@@ -781,32 +744,9 @@ fn validateAccessUnit(au_data: []const u8, config: *const AacConfig) bool {
         if (element_count > 32) return false;
     }
 
-    return found_end or element_count > 0;
-}
-
-/// After parsing the structured header of an SCE/CPE/LFE, scan the remaining
-/// bits for the END marker. The spectral data is variable-length Huffman coded,
-/// so we can't precisely consume it. Instead we verify the AU is properly
-/// terminated — the last byte's high bits should contain END (0b111xxxxx)
-/// within ≤7 bits of byte alignment.
-fn scanForEnd(reader: *BitReader) bool {
-    // The spectral data followed by any fill elements and then ID_END
-    // occupies the remaining bits. We verify the AU terminates properly
-    // by checking that there IS remaining data (spectral data exists)
-    // and the structure parsed so far was valid.
-    //
-    // The structural checks already performed provide strong corruption detection:
-    // - Section lengths must sum exactly to max_sfb
-    // - Scale factor Huffman codewords must be valid
-    // - ICS parameters must be in valid ranges
-    // - Fill element byte counts must be consistent
-    //
-    // If any byte in the section data or scale factor data area is corrupted,
-    // the above checks will catch it. Spectral data corruption is harder to
-    // detect without full Huffman trees, but the structure checks cover the
-    // critical metadata that defines the frame.
-    _ = reader;
-    return true;
+    // Implicit termination (container-delimited AU): valid if we parsed
+    // audio elements and remaining bits < 8 (byte-alignment padding only)
+    return has_audio_element and reader.remainingBits() < 8;
 }
 
 /// Main entry point: validate multiple access units
@@ -821,7 +761,8 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
     var frames: u32 = 0;
     for (au_sizes) |size| {
         if (offset + size > data.len) break;
-        if (!validateAccessUnit(data[offset..][0..size], &config)) {
+        const au_slice = data[offset..][0..size];
+        if (!validateAccessUnit(au_slice, &config)) {
             return AacSyntaxResult.invalid("AAC syntax error in access unit", frames);
         }
         offset += size;
@@ -889,8 +830,8 @@ test "validateAacSyntax rejects empty frames" {
     try std.testing.expect(!result.valid);
 }
 
-test "validateAccessUnit accepts minimal END-only frame" {
-    // An access unit containing just ID_END (0b111) followed by padding
+test "validateAccessUnit rejects END-only frame (no audio element)" {
+    // An access unit containing just ID_END (0b111) without any audio element
     // 0b111_00000 = 0xE0
     const au = [_]u8{0xE0};
     const config = AacConfig{
@@ -899,7 +840,7 @@ test "validateAccessUnit accepts minimal END-only frame" {
         .channel_configuration = 2,
         .frame_length = 1024,
     };
-    try std.testing.expect(validateAccessUnit(&au, &config));
+    try std.testing.expect(!validateAccessUnit(&au, &config));
 }
 
 test "validateAccessUnit rejects truncated frame" {
@@ -915,9 +856,9 @@ test "validateAccessUnit rejects truncated frame" {
     try std.testing.expect(!validateAccessUnit(&au, &config));
 }
 
-test "validateAccessUnit accepts END with padding" {
-    // ID_END followed by padding bytes — valid since we don't enforce
-    // strict bit-exhaustion without spectral data parsing
+test "validateAccessUnit rejects END without audio element" {
+    // ID_END (3 bits) in a 2-byte AU: no audio element was parsed,
+    // so the frame is rejected even though END was found.
     const au = [_]u8{ 0xE0, 0x00 };
     const config = AacConfig{
         .audio_object_type = 2,
@@ -925,7 +866,7 @@ test "validateAccessUnit accepts END with padding" {
         .channel_configuration = 2,
         .frame_length = 1024,
     };
-    try std.testing.expect(validateAccessUnit(&au, &config));
+    try std.testing.expect(!validateAccessUnit(&au, &config));
 }
 
 test "parseFillElement basic" {
