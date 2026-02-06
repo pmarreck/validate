@@ -1530,6 +1530,10 @@ static void progress_cleanup(progress_state_t* state) {
 		printf("\n");  /* One newline to scroll and position for Summary */
 		fflush(stdout);
 	}
+
+	/* Disable TUI flag so atexit handler won't send another \033[r
+	 * (which would move cursor back to 1,1 after Summary is printed) */
+	g_tui_enabled = 0;
 }
 
 /* atexit handler to restore terminal on abnormal exit (e.g., Ctrl+C) */
