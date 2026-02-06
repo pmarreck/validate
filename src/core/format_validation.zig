@@ -2355,7 +2355,7 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "nes")) return .nes;
     if (std.mem.eql(u8, ext_lower, "sfc") or std.mem.eql(u8, ext_lower, "smc")) return .snes;
     if (std.mem.eql(u8, ext_lower, "z64") or std.mem.eql(u8, ext_lower, "n64") or std.mem.eql(u8, ext_lower, "v64")) return .n64;
-    if (std.mem.eql(u8, ext_lower, "md") or std.mem.eql(u8, ext_lower, "gen") or std.mem.eql(u8, ext_lower, "smd")) return .genesis;
+    if (std.mem.eql(u8, ext_lower, "gen") or std.mem.eql(u8, ext_lower, "smd")) return .genesis;
     if (std.mem.eql(u8, ext_lower, "chd")) return .chd;
 
     // Scientific/data formats
@@ -2402,6 +2402,9 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     // Disk images
     if (std.mem.eql(u8, ext_lower, "iso")) return .iso;
     if (std.mem.eql(u8, ext_lower, "dmg")) return .dmg;
+
+    // Text formats
+    if (std.mem.eql(u8, ext_lower, "md") or std.mem.eql(u8, ext_lower, "markdown")) return .markdown;
 
     return .unknown;
 }
