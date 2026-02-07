@@ -18,12 +18,16 @@
 #define STDIN_FILENO 0
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
+#define PATH_SEP '\\'
+#define IS_PATH_SEP(c) ((c) == '/' || (c) == '\\')
 #else
 #include <unistd.h>
 #include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <pthread.h>
+#define PATH_SEP '/'
+#define IS_PATH_SEP(c) ((c) == '/')
 #endif
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -515,11 +519,11 @@ static int enumerate_directory(const char* dir_path, path_list_t* list) {
 			break;
 		}
 
-		/* Build full path (handle trailing slash in dir_path) */
+		/* Build full path (handle trailing separator in dir_path) */
 		size_t dir_len = strlen(dir_path);
 		size_t name_len = strlen(entry->d_name);
-		int needs_slash = (dir_len > 0 && dir_path[dir_len - 1] != '/') ? 1 : 0;
-		size_t path_len = dir_len + needs_slash + name_len;
+		int needs_sep = (dir_len > 0 && !IS_PATH_SEP(dir_path[dir_len - 1])) ? 1 : 0;
+		size_t path_len = dir_len + needs_sep + name_len;
 		char* full_path = (char*)malloc(path_len + 1);
 		if (!full_path) {
 			closedir(dir);
@@ -527,10 +531,10 @@ static int enumerate_directory(const char* dir_path, path_list_t* list) {
 		}
 
 		memcpy(full_path, dir_path, dir_len);
-		if (needs_slash) {
-			full_path[dir_len] = '/';
+		if (needs_sep) {
+			full_path[dir_len] = PATH_SEP;
 		}
-		memcpy(full_path + dir_len + needs_slash, entry->d_name, name_len + 1);
+		memcpy(full_path + dir_len + needs_sep, entry->d_name, name_len + 1);
 
 		int rc = enumerate_path(full_path, list);
 		free(full_path);
