@@ -27,7 +27,7 @@
 
 			# Pre-fetched Zig dependencies (fixed-output derivation)
 			# This hash must be updated when build.zig.zon changes
-			zigDepsHash = "sha256-UK/XkaULteDgq+T0uM1mRaoeZGT2hXDsEFaA1d13inc=";
+			zigDepsHash = "sha256-i3Bsy74FnTzMPtgL02BuajwadlTSfrAWDvyqhAm45aw=";
 		in {
 			# Packages for Garnix/Nix builds
 			packages = forBuildSystems (buildSystem:
@@ -75,7 +75,7 @@
 							nativeBuildInputs = with pkgs; [ zig ]
 								++ pkgs.lib.optionals (isDarwin && !cross) [
 									darwin.cctools
-									# macOS SDK for VideoToolbox hardware video decoding
+									# macOS SDK for system frameworks
 									apple-sdk
 								];
 
@@ -146,7 +146,7 @@
 						nativeBuildInputs = with pkgs; [ zig ffmpeg coreutils ]
 							++ pkgs.lib.optionals isDarwin [
 								darwin.cctools
-								# macOS SDK for VideoToolbox hardware video decoding
+								# macOS SDK for system frameworks
 								apple-sdk
 							];
 
@@ -210,7 +210,7 @@
 							ffmpeg  # For testing ffmpeg fallback validation paths
 						] ++ pkgs.lib.optionals isDarwin [
 							xcodegen
-							# macOS SDK for VideoToolbox hardware video decoding
+							# macOS SDK for system frameworks
 							# The apple-sdk provides all frameworks needed for building
 							apple-sdk
 						] ++ pkgs.lib.optionals isX86_64Linux [ wineWowPackages.stable ];  # For Windows cross-testing
