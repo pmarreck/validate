@@ -1727,6 +1727,23 @@ pub fn detectFormat(header: []const u8) FileFormat {
                     }
                     continue; // Unknown RIFX format
                 }
+                // Special case: ICO format needs additional validation
+                // The 00 00 01 00 magic can match other binary formats (e.g., ETL event trace logs)
+                // Verify that the image count field (bytes 4-5) is reasonable
+                if (sig.format == .ico) {
+                    if (header.len >= 6) {
+                        const image_count = std.mem.readInt(u16, header[4..6], .little);
+                        if (image_count == 0 or image_count > 256) {
+                            continue; // Not a valid ICO (no images or too many)
+                        }
+                        // Additional check: first directory entry's reserved byte should be 0
+                        if (header.len >= 10 and header[9] != 0) {
+                            continue; // Invalid reserved byte in first directory entry
+                        }
+                    } else {
+                        continue; // Not enough data to validate ICO
+                    }
+                }
                 return sig.format;
             }
         }
@@ -2099,6 +2116,14 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     // Erlang/Elixir BEAM bytecode (extension-based fallback)
     if (std.mem.eql(u8, ext_lower, "beam")) return .beam;
 
+    // Windows-specific non-validatable formats
+    // .url = Windows URL shortcut (INI-like syntax but not an INI config file)
+    // .etl = Event Trace Log (binary, can have ICO-like magic bytes)
+    // .lnk = Windows Shell Link (binary shortcut)
+    if (std.mem.eql(u8, ext_lower, "url")) return .unknown;
+    if (std.mem.eql(u8, ext_lower, "etl")) return .unknown;
+    if (std.mem.eql(u8, ext_lower, "lnk")) return .unknown;
+
     // Windows PE executable extensions
     if (std.mem.eql(u8, ext_lower, "exe")) return .pe;
     if (std.mem.eql(u8, ext_lower, "dll")) return .pe;
@@ -2240,6 +2265,10 @@ fn isExcludedTextExtension(path: []const u8) bool {
     if (std.mem.eql(u8, ext_lower, "cfg")) return true;
     if (std.mem.eql(u8, ext_lower, "properties")) return true; // Java properties
     if (std.mem.eql(u8, ext_lower, "env")) return true; // Environment files
+
+    // Windows-specific files that look like INI but aren't standard config
+    if (std.mem.eql(u8, ext_lower, "url")) return true; // Windows URL shortcuts
+    if (std.mem.eql(u8, ext_lower, "website")) return true; // Windows website shortcuts
 
     // Qt project files (qmake)
     if (std.mem.eql(u8, ext_lower, "pro")) return true; // Qt project file
@@ -16318,13 +16347,24 @@ fn looksLikeIni(content: []const u8) bool {
 
         // Check for key=value or key : value pattern
         // Key can start with letter, underscore, digit, dot, percent, etc.
+        // Also accept Unreal Engine array prefixes: +Key=, -Key=, !Key=
         const fc = trimmed[0];
-        if ((fc >= 'a' and fc <= 'z') or (fc >= 'A' and fc <= 'Z') or
-            (fc >= '0' and fc <= '9') or fc == '_' or fc == '.' or fc == '-' or
-            fc == '%' or fc >= 0x80)
+        var key_start: usize = 0;
+        if ((fc == '+' or fc == '-' or fc == '!') and trimmed.len > 1) {
+            const nc = trimmed[1];
+            if ((nc >= 'a' and nc <= 'z') or (nc >= 'A' and nc <= 'Z') or
+                (nc >= '0' and nc <= '9') or nc == '_' or nc == '.' or nc >= 0x80)
+            {
+                key_start = 1; // Skip the prefix
+            }
+        }
+        const effective_fc = if (key_start > 0) trimmed[key_start] else fc;
+        if ((effective_fc >= 'a' and effective_fc <= 'z') or (effective_fc >= 'A' and effective_fc <= 'Z') or
+            (effective_fc >= '0' and effective_fc <= '9') or effective_fc == '_' or effective_fc == '.' or effective_fc == '-' or
+            effective_fc == '%' or effective_fc >= 0x80)
         {
             // Look for = delimiter only (not : which conflicts with email headers, URLs, etc.)
-            var j: usize = 1;
+            var j: usize = key_start + 1;
             // Skip key characters (anything except = and whitespace)
             while (j < trimmed.len and trimmed[j] != '=' and
                 trimmed[j] != ' ' and trimmed[j] != '\t')
@@ -17064,6 +17104,10 @@ fn validateSqliteDeep(allocator: Allocator, path: []const u8) ValidationResult {
     );
     if (open_result != sqlite3.SQLITE_OK) {
         if (db) |d| _ = sqlite3.sqlite3_close(d);
+        // SQLITE_BUSY (5) and SQLITE_LOCKED (6) indicate the database is in use
+        if (open_result == 5 or open_result == 6) {
+            return ValidationResult.okWithDepthAndWarning(.sqlite, .structural, "Database is locked by another process");
+        }
         return ValidationResult.invalidWithDepth(.sqlite, "Failed to open database for integrity check", .full);
     }
     defer _ = sqlite3.sqlite3_close(db);
@@ -17073,12 +17117,18 @@ fn validateSqliteDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const sql = "PRAGMA integrity_check;";
     const prepare_result = sqlite3.sqlite3_prepare_v2(db, sql, -1, &stmt, null);
     if (prepare_result != sqlite3.SQLITE_OK) {
+        // SQLITE_BUSY (5) and SQLITE_LOCKED (6) indicate the database is in use,
+        // not that it's corrupt. Return a warning instead of failure.
+        if (prepare_result == 5 or prepare_result == 6) {
+            return ValidationResult.okWithDepthAndWarning(.sqlite, .structural, "Database is locked by another process");
+        }
         return ValidationResult.invalidWithDepth(.sqlite, "Failed to prepare integrity check", .full);
     }
     defer _ = sqlite3.sqlite3_finalize(stmt);
 
     // Execute and check result
-    if (sqlite3.sqlite3_step(stmt) == sqlite3.SQLITE_ROW) {
+    const step_result = sqlite3.sqlite3_step(stmt);
+    if (step_result == sqlite3.SQLITE_ROW) {
         const result_ptr: [*:0]const u8 = @ptrCast(sqlite3.sqlite3_column_text(stmt, 0));
         const result_text = std.mem.span(result_ptr);
 
@@ -17088,6 +17138,11 @@ fn validateSqliteDeep(allocator: Allocator, path: []const u8) ValidationResult {
             // Database has integrity issues
             return ValidationResult.invalidWithDepth(.sqlite, "Database integrity check failed", .full);
         }
+    }
+
+    // SQLITE_BUSY (5) and SQLITE_LOCKED (6) during step indicate the database is in use
+    if (step_result == 5 or step_result == 6) {
+        return ValidationResult.okWithDepthAndWarning(.sqlite, .structural, "Database is locked by another process");
     }
 
     return ValidationResult.invalidWithDepth(.sqlite, "Integrity check returned no result", .full);
@@ -23392,6 +23447,35 @@ fn validateIniLine(line: []const u8) IniLineType {
         while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
         if (i < line.len and line[i] != ';' and line[i] != '#') return .invalid;
         return .section;
+    }
+
+    // Unreal Engine INI array operation prefixes: +Key=value, -Key=value, .Key=value, !Key=value
+    // These are used for array append (+), remove (-), clear-and-add (.), and exact-remove (!)
+    if (first_char == '+' or first_char == '-' or first_char == '!') {
+        // Skip the prefix and check if a valid key follows
+        i += 1;
+        if (i < line.len) {
+            const next_char = line[i];
+            if ((next_char >= 'a' and next_char <= 'z') or
+                (next_char >= 'A' and next_char <= 'Z') or
+                (next_char >= '0' and next_char <= '9') or
+                next_char == '_' or next_char == '.' or next_char == '-' or next_char == '%' or
+                next_char >= 0x80)
+            {
+                // Continue to key-value parsing below with the prefix consumed
+                while (i < line.len) {
+                    const ch = line[i];
+                    if (ch == '=' or ch == ':') break;
+                    if (ch == ' ' or ch == '\t') break;
+                    if (ch < 0x20 and ch != '\t') return .invalid;
+                    i += 1;
+                }
+                while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+                if (i >= line.len or (line[i] != '=' and line[i] != ':')) return .invalid;
+                return .key_value;
+            }
+        }
+        return .invalid;
     }
 
     // Key-value pair: key = value (or key: value)
