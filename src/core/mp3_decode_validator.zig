@@ -197,6 +197,61 @@ pub fn validateMp3DecodePath(path: []const u8) Mp3DecodeResult {
     return validateMp3Decode(file);
 }
 
+/// Validate MP3 data from an in-memory buffer (for MPEG-TS PES streams, etc.)
+pub fn validateMp3DecodeBuffer(data: []const u8) Mp3DecodeResult {
+    if (data.len == 0) {
+        return Mp3DecodeResult.invalid("Empty buffer", 0);
+    }
+
+    var decoder = Mp3Decoder.init();
+    var frames_decoded: u32 = 0;
+    var samples_decoded: u64 = 0;
+    var channels: u8 = 0;
+    var sample_rate: u32 = 0;
+
+    var offset: usize = 0;
+    var consecutive_failures: u32 = 0;
+
+    while (offset < data.len) {
+        const remaining = data[offset..];
+        if (remaining.len < 4) break;
+
+        var pcm: [mp3.MINIMP3_MAX_SAMPLES_PER_FRAME]i16 = undefined;
+        const samples = decoder.decodeFrame(remaining, &pcm);
+        const frame_bytes = decoder.getFrameBytes();
+
+        if (frame_bytes == 0) {
+            // No valid frame found, skip 1 byte
+            offset += 1;
+            consecutive_failures += 1;
+            if (consecutive_failures > 4096) {
+                // Too much garbage data
+                break;
+            }
+            continue;
+        }
+
+        consecutive_failures = 0;
+        offset += frame_bytes;
+
+        if (samples > 0) {
+            frames_decoded += 1;
+            samples_decoded += @intCast(samples);
+
+            if (channels == 0) {
+                channels = decoder.getChannels();
+                sample_rate = decoder.getSampleRate();
+            }
+        }
+    }
+
+    if (frames_decoded == 0) {
+        return Mp3DecodeResult.invalid("No valid MP3 frames found", 0);
+    }
+
+    return Mp3DecodeResult.ok(frames_decoded, samples_decoded, channels, sample_rate);
+}
+
 // ============ Tests ============
 
 test "MP3 decoder init" {

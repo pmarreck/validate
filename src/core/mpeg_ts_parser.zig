@@ -598,6 +598,8 @@ const ac3_validator = @import("ac3_validator.zig");
 const eac3_validator = @import("eac3_validator.zig");
 const h264_validator = @import("h264_validator.zig");
 const mpeg12_validator = @import("mpeg12_validator.zig");
+const mp3_decode_validator = @import("mp3_decode_validator.zig");
+const h265_validator = @import("h265_validator.zig");
 
 /// Result of deep MPEG-TS validation
 pub const TsDeepValidationResult = struct {
@@ -892,6 +894,15 @@ pub fn validateTsDeep(allocator: std.mem.Allocator, data: []const u8, max_packet
                         return TsDeepValidationResult.failure(result.error_message orelse "H.264 validation failed");
                     }
                 },
+                .h265 => {
+                    const result = h265_validator.validateH265Stream(es_data, 100);
+                    if (result.valid) {
+                        video_streams_validated += 1;
+                        video_frames += result.frames_decoded;
+                    } else {
+                        return TsDeepValidationResult.failure(result.error_message orelse "H.265/HEVC validation failed");
+                    }
+                },
                 // Audio streams
                 .aac_adts => {
                     const result = aac_syntax_validator.validateAdtsStream(es_data);
@@ -900,6 +911,15 @@ pub fn validateTsDeep(allocator: std.mem.Allocator, data: []const u8, max_packet
                         audio_frames += result.frames_checked;
                     } else {
                         return TsDeepValidationResult.failure(result.error_message orelse "AAC ADTS validation failed");
+                    }
+                },
+                .aac_latm => {
+                    const result = aac_syntax_validator.validateLatmStream(es_data);
+                    if (result.valid) {
+                        audio_streams_validated += 1;
+                        audio_frames += result.frames_checked;
+                    } else {
+                        return TsDeepValidationResult.failure(result.error_message orelse "AAC LATM validation failed");
                     }
                 },
                 .ac3 => {
@@ -918,6 +938,15 @@ pub fn validateTsDeep(allocator: std.mem.Allocator, data: []const u8, max_packet
                         audio_frames += result.frames_validated;
                     } else {
                         return TsDeepValidationResult.failure(result.error_message orelse "E-AC-3 validation failed");
+                    }
+                },
+                .mpeg1_audio, .mpeg2_audio => {
+                    const result = mp3_decode_validator.validateMp3DecodeBuffer(es_data);
+                    if (result.valid) {
+                        audio_streams_validated += 1;
+                        audio_frames += result.frames_decoded;
+                    } else {
+                        return TsDeepValidationResult.failure(result.error_message orelse "MPEG audio validation failed");
                     }
                 },
                 else => {

@@ -83,6 +83,7 @@ pub const thread_pool = @import("thread_pool.zig");
 pub const heif_validator = @import("heif_validator.zig");
 pub const webp_validator = @import("webp_validator.zig");
 pub const libraw_validator = @import("libraw_validator.zig");
+pub const h265_validator = @import("h265_validator.zig");
 pub const aac_syntax_validator = @import("aac_syntax_validator.zig");
 pub const aac_huffman_tables = @import("aac_huffman_tables.zig");
 // VideoToolbox validator - uses dlopen/dlsym for runtime loading (macOS only)
@@ -216,6 +217,8 @@ test {
     _ = @import("thread_pool.zig");
     // Path validation (parallel directory traversal)
     _ = @import("path_validation.zig");
+    // H.265/HEVC NAL unit validator
+    _ = @import("h265_validator.zig");
     // AAC syntax validator and Huffman tables
     _ = @import("aac_syntax_validator.zig");
     _ = @import("aac_huffman_tables.zig");

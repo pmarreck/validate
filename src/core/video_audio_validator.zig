@@ -65,6 +65,9 @@ pub const MediaValidationResult = struct {
     has_video_track: bool,
     has_audio_track: bool,
 
+    // CRC-based validation (MKV clusters)
+    crc_validated: bool = false,
+
     pub fn videoOnly(video_result: video_validator.VideoValidationResult) MediaValidationResult {
         return .{
             .valid = video_result.valid,
@@ -155,6 +158,16 @@ pub const AudioValidationResult = struct {
         };
     }
 
+    /// PCM audio is raw samples with no codec structure — integrity cannot be verified
+    pub fn pcmUnverifiable() AudioValidationResult {
+        return .{
+            .valid = true, // Not a failure
+            .error_message = "PCM audio cannot be integrity-checked (raw unstructured samples)",
+            .codec = .pcm,
+            .frames_decoded = 0,
+        };
+    }
+
     pub fn noTrack() AudioValidationResult {
         return .{
             .valid = true,
@@ -162,6 +175,11 @@ pub const AudioValidationResult = struct {
             .codec = .unknown,
             .frames_decoded = 0,
         };
+    }
+
+    /// Returns true if this is PCM audio (unverifiable)
+    pub fn isPcmUnverifiable(self: AudioValidationResult) bool {
+        return self.codec == .pcm and self.frames_decoded == 0 and self.valid;
     }
 };
 
@@ -219,6 +237,7 @@ pub fn validateMkvMedia(allocator: Allocator, path: []const u8, max_video_frames
             .audio_message = null,
             .has_video_track = crc_result.has_video,
             .has_audio_track = crc_result.has_audio,
+            .crc_validated = true,
         };
     }
 
@@ -550,7 +569,7 @@ pub fn validateMp4Audio(allocator: Allocator, path: []const u8) AudioValidationR
         .eac3 => validateMp4Eac3Track(allocator, file, stbl_box.?),
         .dts => AudioValidationResult.unsupported(audio_codec),
         .alac => validateMp4AlacTrack(allocator, file, stbl_box.?),
-        .pcm => AudioValidationResult.ok(.pcm, 0), // PCM doesn't need decode validation
+        .pcm => AudioValidationResult.pcmUnverifiable(), // PCM doesn't need decode validation
         else => AudioValidationResult.unsupported(.unknown),
     };
 }
@@ -1436,7 +1455,7 @@ fn validateMkvAudio(allocator: Allocator, path: []const u8) AudioValidationResul
         .ac3 => validateMkvAc3Track(allocator, &parser, audio_track.?),
         .eac3 => validateMkvEac3Track(allocator, &parser, audio_track.?),
         .dts => AudioValidationResult.unsupported(audio_codec),
-        .pcm => AudioValidationResult.ok(.pcm, 0),
+        .pcm => AudioValidationResult.pcmUnverifiable(),
         else => AudioValidationResult.unsupported(.unknown),
     };
 }

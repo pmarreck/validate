@@ -20669,7 +20669,11 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     }
     // Note if audio couldn't be fully validated
     if (has_audio and !audio_validated and result.warning_message == null) {
-        result.warning_message = "audio track not fully decoded (decode validation not yet implemented for this codec)";
+        if (audio_result.codec == .pcm) {
+            result.warning_message = "PCM audio track cannot be integrity-checked (raw unstructured samples)";
+        } else {
+            result.warning_message = "audio track not fully decoded (decode validation not yet implemented for this codec)";
+        }
     }
     return result;
 }
@@ -20787,7 +20791,7 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
             .valid = media_result.video_valid,
             .error_message = media_result.video_message,
             .frames_decoded = media_result.video_frames_decoded,
-            .byte_validated = media_result.video_valid and media_result.video_frames_decoded > 0,
+            .byte_validated = media_result.crc_validated or (media_result.video_valid and media_result.video_frames_decoded > 0),
             .codec = media_result.video_codec,
             .validated_via_ffmpeg = false, // Not available in MediaValidationResult
             .validated_via_videotoolbox = false,
@@ -20816,14 +20820,21 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Determine overall validation depth
     const video_byte_validated = media_result.has_video_track and media_result.video_valid and media_result.video_frames_decoded > 0;
     const audio_byte_validated = media_result.has_audio_track and media_result.audio_valid and media_result.audio_frames_decoded > 0;
+    const audio_is_pcm = media_result.has_audio_track and media_result.audio_codec == .pcm;
 
-    // Full validation requires at least one track to be byte-validated
-    const byte_validated = video_byte_validated or audio_byte_validated;
+    // Full validation requires at least one track to be byte-validated,
+    // OR CRC-validated (CRC covers all cluster bytes without needing decode)
+    const byte_validated = video_byte_validated or audio_byte_validated or media_result.crc_validated;
 
-    const result = if (byte_validated)
+    var result = if (byte_validated)
         ValidationResult.okWithDepth(.mkv, .full)
     else
         ValidationResult.structuralOnly(.mkv);
+
+    // Add PCM warning when audio is PCM (integrity cannot be verified)
+    if (audio_is_pcm and result.warning_message == null) {
+        result.warning_message = "PCM audio track cannot be integrity-checked (raw unstructured samples)";
+    }
 
     return result;
 }
