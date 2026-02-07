@@ -293,6 +293,10 @@ pub fn build(b: *std.Build) void {
     lib.linkLibrary(libraw_lib);
     lib.linkLibC();
     lib.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
+    // On Windows, LibRaw uses ntohs/htons/htonl/ntohl from ws2_32
+    if (target.result.os.tag == .windows) {
+        lib.linkSystemLibrary("ws2_32");
+    }
 
     lib.installHeadersDirectory(b.path("ffi"), "", .{
         .include_extensions = &.{".h"},

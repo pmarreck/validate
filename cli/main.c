@@ -2109,7 +2109,11 @@ int main(int argc, char* argv[]) {
 	}
 
 	/* Check if we were interrupted */
+#if defined(_WIN32)
+	int was_interrupted = validate_is_interrupted();
+#else
 	int was_interrupted = (g_sigint_count > 0) || validate_is_interrupted();
+#endif
 
 	/* Save file count before freeing */
 	size_t total_file_count = file_list.count;
