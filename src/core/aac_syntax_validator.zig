@@ -705,16 +705,28 @@ fn validateAccessUnit(au_data: []const u8, config: *const AacConfig) bool {
     // (e.g., element_instance_tag for SCE/CPE/LFE), so require >=7 bits to continue.
     // With fewer bits remaining, treat as implicit termination (byte-alignment padding).
     while (reader.remainingBits() >= 7) {
+        // Save position before reading element ID — if parsing fails and we've
+        // already decoded audio, we may be in byte-alignment padding territory.
+        const pre_id_remaining = reader.remainingBits();
         const id_syn_ele = reader.readBits(3) orelse return false;
         element_count += 1;
 
         switch (id_syn_ele) {
             0 => { // ID_SCE - Single Channel Element
-                if (!parseSingleChannelElement(&reader, config)) return false;
+                if (!parseSingleChannelElement(&reader, config)) {
+                    // If we already parsed audio and the "element" was in the last
+                    // few bits, those bits are just byte-alignment/ancillary padding
+                    // that happened to start with bits matching an element ID.
+                    if (has_audio_element and pre_id_remaining < 16) return true;
+                    return false;
+                }
                 has_audio_element = true;
             },
             1 => { // ID_CPE - Channel Pair Element
-                if (!parseChannelPairElement(&reader, config)) return false;
+                if (!parseChannelPairElement(&reader, config)) {
+                    if (has_audio_element and pre_id_remaining < 16) return true;
+                    return false;
+                }
                 has_audio_element = true;
             },
             2 => { // ID_CCE - Coupling Channel Element
@@ -723,7 +735,10 @@ fn validateAccessUnit(au_data: []const u8, config: *const AacConfig) bool {
                 return true;
             },
             3 => { // ID_LFE - LFE Channel Element (same syntax as SCE)
-                if (!parseSingleChannelElement(&reader, config)) return false;
+                if (!parseSingleChannelElement(&reader, config)) {
+                    if (has_audio_element and pre_id_remaining < 16) return true;
+                    return false;
+                }
                 has_audio_element = true;
             },
             4 => { // ID_DSE - Data Stream Element
