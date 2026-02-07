@@ -408,6 +408,8 @@ pub const FileFormat = enum {
     // Game data formats
     wad, // WAD (DOOM/id Software) - IWAD/PWAD
     pak, // PAK (Quake) - "PACK" magic
+    lspk, // Larian Studios PAK (BG3, Divinity) - "LSPK" magic
+    chromium_pak, // Chromium/Electron resource PAK
     bsp, // BSP (Quake/Source map files)
     vpk, // VPK (Valve Pak) - Source engine
     // Game ROM formats
@@ -609,6 +611,8 @@ pub const FileFormat = enum {
             .warc => "WARC Web Archive",
             .wad => "DOOM WAD Archive",
             .pak => "Quake PAK Archive",
+            .lspk => "Larian Studios PAK",
+            .chromium_pak => "Chromium Resource PAK",
             .bsp => "BSP Map File",
             .vpk => "Valve PAK Archive",
             .nes => "NES ROM",
@@ -701,7 +705,7 @@ pub const FileFormat = enum {
             .mdb, .accdb => true, // Database formats
             .iso, .dmg => true, // Disk images
             .hdf5, .parquet, .netcdf, .fits, .dicom, .fasta, .fastq, .warc => true, // Scientific/institutional data formats
-            .wad, .pak, .bsp, .vpk => true, // Game data formats
+            .wad, .pak, .lspk, .chromium_pak, .bsp, .vpk => true, // Game data formats
             .nes, .snes, .n64, .gb, .gba, .nds, .genesis, .chd => true, // ROM formats
             .iff, .blorb => true, // IFF-based formats
             .matlab, .nifti, .pdb_struct, .cif => true, // Scientific formats
@@ -1320,6 +1324,8 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "PWAD", .offset = 0, .format = .wad },
     // PAK (Quake): "PACK" at offset 0
     .{ .bytes = "PACK", .offset = 0, .format = .pak },
+    // Larian Studios PAK (BG3, Divinity): "LSPK" at offset 0
+    .{ .bytes = "LSPK", .offset = 0, .format = .lspk },
     // VPK (Valve): signature 0x55AA1234 at offset 0
     .{ .bytes = &[_]u8{ 0x34, 0x12, 0xAA, 0x55 }, .offset = 0, .format = .vpk },
     // Game ROM formats
@@ -1877,6 +1883,39 @@ pub fn detectFormat(header: []const u8) FileFormat {
         }
     }
 
+    // Check for Chromium/Electron resource PAK (no magic bytes, structural detection)
+    // Version 5: uint32(5) + uint8 encoding + 3 padding + uint16 resource_count + uint16 alias_count
+    // Version 4: uint32(4) + uint32 resource_count + uint8 encoding
+    // Validated by checking first resource entry's offset matches expected index size.
+    if (header.len >= 18) {
+        const version = std.mem.readInt(u32, header[0..4], .little);
+        if (version == 5) {
+            const encoding = header[4];
+            if (encoding <= 2 and header[5] == 0 and header[6] == 0 and header[7] == 0) {
+                const resource_count = std.mem.readInt(u16, header[8..10], .little);
+                const alias_count = std.mem.readInt(u16, header[10..12], .little);
+                if (resource_count > 0) {
+                    // First resource entry offset should match: header + (entries + sentinel) * 6 + aliases * 4
+                    const expected_data_start: u32 = 12 + (@as(u32, resource_count) + 1) * 6 + @as(u32, alias_count) * 4;
+                    const first_entry_offset = std.mem.readInt(u32, header[14..18], .little);
+                    if (first_entry_offset == expected_data_start) {
+                        return .chromium_pak;
+                    }
+                }
+            }
+        } else if (version == 4 and header.len >= 15) {
+            const resource_count = std.mem.readInt(u32, header[4..8], .little);
+            const encoding = header[8];
+            if (encoding <= 2 and resource_count > 0 and resource_count < 100000) {
+                const expected_data_start: u32 = 9 + (@as(u32, resource_count) + 1) * 6;
+                const first_entry_offset = std.mem.readInt(u32, header[11..15], .little);
+                if (first_entry_offset == expected_data_start) {
+                    return .chromium_pak;
+                }
+            }
+        }
+    }
+
     return .unknown;
 }
 
@@ -2423,7 +2462,9 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
 
     // Game data/ROM formats
     if (std.mem.eql(u8, ext_lower, "wad")) return .wad;
-    if (std.mem.eql(u8, ext_lower, "pak")) return .pak;
+    // Note: .pak is NOT mapped here because it's extremely overloaded:
+    // Quake PAK, Larian Studios (BG3), Chromium resource packs, Unreal Engine, etc.
+    // Quake PAK files are still detected via their "PACK" magic bytes.
     if (std.mem.eql(u8, ext_lower, "bsp")) return .bsp;
     if (std.mem.eql(u8, ext_lower, "vpk")) return .vpk;
     if (std.mem.eql(u8, ext_lower, "nes")) return .nes;
@@ -8451,6 +8492,71 @@ fn validatePakDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     return ValidationResult.okWithDepth(.pak, .structural);
+}
+
+/// Validate Larian Studios PAK (BG3, Divinity: Original Sin) structural header.
+/// "LSPK" magic + version + file list offset/size + MD5 hash.
+fn validateLspk(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.lspk, "Failed to seek");
+    var header: [32]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.lspk, "Failed to read");
+    if (bytes_read < 8) return ValidationResult.invalid(.lspk, "File too small");
+
+    // Verify magic
+    if (!std.mem.eql(u8, header[0..4], "LSPK")) {
+        return ValidationResult.invalid(.lspk, "Invalid LSPK magic");
+    }
+
+    const version = std.mem.readInt(u32, header[4..8], .little);
+
+    // Known versions: 7, 10, 13, 15, 16, 18
+    if (version < 7 or version > 30) {
+        return ValidationResult.invalid(.lspk, "Unknown LSPK version");
+    }
+
+    return ValidationResult.okWithDepthAndWarning(.lspk, .structural, "Larian PAK identified; deep validation not yet implemented");
+}
+
+/// Validate Chromium/Electron resource PAK structural header.
+/// Version 4 or 5 format with resource table and encoding byte.
+fn validateChromiumPak(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.chromium_pak, "Failed to seek");
+    var header: [18]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.chromium_pak, "Failed to read");
+    if (bytes_read < 12) return ValidationResult.invalid(.chromium_pak, "File too small");
+
+    const version = std.mem.readInt(u32, header[0..4], .little);
+
+    if (version == 5) {
+        const encoding = header[4];
+        if (encoding > 2) return ValidationResult.invalid(.chromium_pak, "Invalid encoding byte");
+        if (header[5] != 0 or header[6] != 0 or header[7] != 0) {
+            return ValidationResult.invalid(.chromium_pak, "Invalid padding bytes");
+        }
+        const resource_count = std.mem.readInt(u16, header[8..10], .little);
+        if (resource_count == 0) return ValidationResult.invalid(.chromium_pak, "Zero resources");
+
+        // Verify first entry offset matches expected index size
+        if (bytes_read >= 18) {
+            const alias_count = std.mem.readInt(u16, header[10..12], .little);
+            const expected_start: u32 = 12 + (@as(u32, resource_count) + 1) * 6 + @as(u32, alias_count) * 4;
+            const first_offset = std.mem.readInt(u32, header[14..18], .little);
+            if (first_offset != expected_start) {
+                return ValidationResult.invalid(.chromium_pak, "Resource offset mismatch");
+            }
+        }
+    } else if (version == 4) {
+        const resource_count = std.mem.readInt(u32, header[4..8], .little);
+        const encoding = header[8];
+        if (encoding > 2) return ValidationResult.invalid(.chromium_pak, "Invalid encoding byte");
+        if (resource_count == 0 or resource_count > 100000) {
+            return ValidationResult.invalid(.chromium_pak, "Invalid resource count");
+        }
+    } else {
+        return ValidationResult.invalid(.chromium_pak, "Unknown Chromium PAK version");
+    }
+
+    return ValidationResult.okWithDepthAndWarning(.chromium_pak, .structural, "Chromium PAK identified; deep validation not yet implemented");
 }
 
 /// Validate BSP (Quake/Source map) file format.
@@ -16364,15 +16470,11 @@ fn looksLikeIni(content: []const u8) bool {
             effective_fc == '%' or effective_fc >= 0x80)
         {
             // Look for = delimiter only (not : which conflicts with email headers, URLs, etc.)
+            // Allow spaces within keys (Windows desktop.ini uses filenames as keys)
             var j: usize = key_start + 1;
-            // Skip key characters (anything except = and whitespace)
-            while (j < trimmed.len and trimmed[j] != '=' and
-                trimmed[j] != ' ' and trimmed[j] != '\t')
-            {
+            while (j < trimmed.len and trimmed[j] != '=') {
                 j += 1;
             }
-            // Skip whitespace before =
-            while (j < trimmed.len and (trimmed[j] == ' ' or trimmed[j] == '\t')) : (j += 1) {}
             // Check for =
             if (j < trimmed.len and trimmed[j] == '=') {
                 ini_like_lines += 1;
@@ -22256,6 +22358,8 @@ pub const FormatValidator = struct {
             .warc => validateWarc(file),
             .wad => validateWad(file),
             .pak => validatePak(file),
+            .lspk => validateLspk(file),
+            .chromium_pak => validateChromiumPak(file),
             .bsp => validateBsp(file),
             .vpk => validateVpk(file),
             .nes => validateNes(file),
@@ -23466,11 +23570,9 @@ fn validateIniLine(line: []const u8) IniLineType {
                 while (i < line.len) {
                     const ch = line[i];
                     if (ch == '=' or ch == ':') break;
-                    if (ch == ' ' or ch == '\t') break;
                     if (ch < 0x20 and ch != '\t') return .invalid;
                     i += 1;
                 }
-                while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
                 if (i >= line.len or (line[i] != '=' and line[i] != ':')) return .invalid;
                 return .key_value;
             }
@@ -23480,24 +23582,24 @@ fn validateIniLine(line: []const u8) IniLineType {
 
     // Key-value pair: key = value (or key: value)
     // Key must start with a printable non-special character.
-    // Real-world INI keys include dots, hyphens, percent signs, etc.
-    // (e.g., LocalizedResourceName, icon-theme, user.name)
+    // Real-world INI keys include dots, hyphens, percent signs, spaces, etc.
+    // (e.g., LocalizedResourceName, icon-theme, user.name,
+    // "Administrative Tools.lnk" in Windows desktop.ini)
     if ((first_char >= 'a' and first_char <= 'z') or
         (first_char >= 'A' and first_char <= 'Z') or
         (first_char >= '0' and first_char <= '9') or
         first_char == '_' or first_char == '.' or first_char == '-' or first_char == '%' or
         first_char >= 0x80) // UTF-8
     {
-        // Key: anything except = : and whitespace
+        // Scan forward to find delimiter (= or :), allowing spaces within keys.
+        // Windows desktop.ini uses filenames as keys which commonly contain spaces
+        // (e.g., "Administrative Tools.lnk=@%SystemRoot%\...").
         while (i < line.len) {
             const ch = line[i];
             if (ch == '=' or ch == ':') break;
-            if (ch == ' ' or ch == '\t') break;
             if (ch < 0x20 and ch != '\t') return .invalid; // Control chars
             i += 1;
         }
-        // Skip whitespace before = or :
-        while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
         // Must have = or : (both are common INI delimiters)
         if (i >= line.len or (line[i] != '=' and line[i] != ':')) return .invalid;
         // Value can be anything after delimiter, so this is valid

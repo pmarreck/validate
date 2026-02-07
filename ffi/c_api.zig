@@ -162,7 +162,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .hdf5, .parquet, .netcdf, .fits, .dicom, .fasta, .fastq, .matlab, .nifti, .pdb_struct, .cif, .shapefile, .kml, .kmz => "scientific",
 
         // Game data/ROMs
-        .wad, .pak, .bsp, .vpk, .nes, .snes, .n64, .gb, .gba, .nds, .genesis, .chd, .iff, .blorb => "game",
+        .wad, .pak, .lspk, .chromium_pak, .bsp, .vpk, .nes, .snes, .n64, .gb, .gba, .nds, .genesis, .chd, .iff, .blorb => "game",
 
         // Text
         .markdown, .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437, .eml, .mbox => "text",
