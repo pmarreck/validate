@@ -518,18 +518,39 @@ fn parseIndividualChannelStream(
             break :blk true;
         } else false;
     } else blk: {
-        local_ics = parseIcsInfo(reader, config) orelse return false;
+        local_ics = parseIcsInfo(reader, config) orelse {
+            std.debug.print("AAC DEBUG ICS: parseIcsInfo failed, remaining bits={d}\n", .{reader.remainingBits()});
+            return false;
+        };
         break :blk &local_ics;
     };
 
     if (common_window) return true; // Already handled above
 
-    const section_info = parseSectionData(reader, ics) orelse return false;
-    if (!parseScaleFactorData(reader, ics, &section_info)) return false;
-    if (!parsePulseData(reader)) return false;
-    if (!parseTnsData(reader, ics)) return false;
-    if (!parseGainControlData(reader)) return false;
-    if (!parseSpectralData(reader, ics, &section_info, config)) return false;
+    const section_info = parseSectionData(reader, ics) orelse {
+        std.debug.print("AAC DEBUG ICS: sectionData failed at bit {d}\n", .{reader.remainingBits()});
+        return false;
+    };
+    if (!parseScaleFactorData(reader, ics, &section_info)) {
+        std.debug.print("AAC DEBUG ICS: scaleFactorData failed at bit {d}\n", .{reader.remainingBits()});
+        return false;
+    }
+    if (!parsePulseData(reader)) {
+        std.debug.print("AAC DEBUG ICS: pulseData failed at bit {d}\n", .{reader.remainingBits()});
+        return false;
+    }
+    if (!parseTnsData(reader, ics)) {
+        std.debug.print("AAC DEBUG ICS: tnsData failed at bit {d}\n", .{reader.remainingBits()});
+        return false;
+    }
+    if (!parseGainControlData(reader)) {
+        std.debug.print("AAC DEBUG ICS: gainControlData failed at bit {d}\n", .{reader.remainingBits()});
+        return false;
+    }
+    if (!parseSpectralData(reader, ics, &section_info, config)) {
+        std.debug.print("AAC DEBUG ICS: spectralData failed at bit {d}/{d}\n", .{ reader.remainingBits(), reader.remainingBits() });
+        return false;
+    }
 
     return true;
 }
@@ -694,22 +715,40 @@ fn parsePceElement(reader: *BitReader) bool {
 fn validateAccessUnit(au_data: []const u8, config: *const AacConfig) bool {
     if (au_data.len == 0) return false;
 
+    std.debug.print("AAC AU DEBUG: len={d}, first 4 bytes: {x:0>2} {x:0>2} {x:0>2} {x:0>2}\n", .{
+        au_data.len,
+        if (au_data.len > 0) au_data[0] else 0,
+        if (au_data.len > 1) au_data[1] else 0,
+        if (au_data.len > 2) au_data[2] else 0,
+        if (au_data.len > 3) au_data[3] else 0,
+    });
+
     var reader = BitReader.init(au_data);
     var element_count: u32 = 0;
     var has_audio_element = false;
 
-    // Parse raw_data_block elements until ID_END or insufficient bits
-    while (reader.remainingBits() >= 3) {
+    // Parse raw_data_block elements until ID_END or insufficient bits.
+    // The minimum meaningful element after the 3-bit ID needs at least 4 more bits
+    // (e.g., element_instance_tag for SCE/CPE/LFE), so require >=7 bits to continue.
+    // With fewer bits remaining, treat as implicit termination (byte-alignment padding).
+    while (reader.remainingBits() >= 7) {
         const id_syn_ele = reader.readBits(3) orelse return false;
+        std.debug.print("AAC AU DEBUG: elem {d}: id_syn_ele={d}, remaining={d}\n", .{ element_count, id_syn_ele, reader.remainingBits() });
         element_count += 1;
 
         switch (id_syn_ele) {
             0 => { // ID_SCE - Single Channel Element
-                if (!parseSingleChannelElement(&reader, config)) return false;
+                if (!parseSingleChannelElement(&reader, config)) {
+                    std.debug.print("AAC DEBUG: SCE parse failed, elem={d}, remaining={d}\n", .{ element_count, reader.remainingBits() });
+                    return false;
+                }
                 has_audio_element = true;
             },
             1 => { // ID_CPE - Channel Pair Element
-                if (!parseChannelPairElement(&reader, config)) return false;
+                if (!parseChannelPairElement(&reader, config)) {
+                    std.debug.print("AAC DEBUG: CPE parse failed, elem={d}, remaining={d}\n", .{ element_count, reader.remainingBits() });
+                    return false;
+                }
                 has_audio_element = true;
             },
             2 => { // ID_CCE - Coupling Channel Element
@@ -745,24 +784,52 @@ fn validateAccessUnit(au_data: []const u8, config: *const AacConfig) bool {
     }
 
     // Implicit termination (container-delimited AU): valid if we parsed
-    // audio elements and remaining bits < 8 (byte-alignment padding only)
+    // audio elements and remaining bits are byte-alignment padding only.
     return has_audio_element and reader.remainingBits() < 8;
 }
 
 /// Main entry point: validate multiple access units
 pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u8) AacSyntaxResult {
+    // Debug: print ASC and frame info
+    std.debug.print("AAC DEBUG: ASC len={d} bytes:", .{asc.len});
+    for (asc) |b| std.debug.print(" {x:0>2}", .{b});
+    std.debug.print("\n", .{});
+    std.debug.print("AAC DEBUG: {d} AU sizes, data len={d}\n", .{ au_sizes.len, data.len });
+    if (au_sizes.len > 0) {
+        const max_show = @min(au_sizes.len, 10);
+        std.debug.print("AAC DEBUG: first {d} AU sizes:", .{max_show});
+        for (au_sizes[0..max_show]) |s| std.debug.print(" {d}", .{s});
+        std.debug.print("\n", .{});
+    }
+
     const config = parseAudioSpecificConfig(asc) orelse
         return AacSyntaxResult.invalid("Invalid AudioSpecificConfig", 0);
+
+    std.debug.print("AAC DEBUG: AOT={d} freq_idx={d} chan={d}\n", .{ config.audio_object_type, config.sampling_frequency_index, config.channel_configuration });
 
     if (config.audio_object_type != 2)
         return AacSyntaxResult.invalid("Unsupported AOT (not AAC-LC)", 0);
 
     var offset: usize = 0;
     var frames: u32 = 0;
+    var skipped_priming: u32 = 0;
     for (au_sizes) |size| {
         if (offset + size > data.len) break;
         const au_slice = data[offset..][0..size];
+        // Skip very small frames (< 8 bytes): these are typically encoder
+        // priming/delay frames (e.g., Apple AAC encoder emits a ~4-byte
+        // frame at the start with skip_samples metadata). They cannot contain
+        // valid AAC-LC spectral data and are not meaningful for validation.
+        if (size < 8) {
+            skipped_priming += 1;
+            offset += size;
+            continue;
+        }
         if (!validateAccessUnit(au_slice, &config)) {
+            std.debug.print("AAC DEBUG: frame {d} FAILED, size={d}, first bytes:", .{ frames, size });
+            const show = @min(size, 16);
+            for (au_slice[0..show]) |b| std.debug.print(" {x:0>2}", .{b});
+            std.debug.print("\n", .{});
             return AacSyntaxResult.invalid("AAC syntax error in access unit", frames);
         }
         offset += size;

@@ -17184,7 +17184,7 @@ fn validateTiffDeep(allocator: Allocator, path: []const u8, format: FileFormat) 
     // Try to load the image - this performs full decompression and validates the data
     var image = zigimg.Image.fromFilePath(allocator, path, &read_buffer) catch |err| {
         // Debug output for error diagnosis
-        if (std.posix.getenv("TIFF_DEBUG")) |_| {
+        if (getenvCrossPlatform("TIFF_DEBUG")) |_| {
             std.debug.print("TIFF decode error: {s}\n", .{@errorName(err)});
         }
         return switch (err) {
@@ -17636,7 +17636,7 @@ fn validateDngDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Minimum size for a "real" JPEG (1KB) - smaller patterns are likely false positives
     const min_jpeg_size: usize = 1024;
-    const debug = std.posix.getenv("DNG_DEBUG") != null;
+    const debug = getenvCrossPlatform("DNG_DEBUG") != null;
 
     while (i + 10 < data.len) {
         // Look for JPEG SOI marker (0xFFD8) followed by APP0 (JFIF) or APP1 (EXIF)

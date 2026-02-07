@@ -2449,7 +2449,7 @@ fn parseAvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
     }
 
     // Debug: log H.264 profile and level
-    const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
+    const debug_enabled = getenvCrossPlatform("VALIDATE_DEBUG") != null;
     if (debug_enabled) {
         std.debug.print("[H264] Parsed avcC: profile={d} (", .{profile_idc});
         switch (profile_idc) {
