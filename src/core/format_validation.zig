@@ -16289,49 +16289,45 @@ fn looksLikeIni(content: []const u8) bool {
 
         total_content_lines += 1;
 
-        // Check for [section] header - must have valid identifier inside brackets
+        // Check for [section] header - allow any printable content inside brackets
+        // Real-world sections: [.ShellClassInfo], [{GUID}], [remote "origin"], etc.
         if (trimmed[0] == '[') {
-            // Section name must start with letter or underscore (not digit, comma, etc.)
-            if (trimmed.len > 1 and ((trimmed[1] >= 'a' and trimmed[1] <= 'z') or
-                (trimmed[1] >= 'A' and trimmed[1] <= 'Z') or trimmed[1] == '_'))
-            {
-                // Find the closing ] - content must be valid identifier chars
-                var j: usize = 2;
+            if (trimmed.len > 2) {
+                // Find the closing ]
+                var j: usize = 1;
                 while (j < trimmed.len) : (j += 1) {
-                    const c = trimmed[j];
-                    if (c == ']') {
-                        // Check that only whitespace/comment follows the ]
-                        var k = j + 1;
-                        while (k < trimmed.len and (trimmed[k] == ' ' or trimmed[k] == '\t')) : (k += 1) {}
-                        if (k >= trimmed.len or trimmed[k] == ';' or trimmed[k] == '#') {
-                            ini_like_lines += 1;
+                    const ch = trimmed[j];
+                    if (ch == ']') {
+                        // Must have at least one char in section name
+                        if (j > 1) {
+                            // Check that only whitespace/comment follows the ]
+                            var k = j + 1;
+                            while (k < trimmed.len and (trimmed[k] == ' ' or trimmed[k] == '\t')) : (k += 1) {}
+                            if (k >= trimmed.len or trimmed[k] == ';' or trimmed[k] == '#') {
+                                ini_like_lines += 1;
+                            }
                         }
                         break;
                     }
-                    // Valid section name chars: alphanumeric, underscore, dash, dot, space (for subsections)
-                    if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-                        (c >= '0' and c <= '9') or c == '_' or c == '-' or c == '.' or c == ' ' or c == '"'))
-                    {
-                        break; // Invalid char in section name - not an INI section
-                    }
+                    // Allow any printable ASCII or UTF-8 in section names
+                    if (ch < 0x20 and ch != '\t') break; // Control char = not a section
                 }
             }
             continue;
         }
 
-        // Check for key=value or key = value pattern
-        // Key must start with letter or underscore
-        if ((trimmed[0] >= 'a' and trimmed[0] <= 'z') or
-            (trimmed[0] >= 'A' and trimmed[0] <= 'Z') or
-            trimmed[0] == '_')
+        // Check for key=value or key : value pattern
+        // Key can start with letter, underscore, digit, dot, percent, etc.
+        const fc = trimmed[0];
+        if ((fc >= 'a' and fc <= 'z') or (fc >= 'A' and fc <= 'Z') or
+            (fc >= '0' and fc <= '9') or fc == '_' or fc == '.' or fc == '-' or
+            fc == '%' or fc >= 0x80)
         {
-            // Look for = sign
+            // Look for = delimiter only (not : which conflicts with email headers, URLs, etc.)
             var j: usize = 1;
-            // Skip key characters (alphanumeric, underscore, dash, dot)
-            while (j < trimmed.len and ((trimmed[j] >= 'a' and trimmed[j] <= 'z') or
-                (trimmed[j] >= 'A' and trimmed[j] <= 'Z') or
-                (trimmed[j] >= '0' and trimmed[j] <= '9') or
-                trimmed[j] == '_' or trimmed[j] == '-' or trimmed[j] == '.'))
+            // Skip key characters (anything except = and whitespace)
+            while (j < trimmed.len and trimmed[j] != '=' and
+                trimmed[j] != ' ' and trimmed[j] != '\t')
             {
                 j += 1;
             }
@@ -23372,17 +23368,19 @@ fn validateIniLine(line: []const u8) IniLineType {
     // Section header: [name]
     if (first_char == '[') {
         i += 1;
-        // Section name: alphanumeric, dots, underscores, hyphens, spaces allowed
-        // Must have at least one character
+        // Section name: allow any printable ASCII except ] and newline.
+        // Real-world INI sections include things like [.ShellClassInfo],
+        // [{GUID}], [remote "origin"], etc.
         const name_start = i;
         while (i < line.len and line[i] != ']' and line[i] != '\n') {
-            const c = line[i];
-            if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-                (c >= '0' and c <= '9') or c == '.' or c == '_' or c == '-' or c == ' ')
-            {
+            const ch = line[i];
+            if (ch >= 0x20 and ch <= 0x7E) {
+                i += 1;
+            } else if (ch >= 0x80) {
+                // Allow UTF-8 continuation bytes in section names
                 i += 1;
             } else {
-                return .invalid; // Invalid character in section name
+                return .invalid; // Control character in section name
             }
         }
         // Must have closing ]
@@ -23390,34 +23388,35 @@ fn validateIniLine(line: []const u8) IniLineType {
         // Must have at least one character in name
         if (i == name_start) return .invalid;
         i += 1;
-        // Only whitespace allowed after ]
+        // Only whitespace or inline comment allowed after ]
         while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
-        if (i < line.len) return .invalid; // Trailing garbage
+        if (i < line.len and line[i] != ';' and line[i] != '#') return .invalid;
         return .section;
     }
 
-    // Key-value pair: key = value
-    // Key must start with letter or underscore
+    // Key-value pair: key = value (or key: value)
+    // Key must start with a printable non-special character.
+    // Real-world INI keys include dots, hyphens, percent signs, etc.
+    // (e.g., LocalizedResourceName, icon-theme, user.name)
     if ((first_char >= 'a' and first_char <= 'z') or
         (first_char >= 'A' and first_char <= 'Z') or
-        first_char == '_')
+        (first_char >= '0' and first_char <= '9') or
+        first_char == '_' or first_char == '.' or first_char == '-' or first_char == '%' or
+        first_char >= 0x80) // UTF-8
     {
-        // Key: letters, digits, underscores
+        // Key: anything except = : and whitespace
         while (i < line.len) {
-            const c = line[i];
-            if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-                (c >= '0' and c <= '9') or c == '_')
-            {
-                i += 1;
-            } else {
-                break;
-            }
+            const ch = line[i];
+            if (ch == '=' or ch == ':') break;
+            if (ch == ' ' or ch == '\t') break;
+            if (ch < 0x20 and ch != '\t') return .invalid; // Control chars
+            i += 1;
         }
-        // Skip whitespace before =
+        // Skip whitespace before = or :
         while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
-        // Must have =
-        if (i >= line.len or line[i] != '=') return .invalid;
-        // Value can be anything after =, so this is valid
+        // Must have = or : (both are common INI delimiters)
+        if (i >= line.len or (line[i] != '=' and line[i] != ':')) return .invalid;
+        // Value can be anything after delimiter, so this is valid
         return .key_value;
     }
 
@@ -34362,18 +34361,18 @@ test "validateIni rejects unclosed section header" {
     try std.testing.expect(!result.is_valid); // Should be invalid
 }
 
-test "validateIni rejects key starting with digit" {
+test "validateIni accepts key starting with digit" {
     const allocator = std.testing.allocator;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    // INI with key starting with digit
-    const file = try tmp_dir.dir.createFile("bad.ini", .{});
+    // INI with key starting with digit (e.g., Windows Desktop.ini: 3DLighting=1)
+    const file = try tmp_dir.dir.createFile("digit.ini", .{});
     try file.writeAll("[section]\n123key=value\n");
     file.close();
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.ini");
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "digit.ini");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -34381,7 +34380,7 @@ test "validateIni rejects key starting with digit" {
 
     const result = validator.validateFile(path);
     try std.testing.expectEqual(FileFormat.ini, result.format);
-    try std.testing.expect(!result.is_valid); // Should be invalid
+    try std.testing.expect(result.is_valid); // Digit-starting keys are valid in real-world INI
 }
 
 test "validateIni rejects garbage lines" {
