@@ -17,18 +17,7 @@
         .libwebp = .{
             .path = "deps/libwebp",
         },
-        .libheif = .{
-            .path = "deps/libheif",
-        },
-        .libde265 = .{
-            .path = "deps/libde265",
-        },
-        .dav1d = .{
-            .path = "deps/dav1d",
-        },
-        .openh264 = .{
-            .path = "deps/openh264",
-        },
+        // Removed: libheif, libde265, dav1d, openh264 (replaced by pure-Zig validators)
         .libopus = .{
             .path = "deps/libopus",
         },
@@ -41,9 +30,7 @@
         .minimp3 = .{
             .path = "deps/minimp3",
         },
-        .libvpx = .{
-            .path = "deps/libvpx",
-        },
+        // Removed: libvpx (replaced by pure-Zig VP9 validator)
         .openjpeg = .{
             .path = "deps/openjpeg",
         },

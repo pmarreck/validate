@@ -111,8 +111,9 @@ const tracker_validator = @import("tracker_validator.zig");
 // Import libopenmpt bindings for tracker format full decode validation
 const libopenmpt = @import("libopenmpt.zig");
 
-// Import HEIF validator for libheif deep validation (HEIC/AVIF)
-const heif_validator = @import("heif_validator.zig");
+// Import pure-Zig HEIC/AVIF validators (replace libheif)
+const heic_validator = @import("heic_validator.zig");
+const avif_validator = @import("avif_validator.zig");
 
 // Import LibRaw validator for camera RAW format deep validation (ARW, CR2, NEF)
 const libraw_validator = @import("libraw_validator.zig");
@@ -17195,26 +17196,12 @@ fn validateTiffDeep(allocator: Allocator, path: []const u8, format: FileFormat) 
 
             // InvalidData could mean corruption OR unsupported format features
             // zigimg has limited support (e.g., unusual strip sizes, some predictor modes)
-            // Try ffmpeg fallback before giving up
             error.InvalidData => {
-                if (video_validator.isFfprobeAvailable()) {
-                    const ffmpeg_result = video_validator.validateWithFfprobe(allocator, path);
-                    if (ffmpeg_result.valid) {
-                        return ValidationResult.okWithDepthViaFfmpeg(format, .full);
-                    }
-                }
                 return ValidationResult.okWithDepthAndWarning(format, .structural, "zigimg decode failed, structural only");
             },
 
             // Unsupported - zigimg doesn't handle this format variant (e.g., 16-bit TIFF)
-            // Try ffmpeg fallback which supports more variants
             error.Unsupported => {
-                if (video_validator.isFfprobeAvailable()) {
-                    const ffmpeg_result = video_validator.validateWithFfprobe(allocator, path);
-                    if (ffmpeg_result.valid) {
-                        return ValidationResult.okWithDepthViaFfmpeg(format, .full);
-                    }
-                }
                 return ValidationResult.okWithDepthAndWarning(format, .structural, "unsupported format variant");
             },
 
@@ -18032,25 +18019,41 @@ fn validateS3mDeep(path: []const u8) ValidationResult {
     return validateTrackerFullDecode(path, .s3m);
 }
 
-// ============ HEIC/AVIF Deep Validation (libheif) ============
+// ============ HEIC/AVIF Deep Validation (pure Zig) ============
 
-/// Deep HEIC/AVIF validation using libheif.
-/// Decodes the image using libde265 (HEVC) or dav1d (AV1) to verify integrity.
-fn validateHeifDeep(allocator: Allocator, path: []const u8, format: FileFormat) ValidationResult {
+/// Deep HEIC validation using pure-Zig HEIF container parser + H.265 syntax validator.
+fn validateHeicDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
-    const result = heif_validator.validateHeifDeep(path);
+    const result = heic_validator.validateHeicDeep(path);
     if (result.valid) {
-        // If we could only do structural validation (unsupported variant like AVIF sequences),
-        // report structural depth - we didn't actually decode/verify the image data
         if (result.structural_only) {
-            return ValidationResult.okWithDepth(format, .structural);
+            return ValidationResult.okWithDepth(.heic, .structural);
         }
         if (result.warning_message) |warning| {
-            return ValidationResult.okWithDepthAndWarning(format, .full, warning);
+            return ValidationResult.okWithDepthAndWarning(.heic, .full, warning);
         }
-        return ValidationResult.okWithDepth(format, .full);
+        return ValidationResult.okWithDepth(.heic, .full);
     } else {
-        return ValidationResult.invalidWithDepth(format, result.error_message orelse "HEIF decode failed", .full);
+        const msg: []const u8 = if (result.error_message) |e| e else "HEIC validation failed";
+        return ValidationResult.invalidWithDepth(.heic, msg, .full);
+    }
+}
+
+/// Deep AVIF validation using pure-Zig HEIF container parser + AV1 OBU validator.
+fn validateAvifDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    _ = allocator;
+    const result = avif_validator.validateAvifDeep(path);
+    if (result.valid) {
+        if (result.structural_only) {
+            return ValidationResult.okWithDepth(.avif, .structural);
+        }
+        if (result.warning_message) |warning| {
+            return ValidationResult.okWithDepthAndWarning(.avif, .full, warning);
+        }
+        return ValidationResult.okWithDepth(.avif, .full);
+    } else {
+        const msg: []const u8 = if (result.error_message) |e| e else "AVIF validation failed";
+        return ValidationResult.invalidWithDepth(.avif, msg, .full);
     }
 }
 
@@ -21796,7 +21799,8 @@ pub const FormatValidator = struct {
             .mp4, .mov, .m4a => validateMp4Deep(allocator, path),
             .mkv, .webm => validateMkvDeep(allocator, path),
             .avi => validateAviDeep(allocator, path),
-            .heic, .avif => validateHeifDeep(allocator, path, initial_result.format),
+            .heic => validateHeicDeep(allocator, path),
+            .avif => validateAvifDeep(allocator, path),
             .exr => validateExrDeep(allocator, path),
             .glb => validateGlbDeep(allocator, path),
             .doc, .xls, .ppt => validateOle2Deep(allocator, path, initial_result.format),

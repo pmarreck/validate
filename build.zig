@@ -74,32 +74,7 @@ pub fn build(b: *std.Build) void {
     });
     const libwebp_lib = libwebp_dep.artifact("webp");
 
-    // Libheif dependency for HEIC/AVIF deep validation (built from source with libde265 and dav1d)
-    const libheif_dep = b.dependency("libheif", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const libheif_lib = libheif_dep.artifact("heif");
-
-    // OpenH264 dependency for H.264/AVC video deep validation (BSD-2, Cisco pays MPEG-LA royalties)
-    const openh264_dep = b.dependency("openh264", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const openh264_lib = openh264_dep.artifact("openh264");
-
-    // libde265 and dav1d for direct include paths (used by video_validator.zig @cImport)
-    const libde265_dep = b.dependency("libde265", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const libde265_lib = libde265_dep.artifact("de265");
-
-    const dav1d_dep = b.dependency("dav1d", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const dav1d_lib = dav1d_dep.artifact("dav1d");
+    // Removed: libheif, openh264, libde265, dav1d — replaced by pure-Zig validators
 
     // Libopus for Opus audio deep validation (BSD-3, IETF standard)
     const libopus_dep = b.dependency("libopus", .{
@@ -131,12 +106,7 @@ pub fn build(b: *std.Build) void {
     });
     const minimp3_lib = minimp3_dep.artifact("minimp3");
 
-    // libvpx for VP8/VP9 video deep validation (BSD-3, WebM Project)
-    const libvpx_dep = b.dependency("libvpx", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const libvpx_lib = libvpx_dep.artifact("vpx");
+    // Removed: libvpx — replaced by pure-Zig VP9 syntax validator (VP8 was already pure Zig)
 
     // OpenJPEG for JPEG2000 decode validation (BSD-2, used in PDFs and DCPs)
     const openjpeg_dep = b.dependency("openjpeg", .{
@@ -235,15 +205,7 @@ pub fn build(b: *std.Build) void {
     // Add libwebp include path (from Zig-built dependency)
     core_mod.addIncludePath(libwebp_lib.getEmittedIncludeTree());
 
-    // Add libheif include path (from Zig-built dependency)
-    core_mod.addIncludePath(libheif_lib.getEmittedIncludeTree());
-
-    // Add OpenH264 include path (from Zig-built dependency)
-    core_mod.addIncludePath(openh264_lib.getEmittedIncludeTree());
-
-    // Add libde265 and dav1d include paths (for video_validator.zig @cImport)
-    core_mod.addIncludePath(libde265_lib.getEmittedIncludeTree());
-    core_mod.addIncludePath(dav1d_lib.getEmittedIncludeTree());
+    // Removed: libheif, openh264, libde265, dav1d include paths (pure-Zig validators)
 
     // Add libopus include path (for opus_validator.zig @cImport)
     core_mod.addIncludePath(libopus_lib.getEmittedIncludeTree());
@@ -257,8 +219,7 @@ pub fn build(b: *std.Build) void {
     // Add minimp3 include path (for mp3_decode_validator.zig @cImport)
     core_mod.addIncludePath(minimp3_lib.getEmittedIncludeTree());
 
-    // Add libvpx include path (for vp8_vp9_validator.zig @cImport)
-    core_mod.addIncludePath(libvpx_lib.getEmittedIncludeTree());
+    // Removed: libvpx include path (pure-Zig VP9 validator, VP8 is already pure Zig)
 
     // Add OpenJPEG include path (for jpeg2000_validator.zig @cImport)
     core_mod.addIncludePath(openjpeg_lib.getEmittedIncludeTree());
@@ -281,7 +242,7 @@ pub fn build(b: *std.Build) void {
     // Add libraw include path (for camera RAW validation)
     core_mod.addIncludePath(libraw_lib.getEmittedIncludeTree());
 
-    // Add VideoToolbox C shim include path (macOS only, for thread-safe VT access)
+    // Add src/core include path for any remaining C headers
     core_mod.addIncludePath(b.path("src/core"));
 
     // FFI module - C ABI exports
@@ -308,10 +269,7 @@ pub fn build(b: *std.Build) void {
     lib.linkLibrary(libjpeg_lib);
     // Link libwebp for WebP deep validation (built from source)
     lib.linkLibrary(libwebp_lib);
-    // Link libheif for HEIC/AVIF deep validation (built from source)
-    lib.linkLibrary(libheif_lib);
-    // Link OpenH264 for H.264/AVC video deep validation
-    lib.linkLibrary(openh264_lib);
+    // Removed: libheif, openh264 (replaced by pure-Zig validators)
     // Link libopus for Opus audio deep validation
     lib.linkLibrary(libopus_lib);
     // Link libogg for OGG container support (required by libvorbis)
@@ -320,8 +278,7 @@ pub fn build(b: *std.Build) void {
     lib.linkLibrary(libvorbis_lib);
     // Link minimp3 for MP3 audio deep validation
     lib.linkLibrary(minimp3_lib);
-    // Link libvpx for VP8/VP9 video deep validation
-    lib.linkLibrary(libvpx_lib);
+    // Removed: libvpx (replaced by pure-Zig VP9 validator)
     // Link OpenJPEG for JPEG2000 decode validation
     lib.linkLibrary(openjpeg_lib);
     // Link libjxl for JPEG-XL decode validation
@@ -335,18 +292,7 @@ pub fn build(b: *std.Build) void {
     // Link libraw for camera RAW format validation (LGPL-2.1/CDDL dual license)
     lib.linkLibrary(libraw_lib);
     lib.linkLibC();
-    lib.linkLibCpp(); // Required for libheif, libjxl, libopenmpt (C++ libraries)
-
-    // On macOS, compile VideoToolbox C shim for hardware video decoding
-    // The shim uses dlopen/dlsym to load VideoToolbox at runtime, avoiding dyld
-    // symbol resolution issues when the module is loaded from worker threads.
-    // No framework linking needed - frameworks are loaded dynamically.
-    if (target.result.os.tag == .macos) {
-        lib.addCSourceFile(.{
-            .file = b.path("src/core/videotoolbox_shim.c"),
-            .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
-        });
-    }
+    lib.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
 
     lib.installHeadersDirectory(b.path("ffi"), "", .{
         .include_extensions = &.{".h"},
@@ -365,19 +311,14 @@ pub fn build(b: *std.Build) void {
             zlib_lib.getEmittedBin(),
             libjpeg_lib.getEmittedBin(),
             libwebp_lib.getEmittedBin(),
-            libheif_lib.getEmittedBin(),
-            openh264_lib.getEmittedBin(),
             libopus_lib.getEmittedBin(),
             libogg_lib.getEmittedBin(),
             libvorbis_lib.getEmittedBin(),
             minimp3_lib.getEmittedBin(),
-            libvpx_lib.getEmittedBin(),
             openjpeg_lib.getEmittedBin(),
             libjxl_lib.getEmittedBin(),
             brotli_lib.getEmittedBin(),
             libopenmpt_lib.getEmittedBin(),
-            libde265_lib.getEmittedBin(),
-            dav1d_lib.getEmittedBin(),
             cj5_lib.getEmittedBin(),
         };
 
@@ -414,10 +355,7 @@ pub fn build(b: *std.Build) void {
     lib_shared.linkLibrary(libjpeg_lib);
     // Link libwebp for WebP deep validation (built from source)
     lib_shared.linkLibrary(libwebp_lib);
-    // Link libheif for HEIC/AVIF deep validation (built from source)
-    lib_shared.linkLibrary(libheif_lib);
-    // Link OpenH264 for H.264/AVC video deep validation
-    lib_shared.linkLibrary(openh264_lib);
+    // Removed: libheif, openh264 (replaced by pure-Zig validators)
     // Link libopus for Opus audio deep validation
     lib_shared.linkLibrary(libopus_lib);
     // Link libogg for OGG container support (required by libvorbis)
@@ -426,8 +364,7 @@ pub fn build(b: *std.Build) void {
     lib_shared.linkLibrary(libvorbis_lib);
     // Link minimp3 for MP3 audio deep validation
     lib_shared.linkLibrary(minimp3_lib);
-    // Link libvpx for VP8/VP9 video deep validation
-    lib_shared.linkLibrary(libvpx_lib);
+    // Removed: libvpx (replaced by pure-Zig VP9 validator)
     // Link OpenJPEG for JPEG2000 decode validation
     lib_shared.linkLibrary(openjpeg_lib);
     // Link libjxl for JPEG-XL decode validation
@@ -437,10 +374,7 @@ pub fn build(b: *std.Build) void {
     // Link libopenmpt for tracker format (MOD/XM/IT/S3M) deep validation (Zig-built)
     lib_shared.linkLibrary(libopenmpt_lib);
     lib_shared.linkLibC();
-    lib_shared.linkLibCpp(); // Required for libheif, libjxl, libopenmpt (C++ libraries)
-
-    // Note: VideoToolbox is loaded dynamically via dlopen in the C shim,
-    // so no framework linking is needed here.
+    lib_shared.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
 
     lib_shared.installHeadersDirectory(b.path("ffi"), "", .{
         .include_extensions = &.{".h"},
@@ -468,8 +402,6 @@ pub fn build(b: *std.Build) void {
     cli_c.linkLibrary(lib);
     cli_c.linkLibrary(sqlite3_lib);
 
-    // Note: VideoToolbox is loaded dynamically via dlopen in the C shim,
-    // so no framework linking is needed here.
 
     const install_cli = b.addInstallArtifact(cli_c, .{});
     b.getInstallStep().dependOn(&install_cli.step);
@@ -551,10 +483,7 @@ pub fn build(b: *std.Build) void {
     core_tests.linkLibrary(sqlite3_lib);
     // Link libwebp for WebP deep validation tests
     core_tests.linkLibrary(libwebp_lib);
-    // Link libheif for HEIC/AVIF deep validation tests (includes libde265 and dav1d)
-    core_tests.linkLibrary(libheif_lib);
-    // Link OpenH264 for H.264 video deep validation tests
-    core_tests.linkLibrary(openh264_lib);
+    // Removed: libheif, openh264 (replaced by pure-Zig validators)
     // Link libopus for Opus audio deep validation tests
     core_tests.linkLibrary(libopus_lib);
     // Link libogg for OGG container support tests (required by libvorbis)
@@ -563,8 +492,7 @@ pub fn build(b: *std.Build) void {
     core_tests.linkLibrary(libvorbis_lib);
     // Link minimp3 for MP3 audio deep validation tests
     core_tests.linkLibrary(minimp3_lib);
-    // Link libvpx for VP8/VP9 video deep validation tests
-    core_tests.linkLibrary(libvpx_lib);
+    // Removed: libvpx (replaced by pure-Zig VP9 validator)
     // Link OpenJPEG for JPEG2000 decode validation tests
     core_tests.linkLibrary(openjpeg_lib);
     // Link libjxl for JPEG-XL decode validation tests
@@ -574,10 +502,7 @@ pub fn build(b: *std.Build) void {
     // Link libopenmpt for tracker format (MOD/XM/IT/S3M) deep validation tests (Zig-built)
     core_tests.linkLibrary(libopenmpt_lib);
     core_tests.linkLibC();
-    core_tests.linkLibCpp(); // Required for libheif, openh264, libjxl, libopenmpt (C++ libraries)
-
-    // Note: VideoToolbox C shim is added via core module for lib, not needed in tests
-    // since VideoToolbox validation is currently disabled
+    core_tests.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
 
     const host_is_windows = b.graph.host.result.os.tag == .windows;
     const target_is_windows = target.result.os.tag == .windows;
@@ -602,21 +527,16 @@ pub fn build(b: *std.Build) void {
     ffi_tests.linkLibrary(libjpeg_lib);
     ffi_tests.linkLibrary(sqlite3_lib);
     ffi_tests.linkLibrary(libwebp_lib);
-    ffi_tests.linkLibrary(libheif_lib);
-    ffi_tests.linkLibrary(openh264_lib);
     ffi_tests.linkLibrary(libopus_lib);
     ffi_tests.linkLibrary(libogg_lib);
     ffi_tests.linkLibrary(libvorbis_lib);
     ffi_tests.linkLibrary(minimp3_lib);
-    ffi_tests.linkLibrary(libvpx_lib);
     ffi_tests.linkLibrary(openjpeg_lib);
     ffi_tests.linkLibrary(libjxl_lib);
     ffi_tests.linkLibrary(brotli_lib);
     ffi_tests.linkLibrary(libopenmpt_lib);
     ffi_tests.linkLibC();
     ffi_tests.linkLibCpp();
-
-    // Note: ffi_tests gets the VideoToolbox C shim via core module
 
     const run_ffi_tests = if (target_is_windows and !host_is_windows and windows_test_wine != null) blk: {
         const run = b.addSystemCommand(&.{

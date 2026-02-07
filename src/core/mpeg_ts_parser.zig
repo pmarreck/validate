@@ -596,7 +596,7 @@ pub fn validatePsiCrc(section_data: []const u8) bool {
 const aac_syntax_validator = @import("aac_syntax_validator.zig");
 const ac3_validator = @import("ac3_validator.zig");
 const eac3_validator = @import("eac3_validator.zig");
-const h264_validator = @import("h264_validator.zig");
+const h264_validator = @import("h264_syntax_validator.zig");
 const mpeg12_validator = @import("mpeg12_validator.zig");
 const mp3_decode_validator = @import("mp3_decode_validator.zig");
 const h265_validator = @import("h265_validator.zig");
@@ -891,7 +891,8 @@ pub fn validateTsDeep(allocator: std.mem.Allocator, data: []const u8, max_packet
                         video_streams_validated += 1;
                         video_frames += result.frames_decoded;
                     } else {
-                        return TsDeepValidationResult.failure(result.error_message orelse "H.264 validation failed");
+                        const msg: []const u8 = if (result.error_message) |e| std.mem.span(e) else "H.264 validation failed";
+                        return TsDeepValidationResult.failure(msg);
                     }
                 },
                 .h265 => {

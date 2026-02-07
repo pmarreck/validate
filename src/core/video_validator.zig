@@ -1,203 +1,50 @@
-//! Video stream validation using platform-specific decoders.
+//! Video stream validation using pure-Zig bitstream validators.
 //!
-//! PLATFORM STRATEGY (2026-02-03):
-//! ===============================
-//! - macOS: VideoToolbox (system framework) for H.264/HEVC/AV1
-//!   - Complete profile support (all H.264 profiles, HEVC Main/Main10, AV1)
-//!   - Hardware accelerated on Apple Silicon
-//!   - No licensing concerns (system framework)
-//!   - Requires macOS 13.0+ for AV1 support
+//! STRATEGY (2026-02-07):
+//! ======================
+//! All video codec validation is done via pure-Zig syntax validators:
+//! - H.264: h264_syntax_validator.zig (NAL/SPS/PPS/slice parsing)
+//! - H.265: h265_validator.zig (NAL/VPS/SPS/PPS/slice parsing)
+//! - AV1: av1_obu_validator.zig (OBU structural validation)
+//! - VP9: vp9_syntax_validator.zig (frame header parsing)
+//! - ProRes: prores_validator.zig (pure Zig structural validation)
+//! - MPEG-1/2: mpeg12_validator.zig (pure Zig)
+//! - MPEG-4 Part 2: mpeg4p2_validator.zig (pure Zig)
+//! - VP8: vp8_validator.zig (pure Zig)
+//! - Motion JPEG: jpeg_validator.zig (via libjpeg-turbo)
 //!
-//! - Linux/Windows: ffmpeg as primary decoder (if available on PATH)
-//!   - Falls back to built-in decoders (libde265, OpenH264, dav1d) if no ffmpeg
-//!   - Built-in decoders have profile limitations (see isH264ProfileSupported)
-//!
-//! This module provides deep validation for video files by actually decoding
-//! video frames to verify bitstream integrity.
+//! No C video decoder libraries (libde265, dav1d, OpenH264, libvpx, VideoToolbox)
+//! are needed. Validation catches structural corruption by parsing bitstream syntax
+//! deeply enough to detect errors without full pixel-perfect decoding.
 //!
 //! Supported container formats:
 //! - MP4/MOV (ISO Base Media File Format)
 //! - MKV/WebM (Matroska/EBML)
 //! - AVI (RIFF container)
 //!
-//! Supported video codecs:
-//! - HEVC/H.265 (via VideoToolbox on macOS, libde265 on other platforms)
-//! - AV1 (via VideoToolbox on macOS 13+, dav1d on other platforms)
-//! - H.264/AVC (via VideoToolbox on macOS, OpenH264 on other platforms)
-//! - Motion JPEG (via libjpeg-turbo)
-//! - ProRes (pure Zig structural validation)
-//!
-//! Thread safety: Video codec operations are serialized via a global mutex to
-//! prevent potential thread safety issues with C library global state initialization.
-//! C libraries like libde265, dav1d, OpenH264 may not be fully thread-safe for
-//! concurrent decoder creation/destruction. This may reduce parallelism but ensures
-//! stability across all platforms.
+//! Thread safety: Pure-Zig validators are thread-safe with no global state.
 
 const std = @import("std");
 const builtin = @import("builtin");
 
-/// Global mutex for serializing video decoder operations.
-/// C libraries like libde265, dav1d, OpenH264 may have thread safety issues
-/// with global state initialization that can affect any platform.
-var video_decoder_mutex: std.Thread.Mutex = .{};
-
-/// RAII guard for holding the video decoder mutex.
-/// Ensures only one thread at a time can use video decoders.
+// No global mutex needed — pure-Zig validators are thread-safe.
+// VideoDecoderGuard kept as no-op for backward compatibility with any remaining references.
 pub const VideoDecoderGuard = struct {
     pub fn acquire() VideoDecoderGuard {
-        video_decoder_mutex.lock();
         return .{};
     }
 
     pub fn release(self: VideoDecoderGuard) void {
         _ = self;
-        video_decoder_mutex.unlock();
     }
 };
 const Allocator = std.mem.Allocator;
 
-/// Minimum required ffmpeg major version
-const MIN_FFMPEG_VERSION: u32 = 4;
+// ffmpeg/ffprobe fallback removed — pure-Zig validators handle all codecs
 
-/// Cached result of ffprobe availability check
-var ffprobe_available: ?bool = null;
-var ffprobe_check_mutex: std.Thread.Mutex = .{};
-
-/// Parse ffmpeg/ffprobe version from output string
-/// Expected format: "ffprobe version N.M ..." or "ffprobe version nN.M ..."
-fn parseFfmpegVersion(output: []const u8) ?u32 {
-    // Find "version " in output
-    const version_prefix = "version ";
-    const version_start = std.mem.indexOf(u8, output, version_prefix) orelse return null;
-    var pos = version_start + version_prefix.len;
-
-    // Skip optional 'n' prefix (e.g., "n6.1")
-    if (pos < output.len and output[pos] == 'n') {
-        pos += 1;
-    }
-
-    // Parse major version number
-    var major: u32 = 0;
-    while (pos < output.len and output[pos] >= '0' and output[pos] <= '9') {
-        major = major * 10 + (output[pos] - '0');
-        pos += 1;
-    }
-
-    if (major == 0) return null;
-    return major;
-}
-
-/// Check if ffprobe/ffmpeg is available on the system PATH with minimum version
+/// Stub for backward compatibility — always returns false
 pub fn isFfprobeAvailable() bool {
-    ffprobe_check_mutex.lock();
-    defer ffprobe_check_mutex.unlock();
-
-    if (ffprobe_available) |available| {
-        return available;
-    }
-
-    // On Windows, explicitly use .exe extension for reliability
-    const ffprobe_cmd = if (comptime builtin.os.tag == .windows) "ffprobe.exe" else "ffprobe";
-
-    // Try to run ffprobe -version
-    // Note: ffprobe -version output can be very long due to configuration details
-    const result = std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
-        .argv = &[_][]const u8{ ffprobe_cmd, "-version" },
-        .max_output_bytes = 16 * 1024, // 16KB to handle verbose config output
-    }) catch {
-        ffprobe_available = false;
-        return false;
-    };
-    defer std.heap.page_allocator.free(result.stdout);
-    defer std.heap.page_allocator.free(result.stderr);
-
-    // Check exit code
-    const exit_ok = switch (result.term) {
-        .Exited => |code| code == 0,
-        else => false,
-    };
-    if (!exit_ok) {
-        ffprobe_available = false;
-        return false;
-    }
-
-    // Check version is at least MIN_FFMPEG_VERSION
-    const version = parseFfmpegVersion(result.stdout) orelse {
-        ffprobe_available = false;
-        return false;
-    };
-
-    ffprobe_available = (version >= MIN_FFMPEG_VERSION);
-    return ffprobe_available.?;
-}
-
-/// Result of ffprobe validation
-const FfprobeValidationResult = struct {
-    valid: bool,
-    error_message: ?[]const u8,
-    frames_decoded: u32,
-};
-
-/// Validate file using ffmpeg - does full decode to null output.
-/// Works for videos and images (TIFF, etc.) that ffmpeg supports.
-pub fn validateWithFfprobe(allocator: Allocator, file_path: []const u8) FfprobeValidationResult {
-    // Use ffmpeg to decode video to null - this validates the entire stream
-    // ffmpeg -v error -i input.mp4 -f null -
-    // If there are decode errors, they'll be in stderr
-
-    const path_z = allocator.dupeZ(u8, file_path) catch {
-        return .{ .valid = false, .error_message = "Memory allocation failed", .frames_decoded = 0 };
-    };
-    defer allocator.free(path_z);
-
-    // On Windows, explicitly use .exe extension for reliability
-    const ffmpeg_cmd = if (comptime builtin.os.tag == .windows) "ffmpeg.exe" else "ffmpeg";
-    // On Windows, null device is NUL, on Unix it's /dev/null, but -f null - works cross-platform
-    const null_output = if (comptime builtin.os.tag == .windows) "NUL" else "-";
-
-    // Hardware acceleration: -hwaccel auto doesn't reliably select the best option,
-    // so we use platform-specific accelerators for much faster decoding.
-    // macOS VideoToolbox: ~5 min for 4K movie vs ~41 min with software decode
-    const hwaccel = if (comptime builtin.os.tag == .macos) "videotoolbox" else "auto";
-
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{
-            ffmpeg_cmd,
-            "-v", "error",           // Only show errors
-            "-hwaccel", hwaccel,     // Use hardware acceleration (VideoToolbox on macOS)
-            "-threads", "0",         // Auto-detect optimal thread count for parallel decoding
-            "-i", path_z,            // Input file
-            "-f", "null",            // Output format null (discard)
-            null_output,             // Output destination
-        },
-        .max_output_bytes = 64 * 1024, // 64KB for error messages
-    }) catch |err| {
-        const msg = switch (err) {
-            error.FileNotFound => "ffmpeg not found on PATH",
-            else => "Failed to run ffmpeg",
-        };
-        return .{ .valid = false, .error_message = msg, .frames_decoded = 0 };
-    };
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    // Check exit status
-    const exit_code = switch (result.term) {
-        .Exited => |code| code,
-        else => 1,
-    };
-
-    // Exit code 0 means ffmpeg successfully decoded the file
-    // Note: stderr may contain warnings (e.g., DTS timestamp issues from null muxer)
-    // that don't indicate corruption - only exit code matters for validity
-    if (exit_code == 0) {
-        return .{ .valid = true, .error_message = null, .frames_decoded = 1 };
-    }
-
-    // Non-zero exit code - actual decode failure
-    return .{ .valid = false, .error_message = "ffmpeg decode failed (video may be corrupt)", .frames_decoded = 0 };
+    return false;
 }
 
 /// Cross-platform getenv that returns null on Windows (where std.posix.getenv is unavailable).
@@ -211,8 +58,17 @@ fn getenvCrossPlatform(comptime name: []const u8) ?[:0]const u8 {
 // Import EBML/Matroska parser
 const ebml = @import("ebml_parser.zig");
 
-// Import H.264 validator (uses OpenH264)
-const h264 = @import("h264_validator.zig");
+// Import H.264 syntax validator (pure Zig)
+const h264 = @import("h264_syntax_validator.zig");
+
+// Import H.265 validator (pure Zig)
+const h265 = @import("h265_validator.zig");
+
+// Import AV1 OBU validator (pure Zig)
+const av1_obu = @import("av1_obu_validator.zig");
+
+// Import VP9 syntax validator (pure Zig)
+const vp9 = @import("vp9_syntax_validator.zig");
 
 // Import JPEG validator (uses libjpeg-turbo)
 const jpeg = @import("jpeg_validator.zig");
@@ -232,153 +88,33 @@ const theora = @import("theora_validator.zig");
 // Import VP8 validator (via libvpx)
 const vp8 = @import("vp8_validator.zig");
 
-// Platform-specific video decoder imports
-// On macOS: Use VideoToolbox (system framework) for complete profile support
-// On other platforms: Use libde265/dav1d/OpenH264 with ffmpeg fallback
-const use_videotoolbox = builtin.os.tag == .macos;
+// No platform-specific video decoder imports needed — all pure Zig
+const use_videotoolbox = false; // VideoToolbox removed
 
-/// Check if VideoToolbox should be used at runtime.
-/// This allows disabling VideoToolbox via environment variable for testing.
-/// Set DISABLE_VIDEOTOOLBOX=1 (or true/yes/on) to force the non-VideoToolbox code path.
+/// VideoToolbox removed — always returns false
 fn shouldUseVideoToolbox() bool {
-    if (comptime !use_videotoolbox) {
-        return false;
-    }
-
-    // Check environment variable override
-    const override = std.process.getEnvVarOwned(std.heap.page_allocator, "DISABLE_VIDEOTOOLBOX") catch {
-        // No override, check if VideoToolbox is available
-        return videotoolbox.isAvailable();
-    };
-    defer std.heap.page_allocator.free(override);
-
-    const trimmed = std.mem.trim(u8, override, " \t\r\n");
-    if (std.mem.eql(u8, trimmed, "1") or
-        std.ascii.eqlIgnoreCase(trimmed, "true") or
-        std.ascii.eqlIgnoreCase(trimmed, "yes") or
-        std.ascii.eqlIgnoreCase(trimmed, "on"))
-    {
-        return false; // Disabled via env var
-    }
-
-    return videotoolbox.isAvailable();
+    return false;
 }
 
-// Import videotoolbox_validator - uses dlopen/dlsym for runtime loading
-const videotoolbox = if (use_videotoolbox)
-    @import("videotoolbox_validator.zig")
-else
-    struct {
-        // Note: This stub is only used on non-macOS platforms
-        pub const VideoCodec = enum { h264, hevc, av1 };
-        pub const VTValidationResult = struct {
-            valid: bool,
-            frames_decoded: u32,
-            error_message: ?[]const u8,
-            codec: @This().VideoCodec,
-        };
-        pub fn isAvailable() bool {
-            return false;
-        }
-        pub fn validateH264(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
-            return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox not available on this platform", .codec = .h264 };
-        }
-        pub fn validateHEVC(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
-            return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox not available on this platform", .codec = .hevc };
-        }
-        pub fn validateAV1(_: Allocator, _: []const u8, _: []const []const u8) VTValidationResult {
-            return .{ .valid = false, .frames_decoded = 0, .error_message = "VideoToolbox not available on this platform", .codec = .av1 };
-        }
-    };
-
-// Import libde265 for HEVC decoding (non-macOS only)
-// On macOS, VideoToolbox handles HEVC with better profile support
-const de265 = if (!use_videotoolbox) @cImport({
-    @cInclude("libde265/de265.h");
-}) else struct {
-    // Stub types for comptime compatibility when not used
-    pub const DE265_OK: c_int = 0;
-    pub const DE265_ERROR_WAITING_FOR_INPUT_DATA: c_int = 1;
-    pub fn de265_new_decoder() ?*anyopaque {
-        return null;
-    }
-    pub fn de265_free_decoder(_: ?*anyopaque) c_int {
-        return 0;
-    }
-    pub fn de265_start_worker_threads(_: ?*anyopaque, _: c_int) c_int {
-        return 0;
-    }
-    pub fn de265_push_data(_: ?*anyopaque, _: [*]const u8, _: c_int, _: i64, _: ?*anyopaque) c_int {
-        return 0;
-    }
-    pub fn de265_flush_data(_: ?*anyopaque) c_int {
-        return 0;
-    }
-    pub fn de265_decode(_: ?*anyopaque, _: *c_int) c_int {
-        return 0;
-    }
-    pub fn de265_get_next_picture(_: ?*anyopaque) ?*anyopaque {
-        return null;
+// VideoToolbox removed — using pure-Zig validators
+const videotoolbox = struct {
+    pub const VideoCodec = enum { h264, hevc, av1 };
+    pub fn isAvailable() bool {
+        return false;
     }
 };
 
-// Import dav1d for AV1 decoding (non-macOS only)
-// On macOS 13+, VideoToolbox handles AV1 with hardware acceleration
-const dav1d = if (!use_videotoolbox) @cImport({
-    @cInclude("dav1d/dav1d.h");
-}) else struct {
-    // Stub types for comptime compatibility when not used
-    pub const Dav1dSettings = extern struct {
-        n_threads: c_int = 0,
-        max_frame_delay: c_int = 0,
-        // Add other fields as needed for compilation
-    };
-    pub const Dav1dContext = anyopaque;
-    pub const Dav1dData = extern struct {
-        data: ?[*]const u8 = null,
-        sz: usize = 0,
-        ref: ?*anyopaque = null,
-        m: extern struct {
-            timestamp: i64 = 0,
-            duration: i64 = 0,
-            offset: i64 = 0,
-            size: usize = 0,
-            user_data: extern struct {
-                data: ?*anyopaque = null,
-                ref: ?*anyopaque = null,
-            } = .{},
-        } = .{},
-    };
-    pub const Dav1dPicture = extern struct {
-        seq_hdr: ?*anyopaque = null,
-        frame_hdr: ?*anyopaque = null,
-        // Add other fields as needed
-    };
-    pub fn dav1d_default_settings(_: *Dav1dSettings) void {}
-    pub fn dav1d_open(_: *?*Dav1dContext, _: *const Dav1dSettings) c_int {
-        return -1;
-    }
-    pub fn dav1d_close(_: *?*Dav1dContext) void {}
-    pub fn dav1d_send_data(_: *Dav1dContext, _: ?*Dav1dData) c_int {
-        return -1;
-    }
-    pub fn dav1d_get_picture(_: *Dav1dContext, _: *Dav1dPicture) c_int {
-        return -1;
-    }
-    pub fn dav1d_picture_unref(_: *Dav1dPicture) void {}
-    pub fn dav1d_data_unref(_: *Dav1dData) void {}
-    pub fn dav1d_data_create(_: *Dav1dData, _: usize) c_int {
-        return -1;
-    }
-};
+// libde265 removed — using h265_validator.zig (pure Zig)
+
+// dav1d removed — using av1_obu_validator.zig (pure Zig)
 
 /// Video codec type
 pub const VideoCodec = enum {
-    hevc, // H.265 (via libde265)
-    av1, // AV1 (via dav1d)
-    h264, // H.264/AVC (via OpenH264)
-    vp9, // VP9 (via libvpx)
-    vp8, // VP8 (via libvpx)
+    hevc, // H.265 (pure Zig syntax validator)
+    av1, // AV1 (pure Zig OBU validator)
+    h264, // H.264/AVC (pure Zig syntax validator)
+    vp9, // VP9 (pure Zig syntax validator)
+    vp8, // VP8 (pure Zig)
     mjpeg, // Motion JPEG (via libjpeg-turbo)
     prores, // ProRes (pure Zig structural validation)
     mpeg1, // MPEG-1 Video (pure Zig)
@@ -442,145 +178,25 @@ pub const VideoValidationResult = struct {
 	}
 };
 
-/// Validate HEVC bitstream using libde265.
-/// Decodes up to max_frames keyframes to verify integrity.
+/// Validate HEVC bitstream using pure-Zig H.265 syntax validator.
 pub fn validateHevcStream(data: []const u8, max_frames: u32) VideoValidationResult {
-    if (data.len < 4) {
-        return VideoValidationResult.invalid("Data too small for HEVC", .hevc);
+    const result = h265.validateH265Stream(data, max_frames);
+    if (result.valid) {
+        return VideoValidationResult.okDecoded(.hevc, result.frames_decoded);
     }
-
-    // Acquire mutex to prevent thread safety issues with libde265
-    const guard = VideoDecoderGuard.acquire();
-    defer guard.release();
-
-    // Create decoder context
-    const ctx = de265.de265_new_decoder();
-    if (ctx == null) {
-        return VideoValidationResult.invalid("Failed to create HEVC decoder", .hevc);
-    }
-    defer _ = de265.de265_free_decoder(ctx);
-
-    // Start decoder with single thread to avoid memory corruption.
-    // libde265's internal threading has known stability issues that cause
-    // heap corruption (crashes in context_model_table::decouple).
-    _ = de265.de265_start_worker_threads(ctx, 1);
-
-    // Safety check: de265 API uses c_int for length, which is 32-bit signed.
-    // If data is larger than 2GB, we can't process it with this decoder.
-    const max_data_len: usize = @intCast(std.math.maxInt(c_int));
-    if (data.len > max_data_len) {
-        return VideoValidationResult.invalid("HEVC data too large for decoder (>2GB)", .hevc);
-    }
-
-    // Push Annex B data to decoder (data contains start codes 0x00000001)
-    const push_err = de265.de265_push_data(ctx, data.ptr, @intCast(data.len), 0, null);
-    if (push_err != de265.DE265_OK) {
-        return VideoValidationResult.invalid("Failed to push HEVC data", .hevc);
-    }
-
-    // Signal end of stream
-    _ = de265.de265_flush_data(ctx);
-
-    // Try to decode frames
-    var frames_decoded: u32 = 0;
-    var more: c_int = 1;
-
-    while (more != 0 and frames_decoded < max_frames) {
-        const decode_err = de265.de265_decode(ctx, &more);
-        if (decode_err == de265.DE265_ERROR_WAITING_FOR_INPUT_DATA) {
-            break; // Normal end of stream
-        }
-        if (decode_err != de265.DE265_OK) {
-            return VideoValidationResult.invalid("HEVC decode error", .hevc);
-        }
-
-        // Check for decoded frames
-        const img = de265.de265_get_next_picture(ctx);
-        if (img != null) {
-            frames_decoded += 1;
-        }
-    }
-
-    if (frames_decoded == 0) {
-        return VideoValidationResult.invalid("No frames decoded from HEVC", .hevc);
-    }
-
-    return VideoValidationResult.okDecoded(.hevc, frames_decoded);
+    return VideoValidationResult.invalid(result.error_message orelse "H.265 validation failed", .hevc);
 }
 
-/// Validate AV1 bitstream using dav1d.
-/// Decodes up to max_frames to verify integrity.
+/// Validate AV1 bitstream using pure-Zig OBU validator.
+/// Validates up to max_frames to verify integrity.
 pub fn validateAv1Stream(allocator: Allocator, data: []const u8, max_frames: u32) VideoValidationResult {
     _ = allocator;
-    if (data.len < 4) {
-        return VideoValidationResult.invalid("Data too small for AV1", .av1);
+    const result = av1_obu.validateAv1Stream(data, max_frames);
+    if (result.valid) {
+        return VideoValidationResult.okDecoded(.av1, result.frames_decoded);
     }
-
-    // Acquire mutex to prevent thread safety issues with dav1d
-    const guard = VideoDecoderGuard.acquire();
-    defer guard.release();
-
-    // Initialize dav1d settings with multiple threads for better performance.
-    // The VideoDecoderGuard ensures only one decoder runs at a time,
-    // so internal threading is safe and beneficial.
-    var settings: dav1d.Dav1dSettings = undefined;
-    dav1d.dav1d_default_settings(&settings);
-    settings.n_threads = 4;
-    settings.max_frame_delay = 4;
-
-    // Open decoder
-    var ctx: ?*dav1d.Dav1dContext = null;
-    const open_err = dav1d.dav1d_open(&ctx, &settings);
-    if (open_err != 0 or ctx == null) {
-        return VideoValidationResult.invalid("Failed to open AV1 decoder", .av1);
-    }
-    const decoder_ctx = ctx.?; // Unwrap once after null check
-    defer dav1d.dav1d_close(&ctx);
-
-    // Create input data packet
-    var dav1d_data: dav1d.Dav1dData = undefined;
-    const alloc_err = dav1d.dav1d_data_create(&dav1d_data, data.len);
-    if (alloc_err != 0) {
-        return VideoValidationResult.invalid("Failed to allocate AV1 data", .av1);
-    }
-
-    // Copy input data - cast to mutable pointer since dav1d_data_create allocates writable memory
-    const mutable_data: [*]u8 = @constCast(dav1d_data.data orelse return VideoValidationResult.invalid("AV1 data buffer is null", .av1));
-    @memcpy(mutable_data[0..data.len], data);
-
-    // Send data to decoder
-    const send_err = dav1d.dav1d_send_data(decoder_ctx, &dav1d_data);
-    if (send_err != 0 and send_err != -@as(c_int, @intCast(@intFromEnum(std.posix.E.AGAIN)))) {
-        dav1d.dav1d_data_unref(&dav1d_data);
-        return VideoValidationResult.invalid("Failed to send AV1 data", .av1);
-    }
-
-    // Try to get decoded pictures
-    var frames_decoded: u32 = 0;
-    var pic: dav1d.Dav1dPicture = undefined;
-
-    while (frames_decoded < max_frames) {
-        const get_err = dav1d.dav1d_get_picture(decoder_ctx, &pic);
-        if (get_err == -@as(c_int, @intCast(@intFromEnum(std.posix.E.AGAIN)))) {
-            // Need more data - try draining
-            _ = dav1d.dav1d_send_data(decoder_ctx, null);
-            continue;
-        }
-        if (get_err != 0) {
-            break; // No more frames or error
-        }
-
-        frames_decoded += 1;
-        dav1d.dav1d_picture_unref(&pic);
-    }
-
-    _ = allocator;
-
-    if (frames_decoded == 0) {
-        return VideoValidationResult.invalid("No frames decoded from AV1", .av1);
-    }
-
-    return VideoValidationResult.okDecoded(.av1, frames_decoded);
+    const msg: []const u8 = if (result.error_message) |e| std.mem.span(e) else "AV1 validation failed";
+    return VideoValidationResult.invalid(msg, .av1);
 }
 
 /// MP4 box parsing helpers
@@ -807,22 +423,6 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
         return validateMpeg4P2FromMp4(allocator, file, stbl, max_frames);
     }
 
-    // ==========================================================================
-    // PLATFORM-SPECIFIC VIDEO DECODING
-    // ==========================================================================
-    // On macOS: Use VideoToolbox for H.264/HEVC/AV1 (complete profile support)
-    // On other platforms: Use built-in decoders with ffmpeg fallback
-    // ==========================================================================
-
-    if (shouldUseVideoToolbox()) {
-        // macOS: Use VideoToolbox for hardware-accelerated decoding
-        if (video_codec == .h264 or video_codec == .hevc or video_codec == .av1) {
-            return validateMp4VideoWithVideoToolbox(allocator, file, stbl, video_codec, max_frames, path);
-        }
-    }
-
-    // Non-macOS path (or non-H.264/HEVC/AV1 codec): Use existing decoders
-
     // Parse sample tables for frame extraction
     var sample_table = parseSampleTable(allocator, file, stbl.offset, stbl.size, stbl.header_size) orelse {
         return VideoValidationResult.invalid("Failed to parse sample tables", video_codec);
@@ -843,33 +443,7 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
     }
     defer if (codec_private != null) allocator.free(codec_private.?.data);
 
-    // Check for unsupported H.264 profile - use three-tier fallback
-    const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
-    if (video_codec == .h264 and codec_private != null) {
-        const profile_supported = codec_private.?.isH264ProfileSupported();
-        if (debug_enabled) {
-            std.debug.print("[H264] Profile support check: profile={d}, level={d}, supported={}\n", .{ codec_private.?.h264_profile, codec_private.?.h264_level, profile_supported });
-        }
-        if (!profile_supported) {
-            // Tier 2: Try ffprobe/ffmpeg if available
-            if (isFfprobeAvailable()) {
-                const ffprobe_result = validateWithFfprobe(allocator, path);
-                if (ffprobe_result.valid) {
-                    // ffmpeg performs full decoding, so this is byte-validated
-                    return VideoValidationResult.okByteValidatedViaFfmpeg(.h264, ffprobe_result.frames_decoded);
-                } else {
-                    return VideoValidationResult.invalid(
-                        ffprobe_result.error_message orelse "ffmpeg validation failed",
-                        .h264,
-                    );
-                }
-            }
-
-            // Tier 3: Structural validation only - set flag for warning message
-            return VideoValidationResult.structuralOnlyUnsupportedProfile(.h264);
-        }
-    }
-
+    // Pure-Zig H.264 validator supports all profiles (syntax validation, not pixel decode)
     var byte_validated = false;
 
     if (video_codec == .h264 or video_codec == .hevc or video_codec == .av1) {
@@ -935,162 +509,32 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
         else => VideoValidationResult.skipped("Unsupported codec"),
     };
 
-    // If built-in decoder failed due to capability issues (not corruption),
-    // try ffmpeg as fallback. This handles profiles/features our decoders don't support.
-    if (!result.valid and result.error_message != null) {
-        const err_msg = result.error_message.?;
-        const is_decoder_capability_issue =
-            std.mem.indexOf(u8, err_msg, "Failed to create") != null or
-            std.mem.indexOf(u8, err_msg, "Failed to open") != null or
-            std.mem.indexOf(u8, err_msg, "not supported") != null or
-            std.mem.indexOf(u8, err_msg, "no parameter sets") != null;
-
-        if (is_decoder_capability_issue and isFfprobeAvailable()) {
-            const ffprobe_result = validateWithFfprobe(allocator, path);
-            if (ffprobe_result.valid) {
-                var ffmpeg_result = VideoValidationResult.okByteValidatedViaFfmpeg(video_codec, ffprobe_result.frames_decoded);
-                ffmpeg_result.byte_validated = byte_validated;
-                return ffmpeg_result;
-            }
-            // ffmpeg also failed - return original error (likely actual corruption)
-        }
-    }
-
     result.byte_validated = byte_validated;
     return result;
-}
-
-/// Validate MP4 video using VideoToolbox (macOS only).
-/// This provides complete profile support for H.264/HEVC/AV1 using Apple's
-/// hardware-accelerated decoder framework.
-fn validateMp4VideoWithVideoToolbox(
-    allocator: Allocator,
-    file: std.fs.File,
-    stbl: Mp4Box,
-    video_codec: VideoCodec,
-    max_frames: u32,
-    path: []const u8,
-) VideoValidationResult {
-    // This function is only compiled on macOS
-    if (comptime !use_videotoolbox) {
-        return VideoValidationResult.invalid("VideoToolbox not available on this platform", video_codec);
-    }
-
-    // Parse sample tables for frame extraction
-    var sample_table = parseSampleTable(allocator, file, stbl.offset, stbl.size, stbl.header_size) orelse {
-        return VideoValidationResult.invalid("Failed to parse sample tables", video_codec);
-    };
-    defer sample_table.deinit();
-
-    // Get raw codec private data (avcC/hvcC without Annex B conversion)
-    const stsd = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stsd");
-    if (stsd == null) {
-        return VideoValidationResult.invalid("No stsd box found", video_codec);
-    }
-
-    const raw_codec_private = extractRawCodecPrivate(allocator, file, stsd.?.offset, video_codec) orelse {
-        return VideoValidationResult.invalid("Failed to extract codec config", video_codec);
-    };
-    defer allocator.free(raw_codec_private.data);
-
-    // Note: nal_length_size is extracted but not directly used here - VideoToolbox handles NAL parsing internally
-    _ = raw_codec_private.nal_length_size;
-
-    // Extract raw samples (without Annex B conversion)
-    // VideoToolbox expects length-prefixed NAL units as they appear in MP4
-    var samples: std.ArrayListUnmanaged([]const u8) = .{};
-    defer {
-        for (samples.items) |sample| {
-            allocator.free(sample);
-        }
-        samples.deinit(allocator);
-    }
-
-    // Get all sample locations for efficient reading
-    const locations = sample_table.getAllSampleLocations(allocator) orelse {
-        return VideoValidationResult.invalid("Failed to get sample locations", video_codec);
-    };
-    defer allocator.free(locations);
-
-    // Read samples (limit to max_frames for memory efficiency)
-    const samples_to_read = @min(locations.len, max_frames);
-    const max_sample_size: usize = 16 * 1024 * 1024; // 16MB max sample size
-
-    for (0..samples_to_read) |i| {
-        const loc = locations[i];
-        if (loc.size > max_sample_size) continue; // Skip oversized samples
-
-        // Allocate buffer on heap to avoid stack overflow (worker threads have small stacks)
-        const read_buffer = allocator.alloc(u8, loc.size) catch continue;
-        defer allocator.free(read_buffer);
-
-        file.seekTo(loc.offset) catch continue;
-        const bytes_read = file.read(read_buffer) catch continue;
-        if (bytes_read < loc.size) continue;
-
-        // Duplicate the sample data for VideoToolbox
-        const sample_copy = allocator.dupe(u8, read_buffer[0..loc.size]) catch continue;
-        samples.append(allocator, sample_copy) catch {
-            allocator.free(sample_copy);
-            continue;
-        };
-    }
-
-    if (samples.items.len == 0) {
-        return VideoValidationResult.invalid("No samples extracted", video_codec);
-    }
-
-    // Call VideoToolbox validator
-    const vt_codec: videotoolbox.VideoCodec = switch (video_codec) {
-        .h264 => .h264,
-        .hevc => .hevc,
-        .av1 => .av1,
-        else => return VideoValidationResult.invalid("Unsupported codec for VideoToolbox", video_codec),
-    };
-
-    const vt_result = switch (vt_codec) {
-        .h264 => videotoolbox.validateH264(allocator, raw_codec_private.data, samples.items),
-        .hevc => videotoolbox.validateHEVC(allocator, raw_codec_private.data, samples.items),
-        .av1 => videotoolbox.validateAV1(allocator, raw_codec_private.data, samples.items),
-    };
-
-    // Convert VideoToolbox result to VideoValidationResult
-    if (vt_result.valid) {
-        return VideoValidationResult.okByteValidatedViaVideoToolbox(video_codec, vt_result.frames_decoded);
-    } else {
-        // VideoToolbox failed - try ffmpeg as fallback
-        const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
-        if (debug_enabled) {
-            std.debug.print("[VideoToolbox] Decode failed: {s}, trying ffmpeg fallback\n", .{vt_result.error_message orelse "unknown error"});
-        }
-
-        // Try ffmpeg as fallback for VideoToolbox failures
-        if (isFfprobeAvailable()) {
-            const ffprobe_result = validateWithFfprobe(allocator, path);
-            if (ffprobe_result.valid) {
-                return VideoValidationResult.okByteValidatedViaFfmpeg(video_codec, ffprobe_result.frames_decoded);
-            }
-        }
-
-        // Both VideoToolbox and ffmpeg failed
-        return VideoValidationResult.invalid(
-            vt_result.error_message orelse "VideoToolbox decode failed",
-            video_codec,
-        );
-    }
 }
 
 const MkvFrameValidationContext = struct {
 	codec: VideoCodec,
 	nal_length_size: u8,
 	mixed_nal_prefix: bool,
+	comp_header: ?[]const u8,
+	allocator: Allocator,
 };
 
 fn validateMkvFrameBytes(ctx_ptr: ?*anyopaque, data: []const u8) bool {
 	const ctx: *MkvFrameValidationContext = @ptrCast(@alignCast(ctx_ptr orelse return false));
+	// If header stripping is active, prepend the stripped bytes
+	const frame_data = if (ctx.comp_header) |hdr| blk: {
+		const full = ctx.allocator.alloc(u8, hdr.len + data.len) catch return false;
+		@memcpy(full[0..hdr.len], hdr);
+		@memcpy(full[hdr.len..], data);
+		break :blk full;
+	} else data;
+	defer if (ctx.comp_header != null) ctx.allocator.free(frame_data);
+
 	return switch (ctx.codec) {
-		.av1 => validateAv1ObuStream(data),
-		.h264, .hevc => validateMkvNalFrame(data, ctx.codec, ctx.nal_length_size, &ctx.mixed_nal_prefix),
+		.av1 => validateAv1ObuStream(frame_data),
+		.h264, .hevc => validateMkvNalFrame(frame_data, ctx.codec, ctx.nal_length_size, &ctx.mixed_nal_prefix),
 		else => false,
 	};
 }
@@ -1209,9 +653,9 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
                     return VideoValidationResult.invalid("Memory allocation failed", video_codec);
                 };
             }
-        } else if (video_codec == .av1 and codec_private.len >= 4) {
-            // AV1 config is passed directly
-            bitstream.appendSlice(allocator, codec_private) catch {
+        } else if (video_codec == .av1 and codec_private.len > 4) {
+            // AV1 config (av1C format): skip 4-byte fixed header, append config OBUs only
+            bitstream.appendSlice(allocator, codec_private[4..]) catch {
                 return VideoValidationResult.invalid("Memory allocation failed", video_codec);
             };
         }
@@ -1224,6 +668,8 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
             .codec = video_codec,
             .nal_length_size = nal_length_size,
             .mixed_nal_prefix = false,
+            .comp_header = video_track.content_comp_header,
+            .allocator = allocator,
         };
         const ok = parser.walkFrames(video_track.track_number, @intCast(max_frames), @ptrCast(&ctx), validateMkvFrameBytes);
         if (!ok) {
@@ -1438,85 +884,28 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         };
     }
 
-    // ==========================================================================
-    // PLATFORM-SPECIFIC VIDEO DECODING FOR MKV
-    // ==========================================================================
-    // On macOS: Use VideoToolbox for H.264/HEVC/AV1 (complete profile support)
-    // On other platforms: Use built-in decoders with ffmpeg fallback
-    // ==========================================================================
-
-    if (shouldUseVideoToolbox() and (video_codec == .h264 or video_codec == .hevc or video_codec == .av1)) {
-        // Use VideoToolbox for hardware-accelerated decoding
-        if (video_track.codec_private) |codec_private| {
-            // Build samples array for VideoToolbox (it needs raw length-prefixed data)
-            var samples: std.ArrayListUnmanaged([]const u8) = .{};
-            defer {
-                for (samples.items) |sample| {
-                    allocator.free(sample);
-                }
-                samples.deinit(allocator);
-            }
-
-            for (all_frames) |kf| {
-                const sample_copy = allocator.dupe(u8, kf.data) catch continue;
-                samples.append(allocator, sample_copy) catch {
-                    allocator.free(sample_copy);
-                    continue;
-                };
-            }
-
-            if (samples.items.len > 0) {
-                const vt_result = switch (video_codec) {
-                    .h264 => videotoolbox.validateH264(allocator, codec_private, samples.items),
-                    .hevc => videotoolbox.validateHEVC(allocator, codec_private, samples.items),
-                    .av1 => videotoolbox.validateAV1(allocator, codec_private, samples.items),
-                    else => unreachable,
-                };
-
-                if (vt_result.valid) {
-                    var result = VideoValidationResult.okByteValidatedViaVideoToolbox(video_codec, vt_result.frames_decoded);
-                    result.byte_validated = byte_validated;
-                    result.mixed_nal_prefix = mixed_nal_prefix;
-                    return result;
-                } else {
-                    // VideoToolbox failed - fall through to ffmpeg fallback below
-                    const debug_enabled = if (comptime builtin.os.tag == .windows) false else (std.posix.getenv("VALIDATE_DEBUG") != null);
-                    if (debug_enabled) {
-                        std.debug.print("[VideoToolbox MKV] Decode failed: {s}, trying ffmpeg fallback\n", .{vt_result.error_message orelse "unknown error"});
-                    }
-
-                    // Try ffmpeg fallback
-                    if (isFfprobeAvailable()) {
-                        const ffprobe_result = validateWithFfprobe(allocator, path);
-                        if (ffprobe_result.valid) {
-                            var ffmpeg_result = VideoValidationResult.okByteValidatedViaFfmpeg(video_codec, ffprobe_result.frames_decoded);
-                            ffmpeg_result.byte_validated = byte_validated;
-                            ffmpeg_result.mixed_nal_prefix = mixed_nal_prefix;
-                            return ffmpeg_result;
-                        }
-                    }
-
-                    // Both VideoToolbox and ffmpeg failed
-                    return VideoValidationResult.invalid(
-                        vt_result.error_message orelse "VideoToolbox decode failed",
-                        video_codec,
-                    );
-                }
-            }
-        }
-    }
-
-    // Add frame data to bitstream for other codecs
+    // Add frame data to bitstream
     // Safety cap: 256MB max to avoid integer overflow in decoder APIs
     const max_mkv_bitstream_bytes: usize = 256 * 1024 * 1024;
+    const comp_header = video_track.content_comp_header;
     for (all_frames) |kf| {
         if (bitstream.items.len >= max_mkv_bitstream_bytes) break;
+
+        // If header stripping is active, prepend the stripped bytes
+        const frame_data = if (comp_header) |hdr| blk: {
+            const full = allocator.alloc(u8, hdr.len + kf.data.len) catch continue;
+            @memcpy(full[0..hdr.len], hdr);
+            @memcpy(full[hdr.len..], kf.data);
+            break :blk full;
+        } else kf.data;
+        defer if (comp_header != null) allocator.free(frame_data);
+
         if (video_codec == .av1) {
             // AV1 uses OBUs directly
-            bitstream.appendSlice(allocator, kf.data) catch continue;
+            bitstream.appendSlice(allocator, frame_data) catch continue;
         } else {
             // H.264/HEVC: Convert length-prefixed NALs to Annex B
-            if (convertToAnnexB(allocator, kf.data, nal_length_size)) |annexb_data| {
+            if (convertToAnnexB(allocator, frame_data, nal_length_size)) |annexb_data| {
                 defer allocator.free(annexb_data);
                 bitstream.appendSlice(allocator, annexb_data) catch continue;
             }
@@ -1534,26 +923,6 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         .h264 => validateH264Stream(bitstream.items, max_frames),
         else => VideoValidationResult.skipped("Unsupported codec"),
     };
-
-    // If built-in decoder failed due to capability issues, try ffmpeg as fallback
-    if (!result.valid and result.error_message != null) {
-        const err_msg = result.error_message.?;
-        const is_decoder_capability_issue =
-            std.mem.indexOf(u8, err_msg, "Failed to create") != null or
-            std.mem.indexOf(u8, err_msg, "Failed to open") != null or
-            std.mem.indexOf(u8, err_msg, "not supported") != null or
-            std.mem.indexOf(u8, err_msg, "no parameter sets") != null;
-
-        if (is_decoder_capability_issue and isFfprobeAvailable()) {
-            const ffprobe_result = validateWithFfprobe(allocator, path);
-            if (ffprobe_result.valid) {
-                var ffmpeg_result = VideoValidationResult.okByteValidatedViaFfmpeg(video_codec, ffprobe_result.frames_decoded);
-                ffmpeg_result.byte_validated = byte_validated;
-                ffmpeg_result.mixed_nal_prefix = mixed_nal_prefix;
-                return ffmpeg_result;
-            }
-        }
-    }
 
     if (byte_validated) {
         result.byte_validated = true;
@@ -2097,18 +1466,18 @@ fn validateMpeg4P2FromAvi(allocator: Allocator, file: std.fs.File, avi_info: Avi
     }
 }
 
-/// Validate H.264 bitstream using OpenH264.
-/// Decodes up to max_frames to verify integrity.
+/// Validate H.264 bitstream using pure-Zig syntax validator.
+/// Validates up to max_frames to verify integrity.
 /// Input data should be in Annex B format (with 0x00000001 start codes).
-/// This is a thin wrapper around h264_validator for consistency.
 pub fn validateH264Stream(data: []const u8, max_frames: u32) VideoValidationResult {
     const result = h264.validateH264Stream(data, max_frames);
+    const err_msg: ?[]const u8 = if (result.error_message) |e| std.mem.span(e) else null;
     return .{
         .valid = result.valid,
-        .error_message = result.error_message,
+        .error_message = err_msg,
         .codec = .h264,
         .frames_decoded = result.frames_decoded,
-        // Only byte-validated if we actually decoded frames
+        // Pure-Zig syntax validation validates structure deeply enough for corruption detection
         .byte_validated = result.valid and result.frames_decoded > 0,
     };
 }
@@ -3151,17 +2520,22 @@ fn parseHvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
 fn parseAv1C(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size: u64) ?CodecPrivateData {
     file.seekTo(box_offset + 8) catch return null; // Skip box header
 
-    // av1C has 4 bytes header then optional config OBUs
+    // av1C format: 4-byte fixed header (marker/version/profile/level/flags)
+    // followed by optional config OBUs (typically a Sequence Header OBU)
     const data_size = box_size - 8;
     if (data_size < 4 or data_size > 1024) return null;
 
-    const data = allocator.alloc(u8, data_size) catch return null;
-    errdefer allocator.free(data);
-
-    if ((file.read(data) catch return null) < data_size) {
-        allocator.free(data);
+    var raw_buf: [1024]u8 = undefined;
+    if ((file.read(raw_buf[0..data_size]) catch return null) < data_size) {
         return null;
     }
+
+    // Skip the 4-byte av1C fixed header — only return the config OBUs
+    const obu_size = data_size - 4;
+    if (obu_size == 0) return null; // No config OBUs present
+
+    const data = allocator.alloc(u8, obu_size) catch return null;
+    @memcpy(data, raw_buf[4..][0..obu_size]);
 
     // AV1 doesn't use length-prefixed NALs
     return CodecPrivateData{ .data = data, .nal_length_size = 0 };

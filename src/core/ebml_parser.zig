@@ -75,6 +75,18 @@ pub const TrackEntry_ID = struct {
     pub const CodecName: u32 = 0x258688;
     pub const Video: u32 = 0xE0;
     pub const Audio: u32 = 0xE1;
+    pub const ContentEncodings: u32 = 0x6D80;
+};
+
+/// ContentEncoding children
+pub const ContentEncoding_ID = struct {
+    pub const ContentCompression: u32 = 0x5034;
+};
+
+/// ContentCompression children
+pub const ContentCompression_ID = struct {
+    pub const ContentCompAlgo: u32 = 0x4254;
+    pub const ContentCompSettings: u32 = 0x4255;
 };
 
 /// Video settings children
@@ -320,11 +332,16 @@ fn parseBlockFramesFromBuffer(
         else => return null,
     }
 
-    const remaining_bytes: u64 = @intCast(frame_data.len - cursor);
-    if (sizes_total > remaining_bytes) return null;
+    // For Xiph and EBML lacing, only the first N-1 frame sizes are encoded;
+    // the last frame size is inferred from the remaining bytes.
+    // For fixed-size lacing, all frame sizes are already computed.
+    if (lacing != 2) {
+        const remaining_bytes: u64 = @intCast(frame_data.len - cursor);
+        if (sizes_total > remaining_bytes) return null;
 
-    const last_size: u64 = remaining_bytes - sizes_total;
-    sizes[num_frames - 1] = last_size;
+        const last_size: u64 = remaining_bytes - sizes_total;
+        sizes[num_frames - 1] = last_size;
+    }
 
     var data_offset: usize = cursor;
     var frame_index: usize = 0;
@@ -546,6 +563,9 @@ pub const VideoTrackInfo = struct {
     display_width: ?u64,
     display_height: ?u64,
     default_duration: ?u64, // In nanoseconds
+    // ContentCompression header stripping (algo=3): bytes to prepend to each frame
+    content_comp_header: ?[]const u8, // Heap allocated
+    content_comp_allocator: ?Allocator,
 
     pub fn codecId(self: *const VideoTrackInfo) []const u8 {
         return self.codec_id_buf[0..self.codec_id_len];
@@ -559,6 +579,13 @@ pub const VideoTrackInfo = struct {
         }
         self.codec_private = null;
         self.codec_private_allocator = null;
+        if (self.content_comp_header) |hdr| {
+            if (self.content_comp_allocator) |alloc| {
+                alloc.free(hdr);
+            }
+        }
+        self.content_comp_header = null;
+        self.content_comp_allocator = null;
     }
 
     pub fn isHevc(self: *const VideoTrackInfo) bool {
@@ -758,6 +785,8 @@ pub const MatroskaParser = struct {
             .display_width = null,
             .display_height = null,
             .default_duration = null,
+            .content_comp_header = null,
+            .content_comp_allocator = null,
         };
 
         var track_type: u8 = 0;
@@ -822,6 +851,64 @@ pub const MatroskaParser = struct {
                             else => {
                                 _ = self.reader.skipElement(video_child);
                             },
+                        }
+                    }
+                },
+                TrackEntry_ID.ContentEncodings => {
+                    // Parse ContentEncodings → ContentEncoding → ContentCompression
+                    // to detect header stripping (algo=3)
+                    const enc_end = child.data_offset + (child.size orelse 0);
+                    _ = self.reader.seekTo(child.data_offset);
+
+                    while ((self.reader.getPos() orelse enc_end) < enc_end) {
+                        const enc_child = self.reader.readElementHeader() orelse break;
+                        // ContentEncoding element (0x6240)
+                        if (enc_child.id == 0x6240) {
+                            const ce_end = enc_child.data_offset + (enc_child.size orelse 0);
+                            _ = self.reader.seekTo(enc_child.data_offset);
+
+                            var comp_algo: ?u64 = null;
+                            var comp_settings: ?[]const u8 = null;
+
+                            while ((self.reader.getPos() orelse ce_end) < ce_end) {
+                                const ce_child = self.reader.readElementHeader() orelse break;
+                                if (ce_child.id == ContentEncoding_ID.ContentCompression) {
+                                    const cc_end = ce_child.data_offset + (ce_child.size orelse 0);
+                                    _ = self.reader.seekTo(ce_child.data_offset);
+
+                                    while ((self.reader.getPos() orelse cc_end) < cc_end) {
+                                        const cc_child = self.reader.readElementHeader() orelse break;
+                                        switch (cc_child.id) {
+                                            ContentCompression_ID.ContentCompAlgo => {
+                                                comp_algo = self.reader.readElementUint(cc_child);
+                                            },
+                                            ContentCompression_ID.ContentCompSettings => {
+                                                comp_settings = self.reader.readElementData(cc_child, self.allocator);
+                                            },
+                                            else => {
+                                                _ = self.reader.skipElement(cc_child);
+                                            },
+                                        }
+                                    }
+                                } else {
+                                    _ = self.reader.skipElement(ce_child);
+                                }
+                            }
+
+                            // algo=3 means header stripping
+                            if (comp_algo != null and comp_algo.? == 3) {
+                                if (comp_settings) |settings| {
+                                    result.content_comp_header = settings;
+                                    result.content_comp_allocator = self.allocator;
+                                }
+                            } else {
+                                // Not header stripping — free settings if allocated
+                                if (comp_settings) |settings| {
+                                    self.allocator.free(settings);
+                                }
+                            }
+                        } else {
+                            _ = self.reader.skipElement(enc_child);
                         }
                     }
                 },

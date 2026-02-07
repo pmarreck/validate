@@ -27,14 +27,14 @@ pub const eac3_validator = @import("eac3_validator.zig");
 pub const prores_validator = @import("prores_validator.zig");
 pub const prores_decoder = @import("prores_decoder.zig");
 pub const video_validator = @import("video_validator.zig");
-pub const h264_validator = @import("h264_validator.zig");
+pub const h264_validator = @import("h264_syntax_validator.zig");
 pub const ebml_parser = @import("ebml_parser.zig");
 pub const ogg_validator = @import("ogg_validator.zig");
 pub const mp3_validator = @import("mp3_validator.zig");
 pub const opus_validator = @import("opus_validator.zig");
 pub const vorbis_validator = @import("vorbis_validator.zig");
 pub const mp3_decode_validator = @import("mp3_decode_validator.zig");
-pub const vp9_validator = @import("vp9_validator.zig");
+pub const vp9_validator = @import("vp9_syntax_validator.zig");
 pub const jpeg2000_validator = @import("jpeg2000_validator.zig");
 pub const jxl_validator = @import("jxl_validator.zig");
 pub const jbig2_decoder = @import("jbig2_decoder.zig");
@@ -80,25 +80,18 @@ pub const zlib = @import("zlib.zig");
 pub const git_validator = @import("git_validator.zig");
 pub const path_validation = @import("path_validation.zig");
 pub const thread_pool = @import("thread_pool.zig");
-pub const heif_validator = @import("heif_validator.zig");
+pub const heic_validator = @import("heic_validator.zig");
+pub const avif_validator = @import("avif_validator.zig");
 pub const webp_validator = @import("webp_validator.zig");
 pub const libraw_validator = @import("libraw_validator.zig");
 pub const h265_validator = @import("h265_validator.zig");
+pub const h264_syntax_validator = @import("h264_syntax_validator.zig");
 pub const aac_syntax_validator = @import("aac_syntax_validator.zig");
 pub const aac_huffman_tables = @import("aac_huffman_tables.zig");
-// VideoToolbox validator - uses dlopen/dlsym for runtime loading (macOS only)
-pub const videotoolbox_validator = if (builtin.os.tag == .macos)
-    @import("videotoolbox_validator.zig")
-else
-    struct {
-        pub fn init() bool {
-            return false;
-        }
-        pub fn isAvailable() bool {
-            return false;
-        }
-        pub fn preInit() void {}
-    };
+pub const av1_obu_validator = @import("av1_obu_validator.zig");
+pub const vp9_syntax_validator = @import("vp9_syntax_validator.zig");
+pub const heif_container_parser = @import("heif_container_parser.zig");
+// VideoToolbox removed — all video codecs use pure-Zig syntax validators
 
 // Version information
 pub const version = struct {
@@ -121,9 +114,6 @@ pub fn getVersion() []const u8 {
 /// This triggers lazy SIMD detection and global state initialization
 /// in all C libraries, preventing race conditions during parallel validation.
 pub fn preInit() void {
-    // libheif - triggers heif_init() via std.once
-    _ = heif_validator.validateHeifDeep("/nonexistent");
-
     // libjpeg-turbo - triggers SIMD detection on first jpeg_create_decompress()
     _ = jpeg_validator.validateJpegDeep("/nonexistent");
 
@@ -133,12 +123,8 @@ pub fn preInit() void {
     // libjxl - triggers Highway SIMD dispatch selection
     _ = jxl_validator.validateJxlDeep("/nonexistent");
 
-    // VideoToolbox on macOS - loads framework via dlopen
-    // MUST happen on main thread before worker threads use VideoToolbox
-    videotoolbox_validator.preInit();
-
-    // Note: Other decoders (libde265, dav1d, OpenH264) are protected by
-    // video_decoder_mutex and don't need pre-init.
+    // Note: HEIC/AVIF, H.264, H.265, AV1, VP9 all use pure-Zig validators
+    // (no C library init needed). VideoToolbox has been removed.
 }
 
 test "version" {
@@ -219,7 +205,17 @@ test {
     _ = @import("path_validation.zig");
     // H.265/HEVC NAL unit validator
     _ = @import("h265_validator.zig");
+    // H.264/AVC NAL unit syntax validator
+    _ = @import("h264_syntax_validator.zig");
     // AAC syntax validator and Huffman tables
     _ = @import("aac_syntax_validator.zig");
     _ = @import("aac_huffman_tables.zig");
+    // AV1 OBU validator
+    _ = @import("av1_obu_validator.zig");
+    // HEIF/HEIC/AVIF container parser and validators
+    _ = @import("heif_container_parser.zig");
+    _ = @import("heic_validator.zig");
+    _ = @import("avif_validator.zig");
+    // VP9 syntax validator
+    _ = @import("vp9_syntax_validator.zig");
 }
