@@ -174,6 +174,13 @@ pub fn build(b: *std.Build) void {
     const cj5_lib = cj5_dep.artifact("cj5");
     const cj5_mod = cj5_dep.module("cj5");
 
+    // 7z LZMA SDK for 7-Zip archive validation (public domain, ip7z/7zip)
+    const sevenz_dep = b.dependency("sevenz", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const sevenz_lib = sevenz_dep.artifact("7z");
+
     // LibRaw for camera RAW format validation (LGPL-2.1, phcreery/LibRaw-zig)
     const libraw_dep = b.dependency("libraw", .{
         .target = target,
@@ -242,6 +249,9 @@ pub fn build(b: *std.Build) void {
     // Add libraw include path (for camera RAW validation)
     core_mod.addIncludePath(libraw_lib.getEmittedIncludeTree());
 
+    // Add 7z LZMA SDK include path (for sevenz_validator.zig @cImport)
+    core_mod.addIncludePath(sevenz_lib.getEmittedIncludeTree());
+
     // Add src/core include path for any remaining C headers
     core_mod.addIncludePath(b.path("src/core"));
 
@@ -291,6 +301,8 @@ pub fn build(b: *std.Build) void {
     lib.linkLibrary(cj5_lib);
     // Link libraw for camera RAW format validation (LGPL-2.1/CDDL dual license)
     lib.linkLibrary(libraw_lib);
+    // Link 7z LZMA SDK for 7-Zip archive deep validation (public domain)
+    lib.linkLibrary(sevenz_lib);
     lib.linkLibC();
     lib.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
     // On Windows, LibRaw uses ntohs/htons/htonl/ntohl from ws2_32
@@ -505,6 +517,8 @@ pub fn build(b: *std.Build) void {
     core_tests.linkLibrary(brotli_lib);
     // Link libopenmpt for tracker format (MOD/XM/IT/S3M) deep validation tests (Zig-built)
     core_tests.linkLibrary(libopenmpt_lib);
+    // Link 7z LZMA SDK for 7-Zip archive deep validation tests (public domain)
+    core_tests.linkLibrary(sevenz_lib);
     core_tests.linkLibC();
     core_tests.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
 

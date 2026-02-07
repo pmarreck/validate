@@ -68,6 +68,10 @@
             .url = "git+https://github.com/phcreery/LibRaw-zig#master",
             .hash = "libraw-0.21.4-c166SaOCAABnwCAwPECgFypND-jT9Ws-iidaxsJC_N05",
         },
+        .sevenz = .{
+            .url = "git+https://github.com/pmarreck/7zip#2155653d901c55e5661ea02f51e47f29d9d1e049",
+            .hash = "sevenz-25.1.0-GxYsU9LDFgDubsAf5lKHAVylNxpyjLz25ekkkMsRu-6Z",
+        },
     },
     .paths = .{""},
     .fingerprint = 0x421232542dfe208d,

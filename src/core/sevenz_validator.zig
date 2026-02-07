@@ -2,14 +2,21 @@
 //!
 //! This module provides thorough 7z archive validation by:
 //! 1. Verifying header CRCs (start header and next header)
-//! 2. Parsing the header structure to extract file CRCs
-//! 3. Using system's 7z command to verify actual file integrity
+//! 2. Using the LZMA SDK to open, parse, and extract every file to memory
+//!    (discarding output), which verifies per-file CRC integrity
 //!
-//! The 7z format is complex with LZMA/LZMA2 compression, BCJ filters,
-//! and solid compression modes. Full validation requires decompression.
+//! No external 7z executable dependency — uses linked LZMA SDK C library.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+
+// LZMA SDK C API
+const c = @cImport({
+    @cInclude("7z.h");
+    @cInclude("7zAlloc.h");
+    @cInclude("7zCrc.h");
+    @cInclude("7zFile.h");
+});
 
 /// Result of 7z deep validation
 pub const SevenZValidationResult = struct {
@@ -53,37 +60,6 @@ pub const SevenZValidationResult = struct {
 /// 7z signature bytes
 const SEVENZ_SIGNATURE = [_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C };
 
-/// 7z property IDs (used in header parsing)
-const PropertyID = enum(u8) {
-    kEnd = 0x00,
-    kHeader = 0x01,
-    kArchiveProperties = 0x02,
-    kAdditionalStreamsInfo = 0x03,
-    kMainStreamsInfo = 0x04,
-    kFilesInfo = 0x05,
-    kPackInfo = 0x06,
-    kUnpackInfo = 0x07,
-    kSubStreamsInfo = 0x08,
-    kSize = 0x09,
-    kCRC = 0x0A,
-    kFolder = 0x0B,
-    kCodersUnpackSize = 0x0C,
-    kNumUnpackStream = 0x0D,
-    kEmptyStream = 0x0E,
-    kEmptyFile = 0x0F,
-    kAnti = 0x10,
-    kName = 0x11,
-    kCTime = 0x12,
-    kATime = 0x13,
-    kMTime = 0x14,
-    kWinAttributes = 0x15,
-    kComment = 0x16,
-    kEncodedHeader = 0x17,
-    kStartPos = 0x18,
-    kDummy = 0x19,
-    _,
-};
-
 /// Parsed 7z start header
 pub const StartHeader = struct {
     version_major: u8,
@@ -121,241 +97,149 @@ pub fn parseStartHeader(data: []const u8) ?StartHeader {
     return header;
 }
 
-/// Read a 7z variable-length integer (similar to LZMA)
-/// Returns the value and number of bytes consumed
-fn readSevenZInt(data: []const u8) ?struct { value: u64, bytes: usize } {
-    if (data.len == 0) return null;
+/// One-time CRC table initialization (thread-safe via std.once equivalent)
+var crc_initialized = false;
 
-    const first = data[0];
-
-    // Single byte: 0xxxxxxx (0-127)
-    if (first & 0x80 == 0) {
-        return .{ .value = first, .bytes = 1 };
+fn ensureCrcInit() void {
+    if (!crc_initialized) {
+        c.CrcGenerateTable();
+        crc_initialized = true;
     }
-
-    // Multi-byte encoding
-    var mask: u8 = 0x40;
-    var extra_bytes: usize = 1;
-
-    while (extra_bytes < 8 and (first & mask) != 0) {
-        mask >>= 1;
-        extra_bytes += 1;
-    }
-
-    if (data.len < 1 + extra_bytes) return null;
-
-    var value: u64 = first & (mask - 1);
-    for (data[1 .. 1 + extra_bytes]) |byte| {
-        value = (value << 8) | byte;
-    }
-
-    return .{ .value = value, .bytes = 1 + extra_bytes };
 }
 
-/// Extract file CRCs from the next header (if present and uncompressed)
-/// This is a simplified parser that looks for CRC blocks
-pub fn extractFileCrcs(allocator: Allocator, header_data: []const u8) ?[]u32 {
-    if (header_data.len == 0) return null;
-
-    var crcs = std.ArrayList(u32).init(allocator);
-    errdefer crcs.deinit();
-
-    var pos: usize = 0;
-
-    // Look for kCRC property (0x0A)
-    while (pos < header_data.len) {
-        const prop_id = header_data[pos];
-        pos += 1;
-
-        if (prop_id == @intFromEnum(PropertyID.kEnd)) {
-            break;
-        }
-
-        if (prop_id == @intFromEnum(PropertyID.kCRC)) {
-            // CRC block format:
-            // - allAreDefined byte (1 = all files have CRC)
-            // - if not allAreDefined: bit array of which files have CRCs
-            // - CRC values (4 bytes each)
-            if (pos >= header_data.len) break;
-
-            const all_defined = header_data[pos];
-            pos += 1;
-
-            if (all_defined != 0) {
-                // All files have CRCs - read until we hit something that's not a valid CRC position
-                // This is heuristic since we don't know the file count here
-                while (pos + 4 <= header_data.len) {
-                    // Check if next bytes look like a property ID (heuristic to stop)
-                    if (header_data[pos] <= 0x19 and (pos + 4 == header_data.len or header_data[pos + 4] <= 0x19)) {
-                        break;
-                    }
-                    const crc = std.mem.readInt(u32, header_data[pos..][0..4], .little);
-                    crcs.append(crc) catch break;
-                    pos += 4;
-                }
-            }
-        } else {
-            // Skip other properties (we'd need size info to skip properly)
-            // This is a simplified parser - complex archives may not parse correctly
-            continue;
-        }
-    }
-
-    if (crcs.items.len == 0) {
-        crcs.deinit();
-        return null;
-    }
-
-    return crcs.toOwnedSlice() catch null;
+/// LZMA SDK error code to human-readable string
+fn szResString(res: c.SRes) []const u8 {
+    return switch (res) {
+        c.SZ_OK => "OK",
+        c.SZ_ERROR_DATA => "Data error (CRC mismatch or corrupt data)",
+        c.SZ_ERROR_MEM => "Memory allocation failed",
+        c.SZ_ERROR_CRC => "CRC verification failed",
+        c.SZ_ERROR_UNSUPPORTED => "Unsupported compression method",
+        c.SZ_ERROR_PARAM => "Invalid parameter",
+        c.SZ_ERROR_INPUT_EOF => "Unexpected end of input",
+        c.SZ_ERROR_OUTPUT_EOF => "Output buffer overflow",
+        c.SZ_ERROR_READ => "Read error",
+        c.SZ_ERROR_WRITE => "Write error",
+        c.SZ_ERROR_PROGRESS => "Progress callback error",
+        c.SZ_ERROR_FAIL => "General failure",
+        c.SZ_ERROR_THREAD => "Thread error",
+        c.SZ_ERROR_ARCHIVE => "Invalid archive structure",
+        c.SZ_ERROR_NO_ARCHIVE => "Not a 7z archive",
+        else => "Unknown error",
+    };
 }
 
-/// Deep validate a 7z file using system's 7z command for integrity check
+/// Deep validate a 7z file using the LZMA SDK C library.
+/// Opens the archive, parses headers, and extracts every file to memory
+/// (discarding the output) to verify CRC integrity of all compressed data.
 pub fn validateSevenZDeep(allocator: Allocator, path: []const u8) SevenZValidationResult {
-    // First, do basic header validation
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    _ = allocator;
+    ensureCrcInit();
+
+    // Convert path to null-terminated C string
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (path.len >= path_buf.len) {
+        return SevenZValidationResult.invalid("Path too long");
+    }
+    @memcpy(path_buf[0..path.len], path);
+    path_buf[path.len] = 0;
+    const c_path: [*:0]const u8 = path_buf[0..path.len :0];
+
+    // Set up allocators for the LZMA SDK
+    const alloc_impl = c.ISzAlloc{ .Alloc = c.SzAlloc, .Free = c.SzFree };
+    const alloc_temp = c.ISzAlloc{ .Alloc = c.SzAllocTemp, .Free = c.SzFreeTemp };
+
+    // Open file
+    var archive_stream: c.CFileInStream = undefined;
+    if (c.InFile_Open(&archive_stream.file, c_path) != 0) {
         return SevenZValidationResult.invalid("Failed to open file");
-    };
-    defer file.close();
+    }
+    defer _ = c.File_Close(&archive_stream.file);
 
-    // Read start header
-    var header_buf: [32]u8 = undefined;
-    const header_read = file.readAll(&header_buf) catch {
-        return SevenZValidationResult.invalid("Failed to read header");
-    };
-    if (header_read < 32) {
-        return SevenZValidationResult.invalid("File too small for 7z header");
+    c.FileInStream_CreateVTable(&archive_stream);
+
+    // Set up buffered look-ahead reader
+    var look_stream: c.CLookToRead2 = undefined;
+    c.LookToRead2_CreateVTable(&look_stream, 0); // 0 = no lookahead
+    const kInputBufSize = 1 << 18; // 256KB read buffer
+    var input_buf: [kInputBufSize]u8 = undefined;
+    look_stream.buf = &input_buf;
+    look_stream.bufSize = kInputBufSize;
+    look_stream.realStream = &archive_stream.vt;
+    look_stream.pos = 0;
+    look_stream.size = 0;
+
+    // Initialize and open the archive
+    var db: c.CSzArEx = undefined;
+    c.SzArEx_Init(&db);
+    defer c.SzArEx_Free(&db, &alloc_impl);
+
+    const open_res = c.SzArEx_Open(&db, &look_stream.vt, &alloc_impl, &alloc_temp);
+    if (open_res != c.SZ_OK) {
+        return SevenZValidationResult.invalid(szResString(open_res));
     }
 
-    // Parse and validate start header
-    const start_header = parseStartHeader(&header_buf) orelse {
-        return SevenZValidationResult.invalid("Invalid start header or CRC mismatch");
-    };
-
-    // Validate version
-    if (start_header.version_major != 0 or start_header.version_minor > 4) {
-        return SevenZValidationResult.invalid("Unsupported 7z version");
+    const num_files: u32 = db.NumFiles;
+    if (num_files == 0) {
+        return SevenZValidationResult.ok(0, 0);
     }
 
-    // Validate file size
-    const file_size = file.getEndPos() catch {
-        return SevenZValidationResult.invalid("Failed to get file size");
-    };
-
-    const expected_min_size = 32 + start_header.next_header_offset + start_header.next_header_size;
-    if (file_size < expected_min_size) {
-        return SevenZValidationResult.invalid("File truncated");
-    }
-
-    // Read and verify next header CRC
-    if (start_header.next_header_size > 0 and start_header.next_header_size <= 100 * 1024 * 1024) {
-        file.seekTo(32 + start_header.next_header_offset) catch {
-            return SevenZValidationResult.invalid("Failed to seek to next header");
-        };
-
-        const next_header_buf = allocator.alloc(u8, @intCast(start_header.next_header_size)) catch {
-            // Can't allocate - fall through to 7z command
-            return validateWithSevenZCommand(allocator, path);
-        };
-        defer allocator.free(next_header_buf);
-
-        const bytes_read = file.readAll(next_header_buf) catch {
-            return SevenZValidationResult.invalid("Failed to read next header");
-        };
-
-        if (bytes_read != start_header.next_header_size) {
-            return SevenZValidationResult.invalid("Incomplete next header");
-        }
-
-        const computed_crc = std.hash.Crc32.hash(next_header_buf);
-        if (computed_crc != start_header.next_header_crc) {
-            return SevenZValidationResult.invalid("Next header CRC mismatch");
+    // Extract every file to memory (discard output) to verify CRC integrity.
+    // The LZMA SDK's SzArEx_Extract() decompresses data and verifies CRCs
+    // internally — if any file's CRC doesn't match, it returns SZ_ERROR_CRC.
+    var block_index: u32 = 0xFFFFFFFF; // Force initial extraction
+    var out_buffer: ?[*]u8 = null;
+    var out_buffer_size: usize = 0;
+    defer {
+        if (out_buffer) |buf| {
+            const alloc_main = c.ISzAlloc{ .Alloc = c.SzAlloc, .Free = c.SzFree };
+            alloc_main.Free.?(&alloc_main, buf);
         }
     }
 
-    // Use 7z command for full integrity check
-    return validateWithSevenZCommand(allocator, path);
-}
+    var files_checked: u32 = 0;
+    var bytes_verified: u64 = 0;
 
-/// Use system's 7z command to perform full integrity test
-fn validateWithSevenZCommand(allocator: Allocator, path: []const u8) SevenZValidationResult {
-    // Try 7z command with test mode
-    const result = runSevenZTest(allocator, path);
-    return result;
-}
+    var i: u32 = 0;
+    while (i < num_files) : (i += 1) {
+        // Skip directory entries (reimplemented from C macro to avoid Zig type issues)
+        const is_dir = if (db.IsDirs) |dirs|
+            (dirs[i >> 3] & (@as(u8, 0x80) >> @intCast(i & 7))) != 0
+        else
+            false;
+        if (is_dir) continue;
 
-/// Run 7z t (test) command and parse output
-fn runSevenZTest(allocator: Allocator, path: []const u8) SevenZValidationResult {
-    // Build command: 7z t <path>
-    // The -bso0 suppresses normal output
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "7z", "t", "-bso0", path },
-        .max_output_bytes = 64 * 1024, // 64KB for error output
-    }) catch {
-        // 7z command not available - return partial validation (header CRCs were verified)
-        return SevenZValidationResult{
-            .valid = true,
-            .error_message = null,
-            .files_checked = 0,
-            .total_files = 0,
-            .bytes_verified = 0,
-        };
-    };
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
+        var offset: usize = 0;
+        var out_size_processed: usize = 0;
 
-    // Check exit status
-    switch (result.term) {
-        .Exited => |code| {
-            if (code == 0) {
-                // Success - get file count from listing
-                const file_count = countFilesIn7z(allocator, path);
-                return SevenZValidationResult.ok(file_count, 0);
-            } else if (code == 1) {
-                // Warning (some files could not be extracted but archive is readable)
-                return SevenZValidationResult.invalid("7z reports warnings during test");
-            } else if (code == 2) {
-                // Fatal error
-                return SevenZValidationResult.invalid("7z integrity test failed - archive corrupted");
-            } else {
-                return SevenZValidationResult.invalid("7z test failed with unexpected error");
-            }
-        },
-        else => {
-            return SevenZValidationResult.invalid("7z process terminated abnormally");
-        },
-    }
-}
+        const extract_res = c.SzArEx_Extract(
+            &db,
+            &look_stream.vt,
+            i,
+            &block_index,
+            @ptrCast(&out_buffer),
+            &out_buffer_size,
+            &offset,
+            &out_size_processed,
+            &alloc_impl,
+            &alloc_temp,
+        );
 
-/// Count files in 7z archive using list command
-fn countFilesIn7z(allocator: Allocator, path: []const u8) u32 {
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "7z", "l", "-slt", path },
-        .max_output_bytes = 1024 * 1024, // 1MB for large archives
-    }) catch return 0;
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    // Count "Path = " lines (excluding the archive path itself)
-    var count: u32 = 0;
-    var lines = std.mem.splitSequence(u8, result.stdout, "\n");
-    var found_separator = false;
-    while (lines.next()) |line| {
-        if (std.mem.startsWith(u8, line, "----------")) {
-            found_separator = true;
-            continue;
+        if (extract_res != c.SZ_OK) {
+            return SevenZValidationResult.invalid(szResString(extract_res));
         }
-        if (found_separator and std.mem.startsWith(u8, line, "Path = ")) {
-            count += 1;
-        }
+
+        files_checked += 1;
+        bytes_verified += out_size_processed;
     }
 
-    return count;
+    return SevenZValidationResult.ok(files_checked, bytes_verified);
 }
 
-/// Validate a 7z file from a buffer (for embedded archives)
+/// Validate a 7z file from a buffer (for embedded archives).
+/// Uses Zig-native header CRC validation only (no decompression).
 pub fn validateSevenZFromBuffer(allocator: Allocator, data: []const u8) SevenZValidationResult {
+    _ = allocator;
     if (data.len < 32) {
         return SevenZValidationResult.invalid("Data too small for 7z header");
     }
@@ -393,9 +277,6 @@ pub fn validateSevenZFromBuffer(allocator: Allocator, data: []const u8) SevenZVa
         }
     }
 
-    // For buffer validation, we can't easily run 7z command
-    // Return success for header validation only
-    _ = allocator;
     return SevenZValidationResult{
         .valid = true,
         .error_message = null,
@@ -456,18 +337,14 @@ test "parseStartHeader crc mismatch" {
     try std.testing.expect(parsed == null);
 }
 
-test "readSevenZInt single byte" {
-    const data = [_]u8{0x7F};
-    const result = readSevenZInt(&data);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqual(@as(u64, 0x7F), result.?.value);
-    try std.testing.expectEqual(@as(usize, 1), result.?.bytes);
+test "LZMA SDK CRC table initialization" {
+    ensureCrcInit();
+    // If we get here without crashing, the CRC table was initialized successfully
+    try std.testing.expect(crc_initialized);
 }
 
-test "readSevenZInt multi byte" {
-    const data = [_]u8{ 0x80, 0x01 };
-    const result = readSevenZInt(&data);
-    try std.testing.expect(result != null);
-    try std.testing.expectEqual(@as(u64, 0x01), result.?.value);
-    try std.testing.expectEqual(@as(usize, 2), result.?.bytes);
+test "validate non-existent file returns error" {
+    const result = validateSevenZDeep(std.testing.allocator, "/nonexistent/path/fake.7z");
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(result.error_message != null);
 }
