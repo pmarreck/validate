@@ -311,7 +311,12 @@ fn parseSectionData(reader: *BitReader, ics: *const IcsInfo) ?SectionInfo {
             }
 
             const sect_end = k + sect_len;
-            if (sect_end > ics.max_sfb) return null; // Section exceeds max_sfb
+            // Per FAAD2 reference decoder, the section_end boundary check is
+            // not enforced (it's #if 0'd out). The last section in a group
+            // is allowed to overshoot max_sfb to any value; the while loop
+            // simply exits when k >= max_sfb. Spectral data parsing clips
+            // to the SWB offset table bounds, and scalefactor parsing clips
+            // to max_sfb, so the overshoot is harmless.
 
             section_info.sections[section_info.num_sections] = .{
                 .codebook = @intCast(sect_cb),
@@ -322,15 +327,12 @@ fn parseSectionData(reader: *BitReader, ics: *const IcsInfo) ?SectionInfo {
             section_info.num_sections += 1;
             k = sect_end;
         }
-
-        // Sections must exactly cover max_sfb for this group
-        if (k != ics.max_sfb) return null;
     }
 
     return section_info;
 }
 
-fn parseScaleFactorData(reader: *BitReader, _: *const IcsInfo, sections: *const SectionInfo) bool {
+fn parseScaleFactorData(reader: *BitReader, ics: *const IcsInfo, sections: *const SectionInfo) bool {
     // global_gain is read before this function is called
     // We need to decode scalefactor Huffman codewords and validate ranges
 
@@ -346,7 +348,12 @@ fn parseScaleFactorData(reader: *BitReader, _: *const IcsInfo, sections: *const 
             continue;
         }
 
-        const num_sfb = sect.end - sect.start;
+        // Clip section range to max_sfb — scalefactors are only encoded for
+        // bands 0..max_sfb-1 (per ISO 14496-3). Sections may overshoot max_sfb
+        // but the extra bands have no scalefactor data in the bitstream.
+        const effective_end = @min(sect.end, ics.max_sfb);
+        if (sect.start >= effective_end) continue;
+        const num_sfb = effective_end - sect.start;
 
         if (cb == 13) {
             // NOISE_HCB: noise substitution
@@ -390,6 +397,11 @@ fn parseSpectralData(reader: *BitReader, ics: *const IcsInfo, sections: *const S
     else
         huff.swbOffsetsLong(freq_idx);
 
+    // Maximum valid SFB index for this table (swb_count)
+    const max_sfb_idx: u16 = @intCast(swb_offsets.len - 1);
+
+    var total_groups_decoded: u32 = 0;
+
     for (0..sections.num_sections) |i| {
         const sect = sections.sections[i];
         const cb = sect.codebook;
@@ -398,14 +410,18 @@ fn parseSpectralData(reader: *BitReader, ics: *const IcsInfo, sections: *const S
         if (cb == 0 or cb >= 13) continue; // ZERO_HCB, NOISE, INTENSITY
         if (cb == 12) return false; // Reserved codebook
 
-        // Bounds check section against SWB offset table
-        if (sect.end >= swb_offsets.len) return false;
+        // Use the full section range for spectral data (per ISO 14496-3
+        // spectral_data() syntax and FAAD2 reference decoder), but clip
+        // to the SWB offset table bounds. Sections that overshoot beyond
+        // the table have zero additional spectral lines and are skipped.
+        const effective_end = @min(sect.end, max_sfb_idx);
+        if (sect.start >= effective_end) continue;
 
         const dim: u16 = huff.cbDimension(@intCast(cb));
         if (dim == 0) return false;
 
         // Number of spectral lines for this section (within one window)
-        const num_lines = swb_offsets[sect.end] - swb_offsets[sect.start];
+        const num_lines = swb_offsets[effective_end] - swb_offsets[sect.start];
 
         // Multiply by window_group_length for windows in this group
         const group_len: u16 = ics.window_group_length[sect.group];
@@ -418,7 +434,18 @@ fn parseSpectralData(reader: *BitReader, ics: *const IcsInfo, sections: *const S
         const num_groups = total_lines / dim;
         for (0..num_groups) |_| {
             const result = huff.decodeSpectral(reader, @intCast(cb));
-            if (!result.valid) return false;
+            if (!result.valid) {
+                // Distinguish bit exhaustion from invalid codeword.
+                // Real-world AAC encoders (notably Apple's) may truncate
+                // spectral data in the last frame of a stream. FAAD2 handles
+                // this by filling remaining coefficients with zeros.
+                // Accept truncation if we've already decoded some groups.
+                if (reader.remainingBits() < 8 and total_groups_decoded > 0) {
+                    return true;
+                }
+                return false;
+            }
+            total_groups_decoded += 1;
         }
     }
 
@@ -714,9 +741,6 @@ fn validateAccessUnit(au_data: []const u8, config: *const AacConfig) bool {
         switch (id_syn_ele) {
             0 => { // ID_SCE - Single Channel Element
                 if (!parseSingleChannelElement(&reader, config)) {
-                    // If we already parsed audio and the "element" was in the last
-                    // few bits, those bits are just byte-alignment/ancillary padding
-                    // that happened to start with bits matching an element ID.
                     if (has_audio_element and pre_id_remaining < 16) return true;
                     return false;
                 }
@@ -742,13 +766,25 @@ fn validateAccessUnit(au_data: []const u8, config: *const AacConfig) bool {
                 has_audio_element = true;
             },
             4 => { // ID_DSE - Data Stream Element
-                if (!parseDseElement(&reader)) return false;
+                if (!parseDseElement(&reader)) {
+                    // DSE is non-audio metadata (ancillary data, encoder info).
+                    // If audio elements already decoded, a truncated DSE in
+                    // trailing bits doesn't indicate audio corruption.
+                    if (has_audio_element) return true;
+                    return false;
+                }
             },
             5 => { // ID_PCE - Program Config Element
-                if (!parsePceElement(&reader)) return false;
+                if (!parsePceElement(&reader)) {
+                    if (has_audio_element) return true;
+                    return false;
+                }
             },
             6 => { // ID_FIL - Fill Element
-                if (!parseFillElement(&reader)) return false;
+                if (!parseFillElement(&reader)) {
+                    if (has_audio_element) return true;
+                    return false;
+                }
             },
             7 => { // ID_END
                 // After ID_END: remaining bits may include byte-alignment padding
@@ -779,7 +815,6 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
 
     var offset: usize = 0;
     var frames: u32 = 0;
-    var skipped_priming: u32 = 0;
     for (au_sizes) |size| {
         if (offset + size > data.len) break;
         const au_slice = data[offset..][0..size];
@@ -788,7 +823,6 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
         // frame at the start with skip_samples metadata). They cannot contain
         // valid AAC-LC spectral data and are not meaningful for validation.
         if (size < 8) {
-            skipped_priming += 1;
             offset += size;
             continue;
         }

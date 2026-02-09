@@ -88,6 +88,9 @@ pub const h265_validator = @import("h265_validator.zig");
 pub const h264_syntax_validator = @import("h264_syntax_validator.zig");
 pub const aac_syntax_validator = @import("aac_syntax_validator.zig");
 pub const aac_huffman_tables = @import("aac_huffman_tables.zig");
+pub const h264_cavlc_tables = @import("h264_cavlc_tables.zig");
+pub const h264_cabac_tables = @import("h264_cabac_tables.zig");
+pub const h264_cabac_engine = @import("h264_cabac_engine.zig");
 pub const av1_obu_validator = @import("av1_obu_validator.zig");
 pub const vp9_syntax_validator = @import("vp9_syntax_validator.zig");
 pub const heif_container_parser = @import("heif_container_parser.zig");
@@ -210,6 +213,9 @@ test {
     // AAC syntax validator and Huffman tables
     _ = @import("aac_syntax_validator.zig");
     _ = @import("aac_huffman_tables.zig");
+    _ = @import("h264_cavlc_tables.zig");
+    _ = @import("h264_cabac_tables.zig");
+    _ = @import("h264_cabac_engine.zig");
     // AV1 OBU validator
     _ = @import("av1_obu_validator.zig");
     // HEIF/HEIC/AVIF container parser and validators

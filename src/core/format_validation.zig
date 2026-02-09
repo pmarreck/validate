@@ -14273,6 +14273,9 @@ fn validateIsobmff(file: std.fs.File, format: FileFormat) ValidationResult {
             var ext_size: [8]u8 = undefined;
             _ = file.read(&ext_size) catch break;
             const large_size = std.mem.readInt(u64, &ext_size, .big);
+            if (large_size < 16) {
+                return ValidationResult.invalid(format, "Invalid extended box size");
+            }
             if (large_size > file_size) {
                 return ValidationResult.invalid(format, "Box size exceeds file size");
             }
@@ -20708,6 +20711,9 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
                 return ValidationResult.invalidWithDepth(.mp4, "Truncated extended size", .structural);
             }
             actual_size = std.mem.readInt(u64, &ext_size, .big);
+            if (actual_size < 16) {
+                return ValidationResult.invalidWithDepth(.mp4, "Invalid extended box size", .structural);
+            }
         } else if (box_size == 0) {
             // Box extends to end of file
             actual_size = file_size - position;

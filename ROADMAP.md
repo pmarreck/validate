@@ -12,6 +12,12 @@
    - Added regression test: "PNG with .ico extension should not hang"
    - Fixed via dedicated output thread (2026-01-27)
 
+## Experiments / Future Ideas
+
+- **Cloud Upload Parity Survival Test**: Embed custom data (COM marker + APP15 marker) in a JPEG, import into Photos.app, let it sync to Apple/Google/Amazon Photos, re-download from each service's web interface, and compare to see which custom markers survive the round-trip. Tests feasibility of embedded parity data in files managed by cloud photo services.
+- **Embedded Parity Data**: Investigate embedding Reed-Solomon parity data directly inside container formats (ISOBMFF uuid boxes, EBML Void elements, PNG ancillary chunks, etc.) so error-correction data travels with the file. See Entropy Shield project for the sidecar PAR2 approach.
+- **C2PA / Content Credentials**: Explore JUMBF-based C2PA manifest support for provenance/authenticity verification.
+
 ## Medium Priority
 
 - Expand validation coverage for additional formats (document + prioritize by prevalence).

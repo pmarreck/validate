@@ -232,6 +232,9 @@ fn readMp4BoxHeader(file: std.fs.File) ?Mp4Box {
         actual_size = file_size - position;
     }
 
+    // Reject boxes with size smaller than header (prevents infinite loops on corrupted data)
+    if (actual_size < header_size) return null;
+
     return Mp4Box{
         .box_type = box_type.*,
         .offset = position,
