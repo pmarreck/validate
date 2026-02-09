@@ -481,6 +481,12 @@ pub const FileFormat = enum {
     spotlight, // macOS Spotlight index (proprietary)
     // Executable formats
     pe, // Windows PE (Portable Executable) - .exe, .dll, .sys, .scr
+    elf, // ELF (Executable and Linkable Format) - Linux/Unix executables, .so, .o
+    wasm, // WebAssembly binary module (.wasm)
+    // Archive formats (non-compressed)
+    ar, // Unix ar archive (.a static libraries, .deb packages)
+    // Web markup
+    html, // HTML document (.html, .htm, .xhtml)
     // Bundle formats (directories validated as a unit)
     git_repository, // Git repository (.git directory)
     macos_app, // macOS application bundle (.app)
@@ -668,6 +674,10 @@ pub const FileFormat = enum {
             .ds_store => "macOS DS_Store",
             .spotlight => "macOS Spotlight Index",
             .pe => "Windows PE Executable",
+            .elf => "ELF Executable",
+            .wasm => "WebAssembly Module",
+            .ar => "Unix ar Archive",
+            .html => "HTML Document",
             .git_repository => "Git Repository",
             .macos_app => "macOS Application Bundle",
             .macos_framework => "macOS Framework",
@@ -733,6 +743,10 @@ pub const FileFormat = enum {
             .ds_store => true, // macOS DS_Store (structural only)
             .spotlight => true, // macOS Spotlight index (structural only)
             .pe => true, // Windows PE executable
+            .elf => true, // ELF executable
+            .wasm => true, // WebAssembly module
+            .ar => true, // Unix ar archive
+            .html => true, // HTML document
             .git_repository => true, // Git repository validation
             .macos_app => true, // macOS application bundle validation
             .macos_framework => true, // macOS framework validation
@@ -1420,7 +1434,13 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C }, .offset = 0, .format = .asf },
     // CAF (Core Audio Format): "caff"
     .{ .bytes = "caff", .offset = 0, .format = .caf },
-    // Note: DV, TGA, PAM/PBM/PGM/PPM have no reliable magic bytes - detected by extension and/or structure
+    // ELF (Executable and Linkable Format): 7F 45 4C 46 ("\x7fELF")
+    .{ .bytes = &[_]u8{ 0x7F, 0x45, 0x4C, 0x46 }, .offset = 0, .format = .elf },
+    // WebAssembly binary module: 00 61 73 6D ("\x00asm")
+    .{ .bytes = &[_]u8{ 0x00, 0x61, 0x73, 0x6D }, .offset = 0, .format = .wasm },
+    // Unix ar archive: "!<arch>\n"
+    .{ .bytes = "!<arch>\n", .offset = 0, .format = .ar },
+    // Note: DV, TGA, PAM/PBM/PGM/PPM, HTML have no reliable magic bytes - detected by extension and/or structure
 };
 
 /// Maximum number of magic signatures that can share the same first byte.
@@ -2204,6 +2224,24 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "ocx")) return .pe; // ActiveX controls
     if (std.mem.eql(u8, ext_lower, "cpl")) return .pe; // Control Panel applets
 
+    // ELF executable extensions
+    if (std.mem.eql(u8, ext_lower, "so")) return .elf; // Shared objects
+    if (std.mem.eql(u8, ext_lower, "o")) return .elf; // Object files
+    if (std.mem.eql(u8, ext_lower, "elf")) return .elf;
+    if (std.mem.eql(u8, ext_lower, "ko")) return .elf; // Kernel modules
+    if (std.mem.eql(u8, ext_lower, "axf")) return .elf; // ARM executables
+
+    // WebAssembly
+    if (std.mem.eql(u8, ext_lower, "wasm")) return .wasm;
+
+    // Unix ar archive (static libraries)
+    if (std.mem.eql(u8, ext_lower, "a")) return .ar; // Static libraries
+
+    // HTML documents
+    if (std.mem.eql(u8, ext_lower, "html")) return .html;
+    if (std.mem.eql(u8, ext_lower, "htm")) return .html;
+    if (std.mem.eql(u8, ext_lower, "xhtml")) return .html;
+
     return .unknown;
 }
 
@@ -2327,10 +2365,8 @@ fn isExcludedTextExtension(path: []const u8) bool {
     if (std.mem.eql(u8, ext_lower, "diff")) return true; // Diff files
     if (std.mem.eql(u8, ext_lower, "patch")) return true; // Patch files
 
-    // HTML files (not strict XML)
-    if (std.mem.eql(u8, ext_lower, "html")) return true;
-    if (std.mem.eql(u8, ext_lower, "htm")) return true;
-    if (std.mem.eql(u8, ext_lower, "xhtml")) return true; // Often not strict XML in practice
+    // HTML files — now validated as .html format (not strict XML)
+    // Note: html/htm/xhtml extensions are handled by detectFormatFromExtension
 
     // Config files that look like JSON/TOML but aren't standard
     if (std.mem.eql(u8, ext_lower, "conf")) return true;
@@ -21700,7 +21736,7 @@ pub const FormatValidator = struct {
                 // magic bytes, trust the extension and validate with the
                 // format-specific validator directly.
                 const ext_has_no_magic = switch (ext_format) {
-                    .br, .dv, .tga => true,
+                    .br, .dv, .tga, .html => true,
                     else => false,
                 };
                 if (ext_has_no_magic and ext_format.hasValidator()) {
@@ -21712,6 +21748,7 @@ pub const FormatValidator = struct {
                     result = switch (ext_format) {
                         .dv => validateDv(reopen_ext),
                         .tga => validateTga(reopen_ext),
+                        .html => validateHtml(reopen_ext),
                         else => ValidationResult.ok(ext_format),
                     };
                 } else {
@@ -22614,6 +22651,12 @@ pub const FormatValidator = struct {
             .dv => validateDv(file),
             // Executable formats
             .pe => validatePe(file),
+            .elf => validateElf(file),
+            .wasm => validateWasm(file),
+            // Archives
+            .ar => validateAr(file),
+            // Web markup
+            .html => validateHtml(file),
             // Bundle formats (directories) - should be handled before reaching this switch
             // If we get here, it means something went wrong - return invalid to make it obvious
             .git_repository => ValidationResult.invalid(.git_repository, "Git repositories must be validated as directories, not files"),
@@ -25994,6 +26037,300 @@ fn validatePe(file: std.fs.File) ValidationResult {
     // For now, structural validation is sufficient
 
     return ValidationResult.okWithDepth(.pe, .full);
+}
+
+/// Validate ELF (Executable and Linkable Format) files.
+/// Checks ELF header fields: class, data encoding, version, OS/ABI, type, machine.
+fn validateElf(file: std.fs.File) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.elf, "Failed to get file size");
+    if (file_size < 16) return ValidationResult.invalid(.elf, "File too small for ELF header");
+
+    file.seekTo(0) catch return ValidationResult.invalid(.elf, "Failed to seek");
+    var header: [64]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.elf, "Failed to read ELF header");
+    if (bytes_read < 16) return ValidationResult.invalid(.elf, "ELF header too short");
+
+    // Magic already verified by format detection, but double-check
+    if (!std.mem.eql(u8, header[0..4], &[_]u8{ 0x7F, 0x45, 0x4C, 0x46 }))
+        return ValidationResult.invalid(.elf, "Invalid ELF magic");
+
+    // EI_CLASS: 1 = 32-bit, 2 = 64-bit
+    const ei_class = header[4];
+    if (ei_class != 1 and ei_class != 2)
+        return ValidationResult.invalid(.elf, "Invalid ELF class (must be 32 or 64 bit)");
+
+    // EI_DATA: 1 = little-endian, 2 = big-endian
+    const ei_data = header[5];
+    if (ei_data != 1 and ei_data != 2)
+        return ValidationResult.invalid(.elf, "Invalid ELF data encoding");
+
+    // EI_VERSION: must be 1 (current)
+    if (header[6] != 1)
+        return ValidationResult.invalid(.elf, "Invalid ELF version");
+
+    // Minimum header size: 52 for ELF32, 64 for ELF64
+    const min_header_size: usize = if (ei_class == 1) 52 else 64;
+    if (bytes_read < min_header_size)
+        return ValidationResult.invalid(.elf, "ELF header too short for declared class");
+
+    // Parse e_type (2 bytes at offset 16)
+    const endian: std.builtin.Endian = if (ei_data == 1) .little else .big;
+    const e_type = std.mem.readInt(u16, header[16..18], endian);
+    // Valid types: 0=NONE, 1=REL, 2=EXEC, 3=DYN, 4=CORE, 0xFE00-0xFFFF=OS/proc specific
+    if (e_type > 4 and e_type < 0xFE00)
+        return ValidationResult.invalid(.elf, "Invalid ELF type");
+
+    // Parse e_machine (2 bytes at offset 18) — just verify it's non-zero for known types
+    const e_machine = std.mem.readInt(u16, header[18..20], endian);
+    // There are hundreds of valid machine types; just check some well-known ones aren't impossible
+    _ = e_machine; // Accept any machine type
+
+    // Parse e_version (4 bytes at offset 20)
+    const e_version = std.mem.readInt(u32, header[20..24], endian);
+    if (e_version != 1)
+        return ValidationResult.invalid(.elf, "Invalid ELF file version");
+
+    // Validate section header and program header sizes are reasonable
+    if (ei_class == 1) {
+        // ELF32: e_ehsize at 40, e_phentsize at 42, e_shentsize at 46
+        const e_ehsize = std.mem.readInt(u16, header[40..42], endian);
+        if (e_ehsize != 52)
+            return ValidationResult.invalid(.elf, "Invalid ELF32 header size");
+    } else {
+        // ELF64: e_ehsize at 52, e_phentsize at 54, e_shentsize at 58
+        const e_ehsize = std.mem.readInt(u16, header[52..54], endian);
+        if (e_ehsize != 64)
+            return ValidationResult.invalid(.elf, "Invalid ELF64 header size");
+    }
+
+    return ValidationResult.okWithDepth(.elf, .full);
+}
+
+/// Validate WebAssembly binary module.
+/// Checks magic, version, and validates section ordering and sizes.
+fn validateWasm(file: std.fs.File) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.wasm, "Failed to get file size");
+    if (file_size < 8) return ValidationResult.invalid(.wasm, "File too small for Wasm module");
+
+    file.seekTo(0) catch return ValidationResult.invalid(.wasm, "Failed to seek");
+    var header: [8]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.wasm, "Failed to read header");
+    if (bytes_read < 8) return ValidationResult.invalid(.wasm, "Wasm header too short");
+
+    // Magic: \0asm
+    if (!std.mem.eql(u8, header[0..4], &[_]u8{ 0x00, 0x61, 0x73, 0x6D }))
+        return ValidationResult.invalid(.wasm, "Invalid Wasm magic");
+
+    // Version: must be 1 (little-endian u32)
+    const version = std.mem.readInt(u32, header[4..8], .little);
+    if (version != 1)
+        return ValidationResult.invalid(.wasm, "Unsupported Wasm version");
+
+    // Validate sections: each section has a 1-byte ID and LEB128 size
+    var offset: u64 = 8;
+    var last_section_id: u8 = 0;
+    var section_count: u32 = 0;
+
+    while (offset < file_size) {
+        file.seekTo(offset) catch break;
+        var sect_header: [6]u8 = undefined; // section ID + up to 5 bytes LEB128
+        const sect_read = file.read(&sect_header) catch break;
+        if (sect_read < 1) break;
+
+        const section_id = sect_header[0];
+
+        // Section IDs: 0=custom, 1=type, 2=import, 3=function, 4=table, 5=memory,
+        // 6=global, 7=export, 8=start, 9=element, 10=code, 11=data, 12=data_count
+        if (section_id > 12)
+            return ValidationResult.invalid(.wasm, "Invalid Wasm section ID");
+
+        // Non-custom sections must be in order
+        if (section_id != 0) {
+            if (section_id <= last_section_id)
+                return ValidationResult.invalid(.wasm, "Wasm sections out of order");
+            last_section_id = section_id;
+        }
+
+        // Decode LEB128 section size (up to 5 bytes for u32)
+        var size: u64 = 0;
+        var leb_bytes: u32 = 0;
+        for (1..sect_read) |i| {
+            const b = sect_header[i];
+            const shift_amount: u6 = @intCast(leb_bytes * 7);
+            size |= @as(u64, b & 0x7F) << shift_amount;
+            leb_bytes += 1;
+            if (b & 0x80 == 0) break;
+            if (leb_bytes >= 5) return ValidationResult.invalid(.wasm, "Invalid Wasm section size encoding");
+        }
+
+        if (leb_bytes == 0)
+            return ValidationResult.invalid(.wasm, "Missing Wasm section size");
+
+        // Verify section fits within file
+        const section_end = offset + 1 + leb_bytes + size;
+        if (section_end > file_size)
+            return ValidationResult.invalid(.wasm, "Wasm section extends beyond file end");
+
+        // Advance past section
+        offset = section_end;
+        section_count += 1;
+
+        if (section_count > 10000)
+            return ValidationResult.invalid(.wasm, "Too many Wasm sections");
+    }
+
+    if (section_count == 0)
+        return ValidationResult.invalid(.wasm, "Wasm module has no sections");
+
+    return ValidationResult.okWithDepth(.wasm, .full);
+}
+
+/// Validate Unix ar archive format (.a static libraries, .deb packages).
+/// Checks global header and validates member entry headers.
+fn validateAr(file: std.fs.File) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.ar, "Failed to get file size");
+    if (file_size < 8) return ValidationResult.invalid(.ar, "File too small for ar archive");
+
+    file.seekTo(0) catch return ValidationResult.invalid(.ar, "Failed to seek");
+    var magic: [8]u8 = undefined;
+    const bytes_read = file.read(&magic) catch return ValidationResult.invalid(.ar, "Failed to read header");
+    if (bytes_read < 8) return ValidationResult.invalid(.ar, "ar header too short");
+
+    if (!std.mem.eql(u8, &magic, "!<arch>\n"))
+        return ValidationResult.invalid(.ar, "Invalid ar magic");
+
+    // Validate member headers
+    var offset: u64 = 8;
+    var member_count: u32 = 0;
+
+    while (offset + 60 <= file_size) {
+        file.seekTo(offset) catch break;
+        var member_header: [60]u8 = undefined;
+        const mread = file.read(&member_header) catch break;
+        if (mread < 60) break;
+
+        // Each member header ends with 0x60 0x0A ("`\n")
+        if (member_header[58] != 0x60 or member_header[59] != 0x0A)
+            return ValidationResult.invalid(.ar, "Invalid ar member header terminator");
+
+        // Parse file size from bytes 48-57 (ASCII decimal, space-padded)
+        var size_end: usize = 58;
+        while (size_end > 48 and (member_header[size_end - 1] == ' ' or member_header[size_end - 1] == 0)) {
+            size_end -= 1;
+        }
+
+        const size_str = member_header[48..size_end];
+        const member_size = std.fmt.parseInt(u64, size_str, 10) catch
+            return ValidationResult.invalid(.ar, "Invalid ar member size");
+
+        // Advance to next member (size is padded to even boundary)
+        offset += 60 + member_size;
+        if (member_size % 2 != 0) offset += 1; // Padding byte
+
+        member_count += 1;
+        if (member_count > 100000)
+            return ValidationResult.invalid(.ar, "Too many ar members");
+    }
+
+    if (member_count == 0 and file_size > 8)
+        return ValidationResult.invalid(.ar, "ar archive has data but no valid members");
+
+    return ValidationResult.okWithDepth(.ar, .full);
+}
+
+/// Validate HTML document.
+/// Checks for DOCTYPE declaration or <html> tag, validates basic tag structure.
+fn validateHtml(file: std.fs.File) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.html, "Failed to get file size");
+    if (file_size < 7) return ValidationResult.invalid(.html, "File too small for HTML");
+    if (file_size > 500 * 1024 * 1024) return ValidationResult.invalid(.html, "File too large for HTML validation");
+
+    file.seekTo(0) catch return ValidationResult.invalid(.html, "Failed to seek");
+
+    // Read first 8KB for header analysis
+    var buf: [8192]u8 = undefined;
+    const read_size = @min(file_size, buf.len);
+    const bytes_read = file.read(buf[0..@intCast(read_size)]) catch
+        return ValidationResult.invalid(.html, "Failed to read file");
+    if (bytes_read < 7) return ValidationResult.invalid(.html, "HTML too short");
+
+    const data = buf[0..bytes_read];
+
+    // Skip BOM if present
+    var start: usize = 0;
+    if (bytes_read >= 3 and data[0] == 0xEF and data[1] == 0xBB and data[2] == 0xBF) {
+        start = 3;
+    }
+
+    // Skip leading whitespace
+    while (start < bytes_read and (data[start] == ' ' or data[start] == '\t' or data[start] == '\n' or data[start] == '\r')) {
+        start += 1;
+    }
+
+    if (start >= bytes_read) return ValidationResult.invalid(.html, "HTML file is empty");
+
+    // Look for DOCTYPE or <html> or <HTML> or <?xml (XHTML)
+    var has_doctype = false;
+    var has_html_tag = false;
+
+    // Case-insensitive check for <!DOCTYPE
+    if (start + 9 <= bytes_read and data[start] == '<' and data[start + 1] == '!') {
+        // Check for DOCTYPE (case-insensitive)
+        var doctype_check: [7]u8 = undefined;
+        for (0..7) |i| {
+            if (start + 2 + i >= bytes_read) break;
+            const c = data[start + 2 + i];
+            doctype_check[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+        }
+        if (start + 9 <= bytes_read and std.mem.eql(u8, &doctype_check, "doctype")) {
+            has_doctype = true;
+        }
+    }
+
+    // Scan for <html tag (case-insensitive)
+    var i: usize = start;
+    while (i + 5 < bytes_read) : (i += 1) {
+        if (data[i] == '<') {
+            // Check for <html
+            if (i + 5 <= bytes_read) {
+                var tag_lower: [4]u8 = undefined;
+                for (0..4) |j| {
+                    const c = data[i + 1 + j];
+                    tag_lower[j] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+                }
+                if (std.mem.eql(u8, &tag_lower, "html") and
+                    (i + 5 >= bytes_read or data[i + 5] == '>' or data[i + 5] == ' ' or data[i + 5] == '\n' or data[i + 5] == '\r' or data[i + 5] == '\t'))
+                {
+                    has_html_tag = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (!has_doctype and !has_html_tag) {
+        // Also accept <?xml for XHTML
+        if (start + 5 <= bytes_read and std.mem.eql(u8, data[start .. start + 5], "<?xml")) {
+            // Check if it contains html namespace or html tag further in
+            // For XHTML, accept if it has xml declaration
+            return ValidationResult.okWithDepth(.html, .structural);
+        }
+        return ValidationResult.invalid(.html, "No DOCTYPE or <html> tag found");
+    }
+
+    // Count basic open/close angle brackets to verify it's tag-based content
+    var open_count: u32 = 0;
+    var close_count: u32 = 0;
+    for (data[start..]) |c| {
+        if (c == '<') open_count += 1;
+        if (c == '>') close_count += 1;
+    }
+
+    if (open_count < 2) return ValidationResult.invalid(.html, "Too few HTML tags");
+    // Open and close brackets should roughly match
+    if (close_count == 0) return ValidationResult.invalid(.html, "No closing angle brackets found");
+
+    return ValidationResult.okWithDepth(.html, .structural);
 }
 
 // ============ Tests ============

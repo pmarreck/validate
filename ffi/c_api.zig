@@ -135,7 +135,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .pdf, .docx, .xlsx, .pptx, .doc, .xls, .ppt, .odt, .ods, .odp, .rtf, .pages, .wpd, .cwk, .mwd => "document",
 
         // Archives
-        .zip, .gzip, .bzip2, .xz, .zstd, .br, .rar, .sevenz, .tar, .warc => "archive",
+        .zip, .gzip, .bzip2, .xz, .zstd, .br, .rar, .sevenz, .tar, .warc, .ar => "archive",
 
         // Disk images
         .iso, .dmg => "disk_image",
@@ -153,7 +153,10 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .git_repository, .macos_app, .macos_framework, .macos_bundle => "bundle",
 
         // Executables
-        .pe => "executable",
+        .pe, .elf, .wasm => "executable",
+
+        // Web markup
+        .html => "document",
 
         // 3D/CAD
         .dwg, .dxf, .step, .stl, .@"3mf", .obj, .ply, .gltf, .glb, .blend => "3d",

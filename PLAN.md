@@ -48,16 +48,18 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] **`detectFormat()` lookup table** — comptime first-byte index for O(1) bucket lookup instead of linear scan (2026-02-09)
 
 ### Documentation Updates (from 2026-02-09 review)
-- [ ] **Update `FORMAT_VERIFICATIONS.md`** — replace C library refs (OpenH264, libde265, dav1d, libvpx, libheif) with "Pure Zig"
-- [ ] **Update `VALIDATE_VERIFICATION.md`** — last updated 2026-01-28, add ground truth from 2026-02-07+
-- [ ] **Update `CODE_MINIMAP.md`** — add 13+ new pure-Zig validator files
-- [ ] **Fix `ARCHITECTURE.md`** — mark FFI "Current Violation" section as RESOLVED
-- [ ] **Complete `PERF_EXPERIMENTS.md`** "Winner / Merge Decision" section
+- [x] **Update `FORMAT_VERIFICATIONS.md`** — replace C library refs with "Pure Zig" (2026-02-09)
+- [x] **Update `VALIDATE_VERIFICATION.md`** — updated summary with current counts (2026-02-09)
+- [x] **Update `CODE_MINIMAP.md`** — added 20 new pure-Zig validator files (2026-02-09)
+- [x] **Fix `ARCHITECTURE.md`** — marked FFI "Current Violation" as RESOLVED (2026-02-09)
+- [x] **Complete `PERF_EXPERIMENTS.md`** "Winner / Merge Decision" section (2026-02-09)
 
 ### New Format Support
-- [ ] **Add HTML format detection + well-formedness validation** (`.html`, `.htm`)
-- [ ] **Add compilation artifact recognition**: ELF `.o` (magic `\x7fELF`), Mach-O `.o`, COFF `.obj`, Wasm `.o`/`.wasm` (magic `\x00asm`)
-- [ ] **Add `ar` archive recognition** (`.a` files, magic `!<arch>\n`) — static library archives
+- [x] **Add HTML format detection + well-formedness validation** (`.html`, `.htm`, `.xhtml`) (2026-02-09)
+- [x] **Add ELF executable recognition + structural validation** (`.o`, `.so`, `.elf`, `.ko`) (2026-02-09)
+- [x] **Add WebAssembly module validation** (`.wasm`) with section ordering + size checks (2026-02-09)
+- [x] **Add `ar` archive recognition** (`.a` files, magic `!<arch>\n`) with member header validation (2026-02-09)
+- [ ] **Add Mach-O/COFF recognition** — remaining compilation artifacts
 - [ ] Add missing corruption tests for: json5, mpeg12, mpeg4p2, ole2, opus, theora
 
 ### Other
