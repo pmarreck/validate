@@ -58,9 +58,9 @@ queue growth, and memory retention. Track outcomes using CPU time (user+sys).
 - Notes: no improvement vs baseline
 
 ## Winner / Merge Decision
-- Selected approach:
-- Rationale:
-- Follow-ups:
+- Selected approach: None — all three experiments showed no measurable improvement over baseline.
+- Rationale: The bottleneck is I/O-bound (sys time dominates), not allocator contention or queue design. CPU time was within noise for all experiments (~460s for ~/Documents, ~1440s for ~/Documents/Books). The SLOW entries in Books are dominated by large ZIP/EPUB decompression, not queue or allocator overhead.
+- Follow-ups: ZIP central-directory optimization was implemented separately (2026-01-26) which improved ZIP validation. Further gains require reducing I/O (e.g., mmap, async I/O) or skipping redundant reads, not memory management changes.
 
 ## Telemetry: Books (memory + ZIP)
 - Date (EST): 2026-01-26

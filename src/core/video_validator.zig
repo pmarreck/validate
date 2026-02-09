@@ -13,7 +13,7 @@
 //! - VP8: vp8_validator.zig (pure Zig)
 //! - Motion JPEG: jpeg_validator.zig (via libjpeg-turbo)
 //!
-//! No C video decoder libraries (libde265, dav1d, OpenH264, libvpx, VideoToolbox)
+//! All video codecs use pure-Zig syntax validators (no C dependencies)
 //! are needed. Validation catches structural corruption by parsing bitstream syntax
 //! deeply enough to detect errors without full pixel-perfect decoding.
 //!
@@ -85,7 +85,7 @@ const mpeg4p2 = @import("mpeg4p2_validator.zig");
 // Import Theora validator (pure Zig)
 const theora = @import("theora_validator.zig");
 
-// Import VP8 validator (via libvpx)
+// Import VP8 validator (pure Zig)
 const vp8 = @import("vp8_validator.zig");
 
 
@@ -1423,8 +1423,8 @@ pub const CodecPrivateData = struct {
     /// Level is encoded as level * 10 (e.g., 31 = level 3.1, 40 = level 4.0)
     h264_level: u8 = 0,
 
-    /// Check if H.264 profile/level is supported by OpenH264
-    /// OpenH264 was designed for video conferencing (WebRTC), not professional video.
+    /// Check if H.264 profile/level is supported by the pure-Zig validator.
+    /// Some professional profiles have complex features that may not be fully validated.
     /// - Baseline (66) and Main (77): reliably supported at all levels
     /// - High (100): supported at levels <= 3.1 (720p), problematic at 4.0+ (1080p)
     /// - High 10/4:2:2/4:4:4: not supported (10-bit or chroma subsampling)
@@ -2260,7 +2260,7 @@ fn extractCodecPrivate(allocator: Allocator, file: std.fs.File, stsd_offset: u64
 }
 
 /// Extract raw codec private data (avcC/hvcC box contents) without Annex B conversion.
-/// Used by VideoToolbox on macOS which expects the raw box format.
+/// Raw box format used for codec configuration extraction.
 fn extractRawCodecPrivate(allocator: Allocator, file: std.fs.File, stsd_offset: u64, codec: VideoCodec) ?struct { data: []u8, nal_length_size: u8 } {
     // Skip stsd header (8 bytes) + version/flags (4 bytes) + entry count (4 bytes)
     file.seekTo(stsd_offset + 16) catch return null;

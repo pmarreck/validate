@@ -32,6 +32,25 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/video_validator.zig` | Video container parsing + codec decode validation (MP4/MKV/AVI), MKV byte-coverage with mixed NAL-length handling and debug envs (`MKV_BYTE_DEBUG`, `MKV_BYTE_DEBUG_OUT`, `MKV_BYTE_DEBUG_FRAME_OUT`) |
 | `src/core/font_validator.zig` | Standalone font validation (TTF/OTF/CFF/Type1) with checksum fallback to structural parsing for clearer errors |
 | `src/core/pdf_font_validator.zig` | Extracts/validates embedded PDF fonts using strict checksums while reporting warnings instead of failing PDFs |
+| `src/core/pdf_image_validator.zig` | PDF embedded image extraction and validation (JPEG, JBIG2, JPEG2000, CCITT) |
+| `src/core/pdf_xref_parser.zig` | PDF xref table/stream parser for O(M) object lookup (traditional tables + xref streams + /Prev chain) |
+| `src/core/mp4_box_parser.zig` | Shared MP4/ISOBMFF box parsing utilities (readMp4BoxHeader, findChildBox) |
+| `src/core/video_audio_validator.zig` | MP4/MKV audio+video stream validation (AAC, ALAC, MP3, FLAC, AC-3 in containers) |
+| `src/core/h264_syntax_validator.zig` | Pure Zig H.264 NAL/SPS/PPS/slice header parser with full VUI and extension support |
+| `src/core/h264_cavlc_tables.zig` | H.264 CAVLC entropy decoder (coeff_token, total_zeros, run_before, level VLC) |
+| `src/core/h264_cabac_engine.zig` | H.264 CABAC arithmetic engine with context model initialization |
+| `src/core/h264_cabac_tables.zig` | H.264 CABAC tables (rangeTabLPS, transIdx, context init values) |
+| `src/core/h265_validator.zig` | Pure Zig H.265/HEVC NAL unit parser with VPS/SPS/PPS validation |
+| `src/core/av1_obu_validator.zig` | Pure Zig AV1 OBU structural validator (sequence header, frame header, tile group) |
+| `src/core/vp9_syntax_validator.zig` | Pure Zig VP9 frame header parser |
+| `src/core/heif_container_parser.zig` | HEIF ISOBMFF meta-box parsing (ftyp/hdlr/pitm/iinf/iloc/iprp) for HEIC and AVIF |
+| `src/core/heic_validator.zig` | HEIC validation: HEIF container → hvcC NALs → h265_validator |
+| `src/core/avif_validator.zig` | AVIF validation: HEIF container → av1C OBUs → av1_obu_validator |
+| `src/core/aac_syntax_validator.zig` | AAC-LC bitstream validator (raw AU, ADTS, LATM/LOAS) with Huffman spectral decode |
+| `src/core/aac_huffman_tables.zig` | AAC Huffman trees (scalefactor + 11 spectral codebooks) and SWB offset tables |
+| `src/core/mpeg_ts_parser.zig` | MPEG-TS demuxer with PAT/PMT CRC-32, CC tracking, PES assembly + stream dispatch |
+| `src/core/mp3_decode_validator.zig` | MP3 frame decoder (file and buffer-based) with Huffman + IMDCT validation |
+| `src/core/ebml_parser.zig` | EBML/Matroska container parser with CRC-32 verification |
 
 ## FFI (ffi/)
 | Path | Purpose |

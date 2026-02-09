@@ -111,7 +111,7 @@ const tracker_validator = @import("tracker_validator.zig");
 // Import libopenmpt bindings for tracker format full decode validation
 const libopenmpt = @import("libopenmpt.zig");
 
-// Import pure-Zig HEIC/AVIF validators (replace libheif)
+// Import pure-Zig HEIC/AVIF validators
 const heic_validator = @import("heic_validator.zig");
 const avif_validator = @import("avif_validator.zig");
 
@@ -20654,7 +20654,7 @@ fn parseMaxVideoDeepSize(env: ?[:0]const u8) u64 {
 }
 
 /// Deep MP4/ISOBMFF validation - validates all box sizes and structure.
-/// Also validates video stream integrity using libde265 (HEVC) or dav1d (AV1).
+/// Also validates video stream integrity using pure-Zig codec validators.
 fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
@@ -28140,7 +28140,7 @@ test "FormatValidator deep validates real HEIC from ground truth" {
     try std.testing.expectEqual(FileFormat.heic, result.format);
     try std.testing.expect(result.is_valid);
     // Accept either full or structural validation - smaller HEIC images may have
-    // codec variants that libheif can't fully decode (e.g., HEIF without HEVC
+    // codec variants that can't be fully decoded (e.g., HEIF without HEVC
     // Main profile marker), but structural validation still confirms the container.
     try std.testing.expect(result.validation_depth == .full or result.validation_depth == .structural);
 }

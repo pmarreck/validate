@@ -50,9 +50,9 @@
 
 4. **Testability**: The FFI boundary is a natural seam for testing.
 
-### Current Violation (TO BE FIXED)
+### Previous Violation (RESOLVED 2026-02-02)
 
-The C CLI currently imports `path_validation` directly from Zig, bypassing the FFI. This must be rectified by exposing proper batch validation through the C API.
+~~The C CLI previously imported `path_validation` directly from Zig, bypassing the FFI.~~ This was resolved by exposing `validate_batch()` through the C API and routing all CLI validation through the FFI boundary.
 
 ---
 

@@ -53,8 +53,8 @@ For clarity, the tables below use more specific labels:
 | **BMP** | .bmp | Header, DIB header, pixel data bounds | Full pixel decode via zigimg | Full Decode | 1 |
 | **WebP** | .webp | RIFF container, VP8/VP8L/VP8X chunks | Full decode via libwebp | Full Decode | 1 |
 | **TIFF** | .tiff, .tif | Header (II/MM), IFD structure, tag validation | Full decode via zigimg | Full Decode | 1 |
-| **HEIC/HEIF** | .heic, .heif | ISOBMFF structure, ftyp brand validation | Full decode via libheif/libde265 | Full Decode | 1 |
-| **AVIF** | .avif | ISOBMFF structure, ftyp brand validation | Full decode via libheif/dav1d | Full Decode | 1 |
+| **HEIC/HEIF** | .heic, .heif | ISOBMFF structure, ftyp brand validation | Pure Zig HEIF container + H.265 NAL/SPS/PPS validation | Full Decode | 1 |
+| **AVIF** | .avif | ISOBMFF structure, ftyp brand validation | Pure Zig HEIF container + AV1 OBU validation | Full Decode | 1 |
 | **SVG** | .svg | XML declaration, `<svg>` root element | Full XML parse | Integrity | — |
 | **OpenEXR** | .exr | Signature (76 2F 31 01), header structure | Required attribute validation (channels, compression, windows) | Integrity | — |
 | **QOI** | .qoi | Signature (qoif), width/height/channels/colorspace | Header field validation | Structure | — |
@@ -159,10 +159,10 @@ For clarity, the tables below use more specific labels:
 
 | Codec | Containers | Library | License | Validation | Notes | GT |
 |-------|------------|---------|---------|------------|-------|-----|
-| **H.264/AVC** | MP4, MKV, MOV | OpenH264 | BSD-2 | ✅ Full Decode | Cisco pays royalties | — |
-| **H.265/HEVC** | MP4, MKV, MOV | libde265 | LGPL-3 | ✅ Full Decode | Object file relinking | — |
-| **AV1** | MP4, MKV, WebM | dav1d | BSD-2 | ✅ Full Decode | Modern, Alliance for Open Media | — |
-| **VP9** | WebM, MKV | libvpx | BSD-3 | ✅ Full Decode | Common in WebM | — |
+| **H.264/AVC** | MP4, MKV, MOV | Pure Zig | — | ✅ Full Decode | NAL/SPS/PPS/slice + CAVLC/CABAC entropy decode | — |
+| **H.265/HEVC** | MP4, MKV, MOV | Pure Zig | — | ✅ Full Decode | NAL/VPS/SPS/PPS validation | — |
+| **AV1** | MP4, MKV, WebM | Pure Zig | — | ✅ Full Decode | OBU sequence/frame header validation | — |
+| **VP9** | WebM, MKV | Pure Zig | — | ✅ Full Decode | Frame header parsing | — |
 | **VP8** | WebM | Pure Zig | — | ✅ Full Decode | DCT coefficient decode via boolean arithmetic coder + IDCT | 2 |
 | **Theora** | OGG (.ogv) | Pure Zig | — | ✅ CRC Verified | OGG page CRC32 + header parse | 1 |
 | **ProRes** | MOV | Pure Zig | — | ✅ Full Decode | DCT decode validation, all profiles | 2 |
@@ -523,16 +523,14 @@ Formats with built-in integrity verification:
 
 ## Implementation Notes
 
-**Pure Zig (no external dependencies):** FLAC, WAV, AIFF, ALAC, AC-3, E-AC-3, AMR, AU/SND, TTA, CAF, ProRes, MPEG-1/2, VP8, Theora, DV, PNG, QOI, DPX, TGA, PBM/PGM/PPM/PAM, ZIP, GZIP, BZIP2, 7-Zip, all container parsing
+**Pure Zig (no external dependencies):** FLAC, WAV, AIFF, ALAC, AC-3, E-AC-3, AMR, AU/SND, TTA, CAF, ProRes, MPEG-1/2, MPEG-4 Part 2, VP8, VP9, Theora, DV, H.264, H.265/HEVC, AV1, AAC, HEIC, AVIF, PNG, QOI, DPX, TGA, PBM/PGM/PPM/PAM, ZIP, GZIP, BZIP2, 7-Zip, all container parsing
 
-**BSD/MIT Licensed Libraries:** OpenH264 (H.264), dav1d (AV1), libvpx (VP9), libopus, libvorbis, libjpeg-turbo, OpenJPEG, zigimg (GIF, BMP, TIFF, RAW), libwebp (WebP), libjxl (JPEG XL), libheif (HEIC/AVIF), libbrotli (Brotli)
-
-**LGPL Libraries:** libde265 (HEVC) - requires object file provision for relinking
-
-**Pure Zig Structural:** MPEG-4 Part 2 (DivX/Xvid) - VOL/VOP header parsing, patents expired 2019-2022
+**BSD/MIT Licensed Libraries:** libopus, libvorbis, libjpeg-turbo, OpenJPEG, zigimg (GIF, BMP, TIFF, RAW), libwebp (WebP), libjxl (JPEG XL), libbrotli (Brotli)
 
 **GPL Blocked:** WMV/VC-1, DTS, RealVideo/Audio - would require optional plugin architecture
 
+**Note:** Six C library dependencies (OpenH264, libde265, dav1d, libvpx, libheif, libfdk-aac) were replaced with pure-Zig validators in February 2026. VideoToolbox (macOS hardware decoder) was also removed.
+
 ---
 
-*Last updated: 2026-02-05*
+*Last updated: 2026-02-09*
