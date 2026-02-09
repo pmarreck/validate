@@ -73,6 +73,13 @@ pub const udf_parser = @import("udf_parser.zig");
 pub const dvd_validator = @import("dvd_validator.zig");
 pub const blu_ray_validator = @import("blu_ray_validator.zig");
 pub const iso_validator = @import("iso_validator.zig");
+pub const game_validator = @import("game_validator.zig");
+pub const pe_validator = @import("pe_validator.zig");
+pub const daw_validators = @import("daw_validators.zig");
+pub const scientific_validators = @import("scientific_validators.zig");
+pub const music_validators = @import("music_validators.zig");
+pub const movie_validators = @import("movie_validators.zig");
+pub const image_validators = @import("image_validators.zig");
 pub const gpt_parser = @import("gpt_parser.zig");
 pub const apm_parser = @import("apm_parser.zig");
 pub const hfsplus_parser = @import("hfsplus_parser.zig");
@@ -96,6 +103,7 @@ pub const vp9_syntax_validator = @import("vp9_syntax_validator.zig");
 pub const mp4_box_parser = @import("mp4_box_parser.zig");
 pub const heif_container_parser = @import("heif_container_parser.zig");
 pub const pdf_xref_parser = @import("pdf_xref_parser.zig");
+pub const text_format_validators = @import("text_format_validators.zig");
 // VideoToolbox removed — all video codecs use pure-Zig syntax validators
 
 // Version information
@@ -192,6 +200,20 @@ test {
     _ = @import("blu_ray_validator.zig");
     // ISO validator (recursive file validation)
     _ = @import("iso_validator.zig");
+    // Game ROM validators (NES, SNES, N64, GB, GBA, NDS, Genesis, CHD)
+    _ = @import("game_validator.zig");
+    // PE (Portable Executable) validator
+    _ = @import("pe_validator.zig");
+    // DAW project validators (FLP, ALS, RPP)
+    _ = @import("daw_validators.zig");
+    // Scientific format validators (NetCDF, FITS, DICOM, FASTA, FASTQ)
+    _ = @import("scientific_validators.zig");
+    // Music/audio format validators (MP3, FLAC, WAV, OGG, MIDI, AC3, etc.)
+    _ = @import("music_validators.zig");
+    // Movie/video format validators (MP4, MKV, AVI, SWF, FLV, MPEG-TS, etc.)
+    _ = @import("movie_validators.zig");
+    // Image/photography format validators (PNG, JPEG, TIFF, SVG, PSD, HEIC, etc.)
+    _ = @import("image_validators.zig");
     // ProRes decoder
     _ = @import("prores_decoder.zig");
     // GPT parser
@@ -230,4 +252,6 @@ test {
     _ = @import("mp4_box_parser.zig");
     // PDF xref table parser
     _ = @import("pdf_xref_parser.zig");
+    // Text format validators (JSON, TOML, INI, XML, CSV, RTF, HTML, KML, plain text, UTF-8/16)
+    _ = @import("text_format_validators.zig");
 }

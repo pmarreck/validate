@@ -68,7 +68,6 @@ fn parseAudioSpecificConfig(asc: []const u8) ?AacConfig {
         aot_raw = 32 + ext;
     }
     if (aot_raw > 31) return null; // Can't fit in u5
-    const aot: u5 = @intCast(aot_raw);
 
     // samplingFrequencyIndex (4 bits, explicit 24-bit freq if 15)
     var freq_idx_raw = reader.readBits(4) orelse return null;
@@ -85,6 +84,28 @@ fn parseAudioSpecificConfig(asc: []const u8) ?AacConfig {
     const chan_cfg_raw = reader.readBits(4) orelse return null;
     if (chan_cfg_raw > 7) return null;
     const chan_cfg: u4 = @intCast(chan_cfg_raw);
+
+    // SBR/PS signaling for HE-AAC (aot 5 or 29)
+    // When the explicit signaling AOT is SBR(5) or PS(29), the config has:
+    //   extensionSamplingFrequencyIndex, then the base audioObjectType
+    // The base AOT is what matters for syntax validation (usually AAC-LC = 2)
+    // The raw_data_block is standard AAC-LC at the core sampling rate.
+    if (aot_raw == 5 or aot_raw == 29) {
+        // extensionSamplingFrequencyIndex (4 bits) — SBR output frequency
+        const ext_freq = reader.readBits(4) orelse return null;
+        if (ext_freq == 0x0F) {
+            _ = reader.readBits(24) orelse return null; // explicit 24-bit extension frequency
+        }
+        // Read the base audioObjectType
+        var base_aot = reader.readBits(5) orelse return null;
+        if (base_aot == 31) {
+            base_aot = 32 + (reader.readBits(6) orelse return null);
+        }
+        if (base_aot > 31) return null;
+        aot_raw = base_aot; // Use base AOT for validation
+    }
+
+    const aot: u5 = @intCast(aot_raw);
 
     return AacConfig{
         .audio_object_type = aot,

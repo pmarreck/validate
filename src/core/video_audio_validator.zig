@@ -412,7 +412,10 @@ fn detectMp4AudioCodec(file: std.fs.File, stsd_offset: u64) AudioCodec {
         return .opus;
     } else if (std.mem.eql(u8, entry_type, "sowt") or std.mem.eql(u8, entry_type, "twos") or
         std.mem.eql(u8, entry_type, "in24") or std.mem.eql(u8, entry_type, "in32") or
-        std.mem.eql(u8, entry_type, "fl32") or std.mem.eql(u8, entry_type, "fl64"))
+        std.mem.eql(u8, entry_type, "fl32") or std.mem.eql(u8, entry_type, "fl64") or
+        std.mem.eql(u8, entry_type, "lpcm") or std.mem.eql(u8, entry_type, "raw ") or
+        std.mem.eql(u8, entry_type, "NONE") or std.mem.eql(u8, entry_type, "alaw") or
+        std.mem.eql(u8, entry_type, "ulaw"))
     {
         return .pcm;
     }

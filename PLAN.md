@@ -31,12 +31,15 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - Note: Original crash was SIGABRT in C library on Intel. Moot now that C deps are removed.
 
 ### Codebase Refactoring (from 2026-02-09 review)
-- [ ] **Break out `format_validation.zig` (34,780 lines)** into separate validator files:
-  - [ ] Extract PE/Windows executable validator (~205 lines) → `pe_validator.zig`
-  - [ ] Extract text format validators (JSON, CSV, TOML, YAML, INI, RTF) → `text_format_validators.zig`
-  - [ ] Extract scientific format validators (FITS, DICOM, NetCDF, FASTA, FASTQ) → `scientific_validators.zig`
-  - [ ] Extract game ROM validators → consolidate into `game_validator.zig`
-  - [ ] Extract DAW project validators → `daw_validators.zig`
+- [ ] **Break out `format_validation.zig`** into separate validator files:
+  - [x] Extract PE/Windows executable validator → `pe_validator.zig` (2026-02-09)
+  - [x] Extract text format validators (JSON, CSV, TOML, INI, XML, RTF, HTML, KML, plain text, Unicode) → `text_format_validators.zig` (2026-02-09)
+  - [x] Extract scientific format validators (FITS, DICOM, NetCDF, FASTA, FASTQ) → `scientific_validators.zig` (2026-02-09)
+  - [x] Extract game ROM validators → `game_validator.zig` (2026-02-09)
+  - [x] Extract DAW project validators → `daw_validators.zig` (2026-02-09)
+  - [x] Extract video/movie format validators → `movie_validators.zig` (MP4, MKV, AVI, MOV, FLV, WebM, SWF, MPEG-TS/PS/ES, IVF) (2026-02-09)
+  - [x] Extract music/audio format validators → `music_validators.zig` (WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD, AC3, EAC3, MIDI, Tracker) (2026-02-09)
+  - [x] Extract photography/image format validators → `image_validators.zig` (PNG, JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR, PSD, JPEG2000, JBIG2, HEIC, AVIF, ICO, QOI, TGA, DNG) (2026-02-09)
   - [ ] Audit remaining large functions (need accurate line counts, not hallucinated ones)
 - [x] **Extract shared MP4 box parser** — `mp4_box_parser.zig` with `Mp4Box`/`readMp4BoxHeader`/`findChildBox` (2026-02-09)
 - [x] **Remove VideoToolbox dead code** — removed field, function, CLI branch, FFI key across 6 files (2026-02-09)
@@ -61,6 +64,15 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] **Add `ar` archive recognition** (`.a` files, magic `!<arch>\n`) with member header validation (2026-02-09)
 - [ ] **Add Mach-O/COFF recognition** — remaining compilation artifacts
 - [x] Add missing corruption tests for: json5, mpeg12, mpeg4p2, ole2, opus, theora, mov (2026-02-09)
+
+### Future Investigation: Kaitai Struct as Reference Library
+- [ ] Use .ksy specs (https://github.com/kaitai-io/kaitai_struct_formats) as reference when writing new validators
+  - 170-200+ format specs in YAML covering archives, images, media, executables, filesystems, etc.
+  - Format gallery: https://formats.kaitai.io/
+  - **No Zig or C target** — closest are C++/STL and Rust, impractical for pure-Zig FFI
+  - **Parsing != validation**: lacks checksum verification, bitstream entropy decoding, semantic cross-field validation
+  - **Best use: .ksy YAML as machine-readable format documentation** (field offsets, types, enums, valid ranges)
+  - Not worth integrating as a dependency (GPLv3 compiler, code-gen build step, structural-only parsing)
 
 ### Other
 - [x] Add flake-provided Wine for Windows tests on Linux (CrossOver still needed on macOS) (2026-02-02)
