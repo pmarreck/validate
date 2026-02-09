@@ -45,7 +45,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] **Remove `check_lzma`** — unreferenced ad-hoc debug binary, no source, no docs (2026-02-09)
 - N/A **`result/` symlinks** — checked, all valid (Nix store paths still exist)
 - [x] **PDF validation O(N²) fix** — xref table parser with O(M) lookup, falls back to linear scan (2026-02-09)
-- [ ] **Optional: `detectFormat()` lookup table** — index magic signatures by first byte for faster dispatch
+- [x] **`detectFormat()` lookup table** — comptime first-byte index for O(1) bucket lookup instead of linear scan (2026-02-09)
 
 ### Documentation Updates (from 2026-02-09 review)
 - [ ] **Update `FORMAT_VERIFICATIONS.md`** — replace C library refs (OpenH264, libde265, dav1d, libvpx, libheif) with "Pure Zig"

@@ -1423,6 +1423,68 @@ const magic_signatures = [_]MagicSignature{
     // Note: DV, TGA, PAM/PBM/PGM/PPM have no reliable magic bytes - detected by extension and/or structure
 };
 
+/// Maximum number of magic signatures that can share the same first byte.
+/// Determined at comptime by scanning magic_signatures.
+const max_sigs_per_byte = blk: {
+    var max: usize = 0;
+    var counts: [256]usize = [_]usize{0} ** 256;
+    for (magic_signatures) |sig| {
+        if (sig.offset == 0) {
+            counts[sig.bytes[0]] += 1;
+            if (counts[sig.bytes[0]] > max) {
+                max = counts[sig.bytes[0]];
+            }
+        }
+    }
+    break :blk max;
+};
+
+/// Entry in the first-byte lookup table: a fixed-size array of indices into magic_signatures.
+const MagicBucket = struct {
+    indices: [max_sigs_per_byte]u8,
+    len: u8,
+};
+
+/// Comptime lookup table: for each possible first byte (0-255), lists all magic_signatures
+/// at offset 0 whose first byte matches. This avoids linear scanning of all signatures.
+const magic_by_first_byte: [256]MagicBucket = blk: {
+    var table: [256]MagicBucket = undefined;
+    for (&table) |*bucket| {
+        bucket.len = 0;
+        bucket.indices = [_]u8{0} ** max_sigs_per_byte;
+    }
+    for (magic_signatures, 0..) |sig, i| {
+        if (sig.offset == 0) {
+            const first = sig.bytes[0];
+            table[first].indices[table[first].len] = @intCast(i);
+            table[first].len += 1;
+        }
+    }
+    break :blk table;
+};
+
+/// Count of non-zero-offset signatures (for the separate scan).
+const non_zero_offset_sig_count = blk: {
+    var count: usize = 0;
+    for (magic_signatures) |sig| {
+        if (sig.offset != 0) count += 1;
+    }
+    break :blk count;
+};
+
+/// Comptime array of indices into magic_signatures for non-zero-offset entries.
+const non_zero_offset_sigs: [non_zero_offset_sig_count]u8 = blk: {
+    var arr: [non_zero_offset_sig_count]u8 = undefined;
+    var idx: usize = 0;
+    for (magic_signatures, 0..) |sig, i| {
+        if (sig.offset != 0) {
+            arr[idx] = @intCast(i);
+            idx += 1;
+        }
+    }
+    break :blk arr;
+};
+
 /// Extended format detection for formats that need more than magic bytes.
 /// Returns format based on deeper inspection of header content.
 fn detectExtendedFormat(header: []const u8, file: std.fs.File) FileFormat {
@@ -1591,7 +1653,109 @@ fn detectMatroskaSubformat(file: std.fs.File) FileFormat {
 }
 
 /// Detect file format from first bytes (basic detection).
+
+/// Handle special-case format detection that requires additional header inspection
+/// beyond the magic bytes match. Returns the detected format, or null to skip this signature.
+fn checkSpecialCases(sig: MagicSignature, header: []const u8) ?FileFormat {
+    // RIFF-based formats need additional check at offset 8
+    if (sig.format == .webp) {
+        if (header.len >= 12) {
+            if (std.mem.eql(u8, header[8..12], "WEBP")) return .webp;
+            if (std.mem.eql(u8, header[8..12], "AVI ")) return .avi;
+            if (std.mem.eql(u8, header[8..12], "WAVE")) return .wav;
+        }
+        return null; // Unknown RIFF format
+    }
+    // FORM/IFF-based formats (AIFF, AIFC, Blorb, etc.)
+    if (sig.format == .aiff) {
+        if (header.len >= 12) {
+            if (std.mem.eql(u8, header[8..12], "AIFF") or std.mem.eql(u8, header[8..12], "AIFC")) return .aiff;
+            if (std.mem.eql(u8, header[8..12], "IFRS") or std.mem.eql(u8, header[8..12], "IFZS")) return .blorb;
+            return .iff; // Generic IFF container
+        }
+        return null;
+    }
+    // BEAM bytecode (FOR1 + size + "BEAM")
+    if (sig.format == .beam) {
+        if (header.len >= 12) {
+            if (std.mem.eql(u8, header[8..12], "BEAM")) return .beam;
+        }
+        return null;
+    }
+    // AC-3 vs E-AC-3 detection (same sync word 0B 77)
+    if (sig.format == .ac3) {
+        if (header.len >= 6) {
+            const bsid = header[5] >> 3;
+            if (bsid == 16) return .eac3;
+            if (bsid <= 8) return .ac3;
+        }
+        return null;
+    }
+    // ADTS AAC - verify with frame_length and second sync
+    if (sig.format == .aac_adts) {
+        if (header.len >= 7) {
+            const freq_idx = (header[2] >> 2) & 0x0F;
+            if (freq_idx > 12) return null;
+            const fl_high: u16 = @as(u16, header[3] & 0x03);
+            const fl_mid: u16 = @as(u16, header[4]);
+            const fl_low: u16 = @as(u16, (header[5] >> 5) & 0x07);
+            const frame_length = (fl_high << 11) | (fl_mid << 3) | fl_low;
+            if (frame_length < 7 or frame_length > 8192) return null;
+            if (header.len > frame_length + 1) {
+                if (header[frame_length] == 0xFF and (header[frame_length + 1] & 0xF0) == 0xF0 and
+                    (header[frame_length + 1] & 0x06) == 0x00)
+                {
+                    return .aac_adts;
+                }
+                return null;
+            }
+            return .aac_adts;
+        }
+        return null;
+    }
+    // MPEG TS detection (single 0x47 sync byte needs additional sync verification)
+    if (sig.format == .mpeg_ts) {
+        if (header.len >= 376) {
+            if (header[188] == 0x47) return .mpeg_ts;
+            if (header[192] == 0x47) return .mpeg_ts;
+            if (header[204] == 0x47) return .mpeg_ts;
+        }
+        return null;
+    }
+    // TrueType fonts need validation of numTables
+    if (sig.format == .ttf) {
+        if (header.len >= 12) {
+            const num_tables = (@as(u16, header[4]) << 8) | @as(u16, header[5]);
+            if (num_tables == 0 or num_tables > 100) return null;
+            const search_range = (@as(u16, header[6]) << 8) | @as(u16, header[7]);
+            if (search_range == 0 or search_range > num_tables * 16 or search_range % 16 != 0) return null;
+        } else {
+            return null;
+        }
+    }
+    // RIFX-based formats (After Effects AEP)
+    if (sig.format == .aep) {
+        if (header.len >= 12) {
+            if (std.mem.eql(u8, header[8..12], "Egg!")) return .aep;
+        }
+        return null;
+    }
+    // ICO format needs additional validation
+    if (sig.format == .ico) {
+        if (header.len >= 6) {
+            const image_count = std.mem.readInt(u16, header[4..6], .little);
+            if (image_count == 0 or image_count > 256) return null;
+            if (header.len >= 10 and header[9] != 0) return null;
+        } else {
+            return null;
+        }
+    }
+    return sig.format;
+}
+
 pub fn detectFormat(header: []const u8) FileFormat {
+    if (header.len == 0) return .unknown;
+
     // DICOM must be checked first: DICOM files have a 128-byte preamble that can contain
     // arbitrary data (including TIFF-like signatures II* or MM*). The DICM signature at
     // offset 128 is definitive, so we check it before any offset-0 signatures.
@@ -1599,156 +1763,26 @@ pub fn detectFormat(header: []const u8) FileFormat {
         return .dicom;
     }
 
-    for (magic_signatures) |sig| {
+    // Fast path: use first-byte lookup table for offset-0 signatures
+    const bucket = magic_by_first_byte[header[0]];
+    for (bucket.indices[0..bucket.len]) |sig_idx| {
+        const sig = magic_signatures[sig_idx];
+        if (header.len >= sig.bytes.len) {
+            if (std.mem.eql(u8, header[0..sig.bytes.len], sig.bytes)) {
+                if (checkSpecialCases(sig, header)) |format| {
+                    return format;
+                }
+                // checkSpecialCases returns null to mean "continue" (skip this sig)
+                // For non-special formats, it returns the format directly
+            }
+        }
+    }
+
+    // Slow path: check non-zero-offset signatures (S3M at 44, MATLAB at 124, NIfTI at 344, etc.)
+    for (non_zero_offset_sigs) |sig_idx| {
+        const sig = magic_signatures[sig_idx];
         if (header.len >= sig.offset + sig.bytes.len) {
             if (std.mem.eql(u8, header[sig.offset..][0..sig.bytes.len], sig.bytes)) {
-                // Special case: RIFF-based formats need additional check
-                if (sig.format == .webp) {
-                    if (header.len >= 12) {
-                        if (std.mem.eql(u8, header[8..12], "WEBP")) {
-                            return .webp;
-                        }
-                        if (std.mem.eql(u8, header[8..12], "AVI ")) {
-                            return .avi;
-                        }
-                        if (std.mem.eql(u8, header[8..12], "WAVE")) {
-                            return .wav;
-                        }
-                    }
-                    continue; // Unknown RIFF format
-                }
-                // Special case: FORM/IFF-based formats (AIFF, AIFC, Blorb, etc.)
-                if (sig.format == .aiff) {
-                    if (header.len >= 12) {
-                        if (std.mem.eql(u8, header[8..12], "AIFF") or std.mem.eql(u8, header[8..12], "AIFC")) {
-                            return .aiff;
-                        }
-                        // Blorb: Interactive Fiction resources (IFRS for Z-machine, IFZS for Glulx)
-                        if (std.mem.eql(u8, header[8..12], "IFRS") or std.mem.eql(u8, header[8..12], "IFZS")) {
-                            return .blorb;
-                        }
-                        // Generic IFF container (unknown form type)
-                        return .iff;
-                    }
-                    continue; // Not enough data
-                }
-                // Special case: BEAM bytecode (FOR1 + size + "BEAM")
-                if (sig.format == .beam) {
-                    if (header.len >= 12) {
-                        if (std.mem.eql(u8, header[8..12], "BEAM")) {
-                            return .beam;
-                        }
-                    }
-                    continue; // Not BEAM, might be other FOR1-based format
-                }
-                // Special case: AC-3 vs E-AC-3 detection (same sync word 0B 77)
-                // bsid (bit stream identification) at byte offset 5, bits 3-7
-                // AC-3: bsid = 0-8, E-AC-3: bsid = 16
-                if (sig.format == .ac3) {
-                    if (header.len >= 6) {
-                        const bsid = header[5] >> 3;
-                        if (bsid == 16) {
-                            return .eac3;
-                        } else if (bsid <= 8) {
-                            return .ac3;
-                        }
-                    }
-                    continue; // Not enough data or invalid bsid
-                }
-                // Special case: ADTS AAC - verify with frame_length and second sync
-                if (sig.format == .aac_adts) {
-                    if (header.len >= 7) {
-                        // Validate sampling_frequency_index (4 bits at byte 2, bits 2-5)
-                        const freq_idx = (header[2] >> 2) & 0x0F;
-                        if (freq_idx > 12) continue; // Invalid frequency index
-
-                        // Extract frame_length (13 bits across bytes 3-5)
-                        const fl_high: u16 = @as(u16, header[3] & 0x03);
-                        const fl_mid: u16 = @as(u16, header[4]);
-                        const fl_low: u16 = @as(u16, (header[5] >> 5) & 0x07);
-                        const frame_length = (fl_high << 11) | (fl_mid << 3) | fl_low;
-
-                        if (frame_length < 7 or frame_length > 8192) continue; // Invalid frame length
-
-                        // Confirm with second ADTS sync at frame_length offset
-                        if (header.len > frame_length + 1) {
-                            if (header[frame_length] == 0xFF and (header[frame_length + 1] & 0xF0) == 0xF0 and
-                                (header[frame_length + 1] & 0x06) == 0x00)
-                            { // layer == 00
-                                return .aac_adts;
-                            }
-                            continue; // Second sync not found
-                        }
-                        // Not enough data for second sync, trust first header
-                        return .aac_adts;
-                    }
-                    continue;
-                }
-                // Special case: MPEG TS detection (single 0x47 sync byte)
-                // Need to verify there are additional sync bytes at packet intervals
-                if (sig.format == .mpeg_ts) {
-                    if (header.len >= 376) {
-                        // Check for sync bytes at common packet sizes: 188, 192, 204 bytes
-                        if (header[188] == 0x47) {
-                            return .mpeg_ts; // 188-byte packets (standard)
-                        }
-                        if (header[192] == 0x47) {
-                            return .mpeg_ts; // 192-byte packets (with timestamp)
-                        }
-                        if (header[204] == 0x47) {
-                            return .mpeg_ts; // 204-byte packets (with FEC)
-                        }
-                    }
-                    continue; // Not enough data or no sync pattern
-                }
-                // Special case: TrueType fonts need validation of numTables
-                // The 00 01 00 00 signature can match other binary formats
-                if (sig.format == .ttf) {
-                    if (header.len >= 12) {
-                        // Bytes 4-5 are numTables (big-endian)
-                        const num_tables = (@as(u16, header[4]) << 8) | @as(u16, header[5]);
-                        // Valid fonts have 1-100 tables (typical: 10-25)
-                        if (num_tables == 0 or num_tables > 100) {
-                            continue; // Not a valid TrueType font
-                        }
-                        // Additional sanity check: searchRange, entrySelector, rangeShift
-                        // searchRange = (max power of 2 <= numTables) * 16
-                        const search_range = (@as(u16, header[6]) << 8) | @as(u16, header[7]);
-                        // searchRange should be a multiple of 16 and <= numTables * 16
-                        if (search_range == 0 or search_range > num_tables * 16 or search_range % 16 != 0) {
-                            continue; // Invalid searchRange
-                        }
-                    } else {
-                        continue; // Not enough data to validate
-                    }
-                }
-                // Special case: RIFX-based formats (After Effects AEP)
-                // RIFX is big-endian RIFF, format type at offset 8
-                if (sig.format == .aep) {
-                    if (header.len >= 12) {
-                        if (std.mem.eql(u8, header[8..12], "Egg!")) {
-                            return .aep;
-                        }
-                    }
-                    continue; // Unknown RIFX format
-                }
-                // Special case: ICO format needs additional validation
-                // The 00 00 01 00 magic can match other binary formats (e.g., ETL event trace logs)
-                // Verify that the image count field (bytes 4-5) is reasonable
-                if (sig.format == .ico) {
-                    if (header.len >= 6) {
-                        const image_count = std.mem.readInt(u16, header[4..6], .little);
-                        if (image_count == 0 or image_count > 256) {
-                            continue; // Not a valid ICO (no images or too many)
-                        }
-                        // Additional check: first directory entry's reserved byte should be 0
-                        if (header.len >= 10 and header[9] != 0) {
-                            continue; // Invalid reserved byte in first directory entry
-                        }
-                    } else {
-                        continue; // Not enough data to validate ICO
-                    }
-                }
                 return sig.format;
             }
         }
