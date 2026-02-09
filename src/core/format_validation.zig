@@ -500,6 +500,9 @@ pub const FileFormat = enum {
     // Executable formats
     pe, // Windows PE (Portable Executable) - .exe, .dll, .sys, .scr
     elf, // ELF (Executable and Linkable Format) - Linux/Unix executables, .so, .o
+    macho, // Mach-O (macOS/iOS executable, object, dylib, bundle)
+    macho_fat, // Mach-O Universal/Fat binary (multi-architecture)
+    coff, // COFF object file (Windows .obj)
     wasm, // WebAssembly binary module (.wasm)
     // Archive formats (non-compressed)
     ar, // Unix ar archive (.a static libraries, .deb packages)
@@ -693,6 +696,9 @@ pub const FileFormat = enum {
             .spotlight => "macOS Spotlight Index",
             .pe => "Windows PE Executable",
             .elf => "ELF Executable",
+            .macho => "Mach-O Binary",
+            .macho_fat => "Mach-O Universal Binary",
+            .coff => "COFF Object File",
             .wasm => "WebAssembly Module",
             .ar => "Unix ar Archive",
             .html => "HTML Document",
@@ -762,6 +768,9 @@ pub const FileFormat = enum {
             .spotlight => true, // macOS Spotlight index (structural only)
             .pe => true, // Windows PE executable
             .elf => true, // ELF executable
+            .macho => true, // Mach-O binary
+            .macho_fat => true, // Mach-O universal binary
+            .coff => true, // COFF object file
             .wasm => true, // WebAssembly module
             .ar => true, // Unix ar archive
             .html => true, // HTML document
@@ -1458,7 +1467,17 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x00, 0x61, 0x73, 0x6D }, .offset = 0, .format = .wasm },
     // Unix ar archive: "!<arch>\n"
     .{ .bytes = "!<arch>\n", .offset = 0, .format = .ar },
-    // Note: DV, TGA, PAM/PBM/PGM/PPM, HTML have no reliable magic bytes - detected by extension and/or structure
+    // Mach-O: 64-bit little-endian (most common: macOS arm64/x86_64)
+    .{ .bytes = &[_]u8{ 0xCF, 0xFA, 0xED, 0xFE }, .offset = 0, .format = .macho },
+    // Mach-O: 32-bit little-endian
+    .{ .bytes = &[_]u8{ 0xCE, 0xFA, 0xED, 0xFE }, .offset = 0, .format = .macho },
+    // Mach-O: 64-bit big-endian
+    .{ .bytes = &[_]u8{ 0xFE, 0xED, 0xFA, 0xCF }, .offset = 0, .format = .macho },
+    // Mach-O: 32-bit big-endian
+    .{ .bytes = &[_]u8{ 0xFE, 0xED, 0xFA, 0xCE }, .offset = 0, .format = .macho },
+    // Mach-O Universal/Fat binary (shares 0xCAFEBABE with Java .class - disambiguated in checkSpecialCases)
+    .{ .bytes = &[_]u8{ 0xCA, 0xFE, 0xBA, 0xBE }, .offset = 0, .format = .macho_fat },
+    // Note: DV, TGA, PAM/PBM/PGM/PPM, HTML, COFF have no reliable magic bytes - detected by extension and/or structure
 };
 
 /// Maximum number of magic signatures that can share the same first byte.
@@ -1775,6 +1794,55 @@ fn checkSpecialCases(sig: MagicSignature, header: []const u8) ?FileFormat {
     if (sig.format == .aep) {
         if (header.len >= 12) {
             if (std.mem.eql(u8, header[8..12], "Egg!")) return .aep;
+        }
+        return null;
+    }
+    // Mach-O single-arch: validate CPU type and filetype
+    if (sig.format == .macho) {
+        if (header.len >= 28) {
+            // Determine endianness from magic
+            const is_le = (header[0] == 0xCE or header[0] == 0xCF);
+            const endian: std.builtin.Endian = if (is_le) .little else .big;
+            const cputype = std.mem.readInt(u32, header[4..8], endian);
+            const filetype = std.mem.readInt(u32, header[12..16], endian);
+            const ncmds = std.mem.readInt(u32, header[16..20], endian);
+            // Validate CPU type
+            const valid_cpu = (cputype == 7 or // i386
+                cputype == 0x01000007 or // x86_64
+                cputype == 12 or // arm
+                cputype == 0x0100000C or // arm64
+                cputype == 18); // ppc
+            if (!valid_cpu) return null;
+            // Filetype must be 1-12
+            if (filetype == 0 or filetype > 12) return null;
+            // Reasonable number of load commands
+            if (ncmds == 0 or ncmds > 2000) return null;
+            return .macho;
+        }
+        return null;
+    }
+    // Mach-O Fat/Universal binary vs Java .class disambiguation
+    if (sig.format == .macho_fat) {
+        if (header.len >= 8) {
+            // nfat_arch is at offset 4, always big-endian
+            const nfat_arch = std.mem.readInt(u32, header[4..8], .big);
+            // Java .class files have minor_version at offset 4 (typically 0 or 65535)
+            // and major_version at offset 6 (43-67 for Java 1.0-23).
+            // Fat binaries have nfat_arch (typically 1-4, max ~20).
+            // nfat_arch == 0 is invalid, and > 30 is almost certainly Java or garbage.
+            if (nfat_arch == 0 or nfat_arch > 30) return null;
+            // Additional check: each fat_arch entry is 20 bytes, starting at offset 8.
+            // Verify the first entry has a valid cputype.
+            if (header.len >= 16) {
+                const first_cputype = std.mem.readInt(u32, header[8..12], .big);
+                const valid_cpu = (first_cputype == 7 or // i386
+                    first_cputype == 0x01000007 or // x86_64
+                    first_cputype == 12 or // arm
+                    first_cputype == 0x0100000C or // arm64
+                    first_cputype == 18); // ppc
+                if (!valid_cpu) return null;
+            }
+            return .macho_fat;
         }
         return null;
     }
@@ -2244,10 +2312,16 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
 
     // ELF executable extensions
     if (std.mem.eql(u8, ext_lower, "so")) return .elf; // Shared objects
-    if (std.mem.eql(u8, ext_lower, "o")) return .elf; // Object files
     if (std.mem.eql(u8, ext_lower, "elf")) return .elf;
     if (std.mem.eql(u8, ext_lower, "ko")) return .elf; // Kernel modules
     if (std.mem.eql(u8, ext_lower, "axf")) return .elf; // ARM executables
+
+    // Mach-O extensions (magic bytes handle detection; these are fallback hints)
+    if (std.mem.eql(u8, ext_lower, "dylib")) return .macho; // Dynamic libraries
+    // Note: .o files are detected by magic bytes (ELF or Mach-O), not extension
+
+    // COFF object files (no magic bytes — extension-based detection + structural validation)
+    if (std.mem.eql(u8, ext_lower, "obj")) return .coff; // Windows object files
 
     // WebAssembly
     if (std.mem.eql(u8, ext_lower, "wasm")) return .wasm;
@@ -14505,6 +14579,9 @@ pub const FormatValidator = struct {
             // Executable formats
             .pe => pe_validator.validatePe(file),
             .elf => validateElf(file),
+            .macho => validateMacho(file),
+            .macho_fat => validateMachoFat(file),
+            .coff => validateCoff(file),
             .wasm => validateWasm(file),
             // Archives
             .ar => validateAr(file),
@@ -15752,6 +15829,169 @@ fn validateElf(file: std.fs.File) ValidationResult {
     }
 
     return ValidationResult.okWithDepth(.elf, .full);
+}
+
+/// Validate Mach-O binary (single-architecture).
+/// Checks magic, CPU type, file type, and load command structure.
+fn validateMacho(file: std.fs.File) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.macho, "Failed to get file size");
+    if (file_size < 28) return ValidationResult.invalid(.macho, "File too small for Mach-O header");
+
+    file.seekTo(0) catch return ValidationResult.invalid(.macho, "Failed to seek");
+    var header: [32]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.macho, "Failed to read header");
+    if (bytes_read < 28) return ValidationResult.invalid(.macho, "Mach-O header too short");
+
+    // Determine 32-bit vs 64-bit and endianness from magic
+    const is_64 = (header[0] == 0xCF or header[3] == 0xCF);
+    const is_le = (header[0] == 0xCE or header[0] == 0xCF);
+    const endian: std.builtin.Endian = if (is_le) .little else .big;
+    const header_size: usize = if (is_64) 32 else 28;
+
+    if (bytes_read < header_size)
+        return ValidationResult.invalid(.macho, "Mach-O header too short for class");
+
+    // cputype (4 bytes at offset 4)
+    const cputype = std.mem.readInt(u32, header[4..8], endian);
+    const valid_cpu = (cputype == 7 or // i386
+        cputype == 0x01000007 or // x86_64
+        cputype == 12 or // arm
+        cputype == 0x0100000C or // arm64
+        cputype == 18); // ppc
+    if (!valid_cpu)
+        return ValidationResult.invalid(.macho, "Invalid Mach-O CPU type");
+
+    // filetype (4 bytes at offset 12): 1=OBJECT, 2=EXECUTE, 3=FVMLIB, 4=CORE,
+    // 5=PRELOAD, 6=DYLIB, 7=DYLINKER, 8=BUNDLE, 9=DYLIB_STUB, 10=DSYM, 11=KEXT_BUNDLE, 12=FILESET
+    const filetype = std.mem.readInt(u32, header[12..16], endian);
+    if (filetype == 0 or filetype > 12)
+        return ValidationResult.invalid(.macho, "Invalid Mach-O file type");
+
+    // ncmds (4 bytes at offset 16) and sizeofcmds (4 bytes at offset 20)
+    const ncmds = std.mem.readInt(u32, header[16..20], endian);
+    const sizeofcmds = std.mem.readInt(u32, header[20..24], endian);
+    if (ncmds == 0)
+        return ValidationResult.invalid(.macho, "No load commands");
+    if (ncmds > 2000)
+        return ValidationResult.invalid(.macho, "Unreasonable number of load commands");
+
+    // sizeofcmds must fit within the file
+    if (@as(u64, header_size) + @as(u64, sizeofcmds) > file_size)
+        return ValidationResult.invalid(.macho, "Load commands extend beyond file");
+
+    return ValidationResult.okWithDepth(.macho, .full);
+}
+
+/// Validate Mach-O Universal/Fat binary (multi-architecture).
+/// Checks nfat_arch, validates each architecture entry's bounds and embedded Mach-O magic.
+fn validateMachoFat(file: std.fs.File) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.macho_fat, "Failed to get file size");
+    if (file_size < 8) return ValidationResult.invalid(.macho_fat, "File too small for fat header");
+
+    file.seekTo(0) catch return ValidationResult.invalid(.macho_fat, "Failed to seek");
+    var header: [8]u8 = undefined;
+    _ = file.read(&header) catch return ValidationResult.invalid(.macho_fat, "Failed to read header");
+
+    // nfat_arch at offset 4, always big-endian
+    const nfat_arch = std.mem.readInt(u32, header[4..8], .big);
+    if (nfat_arch == 0 or nfat_arch > 30)
+        return ValidationResult.invalid(.macho_fat, "Invalid number of architectures");
+
+    // Each fat_arch entry is 20 bytes, starting at offset 8
+    const entries_end: u64 = 8 + @as(u64, nfat_arch) * 20;
+    if (entries_end > file_size)
+        return ValidationResult.invalid(.macho_fat, "Fat arch entries extend beyond file");
+
+    // Validate each architecture entry
+    var valid_archs: u32 = 0;
+    for (0..nfat_arch) |i| {
+        const entry_offset = 8 + i * 20;
+        file.seekTo(entry_offset) catch break;
+        var entry: [20]u8 = undefined;
+        const read = file.read(&entry) catch break;
+        if (read < 20) break;
+
+        // cputype (4 bytes), cpusubtype (4 bytes), offset (4 bytes), size (4 bytes), align (4 bytes)
+        const arch_cputype = std.mem.readInt(u32, entry[0..4], .big);
+        const arch_offset = std.mem.readInt(u32, entry[8..12], .big);
+        const arch_size = std.mem.readInt(u32, entry[12..16], .big);
+
+        // Validate CPU type
+        const valid_cpu = (arch_cputype == 7 or // i386
+            arch_cputype == 0x01000007 or // x86_64
+            arch_cputype == 12 or // arm
+            arch_cputype == 0x0100000C or // arm64
+            arch_cputype == 18); // ppc
+        if (!valid_cpu) continue;
+
+        // Validate offset + size within file
+        if (@as(u64, arch_offset) + @as(u64, arch_size) > file_size) continue;
+
+        // Verify embedded Mach-O has valid magic
+        if (arch_size >= 4) {
+            file.seekTo(arch_offset) catch continue;
+            var magic: [4]u8 = undefined;
+            _ = file.read(&magic) catch continue;
+            const is_macho = std.mem.eql(u8, &magic, &[_]u8{ 0xCF, 0xFA, 0xED, 0xFE }) or
+                std.mem.eql(u8, &magic, &[_]u8{ 0xCE, 0xFA, 0xED, 0xFE }) or
+                std.mem.eql(u8, &magic, &[_]u8{ 0xFE, 0xED, 0xFA, 0xCF }) or
+                std.mem.eql(u8, &magic, &[_]u8{ 0xFE, 0xED, 0xFA, 0xCE });
+            if (is_macho) valid_archs += 1;
+        }
+    }
+
+    if (valid_archs == 0)
+        return ValidationResult.invalid(.macho_fat, "No valid Mach-O architectures found");
+
+    return ValidationResult.okWithDepth(.macho_fat, .full);
+}
+
+/// Validate COFF object file (.obj).
+/// Checks machine type, section count, and structural consistency.
+fn validateCoff(file: std.fs.File) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.coff, "Failed to get file size");
+    if (file_size < 20) return ValidationResult.invalid(.coff, "File too small for COFF header");
+
+    file.seekTo(0) catch return ValidationResult.invalid(.coff, "Failed to seek");
+    var header: [20]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.coff, "Failed to read header");
+    if (bytes_read < 20) return ValidationResult.invalid(.coff, "COFF header too short");
+
+    // Machine type (2 bytes at offset 0, little-endian)
+    const machine = std.mem.readInt(u16, header[0..2], .little);
+    const valid_machine = (machine == 0x014C or // i386
+        machine == 0x8664 or // amd64
+        machine == 0x01C0 or // arm
+        machine == 0x01C2 or // thumb
+        machine == 0x01C4 or // armnt (ARM Thumb-2)
+        machine == 0xAA64 or // arm64
+        machine == 0x0200); // ia64
+    if (!valid_machine)
+        return ValidationResult.invalid(.coff, "Invalid COFF machine type");
+
+    // NumberOfSections (2 bytes at offset 2)
+    const num_sections = std.mem.readInt(u16, header[2..4], .little);
+    if (num_sections == 0 or num_sections > 96)
+        return ValidationResult.invalid(.coff, "Invalid COFF section count");
+
+    // SizeOfOptionalHeader (2 bytes at offset 16)
+    const opt_header_size = std.mem.readInt(u16, header[16..18], .little);
+    // COFF object files typically have 0 optional header; PE optional header is larger
+    if (opt_header_size > 1024)
+        return ValidationResult.invalid(.coff, "Optional header too large for COFF object");
+
+    // Verify the section headers fit within the file
+    // Section headers: 40 bytes each, starting after the COFF header + optional header
+    const section_table_end: u64 = 20 + @as(u64, opt_header_size) + @as(u64, num_sections) * 40;
+    if (section_table_end > file_size)
+        return ValidationResult.invalid(.coff, "Section table extends beyond file");
+
+    // PointerToSymbolTable (4 bytes at offset 8) — if non-zero, must be within file
+    const sym_table_ptr = std.mem.readInt(u32, header[8..12], .little);
+    if (sym_table_ptr > 0 and @as(u64, sym_table_ptr) > file_size)
+        return ValidationResult.invalid(.coff, "Symbol table pointer beyond file");
+
+    return ValidationResult.okWithDepth(.coff, .full);
 }
 
 /// Validate WebAssembly binary module.

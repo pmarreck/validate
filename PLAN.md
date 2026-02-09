@@ -40,7 +40,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
   - [x] Extract video/movie format validators → `movie_validators.zig` (MP4, MKV, AVI, MOV, FLV, WebM, SWF, MPEG-TS/PS/ES, IVF) (2026-02-09)
   - [x] Extract music/audio format validators → `music_validators.zig` (WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD, AC3, EAC3, MIDI, Tracker) (2026-02-09)
   - [x] Extract photography/image format validators → `image_validators.zig` (PNG, JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR, PSD, JPEG2000, JBIG2, HEIC, AVIF, ICO, QOI, TGA, DNG) (2026-02-09)
-  - [ ] Audit remaining large functions (need accurate line counts, not hallucinated ones)
+  - [x] Audit remaining large functions — see session audit (2026-02-09)
 - [x] **Extract shared MP4 box parser** — `mp4_box_parser.zig` with `Mp4Box`/`readMp4BoxHeader`/`findChildBox` (2026-02-09)
 - [x] **Remove VideoToolbox dead code** — removed field, function, CLI branch, FFI key across 6 files (2026-02-09)
 - [x] **Remove ~995 MB of orphaned deps**: libheif, libde265, dav1d, openh264, libvpx, libfdk-aac + src mirrors (2026-02-09)
@@ -62,7 +62,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] **Add ELF executable recognition + structural validation** (`.o`, `.so`, `.elf`, `.ko`) (2026-02-09)
 - [x] **Add WebAssembly module validation** (`.wasm`) with section ordering + size checks (2026-02-09)
 - [x] **Add `ar` archive recognition** (`.a` files, magic `!<arch>\n`) with member header validation (2026-02-09)
-- [ ] **Add Mach-O/COFF recognition** — remaining compilation artifacts
+- [x] **Add Mach-O/COFF recognition** — single-arch, fat binary, COFF .obj detection + validation (2026-02-09)
 - [x] Add missing corruption tests for: json5, mpeg12, mpeg4p2, ole2, opus, theora, mov (2026-02-09)
 
 ### Future Investigation: Kaitai Struct as Reference Library

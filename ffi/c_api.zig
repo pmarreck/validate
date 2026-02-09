@@ -153,7 +153,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .git_repository, .macos_app, .macos_framework, .macos_bundle => "bundle",
 
         // Executables
-        .pe, .elf, .wasm => "executable",
+        .pe, .elf, .macho, .macho_fat, .coff, .wasm => "executable",
 
         // Web markup
         .html => "document",
