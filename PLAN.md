@@ -60,7 +60,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] **Add WebAssembly module validation** (`.wasm`) with section ordering + size checks (2026-02-09)
 - [x] **Add `ar` archive recognition** (`.a` files, magic `!<arch>\n`) with member header validation (2026-02-09)
 - [ ] **Add Mach-O/COFF recognition** — remaining compilation artifacts
-- [ ] Add missing corruption tests for: json5, mpeg12, mpeg4p2, ole2, opus, theora
+- [x] Add missing corruption tests for: json5, mpeg12, mpeg4p2, ole2, opus, theora, mov (2026-02-09)
 
 ### Other
 - [x] Add flake-provided Wine for Windows tests on Linux (CrossOver still needed on macOS) (2026-02-02)
