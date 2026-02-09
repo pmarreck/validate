@@ -358,13 +358,9 @@ fn validateMkvCrc(allocator: Allocator, path: []const u8) MkvCrcResult {
     };
 }
 
-/// MP4 box parsing helpers (reusing from video_validator)
-const Mp4Box = struct {
-    box_type: [4]u8,
-    offset: u64,
-    size: u64,
-    header_size: u8,
-};
+/// MP4 box parsing — shared implementation
+const mp4_parser = @import("mp4_box_parser.zig");
+const Mp4Box = mp4_parser.Mp4Box;
 
 const StscEntry = struct {
     first_chunk: u32,
@@ -387,54 +383,8 @@ fn getSamplesPerChunk(stsc_entries: []const StscEntry, chunk_number: u32) u32 {
     return result;
 }
 
-/// Read MP4 box header at current position
-fn readMp4BoxHeader(file: std.fs.File) ?Mp4Box {
-    var header: [16]u8 = undefined;
-    const bytes_read = file.read(header[0..8]) catch return null;
-    if (bytes_read < 8) return null;
-
-    const position = (file.getPos() catch return null) - 8;
-    const size = std.mem.readInt(u32, header[0..4], .big);
-    const box_type = header[4..8];
-
-    var header_size: u8 = 8;
-    var actual_size: u64 = size;
-
-    if (size == 1) {
-        const ext_read = file.read(header[8..16]) catch return null;
-        if (ext_read < 8) return null;
-        actual_size = std.mem.readInt(u64, header[8..16], .big);
-        header_size = 16;
-    } else if (size == 0) {
-        const file_size = file.getEndPos() catch return null;
-        actual_size = file_size - position;
-    }
-
-    // Reject boxes with size smaller than header (prevents infinite loops on corrupted data)
-    if (actual_size < header_size) return null;
-
-    return Mp4Box{
-        .box_type = box_type.*,
-        .offset = position,
-        .size = actual_size,
-        .header_size = header_size,
-    };
-}
-
-/// Find a child box within a container box
-fn findChildBox(file: std.fs.File, parent_offset: u64, parent_size: u64, target_type: []const u8) ?Mp4Box {
-    const end_offset = parent_offset + parent_size;
-    file.seekTo(parent_offset) catch return null;
-
-    while ((file.getPos() catch return null) < end_offset) {
-        const box = readMp4BoxHeader(file) orelse return null;
-        if (std.mem.eql(u8, &box.box_type, target_type)) {
-            return box;
-        }
-        file.seekTo(box.offset + box.size) catch return null;
-    }
-    return null;
-}
+const readMp4BoxHeader = mp4_parser.readMp4BoxHeader;
+const findChildBox = mp4_parser.findChildBox;
 
 /// Detect audio codec from MP4 sample description
 fn detectMp4AudioCodec(file: std.fs.File, stsd_offset: u64) AudioCodec {

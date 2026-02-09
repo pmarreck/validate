@@ -26,20 +26,39 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Return continuable error for unknown directory types (2026-02-02)
 - [x] Bundle validation complete (see ARCHITECTURE.md)
 
-### HEIC/Intel Crash Investigation (SIGABRT on Garnix CI)
-- [x] Disabled SSE on Linux libde265 build (crash persisted in fallback C++ code)
-- [x] Set num_codec_threads=0 to disable libde265 internal worker threads
-- [x] Set heif_context_set_max_decoding_threads(ctx, 0) to disable grid tile parallelism
-- [x] Forked libheif to fix num_threads=0 handling in decoder_libde265.cc
-- [x] Added -UNDEBUG to libde265 to enable C assertions
-- [x] Added concurrent stress test (8 threads × 10 iterations)
-- [x] Verified stress test passes on AMD Ryzen 9 (Framework laptop)
-- [x] Added verbose progress output to stress test for crash diagnosis
-- [ ] **WAITING**: Garnix CI to run with verbose output - will show crash location
-- [ ] If warmup single-decode crashes: issue is in basic decode path
-- [ ] If concurrent decode crashes: possible race condition in shared state
-- [ ] Consider forking libde265 to add more assertions/debug output
-- Note: Crash is SIGABRT (assertion failure), Intel-specific, affects Garnix CI but not AMD
+### HEIC/Intel Crash Investigation — RESOLVED via pure-Zig
+- [x] Replaced libheif/libde265 with pure-Zig heif_container_parser + h265_validator (2026-02-07)
+- Note: Original crash was SIGABRT in C library on Intel. Moot now that C deps are removed.
+
+### Codebase Refactoring (from 2026-02-09 review)
+- [ ] **Break out `format_validation.zig` (34,780 lines)** into separate validator files:
+  - [ ] Extract PE/Windows executable validator (~205 lines) → `pe_validator.zig`
+  - [ ] Extract text format validators (JSON, CSV, TOML, YAML, INI, RTF) → `text_format_validators.zig`
+  - [ ] Extract scientific format validators (FITS, DICOM, NetCDF, FASTA, FASTQ) → `scientific_validators.zig`
+  - [ ] Extract game ROM validators → consolidate into `game_validator.zig`
+  - [ ] Extract DAW project validators → `daw_validators.zig`
+  - [ ] Audit remaining large functions (need accurate line counts, not hallucinated ones)
+- [x] **Extract shared MP4 box parser** — `mp4_box_parser.zig` with `Mp4Box`/`readMp4BoxHeader`/`findChildBox` (2026-02-09)
+- [x] **Remove VideoToolbox dead code** — removed field, function, CLI branch, FFI key across 6 files (2026-02-09)
+- [x] **Remove ~995 MB of orphaned deps**: libheif, libde265, dav1d, openh264, libvpx, libfdk-aac + src mirrors (2026-02-09)
+- [x] **Remove stale docs**: 5 thread safety MDs for removed C libs, `tools/heif_stress_test.c` (2026-02-09)
+- [x] **Remove `check_lzma`** — unreferenced ad-hoc debug binary, no source, no docs (2026-02-09)
+- N/A **`result/` symlinks** — checked, all valid (Nix store paths still exist)
+- [x] **PDF validation O(N²) fix** — xref table parser with O(M) lookup, falls back to linear scan (2026-02-09)
+- [ ] **Optional: `detectFormat()` lookup table** — index magic signatures by first byte for faster dispatch
+
+### Documentation Updates (from 2026-02-09 review)
+- [ ] **Update `FORMAT_VERIFICATIONS.md`** — replace C library refs (OpenH264, libde265, dav1d, libvpx, libheif) with "Pure Zig"
+- [ ] **Update `VALIDATE_VERIFICATION.md`** — last updated 2026-01-28, add ground truth from 2026-02-07+
+- [ ] **Update `CODE_MINIMAP.md`** — add 13+ new pure-Zig validator files
+- [ ] **Fix `ARCHITECTURE.md`** — mark FFI "Current Violation" section as RESOLVED
+- [ ] **Complete `PERF_EXPERIMENTS.md`** "Winner / Merge Decision" section
+
+### New Format Support
+- [ ] **Add HTML format detection + well-formedness validation** (`.html`, `.htm`)
+- [ ] **Add compilation artifact recognition**: ELF `.o` (magic `\x7fELF`), Mach-O `.o`, COFF `.obj`, Wasm `.o`/`.wasm` (magic `\x00asm`)
+- [ ] **Add `ar` archive recognition** (`.a` files, magic `!<arch>\n`) — static library archives
+- [ ] Add missing corruption tests for: json5, mpeg12, mpeg4p2, ole2, opus, theora
 
 ### Other
 - [x] Add flake-provided Wine for Windows tests on Linux (CrossOver still needed on macOS) (2026-02-02)

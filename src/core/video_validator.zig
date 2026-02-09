@@ -88,21 +88,6 @@ const theora = @import("theora_validator.zig");
 // Import VP8 validator (via libvpx)
 const vp8 = @import("vp8_validator.zig");
 
-// No platform-specific video decoder imports needed — all pure Zig
-const use_videotoolbox = false; // VideoToolbox removed
-
-/// VideoToolbox removed — always returns false
-fn shouldUseVideoToolbox() bool {
-    return false;
-}
-
-// VideoToolbox removed — using pure-Zig validators
-const videotoolbox = struct {
-    pub const VideoCodec = enum { h264, hevc, av1 };
-    pub fn isAvailable() bool {
-        return false;
-    }
-};
 
 // libde265 removed — using h265_validator.zig (pure Zig)
 
@@ -137,8 +122,7 @@ pub const VideoValidationResult = struct {
 	unsupported_profile_no_ffmpeg: bool = false,
 	/// Set when validation was performed via external ffmpeg CLI
 	validated_via_ffmpeg: bool = false,
-	/// Set when validation was performed via macOS VideoToolbox hardware decoder
-	validated_via_videotoolbox: bool = false,
+
 
 	pub fn okDecoded(codec: VideoCodec, frames: u32) VideoValidationResult {
 		// Decoding frames means bytes were validated - decoder would fail on corrupt data
@@ -153,9 +137,7 @@ pub const VideoValidationResult = struct {
 		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = true, .mixed_nal_prefix = false, .validated_via_ffmpeg = true };
 	}
 
-	pub fn okByteValidatedViaVideoToolbox(codec: VideoCodec, frames: u32) VideoValidationResult {
-		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = true, .mixed_nal_prefix = false, .validated_via_videotoolbox = true };
-	}
+
 
 	pub fn invalid(message: []const u8, codec: VideoCodec) VideoValidationResult {
 		return .{ .valid = false, .error_message = message, .codec = codec, .frames_decoded = 0, .byte_validated = false, .mixed_nal_prefix = false };
@@ -199,65 +181,11 @@ pub fn validateAv1Stream(allocator: Allocator, data: []const u8, max_frames: u32
     return VideoValidationResult.invalid(msg, .av1);
 }
 
-/// MP4 box parsing helpers
-const Mp4Box = struct {
-    box_type: [4]u8,
-    offset: u64,
-    size: u64,
-    header_size: u8, // 8 for normal, 16 for extended size
-};
-
-/// Read MP4 box header at current position
-fn readMp4BoxHeader(file: std.fs.File) ?Mp4Box {
-    var header: [16]u8 = undefined;
-    const bytes_read = file.read(header[0..8]) catch return null;
-    if (bytes_read < 8) return null;
-
-    const position = (file.getPos() catch return null) - 8;
-    const size = std.mem.readInt(u32, header[0..4], .big);
-    const box_type = header[4..8];
-
-    var header_size: u8 = 8;
-    var actual_size: u64 = size;
-
-    if (size == 1) {
-        // Extended size
-        const ext_read = file.read(header[8..16]) catch return null;
-        if (ext_read < 8) return null;
-        actual_size = std.mem.readInt(u64, header[8..16], .big);
-        header_size = 16;
-    } else if (size == 0) {
-        // Box extends to end of file
-        const file_size = file.getEndPos() catch return null;
-        actual_size = file_size - position;
-    }
-
-    // Reject boxes with size smaller than header (prevents infinite loops on corrupted data)
-    if (actual_size < header_size) return null;
-
-    return Mp4Box{
-        .box_type = box_type.*,
-        .offset = position,
-        .size = actual_size,
-        .header_size = header_size,
-    };
-}
-
-/// Find a child box within a container box
-fn findChildBox(file: std.fs.File, parent_offset: u64, parent_size: u64, target_type: []const u8) ?Mp4Box {
-    const end_offset = parent_offset + parent_size;
-    file.seekTo(parent_offset) catch return null;
-
-    while ((file.getPos() catch return null) < end_offset) {
-        const box = readMp4BoxHeader(file) orelse return null;
-        if (std.mem.eql(u8, &box.box_type, target_type)) {
-            return box;
-        }
-        // Skip to next box
-        file.seekTo(box.offset + box.size) catch return null;
-    }
-    return null;
-}
+/// MP4 box parsing — shared implementation
+const mp4_parser = @import("mp4_box_parser.zig");
+const Mp4Box = mp4_parser.Mp4Box;
+const readMp4BoxHeader = mp4_parser.readMp4BoxHeader;
+const findChildBox = mp4_parser.findChildBox;
 
 /// Detect video codec from MP4 sample description
 fn detectMp4VideoCodec(file: std.fs.File, stsd_offset: u64, stsd_size: u64) VideoCodec {

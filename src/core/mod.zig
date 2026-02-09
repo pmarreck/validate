@@ -93,7 +93,9 @@ pub const h264_cabac_tables = @import("h264_cabac_tables.zig");
 pub const h264_cabac_engine = @import("h264_cabac_engine.zig");
 pub const av1_obu_validator = @import("av1_obu_validator.zig");
 pub const vp9_syntax_validator = @import("vp9_syntax_validator.zig");
+pub const mp4_box_parser = @import("mp4_box_parser.zig");
 pub const heif_container_parser = @import("heif_container_parser.zig");
+pub const pdf_xref_parser = @import("pdf_xref_parser.zig");
 // VideoToolbox removed — all video codecs use pure-Zig syntax validators
 
 // Version information
@@ -224,4 +226,8 @@ test {
     _ = @import("avif_validator.zig");
     // VP9 syntax validator
     _ = @import("vp9_syntax_validator.zig");
+    // MP4/ISOBMFF box parser
+    _ = @import("mp4_box_parser.zig");
+    // PDF xref table parser
+    _ = @import("pdf_xref_parser.zig");
 }

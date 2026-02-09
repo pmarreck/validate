@@ -811,15 +811,12 @@ static void print_validation_result(const char* path, const char* result) {
 	uint64_t malform_bits = kv_get_u64(result, "malform_u64");
 	int bypass_prot = kv_get_bool(result, "bypass_prot");
 	int via_ffmpeg = kv_get_bool(result, "via_ffmpeg");
-	int via_videotoolbox = kv_get_bool(result, "via_videotoolbox");
 
 	const char* depth_str = (depth == 1) ? "fully validated" : "structural";
 
-	/* Build depth description with optional ffmpeg/videotoolbox suffix */
+	/* Build depth description with optional ffmpeg suffix */
 	char depth_desc[64];
-	if (via_videotoolbox) {
-		snprintf(depth_desc, sizeof(depth_desc), "%s, via VideoToolbox", depth_str);
-	} else if (via_ffmpeg) {
+	if (via_ffmpeg) {
 		snprintf(depth_desc, sizeof(depth_desc), "%s, via ffmpeg", depth_str);
 	} else {
 		snprintf(depth_desc, sizeof(depth_desc), "%s", depth_str);

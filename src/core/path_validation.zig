@@ -94,7 +94,7 @@ const ResultItem = struct {
 	validation_depth: format_validation.ValidationDepth,
 	circumvented_trivial_protection: bool,
 	validated_via_ffmpeg: bool,
-	validated_via_videotoolbox: bool,
+
 	elapsed_seconds: f64,
 
 	pub fn deinit(self: *ResultItem, allocator: Allocator) void {
@@ -336,7 +336,7 @@ fn workerMain(shared: *Shared) void {
 				.validation_depth = result.validation_depth,
 				.circumvented_trivial_protection = result.circumvented_trivial_protection,
 				.validated_via_ffmpeg = result.validated_via_ffmpeg,
-				.validated_via_videotoolbox = result.validated_via_videotoolbox,
+
 				.elapsed_seconds = elapsed_seconds,
 			};
 			shared.result_queue.push(result_item) catch {
@@ -367,7 +367,7 @@ fn outputMain(shared: *Shared) void {
 			.validation_depth = item.validation_depth,
 			.circumvented_trivial_protection = item.circumvented_trivial_protection,
 			.validated_via_ffmpeg = item.validated_via_ffmpeg,
-			.validated_via_videotoolbox = item.validated_via_videotoolbox,
+
 		};
 		callback(shared.callback_ctx, item.display_path, result, item.elapsed_seconds);
 	}

@@ -25,6 +25,7 @@ const lzw_decoder = @import("lzw_decoder.zig");
 const pdf_decryptor = @import("pdf_decryptor.zig");
 const zlib = @import("zlib.zig");
 const thread_pool = @import("thread_pool.zig");
+const pdf_xref_parser = @import("pdf_xref_parser.zig");
 
 /// Minimum number of images to trigger parallel validation
 const PARALLEL_IMAGE_THRESHOLD: usize = 10;
@@ -297,8 +298,20 @@ fn filterFromName(name: []const u8) ImageFilter {
     return .unknown;
 }
 
-/// Find all image XObjects in PDF data
+/// Find all image XObjects in PDF data.
+/// Tries xref-based O(M) lookup first, falls back to O(N) linear scan on failure.
 pub fn findPdfImages(allocator: Allocator, data: []const u8) ![]PdfImageInfo {
+    // Fast path: use xref table for direct object lookup
+    if (findPdfImagesViaXref(allocator, data)) |images| {
+        return images;
+    }
+
+    // Fallback: linear scan (handles malformed/missing xref)
+    return findPdfImagesLinear(allocator, data);
+}
+
+/// Find all image XObjects via linear byte scan (O(N) fallback).
+pub fn findPdfImagesLinear(allocator: Allocator, data: []const u8) ![]PdfImageInfo {
     var images: std.ArrayListUnmanaged(PdfImageInfo) = .{};
     errdefer images.deinit(allocator);
 
@@ -555,6 +568,219 @@ pub fn freePdfImages(allocator: Allocator, images: []PdfImageInfo) void {
         allocator.free(img.filters);
     }
     allocator.free(images);
+}
+
+/// Find PDF images via xref table (O(M) where M = number of objects).
+/// Returns null if xref parsing fails (caller should fall back to linear scan).
+pub fn findPdfImagesViaXref(allocator: Allocator, data: []const u8) ?[]PdfImageInfo {
+    var xref_table = pdf_xref_parser.parseXrefTable(allocator, data) orelse return null;
+    defer xref_table.deinit(allocator);
+
+    var images: std.ArrayListUnmanaged(PdfImageInfo) = .{};
+    errdefer {
+        for (images.items) |img| allocator.free(img.filters);
+        images.deinit(allocator);
+    }
+
+    // Iterate over all in-use xref entries
+    var iter = xref_table.entries.valueIterator();
+    while (iter.next()) |entry| {
+        if (!entry.in_use) continue;
+        if (entry.offset >= data.len) continue;
+
+        // Parse this object looking for image XObject
+        const offset: usize = @intCast(entry.offset);
+        if (parseObjectForImage(allocator, data, offset, entry.obj_num, entry.gen_num)) |img| {
+            images.append(allocator, img) catch {
+                allocator.free(img.filters);
+                return null;
+            };
+        }
+    }
+
+    return images.toOwnedSlice(allocator) catch null;
+}
+
+/// Parse a single PDF object at `offset` and return PdfImageInfo if it's an image XObject.
+fn parseObjectForImage(allocator: Allocator, data: []const u8, offset: usize, obj_num: u32, gen_num: u16) ?PdfImageInfo {
+    var j = offset;
+
+    // Skip past "N G obj"
+    // Skip object number
+    while (j < data.len and data[j] >= '0' and data[j] <= '9') : (j += 1) {}
+    j = skipWhitespace(data, j);
+    // Skip generation number
+    while (j < data.len and data[j] >= '0' and data[j] <= '9') : (j += 1) {}
+    j = skipWhitespace(data, j);
+    // Skip "obj"
+    if (j + 3 > data.len or !std.mem.eql(u8, data[j..][0..3], "obj")) return null;
+    j += 3;
+
+    var is_image = false;
+    var width: ?u32 = null;
+    var height: ?u32 = null;
+    var bits: ?u8 = null;
+    var stream_length: ?u32 = null;
+    var filters: std.ArrayListUnmanaged(ImageFilter) = .{};
+    var stream_start: ?usize = null;
+    var stream_end: ?usize = null;
+    var jbig2_globals_obj: ?u32 = null;
+    var jbig2_globals_gen: ?u32 = null;
+
+    // Parse object content (same logic as findPdfImages linear scan)
+    while (j < data.len) {
+        j = skipWhitespace(data, j);
+        if (j >= data.len) break;
+
+        // Check for stream keyword (not "endstream")
+        if (j + 6 < data.len and std.mem.eql(u8, data[j..][0..6], "stream") and
+            (j < 3 or !std.mem.eql(u8, data[j - 3 ..][0..3], "end")))
+        {
+            j += 6;
+            if (j < data.len and data[j] == '\r') j += 1;
+            if (j < data.len and data[j] == '\n') j += 1;
+            stream_start = j;
+
+            if (stream_length) |len| {
+                stream_end = stream_start.? + len;
+                if (stream_end.? > data.len) stream_end = data.len;
+            } else {
+                while (j < data.len) {
+                    if (j + 9 <= data.len and std.mem.eql(u8, data[j..][0..9], "endstream")) {
+                        stream_end = j;
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+            break;
+        }
+
+        // Check for endobj
+        if (j + 6 < data.len and std.mem.eql(u8, data[j..][0..6], "endobj")) break;
+
+        // Parse dictionary entries
+        if (data[j] == '/') {
+            const name_result = parseName(data, j) orelse {
+                j += 1;
+                continue;
+            };
+            const name = name_result.name;
+            j = skipWhitespace(data, name_result.end);
+
+            if (std.mem.eql(u8, name, "Subtype")) {
+                if (j < data.len and data[j] == '/') {
+                    const subtype = parseName(data, j) orelse {
+                        j += 1;
+                        continue;
+                    };
+                    if (std.mem.eql(u8, subtype.name, "Image")) is_image = true;
+                    j = subtype.end;
+                }
+            } else if (std.mem.eql(u8, name, "Width")) {
+                if (parseInt(data, j)) |r| {
+                    width = @intCast(@max(0, r.value));
+                    j = r.end;
+                }
+            } else if (std.mem.eql(u8, name, "Height")) {
+                if (parseInt(data, j)) |r| {
+                    height = @intCast(@max(0, r.value));
+                    j = r.end;
+                }
+            } else if (std.mem.eql(u8, name, "BitsPerComponent")) {
+                if (parseInt(data, j)) |r| {
+                    bits = @intCast(@max(0, @min(255, r.value)));
+                    j = r.end;
+                }
+            } else if (std.mem.eql(u8, name, "Length")) {
+                if (parseDirectInt(data, j)) |r| {
+                    stream_length = @intCast(@max(0, r.value));
+                    j = r.end;
+                }
+            } else if (std.mem.eql(u8, name, "Filter")) {
+                if (j < data.len and data[j] == '/') {
+                    const filter_name = parseName(data, j) orelse {
+                        j += 1;
+                        continue;
+                    };
+                    filters.append(allocator, filterFromName(filter_name.name)) catch return null;
+                    j = filter_name.end;
+                } else if (j < data.len and data[j] == '[') {
+                    j += 1;
+                    while (j < data.len and data[j] != ']') {
+                        j = skipWhitespace(data, j);
+                        if (j < data.len and data[j] == '/') {
+                            const filter_name = parseName(data, j) orelse break;
+                            filters.append(allocator, filterFromName(filter_name.name)) catch return null;
+                            j = filter_name.end;
+                        } else {
+                            j += 1;
+                        }
+                    }
+                    if (j < data.len) j += 1;
+                }
+            } else if (std.mem.eql(u8, name, "DecodeParms")) {
+                // Parse DecodeParms for JBIG2Globals reference
+                const dp_start = j;
+                var dp_depth: u32 = 0;
+                var in_decode_parms = false;
+                while (j < data.len) {
+                    if (data[j] == '<' and j + 1 < data.len and data[j + 1] == '<') {
+                        dp_depth += 1;
+                        in_decode_parms = true;
+                        j += 2;
+                    } else if (data[j] == '>' and j + 1 < data.len and data[j + 1] == '>') {
+                        if (dp_depth > 0) dp_depth -= 1;
+                        if (dp_depth == 0 and in_decode_parms) {
+                            j += 2;
+                            break;
+                        }
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                    if (in_decode_parms and dp_depth == 0) break;
+                }
+                const dp_end = j;
+                var k = dp_start;
+                while (k + 13 < dp_end) : (k += 1) {
+                    if (std.mem.startsWith(u8, data[k..], "/JBIG2Globals")) {
+                        var ref_pos = k + 13;
+                        ref_pos = skipWhitespace(data, ref_pos);
+                        if (parseInt(data, ref_pos)) |obj_result| {
+                            jbig2_globals_obj = @intCast(@max(0, obj_result.value));
+                            ref_pos = skipWhitespace(data, obj_result.end);
+                            if (parseInt(data, ref_pos)) |gen_result| {
+                                jbig2_globals_gen = @intCast(@max(0, gen_result.value));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        } else {
+            j += 1;
+        }
+    }
+
+    if (is_image and stream_start != null and stream_end != null) {
+        return .{
+            .stream_start = stream_start.?,
+            .stream_end = stream_end.?,
+            .width = width,
+            .height = height,
+            .bits_per_component = bits,
+            .filters = filters.toOwnedSlice(allocator) catch return null,
+            .object_num = obj_num,
+            .gen_num = gen_num,
+            .jbig2_globals_obj = jbig2_globals_obj,
+            .jbig2_globals_gen = jbig2_globals_gen,
+        };
+    }
+
+    // Not an image — free filters
+    filters.deinit(allocator);
+    return null;
 }
 
 /// Find an object's stream data by object number

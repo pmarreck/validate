@@ -938,8 +938,7 @@ pub const ValidationResult = struct {
     circumvented_trivial_protection: bool = false,
     /// Whether validation was performed via external ffmpeg CLI (for video formats).
     validated_via_ffmpeg: bool = false,
-    /// Whether validation was performed via macOS VideoToolbox hardware decoder.
-    validated_via_videotoolbox: bool = false,
+
 
     /// Check if there are any malformations (warnings)
     pub fn hasMalformations(self: ValidationResult) bool {
@@ -2964,7 +2963,7 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
 
     // Check for valid UTF-8 - if it contains high bytes that aren't valid UTF-8,
     // check if it might be CP437 (demoscene NFO files) or Latin-1 (fallback)
-    if (!isValidUtf8(header[0..check_len])) {
+    if (!validateUtf8(header[0..check_len]).isValid()) {
         if (looksLikeCp437(header[0..check_len])) {
             return .plain_text_cp437;
         }
@@ -16198,7 +16197,7 @@ fn validateRpp(file: std.fs.File) ValidationResult {
     }
 
     // Verify it's UTF-8 by checking for valid UTF-8 sequences in header
-    if (!isValidUtf8(header[0..bytes_read])) {
+    if (!validateUtf8(header[0..bytes_read]).isValid()) {
         return ValidationResult.invalid(.rpp, "Invalid UTF-8 encoding");
     }
 
@@ -16236,7 +16235,7 @@ fn validateRppDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Validate UTF-8
-    if (!isValidUtf8(data)) {
+    if (!validateUtf8(data).isValid()) {
         return ValidationResult.invalid(.rpp, "Invalid UTF-8 encoding");
     }
 
@@ -16558,38 +16557,7 @@ test "looksLikeCp437 detects box-drawing characters" {
     try std.testing.expect(!looksLikeCp437(&latin1));
 }
 
-/// Check if a byte slice is valid UTF-8.
-fn isValidUtf8(bytes: []const u8) bool {
-    var i: usize = 0;
-    while (i < bytes.len) {
-        const b = bytes[i];
-        if (b < 0x80) {
-            // ASCII
-            i += 1;
-        } else if (b & 0xE0 == 0xC0) {
-            // 2-byte sequence
-            if (i + 1 >= bytes.len) return false;
-            if (bytes[i + 1] & 0xC0 != 0x80) return false;
-            i += 2;
-        } else if (b & 0xF0 == 0xE0) {
-            // 3-byte sequence
-            if (i + 2 >= bytes.len) return false;
-            if (bytes[i + 1] & 0xC0 != 0x80) return false;
-            if (bytes[i + 2] & 0xC0 != 0x80) return false;
-            i += 3;
-        } else if (b & 0xF8 == 0xF0) {
-            // 4-byte sequence
-            if (i + 3 >= bytes.len) return false;
-            if (bytes[i + 1] & 0xC0 != 0x80) return false;
-            if (bytes[i + 2] & 0xC0 != 0x80) return false;
-            if (bytes[i + 3] & 0xC0 != 0x80) return false;
-            i += 4;
-        } else {
-            return false;
-        }
-    }
-    return true;
-}
+
 
 // ============ Font Validators (TTF/OTF/WOFF/WOFF2) ============
 
@@ -16770,7 +16738,7 @@ fn validateUnknownWithUtf8Fallback(file: std.fs.File) ValidationResult {
     if (detected_encoding != .none) {
         // For UTF-8 with BOM, validate the UTF-8 content
         if (detected_encoding == .utf8_bom) {
-            if (isValidUtf8(buffer[start_offset..bytes_read])) {
+            if (validateUtf8(buffer[start_offset..bytes_read]).isValid()) {
                 var result = ValidationResult.ok(.unknown);
                 result.validation_depth = .structural;
                 return result;
@@ -16783,7 +16751,7 @@ fn validateUnknownWithUtf8Fallback(file: std.fs.File) ValidationResult {
     }
 
     // No BOM - try UTF-8 validation
-    if (isValidUtf8(buffer[0..bytes_read])) {
+    if (validateUtf8(buffer[0..bytes_read]).isValid()) {
         // Check if it looks like text (mostly printable/whitespace)
         var text_chars: usize = 0;
         var binary_chars: usize = 0;
@@ -20817,9 +20785,7 @@ fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
     if (video_result.validated_via_ffmpeg) {
         result.validated_via_ffmpeg = true;
     }
-    if (video_result.validated_via_videotoolbox) {
-        result.validated_via_videotoolbox = true;
-    }
+
     if (video_result.mixed_nal_prefix) {
         result.malformations.insert(.video_mixed_nal_prefix);
         result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
@@ -20956,7 +20922,7 @@ fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
             .byte_validated = media_result.crc_validated or (media_result.video_valid and media_result.video_frames_decoded > 0),
             .codec = media_result.video_codec,
             .validated_via_ffmpeg = false, // Not available in MediaValidationResult
-            .validated_via_videotoolbox = false,
+
             .mixed_nal_prefix = false,
             .unsupported_profile_no_ffmpeg = false,
         };
@@ -21062,9 +21028,7 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
     if (video_result.validated_via_ffmpeg) {
         result.validated_via_ffmpeg = true;
     }
-    if (video_result.validated_via_videotoolbox) {
-        result.validated_via_videotoolbox = true;
-    }
+
     // Check for unsupported profile warning
     if (video_result.unsupported_profile_no_ffmpeg) {
         result.malformations.insert(.video_unsupported_profile_no_ffmpeg);
@@ -21077,39 +21041,208 @@ fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
 /// Validate that a byte sequence is valid UTF-8.
 /// Returns the index of the first invalid byte, or null if valid.
-pub fn validateUtf8(data: []const u8) ?usize {
+
+pub const UnicodeWarningKind = enum(u3) {
+    noncharacter,
+    bidi_override,
+    zero_width,
+    misplaced_bom,
+};
+
+pub const UnicodeWarning = struct {
+    kind: UnicodeWarningKind,
+    byte_offset: usize,
+};
+
+pub const Utf8Result = struct {
+    /// Byte offset of first encoding error, or null if valid UTF-8
+    error_offset: ?usize = null,
+    /// Suspicious codepoint warnings (up to 5)
+    warnings: [5]UnicodeWarning = undefined,
+    warning_count: u3 = 0,
+
+    pub fn isValid(self: Utf8Result) bool {
+        return self.error_offset == null;
+    }
+
+    pub fn hasWarnings(self: Utf8Result) bool {
+        return self.warning_count > 0;
+    }
+};
+
+fn isNoncharacter(cp: u21) bool {
+    return (cp >= 0xFDD0 and cp <= 0xFDEF) or
+        (cp & 0xFFFF) == 0xFFFE or
+        (cp & 0xFFFF) == 0xFFFF;
+}
+
+fn isBidiOverride(cp: u21) bool {
+    return (cp >= 0x202A and cp <= 0x202E) or
+        (cp >= 0x2066 and cp <= 0x2069);
+}
+
+fn isZeroWidth(cp: u21) bool {
+    return cp == 0x200B or cp == 0x200C or cp == 0x200D or cp == 0x2060;
+}
+
+
+fn formatUnicodeWarnings(allocator: Allocator, warnings: []const UnicodeWarning) ?[]const u8 {
+    if (warnings.len == 0) return null;
+
+    // Group warnings by kind and collect byte offsets
+    var nonchar_offsets: [5]usize = undefined;
+    var nonchar_count: usize = 0;
+    var bidi_offsets: [5]usize = undefined;
+    var bidi_count: usize = 0;
+    var zw_offsets: [5]usize = undefined;
+    var zw_count: usize = 0;
+    var bom_offsets: [5]usize = undefined;
+    var bom_count: usize = 0;
+
+    for (warnings) |w| {
+        switch (w.kind) {
+            .noncharacter => {
+                if (nonchar_count < 5) {
+                    nonchar_offsets[nonchar_count] = w.byte_offset;
+                    nonchar_count += 1;
+                }
+            },
+            .bidi_override => {
+                if (bidi_count < 5) {
+                    bidi_offsets[bidi_count] = w.byte_offset;
+                    bidi_count += 1;
+                }
+            },
+            .zero_width => {
+                if (zw_count < 5) {
+                    zw_offsets[zw_count] = w.byte_offset;
+                    zw_count += 1;
+                }
+            },
+            .misplaced_bom => {
+                if (bom_count < 5) {
+                    bom_offsets[bom_count] = w.byte_offset;
+                    bom_count += 1;
+                }
+            },
+        }
+    }
+
+    // Build formatted string using ArrayList
+    var list = std.ArrayListUnmanaged(u8){};
+    const writer = list.writer(allocator);
+
+    writer.writeAll("[") catch return null;
+    var first_group = true;
+
+    const groups = [_]struct { name: []const u8, offsets: []const usize }{
+        .{ .name = "noncharacters", .offsets = nonchar_offsets[0..nonchar_count] },
+        .{ .name = "bidi overrides", .offsets = bidi_offsets[0..bidi_count] },
+        .{ .name = "zero-width chars", .offsets = zw_offsets[0..zw_count] },
+        .{ .name = "misplaced BOM", .offsets = bom_offsets[0..bom_count] },
+    };
+
+    for (groups) |group| {
+        if (group.offsets.len == 0) continue;
+        if (!first_group) {
+            writer.writeAll("; ") catch return null;
+        }
+        first_group = false;
+        writer.writeAll(group.name) catch return null;
+        writer.writeAll(" @ ") catch return null;
+        for (group.offsets, 0..) |offset, idx| {
+            if (idx > 0) {
+                writer.writeAll(", ") catch return null;
+            }
+            std.fmt.format(writer, "{d}", .{offset}) catch return null;
+        }
+    }
+
+    writer.writeAll("]") catch return null;
+    return list.toOwnedSlice(allocator) catch return null;
+}
+
+pub fn validateUtf8(data: []const u8) Utf8Result {
+    var result = Utf8Result{};
     var i: usize = 0;
     while (i < data.len) {
         const byte = data[i];
-        const seq_len = getUtf8SequenceLength(byte) orelse return i;
+        const seq_len = getUtf8SequenceLength(byte) orelse {
+            result.error_offset = i;
+            return result;
+        };
 
-        if (i + seq_len > data.len) return i; // Truncated sequence
+        if (i + seq_len > data.len) { // Truncated sequence
+            result.error_offset = i;
+            return result;
+        }
 
         // Validate continuation bytes
         var j: usize = 1;
         while (j < seq_len) : (j += 1) {
-            if (i + j >= data.len) return i;
+            if (i + j >= data.len) {
+                result.error_offset = i;
+                return result;
+            }
             const cont = data[i + j];
-            if ((cont & 0xC0) != 0x80) return i + j; // Not a valid continuation byte
+            if ((cont & 0xC0) != 0x80) { // Not a valid continuation byte
+                result.error_offset = i + j;
+                return result;
+            }
         }
 
         // Check for overlong encodings and invalid codepoints
-        const codepoint = decodeUtf8Codepoint(data[i..][0..seq_len]) orelse return i;
+        const codepoint = decodeUtf8Codepoint(data[i..][0..seq_len]) orelse {
+            result.error_offset = i;
+            return result;
+        };
 
         // Check for overlong encoding
-        if (seq_len == 2 and codepoint < 0x80) return i;
-        if (seq_len == 3 and codepoint < 0x800) return i;
-        if (seq_len == 4 and codepoint < 0x10000) return i;
+        if (seq_len == 2 and codepoint < 0x80) {
+            result.error_offset = i;
+            return result;
+        }
+        if (seq_len == 3 and codepoint < 0x800) {
+            result.error_offset = i;
+            return result;
+        }
+        if (seq_len == 4 and codepoint < 0x10000) {
+            result.error_offset = i;
+            return result;
+        }
 
         // Check for surrogate pairs (U+D800 to U+DFFF) - invalid in UTF-8
-        if (codepoint >= 0xD800 and codepoint <= 0xDFFF) return i;
+        if (codepoint >= 0xD800 and codepoint <= 0xDFFF) {
+            result.error_offset = i;
+            return result;
+        }
 
         // Check for values above U+10FFFF
-        if (codepoint > 0x10FFFF) return i;
+        if (codepoint > 0x10FFFF) {
+            result.error_offset = i;
+            return result;
+        }
+
+        // Check for suspicious but valid codepoints
+        if (result.warning_count < 5) {
+            if (isNoncharacter(codepoint)) {
+                result.warnings[result.warning_count] = .{ .kind = .noncharacter, .byte_offset = i };
+                result.warning_count += 1;
+            } else if (isBidiOverride(codepoint)) {
+                result.warnings[result.warning_count] = .{ .kind = .bidi_override, .byte_offset = i };
+                result.warning_count += 1;
+            } else if (isZeroWidth(codepoint)) {
+                result.warnings[result.warning_count] = .{ .kind = .zero_width, .byte_offset = i };
+                result.warning_count += 1;
+            } else if (codepoint == 0xFEFF and i > 0) {
+                result.warnings[result.warning_count] = .{ .kind = .misplaced_bom, .byte_offset = i };
+                result.warning_count += 1;
+            }
+        }
 
         i += seq_len;
     }
-    return null; // Valid UTF-8
+    return result; // Valid UTF-8
 }
 
 fn getUtf8SequenceLength(first_byte: u8) ?usize {
@@ -21816,6 +21949,11 @@ pub const FormatValidator = struct {
             return ValidationResult.unknown();
         }
 
+        // Ensure allocator is available for validators that need it (e.g. Unicode warnings)
+        if (self.allocator == null) {
+            self.allocator = allocator;
+        }
+
         // First do structural validation
         var result = self.validateFile(path);
 
@@ -22405,8 +22543,8 @@ pub const FormatValidator = struct {
             .erlang_term => ValidationResult.ok(.erlang_term), // Structural detection only
             .eex => ValidationResult.ok(.eex), // Structural detection only
             .markdown => ValidationResult.ok(.markdown), // Text format, no validation
-            .plain_text => validatePlainText(file), // UTF-8 validation
-            .plain_text_utf16 => validatePlainTextUtf16(file), // UTF-16 validation
+            .plain_text => validatePlainText(self.allocator, file), // UTF-8 validation
+            .plain_text_utf16 => validatePlainTextUtf16(self.allocator, file), // UTF-16 validation
             .plain_text_latin1 => ValidationResult.okWithDepth(.plain_text_latin1, .full), // Latin-1 always valid
             .plain_text_cp437 => ValidationResult.okWithDepth(.plain_text_cp437, .full), // CP437 always valid (demoscene NFO)
             // Font formats
@@ -24308,7 +24446,7 @@ fn validateCsv(file: std.fs.File) ValidationResult {
 /// This allows validating arbitrarily large text files without loading them entirely into memory.
 /// If file has UTF-16 BOM, delegates to UTF-16 validation.
 /// If UTF-8 validation fails but content looks like text, falls back to Latin-1.
-fn validatePlainText(file: std.fs.File) ValidationResult {
+fn validatePlainText(allocator: ?Allocator, file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
         return ValidationResult.invalid(.plain_text, "Failed to stat file");
     };
@@ -24329,6 +24467,11 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
     // Track incomplete multi-byte UTF-8 sequences at chunk boundaries
     var pending_count: usize = 0;
     var is_first_chunk = true;
+
+    // Warning accumulation across chunks
+    var file_warnings: [5]UnicodeWarning = undefined;
+    var file_warning_count: u3 = 0;
+    var chunk_base_offset: usize = 0;
 
     while (true) {
         // Read into buffer after any pending bytes
@@ -24360,7 +24503,7 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
                 file.seekTo(0) catch {
                     return ValidationResult.invalid(.plain_text_utf16, "Failed to seek");
                 };
-                return validatePlainTextUtf16(file);
+                return validatePlainTextUtf16(allocator, file);
             }
             // Check for UTF-16 BE BOM (0xFE 0xFF)
             if (data_end >= 2 and buffer[0] == 0xFE and buffer[1] == 0xFF) {
@@ -24368,7 +24511,7 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
                 file.seekTo(0) catch {
                     return ValidationResult.invalid(.plain_text_utf16, "Failed to seek");
                 };
-                return validatePlainTextUtf16(file);
+                return validatePlainTextUtf16(allocator, file);
             }
             // Check for UTF-8 BOM (0xEF 0xBB 0xBF)
             if (data_end >= 3 and buffer[0] == 0xEF and buffer[1] == 0xBB and buffer[2] == 0xBF) {
@@ -24405,12 +24548,24 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
 
         // Validate complete sequences
         if (validate_end > data_start) {
-            if (!isValidUtf8(buffer[data_start..validate_end])) {
+            const utf8_result = validateUtf8(buffer[data_start..validate_end]);
+            if (!utf8_result.isValid()) {
                 // Invalid UTF-8, try Latin-1 fallback
                 file.seekTo(0) catch {
                     return ValidationResult.invalid(.plain_text, "Failed to seek for Latin-1 check");
                 };
                 return validatePlainTextLatin1Fallback(file);
+            }
+            // Accumulate warnings with adjusted byte offsets
+            const adj_offset = chunk_base_offset + data_start;
+            var wi: u3 = 0;
+            while (wi < utf8_result.warning_count) : (wi += 1) {
+                if (file_warning_count >= 5) break;
+                file_warnings[file_warning_count] = .{
+                    .kind = utf8_result.warnings[wi].kind,
+                    .byte_offset = utf8_result.warnings[wi].byte_offset + adj_offset,
+                };
+                file_warning_count += 1;
             }
         }
 
@@ -24421,6 +24576,16 @@ fn validatePlainText(file: std.fs.File) ValidationResult {
             var temp: [4]u8 = undefined;
             @memcpy(temp[0..pending_count], buffer[validate_end..data_end]);
             @memcpy(buffer[0..pending_count], temp[0..pending_count]);
+        }
+
+        chunk_base_offset += bytes_read;
+    }
+
+    if (file_warning_count > 0) {
+        if (allocator) |alloc| {
+            if (formatUnicodeWarnings(alloc, file_warnings[0..file_warning_count])) |warning_str| {
+                return ValidationResult.okWithDepthAndWarning(.plain_text, .full, warning_str);
+            }
         }
     }
 
@@ -24484,7 +24649,7 @@ fn validatePlainTextLatin1Fallback(file: std.fs.File) ValidationResult {
 
 /// Validate plain text file as UTF-16 using streaming validation.
 /// Supports both UTF-16 LE (0xFF 0xFE BOM) and UTF-16 BE (0xFE 0xFF BOM).
-fn validatePlainTextUtf16(file: std.fs.File) ValidationResult {
+fn validatePlainTextUtf16(allocator: ?Allocator, file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
         return ValidationResult.invalid(.plain_text_utf16, "Failed to stat file");
     };
@@ -24530,6 +24695,11 @@ fn validatePlainTextUtf16(file: std.fs.File) ValidationResult {
     var pending_byte: ?u8 = null;
     var pending_high_surrogate: ?u16 = null;
 
+    // Warning accumulation
+    var file_warnings: [5]UnicodeWarning = undefined;
+    var file_warning_count: u3 = 0;
+    var byte_offset: usize = if (is_little_endian or is_big_endian) @as(usize, 2) else @as(usize, 0);
+
     while (true) {
         const read_start: usize = if (pending_byte != null) 1 else 0;
         if (pending_byte) |b| {
@@ -24570,11 +24740,16 @@ fn validatePlainTextUtf16(file: std.fs.File) ValidationResult {
             else
                 (@as(u16, buffer[i + 1]) << 8) | buffer[i];
 
-            if (pending_high_surrogate) |_| {
+            if (pending_high_surrogate) |high| {
                 // Expecting low surrogate (0xDC00-0xDFFF)
                 if (code_unit >= 0xDC00 and code_unit <= 0xDFFF) {
-                    // Valid surrogate pair
+                    // Valid surrogate pair — decode full codepoint for warning check
+                    const codepoint: u21 = (@as(u21, high - 0xD800) << 10) + @as(u21, code_unit - 0xDC00) + 0x10000;
                     pending_high_surrogate = null;
+                    if (file_warning_count < 5 and isNoncharacter(codepoint)) {
+                        file_warnings[file_warning_count] = .{ .kind = .noncharacter, .byte_offset = byte_offset - 2 };
+                        file_warning_count += 1;
+                    }
                 } else {
                     return ValidationResult.invalid(.plain_text_utf16, "Invalid UTF-16 (missing low surrogate)");
                 }
@@ -24584,10 +24759,37 @@ fn validatePlainTextUtf16(file: std.fs.File) ValidationResult {
             } else if (code_unit >= 0xDC00 and code_unit <= 0xDFFF) {
                 // Unexpected low surrogate
                 return ValidationResult.invalid(.plain_text_utf16, "Invalid UTF-16 (unexpected low surrogate)");
+            } else {
+                // BMP codepoint — check for suspicious characters
+                const codepoint: u21 = @as(u21, code_unit);
+                if (file_warning_count < 5) {
+                    if (isNoncharacter(codepoint)) {
+                        file_warnings[file_warning_count] = .{ .kind = .noncharacter, .byte_offset = byte_offset };
+                        file_warning_count += 1;
+                    } else if (isBidiOverride(codepoint)) {
+                        file_warnings[file_warning_count] = .{ .kind = .bidi_override, .byte_offset = byte_offset };
+                        file_warning_count += 1;
+                    } else if (isZeroWidth(codepoint)) {
+                        file_warnings[file_warning_count] = .{ .kind = .zero_width, .byte_offset = byte_offset };
+                        file_warning_count += 1;
+                    } else if (codepoint == 0xFEFF and byte_offset > 2) {
+                        // Misplaced BOM (not at file start; offset > 2 means past the BOM)
+                        file_warnings[file_warning_count] = .{ .kind = .misplaced_bom, .byte_offset = byte_offset };
+                        file_warning_count += 1;
+                    }
+                }
             }
-            // Other values are valid BMP code points
 
+            byte_offset += 2;
             i += 2;
+        }
+    }
+
+    if (file_warning_count > 0) {
+        if (allocator) |alloc| {
+            if (formatUnicodeWarnings(alloc, file_warnings[0..file_warning_count])) |warning_str| {
+                return ValidationResult.okWithDepthAndWarning(.plain_text_utf16, .full, warning_str);
+            }
         }
     }
 
@@ -28946,39 +29148,139 @@ test "FormatValidator rejects invalid WordPerfect" {
 
 test "validateUtf8 accepts valid ASCII" {
     const valid = "Hello, World!";
-    try std.testing.expect(validateUtf8(valid) == null);
+    const result = validateUtf8(valid);
+    try std.testing.expect(result.isValid());
+    try std.testing.expect(!result.hasWarnings());
 }
 
 test "validateUtf8 accepts valid multi-byte sequences" {
     // Japanese: "こんにちは" (Konnichiwa)
     const japanese = "\xe3\x81\x93\xe3\x82\x93\xe3\x81\xab\xe3\x81\xa1\xe3\x81\xaf";
-    try std.testing.expect(validateUtf8(japanese) == null);
+    try std.testing.expect(validateUtf8(japanese).isValid());
 
     // Emoji: 😀 (U+1F600)
     const emoji = "\xf0\x9f\x98\x80";
-    try std.testing.expect(validateUtf8(emoji) == null);
+    try std.testing.expect(validateUtf8(emoji).isValid());
 }
 
 test "validateUtf8 rejects invalid start byte" {
     const invalid = "\xff"; // 0xFF is never valid in UTF-8
-    try std.testing.expect(validateUtf8(invalid) != null);
+    try std.testing.expect(!validateUtf8(invalid).isValid());
 }
 
 test "validateUtf8 rejects truncated sequence" {
     const truncated = "\xe3\x81"; // Start of 3-byte sequence, missing last byte
-    try std.testing.expect(validateUtf8(truncated) != null);
+    try std.testing.expect(!validateUtf8(truncated).isValid());
 }
 
 test "validateUtf8 rejects overlong encoding" {
     // Overlong encoding of '/' (U+002F) as 2 bytes instead of 1
     const overlong = "\xc0\xaf";
-    try std.testing.expect(validateUtf8(overlong) != null);
+    try std.testing.expect(!validateUtf8(overlong).isValid());
 }
 
 test "validateUtf8 rejects surrogate pairs" {
     // UTF-8 encoded surrogate (U+D800) - invalid
     const surrogate = "\xed\xa0\x80";
-    try std.testing.expect(validateUtf8(surrogate) != null);
+    try std.testing.expect(!validateUtf8(surrogate).isValid());
+}
+
+// ============ Unicode Suspicious Codepoint Warning Tests ============
+
+test "validateUtf8 warns on noncharacter U+FFFE" {
+    // U+FFFE = EF BF BE
+    const data = "abc\xef\xbf\xbedef";
+    const result = validateUtf8(data);
+    try std.testing.expect(result.isValid());
+    try std.testing.expect(result.hasWarnings());
+    try std.testing.expectEqual(@as(u3, 1), result.warning_count);
+    try std.testing.expectEqual(UnicodeWarningKind.noncharacter, result.warnings[0].kind);
+    try std.testing.expectEqual(@as(usize, 3), result.warnings[0].byte_offset);
+}
+
+test "validateUtf8 warns on noncharacter U+FDD0" {
+    // U+FDD0 = EF B7 90
+    const data = "\xef\xb7\x90";
+    const result = validateUtf8(data);
+    try std.testing.expect(result.isValid());
+    try std.testing.expectEqual(@as(u3, 1), result.warning_count);
+    try std.testing.expectEqual(UnicodeWarningKind.noncharacter, result.warnings[0].kind);
+}
+
+test "validateUtf8 warns on noncharacter U+1FFFE" {
+    // U+1FFFE = F0 9F BF BE
+    const data = "\xf0\x9f\xbf\xbe";
+    const result = validateUtf8(data);
+    try std.testing.expect(result.isValid());
+    try std.testing.expectEqual(@as(u3, 1), result.warning_count);
+    try std.testing.expectEqual(UnicodeWarningKind.noncharacter, result.warnings[0].kind);
+}
+
+test "validateUtf8 warns on bidi override U+202E (RLO)" {
+    // U+202E = E2 80 AE
+    const data = "Hello\xe2\x80\xaeWorld";
+    const result = validateUtf8(data);
+    try std.testing.expect(result.isValid());
+    try std.testing.expectEqual(@as(u3, 1), result.warning_count);
+    try std.testing.expectEqual(UnicodeWarningKind.bidi_override, result.warnings[0].kind);
+    try std.testing.expectEqual(@as(usize, 5), result.warnings[0].byte_offset);
+}
+
+test "validateUtf8 warns on zero-width space U+200B" {
+    // U+200B = E2 80 8B
+    const data = "a\xe2\x80\x8bb";
+    const result = validateUtf8(data);
+    try std.testing.expect(result.isValid());
+    try std.testing.expectEqual(@as(u3, 1), result.warning_count);
+    try std.testing.expectEqual(UnicodeWarningKind.zero_width, result.warnings[0].kind);
+    try std.testing.expectEqual(@as(usize, 1), result.warnings[0].byte_offset);
+}
+
+test "validateUtf8 warns on misplaced BOM (not at offset 0)" {
+    // U+FEFF = EF BB BF (BOM at position 3, not at start)
+    const data = "abc\xef\xbb\xbf";
+    const result = validateUtf8(data);
+    try std.testing.expect(result.isValid());
+    try std.testing.expectEqual(@as(u3, 1), result.warning_count);
+    try std.testing.expectEqual(UnicodeWarningKind.misplaced_bom, result.warnings[0].kind);
+    try std.testing.expectEqual(@as(usize, 3), result.warnings[0].byte_offset);
+}
+
+test "validateUtf8 does not warn on BOM at offset 0" {
+    // U+FEFF at start of data — this is a legitimate BOM
+    const data = "\xef\xbb\xbf" ++ "Hello";
+    const result = validateUtf8(data);
+    try std.testing.expect(result.isValid());
+    try std.testing.expect(!result.hasWarnings());
+}
+
+test "validateUtf8 collects at most 5 warnings" {
+    // 6 zero-width spaces — only 5 should be collected
+    const data = "\xe2\x80\x8b" ** 6;
+    const result = validateUtf8(data);
+    try std.testing.expect(result.isValid());
+    try std.testing.expectEqual(@as(u3, 5), result.warning_count);
+}
+
+test "formatUnicodeWarnings produces correct output" {
+    const warnings = [_]UnicodeWarning{
+        .{ .kind = .noncharacter, .byte_offset = 100 },
+        .{ .kind = .noncharacter, .byte_offset = 200 },
+        .{ .kind = .bidi_override, .byte_offset = 300 },
+        .{ .kind = .zero_width, .byte_offset = 400 },
+    };
+    const formatted = formatUnicodeWarnings(std.testing.allocator, &warnings);
+    try std.testing.expect(formatted != null);
+    defer if (formatted) |f| std.testing.allocator.free(f);
+    try std.testing.expectEqualStrings(
+        "[noncharacters @ 100, 200; bidi overrides @ 300; zero-width chars @ 400]",
+        formatted.?,
+    );
+}
+
+test "formatUnicodeWarnings returns null for empty warnings" {
+    const formatted = formatUnicodeWarnings(std.testing.allocator, &[_]UnicodeWarning{});
+    try std.testing.expect(formatted == null);
 }
 
 // ============ UTF-16 Validation Tests ============
