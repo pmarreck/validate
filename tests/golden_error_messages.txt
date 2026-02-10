@@ -1,0 +1,1435 @@
+# Error/Warning Message Catalog — Golden Reference
+# Generated: 2026-02-10T20:16:18Z
+# Commit: 73bea9b
+#
+# This file captures every unique user-facing error and warning string.
+# After refactoring, regenerate and diff to catch regressions.
+#
+# ERRORS: 1374
+# WARNINGS: 48
+
+=== ERRORS ===
+Access denied
+accessor has invalid count
+accessor references invalid bufferView index
+Allocation table extends beyond file
+APE descriptor too small
+APE header too small
+ar archive has data but no valid members
+ar header too short
+ASF header contains no sub-objects
+ASF header object count unreasonably large
+ASF Header Object size exceeds file size (truncated)
+ASF Header Object size too small
+asset is not an object
+BIN chunk smaller than first buffer byteLength
+Binary plist too small
+Block CRC mismatch - data corrupted
+BMP file size mismatch (truncated)
+Bookkeeping offset exceeds file size
+Bookkeeping section truncated
+Bookkeeping size exceeds file size
+Boundary too long
+Box exceeds file bounds
+Box extends beyond file end (truncated)
+Box size exceeds file size
+Buffer has negative byteLength
+Buffer too small
+Buffer too small for ACCDB
+Buffer too small for AEP header
+Buffer too small for Blender
+Buffer too small for DRP
+Buffer too small for DWG
+Buffer too small for EXR
+Buffer too small for FCPXML
+Buffer too small for FL Studio
+Buffer too small for INDD
+Buffer too small for MDB
+Buffer too small for OBJ
+Buffer too small for PRPROJ
+Buffer too small for PSD header
+Buffer too small for Sketch
+Buffer truncated
+bufferView references invalid buffer index
+Cannot determine MPEG TS packet size
+Central directory extends beyond file
+CHECKSUM verification failed
+Chunk extends beyond file
+Chunk extends beyond FORM boundary
+Chunk size exceeds file bounds
+Chunk size exceeds maximum
+COFF header too short
+Color mode data exceeds buffer
+Color mode data section exceeds file size
+COMM chunk extends beyond file
+COMM chunk too small
+Comment too long
+Compressed SWF larger than declared size
+Container size exceeds file size (truncated)
+Content-Length exceeds file bounds
+Corrupt compressed data
+Corrupted
+CRC checksum mismatch
+CRC mismatch in critical chunk
+CRC mismatch in deflated entry
+CRC mismatch in stored entry
+CRC32 or ISIZE mismatch - data corrupted
+Data array exceeds file size
+Data array size overflow
+DATA before HEADER
+Data element exceeds file bounds
+Data size exceeds file size (truncated)
+Database integrity check failed
+DATASUM verification failed
+Declared file length exceeds actual size
+Decompressed data too large
+Decompressed size exceeds limit
+Decompressed size mismatch
+Decompression error
+Decompression failed
+Decompression failed - corrupt data
+Decompressor init failed
+Deflate decompression failed
+Deflate decompression failed - buffer error
+Deflate decompression failed - corrupted data
+detected via extension, magic bytes corrupted
+DFF chunk size exceeds file size
+Directory extends beyond file
+Directory offset beyond file size
+DNG file read incomplete
+DNG: embedded preview image corrupt
+DPX declared file size exceeds actual size (truncated)
+DPX image offset beyond end of file
+DPX image offset too small
+DPX version string does not start with 'V'
+DSF header claims larger size than file
+Duplicate HEADER section
+EBML header exceeds file size
+ELF header too short
+ELF header too short for declared class
+Empty file
+Empty font file
+Empty footer metadata
+Empty INI file
+Empty JSON file
+Empty plist file
+Empty sequence (no data after header)
+Empty sequence line
+Empty tag name
+Empty TOML file
+Empty XML document
+Empty XML file
+END-ISO without DATA
+End-of-file address exceeds file size
+endfacet without facet
+endsolid without solid
+EPS missing %%BoundingBox
+EPS missing required %%BoundingBox
+EXR scanline decompression failed: corrupt data
+Face has fewer indices than declared
+Face must have at least 3 vertices
+Face vertex index out of range
+Facet must have exactly 3 vertices
+Failed to allocate block header buffer
+Failed to allocate conversion buffer
+Failed to allocate memory
+Failed to allocate memory for XML
+Failed to allocate read buffer
+Failed to allocate section buffer
+Failed to get file size
+Failed to get offset table position
+Failed to get position
+Failed to get size
+Failed to get ZIP data position
+Failed to open ACCDB file
+Failed to open Blender file
+Failed to open database for integrity check
+Failed to open DNG file
+Failed to open DRP file
+Failed to open DWG file
+Failed to open EXR file
+Failed to open FCPXML file
+Failed to open file
+Failed to open FL Studio file
+Failed to open FLV file
+Failed to open Genesis file
+Failed to open GLB file
+Failed to open IFF file
+Failed to open INDD file
+Failed to open KML file
+Failed to open MBOX file
+Failed to open MDB file
+Failed to open N64 file
+Failed to open NES file
+Failed to open OBJ file
+Failed to open PAK file
+Failed to open PRPROJ file
+Failed to open RPP file
+Failed to open RTF file
+Failed to open Sketch file
+Failed to open SVG file
+Failed to open TIFF file
+Failed to open WAD file
+Failed to prepare integrity check
+Failed to read
+Failed to read 7z header
+Failed to read AC-3 header
+Failed to read ACCDB header
+Failed to read ADTS data
+Failed to read AEP header
+Failed to read after ID3
+Failed to read AI header
+Failed to read ALS header
+Failed to read APE header
+Failed to read AppleDouble header
+Failed to read ASF header
+Failed to read at startxref position
+Failed to read audio header
+Failed to read AVI data
+Failed to read AVI header
+Failed to read binary data
+Failed to read blend signature
+Failed to read Blender header
+Failed to read Blorb header
+Failed to read BMP header
+Failed to read BOM
+Failed to read bookkeeping
+Failed to read BSP header
+Failed to read bzip2 header
+Failed to read CAF header
+Failed to read central directory extra
+Failed to read central directory filename
+Failed to read central directory header
+Failed to read CHD header
+Failed to read checksum
+Failed to read chunk
+Failed to read chunk CRC
+Failed to read chunk data
+Failed to read chunk header
+Failed to read ClarisWorks header
+Failed to read color mode data length
+Failed to read color mode length
+Failed to read comment
+Failed to read compressed data
+Failed to read compression type
+Failed to read data
+Failed to read data for DATASUM
+Failed to read DFF chunks
+Failed to read DFF header
+Failed to read DICOM magic
+Failed to read directory
+Failed to read directory entry
+Failed to read DMG trailer
+Failed to read DNG file
+Failed to read DOS header
+Failed to read DPX header
+Failed to read DRP header
+Failed to read DSF header
+Failed to read DV header
+Failed to read DWG header
+Failed to read DXF header
+Failed to read E-AC-3 header
+Failed to read EBML data
+Failed to read EBML header
+Failed to read EBML header size
+Failed to read EBML size
+Failed to read element
+Failed to read ELF header
+Failed to read embedded content
+Failed to read entry data
+Failed to read entry filename
+Failed to read entry signature
+Failed to read EOCD area
+Failed to read EPS header
+Failed to read EXR header
+Failed to read extended size
+Failed to read extra data length
+Failed to read extra field length
+Failed to read FCPXML header
+Failed to read file
+Failed to read file for Latin-1 check
+Failed to read file header
+Failed to read filename
+Failed to read FITS header
+Failed to read FLAC header
+Failed to read FLP header
+Failed to read FLV header
+Failed to read fmt chunk
+Failed to read font file
+Failed to read footer metadata
+Failed to read for content check
+Failed to read for EOI search
+Failed to read full footer
+Failed to read full trailer
+Failed to read GB header
+Failed to read GBA header
+Failed to read Genesis header
+Failed to read GIF header
+Failed to read gzip header
+Failed to read gzip trailer
+Failed to read HDF5 superblock
+Failed to read HDU for CHECKSUM
+Failed to read header
+Failed to read header CRC
+Failed to read header data
+Failed to read IDML header
+Failed to read IFD
+Failed to read IFD entry
+Failed to read IFD entry count
+Failed to read IFF header
+Failed to read image data
+Failed to read image resources length
+Failed to read INDD header
+Failed to read IT header
+Failed to read JBIG2 header
+Failed to read JPEG header
+Failed to read JPEG2000 header
+Failed to read JSON
+Failed to read JXL header
+Failed to read KML header
+Failed to read KMZ header
+Failed to read layer bounds
+Failed to read layer channel count
+Failed to read layer count
+Failed to read layer info length
+Failed to read layer/mask length
+Failed to read local file header
+Failed to read local file header signature
+Failed to read MacWrite header
+Failed to read MATLAB header
+Failed to read MDB header
+Failed to read metadata header
+Failed to read MIDI header
+Failed to read MOD signature
+Failed to read MP3 header
+Failed to read N64 header
+Failed to read NDS header
+Failed to read NES header
+Failed to read NetCDF header
+Failed to read NIfTI header
+Failed to read Nintendo logo
+Failed to read offset table
+Failed to read Ogg header
+Failed to read OLE2 header
+Failed to read packet header
+Failed to read PAK header
+Failed to read PAM header
+Failed to read Parquet footer
+Failed to read Parquet header
+Failed to read PDF header
+Failed to read PE header
+Failed to read PNG signature
+Failed to read PreviousTagSize0
+Failed to read PRPROJ header
+Failed to read PSD header
+Failed to read QOI header
+Failed to read RAR header
+Failed to read record
+Failed to read resource data length
+Failed to read resource ID
+Failed to read resource name length
+Failed to read RIFF header
+Failed to read RLE count
+Failed to read RPP header
+Failed to read RTF header
+Failed to read RTF tail
+Failed to read S3M header
+Failed to read section table
+Failed to read Segment ID
+Failed to read segment length
+Failed to read segment marker
+Failed to read segment table
+Failed to read Shapefile header
+Failed to read Sketch header
+Failed to read SMD
+Failed to read SMD header
+Failed to read SQLite header
+Failed to read STL header
+Failed to read strip data
+Failed to read StripByteCounts
+Failed to read StripOffsets
+Failed to read SVG header
+Failed to read SWF header
+Failed to read SWF RECT
+Failed to read tag header
+Failed to read tar header
+Failed to read TGA header
+Failed to read TIFF header
+Failed to read track header
+Failed to read trailer
+Failed to read trailer area
+Failed to read triangle
+Failed to read TS data
+Failed to read volume descriptor
+Failed to read VPK header
+Failed to read WAD header
+Failed to read WAV data
+Failed to read WAV header
+Failed to read WebP header
+Failed to read WordPerfect header
+Failed to read XM header
+Failed to read XML data
+Failed to read XZ header
+Failed to read ZIP compressed data
+Failed to read ZIP signature
+Failed to read Zstd header
+Failed to seek
+Failed to seek for CHECKSUM
+Failed to seek for content check
+Failed to seek for CRC
+Failed to seek for CRC calc
+Failed to seek for EOCD
+Failed to seek for EOI search
+Failed to seek for Latin-1 check
+Failed to seek for Opus validation
+Failed to seek for trailer
+Failed to seek for Vorbis validation
+Failed to seek past EBML header
+Failed to seek past extra field
+Failed to seek past header
+Failed to seek past ID3
+Failed to seek past image resources
+Failed to seek past layers
+Failed to seek past magic
+Failed to seek past preamble
+Failed to seek past signature
+Failed to seek to audio
+Failed to seek to bookkeeping
+Failed to seek to central directory
+Failed to seek to checksum
+Failed to seek to chunk
+Failed to seek to comment
+Failed to seek to compressed data
+Failed to seek to data
+Failed to seek to data for DATASUM
+Failed to seek to directory
+Failed to seek to element
+Failed to seek to embedded content
+Failed to seek to end
+Failed to seek to filename
+Failed to seek to footer
+Failed to seek to footer metadata
+Failed to seek to header
+Failed to seek to header type
+Failed to seek to IFD
+Failed to seek to image data
+Failed to seek to JSON
+Failed to seek to local file header
+Failed to seek to logo
+Failed to seek to MOD signature
+Failed to seek to packet
+Failed to seek to PE header
+Failed to seek to PS data
+Failed to seek to record
+Failed to seek to RECT
+Failed to seek to RLE data
+Failed to seek to section table
+Failed to seek to start
+Failed to seek to strip
+Failed to seek to tags
+Failed to seek to TIFF IFD
+Failed to seek to trailer
+Failed to seek to trailer area
+Failed to seek to volume descriptor
+Failed to seek to xref table
+Failed to skip central directory comment
+Failed to skip central directory filename
+Failed to skip channel info
+Failed to skip color mode data
+Failed to skip encrypted entry
+Failed to skip entry
+Failed to skip entry after alloc failure
+Failed to skip entry data
+Failed to skip entry filename
+Failed to skip extra data
+Failed to skip filename/extra
+Failed to skip image resources
+Failed to skip large compressed entry
+Failed to skip large deflated entry
+Failed to skip large entry
+Failed to skip layer properties
+Failed to skip layer/mask data
+Failed to skip local extra
+Failed to skip local filename
+Failed to skip resource data
+Failed to skip resource name
+Failed to stat DNG file
+Failed to stat file
+Failed to stat font file
+Failed to stat TIFF file
+FASTA must start with '>'
+FASTQ must start with '@'
+Fat arch entries extend beyond file
+FCPXML too large
+File appears to be ZIP, not Bitwig project
+File appears to be ZIP, not Pro Tools session
+File appears to be ZIP, not Reason project
+File entry extends beyond archive
+File not found
+File smaller than header indicates
+File too large
+File too large for full decode validation
+File too large for Genesis ROM
+File too large for HTML validation
+File too large for N64 ROM
+File too large for SNES ROM
+File too large for validation
+File too small
+File too small for 3MF
+File too small for 7z header
+File too small for AC-3
+File too small for ACCDB format
+File too small for ADTS
+File too small for AEP header
+File too small for AI header
+File too small for ALS format
+File too small for APE format
+File too small for AppleDouble
+File too small for ar archive
+File too small for ASF header
+File too small for BEAM format
+File too small for Bitwig project
+File too small for Blender format
+File too small for Blorb
+File too small for BMP
+File too small for BSP
+File too small for bzip2
+File too small for CAF header
+File too small for CHD
+File too small for ClarisWorks
+File too small for COFF header
+File too small for Cubase project
+File too small for declared data array
+File too small for declared ROM sizes
+File too small for DFF
+File too small for DICOM
+File too small for directory entries
+File too small for DMG
+File too small for DPX header
+File too small for DRP format
+File too small for DS_Store format
+File too small for DSF
+File too small for DV DIF block (need 80 bytes)
+File too small for DWG format
+File too small for DXF
+File too small for E-AC-3
+File too small for ELF header
+File too small for EML
+File too small for EPS header
+File too small for EXR format
+File too small for fat header
+File too small for FCPXML format
+File too small for FITS
+File too small for FL Studio project
+File too small for GarageBand project
+File too small for GB ROM
+File too small for GBA ROM
+File too small for Genesis ROM
+File too small for GLB
+File too small for gzip
+File too small for gzip trailer
+File too small for HDF5 superblock
+File too small for HTML
+File too small for ICO format
+File too small for IDML format
+File too small for IFF
+File too small for INDD format
+File too small for ISO 9660
+File too small for ISO BMFF
+File too small for IT format
+File too small for IVF header
+File too small for JBIG2
+File too small for JPEG
+File too small for JPEG2000
+File too small for JXL
+File too small for KML
+File too small for KMZ
+File too small for Mach-O header
+File too small for MacWrite
+File too small for MATLAB
+File too small for MBOX
+File too small for MDB format
+File too small for MIDI
+File too small for MOD format
+File too small for MPEG ES
+File too small for MPEG PS
+File too small for MPEG TS
+File too small for MPEG-TS
+File too small for N64 ROM
+File too small for NDS ROM
+File too small for NES ROM
+File too small for NetCDF
+File too small for NIfTI
+File too small for Ogg
+File too small for OLE2 format
+File too small for packet header
+File too small for PAK
+File too small for PAR2 packet
+File too small for Parquet
+File too small for Parquet footer
+File too small for PE format
+File too small for plist format
+File too small for PLY
+File too small for PNG
+File too small for Portable Anymap header
+File too small for Pro Tools session
+File too small for PRPROJ format
+File too small for PSD header
+File too small for QOI header (need 14 bytes)
+File too small for RAR
+File too small for Reason project
+File too small for RPP format
+File too small for RTF
+File too small for S3M format
+File too small for seek table
+File too small for Segment
+File too small for Shapefile
+File too small for Sketch format
+File too small for SNES ROM
+File too small for SQLite
+File too small for STEP
+File too small for STL
+File too small for SVG
+File too small for tar header
+File too small for TGA header (need 18 bytes)
+File too small for TIFF header
+File too small for UTF-16
+File too small for valid AIFF
+File too small for valid bzip2
+File too small for valid DWG
+File too small for valid GIF
+File too small for valid PDF
+File too small for valid PostScript
+File too small for valid WAV
+File too small for valid ZIP
+File too small for VPK
+File too small for WAD
+File too small for WARC
+File too small for Wasm module
+File too small for WordPerfect
+File too small for XM format
+File too small for XZ
+File too small for Zstd
+File too small to identify
+File truncated
+File truncated (next header beyond EOF)
+File truncated (size mismatch)
+Filename too long
+First block must be STREAMINFO
+First CAF chunk is not 'desc' (Audio Description)
+First chunk must be IHDR
+First DIF block is not a header section
+First DIF block number is not 0
+First metadata block must be STREAMINFO
+FLV data offset exceeds file size
+FLV tag exceeds file size
+FLV tag exceeds file size (truncated)
+fmt chunk too small
+Font file too large
+Footer metadata length exceeds file size
+Footer metadata too small
+FORM size exceeds file size
+Format 0 MIDI must have exactly 1 track
+Frame decode failed: audio data corrupted
+GBA header checksum mismatch
+GIF decode error
+GIF decode failed - data may be corrupt
+GIF truncated - unexpected end of data
+Git repositories must be validated as directories, not files
+GLB length exceeds file size
+HDF5 superblock checksum mismatch
+Header checksum mismatch
+Header CRC mismatch
+Header CRC32 mismatch
+HTML file is empty
+HTML too short
+Huffman table overflow
+IFD entries truncated
+IFD offset beyond file end (truncated)
+IFD offset out of bounds
+IHDR must be first chunk
+Image data exceeds file bounds
+Image resources exceeds buffer
+Image resources section exceeds file size
+Implausible lump count
+Implausible record count
+Incomplete ADTS data
+Incomplete compressed data read
+Incomplete directory read
+Incomplete file read
+Incomplete final record
+Incomplete gzip trailer
+Incomplete RAR4 header
+Incomplete RAR5 header
+Incomplete read
+Incomplete read of compressed data
+Incomplete read of font file
+Incomplete read of PDF
+Incomplete strip read
+Incomplete TS data
+Incomplete vertex data
+Incomplete XML read
+INI file too large (>1GB)
+Insufficient data for vertices
+Integrity check returned no result
+Invalid 7z signature
+Invalid AC-3 bsid (expected 0-8)
+Invalid AC-3 sync word
+Invalid ACCDB magic bytes
+Invalid ACCDB signature (not Standard ACE DB)
+Invalid AEP format marker
+Invalid AEP format marker (expected Egg!)
+Invalid AEP signature
+Invalid AEP signature (expected RIFX)
+Invalid AI signature
+Invalid AI signature (expected %PDF- or %!PS-Adobe)
+Invalid AIFF form type
+Invalid AIFF header (not FORM)
+Invalid AIFF signature
+Invalid ALS signature (not gzip)
+Invalid AMR magic bytes
+Invalid AMR-NB frame type
+Invalid AMR-WB frame type
+Invalid APE signature
+Invalid AppleDouble entry count
+Invalid AppleDouble signature
+Invalid ar magic
+Invalid ar member header terminator
+Invalid ar member size
+Invalid ARM7 offset
+Invalid ARM7 size
+Invalid ARM9 offset
+Invalid ARM9 size
+Invalid ASF Header Object GUID
+Invalid ATOM coordinates
+Invalid attribute list tag
+Invalid attribute size
+Invalid AU magic (expected .snd)
+Invalid audio format (expected 1 for lossless)
+Invalid AVI fourcc
+Invalid AVI signature
+Invalid B-tree K values
+Invalid base64 encoding in attachment
+Invalid bit depth
+Invalid bit depth (expected 1, 8, 16, or 32)
+Invalid BITPIX value
+Invalid bitrate
+Invalid bitrate index
+Invalid bits per sample
+Invalid bits per sample (must be 8, 16, or 24)
+Invalid Blender signature
+Invalid block header
+Invalid block size
+Invalid Blorb signature
+Invalid BMP info header size
+Invalid BMP signature
+Invalid bounding box (Xmin > Xmax)
+Invalid bounding box (Ymin > Ymax)
+Invalid box type (non-ASCII data)
+Invalid BWT index
+Invalid bzip2 block size
+Invalid bzip2 magic number
+Invalid BZIP2 signature
+Invalid CAF flags (expected 0)
+Invalid CAF magic bytes
+Invalid central directory signature
+Invalid channel count
+Invalid channel count (must be > 0)
+Invalid channel count (must be 1-8)
+Invalid channel type
+Invalid character in Portable Anymap header
+Invalid CHD header length
+Invalid CHD signature
+Invalid checksum format
+Invalid COFF machine type
+Invalid COFF section count
+Invalid color mode
+Invalid compression method
+Invalid compression type
+Invalid compression type in image data
+Invalid container signature
+Invalid content length
+Invalid Cubase signature (not RIFF)
+Invalid data offset (must be >= 24)
+Invalid DATASUM value
+Invalid DFF form type (expected DSD)
+Invalid DFF signature
+Invalid DICOM signature
+Invalid dimension list tag
+Invalid dimension value
+Invalid dimensions
+Invalid directory
+Invalid directory size (not multiple of 64)
+Invalid DMG signature
+Invalid document offset (truncated)
+Invalid DOS signature (expected MZ)
+Invalid DPX magic bytes (expected SDPX or XPDS)
+Invalid DRP signature (not ZIP)
+Invalid DS_Store Bud1 signature
+Invalid DS_Store magic number
+Invalid DSD chunk size
+Invalid DSD sample rate
+Invalid DSF signature
+Invalid DWG signature (expected AC)
+Invalid DWG version code
+Invalid DWG version format
+Invalid E-AC-3 bsid (expected 16)
+Invalid E-AC-3 sync word
+Invalid EBML signature
+Invalid EBML size encoding
+Invalid ELF class (must be 32 or 64 bit)
+Invalid ELF data encoding
+Invalid ELF file version
+Invalid ELF magic
+Invalid ELF type
+Invalid ELF version
+Invalid ELF32 header size
+Invalid ELF64 header size
+Invalid encoding byte
+Invalid encoding format (must be 1-27)
+Invalid endianness indicator
+Invalid EPS signature
+Invalid EXR magic bytes
+Invalid extended box size
+Invalid face count
+Invalid face vertex count
+Invalid face vertex index
+Invalid facet normal
+Invalid FCPXML: missing fcpxml element
+Invalid first record type
+Invalid FITS signature
+Invalid FL Studio signature
+Invalid FLAC signature
+Invalid FLP header length
+Invalid FLV data offset
+Invalid FLV flags (reserved bits set)
+Invalid FLV signature
+Invalid FLV tag type
+Invalid FLV version
+Invalid fmt chunk signature
+Invalid fmt chunk size
+Invalid format fourcc
+Invalid GBA entry point
+Invalid GBA Nintendo logo
+Invalid Genesis ROM signature
+Invalid Genesis signature
+Invalid GIF header
+Invalid GIF signature
+Invalid GLB magic
+Invalid gzip magic number
+Invalid GZIP signature
+Invalid HDF5 signature
+Invalid header values
+Invalid IDML signature (not ZIP)
+Invalid IFD entry count
+Invalid IFF signature
+Invalid image entry (zero offset/size)
+Invalid image height
+Invalid image resource signature (expected 8BIM)
+Invalid image type (must be 1 or 2)
+Invalid image width
+Invalid INDD magic bytes
+Invalid INI syntax
+Invalid ISO 9660 signature
+Invalid IT instrument count
+Invalid IT sample count
+Invalid IT signature
+Invalid IVF dimensions
+Invalid IVF header size
+Invalid IVF signature
+Invalid JBIG2 signature
+Invalid JPEG SOI marker
+Invalid JPEG XL signature
+Invalid JPEG2000 signature
+Invalid JSON in GLB
+Invalid layer blend mode signature
+Invalid leaf payload fraction
+Invalid local file header signature
+Invalid LSPK magic
+Invalid Mach-O CPU type
+Invalid Mach-O file type
+Invalid magic bytes
+Invalid magic number
+Invalid MATLAB endian indicator
+Invalid max embedded payload fraction
+Invalid MDB magic bytes
+Invalid MDB signature (not Standard Jet DB)
+Invalid metadata offset
+Invalid MIDI format type
+Invalid MIDI header length
+Invalid MIDI signature
+Invalid MIME content boundaries
+Invalid min embedded payload fraction
+Invalid MKV/WebM signature
+Invalid MOD signature
+Invalid MP3 frame sync
+Invalid MP3 signature
+Invalid MP4 signature
+Invalid MPEG ES start code
+Invalid MPEG PS marker bits
+Invalid MPEG PS pack start code
+Invalid MPEG TS PID
+Invalid MPEG TS sync byte
+Invalid N64 ROM signature
+Invalid N64 ROM size
+Invalid N64 signature
+Invalid NAXIS value
+Invalid NES signature
+Invalid NetCDF signature
+Invalid NetCDF version
+Invalid NIfTI header size
+Invalid NIfTI-1 magic
+Invalid NIfTI-2 magic
+Invalid Nintendo logo
+Invalid normal vector (NaN/Inf)
+Invalid number of architectures
+Invalid number of dimensions
+Invalid object ref size in trailer
+Invalid offset int size in trailer
+Invalid offset table start
+Invalid Ogg signature
+Invalid OGG signature
+Invalid OLE2 byte order marker
+Invalid OLE2 mini sector size
+Invalid OLE2 sector size
+Invalid OLE2 signature
+Invalid optional header magic
+Invalid packet length (too small)
+Invalid padding bytes
+Invalid PAK signature
+Invalid PAR2 magic
+Invalid Parquet footer magic
+Invalid Parquet signature
+Invalid PDF header
+Invalid PDF signature
+Invalid PE header offset
+Invalid PE signature
+Invalid PNG signature
+Invalid pointer size indicator
+Invalid Portable Anymap magic (expected 'P')
+Invalid Portable Anymap type (expected P1-P7)
+Invalid PostScript header
+Invalid PreviousTagSize0 (should be 0)
+Invalid product type
+Invalid PRPROJ signature
+Invalid PRPROJ signature (not gzip or XML)
+Invalid PSD signature
+Invalid PSD signature (expected 8BPS)
+Invalid PSD version
+Invalid PSD version (expected 1 or 2)
+Invalid QOI magic bytes
+Invalid quality score character
+Invalid RAR signature
+Invalid RAR4 header size
+Invalid RAR5 data size
+Invalid RAR5 extra area size
+Invalid RAR5 header flags
+Invalid RAR5 header size
+Invalid RAR5 header type
+Invalid record number
+Invalid RECT Nbits value
+Invalid reserved field
+Invalid resource count
+Invalid RIFF signature
+Invalid ROM address range
+Invalid row count in Parquet metadata
+Invalid RPP signature
+Invalid RTF signature
+Invalid RTF version
+Invalid S3M instrument count
+Invalid S3M order count
+Invalid S3M pattern count
+Invalid S3M signature
+Invalid S3M type byte
+Invalid sample rate
+Invalid sample rate (must be > 0)
+Invalid section count
+Invalid segment length
+Invalid segment marker
+Invalid selector
+Invalid sequence character
+Invalid shape type
+Invalid Shapefile magic number
+Invalid Shapefile version
+Invalid size of lengths
+Invalid size of offsets
+Invalid Sketch signature (not ZIP)
+Invalid small element size
+Invalid SQLite page size
+Invalid SQLite signature
+Invalid startxref value
+Invalid STEP signature
+Invalid STL format
+Invalid stream flags
+Invalid STREAMINFO size
+Invalid SWF file size
+Invalid SWF RECT Nbits value
+Invalid SWF signature
+Invalid SWF version
+Invalid tar format (no ustar magic and not V7)
+Invalid texture coordinate
+Invalid TGA image type
+Invalid TGA pixel depth
+Invalid Thrift footer structure
+Invalid TIFF byte order
+Invalid TIFF byte order marker
+Invalid TIFF magic number
+Invalid total samples (must be > 0)
+Invalid track chunk signature
+Invalid TTA magic (expected TTA1)
+Invalid UTF-16 (missing low surrogate)
+Invalid UTF-16 (odd byte count)
+Invalid UTF-16 (unexpected low surrogate)
+Invalid UTF-16 (unpaired high surrogate at EOF)
+Invalid UTF-16 encoding
+Invalid UTF-8 encoding
+Invalid variable list tag
+Invalid version number
+Invalid vertex 1 (NaN/Inf)
+Invalid vertex 2 (NaN/Inf)
+Invalid vertex 3 (NaN/Inf)
+Invalid vertex coordinates
+Invalid vertex count
+Invalid vertex data
+Invalid vertex normal
+Invalid VPK signature
+Invalid WAD signature
+Invalid WARC record version
+Invalid WARC version
+Invalid Wasm magic
+Invalid Wasm section ID
+Invalid Wasm section size encoding
+Invalid WAV header
+Invalid WAV signature
+Invalid WAVE fourcc
+Invalid WebP chunk type
+Invalid WebP fourcc
+Invalid WebP signature
+Invalid WordPerfect signature
+Invalid XM channel count
+Invalid XM header size
+Invalid XM signature
+Invalid XML structure
+Invalid xref structure at startxref position
+Invalid XZ header
+Invalid XZ magic number
+Invalid XZ signature
+Invalid ZIP signature
+Invalid Zstd magic number
+Invalid ZSTD signature
+IT file has no orders
+JSON chunk must be first
+JSON file too large (>1GB)
+JSON Lines parse error
+JSON parse error
+JSON root is not an object
+Layer and mask section exceeds file size
+Layer section exceeds buffer
+LibRaw decode failed
+Load commands extend beyond file
+Lump extends beyond file
+LZW decompression failed
+Mach-O header too short
+Mach-O header too short for class
+macOS app bundles must be validated as directories, not files
+macOS bundles must be validated as directories, not files
+macOS frameworks must be validated as directories, not files
+magic bytes corrupted (structure not validated)
+magic bytes corrupted (structure valid, repairable)
+Malformed XML in plist
+MBOX must start with 'From ' separator
+MD5 mismatch: audio data corrupted
+Memory allocation failed
+Meta element value exceeds file bounds
+MIDI file has no tracks
+Mismatched braces in RTF
+Mismatched brackets in RPP file
+Missing 'asset' field
+Missing %%EOF marker
+Missing %%EOF marker (truncated file)
+Missing <plist> root element
+Missing asset.version
+Missing atom table chunk
+Missing AVI header list
+Missing BITPIX keyword
+Missing chunk CRC
+Missing code chunk
+Missing COMM chunk
+Missing Content-Length header
+Missing Contents/Info.plist
+Missing Contents/MacOS directory
+Missing data chunk
+Missing DATA section
+Missing DFF chunks
+Missing DNA1 schema block
+Missing DOCUMENT identifier
+Missing END keyword in header
+Missing End of Central Directory (corrupted or truncated)
+Missing end_header
+Missing END-ISO-10303-21
+Missing ENDB terminator block
+Missing endsolid
+Missing EOI marker (truncated file)
+Missing EPUB container structure
+Missing Excel spreadsheet structure
+Missing face vertex count
+Missing FLdt chunk
+Missing fmt chunk
+Missing FOR1 magic
+Missing format declaration
+Missing ftyp box
+Missing GIF trailer (truncated file)
+Missing HEADER section
+Missing IEND chunk
+Missing IEND chunk (truncated file)
+Missing IHDR chunk
+Missing ImageLength tag
+Missing ImageWidth tag
+Missing Info.plist
+Missing JPEG EOI marker
+Missing JSON chunk
+Missing moov or mdat box
+Missing moov/mdat boxes
+Missing NAXIS keyword
+Missing NAXISn dimension
+Missing optional header
+Missing PLY magic
+Missing PowerPoint structure
+Missing required 'asset' field
+Missing required 'version' field
+Missing required asset field
+Missing required EXR attributes
+Missing required RIdx chunk
+Missing Segment element
+Missing solid declaration
+Missing SOS marker (no image data)
+Missing SSND chunk
+Missing startxref keyword
+Missing StripByteCounts tag
+Missing StripOffsets tag
+Missing track chunk
+Missing Transfer Syntax UID
+Missing Versions, Headers, or Resources directory
+Missing WARC-Date header
+Missing WARC-Record-ID header
+Missing WARC-Type header
+Missing Wasm section size
+Missing Word document structure
+Missing XM end-of-text marker
+Nested facet
+Nested solid without endsolid
+No <kml> element found
+No <svg> element found
+No ATOM/HETATM records found
+No chunks found
+No chunks found in FORM
+No closing angle brackets found
+No complete records found
+No data elements found
+No data_ block found
+No DICOM elements found
+No DOCTYPE or <html> tag found
+No entries found
+No events found in FLP file
+No header/body separator found
+No image data section
+No images in icon file
+No load commands
+No numeric data found
+No packets found in OGG stream
+No sequences found
+No tags found
+No valid chunks found in AEP file
+No valid CSV rows found
+No valid email headers found
+No valid FLV tags found
+No valid Mach-O architectures found
+No valid MBOX messages found
+No valid messages found
+No valid MP3 frames found
+No valid OBJ directives found
+No valid Ogg pages found (truncated)
+No valid PAR2 packets found
+No valid RAR4 headers found
+No valid RAR5 headers found
+No valid records found
+No valid SNES header found
+No vertices found
+No WARC records found
+No ZIP compressed data
+No ZIP compressed data read
+Not a BEAM file (wrong form type)
+Not a Blorb file (wrong form type)
+Not a valid DXF file
+Not a valid KML file
+Not a valid SVG file
+Not a valid ZIP/KMZ file
+Not valid JSON
+OBJ contains non-ASCII characters
+Offset table exceeds file bounds
+Offset table extends beyond file
+Offset table overlaps trailer
+Optional header size too small for PE type
+Optional header too large for COFF object
+Optional header too small
+Out of memory
+Out of memory during decode
+Out of memory during decompression
+Out of memory during parsing
+Out of memory for JSON
+Out of memory for TS data
+Out of memory reading central directory extra
+Packet length exceeds file size
+Path too long
+PDF too small for deep validation
+PE header offset exceeds file size
+Portable Anymap height is zero
+Portable Anymap magic not followed by whitespace
+Portable Anymap width is zero
+PRPROJ XML too large
+QOI channels must be 3 or 4
+QOI colorspace must be 0 (sRGB) or 1 (linear)
+QOI height is zero
+QOI width is zero
+Quality length doesn't match sequence
+RAR4 header too large
+RAR5 header data too large
+RAR5 header too large
+Read failed
+Read failed during parsing
+Record extends beyond file
+Record header must start with '@'
+Record shape type mismatch
+Reserved bytes in header are not zero
+Reserved bytes not zero
+Reserved flag bits set
+Reserved layer
+Reserved MPEG version
+Reserved sample rate
+Resource offset mismatch
+RIFF size exceeds file size
+RIFF size exceeds file size (truncated)
+RLE decompression failed
+Root group address exceeds file size
+RTF file missing closing brace
+RTF file too small
+Scanline offset exceeds file size
+Section data exceeds file bounds
+Section table exceeds file size
+Section table extends beyond file
+Seek failed during box scan
+Separator line must start with '+'
+SIMPLE != T (non-conforming FITS)
+SNES ROM checksum mismatch
+SQLite file appears truncated
+SSND chunk extends beyond file
+startxref points beyond file
+Stream CRC mismatch - data corrupted
+Strip data out of bounds
+Strip data truncated
+Strip extends beyond file end
+Strip offset array truncated
+Strip offset out of bounds
+StripOffsets/StripByteCounts count mismatch
+SWF size mismatch (truncated or corrupted)
+Symbol table pointer beyond file
+TGA color map type must be 0 or 1
+TGA color-mapped image type requires color map type 1
+TGA image height is zero
+TGA image width is zero
+TOML file too large (>1GB)
+TOML parse error
+Too few HTML tags
+Too many ar members
+Too many attributes
+Too many chunks
+Too many chunks (likely corrupt)
+Too many dimensions
+Too many image resources
+Too many images (max 256)
+Too many JPEG segments
+Too many meta information elements
+Too many objects (likely corrupt)
+Too many PNG chunks
+Too many records
+Too many sequences
+Too many variables
+Too many vertices in facet
+Too many Wasm sections
+Too many ZIP entries
+Track length exceeds file size
+Tree size exceeds file size
+Truncated at color mode section
+Truncated at image resources section
+Truncated at layer section
+Truncated ATOM record
+Truncated attribute count
+Truncated binary data
+Truncated bookkeeping header
+Truncated CDF-5 header
+Truncated central directory extra
+Truncated central directory filename
+Truncated central directory header
+Truncated chunk CRC
+Truncated chunk data
+Truncated chunk header
+Truncated comment field
+Truncated DICOM magic
+Truncated dimension count
+Truncated dimension list
+Truncated directory entry
+Truncated DOS EPS header
+Truncated DOS header
+Truncated EBML size
+Truncated element header
+Truncated entry filename
+Truncated entry signature
+Truncated extended size
+Truncated face data
+Truncated file
+Truncated filename field
+Truncated FLAC header
+Truncated fmt chunk
+Truncated header
+Truncated header (need 22 bytes)
+Truncated header (need 24 bytes)
+Truncated HETATM record
+Truncated JPEG segment
+Truncated JSON chunk
+Truncated local file header
+Truncated NetCDF header
+Truncated NIfTI-2 header
+Truncated packet header
+Truncated PE header
+Truncated PNG chunk
+Truncated raw image data
+Truncated RLE byte counts
+Truncated RLE compressed data
+Truncated section table
+Truncated segment table
+Truncated superblock addresses
+Truncated superblock checksum
+Truncated SWF RECT
+Truncated trailer
+Truncated triangle data
+Truncated variable count
+Truncated version 0/1 superblock
+Truncated version 2/3 superblock
+Truncated vertex data
+Unclosed brace
+Unclosed bracket
+Unclosed facet
+Unclosed quoted field
+Unclosed string
+Unexpected CAF Audio Description chunk size
+Unexpected DFF chunk type
+Unexpected end of file
+Unexpected end of stream
+Unexpected EOF in chunk data
+Unexpected EOF in entry data
+Unexpected format for RIFF audio
+Unknown BSP version
+Unknown CHD version
+Unknown Chromium PAK version
+Unknown directory type (not a recognized bundle)
+Unknown free space version
+Unknown LSPK version
+Unknown machine type
+Unknown MATLAB version
+Unknown PLY format
+Unknown root group version
+Unknown shared header message version
+Unknown superblock version
+Unknown VPK version
+Unmatched closing brace
+Unmatched closing bracket
+Unmatched closing parenthesis
+Unmatched parentheses
+Unreasonable channel count (> 128)
+Unreasonable number of load commands
+Unreasonable sample rate (> 768000 Hz)
+Unreasonably large allocation count
+Unrecognized ClarisWorks format
+Unrecognized MacWrite format
+Unsupported 7z version
+Unsupported AppleDouble version
+Unsupported bit depth
+Unsupported CAF version (expected 1)
+Unsupported compression method (not deflate)
+Unsupported DSF format ID
+Unsupported DSF format version
+Unsupported GLB version
+Unsupported IT version
+Unsupported IVF version
+Unsupported Ogg version
+Unsupported OLE2 version
+Unsupported SQLite read version
+Unsupported SQLite write version
+Unsupported Wasm version
+Unsupported WordPerfect file type
+Unsupported XM version
+Variable data offset exceeds file size
+vertex outside facet
+Wasm header too short
+Wasm module has no sections
+Wasm section extends beyond file end
+Wasm sections out of order
+Write failed during validation
+XML file but no <kml> element
+XML file but no <svg> element found
+XML file too large (>1GB)
+XML plist too large (>1GB)
+Zero resources
+ZIP decompression error
+ZIP decompression failed: corrupt data
+ZIP decompression produced empty output
+
+=== WARNINGS ===
+Bookkeeping offset mismatch (possible corruption)
+Chromium PAK identified; deep validation not yet implemented
+data checksum present but not verified (large file)
+Database is locked by another process
+decode failed
+DNA1 block has invalid structure
+DNG too large for deep validation
+DNG: no embedded previews to validate
+DNG: out of memory for deep validation
+DNG: some semantic map tiles invalid
+DOCTYPE declaration skipped (DTD not validated)
+Embedded pixel data validation failed
+Empty STL (no facets)
+Encrypted DWG - limited validation
+Event data appears truncated
+File larger than expected
+FLAC-in-OGG codec - CRC verified, no bitstream decode
+GIF too large to fully decode in memory
+GLB version 1 (deprecated)
+header CRCs verified, file content CRCs not checked
+Invalid country code
+Invalid section record count
+JSON chunk too large to parse
+JSON contains template code (not valid JSON until rendered)
+JSON5: uses JSON5 extensions (unquoted keys, trailing commas, etc.)
+JSONC: contains comments (non-standard JSON extension)
+Larian PAK identified; deep validation not yet implemented
+Mesh without complete buffer chain
+Missing document.json in Sketch archive
+Missing fcpxml root element
+Missing meta.json in Sketch archive
+Missing project.xml in DRP archive
+Non-ASCII in game title
+Out of memory for strip decompression
+ROM end exceeds file size
+Speex audio codec - CRC verified, no bitstream decode
+Unexpected maintenance version
+Unknown ACE version
+Unknown EXR version
+Unknown Jet version
+Unknown OGG codec, CRC verification only
+unsupported format variant
+unusual dimensions
+Unusual scanline count
+Unusually small DWG file
+zigimg decode failed, structural only
+ZIP: decompressed data exceeds limit
+ZIP: out of memory for compressed data
