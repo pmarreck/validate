@@ -403,7 +403,8 @@ static void show_enum_progress(size_t count) {
 	if (!g_show_enum_progress) return;
 	/* Only update every 100 files or if count changed significantly to reduce flicker */
 	if (count - g_last_progress_count >= 100 || count < 100) {
-		fprintf(stderr, "\rScanning... %zu files found", count);
+		fprintf(stderr, "\r");
+		fprintf(stderr, validate_tr(VALIDATE_STR_SCANNING_FILES_FOUND), count);
 		fflush(stderr);
 		g_last_progress_count = count;
 	}
@@ -812,12 +813,18 @@ static void print_validation_result(const char* path, const char* result) {
 	int bypass_prot = kv_get_bool(result, "bypass_prot");
 	int via_ffmpeg = kv_get_bool(result, "via_ffmpeg");
 
-	const char* depth_str = (depth == 1) ? "fully validated" : "structural";
+	/* Get depth description from KV result (i18n-translated), fall back to numeric */
+	char depth_str_buf[128];
+	int got_depth_desc = kv_get_str(result, "depth_desc", depth_str_buf, sizeof(depth_str_buf));
+	const char* depth_str = (got_depth_desc == 0 && depth_str_buf[0]) ? depth_str_buf
+		: ((depth == 1) ? "fully validated" : "structural");
 
 	/* Build depth description with optional ffmpeg suffix */
-	char depth_desc[64];
+	char depth_desc[128];
 	if (via_ffmpeg) {
-		snprintf(depth_desc, sizeof(depth_desc), "%s, via ffmpeg", depth_str);
+		const char* ffmpeg_suffix = validate_tr(VALIDATE_STR_VIA_FFMPEG_SUFFIX);
+		snprintf(depth_desc, sizeof(depth_desc), "%s, %s",
+			depth_str, ffmpeg_suffix ? ffmpeg_suffix : "via ffmpeg");
 	} else {
 		snprintf(depth_desc, sizeof(depth_desc), "%s", depth_str);
 	}
@@ -834,7 +841,7 @@ static void print_validation_result(const char* path, const char* result) {
 			int warn_pos = 0;
 			int first_warn = 1;
 			if (has_malformations) {
-				for (int i = 0; i < 15; i++) {
+				for (int i = 0; i < 22; i++) {
 					if (malform_bits & (1ULL << i)) {
 						const char* desc = validate_malform_desc(i);
 						if (desc) {
@@ -850,16 +857,16 @@ static void print_validation_result(const char* path, const char* result) {
 					"%s%s", first_warn ? "" : "; ", warn_msg);
 			}
 			snprintf(rest_buf, sizeof(rest_buf), " %s: %s (%s) [%s]", path, fmt_desc, depth_desc, warn_details);
-			write_colored_line(&g_warn_out, COLOR_YELLOW, "WARN", rest_buf);
+			write_colored_line(&g_warn_out, COLOR_YELLOW, validate_tr(VALIDATE_STR_LABEL_WARN), rest_buf);
 		} else if (bypass_prot) {
 			/* NOTICE is a special OK case, goes to g_ok_out */
 			snprintf(rest_buf, sizeof(rest_buf), " %s: %s (%s) - trivial protection circumvented",
 					 path, fmt_desc, depth_desc);
-			write_colored_line(&g_ok_out, COLOR_YELLOW, "NOTICE", rest_buf);
+			write_colored_line(&g_ok_out, COLOR_YELLOW, validate_tr(VALIDATE_STR_LABEL_NOTICE), rest_buf);
 		} else {
 			/* OK goes to g_ok_out */
 			snprintf(rest_buf, sizeof(rest_buf), " %s: %s (%s)", path, fmt_desc, depth_desc);
-			write_colored_line(&g_ok_out, COLOR_GREEN, "OK", rest_buf);
+			write_colored_line(&g_ok_out, COLOR_GREEN, validate_tr(VALIDATE_STR_LABEL_OK), rest_buf);
 		}
 	} else {
 		/* FAIL goes to g_fail_out - all details on one line */
@@ -868,7 +875,7 @@ static void print_validation_result(const char* path, const char* result) {
 		fail_pos += snprintf(fail_details, sizeof(fail_details), "%s",
 			err_msg[0] ? err_msg : "Unknown error");
 		if (has_malformations) {
-			for (int i = 0; i < 15; i++) {
+			for (int i = 0; i < 22; i++) {
 				if (malform_bits & (1ULL << i)) {
 					const char* desc = validate_malform_desc(i);
 					if (desc) {
@@ -879,7 +886,7 @@ static void print_validation_result(const char* path, const char* result) {
 			}
 		}
 		snprintf(rest_buf, sizeof(rest_buf), " %s: %s [%s]", path, fmt_desc, fail_details);
-		write_colored_line(&g_fail_out, COLOR_RED, "FAIL", rest_buf);
+		write_colored_line(&g_fail_out, COLOR_RED, validate_tr(VALIDATE_STR_LABEL_FAIL), rest_buf);
 	}
 }
 
@@ -965,7 +972,7 @@ static void on_validation_result(
 		if (counts) counts->unknown_count++;
 		char rest_buf[2048];
 		snprintf(rest_buf, sizeof(rest_buf), " %s: Unknown", path);
-		write_colored_line(&g_unknown_out, COLOR_CYAN, "UNKNOWN", rest_buf);
+		write_colored_line(&g_unknown_out, COLOR_CYAN, validate_tr(VALIDATE_STR_LABEL_UNKNOWN), rest_buf);
 	} else if (is_valid) {
 		if (counts) counts->valid_count++;
 		print_validation_result(path, result);
@@ -979,7 +986,7 @@ static void on_validation_result(
 		double elapsed_s = (double)elapsed_ns / 1000000000.0;
 		char rest_buf[2048];
 		snprintf(rest_buf, sizeof(rest_buf), " %s: %.2fs", path, elapsed_s);
-		write_colored_line(&g_slow_out, COLOR_YELLOW, "SLOW", rest_buf);
+		write_colored_line(&g_slow_out, COLOR_YELLOW, validate_tr(VALIDATE_STR_LABEL_SLOW), rest_buf);
 	}
 
 	/* Now render progress bar AFTER output (in the fixed bottom area) */
@@ -1768,6 +1775,7 @@ static void print_usage(const char* program) {
 	printf("    --stress N              Repeat validation N times with shuffling\n");
 	printf("    --no-frontload          Don't prioritize large files (default: top 10%% largest first)\n");
 	printf("    --simple-progress       Use simple ASCII progress instead of TUI status bar\n");
+	printf("    --lang CODE             Set output language (e.g., en, de)\n");
 #else
 	printf("    --version          Print version\n");
 	printf("    --help             Show this help\n");
@@ -1779,6 +1787,7 @@ static void print_usage(const char* program) {
 	printf("    --stress N         Repeat validation N times with shuffling\n");
 	printf("    --no-frontload     Don't prioritize large files (default: top 10%% largest first)\n");
 	printf("    --simple-progress  Use simple ASCII progress instead of TUI status bar\n");
+	printf("    --lang CODE        Set output language (e.g., en, de)\n");
 #endif
 	printf("\n");
 	printf("ENVIRONMENT:\n");
@@ -1792,6 +1801,8 @@ static void print_usage(const char* program) {
 	printf("    BEGIN_OUT     Output when files start validation (default: @null)\n");
 	printf("                  Useful for debugging crashes - shows 'in-flight' files\n");
 	printf("    MAX_FILES     Limit number of files to validate\n");
+	printf("    LANG          Locale for output language (e.g., de_DE.UTF-8)\n");
+	printf("    LC_MESSAGES   Locale for output language (overrides LANG)\n");
 	printf("\n");
 	printf("OUTPUT REDIRECTION:\n");
 	printf("    All *_OUT variables accept colon-separated destinations.\n");
@@ -1829,6 +1840,9 @@ int main(int argc, char* argv[]) {
 	size_t stress_iterations = 0;
 	int no_frontload = 0;
 	int simple_progress = 0;
+
+	/* Auto-detect locale from environment (--lang overrides this) */
+	validate_set_locale(NULL);
 
 	/* Collect positional arguments (paths) */
 	const char** paths = NULL;
@@ -1889,6 +1903,16 @@ int main(int argc, char* argv[]) {
 				return 2;
 			}
 			jobs = (size_t)strtoull(argv[++i], NULL, 10);
+			continue;
+		}
+		/* Language: --lang */
+		if (strcmp(arg, "--lang") == 0) {
+			if (i + 1 >= argc) {
+				fprintf(stderr, "%sError: --lang requires a value\n%s", COLOR_RED, COLOR_RESET);
+				free(paths);
+				return 2;
+			}
+			validate_set_locale(argv[++i]);
 			continue;
 		}
 		/* No color: --no-color */
@@ -2021,11 +2045,11 @@ int main(int argc, char* argv[]) {
 	}
 
 	if (any_directories || file_list.count > 1) {
-		printf("Found %zu files to validate.%s\n\n", file_list.count,
-			should_shuffle ? " (shuffled)" : "");
+		printf(validate_tr(VALIDATE_STR_FOUND_FILES_TO_VALIDATE), file_list.count);
+		printf("%s\n\n", should_shuffle ? " (shuffled)" : "");
 		fflush(stdout);  /* Ensure visible before TUI setup */
 	} else {
-		printf("Checking: %s\n", file_list.paths[0]);
+		printf("%s %s\n", validate_tr(VALIDATE_STR_CHECKING), file_list.paths[0]);
 		fflush(stdout);
 	}
 
@@ -2131,24 +2155,24 @@ int main(int argc, char* argv[]) {
 
 	/* Show summary (partial if interrupted) */
 	if (was_interrupted) {
-		printf("\n%sInterrupted - Partial Summary:%s\n", COLOR_YELLOW, COLOR_RESET);
+		printf("\n%s%s%s\n", COLOR_YELLOW, validate_tr(VALIDATE_STR_SUMMARY_INTERRUPTED), COLOR_RESET);
 	} else {
-		printf("\n%sSummary:%s\n", COLOR_CYAN, COLOR_RESET);
+		printf("\n%s%s%s\n", COLOR_CYAN, validate_tr(VALIDATE_STR_SUMMARY_TITLE), COLOR_RESET);
 	}
 	if (stress_iterations > 1) {
 		printf("  Iterations: %zu\n", stress_iterations);
 	}
 	size_t total_processed = summary_counts->valid_count + summary_counts->invalid_count + summary_counts->unknown_count;
 	if (was_interrupted) {
-		printf("  Processed: %zu / %zu files\n", total_processed, total_file_count);
+		printf("  %s %zu / %zu files\n", validate_tr(VALIDATE_STR_SUMMARY_PROCESSED), total_processed, total_file_count);
 	}
-	printf("  Valid:   %s%zu%s\n", COLOR_GREEN, summary_counts->valid_count, COLOR_RESET);
+	printf("  %-8s %s%zu%s\n", validate_tr(VALIDATE_STR_SUMMARY_VALID), COLOR_GREEN, summary_counts->valid_count, COLOR_RESET);
 	if (summary_counts->invalid_count > 0) {
-		printf("  Invalid: %s%zu%s\n", COLOR_RED, summary_counts->invalid_count, COLOR_RESET);
+		printf("  %-8s %s%zu%s\n", validate_tr(VALIDATE_STR_SUMMARY_INVALID), COLOR_RED, summary_counts->invalid_count, COLOR_RESET);
 	} else {
-		printf("  Invalid: %zu\n", summary_counts->invalid_count);
+		printf("  %-8s %zu\n", validate_tr(VALIDATE_STR_SUMMARY_INVALID), summary_counts->invalid_count);
 	}
-	printf("  Unknown: %zu\n", summary_counts->unknown_count);
+	printf("  %-8s %zu\n", validate_tr(VALIDATE_STR_SUMMARY_UNKNOWN), summary_counts->unknown_count);
 
 	/* Reset interrupt flag for potential future use */
 	validate_reset_interrupt();

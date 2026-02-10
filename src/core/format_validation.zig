@@ -209,6 +209,7 @@ const executable_validators = @import("executable_validators.zig");
 const archive_validators = @import("archive_validators.zig");
 pub const creative_validators = @import("creative_validators.zig");
 const cad_3d_validators = @import("cad_3d_validators.zig");
+const i18n = @import("i18n/mod.zig");
 
 // ============ Constants ============
 
@@ -849,10 +850,10 @@ pub const ValidationDepth = enum {
     /// Payload corruption WILL be detected.
     full,
 
-    pub fn description(self: ValidationDepth) []const u8 {
+    pub fn description(self: ValidationDepth) [:0]const u8 {
         return switch (self) {
-            .structural => "structural",
-            .full => "fully validated",
+            .structural => i18n.tr().depth_structural,
+            .full => i18n.tr().depth_full,
         };
     }
 };
@@ -929,30 +930,31 @@ pub const MalformationType = enum {
     /// REPAIRABLE: Re-encode as CCITT G4 or repair JBIG2 segments (future work)
     pdf_jbig2_decode_failed,
 
-    pub fn description(self: MalformationType) []const u8 {
+    pub fn description(self: MalformationType) [:0]const u8 {
+        const s = i18n.tr();
         return switch (self) {
-            .pdf_garbage_after_eof => "non-PDF data appended after %%EOF",
-            .png_ancillary_crc_error => "CRC error in ancillary PNG chunk",
-            .extension_mismatch => "file extension doesn't match content",
-            .pdf_trivial_encryption => "PDF encrypted with empty password (trivial protection)",
-            .mime_wrapped_content => "MIME-WRAPPED GARBAGE: file has email/MIME headers prepended - some buggy web service returned multipart MIME instead of raw content!",
-            .pdf_jbig2_truncated => "truncated JBIG2 data in PDF image",
-            .pdf_dct_not_jpeg => "DCTDecode image data is not valid JPEG",
-            .video_no_frames_decoded => "video decoder produced no frames (player-tolerated)",
-            .video_unsupported_profile_no_ffmpeg => "full validation of this file requires ffmpeg (v4.0+) on PATH due to H.264 profile complexity",
-            .xml_undefined_entity => "XML entity reference undefined (DTD not validated)",
-            .rar_header_crc_mismatch => "RAR header CRC mismatch (player-tolerated)",
-            .video_mixed_nal_prefix => "mixed or nonstandard NAL length prefixes (repairable by remux)",
-            .pdf_missing_trailer => "missing trailer dictionary (reader-tolerated)",
-            .pdf_trailer_missing_size => "trailer missing /Size key (reader-tolerated)",
-            .pdf_trailer_missing_root => "trailer missing /Root key (reader-tolerated)",
-            .magic_bytes_corrupted => "magic bytes corrupted (identified via extension and secondary signatures)",
-            .pdf_dct_truncated => "embedded JPEG is truncated (reader-tolerated)",
-            .pdf_jpx_decode_failed => "embedded JPEG2000 decode failed (reader-tolerated)",
-            .pdf_ccitt_decode_failed => "embedded CCITT fax decode failed (reader-tolerated)",
-            .pdf_flate_decode_failed => "embedded FlateDecode stream corrupted (reader-tolerated)",
-            .pdf_lzw_decode_failed => "embedded LZW stream corrupted (reader-tolerated)",
-            .pdf_jbig2_decode_failed => "embedded JBIG2 decode failed (reader-tolerated)",
+            .pdf_garbage_after_eof => s.malform_pdf_garbage_after_eof,
+            .png_ancillary_crc_error => s.malform_png_ancillary_crc_error,
+            .extension_mismatch => s.malform_extension_mismatch,
+            .pdf_trivial_encryption => s.malform_pdf_trivial_encryption,
+            .mime_wrapped_content => s.malform_mime_wrapped_content,
+            .pdf_jbig2_truncated => s.malform_pdf_jbig2_truncated,
+            .pdf_dct_not_jpeg => s.malform_pdf_dct_not_jpeg,
+            .video_no_frames_decoded => s.malform_video_no_frames_decoded,
+            .video_unsupported_profile_no_ffmpeg => s.malform_video_unsupported_profile_no_ffmpeg,
+            .xml_undefined_entity => s.malform_xml_undefined_entity,
+            .rar_header_crc_mismatch => s.malform_rar_header_crc_mismatch,
+            .video_mixed_nal_prefix => s.malform_video_mixed_nal_prefix,
+            .pdf_missing_trailer => s.malform_pdf_missing_trailer,
+            .pdf_trailer_missing_size => s.malform_pdf_trailer_missing_size,
+            .pdf_trailer_missing_root => s.malform_pdf_trailer_missing_root,
+            .magic_bytes_corrupted => s.malform_magic_bytes_corrupted,
+            .pdf_dct_truncated => s.malform_pdf_dct_truncated,
+            .pdf_jpx_decode_failed => s.malform_pdf_jpx_decode_failed,
+            .pdf_ccitt_decode_failed => s.malform_pdf_ccitt_decode_failed,
+            .pdf_flate_decode_failed => s.malform_pdf_flate_decode_failed,
+            .pdf_lzw_decode_failed => s.malform_pdf_lzw_decode_failed,
+            .pdf_jbig2_decode_failed => s.malform_pdf_jbig2_decode_failed,
         };
     }
 };

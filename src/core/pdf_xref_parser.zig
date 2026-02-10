@@ -86,7 +86,7 @@ fn parseSint(data: []const u8, start: usize) ?struct { value: i64, end: usize } 
         i += 1;
     }
     const r = parseUint(data, i) orelse return null;
-    const sval: i64 = @intCast(r.value);
+    const sval: i64 = std.math.cast(i64, r.value) orelse return null;
     return .{ .value = if (negative) -sval else sval, .end = r.end };
 }
 
@@ -196,14 +196,14 @@ fn parseTraditionalXref(data: []const u8, offset: usize, table: *XrefTable, allo
                 i += 1;
             }
 
-            const obj_num: u32 = @intCast(first_obj.value + obj_idx);
+            const obj_num: u32 = std.math.cast(u32, first_obj.value + obj_idx) orelse return null;
 
             // Only add if not already present (later xref sections in /Prev chain
             // take precedence since we process most-recent first)
             if (!table.entries.contains(obj_num)) {
                 table.entries.put(allocator, obj_num, .{
                     .obj_num = obj_num,
-                    .gen_num = @intCast(gen.value),
+                    .gen_num = std.math.cast(u16, gen.value) orelse 0,
                     .offset = entry_offset.value,
                     .in_use = flag == 'n',
                 }) catch return null;
@@ -250,14 +250,14 @@ pub fn parseTrailerDict(data: []const u8, start: usize) ?TrailerInfo {
 
             if (std.mem.eql(u8, name_result.name, "Size")) {
                 if (parseUint(data, i)) |r| {
-                    info.size = @intCast(r.value);
+                    info.size = std.math.cast(u32, r.value) orelse return null;
                     found_size = true;
                     i = r.end;
                 }
             } else if (std.mem.eql(u8, name_result.name, "Root")) {
                 // Parse indirect reference: N G R
                 if (parseUint(data, i)) |obj_r| {
-                    info.root_obj = @intCast(obj_r.value);
+                    info.root_obj = std.math.cast(u32, obj_r.value) orelse null;
                     i = skipWs(data, obj_r.end);
                     // skip gen num and 'R'
                     if (parseUint(data, i)) |gen_r| {
@@ -440,7 +440,7 @@ fn parseXrefStream(allocator: Allocator, data: []const u8, offset: usize, table:
 
         if (std.mem.eql(u8, name_result.name, "Size")) {
             if (parseUint(data, i)) |r| {
-                size = @intCast(r.value);
+                size = std.math.cast(u32, r.value) orelse return null;
                 i = r.end;
             }
         } else if (std.mem.eql(u8, name_result.name, "W")) {
@@ -450,7 +450,7 @@ fn parseXrefStream(allocator: Allocator, data: []const u8, offset: usize, table:
                 for (0..3) |wi| {
                     i = skipWs(data, i);
                     if (parseUint(data, i)) |r| {
-                        w_fields[wi] = @intCast(r.value);
+                        w_fields[wi] = std.math.cast(u32, r.value) orelse return null;
                         i = r.end;
                     }
                 }
@@ -473,7 +473,7 @@ fn parseXrefStream(allocator: Allocator, data: []const u8, offset: usize, table:
             }
         } else if (std.mem.eql(u8, name_result.name, "Root")) {
             if (parseUint(data, i)) |r| {
-                root_obj = @intCast(r.value);
+                root_obj = std.math.cast(u32, r.value) orelse null;
                 i = skipWs(data, r.end);
                 // skip gen + R
                 if (parseUint(data, i)) |gen_r| {
@@ -492,7 +492,7 @@ fn parseXrefStream(allocator: Allocator, data: []const u8, offset: usize, table:
             }
         } else if (std.mem.eql(u8, name_result.name, "Length")) {
             if (parseUint(data, i)) |r| {
-                stream_length = @intCast(r.value);
+                stream_length = std.math.cast(u32, r.value) orelse return null;
                 i = r.end;
             }
         } else {
@@ -553,8 +553,8 @@ fn parseXrefStream(allocator: Allocator, data: []const u8, offset: usize, table:
             const count = parseUint(idx_data, j) orelse break;
             j = count.end;
             subsections.append(allocator, .{
-                .first = @intCast(first.value),
-                .count = @intCast(count.value),
+                .first = std.math.cast(u32, first.value) orelse break,
+                .count = std.math.cast(u32, count.value) orelse break,
             }) catch return null;
         }
     } else {
@@ -601,7 +601,7 @@ fn parseXrefStream(allocator: Allocator, data: []const u8, offset: usize, table:
                         // Free object
                         table.entries.put(allocator, obj_num, .{
                             .obj_num = obj_num,
-                            .gen_num = @intCast(field3),
+                            .gen_num = std.math.cast(u16, field3) orelse 0,
                             .offset = field2,
                             .in_use = false,
                         }) catch return null;
@@ -610,7 +610,7 @@ fn parseXrefStream(allocator: Allocator, data: []const u8, offset: usize, table:
                         // In-use, offset in field2, gen in field3
                         table.entries.put(allocator, obj_num, .{
                             .obj_num = obj_num,
-                            .gen_num = @intCast(field3),
+                            .gen_num = std.math.cast(u16, field3) orelse 0,
                             .offset = field2,
                             .in_use = true,
                         }) catch return null;

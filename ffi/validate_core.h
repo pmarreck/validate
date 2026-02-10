@@ -71,14 +71,44 @@ typedef enum {
     VALIDATE_MALFORM_PDF_JBIG2_TRUNCATED = 5,
     VALIDATE_MALFORM_PDF_DCT_NOT_JPEG = 6,
     VALIDATE_MALFORM_VIDEO_NO_FRAMES_DECODED = 7,
-    VALIDATE_MALFORM_XML_UNDEFINED_ENTITY = 8,
-    VALIDATE_MALFORM_RAR_HEADER_CRC_MISMATCH = 9,
-    VALIDATE_MALFORM_VIDEO_MIXED_NAL_PREFIX = 10,
-    VALIDATE_MALFORM_PDF_MISSING_TRAILER = 11,
-    VALIDATE_MALFORM_PDF_TRAILER_MISSING_SIZE = 12,
-    VALIDATE_MALFORM_PDF_TRAILER_MISSING_ROOT = 13,
-    VALIDATE_MALFORM_MAGIC_BYTES_CORRUPTED = 14,
+    VALIDATE_MALFORM_VIDEO_UNSUPPORTED_PROFILE_NO_FFMPEG = 8,
+    VALIDATE_MALFORM_XML_UNDEFINED_ENTITY = 9,
+    VALIDATE_MALFORM_RAR_HEADER_CRC_MISMATCH = 10,
+    VALIDATE_MALFORM_VIDEO_MIXED_NAL_PREFIX = 11,
+    VALIDATE_MALFORM_PDF_MISSING_TRAILER = 12,
+    VALIDATE_MALFORM_PDF_TRAILER_MISSING_SIZE = 13,
+    VALIDATE_MALFORM_PDF_TRAILER_MISSING_ROOT = 14,
+    VALIDATE_MALFORM_MAGIC_BYTES_CORRUPTED = 15,
+    VALIDATE_MALFORM_PDF_DCT_TRUNCATED = 16,
+    VALIDATE_MALFORM_PDF_JPX_DECODE_FAILED = 17,
+    VALIDATE_MALFORM_PDF_CCITT_DECODE_FAILED = 18,
+    VALIDATE_MALFORM_PDF_FLATE_DECODE_FAILED = 19,
+    VALIDATE_MALFORM_PDF_LZW_DECODE_FAILED = 20,
+    VALIDATE_MALFORM_PDF_JBIG2_DECODE_FAILED = 21,
 } validate_malform_t;
+
+/* String IDs for validate_tr() (i18n) */
+typedef enum {
+    VALIDATE_STR_LABEL_OK = 0,
+    VALIDATE_STR_LABEL_WARN = 1,
+    VALIDATE_STR_LABEL_FAIL = 2,
+    VALIDATE_STR_LABEL_NOTICE = 3,
+    VALIDATE_STR_LABEL_UNKNOWN = 4,
+    VALIDATE_STR_LABEL_SLOW = 5,
+    VALIDATE_STR_SUMMARY_TITLE = 6,
+    VALIDATE_STR_SUMMARY_INTERRUPTED = 7,
+    VALIDATE_STR_SUMMARY_VALID = 8,
+    VALIDATE_STR_SUMMARY_INVALID = 9,
+    VALIDATE_STR_SUMMARY_UNKNOWN = 10,
+    VALIDATE_STR_SUMMARY_PROCESSED = 11,
+    VALIDATE_STR_DEPTH_STRUCTURAL = 12,
+    VALIDATE_STR_DEPTH_FULL = 13,
+    VALIDATE_STR_FULL_VALIDATION_UNAVAILABLE = 14,
+    VALIDATE_STR_VIA_FFMPEG_SUFFIX = 15,
+    VALIDATE_STR_SCANNING_FILES_FOUND = 16,
+    VALIDATE_STR_FOUND_FILES_TO_VALIDATE = 17,
+    VALIDATE_STR_CHECKING = 18,
+} validate_string_id_t;
 
 /* ========== Core Functions ========== */
 
@@ -216,11 +246,29 @@ char* validate_git(const char* path);
 /* ========== Utility Functions ========== */
 
 /**
- * Get description for a malformation bit.
- * @param bit Bit position (0-14)
+ * Get description for a malformation bit (i18n-aware).
+ * @param bit Bit position (0-21)
  * @return Description string. Static, do not free.
  */
 const char* validate_malform_desc(int bit);
+
+/* ========== Internationalization ========== */
+
+/**
+ * Set the global locale for translated strings.
+ * @param lang Locale code (e.g., "en", "de", "de_DE.UTF-8").
+ *             Pass NULL to auto-detect from $LANG/$LC_MESSAGES.
+ */
+void validate_set_locale(const char* lang);
+
+/**
+ * Get a translated string by numeric ID.
+ * @param string_id One of the VALIDATE_STR_* constants.
+ * @return Translated string, or NULL for invalid IDs. Static, do not free.
+ */
+const char* validate_tr(uint32_t string_id);
+
+/* ========== Error Reporting ========== */
 
 /**
  * Get the last error message (thread-local).

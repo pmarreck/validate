@@ -48,6 +48,7 @@ const errors = core.errors;
 const format_validation = core.format_validation;
 const git_validator = core.git_validator;
 const thread_pool = core.thread_pool;
+const i18n = core.i18n;
 
 // Delimiters
 const US: u8 = 0x1F; // Unit Separator: between key and value
@@ -213,6 +214,7 @@ fn buildValidationResult(
         .structural => 0,
         .full => 1,
     });
+    try builder.add("depth_desc", result.validation_depth.description());
 
     // Malformations as bitset
     var malform_bits: u64 = 0;
@@ -518,31 +520,34 @@ export fn validate_batch(
 
 // ========== Utility Functions ==========
 
-/// Malformation descriptions
-const malform_descriptions = [_][:0]const u8{
-    "non-PDF data appended after %%EOF",
-    "CRC error in ancillary PNG chunk",
-    "file extension doesn't match content",
-    "PDF encrypted with empty password (trivial protection)",
-    "MIME-wrapped content (multipart MIME prepended)",
-    "truncated JBIG2 data in PDF image",
-    "DCTDecode image data is not valid JPEG",
-    "video decoder produced no frames",
-    "XML entity reference undefined",
-    "RAR header CRC mismatch",
-    "mixed or nonstandard NAL length prefixes",
-    "missing trailer dictionary",
-    "trailer missing /Size key",
-    "trailer missing /Root key",
-    "magic bytes corrupted",
-};
-
-/// Get description for a malformation bit.
+/// Get description for a malformation bit (i18n-aware).
+/// Uses MalformationType.description() which goes through the i18n system.
 export fn validate_malform_desc(bit: c_int) [*:0]const u8 {
-    if (bit < 0 or bit >= malform_descriptions.len) {
+    if (bit < 0 or bit >= @typeInfo(format_validation.MalformationType).@"enum".fields.len) {
         return "unknown malformation";
     }
-    return malform_descriptions[@intCast(bit)].ptr;
+    const malform: format_validation.MalformationType = @enumFromInt(@as(u5, @intCast(bit)));
+    return malform.description().ptr;
+}
+
+/// Set the global locale for translated strings.
+export fn validate_set_locale(lang: ?[*:0]const u8) void {
+    if (lang) |l| {
+        const slice = std.mem.span(l);
+        _ = i18n.setLocaleFromString(slice);
+    } else {
+        // NULL = detect from environment
+        i18n.setLocale(i18n.detectFromEnv());
+    }
+}
+
+/// Get a translated string by numeric ID.
+/// Returns NULL for invalid IDs.
+export fn validate_tr(string_id: u32) ?[*:0]const u8 {
+    if (i18n.getStringById(string_id)) |s| {
+        return s.ptr;
+    }
+    return null;
 }
 
 /// Get the last error message (thread-local).
