@@ -1,38 +1,27 @@
 const Strings = @import("strings.zig").Strings;
-const cli = @import("cli_aliases.zig");
 const i18n = @import("mod.zig");
+const cli = @import("cli_aliases.zig");
 
 pub const strings = Strings{
-    // CLI status labels
     .label_ok = "OK",
-    .label_warn = "WARN",
-    .label_fail = "FAIL",
-    .label_notice = "NOTICE",
-    .label_unknown = "UNKNOWN",
-    .label_slow = "SLOW",
-
-    // Summary
-    .summary_title = "Summary:",
-    .summary_interrupted = "Interrupted - Partial Summary:",
-    .summary_valid = "Valid:",
-    .summary_invalid = "Invalid:",
-    .summary_unknown = "Unknown:",
-    .summary_processed = "Processed:",
-
-    // Depth descriptions
-    .depth_structural = "structural",
-    .depth_full = "fully validated",
-
-    // Progress / startup
-    .scanning_files_found = "Scanning... %zu files found",
-    .found_files_to_validate = "Found %zu files to validate.",
-    .checking = "Checking:",
-
-    // Misc
-    .full_validation_unavailable = "Full validation unavailable",
-    .via_ffmpeg_suffix = "via ffmpeg",
-
-    // Malformation descriptions
+    .label_warn = "AVVISO",
+    .label_fail = "ERRORE",
+    .label_notice = "AVVISO",
+    .label_unknown = "SCONOSCIUTO",
+    .label_slow = "LENTO",
+    .summary_title = "Riepilogo:",
+    .summary_interrupted = "Interrotto - Riepilogo parziale:",
+    .summary_valid = "Validi:",
+    .summary_invalid = "Non validi:",
+    .summary_unknown = "Sconosciuti:",
+    .summary_processed = "Elaborati:",
+    .depth_structural = "strutturale",
+    .depth_full = "completamente validato",
+    .scanning_files_found = "Scansione... %zu file trovati",
+    .found_files_to_validate = "%zu file da validare.",
+    .checking = "Verifica:",
+    .full_validation_unavailable = "Validazione completa non disponibile",
+    .via_ffmpeg_suffix = "tramite ffmpeg",
     .malform_pdf_garbage_after_eof = "non-PDF data appended after %%EOF",
     .malform_png_ancillary_crc_error = "CRC error in ancillary PNG chunk",
     .malform_extension_mismatch = "file extension doesn't match content",
@@ -57,7 +46,31 @@ pub const strings = Strings{
     .malform_pdf_jbig2_decode_failed = "embedded JBIG2 decode failed (reader-tolerated)",
 };
 
-// English format descriptions — the canonical source of truth.
+pub const cli_aliases = cli.CliAliases{
+    .help = "aiuto",
+    .version = "versione",
+    .lang = "lingua",
+    .jobs = "lavori",
+    .shuffle = "mescola",
+    .stress = "stress",
+    .no_color = "senza-colore",
+    .color = "colore",
+    .simple_progress = "progresso-semplice",
+    .no_frontload = "senza-priorita",
+};
+
+pub const env_aliases = cli.EnvAliases{
+    .ok_out = "OK_USCITA",
+    .warn_out = "AVVISO_USCITA",
+    .fail_out = "ERRORE_USCITA",
+    .unknown_out = "SCONOSCIUTO_USCITA",
+    .slow_out = "LENTO_USCITA",
+    .debug_out = "DEBUG_USCITA",
+    .begin_out = "INIZIO_USCITA",
+    .max_files = "MAX_FILE",
+    .validate_debug = "VALIDATE_DEBUG",
+};
+
 pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .unknown = "Unknown",
     .png = "PNG Image",
@@ -251,31 +264,5 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macos_bundle = "macOS Bundle",
 });
 
-// English CLI argument aliases (canonical forms, without -- prefix).
-pub const cli_aliases = cli.CliAliases{
-    .help = "help",
-    .version = "version",
-    .lang = "lang",
-    .jobs = "jobs",
-    .shuffle = "shuffle",
-    .stress = "stress",
-    .no_color = "no-color",
-    .color = "color",
-    .simple_progress = "simple-progress",
-    .no_frontload = "no-frontload",
-};
-
-// English environment variable aliases (canonical forms).
-pub const env_aliases = cli.EnvAliases{
-    .ok_out = "OK_OUT",
-    .warn_out = "WARN_OUT",
-    .fail_out = "FAIL_OUT",
-    .unknown_out = "UNKNOWN_OUT",
-    .slow_out = "SLOW_OUT",
-    .debug_out = "DEBUG_OUT",
-    .begin_out = "BEGIN_OUT",
-    .max_files = "MAX_FILES",
-    .validate_debug = "VALIDATE_DEBUG",
-};
-
-// English needs no error_translations or warning_translations (identity passthrough).
+pub const error_translations = i18n.ErrorMap.initComptime(.{});
+pub const warning_translations = i18n.WarningMap.initComptime(.{});

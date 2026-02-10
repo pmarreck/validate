@@ -110,6 +110,34 @@ typedef enum {
     VALIDATE_STR_CHECKING = 18,
 } validate_string_id_t;
 
+/* CLI argument IDs (returned by validate_match_arg) */
+typedef enum {
+    VALIDATE_ARG_HELP = 0,
+    VALIDATE_ARG_VERSION = 1,
+    VALIDATE_ARG_LANG = 2,
+    VALIDATE_ARG_JOBS = 3,
+    VALIDATE_ARG_SHUFFLE = 4,
+    VALIDATE_ARG_STRESS = 5,
+    VALIDATE_ARG_NO_COLOR = 6,
+    VALIDATE_ARG_COLOR = 7,
+    VALIDATE_ARG_SIMPLE_PROGRESS = 8,
+    VALIDATE_ARG_NO_FRONTLOAD = 9,
+    VALIDATE_ARG_UNKNOWN = 255,
+} validate_arg_t;
+
+/* Environment variable IDs (for validate_getenv) */
+typedef enum {
+    VALIDATE_ENV_OK_OUT = 0,
+    VALIDATE_ENV_WARN_OUT = 1,
+    VALIDATE_ENV_FAIL_OUT = 2,
+    VALIDATE_ENV_UNKNOWN_OUT = 3,
+    VALIDATE_ENV_SLOW_OUT = 4,
+    VALIDATE_ENV_DEBUG_OUT = 5,
+    VALIDATE_ENV_BEGIN_OUT = 6,
+    VALIDATE_ENV_MAX_FILES = 7,
+    VALIDATE_ENV_VALIDATE_DEBUG = 8,
+} validate_env_t;
+
 /* ========== Core Functions ========== */
 
 /**
@@ -267,6 +295,28 @@ void validate_set_locale(const char* lang);
  * @return Translated string, or NULL for invalid IDs. Static, do not free.
  */
 const char* validate_tr(uint32_t string_id);
+
+/* ========== CLI Alias Functions ========== */
+
+/**
+ * Match a CLI argument keyword against all locale aliases.
+ * The keyword should NOT include the -- or - prefix (e.g., pass "hilfe" not "--hilfe").
+ * Matches against all 22 locales simultaneously.
+ *
+ * @param keyword Argument keyword (null-terminated UTF-8)
+ * @return VALIDATE_ARG_* constant, or VALIDATE_ARG_UNKNOWN (255) if not recognized
+ */
+uint8_t validate_match_arg(const char* keyword);
+
+/**
+ * Look up an environment variable by checking all locale aliases.
+ * For example, validate_getenv(VALIDATE_ENV_FAIL_OUT) will check
+ * "FAIL_OUT", "FEHLER_AUS", "ECHEC_SORTIE", etc.
+ *
+ * @param env_id One of the VALIDATE_ENV_* constants
+ * @return Environment variable value (first non-empty match), or NULL
+ */
+const char* validate_getenv(uint8_t env_id);
 
 /* ========== Error Reporting ========== */
 

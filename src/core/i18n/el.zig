@@ -1,38 +1,27 @@
 const Strings = @import("strings.zig").Strings;
-const cli = @import("cli_aliases.zig");
 const i18n = @import("mod.zig");
+const cli = @import("cli_aliases.zig");
 
 pub const strings = Strings{
-    // CLI status labels
     .label_ok = "OK",
-    .label_warn = "WARN",
-    .label_fail = "FAIL",
-    .label_notice = "NOTICE",
-    .label_unknown = "UNKNOWN",
-    .label_slow = "SLOW",
-
-    // Summary
-    .summary_title = "Summary:",
-    .summary_interrupted = "Interrupted - Partial Summary:",
-    .summary_valid = "Valid:",
-    .summary_invalid = "Invalid:",
-    .summary_unknown = "Unknown:",
-    .summary_processed = "Processed:",
-
-    // Depth descriptions
-    .depth_structural = "structural",
-    .depth_full = "fully validated",
-
-    // Progress / startup
-    .scanning_files_found = "Scanning... %zu files found",
-    .found_files_to_validate = "Found %zu files to validate.",
-    .checking = "Checking:",
-
-    // Misc
-    .full_validation_unavailable = "Full validation unavailable",
-    .via_ffmpeg_suffix = "via ffmpeg",
-
-    // Malformation descriptions
+    .label_warn = "\xce\xa0\xce\xa1\xce\x9f\xce\x95\xce\x99\xce\x94\xce\x9f\xce\xa0\xce\x9f\xce\x99\xce\x97\xce\xa3\xce\x97",
+    .label_fail = "\xce\x91\xce\xa0\xce\x9f\xce\xa4\xce\xa5\xce\xa7\xce\x99\xce\x91",
+    .label_notice = "\xce\x95\xce\x99\xce\x94\xce\x9f\xce\xa0\xce\x9f\xce\x99\xce\x97\xce\xa3\xce\x97",
+    .label_unknown = "\xce\x86\xce\x93\xce\x9d\xce\xa9\xce\xa3\xce\xa4\xce\x9f",
+    .label_slow = "\xce\x91\xce\xa1\xce\x93\xce\x8c",
+    .summary_title = "\xce\xa0\xce\xb5\xcf\x81\xce\xaf\xce\xbb\xce\xb7\xcf\x88\xce\xb7:",
+    .summary_interrupted = "\xce\x94\xce\xb9\xce\xb1\xce\xba\xce\xbf\xcf\x80\xce\xae - \xce\x9c\xce\xb5\xcf\x81\xce\xb9\xce\xba\xce\xae \xcf\x80\xce\xb5\xcf\x81\xce\xaf\xce\xbb\xce\xb7\xcf\x88\xce\xb7:",
+    .summary_valid = "\xce\x88\xce\xb3\xce\xba\xcf\x85\xcf\x81\xce\xb1:",
+    .summary_invalid = "\xce\x86\xce\xba\xcf\x85\xcf\x81\xce\xb1:",
+    .summary_unknown = "\xce\x86\xce\xb3\xce\xbd\xcf\x89\xcf\x83\xcf\x84\xce\xb1:",
+    .summary_processed = "\xce\x95\xcf\x80\xce\xb5\xce\xbe\xce\xb5\xcf\x81\xce\xb3\xce\xb1\xcf\x83\xce\xbc\xce\xad\xce\xbd\xce\xb1:",
+    .depth_structural = "\xce\xb4\xce\xbf\xce\xbc\xce\xb9\xce\xba\xcf\x8c",
+    .depth_full = "\xcf\x80\xce\xbb\xce\xae\xcf\x81\xcf\x89\xcf\x82 \xce\xb5\xcf\x80\xce\xb9\xce\xba\xcf\x85\xcf\x81\xcf\x89\xce\xbc\xce\xad\xce\xbd\xce\xbf",
+    .scanning_files_found = "\xce\xa3\xce\xac\xcf\x81\xcf\x89\xcf\x83\xce\xb7... %zu \xce\xb1\xcf\x81\xcf\x87\xce\xb5\xce\xaf\xce\xb1 \xce\xb2\xcf\x81\xce\xad\xce\xb8\xce\xb7\xce\xba\xce\xb1\xce\xbd",
+    .found_files_to_validate = "%zu \xce\xb1\xcf\x81\xcf\x87\xce\xb5\xce\xaf\xce\xb1 \xcf\x80\xcf\x81\xce\xbf\xcf\x82 \xce\xb5\xcf\x80\xce\xb9\xce\xba\xcf\x8d\xcf\x81\xcf\x89\xcf\x83\xce\xb7.",
+    .checking = "\xce\x88\xce\xbb\xce\xb5\xce\xb3\xcf\x87\xce\xbf\xcf\x82:",
+    .full_validation_unavailable = "\xce\xa0\xce\xbb\xce\xae\xcf\x81\xce\xb7\xcf\x82 \xce\xb5\xcf\x80\xce\xb9\xce\xba\xcf\x8d\xcf\x81\xcf\x89\xcf\x83\xce\xb7 \xce\xbc\xce\xb7 \xce\xb4\xce\xb9\xce\xb1\xce\xb8\xce\xad\xcf\x83\xce\xb9\xce\xbc\xce\xb7",
+    .via_ffmpeg_suffix = "\xce\xbc\xce\xad\xcf\x83\xcf\x89 ffmpeg",
     .malform_pdf_garbage_after_eof = "non-PDF data appended after %%EOF",
     .malform_png_ancillary_crc_error = "CRC error in ancillary PNG chunk",
     .malform_extension_mismatch = "file extension doesn't match content",
@@ -57,7 +46,31 @@ pub const strings = Strings{
     .malform_pdf_jbig2_decode_failed = "embedded JBIG2 decode failed (reader-tolerated)",
 };
 
-// English format descriptions — the canonical source of truth.
+pub const cli_aliases = cli.CliAliases{
+    .help = "\xce\xb2\xce\xbf\xce\xae\xce\xb8\xce\xb5\xce\xb9\xce\xb1",
+    .version = "\xce\xad\xce\xba\xce\xb4\xce\xbf\xcf\x83\xce\xb7",
+    .lang = "\xce\xb3\xce\xbb\xcf\x8e\xcf\x83\xcf\x83\xce\xb1",
+    .jobs = "\xce\xb5\xcf\x81\xce\xb3\xce\xb1\xcf\x83\xce\xaf\xce\xb5\xcf\x82",
+    .shuffle = "\xce\xb1\xce\xbd\xce\xb1\xce\xba\xce\xac\xcf\x84\xce\xb5\xce\xbc\xce\xb1",
+    .stress = "stress",
+    .no_color = "\xcf\x87\xcf\x89\xcf\x81\xce\xaf\xcf\x82-\xcf\x87\xcf\x81\xcf\x8e\xce\xbc\xce\xb1",
+    .color = "\xcf\x87\xcf\x81\xcf\x8e\xce\xbc\xce\xb1",
+    .simple_progress = "\xce\xb1\xcf\x80\xce\xbb\xce\xae-\xcf\x80\xcf\x81\xcf\x8c\xce\xbf\xce\xb4\xce\xbf\xcf\x82",
+    .no_frontload = "\xcf\x87\xcf\x89\xcf\x81\xce\xaf\xcf\x82-\xcf\x80\xcf\x81\xce\xbf\xcf\x84\xce\xb5\xcf\x81\xce\xb1\xce\xb9\xcf\x8c\xcf\x84\xce\xb7\xcf\x84\xce\xb1",
+};
+
+pub const env_aliases = cli.EnvAliases{
+    .ok_out = "OK_EXODOS",
+    .warn_out = "PROEIDOP_EXODOS",
+    .fail_out = "APOTYHIA_EXODOS",
+    .unknown_out = "AGNOSTI_EXODOS",
+    .slow_out = "ARGO_EXODOS",
+    .debug_out = "DEBUG_EXODOS",
+    .begin_out = "ENARXI_EXODOS",
+    .max_files = "MEGISTA_ARXEIA",
+    .validate_debug = "VALIDATE_DEBUG",
+};
+
 pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .unknown = "Unknown",
     .png = "PNG Image",
@@ -251,31 +264,5 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macos_bundle = "macOS Bundle",
 });
 
-// English CLI argument aliases (canonical forms, without -- prefix).
-pub const cli_aliases = cli.CliAliases{
-    .help = "help",
-    .version = "version",
-    .lang = "lang",
-    .jobs = "jobs",
-    .shuffle = "shuffle",
-    .stress = "stress",
-    .no_color = "no-color",
-    .color = "color",
-    .simple_progress = "simple-progress",
-    .no_frontload = "no-frontload",
-};
-
-// English environment variable aliases (canonical forms).
-pub const env_aliases = cli.EnvAliases{
-    .ok_out = "OK_OUT",
-    .warn_out = "WARN_OUT",
-    .fail_out = "FAIL_OUT",
-    .unknown_out = "UNKNOWN_OUT",
-    .slow_out = "SLOW_OUT",
-    .debug_out = "DEBUG_OUT",
-    .begin_out = "BEGIN_OUT",
-    .max_files = "MAX_FILES",
-    .validate_debug = "VALIDATE_DEBUG",
-};
-
-// English needs no error_translations or warning_translations (identity passthrough).
+pub const error_translations = i18n.ErrorMap.initComptime(.{});
+pub const warning_translations = i18n.WarningMap.initComptime(.{});

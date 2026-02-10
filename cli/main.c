@@ -629,14 +629,15 @@ static void init_output_destinations(void) {
 	output_dest_init(&g_debug_out);
 	output_dest_init(&g_begin_out);
 
-	/* Parse environment variables or use defaults */
-	const char* ok_spec = getenv("OK_OUT");
-	const char* warn_spec = getenv("WARN_OUT");
-	const char* fail_spec = getenv("FAIL_OUT");
-	const char* unknown_spec = getenv("UNKNOWN_OUT");
-	const char* slow_spec = getenv("SLOW_OUT");
-	const char* debug_spec = getenv("DEBUG_OUT");
-	const char* begin_spec = getenv("BEGIN_OUT");
+	/* Parse environment variables or use defaults.
+	 * validate_getenv() checks all locale aliases (e.g., FAIL_OUT, FEHLER_AUS, ECHEC_SORTIE). */
+	const char* ok_spec = validate_getenv(VALIDATE_ENV_OK_OUT);
+	const char* warn_spec = validate_getenv(VALIDATE_ENV_WARN_OUT);
+	const char* fail_spec = validate_getenv(VALIDATE_ENV_FAIL_OUT);
+	const char* unknown_spec = validate_getenv(VALIDATE_ENV_UNKNOWN_OUT);
+	const char* slow_spec = validate_getenv(VALIDATE_ENV_SLOW_OUT);
+	const char* debug_spec = validate_getenv(VALIDATE_ENV_DEBUG_OUT);
+	const char* begin_spec = validate_getenv(VALIDATE_ENV_BEGIN_OUT);
 
 	/* OK_OUT: default to stdout */
 	if (ok_spec && ok_spec[0] != '\0') {
@@ -700,7 +701,7 @@ static void shutdown_output_destinations(void) {
 }
 
 static size_t get_env_max_files(void) {
-	const char* env = getenv("MAX_FILES");
+	const char* env = validate_getenv(VALIDATE_ENV_MAX_FILES);
 	if (!env || env[0] == '\0') {
 		return 0;
 	}
@@ -946,7 +947,7 @@ static void on_validation_result(
 			}
 		}
 		/* Debug: check if file_id was found */
-		if (!found && getenv("VALIDATE_DEBUG")) {
+		if (!found && validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG)) {
 			fprintf(stderr, "[DEBUG] WARNING: file_id=%u not found in list!\n", file_id);
 		}
 		/* Update progress if TUI enabled */
@@ -1106,7 +1107,7 @@ static void frontload_large_files(path_list_t* list) {
 	size_t threshold = find_percentile_size(list, 90);
 	if (threshold == 0) return;  /* All files are empty or error occurred */
 
-	if (getenv("VALIDATE_DEBUG")) {
+	if (validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG)) {
 		fprintf(stderr, "[DEBUG] Frontload: P90 threshold=%zu bytes\n", threshold);
 	}
 
@@ -1162,7 +1163,7 @@ static void frontload_large_files(path_list_t* list) {
 		dest++;
 	}
 
-	if (getenv("VALIDATE_DEBUG")) {
+	if (validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG)) {
 		/* Calculate total bytes in large vs small files */
 		size_t large_bytes = 0, small_bytes = 0;
 		for (size_t i = 0; i < large_count; i++) {
@@ -1458,7 +1459,7 @@ static void progress_init(progress_state_t* state, size_t total_files, size_t to
 	state->tui_enabled = is_tty && total_files > 1 && !simple && height >= 5;
 
 	/* Debug output for TUI enablement - only when VALIDATE_DEBUG is set */
-	if (getenv("VALIDATE_DEBUG")) {
+	if (validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG)) {
 		fprintf(stderr, "[TUI] is_tty=%d, files=%zu, simple=%d, height=%d -> enabled=%d\n",
 				is_tty, total_files, simple, height, state->tui_enabled);
 		fprintf(stderr, "[TUI] total_bytes=%zu\n", total_bytes);
@@ -1605,7 +1606,7 @@ static void progress_render(progress_state_t* state) {
 
 	/* Debug width values if VALIDATE_DEBUG is set */
 	static int debug_printed = 0;
-	if (getenv("VALIDATE_DEBUG") && debug_printed < 5) {
+	if (validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG) && debug_printed < 5) {
 		size_t cb = atomic_load(&state->completed_bytes);
 		size_t cf = atomic_load(&state->completed_files);
 		fprintf(stderr, "[TUI] files=%zu/%zu bytes=%zu/%zu\n",
@@ -1823,6 +1824,37 @@ static void print_usage(const char* program) {
 	printf("Use --no-frontload to disable this behavior.\n");
 }
 
+/**
+ * Parse a CLI argument string into a validate_arg_t.
+ * Handles --long, -short, and /windows prefix forms.
+ * Short forms (-h, -j) and Windows forms (/?, /h, /help, /j, /jobs, /version)
+ * are hardcoded here. Long forms (--anything) are resolved through the
+ * i18n alias system via validate_match_arg().
+ */
+static uint8_t parse_cli_arg(const char* arg) {
+	/* Short forms (hardcoded, not localized) */
+	if (strcmp(arg, "-h") == 0) return VALIDATE_ARG_HELP;
+	if (strcmp(arg, "-j") == 0) return VALIDATE_ARG_JOBS;
+
+#ifdef _WIN32
+	/* Windows prefix forms */
+	if (strcmp(arg, "/?") == 0) return VALIDATE_ARG_HELP;
+	if (arg[0] == '/') {
+		/* Strip / prefix and look up via alias system */
+		uint8_t result = validate_match_arg(arg + 1);
+		if (result != VALIDATE_ARG_UNKNOWN) return result;
+		return VALIDATE_ARG_UNKNOWN;
+	}
+#endif
+
+	/* -- prefix: strip and look up via alias system */
+	if (arg[0] == '-' && arg[1] == '-') {
+		return validate_match_arg(arg + 2);
+	}
+
+	return VALIDATE_ARG_UNKNOWN;
+}
+
 int main(int argc, char* argv[]) {
 	/* Initialize color support based on terminal capabilities */
 	init_colors();
@@ -1851,104 +1883,75 @@ int main(int argc, char* argv[]) {
 
 	for (int i = 1; i < argc; i++) {
 		const char* arg = argv[i];
-		/* Help: --help, -h (and /help, /h, /? on Windows) */
-		if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0
+
+		/* Check if this looks like an option (starts with - or / on Windows) */
+		int is_option = (arg[0] == '-');
 #ifdef _WIN32
-		    || strcmp(arg, "/help") == 0 || strcmp(arg, "/h") == 0 || strcmp(arg, "/?") == 0
+		if (arg[0] == '/' && arg[1] != '\0' && arg[1] != '/' && arg[1] != '\\')
+			is_option = 1;
 #endif
-		) {
-			print_usage(argv[0]);
-			free(paths);
-			return 0;
-		}
-		/* Version: --version (and /version on Windows) */
-		if (strcmp(arg, "--version") == 0
-#ifdef _WIN32
-		    || strcmp(arg, "/version") == 0
-#endif
-		) {
-			printf("%s\n", validate_version());
-			free(paths);
-			return 0;
-		}
-		/* Shuffle: --shuffle */
-		if (strcmp(arg, "--shuffle") == 0) {
-			shuffle = 1;
-			continue;
-		}
-		/* Stress: --stress N */
-		if (strcmp(arg, "--stress") == 0) {
-			if (i + 1 >= argc) {
-				fprintf(stderr, "%sError: --stress requires a value\n%s", COLOR_RED, COLOR_RESET);
+
+		if (is_option) {
+			uint8_t arg_id = parse_cli_arg(arg);
+			switch (arg_id) {
+			case VALIDATE_ARG_HELP:
+				print_usage(argv[0]);
+				free(paths);
+				return 0;
+			case VALIDATE_ARG_VERSION:
+				printf("%s\n", validate_version());
+				free(paths);
+				return 0;
+			case VALIDATE_ARG_SHUFFLE:
+				shuffle = 1;
+				continue;
+			case VALIDATE_ARG_STRESS:
+				if (i + 1 >= argc) {
+					fprintf(stderr, "%sError: --stress requires a value\n%s", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				stress_iterations = (size_t)strtoull(argv[++i], NULL, 10);
+				if (stress_iterations == 0) {
+					fprintf(stderr, "%sError: --stress value must be > 0\n%s", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				continue;
+			case VALIDATE_ARG_JOBS:
+				if (i + 1 >= argc) {
+					fprintf(stderr, "%sError: --jobs requires a value\n%s", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				jobs = (size_t)strtoull(argv[++i], NULL, 10);
+				continue;
+			case VALIDATE_ARG_LANG:
+				if (i + 1 >= argc) {
+					fprintf(stderr, "%sError: --lang requires a value\n%s", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				validate_set_locale(argv[++i]);
+				continue;
+			case VALIDATE_ARG_NO_COLOR:
+				disable_colors();
+				continue;
+			case VALIDATE_ARG_COLOR:
+				enable_colors();  /* Force colors on even if not TTY */
+				continue;
+			case VALIDATE_ARG_NO_FRONTLOAD:
+				no_frontload = 1;
+				continue;
+			case VALIDATE_ARG_SIMPLE_PROGRESS:
+				simple_progress = 1;
+				continue;
+			default:
+				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);
 				return 2;
 			}
-			stress_iterations = (size_t)strtoull(argv[++i], NULL, 10);
-			if (stress_iterations == 0) {
-				fprintf(stderr, "%sError: --stress value must be > 0\n%s", COLOR_RED, COLOR_RESET);
-				free(paths);
-				return 2;
-			}
-			continue;
 		}
-		/* Jobs: --jobs, -j (and /jobs, /j on Windows) */
-		if (strcmp(arg, "--jobs") == 0 || strcmp(arg, "-j") == 0
-#ifdef _WIN32
-		    || strcmp(arg, "/jobs") == 0 || strcmp(arg, "/j") == 0
-#endif
-		) {
-			if (i + 1 >= argc) {
-				fprintf(stderr, "%sError: --jobs requires a value\n%s", COLOR_RED, COLOR_RESET);
-				free(paths);
-				return 2;
-			}
-			jobs = (size_t)strtoull(argv[++i], NULL, 10);
-			continue;
-		}
-		/* Language: --lang */
-		if (strcmp(arg, "--lang") == 0) {
-			if (i + 1 >= argc) {
-				fprintf(stderr, "%sError: --lang requires a value\n%s", COLOR_RED, COLOR_RESET);
-				free(paths);
-				return 2;
-			}
-			validate_set_locale(argv[++i]);
-			continue;
-		}
-		/* No color: --no-color */
-		if (strcmp(arg, "--no-color") == 0) {
-			disable_colors();
-			continue;
-		}
-		/* Force color: --color */
-		if (strcmp(arg, "--color") == 0) {
-			enable_colors();  /* Force colors on even if not TTY */
-			continue;
-		}
-		/* No frontload: --no-frontload */
-		if (strcmp(arg, "--no-frontload") == 0) {
-			no_frontload = 1;
-			continue;
-		}
-		/* Simple progress: --simple-progress */
-		if (strcmp(arg, "--simple-progress") == 0) {
-			simple_progress = 1;
-			continue;
-		}
-		/* Unknown option check */
-		if (arg[0] == '-') {
-			fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
-			free(paths);
-			return 2;
-		}
-#ifdef _WIN32
-		/* On Windows, / is an option prefix (but allow paths like C:\ or \\server) */
-		if (arg[0] == '/' && arg[1] != '\0' && arg[1] != '/' && arg[1] != '\\') {
-			fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
-			free(paths);
-			return 2;
-		}
-#endif
 		/* Add positional argument to paths list */
 		if (path_count >= path_capacity) {
 			size_t new_capacity = path_capacity == 0 ? 8 : path_capacity * 2;
@@ -2127,7 +2130,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	/* Debug: show final byte counts */
-	if (getenv("VALIDATE_DEBUG") && g_tui_enabled) {
+	if (validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG) && g_tui_enabled) {
 		size_t final_bytes = atomic_load(&g_progress.completed_bytes);
 		fprintf(stderr, "[DEBUG] Final: completed_bytes=%zu total_bytes=%zu\n",
 				final_bytes, g_progress.total_bytes);

@@ -205,9 +205,9 @@ fn buildValidationResult(
     try builder.addBool("valid", result.is_valid);
     try builder.addBool("unknown", result.format == .unknown);
 
-    // Messages
-    try builder.add("err", result.error_message orelse "");
-    try builder.add("warn", result.warning_message orelse "");
+    // Messages (translated for current locale)
+    try builder.add("err", i18n.translateError(result.error_message orelse ""));
+    try builder.add("warn", i18n.translateWarning(result.warning_message orelse ""));
 
     // Depth
     try builder.addU8("depth_u8", switch (result.validation_depth) {
@@ -548,6 +548,36 @@ export fn validate_tr(string_id: u32) ?[*:0]const u8 {
         return s.ptr;
     }
     return null;
+}
+
+// ========== CLI Alias Functions ==========
+
+/// Match a CLI argument keyword (without --/-/ prefix) against all locale aliases.
+/// Returns the CliArg enum value (u8) if found, or 255 if not recognized.
+export fn validate_match_arg(keyword: ?[*:0]const u8) u8 {
+    const k = keyword orelse return 255;
+    const slice = std.mem.span(k);
+    if (i18n.matchCliArg(slice)) |arg| {
+        return @intFromEnum(arg);
+    }
+    return 255;
+}
+
+/// Look up an environment variable by checking all locale aliases.
+/// env_id is a validate_env_t value.
+/// Returns the env var value (from whichever alias matched), or NULL if none set.
+export fn validate_getenv(env_id: u8) ?[*:0]const u8 {
+    return switch (@as(i18n.EnvVar, @enumFromInt(env_id))) {
+        .ok_out => i18n.getEnvLocalized(.ok_out),
+        .warn_out => i18n.getEnvLocalized(.warn_out),
+        .fail_out => i18n.getEnvLocalized(.fail_out),
+        .unknown_out => i18n.getEnvLocalized(.unknown_out),
+        .slow_out => i18n.getEnvLocalized(.slow_out),
+        .debug_out => i18n.getEnvLocalized(.debug_out),
+        .begin_out => i18n.getEnvLocalized(.begin_out),
+        .max_files => i18n.getEnvLocalized(.max_files),
+        .validate_debug => i18n.getEnvLocalized(.validate_debug),
+    };
 }
 
 /// Get the last error message (thread-local).

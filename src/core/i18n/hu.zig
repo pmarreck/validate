@@ -1,38 +1,27 @@
 const Strings = @import("strings.zig").Strings;
-const cli = @import("cli_aliases.zig");
 const i18n = @import("mod.zig");
+const cli = @import("cli_aliases.zig");
 
 pub const strings = Strings{
-    // CLI status labels
     .label_ok = "OK",
-    .label_warn = "WARN",
-    .label_fail = "FAIL",
-    .label_notice = "NOTICE",
-    .label_unknown = "UNKNOWN",
-    .label_slow = "SLOW",
-
-    // Summary
-    .summary_title = "Summary:",
-    .summary_interrupted = "Interrupted - Partial Summary:",
-    .summary_valid = "Valid:",
-    .summary_invalid = "Invalid:",
-    .summary_unknown = "Unknown:",
-    .summary_processed = "Processed:",
-
-    // Depth descriptions
-    .depth_structural = "structural",
-    .depth_full = "fully validated",
-
-    // Progress / startup
-    .scanning_files_found = "Scanning... %zu files found",
-    .found_files_to_validate = "Found %zu files to validate.",
-    .checking = "Checking:",
-
-    // Misc
-    .full_validation_unavailable = "Full validation unavailable",
-    .via_ffmpeg_suffix = "via ffmpeg",
-
-    // Malformation descriptions
+    .label_warn = "FIGYELMEZTET\xc3\x89S",
+    .label_fail = "HIBA",
+    .label_notice = "\xc3\x89RTES\xc3\x8dT\xc3\x89S",
+    .label_unknown = "ISMERETLEN",
+    .label_slow = "LASS\xc3\x9a",
+    .summary_title = "\xc3\x96sszegz\xc3\xa9s:",
+    .summary_interrupted = "Megszak\xc3\xadtva - R\xc3\xa9sz\xc3\xb6sszegz\xc3\xa9s:",
+    .summary_valid = "\xc3\x89rv\xc3\xa9nyes:",
+    .summary_invalid = "\xc3\x89rv\xc3\xa9nytelen:",
+    .summary_unknown = "Ismeretlen:",
+    .summary_processed = "Feldolgozva:",
+    .depth_structural = "struktur\xc3\xa1lis",
+    .depth_full = "teljesen valid\xc3\xa1lt",
+    .scanning_files_found = "Keres\xc3\xa9s... %zu f\xc3\xa1jl tal\xc3\xa1lva",
+    .found_files_to_validate = "%zu f\xc3\xa1jl valid\xc3\xa1land\xc3\xb3.",
+    .checking = "Ellen\xc5\x91rz\xc3\xa9s:",
+    .full_validation_unavailable = "Teljes valid\xc3\xa1ci\xc3\xb3 nem el\xc3\xa9rhet\xc5\x91",
+    .via_ffmpeg_suffix = "ffmpeg-en kereszt\xc3\xbcl",
     .malform_pdf_garbage_after_eof = "non-PDF data appended after %%EOF",
     .malform_png_ancillary_crc_error = "CRC error in ancillary PNG chunk",
     .malform_extension_mismatch = "file extension doesn't match content",
@@ -57,7 +46,31 @@ pub const strings = Strings{
     .malform_pdf_jbig2_decode_failed = "embedded JBIG2 decode failed (reader-tolerated)",
 };
 
-// English format descriptions — the canonical source of truth.
+pub const cli_aliases = cli.CliAliases{
+    .help = "segitseg",
+    .version = "verzio",
+    .lang = "nyelv",
+    .jobs = "feladatok",
+    .shuffle = "kever",
+    .stress = "stress",
+    .no_color = "szin-nelkul",
+    .color = "szin",
+    .simple_progress = "egyszeru-haladas",
+    .no_frontload = "sorrend-nelkul",
+};
+
+pub const env_aliases = cli.EnvAliases{
+    .ok_out = "OK_KIMENET",
+    .warn_out = "FIGYELM_KIMENET",
+    .fail_out = "HIBA_KIMENET",
+    .unknown_out = "ISMERETLEN_KIMENET",
+    .slow_out = "LASSU_KIMENET",
+    .debug_out = "DEBUG_KIMENET",
+    .begin_out = "KEZDET_KIMENET",
+    .max_files = "MAX_FAJLOK",
+    .validate_debug = "VALIDATE_DEBUG",
+};
+
 pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .unknown = "Unknown",
     .png = "PNG Image",
@@ -251,31 +264,5 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macos_bundle = "macOS Bundle",
 });
 
-// English CLI argument aliases (canonical forms, without -- prefix).
-pub const cli_aliases = cli.CliAliases{
-    .help = "help",
-    .version = "version",
-    .lang = "lang",
-    .jobs = "jobs",
-    .shuffle = "shuffle",
-    .stress = "stress",
-    .no_color = "no-color",
-    .color = "color",
-    .simple_progress = "simple-progress",
-    .no_frontload = "no-frontload",
-};
-
-// English environment variable aliases (canonical forms).
-pub const env_aliases = cli.EnvAliases{
-    .ok_out = "OK_OUT",
-    .warn_out = "WARN_OUT",
-    .fail_out = "FAIL_OUT",
-    .unknown_out = "UNKNOWN_OUT",
-    .slow_out = "SLOW_OUT",
-    .debug_out = "DEBUG_OUT",
-    .begin_out = "BEGIN_OUT",
-    .max_files = "MAX_FILES",
-    .validate_debug = "VALIDATE_DEBUG",
-};
-
-// English needs no error_translations or warning_translations (identity passthrough).
+pub const error_translations = i18n.ErrorMap.initComptime(.{});
+pub const warning_translations = i18n.WarningMap.initComptime(.{});
