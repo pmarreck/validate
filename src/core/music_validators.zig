@@ -15,6 +15,7 @@ const libopenmpt = @import("libopenmpt.zig");
 const flac_decoder = @import("flac_decoder.zig");
 const mp3_decode_validator = @import("mp3_decode_validator.zig");
 const mp3_validator = @import("mp3_validator.zig");
+const aac_syntax_validator = @import("aac_syntax_validator.zig");
 
 // ============ Helper ============
 
@@ -1643,4 +1644,179 @@ pub fn validateOggFromBuffer(data: []const u8) ValidationResult {
         return ValidationResult.ok(.ogg);
     }
     return ValidationResult.invalid(.ogg, "Invalid OGG signature");
+}
+
+// ============ AMR Validator ============
+
+/// Validate AMR (Adaptive Multi-Rate) audio file structure.
+/// AMR-NB: "#!AMR\n", AMR-WB: "#!AMR-WB\n", multi-channel variants also supported.
+pub fn validateAmr(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.amr, "Failed to seek");
+
+    var header: [15]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.amr, "Failed to read header");
+
+    if (bytes_read < 6) return ValidationResult.invalid(.amr, "Truncated header");
+
+    if (bytes_read >= 15 and std.mem.eql(u8, header[0..15], "#!AMR-WB_MC1.0\n")) {
+        return ValidationResult.structuralOnly(.amr);
+    }
+    if (bytes_read >= 12 and std.mem.eql(u8, header[0..12], "#!AMR_MC1.0\n")) {
+        return ValidationResult.structuralOnly(.amr);
+    }
+    if (bytes_read >= 9 and std.mem.eql(u8, header[0..9], "#!AMR-WB\n")) {
+        if (bytes_read > 9) {
+            const frame_header = header[9];
+            const ft = (frame_header >> 3) & 0x0F;
+            if (ft > 9 and ft != 14 and ft != 15) {
+                return ValidationResult.invalid(.amr, "Invalid AMR-WB frame type");
+            }
+        }
+        return ValidationResult.structuralOnly(.amr);
+    }
+    if (std.mem.eql(u8, header[0..6], "#!AMR\n")) {
+        if (bytes_read > 6) {
+            const frame_header = header[6];
+            const ft = (frame_header >> 3) & 0x0F;
+            if (ft > 8 and ft != 15) {
+                return ValidationResult.invalid(.amr, "Invalid AMR-NB frame type");
+            }
+        }
+        return ValidationResult.structuralOnly(.amr);
+    }
+
+    return ValidationResult.invalid(.amr, "Invalid AMR magic bytes");
+}
+
+// ============ AU/SND Validator ============
+
+/// Validate AU/SND (Sun/NeXT audio) file structure.
+pub fn validateAu(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.au, "Failed to seek");
+
+    var header: [24]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.au, "Failed to read header");
+    if (bytes_read < 24) return ValidationResult.invalid(.au, "Truncated header (need 24 bytes)");
+
+    if (!std.mem.eql(u8, header[0..4], ".snd")) {
+        return ValidationResult.invalid(.au, "Invalid AU magic (expected .snd)");
+    }
+
+    const data_offset = std.mem.readInt(u32, header[4..8], .big);
+    const data_size = std.mem.readInt(u32, header[8..12], .big);
+    const encoding = std.mem.readInt(u32, header[12..16], .big);
+    const sample_rate = std.mem.readInt(u32, header[16..20], .big);
+    const channels = std.mem.readInt(u32, header[20..24], .big);
+
+    if (data_offset < 24) return ValidationResult.invalid(.au, "Invalid data offset (must be >= 24)");
+    if (encoding == 0 or encoding > 27) return ValidationResult.invalid(.au, "Invalid encoding format (must be 1-27)");
+    if (sample_rate == 0) return ValidationResult.invalid(.au, "Invalid sample rate (must be > 0)");
+    if (sample_rate > 768000) return ValidationResult.invalid(.au, "Unreasonable sample rate (> 768000 Hz)");
+    if (channels == 0) return ValidationResult.invalid(.au, "Invalid channel count (must be > 0)");
+    if (channels > 128) return ValidationResult.invalid(.au, "Unreasonable channel count (> 128)");
+
+    if (data_size != 0xFFFFFFFF and data_size != 0) {
+        const file_size = file.getEndPos() catch return ValidationResult.structuralOnly(.au);
+        const expected_min: u64 = @as(u64, data_offset) + @as(u64, data_size);
+        if (expected_min > file_size) {
+            return ValidationResult.invalid(.au, "Data size exceeds file size (truncated)");
+        }
+    }
+
+    return ValidationResult.structuralOnly(.au);
+}
+
+// ============ TTA Validator ============
+
+/// Validate TTA (True Audio) lossless file structure with header CRC32 verification.
+pub fn validateTta(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.tta, "Failed to seek");
+
+    var header: [22]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.tta, "Failed to read header");
+    if (bytes_read < 22) return ValidationResult.invalid(.tta, "Truncated header (need 22 bytes)");
+
+    if (!std.mem.eql(u8, header[0..4], "TTA1")) {
+        return ValidationResult.invalid(.tta, "Invalid TTA magic (expected TTA1)");
+    }
+
+    const audio_format = std.mem.readInt(u16, header[4..6], .little);
+    const num_channels = std.mem.readInt(u16, header[6..8], .little);
+    const bits_per_sample = std.mem.readInt(u16, header[8..10], .little);
+    const sample_rate = std.mem.readInt(u32, header[10..14], .little);
+    const total_samples = std.mem.readInt(u32, header[14..18], .little);
+
+    if (audio_format != 1) return ValidationResult.invalid(.tta, "Invalid audio format (expected 1 for lossless)");
+    if (num_channels == 0 or num_channels > 8) return ValidationResult.invalid(.tta, "Invalid channel count (must be 1-8)");
+    if (bits_per_sample != 8 and bits_per_sample != 16 and bits_per_sample != 24) return ValidationResult.invalid(.tta, "Invalid bits per sample (must be 8, 16, or 24)");
+    if (sample_rate == 0 or sample_rate > 768000) return ValidationResult.invalid(.tta, "Invalid sample rate");
+    if (total_samples == 0) return ValidationResult.invalid(.tta, "Invalid total samples (must be > 0)");
+
+    // Verify CRC32 of header bytes 0-17
+    const stored_crc = std.mem.readInt(u32, header[18..22], .little);
+    const computed_crc = std.hash.Crc32.hash(header[0..18]);
+    if (stored_crc != computed_crc) return ValidationResult.invalid(.tta, "Header CRC32 mismatch");
+
+    // Validate seek table fits
+    const frame_length: u64 = @as(u64, sample_rate) * 256 / 245;
+    if (frame_length > 0) {
+        const fl32: u32 = @intCast(@min(frame_length, std.math.maxInt(u32)));
+        if (fl32 > 0) {
+            const num_frames = (total_samples + fl32 - 1) / fl32;
+            const seek_table_size: u64 = @as(u64, num_frames) * 4 + 4;
+            const file_size = file.getEndPos() catch return ValidationResult.structuralOnly(.tta);
+            if (file_size < 22 + seek_table_size) return ValidationResult.invalid(.tta, "File too small for seek table");
+        }
+    }
+
+    return ValidationResult.structuralOnly(.tta);
+}
+
+// ============ CAF Validator ============
+
+/// Validate CAF (Core Audio Format) file structure.
+pub fn validateCaf(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.caf, "Failed to seek");
+
+    var header: [20]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.caf, "Failed to read CAF header");
+    if (bytes_read < 20) return ValidationResult.invalid(.caf, "File too small for CAF header");
+
+    if (!std.mem.eql(u8, header[0..4], "caff")) return ValidationResult.invalid(.caf, "Invalid CAF magic bytes");
+
+    const version = std.mem.readInt(u16, header[4..6], .big);
+    if (version != 1) return ValidationResult.invalid(.caf, "Unsupported CAF version (expected 1)");
+
+    const flags = std.mem.readInt(u16, header[6..8], .big);
+    if (flags != 0) return ValidationResult.invalid(.caf, "Invalid CAF flags (expected 0)");
+
+    if (!std.mem.eql(u8, header[8..12], "desc")) return ValidationResult.invalid(.caf, "First CAF chunk is not 'desc' (Audio Description)");
+
+    const chunk_size = std.mem.readInt(i64, header[12..20], .big);
+    if (chunk_size != -1 and chunk_size != 32) return ValidationResult.invalid(.caf, "Unexpected CAF Audio Description chunk size");
+
+    return ValidationResult.structuralOnly(.caf);
+}
+
+// ============ AAC ADTS Validator ============
+
+/// Validate standalone AAC ADTS (.aac) file using pure-Zig bitstream validator.
+pub fn validateAacAdts(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.aac_adts, "Failed to seek");
+
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.aac_adts, "Failed to get file size");
+    if (file_size < 7) return ValidationResult.invalid(.aac_adts, "File too small for ADTS");
+
+    const max_read: usize = 1024 * 1024;
+    const read_size: usize = @min(file_size, max_read);
+    var buf: [max_read]u8 = undefined;
+    const bytes_read = file.readAll(buf[0..read_size]) catch return ValidationResult.invalid(.aac_adts, "Failed to read ADTS data");
+    if (bytes_read < 7) return ValidationResult.invalid(.aac_adts, "Incomplete ADTS data");
+
+    const result = aac_syntax_validator.validateAdtsStream(buf[0..bytes_read]);
+    if (!result.valid) {
+        return ValidationResult.invalid(.aac_adts, result.error_message orelse "ADTS validation failed");
+    }
+
+    return ValidationResult.okWithDepth(.aac_adts, .full);
 }

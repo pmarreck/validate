@@ -204,6 +204,11 @@ const scientific_validators = @import("scientific_validators.zig");
 const music_validators = @import("music_validators.zig");
 const movie_validators = @import("movie_validators.zig");
 const image_validators = @import("image_validators.zig");
+const email_validators = @import("email_validators.zig");
+const executable_validators = @import("executable_validators.zig");
+const archive_validators = @import("archive_validators.zig");
+pub const creative_validators = @import("creative_validators.zig");
+const cad_3d_validators = @import("cad_3d_validators.zig");
 
 // ============ Constants ============
 
@@ -1770,6 +1775,52 @@ fn checkSpecialCases(sig: MagicSignature, header: []const u8) ?FileFormat {
         }
         return null;
     }
+    // Mach-O single-arch: validate CPU type and filetype
+    if (sig.format == .macho) {
+        if (header.len >= 28) {
+            // Determine endianness from magic
+            const is_le = (header[0] == 0xCE or header[0] == 0xCF);
+            const endian: std.builtin.Endian = if (is_le) .little else .big;
+            const cputype = std.mem.readInt(u32, header[4..8], endian);
+            const filetype = std.mem.readInt(u32, header[12..16], endian);
+            const ncmds = std.mem.readInt(u32, header[16..20], endian);
+            // Validate CPU type
+            const valid_cpu = (cputype == 7 or // i386
+                cputype == 0x01000007 or // x86_64
+                cputype == 12 or // arm
+                cputype == 0x0100000C or // arm64
+                cputype == 0x0200000C or // arm64_32
+                cputype == 18 or // powerpc
+                cputype == 0x01000012); // powerpc64
+            if (!valid_cpu) return null;
+            // Validate filetype (1-12)
+            if (filetype == 0 or filetype > 12) return null;
+            // Validate ncmds (should be reasonable)
+            if (ncmds == 0 or ncmds > 10000) return null;
+        }
+        return .macho;
+    }
+    // Mach-O Universal/Fat: disambiguate from Java .class (both start with 0xCAFEBABE)
+    if (sig.format == .macho_fat) {
+        if (header.len >= 8) {
+            const nfat_arch = std.mem.readInt(u32, header[4..8], .big);
+            // Fat binary should have 1-30 architectures; Java .class has version numbers here
+            // Java .class: bytes 4-5 = minor version, 6-7 = major version (typically 45-65)
+            if (nfat_arch >= 1 and nfat_arch <= 30) {
+                // Additional check: for fat binaries, the next bytes should be valid CPU types
+                if (header.len >= 28) {
+                    const first_cputype = std.mem.readInt(u32, header[8..12], .big);
+                    const valid_fat_cpu = (first_cputype == 7 or first_cputype == 0x01000007 or
+                        first_cputype == 12 or first_cputype == 0x0100000C or
+                        first_cputype == 18 or first_cputype == 0x01000012);
+                    if (valid_fat_cpu) return .macho_fat;
+                } else {
+                    return .macho_fat;
+                }
+            }
+        }
+        return null;
+    }
     // MPEG TS detection (single 0x47 sync byte needs additional sync verification)
     if (sig.format == .mpeg_ts) {
         if (header.len >= 376) {
@@ -1794,55 +1845,6 @@ fn checkSpecialCases(sig: MagicSignature, header: []const u8) ?FileFormat {
     if (sig.format == .aep) {
         if (header.len >= 12) {
             if (std.mem.eql(u8, header[8..12], "Egg!")) return .aep;
-        }
-        return null;
-    }
-    // Mach-O single-arch: validate CPU type and filetype
-    if (sig.format == .macho) {
-        if (header.len >= 28) {
-            // Determine endianness from magic
-            const is_le = (header[0] == 0xCE or header[0] == 0xCF);
-            const endian: std.builtin.Endian = if (is_le) .little else .big;
-            const cputype = std.mem.readInt(u32, header[4..8], endian);
-            const filetype = std.mem.readInt(u32, header[12..16], endian);
-            const ncmds = std.mem.readInt(u32, header[16..20], endian);
-            // Validate CPU type
-            const valid_cpu = (cputype == 7 or // i386
-                cputype == 0x01000007 or // x86_64
-                cputype == 12 or // arm
-                cputype == 0x0100000C or // arm64
-                cputype == 18); // ppc
-            if (!valid_cpu) return null;
-            // Filetype must be 1-12
-            if (filetype == 0 or filetype > 12) return null;
-            // Reasonable number of load commands
-            if (ncmds == 0 or ncmds > 2000) return null;
-            return .macho;
-        }
-        return null;
-    }
-    // Mach-O Fat/Universal binary vs Java .class disambiguation
-    if (sig.format == .macho_fat) {
-        if (header.len >= 8) {
-            // nfat_arch is at offset 4, always big-endian
-            const nfat_arch = std.mem.readInt(u32, header[4..8], .big);
-            // Java .class files have minor_version at offset 4 (typically 0 or 65535)
-            // and major_version at offset 6 (43-67 for Java 1.0-23).
-            // Fat binaries have nfat_arch (typically 1-4, max ~20).
-            // nfat_arch == 0 is invalid, and > 30 is almost certainly Java or garbage.
-            if (nfat_arch == 0 or nfat_arch > 30) return null;
-            // Additional check: each fat_arch entry is 20 bytes, starting at offset 8.
-            // Verify the first entry has a valid cputype.
-            if (header.len >= 16) {
-                const first_cputype = std.mem.readInt(u32, header[8..12], .big);
-                const valid_cpu = (first_cputype == 7 or // i386
-                    first_cputype == 0x01000007 or // x86_64
-                    first_cputype == 12 or // arm
-                    first_cputype == 0x0100000C or // arm64
-                    first_cputype == 18); // ppc
-                if (!valid_cpu) return null;
-            }
-            return .macho_fat;
         }
         return null;
     }
@@ -2200,7 +2202,7 @@ fn findMimeContentEnd(file: std.fs.File, content_start: usize, file_size: u64) !
 }
 
 /// Validate data buffer for a specific format (used for MIME-wrapped content)
-fn validateDataBufferFormat(data: []const u8, format: FileFormat) ValidationResult {
+pub fn validateDataBufferFormat(data: []const u8, format: FileFormat) ValidationResult {
     return switch (format) {
         .pdf => validatePdfFromBuffer(data),
         .png => image_validators.validatePngFromBuffer(data),
@@ -2209,7 +2211,7 @@ fn validateDataBufferFormat(data: []const u8, format: FileFormat) ValidationResu
         .bmp => image_validators.validateBmpFromBuffer(data),
         .tiff => image_validators.validateTiffFromBuffer(data),
         .webp => image_validators.validateWebpFromBuffer(data),
-        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => validateZipFromBuffer(data, format),
+        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => archive_validators.validateZipFromBuffer(data, format),
         .mp4, .mov, .m4a => movie_validators.validateMp4FromBuffer(data),
         else => ValidationResult.ok(format), // Format not supported for buffer validation
     };
@@ -2312,16 +2314,10 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
 
     // ELF executable extensions
     if (std.mem.eql(u8, ext_lower, "so")) return .elf; // Shared objects
+    if (std.mem.eql(u8, ext_lower, "o")) return .elf; // Object files
     if (std.mem.eql(u8, ext_lower, "elf")) return .elf;
     if (std.mem.eql(u8, ext_lower, "ko")) return .elf; // Kernel modules
     if (std.mem.eql(u8, ext_lower, "axf")) return .elf; // ARM executables
-
-    // Mach-O extensions (magic bytes handle detection; these are fallback hints)
-    if (std.mem.eql(u8, ext_lower, "dylib")) return .macho; // Dynamic libraries
-    // Note: .o files are detected by magic bytes (ELF or Mach-O), not extension
-
-    // COFF object files (no magic bytes — extension-based detection + structural validation)
-    if (std.mem.eql(u8, ext_lower, "obj")) return .coff; // Windows object files
 
     // WebAssembly
     if (std.mem.eql(u8, ext_lower, "wasm")) return .wasm;
@@ -3550,7 +3546,7 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
 }
 
 /// Check if a header name is a common RFC 822/2822 email header.
-fn isEmailHeader(name: []const u8) bool {
+pub fn isEmailHeader(name: []const u8) bool {
     const email_headers = [_][]const u8{
         "From",                      "To",                     "Cc",             "Bcc",                 "Subject",     "Date",       "Message-ID",    "Message-Id",
         "Received",                  "Return-Path",            "Reply-To",       "Sender",              "In-Reply-To", "References", "MIME-Version",  "Content-Type",
@@ -4597,7 +4593,7 @@ fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
     if (header[0] == 0x1f and header[1] == 0x8b) {
         // Use gzip deep validation for CRC verification
         // This validates every byte through decompression and CRC32 check
-        const gzip_result = validateGzipDeep(allocator, path);
+        const gzip_result = archive_validators.validateGzipDeep(allocator, path);
         if (!gzip_result.is_valid) {
             // Remap format to prproj but preserve error
             var result = gzip_result;
@@ -5396,7 +5392,7 @@ fn validateDrp(file: std.fs.File) ValidationResult {
 /// Parses the ZIP and verifies project.xml exists.
 fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Use ZIP deep validation for the container integrity
-    const zip_result = validateZipDeep(allocator, path);
+    const zip_result = archive_validators.validateZipDeep(allocator, path);
     if (!zip_result.is_valid) {
         return ValidationResult.invalid(.drp, zip_result.error_message orelse "Invalid ZIP structure");
     }
@@ -5483,7 +5479,7 @@ fn validateSketch(file: std.fs.File) ValidationResult {
 /// Parses the ZIP and verifies document.json and meta.json exist.
 fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Use ZIP deep validation for the container integrity
-    const zip_result = validateZipDeep(allocator, path);
+    const zip_result = archive_validators.validateZipDeep(allocator, path);
     if (!zip_result.is_valid) {
         return ValidationResult.invalid(.sketch, zip_result.error_message orelse "Invalid ZIP structure");
     }
@@ -8157,7 +8153,7 @@ fn isInvalidFloat(bits: u32) bool {
 /// 3MF is ZIP-based with XML content defining 3D models.
 fn validate3mf(file: std.fs.File) ValidationResult {
     // 3MF is ZIP-based, first validate ZIP structure
-    const zip_result = validateZip(file, .@"3mf");
+    const zip_result = archive_validators.validateZip(file, .@"3mf");
     if (!zip_result.is_valid) {
         return zip_result;
     }
@@ -9233,7 +9229,7 @@ fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult {
 // ============ EML/MBOX Validators ============
 
 /// Base64 decoding table (RFC 4648)
-const base64_decode_table = blk: {
+pub const base64_decode_table = blk: {
     var table: [256]u8 = .{0xFF} ** 256;
     const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     for (alphabet, 0..) |c, i| {
@@ -9245,7 +9241,7 @@ const base64_decode_table = blk: {
 
 /// Decode base64 data into output buffer.
 /// Returns the number of decoded bytes, or error if invalid.
-fn decodeBase64(encoded: []const u8, output: []u8) !usize {
+pub fn decodeBase64(encoded: []const u8, output: []u8) !usize {
     var out_idx: usize = 0;
     var accum: u32 = 0;
     var bits: u8 = 0;
@@ -9286,7 +9282,7 @@ fn decodeBase64(encoded: []const u8, output: []u8) !usize {
 }
 
 /// Maximum attachment size to decode and validate (16 MB)
-const max_attachment_decode_size: usize = 16 * 1024 * 1024;
+pub const max_attachment_decode_size: usize = 16 * 1024 * 1024;
 
 /// Validate EML (RFC 822/2822 email) file structure and attachments.
 fn validateEml(file: std.fs.File) ValidationResult {
@@ -9413,7 +9409,7 @@ fn validateEmlContent(allocator: Allocator, content: []const u8) ValidationResul
 }
 
 /// Check if headers contain at least one valid email header.
-fn hasValidEmailHeaders(headers: []const u8) bool {
+pub fn hasValidEmailHeaders(headers: []const u8) bool {
     var line_start: usize = 0;
     for (headers, 0..) |c, idx| {
         if (c == '\n') {
@@ -9438,7 +9434,7 @@ fn hasValidEmailHeaders(headers: []const u8) bool {
 }
 
 /// Find MIME boundary from Content-Type header.
-fn findMimeBoundary(headers: []const u8) ?[]const u8 {
+pub fn findMimeBoundary(headers: []const u8) ?[]const u8 {
     const content_type = findHeaderValue(headers, "Content-Type") orelse return null;
 
     // Look for boundary= in Content-Type
@@ -9470,7 +9466,7 @@ fn findMimeBoundary(headers: []const u8) ?[]const u8 {
 }
 
 /// Find a header value by name (case-insensitive).
-fn findHeaderValue(headers: []const u8, name: []const u8) ?[]const u8 {
+pub fn findHeaderValue(headers: []const u8, name: []const u8) ?[]const u8 {
     var line_start: usize = 0;
     var in_continuation = false;
     var value_start: usize = 0;
@@ -9986,7 +9982,7 @@ fn validatePar2(file: std.fs.File) ValidationResult {
 // ============ PDF Validator ============
 
 /// Validate PDF file structure.
-fn validatePdf(file: std.fs.File) ValidationResult {
+pub fn validatePdf(file: std.fs.File) ValidationResult {
     return validatePdfWithOptions(file, false);
 }
 
@@ -11803,7 +11799,7 @@ fn validateZipDeepWithCentralDirectory(
 /// Deep ZIP validation by verifying CRC-32 checksums for all entries.
 /// ZIP stores a CRC-32 for each file entry, computed over the uncompressed data.
 /// For stored files, we CRC the data directly. For deflated files, we decompress first.
-fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.zip, "File not found", .full),
@@ -12241,7 +12237,7 @@ fn logPdfSlow(
 /// - xref table parsability
 /// - Trailer dictionary required keys (/Size, /Root)
 /// - FlateDecode stream decompression (if present)
-fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	const telemetry = PdfTelemetry.init();
 	const total_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
 	const file = std.fs.cwd().openFile(path, .{}) catch |err| {
@@ -14052,7 +14048,7 @@ pub const FormatValidator = struct {
             .png => image_validators.validatePngFromBuffer(content),
             .jpeg => image_validators.validateJpegFromBuffer(content),
             .gif => image_validators.validateGifFromBuffer(content),
-            .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => validateZipFromBuffer(content, format),
+            .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => archive_validators.validateZipFromBuffer(content, format),
             else => ValidationResult.ok(format),
         };
 
@@ -14069,23 +14065,23 @@ pub const FormatValidator = struct {
             .gif => image_validators.validateGifDeep(allocator, path),
             .tiff, .dng, .cr2, .nef, .arw => image_validators.validateTiffDeep(allocator, path, initial_result.format),
             .psd => image_validators.validatePsdDeep(allocator, path),
-            .ai => validateAiDeep(allocator, path),
-            .eps => validateEpsDeep(allocator, path),
-            .aep => validateAepDeep(allocator, path),
+            .ai => creative_validators.validateAiDeep(allocator, path),
+            .eps => creative_validators.validateEpsDeep(allocator, path),
+            .aep => creative_validators.validateAepDeep(allocator, path),
             .webp => image_validators.validateWebpDeep(allocator, path),
             .jxl => image_validators.validateJxlDeep(allocator, path),
             .bmp => image_validators.validateBmpDeep(allocator, path),
-            .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .pages, .logicx, .song => validateZipDeep(allocator, path),
+            .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .pages, .logicx, .song => archive_validators.validateZipDeep(allocator, path),
             .flac => music_validators.validateFlacDeep(allocator, path),
             .wav => music_validators.validateWavDeep(allocator, path),
             .aiff => music_validators.validateAiffDeep(allocator, path),
             .pdf => validatePdfDeep(allocator, path),
-            .gzip => validateGzipDeep(allocator, path),
-            .bzip2 => validateBzip2Deep(allocator, path),
-            .xz => validateXzDeep(allocator, path),
-            .zstd => validateZstdDeep(allocator, path),
-            .sevenz => validate7zDeep(allocator, path),
-            .rar => validateRarDeep(allocator, path),
+            .gzip => archive_validators.validateGzipDeep(allocator, path),
+            .bzip2 => archive_validators.validateBzip2Deep(allocator, path),
+            .xz => archive_validators.validateXzDeep(allocator, path),
+            .zstd => archive_validators.validateZstdDeep(allocator, path),
+            .sevenz => archive_validators.validate7zDeep(allocator, path),
+            .rar => archive_validators.validateRarDeep(allocator, path),
             .dmg => validateDmgDeep(allocator, path),
             .iso => validateIsoDeep(allocator, path),
             .mp3 => music_validators.validateMp3Deep(allocator, path),
@@ -14097,7 +14093,7 @@ pub const FormatValidator = struct {
             .heic => image_validators.validateHeicDeep(allocator, path),
             .avif => image_validators.validateAvifDeep(allocator, path),
             .exr => image_validators.validateExrDeep(allocator, path),
-            .glb => validateGlbDeep(allocator, path),
+            .glb => cad_3d_validators.validateGlbDeep(allocator, path),
             .doc, .xls, .ppt => validateOle2Deep(allocator, path, initial_result.format),
             .br => validateBrotliDeep(path),
             .mod => music_validators.validateModDeep(path),
@@ -14108,32 +14104,32 @@ pub const FormatValidator = struct {
             .jbig2 => image_validators.validateJbig2Deep(allocator, path),
             .ac3 => music_validators.validateAc3Deep(path),
             .eac3 => music_validators.validateEac3Deep(path),
-            .prproj => validatePrprojDeep(allocator, path),
-            .indd => validateInddDeep(allocator, path),
-            .idml => validateZipDeep(allocator, path), // IDML uses ZIP deep validation
-            .dwg => validateDwgDeep(allocator, path),
-            .blend => validateBlendDeep(allocator, path),
+            .prproj => creative_validators.validatePrprojDeep(allocator, path),
+            .indd => creative_validators.validateInddDeep(allocator, path),
+            .idml => archive_validators.validateZipDeep(allocator, path), // IDML uses ZIP deep validation
+            .dwg => cad_3d_validators.validateDwgDeep(allocator, path),
+            .blend => cad_3d_validators.validateBlendDeep(allocator, path),
             .flp => daw_validators.validateFlpDeep(allocator, path),
             .als => daw_validators.validateAlsDeep(allocator, path),
             .rpp => daw_validators.validateRppDeep(allocator, path),
-            .fcpxml => validateFcpxmlDeep(allocator, path),
+            .fcpxml => creative_validators.validateFcpxmlDeep(allocator, path),
             .svg => image_validators.validateSvgDeep(allocator, path),
             .kml => text_format_validators.validateKmlDeep(allocator, path),
             .rtf => text_format_validators.validateRtfDeep(allocator, path),
             .mpeg_ts => movie_validators.validateMpegTsDeep(allocator, path),
             .flv => movie_validators.validateFlvDeep(allocator, path),
-            .mbox => validateMboxDeep(allocator, path),
+            .mbox => email_validators.validateMboxDeep(allocator, path),
             .wad => validateWadDeep(allocator, path),
             .pak => validatePakDeep(allocator, path),
             .nes => game_validator.validateNesDeep(allocator, path),
             .iff => validateIffDeep(allocator, path),
             .n64 => game_validator.validateN64Deep(allocator, path),
             .genesis => game_validator.validateGenesisDeep(allocator, path),
-            .drp => validateDrpDeep(allocator, path),
+            .drp => creative_validators.validateDrpDeep(allocator, path),
             .mdb => validateMdbDeep(allocator, path),
             .accdb => validateAccdbDeep(allocator, path),
-            .obj => validateObjDeep(allocator, path),
-            .sketch => validateSketchDeep(allocator, path),
+            .obj => cad_3d_validators.validateObjDeep(allocator, path),
+            .sketch => creative_validators.validateSketchDeep(allocator, path),
             .git_repository => validateGitRepositoryDeep(allocator, path),
             .macos_app => validateMacosAppDeep(allocator, path),
             .macos_framework => validateMacosFrameworkDeep(allocator, path),
@@ -14422,21 +14418,21 @@ pub const FormatValidator = struct {
             .bmp => image_validators.validateBmp(file),
             .webp => image_validators.validateWebp(file),
             .psd => image_validators.validatePsd(file),
-            .ai => validateAi(file),
-            .eps => validateEps(file),
-            .aep => validateAep(file),
+            .ai => creative_validators.validateAi(file),
+            .eps => creative_validators.validateEps(file),
+            .aep => creative_validators.validateAep(file),
             .tiff, .dng, .cr2, .nef, .arw => image_validators.validateTiff(file, format),
             .exr => image_validators.validateExr(file),
-            .zip, .epub, .docx, .xlsx, .pptx => validateZip(file, format),
-            .odt, .ods, .odp, .pages, .logicx, .song => validateZip(file, format), // ZIP-based document/DAW formats
-            .gzip => validateGzip(file),
-            .bzip2 => validateBzip2(file),
-            .xz => validateXz(file),
-            .zstd => validateZstd(file),
+            .zip, .epub, .docx, .xlsx, .pptx => archive_validators.validateZip(file, format),
+            .odt, .ods, .odp, .pages, .logicx, .song => archive_validators.validateZip(file, format), // ZIP-based document/DAW formats
+            .gzip => archive_validators.validateGzip(file),
+            .bzip2 => archive_validators.validateBzip2(file),
+            .xz => archive_validators.validateXz(file),
+            .zstd => archive_validators.validateZstd(file),
             .br => ValidationResult.ok(.br), // No magic bytes - extension-only detection, deep validates
-            .rar => validateRar(file),
-            .sevenz => validate7z(file),
-            .tar => validateTar(file),
+            .rar => archive_validators.validateRar(file),
+            .sevenz => archive_validators.validate7z(file),
+            .tar => archive_validators.validateTar(file),
             .pdf => validatePdf(file),
             .rtf => text_format_validators.validateRtf(file),
             .doc, .xls, .ppt => validateOle2(file, format), // OLE2/CFBF binary Office
@@ -14478,14 +14474,14 @@ pub const FormatValidator = struct {
             .ptx => validateProTools(file),
             .band => validateGarageBand(file),
             .reason => validateReason(file),
-            .prproj => validatePrproj(file),
-            .indd => validateIndd(file),
-            .idml => validateIdml(file),
-            .dwg => validateDwg(file),
-            .blend => validateBlend(file),
-            .fcpxml => validateFcpxml(file),
-            .drp => validateDrp(file),
-            .sketch => validateSketch(file),
+            .prproj => creative_validators.validatePrproj(file),
+            .indd => creative_validators.validateIndd(file),
+            .idml => creative_validators.validateIdml(file),
+            .dwg => cad_3d_validators.validateDwg(file),
+            .blend => cad_3d_validators.validateBlend(file),
+            .fcpxml => creative_validators.validateFcpxml(file),
+            .drp => creative_validators.validateDrp(file),
+            .sketch => creative_validators.validateSketch(file),
             .mdb => validateMdb(file),
             .accdb => validateAccdb(file),
             .iso => validateIso(file),
@@ -14497,7 +14493,7 @@ pub const FormatValidator = struct {
             .dicom => scientific_validators.validateDicom(file),
             .fasta => scientific_validators.validateFasta(file),
             .fastq => scientific_validators.validateFastq(file),
-            .warc => validateWarc(file),
+            .warc => archive_validators.validateWarc(file),
             .wad => validateWad(file),
             .pak => validatePak(file),
             .lspk => validateLspk(file),
@@ -14521,17 +14517,17 @@ pub const FormatValidator = struct {
             .shapefile => validateShapefile(file),
             .kml => text_format_validators.validateKml(file),
             .kmz => text_format_validators.validateKmz(file),
-            .dxf => validateDxf(file),
-            .step => validateStep(file),
-            .stl => validateStl(file),
+            .dxf => cad_3d_validators.validateDxf(file),
+            .step => cad_3d_validators.validateStep(file),
+            .stl => cad_3d_validators.validateStl(file),
             // 3D printing/modeling formats
             .@"3mf" => validate3mf(file),
-            .obj => validateObj(file),
-            .ply => validatePly(file),
-            .gltf => validateGltf(file),
-            .glb => validateGlb(file),
-            .eml => validateEml(file),
-            .mbox => validateMbox(file),
+            .obj => cad_3d_validators.validateObj(file),
+            .ply => cad_3d_validators.validatePly(file),
+            .gltf => cad_3d_validators.validateGltf(file),
+            .glb => cad_3d_validators.validateGlb(file),
+            .eml => email_validators.validateEml(file),
+            .mbox => email_validators.validateMbox(file),
             .svg => image_validators.validateSvg(file),
             .json => text_format_validators.validateJson(file),
             .toml => text_format_validators.validateToml(file),
@@ -14551,7 +14547,7 @@ pub const FormatValidator = struct {
             .woff => validateWoff(file),
             .woff2 => validateWoff2(file),
             .type1 => validateType1Font(file),
-            .par2 => validatePar2(file),
+            .par2 => archive_validators.validatePar2(file),
             // VM/Bytecode formats
             .beam => validateBeam(file),
             // Icon formats
@@ -14578,13 +14574,13 @@ pub const FormatValidator = struct {
             .dv => validateDv(file),
             // Executable formats
             .pe => pe_validator.validatePe(file),
-            .elf => validateElf(file),
-            .macho => validateMacho(file),
-            .macho_fat => validateMachoFat(file),
-            .coff => validateCoff(file),
-            .wasm => validateWasm(file),
+            .elf => executable_validators.validateElf(file),
+            .macho => executable_validators.validateMacho(file),
+            .macho_fat => executable_validators.validateMachoFat(file),
+            .coff => executable_validators.validateCoff(file),
+            .wasm => executable_validators.validateWasm(file),
             // Archives
-            .ar => validateAr(file),
+            .ar => executable_validators.validateAr(file),
             // Web markup
             .html => text_format_validators.validateHtml(file),
             // Bundle formats (directories) - should be handled before reaching this switch
@@ -14697,23 +14693,23 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
         .tiff => image_validators.validateTiffFromBuffer(data),
         .exr => image_validators.validateExrFromBuffer(data),
         .psd => image_validators.validatePsdFromBuffer(data),
-        .ai => validateAiFromBuffer(data),
-        .eps => validateEpsFromBuffer(data),
-        .aep => validateAepFromBuffer(data),
-        .prproj => validatePrprojFromBuffer(data),
-        .indd => validateInddFromBuffer(data),
-        .idml => validateZipFromBuffer(data, .idml),
+        .ai => creative_validators.validateAiFromBuffer(data),
+        .eps => creative_validators.validateEpsFromBuffer(data),
+        .aep => creative_validators.validateAepFromBuffer(data),
+        .prproj => creative_validators.validatePrprojFromBuffer(data),
+        .indd => creative_validators.validateInddFromBuffer(data),
+        .idml => archive_validators.validateZipFromBuffer(data, .idml),
         .dwg => validateDwgFromBuffer(data),
         .blend => validateBlendFromBuffer(data),
         .flp => daw_validators.validateFlpFromBuffer(data),
-        .fcpxml => validateFcpxmlFromBuffer(data),
-        .drp => validateDrpFromBuffer(data),
-        .sketch => validateSketchFromBuffer(data),
+        .fcpxml => creative_validators.validateFcpxmlFromBuffer(data),
+        .drp => creative_validators.validateDrpFromBuffer(data),
+        .sketch => creative_validators.validateSketchFromBuffer(data),
         .mdb => validateMdbFromBuffer(data),
         .accdb => validateAccdbFromBuffer(data),
         .obj => validateObjFromBuffer(data),
         .webp => image_validators.validateWebpFromBuffer(data),
-        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => validateZipFromBuffer(data, format),
+        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => archive_validators.validateZipFromBuffer(data, format),
         .pdf => validatePdfFromBuffer(data),
         .mp4, .mov, .m4a => movie_validators.validateMp4FromBuffer(data),
         .mkv, .webm => movie_validators.validateMkvFromBuffer(data),
@@ -14723,12 +14719,12 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
         .wav => music_validators.validateWavFromBuffer(data),
         .aiff => music_validators.validateAiffFromBuffer(data),
         .ogg => music_validators.validateOggFromBuffer(data),
-        .gzip => validateGzipFromBuffer(data),
-        .bzip2 => validateBzip2FromBuffer(data),
-        .xz => validateXzFromBuffer(data),
-        .zstd => validateZstdFromBuffer(data),
-        .rar => validateRarFromBuffer(data),
-        .sevenz => validate7zFromBuffer(data),
+        .gzip => archive_validators.validateGzipFromBuffer(data),
+        .bzip2 => archive_validators.validateBzip2FromBuffer(data),
+        .xz => archive_validators.validateXzFromBuffer(data),
+        .zstd => archive_validators.validateZstdFromBuffer(data),
+        .rar => archive_validators.validateRarFromBuffer(data),
+        .sevenz => archive_validators.validate7zFromBuffer(data),
         // For formats without buffer validators yet, just return format detected
         else => ValidationResult.ok(format),
     };
@@ -14745,7 +14741,7 @@ fn validateZipFromBuffer(data: []const u8, format: FileFormat) ValidationResult 
     return ValidationResult.invalid(format, "Invalid ZIP signature");
 }
 
-fn validatePdfFromBuffer(data: []const u8) ValidationResult {
+pub fn validatePdfFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 5) return ValidationResult.invalid(.pdf, "File too small");
     if (std.mem.eql(u8, data[0..5], "%PDF-")) {
         return ValidationResult.ok(.pdf);
@@ -15829,169 +15825,6 @@ fn validateElf(file: std.fs.File) ValidationResult {
     }
 
     return ValidationResult.okWithDepth(.elf, .full);
-}
-
-/// Validate Mach-O binary (single-architecture).
-/// Checks magic, CPU type, file type, and load command structure.
-fn validateMacho(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.macho, "Failed to get file size");
-    if (file_size < 28) return ValidationResult.invalid(.macho, "File too small for Mach-O header");
-
-    file.seekTo(0) catch return ValidationResult.invalid(.macho, "Failed to seek");
-    var header: [32]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.macho, "Failed to read header");
-    if (bytes_read < 28) return ValidationResult.invalid(.macho, "Mach-O header too short");
-
-    // Determine 32-bit vs 64-bit and endianness from magic
-    const is_64 = (header[0] == 0xCF or header[3] == 0xCF);
-    const is_le = (header[0] == 0xCE or header[0] == 0xCF);
-    const endian: std.builtin.Endian = if (is_le) .little else .big;
-    const header_size: usize = if (is_64) 32 else 28;
-
-    if (bytes_read < header_size)
-        return ValidationResult.invalid(.macho, "Mach-O header too short for class");
-
-    // cputype (4 bytes at offset 4)
-    const cputype = std.mem.readInt(u32, header[4..8], endian);
-    const valid_cpu = (cputype == 7 or // i386
-        cputype == 0x01000007 or // x86_64
-        cputype == 12 or // arm
-        cputype == 0x0100000C or // arm64
-        cputype == 18); // ppc
-    if (!valid_cpu)
-        return ValidationResult.invalid(.macho, "Invalid Mach-O CPU type");
-
-    // filetype (4 bytes at offset 12): 1=OBJECT, 2=EXECUTE, 3=FVMLIB, 4=CORE,
-    // 5=PRELOAD, 6=DYLIB, 7=DYLINKER, 8=BUNDLE, 9=DYLIB_STUB, 10=DSYM, 11=KEXT_BUNDLE, 12=FILESET
-    const filetype = std.mem.readInt(u32, header[12..16], endian);
-    if (filetype == 0 or filetype > 12)
-        return ValidationResult.invalid(.macho, "Invalid Mach-O file type");
-
-    // ncmds (4 bytes at offset 16) and sizeofcmds (4 bytes at offset 20)
-    const ncmds = std.mem.readInt(u32, header[16..20], endian);
-    const sizeofcmds = std.mem.readInt(u32, header[20..24], endian);
-    if (ncmds == 0)
-        return ValidationResult.invalid(.macho, "No load commands");
-    if (ncmds > 2000)
-        return ValidationResult.invalid(.macho, "Unreasonable number of load commands");
-
-    // sizeofcmds must fit within the file
-    if (@as(u64, header_size) + @as(u64, sizeofcmds) > file_size)
-        return ValidationResult.invalid(.macho, "Load commands extend beyond file");
-
-    return ValidationResult.okWithDepth(.macho, .full);
-}
-
-/// Validate Mach-O Universal/Fat binary (multi-architecture).
-/// Checks nfat_arch, validates each architecture entry's bounds and embedded Mach-O magic.
-fn validateMachoFat(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.macho_fat, "Failed to get file size");
-    if (file_size < 8) return ValidationResult.invalid(.macho_fat, "File too small for fat header");
-
-    file.seekTo(0) catch return ValidationResult.invalid(.macho_fat, "Failed to seek");
-    var header: [8]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.macho_fat, "Failed to read header");
-
-    // nfat_arch at offset 4, always big-endian
-    const nfat_arch = std.mem.readInt(u32, header[4..8], .big);
-    if (nfat_arch == 0 or nfat_arch > 30)
-        return ValidationResult.invalid(.macho_fat, "Invalid number of architectures");
-
-    // Each fat_arch entry is 20 bytes, starting at offset 8
-    const entries_end: u64 = 8 + @as(u64, nfat_arch) * 20;
-    if (entries_end > file_size)
-        return ValidationResult.invalid(.macho_fat, "Fat arch entries extend beyond file");
-
-    // Validate each architecture entry
-    var valid_archs: u32 = 0;
-    for (0..nfat_arch) |i| {
-        const entry_offset = 8 + i * 20;
-        file.seekTo(entry_offset) catch break;
-        var entry: [20]u8 = undefined;
-        const read = file.read(&entry) catch break;
-        if (read < 20) break;
-
-        // cputype (4 bytes), cpusubtype (4 bytes), offset (4 bytes), size (4 bytes), align (4 bytes)
-        const arch_cputype = std.mem.readInt(u32, entry[0..4], .big);
-        const arch_offset = std.mem.readInt(u32, entry[8..12], .big);
-        const arch_size = std.mem.readInt(u32, entry[12..16], .big);
-
-        // Validate CPU type
-        const valid_cpu = (arch_cputype == 7 or // i386
-            arch_cputype == 0x01000007 or // x86_64
-            arch_cputype == 12 or // arm
-            arch_cputype == 0x0100000C or // arm64
-            arch_cputype == 18); // ppc
-        if (!valid_cpu) continue;
-
-        // Validate offset + size within file
-        if (@as(u64, arch_offset) + @as(u64, arch_size) > file_size) continue;
-
-        // Verify embedded Mach-O has valid magic
-        if (arch_size >= 4) {
-            file.seekTo(arch_offset) catch continue;
-            var magic: [4]u8 = undefined;
-            _ = file.read(&magic) catch continue;
-            const is_macho = std.mem.eql(u8, &magic, &[_]u8{ 0xCF, 0xFA, 0xED, 0xFE }) or
-                std.mem.eql(u8, &magic, &[_]u8{ 0xCE, 0xFA, 0xED, 0xFE }) or
-                std.mem.eql(u8, &magic, &[_]u8{ 0xFE, 0xED, 0xFA, 0xCF }) or
-                std.mem.eql(u8, &magic, &[_]u8{ 0xFE, 0xED, 0xFA, 0xCE });
-            if (is_macho) valid_archs += 1;
-        }
-    }
-
-    if (valid_archs == 0)
-        return ValidationResult.invalid(.macho_fat, "No valid Mach-O architectures found");
-
-    return ValidationResult.okWithDepth(.macho_fat, .full);
-}
-
-/// Validate COFF object file (.obj).
-/// Checks machine type, section count, and structural consistency.
-fn validateCoff(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.coff, "Failed to get file size");
-    if (file_size < 20) return ValidationResult.invalid(.coff, "File too small for COFF header");
-
-    file.seekTo(0) catch return ValidationResult.invalid(.coff, "Failed to seek");
-    var header: [20]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.coff, "Failed to read header");
-    if (bytes_read < 20) return ValidationResult.invalid(.coff, "COFF header too short");
-
-    // Machine type (2 bytes at offset 0, little-endian)
-    const machine = std.mem.readInt(u16, header[0..2], .little);
-    const valid_machine = (machine == 0x014C or // i386
-        machine == 0x8664 or // amd64
-        machine == 0x01C0 or // arm
-        machine == 0x01C2 or // thumb
-        machine == 0x01C4 or // armnt (ARM Thumb-2)
-        machine == 0xAA64 or // arm64
-        machine == 0x0200); // ia64
-    if (!valid_machine)
-        return ValidationResult.invalid(.coff, "Invalid COFF machine type");
-
-    // NumberOfSections (2 bytes at offset 2)
-    const num_sections = std.mem.readInt(u16, header[2..4], .little);
-    if (num_sections == 0 or num_sections > 96)
-        return ValidationResult.invalid(.coff, "Invalid COFF section count");
-
-    // SizeOfOptionalHeader (2 bytes at offset 16)
-    const opt_header_size = std.mem.readInt(u16, header[16..18], .little);
-    // COFF object files typically have 0 optional header; PE optional header is larger
-    if (opt_header_size > 1024)
-        return ValidationResult.invalid(.coff, "Optional header too large for COFF object");
-
-    // Verify the section headers fit within the file
-    // Section headers: 40 bytes each, starting after the COFF header + optional header
-    const section_table_end: u64 = 20 + @as(u64, opt_header_size) + @as(u64, num_sections) * 40;
-    if (section_table_end > file_size)
-        return ValidationResult.invalid(.coff, "Section table extends beyond file");
-
-    // PointerToSymbolTable (4 bytes at offset 8) — if non-zero, must be within file
-    const sym_table_ptr = std.mem.readInt(u32, header[8..12], .little);
-    if (sym_table_ptr > 0 and @as(u64, sym_table_ptr) > file_size)
-        return ValidationResult.invalid(.coff, "Symbol table pointer beyond file");
-
-    return ValidationResult.okWithDepth(.coff, .full);
 }
 
 /// Validate WebAssembly binary module.

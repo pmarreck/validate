@@ -3043,3 +3043,125 @@ pub fn validateTga(file: std.fs.File) ValidationResult {
 
     return ValidationResult.structuralOnly(.tga);
 }
+
+// ============ PAM/PBM/PGM/PPM Validator ============
+
+/// Validate Portable Anymap (PBM/PGM/PPM/PAM) file structure.
+/// P1=PBM ASCII, P2=PGM ASCII, P3=PPM ASCII, P4=PBM binary, P5=PGM binary, P6=PPM binary, P7=PAM.
+pub fn validatePam(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.pam, "Failed to seek");
+
+    var header: [256]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.pam, "Failed to read PAM header");
+
+    if (bytes_read < 3) {
+        return ValidationResult.invalid(.pam, "File too small for Portable Anymap header");
+    }
+
+    if (header[0] != 'P') {
+        return ValidationResult.invalid(.pam, "Invalid Portable Anymap magic (expected 'P')");
+    }
+
+    if (header[1] < '1' or header[1] > '7') {
+        return ValidationResult.invalid(.pam, "Invalid Portable Anymap type (expected P1-P7)");
+    }
+
+    if (header[2] != ' ' and header[2] != '\t' and header[2] != '\n' and header[2] != '\r') {
+        return ValidationResult.invalid(.pam, "Portable Anymap magic not followed by whitespace");
+    }
+
+    // For P7 (PAM), check for ENDHDR keyword
+    if (header[1] == '7') {
+        const header_data = header[0..bytes_read];
+        if (std.mem.indexOf(u8, header_data, "ENDHDR") == null) {
+            // Could be a very large header; not necessarily invalid
+        }
+    } else {
+        // P1-P6: Try to parse width/height
+        var pos: usize = 3;
+        var number_count: u32 = 0;
+
+        while (pos < bytes_read and number_count < 2) {
+            if (header[pos] == '#') {
+                while (pos < bytes_read and header[pos] != '\n') : (pos += 1) {}
+                if (pos < bytes_read) pos += 1;
+                continue;
+            }
+            if (header[pos] == ' ' or header[pos] == '\t' or header[pos] == '\n' or header[pos] == '\r') {
+                pos += 1;
+                continue;
+            }
+            if (header[pos] >= '0' and header[pos] <= '9') {
+                var value: u32 = 0;
+                while (pos < bytes_read and header[pos] >= '0' and header[pos] <= '9') {
+                    value = value *% 10 +% @as(u32, header[pos] - '0');
+                    pos += 1;
+                }
+                number_count += 1;
+                if (value == 0) {
+                    if (number_count == 1) {
+                        return ValidationResult.invalid(.pam, "Portable Anymap width is zero");
+                    } else {
+                        return ValidationResult.invalid(.pam, "Portable Anymap height is zero");
+                    }
+                }
+            } else {
+                return ValidationResult.invalid(.pam, "Invalid character in Portable Anymap header");
+            }
+        }
+    }
+
+    return ValidationResult.structuralOnly(.pam);
+}
+
+// ============ DPX Validator ============
+
+/// Validate DPX (Digital Picture Exchange) file structure.
+/// Magic: "SDPX" (LE) or "XPDS" (BE). Minimum header 2048 bytes in practice.
+pub fn validateDpx(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.dpx, "Failed to seek");
+
+    var header: [32]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.dpx, "Failed to read DPX header");
+
+    if (bytes_read < 32) {
+        return ValidationResult.invalid(.dpx, "File too small for DPX header");
+    }
+
+    // DPX spec: "SDPX" (0x53445058) = big-endian, "XPDS" (0x58504453) = little-endian
+    const is_be = std.mem.eql(u8, header[0..4], "SDPX");
+    const is_le = std.mem.eql(u8, header[0..4], "XPDS");
+
+    if (!is_le and !is_be) {
+        return ValidationResult.invalid(.dpx, "Invalid DPX magic bytes (expected SDPX or XPDS)");
+    }
+
+    const endian: std.builtin.Endian = if (is_le) .little else .big;
+
+    const image_offset = std.mem.readInt(u32, header[4..8], endian);
+    if (image_offset < 1024) {
+        return ValidationResult.invalid(.dpx, "DPX image offset too small");
+    }
+
+    // Version string at offset 8 should start with 'V'
+    if (header[8] != 'V') {
+        return ValidationResult.invalid(.dpx, "DPX version string does not start with 'V'");
+    }
+
+    const declared_size = std.mem.readInt(u32, header[16..20], endian);
+    const actual_size = file.getEndPos() catch {
+        return ValidationResult.structuralOnly(.dpx);
+    };
+
+    if (declared_size != 0xFFFFFFFF) {
+        if (declared_size > actual_size) {
+            return ValidationResult.invalid(.dpx, "DPX declared file size exceeds actual size (truncated)");
+        }
+    }
+
+    if (image_offset > actual_size) {
+        return ValidationResult.invalid(.dpx, "DPX image offset beyond end of file");
+    }
+
+    return ValidationResult.structuralOnly(.dpx);
+}

@@ -1193,6 +1193,97 @@ pub fn validateAviFromBuffer(data: []const u8) ValidationResult {
     return ValidationResult.invalid(.avi, "Invalid AVI signature");
 }
 
+// ============ ASF/WMV/WMA Validator ============
+
+/// Validate ASF (Advanced Systems Format) file structure. Used by WMV video and WMA audio.
+/// 16-byte GUID header + object size(8,LE) + num_objects(4,LE) + reserved(2) = 30 bytes minimum.
+pub fn validateAsf(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.asf, "Failed to seek");
+
+    var header: [30]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.asf, "Failed to read ASF header");
+
+    if (bytes_read < 30) {
+        return ValidationResult.invalid(.asf, "File too small for ASF header");
+    }
+
+    // ASF Header Object GUID
+    const asf_header_guid = [_]u8{ 0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C };
+    if (!std.mem.eql(u8, header[0..16], &asf_header_guid)) {
+        return ValidationResult.invalid(.asf, "Invalid ASF Header Object GUID");
+    }
+
+    const object_size = std.mem.readInt(u64, header[16..24], .little);
+    if (object_size < 30) {
+        return ValidationResult.invalid(.asf, "ASF Header Object size too small");
+    }
+
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.structuralOnly(.asf);
+    };
+    if (object_size > file_size) {
+        return ValidationResult.invalid(.asf, "ASF Header Object size exceeds file size (truncated)");
+    }
+
+    const num_header_objects = std.mem.readInt(u32, header[24..28], .little);
+    if (num_header_objects == 0) {
+        return ValidationResult.invalid(.asf, "ASF header contains no sub-objects");
+    }
+    if (num_header_objects > 10000) {
+        return ValidationResult.invalid(.asf, "ASF header object count unreasonably large");
+    }
+
+    return ValidationResult.structuralOnly(.asf);
+}
+
+// ============ DV Validator ============
+
+/// Validate DV (Digital Video) raw stream.
+/// DV uses 80-byte DIF (Digital Interface Format) blocks.
+/// First block: section type = 000 (header section) in high 3 bits of byte 0.
+pub fn validateDv(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.dv, "Failed to seek");
+
+    var header: [80]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.dv, "Failed to read DV header");
+
+    if (bytes_read < 80) {
+        return ValidationResult.invalid(.dv, "File too small for DV DIF block (need 80 bytes)");
+    }
+
+    // Section type in high 3 bits of byte 0: should be 000 (header section)
+    const section_type = (header[0] >> 5) & 0x07;
+    if (section_type != 0) {
+        return ValidationResult.invalid(.dv, "First DIF block is not a header section");
+    }
+
+    // DIF block number (byte 2) should be 0 for first block
+    if (header[2] != 0) {
+        return ValidationResult.invalid(.dv, "First DIF block number is not 0");
+    }
+
+    // Check for a second DIF block at offset 80
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.structuralOnly(.dv);
+    };
+
+    if (file_size >= 160) {
+        var second_block: [3]u8 = undefined;
+        file.seekTo(80) catch return ValidationResult.structuralOnly(.dv);
+        const second_read = file.read(&second_block) catch return ValidationResult.structuralOnly(.dv);
+
+        if (second_read >= 1) {
+            const second_section_type = (second_block[0] >> 5) & 0x07;
+            // Second block should be subcode section (001)
+            if (second_section_type != 1) {
+                return ValidationResult.structuralOnly(.dv);
+            }
+        }
+    }
+
+    return ValidationResult.structuralOnly(.dv);
+}
+
 // ============ Tests ============
 
 test "parseMaxVideoDeepSize defaults to unlimited and honors MAX_VIDEO_SIZE" {

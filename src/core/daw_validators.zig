@@ -309,3 +309,125 @@ pub fn validateRppDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     return ValidationResult.okWithDepth(.rpp, .structural);
 }
+
+// ============ Bitwig Studio (BWProject) ============
+
+/// Bitwig Studio project files use a proprietary binary format.
+/// This validator performs basic structural checks since the format is not publicly documented.
+pub fn validateBwproject(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.bwproject, "Failed to seek to start");
+
+    const stat = file.stat() catch return ValidationResult.invalid(.bwproject, "Failed to stat file");
+
+    if (stat.size < 100) {
+        return ValidationResult.invalid(.bwproject, "File too small for Bitwig project");
+    }
+
+    var header: [8]u8 = undefined;
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.bwproject, "Failed to read header");
+
+    if (header_read < 4) {
+        return ValidationResult.invalid(.bwproject, "File too small to identify");
+    }
+
+    // Reject if this is actually a ZIP file (ZIP magic: PK\x03\x04)
+    if (header[0] == 'P' and header[1] == 'K' and header[2] == 0x03 and header[3] == 0x04) {
+        return ValidationResult.invalid(.bwproject, "File appears to be ZIP, not Bitwig project");
+    }
+
+    return ValidationResult.ok(.bwproject);
+}
+
+// ============ Cubase (CPR) ============
+
+/// Cubase project files (.cpr) use a RIFF-based binary format.
+pub fn validateCubase(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.cpr, "Failed to seek to start");
+
+    var header: [12]u8 = undefined;
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.cpr, "Failed to read header");
+
+    if (header_read < 12) {
+        return ValidationResult.invalid(.cpr, "File too small for Cubase project");
+    }
+
+    if (!std.mem.eql(u8, header[0..4], "RIFF")) {
+        return ValidationResult.invalid(.cpr, "Invalid Cubase signature (not RIFF)");
+    }
+
+    return ValidationResult.ok(.cpr);
+}
+
+// ============ Pro Tools (PTX) ============
+
+/// Pro Tools session files (.ptx) use a proprietary binary format.
+pub fn validateProTools(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.ptx, "Failed to seek to start");
+
+    const stat = file.stat() catch return ValidationResult.invalid(.ptx, "Failed to stat file");
+
+    if (stat.size < 256) {
+        return ValidationResult.invalid(.ptx, "File too small for Pro Tools session");
+    }
+
+    var header: [16]u8 = undefined;
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.ptx, "Failed to read header");
+
+    if (header_read < 8) {
+        return ValidationResult.invalid(.ptx, "File too small to identify");
+    }
+
+    if (header[0] == 'P' and header[1] == 'K' and header[2] == 0x03 and header[3] == 0x04) {
+        return ValidationResult.invalid(.ptx, "File appears to be ZIP, not Pro Tools session");
+    }
+
+    return ValidationResult.ok(.ptx);
+}
+
+// ============ GarageBand ============
+
+/// GarageBand project files (.band) are macOS packages/bundles.
+pub fn validateGarageBand(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.band, "Failed to seek to start");
+
+    const stat = file.stat() catch return ValidationResult.invalid(.band, "Failed to stat file");
+
+    if (stat.size < 64) {
+        return ValidationResult.invalid(.band, "File too small for GarageBand project");
+    }
+
+    var header: [8]u8 = undefined;
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.band, "Failed to read header");
+
+    if (header_read < 4) {
+        return ValidationResult.invalid(.band, "File too small to identify");
+    }
+
+    return ValidationResult.ok(.band);
+}
+
+// ============ Reason ============
+
+/// Reason project files (.reason) use a proprietary format.
+pub fn validateReason(file: std.fs.File) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalid(.reason, "Failed to seek to start");
+
+    const stat = file.stat() catch return ValidationResult.invalid(.reason, "Failed to stat file");
+
+    if (stat.size < 128) {
+        return ValidationResult.invalid(.reason, "File too small for Reason project");
+    }
+
+    var header: [8]u8 = undefined;
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.reason, "Failed to read header");
+
+    if (header_read < 4) {
+        return ValidationResult.invalid(.reason, "File too small to identify");
+    }
+
+    if (header[0] == 'P' and header[1] == 'K' and header[2] == 0x03 and header[3] == 0x04) {
+        return ValidationResult.invalid(.reason, "File appears to be ZIP, not Reason project");
+    }
+
+    return ValidationResult.ok(.reason);
+}

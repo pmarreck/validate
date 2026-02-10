@@ -80,6 +80,8 @@ pub const scientific_validators = @import("scientific_validators.zig");
 pub const music_validators = @import("music_validators.zig");
 pub const movie_validators = @import("movie_validators.zig");
 pub const image_validators = @import("image_validators.zig");
+pub const cad_3d_validators = @import("cad_3d_validators.zig");
+pub const executable_validators = @import("executable_validators.zig");
 pub const gpt_parser = @import("gpt_parser.zig");
 pub const apm_parser = @import("apm_parser.zig");
 pub const hfsplus_parser = @import("hfsplus_parser.zig");
@@ -104,6 +106,9 @@ pub const mp4_box_parser = @import("mp4_box_parser.zig");
 pub const heif_container_parser = @import("heif_container_parser.zig");
 pub const pdf_xref_parser = @import("pdf_xref_parser.zig");
 pub const text_format_validators = @import("text_format_validators.zig");
+pub const archive_validators = @import("archive_validators.zig");
+pub const creative_validators = @import("creative_validators.zig");
+pub const email_validators = @import("email_validators.zig");
 // VideoToolbox removed — all video codecs use pure-Zig syntax validators
 
 // Version information
@@ -214,6 +219,10 @@ test {
     _ = @import("movie_validators.zig");
     // Image/photography format validators (PNG, JPEG, TIFF, SVG, PSD, HEIC, etc.)
     _ = @import("image_validators.zig");
+    // 3D model and CAD format validators (DWG, DXF, Blender, STEP, STL, OBJ, PLY, glTF, GLB)
+    _ = @import("cad_3d_validators.zig");
+    // Executable/binary format validators (ELF, Mach-O, COFF, Wasm, ar)
+    _ = @import("executable_validators.zig");
     // ProRes decoder
     _ = @import("prores_decoder.zig");
     // GPT parser
@@ -254,4 +263,10 @@ test {
     _ = @import("pdf_xref_parser.zig");
     // Text format validators (JSON, TOML, INI, XML, CSV, RTF, HTML, KML, plain text, UTF-8/16)
     _ = @import("text_format_validators.zig");
+    // Archive/compression format validators (ZIP, Gzip, Bzip2, XZ, Zstd, RAR, 7z, Tar, PAR2, WARC)
+    _ = @import("archive_validators.zig");
+    // Email format validators (EML, MBOX)
+    _ = @import("email_validators.zig");
+    // Creative suite / Adobe / NLE format validators (Premiere Pro, InDesign, IDML, FCPXML, DaVinci Resolve, Sketch, Illustrator, EPS, After Effects)
+    _ = @import("creative_validators.zig");
 }

@@ -31,7 +31,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - Note: Original crash was SIGABRT in C library on Intel. Moot now that C deps are removed.
 
 ### Codebase Refactoring (from 2026-02-09 review)
-- [ ] **Break out `format_validation.zig`** into separate validator files:
+- [x] **Break out `format_validation.zig`** into separate validator files:
   - [x] Extract PE/Windows executable validator → `pe_validator.zig` (2026-02-09)
   - [x] Extract text format validators (JSON, CSV, TOML, INI, XML, RTF, HTML, KML, plain text, Unicode) → `text_format_validators.zig` (2026-02-09)
   - [x] Extract scientific format validators (FITS, DICOM, NetCDF, FASTA, FASTQ) → `scientific_validators.zig` (2026-02-09)
@@ -41,6 +41,11 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
   - [x] Extract music/audio format validators → `music_validators.zig` (WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD, AC3, EAC3, MIDI, Tracker) (2026-02-09)
   - [x] Extract photography/image format validators → `image_validators.zig` (PNG, JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR, PSD, JPEG2000, JBIG2, HEIC, AVIF, ICO, QOI, TGA, DNG) (2026-02-09)
   - [x] Audit remaining large functions — see session audit (2026-02-09)
+  - [x] Extract archive/compression validators → `archive_validators.zig` (ZIP, Gzip, Bzip2, XZ, Zstd, RAR, 7z, Tar, PAR2, WARC) (2026-02-10)
+  - [x] Extract 3D/CAD validators → `cad_3d_validators.zig` (DWG, DXF, STEP, STL, OBJ, PLY, glTF/GLB, Blender) (2026-02-10)
+  - [x] Extract creative suite validators → `creative_validators.zig` (Premiere, InDesign, IDML, FCPXML, DaVinci, Sketch, AI, EPS, AEP) (2026-02-10)
+  - [x] Extract email validators → `email_validators.zig` (EML, MBOX) (2026-02-10)
+  - [x] Extract executable/binary validators → `executable_validators.zig` (ELF, Mach-O, COFF, Wasm, AR) (2026-02-10)
 - [x] **Extract shared MP4 box parser** — `mp4_box_parser.zig` with `Mp4Box`/`readMp4BoxHeader`/`findChildBox` (2026-02-09)
 - [x] **Remove VideoToolbox dead code** — removed field, function, CLI branch, FFI key across 6 files (2026-02-09)
 - [x] **Remove ~995 MB of orphaned deps**: libheif, libde265, dav1d, openh264, libvpx, libfdk-aac + src mirrors (2026-02-09)
