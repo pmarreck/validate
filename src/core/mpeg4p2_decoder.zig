@@ -24,6 +24,7 @@ const mpeg12 = @import("mpeg12_decoder.zig");
 
 // Import structural validator for VOL/VOP parsing
 const mpeg4p2_struct = @import("mpeg4p2_validator.zig");
+const errmsg = @import("error_messages.zig");
 
 // ============================================================================
 // Re-exported shared types
@@ -1201,7 +1202,7 @@ pub fn decodeInterMacroblock(
     const not_coded = reader.readBit() orelse {
         return .{
             .success = false,
-            .error_message = "Failed to read not_coded bit",
+            .error_message = errmsg.failedToRead("not_coded bit"),
             .is_intra = false,
             .has_motion = false,
             .blocks_decoded = 0,

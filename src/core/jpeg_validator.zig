@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const errmsg = @import("error_messages.zig");
 
 /// Threshold for warning about large image files (200MB)
 const large_image_threshold: u64 = 200 * 1024 * 1024;
@@ -74,7 +75,7 @@ fn validateJpegStructurally(data: []const u8) JpegValidationResult {
         return JpegValidationResult.invalid("File too small");
     }
     if (data[0] != 0xFF or data[1] != 0xD8) {
-        return JpegValidationResult.invalid("Missing JPEG SOI marker");
+        return JpegValidationResult.invalid(errmsg.missing("JPEG SOI marker"));
     }
 
     var i: usize = 2;
@@ -87,7 +88,7 @@ fn validateJpegStructurally(data: []const u8) JpegValidationResult {
             i += 1;
         }
         if (i >= data.len) {
-            return JpegValidationResult.invalid("Truncated JPEG marker");
+            return JpegValidationResult.invalid(errmsg.truncated("JPEG marker"));
         }
         const marker = data[i];
         i += 1;
@@ -101,7 +102,7 @@ fn validateJpegStructurally(data: []const u8) JpegValidationResult {
         }
 
         if (i + 2 > data.len) {
-            return JpegValidationResult.invalid("Truncated JPEG segment length");
+            return JpegValidationResult.invalid(errmsg.truncated("JPEG segment length"));
         }
         const seg_len: usize = (@as(usize, data[i]) << 8) | data[i + 1];
         i += 2;
@@ -110,13 +111,13 @@ fn validateJpegStructurally(data: []const u8) JpegValidationResult {
         }
         const payload_len = seg_len - 2;
         if (i + payload_len > data.len) {
-            return JpegValidationResult.invalid("Truncated JPEG segment");
+            return JpegValidationResult.invalid(errmsg.truncated("JPEG segment"));
         }
         i += payload_len;
     }
 
     if (!saw_eoi) {
-        return JpegValidationResult.invalid("Missing JPEG EOI marker");
+        return JpegValidationResult.invalid(errmsg.missing("JPEG EOI marker"));
     }
     return JpegValidationResult.ok();
 }
@@ -130,14 +131,14 @@ pub fn validateJpegDeep(file_path: []const u8) JpegValidationResult {
         return switch (err) {
             error.FileNotFound => JpegValidationResult.invalid("File not found"),
             error.AccessDenied => JpegValidationResult.invalid("Access denied"),
-            else => JpegValidationResult.invalid("Failed to open file"),
+            else => JpegValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     // Get file size
     const file_size = file.getEndPos() catch {
-        return JpegValidationResult.invalid("Failed to get file size");
+        return JpegValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     // Track large files for warning (but don't reject them)
@@ -156,10 +157,10 @@ pub fn validateJpegDeep(file_path: []const u8) JpegValidationResult {
     // Read entire file
     const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
     const bytes_read = file.readAll(buf_slice) catch {
-        return JpegValidationResult.invalid("Failed to read file");
+        return JpegValidationResult.invalid(errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {
-        return JpegValidationResult.invalid("Incomplete file read");
+        return JpegValidationResult.invalid(errmsg.incomplete("file read"));
     }
 
     const result = validateJpegDeepFromBuffer(buf_slice);
@@ -184,12 +185,12 @@ pub fn validateJpegDeepFromHandle(file: std.fs.File) JpegValidationResult {
 fn validateJpegDeepFromMemory(file: std.fs.File) JpegValidationResult {
     // Seek to start
     file.seekTo(0) catch {
-        return JpegValidationResult.invalid("Failed to seek to start");
+        return JpegValidationResult.invalid(errmsg.failedToSeek("to start"));
     };
 
     // Get file size
     const file_size = file.getEndPos() catch {
-        return JpegValidationResult.invalid("Failed to get file size");
+        return JpegValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     // Track large files for warning (but don't reject them)
@@ -204,10 +205,10 @@ fn validateJpegDeepFromMemory(file: std.fs.File) JpegValidationResult {
     // Read entire file
     const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
     const bytes_read = file.readAll(buf_slice) catch {
-        return JpegValidationResult.invalid("Failed to read file");
+        return JpegValidationResult.invalid(errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {
-        return JpegValidationResult.invalid("Incomplete file read");
+        return JpegValidationResult.invalid(errmsg.incomplete("file read"));
     }
 
     const result = validateJpegDeepFromBuffer(buf_slice);
@@ -260,7 +261,7 @@ pub fn validateJpegDeepFromBuffer(data: []const u8) JpegValidationResult {
     const header_result = c.jpeg_read_header(&cinfo, c.TRUE);
     if (header_result != c.JPEG_HEADER_OK) {
         c.jpeg_destroy_decompress(&cinfo);
-        return JpegValidationResult.invalid("Failed to read JPEG header");
+        return JpegValidationResult.invalid(errmsg.failedToRead("JPEG header"));
     }
 
     // Start decompression

@@ -19,6 +19,7 @@ const iso9660 = @import("iso9660_parser.zig");
 const udf = @import("udf_parser.zig");
 const mpeg_ps = @import("mpeg_ps_parser.zig");
 const mpeg12_decoder = @import("mpeg12_decoder.zig");
+const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
 
 // ============================================================================
@@ -317,7 +318,7 @@ pub fn validateDvdIsoFile(
     allocator: std.mem.Allocator,
 ) DvdValidationResult {
     const file_size = file.getEndPos() catch {
-        return DvdValidationResult.invalid("Failed to get file size");
+        return DvdValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     // DVDs can be large (up to 8.5GB for dual-layer)
@@ -326,7 +327,7 @@ pub fn validateDvdIsoFile(
     const read_size: usize = @min(file_size, max_read);
 
     file.seekTo(0) catch {
-        return DvdValidationResult.invalid("Failed to seek");
+        return DvdValidationResult.invalid(errmsg.failedToSeek("in DVD"));
     };
 
     const data = allocator.alloc(u8, read_size) catch {
@@ -335,7 +336,7 @@ pub fn validateDvdIsoFile(
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return DvdValidationResult.invalid("Failed to read file");
+        return DvdValidationResult.invalid(errmsg.failedToRead("file"));
     };
 
     return validateDvdIso(data[0..bytes_read], deep_validate, max_vobs, allocator);

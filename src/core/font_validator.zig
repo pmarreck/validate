@@ -9,6 +9,7 @@
 //! Reference: Apple TrueType Reference Manual, OpenType spec
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
 
 pub const FontValidationError = error{
@@ -146,7 +147,7 @@ pub fn validateTtfOtf(data: []const u8) FontValidationResult {
 pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) FontValidationResult {
 	// Minimum size: sfnt header (12 bytes) + at least 1 table record (16 bytes)
 	if (data.len < 28) {
-		return FontValidationResult.invalid("File too small for TTF/OTF");
+		return FontValidationResult.invalid(errmsg.fileTooSmallFor("TTF/OTF"));
 	}
 
 	// Parse sfnt version
@@ -170,7 +171,7 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 	// Calculate required size for table directory
 	const table_dir_end = 12 + @as(usize, num_tables) * 16;
 	if (data.len < table_dir_end) {
-		return FontValidationResult.invalid("File too small for table directory");
+		return FontValidationResult.invalid(errmsg.fileTooSmallFor("table directory"));
 	}
 
 	// Parse table directory and verify checksums
@@ -233,7 +234,7 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 
 	// Verify head table exists
 	if (head_offset == null) {
-		return FontValidationResult.invalid("Missing head table");
+		return FontValidationResult.invalid(errmsg.missing("head table"));
 	}
 
 	// Verify head table (special checksum handling)
@@ -309,12 +310,12 @@ fn parseTableRecord(data: *const [16]u8) TableRecord {
 pub fn validateWoff(data: []const u8) FontValidationResult {
 	// WOFF header: 44 bytes minimum
 	if (data.len < 44) {
-		return FontValidationResult.invalid("File too small for WOFF");
+		return FontValidationResult.invalid(errmsg.fileTooSmallFor("WOFF"));
 	}
 
 	// Verify signature
 	if (!std.mem.eql(u8, data[0..4], "wOFF")) {
-		return FontValidationResult.invalid("Invalid WOFF signature");
+		return FontValidationResult.invalid(errmsg.invalidSignature("WOFF"));
 	}
 
 	// Parse header
@@ -344,12 +345,12 @@ pub fn validateWoff(data: []const u8) FontValidationResult {
 pub fn validateWoff2(data: []const u8) FontValidationResult {
 	// WOFF2 header: 48 bytes minimum
 	if (data.len < 48) {
-		return FontValidationResult.invalid("File too small for WOFF2");
+		return FontValidationResult.invalid(errmsg.fileTooSmallFor("WOFF2"));
 	}
 
 	// Verify signature
 	if (!std.mem.eql(u8, data[0..4], "wOF2")) {
-		return FontValidationResult.invalid("Invalid WOFF2 signature");
+		return FontValidationResult.invalid(errmsg.invalidSignature("WOFF2"));
 	}
 
 	// Parse header
@@ -374,7 +375,7 @@ pub fn validateWoff2(data: []const u8) FontValidationResult {
 /// PFA: ASCII format (PostScript source)
 pub fn validateType1(data: []const u8) FontValidationResult {
 	if (data.len < 6) {
-		return FontValidationResult.invalid("File too small for Type1 font");
+		return FontValidationResult.invalid(errmsg.fileTooSmallFor("Type1 font"));
 	}
 
 	// Check for PFB format: starts with 0x80 followed by segment type (1, 2, or 3)
@@ -387,7 +388,7 @@ pub fn validateType1(data: []const u8) FontValidationResult {
 		return validateType1Pfa(data);
 	}
 
-	return FontValidationResult.invalid("Invalid Type1 signature");
+	return FontValidationResult.invalid(errmsg.invalidSignature("Type1"));
 }
 
 /// Validate a PFB (PostScript Font Binary) file.
@@ -409,7 +410,7 @@ fn validateType1Pfb(data: []const u8) FontValidationResult {
 		pos += 1;
 
 		if (pos >= data.len) {
-			return FontValidationResult.invalid("Truncated PFB segment header");
+			return FontValidationResult.invalid(errmsg.truncated("PFB segment header"));
 		}
 
 		const segment_type = data[pos];
@@ -427,7 +428,7 @@ fn validateType1Pfb(data: []const u8) FontValidationResult {
 		}
 
 		if (pos + 4 > data.len) {
-			return FontValidationResult.invalid("Truncated PFB segment length");
+			return FontValidationResult.invalid(errmsg.truncated("PFB segment length"));
 		}
 
 		// Length is little-endian
@@ -444,7 +445,7 @@ fn validateType1Pfb(data: []const u8) FontValidationResult {
 
 		// Sanity check
 		if (segment_count > 10000) {
-			return FontValidationResult.invalid("Too many PFB segments");
+			return FontValidationResult.invalid(errmsg.tooMany("PFB segments"));
 		}
 	}
 
@@ -503,7 +504,7 @@ fn validateType1Pfa(data: []const u8) FontValidationResult {
 pub fn validateCff(data: []const u8) FontValidationResult {
 	// CFF header is at least 4 bytes
 	if (data.len < 4) {
-		return FontValidationResult.invalid("File too small for CFF");
+		return FontValidationResult.invalid(errmsg.fileTooSmallFor("CFF"));
 	}
 
 	// CFF header:

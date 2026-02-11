@@ -15,6 +15,7 @@ const std = @import("std");
 const BitReader = @import("bitstream_reader.zig").BitReader;
 const cavlc = @import("h264_cavlc_tables.zig");
 const cabac_engine = @import("h264_cabac_engine.zig");
+const errmsg = @import("error_messages.zig");
 
 // ============================================================================
 // NAL Unit Types (ITU-T H.264 Table 7-1)
@@ -1518,7 +1519,7 @@ pub fn validateH264Stream(data: []const u8, max_frames: u32) H264SyntaxResult {
 
     // Check for Annex B start code
     if (!hasAnnexBStartCode(data)) {
-        return H264SyntaxResult.invalid("Missing Annex B start code");
+        return H264SyntaxResult.invalid(errmsg.missing("Annex B start code"));
     }
 
     var iterator = NalUnitIterator.init(data);

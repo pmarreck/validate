@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const errmsg = @import("error_messages.zig");
 
 /// PDF standard padding string (32 bytes)
 /// Used to pad passwords to 32 bytes
@@ -195,7 +196,7 @@ pub fn parseEncryptionParams(data: []const u8) ?EncryptionParams {
 /// Try to decrypt with empty password
 pub fn tryEmptyPassword(params: EncryptionParams) DecryptResult {
     if (!params.isSupported()) {
-        return DecryptResult.fail("Unsupported encryption version");
+        return DecryptResult.fail(errmsg.unsupported("encryption version"));
     }
 
     // Compute encryption key with empty password

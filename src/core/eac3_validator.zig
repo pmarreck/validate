@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const BitReader = @import("bitstream_reader.zig").BitReader;
+const errmsg = @import("error_messages.zig");
 
 /// E-AC-3 sample rate table
 const sample_rates = [_]u32{ 48000, 44100, 32000, 0 };
@@ -276,7 +277,7 @@ pub fn validateEac3Stream(data: []const u8, max_frames: u32) Eac3ValidationResul
     }
 
     if (frames_validated == 0) {
-        return Eac3ValidationResult.invalid("No valid E-AC-3 frames found", 0);
+        return Eac3ValidationResult.invalid(errmsg.noValidXFound("E-AC-3 frames"), 0);
     }
 
     return Eac3ValidationResult.ok(
@@ -291,16 +292,16 @@ pub fn validateEac3Stream(data: []const u8, max_frames: u32) Eac3ValidationResul
 /// Validate E-AC-3 from file
 pub fn validateEac3File(path: []const u8, max_frames: u32) Eac3ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return Eac3ValidationResult.invalid("Failed to open file", 0);
+        return Eac3ValidationResult.invalid(errmsg.failedToOpen("file"), 0);
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return Eac3ValidationResult.invalid("Failed to get file size", 0);
+        return Eac3ValidationResult.invalid(errmsg.failedToGet("file size"), 0);
     };
 
     if (file_size < 8) {
-        return Eac3ValidationResult.invalid("File too small for E-AC-3", 0);
+        return Eac3ValidationResult.invalid(errmsg.fileTooSmallFor("E-AC-3"), 0);
     }
 
     // Read up to 1MB for validation
@@ -308,7 +309,7 @@ pub fn validateEac3File(path: []const u8, max_frames: u32) Eac3ValidationResult 
     var buffer: [1024 * 1024]u8 = undefined;
 
     const bytes_read = file.read(buffer[0..read_size]) catch {
-        return Eac3ValidationResult.invalid("Failed to read file", 0);
+        return Eac3ValidationResult.invalid(errmsg.failedToRead("file"), 0);
     };
 
     return validateEac3Stream(buffer[0..bytes_read], max_frames);

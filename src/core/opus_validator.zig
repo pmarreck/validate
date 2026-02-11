@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const ogg_validator = @import("ogg_validator.zig");
+const errmsg = @import("error_messages.zig");
 
 // Import libopus via C interop
 const opus = @cImport({
@@ -105,7 +106,7 @@ pub fn validateOpusPackets(
     // Allocate output buffer (max 120ms at 48kHz stereo = 5760 samples * 2 channels)
     const max_frame_size: usize = 5760 * 2;
     const output_buffer = allocator.alloc(i16, max_frame_size) catch {
-        return OpusValidationResult.invalid("Failed to allocate decode buffer", 0);
+        return OpusValidationResult.invalid(errmsg.failedToAllocate("decode buffer"), 0);
     };
     defer allocator.free(output_buffer);
 
@@ -165,13 +166,13 @@ pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: std.fs.File) Opu
     // Extract parameters from OpusHead
     const version = opus_head[8];
     if (version != 1) {
-        return OpusValidationResult.invalid("Unsupported Opus version", 0);
+        return OpusValidationResult.invalid(errmsg.unsupported("Opus version"), 0);
     }
 
     const channels: i32 = opus_head[9];
     if (channels < 1 or channels > 2) {
         // libopus only supports mono and stereo for basic decoding
-        return OpusValidationResult.invalid("Unsupported channel count for decoding", 0);
+        return OpusValidationResult.invalid(errmsg.unsupported("channel count for decoding"), 0);
     }
 
     // Sample rate from OpusHead is just informational (original input sample rate)
@@ -194,7 +195,7 @@ pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: std.fs.File) Opu
     // Allocate output buffer (max 120ms at 48kHz stereo = 5760 samples * 2 channels)
     const max_frame_size: usize = 5760 * 2;
     const output_buffer = allocator.alloc(i16, max_frame_size) catch {
-        return OpusValidationResult.invalid("Failed to allocate decode buffer", 0);
+        return OpusValidationResult.invalid(errmsg.failedToAllocate("decode buffer"), 0);
     };
     defer allocator.free(output_buffer);
 
@@ -218,7 +219,7 @@ pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: std.fs.File) Opu
 /// Validate OGG Opus from a file path.
 pub fn validateOggOpusPath(path: []const u8) OpusValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return OpusValidationResult.invalid("Failed to open file", 0);
+        return OpusValidationResult.invalid(errmsg.failedToOpen("file"), 0);
     };
     defer file.close();
     return validateOggOpus(file);

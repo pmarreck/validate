@@ -15,6 +15,7 @@ const std = @import("std");
 const math = std.math;
 const Allocator = std.mem.Allocator;
 const BitReader = @import("bitstream_reader.zig").BitReader;
+const errmsg = @import("error_messages.zig");
 
 // ============================================================================
 // Constants
@@ -457,7 +458,7 @@ pub fn validateFrameDeep(frame_data: []const u8) FrameDecodeResult {
     if (!std.mem.eql(u8, frame_data[4..8], "icpf")) {
         return .{
             .valid = false,
-            .error_message = "Invalid frame signature",
+            .error_message = errmsg.invalidSignature("frame"),
             .slices_decoded = 0,
             .blocks_decoded = 0,
             .width = 0,

@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const errmsg = @import("error_messages.zig");
 
 // ============ JPEG Markers ============
 
@@ -384,7 +385,7 @@ pub fn validateLosslessJpeg(allocator: Allocator, data: []const u8) ValidationRe
 
 	// Check SOI marker
 	if (data[0] != 0xFF or data[1] != 0xD8) {
-		return ValidationResult.invalid("Missing SOI marker (0xFFD8)");
+		return ValidationResult.invalid(errmsg.missing("SOI marker (0xFFD8)"));
 	}
 
 	var pos: usize = 2;
@@ -426,7 +427,7 @@ pub fn validateLosslessJpeg(allocator: Allocator, data: []const u8) ValidationRe
 
 		// Read marker length
 		if (pos + 2 > data.len) {
-			return ValidationResult.invalid("Truncated marker length");
+			return ValidationResult.invalid(errmsg.truncated("marker length"));
 		}
 		const length = (@as(u16, data[pos]) << 8) | data[pos + 1];
 		if (length < 2 or pos + length > data.len) {
@@ -491,7 +492,7 @@ pub fn validateLosslessJpeg(allocator: Allocator, data: []const u8) ValidationRe
 					}
 
 					if (dht_pos + 17 + total_values > segment_data.len) {
-						return ValidationResult.invalid("Truncated Huffman table");
+						return ValidationResult.invalid(errmsg.truncated("Huffman table"));
 					}
 
 					const values = segment_data[dht_pos + 17 .. dht_pos + 17 + total_values];
@@ -545,10 +546,10 @@ pub fn validateLosslessJpeg(allocator: Allocator, data: []const u8) ValidationRe
 
 	// Validate we have required info
 	if (frame_info == null) {
-		return ValidationResult.invalid("Missing SOF marker");
+		return ValidationResult.invalid(errmsg.missing("SOF marker"));
 	}
 	if (scan_info == null) {
-		return ValidationResult.invalid("Missing SOS marker");
+		return ValidationResult.invalid(errmsg.missing("SOS marker"));
 	}
 
 	// Check we have at least one Huffman table
@@ -560,7 +561,7 @@ pub fn validateLosslessJpeg(allocator: Allocator, data: []const u8) ValidationRe
 		}
 	}
 	if (!has_table) {
-		return ValidationResult.invalid("Missing Huffman table");
+		return ValidationResult.invalid(errmsg.missing("Huffman table"));
 	}
 
 	// Validate by decoding some pixels

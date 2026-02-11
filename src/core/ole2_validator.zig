@@ -43,6 +43,7 @@
 //! - [MS-PPT]: PowerPoint Binary File Format
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
 
 /// OLE2 magic signature: D0 CF 11 E0 A1 B1 1A E1
@@ -118,33 +119,33 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
         return switch (err) {
             error.FileNotFound => Ole2ValidationResult.invalid("File not found"),
             error.AccessDenied => Ole2ValidationResult.invalid("Access denied"),
-            else => Ole2ValidationResult.invalid("Failed to open file"),
+            else => Ole2ValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return Ole2ValidationResult.invalid("Failed to get file size");
+        return Ole2ValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     if (file_size < 512) {
-        return Ole2ValidationResult.invalid("File too small for OLE2 (min 512 bytes)");
+        return Ole2ValidationResult.invalid(errmsg.fileTooSmallFor("OLE2 (min 512 bytes)"));
     }
 
     // Read and parse header
     var header_buf: [512]u8 = undefined;
     const header_bytes = file.readAll(&header_buf) catch {
-        return Ole2ValidationResult.invalid("Failed to read OLE2 header");
+        return Ole2ValidationResult.invalid(errmsg.failedToRead("OLE2 header"));
     };
 
     if (header_bytes < 512) {
-        return Ole2ValidationResult.invalid("Incomplete OLE2 header");
+        return Ole2ValidationResult.invalid(errmsg.incomplete("OLE2 header"));
     }
 
     const header = parseHeader(&header_buf) catch |err| {
         return switch (err) {
-            error.InvalidSignature => Ole2ValidationResult.invalid("Invalid OLE2 signature"),
-            error.InvalidVersion => Ole2ValidationResult.invalid("Unsupported OLE2 version"),
+            error.InvalidSignature => Ole2ValidationResult.invalid(errmsg.invalidSignature("OLE2")),
+            error.InvalidVersion => Ole2ValidationResult.invalid(errmsg.unsupported("OLE2 version")),
             error.InvalidByteOrder => Ole2ValidationResult.invalid("Invalid byte order marker"),
             error.InvalidSectorSize => Ole2ValidationResult.invalid("Invalid sector size"),
             error.InvalidMiniSectorSize => Ole2ValidationResult.invalid("Invalid mini sector size"),
@@ -157,11 +158,11 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
     // Validate FAT
     const fat = readFat(allocator, file, &header, total_sectors) catch |err| {
         return switch (err) {
-            error.OutOfMemory => Ole2ValidationResult.invalid("Out of memory reading FAT"),
+            error.OutOfMemory => Ole2ValidationResult.invalid(errmsg.outOfMemory("reading FAT")),
             error.InvalidDifatChain => Ole2ValidationResult.invalid("Invalid DIFAT chain"),
             error.InvalidFatSector => Ole2ValidationResult.invalid("FAT references invalid sector"),
             error.FatChainLoop => Ole2ValidationResult.invalid("FAT chain contains loop"),
-            else => Ole2ValidationResult.invalid("Failed to read FAT"),
+            else => Ole2ValidationResult.invalid(errmsg.failedToRead("FAT")),
         };
     };
     defer allocator.free(fat);
@@ -175,10 +176,10 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
     // Read and validate directory entries
     const dir_result = validateDirectoryEntries(allocator, file, &header, fat, total_sectors) catch |err| {
         return switch (err) {
-            error.OutOfMemory => Ole2ValidationResult.invalid("Out of memory reading directory"),
+            error.OutOfMemory => Ole2ValidationResult.invalid(errmsg.outOfMemory("reading directory")),
             error.InvalidDirectorySector => Ole2ValidationResult.invalid("Invalid directory sector"),
             error.DirectoryChainLoop => Ole2ValidationResult.invalid("Directory chain contains loop"),
-            else => Ole2ValidationResult.invalid("Failed to read directory"),
+            else => Ole2ValidationResult.invalid(errmsg.failedToRead("directory")),
         };
     };
 
@@ -582,7 +583,7 @@ fn validateDirectoryEntries(
 // ============ Tests ============
 
 test "reject non-OLE2 data" {
-    const result = Ole2ValidationResult.invalid("Invalid OLE2 signature");
+    const result = Ole2ValidationResult.invalid(errmsg.invalidSignature("OLE2"));
     try std.testing.expect(!result.valid);
 }
 

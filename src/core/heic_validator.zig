@@ -7,6 +7,7 @@
 const std = @import("std");
 const heif = @import("heif_container_parser.zig");
 const h265 = @import("h265_validator.zig");
+const errmsg = @import("error_messages.zig");
 
 pub const HeicValidationResult = struct {
     valid: bool,
@@ -80,24 +81,24 @@ pub fn validateHeicDeep(path: []const u8) HeicValidationResult {
         return switch (err) {
             error.FileNotFound => HeicValidationResult.invalid("File not found"),
             error.AccessDenied => HeicValidationResult.invalid("Access denied"),
-            else => HeicValidationResult.invalid("Failed to open file"),
+            else => HeicValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return HeicValidationResult.invalid("Failed to get file size");
+        return HeicValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     const is_large_file = file_size > large_image_threshold;
 
     if (file_size < 12) {
-        return HeicValidationResult.invalid("File too small for HEIC");
+        return HeicValidationResult.invalid(errmsg.fileTooSmallFor("HEIC"));
     }
 
     // Cap at 512 MB to avoid excessive memory use
     if (file_size > 512 * 1024 * 1024) {
-        return HeicValidationResult.invalid("File too large for in-memory validation");
+        return HeicValidationResult.invalid(errmsg.fileTooLargeFor("in-memory validation"));
     }
 
     const allocator = std.heap.page_allocator;
@@ -107,10 +108,10 @@ pub fn validateHeicDeep(path: []const u8) HeicValidationResult {
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return HeicValidationResult.invalid("Failed to read file");
+        return HeicValidationResult.invalid(errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {
-        return HeicValidationResult.invalid("Incomplete file read");
+        return HeicValidationResult.invalid(errmsg.incomplete("file read"));
     }
 
     const result = validateHeicDeepFromBuffer(data);
@@ -144,7 +145,7 @@ pub fn validateHeicDeepFromBuffer(data: []const u8) HeicValidationResult {
             heif.HeifContainerError.ItemNotFound => HeicValidationResult.invalid("Primary item not found"),
             heif.HeifContainerError.DataOutOfBounds => HeicValidationResult.invalid("Item data out of bounds"),
             heif.HeifContainerError.UnsupportedConstructionMethod => HeicValidationResult.structural(),
-            heif.HeifContainerError.Truncated => HeicValidationResult.invalid("Truncated HEIC data"),
+            heif.HeifContainerError.Truncated => HeicValidationResult.invalid(errmsg.truncated("HEIC data")),
         };
     };
 

@@ -14,6 +14,7 @@
 //! 3. Report any decode errors
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 // Import minimp3 via C interop
 const mp3 = @cImport({
@@ -103,21 +104,21 @@ pub fn validateMp3Decode(file: std.fs.File) Mp3DecodeResult {
 
     // Get file size
     const stat = file.stat() catch {
-        return Mp3DecodeResult.invalid("Failed to stat file", 0);
+        return Mp3DecodeResult.invalid(errmsg.failedToStat("file"), 0);
     };
     const file_size = stat.size;
 
     if (file_size == 0) {
-        return Mp3DecodeResult.invalid("Empty file", 0);
+        return Mp3DecodeResult.invalid(errmsg.empty("file"), 0);
     }
 
     if (file_size > 500 * 1024 * 1024) { // 500MB limit
-        return Mp3DecodeResult.invalid("File too large for decode validation", 0);
+        return Mp3DecodeResult.invalid(errmsg.fileTooLargeFor("decode validation"), 0);
     }
 
     // Seek to start
     file.seekTo(0) catch {
-        return Mp3DecodeResult.invalid("Failed to seek to start", 0);
+        return Mp3DecodeResult.invalid(errmsg.failedToSeek("to start"), 0);
     };
 
     // Read file in chunks
@@ -138,7 +139,7 @@ pub fn validateMp3Decode(file: std.fs.File) Mp3DecodeResult {
 
             // Read more data
             const bytes_read = file.read(buffer[buffer_len..chunk_size]) catch {
-                return Mp3DecodeResult.invalid("Failed to read file", frames_decoded);
+                return Mp3DecodeResult.invalid(errmsg.failedToRead("file"), frames_decoded);
             };
             if (bytes_read == 0) {
                 eof = true;
@@ -182,7 +183,7 @@ pub fn validateMp3Decode(file: std.fs.File) Mp3DecodeResult {
     }
 
     if (frames_decoded == 0) {
-        return Mp3DecodeResult.invalid("No valid MP3 frames found", 0);
+        return Mp3DecodeResult.invalid(errmsg.noValidXFound("MP3 frames"), 0);
     }
 
     return Mp3DecodeResult.ok(frames_decoded, samples_decoded, channels, sample_rate);
@@ -191,7 +192,7 @@ pub fn validateMp3Decode(file: std.fs.File) Mp3DecodeResult {
 /// Validate MP3 decode from a file path.
 pub fn validateMp3DecodePath(path: []const u8) Mp3DecodeResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return Mp3DecodeResult.invalid("Failed to open file", 0);
+        return Mp3DecodeResult.invalid(errmsg.failedToOpen("file"), 0);
     };
     defer file.close();
     return validateMp3Decode(file);
@@ -200,7 +201,7 @@ pub fn validateMp3DecodePath(path: []const u8) Mp3DecodeResult {
 /// Validate MP3 data from an in-memory buffer (for MPEG-TS PES streams, etc.)
 pub fn validateMp3DecodeBuffer(data: []const u8) Mp3DecodeResult {
     if (data.len == 0) {
-        return Mp3DecodeResult.invalid("Empty buffer", 0);
+        return Mp3DecodeResult.invalid(errmsg.empty("buffer"), 0);
     }
 
     var decoder = Mp3Decoder.init();
@@ -246,7 +247,7 @@ pub fn validateMp3DecodeBuffer(data: []const u8) Mp3DecodeResult {
     }
 
     if (frames_decoded == 0) {
-        return Mp3DecodeResult.invalid("No valid MP3 frames found", 0);
+        return Mp3DecodeResult.invalid(errmsg.noValidXFound("MP3 frames"), 0);
     }
 
     return Mp3DecodeResult.ok(frames_decoded, samples_decoded, channels, sample_rate);

@@ -13,6 +13,7 @@
 //! - File size consistency checks
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 /// Result of deep tracker validation
 pub const TrackerValidationResult = struct {
@@ -45,18 +46,18 @@ pub fn validateModDeep(path: []const u8) TrackerValidationResult {
         return switch (err) {
             error.FileNotFound => TrackerValidationResult.invalid("File not found"),
             error.AccessDenied => TrackerValidationResult.invalid("Access denied"),
-            else => TrackerValidationResult.invalid("Failed to open file"),
+            else => TrackerValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return TrackerValidationResult.invalid("Failed to get file size");
+        return TrackerValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     // MOD minimum: 1084 bytes (header + signature)
     if (file_size < 1084) {
-        return TrackerValidationResult.invalid("File too small for MOD");
+        return TrackerValidationResult.invalid(errmsg.fileTooSmallFor("MOD"));
     }
 
     // Read header (first 1084 bytes)
@@ -67,7 +68,7 @@ pub fn validateModDeep(path: []const u8) TrackerValidationResult {
     // Check signature at offset 1080
     const sig = header[1080..1084];
     const num_channels: u16 = getModChannels(sig) orelse {
-        return TrackerValidationResult.invalid("Invalid MOD signature");
+        return TrackerValidationResult.invalid(errmsg.invalidSignature("MOD"));
     };
 
     // Parse 31 sample headers (30 bytes each, starting at offset 20)
@@ -146,17 +147,17 @@ pub fn validateXmDeep(path: []const u8) TrackerValidationResult {
         return switch (err) {
             error.FileNotFound => TrackerValidationResult.invalid("File not found"),
             error.AccessDenied => TrackerValidationResult.invalid("Access denied"),
-            else => TrackerValidationResult.invalid("Failed to open file"),
+            else => TrackerValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return TrackerValidationResult.invalid("Failed to get file size");
+        return TrackerValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     if (file_size < 80) {
-        return TrackerValidationResult.invalid("File too small for XM");
+        return TrackerValidationResult.invalid(errmsg.fileTooSmallFor("XM"));
     }
 
     // Read header
@@ -165,12 +166,12 @@ pub fn validateXmDeep(path: []const u8) TrackerValidationResult {
 
     // Check signature
     if (!std.mem.eql(u8, header[0..17], "Extended Module: ")) {
-        return TrackerValidationResult.invalid("Invalid XM signature");
+        return TrackerValidationResult.invalid(errmsg.invalidSignature("XM"));
     }
 
     // Check 0x1A marker
     if (header[37] != 0x1A) {
-        return TrackerValidationResult.invalid("Missing XM end-of-text marker");
+        return TrackerValidationResult.invalid(errmsg.missing("XM end-of-text marker"));
     }
 
     // Parse header fields
@@ -237,17 +238,17 @@ pub fn validateItDeep(path: []const u8) TrackerValidationResult {
         return switch (err) {
             error.FileNotFound => TrackerValidationResult.invalid("File not found"),
             error.AccessDenied => TrackerValidationResult.invalid("Access denied"),
-            else => TrackerValidationResult.invalid("Failed to open file"),
+            else => TrackerValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return TrackerValidationResult.invalid("Failed to get file size");
+        return TrackerValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     if (file_size < 192) {
-        return TrackerValidationResult.invalid("File too small for IT");
+        return TrackerValidationResult.invalid(errmsg.fileTooSmallFor("IT"));
     }
 
     // Read header
@@ -256,7 +257,7 @@ pub fn validateItDeep(path: []const u8) TrackerValidationResult {
 
     // Check signature
     if (!std.mem.eql(u8, header[0..4], "IMPM")) {
-        return TrackerValidationResult.invalid("Invalid IT signature");
+        return TrackerValidationResult.invalid(errmsg.invalidSignature("IT"));
     }
 
     // Parse header fields
@@ -339,17 +340,17 @@ pub fn validateS3mDeep(path: []const u8) TrackerValidationResult {
         return switch (err) {
             error.FileNotFound => TrackerValidationResult.invalid("File not found"),
             error.AccessDenied => TrackerValidationResult.invalid("Access denied"),
-            else => TrackerValidationResult.invalid("Failed to open file"),
+            else => TrackerValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return TrackerValidationResult.invalid("Failed to get file size");
+        return TrackerValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     if (file_size < 96) {
-        return TrackerValidationResult.invalid("File too small for S3M");
+        return TrackerValidationResult.invalid(errmsg.fileTooSmallFor("S3M"));
     }
 
     // Read header
@@ -358,7 +359,7 @@ pub fn validateS3mDeep(path: []const u8) TrackerValidationResult {
 
     // Check signature at offset 44
     if (!std.mem.eql(u8, header[44..48], "SCRM")) {
-        return TrackerValidationResult.invalid("Invalid S3M signature");
+        return TrackerValidationResult.invalid(errmsg.invalidSignature("S3M"));
     }
 
     // Check type byte

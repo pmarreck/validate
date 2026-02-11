@@ -22,6 +22,7 @@
 //! - [ ] Refinement region decoding
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
 
 // ============ Constants ============
@@ -1666,8 +1667,8 @@ pub fn validateJbig2(allocator: Allocator, data: []const u8) Jbig2ValidateResult
     // Parse file header
     const header_result = parseFileHeader(data) catch |err| {
         return Jbig2ValidateResult.failure(switch (err) {
-            Jbig2Error.InvalidSignature => "Invalid JBIG2 signature",
-            Jbig2Error.UnexpectedEndOfData => "Truncated JBIG2 file header",
+            Jbig2Error.InvalidSignature => errmsg.invalidSignature("JBIG2"),
+            Jbig2Error.UnexpectedEndOfData => errmsg.truncated("JBIG2 file header"),
             else => "Failed to parse JBIG2 header",
         });
     };
@@ -1682,7 +1683,7 @@ pub fn validateJbig2(allocator: Allocator, data: []const u8) Jbig2ValidateResult
     while (offset < data.len and !found_eof) {
         const seg_result = parseSegmentHeader(allocator, data[offset..]) catch |err| {
             return Jbig2ValidateResult.failure(switch (err) {
-                Jbig2Error.UnexpectedEndOfData => "Truncated segment header",
+                Jbig2Error.UnexpectedEndOfData => errmsg.truncated("segment header"),
                 Jbig2Error.InvalidSegmentHeader => "Invalid segment header",
                 else => "Failed to parse segment",
             });
@@ -1700,7 +1701,7 @@ pub fn validateJbig2(allocator: Allocator, data: []const u8) Jbig2ValidateResult
                     return Jbig2ValidateResult.failure("Page info segment too short");
                 }
                 if (offset + header.data_length > data.len) {
-                    return Jbig2ValidateResult.failure("Truncated page info segment");
+                    return Jbig2ValidateResult.failure(errmsg.truncated("page info segment"));
                 }
 
                 const page_info = parsePageInfo(data[offset..][0..header.data_length]) catch {
@@ -1727,7 +1728,7 @@ pub fn validateJbig2(allocator: Allocator, data: []const u8) Jbig2ValidateResult
                         page_width,
                         page_height,
                         page_count,
-                        "Truncated segment data (partial/embedded stream)",
+                        errmsg.truncated("segment data (partial/embedded stream)"),
                     );
                 }
                 // Even if no pages yet, if header said we have pages, treat as truncated
@@ -1737,11 +1738,11 @@ pub fn validateJbig2(allocator: Allocator, data: []const u8) Jbig2ValidateResult
                             0,
                             0,
                             0,
-                            "Truncated JBIG2 stream (header indicates pages but data truncated)",
+                            errmsg.truncated("JBIG2 stream (header indicates pages but data truncated)"),
                         );
                     }
                 }
-                return Jbig2ValidateResult.failure("Truncated segment data");
+                return Jbig2ValidateResult.failure(errmsg.truncated("segment data"));
             }
             offset += header.data_length;
         }
@@ -1765,11 +1766,11 @@ pub fn validateJbig2(allocator: Allocator, data: []const u8) Jbig2ValidateResult
                     0,
                     0,
                     expected_pages,
-                    "Truncated JBIG2 stream (no page segments parsed)",
+                    errmsg.truncated("JBIG2 stream (no page segments parsed)"),
                 );
             }
         }
-        return Jbig2ValidateResult.failure("Missing end-of-file segment and no pages found");
+        return Jbig2ValidateResult.failure(errmsg.missing("end-of-file segment and no pages found"));
     }
 
     return Jbig2ValidateResult.success(page_width, page_height, page_count);
@@ -3921,7 +3922,7 @@ pub fn validatePdfJbig2(
         decoder.processGlobals(g) catch |err| {
             return Jbig2ValidateResult.failure(switch (err) {
                 Jbig2Error.InvalidSymbolDictionary => "Invalid symbol dictionary in globals",
-                Jbig2Error.UnexpectedEndOfData => "Truncated JBIG2 globals",
+                Jbig2Error.UnexpectedEndOfData => errmsg.truncated("JBIG2 globals"),
                 else => "Failed to process JBIG2 globals",
             });
         };
@@ -3974,8 +3975,8 @@ pub fn validatePdfJbig2(
         return Jbig2ValidateResult.failure(switch (err) {
             Jbig2Error.InvalidTextRegion => "Invalid text region",
             Jbig2Error.InvalidSymbolDictionary => "Invalid symbol dictionary",
-            Jbig2Error.UnexpectedEndOfData => "Truncated JBIG2 page data",
-            Jbig2Error.UnsupportedSegmentType => "Unsupported JBIG2 coding mode",
+            Jbig2Error.UnexpectedEndOfData => errmsg.truncated("JBIG2 page data"),
+            Jbig2Error.UnsupportedSegmentType => errmsg.unsupported("JBIG2 coding mode"),
             Jbig2Error.ArithmeticDecoderError => "Arithmetic decoder error",
             Jbig2Error.InvalidRefinementRegion => "Invalid refinement region",
             Jbig2Error.InvalidGenericRegion => "Invalid generic region",

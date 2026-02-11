@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const libraw = @import("libraw");
+const errmsg = @import("error_messages.zig");
 
 /// Result of LibRaw validation
 pub const LibRawValidationResult = struct {
@@ -79,11 +80,11 @@ fn getLibRawError(code: c_int) []const u8 {
     return switch (code) {
         libraw.LIBRAW_SUCCESS => "Success",
         libraw.LIBRAW_UNSPECIFIED_ERROR => "Unspecified error",
-        libraw.LIBRAW_FILE_UNSUPPORTED => "Unsupported file format",
+        libraw.LIBRAW_FILE_UNSUPPORTED => errmsg.unsupported("file format"),
         libraw.LIBRAW_REQUEST_FOR_NONEXISTENT_IMAGE => "Non-existent image requested",
         libraw.LIBRAW_OUT_OF_ORDER_CALL => "Out of order call",
         libraw.LIBRAW_NO_THUMBNAIL => "No thumbnail",
-        libraw.LIBRAW_UNSUPPORTED_THUMBNAIL => "Unsupported thumbnail",
+        libraw.LIBRAW_UNSUPPORTED_THUMBNAIL => errmsg.unsupported("thumbnail"),
         libraw.LIBRAW_INPUT_CLOSED => "Input closed",
         libraw.LIBRAW_NOT_IMPLEMENTED => "Not implemented",
         libraw.LIBRAW_UNSUFFICIENT_MEMORY => "Insufficient memory",
@@ -93,7 +94,7 @@ fn getLibRawError(code: c_int) []const u8 {
         libraw.LIBRAW_BAD_CROP => "Bad crop",
         libraw.LIBRAW_TOO_BIG => "Image too big",
         libraw.LIBRAW_MEMPOOL_OVERFLOW => "Memory pool overflow",
-        else => "Unknown LibRaw error",
+        else => errmsg.unknown("LibRaw error"),
     };
 }
 

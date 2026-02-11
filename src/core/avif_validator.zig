@@ -7,6 +7,7 @@
 const std = @import("std");
 const heif = @import("heif_container_parser.zig");
 const av1 = @import("av1_obu_validator.zig");
+const errmsg = @import("error_messages.zig");
 
 pub const AvifValidationResult = struct {
     valid: bool,
@@ -80,24 +81,24 @@ pub fn validateAvifDeep(path: []const u8) AvifValidationResult {
         return switch (err) {
             error.FileNotFound => AvifValidationResult.invalid("File not found"),
             error.AccessDenied => AvifValidationResult.invalid("Access denied"),
-            else => AvifValidationResult.invalid("Failed to open file"),
+            else => AvifValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return AvifValidationResult.invalid("Failed to get file size");
+        return AvifValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     const is_large_file = file_size > large_image_threshold;
 
     if (file_size < 12) {
-        return AvifValidationResult.invalid("File too small for AVIF");
+        return AvifValidationResult.invalid(errmsg.fileTooSmallFor("AVIF"));
     }
 
     // Cap at 512 MB
     if (file_size > 512 * 1024 * 1024) {
-        return AvifValidationResult.invalid("File too large for in-memory validation");
+        return AvifValidationResult.invalid(errmsg.fileTooLargeFor("in-memory validation"));
     }
 
     const allocator = std.heap.page_allocator;
@@ -107,10 +108,10 @@ pub fn validateAvifDeep(path: []const u8) AvifValidationResult {
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return AvifValidationResult.invalid("Failed to read file");
+        return AvifValidationResult.invalid(errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {
-        return AvifValidationResult.invalid("Incomplete file read");
+        return AvifValidationResult.invalid(errmsg.incomplete("file read"));
     }
 
     const result = validateAvifDeepFromBuffer(data);
@@ -144,7 +145,7 @@ pub fn validateAvifDeepFromBuffer(data: []const u8) AvifValidationResult {
             heif.HeifContainerError.ItemNotFound => AvifValidationResult.invalid("Primary item not found"),
             heif.HeifContainerError.DataOutOfBounds => AvifValidationResult.invalid("Item data out of bounds"),
             heif.HeifContainerError.UnsupportedConstructionMethod => AvifValidationResult.structural(),
-            heif.HeifContainerError.Truncated => AvifValidationResult.invalid("Truncated AVIF data"),
+            heif.HeifContainerError.Truncated => AvifValidationResult.invalid(errmsg.truncated("AVIF data")),
         };
     };
 

@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const zigimg = @import("zigimg");
+const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
 
 /// Compression methods
@@ -62,13 +63,13 @@ pub fn validateBmp(allocator: Allocator, path: []const u8) BmpValidationResult {
         return switch (err) {
             error.FileNotFound => BmpValidationResult.invalid("File not found"),
             error.AccessDenied => BmpValidationResult.invalid("Access denied"),
-            else => BmpValidationResult.invalid("Failed to open file"),
+            else => BmpValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return BmpValidationResult.invalid("Failed to get file size");
+        return BmpValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     // Sanity check file size (max 500MB for BMP)
@@ -81,16 +82,16 @@ pub fn validateBmp(allocator: Allocator, path: []const u8) BmpValidationResult {
     }
 
     const data = allocator.alloc(u8, file_size) catch {
-        return BmpValidationResult.invalid("Out of memory");
+        return BmpValidationResult.invalid(errmsg.outOfMemory("for BMP"));
     };
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return BmpValidationResult.invalid("Failed to read file");
+        return BmpValidationResult.invalid(errmsg.failedToRead("file"));
     };
 
     if (bytes_read != file_size) {
-        return BmpValidationResult.invalid("Incomplete read");
+        return BmpValidationResult.invalid(errmsg.incomplete("read"));
     }
 
     return validateBmpFromBufferWithPath(allocator, data, path);
@@ -104,7 +105,7 @@ fn validateBmpFromBufferWithPath(allocator: Allocator, data: []const u8, path: [
 
     // Check signature
     if (data[0] != 'B' or data[1] != 'M') {
-        return BmpValidationResult.invalid("Invalid BMP signature");
+        return BmpValidationResult.invalid(errmsg.invalidSignature("BMP"));
     }
 
     // Read header size to determine version (offset 14)
@@ -116,7 +117,7 @@ fn validateBmpFromBufferWithPath(allocator: Allocator, data: []const u8, path: [
         108, 124 => validateBmpV4V5(allocator, path),
         12 => BmpValidationResult.invalid("OS/2 1.x BMP not supported"),
         64 => BmpValidationResult.invalid("OS/2 2.x BMP not supported"),
-        else => BmpValidationResult.invalid("Unknown BMP header version"),
+        else => BmpValidationResult.invalid(errmsg.unknown("BMP header version")),
     };
 }
 
@@ -128,7 +129,7 @@ pub fn validateBmpFromBuffer(allocator: Allocator, data: []const u8) BmpValidati
 
     // Check signature
     if (data[0] != 'B' or data[1] != 'M') {
-        return BmpValidationResult.invalid("Invalid BMP signature");
+        return BmpValidationResult.invalid(errmsg.invalidSignature("BMP"));
     }
 
     // Read header size to determine version (offset 14)
@@ -141,14 +142,14 @@ pub fn validateBmpFromBuffer(allocator: Allocator, data: []const u8) BmpValidati
         108, 124 => BmpValidationResult.invalid("V4/V5 BMP requires file path"),
         12 => BmpValidationResult.invalid("OS/2 1.x BMP not supported"),
         64 => BmpValidationResult.invalid("OS/2 2.x BMP not supported"),
-        else => BmpValidationResult.invalid("Unknown BMP header version"),
+        else => BmpValidationResult.invalid(errmsg.unknown("BMP header version")),
     };
 }
 
 /// Validate V3 BMP (40-byte BITMAPINFOHEADER) from buffer
 fn validateBmpV3FromBuffer(allocator: Allocator, data: []const u8) BmpValidationResult {
     if (data.len < 54) { // 14 file header + 40 info header
-        return BmpValidationResult.invalid("Truncated V3 header");
+        return BmpValidationResult.invalid(errmsg.truncated("V3 header"));
     }
 
     // Parse V3 header (starts at offset 14)
@@ -184,7 +185,7 @@ fn validateBmpV3FromBuffer(allocator: Allocator, data: []const u8) BmpValidation
     switch (bit_count) {
         1, 4, 8 => {
             if (comp != .rgb and comp != .rle8 and comp != .rle4) {
-                return BmpValidationResult.invalid("Unsupported compression for indexed color");
+                return BmpValidationResult.invalid(errmsg.unsupported("compression for indexed color"));
             }
             if (bit_count == 8 and comp == .rle4) {
                 return BmpValidationResult.invalid("RLE4 invalid for 8-bit");
@@ -195,7 +196,7 @@ fn validateBmpV3FromBuffer(allocator: Allocator, data: []const u8) BmpValidation
         },
         16 => {
             if (comp != .rgb and comp != .bitfields) {
-                return BmpValidationResult.invalid("Unsupported compression for 16-bit");
+                return BmpValidationResult.invalid(errmsg.unsupported("compression for 16-bit"));
             }
         },
         24 => {
@@ -205,11 +206,11 @@ fn validateBmpV3FromBuffer(allocator: Allocator, data: []const u8) BmpValidation
         },
         32 => {
             if (comp != .rgb and comp != .bitfields) {
-                return BmpValidationResult.invalid("Unsupported compression for 32-bit");
+                return BmpValidationResult.invalid(errmsg.unsupported("compression for 32-bit"));
             }
         },
         else => {
-            return BmpValidationResult.invalid("Unsupported bit depth");
+            return BmpValidationResult.invalid(errmsg.unsupported("bit depth"));
         },
     }
 
@@ -226,7 +227,7 @@ fn validateBmpV3FromBuffer(allocator: Allocator, data: []const u8) BmpValidation
     const header_end: usize = 54 + color_table_size;
 
     if (data.len < header_end) {
-        return BmpValidationResult.invalid("Truncated color table");
+        return BmpValidationResult.invalid(errmsg.truncated("color table"));
     }
 
     // For uncompressed data, verify pixel data size
@@ -236,12 +237,12 @@ fn validateBmpV3FromBuffer(allocator: Allocator, data: []const u8) BmpValidation
         const pixel_offset = std.mem.readInt(u32, data[10..14], .little);
 
         if (data.len < pixel_offset + expected_pixel_size) {
-            return BmpValidationResult.invalid("Truncated pixel data");
+            return BmpValidationResult.invalid(errmsg.truncated("pixel data"));
         }
 
         // Validate we can read all pixel data (allocate one row at a time)
         const row_buffer = allocator.alloc(u8, row_size) catch {
-            return BmpValidationResult.invalid("Out of memory");
+            return BmpValidationResult.invalid(errmsg.outOfMemory("for BMP"));
         };
         defer allocator.free(row_buffer);
 
@@ -249,7 +250,7 @@ fn validateBmpV3FromBuffer(allocator: Allocator, data: []const u8) BmpValidation
         while (row < abs_height) : (row += 1) {
             const row_start = pixel_offset + row * row_size;
             if (row_start + row_size > data.len) {
-                return BmpValidationResult.invalid("Truncated pixel data");
+                return BmpValidationResult.invalid(errmsg.truncated("pixel data"));
             }
             // Copy row to verify data is accessible
             @memcpy(row_buffer, data[row_start..][0..row_size]);
@@ -279,7 +280,7 @@ fn validateRleFromBuffer(data: []const u8, height: u32, is_rle4: bool) BmpValida
 
     while (y < height and pos < data.len) {
         if (pos + 1 >= data.len) {
-            return BmpValidationResult.invalid("Truncated RLE data");
+            return BmpValidationResult.invalid(errmsg.truncated("RLE data"));
         }
 
         const byte1 = data[pos];
@@ -302,7 +303,7 @@ fn validateRleFromBuffer(data: []const u8, height: u32, is_rle4: bool) BmpValida
                 2 => {
                     // Delta - skip pixels
                     if (pos + 1 >= data.len) {
-                        return BmpValidationResult.invalid("Truncated RLE delta");
+                        return BmpValidationResult.invalid(errmsg.truncated("RLE delta"));
                     }
                     pos += 1; // dx
                     const dy = data[pos];
@@ -314,7 +315,7 @@ fn validateRleFromBuffer(data: []const u8, height: u32, is_rle4: bool) BmpValida
                     const count = byte2;
                     const bytes_to_skip = (count + 1) & ~@as(u8, 1);
                     if (pos + bytes_to_skip > data.len) {
-                        return BmpValidationResult.invalid("Truncated RLE absolute data");
+                        return BmpValidationResult.invalid(errmsg.truncated("RLE absolute data"));
                     }
                     pos += bytes_to_skip;
                 },
@@ -322,7 +323,7 @@ fn validateRleFromBuffer(data: []const u8, height: u32, is_rle4: bool) BmpValida
         } else {
             // Encoded mode - byte1 pixels of value byte2
             if (pos >= data.len) {
-                return BmpValidationResult.invalid("Truncated RLE encoded data");
+                return BmpValidationResult.invalid(errmsg.truncated("RLE encoded data"));
             }
             pos += 1;
         }
@@ -337,9 +338,9 @@ fn validateBmpV4V5(allocator: Allocator, path: []const u8) BmpValidationResult {
 
     var image = zigimg.Image.fromFilePath(allocator, path, &read_buffer) catch |err| {
         return switch (err) {
-            error.OutOfMemory => BmpValidationResult.invalid("Out of memory"),
+            error.OutOfMemory => BmpValidationResult.invalid(errmsg.outOfMemory("for BMP")),
             error.InvalidData => BmpValidationResult.invalid("Invalid BMP data"),
-            error.EndOfStream => BmpValidationResult.invalid("Truncated file"),
+            error.EndOfStream => BmpValidationResult.invalid(errmsg.truncated("file")),
             error.FileNotFound => BmpValidationResult.invalid("File not found"),
             error.AccessDenied => BmpValidationResult.invalid("Access denied"),
             else => BmpValidationResult.invalid("BMP decode failed"),

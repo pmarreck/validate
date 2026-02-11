@@ -57,6 +57,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
+const errmsg = @import("error_messages.zig");
 
 /// Cross-platform getenv that returns null on Windows (where std.posix.getenv is unavailable).
 /// On POSIX systems, returns the environment variable value or null if not set.
@@ -3624,39 +3625,39 @@ fn validateZip(file: std.fs.File, format: FileFormat) ValidationResult {
 
 fn validateZipWithOptions(file: std.fs.File, format: FileFormat, skip_magic: bool) ValidationResult {
     // Reset to start
-    file.seekTo(0) catch return ValidationResult.invalid(format, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(format, errmsg.failedToSeek("to start"));
 
     // Read first 4 bytes for signature (or skip past if skip_magic is set)
     var sig: [4]u8 = undefined;
-    _ = file.read(&sig) catch return ValidationResult.invalid(format, "Failed to read ZIP signature");
+    _ = file.read(&sig) catch return ValidationResult.invalid(format, errmsg.failedToRead("ZIP signature"));
 
     if (!skip_magic) {
         const signature = std.mem.readInt(u32, &sig, .little);
         if (signature != ZIP_LOCAL_FILE_HEADER) {
-            return ValidationResult.invalid(format, "Invalid ZIP signature");
+            return ValidationResult.invalid(format, errmsg.invalidSignature("ZIP"));
         }
     }
 
     // Seek to end to find End of Central Directory
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(format, "Failed to get file size");
+        return ValidationResult.invalid(format, errmsg.failedToGet("file size"));
     };
 
     if (file_size < 22) { // Minimum EOCD size
-        return ValidationResult.invalid(format, "File too small for valid ZIP");
+        return ValidationResult.invalid(format, errmsg.fileTooSmallFor("valid ZIP"));
     }
 
     // Search for EOCD signature (can have comment up to 65535 bytes)
     const search_start = if (file_size > 65557) file_size - 65557 else 0;
     file.seekTo(search_start) catch {
-        return ValidationResult.invalid(format, "Failed to seek for EOCD");
+        return ValidationResult.invalid(format, errmsg.failedToSeek("for EOCD"));
     };
 
     var buffer: [65557]u8 = undefined;
     const to_read = file_size - search_start;
     // Use readAll to handle potential short reads under concurrent I/O
     const bytes_read = file.readAll(buffer[0..to_read]) catch {
-        return ValidationResult.invalid(format, "Failed to read EOCD area");
+        return ValidationResult.invalid(format, errmsg.failedToRead("EOCD area"));
     };
 
     // Search backwards for EOCD signature
@@ -3676,16 +3677,16 @@ fn validateZipWithOptions(file: std.fs.File, format: FileFormat, skip_magic: boo
     }
 
     if (!found_eocd) {
-        return ValidationResult.invalid(format, "Missing End of Central Directory (corrupted or truncated)");
+        return ValidationResult.invalid(format, errmsg.missing("End of Central Directory (corrupted or truncated)"));
     }
 
     // For ZIP-based formats, check for required content
     if (format != .zip) {
-        file.seekTo(0) catch return ValidationResult.invalid(format, "Failed to seek for content check");
+        file.seekTo(0) catch return ValidationResult.invalid(format, errmsg.failedToSeek("for content check"));
 
         var content_buffer: [16384]u8 = undefined;
         const content_bytes = file.read(&content_buffer) catch {
-            return ValidationResult.invalid(format, "Failed to read for content check");
+            return ValidationResult.invalid(format, errmsg.failedToRead("for content check"));
         };
 
         const has_required = switch (format) {
@@ -3702,10 +3703,10 @@ fn validateZipWithOptions(file: std.fs.File, format: FileFormat, skip_magic: boo
 
         if (!has_required) {
             return switch (format) {
-                .epub => ValidationResult.invalid(format, "Missing EPUB container structure"),
-                .docx => ValidationResult.invalid(format, "Missing Word document structure"),
-                .xlsx => ValidationResult.invalid(format, "Missing Excel spreadsheet structure"),
-                .pptx => ValidationResult.invalid(format, "Missing PowerPoint structure"),
+                .epub => ValidationResult.invalid(format, errmsg.missing("EPUB container structure")),
+                .docx => ValidationResult.invalid(format, errmsg.missing("Word document structure")),
+                .xlsx => ValidationResult.invalid(format, errmsg.missing("Excel spreadsheet structure")),
+                .pptx => ValidationResult.invalid(format, errmsg.missing("PowerPoint structure")),
                 else => ValidationResult.ok(format),
             };
         }
@@ -3726,24 +3727,24 @@ const GZIP_FCOMMENT: u8 = 0x10;
 /// Validate gzip file structure (header and trailer).
 fn validateGzip(file: std.fs.File) ValidationResult {
     // Reset to start
-    file.seekTo(0) catch return ValidationResult.invalid(.gzip, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.gzip, errmsg.failedToSeek("to start"));
 
     // Read header (minimum 10 bytes)
     var header: [10]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.gzip, "Failed to read gzip header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.gzip, errmsg.failedToRead("gzip header"));
 
     if (header_read < 10) {
-        return ValidationResult.invalid(.gzip, "File too small for gzip");
+        return ValidationResult.invalid(.gzip, errmsg.fileTooSmallFor("gzip"));
     }
 
     // Check magic number (1F 8B)
     if (header[0] != 0x1F or header[1] != 0x8B) {
-        return ValidationResult.invalid(.gzip, "Invalid gzip magic number");
+        return ValidationResult.invalid(.gzip, errmsg.invalidMagicNumber("gzip"));
     }
 
     // Check compression method (8 = deflate)
     if (header[2] != 8) {
-        return ValidationResult.invalid(.gzip, "Unsupported compression method (not deflate)");
+        return ValidationResult.invalid(.gzip, errmsg.unsupported("compression method (not deflate)"));
     }
 
     const flags = header[3];
@@ -3753,20 +3754,20 @@ fn validateGzip(file: std.fs.File) ValidationResult {
 
     // FEXTRA: extra field
     if (flags & GZIP_FEXTRA != 0) {
-        file.seekTo(pos) catch return ValidationResult.invalid(.gzip, "Failed to seek past extra field");
+        file.seekTo(pos) catch return ValidationResult.invalid(.gzip, errmsg.failedToSeek("past extra field"));
         var xlen_buf: [2]u8 = undefined;
-        _ = file.read(&xlen_buf) catch return ValidationResult.invalid(.gzip, "Failed to read extra field length");
+        _ = file.read(&xlen_buf) catch return ValidationResult.invalid(.gzip, errmsg.failedToRead("extra field length"));
         const xlen = std.mem.readInt(u16, &xlen_buf, .little);
         pos += 2 + xlen;
     }
 
     // FNAME: original filename (null-terminated)
     if (flags & GZIP_FNAME != 0) {
-        file.seekTo(pos) catch return ValidationResult.invalid(.gzip, "Failed to seek to filename");
+        file.seekTo(pos) catch return ValidationResult.invalid(.gzip, errmsg.failedToSeek("to filename"));
         var byte: [1]u8 = undefined;
         while (true) {
-            const n = file.read(&byte) catch return ValidationResult.invalid(.gzip, "Failed to read filename");
-            if (n == 0) return ValidationResult.invalid(.gzip, "Truncated filename field");
+            const n = file.read(&byte) catch return ValidationResult.invalid(.gzip, errmsg.failedToRead("filename"));
+            if (n == 0) return ValidationResult.invalid(.gzip, errmsg.truncated("filename field"));
             pos += 1;
             if (byte[0] == 0) break;
             if (pos > 65536) return ValidationResult.invalid(.gzip, "Filename too long");
@@ -3775,11 +3776,11 @@ fn validateGzip(file: std.fs.File) ValidationResult {
 
     // FCOMMENT: comment (null-terminated)
     if (flags & GZIP_FCOMMENT != 0) {
-        file.seekTo(pos) catch return ValidationResult.invalid(.gzip, "Failed to seek to comment");
+        file.seekTo(pos) catch return ValidationResult.invalid(.gzip, errmsg.failedToSeek("to comment"));
         var byte: [1]u8 = undefined;
         while (true) {
-            const n = file.read(&byte) catch return ValidationResult.invalid(.gzip, "Failed to read comment");
-            if (n == 0) return ValidationResult.invalid(.gzip, "Truncated comment field");
+            const n = file.read(&byte) catch return ValidationResult.invalid(.gzip, errmsg.failedToRead("comment"));
+            if (n == 0) return ValidationResult.invalid(.gzip, errmsg.truncated("comment field"));
             pos += 1;
             if (byte[0] == 0) break;
             if (pos > 1048576) return ValidationResult.invalid(.gzip, "Comment too long");
@@ -3792,20 +3793,20 @@ fn validateGzip(file: std.fs.File) ValidationResult {
     }
 
     // Validate trailer (last 8 bytes: CRC32 + ISIZE)
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.gzip, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.gzip, errmsg.failedToGet("file size"));
 
     if (file_size < pos + 8) {
-        return ValidationResult.invalid(.gzip, "File too small for gzip trailer");
+        return ValidationResult.invalid(.gzip, errmsg.fileTooSmallFor("gzip trailer"));
     }
 
     // Seek to trailer
-    file.seekTo(file_size - 8) catch return ValidationResult.invalid(.gzip, "Failed to seek to trailer");
+    file.seekTo(file_size - 8) catch return ValidationResult.invalid(.gzip, errmsg.failedToSeek("to trailer"));
 
     var trailer: [8]u8 = undefined;
-    const trailer_read = file.read(&trailer) catch return ValidationResult.invalid(.gzip, "Failed to read gzip trailer");
+    const trailer_read = file.read(&trailer) catch return ValidationResult.invalid(.gzip, errmsg.failedToRead("gzip trailer"));
 
     if (trailer_read != 8) {
-        return ValidationResult.invalid(.gzip, "Incomplete gzip trailer");
+        return ValidationResult.invalid(.gzip, errmsg.incomplete("gzip trailer"));
     }
 
     // Trailer contains CRC32 and ISIZE (uncompressed size mod 2^32)
@@ -3822,19 +3823,19 @@ const BZIP2_SIGNATURE = [_]u8{ 0x42, 0x5A, 0x68 }; // "BZh"
 /// Validate Bzip2 file structure.
 fn validateBzip2(file: std.fs.File) ValidationResult {
     // Reset to start
-    file.seekTo(0) catch return ValidationResult.invalid(.bzip2, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.bzip2, errmsg.failedToSeek("to start"));
 
     // Read header (4 bytes minimum: BZh + block size)
     var header: [10]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.bzip2, "Failed to read bzip2 header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.bzip2, errmsg.failedToRead("bzip2 header"));
 
     if (header_read < 4) {
-        return ValidationResult.invalid(.bzip2, "File too small for bzip2");
+        return ValidationResult.invalid(.bzip2, errmsg.fileTooSmallFor("bzip2"));
     }
 
     // Check magic number "BZh"
     if (!std.mem.eql(u8, header[0..3], &BZIP2_SIGNATURE)) {
-        return ValidationResult.invalid(.bzip2, "Invalid bzip2 magic number");
+        return ValidationResult.invalid(.bzip2, errmsg.invalidMagicNumber("bzip2"));
     }
 
     // Check block size (must be '1' to '9', i.e., 0x31-0x39)
@@ -3844,12 +3845,12 @@ fn validateBzip2(file: std.fs.File) ValidationResult {
     }
 
     // For basic validation, verify file has some content after header
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.bzip2, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.bzip2, errmsg.failedToGet("file size"));
 
     // Minimum bzip2 file needs header (4 bytes) + some compressed data + trailer
     // A realistic minimum is around 14 bytes for an empty compressed stream
     if (file_size < 14) {
-        return ValidationResult.invalid(.bzip2, "File too small for valid bzip2");
+        return ValidationResult.invalid(.bzip2, errmsg.fileTooSmallFor("valid bzip2"));
     }
 
     return ValidationResult.ok(.bzip2);
@@ -3862,18 +3863,18 @@ const XZ_SIGNATURE = [_]u8{ 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00 };
 
 /// Validate XZ file structure.
 fn validateXz(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.xz, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.xz, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.xz, "Failed to read XZ header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.xz, errmsg.failedToRead("XZ header"));
 
     if (header_read < 12) {
-        return ValidationResult.invalid(.xz, "File too small for XZ");
+        return ValidationResult.invalid(.xz, errmsg.fileTooSmallFor("XZ"));
     }
 
     // Check magic number
     if (!std.mem.eql(u8, header[0..6], &XZ_SIGNATURE)) {
-        return ValidationResult.invalid(.xz, "Invalid XZ magic number");
+        return ValidationResult.invalid(.xz, errmsg.invalidMagicNumber("XZ"));
     }
 
     // Bytes 6-7 are stream flags
@@ -3895,18 +3896,18 @@ const ZSTD_SIGNATURE = [_]u8{ 0x28, 0xB5, 0x2F, 0xFD };
 
 /// Validate Zstandard file structure.
 fn validateZstd(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.zstd, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.zstd, errmsg.failedToSeek("to start"));
 
     var header: [18]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.zstd, "Failed to read Zstd header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.zstd, errmsg.failedToRead("Zstd header"));
 
     if (header_read < 5) {
-        return ValidationResult.invalid(.zstd, "File too small for Zstd");
+        return ValidationResult.invalid(.zstd, errmsg.fileTooSmallFor("Zstd"));
     }
 
     // Check magic number
     if (!std.mem.eql(u8, header[0..4], &ZSTD_SIGNATURE)) {
-        return ValidationResult.invalid(.zstd, "Invalid Zstd magic number");
+        return ValidationResult.invalid(.zstd, errmsg.invalidMagicNumber("Zstd"));
     }
 
     // Byte 4 is frame header descriptor
@@ -3958,13 +3959,13 @@ fn rarCrc16(data: []const u8) u16 {
 
 /// Validate RAR file structure with header CRC verification.
 fn validateRar(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.rar, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.rar, errmsg.failedToSeek("to start"));
 
     var signature: [8]u8 = undefined;
-    const sig_read = file.read(&signature) catch return ValidationResult.invalid(.rar, "Failed to read RAR header");
+    const sig_read = file.read(&signature) catch return ValidationResult.invalid(.rar, errmsg.failedToRead("RAR header"));
 
     if (sig_read < 7) {
-        return ValidationResult.invalid(.rar, "File too small for RAR");
+        return ValidationResult.invalid(.rar, errmsg.fileTooSmallFor("RAR"));
     }
 
     // Check RAR5 signature first (8 bytes)
@@ -3977,12 +3978,12 @@ fn validateRar(file: std.fs.File) ValidationResult {
         return validateRar4Headers(file);
     }
 
-    return ValidationResult.invalid(.rar, "Invalid RAR signature");
+    return ValidationResult.invalid(.rar, errmsg.invalidSignature("RAR"));
 }
 
 /// Validate RAR4 archive headers with CRC16 verification
 fn validateRar4Headers(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.rar, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.rar, errmsg.failedToGet("file size"));
 
     // Start after 7-byte signature
     var pos: u64 = 7;
@@ -3990,11 +3991,11 @@ fn validateRar4Headers(file: std.fs.File) ValidationResult {
     const max_headers: u32 = 10000; // Sanity limit
 
     while (pos < file_size and headers_validated < max_headers) {
-        file.seekTo(pos) catch return ValidationResult.invalid(.rar, "Failed to seek to header");
+        file.seekTo(pos) catch return ValidationResult.invalid(.rar, errmsg.failedToSeek("to header"));
 
         // Read base header: CRC16 (2) + TYPE (1) + FLAGS (2) + SIZE (2) = 7 bytes
         var base_header: [7]u8 = undefined;
-        const base_read = file.read(&base_header) catch return ValidationResult.invalid(.rar, "Failed to read header");
+        const base_read = file.read(&base_header) catch return ValidationResult.invalid(.rar, errmsg.failedToRead("header"));
 
         if (base_read < 7) {
             // Reached end of file
@@ -4015,14 +4016,14 @@ fn validateRar4Headers(file: std.fs.File) ValidationResult {
             return ValidationResult.invalid(.rar, "RAR4 header too large");
         }
 
-        file.seekTo(pos + 2) catch return ValidationResult.invalid(.rar, "Failed to seek for CRC");
+        file.seekTo(pos + 2) catch return ValidationResult.invalid(.rar, errmsg.failedToSeek("for CRC"));
 
         var header_buf: [4096]u8 = undefined;
         const to_read = @min(head_size - 2, header_buf.len);
-        const header_read = file.read(header_buf[0..to_read]) catch return ValidationResult.invalid(.rar, "Failed to read header data");
+        const header_read = file.read(header_buf[0..to_read]) catch return ValidationResult.invalid(.rar, errmsg.failedToRead("header data"));
 
         if (header_read < head_size - 2) {
-            return ValidationResult.invalid(.rar, "Incomplete RAR4 header");
+            return ValidationResult.invalid(.rar, errmsg.incomplete("RAR4 header"));
         }
 
         // Calculate CRC16 of header (excluding the CRC field itself)
@@ -4059,7 +4060,7 @@ fn validateRar4Headers(file: std.fs.File) ValidationResult {
     }
 
     if (headers_validated == 0) {
-        return ValidationResult.invalid(.rar, "No valid RAR4 headers found");
+        return ValidationResult.invalid(.rar, errmsg.noValidXFound("RAR4 headers"));
     }
 
     // Note: Only header CRCs are verified, NOT file content CRCs
@@ -4085,7 +4086,7 @@ fn readRar5Vint(file: std.fs.File) !u64 {
 
 /// Validate RAR5 archive headers with CRC32 verification
 fn validateRar5Headers(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.rar, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.rar, errmsg.failedToGet("file size"));
 
     // Start after 8-byte signature
     var pos: u64 = 8;
@@ -4093,11 +4094,11 @@ fn validateRar5Headers(file: std.fs.File) ValidationResult {
     const max_headers: u32 = 10000;
 
     while (pos < file_size and headers_validated < max_headers) {
-        file.seekTo(pos) catch return ValidationResult.invalid(.rar, "Failed to seek to header");
+        file.seekTo(pos) catch return ValidationResult.invalid(.rar, errmsg.failedToSeek("to header"));
 
         // Read header CRC32 (4 bytes)
         var crc_buf: [4]u8 = undefined;
-        const crc_read = file.read(&crc_buf) catch return ValidationResult.invalid(.rar, "Failed to read header CRC");
+        const crc_read = file.read(&crc_buf) catch return ValidationResult.invalid(.rar, errmsg.failedToRead("header CRC"));
 
         if (crc_read < 4) {
             break; // End of file
@@ -4115,7 +4116,7 @@ fn validateRar5Headers(file: std.fs.File) ValidationResult {
         }
 
         // Remember position after size vint
-        const header_data_pos = file.getPos() catch return ValidationResult.invalid(.rar, "Failed to get position");
+        const header_data_pos = file.getPos() catch return ValidationResult.invalid(.rar, errmsg.failedToGet("position"));
 
         // Read header data for CRC calculation (size vint + rest of header)
         // We need to include the size vint in CRC calculation
@@ -4126,14 +4127,14 @@ fn validateRar5Headers(file: std.fs.File) ValidationResult {
             return ValidationResult.invalid(.rar, "RAR5 header data too large");
         }
 
-        file.seekTo(pos + 4) catch return ValidationResult.invalid(.rar, "Failed to seek for CRC calc");
+        file.seekTo(pos + 4) catch return ValidationResult.invalid(.rar, errmsg.failedToSeek("for CRC calc"));
 
         var header_buf: [65536]u8 = undefined;
         const to_read: usize = @intCast(total_header_data);
-        const header_read = file.read(header_buf[0..to_read]) catch return ValidationResult.invalid(.rar, "Failed to read header");
+        const header_read = file.read(header_buf[0..to_read]) catch return ValidationResult.invalid(.rar, errmsg.failedToRead("header"));
 
         if (header_read < to_read) {
-            return ValidationResult.invalid(.rar, "Incomplete RAR5 header");
+            return ValidationResult.invalid(.rar, errmsg.incomplete("RAR5 header"));
         }
 
         // Calculate CRC32
@@ -4145,7 +4146,7 @@ fn validateRar5Headers(file: std.fs.File) ValidationResult {
         headers_validated += 1;
 
         // Parse header type and flags to determine next position
-        file.seekTo(header_data_pos) catch return ValidationResult.invalid(.rar, "Failed to seek to header type");
+        file.seekTo(header_data_pos) catch return ValidationResult.invalid(.rar, errmsg.failedToSeek("to header type"));
         const header_type = readRar5Vint(file) catch {
             return ValidationResult.invalid(.rar, "Invalid RAR5 header type");
         };
@@ -4179,7 +4180,7 @@ fn validateRar5Headers(file: std.fs.File) ValidationResult {
     }
 
     if (headers_validated == 0) {
-        return ValidationResult.invalid(.rar, "No valid RAR5 headers found");
+        return ValidationResult.invalid(.rar, errmsg.noValidXFound("RAR5 headers"));
     }
 
     // Note: Only header CRCs are verified, NOT file content CRCs
@@ -4192,19 +4193,19 @@ fn validateRar5Headers(file: std.fs.File) ValidationResult {
 /// Bitwig Studio project files use a proprietary binary format.
 /// This validator performs basic structural checks since the format is not publicly documented.
 fn validateBwproject(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.bwproject, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.bwproject, errmsg.failedToSeek("to start"));
 
     // Get file size - Bitwig files should have reasonable size
-    const stat = file.stat() catch return ValidationResult.invalid(.bwproject, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.bwproject, errmsg.failedToStat("file"));
 
     // Bitwig projects are typically at least a few KB
     if (stat.size < 100) {
-        return ValidationResult.invalid(.bwproject, "File too small for Bitwig project");
+        return ValidationResult.invalid(.bwproject, errmsg.fileTooSmallFor("Bitwig project"));
     }
 
     // Read header to verify this is not a ZIP file (common mistake)
     var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.bwproject, "Failed to read header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.bwproject, errmsg.failedToRead("header"));
 
     if (header_read < 4) {
         return ValidationResult.invalid(.bwproject, "File too small to identify");
@@ -4226,18 +4227,18 @@ fn validateBwproject(file: std.fs.File) ValidationResult {
 /// Cubase project files (.cpr) use a RIFF-based binary format.
 /// We validate the RIFF structure header.
 fn validateCubase(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.cpr, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.cpr, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.cpr, "Failed to read header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.cpr, errmsg.failedToRead("header"));
 
     if (header_read < 12) {
-        return ValidationResult.invalid(.cpr, "File too small for Cubase project");
+        return ValidationResult.invalid(.cpr, errmsg.fileTooSmallFor("Cubase project"));
     }
 
     // Cubase uses RIFF format - check for "RIFF" signature
     if (!std.mem.eql(u8, header[0..4], "RIFF")) {
-        return ValidationResult.invalid(.cpr, "Invalid Cubase signature (not RIFF)");
+        return ValidationResult.invalid(.cpr, errmsg.invalidSignatureNot("Cubase", "RIFF"));
     }
 
     // RIFF files have a form type at offset 8
@@ -4251,17 +4252,17 @@ fn validateCubase(file: std.fs.File) ValidationResult {
 /// Pro Tools session files (.ptx) use a proprietary binary format.
 /// This validator performs basic structural checks.
 fn validateProTools(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.ptx, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.ptx, errmsg.failedToSeek("to start"));
 
-    const stat = file.stat() catch return ValidationResult.invalid(.ptx, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.ptx, errmsg.failedToStat("file"));
 
     // Pro Tools sessions are typically at least several KB
     if (stat.size < 256) {
-        return ValidationResult.invalid(.ptx, "File too small for Pro Tools session");
+        return ValidationResult.invalid(.ptx, errmsg.fileTooSmallFor("Pro Tools session"));
     }
 
     var header: [16]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.ptx, "Failed to read header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.ptx, errmsg.failedToRead("header"));
 
     if (header_read < 8) {
         return ValidationResult.invalid(.ptx, "File too small to identify");
@@ -4281,19 +4282,19 @@ fn validateProTools(file: std.fs.File) ValidationResult {
 /// GarageBand project files (.band) are macOS packages/bundles.
 /// When accessed as a file (not directory), we perform basic checks.
 fn validateGarageBand(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.band, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.band, errmsg.failedToSeek("to start"));
 
-    const stat = file.stat() catch return ValidationResult.invalid(.band, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.band, errmsg.failedToStat("file"));
 
     // GarageBand projects should have some content
     if (stat.size < 64) {
-        return ValidationResult.invalid(.band, "File too small for GarageBand project");
+        return ValidationResult.invalid(.band, errmsg.fileTooSmallFor("GarageBand project"));
     }
 
     // GarageBand bundles when accessed as files may be ZIP-like
     // or may just be the metadata. We accept basic binary data.
     var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.band, "Failed to read header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.band, errmsg.failedToRead("header"));
 
     if (header_read < 4) {
         return ValidationResult.invalid(.band, "File too small to identify");
@@ -4308,17 +4309,17 @@ fn validateGarageBand(file: std.fs.File) ValidationResult {
 /// Reason project files (.reason) use a proprietary format.
 /// This validator performs basic structural checks.
 fn validateReason(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.reason, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.reason, errmsg.failedToSeek("to start"));
 
-    const stat = file.stat() catch return ValidationResult.invalid(.reason, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.reason, errmsg.failedToStat("file"));
 
     // Reason projects should have some content
     if (stat.size < 128) {
-        return ValidationResult.invalid(.reason, "File too small for Reason project");
+        return ValidationResult.invalid(.reason, errmsg.fileTooSmallFor("Reason project"));
     }
 
     var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.reason, "Failed to read header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.reason, errmsg.failedToRead("header"));
 
     if (header_read < 4) {
         return ValidationResult.invalid(.reason, "File too small to identify");
@@ -4339,15 +4340,15 @@ fn validateReason(file: std.fs.File) ValidationResult {
 /// PRPROJ files are gzip-compressed XML (since CS6/CC7+) or plain XML (legacy).
 /// Detection: gzip magic (0x1f 0x8b) or XML declaration.
 fn validatePrproj(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.prproj, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.prproj, errmsg.failedToSeek("to start"));
 
     var header: [10]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.prproj, "Failed to read PRPROJ header");
+        return ValidationResult.invalid(.prproj, errmsg.failedToRead("PRPROJ header"));
     };
 
     if (bytes_read < 5) {
-        return ValidationResult.invalid(.prproj, "File too small for PRPROJ format");
+        return ValidationResult.invalid(.prproj, errmsg.fileTooSmallFor("PRPROJ format"));
     }
 
     // Check for gzip magic (0x1f 0x8b) - modern PRPROJ format (CS6+/CC7+)
@@ -4375,7 +4376,7 @@ fn validatePrproj(file: std.fs.File) ValidationResult {
         }
     }
 
-    return ValidationResult.invalid(.prproj, "Invalid PRPROJ signature (not gzip or XML)");
+    return ValidationResult.invalid(.prproj, errmsg.invalidSignatureNot("PRPROJ", "gzip or XML"));
 }
 
 /// Deep validation for Adobe Premiere Pro Project files.
@@ -4383,14 +4384,14 @@ fn validatePrproj(file: std.fs.File) ValidationResult {
 fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Read file
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.prproj, "Failed to open PRPROJ file");
+        return ValidationResult.invalid(.prproj, errmsg.failedToOpen("PRPROJ file"));
     };
     defer file.close();
 
     // Read header to determine format
     var header: [10]u8 = undefined;
     const header_read = file.read(&header) catch {
-        return ValidationResult.invalid(.prproj, "Failed to read header");
+        return ValidationResult.invalid(.prproj, errmsg.failedToRead("header"));
     };
 
     if (header_read < 5) {
@@ -4398,7 +4399,7 @@ fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Reset file position
-    file.seekTo(0) catch return ValidationResult.invalid(.prproj, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.prproj, errmsg.failedToSeek("in Premiere project"));
 
     // Check if gzip-compressed
     if (header[0] == 0x1f and header[1] == 0x8b) {
@@ -4417,7 +4418,7 @@ fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Legacy XML format - parse and validate XML structure
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.prproj, "Failed to get file size");
+        return ValidationResult.invalid(.prproj, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 500 * 1024 * 1024) { // 500MB limit for XML files
@@ -4425,16 +4426,16 @@ fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     const xml_data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.prproj, "Failed to allocate memory for XML");
+        return ValidationResult.invalid(.prproj, errmsg.failedToAllocate("memory for XML"));
     };
     defer allocator.free(xml_data);
 
     const xml_read = file.readAll(xml_data) catch {
-        return ValidationResult.invalid(.prproj, "Failed to read XML data");
+        return ValidationResult.invalid(.prproj, errmsg.failedToRead("XML data"));
     };
 
     if (xml_read != file_size) {
-        return ValidationResult.invalid(.prproj, "Incomplete XML read");
+        return ValidationResult.invalid(.prproj, errmsg.incomplete("XML read"));
     }
 
     // Validate XML structure using the xml module
@@ -4460,7 +4461,7 @@ fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     if (element_count == 0) {
-        return ValidationResult.invalid(.prproj, "Empty XML document");
+        return ValidationResult.invalid(.prproj, errmsg.empty("XML document"));
     }
 
     // Successfully parsed - validate all bytes via XML parse
@@ -4480,7 +4481,7 @@ fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Buffer-based validation for Adobe Premiere Pro Project files.
 pub fn validatePrprojFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 5) {
-        return ValidationResult.invalid(.prproj, "Buffer too small for PRPROJ");
+        return ValidationResult.invalid(.prproj, errmsg.bufferTooSmallFor("PRPROJ"));
     }
 
     // Check for gzip magic
@@ -4503,7 +4504,7 @@ pub fn validatePrprojFromBuffer(data: []const u8) ValidationResult {
         }
     }
 
-    return ValidationResult.invalid(.prproj, "Invalid PRPROJ signature");
+    return ValidationResult.invalid(.prproj, errmsg.invalidSignature("PRPROJ"));
 }
 
 // ============ Adobe InDesign Validators ============
@@ -4511,25 +4512,25 @@ pub fn validatePrprojFromBuffer(data: []const u8) ValidationResult {
 /// Validate Adobe InDesign Document (.indd) file structure.
 /// INDD files are proprietary binary with magic bytes 06 06 ED F5 and "DOCUMENT" at byte 16.
 fn validateIndd(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.indd, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.indd, errmsg.failedToSeek("to start"));
 
     var header: [24]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.indd, "Failed to read INDD header");
+        return ValidationResult.invalid(.indd, errmsg.failedToRead("INDD header"));
     };
 
     if (bytes_read < 24) {
-        return ValidationResult.invalid(.indd, "File too small for INDD format");
+        return ValidationResult.invalid(.indd, errmsg.fileTooSmallFor("INDD format"));
     }
 
     // Check magic bytes: 06 06 ED F5
     if (header[0] != 0x06 or header[1] != 0x06 or header[2] != 0xED or header[3] != 0xF5) {
-        return ValidationResult.invalid(.indd, "Invalid INDD magic bytes");
+        return ValidationResult.invalid(.indd, errmsg.invalidMagic("INDD"));
     }
 
     // Check for "DOCUMENT" at byte 16
     if (!std.mem.eql(u8, header[16..24], "DOCUMENT")) {
-        return ValidationResult.invalid(.indd, "Missing DOCUMENT identifier");
+        return ValidationResult.invalid(.indd, errmsg.missing("DOCUMENT identifier"));
     }
 
     // INDD is proprietary binary - structural validation only
@@ -4541,7 +4542,7 @@ fn validateIndd(file: std.fs.File) ValidationResult {
 fn validateInddDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.indd, "Failed to open INDD file");
+        return ValidationResult.invalid(.indd, errmsg.failedToOpen("INDD file"));
     };
     defer file.close();
 
@@ -4556,17 +4557,17 @@ fn validateInddDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Buffer-based validation for Adobe InDesign Document files.
 pub fn validateInddFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 24) {
-        return ValidationResult.invalid(.indd, "Buffer too small for INDD");
+        return ValidationResult.invalid(.indd, errmsg.bufferTooSmallFor("INDD"));
     }
 
     // Check magic bytes: 06 06 ED F5
     if (data[0] != 0x06 or data[1] != 0x06 or data[2] != 0xED or data[3] != 0xF5) {
-        return ValidationResult.invalid(.indd, "Invalid INDD magic bytes");
+        return ValidationResult.invalid(.indd, errmsg.invalidMagic("INDD"));
     }
 
     // Check for "DOCUMENT" at byte 16
     if (!std.mem.eql(u8, data[16..24], "DOCUMENT")) {
-        return ValidationResult.invalid(.indd, "Missing DOCUMENT identifier");
+        return ValidationResult.invalid(.indd, errmsg.missing("DOCUMENT identifier"));
     }
 
     return ValidationResult.structuralOnly(.indd);
@@ -4575,20 +4576,20 @@ pub fn validateInddFromBuffer(data: []const u8) ValidationResult {
 /// Validate Adobe InDesign Markup Language (.idml) file structure.
 /// IDML files are ZIP containers with XML content, containing designmap.xml and META-INF/container.xml.
 fn validateIdml(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.idml, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.idml, errmsg.failedToSeek("to start"));
 
     var header: [4]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.idml, "Failed to read IDML header");
+        return ValidationResult.invalid(.idml, errmsg.failedToRead("IDML header"));
     };
 
     if (bytes_read < 4) {
-        return ValidationResult.invalid(.idml, "File too small for IDML format");
+        return ValidationResult.invalid(.idml, errmsg.fileTooSmallFor("IDML format"));
     }
 
     // Check for ZIP magic (PK)
     if (header[0] != 'P' or header[1] != 'K' or header[2] != 0x03 or header[3] != 0x04) {
-        return ValidationResult.invalid(.idml, "Invalid IDML signature (not ZIP)");
+        return ValidationResult.invalid(.idml, errmsg.invalidSignatureNot("IDML", "ZIP"));
     }
 
     // IDML is a ZIP container - basic structural validation passes
@@ -4601,20 +4602,20 @@ fn validateIdml(file: std.fs.File) ValidationResult {
 /// Validate AutoCAD DWG file structure.
 /// DWG files start with "AC" followed by a 4-digit version code (e.g., "AC1032" = DWG 2018).
 fn validateDwg(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.dwg, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.dwg, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.dwg, "Failed to read DWG header");
+        return ValidationResult.invalid(.dwg, errmsg.failedToRead("DWG header"));
     };
 
     if (bytes_read < 6) {
-        return ValidationResult.invalid(.dwg, "File too small for DWG format");
+        return ValidationResult.invalid(.dwg, errmsg.fileTooSmallFor("DWG format"));
     }
 
     // Check for "AC" magic at start
     if (header[0] != 'A' or header[1] != 'C') {
-        return ValidationResult.invalid(.dwg, "Invalid DWG signature (expected AC)");
+        return ValidationResult.invalid(.dwg, errmsg.invalidSignatureExpected("DWG", "AC"));
     }
 
     // Verify version code format: should be "AC10xx" where xx are digits
@@ -4643,7 +4644,7 @@ fn isDigit(c: u8) bool {
 fn validateDwgDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.dwg, "Failed to open DWG file");
+        return ValidationResult.invalid(.dwg, errmsg.failedToOpen("DWG file"));
     };
     defer file.close();
 
@@ -4653,12 +4654,12 @@ fn validateDwgDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Get file size for bounds checking
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.dwg, "Failed to get file size");
+        return ValidationResult.invalid(.dwg, errmsg.failedToGet("file size"));
     };
 
     // Minimum DWG file size (header + some data)
     if (file_size < 0x80) {
-        return ValidationResult.invalid(.dwg, "File too small for valid DWG");
+        return ValidationResult.invalid(.dwg, errmsg.fileTooSmallFor("valid DWG"));
     }
 
     // Read extended header for version-specific validation
@@ -4716,12 +4717,12 @@ fn validateDwgDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Buffer-based validation for AutoCAD DWG files.
 pub fn validateDwgFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 6) {
-        return ValidationResult.invalid(.dwg, "Buffer too small for DWG");
+        return ValidationResult.invalid(.dwg, errmsg.bufferTooSmallFor("DWG"));
     }
 
     // Check for "AC" magic at start
     if (data[0] != 'A' or data[1] != 'C') {
-        return ValidationResult.invalid(.dwg, "Invalid DWG signature (expected AC)");
+        return ValidationResult.invalid(.dwg, errmsg.invalidSignatureExpected("DWG", "AC"));
     }
 
     // Verify version code format: should be "AC10xx"
@@ -4742,20 +4743,20 @@ pub fn validateDwgFromBuffer(data: []const u8) ValidationResult {
 /// Validate Blender 3D project (.blend) file structure.
 /// Blender files start with "BLENDER" magic, followed by pointer size, endianness, and version.
 fn validateBlend(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.blend, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.blend, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.blend, "Failed to read Blender header");
+        return ValidationResult.invalid(.blend, errmsg.failedToRead("Blender header"));
     };
 
     if (bytes_read < 12) {
-        return ValidationResult.invalid(.blend, "File too small for Blender format");
+        return ValidationResult.invalid(.blend, errmsg.fileTooSmallFor("Blender format"));
     }
 
     // Check for "BLENDER" magic (7 bytes)
     if (!std.mem.eql(u8, header[0..7], "BLENDER")) {
-        return ValidationResult.invalid(.blend, "Invalid Blender signature");
+        return ValidationResult.invalid(.blend, errmsg.invalidSignature("Blender"));
     }
 
     // Check pointer size: '_' (0x5F) = 32-bit, '-' (0x2D) = 64-bit
@@ -4783,7 +4784,7 @@ fn validateBlend(file: std.fs.File) ValidationResult {
 /// The DNA1 block contains the self-describing schema that defines all data structures.
 fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.blend, "Failed to open Blender file");
+        return ValidationResult.invalid(.blend, errmsg.failedToOpen("Blender file"));
     };
     defer file.close();
 
@@ -4792,10 +4793,10 @@ fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResult {
     if (!structural_result.is_valid) return structural_result;
 
     // Reset to start
-    file.seekTo(0) catch return ValidationResult.invalid(.blend, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.blend, errmsg.failedToSeek("in Blender file"));
 
     var header: [12]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.blend, "Failed to read header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.blend, errmsg.failedToRead("header"));
 
     // Determine pointer size for block header parsing
     const pointer_size: u8 = if (header[7] == '-') 8 else 4;
@@ -4812,7 +4813,7 @@ fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const max_blocks: usize = 1000000; // Sanity limit
 
     var block_header_buf = allocator.alloc(u8, block_header_size) catch {
-        return ValidationResult.invalid(.blend, "Failed to allocate block header buffer");
+        return ValidationResult.invalid(.blend, errmsg.failedToAllocate("block header buffer"));
     };
     defer allocator.free(block_header_buf);
 
@@ -4865,11 +4866,11 @@ fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     if (!found_endb) {
-        return ValidationResult.invalid(.blend, "Missing ENDB terminator block");
+        return ValidationResult.invalid(.blend, errmsg.missing("ENDB terminator block"));
     }
 
     if (!found_dna1) {
-        return ValidationResult.invalid(.blend, "Missing DNA1 schema block");
+        return ValidationResult.invalid(.blend, errmsg.missing("DNA1 schema block"));
     }
 
     if (!dna_fully_valid) {
@@ -4992,12 +4993,12 @@ fn validateDNA1Block(data: []const u8, endian: std.builtin.Endian) bool {
 /// Buffer-based validation for Blender files.
 pub fn validateBlendFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 12) {
-        return ValidationResult.invalid(.blend, "Buffer too small for Blender");
+        return ValidationResult.invalid(.blend, errmsg.bufferTooSmallFor("Blender"));
     }
 
     // Check for "BLENDER" magic
     if (!std.mem.eql(u8, data[0..7], "BLENDER")) {
-        return ValidationResult.invalid(.blend, "Invalid Blender signature");
+        return ValidationResult.invalid(.blend, errmsg.invalidSignature("Blender"));
     }
 
     // Check pointer size
@@ -5023,16 +5024,16 @@ pub fn validateBlendFromBuffer(data: []const u8) ValidationResult {
 /// Validate Final Cut Pro XML (.fcpxml) file structure.
 /// FCPXML files are XML with a specific DTD and root element "fcpxml".
 fn validateFcpxml(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.fcpxml, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.fcpxml, errmsg.failedToSeek("to start"));
 
     // Read enough for XML declaration and root element detection
     var header: [512]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.fcpxml, "Failed to read FCPXML header");
+        return ValidationResult.invalid(.fcpxml, errmsg.failedToRead("FCPXML header"));
     };
 
     if (bytes_read < 10) {
-        return ValidationResult.invalid(.fcpxml, "File too small for FCPXML format");
+        return ValidationResult.invalid(.fcpxml, errmsg.fileTooSmallFor("FCPXML format"));
     }
 
     // Skip BOM if present
@@ -5084,7 +5085,7 @@ fn containsElement(content: []const u8, comptime element_name: []const u8) bool 
 /// Parses the full XML structure to validate.
 fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.fcpxml, "Failed to open FCPXML file");
+        return ValidationResult.invalid(.fcpxml, errmsg.failedToOpen("FCPXML file"));
     };
     defer file.close();
 
@@ -5093,10 +5094,10 @@ fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
     if (!structural_result.is_valid) return structural_result;
 
     // For deep validation, parse full XML
-    file.seekTo(0) catch return ValidationResult.invalid(.fcpxml, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.fcpxml, errmsg.failedToSeek("in FCPXML file"));
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.fcpxml, "Failed to get file size");
+        return ValidationResult.invalid(.fcpxml, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 500 * 1024 * 1024) { // 500MB limit
@@ -5104,16 +5105,16 @@ fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     const xml_data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.fcpxml, "Failed to allocate memory");
+        return ValidationResult.invalid(.fcpxml, errmsg.failedToAllocate("memory"));
     };
     defer allocator.free(xml_data);
 
     const xml_read = file.readAll(xml_data) catch {
-        return ValidationResult.invalid(.fcpxml, "Failed to read XML data");
+        return ValidationResult.invalid(.fcpxml, errmsg.failedToRead("XML data"));
     };
 
     if (xml_read != file_size) {
-        return ValidationResult.invalid(.fcpxml, "Incomplete read");
+        return ValidationResult.invalid(.fcpxml, errmsg.incomplete("read"));
     }
 
     // Use XML parser to validate structure
@@ -5145,7 +5146,7 @@ fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     if (!found_fcpxml) {
-        return ValidationResult.okWithDepthAndWarning(.fcpxml, .structural, "Missing fcpxml root element");
+        return ValidationResult.okWithDepthAndWarning(.fcpxml, .structural, errmsg.missing("fcpxml root element"));
     }
 
     return ValidationResult.okWithDepth(.fcpxml, .full);
@@ -5154,7 +5155,7 @@ fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Buffer-based validation for Final Cut Pro XML files.
 pub fn validateFcpxmlFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 10) {
-        return ValidationResult.invalid(.fcpxml, "Buffer too small for FCPXML");
+        return ValidationResult.invalid(.fcpxml, errmsg.bufferTooSmallFor("FCPXML"));
     }
 
     // Skip BOM if present
@@ -5178,20 +5179,20 @@ pub fn validateFcpxmlFromBuffer(data: []const u8) ValidationResult {
 /// Validate DaVinci Resolve Project (.drp) file structure.
 /// DRP files are ZIP containers with project.xml inside.
 fn validateDrp(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.drp, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.drp, errmsg.failedToSeek("to start"));
 
     var header: [4]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.drp, "Failed to read DRP header");
+        return ValidationResult.invalid(.drp, errmsg.failedToRead("DRP header"));
     };
 
     if (bytes_read < 4) {
-        return ValidationResult.invalid(.drp, "File too small for DRP format");
+        return ValidationResult.invalid(.drp, errmsg.fileTooSmallFor("DRP format"));
     }
 
     // Check for ZIP magic (PK\x03\x04)
     if (header[0] != 'P' or header[1] != 'K' or header[2] != 0x03 or header[3] != 0x04) {
-        return ValidationResult.invalid(.drp, "Invalid DRP signature (not ZIP)");
+        return ValidationResult.invalid(.drp, errmsg.invalidSignatureNot("DRP", "ZIP"));
     }
 
     // DRP is a ZIP container - basic structural validation passes
@@ -5210,12 +5211,12 @@ fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Now check for project.xml in the archive
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.drp, "Failed to open DRP file");
+        return ValidationResult.invalid(.drp, errmsg.failedToOpen("DRP file"));
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.drp, "Failed to get file size");
+        return ValidationResult.invalid(.drp, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 500 * 1024 * 1024) {
@@ -5225,16 +5226,16 @@ fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Read the file to find project.xml in the central directory
     const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.drp, "Failed to allocate memory");
+        return ValidationResult.invalid(.drp, errmsg.failedToAllocate("memory"));
     };
     defer allocator.free(data);
 
     const read_len = file.readAll(data) catch {
-        return ValidationResult.invalid(.drp, "Failed to read file");
+        return ValidationResult.invalid(.drp, errmsg.failedToRead("file"));
     };
 
     if (read_len != file_size) {
-        return ValidationResult.invalid(.drp, "Incomplete read");
+        return ValidationResult.invalid(.drp, errmsg.incomplete("read"));
     }
 
     // Look for project.xml in the file names
@@ -5243,18 +5244,18 @@ fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.okWithDepth(.drp, .full);
     }
 
-    return ValidationResult.okWithDepthAndWarning(.drp, .structural, "Missing project.xml in DRP archive");
+    return ValidationResult.okWithDepthAndWarning(.drp, .structural, errmsg.missing("project.xml in DRP archive"));
 }
 
 /// Buffer-based validation for DaVinci Resolve Project files.
 pub fn validateDrpFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 4) {
-        return ValidationResult.invalid(.drp, "Buffer too small for DRP");
+        return ValidationResult.invalid(.drp, errmsg.bufferTooSmallFor("DRP"));
     }
 
     // Check for ZIP magic (PK\x03\x04)
     if (data[0] != 'P' or data[1] != 'K' or data[2] != 0x03 or data[3] != 0x04) {
-        return ValidationResult.invalid(.drp, "Invalid DRP signature (not ZIP)");
+        return ValidationResult.invalid(.drp, errmsg.invalidSignatureNot("DRP", "ZIP"));
     }
 
     return ValidationResult.ok(.drp);
@@ -5265,20 +5266,20 @@ pub fn validateDrpFromBuffer(data: []const u8) ValidationResult {
 /// Validate Sketch design file structure.
 /// Sketch files are ZIP containers with document.json, meta.json, and pages/ directory.
 fn validateSketch(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.sketch, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.sketch, errmsg.failedToSeek("to start"));
 
     var header: [4]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.sketch, "Failed to read Sketch header");
+        return ValidationResult.invalid(.sketch, errmsg.failedToRead("Sketch header"));
     };
 
     if (bytes_read < 4) {
-        return ValidationResult.invalid(.sketch, "File too small for Sketch format");
+        return ValidationResult.invalid(.sketch, errmsg.fileTooSmallFor("Sketch format"));
     }
 
     // Check for ZIP magic (PK\x03\x04)
     if (header[0] != 'P' or header[1] != 'K' or header[2] != 0x03 or header[3] != 0x04) {
-        return ValidationResult.invalid(.sketch, "Invalid Sketch signature (not ZIP)");
+        return ValidationResult.invalid(.sketch, errmsg.invalidSignatureNot("Sketch", "ZIP"));
     }
 
     // Sketch is a ZIP container - basic structural validation passes
@@ -5297,12 +5298,12 @@ fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Now check for required Sketch files in the archive
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.sketch, "Failed to open Sketch file");
+        return ValidationResult.invalid(.sketch, errmsg.failedToOpen("Sketch file"));
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.sketch, "Failed to get file size");
+        return ValidationResult.invalid(.sketch, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 500 * 1024 * 1024) {
@@ -5312,16 +5313,16 @@ fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Read the file to find document.json and meta.json in the central directory
     const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.sketch, "Failed to allocate memory");
+        return ValidationResult.invalid(.sketch, errmsg.failedToAllocate("memory"));
     };
     defer allocator.free(data);
 
     const read_len = file.readAll(data) catch {
-        return ValidationResult.invalid(.sketch, "Failed to read file");
+        return ValidationResult.invalid(.sketch, errmsg.failedToRead("file"));
     };
 
     if (read_len != file_size) {
-        return ValidationResult.invalid(.sketch, "Incomplete read");
+        return ValidationResult.invalid(.sketch, errmsg.incomplete("read"));
     }
 
     // Look for required Sketch files
@@ -5329,10 +5330,10 @@ fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const has_meta = std.mem.indexOf(u8, data, "meta.json") != null;
 
     if (!has_document) {
-        return ValidationResult.okWithDepthAndWarning(.sketch, .structural, "Missing document.json in Sketch archive");
+        return ValidationResult.okWithDepthAndWarning(.sketch, .structural, errmsg.missing("document.json in Sketch archive"));
     }
     if (!has_meta) {
-        return ValidationResult.okWithDepthAndWarning(.sketch, .structural, "Missing meta.json in Sketch archive");
+        return ValidationResult.okWithDepthAndWarning(.sketch, .structural, errmsg.missing("meta.json in Sketch archive"));
     }
 
     return ValidationResult.okWithDepth(.sketch, .full);
@@ -5341,12 +5342,12 @@ fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Buffer-based validation for Sketch design files.
 pub fn validateSketchFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 4) {
-        return ValidationResult.invalid(.sketch, "Buffer too small for Sketch");
+        return ValidationResult.invalid(.sketch, errmsg.bufferTooSmallFor("Sketch"));
     }
 
     // Check for ZIP magic (PK\x03\x04)
     if (data[0] != 'P' or data[1] != 'K' or data[2] != 0x03 or data[3] != 0x04) {
-        return ValidationResult.invalid(.sketch, "Invalid Sketch signature (not ZIP)");
+        return ValidationResult.invalid(.sketch, errmsg.invalidSignatureNot("Sketch", "ZIP"));
     }
 
     return ValidationResult.ok(.sketch);
@@ -5357,26 +5358,26 @@ pub fn validateSketchFromBuffer(data: []const u8) ValidationResult {
 /// Validate Microsoft Access MDB file structure (Access 97-2003).
 /// MDB files have magic bytes 00 01 00 00 followed by "Standard Jet DB" at offset 4.
 fn validateMdb(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.mdb, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.mdb, errmsg.failedToSeek("to start"));
 
     var header: [20]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.mdb, "Failed to read MDB header");
+        return ValidationResult.invalid(.mdb, errmsg.failedToRead("MDB header"));
     };
 
     if (bytes_read < 20) {
-        return ValidationResult.invalid(.mdb, "File too small for MDB format");
+        return ValidationResult.invalid(.mdb, errmsg.fileTooSmallFor("MDB format"));
     }
 
     // Check magic bytes: 00 01 00 00
     if (header[0] != 0x00 or header[1] != 0x01 or header[2] != 0x00 or header[3] != 0x00) {
-        return ValidationResult.invalid(.mdb, "Invalid MDB magic bytes");
+        return ValidationResult.invalid(.mdb, errmsg.invalidMagic("MDB"));
     }
 
     // Check for "Standard Jet DB" at offset 4 (15 characters, null terminated makes 16)
     const jet_sig = "Standard Jet DB";
     if (!std.mem.eql(u8, header[4..19], jet_sig)) {
-        return ValidationResult.invalid(.mdb, "Invalid MDB signature (not Standard Jet DB)");
+        return ValidationResult.invalid(.mdb, errmsg.invalidSignatureNot("MDB", "Standard Jet DB"));
     }
 
     return ValidationResult.ok(.mdb);
@@ -5385,26 +5386,26 @@ fn validateMdb(file: std.fs.File) ValidationResult {
 /// Validate Microsoft Access ACCDB file structure (Access 2007+).
 /// ACCDB files have magic bytes 00 01 00 00 followed by "Standard ACE DB" at offset 4.
 fn validateAccdb(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.accdb, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.accdb, errmsg.failedToSeek("to start"));
 
     var header: [20]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.accdb, "Failed to read ACCDB header");
+        return ValidationResult.invalid(.accdb, errmsg.failedToRead("ACCDB header"));
     };
 
     if (bytes_read < 20) {
-        return ValidationResult.invalid(.accdb, "File too small for ACCDB format");
+        return ValidationResult.invalid(.accdb, errmsg.fileTooSmallFor("ACCDB format"));
     }
 
     // Check magic bytes: 00 01 00 00
     if (header[0] != 0x00 or header[1] != 0x01 or header[2] != 0x00 or header[3] != 0x00) {
-        return ValidationResult.invalid(.accdb, "Invalid ACCDB magic bytes");
+        return ValidationResult.invalid(.accdb, errmsg.invalidMagic("ACCDB"));
     }
 
     // Check for "Standard ACE DB" at offset 4 (15 characters, null terminated makes 16)
     const ace_sig = "Standard ACE DB";
     if (!std.mem.eql(u8, header[4..19], ace_sig)) {
-        return ValidationResult.invalid(.accdb, "Invalid ACCDB signature (not Standard ACE DB)");
+        return ValidationResult.invalid(.accdb, errmsg.invalidSignatureNot("ACCDB", "Standard ACE DB"));
     }
 
     return ValidationResult.ok(.accdb);
@@ -5415,34 +5416,34 @@ fn validateAccdb(file: std.fs.File) ValidationResult {
 fn validateMdbDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.mdb, "Failed to open MDB file");
+        return ValidationResult.invalid(.mdb, errmsg.failedToOpen("MDB file"));
     };
     defer file.close();
 
     var header: [64]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.mdb, "Failed to read MDB header");
+        return ValidationResult.invalid(.mdb, errmsg.failedToRead("MDB header"));
     };
 
     if (bytes_read < 64) {
-        return ValidationResult.invalid(.mdb, "File too small for MDB format");
+        return ValidationResult.invalid(.mdb, errmsg.fileTooSmallFor("MDB format"));
     }
 
     // Check magic bytes: 00 01 00 00
     if (header[0] != 0x00 or header[1] != 0x01 or header[2] != 0x00 or header[3] != 0x00) {
-        return ValidationResult.invalid(.mdb, "Invalid MDB magic bytes");
+        return ValidationResult.invalid(.mdb, errmsg.invalidMagic("MDB"));
     }
 
     // Check for "Standard Jet DB" at offset 4
     const jet_sig = "Standard Jet DB";
     if (!std.mem.eql(u8, header[4..19], jet_sig)) {
-        return ValidationResult.invalid(.mdb, "Invalid MDB signature (not Standard Jet DB)");
+        return ValidationResult.invalid(.mdb, errmsg.invalidSignatureNot("MDB", "Standard Jet DB"));
     }
 
     // Jet version at offset 0x14 (0 = Jet3, 1 = Jet4)
     const jet_version = header[0x14];
     if (jet_version > 1) {
-        return ValidationResult.okWithDepthAndWarning(.mdb, .structural, "Unknown Jet version");
+        return ValidationResult.okWithDepthAndWarning(.mdb, .structural, errmsg.unknown("Jet version"));
     }
 
     // For MDB files, we can only do structural validation since the internal
@@ -5454,28 +5455,28 @@ fn validateMdbDeep(allocator: Allocator, path: []const u8) ValidationResult {
 fn validateAccdbDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.accdb, "Failed to open ACCDB file");
+        return ValidationResult.invalid(.accdb, errmsg.failedToOpen("ACCDB file"));
     };
     defer file.close();
 
     var header: [64]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.accdb, "Failed to read ACCDB header");
+        return ValidationResult.invalid(.accdb, errmsg.failedToRead("ACCDB header"));
     };
 
     if (bytes_read < 64) {
-        return ValidationResult.invalid(.accdb, "File too small for ACCDB format");
+        return ValidationResult.invalid(.accdb, errmsg.fileTooSmallFor("ACCDB format"));
     }
 
     // Check magic bytes: 00 01 00 00
     if (header[0] != 0x00 or header[1] != 0x01 or header[2] != 0x00 or header[3] != 0x00) {
-        return ValidationResult.invalid(.accdb, "Invalid ACCDB magic bytes");
+        return ValidationResult.invalid(.accdb, errmsg.invalidMagic("ACCDB"));
     }
 
     // Check for "Standard ACE DB" at offset 4
     const ace_sig = "Standard ACE DB";
     if (!std.mem.eql(u8, header[4..19], ace_sig)) {
-        return ValidationResult.invalid(.accdb, "Invalid ACCDB signature (not Standard ACE DB)");
+        return ValidationResult.invalid(.accdb, errmsg.invalidSignatureNot("ACCDB", "Standard ACE DB"));
     }
 
     // ACE version at offset 0x14:
@@ -5484,7 +5485,7 @@ fn validateAccdbDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // 0x05 = ACE 16 (Access 2016 with Large Integer)
     const ace_version = header[0x14];
     if (ace_version < 0x02 or ace_version > 0x05) {
-        return ValidationResult.okWithDepthAndWarning(.accdb, .structural, "Unknown ACE version");
+        return ValidationResult.okWithDepthAndWarning(.accdb, .structural, errmsg.unknown("ACE version"));
     }
 
     // ACCDB is proprietary - structural validation only
@@ -5494,18 +5495,18 @@ fn validateAccdbDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Buffer-based validation for MDB files.
 pub fn validateMdbFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 20) {
-        return ValidationResult.invalid(.mdb, "Buffer too small for MDB");
+        return ValidationResult.invalid(.mdb, errmsg.bufferTooSmallFor("MDB"));
     }
 
     // Check magic bytes: 00 01 00 00
     if (data[0] != 0x00 or data[1] != 0x01 or data[2] != 0x00 or data[3] != 0x00) {
-        return ValidationResult.invalid(.mdb, "Invalid MDB magic bytes");
+        return ValidationResult.invalid(.mdb, errmsg.invalidMagic("MDB"));
     }
 
     // Check for "Standard Jet DB" at offset 4
     const jet_sig = "Standard Jet DB";
     if (!std.mem.eql(u8, data[4..19], jet_sig)) {
-        return ValidationResult.invalid(.mdb, "Invalid MDB signature (not Standard Jet DB)");
+        return ValidationResult.invalid(.mdb, errmsg.invalidSignatureNot("MDB", "Standard Jet DB"));
     }
 
     return ValidationResult.ok(.mdb);
@@ -5514,18 +5515,18 @@ pub fn validateMdbFromBuffer(data: []const u8) ValidationResult {
 /// Buffer-based validation for ACCDB files.
 pub fn validateAccdbFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 20) {
-        return ValidationResult.invalid(.accdb, "Buffer too small for ACCDB");
+        return ValidationResult.invalid(.accdb, errmsg.bufferTooSmallFor("ACCDB"));
     }
 
     // Check magic bytes: 00 01 00 00
     if (data[0] != 0x00 or data[1] != 0x01 or data[2] != 0x00 or data[3] != 0x00) {
-        return ValidationResult.invalid(.accdb, "Invalid ACCDB magic bytes");
+        return ValidationResult.invalid(.accdb, errmsg.invalidMagic("ACCDB"));
     }
 
     // Check for "Standard ACE DB" at offset 4
     const ace_sig = "Standard ACE DB";
     if (!std.mem.eql(u8, data[4..19], ace_sig)) {
-        return ValidationResult.invalid(.accdb, "Invalid ACCDB signature (not Standard ACE DB)");
+        return ValidationResult.invalid(.accdb, errmsg.invalidSignatureNot("ACCDB", "Standard ACE DB"));
     }
 
     return ValidationResult.ok(.accdb);
@@ -5536,18 +5537,18 @@ pub fn validateAccdbFromBuffer(data: []const u8) ValidationResult {
 /// Validate ISO 9660 disk image structure.
 fn validateIso(file: std.fs.File) ValidationResult {
     // ISO 9660 has "CD001" at offset 0x8001 (32769) for primary volume descriptor
-    file.seekTo(0x8001) catch return ValidationResult.invalid(.iso, "Failed to seek to volume descriptor");
+    file.seekTo(0x8001) catch return ValidationResult.invalid(.iso, errmsg.failedToSeek("to volume descriptor"));
 
     var descriptor: [5]u8 = undefined;
-    const desc_read = file.read(&descriptor) catch return ValidationResult.invalid(.iso, "Failed to read volume descriptor");
+    const desc_read = file.read(&descriptor) catch return ValidationResult.invalid(.iso, errmsg.failedToRead("volume descriptor"));
 
     if (desc_read < 5) {
-        return ValidationResult.invalid(.iso, "File too small for ISO 9660");
+        return ValidationResult.invalid(.iso, errmsg.fileTooSmallFor("ISO 9660"));
     }
 
     // Check for "CD001" identifier
     if (!std.mem.eql(u8, &descriptor, "CD001")) {
-        return ValidationResult.invalid(.iso, "Invalid ISO 9660 signature");
+        return ValidationResult.invalid(.iso, errmsg.invalidSignature("ISO 9660"));
     }
 
     return ValidationResult.okWithDepth(.iso, .full);
@@ -5558,25 +5559,25 @@ fn validateIso(file: std.fs.File) ValidationResult {
 /// Validate Apple Disk Image structure.
 fn validateDmg(file: std.fs.File) ValidationResult {
     // DMG has "koly" trailer at end of file (last 512 bytes contain the trailer)
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.dmg, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.dmg, errmsg.failedToGet("file size"));
 
     if (file_size < 512) {
-        return ValidationResult.invalid(.dmg, "File too small for DMG");
+        return ValidationResult.invalid(.dmg, errmsg.fileTooSmallFor("DMG"));
     }
 
     // Seek to last 512 bytes where koly trailer should be
-    file.seekTo(file_size - 512) catch return ValidationResult.invalid(.dmg, "Failed to seek to trailer");
+    file.seekTo(file_size - 512) catch return ValidationResult.invalid(.dmg, errmsg.failedToSeek("to trailer"));
 
     var trailer: [512]u8 = undefined;
-    const trailer_read = file.read(&trailer) catch return ValidationResult.invalid(.dmg, "Failed to read DMG trailer");
+    const trailer_read = file.read(&trailer) catch return ValidationResult.invalid(.dmg, errmsg.failedToRead("DMG trailer"));
 
     if (trailer_read < 512) {
-        return ValidationResult.invalid(.dmg, "Failed to read full trailer");
+        return ValidationResult.invalid(.dmg, errmsg.failedToRead("full trailer"));
     }
 
     // Look for "koly" signature at start of trailer
     if (!std.mem.eql(u8, trailer[0..4], "koly")) {
-        return ValidationResult.invalid(.dmg, "Invalid DMG signature");
+        return ValidationResult.invalid(.dmg, errmsg.invalidSignature("DMG"));
     }
 
     return ValidationResult.okWithDepth(.dmg, .full);
@@ -5684,53 +5685,53 @@ test "jenkinsLookup3 basic hash" {
 /// Full integrity validation: parses superblock, validates version-specific fields,
 /// and checks root group object header.
 fn validateHdf5(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.hdf5, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.hdf5, errmsg.failedToStat("file"));
     const file_size = stat.size;
 
-    file.seekTo(0) catch return ValidationResult.invalid(.hdf5, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.hdf5, errmsg.failedToSeek("to start"));
 
     // Superblock is at least 24 bytes for version 0/1, or 48+ bytes for version 2/3
     var superblock: [96]u8 = undefined;
-    const sb_read = file.read(&superblock) catch return ValidationResult.invalid(.hdf5, "Failed to read HDF5 superblock");
+    const sb_read = file.read(&superblock) catch return ValidationResult.invalid(.hdf5, errmsg.failedToRead("HDF5 superblock"));
 
     if (sb_read < 16) {
-        return ValidationResult.invalid(.hdf5, "File too small for HDF5 superblock");
+        return ValidationResult.invalid(.hdf5, errmsg.fileTooSmallFor("HDF5 superblock"));
     }
 
     // Check magic number
     if (!std.mem.eql(u8, superblock[0..8], &HDF5_SIGNATURE)) {
-        return ValidationResult.invalid(.hdf5, "Invalid HDF5 signature");
+        return ValidationResult.invalid(.hdf5, errmsg.invalidSignature("HDF5"));
     }
 
     // Superblock version at offset 8
     const sb_version = superblock[8];
     if (sb_version > 3) {
-        return ValidationResult.invalid(.hdf5, "Unknown superblock version");
+        return ValidationResult.invalid(.hdf5, errmsg.unknown("superblock version"));
     }
 
     // Parse based on superblock version
     if (sb_version == 0 or sb_version == 1) {
         // Version 0/1 superblock structure
         if (sb_read < 24) {
-            return ValidationResult.invalid(.hdf5, "Truncated version 0/1 superblock");
+            return ValidationResult.invalid(.hdf5, errmsg.truncated("version 0/1 superblock"));
         }
 
         // Free space storage version
         const fs_version = superblock[9];
         if (fs_version > 0) {
-            return ValidationResult.invalid(.hdf5, "Unknown free space version");
+            return ValidationResult.invalid(.hdf5, errmsg.unknown("free space version"));
         }
 
         // Root group symbol table entry version
         const rg_version = superblock[10];
         if (rg_version > 0) {
-            return ValidationResult.invalid(.hdf5, "Unknown root group version");
+            return ValidationResult.invalid(.hdf5, errmsg.unknown("root group version"));
         }
 
         // Shared header message format version
         const shm_version = superblock[12];
         if (shm_version > 0) {
-            return ValidationResult.invalid(.hdf5, "Unknown shared header message version");
+            return ValidationResult.invalid(.hdf5, errmsg.unknown("shared header message version"));
         }
 
         // Size of offsets (must be 2, 4, 8)
@@ -5759,7 +5760,7 @@ fn validateHdf5(file: std.fs.File) ValidationResult {
     } else {
         // Version 2/3 superblock structure
         if (sb_read < 48) {
-            return ValidationResult.invalid(.hdf5, "Truncated version 2/3 superblock");
+            return ValidationResult.invalid(.hdf5, errmsg.truncated("version 2/3 superblock"));
         }
 
         // Size of offsets at offset 9
@@ -5788,7 +5789,7 @@ fn validateHdf5(file: std.fs.File) ValidationResult {
         const root_oh_offset: usize = eof_offset + offset_size;
 
         if (root_oh_offset + offset_size > sb_read) {
-            return ValidationResult.invalid(.hdf5, "Truncated superblock addresses");
+            return ValidationResult.invalid(.hdf5, errmsg.truncated("superblock addresses"));
         }
 
         // Read end-of-file address
@@ -5825,7 +5826,7 @@ fn validateHdf5(file: std.fs.File) ValidationResult {
         // Superblock size: 12 bytes fixed + 4 addresses of offset_size each + 4 byte checksum
         const superblock_size: usize = 12 + 4 * offset_size + 4;
         if (superblock_size > sb_read) {
-            return ValidationResult.invalid(.hdf5, "Truncated superblock checksum");
+            return ValidationResult.invalid(.hdf5, errmsg.truncated("superblock checksum"));
         }
 
         // Checksum covers bytes 0 to (superblock_size - 4), stored checksum is last 4 bytes
@@ -5850,35 +5851,35 @@ const PARQUET_SIGNATURE = [_]u8{ 'P', 'A', 'R', '1' };
 /// Full integrity validation: parses footer metadata, validates row group structure,
 /// and checks column chunk bounds.
 fn validateParquet(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.parquet, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.parquet, errmsg.failedToStat("file"));
     const file_size = stat.size;
 
-    file.seekTo(0) catch return ValidationResult.invalid(.parquet, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.parquet, errmsg.failedToSeek("to start"));
 
     var header: [4]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.parquet, "Failed to read Parquet header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.parquet, errmsg.failedToRead("Parquet header"));
 
     if (header_read < 4) {
-        return ValidationResult.invalid(.parquet, "File too small for Parquet");
+        return ValidationResult.invalid(.parquet, errmsg.fileTooSmallFor("Parquet"));
     }
 
     // Check magic number at start
     if (!std.mem.eql(u8, &header, &PARQUET_SIGNATURE)) {
-        return ValidationResult.invalid(.parquet, "Invalid Parquet signature");
+        return ValidationResult.invalid(.parquet, errmsg.invalidSignature("Parquet"));
     }
 
     if (file_size < 12) {
-        return ValidationResult.invalid(.parquet, "File too small for Parquet footer");
+        return ValidationResult.invalid(.parquet, errmsg.fileTooSmallFor("Parquet footer"));
     }
 
     // Read footer: last 8 bytes are footer_length (4 bytes LE) + magic (4 bytes)
-    file.seekTo(file_size - 8) catch return ValidationResult.invalid(.parquet, "Failed to seek to footer");
+    file.seekTo(file_size - 8) catch return ValidationResult.invalid(.parquet, errmsg.failedToSeek("to footer"));
 
     var footer_buf: [8]u8 = undefined;
-    const footer_read = file.read(&footer_buf) catch return ValidationResult.invalid(.parquet, "Failed to read Parquet footer");
+    const footer_read = file.read(&footer_buf) catch return ValidationResult.invalid(.parquet, errmsg.failedToRead("Parquet footer"));
 
     if (footer_read < 8) {
-        return ValidationResult.invalid(.parquet, "Failed to read full footer");
+        return ValidationResult.invalid(.parquet, errmsg.failedToRead("full footer"));
     }
 
     // Check magic at end
@@ -5890,7 +5891,7 @@ fn validateParquet(file: std.fs.File) ValidationResult {
     const footer_length = std.mem.readInt(u32, footer_buf[0..4], .little);
 
     if (footer_length == 0) {
-        return ValidationResult.invalid(.parquet, "Empty footer metadata");
+        return ValidationResult.invalid(.parquet, errmsg.empty("footer metadata"));
     }
 
     // Footer metadata must fit before the footer_length and magic
@@ -5900,12 +5901,12 @@ fn validateParquet(file: std.fs.File) ValidationResult {
 
     // Read footer metadata (Thrift-encoded FileMetaData)
     const footer_start = file_size - 8 - footer_length;
-    file.seekTo(footer_start) catch return ValidationResult.invalid(.parquet, "Failed to seek to footer metadata");
+    file.seekTo(footer_start) catch return ValidationResult.invalid(.parquet, errmsg.failedToSeek("to footer metadata"));
 
     // Read up to 64KB of footer metadata for validation
     const max_footer_read: usize = @min(footer_length, 65536);
     var footer_meta: [65536]u8 = undefined;
-    const meta_read = file.read(footer_meta[0..max_footer_read]) catch return ValidationResult.invalid(.parquet, "Failed to read footer metadata");
+    const meta_read = file.read(footer_meta[0..max_footer_read]) catch return ValidationResult.invalid(.parquet, errmsg.failedToRead("footer metadata"));
 
     if (meta_read < 8) {
         return ValidationResult.invalid(.parquet, "Footer metadata too small");
@@ -6122,25 +6123,25 @@ fn readThriftVarint(data: []const u8) ?struct { value: i64, size: usize } {
 /// Full integrity validation: parses multiple records, validates headers,
 /// and verifies Content-Length consistency.
 fn validateWarc(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.warc, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.warc, errmsg.failedToStat("file"));
     const file_size = stat.size;
 
     if (file_size < 20) {
-        return ValidationResult.invalid(.warc, "File too small for WARC");
+        return ValidationResult.invalid(.warc, errmsg.fileTooSmallFor("WARC"));
     }
 
-    file.seekTo(0) catch return ValidationResult.invalid(.warc, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.warc, errmsg.failedToSeek("to start"));
 
     var buffer: [8192]u8 = undefined;
     var offset: u64 = 0;
     var record_count: u32 = 0;
 
     while (offset < file_size) {
-        file.seekTo(offset) catch return ValidationResult.invalid(.warc, "Failed to seek to record");
+        file.seekTo(offset) catch return ValidationResult.invalid(.warc, errmsg.failedToSeek("to record"));
 
         const to_read = @min(buffer.len, @as(usize, @intCast(file_size - offset)));
         const bytes_read = file.read(buffer[0..to_read]) catch {
-            return ValidationResult.invalid(.warc, "Failed to read record");
+            return ValidationResult.invalid(.warc, errmsg.failedToRead("record"));
         };
 
         if (bytes_read < 10) break;
@@ -6203,19 +6204,19 @@ fn validateWarc(file: std.fs.File) ValidationResult {
         }
 
         if (!found_type) {
-            return ValidationResult.invalid(.warc, "Missing WARC-Type header");
+            return ValidationResult.invalid(.warc, errmsg.missing("WARC-Type header"));
         }
 
         if (!found_record_id) {
-            return ValidationResult.invalid(.warc, "Missing WARC-Record-ID header");
+            return ValidationResult.invalid(.warc, errmsg.missing("WARC-Record-ID header"));
         }
 
         if (!found_date) {
-            return ValidationResult.invalid(.warc, "Missing WARC-Date header");
+            return ValidationResult.invalid(.warc, errmsg.missing("WARC-Date header"));
         }
 
         if (content_length == null) {
-            return ValidationResult.invalid(.warc, "Missing Content-Length header");
+            return ValidationResult.invalid(.warc, errmsg.missing("Content-Length header"));
         }
 
         // Calculate next record offset
@@ -6232,7 +6233,7 @@ fn validateWarc(file: std.fs.File) ValidationResult {
         offset = next_record;
 
         if (record_count > 10_000_000) {
-            return ValidationResult.invalid(.warc, "Too many records");
+            return ValidationResult.invalid(.warc, errmsg.tooMany("records"));
         }
 
         // Stop if we've validated enough records (sampling for large files)
@@ -6254,18 +6255,18 @@ fn validateWarc(file: std.fs.File) ValidationResult {
 /// WAD files start with "IWAD" (internal) or "PWAD" (patch) followed by
 /// lump count (4 bytes, little-endian) and directory offset (4 bytes, little-endian).
 fn validateWad(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.wad, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.wad, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.wad, "Failed to read WAD header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.wad, errmsg.failedToRead("WAD header"));
 
     if (header_read < 12) {
-        return ValidationResult.invalid(.wad, "File too small for WAD");
+        return ValidationResult.invalid(.wad, errmsg.fileTooSmallFor("WAD"));
     }
 
     // Check signature
     if (!std.mem.eql(u8, header[0..4], "IWAD") and !std.mem.eql(u8, header[0..4], "PWAD")) {
-        return ValidationResult.invalid(.wad, "Invalid WAD signature");
+        return ValidationResult.invalid(.wad, errmsg.invalidSignature("WAD"));
     }
 
     // Lump count (little-endian)
@@ -6276,7 +6277,7 @@ fn validateWad(file: std.fs.File) ValidationResult {
 
     // Directory offset (little-endian)
     const dir_offset = std.mem.readInt(u32, header[8..12], .little);
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.wad, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.wad, errmsg.failedToGet("file size"));
 
     // Directory must be within file
     if (dir_offset > file_size) {
@@ -6295,20 +6296,20 @@ fn validateWad(file: std.fs.File) ValidationResult {
 /// Deep validation for WAD files - validates all directory entries.
 fn validateWadDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.wad, "Failed to open WAD file");
+        return ValidationResult.invalid(.wad, errmsg.failedToOpen("WAD file"));
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.wad, "Failed to get file size");
+        return ValidationResult.invalid(.wad, errmsg.failedToGet("file size"));
     };
 
     // Read header
     var header: [12]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.wad, "Failed to read header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.wad, errmsg.failedToRead("header"));
 
     if (!std.mem.eql(u8, header[0..4], "IWAD") and !std.mem.eql(u8, header[0..4], "PWAD")) {
-        return ValidationResult.invalid(.wad, "Invalid WAD signature");
+        return ValidationResult.invalid(.wad, errmsg.invalidSignature("WAD"));
     }
 
     const lump_count = std.mem.readInt(u32, header[4..8], .little);
@@ -6329,11 +6330,11 @@ fn validateWadDeep(allocator: Allocator, path: []const u8) ValidationResult {
     };
     defer allocator.free(dir_data);
 
-    file.seekTo(dir_offset) catch return ValidationResult.invalid(.wad, "Failed to seek to directory");
-    const dir_read = file.readAll(dir_data) catch return ValidationResult.invalid(.wad, "Failed to read directory");
+    file.seekTo(dir_offset) catch return ValidationResult.invalid(.wad, errmsg.failedToSeek("to directory"));
+    const dir_read = file.readAll(dir_data) catch return ValidationResult.invalid(.wad, errmsg.failedToRead("directory"));
 
     if (dir_read != dir_size) {
-        return ValidationResult.invalid(.wad, "Incomplete directory read");
+        return ValidationResult.invalid(.wad, errmsg.incomplete("directory read"));
     }
 
     // Validate each directory entry
@@ -6356,18 +6357,18 @@ fn validateWadDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// PAK files start with "PACK" followed by directory offset and size (both 4 bytes, little-endian).
 /// NOTE: Git pack files also start with "PACK" but have different structure (version + object count, big-endian).
 fn validatePak(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.pak, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.pak, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.pak, "Failed to read PAK header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.pak, errmsg.failedToRead("PAK header"));
 
     if (header_read < 12) {
-        return ValidationResult.invalid(.pak, "File too small for PAK");
+        return ValidationResult.invalid(.pak, errmsg.fileTooSmallFor("PAK"));
     }
 
     // Check signature
     if (!std.mem.eql(u8, header[0..4], "PACK")) {
-        return ValidationResult.invalid(.pak, "Invalid PAK signature");
+        return ValidationResult.invalid(.pak, errmsg.invalidSignature("PAK"));
     }
 
     // Check if this is a Git pack file instead of Quake PAK
@@ -6385,7 +6386,7 @@ fn validatePak(file: std.fs.File) ValidationResult {
     // Directory size (little-endian)
     const dir_size = std.mem.readInt(u32, header[8..12], .little);
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.pak, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.pak, errmsg.failedToGet("file size"));
 
     // Directory must be within file
     if (dir_offset + dir_size > file_size) {
@@ -6403,20 +6404,20 @@ fn validatePak(file: std.fs.File) ValidationResult {
 /// Deep validation for PAK files - validates all directory entries.
 fn validatePakDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.pak, "Failed to open PAK file");
+        return ValidationResult.invalid(.pak, errmsg.failedToOpen("PAK file"));
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.pak, "Failed to get file size");
+        return ValidationResult.invalid(.pak, errmsg.failedToGet("file size"));
     };
 
     // Read header
     var header: [12]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.pak, "Failed to read header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.pak, errmsg.failedToRead("header"));
 
     if (!std.mem.eql(u8, header[0..4], "PACK")) {
-        return ValidationResult.invalid(.pak, "Invalid PAK signature");
+        return ValidationResult.invalid(.pak, errmsg.invalidSignature("PAK"));
     }
 
     // Check for Git pack file
@@ -6438,11 +6439,11 @@ fn validatePakDeep(allocator: Allocator, path: []const u8) ValidationResult {
     };
     defer allocator.free(dir_data);
 
-    file.seekTo(dir_offset) catch return ValidationResult.invalid(.pak, "Failed to seek");
-    const dir_read = file.readAll(dir_data) catch return ValidationResult.invalid(.pak, "Failed to read");
+    file.seekTo(dir_offset) catch return ValidationResult.invalid(.pak, errmsg.failedToSeek("to PAK directory"));
+    const dir_read = file.readAll(dir_data) catch return ValidationResult.invalid(.pak, errmsg.failedToRead("PAK directory"));
 
     if (dir_read != dir_size) {
-        return ValidationResult.invalid(.pak, "Incomplete directory read");
+        return ValidationResult.invalid(.pak, errmsg.incomplete("directory read"));
     }
 
     // Validate each entry
@@ -6464,9 +6465,9 @@ fn validatePakDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Validate Larian Studios PAK (BG3, Divinity: Original Sin) structural header.
 /// "LSPK" magic + version + file list offset/size + MD5 hash.
 fn validateLspk(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.lspk, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.lspk, errmsg.failedToSeek("in LSPK file"));
     var header: [32]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.lspk, "Failed to read");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.lspk, errmsg.failedToRead("LSPK header"));
     if (bytes_read < 8) return ValidationResult.invalid(.lspk, "File too small");
 
     // Verify magic
@@ -6478,7 +6479,7 @@ fn validateLspk(file: std.fs.File) ValidationResult {
 
     // Known versions: 7, 10, 13, 15, 16, 18
     if (version < 7 or version > 30) {
-        return ValidationResult.invalid(.lspk, "Unknown LSPK version");
+        return ValidationResult.invalid(.lspk, errmsg.unknown("LSPK version"));
     }
 
     return ValidationResult.okWithDepthAndWarning(.lspk, .structural, "Larian PAK identified; deep validation not yet implemented");
@@ -6487,9 +6488,9 @@ fn validateLspk(file: std.fs.File) ValidationResult {
 /// Validate Chromium/Electron resource PAK structural header.
 /// Version 4 or 5 format with resource table and encoding byte.
 fn validateChromiumPak(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.chromium_pak, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.chromium_pak, errmsg.failedToSeek("in Chromium PAK file"));
     var header: [18]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.chromium_pak, "Failed to read");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.chromium_pak, errmsg.failedToRead("Chromium PAK header"));
     if (bytes_read < 12) return ValidationResult.invalid(.chromium_pak, "File too small");
 
     const version = std.mem.readInt(u32, header[0..4], .little);
@@ -6520,7 +6521,7 @@ fn validateChromiumPak(file: std.fs.File) ValidationResult {
             return ValidationResult.invalid(.chromium_pak, "Invalid resource count");
         }
     } else {
-        return ValidationResult.invalid(.chromium_pak, "Unknown Chromium PAK version");
+        return ValidationResult.invalid(.chromium_pak, errmsg.unknown("Chromium PAK version"));
     }
 
     return ValidationResult.okWithDepthAndWarning(.chromium_pak, .structural, "Chromium PAK identified; deep validation not yet implemented");
@@ -6529,13 +6530,13 @@ fn validateChromiumPak(file: std.fs.File) ValidationResult {
 /// Validate BSP (Quake/Source map) file format.
 /// BSP files use version numbers at offset 0 to identify the format variant.
 fn validateBsp(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.bsp, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.bsp, errmsg.failedToSeek("to start"));
 
     var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.bsp, "Failed to read BSP header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.bsp, errmsg.failedToRead("BSP header"));
 
     if (header_read < 8) {
-        return ValidationResult.invalid(.bsp, "File too small for BSP");
+        return ValidationResult.invalid(.bsp, errmsg.fileTooSmallFor("BSP"));
     }
 
     // BSP version at offset 0 (little-endian)
@@ -6572,7 +6573,7 @@ fn validateBsp(file: std.fs.File) ValidationResult {
     }
 
     if (!version_valid) {
-        return ValidationResult.invalid(.bsp, "Unknown BSP version");
+        return ValidationResult.invalid(.bsp, errmsg.unknown("BSP version"));
     }
 
     return ValidationResult.okWithDepth(.bsp, .full);
@@ -6581,30 +6582,30 @@ fn validateBsp(file: std.fs.File) ValidationResult {
 /// Validate VPK (Valve PAK) file format.
 /// VPK files start with signature 0x55AA1234 followed by version.
 fn validateVpk(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.vpk, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.vpk, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.vpk, "Failed to read VPK header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.vpk, errmsg.failedToRead("VPK header"));
 
     if (header_read < 12) {
-        return ValidationResult.invalid(.vpk, "File too small for VPK");
+        return ValidationResult.invalid(.vpk, errmsg.fileTooSmallFor("VPK"));
     }
 
     // Check signature (0x55AA1234 in little-endian)
     const signature = std.mem.readInt(u32, header[0..4], .little);
     if (signature != 0x55AA1234) {
-        return ValidationResult.invalid(.vpk, "Invalid VPK signature");
+        return ValidationResult.invalid(.vpk, errmsg.invalidSignature("VPK"));
     }
 
     // Version (1 or 2)
     const version = std.mem.readInt(u32, header[4..8], .little);
     if (version != 1 and version != 2) {
-        return ValidationResult.invalid(.vpk, "Unknown VPK version");
+        return ValidationResult.invalid(.vpk, errmsg.unknown("VPK version"));
     }
 
     // Tree size (VPK v1 and v2 both have this)
     const tree_size = std.mem.readInt(u32, header[8..12], .little);
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.vpk, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.vpk, errmsg.failedToGet("file size"));
 
     // Tree must fit in file
     if (tree_size > file_size) {
@@ -6619,25 +6620,25 @@ fn validateVpk(file: std.fs.File) ValidationResult {
 /// Validate generic IFF (Interchange File Format) container.
 /// IFF files have "FORM" signature followed by 4-byte size (big-endian) and 4-byte type.
 fn validateIff(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.iff, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.iff, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.iff, "Failed to read IFF header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.iff, errmsg.failedToRead("IFF header"));
 
     if (header_read < 12) {
-        return ValidationResult.invalid(.iff, "File too small for IFF");
+        return ValidationResult.invalid(.iff, errmsg.fileTooSmallFor("IFF"));
     }
 
     // Check FORM signature
     if (!std.mem.eql(u8, header[0..4], "FORM")) {
-        return ValidationResult.invalid(.iff, "Invalid IFF signature");
+        return ValidationResult.invalid(.iff, errmsg.invalidSignature("IFF"));
     }
 
     // Read chunk size (big-endian)
     const chunk_size = std.mem.readInt(u32, header[4..8], .big);
 
     // Verify file is large enough (8 byte header + chunk_size)
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.iff, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.iff, errmsg.failedToGet("file size"));
     if (file_size < 8 + @as(u64, chunk_size)) {
         return ValidationResult.invalid(.iff, "File truncated");
     }
@@ -6649,19 +6650,19 @@ fn validateIff(file: std.fs.File) ValidationResult {
 fn validateIffDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.iff, "Failed to open IFF file");
+        return ValidationResult.invalid(.iff, errmsg.failedToOpen("IFF file"));
     };
     defer file.close();
 
     var header: [12]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.iff, "Failed to read header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.iff, errmsg.failedToRead("header"));
 
     if (!std.mem.eql(u8, header[0..4], "FORM")) {
-        return ValidationResult.invalid(.iff, "Invalid IFF signature");
+        return ValidationResult.invalid(.iff, errmsg.invalidSignature("IFF"));
     }
 
     const form_size = std.mem.readInt(u32, header[4..8], .big);
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.iff, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.iff, errmsg.failedToGet("file size"));
 
     if (file_size < 8 + @as(u64, form_size)) {
         return ValidationResult.invalid(.iff, "File truncated");
@@ -6703,18 +6704,18 @@ fn validateIffDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Validate Blorb (Interactive Fiction resource) format.
 /// Blorb is an IFF container with IFRS (Z-machine) or IFZS (Glulx) form type.
 fn validateBlorb(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.blorb, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.blorb, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.blorb, "Failed to read Blorb header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.blorb, errmsg.failedToRead("Blorb header"));
 
     if (header_read < 12) {
-        return ValidationResult.invalid(.blorb, "File too small for Blorb");
+        return ValidationResult.invalid(.blorb, errmsg.fileTooSmallFor("Blorb"));
     }
 
     // Check FORM signature
     if (!std.mem.eql(u8, header[0..4], "FORM")) {
-        return ValidationResult.invalid(.blorb, "Invalid Blorb signature");
+        return ValidationResult.invalid(.blorb, errmsg.invalidSignature("Blorb"));
     }
 
     // Check Blorb form type
@@ -6726,7 +6727,7 @@ fn validateBlorb(file: std.fs.File) ValidationResult {
     const chunk_size = std.mem.readInt(u32, header[4..8], .big);
 
     // Verify file is large enough
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.blorb, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.blorb, errmsg.failedToGet("file size"));
     if (file_size < 8 + @as(u64, chunk_size)) {
         return ValidationResult.invalid(.blorb, "File truncated");
     }
@@ -6752,7 +6753,7 @@ fn validateBlorb(file: std.fs.File) ValidationResult {
         if (size % 2 == 1) pos += 1;
     }
 
-    return ValidationResult.invalid(.blorb, "Missing required RIdx chunk");
+    return ValidationResult.invalid(.blorb, errmsg.missing("required RIdx chunk"));
 }
 
 // ============ Scientific Format Validators ============
@@ -6760,16 +6761,16 @@ fn validateBlorb(file: std.fs.File) ValidationResult {
 /// Validate MATLAB v5+ .mat file format.
 /// Full integrity validation: parses data element structure and validates types.
 fn validateMatlab(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.matlab, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.matlab, errmsg.failedToStat("file"));
     const file_size = stat.size;
 
-    file.seekTo(0) catch return ValidationResult.invalid(.matlab, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.matlab, errmsg.failedToSeek("to start"));
 
     var header: [128]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.matlab, "Failed to read MATLAB header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.matlab, errmsg.failedToRead("MATLAB header"));
 
     if (header_read < 128) {
-        return ValidationResult.invalid(.matlab, "File too small for MATLAB");
+        return ValidationResult.invalid(.matlab, errmsg.fileTooSmallFor("MATLAB"));
     }
 
     // Version field at offset 124: 0x0100 for v5
@@ -6785,7 +6786,7 @@ fn validateMatlab(file: std.fs.File) ValidationResult {
     }
 
     if (version != 0x0100) {
-        return ValidationResult.invalid(.matlab, "Unknown MATLAB version");
+        return ValidationResult.invalid(.matlab, errmsg.unknown("MATLAB version"));
     }
 
     // Parse data elements
@@ -6847,13 +6848,13 @@ fn validateMatlab(file: std.fs.File) ValidationResult {
             defer std.heap.page_allocator.free(compressed_data);
 
             file.seekTo(offset + header_size) catch {
-                return ValidationResult.invalid(.matlab, "Failed to seek to compressed data");
+                return ValidationResult.invalid(.matlab, errmsg.failedToSeek("to compressed data"));
             };
             const compressed_read = file.readAll(compressed_data) catch {
-                return ValidationResult.invalid(.matlab, "Failed to read compressed data");
+                return ValidationResult.invalid(.matlab, errmsg.failedToRead("compressed data"));
             };
             if (compressed_read != num_bytes) {
-                return ValidationResult.invalid(.matlab, "Incomplete compressed data read");
+                return ValidationResult.invalid(.matlab, errmsg.incomplete("compressed data read"));
             }
 
             // Validate zlib decompression using streaming (fixed 64KB buffer, no heap allocation)
@@ -6861,7 +6862,7 @@ fn validateMatlab(file: std.fs.File) ValidationResult {
                 const msg = switch (err) {
                     error.DataError => "Zlib data error - corrupted compressed data",
                     error.UnexpectedEof => "Zlib unexpected EOF - incomplete compressed data",
-                    else => "Zlib decompression failed",
+                    else => errmsg.decompressionFailed("Zlib"),
                 };
                 return ValidationResult.invalid(.matlab, msg);
             };
@@ -6887,16 +6888,16 @@ fn validateMatlab(file: std.fs.File) ValidationResult {
 /// Validate NIfTI (Neuroimaging Informatics Technology Initiative) format.
 /// Full integrity validation: parses all header fields and validates data bounds.
 fn validateNifti(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.nifti, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.nifti, errmsg.failedToStat("file"));
     const file_size = stat.size;
 
-    file.seekTo(0) catch return ValidationResult.invalid(.nifti, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.nifti, errmsg.failedToSeek("to start"));
 
     var header: [540]u8 = undefined; // NIfTI-2 is 540 bytes
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.nifti, "Failed to read NIfTI header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.nifti, errmsg.failedToRead("NIfTI header"));
 
     if (header_read < 348) {
-        return ValidationResult.invalid(.nifti, "File too small for NIfTI");
+        return ValidationResult.invalid(.nifti, errmsg.fileTooSmallFor("NIfTI"));
     }
 
     // Determine endianness and version from sizeof_hdr
@@ -6923,7 +6924,7 @@ fn validateNifti(file: std.fs.File) ValidationResult {
     }
 
     if (is_nifti2 and header_read < 540) {
-        return ValidationResult.invalid(.nifti, "Truncated NIfTI-2 header");
+        return ValidationResult.invalid(.nifti, errmsg.truncated("NIfTI-2 header"));
     }
 
     // Check magic string
@@ -7058,14 +7059,14 @@ fn validateNifti(file: std.fs.File) ValidationResult {
 /// Full integrity validation: parses record types, validates ATOM/HETATM format,
 /// and checks coordinate bounds.
 fn validatePdb(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.pdb_struct, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.pdb_struct, errmsg.failedToStat("file"));
     const file_size = stat.size;
 
     if (file_size == 0) {
-        return ValidationResult.invalid(.pdb_struct, "Empty file");
+        return ValidationResult.invalid(.pdb_struct, errmsg.empty("file"));
     }
 
-    file.seekTo(0) catch return ValidationResult.invalid(.pdb_struct, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.pdb_struct, errmsg.failedToSeek("to start"));
 
     // Read file in chunks
     const chunk_size: usize = 1024 * 1024;
@@ -7095,7 +7096,7 @@ fn validatePdb(file: std.fs.File) ValidationResult {
     while (total_read < file_size) {
         const to_read = @min(chunk_size, @as(usize, @intCast(file_size - total_read)));
         const bytes_read = file.read(buffer[0..to_read]) catch {
-            return ValidationResult.invalid(.pdb_struct, "Failed to read file");
+            return ValidationResult.invalid(.pdb_struct, errmsg.failedToRead("file"));
         };
 
         if (bytes_read == 0) break;
@@ -7129,7 +7130,7 @@ fn validatePdb(file: std.fs.File) ValidationResult {
                             atom_count += 1;
                             // Validate ATOM record format (should have coordinates)
                             if (line.len < 54) {
-                                return ValidationResult.invalid(.pdb_struct, "Truncated ATOM record");
+                                return ValidationResult.invalid(.pdb_struct, errmsg.truncated("ATOM record"));
                             }
                             // Columns 31-38, 39-46, 47-54 are X, Y, Z coordinates
                             // Just check they're mostly valid characters
@@ -7143,7 +7144,7 @@ fn validatePdb(file: std.fs.File) ValidationResult {
                         } else if (std.mem.eql(u8, line[0..6], "HETATM")) {
                             hetatm_count += 1;
                             if (line.len < 54) {
-                                return ValidationResult.invalid(.pdb_struct, "Truncated HETATM record");
+                                return ValidationResult.invalid(.pdb_struct, errmsg.truncated("HETATM record"));
                             }
                         } else if (std.mem.eql(u8, line[0..6], "END   ") or std.mem.eql(u8, line[0..3], "END")) {
                             found_end = true;
@@ -7186,14 +7187,14 @@ fn validatePdb(file: std.fs.File) ValidationResult {
 /// Full integrity validation: parses data blocks, validates tag syntax,
 /// and checks loop structure.
 fn validateCif(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.cif, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.cif, errmsg.failedToStat("file"));
     const file_size = stat.size;
 
     if (file_size == 0) {
-        return ValidationResult.invalid(.cif, "Empty file");
+        return ValidationResult.invalid(.cif, errmsg.empty("file"));
     }
 
-    file.seekTo(0) catch return ValidationResult.invalid(.cif, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.cif, errmsg.failedToSeek("to start"));
 
     // Read file in chunks
     const chunk_size: usize = 1024 * 1024;
@@ -7211,7 +7212,7 @@ fn validateCif(file: std.fs.File) ValidationResult {
     while (total_read < file_size) {
         const to_read = @min(chunk_size, @as(usize, @intCast(file_size - total_read)));
         const bytes_read = file.read(buffer[0..to_read]) catch {
-            return ValidationResult.invalid(.cif, "Failed to read file");
+            return ValidationResult.invalid(.cif, errmsg.failedToRead("file"));
         };
 
         if (bytes_read == 0) break;
@@ -7268,7 +7269,7 @@ fn validateCif(file: std.fs.File) ValidationResult {
                             while (tag_end < content.len and content[tag_end] != ' ' and content[tag_end] != '\t') : (tag_end += 1) {}
 
                             if (tag_end <= 1) {
-                                return ValidationResult.invalid(.cif, "Empty tag name");
+                                return ValidationResult.invalid(.cif, errmsg.empty("tag name"));
                             }
                         }
                         // Check for save frame
@@ -7318,22 +7319,22 @@ fn validateCif(file: std.fs.File) ValidationResult {
 /// Full integrity validation: parses all records, validates geometry bounds,
 /// and checks record lengths.
 fn validateShapefile(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.shapefile, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.shapefile, errmsg.failedToStat("file"));
     const file_size = stat.size;
 
-    file.seekTo(0) catch return ValidationResult.invalid(.shapefile, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.shapefile, errmsg.failedToSeek("to start"));
 
     var header: [100]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.shapefile, "Failed to read Shapefile header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.shapefile, errmsg.failedToRead("Shapefile header"));
 
     if (header_read < 100) {
-        return ValidationResult.invalid(.shapefile, "File too small for Shapefile");
+        return ValidationResult.invalid(.shapefile, errmsg.fileTooSmallFor("Shapefile"));
     }
 
     // File code at offset 0: 9994 (big-endian)
     const file_code = std.mem.readInt(i32, header[0..4], .big);
     if (file_code != 9994) {
-        return ValidationResult.invalid(.shapefile, "Invalid Shapefile magic number");
+        return ValidationResult.invalid(.shapefile, errmsg.invalidMagicNumber("Shapefile"));
     }
 
     // File length at offset 24 (big-endian, in 16-bit words)
@@ -7422,7 +7423,7 @@ fn validateShapefile(file: std.fs.File) ValidationResult {
     }
 
     if (record_count == 0 and declared_file_size > 100) {
-        return ValidationResult.invalid(.shapefile, "No valid records found");
+        return ValidationResult.invalid(.shapefile, errmsg.noValidXFound("records"));
     }
 
     return ValidationResult.okWithDepth(.shapefile, .full);
@@ -7433,13 +7434,13 @@ fn validateShapefile(file: std.fs.File) ValidationResult {
 /// Validate DXF (AutoCAD Drawing Exchange Format) file.
 /// DXF files are text or binary; text starts with "0\nSECTION".
 fn validateDxf(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.dxf, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.dxf, errmsg.failedToSeek("to start"));
 
     var header: [256]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.dxf, "Failed to read DXF header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.dxf, errmsg.failedToRead("DXF header"));
 
     if (header_read < 10) {
-        return ValidationResult.invalid(.dxf, "File too small for DXF");
+        return ValidationResult.invalid(.dxf, errmsg.fileTooSmallFor("DXF"));
     }
 
     const content = header[0..header_read];
@@ -7472,9 +7473,9 @@ fn validateDxf(file: std.fs.File) ValidationResult {
 /// Validate STEP/STP (ISO 10303-21) CAD exchange format with full decode.
 /// Parses entire file structure: ISO signature, HEADER, DATA, END-ISO sections.
 fn validateStep(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.step, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.step, errmsg.failedToSeek("to start"));
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.step, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.step, errmsg.failedToGet("file size"));
     if (file_size > 500 * 1024 * 1024) {
         // Very large STEP file - use chunked validation
         return validateStepChunked(file, file_size);
@@ -7486,13 +7487,13 @@ fn validateStep(file: std.fs.File) ValidationResult {
     const allocator = gpa.allocator();
 
     const content = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.step, "Out of memory");
+        return ValidationResult.invalid(.step, errmsg.outOfMemory("for STEP"));
     };
     defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalid(.step, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.step, errmsg.failedToSeek("in STEP file"));
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.step, "Failed to read file");
+        return ValidationResult.invalid(.step, errmsg.failedToRead("file"));
     };
 
     return parseStepContent(content[0..bytes_read]);
@@ -7501,12 +7502,12 @@ fn validateStep(file: std.fs.File) ValidationResult {
 /// Parse and validate STEP file content.
 fn parseStepContent(content: []const u8) ValidationResult {
     if (content.len < 13) {
-        return ValidationResult.invalid(.step, "File too small for STEP");
+        return ValidationResult.invalid(.step, errmsg.fileTooSmallFor("STEP"));
     }
 
     // Check for ISO-10303-21 signature
     if (!std.mem.eql(u8, content[0..13], "ISO-10303-21;")) {
-        return ValidationResult.invalid(.step, "Invalid STEP signature");
+        return ValidationResult.invalid(.step, errmsg.invalidSignature("STEP"));
     }
 
     // Required sections in order: HEADER, DATA (one or more), END-ISO-10303-21
@@ -7595,13 +7596,13 @@ fn parseStepContent(content: []const u8) ValidationResult {
     }
 
     if (!has_header) {
-        return ValidationResult.invalid(.step, "Missing HEADER section");
+        return ValidationResult.invalid(.step, errmsg.missing("HEADER section"));
     }
     if (!has_data) {
-        return ValidationResult.invalid(.step, "Missing DATA section");
+        return ValidationResult.invalid(.step, errmsg.missing("DATA section"));
     }
     if (!has_end) {
-        return ValidationResult.invalid(.step, "Missing END-ISO-10303-21");
+        return ValidationResult.invalid(.step, errmsg.missing("END-ISO-10303-21"));
     }
     if (paren_depth != 0) {
         return ValidationResult.invalid(.step, "Unmatched parentheses");
@@ -7619,20 +7620,20 @@ fn validateStepChunked(file: std.fs.File, file_size: u64) ValidationResult {
     var has_data = false;
     var has_end = false;
 
-    file.seekTo(0) catch return ValidationResult.invalid(.step, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.step, errmsg.failedToSeek("in STEP file"));
 
     // Check signature first
     var sig_buf: [13]u8 = undefined;
-    _ = file.read(&sig_buf) catch return ValidationResult.invalid(.step, "Failed to read");
+    _ = file.read(&sig_buf) catch return ValidationResult.invalid(.step, errmsg.failedToRead("STEP signature"));
     if (!std.mem.eql(u8, &sig_buf, "ISO-10303-21;")) {
-        return ValidationResult.invalid(.step, "Invalid STEP signature");
+        return ValidationResult.invalid(.step, errmsg.invalidSignature("STEP"));
     }
 
-    file.seekTo(0) catch return ValidationResult.invalid(.step, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.step, errmsg.failedToSeek("in STEP file"));
 
     while (position < file_size) {
         const bytes_read = file.read(&buffer) catch {
-            return ValidationResult.invalid(.step, "Failed to read chunk");
+            return ValidationResult.invalid(.step, errmsg.failedToRead("chunk"));
         };
         if (bytes_read == 0) break;
 
@@ -7653,13 +7654,13 @@ fn validateStepChunked(file: std.fs.File, file_size: u64) ValidationResult {
     }
 
     if (!has_header) {
-        return ValidationResult.invalid(.step, "Missing HEADER section");
+        return ValidationResult.invalid(.step, errmsg.missing("HEADER section"));
     }
     if (!has_data) {
-        return ValidationResult.invalid(.step, "Missing DATA section");
+        return ValidationResult.invalid(.step, errmsg.missing("DATA section"));
     }
     if (!has_end) {
-        return ValidationResult.invalid(.step, "Missing END-ISO-10303-21");
+        return ValidationResult.invalid(.step, errmsg.missing("END-ISO-10303-21"));
     }
 
     return ValidationResult.okWithDepth(.step, .full);
@@ -7669,21 +7670,21 @@ fn validateStepChunked(file: std.fs.File, file_size: u64) ValidationResult {
 /// STL can be ASCII ("solid " prefix) or binary (80-byte header + triangle count).
 /// Full decode: reads and validates every triangle's vertex data.
 fn validateStl(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.stl, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.stl, errmsg.failedToSeek("to start"));
 
     var header: [84]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.stl, "Failed to read STL header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.stl, errmsg.failedToRead("STL header"));
 
     if (header_read < 6) {
-        return ValidationResult.invalid(.stl, "File too small for STL");
+        return ValidationResult.invalid(.stl, errmsg.fileTooSmallFor("STL"));
     }
 
     // Check if ASCII STL (starts with "solid ")
     if (std.mem.eql(u8, header[0..6], "solid ")) {
         // Verify it's actually ASCII STL by looking for "facet" keyword
-        file.seekTo(0) catch return ValidationResult.invalid(.stl, "Failed to seek");
+        file.seekTo(0) catch return ValidationResult.invalid(.stl, errmsg.failedToSeek("in STL file"));
         var peek_buffer: [1024]u8 = undefined;
-        const peek_read = file.read(&peek_buffer) catch return ValidationResult.invalid(.stl, "Failed to read");
+        const peek_read = file.read(&peek_buffer) catch return ValidationResult.invalid(.stl, errmsg.failedToRead("STL data"));
         const peek_content = peek_buffer[0..peek_read];
 
         if (std.mem.indexOf(u8, peek_content, "facet") != null) {
@@ -7704,9 +7705,9 @@ fn validateStl(file: std.fs.File) ValidationResult {
 /// Full decode validation for ASCII STL files.
 /// Parses every facet, normal, and vertex to ensure data integrity.
 fn validateStlAscii(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.stl, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.stl, errmsg.failedToSeek("to start"));
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.stl, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.stl, errmsg.failedToGet("file size"));
     if (file_size > 500 * 1024 * 1024) {
         // For very large files (>500MB), do chunked validation
         return validateStlAsciiChunked(file, file_size);
@@ -7718,13 +7719,13 @@ fn validateStlAscii(file: std.fs.File) ValidationResult {
     const allocator = gpa.allocator();
 
     const content = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.stl, "Out of memory");
+        return ValidationResult.invalid(.stl, errmsg.outOfMemory("for STL"));
     };
     defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalid(.stl, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.stl, errmsg.failedToSeek("in STL file"));
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.stl, "Failed to read file");
+        return ValidationResult.invalid(.stl, errmsg.failedToRead("file"));
     };
 
     return parseStlAsciiContent(content[0..bytes_read]);
@@ -7785,7 +7786,7 @@ fn parseStlAsciiContent(content: []const u8) ValidationResult {
             }
             vertex_count += 1;
             if (vertex_count > 3) {
-                return ValidationResult.invalid(.stl, "Too many vertices in facet");
+                return ValidationResult.invalid(.stl, errmsg.tooMany("vertices in facet"));
             }
         } else if (std.mem.startsWith(u8, trimmed, "outer loop") or
             std.mem.startsWith(u8, trimmed, "endloop"))
@@ -7801,10 +7802,10 @@ fn parseStlAsciiContent(content: []const u8) ValidationResult {
         return ValidationResult.invalid(.stl, "Unclosed facet");
     }
     if (found_solid and !found_endsolid) {
-        return ValidationResult.invalid(.stl, "Missing endsolid");
+        return ValidationResult.invalid(.stl, errmsg.missing("endsolid"));
     }
     if (!found_solid) {
-        return ValidationResult.invalid(.stl, "Missing solid declaration");
+        return ValidationResult.invalid(.stl, errmsg.missing("solid declaration"));
     }
 
     return ValidationResult.okWithDepth(.stl, .full);
@@ -7835,11 +7836,11 @@ fn validateStlAsciiChunked(file: std.fs.File, file_size: u64) ValidationResult {
     var found_solid = false;
     var found_endsolid = false;
 
-    file.seekTo(0) catch return ValidationResult.invalid(.stl, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.stl, errmsg.failedToSeek("in STL file"));
 
     while (position < file_size) {
         const bytes_read = file.read(&buffer) catch {
-            return ValidationResult.invalid(.stl, "Failed to read chunk");
+            return ValidationResult.invalid(.stl, errmsg.failedToRead("chunk"));
         };
         if (bytes_read == 0) break;
 
@@ -7862,13 +7863,13 @@ fn validateStlAsciiChunked(file: std.fs.File, file_size: u64) ValidationResult {
     }
 
     if (!found_solid) {
-        return ValidationResult.invalid(.stl, "Missing solid declaration");
+        return ValidationResult.invalid(.stl, errmsg.missing("solid declaration"));
     }
     if (!found_endsolid) {
-        return ValidationResult.invalid(.stl, "Missing endsolid");
+        return ValidationResult.invalid(.stl, errmsg.missing("endsolid"));
     }
     if (facet_count == 0) {
-        return ValidationResult.okWithWarning(.stl, "Empty STL (no facets)");
+        return ValidationResult.okWithWarning(.stl, errmsg.empty("STL (no facets)"));
     }
 
     return ValidationResult.okWithDepth(.stl, .full);
@@ -7881,7 +7882,7 @@ fn validateStlBinary(file: std.fs.File, header: [84]u8) ValidationResult {
 
     // Each triangle is 50 bytes: normal (12) + v1 (12) + v2 (12) + v3 (12) + attr (2)
     const expected_size: u64 = 84 + @as(u64, triangle_count) * 50;
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.stl, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.stl, errmsg.failedToGet("file size"));
 
     if (file_size < expected_size) {
         return ValidationResult.invalid(.stl, "File truncated");
@@ -7892,17 +7893,17 @@ fn validateStlBinary(file: std.fs.File, header: [84]u8) ValidationResult {
     }
 
     // Validate triangles by reading them all
-    file.seekTo(84) catch return ValidationResult.invalid(.stl, "Failed to seek past header");
+    file.seekTo(84) catch return ValidationResult.invalid(.stl, errmsg.failedToSeek("past header"));
 
     var triangle_buffer: [50]u8 = undefined;
     var triangles_read: u32 = 0;
 
     while (triangles_read < triangle_count) {
         const bytes_read = file.read(&triangle_buffer) catch {
-            return ValidationResult.invalid(.stl, "Failed to read triangle");
+            return ValidationResult.invalid(.stl, errmsg.failedToRead("triangle"));
         };
         if (bytes_read < 50) {
-            return ValidationResult.invalid(.stl, "Truncated triangle data");
+            return ValidationResult.invalid(.stl, errmsg.truncated("triangle data"));
         }
 
         // Parse and validate floats (check for NaN/Inf which indicate corruption)
@@ -7970,12 +7971,12 @@ fn validate3mf(file: std.fs.File) ValidationResult {
     }
 
     // Look for required 3MF content (3D/3dmodel.model)
-    file.seekTo(0) catch return ValidationResult.invalid(.@"3mf", "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.@"3mf", errmsg.failedToSeek("to start"));
 
     var header: [4096]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.@"3mf", "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.@"3mf", errmsg.failedToRead("header"));
     if (bytes_read < 30) {
-        return ValidationResult.invalid(.@"3mf", "File too small for 3MF");
+        return ValidationResult.invalid(.@"3mf", errmsg.fileTooSmallFor("3MF"));
     }
 
     // Look for Content_Types].xml or 3dmodel.model in the ZIP directory
@@ -7994,9 +7995,9 @@ fn validate3mf(file: std.fs.File) ValidationResult {
 /// Validate Wavefront OBJ file with full decode.
 /// Parses every vertex, texture coordinate, normal, and face definition.
 fn validateObj(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.obj, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.obj, errmsg.failedToSeek("to start"));
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.obj, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.obj, errmsg.failedToGet("file size"));
     if (file_size > 500 * 1024 * 1024) {
         // For very large files, use chunked validation
         return validateObjChunked(file, file_size);
@@ -8008,13 +8009,13 @@ fn validateObj(file: std.fs.File) ValidationResult {
     const allocator = gpa.allocator();
 
     const content = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.obj, "Out of memory");
+        return ValidationResult.invalid(.obj, errmsg.outOfMemory("for OBJ"));
     };
     defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalid(.obj, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.obj, errmsg.failedToSeek("in OBJ file"));
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.obj, "Failed to read file");
+        return ValidationResult.invalid(.obj, errmsg.failedToRead("file"));
     };
 
     return parseObjContent(content[0..bytes_read]);
@@ -8095,7 +8096,7 @@ fn parseObjContent(content: []const u8) ValidationResult {
     }
 
     if (!has_obj_directive) {
-        return ValidationResult.invalid(.obj, "No valid OBJ directives found");
+        return ValidationResult.invalid(.obj, errmsg.noValidXFound("OBJ directives"));
     }
 
     if (vertex_count == 0) {
@@ -8130,7 +8131,7 @@ const ObjFaceResult = struct {
 fn validateObjFace(face_data: []const u8, vertex_count: usize, texcoord_count: usize, normal_count: usize) ObjFaceResult {
     const trimmed = std.mem.trim(u8, face_data, " \t");
     if (trimmed.len == 0) {
-        return .{ .valid = false, .message = "Empty face definition" };
+        return .{ .valid = false, .message = errmsg.empty("face definition") };
     }
 
     var parts = std.mem.tokenizeAny(u8, trimmed, " \t");
@@ -8141,7 +8142,7 @@ fn validateObjFace(face_data: []const u8, vertex_count: usize, texcoord_count: u
         var indices = std.mem.splitScalar(u8, part, '/');
 
         // Vertex index (required)
-        const v_str = indices.next() orelse return .{ .valid = false, .message = "Missing vertex index" };
+        const v_str = indices.next() orelse return .{ .valid = false, .message = errmsg.missing("vertex index") };
         if (v_str.len > 0) {
             const v_idx = std.fmt.parseInt(i32, v_str, 10) catch {
                 return .{ .valid = false, .message = "Invalid vertex index" };
@@ -8217,11 +8218,11 @@ fn validateObjChunked(file: std.fs.File, file_size: u64) ValidationResult {
     var face_count: usize = 0;
     var has_obj_directive = false;
 
-    file.seekTo(0) catch return ValidationResult.invalid(.obj, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.obj, errmsg.failedToSeek("in OBJ file"));
 
     while (position < file_size) {
         const bytes_read = file.read(&buffer) catch {
-            return ValidationResult.invalid(.obj, "Failed to read chunk");
+            return ValidationResult.invalid(.obj, errmsg.failedToRead("chunk"));
         };
         if (bytes_read == 0) break;
 
@@ -8251,7 +8252,7 @@ fn validateObjChunked(file: std.fs.File, file_size: u64) ValidationResult {
     }
 
     if (!has_obj_directive) {
-        return ValidationResult.invalid(.obj, "No valid OBJ directives found");
+        return ValidationResult.invalid(.obj, errmsg.noValidXFound("OBJ directives"));
     }
     if (vertex_count == 0) {
         return ValidationResult.invalid(.obj, "No vertices found");
@@ -8264,7 +8265,7 @@ fn validateObjChunked(file: std.fs.File, file_size: u64) ValidationResult {
 fn validateObjDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.obj, "Failed to open OBJ file");
+        return ValidationResult.invalid(.obj, errmsg.failedToOpen("OBJ file"));
     };
     defer file.close();
     return validateObj(file);
@@ -8273,7 +8274,7 @@ fn validateObjDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Buffer-based validation for OBJ files.
 pub fn validateObjFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 2) {
-        return ValidationResult.invalid(.obj, "Buffer too small for OBJ");
+        return ValidationResult.invalid(.obj, errmsg.bufferTooSmallFor("OBJ"));
     }
 
     // Check for ASCII content
@@ -8311,20 +8312,20 @@ const PlyPropertyType = enum {
 /// Validate PLY (Stanford Polygon File Format) file with full decode.
 /// Parses header and validates all element data.
 fn validatePly(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.ply, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.ply, errmsg.failedToSeek("to start"));
 
     // Read header (up to 64KB - headers can be large with many properties)
     var header_buf: [65536]u8 = undefined;
-    const header_read = file.read(&header_buf) catch return ValidationResult.invalid(.ply, "Failed to read header");
+    const header_read = file.read(&header_buf) catch return ValidationResult.invalid(.ply, errmsg.failedToRead("header"));
     if (header_read < 4) {
-        return ValidationResult.invalid(.ply, "File too small for PLY");
+        return ValidationResult.invalid(.ply, errmsg.fileTooSmallFor("PLY"));
     }
 
     const header_content = header_buf[0..header_read];
 
     // PLY must start with "ply" followed by newline
     if (!std.mem.startsWith(u8, header_content, "ply\n") and !std.mem.startsWith(u8, header_content, "ply\r\n")) {
-        return ValidationResult.invalid(.ply, "Missing PLY magic");
+        return ValidationResult.invalid(.ply, errmsg.missing("PLY magic"));
     }
 
     // Parse header
@@ -8350,7 +8351,7 @@ fn validatePly(file: std.fs.File) ValidationResult {
             } else if (std.mem.indexOf(u8, trimmed, "binary_big_endian") != null) {
                 format = .binary_big_endian;
             } else {
-                return ValidationResult.invalid(.ply, "Unknown PLY format");
+                return ValidationResult.invalid(.ply, errmsg.unknown("PLY format"));
             }
         } else if (std.mem.startsWith(u8, trimmed, "element vertex ")) {
             const count_str = trimmed[15..];
@@ -8380,14 +8381,14 @@ fn validatePly(file: std.fs.File) ValidationResult {
     }
 
     if (format == null) {
-        return ValidationResult.invalid(.ply, "Missing format declaration");
+        return ValidationResult.invalid(.ply, errmsg.missing("format declaration"));
     }
     if (header_end_offset == 0) {
-        return ValidationResult.invalid(.ply, "Missing end_header");
+        return ValidationResult.invalid(.ply, errmsg.missing("end_header"));
     }
 
     // Now validate the data section
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.ply, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.ply, errmsg.failedToGet("file size"));
     const data_size = file_size - header_end_offset;
 
     if (format.? == .ascii) {
@@ -8399,10 +8400,10 @@ fn validatePly(file: std.fs.File) ValidationResult {
 
 /// Validate ASCII PLY data section.
 fn validatePlyAsciiData(file: std.fs.File, header_end: usize, vertex_count: usize, face_count: usize, vertex_prop_count: usize) ValidationResult {
-    file.seekTo(header_end) catch return ValidationResult.invalid(.ply, "Failed to seek to data");
+    file.seekTo(header_end) catch return ValidationResult.invalid(.ply, errmsg.failedToSeek("to data"));
 
     // For large files, validate a sample
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.ply, "Failed to get size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.ply, errmsg.failedToGet("size"));
     if (file_size > 100 * 1024 * 1024) {
         // Just validate structure for very large ASCII files
         return validatePlyAsciiSample(file, vertex_count, face_count);
@@ -8414,12 +8415,12 @@ fn validatePlyAsciiData(file: std.fs.File, header_end: usize, vertex_count: usiz
 
     const data_size = file_size - header_end;
     const data = allocator.alloc(u8, @intCast(data_size)) catch {
-        return ValidationResult.invalid(.ply, "Out of memory");
+        return ValidationResult.invalid(.ply, errmsg.outOfMemory("for PLY"));
     };
     defer allocator.free(data);
 
-    file.seekTo(header_end) catch return ValidationResult.invalid(.ply, "Failed to seek");
-    _ = file.readAll(data) catch return ValidationResult.invalid(.ply, "Failed to read data");
+    file.seekTo(header_end) catch return ValidationResult.invalid(.ply, errmsg.failedToSeek("in PLY file"));
+    _ = file.readAll(data) catch return ValidationResult.invalid(.ply, errmsg.failedToRead("data"));
 
     var lines = std.mem.splitScalar(u8, data, '\n');
     var vertices_parsed: usize = 0;
@@ -8427,7 +8428,7 @@ fn validatePlyAsciiData(file: std.fs.File, header_end: usize, vertex_count: usiz
 
     // Parse vertices
     while (vertices_parsed < vertex_count) {
-        const line = lines.next() orelse return ValidationResult.invalid(.ply, "Truncated vertex data");
+        const line = lines.next() orelse return ValidationResult.invalid(.ply, errmsg.truncated("vertex data"));
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
 
@@ -8442,21 +8443,21 @@ fn validatePlyAsciiData(file: std.fs.File, header_end: usize, vertex_count: usiz
             prop_count += 1;
         }
         if (prop_count < vertex_prop_count) {
-            return ValidationResult.invalid(.ply, "Incomplete vertex data");
+            return ValidationResult.invalid(.ply, errmsg.incomplete("vertex data"));
         }
         vertices_parsed += 1;
     }
 
     // Parse faces
     while (faces_parsed < face_count) {
-        const line = lines.next() orelse return ValidationResult.invalid(.ply, "Truncated face data");
+        const line = lines.next() orelse return ValidationResult.invalid(.ply, errmsg.truncated("face data"));
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (trimmed.len == 0) continue;
 
         var parts = std.mem.tokenizeAny(u8, trimmed, " \t");
 
         // First number is vertex count for this face
-        const count_str = parts.next() orelse return ValidationResult.invalid(.ply, "Missing face vertex count");
+        const count_str = parts.next() orelse return ValidationResult.invalid(.ply, errmsg.missing("face vertex count"));
         const face_vertex_count = std.fmt.parseInt(usize, count_str, 10) catch {
             return ValidationResult.invalid(.ply, "Invalid face vertex count");
         };
@@ -8493,7 +8494,7 @@ fn validatePlyAsciiSample(file: std.fs.File, vertex_count: usize, face_count: us
     _ = face_count;
     // Read first and last chunks, verify structure
     var buffer: [8192]u8 = undefined;
-    const bytes_read = file.read(&buffer) catch return ValidationResult.invalid(.ply, "Failed to read");
+    const bytes_read = file.read(&buffer) catch return ValidationResult.invalid(.ply, errmsg.failedToRead("PLY data"));
 
     // Check that data looks like numbers
     var has_numbers = false;
@@ -8514,7 +8515,7 @@ fn validatePlyAsciiSample(file: std.fs.File, vertex_count: usize, face_count: us
 /// Validate binary PLY data section.
 fn validatePlyBinaryData(file: std.fs.File, header_end: usize, data_size: u64, vertex_count: usize, vertex_prop_count: usize, format: PlyFormat) ValidationResult {
     _ = format;
-    file.seekTo(header_end) catch return ValidationResult.invalid(.ply, "Failed to seek to data");
+    file.seekTo(header_end) catch return ValidationResult.invalid(.ply, errmsg.failedToSeek("to data"));
 
     // Binary PLY: each vertex is typically floats for x,y,z plus optional properties
     // Minimum vertex size: 3 floats (12 bytes) for position
@@ -8533,7 +8534,7 @@ fn validatePlyBinaryData(file: std.fs.File, header_end: usize, data_size: u64, v
     while (bytes_validated < data_size) {
         const to_read = @min(chunk_size, data_size - bytes_validated);
         const bytes_read = file.read(buffer[0..to_read]) catch {
-            return ValidationResult.invalid(.ply, "Failed to read binary data");
+            return ValidationResult.invalid(.ply, errmsg.failedToRead("binary data"));
         };
         if (bytes_read == 0) break;
 
@@ -8543,7 +8544,7 @@ fn validatePlyBinaryData(file: std.fs.File, header_end: usize, data_size: u64, v
     }
 
     if (bytes_validated < data_size) {
-        return ValidationResult.invalid(.ply, "Truncated binary data");
+        return ValidationResult.invalid(.ply, errmsg.truncated("binary data"));
     }
 
     return ValidationResult.okWithDepth(.ply, .full);
@@ -8552,9 +8553,9 @@ fn validatePlyBinaryData(file: std.fs.File, header_end: usize, data_size: u64, v
 /// Validate glTF (GL Transmission Format) JSON file with full decode.
 /// Parses entire JSON and validates structure and references.
 fn validateGltf(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.gltf, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.gltf, errmsg.failedToSeek("to start"));
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.gltf, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.gltf, errmsg.failedToGet("file size"));
     if (file_size > 100 * 1024 * 1024) {
         // Very large glTF - do structural validation only
         return validateGltfStructural(file);
@@ -8566,13 +8567,13 @@ fn validateGltf(file: std.fs.File) ValidationResult {
     const allocator = gpa.allocator();
 
     const content = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.gltf, "Out of memory");
+        return ValidationResult.invalid(.gltf, errmsg.outOfMemory("for glTF"));
     };
     defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalid(.gltf, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.gltf, errmsg.failedToSeek("in glTF file"));
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.gltf, "Failed to read file");
+        return ValidationResult.invalid(.gltf, errmsg.failedToRead("file"));
     };
 
     return parseGltfJson(content[0..bytes_read]);
@@ -8654,10 +8655,10 @@ fn parseGltfJson(content: []const u8) ValidationResult {
     }
 
     if (!has_asset) {
-        return ValidationResult.invalid(.gltf, "Missing required 'asset' field");
+        return ValidationResult.invalid(.gltf, errmsg.missing("required 'asset' field"));
     }
     if (!has_version) {
-        return ValidationResult.invalid(.gltf, "Missing required 'version' field");
+        return ValidationResult.invalid(.gltf, errmsg.missing("required 'version' field"));
     }
 
     // Count and validate array indices for common fields
@@ -8683,10 +8684,10 @@ fn parseGltfJson(content: []const u8) ValidationResult {
 
 /// Structural validation for very large glTF files.
 fn validateGltfStructural(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.gltf, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.gltf, errmsg.failedToSeek("in glTF file"));
 
     var buffer: [8192]u8 = undefined;
-    const bytes_read = file.read(&buffer) catch return ValidationResult.invalid(.gltf, "Failed to read");
+    const bytes_read = file.read(&buffer) catch return ValidationResult.invalid(.gltf, errmsg.failedToRead("glTF data"));
     const content = buffer[0..bytes_read];
 
     // Check basic structure
@@ -8700,7 +8701,7 @@ fn validateGltfStructural(file: std.fs.File) ValidationResult {
     }
 
     if (std.mem.indexOf(u8, content, "\"asset\"") == null) {
-        return ValidationResult.invalid(.gltf, "Missing 'asset' field");
+        return ValidationResult.invalid(.gltf, errmsg.missing("'asset' field"));
     }
 
     return ValidationResult.okWithDepth(.gltf, .full);
@@ -8709,12 +8710,12 @@ fn validateGltfStructural(file: std.fs.File) ValidationResult {
 /// Validate GLB (Binary glTF) file with full decode.
 /// Parses all chunks and validates JSON content and binary data.
 fn validateGlb(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.glb, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.glb, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.glb, "Failed to read header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.glb, errmsg.failedToRead("header"));
     if (header_read < 12) {
-        return ValidationResult.invalid(.glb, "File too small for GLB");
+        return ValidationResult.invalid(.glb, errmsg.fileTooSmallFor("GLB"));
     }
 
     // GLB header: magic (4) + version (4) + length (4)
@@ -8724,11 +8725,11 @@ fn validateGlb(file: std.fs.File) ValidationResult {
 
     const version = std.mem.readInt(u32, header[4..8], .little);
     if (version != 2 and version != 1) {
-        return ValidationResult.invalid(.glb, "Unsupported GLB version");
+        return ValidationResult.invalid(.glb, errmsg.unsupported("GLB version"));
     }
 
     const total_length = std.mem.readInt(u32, header[8..12], .little);
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.glb, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.glb, errmsg.failedToGet("file size"));
 
     if (total_length > file_size) {
         return ValidationResult.invalid(.glb, "GLB length exceeds file size");
@@ -8743,10 +8744,10 @@ fn validateGlb(file: std.fs.File) ValidationResult {
     while (position + 8 <= total_length) {
         // Read chunk header: length (4) + type (4)
         var chunk_header: [8]u8 = undefined;
-        file.seekTo(position) catch return ValidationResult.invalid(.glb, "Failed to seek to chunk");
-        const chunk_header_read = file.read(&chunk_header) catch return ValidationResult.invalid(.glb, "Failed to read chunk header");
+        file.seekTo(position) catch return ValidationResult.invalid(.glb, errmsg.failedToSeek("to chunk"));
+        const chunk_header_read = file.read(&chunk_header) catch return ValidationResult.invalid(.glb, errmsg.failedToRead("chunk header"));
         if (chunk_header_read < 8) {
-            return ValidationResult.invalid(.glb, "Truncated chunk header");
+            return ValidationResult.invalid(.glb, errmsg.truncated("chunk header"));
         }
 
         const chunk_length = std.mem.readInt(u32, chunk_header[0..4], .little);
@@ -8786,7 +8787,7 @@ fn validateGlb(file: std.fs.File) ValidationResult {
     }
 
     if (!json_validated) {
-        return ValidationResult.invalid(.glb, "Missing JSON chunk");
+        return ValidationResult.invalid(.glb, errmsg.missing("JSON chunk"));
     }
 
     if (version == 1) {
@@ -8808,15 +8809,15 @@ fn validateGlbJsonChunk(file: std.fs.File, offset: u64, length: u32) ValidationR
     const allocator = gpa.allocator();
 
     const json_data = allocator.alloc(u8, length) catch {
-        return ValidationResult.invalid(.glb, "Out of memory for JSON");
+        return ValidationResult.invalid(.glb, errmsg.outOfMemory("for JSON"));
     };
     defer allocator.free(json_data);
 
-    file.seekTo(offset) catch return ValidationResult.invalid(.glb, "Failed to seek to JSON");
-    const read_len = file.readAll(json_data) catch return ValidationResult.invalid(.glb, "Failed to read JSON");
+    file.seekTo(offset) catch return ValidationResult.invalid(.glb, errmsg.failedToSeek("to JSON"));
+    const read_len = file.readAll(json_data) catch return ValidationResult.invalid(.glb, errmsg.failedToRead("JSON"));
 
     if (read_len < length) {
-        return ValidationResult.invalid(.glb, "Truncated JSON chunk");
+        return ValidationResult.invalid(.glb, errmsg.truncated("JSON chunk"));
     }
 
     // Validate JSON structure
@@ -8830,7 +8831,7 @@ fn validateGlbBinChunk(file: std.fs.File, offset: u64, length: u32) ValidationRe
 
 /// Validate a chunk is readable by reading all its data.
 fn validateGlbChunkReadable(file: std.fs.File, offset: u64, length: u32) ValidationResult {
-    file.seekTo(offset) catch return ValidationResult.invalid(.glb, "Failed to seek to chunk");
+    file.seekTo(offset) catch return ValidationResult.invalid(.glb, errmsg.failedToSeek("to chunk"));
 
     const chunk_size: usize = 64 * 1024;
     var buffer: [chunk_size]u8 = undefined;
@@ -8839,14 +8840,14 @@ fn validateGlbChunkReadable(file: std.fs.File, offset: u64, length: u32) Validat
     while (bytes_read < length) {
         const to_read: usize = @min(chunk_size, length - @as(u32, @intCast(bytes_read)));
         const read = file.read(buffer[0..to_read]) catch {
-            return ValidationResult.invalid(.glb, "Failed to read chunk data");
+            return ValidationResult.invalid(.glb, errmsg.failedToRead("chunk data"));
         };
         if (read == 0) break;
         bytes_read += read;
     }
 
     if (bytes_read < length) {
-        return ValidationResult.invalid(.glb, "Truncated chunk data");
+        return ValidationResult.invalid(.glb, errmsg.truncated("chunk data"));
     }
 
     return ValidationResult.okWithDepth(.glb, .full);
@@ -8856,20 +8857,20 @@ fn validateGlbChunkReadable(file: std.fs.File, offset: u64, length: u32) Validat
 /// Deep GLB validation - parses JSON and validates accessor/buffer relationships.
 fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.glb, "Failed to open GLB file");
+        return ValidationResult.invalid(.glb, errmsg.failedToOpen("GLB file"));
     };
     defer file.close();
 
     // Read GLB header
     var header: [12]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.glb, "Failed to read header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.glb, errmsg.failedToRead("header"));
 
     if (!std.mem.eql(u8, header[0..4], "glTF")) {
         return ValidationResult.invalid(.glb, "Invalid GLB magic");
     }
 
     const total_length = std.mem.readInt(u32, header[8..12], .little);
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.glb, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.glb, errmsg.failedToGet("file size"));
 
     if (total_length > file_size) {
         return ValidationResult.invalid(.glb, "GLB length exceeds file size");
@@ -8901,7 +8902,7 @@ fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     if (json_length == 0) {
-        return ValidationResult.invalid(.glb, "Missing JSON chunk");
+        return ValidationResult.invalid(.glb, errmsg.missing("JSON chunk"));
     }
 
     // Read and parse JSON chunk (limit to 50MB)
@@ -8914,10 +8915,10 @@ fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult {
     };
     defer allocator.free(json_data);
 
-    file.seekTo(json_offset) catch return ValidationResult.invalid(.glb, "Failed to seek to JSON");
-    const read_len = file.readAll(json_data) catch return ValidationResult.invalid(.glb, "Failed to read JSON");
+    file.seekTo(json_offset) catch return ValidationResult.invalid(.glb, errmsg.failedToSeek("to JSON"));
+    const read_len = file.readAll(json_data) catch return ValidationResult.invalid(.glb, errmsg.failedToRead("JSON"));
     if (read_len < json_length) {
-        return ValidationResult.invalid(.glb, "Truncated JSON chunk");
+        return ValidationResult.invalid(.glb, errmsg.truncated("JSON chunk"));
     }
 
     // Parse JSON using std.json
@@ -9025,13 +9026,13 @@ fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult {
     if (root.object.get("asset")) |asset| {
         if (asset == .object) {
             if (asset.object.get("version") == null) {
-                return ValidationResult.invalid(.glb, "Missing asset.version");
+                return ValidationResult.invalid(.glb, errmsg.missing("asset.version"));
             }
         } else {
             return ValidationResult.invalid(.glb, "asset is not an object");
         }
     } else {
-        return ValidationResult.invalid(.glb, "Missing required asset field");
+        return ValidationResult.invalid(.glb, errmsg.missing("required asset field"));
     }
 
     return ValidationResult.okWithDepth(.glb, .full);
@@ -9097,10 +9098,10 @@ pub const max_attachment_decode_size: usize = 16 * 1024 * 1024;
 
 /// Validate EML (RFC 822/2822 email) file structure and attachments.
 fn validateEml(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.eml, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.eml, errmsg.failedToSeek("to start"));
 
     // Read entire file (limit to reasonable size)
-    const stat = file.stat() catch return ValidationResult.invalid(.eml, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.eml, errmsg.failedToStat("file"));
     if (stat.size > 100 * 1024 * 1024) {
         // File too large, just do structural validation
         return validateEmlStructure(file);
@@ -9112,13 +9113,13 @@ fn validateEml(file: std.fs.File) ValidationResult {
     const allocator = gpa.allocator();
 
     const content = allocator.alloc(u8, @intCast(stat.size)) catch {
-        return ValidationResult.invalid(.eml, "Out of memory");
+        return ValidationResult.invalid(.eml, errmsg.outOfMemory("for EML"));
     };
     defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalid(.eml, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.eml, errmsg.failedToSeek("to start"));
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.eml, "Failed to read file");
+        return ValidationResult.invalid(.eml, errmsg.failedToRead("file"));
     };
 
     return validateEmlContent(allocator, content[0..bytes_read]);
@@ -9126,13 +9127,13 @@ fn validateEml(file: std.fs.File) ValidationResult {
 
 /// Validate EML structure only (for large files).
 fn validateEmlStructure(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.eml, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.eml, errmsg.failedToSeek("to start"));
 
     var header: [4096]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.eml, "Failed to read header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.eml, errmsg.failedToRead("header"));
 
     if (header_read < 10) {
-        return ValidationResult.invalid(.eml, "File too small for EML");
+        return ValidationResult.invalid(.eml, errmsg.fileTooSmallFor("EML"));
     }
 
     // Check for valid email headers
@@ -9163,7 +9164,7 @@ fn validateEmlStructure(file: std.fs.File) ValidationResult {
     }
 
     if (!found_header) {
-        return ValidationResult.invalid(.eml, "No valid email headers found");
+        return ValidationResult.invalid(.eml, errmsg.noValidXFound("email headers"));
     }
 
     return ValidationResult.okWithDepth(.eml, .structural);
@@ -9197,7 +9198,7 @@ fn validateEmlContent(allocator: Allocator, content: []const u8) ValidationResul
 
     // Check for valid email headers
     if (!hasValidEmailHeaders(headers)) {
-        return ValidationResult.invalid(.eml, "No valid email headers found");
+        return ValidationResult.invalid(.eml, errmsg.noValidXFound("email headers"));
     }
 
     // Check for multipart MIME
@@ -9475,13 +9476,13 @@ fn validateBase64Attachment(allocator: Allocator, body: []const u8, headers: []c
 
 /// Validate MBOX (Unix mailbox) file structure.
 fn validateMbox(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.mbox, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.mbox, errmsg.failedToSeek("to start"));
 
     var header: [4096]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.mbox, "Failed to read header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.mbox, errmsg.failedToRead("header"));
 
     if (header_read < 5) {
-        return ValidationResult.invalid(.mbox, "File too small for MBOX");
+        return ValidationResult.invalid(.mbox, errmsg.fileTooSmallFor("MBOX"));
     }
 
     // MBOX must start with "From " (note the space)
@@ -9508,7 +9509,7 @@ fn validateMbox(file: std.fs.File) ValidationResult {
     }
 
     if (message_count == 0) {
-        return ValidationResult.invalid(.mbox, "No valid MBOX messages found");
+        return ValidationResult.invalid(.mbox, errmsg.noValidXFound("MBOX messages"));
     }
 
     return ValidationResult.ok(.mbox);
@@ -9517,12 +9518,12 @@ fn validateMbox(file: std.fs.File) ValidationResult {
 /// Deep validation for MBOX files - parses all message boundaries.
 fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.mbox, "Failed to open MBOX file");
+        return ValidationResult.invalid(.mbox, errmsg.failedToOpen("MBOX file"));
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.mbox, "Failed to get file size");
+        return ValidationResult.invalid(.mbox, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 1024 * 1024 * 1024) { // 1GB limit
@@ -9535,10 +9536,10 @@ fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult {
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalid(.mbox, "Failed to read file");
+        return ValidationResult.invalid(.mbox, errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {
-        return ValidationResult.invalid(.mbox, "Incomplete file read");
+        return ValidationResult.invalid(.mbox, errmsg.incomplete("file read"));
     }
 
     // Must start with "From "
@@ -9561,7 +9562,7 @@ fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     if (message_count == 0) {
-        return ValidationResult.invalid(.mbox, "No valid messages found");
+        return ValidationResult.invalid(.mbox, errmsg.noValidXFound("messages"));
     }
 
     return ValidationResult.okWithDepth(.mbox, .structural);
@@ -9576,7 +9577,7 @@ const SEVENZ_SIGNATURE = [_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C };
 /// Validate 7-Zip file structure.
 fn validate7z(file: std.fs.File) ValidationResult {
     // Reset to start
-    file.seekTo(0) catch return ValidationResult.invalid(.sevenz, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.sevenz, errmsg.failedToSeek("to start"));
 
     // 7z header: 32 bytes
     // - 6 bytes: signature (37 7A BC AF 27 1C)
@@ -9587,22 +9588,22 @@ fn validate7z(file: std.fs.File) ValidationResult {
     // - 4 bytes: next header CRC
 
     var header: [32]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.sevenz, "Failed to read 7z header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.sevenz, errmsg.failedToRead("7z header"));
 
     if (header_read < 32) {
-        return ValidationResult.invalid(.sevenz, "File too small for 7z header");
+        return ValidationResult.invalid(.sevenz, errmsg.fileTooSmallFor("7z header"));
     }
 
     // Check signature
     if (!std.mem.eql(u8, header[0..6], &SEVENZ_SIGNATURE)) {
-        return ValidationResult.invalid(.sevenz, "Invalid 7z signature");
+        return ValidationResult.invalid(.sevenz, errmsg.invalidSignature("7z"));
     }
 
     // Check version (we support 0.x where x <= 4)
     const major_version = header[6];
     const minor_version = header[7];
     if (major_version != 0 or minor_version > 4) {
-        return ValidationResult.invalid(.sevenz, "Unsupported 7z version");
+        return ValidationResult.invalid(.sevenz, errmsg.unsupported("7z version"));
     }
 
     // Read next header offset and size
@@ -9610,7 +9611,7 @@ fn validate7z(file: std.fs.File) ValidationResult {
     const next_header_size = std.mem.readInt(u64, header[20..28], .little);
 
     // Validate that the file is large enough for the next header
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.sevenz, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.sevenz, errmsg.failedToGet("file size"));
 
     // Next header starts after the 32-byte start header
     const expected_min_size = 32 + next_header_offset + next_header_size;
@@ -9626,7 +9627,7 @@ fn validate7z(file: std.fs.File) ValidationResult {
 /// Validate tar file structure.
 fn validateTar(file: std.fs.File) ValidationResult {
     // Reset to start
-    file.seekTo(0) catch return ValidationResult.invalid(.tar, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.tar, errmsg.failedToSeek("to start"));
 
     // Tar files consist of 512-byte blocks
     // Each file entry has a header block followed by data blocks
@@ -9634,10 +9635,10 @@ fn validateTar(file: std.fs.File) ValidationResult {
     // Or the file can be old-style V7 tar with no magic
 
     var header: [512]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.tar, "Failed to read tar header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.tar, errmsg.failedToRead("tar header"));
 
     if (header_read < 512) {
-        return ValidationResult.invalid(.tar, "File too small for tar header");
+        return ValidationResult.invalid(.tar, errmsg.fileTooSmallFor("tar header"));
     }
 
     // Check for POSIX ustar magic at offset 257
@@ -9714,15 +9715,15 @@ fn validateTar(file: std.fs.File) ValidationResult {
 /// recovery set ID (16 bytes), and packet type (16 bytes).
 fn validatePar2(file: std.fs.File) ValidationResult {
     // Reset to start
-    file.seekTo(0) catch return ValidationResult.invalid(.par2, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.par2, errmsg.failedToSeek("to start"));
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.par2, "Failed to get file size");
+        return ValidationResult.invalid(.par2, errmsg.failedToGet("file size"));
     };
 
     // Minimum PAR2 file is at least one packet header (64 bytes)
     if (file_size < 64) {
-        return ValidationResult.invalid(.par2, "File too small for PAR2 packet");
+        return ValidationResult.invalid(.par2, errmsg.fileTooSmallFor("PAR2 packet"));
     }
 
     // PAR2 packet header is 64 bytes:
@@ -9739,20 +9740,20 @@ fn validatePar2(file: std.fs.File) ValidationResult {
     // Validate up to 100 packets or until EOF
     while (packets_validated < 100 and offset + 64 <= file_size) {
         file.seekTo(offset) catch {
-            return ValidationResult.invalid(.par2, "Failed to seek to packet");
+            return ValidationResult.invalid(.par2, errmsg.failedToSeek("to packet"));
         };
 
         var header: [64]u8 = undefined;
         const bytes_read = file.read(&header) catch {
-            return ValidationResult.invalid(.par2, "Failed to read packet header");
+            return ValidationResult.invalid(.par2, errmsg.failedToRead("packet header"));
         };
 
         if (bytes_read < 64) {
             // Partial read at end - might be truncated
             if (packets_validated > 0) {
-                return ValidationResult.invalid(.par2, "Truncated packet header");
+                return ValidationResult.invalid(.par2, errmsg.truncated("packet header"));
             }
-            return ValidationResult.invalid(.par2, "File too small for packet header");
+            return ValidationResult.invalid(.par2, errmsg.fileTooSmallFor("packet header"));
         }
 
         // Check magic
@@ -9783,7 +9784,7 @@ fn validatePar2(file: std.fs.File) ValidationResult {
     }
 
     if (packets_validated == 0) {
-        return ValidationResult.invalid(.par2, "No valid PAR2 packets found");
+        return ValidationResult.invalid(.par2, errmsg.noValidXFound("PAR2 packets"));
     }
 
     // Successfully validated packet structure
@@ -9800,7 +9801,7 @@ pub fn validatePdf(file: std.fs.File) ValidationResult {
 fn validatePdfWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
     // Check header (or skip past it if skip_magic is set)
     var header: [8]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.pdf, "Failed to read PDF header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.pdf, errmsg.failedToRead("PDF header"));
 
     if (!skip_magic) {
         if (!std.mem.startsWith(u8, &header, "%PDF-")) {
@@ -9810,11 +9811,11 @@ fn validatePdfWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult 
 
     // Check for %%EOF at end
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.pdf, "Failed to get file size");
+        return ValidationResult.invalid(.pdf, errmsg.failedToGet("file size"));
     };
 
     if (file_size < 20) {
-        return ValidationResult.invalid(.pdf, "File too small for valid PDF");
+        return ValidationResult.invalid(.pdf, errmsg.fileTooSmallFor("valid PDF"));
     }
 
 	// Tiered search for %%EOF: try small window first (fast path), expand if needed
@@ -9827,10 +9828,10 @@ fn validatePdfWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult 
     const small_search: u64 = 1024;
     var search_start = if (file_size > small_search) file_size - small_search else 0;
     file.seekTo(search_start) catch {
-        return ValidationResult.invalid(.pdf, "Failed to seek for trailer");
+        return ValidationResult.invalid(.pdf, errmsg.failedToSeek("for trailer"));
     };
     bytes_read = file.read(buffer[0..small_search]) catch {
-        return ValidationResult.invalid(.pdf, "Failed to read trailer");
+        return ValidationResult.invalid(.pdf, errmsg.failedToRead("trailer"));
     };
 
     var eof_pos = std.mem.lastIndexOf(u8, buffer[0..bytes_read], eof_marker);
@@ -9840,16 +9841,16 @@ fn validatePdfWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult 
         const large_search: u64 = 8192;
         search_start = if (file_size > large_search) file_size - large_search else 0;
         file.seekTo(search_start) catch {
-            return ValidationResult.invalid(.pdf, "Failed to seek for trailer");
+            return ValidationResult.invalid(.pdf, errmsg.failedToSeek("for trailer"));
         };
         bytes_read = file.read(&buffer) catch {
-            return ValidationResult.invalid(.pdf, "Failed to read trailer");
+            return ValidationResult.invalid(.pdf, errmsg.failedToRead("trailer"));
         };
         eof_pos = std.mem.lastIndexOf(u8, buffer[0..bytes_read], eof_marker);
     }
 
     if (eof_pos == null) {
-        return ValidationResult.invalid(.pdf, "Missing %%EOF marker (truncated file)");
+        return ValidationResult.invalid(.pdf, errmsg.missing("%%EOF marker (truncated file)"));
     }
 
     // Check for garbage after %%EOF (allowing only whitespace/newlines)
@@ -9897,18 +9898,18 @@ fn validatePdfWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult 
 /// Validate Adobe Illustrator file.
 /// AI files can be either PDF-based (modern) or PostScript-based (legacy).
 fn validateAi(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.ai, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.ai, errmsg.failedToSeek("to start"));
 
     var header: [16]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ai, "Failed to read AI header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ai, errmsg.failedToRead("AI header"));
     if (bytes_read < 5) {
-        return ValidationResult.invalid(.ai, "File too small for AI header");
+        return ValidationResult.invalid(.ai, errmsg.fileTooSmallFor("AI header"));
     }
 
     // Check if it's PDF-based (modern AI files)
     if (std.mem.startsWith(u8, header[0..bytes_read], "%PDF-")) {
         // Delegate to PDF validator
-        file.seekTo(0) catch return ValidationResult.invalid(.ai, "Failed to seek to start");
+        file.seekTo(0) catch return ValidationResult.invalid(.ai, errmsg.failedToSeek("to start"));
         const pdf_result = validatePdf(file);
         // Return AI format but with PDF validation result
         return ValidationResult{
@@ -9925,22 +9926,22 @@ fn validateAi(file: std.fs.File) ValidationResult {
         std.mem.startsWith(u8, header[0..bytes_read], "%!PS-"))
     {
         // Reset file position before validation
-        file.seekTo(0) catch return ValidationResult.invalid(.ai, "Failed to seek to start");
+        file.seekTo(0) catch return ValidationResult.invalid(.ai, errmsg.failedToSeek("to start"));
         // Do basic PostScript/EPS structural validation
         return validatePostScript(file, .ai);
     }
 
-    return ValidationResult.invalid(.ai, "Invalid AI signature (expected %PDF- or %!PS-Adobe)");
+    return ValidationResult.invalid(.ai, errmsg.invalidSignatureExpected("AI", "%PDF- or %!PS-Adobe"));
 }
 
 /// Validate Encapsulated PostScript file.
 fn validateEps(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.eps, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.eps, errmsg.failedToSeek("to start"));
 
     var header: [16]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.eps, "Failed to read EPS header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.eps, errmsg.failedToRead("EPS header"));
     if (bytes_read < 4) {
-        return ValidationResult.invalid(.eps, "File too small for EPS header");
+        return ValidationResult.invalid(.eps, errmsg.fileTooSmallFor("EPS header"));
     }
 
     // EPS can start with binary header (0xC5D0D3C6) for DOS EPS or %!PS-Adobe for standard EPS
@@ -9948,11 +9949,11 @@ fn validateEps(file: std.fs.File) ValidationResult {
     if (std.mem.startsWith(u8, header[0..bytes_read], &dos_eps_sig)) {
         // DOS EPS with binary header - parse header to find PS data offset
         if (bytes_read < 12) {
-            return ValidationResult.invalid(.eps, "Truncated DOS EPS header");
+            return ValidationResult.invalid(.eps, errmsg.truncated("DOS EPS header"));
         }
         // DOS EPS header: 4-byte magic, 4-byte PS offset, 4-byte PS length
         const ps_offset = std.mem.readInt(u32, header[4..8], .little);
-        file.seekTo(ps_offset) catch return ValidationResult.invalid(.eps, "Failed to seek to PS data");
+        file.seekTo(ps_offset) catch return ValidationResult.invalid(.eps, errmsg.failedToSeek("to PS data"));
         return validatePostScript(file, .eps);
     }
 
@@ -9960,24 +9961,24 @@ fn validateEps(file: std.fs.File) ValidationResult {
     if (std.mem.startsWith(u8, header[0..bytes_read], "%!PS-Adobe") or
         std.mem.startsWith(u8, header[0..bytes_read], "%!PS-"))
     {
-        file.seekTo(0) catch return ValidationResult.invalid(.eps, "Failed to seek to start");
+        file.seekTo(0) catch return ValidationResult.invalid(.eps, errmsg.failedToSeek("to start"));
         return validatePostScript(file, .eps);
     }
 
-    return ValidationResult.invalid(.eps, "Invalid EPS signature");
+    return ValidationResult.invalid(.eps, errmsg.invalidSignature("EPS"));
 }
 
 /// Validate PostScript/EPS structure.
 /// Parses DSC (Document Structuring Conventions) comments and verifies structure.
 fn validatePostScript(file: std.fs.File, format: FileFormat) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(format, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(format, errmsg.failedToGet("file size"));
     if (file_size < 20) {
-        return ValidationResult.invalid(format, "File too small for valid PostScript");
+        return ValidationResult.invalid(format, errmsg.fileTooSmallFor("valid PostScript"));
     }
 
     // Read first chunk to verify header
     var header_buf: [256]u8 = undefined;
-    const header_read = file.read(&header_buf) catch return ValidationResult.invalid(format, "Failed to read header");
+    const header_read = file.read(&header_buf) catch return ValidationResult.invalid(format, errmsg.failedToRead("header"));
     if (header_read < 10) {
         return ValidationResult.invalid(format, "File too small");
     }
@@ -10001,10 +10002,10 @@ fn validatePostScript(file: std.fs.File, format: FileFormat) ValidationResult {
     // Check trailer for %%EOF
     const trailer_size: u64 = @min(1024, file_size);
     const trailer_start = file_size - trailer_size;
-    file.seekTo(trailer_start) catch return ValidationResult.invalid(format, "Failed to seek to trailer");
+    file.seekTo(trailer_start) catch return ValidationResult.invalid(format, errmsg.failedToSeek("to trailer"));
 
     var trailer_buf: [1024]u8 = undefined;
-    const trailer_read = file.read(&trailer_buf) catch return ValidationResult.invalid(format, "Failed to read trailer");
+    const trailer_read = file.read(&trailer_buf) catch return ValidationResult.invalid(format, errmsg.failedToRead("trailer"));
     if (trailer_read > 0) {
         // Look for %%EOF marker (may have trailing whitespace)
         if (std.mem.indexOf(u8, trailer_buf[0..trailer_read], "%%EOF")) |_| {
@@ -10035,13 +10036,13 @@ fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.ai, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.ai, "Access denied"),
-            else => ValidationResult.invalid(.ai, "Failed to open file"),
+            else => ValidationResult.invalid(.ai, errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     var header: [16]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ai, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ai, errmsg.failedToRead("header"));
 
     // If PDF-based, use deep PDF validation
     if (std.mem.startsWith(u8, header[0..bytes_read], "%PDF-")) {
@@ -10056,7 +10057,7 @@ fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // For PostScript-based AI, structural validation is the best we can do
-    file.seekTo(0) catch return ValidationResult.invalid(.ai, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.ai, errmsg.failedToSeek("in AI file"));
     const basic_result = validateAi(file);
     return ValidationResult{
         .format = .ai,
@@ -10074,7 +10075,7 @@ fn validateEpsDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.eps, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.eps, "Access denied"),
-            else => ValidationResult.invalid(.eps, "Failed to open file"),
+            else => ValidationResult.invalid(.eps, errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
@@ -10114,7 +10115,7 @@ pub fn validateAiFromBuffer(data: []const u8) ValidationResult {
         return ValidationResult.ok(.ai);
     }
 
-    return ValidationResult.invalid(.ai, "Invalid AI signature");
+    return ValidationResult.invalid(.ai, errmsg.invalidSignature("AI"));
 }
 
 /// Validate EPS from memory buffer.
@@ -10127,7 +10128,7 @@ pub fn validateEpsFromBuffer(data: []const u8) ValidationResult {
     const dos_eps_sig = [_]u8{ 0xC5, 0xD0, 0xD3, 0xC6 };
     if (std.mem.startsWith(u8, data, &dos_eps_sig)) {
         if (data.len < 12) {
-            return ValidationResult.invalid(.eps, "Truncated DOS EPS header");
+            return ValidationResult.invalid(.eps, errmsg.truncated("DOS EPS header"));
         }
         // For buffer validation, just verify the header structure
         return ValidationResult.ok(.eps);
@@ -10143,24 +10144,24 @@ pub fn validateEpsFromBuffer(data: []const u8) ValidationResult {
         return ValidationResult.invalid(.eps, "EPS missing %%BoundingBox");
     }
 
-    return ValidationResult.invalid(.eps, "Invalid EPS signature");
+    return ValidationResult.invalid(.eps, errmsg.invalidSignature("EPS"));
 }
 
 // ============ Adobe After Effects Validator ============
 
 /// Validate Adobe After Effects Project file (RIFX-based).
 fn validateAep(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.aep, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.aep, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.aep, "Failed to read AEP header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.aep, errmsg.failedToRead("AEP header"));
     if (bytes_read < 12) {
-        return ValidationResult.invalid(.aep, "File too small for AEP header");
+        return ValidationResult.invalid(.aep, errmsg.fileTooSmallFor("AEP header"));
     }
 
     // Verify RIFX signature (big-endian RIFF)
     if (!std.mem.eql(u8, header[0..4], "RIFX")) {
-        return ValidationResult.invalid(.aep, "Invalid AEP signature (expected RIFX)");
+        return ValidationResult.invalid(.aep, errmsg.invalidSignatureExpected("AEP", "RIFX"));
     }
 
     // Verify "Egg!" format marker
@@ -10172,7 +10173,7 @@ fn validateAep(file: std.fs.File) ValidationResult {
     const declared_size = std.mem.readInt(u32, header[4..8], .big);
 
     // Get actual file size
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.aep, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.aep, errmsg.failedToGet("file size"));
 
     // RIFX size is file size minus 8 (excludes RIFX and size field itself)
     const expected_size = @as(u64, declared_size) + 8;
@@ -10232,7 +10233,7 @@ fn validateAepDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.aep, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.aep, "Access denied"),
-            else => ValidationResult.invalid(.aep, "Failed to open file"),
+            else => ValidationResult.invalid(.aep, errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
@@ -10252,12 +10253,12 @@ fn validateAepDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Validate AEP from memory buffer.
 pub fn validateAepFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 12) {
-        return ValidationResult.invalid(.aep, "Buffer too small for AEP header");
+        return ValidationResult.invalid(.aep, errmsg.bufferTooSmallFor("AEP header"));
     }
 
     // Verify RIFX signature
     if (!std.mem.eql(u8, data[0..4], "RIFX")) {
-        return ValidationResult.invalid(.aep, "Invalid AEP signature");
+        return ValidationResult.invalid(.aep, errmsg.invalidSignature("AEP"));
     }
 
     // Verify "Egg!" format marker
@@ -10598,7 +10599,7 @@ fn validateWoff2(file: std.fs.File) ValidationResult {
 fn validateType1Font(file: std.fs.File) ValidationResult {
     // Get file size
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.type1, "Failed to stat font file");
+        return ValidationResult.invalid(.type1, errmsg.failedToStat("font file"));
     };
 
     // Reasonable limit for font files (100 MB)
@@ -10608,25 +10609,25 @@ fn validateType1Font(file: std.fs.File) ValidationResult {
     }
 
     if (stat.size == 0) {
-        return ValidationResult.invalid(.type1, "Empty font file");
+        return ValidationResult.invalid(.type1, errmsg.empty("font file"));
     }
 
     // Read entire file for validation - use heap allocation to avoid stack overflow
     file.seekTo(0) catch {
-        return ValidationResult.invalid(.type1, "Failed to seek to start");
+        return ValidationResult.invalid(.type1, errmsg.failedToSeek("to start"));
     };
 
     const data = std.heap.page_allocator.alloc(u8, @intCast(stat.size)) catch {
-        return ValidationResult.invalid(.type1, "Failed to allocate memory");
+        return ValidationResult.invalid(.type1, errmsg.failedToAllocate("memory"));
     };
     defer std.heap.page_allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalid(.type1, "Failed to read font file");
+        return ValidationResult.invalid(.type1, errmsg.failedToRead("font file"));
     };
 
     if (bytes_read != stat.size) {
-        return ValidationResult.invalid(.type1, "Incomplete read of font file");
+        return ValidationResult.invalid(.type1, errmsg.incomplete("read of font file"));
     }
 
     const result = font_validator.validateType1(data);
@@ -10642,7 +10643,7 @@ fn validateType1Font(file: std.fs.File) ValidationResult {
 fn validateFontFile(file: std.fs.File, format: FileFormat) ValidationResult {
     // Get file size
     const stat = file.stat() catch {
-        return ValidationResult.invalid(format, "Failed to stat font file");
+        return ValidationResult.invalid(format, errmsg.failedToStat("font file"));
     };
 
     // Reasonable limit for font files (100 MB)
@@ -10652,25 +10653,25 @@ fn validateFontFile(file: std.fs.File, format: FileFormat) ValidationResult {
     }
 
     if (stat.size == 0) {
-        return ValidationResult.invalid(format, "Empty font file");
+        return ValidationResult.invalid(format, errmsg.empty("font file"));
     }
 
     // Read entire file for validation - use heap allocation to avoid stack overflow
     file.seekTo(0) catch {
-        return ValidationResult.invalid(format, "Failed to seek to start");
+        return ValidationResult.invalid(format, errmsg.failedToSeek("to start"));
     };
 
     const data = std.heap.page_allocator.alloc(u8, @intCast(stat.size)) catch {
-        return ValidationResult.invalid(format, "Failed to allocate memory");
+        return ValidationResult.invalid(format, errmsg.failedToAllocate("memory"));
     };
     defer std.heap.page_allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalid(format, "Failed to read font file");
+        return ValidationResult.invalid(format, errmsg.failedToRead("font file"));
     };
 
     if (bytes_read != stat.size) {
-        return ValidationResult.invalid(format, "Incomplete read of font file");
+        return ValidationResult.invalid(format, errmsg.incomplete("read of font file"));
     }
 
     // Dispatch to appropriate validator
@@ -10809,16 +10810,16 @@ const OLE2_MAGIC = [_]u8{ 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 };
 fn validateOle2(file: std.fs.File, format: FileFormat) ValidationResult {
     var header: [512]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(format, "Failed to read OLE2 header");
+        return ValidationResult.invalid(format, errmsg.failedToRead("OLE2 header"));
     };
 
     if (bytes_read < 512) {
-        return ValidationResult.invalid(format, "File too small for OLE2 format");
+        return ValidationResult.invalid(format, errmsg.fileTooSmallFor("OLE2 format"));
     }
 
     // Check magic signature
     if (!std.mem.eql(u8, header[0..8], &OLE2_MAGIC)) {
-        return ValidationResult.invalid(format, "Invalid OLE2 signature");
+        return ValidationResult.invalid(format, errmsg.invalidSignature("OLE2"));
     }
 
     // Check minor version (offset 0x18, 2 bytes) - should be 0x003E or less common values
@@ -10828,7 +10829,7 @@ fn validateOle2(file: std.fs.File, format: FileFormat) ValidationResult {
     // Check major version (offset 0x1A, 2 bytes) - should be 3 or 4
     const major_version = std.mem.readInt(u16, header[0x1A..0x1C], .little);
     if (major_version != 3 and major_version != 4) {
-        return ValidationResult.invalid(format, "Unsupported OLE2 version");
+        return ValidationResult.invalid(format, errmsg.unsupported("OLE2 version"));
     }
 
     // Check byte order (offset 0x1C, 2 bytes) - should be 0xFFFE (little-endian)
@@ -10915,16 +10916,16 @@ fn detectOle2Subformat(file: std.fs.File) FileFormat {
 fn validateWordPerfect(file: std.fs.File) ValidationResult {
     var header: [16]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.wpd, "Failed to read WordPerfect header");
+        return ValidationResult.invalid(.wpd, errmsg.failedToRead("WordPerfect header"));
     };
 
     if (bytes_read < 16) {
-        return ValidationResult.invalid(.wpd, "File too small for WordPerfect");
+        return ValidationResult.invalid(.wpd, errmsg.fileTooSmallFor("WordPerfect"));
     }
 
     // Check magic signature: FF 57 50 43 (WPC prefix)
     if (!std.mem.eql(u8, header[0..4], &[_]u8{ 0xFF, 0x57, 0x50, 0x43 })) {
-        return ValidationResult.invalid(.wpd, "Invalid WordPerfect signature");
+        return ValidationResult.invalid(.wpd, errmsg.invalidSignature("WordPerfect"));
     }
 
     // Check document area offset (bytes 4-7)
@@ -10932,7 +10933,7 @@ fn validateWordPerfect(file: std.fs.File) ValidationResult {
 
     // Verify file is large enough for document area
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.wpd, "Failed to get file size");
+        return ValidationResult.invalid(.wpd, errmsg.failedToGet("file size"));
     };
 
     if (doc_offset > file_size) {
@@ -10948,7 +10949,7 @@ fn validateWordPerfect(file: std.fs.File) ValidationResult {
     // Check file type (byte 9) - 0x0A for WPD
     const file_type = header[9];
     if (file_type != 0x0A and file_type != 0x01) {
-        return ValidationResult.invalid(.wpd, "Unsupported WordPerfect file type");
+        return ValidationResult.invalid(.wpd, errmsg.unsupported("WordPerfect file type"));
     }
 
     return ValidationResult.ok(.wpd);
@@ -10964,17 +10965,17 @@ fn validateSqlite(file: std.fs.File) ValidationResult {
 fn validateSqliteWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
     var header: [100]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.sqlite, "Failed to read SQLite header");
+        return ValidationResult.invalid(.sqlite, errmsg.failedToRead("SQLite header"));
     };
 
     if (bytes_read < 100) {
-        return ValidationResult.invalid(.sqlite, "File too small for SQLite");
+        return ValidationResult.invalid(.sqlite, errmsg.fileTooSmallFor("SQLite"));
     }
 
     // Check magic signature: "SQLite format 3\0" (or skip if skip_magic is set)
     if (!skip_magic) {
         if (!std.mem.eql(u8, header[0..16], "SQLite format 3\x00")) {
-            return ValidationResult.invalid(.sqlite, "Invalid SQLite signature");
+            return ValidationResult.invalid(.sqlite, errmsg.invalidSignature("SQLite"));
         }
     }
 
@@ -10992,13 +10993,13 @@ fn validateSqliteWithOptions(file: std.fs.File, skip_magic: bool) ValidationResu
     // File format write version (byte 18): 1 for legacy, 2 for WAL
     const write_version = header[18];
     if (write_version != 1 and write_version != 2) {
-        return ValidationResult.invalid(.sqlite, "Unsupported SQLite write version");
+        return ValidationResult.invalid(.sqlite, errmsg.unsupported("SQLite write version"));
     }
 
     // File format read version (byte 19): 1 for legacy, 2 for WAL
     const read_version = header[19];
     if (read_version != 1 and read_version != 2) {
-        return ValidationResult.invalid(.sqlite, "Unsupported SQLite read version");
+        return ValidationResult.invalid(.sqlite, errmsg.unsupported("SQLite read version"));
     }
 
     // Reserved space per page (byte 20): usually 0
@@ -11024,7 +11025,7 @@ fn validateSqliteWithOptions(file: std.fs.File, skip_magic: bool) ValidationResu
 
     // Verify file size is consistent with page count (basic check)
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.sqlite, "Failed to get file size");
+        return ValidationResult.invalid(.sqlite, errmsg.failedToGet("file size"));
     };
 
     const actual_page_size: u64 = if (page_size == 1) 65536 else @as(u64, page_size);
@@ -11044,7 +11045,7 @@ fn validateSqliteWithOptions(file: std.fs.File, skip_magic: bool) ValidationResu
 fn validateSqliteDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Create null-terminated path for SQLite
     const path_z = allocator.allocSentinel(u8, path.len, 0) catch {
-        return ValidationResult.invalid(.sqlite, "Out of memory");
+        return ValidationResult.invalid(.sqlite, errmsg.outOfMemory("for SQLite"));
     };
     defer allocator.free(path_z);
     @memcpy(path_z, path);
@@ -11062,7 +11063,7 @@ fn validateSqliteDeep(allocator: Allocator, path: []const u8) ValidationResult {
         if (open_result == 5 or open_result == 6) {
             return ValidationResult.okWithDepthAndWarning(.sqlite, .structural, "Database is locked by another process");
         }
-        return ValidationResult.invalidWithDepth(.sqlite, "Failed to open database for integrity check", .full);
+        return ValidationResult.invalidWithDepth(.sqlite, errmsg.failedToOpen("database for integrity check"), .full);
     }
     defer _ = sqlite3.sqlite3_close(db);
 
@@ -11127,7 +11128,7 @@ fn validateBrotliDeep(path: []const u8) ValidationResult {
     if (result.valid) {
         return ValidationResult.okWithDepth(.br, .full);
     } else {
-        return ValidationResult.invalidWithDepth(.br, result.error_message orelse "Brotli decompression failed", .full);
+        return ValidationResult.invalidWithDepth(.br, result.error_message orelse errmsg.decompressionFailed("Brotli"), .full);
     }
 }
 
@@ -11396,17 +11397,17 @@ fn validateZipDeepWithCentralDirectory(
     const max_entries: u64 = 100000;
 
     while (entry_count < central.entries and entry_count < max_entries) : (entry_count += 1) {
-        file.seekTo(cdir_pos) catch return ValidationResult.invalidWithDepth(format, "Failed to seek to central directory", .full);
+        file.seekTo(cdir_pos) catch return ValidationResult.invalidWithDepth(format, errmsg.failedToSeek("to central directory"), .full);
 
         var header: [46]u8 = undefined;
         const header_read = file.readAll(&header) catch {
-            return ValidationResult.invalidWithDepth(format, "Failed to read central directory header", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.failedToRead("central directory header"), .full);
         };
         if (header_read != header.len) {
-            return ValidationResult.invalidWithDepth(format, "Truncated central directory header", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.truncated("central directory header"), .full);
         }
         if (!std.mem.eql(u8, header[0..4], "PK\x01\x02")) {
-            return ValidationResult.invalidWithDepth(format, "Invalid central directory signature", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.invalidSignature("central directory"), .full);
         }
 
         const flags = readLe(u16, header[8..10]);
@@ -11429,44 +11430,44 @@ fn validateZipDeepWithCentralDirectory(
         const to_read = @min(name_len_usize, name_buf.len);
         if (to_read > 0) {
             const name_read = file.readAll(name_buf[0..to_read]) catch {
-                return ValidationResult.invalidWithDepth(format, "Failed to read central directory filename", .full);
+                return ValidationResult.invalidWithDepth(format, errmsg.failedToRead("central directory filename"), .full);
             };
             if (name_read != to_read) {
-                return ValidationResult.invalidWithDepth(format, "Truncated central directory filename", .full);
+                return ValidationResult.invalidWithDepth(format, errmsg.truncated("central directory filename"), .full);
             }
             name_slice = name_buf[0..to_read];
             if (name_len_usize > to_read) {
                 name_truncated = true;
                 const remaining: i64 = @intCast(name_len_usize - to_read);
                 file.seekBy(remaining) catch {
-                    return ValidationResult.invalidWithDepth(format, "Failed to skip central directory filename", .full);
+                    return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("central directory filename"), .full);
                 };
             }
         } else if (name_len_usize > 0) {
             const remaining: i64 = @intCast(name_len_usize);
             file.seekBy(remaining) catch {
-                return ValidationResult.invalidWithDepth(format, "Failed to skip central directory filename", .full);
+                return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("central directory filename"), .full);
             };
         }
 
         var extra_buf: []u8 = &[_]u8{};
         if (extra_len_usize > 0) {
             extra_buf = allocator.alloc(u8, extra_len_usize) catch {
-                return ValidationResult.invalidWithDepth(format, "Out of memory reading central directory extra", .full);
+                return ValidationResult.invalidWithDepth(format, errmsg.outOfMemory("reading central directory extra"), .full);
             };
             defer allocator.free(extra_buf);
             const extra_read = file.readAll(extra_buf) catch {
-                return ValidationResult.invalidWithDepth(format, "Failed to read central directory extra", .full);
+                return ValidationResult.invalidWithDepth(format, errmsg.failedToRead("central directory extra"), .full);
             };
             if (extra_read != extra_len_usize) {
-                return ValidationResult.invalidWithDepth(format, "Truncated central directory extra", .full);
+                return ValidationResult.invalidWithDepth(format, errmsg.truncated("central directory extra"), .full);
             }
         }
 
         if (comment_len_usize > 0) {
             const skip_comment: i64 = @intCast(comment_len_usize);
             file.seekBy(skip_comment) catch {
-                return ValidationResult.invalidWithDepth(format, "Failed to skip central directory comment", .full);
+                return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("central directory comment"), .full);
             };
         }
 
@@ -11500,23 +11501,23 @@ fn validateZipDeepWithCentralDirectory(
         defer entry_telemetry.finish(telemetry, format);
 
         file.seekTo(entry.local_header_offset) catch {
-            return ValidationResult.invalidWithDepth(format, "Failed to seek to local file header", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.failedToSeek("to local file header"), .full);
         };
 
         var local_sig: [4]u8 = undefined;
         const sig_read = file.readAll(&local_sig) catch {
-            return ValidationResult.invalidWithDepth(format, "Failed to read local file header signature", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.failedToRead("local file header signature"), .full);
         };
         if (sig_read != local_sig.len or !std.mem.eql(u8, local_sig[0..], "PK\x03\x04")) {
-            return ValidationResult.invalidWithDepth(format, "Invalid local file header signature", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.invalidSignature("local file header"), .full);
         }
 
         var local_header: [26]u8 = undefined;
         const local_header_read = file.readAll(&local_header) catch {
-            return ValidationResult.invalidWithDepth(format, "Failed to read local file header", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.failedToRead("local file header"), .full);
         };
         if (local_header_read != local_header.len) {
-            return ValidationResult.invalidWithDepth(format, "Truncated local file header", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.truncated("local file header"), .full);
         }
 
         const local_filename_len = readLe(u16, local_header[22..24]);
@@ -11524,11 +11525,11 @@ fn validateZipDeepWithCentralDirectory(
 
         const skip_local_name: i64 = @intCast(local_filename_len);
         file.seekBy(skip_local_name) catch {
-            return ValidationResult.invalidWithDepth(format, "Failed to skip local filename", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("local filename"), .full);
         };
         const skip_local_extra: i64 = @intCast(local_extra_len);
         file.seekBy(skip_local_extra) catch {
-            return ValidationResult.invalidWithDepth(format, "Failed to skip local extra", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("local extra"), .full);
         };
 
         if (entry_telemetry.encrypted) {
@@ -11615,14 +11616,14 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.zip, "File not found", .full),
             error.AccessDenied => ValidationResult.invalidWithDepth(.zip, "Access denied", .full),
-            else => ValidationResult.invalidWithDepth(.zip, "Failed to open file", .full),
+            else => ValidationResult.invalidWithDepth(.zip, errmsg.failedToOpen("file"), .full),
         };
     };
     defer file.close();
 
     const format = detectZipSubformat(file);
     file.seekTo(0) catch {
-        return ValidationResult.invalidWithDepth(format, "Failed to seek to start", .full);
+        return ValidationResult.invalidWithDepth(format, errmsg.failedToSeek("to start"), .full);
     };
 
     const telemetry = ZipTelemetry.init();
@@ -11637,18 +11638,18 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     while (true) : (entry_count += 1) {
         if (entry_count > max_entries) {
-            return ValidationResult.invalidWithDepth(format, "Too many ZIP entries", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.tooMany("ZIP entries"), .full);
         }
 
         // Read local file header signature
         var sig: [4]u8 = undefined;
         const sig_bytes = file.read(&sig) catch |err| {
             if (err == error.EndOfStream) break;
-            return ValidationResult.invalidWithDepth(format, "Failed to read entry signature", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.failedToRead("entry signature"), .full);
         };
         if (sig_bytes == 0) break;
         if (sig_bytes < 4) {
-            return ValidationResult.invalidWithDepth(format, "Truncated entry signature", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.truncated("entry signature"), .full);
         }
 
         // Check for end of entries (central directory starts)
@@ -11663,7 +11664,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         // Verify local file header signature
         if (sig[0] != 'P' or sig[1] != 'K' or sig[2] != 3 or sig[3] != 4) {
-            return ValidationResult.invalidWithDepth(format, "Invalid local file header signature", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.invalidSignature("local file header"), .full);
         }
 
         var entry_telemetry = ZipEntryTelemetry.init(telemetry, entry_count + 1);
@@ -11672,10 +11673,10 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
         // Read rest of local file header (26 bytes after signature)
         var header: [26]u8 = undefined;
         const header_bytes = file.read(&header) catch {
-            return ValidationResult.invalidWithDepth(format, "Failed to read local file header", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.failedToRead("local file header"), .full);
         };
         if (header_bytes < 26) {
-            return ValidationResult.invalidWithDepth(format, "Truncated local file header", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.truncated("local file header"), .full);
         }
 
         // Parse header fields (little endian)
@@ -11707,10 +11708,10 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
             var truncated = false;
             if (to_read > 0) {
                 const name_read = file.readAll(name_buf[0..to_read]) catch {
-                    return ValidationResult.invalidWithDepth(format, "Failed to read entry filename", .full);
+                    return ValidationResult.invalidWithDepth(format, errmsg.failedToRead("entry filename"), .full);
                 };
                 if (name_read != to_read) {
-                    return ValidationResult.invalidWithDepth(format, "Truncated entry filename", .full);
+                    return ValidationResult.invalidWithDepth(format, errmsg.truncated("entry filename"), .full);
                 }
                 entry_telemetry.setName(name_buf[0..to_read], false);
             }
@@ -11718,7 +11719,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
                 truncated = true;
                 const remaining: i64 = @intCast(filename_len_usize - to_read);
                 file.seekBy(remaining) catch {
-                    return ValidationResult.invalidWithDepth(format, "Failed to skip entry filename", .full);
+                    return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("entry filename"), .full);
                 };
             }
             if (to_read == 0) {
@@ -11730,13 +11731,13 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
             // Skip filename
             const filename_len_i64: i64 = @intCast(filename_len_usize);
             file.seekBy(filename_len_i64) catch {
-                return ValidationResult.invalidWithDepth(format, "Failed to skip entry filename", .full);
+                return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("entry filename"), .full);
             };
         }
 
         // Skip extra field
         file.seekBy(@as(i64, extra_len)) catch {
-            return ValidationResult.invalidWithDepth(format, "Failed to skip filename/extra", .full);
+            return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("filename/extra"), .full);
         };
 
         if (is_encrypted) {
@@ -11744,7 +11745,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
             // Skip the compressed data and continue with structural validation
             encrypted_entry_count += 1;
             file.seekBy(@as(i64, compressed_size)) catch {
-                return ValidationResult.invalidWithDepth(format, "Failed to skip encrypted entry", .structural);
+                return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("encrypted entry"), .structural);
             };
             continue;
         }
@@ -11809,7 +11810,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
         if (stored_crc == 0) {
             // Skip the compressed data
             file.seekBy(@as(i64, compressed_size)) catch {
-                return ValidationResult.invalidWithDepth(format, "Failed to skip entry data", .full);
+                return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("entry data"), .full);
             };
             continue;
         }
@@ -11818,7 +11819,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
         if (uncompressed_size > max_uncompressed_size) {
             // Skip this entry but don't fail
             file.seekBy(@as(i64, compressed_size)) catch {
-                return ValidationResult.invalidWithDepth(format, "Failed to skip large entry", .full);
+                return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("large entry"), .full);
             };
             continue;
         }
@@ -11842,7 +11843,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
             _ => {
                 // Unknown compression method - skip
                 file.seekBy(@as(i64, compressed_size)) catch {
-                    return ValidationResult.invalidWithDepth(format, "Failed to skip entry", .full);
+                    return ValidationResult.invalidWithDepth(format, errmsg.failedToSkip("entry"), .full);
                 };
             },
         }
@@ -11889,7 +11890,7 @@ fn validateZipStoredEntry(file: std.fs.File, stored_crc: u32, size: u32) Validat
             if (err == error.EndOfStream) {
                 return ValidationResult.invalid(.zip, "Unexpected EOF in entry data");
             }
-            return ValidationResult.invalid(.zip, "Failed to read entry data");
+            return ValidationResult.invalid(.zip, errmsg.failedToRead("entry data"));
         };
         if (bytes_read == 0) {
             return ValidationResult.invalid(.zip, "Unexpected EOF in entry data");
@@ -11913,7 +11914,7 @@ fn validateZipDeflatedEntry(allocator: Allocator, file: std.fs.File, stored_crc:
     if (uncompressed_size > MAX_ZIP_ENTRY_SIZE) {
         // Skip validation for huge entries - just seek past
         file.seekBy(@as(i64, compressed_size)) catch {
-            return ValidationResult.invalid(.zip, "Failed to skip large deflated entry");
+            return ValidationResult.invalid(.zip, errmsg.failedToSkip("large deflated entry"));
         };
         return ValidationResult.ok(.zip);
     }
@@ -11922,7 +11923,7 @@ fn validateZipDeflatedEntry(allocator: Allocator, file: std.fs.File, stored_crc:
     const max_compressed_read: u32 = 64 * 1024 * 1024; // 64MB limit for compressed data
     if (compressed_size > max_compressed_read) {
         file.seekBy(@as(i64, compressed_size)) catch {
-            return ValidationResult.invalid(.zip, "Failed to skip large compressed entry");
+            return ValidationResult.invalid(.zip, errmsg.failedToSkip("large compressed entry"));
         };
         return ValidationResult.ok(.zip);
     }
@@ -11931,17 +11932,17 @@ fn validateZipDeflatedEntry(allocator: Allocator, file: std.fs.File, stored_crc:
     const compressed_data = allocator.alloc(u8, compressed_size) catch {
         // If allocation fails, skip this entry
         file.seekBy(@as(i64, compressed_size)) catch {
-            return ValidationResult.invalid(.zip, "Failed to skip entry after alloc failure");
+            return ValidationResult.invalid(.zip, errmsg.failedToSkip("entry after alloc failure"));
         };
         return ValidationResult.ok(.zip);
     };
     defer allocator.free(compressed_data);
 
     const bytes_read = file.readAll(compressed_data) catch {
-        return ValidationResult.invalid(.zip, "Failed to read compressed data");
+        return ValidationResult.invalid(.zip, errmsg.failedToRead("compressed data"));
     };
     if (bytes_read != compressed_size) {
-        return ValidationResult.invalid(.zip, "Incomplete read of compressed data");
+        return ValidationResult.invalid(.zip, errmsg.incomplete("read of compressed data"));
     }
 
     // Allocate output buffer for decompressed data
@@ -11955,7 +11956,7 @@ fn validateZipDeflatedEntry(allocator: Allocator, file: std.fs.File, stored_crc:
         return switch (err) {
             zlib.ZlibError.DataError => ValidationResult.invalid(.zip, "Deflate decompression failed - corrupted data"),
             zlib.ZlibError.BufferError => ValidationResult.invalid(.zip, "Deflate decompression failed - buffer error"),
-            else => ValidationResult.invalid(.zip, "Deflate decompression failed"),
+            else => ValidationResult.invalid(.zip, errmsg.decompressionFailed("Deflate")),
         };
     };
 
@@ -12055,17 +12056,17 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 		return switch (err) {
 			error.FileNotFound => ValidationResult.invalidWithDepth(.pdf, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.pdf, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.pdf, "Failed to open file", .structural),
+            else => ValidationResult.invalidWithDepth(.pdf, errmsg.failedToOpen("file"), .structural),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.pdf, "Failed to get file size", .structural);
+        return ValidationResult.invalidWithDepth(.pdf, errmsg.failedToGet("file size"), .structural);
     };
 
 	if (file_size < 50) {
-		return ValidationResult.invalidWithDepth(.pdf, "File too small for valid PDF", .structural);
+		return ValidationResult.invalidWithDepth(.pdf, errmsg.fileTooSmallFor("valid PDF"), .structural);
 	}
 
 	const structural_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
@@ -12082,10 +12083,10 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
     const small_search: usize = @min(1024, file_size);
     search_start = file_size - small_search;
     file.seekTo(search_start) catch {
-        return ValidationResult.invalidWithDepth(.pdf, "Failed to seek to trailer area", .structural);
+        return ValidationResult.invalidWithDepth(.pdf, errmsg.failedToSeek("to trailer area"), .structural);
     };
     bytes_read = file.read(buffer[0..small_search]) catch {
-        return ValidationResult.invalidWithDepth(.pdf, "Failed to read trailer area", .structural);
+        return ValidationResult.invalidWithDepth(.pdf, errmsg.failedToRead("trailer area"), .structural);
     };
 
     var eof_pos = std.mem.lastIndexOf(u8, buffer[0..bytes_read], eof_marker);
@@ -12095,10 +12096,10 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
         const large_search: usize = @min(8192, file_size);
         search_start = file_size - large_search;
         file.seekTo(search_start) catch {
-            return ValidationResult.invalidWithDepth(.pdf, "Failed to seek to trailer area", .structural);
+            return ValidationResult.invalidWithDepth(.pdf, errmsg.failedToSeek("to trailer area"), .structural);
         };
         bytes_read = file.read(buffer[0..large_search]) catch {
-            return ValidationResult.invalidWithDepth(.pdf, "Failed to read trailer area", .structural);
+            return ValidationResult.invalidWithDepth(.pdf, errmsg.failedToRead("trailer area"), .structural);
         };
         eof_pos = std.mem.lastIndexOf(u8, buffer[0..bytes_read], eof_marker);
     }
@@ -12106,7 +12107,7 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
     const trailer_data = buffer[0..bytes_read];
 
     if (eof_pos == null) {
-        return ValidationResult.invalidWithDepth(.pdf, "Missing %%EOF marker", .full);
+        return ValidationResult.invalidWithDepth(.pdf, errmsg.missing("%%EOF marker"), .full);
     }
 
     // Check for garbage after %%EOF (allowing only whitespace/newlines)
@@ -12127,7 +12128,7 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
     const startxref_marker = "startxref";
     const startxref_pos = std.mem.lastIndexOf(u8, trailer_data[0..eof_pos.?], startxref_marker);
     if (startxref_pos == null) {
-        return ValidationResult.invalidWithDepth(.pdf, "Missing startxref keyword", .full);
+        return ValidationResult.invalidWithDepth(.pdf, errmsg.missing("startxref keyword"), .full);
     }
 
     // Parse the startxref value (number following "startxref")
@@ -12143,12 +12144,12 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Seek to xref position and verify it's valid
     file.seekTo(xref_offset) catch {
-        return ValidationResult.invalidWithDepth(.pdf, "Failed to seek to xref table", .full);
+        return ValidationResult.invalidWithDepth(.pdf, errmsg.failedToSeek("to xref table"), .full);
     };
 
     var xref_header: [20]u8 = undefined;
     const xref_bytes = file.read(&xref_header) catch {
-        return ValidationResult.invalidWithDepth(.pdf, "Failed to read at startxref position", .full);
+        return ValidationResult.invalidWithDepth(.pdf, errmsg.failedToRead("at startxref position"), .full);
     };
 
     // Skip leading whitespace (some PDF writers put newlines before xref)
@@ -12229,7 +12230,7 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
 
     if (read_bytes != file_size) {
-        return ValidationResult.invalidWithDepth(.pdf, "Incomplete read of PDF", .full);
+        return ValidationResult.invalidWithDepth(.pdf, errmsg.incomplete("read of PDF"), .full);
     }
 
 	// Validate embedded images
@@ -12349,7 +12350,7 @@ fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Validat
     const eof_marker = "%%EOF";
     const eof_pos = std.mem.lastIndexOf(u8, pdf_data, eof_marker);
     if (eof_pos == null) {
-        return ValidationResult.invalidWithDepth(.pdf, "Missing %%EOF marker", .full);
+        return ValidationResult.invalidWithDepth(.pdf, errmsg.missing("%%EOF marker"), .full);
     }
 
     // Check for garbage after %%EOF
@@ -12368,7 +12369,7 @@ fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Validat
     const startxref_marker = "startxref";
     const startxref_pos = std.mem.lastIndexOf(u8, pdf_data[0..eof_pos.?], startxref_marker);
     if (startxref_pos == null) {
-        return ValidationResult.invalidWithDepth(.pdf, "Missing startxref keyword", .full);
+        return ValidationResult.invalidWithDepth(.pdf, errmsg.missing("startxref keyword"), .full);
     }
 
     // Parse xref offset
@@ -12520,14 +12521,14 @@ pub fn validateGzipDeep(allocator: Allocator, path: []const u8) ValidationResult
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.gzip, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.gzip, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.gzip, "Failed to open file", .structural),
+            else => ValidationResult.invalidWithDepth(.gzip, errmsg.failedToOpen("file"), .structural),
         };
     };
     defer file.close();
 
     // Get file size
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.gzip, "Failed to get file size", .structural);
+        return ValidationResult.invalidWithDepth(.gzip, errmsg.failedToGet("file size"), .structural);
     };
 
     if (file_size < 18) { // Minimum gzip: 10 header + 8 trailer
@@ -12537,20 +12538,20 @@ pub fn validateGzipDeep(allocator: Allocator, path: []const u8) ValidationResult
     // Limit file size to prevent memory exhaustion (1GB max for gzip validation)
     const max_gzip_size: u64 = 1024 * 1024 * 1024;
     if (file_size > max_gzip_size) {
-        return ValidationResult.invalidWithDepth(.gzip, "File too large for validation", .structural);
+        return ValidationResult.invalidWithDepth(.gzip, errmsg.fileTooLargeFor("validation"), .structural);
     }
 
     // Read entire file
     const file_data = allocator.alloc(u8, file_size) catch {
-        return ValidationResult.invalidWithDepth(.gzip, "Failed to allocate read buffer", .structural);
+        return ValidationResult.invalidWithDepth(.gzip, errmsg.failedToAllocate("read buffer"), .structural);
     };
     defer allocator.free(file_data);
 
     const bytes_read = file.readAll(file_data) catch {
-        return ValidationResult.invalidWithDepth(.gzip, "Failed to read file", .structural);
+        return ValidationResult.invalidWithDepth(.gzip, errmsg.failedToRead("file"), .structural);
     };
     if (bytes_read != file_size) {
-        return ValidationResult.invalidWithDepth(.gzip, "Incomplete file read", .structural);
+        return ValidationResult.invalidWithDepth(.gzip, errmsg.incomplete("file read"), .structural);
     }
 
     // Validate header
@@ -12696,14 +12697,14 @@ fn validateBzip2Deep(allocator: Allocator, path: []const u8) ValidationResult {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.bzip2, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.bzip2, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.bzip2, "Failed to open file", .structural),
+            else => ValidationResult.invalidWithDepth(.bzip2, errmsg.failedToOpen("file"), .structural),
         };
     };
     defer file.close();
 
     // Get file size
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.bzip2, "Failed to get file size", .structural);
+        return ValidationResult.invalidWithDepth(.bzip2, errmsg.failedToGet("file size"), .structural);
     };
 
     if (file_size < 14) {
@@ -12719,20 +12720,20 @@ fn validateBzip2Deep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     const compressed_data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidWithDepth(.bzip2, "Out of memory", .structural);
+        return ValidationResult.invalidWithDepth(.bzip2, errmsg.outOfMemory("for bzip2"), .structural);
     };
     defer allocator.free(compressed_data);
 
     file.seekTo(0) catch {
-        return ValidationResult.invalidWithDepth(.bzip2, "Failed to seek", .structural);
+        return ValidationResult.invalidWithDepth(.bzip2, errmsg.failedToSeek("in bzip2 data"), .structural);
     };
 
     const bytes_read = file.readAll(compressed_data) catch {
-        return ValidationResult.invalidWithDepth(.bzip2, "Failed to read file", .structural);
+        return ValidationResult.invalidWithDepth(.bzip2, errmsg.failedToRead("file"), .structural);
     };
 
     if (bytes_read != file_size) {
-        return ValidationResult.invalidWithDepth(.bzip2, "Incomplete read", .structural);
+        return ValidationResult.invalidWithDepth(.bzip2, errmsg.incomplete("read"), .structural);
     }
 
     // Validate header
@@ -12763,7 +12764,7 @@ fn validateBzip2Deep(allocator: Allocator, path: []const u8) ValidationResult {
             error.InvalidSelector => ValidationResult.invalidWithDepth(.bzip2, "Invalid selector", .structural),
             error.UnexpectedEof => ValidationResult.invalidWithDepth(.bzip2, "Unexpected end of file", .structural),
             error.InvalidBwtIndex => ValidationResult.invalidWithDepth(.bzip2, "Invalid BWT index", .structural),
-            error.OutOfMemory => ValidationResult.invalidWithDepth(.bzip2, "Out of memory during decompression", .structural),
+            error.OutOfMemory => ValidationResult.invalidWithDepth(.bzip2, errmsg.outOfMemory("during decompression"), .structural),
             else => ValidationResult.invalidWithDepth(.bzip2, "Decompression failed", .structural),
         };
     };
@@ -12776,12 +12777,12 @@ fn validateBzip2Deep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Structural validation for large bzip2 files (>1GB compressed)
 fn validateBzip2LargeFile(file: std.fs.File) ValidationResult {
     file.seekTo(0) catch {
-        return ValidationResult.invalidWithDepth(.bzip2, "Failed to seek", .structural);
+        return ValidationResult.invalidWithDepth(.bzip2, errmsg.failedToSeek("in bzip2 data"), .structural);
     };
 
     var header: [4]u8 = undefined;
     _ = file.read(&header) catch {
-        return ValidationResult.invalidWithDepth(.bzip2, "Failed to read header", .structural);
+        return ValidationResult.invalidWithDepth(.bzip2, errmsg.failedToRead("header"), .structural);
     };
 
     if (!std.mem.eql(u8, header[0..3], &BZIP2_SIGNATURE)) {
@@ -12807,14 +12808,14 @@ fn validateXzDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.xz, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.xz, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.xz, "Failed to open file", .structural),
+            else => ValidationResult.invalidWithDepth(.xz, errmsg.failedToOpen("file"), .structural),
         };
     };
     defer file.close();
 
     // Get file size for basic validation
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.xz, "Failed to get file size", .structural);
+        return ValidationResult.invalidWithDepth(.xz, errmsg.failedToGet("file size"), .structural);
     };
 
     if (file_size < 32) { // Minimum XZ: 12 header + index + 12 footer
@@ -12875,14 +12876,14 @@ fn validateZstdDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.zstd, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.zstd, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.zstd, "Failed to open file", .structural),
+            else => ValidationResult.invalidWithDepth(.zstd, errmsg.failedToOpen("file"), .structural),
         };
     };
     defer file.close();
 
     // Get file size for basic validation
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.zstd, "Failed to get file size", .structural);
+        return ValidationResult.invalidWithDepth(.zstd, errmsg.failedToGet("file size"), .structural);
     };
 
     if (file_size < 8) { // Minimum Zstd frame
@@ -13011,7 +13012,7 @@ fn validateDmgDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.dmg, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.dmg, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.dmg, "Failed to open file", .structural),
+            else => ValidationResult.invalidWithDepth(.dmg, errmsg.failedToOpen("file"), .structural),
         };
     };
     defer file.close();
@@ -13043,20 +13044,20 @@ fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.iso, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.iso, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.iso, "Failed to open file", .structural),
+            else => ValidationResult.invalidWithDepth(.iso, errmsg.failedToOpen("file"), .structural),
         };
     };
     defer file.close();
 
     // Get file size
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.iso, "Failed to get file size", .structural);
+        return ValidationResult.invalidWithDepth(.iso, errmsg.failedToGet("file size"), .structural);
     };
 
     // ISO 9660 minimum: 32KB system area + at least one volume descriptor sector
     const min_iso_size: u64 = 32 * 1024 + 2048;
     if (file_size < min_iso_size) {
-        return ValidationResult.invalidWithDepth(.iso, "File too small for ISO 9660", .structural);
+        return ValidationResult.invalidWithDepth(.iso, errmsg.fileTooSmallFor("ISO 9660"), .structural);
     }
 
     // Read enough data for validation (volume descriptors + root directory)
@@ -13069,15 +13070,15 @@ fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult {
     defer allocator.free(data);
 
     file.seekTo(0) catch {
-        return ValidationResult.invalidWithDepth(.iso, "Failed to seek to start", .structural);
+        return ValidationResult.invalidWithDepth(.iso, errmsg.failedToSeek("to start"), .structural);
     };
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalidWithDepth(.iso, "Failed to read file", .structural);
+        return ValidationResult.invalidWithDepth(.iso, errmsg.failedToRead("file"), .structural);
     };
 
     if (bytes_read < min_iso_size) {
-        return ValidationResult.invalidWithDepth(.iso, "Incomplete read", .structural);
+        return ValidationResult.invalidWithDepth(.iso, errmsg.incomplete("read"), .structural);
     }
 
     // Use iso9660_parser for validation
@@ -13094,17 +13095,17 @@ fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Simple ISO signature validation (fallback for memory-constrained situations)
 fn validateIsoSignature(file: std.fs.File) ValidationResult {
     // ISO 9660 has "CD001" at offset 0x8001 (32769) for primary volume descriptor
-    file.seekTo(0x8001) catch return ValidationResult.invalid(.iso, "Failed to seek to volume descriptor");
+    file.seekTo(0x8001) catch return ValidationResult.invalid(.iso, errmsg.failedToSeek("to volume descriptor"));
 
     var descriptor: [5]u8 = undefined;
-    const desc_read = file.read(&descriptor) catch return ValidationResult.invalid(.iso, "Failed to read volume descriptor");
+    const desc_read = file.read(&descriptor) catch return ValidationResult.invalid(.iso, errmsg.failedToRead("volume descriptor"));
 
     if (desc_read < 5) {
-        return ValidationResult.invalid(.iso, "File too small for ISO 9660");
+        return ValidationResult.invalid(.iso, errmsg.fileTooSmallFor("ISO 9660"));
     }
 
     if (!std.mem.eql(u8, &descriptor, "CD001")) {
-        return ValidationResult.invalid(.iso, "Invalid ISO 9660 signature");
+        return ValidationResult.invalid(.iso, errmsg.invalidSignature("ISO 9660"));
     }
 
     return ValidationResult.okWithDepth(.iso, .structural);
@@ -13229,23 +13230,23 @@ pub fn isAppleDouble(data: []const u8) bool {
 fn validateAppleDouble(file: std.fs.File) ValidationResult {
     var header: [26]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.unknown, "Failed to read AppleDouble header");
+        return ValidationResult.invalid(.unknown, errmsg.failedToRead("AppleDouble header"));
     };
 
     if (bytes_read < 26) {
-        return ValidationResult.invalid(.unknown, "File too small for AppleDouble");
+        return ValidationResult.invalid(.unknown, errmsg.fileTooSmallFor("AppleDouble"));
     }
 
     // Check magic
     const magic = std.mem.readInt(u32, header[0..4], .big);
     if (magic != APPLEDOUBLE_MAGIC and magic != APPLESINGLE_MAGIC) {
-        return ValidationResult.invalid(.unknown, "Invalid AppleDouble signature");
+        return ValidationResult.invalid(.unknown, errmsg.invalidSignature("AppleDouble"));
     }
 
     // Check version (should be 0x00020000)
     const version = std.mem.readInt(u32, header[4..8], .big);
     if (version != 0x00020000) {
-        return ValidationResult.invalid(.unknown, "Unsupported AppleDouble version");
+        return ValidationResult.invalid(.unknown, errmsg.unsupported("AppleDouble version"));
     }
 
     // Number of entries (bytes 24-25)
@@ -13264,11 +13265,11 @@ fn validateAppleDouble(file: std.fs.File) ValidationResult {
 fn validateClarisWorks(file: std.fs.File) ValidationResult {
     var header: [32]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.cwk, "Failed to read ClarisWorks header");
+        return ValidationResult.invalid(.cwk, errmsg.failedToRead("ClarisWorks header"));
     };
 
     if (bytes_read < 8) {
-        return ValidationResult.invalid(.cwk, "File too small for ClarisWorks");
+        return ValidationResult.invalid(.cwk, errmsg.fileTooSmallFor("ClarisWorks"));
     }
 
     // ClarisWorks/AppleWorks has multiple magic signatures depending on version
@@ -13294,11 +13295,11 @@ fn validateClarisWorks(file: std.fs.File) ValidationResult {
 fn validateMacWrite(file: std.fs.File) ValidationResult {
     var header: [16]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.mwd, "Failed to read MacWrite header");
+        return ValidationResult.invalid(.mwd, errmsg.failedToRead("MacWrite header"));
     };
 
     if (bytes_read < 8) {
-        return ValidationResult.invalid(.mwd, "File too small for MacWrite");
+        return ValidationResult.invalid(.mwd, errmsg.fileTooSmallFor("MacWrite"));
     }
 
     // MacWrite II uses version bytes at offset 0
@@ -13411,16 +13412,16 @@ pub const FormatValidator = struct {
 
         // Check if path is a directory (but not a known bundle)
         const stat = std.fs.cwd().statFile(path) catch {
-            return ValidationResult.invalid(.unknown, "Failed to open file");
+            return ValidationResult.invalid(.unknown, errmsg.failedToOpen("file"));
         };
         if (stat.kind == .directory) {
             // Directory that is not a known bundle type - return continuable error
-            return ValidationResult.invalid(.unknown, "Unknown directory type (not a recognized bundle)");
+            return ValidationResult.invalid(.unknown, errmsg.unknown("directory type (not a recognized bundle)"));
         }
 
         // Open the file
         const file = std.fs.cwd().openFile(path, .{}) catch {
-            return ValidationResult.invalid(.unknown, "Failed to open file");
+            return ValidationResult.invalid(.unknown, errmsg.failedToOpen("file"));
         };
         defer file.close();
 
@@ -13992,7 +13993,7 @@ pub const FormatValidator = struct {
 
         // Check if Info.plist exists
         std.fs.cwd().access(info_plist_path, .{}) catch {
-            return ValidationResult.invalidWithDepth(.macos_app, "Missing Contents/Info.plist", .structural);
+            return ValidationResult.invalidWithDepth(.macos_app, errmsg.missing("Contents/Info.plist"), .structural);
         };
 
         // Check for Contents/MacOS directory
@@ -14001,7 +14002,7 @@ pub const FormatValidator = struct {
         };
 
         std.fs.cwd().access(macos_dir_path, .{}) catch {
-            return ValidationResult.invalidWithDepth(.macos_app, "Missing Contents/MacOS directory", .structural);
+            return ValidationResult.invalidWithDepth(.macos_app, errmsg.missing("Contents/MacOS directory"), .structural);
         };
 
         return ValidationResult.okWithDepth(.macos_app, .structural);
@@ -14041,7 +14042,7 @@ pub const FormatValidator = struct {
         if (std.fs.cwd().access(resources_path, .{})) |_| {
             return ValidationResult.okWithDepth(.macos_framework, .structural);
         } else |_| {
-            return ValidationResult.invalidWithDepth(.macos_framework, "Missing Versions, Headers, or Resources directory", .structural);
+            return ValidationResult.invalidWithDepth(.macos_framework, errmsg.missing("Versions, Headers, or Resources directory"), .structural);
         }
     }
 
@@ -14068,7 +14069,7 @@ pub const FormatValidator = struct {
         if (std.fs.cwd().access(flat_info_path, .{})) |_| {
             return ValidationResult.okWithDepth(.macos_bundle, .structural);
         } else |_| {
-            return ValidationResult.invalidWithDepth(.macos_bundle, "Missing Info.plist", .structural);
+            return ValidationResult.invalidWithDepth(.macos_bundle, errmsg.missing("Info.plist"), .structural);
         }
     }
 
@@ -14084,7 +14085,7 @@ pub const FormatValidator = struct {
         // - MOD files (signature at offset 1080)
         var header: [1088]u8 = undefined;
         const header_bytes = file.read(&header) catch {
-            return ValidationResult.invalid(.unknown, "Failed to read file header");
+            return ValidationResult.invalid(.unknown, errmsg.failedToRead("file header"));
         };
 
         if (header_bytes < 4) {
@@ -14124,7 +14125,7 @@ pub const FormatValidator = struct {
                 // because file-based validators use absolute seeks which won't work with the offset.
                 // Read the file into memory and use buffer-based validation.
                 const file_size = file.getEndPos() catch {
-                    return ValidationResult.invalid(format, "Failed to get file size");
+                    return ValidationResult.invalid(format, errmsg.failedToGet("file size"));
                 };
 
                 // Sanity check - don't try to load huge files into memory
@@ -14139,7 +14140,7 @@ pub const FormatValidator = struct {
                 // Find the end of embedded content (before closing MIME boundary)
                 // Read enough to find the closing boundary
                 file.seekTo(0) catch {
-                    return ValidationResult.invalid(format, "Failed to seek");
+                    return ValidationResult.invalid(format, errmsg.failedToSeek("to start of file"));
                 };
 
                 // Use stack buffer for small files, otherwise skip deep validation
@@ -14159,14 +14160,14 @@ pub const FormatValidator = struct {
 
                 // For structural validation, use the buffer-based validator
                 file.seekTo(mime_content_offset) catch {
-                    return ValidationResult.invalid(format, "Failed to seek to embedded content");
+                    return ValidationResult.invalid(format, errmsg.failedToSeek("to embedded content"));
                 };
 
                 // Read embedded content into stack buffer if small enough
                 var embedded_buffer: [65536]u8 = undefined;
                 if (embedded_size <= embedded_buffer.len) {
                     const read_bytes = file.read(embedded_buffer[0..@intCast(embedded_size)]) catch {
-                        return ValidationResult.invalid(format, "Failed to read embedded content");
+                        return ValidationResult.invalid(format, errmsg.failedToRead("embedded content"));
                     };
                     const buffer_result = validateDataBufferFormat(embedded_buffer[0..read_bytes], format);
                     var result = buffer_result;
@@ -14184,14 +14185,14 @@ pub const FormatValidator = struct {
 
         // Reset file position
         file.seekTo(0) catch {
-            return ValidationResult.invalid(format, "Failed to seek to start");
+            return ValidationResult.invalid(format, errmsg.failedToSeek("to start"));
         };
 
         // For ZIP files, try to detect subformat
         if (format == .zip) {
             format = detectZipSubformat(file);
             file.seekTo(0) catch {
-                return ValidationResult.invalid(format, "Failed to seek to start");
+                return ValidationResult.invalid(format, errmsg.failedToSeek("to start"));
             };
         }
 
@@ -14199,7 +14200,7 @@ pub const FormatValidator = struct {
         if (format == .mkv) {
             format = detectMatroskaSubformat(file);
             file.seekTo(0) catch {
-                return ValidationResult.invalid(format, "Failed to seek to start");
+                return ValidationResult.invalid(format, errmsg.failedToSeek("to start"));
             };
         }
 
@@ -14207,7 +14208,7 @@ pub const FormatValidator = struct {
         if (format == .doc) {
             format = detectOle2Subformat(file);
             file.seekTo(0) catch {
-                return ValidationResult.invalid(format, "Failed to seek to start");
+                return ValidationResult.invalid(format, errmsg.failedToSeek("to start"));
             };
         }
 
@@ -14549,7 +14550,7 @@ fn validateZipFromBuffer(data: []const u8, format: FileFormat) ValidationResult 
         // TODO: Full ZIP validation (EOCD check)
         return ValidationResult.ok(format);
     }
-    return ValidationResult.invalid(format, "Invalid ZIP signature");
+    return ValidationResult.invalid(format, errmsg.invalidSignature("ZIP"));
 }
 
 pub fn validatePdfFromBuffer(data: []const u8) ValidationResult {
@@ -14557,7 +14558,7 @@ pub fn validatePdfFromBuffer(data: []const u8) ValidationResult {
     if (std.mem.eql(u8, data[0..5], "%PDF-")) {
         return ValidationResult.ok(.pdf);
     }
-    return ValidationResult.invalid(.pdf, "Invalid PDF signature");
+    return ValidationResult.invalid(.pdf, errmsg.invalidSignature("PDF"));
 }
 
 
@@ -14569,7 +14570,7 @@ fn validateGzipFromBuffer(data: []const u8) ValidationResult {
     if (data[0] == 0x1F and data[1] == 0x8B) {
         return ValidationResult.ok(.gzip);
     }
-    return ValidationResult.invalid(.gzip, "Invalid GZIP signature");
+    return ValidationResult.invalid(.gzip, errmsg.invalidSignature("GZIP"));
 }
 
 fn validateBzip2FromBuffer(data: []const u8) ValidationResult {
@@ -14577,7 +14578,7 @@ fn validateBzip2FromBuffer(data: []const u8) ValidationResult {
     if (data[0] == 'B' and data[1] == 'Z' and data[2] == 'h') {
         return ValidationResult.ok(.bzip2);
     }
-    return ValidationResult.invalid(.bzip2, "Invalid BZIP2 signature");
+    return ValidationResult.invalid(.bzip2, errmsg.invalidSignature("BZIP2"));
 }
 
 fn validateXzFromBuffer(data: []const u8) ValidationResult {
@@ -14586,7 +14587,7 @@ fn validateXzFromBuffer(data: []const u8) ValidationResult {
     if (std.mem.eql(u8, data[0..6], &xz_sig)) {
         return ValidationResult.ok(.xz);
     }
-    return ValidationResult.invalid(.xz, "Invalid XZ signature");
+    return ValidationResult.invalid(.xz, errmsg.invalidSignature("XZ"));
 }
 
 fn validateZstdFromBuffer(data: []const u8) ValidationResult {
@@ -14595,7 +14596,7 @@ fn validateZstdFromBuffer(data: []const u8) ValidationResult {
     if (data[0] == 0x28 and data[1] == 0xB5 and data[2] == 0x2F and data[3] == 0xFD) {
         return ValidationResult.ok(.zstd);
     }
-    return ValidationResult.invalid(.zstd, "Invalid ZSTD signature");
+    return ValidationResult.invalid(.zstd, errmsg.invalidSignature("ZSTD"));
 }
 
 fn validateRarFromBuffer(data: []const u8) ValidationResult {
@@ -14607,7 +14608,7 @@ fn validateRarFromBuffer(data: []const u8) ValidationResult {
     if (std.mem.eql(u8, data[0..7], &rar5_sig) or std.mem.eql(u8, data[0..7], &rar4_sig)) {
         return ValidationResult.ok(.rar);
     }
-    return ValidationResult.invalid(.rar, "Invalid RAR signature");
+    return ValidationResult.invalid(.rar, errmsg.invalidSignature("RAR"));
 }
 
 fn validate7zFromBuffer(data: []const u8) ValidationResult {
@@ -14616,7 +14617,7 @@ fn validate7zFromBuffer(data: []const u8) ValidationResult {
     if (std.mem.eql(u8, data[0..6], &sig_7z)) {
         return ValidationResult.ok(.sevenz);
     }
-    return ValidationResult.invalid(.sevenz, "Invalid 7z signature");
+    return ValidationResult.invalid(.sevenz, errmsg.invalidSignature("7z"));
 }
 
 // ============ BEAM Bytecode Validation ============
@@ -14624,15 +14625,15 @@ fn validate7zFromBuffer(data: []const u8) ValidationResult {
 /// Validate Erlang/Elixir BEAM bytecode files.
 fn validateBeam(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.beam, "Failed to stat file");
+        return ValidationResult.invalid(.beam, errmsg.failedToStat("file"));
     };
-    if (stat.size < 12) return ValidationResult.invalid(.beam, "File too small for BEAM format");
+    if (stat.size < 12) return ValidationResult.invalid(.beam, errmsg.fileTooSmallFor("BEAM format"));
 
     var header: [12]u8 = undefined;
     const bytes_read = file.readAll(&header) catch {
-        return ValidationResult.invalid(.beam, "Failed to read header");
+        return ValidationResult.invalid(.beam, errmsg.failedToRead("header"));
     };
-    if (bytes_read < 12) return ValidationResult.invalid(.beam, "Truncated header");
+    if (bytes_read < 12) return ValidationResult.invalid(.beam, errmsg.truncated("header"));
     if (!std.mem.eql(u8, header[0..4], "FOR1")) return ValidationResult.invalid(.beam, "Missing FOR1 magic");
     if (!std.mem.eql(u8, header[8..12], "BEAM")) return ValidationResult.invalid(.beam, "Not a BEAM file (wrong form type)");
 
@@ -14648,8 +14649,8 @@ fn validateBeam(file: std.fs.File) ValidationResult {
 
     while (offset + 8 <= chunk_area_end) {
         var chunk_header_buf: [8]u8 = undefined;
-        file.seekTo(offset) catch return ValidationResult.invalid(.beam, "Failed to seek to chunk");
-        const chunk_bytes = file.readAll(&chunk_header_buf) catch return ValidationResult.invalid(.beam, "Failed to read chunk header");
+        file.seekTo(offset) catch return ValidationResult.invalid(.beam, errmsg.failedToSeek("to chunk"));
+        const chunk_bytes = file.readAll(&chunk_header_buf) catch return ValidationResult.invalid(.beam, errmsg.failedToRead("chunk header"));
         if (chunk_bytes < 8) break;
 
         const chunk_name = chunk_header_buf[0..4];
@@ -14661,12 +14662,12 @@ fn validateBeam(file: std.fs.File) ValidationResult {
         const padded_size = (chunk_size + 3) & ~@as(u32, 3);
         offset = offset + 8 + padded_size;
         chunk_count += 1;
-        if (chunk_count > 1000) return ValidationResult.invalid(.beam, "Too many chunks (likely corrupt)");
+        if (chunk_count > 1000) return ValidationResult.invalid(.beam, errmsg.tooMany("chunks (likely corrupt)"));
     }
 
     if (chunk_count == 0) return ValidationResult.invalid(.beam, "No chunks found");
-    if (!has_atom_table) return ValidationResult.invalid(.beam, "Missing atom table chunk");
-    if (!has_code) return ValidationResult.invalid(.beam, "Missing code chunk");
+    if (!has_atom_table) return ValidationResult.invalid(.beam, errmsg.missing("atom table chunk"));
+    if (!has_code) return ValidationResult.invalid(.beam, errmsg.missing("code chunk"));
     return ValidationResult.okWithDepth(.beam, .full);
 }
 
@@ -14800,21 +14801,21 @@ pub fn stripDoctypeDeclaration(content: []const u8) DoctypeStrippedResult {
 /// Validate Apple Property List files (XML or binary format).
 fn validatePlist(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.plist, "Failed to stat file");
+        return ValidationResult.invalid(.plist, errmsg.failedToStat("file"));
     };
 
     if (stat.size < 8) {
-        return ValidationResult.invalid(.plist, "File too small for plist format");
+        return ValidationResult.invalid(.plist, errmsg.fileTooSmallFor("plist format"));
     }
 
     // Read header to determine format
     var header: [16]u8 = undefined;
     const bytes_read = file.readAll(&header) catch {
-        return ValidationResult.invalid(.plist, "Failed to read header");
+        return ValidationResult.invalid(.plist, errmsg.failedToRead("header"));
     };
 
     if (bytes_read < 8) {
-        return ValidationResult.invalid(.plist, "Truncated header");
+        return ValidationResult.invalid(.plist, errmsg.truncated("header"));
     }
 
     // Check for binary plist magic: "bplist00" or "bplist01"
@@ -14831,33 +14832,33 @@ fn validatePlist(file: std.fs.File) ValidationResult {
 /// Format: 0x00000001 (big-endian) + "Bud1" magic + allocator + B-tree structure
 fn validateDsStore(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.ds_store, "Failed to stat file");
+        return ValidationResult.invalid(.ds_store, errmsg.failedToStat("file"));
     };
 
     // Minimum size: header (32 bytes minimum)
     if (stat.size < 32) {
-        return ValidationResult.invalid(.ds_store, "File too small for DS_Store format");
+        return ValidationResult.invalid(.ds_store, errmsg.fileTooSmallFor("DS_Store format"));
     }
 
     // Read header
     var header: [32]u8 = undefined;
     file.seekTo(0) catch {
-        return ValidationResult.invalid(.ds_store, "Failed to seek to start");
+        return ValidationResult.invalid(.ds_store, errmsg.failedToSeek("to start"));
     };
     const bytes_read = file.readAll(&header) catch {
-        return ValidationResult.invalid(.ds_store, "Failed to read header");
+        return ValidationResult.invalid(.ds_store, errmsg.failedToRead("header"));
     };
 
     if (bytes_read < 32) {
-        return ValidationResult.invalid(.ds_store, "Truncated header");
+        return ValidationResult.invalid(.ds_store, errmsg.truncated("header"));
     }
 
     // Verify magic: 0x00000001 (big-endian) + "Bud1"
     if (!std.mem.eql(u8, header[0..4], &[_]u8{ 0x00, 0x00, 0x00, 0x01 })) {
-        return ValidationResult.invalid(.ds_store, "Invalid DS_Store magic number");
+        return ValidationResult.invalid(.ds_store, errmsg.invalidMagicNumber("DS_Store"));
     }
     if (!std.mem.eql(u8, header[4..8], "Bud1")) {
-        return ValidationResult.invalid(.ds_store, "Invalid DS_Store Bud1 signature");
+        return ValidationResult.invalid(.ds_store, errmsg.invalidSignature("DS_Store Bud1"));
     }
 
     // Header structure (all big-endian):
@@ -14895,16 +14896,16 @@ fn validateDsStore(file: std.fs.File) ValidationResult {
     }
 
     file.seekTo(bookkeeping_offset) catch {
-        return ValidationResult.invalid(.ds_store, "Failed to seek to bookkeeping");
+        return ValidationResult.invalid(.ds_store, errmsg.failedToSeek("to bookkeeping"));
     };
 
     var bk_header: [16]u8 = undefined;
     const bk_read = file.read(&bk_header) catch {
-        return ValidationResult.invalid(.ds_store, "Failed to read bookkeeping");
+        return ValidationResult.invalid(.ds_store, errmsg.failedToRead("bookkeeping"));
     };
 
     if (bk_read < 8) {
-        return ValidationResult.invalid(.ds_store, "Truncated bookkeeping header");
+        return ValidationResult.invalid(.ds_store, errmsg.truncated("bookkeeping header"));
     }
 
     // Block allocation count at offset 4
@@ -14930,15 +14931,15 @@ fn validateDsStore(file: std.fs.File) ValidationResult {
 /// is proprietary and undocumented, so we verify the magic and return structural.
 fn validateSpotlight(file: std.fs.File) ValidationResult {
     file.seekTo(0) catch {
-        return ValidationResult.invalid(.spotlight, "Failed to seek");
+        return ValidationResult.invalid(.spotlight, errmsg.failedToSeek("in Spotlight file"));
     };
 
     var header: [8]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.spotlight, "Failed to read header");
+        return ValidationResult.invalid(.spotlight, errmsg.failedToRead("header"));
     };
     if (bytes_read < 8) {
-        return ValidationResult.invalid(.spotlight, "Truncated header");
+        return ValidationResult.invalid(.spotlight, errmsg.truncated("header"));
     }
 
     // Verify "8tsd" magic
@@ -14957,12 +14958,12 @@ fn validateSpotlight(file: std.fs.File) ValidationResult {
 /// AMR-WB (wide-band): magic "#!AMR-WB\n" (9 bytes)
 /// Multi-channel variants: "#!AMR_MC1.0\n" (12) and "#!AMR-WB_MC1.0\n" (15)
 fn validateAmr(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.amr, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.amr, errmsg.failedToSeek("in AMR file"));
 
     var header: [15]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.amr, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.amr, errmsg.failedToRead("header"));
 
-    if (bytes_read < 6) return ValidationResult.invalid(.amr, "Truncated header");
+    if (bytes_read < 6) return ValidationResult.invalid(.amr, errmsg.truncated("header"));
 
     // Check for AMR-WB multi-channel: "#!AMR-WB_MC1.0\n"
     if (bytes_read >= 15 and std.mem.eql(u8, header[0..15], "#!AMR-WB_MC1.0\n")) {
@@ -15000,7 +15001,7 @@ fn validateAmr(file: std.fs.File) ValidationResult {
         return ValidationResult.structuralOnly(.amr);
     }
 
-    return ValidationResult.invalid(.amr, "Invalid AMR magic bytes");
+    return ValidationResult.invalid(.amr, errmsg.invalidMagic("AMR"));
 }
 
 // ============ AU/SND Validator ============
@@ -15008,12 +15009,12 @@ fn validateAmr(file: std.fs.File) ValidationResult {
 /// Validate AU/SND (Sun/NeXT audio) file structure.
 /// 24-byte header, all big-endian: magic ".snd", data_offset, data_size, encoding, sample_rate, channels.
 fn validateAu(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.au, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.au, errmsg.failedToSeek("in AU file"));
 
     var header: [24]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.au, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.au, errmsg.failedToRead("header"));
 
-    if (bytes_read < 24) return ValidationResult.invalid(.au, "Truncated header (need 24 bytes)");
+    if (bytes_read < 24) return ValidationResult.invalid(.au, errmsg.truncated("header (need 24 bytes)"));
 
     if (!std.mem.eql(u8, header[0..4], ".snd")) {
         return ValidationResult.invalid(.au, "Invalid AU magic (expected .snd)");
@@ -15067,12 +15068,12 @@ fn validateAu(file: std.fs.File) ValidationResult {
 /// Validate TTA (True Audio) lossless file structure.
 /// TTA1 header: magic "TTA1"(4) + format(2,LE) + channels(2,LE) + bps(2,LE) + rate(4,LE) + samples(4,LE) + CRC32(4,LE) = 22 bytes.
 fn validateTta(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.tta, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.tta, errmsg.failedToSeek("in TTA file"));
 
     var header: [22]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.tta, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.tta, errmsg.failedToRead("header"));
 
-    if (bytes_read < 22) return ValidationResult.invalid(.tta, "Truncated header (need 22 bytes)");
+    if (bytes_read < 22) return ValidationResult.invalid(.tta, errmsg.truncated("header (need 22 bytes)"));
 
     if (!std.mem.eql(u8, header[0..4], "TTA1")) {
         return ValidationResult.invalid(.tta, "Invalid TTA magic (expected TTA1)");
@@ -15122,7 +15123,7 @@ fn validateTta(file: std.fs.File) ValidationResult {
                 return ValidationResult.structuralOnly(.tta);
             };
             if (file_size < 22 + seek_table_size) {
-                return ValidationResult.invalid(.tta, "File too small for seek table");
+                return ValidationResult.invalid(.tta, errmsg.fileTooSmallFor("seek table"));
             }
         }
     }
@@ -15136,22 +15137,22 @@ fn validateTta(file: std.fs.File) ValidationResult {
 /// File header: "caff"(4) + version(2,BE) + flags(2,BE) = 8 bytes.
 /// First chunk should be "desc" (Audio Description) with size 32.
 fn validateCaf(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.caf, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.caf, errmsg.failedToSeek("in CAF file"));
 
     var header: [20]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.caf, "Failed to read CAF header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.caf, errmsg.failedToRead("CAF header"));
 
     if (bytes_read < 20) {
-        return ValidationResult.invalid(.caf, "File too small for CAF header");
+        return ValidationResult.invalid(.caf, errmsg.fileTooSmallFor("CAF header"));
     }
 
     if (!std.mem.eql(u8, header[0..4], "caff")) {
-        return ValidationResult.invalid(.caf, "Invalid CAF magic bytes");
+        return ValidationResult.invalid(.caf, errmsg.invalidMagic("CAF"));
     }
 
     const version = std.mem.readInt(u16, header[4..6], .big);
     if (version != 1) {
-        return ValidationResult.invalid(.caf, "Unsupported CAF version (expected 1)");
+        return ValidationResult.invalid(.caf, errmsg.unsupported("CAF version (expected 1)"));
     }
 
     const flags = std.mem.readInt(u16, header[6..8], .big);
@@ -15176,17 +15177,17 @@ fn validateCaf(file: std.fs.File) ValidationResult {
 
 /// Validate standalone AAC ADTS (.aac) file using pure-Zig bitstream validator.
 fn validateAacAdts(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.aac_adts, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.aac_adts, errmsg.failedToSeek("in AAC ADTS file"));
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.aac_adts, "Failed to get file size");
-    if (file_size < 7) return ValidationResult.invalid(.aac_adts, "File too small for ADTS");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.aac_adts, errmsg.failedToGet("file size"));
+    if (file_size < 7) return ValidationResult.invalid(.aac_adts, errmsg.fileTooSmallFor("ADTS"));
 
     // Read up to 1MB for validation (covers many ADTS frames)
     const max_read: usize = 1024 * 1024;
     const read_size: usize = @min(file_size, max_read);
     var buf: [max_read]u8 = undefined;
-    const bytes_read = file.readAll(buf[0..read_size]) catch return ValidationResult.invalid(.aac_adts, "Failed to read ADTS data");
-    if (bytes_read < 7) return ValidationResult.invalid(.aac_adts, "Incomplete ADTS data");
+    const bytes_read = file.readAll(buf[0..read_size]) catch return ValidationResult.invalid(.aac_adts, errmsg.failedToRead("ADTS data"));
+    if (bytes_read < 7) return ValidationResult.invalid(.aac_adts, errmsg.incomplete("ADTS data"));
 
     const result = aac_syntax_validator.validateAdtsStream(buf[0..bytes_read]);
     if (!result.valid) {
@@ -15202,13 +15203,13 @@ fn validateAacAdts(file: std.fs.File) ValidationResult {
 /// Validate Portable Anymap (PBM/PGM/PPM/PAM) file structure.
 /// P1=PBM ASCII, P2=PGM ASCII, P3=PPM ASCII, P4=PBM binary, P5=PGM binary, P6=PPM binary, P7=PAM.
 fn validatePam(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.pam, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.pam, errmsg.failedToSeek("in PAM file"));
 
     var header: [256]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.pam, "Failed to read PAM header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.pam, errmsg.failedToRead("PAM header"));
 
     if (bytes_read < 3) {
-        return ValidationResult.invalid(.pam, "File too small for Portable Anymap header");
+        return ValidationResult.invalid(.pam, errmsg.fileTooSmallFor("Portable Anymap header"));
     }
 
     if (header[0] != 'P') {
@@ -15272,13 +15273,13 @@ fn validatePam(file: std.fs.File) ValidationResult {
 /// Validate DPX (Digital Picture Exchange) file structure.
 /// Magic: "SDPX" (LE) or "XPDS" (BE). Minimum header 2048 bytes in practice.
 fn validateDpx(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.dpx, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.dpx, errmsg.failedToSeek("in DPX file"));
 
     var header: [32]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.dpx, "Failed to read DPX header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.dpx, errmsg.failedToRead("DPX header"));
 
     if (bytes_read < 32) {
-        return ValidationResult.invalid(.dpx, "File too small for DPX header");
+        return ValidationResult.invalid(.dpx, errmsg.fileTooSmallFor("DPX header"));
     }
 
     // DPX spec: "SDPX" (0x53445058) = big-endian, "XPDS" (0x58504453) = little-endian
@@ -15325,13 +15326,13 @@ fn validateDpx(file: std.fs.File) ValidationResult {
 /// Validate ASF (Advanced Systems Format) file structure. Used by WMV video and WMA audio.
 /// 16-byte GUID header + object size(8,LE) + num_objects(4,LE) + reserved(2) = 30 bytes minimum.
 fn validateAsf(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.asf, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.asf, errmsg.failedToSeek("in ASF file"));
 
     var header: [30]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.asf, "Failed to read ASF header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.asf, errmsg.failedToRead("ASF header"));
 
     if (bytes_read < 30) {
-        return ValidationResult.invalid(.asf, "File too small for ASF header");
+        return ValidationResult.invalid(.asf, errmsg.fileTooSmallFor("ASF header"));
     }
 
     // ASF Header Object GUID
@@ -15369,13 +15370,13 @@ fn validateAsf(file: std.fs.File) ValidationResult {
 /// DV uses 80-byte DIF (Digital Interface Format) blocks.
 /// First block: section type = 000 (header section) in high 3 bits of byte 0.
 fn validateDv(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.dv, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.dv, errmsg.failedToSeek("in DV file"));
 
     var header: [80]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.dv, "Failed to read DV header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.dv, errmsg.failedToRead("DV header"));
 
     if (bytes_read < 80) {
-        return ValidationResult.invalid(.dv, "File too small for DV DIF block (need 80 bytes)");
+        return ValidationResult.invalid(.dv, errmsg.fileTooSmallFor("DV DIF block (need 80 bytes)"));
     }
 
     // Section type in high 3 bits of byte 0: should be 000 (header section)
@@ -15425,16 +15426,16 @@ fn validateBinaryPlist(file: std.fs.File, file_size: u64) ValidationResult {
 
     // Read trailer (last 32 bytes)
     file.seekTo(file_size - 32) catch {
-        return ValidationResult.invalid(.plist, "Failed to seek to trailer");
+        return ValidationResult.invalid(.plist, errmsg.failedToSeek("to trailer"));
     };
 
     var trailer: [32]u8 = undefined;
     const trailer_bytes = file.readAll(&trailer) catch {
-        return ValidationResult.invalid(.plist, "Failed to read trailer");
+        return ValidationResult.invalid(.plist, errmsg.failedToRead("trailer"));
     };
 
     if (trailer_bytes < 32) {
-        return ValidationResult.invalid(.plist, "Truncated trailer");
+        return ValidationResult.invalid(.plist, errmsg.truncated("trailer"));
     }
 
     // Trailer format:
@@ -15466,7 +15467,7 @@ fn validateBinaryPlist(file: std.fs.File, file_size: u64) ValidationResult {
 
     // Sanity check - plist shouldn't have billions of objects
     if (num_objects > 10_000_000) {
-        return ValidationResult.invalid(.plist, "Too many objects (likely corrupt)");
+        return ValidationResult.invalid(.plist, errmsg.tooMany("objects (likely corrupt)"));
     }
 
     // Read offset table start
@@ -15503,21 +15504,21 @@ fn validateXmlPlist(file: std.fs.File, file_size: u64) ValidationResult {
 
     // Seek back to start
     file.seekTo(0) catch {
-        return ValidationResult.invalid(.plist, "Failed to seek to start");
+        return ValidationResult.invalid(.plist, errmsg.failedToSeek("to start"));
     };
 
     // Read entire file
     const content = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.plist, "Failed to allocate memory");
+        return ValidationResult.invalid(.plist, errmsg.failedToAllocate("memory"));
     };
     defer std.heap.page_allocator.free(content);
 
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.plist, "Failed to read file");
+        return ValidationResult.invalid(.plist, errmsg.failedToRead("file"));
     };
 
     if (bytes_read == 0) {
-        return ValidationResult.invalid(.plist, "Empty plist file");
+        return ValidationResult.invalid(.plist, errmsg.empty("plist file"));
     }
 
     const data = content[0..bytes_read];
@@ -15540,7 +15541,7 @@ fn validateXmlPlist(file: std.fs.File, file_size: u64) ValidationResult {
                 error.MalformedXml => {
                     return ValidationResult.invalid(.plist, "Malformed XML in plist");
                 },
-                error.OutOfMemory => return ValidationResult.invalid(.plist, "Out of memory"),
+                error.OutOfMemory => return ValidationResult.invalid(.plist, errmsg.outOfMemory("for plist")),
                 error.ReadFailed => return ValidationResult.invalid(.plist, "Read failed"),
             }
         };
@@ -15562,7 +15563,7 @@ fn validateXmlPlist(file: std.fs.File, file_size: u64) ValidationResult {
     }
 
     if (!found_plist_root) {
-        return ValidationResult.invalid(.plist, "Missing <plist> root element");
+        return ValidationResult.invalid(.plist, errmsg.missing("<plist> root element"));
     }
 
     // DOCTYPE is ubiquitous in Apple plists - don't warn about it
@@ -15574,12 +15575,12 @@ fn validateXmlPlist(file: std.fs.File, file_size: u64) ValidationResult {
 /// Validate ELF (Executable and Linkable Format) files.
 /// Checks ELF header fields: class, data encoding, version, OS/ABI, type, machine.
 fn validateElf(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.elf, "Failed to get file size");
-    if (file_size < 16) return ValidationResult.invalid(.elf, "File too small for ELF header");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.elf, errmsg.failedToGet("file size"));
+    if (file_size < 16) return ValidationResult.invalid(.elf, errmsg.fileTooSmallFor("ELF header"));
 
-    file.seekTo(0) catch return ValidationResult.invalid(.elf, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.elf, errmsg.failedToSeek("in ELF file"));
     var header: [64]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.elf, "Failed to read ELF header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.elf, errmsg.failedToRead("ELF header"));
     if (bytes_read < 16) return ValidationResult.invalid(.elf, "ELF header too short");
 
     // Magic already verified by format detection, but double-check
@@ -15641,12 +15642,12 @@ fn validateElf(file: std.fs.File) ValidationResult {
 /// Validate WebAssembly binary module.
 /// Checks magic, version, and validates section ordering and sizes.
 fn validateWasm(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.wasm, "Failed to get file size");
-    if (file_size < 8) return ValidationResult.invalid(.wasm, "File too small for Wasm module");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.wasm, errmsg.failedToGet("file size"));
+    if (file_size < 8) return ValidationResult.invalid(.wasm, errmsg.fileTooSmallFor("Wasm module"));
 
-    file.seekTo(0) catch return ValidationResult.invalid(.wasm, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.wasm, errmsg.failedToSeek("in Wasm file"));
     var header: [8]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.wasm, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.wasm, errmsg.failedToRead("header"));
     if (bytes_read < 8) return ValidationResult.invalid(.wasm, "Wasm header too short");
 
     // Magic: \0asm
@@ -15656,7 +15657,7 @@ fn validateWasm(file: std.fs.File) ValidationResult {
     // Version: must be 1 (little-endian u32)
     const version = std.mem.readInt(u32, header[4..8], .little);
     if (version != 1)
-        return ValidationResult.invalid(.wasm, "Unsupported Wasm version");
+        return ValidationResult.invalid(.wasm, errmsg.unsupported("Wasm version"));
 
     // Validate sections: each section has a 1-byte ID and LEB128 size
     var offset: u64 = 8;
@@ -15696,7 +15697,7 @@ fn validateWasm(file: std.fs.File) ValidationResult {
         }
 
         if (leb_bytes == 0)
-            return ValidationResult.invalid(.wasm, "Missing Wasm section size");
+            return ValidationResult.invalid(.wasm, errmsg.missing("Wasm section size"));
 
         // Verify section fits within file
         const section_end = offset + 1 + leb_bytes + size;
@@ -15708,7 +15709,7 @@ fn validateWasm(file: std.fs.File) ValidationResult {
         section_count += 1;
 
         if (section_count > 10000)
-            return ValidationResult.invalid(.wasm, "Too many Wasm sections");
+            return ValidationResult.invalid(.wasm, errmsg.tooMany("Wasm sections"));
     }
 
     if (section_count == 0)
@@ -15720,12 +15721,12 @@ fn validateWasm(file: std.fs.File) ValidationResult {
 /// Validate Unix ar archive format (.a static libraries, .deb packages).
 /// Checks global header and validates member entry headers.
 fn validateAr(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.ar, "Failed to get file size");
-    if (file_size < 8) return ValidationResult.invalid(.ar, "File too small for ar archive");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.ar, errmsg.failedToGet("file size"));
+    if (file_size < 8) return ValidationResult.invalid(.ar, errmsg.fileTooSmallFor("ar archive"));
 
-    file.seekTo(0) catch return ValidationResult.invalid(.ar, "Failed to seek");
+    file.seekTo(0) catch return ValidationResult.invalid(.ar, errmsg.failedToSeek("in ar archive"));
     var magic: [8]u8 = undefined;
-    const bytes_read = file.read(&magic) catch return ValidationResult.invalid(.ar, "Failed to read header");
+    const bytes_read = file.read(&magic) catch return ValidationResult.invalid(.ar, errmsg.failedToRead("header"));
     if (bytes_read < 8) return ValidationResult.invalid(.ar, "ar header too short");
 
     if (!std.mem.eql(u8, &magic, "!<arch>\n"))
@@ -15761,7 +15762,7 @@ fn validateAr(file: std.fs.File) ValidationResult {
 
         member_count += 1;
         if (member_count > 100000)
-            return ValidationResult.invalid(.ar, "Too many ar members");
+            return ValidationResult.invalid(.ar, errmsg.tooMany("ar members"));
     }
 
     if (member_count == 0 and file_size > 8)
@@ -21416,7 +21417,7 @@ test "toleratedPdfImageFailures accepts truncated JBIG2 failures" {
 			.object_num = 1,
 			.filter = .jbig2_decode,
 			.valid = false,
-			.error_message = "Truncated JBIG2 globals",
+			.error_message = errmsg.truncated("JBIG2 globals"),
 			.width = 0,
 			.height = 0,
 		},
@@ -24470,7 +24471,7 @@ test "validateFile returns error for unknown directory type" {
     // Should return invalid with "Unknown directory type" error
     try std.testing.expect(!result.is_valid);
     try std.testing.expectEqualStrings(
-        "Unknown directory type (not a recognized bundle)",
+        errmsg.unknown("directory type (not a recognized bundle)"),
         result.error_message orelse "no error",
     );
 }

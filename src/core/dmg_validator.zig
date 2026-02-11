@@ -11,6 +11,7 @@
 //! Reference: https://newosxbook.com/DMG.html
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 // ============================================================================
 // Constants
@@ -216,35 +217,35 @@ fn crc32(data: []const u8) u32 {
 pub fn validateDmgFile(file: std.fs.File, allocator: std.mem.Allocator) DmgValidationResult {
     // Get file size
     const file_size = file.getEndPos() catch {
-        return DmgValidationResult.invalid("Failed to get file size");
+        return DmgValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     if (file_size < KOLY_SIZE) {
-        return DmgValidationResult.invalid("File too small for DMG");
+        return DmgValidationResult.invalid(errmsg.fileTooSmallFor("DMG"));
     }
 
     // Read koly block from end of file
     file.seekTo(file_size - KOLY_SIZE) catch {
-        return DmgValidationResult.invalid("Failed to seek to koly block");
+        return DmgValidationResult.invalid(errmsg.failedToSeek("to koly block"));
     };
 
     var koly_data: [KOLY_SIZE]u8 = undefined;
     const bytes_read = file.readAll(&koly_data) catch {
-        return DmgValidationResult.invalid("Failed to read koly block");
+        return DmgValidationResult.invalid(errmsg.failedToRead("koly block"));
     };
 
     if (bytes_read < KOLY_SIZE) {
-        return DmgValidationResult.invalid("Incomplete koly block read");
+        return DmgValidationResult.invalid(errmsg.incomplete("koly block read"));
     }
 
     // Parse koly block
     const koly = parseKolyBlock(&koly_data) orelse {
-        return DmgValidationResult.invalid("Invalid koly signature");
+        return DmgValidationResult.invalid(errmsg.invalidSignature("koly"));
     };
 
     // Validate version
     if (koly.version < 1 or koly.version > 10) {
-        return DmgValidationResult.invalid("Unsupported DMG version");
+        return DmgValidationResult.invalid(errmsg.unsupported("DMG version"));
     }
 
     // Check for checksums
@@ -263,7 +264,7 @@ pub fn validateDmgFile(file: std.fs.File, allocator: std.mem.Allocator) DmgValid
 
         if (data_size <= 100 * 1024 * 1024) { // Only verify if <= 100MB (fast path)
             file.seekTo(koly.data_fork_offset) catch {
-                return DmgValidationResult.invalid("Failed to seek to data fork");
+                return DmgValidationResult.invalid(errmsg.failedToSeek("to data fork"));
             };
 
             const data_buf = allocator.alloc(u8, data_size) catch {
@@ -282,7 +283,7 @@ pub fn validateDmgFile(file: std.fs.File, allocator: std.mem.Allocator) DmgValid
             defer allocator.free(data_buf);
 
             const read_size = file.readAll(data_buf) catch {
-                return DmgValidationResult.invalid("Failed to read data fork");
+                return DmgValidationResult.invalid(errmsg.failedToRead("data fork"));
             };
 
             if (read_size == data_size) {
@@ -311,17 +312,17 @@ pub fn validateDmgFile(file: std.fs.File, allocator: std.mem.Allocator) DmgValid
 /// Validate DMG from buffer (for testing)
 pub fn validateDmgBuffer(data: []const u8) DmgValidationResult {
     if (data.len < KOLY_SIZE) {
-        return DmgValidationResult.invalid("Buffer too small for DMG");
+        return DmgValidationResult.invalid(errmsg.bufferTooSmallFor("DMG"));
     }
 
     // koly block is at end
     const koly_start = data.len - KOLY_SIZE;
     const koly = parseKolyBlock(data[koly_start..]) orelse {
-        return DmgValidationResult.invalid("Invalid koly signature");
+        return DmgValidationResult.invalid(errmsg.invalidSignature("koly"));
     };
 
     if (koly.version < 1 or koly.version > 10) {
-        return DmgValidationResult.invalid("Unsupported DMG version");
+        return DmgValidationResult.invalid(errmsg.unsupported("DMG version"));
     }
 
     const has_data_ck = koly.data_checksum_type == .crc32 and koly.data_checksum_size >= 4;

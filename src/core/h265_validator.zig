@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const BitReader = @import("bitstream_reader.zig").BitReader;
+const errmsg = @import("error_messages.zig");
 
 // ============================================================================
 // NAL Unit Types (ITU-T H.265 Table 7-1)
@@ -731,7 +732,7 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
 
     // Check for Annex B start code
     if (!hasAnnexBStartCode(data)) {
-        return H265ValidationResult.invalid("Missing Annex B start code");
+        return H265ValidationResult.invalid(errmsg.missing("Annex B start code"));
     }
 
     var iterator = NalUnitIterator.init(data);

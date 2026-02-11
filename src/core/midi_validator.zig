@@ -12,6 +12,7 @@
 //! - Running status is used correctly
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 pub const MidiValidationResult = struct {
     valid: bool,
@@ -57,33 +58,33 @@ pub fn validateMidiDeep(path: []const u8) MidiValidationResult {
         return switch (err) {
             error.FileNotFound => MidiValidationResult.invalid("File not found"),
             error.AccessDenied => MidiValidationResult.invalid("Access denied"),
-            else => MidiValidationResult.invalid("Failed to open file"),
+            else => MidiValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     // Get file size
     const file_size = file.getEndPos() catch {
-        return MidiValidationResult.invalid("Failed to get file size");
+        return MidiValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     if (file_size > 100 * 1024 * 1024) { // 100MB limit for MIDI
-        return MidiValidationResult.invalid("File too large for MIDI");
+        return MidiValidationResult.invalid(errmsg.fileTooLargeFor("MIDI"));
     }
 
     // Read header chunk (14 bytes)
     var header: [14]u8 = undefined;
     const header_read = file.readAll(&header) catch {
-        return MidiValidationResult.invalid("Failed to read header");
+        return MidiValidationResult.invalid(errmsg.failedToRead("header"));
     };
 
     if (header_read < 14) {
-        return MidiValidationResult.invalid("File too small for MIDI header");
+        return MidiValidationResult.invalid(errmsg.fileTooSmallFor("MIDI header"));
     }
 
     // Validate MThd signature
     if (!std.mem.eql(u8, header[0..4], "MThd")) {
-        return MidiValidationResult.invalid("Invalid MIDI signature (expected MThd)");
+        return MidiValidationResult.invalid(errmsg.invalidSignatureExpected("MIDI", "MThd"));
     }
 
     // Validate header length (must be 6)
@@ -123,20 +124,20 @@ pub fn validateMidiDeep(path: []const u8) MidiValidationResult {
         // Read track header
         var track_header: [8]u8 = undefined;
         file.seekTo(pos) catch {
-            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, "Failed to seek to track");
+            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, errmsg.failedToSeek("to track"));
         };
 
         const track_header_read = file.readAll(&track_header) catch {
-            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, "Failed to read track header");
+            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, errmsg.failedToRead("track header"));
         };
 
         if (track_header_read < 8) {
-            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, "Truncated track header");
+            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, errmsg.truncated("track header"));
         }
 
         // Validate MTrk signature
         if (!std.mem.eql(u8, track_header[0..4], "MTrk")) {
-            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, "Invalid track signature (expected MTrk)");
+            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, errmsg.invalidSignatureExpected("track", "MTrk"));
         }
 
         // Get track length
@@ -162,7 +163,7 @@ pub fn validateMidiDeep(path: []const u8) MidiValidationResult {
 /// Validate track data by parsing all events
 fn validateTrackData(file: std.fs.File, start_pos: u64, length: u32) MidiValidationResult {
     if (length == 0) {
-        return MidiValidationResult.invalid("Empty track");
+        return MidiValidationResult.invalid(errmsg.empty("track"));
     }
 
     // Allocate buffer for track data (limit to reasonable size)
@@ -177,7 +178,7 @@ fn validateTrackData(file: std.fs.File, start_pos: u64, length: u32) MidiValidat
     var found_end_of_track = false;
 
     file.seekTo(start_pos) catch {
-        return MidiValidationResult.invalid("Failed to seek to track data");
+        return MidiValidationResult.invalid(errmsg.failedToSeek("to track data"));
     };
 
     // Process events
@@ -187,11 +188,11 @@ fn validateTrackData(file: std.fs.File, start_pos: u64, length: u32) MidiValidat
         const chunk_size = @min(data_buf.len, length - pos);
 
         file.seekTo(start_pos + pos) catch {
-            return MidiValidationResult.invalid("Failed to seek in track");
+            return MidiValidationResult.invalid(errmsg.failedToSeek("in track"));
         };
 
         const bytes_read = file.readAll(data_buf[0..chunk_size]) catch {
-            return MidiValidationResult.invalid("Failed to read track data");
+            return MidiValidationResult.invalid(errmsg.failedToRead("track data"));
         };
 
         if (bytes_read == 0) {
@@ -324,7 +325,7 @@ fn validateMidiEvent(status: u8, data: []const u8) EventValidationResult {
         0x80, 0x90, 0xA0, 0xB0, 0xE0 => {
             // Note Off, Note On, Poly Pressure, Control Change, Pitch Bend
             if (data.len < 2) {
-                return EventValidationResult.invalid("Truncated channel message");
+                return EventValidationResult.invalid(errmsg.truncated("channel message"));
             }
             // Validate data bytes (must be 0x00-0x7F)
             if (data[0] > 0x7F or data[1] > 0x7F) {
@@ -336,7 +337,7 @@ fn validateMidiEvent(status: u8, data: []const u8) EventValidationResult {
         0xC0, 0xD0 => {
             // Program Change, Channel Pressure
             if (data.len < 1) {
-                return EventValidationResult.invalid("Truncated channel message");
+                return EventValidationResult.invalid(errmsg.truncated("channel message"));
             }
             if (data[0] > 0x7F) {
                 return EventValidationResult.invalid("Invalid data byte in channel message");
@@ -349,7 +350,7 @@ fn validateMidiEvent(status: u8, data: []const u8) EventValidationResult {
         },
         else => {
             // Unknown status
-            return EventValidationResult.invalid("Unknown MIDI status byte");
+            return EventValidationResult.invalid(errmsg.unknown("MIDI status byte"));
         },
     }
 }
@@ -368,17 +369,17 @@ fn validateSystemMessage(status: u8, data: []const u8) EventValidationResult {
         },
         0xF1 => {
             // MTC Quarter Frame
-            if (data.len < 1) return EventValidationResult.invalid("Truncated MTC message");
+            if (data.len < 1) return EventValidationResult.invalid(errmsg.truncated("MTC message"));
             return EventValidationResult.ok(1);
         },
         0xF2 => {
             // Song Position Pointer
-            if (data.len < 2) return EventValidationResult.invalid("Truncated Song Position");
+            if (data.len < 2) return EventValidationResult.invalid(errmsg.truncated("Song Position"));
             return EventValidationResult.ok(2);
         },
         0xF3 => {
             // Song Select
-            if (data.len < 1) return EventValidationResult.invalid("Truncated Song Select");
+            if (data.len < 1) return EventValidationResult.invalid(errmsg.truncated("Song Select"));
             return EventValidationResult.ok(1);
         },
         0xF6 => {
@@ -413,7 +414,7 @@ fn validateSystemMessage(status: u8, data: []const u8) EventValidationResult {
 /// Validate meta events (0xFF type length data...)
 fn validateMetaEvent(data: []const u8) EventValidationResult {
     if (data.len < 2) {
-        return EventValidationResult.invalid("Truncated meta event");
+        return EventValidationResult.invalid(errmsg.truncated("meta event"));
     }
 
     const meta_type = data[0];
@@ -426,7 +427,7 @@ fn validateMetaEvent(data: []const u8) EventValidationResult {
     const total_bytes = 1 + length_result.bytes_consumed + length_result.value;
 
     if (data.len < total_bytes) {
-        return EventValidationResult.invalid("Truncated meta event data");
+        return EventValidationResult.invalid(errmsg.truncated("meta event data"));
     }
 
     // Check for End of Track (0x2F with length 0)
@@ -440,12 +441,12 @@ fn validateMetaEvent(data: []const u8) EventValidationResult {
 /// Validate MIDI from memory buffer
 pub fn validateMidiDeepFromBuffer(data: []const u8) MidiValidationResult {
     if (data.len < 14) {
-        return MidiValidationResult.invalid("File too small for MIDI header");
+        return MidiValidationResult.invalid(errmsg.fileTooSmallFor("MIDI header"));
     }
 
     // Validate MThd signature
     if (!std.mem.eql(u8, data[0..4], "MThd")) {
-        return MidiValidationResult.invalid("Invalid MIDI signature");
+        return MidiValidationResult.invalid(errmsg.invalidSignature("MIDI"));
     }
 
     // Validate header length
@@ -476,11 +477,11 @@ pub fn validateMidiDeepFromBuffer(data: []const u8) MidiValidationResult {
 
     while (tracks_validated < num_tracks) : (tracks_validated += 1) {
         if (pos + 8 > data.len) {
-            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, "Truncated track header");
+            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, errmsg.truncated("track header"));
         }
 
         if (!std.mem.eql(u8, data[pos..][0..4], "MTrk")) {
-            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, "Invalid track signature");
+            return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, errmsg.invalidSignature("track"));
         }
 
         const track_length = std.mem.readInt(u32, data[pos + 4 ..][0..4], .big);
@@ -504,7 +505,7 @@ pub fn validateMidiDeepFromBuffer(data: []const u8) MidiValidationResult {
 /// Validate track data from buffer
 fn validateTrackDataFromBuffer(data: []const u8) MidiValidationResult {
     if (data.len == 0) {
-        return MidiValidationResult.invalid("Empty track");
+        return MidiValidationResult.invalid(errmsg.empty("track"));
     }
 
     var pos: usize = 0;
@@ -520,7 +521,7 @@ fn validateTrackDataFromBuffer(data: []const u8) MidiValidationResult {
         pos += delta_result.bytes_consumed;
 
         if (pos >= data.len) {
-            return MidiValidationResult.invalid("Truncated after delta time");
+            return MidiValidationResult.invalid(errmsg.truncated("after delta time"));
         }
 
         // Parse status byte
@@ -542,7 +543,7 @@ fn validateTrackDataFromBuffer(data: []const u8) MidiValidationResult {
         }
 
         if (pos > data.len) {
-            return MidiValidationResult.invalid("Truncated event");
+            return MidiValidationResult.invalid(errmsg.truncated("event"));
         }
 
         // Validate event
@@ -560,7 +561,7 @@ fn validateTrackDataFromBuffer(data: []const u8) MidiValidationResult {
     }
 
     if (!found_end_of_track) {
-        return MidiValidationResult.invalid("Missing End of Track");
+        return MidiValidationResult.invalid(errmsg.missing("End of Track"));
     }
 
     return MidiValidationResult.ok(0, 0);

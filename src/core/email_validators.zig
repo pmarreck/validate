@@ -5,6 +5,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const format_validation = @import("format_validation.zig");
+const errmsg = @import("error_messages.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 
@@ -23,10 +24,10 @@ const validateDataBufferFormat = format_validation.validateDataBufferFormat;
 
 /// Validate an EML (RFC 5322) email message file.
 pub fn validateEml(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.eml, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.eml, errmsg.failedToSeek("to start"));
 
     // Read entire file (limit to reasonable size)
-    const stat = file.stat() catch return ValidationResult.invalid(.eml, "Failed to stat file");
+    const stat = file.stat() catch return ValidationResult.invalid(.eml, errmsg.failedToStat("file"));
     if (stat.size > 100 * 1024 * 1024) {
         // File too large, just do structural validation
         return validateEmlStructure(file);
@@ -42,9 +43,9 @@ pub fn validateEml(file: std.fs.File) ValidationResult {
     };
     defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalid(.eml, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.eml, errmsg.failedToSeek("to start"));
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.eml, "Failed to read file");
+        return ValidationResult.invalid(.eml, errmsg.failedToRead("file"));
     };
 
     return validateEmlContent(allocator, content[0..bytes_read]);
@@ -52,13 +53,13 @@ pub fn validateEml(file: std.fs.File) ValidationResult {
 
 /// Validate EML structural headers only (used for oversized files).
 pub fn validateEmlStructure(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.eml, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.eml, errmsg.failedToSeek("to start"));
 
     var header: [4096]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.eml, "Failed to read header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.eml, errmsg.failedToRead("header"));
 
     if (header_read < 10) {
-        return ValidationResult.invalid(.eml, "File too small for EML");
+        return ValidationResult.invalid(.eml, errmsg.fileTooSmallFor("EML"));
     }
 
     // Check for valid email headers
@@ -89,7 +90,7 @@ pub fn validateEmlStructure(file: std.fs.File) ValidationResult {
     }
 
     if (!found_header) {
-        return ValidationResult.invalid(.eml, "No valid email headers found");
+        return ValidationResult.invalid(.eml, errmsg.noValidXFound("email headers"));
     }
 
     return ValidationResult.okWithDepth(.eml, .structural);
@@ -123,7 +124,7 @@ pub fn validateEmlContent(allocator: Allocator, content: []const u8) ValidationR
 
     // Check for valid email headers
     if (!hasValidEmailHeaders(headers)) {
-        return ValidationResult.invalid(.eml, "No valid email headers found");
+        return ValidationResult.invalid(.eml, errmsg.noValidXFound("email headers"));
     }
 
     // Check for multipart MIME
@@ -301,13 +302,13 @@ pub fn validateBase64Attachment(allocator: Allocator, body: []const u8, headers:
 
 /// Validate an MBOX mailbox file structure.
 pub fn validateMbox(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.mbox, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.mbox, errmsg.failedToSeek("to start"));
 
     var header: [4096]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.mbox, "Failed to read header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.mbox, errmsg.failedToRead("header"));
 
     if (header_read < 5) {
-        return ValidationResult.invalid(.mbox, "File too small for MBOX");
+        return ValidationResult.invalid(.mbox, errmsg.fileTooSmallFor("MBOX"));
     }
 
     // MBOX must start with "From " (note the space)
@@ -334,7 +335,7 @@ pub fn validateMbox(file: std.fs.File) ValidationResult {
     }
 
     if (message_count == 0) {
-        return ValidationResult.invalid(.mbox, "No valid MBOX messages found");
+        return ValidationResult.invalid(.mbox, errmsg.noValidXFound("MBOX messages"));
     }
 
     return ValidationResult.ok(.mbox);
@@ -343,12 +344,12 @@ pub fn validateMbox(file: std.fs.File) ValidationResult {
 /// Deep-validate an MBOX mailbox file by reading all message separators.
 pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.mbox, "Failed to open MBOX file");
+        return ValidationResult.invalid(.mbox, errmsg.failedToOpen("MBOX file"));
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.mbox, "Failed to get file size");
+        return ValidationResult.invalid(.mbox, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 1024 * 1024 * 1024) { // 1GB limit
@@ -361,10 +362,10 @@ pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalid(.mbox, "Failed to read file");
+        return ValidationResult.invalid(.mbox, errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {
-        return ValidationResult.invalid(.mbox, "Incomplete file read");
+        return ValidationResult.invalid(.mbox, errmsg.incomplete("file read"));
     }
 
     // Must start with "From "
@@ -387,7 +388,7 @@ pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult
     }
 
     if (message_count == 0) {
-        return ValidationResult.invalid(.mbox, "No valid messages found");
+        return ValidationResult.invalid(.mbox, errmsg.noValidXFound("messages"));
     }
 
     return ValidationResult.okWithDepth(.mbox, .structural);

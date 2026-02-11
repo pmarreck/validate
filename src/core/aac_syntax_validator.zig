@@ -12,6 +12,7 @@
 const std = @import("std");
 const BitReader = @import("bitstream_reader.zig").BitReader;
 const huff = @import("aac_huffman_tables.zig");
+const errmsg = @import("error_messages.zig");
 
 // ============================================================================
 // Public Result Types
@@ -832,7 +833,7 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
         return AacSyntaxResult.invalid("Invalid AudioSpecificConfig", 0);
 
     if (config.audio_object_type != 2)
-        return AacSyntaxResult.invalid("Unsupported AOT (not AAC-LC)", 0);
+        return AacSyntaxResult.invalid(errmsg.unsupported("AOT (not AAC-LC)"), 0);
 
     var offset: usize = 0;
     var frames: u32 = 0;
@@ -927,7 +928,7 @@ pub fn validateAdtsStream(data: []const u8) AacSyntaxResult {
 
     // ADTS profile is AOT - 1, so LC (AOT=2) has profile=1
     if (first_header.profile != 1)
-        return AacSyntaxResult.invalid("Unsupported ADTS profile (not AAC-LC)", 0);
+        return AacSyntaxResult.invalid(errmsg.unsupported("ADTS profile (not AAC-LC)"), 0);
 
     // Synthesize AudioSpecificConfig from ADTS header
     // ASC: 5 bits AOT + 4 bits freq_idx + 4 bits channel_cfg + padding
@@ -1038,13 +1039,13 @@ const AudioMuxParseResult = struct {
 /// Parse AudioMuxElement from LOAS frame payload.
 /// Structure: useSameStreamMux(1), [StreamMuxConfig], PayloadLengthInfo, PayloadMux
 fn parseAudioMuxElement(data: []const u8, config_out: *?AacConfig) AudioMuxParseResult {
-    if (data.len == 0) return .{ .valid = false, .au_count = 0, .error_msg = "Empty AudioMuxElement" };
+    if (data.len == 0) return .{ .valid = false, .au_count = 0, .error_msg = errmsg.empty("AudioMuxElement") };
 
     var reader = BitReader.init(data);
 
     // useSameStreamMux: 1 bit
     const use_same = reader.readBits(1) orelse
-        return .{ .valid = false, .au_count = 0, .error_msg = "Failed to read useSameStreamMux" };
+        return .{ .valid = false, .au_count = 0, .error_msg = errmsg.failedToRead("useSameStreamMux") };
 
     if (use_same == 0) {
         // StreamMuxConfig present — parse it to extract AudioSpecificConfig
@@ -1065,7 +1066,7 @@ fn parseAudioMuxElement(data: []const u8, config_out: *?AacConfig) AudioMuxParse
     var payload_len: usize = 0;
     while (true) {
         const tmp = reader.readBits(8) orelse
-            return .{ .valid = false, .au_count = 0, .error_msg = "Failed to read PayloadLengthInfo" };
+            return .{ .valid = false, .au_count = 0, .error_msg = errmsg.failedToRead("PayloadLengthInfo") };
         payload_len += tmp;
         if (tmp != 255) break;
         if (payload_len > data.len) break;

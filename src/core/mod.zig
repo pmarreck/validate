@@ -109,6 +109,7 @@ pub const text_format_validators = @import("text_format_validators.zig");
 pub const archive_validators = @import("archive_validators.zig");
 pub const creative_validators = @import("creative_validators.zig");
 pub const email_validators = @import("email_validators.zig");
+pub const error_messages = @import("error_messages.zig");
 pub const i18n = @import("i18n/mod.zig");
 // VideoToolbox removed — all video codecs use pure-Zig syntax validators
 
@@ -270,6 +271,8 @@ test {
     _ = @import("email_validators.zig");
     // Creative suite / Adobe / NLE format validators (Premiere Pro, InDesign, IDML, FCPXML, DaVinci Resolve, Sketch, Illustrator, EPS, After Effects)
     _ = @import("creative_validators.zig");
+    // Error message templates
+    _ = @import("error_messages.zig");
     // i18n (internationalization)
     _ = @import("i18n/mod.zig");
 }

@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const errmsg = @import("error_messages.zig");
 
 /// Result of RAR deep validation
 pub const RarValidationResult = struct {
@@ -62,25 +63,25 @@ const RAR4_SIGNATURE = [_]u8{ 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00 };
 pub fn validateRarDeep(allocator: Allocator, path: []const u8) RarValidationResult {
     // First, verify the signature and basic header structure
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return RarValidationResult.invalid("Failed to open file");
+        return RarValidationResult.invalid(errmsg.failedToOpen("file"));
     };
     defer file.close();
 
     // Read signature
     var sig_buf: [8]u8 = undefined;
     const sig_read = file.readAll(&sig_buf) catch {
-        return RarValidationResult.invalid("Failed to read signature");
+        return RarValidationResult.invalid(errmsg.failedToRead("signature"));
     };
 
     if (sig_read < 7) {
-        return RarValidationResult.invalid("File too small for RAR");
+        return RarValidationResult.invalid(errmsg.fileTooSmallFor("RAR"));
     }
 
     const is_rar5 = sig_read >= 8 and std.mem.eql(u8, sig_buf[0..8], &RAR5_SIGNATURE);
     const is_rar4 = !is_rar5 and std.mem.eql(u8, sig_buf[0..7], &RAR4_SIGNATURE);
 
     if (!is_rar4 and !is_rar5) {
-        return RarValidationResult.invalid("Invalid RAR signature");
+        return RarValidationResult.invalid(errmsg.invalidSignature("RAR"));
     }
 
     // Try unrar first, then 7z as fallback
@@ -132,7 +133,7 @@ fn tryUnrarTest(allocator: Allocator, path: []const u8) RarValidationResult {
                 return RarValidationResult.invalid("RAR CRC error - archive corrupted");
             } else if (code == 10) {
                 // Unknown archive format
-                return RarValidationResult.invalid("Unknown RAR format");
+                return RarValidationResult.invalid(errmsg.unknown("RAR format"));
             } else {
                 // Other error
                 return RarValidationResult.invalid("RAR integrity test failed");
@@ -224,7 +225,7 @@ pub fn validateRarFromBuffer(data: []const u8) RarValidationResult {
     const is_rar4 = !is_rar5 and std.mem.eql(u8, data[0..7], &RAR4_SIGNATURE);
 
     if (!is_rar4 and !is_rar5) {
-        return RarValidationResult.invalid("Invalid RAR signature");
+        return RarValidationResult.invalid(errmsg.invalidSignature("RAR"));
     }
 
     // For buffer validation, we can only do signature check

@@ -14,6 +14,7 @@ const ebml_parser = @import("ebml_parser.zig");
 const mp4_box_parser = @import("mp4_box_parser.zig");
 const mpeg_ts_parser = @import("mpeg_ts_parser.zig");
 const zlib = @import("zlib.zig");
+const errmsg = @import("error_messages.zig");
 
 // Imported helpers from format_validation
 const VideoDecodeTolerance = format_validation.VideoDecodeTolerance;
@@ -25,14 +26,14 @@ const isValidBoxType = format_validation.isValidBoxType;
 
 /// Validate ISO BMFF (MP4, MOV, HEIC, M4A) file structure.
 pub fn validateIsobmff(file: std.fs.File, format: FileFormat) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(format, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(format, errmsg.failedToSeek("to start"));
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(format, "Failed to get file size");
+        return ValidationResult.invalid(format, errmsg.failedToGet("file size"));
     };
 
     if (file_size < 8) {
-        return ValidationResult.invalid(format, "File too small for ISO BMFF");
+        return ValidationResult.invalid(format, errmsg.fileTooSmallFor("ISO BMFF"));
     }
 
     // Scan boxes (atoms)
@@ -111,12 +112,12 @@ pub fn validateIsobmff(file: std.fs.File, format: FileFormat) ValidationResult {
         if (format == .mov) {
             // Classic QuickTime: ftyp is optional, but we need moov or mdat
             if (!found_mdat_or_moov) {
-                return ValidationResult.invalid(format, "Missing moov or mdat box");
+                return ValidationResult.invalid(format, errmsg.missing("moov or mdat box"));
             }
             // Valid classic QuickTime file
         } else {
             // ISO BMFF formats require ftyp
-            return ValidationResult.invalid(format, "Missing ftyp box");
+            return ValidationResult.invalid(format, errmsg.missing("ftyp box"));
         }
     }
 
@@ -127,14 +128,14 @@ pub fn validateIsobmff(file: std.fs.File, format: FileFormat) ValidationResult {
 
 /// Validate Matroska (MKV/WebM) file structure using EBML.
 pub fn validateMatroska(file: std.fs.File, format: FileFormat) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(format, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(format, errmsg.failedToSeek("to start"));
 
     var header: [4]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(format, "Failed to read EBML header");
+    _ = file.read(&header) catch return ValidationResult.invalid(format, errmsg.failedToRead("EBML header"));
 
     // Check EBML signature
     if (!std.mem.eql(u8, &header, &[_]u8{ 0x1A, 0x45, 0xDF, 0xA3 })) {
-        return ValidationResult.invalid(format, "Invalid EBML signature");
+        return ValidationResult.invalid(format, errmsg.invalidSignature("EBML"));
     }
 
     // Read more to find DocType
@@ -142,7 +143,7 @@ pub fn validateMatroska(file: std.fs.File, format: FileFormat) ValidationResult 
 
     var buffer: [256]u8 = undefined;
     const bytes_read = file.read(&buffer) catch {
-        return ValidationResult.invalid(format, "Failed to read EBML data");
+        return ValidationResult.invalid(format, errmsg.failedToRead("EBML data"));
     };
 
     // Look for DocType element (0x4282)
@@ -179,11 +180,11 @@ pub fn validateMatroska(file: std.fs.File, format: FileFormat) ValidationResult 
 /// Validate AVI file structure (RIFF container).
 pub fn validateAvi(file: std.fs.File) ValidationResult {
     var header: [12]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.avi, "Failed to read AVI header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.avi, errmsg.failedToRead("AVI header"));
 
     // Check RIFF signature
     if (!std.mem.eql(u8, header[0..4], "RIFF")) {
-        return ValidationResult.invalid(.avi, "Invalid RIFF signature");
+        return ValidationResult.invalid(.avi, errmsg.invalidSignature("RIFF"));
     }
 
     // Check AVI fourcc
@@ -194,7 +195,7 @@ pub fn validateAvi(file: std.fs.File) ValidationResult {
     // Get declared RIFF size
     const riff_size = std.mem.readInt(u32, header[4..8], .little);
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.avi, "Failed to get file size");
+        return ValidationResult.invalid(.avi, errmsg.failedToGet("file size"));
     };
 
     if (riff_size + 8 > file_size) {
@@ -206,12 +207,12 @@ pub fn validateAvi(file: std.fs.File) ValidationResult {
     file.seekTo(12) catch return ValidationResult.invalid(.avi, "Failed to seek");
 
     const bytes_read = file.read(&buffer) catch {
-        return ValidationResult.invalid(.avi, "Failed to read AVI data");
+        return ValidationResult.invalid(.avi, errmsg.failedToRead("AVI data"));
     };
 
     const has_hdrl = format_validation.findInBuffer(&buffer, bytes_read, "hdrl");
     if (!has_hdrl) {
-        return ValidationResult.invalid(.avi, "Missing AVI header list");
+        return ValidationResult.invalid(.avi, errmsg.missing("AVI header list"));
     }
 
     return ValidationResult.ok(.avi);
@@ -223,7 +224,7 @@ pub fn validateAvi(file: std.fs.File) ValidationResult {
 /// Supports FWS (uncompressed), CWS (zlib), and ZWS (LZMA) formats.
 pub fn validateSwf(file: std.fs.File) ValidationResult {
     var header: [8]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.swf, "Failed to read SWF header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.swf, errmsg.failedToRead("SWF header"));
 
     // Check signature (FWS, CWS, or ZWS)
     const sig = header[0..3];
@@ -234,7 +235,7 @@ pub fn validateSwf(file: std.fs.File) ValidationResult {
     else if (std.mem.eql(u8, sig, "ZWS"))
         .lzma
     else
-        return ValidationResult.invalid(.swf, "Invalid SWF signature");
+        return ValidationResult.invalid(.swf, errmsg.invalidSignature("SWF"));
 
     // Version (byte 3): must be reasonable (1-50)
     const version = header[3];
@@ -250,7 +251,7 @@ pub fn validateSwf(file: std.fs.File) ValidationResult {
     }
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.swf, "Failed to get file size");
+        return ValidationResult.invalid(.swf, errmsg.failedToGet("file size"));
     };
 
     // For uncompressed SWF, check file size matches
@@ -271,14 +272,14 @@ pub fn validateSwf(file: std.fs.File) ValidationResult {
         .uncompressed => {
             // Read the RECT directly
             var rect_buffer: [16]u8 = undefined;
-            file.seekTo(8) catch return ValidationResult.invalid(.swf, "Failed to seek to RECT");
+            file.seekTo(8) catch return ValidationResult.invalid(.swf, errmsg.failedToSeek("to RECT"));
 
             const rect_read = file.read(&rect_buffer) catch {
-                return ValidationResult.invalid(.swf, "Failed to read SWF RECT");
+                return ValidationResult.invalid(.swf, errmsg.failedToRead("SWF RECT"));
             };
 
             if (rect_read < 1) {
-                return ValidationResult.invalid(.swf, "Truncated SWF RECT");
+                return ValidationResult.invalid(.swf, errmsg.truncated("SWF RECT"));
             }
 
             // RECT: first 5 bits are Nbits (number of bits per value)
@@ -372,11 +373,11 @@ pub fn validateSwfZlib(file: std.fs.File, declared_size: u32) ValidationResult {
 /// Validate Adobe Flash Video (FLV) container structure.
 pub fn validateFlv(file: std.fs.File) ValidationResult {
     var header: [9]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.flv, "Failed to read FLV header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.flv, errmsg.failedToRead("FLV header"));
 
     // Check signature "FLV"
     if (!std.mem.eql(u8, header[0..3], "FLV")) {
-        return ValidationResult.invalid(.flv, "Invalid FLV signature");
+        return ValidationResult.invalid(.flv, errmsg.invalidSignature("FLV"));
     }
 
     // Version (usually 1)
@@ -399,7 +400,7 @@ pub fn validateFlv(file: std.fs.File) ValidationResult {
     }
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.flv, "Failed to get file size");
+        return ValidationResult.invalid(.flv, errmsg.failedToGet("file size"));
     };
 
     if (data_offset > file_size) {
@@ -408,11 +409,11 @@ pub fn validateFlv(file: std.fs.File) ValidationResult {
 
     // Read first tag header (if present)
     if (file_size > data_offset + 4) {
-        file.seekTo(data_offset) catch return ValidationResult.invalid(.flv, "Failed to seek to tags");
+        file.seekTo(data_offset) catch return ValidationResult.invalid(.flv, errmsg.failedToSeek("to tags"));
 
         // PreviousTagSize0 should be 0
         var prev_tag_size: [4]u8 = undefined;
-        _ = file.read(&prev_tag_size) catch return ValidationResult.invalid(.flv, "Failed to read PreviousTagSize0");
+        _ = file.read(&prev_tag_size) catch return ValidationResult.invalid(.flv, errmsg.failedToRead("PreviousTagSize0"));
 
         const prev_size = std.mem.readInt(u32, &prev_tag_size, .big);
         if (prev_size != 0) {
@@ -422,7 +423,7 @@ pub fn validateFlv(file: std.fs.File) ValidationResult {
         // If there's more data, validate first tag header
         if (file_size > data_offset + 4 + 11) {
             var tag_header: [11]u8 = undefined;
-            _ = file.read(&tag_header) catch return ValidationResult.invalid(.flv, "Failed to read tag header");
+            _ = file.read(&tag_header) catch return ValidationResult.invalid(.flv, errmsg.failedToRead("tag header"));
 
             const tag_type = tag_header[0];
             // Valid tag types: 8 (audio), 9 (video), 18 (script data)
@@ -447,12 +448,12 @@ pub fn validateFlv(file: std.fs.File) ValidationResult {
 /// Deep validation for FLV files - parses all tag boundaries.
 pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.flv, "Failed to open FLV file");
+        return ValidationResult.invalid(.flv, errmsg.failedToOpen("FLV file"));
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.flv, "Failed to get file size");
+        return ValidationResult.invalid(.flv, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 4 * 1024 * 1024 * 1024) { // 4GB limit
@@ -461,10 +462,10 @@ pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Read header
     var header: [9]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.flv, "Failed to read FLV header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.flv, errmsg.failedToRead("FLV header"));
 
     if (!std.mem.eql(u8, header[0..3], "FLV")) {
-        return ValidationResult.invalid(.flv, "Invalid FLV signature");
+        return ValidationResult.invalid(.flv, errmsg.invalidSignature("FLV"));
     }
 
     const data_offset = std.mem.readInt(u32, header[5..9], .big);
@@ -473,7 +474,7 @@ pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Parse all tags
-    file.seekTo(data_offset) catch return ValidationResult.invalid(.flv, "Failed to seek to tags");
+    file.seekTo(data_offset) catch return ValidationResult.invalid(.flv, errmsg.failedToSeek("to tags"));
 
     var tag_count: u32 = 0;
     var offset: u64 = data_offset;
@@ -512,7 +513,7 @@ pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     if (tag_count == 0) {
-        return ValidationResult.invalid(.flv, "No valid FLV tags found");
+        return ValidationResult.invalid(.flv, errmsg.noValidXFound("FLV tags"));
     }
 
     return ValidationResult.okWithDepth(.flv, .full);
@@ -523,13 +524,13 @@ pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Validate MPEG Program Stream file structure.
 /// Pack start code: 00 00 01 BA followed by SCR and mux rate
 pub fn validateMpegPs(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.mpeg_ps, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.mpeg_ps, errmsg.failedToSeek("to start"));
 
     var header: [14]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.mpeg_ps, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.mpeg_ps, errmsg.failedToRead("header"));
 
     if (bytes_read < 14) {
-        return ValidationResult.invalid(.mpeg_ps, "File too small for MPEG PS");
+        return ValidationResult.invalid(.mpeg_ps, errmsg.fileTooSmallFor("MPEG PS"));
     }
 
     // Check pack start code: 00 00 01 BA
@@ -555,14 +556,14 @@ pub fn validateMpegPs(file: std.fs.File) ValidationResult {
 /// Validate MPEG Transport Stream file structure.
 /// 188-byte packets starting with 0x47 sync byte
 pub fn validateMpegTs(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.mpeg_ts, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.mpeg_ts, errmsg.failedToSeek("to start"));
 
     // Read enough to check multiple sync bytes
     var buffer: [376]u8 = undefined;
-    const bytes_read = file.read(&buffer) catch return ValidationResult.invalid(.mpeg_ts, "Failed to read header");
+    const bytes_read = file.read(&buffer) catch return ValidationResult.invalid(.mpeg_ts, errmsg.failedToRead("header"));
 
     if (bytes_read < 188) {
-        return ValidationResult.invalid(.mpeg_ts, "File too small for MPEG TS");
+        return ValidationResult.invalid(.mpeg_ts, errmsg.fileTooSmallFor("MPEG TS"));
     }
 
     // First byte must be sync byte
@@ -592,15 +593,15 @@ pub fn validateMpegTs(file: std.fs.File) ValidationResult {
 /// Deep MPEG-TS validation: CRC-32 for PAT/PMT, continuity counters, PES assembly + stream validation
 pub fn validateMpegTsDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.mpeg_ts, "Failed to open file");
+        return ValidationResult.invalid(.mpeg_ts, errmsg.failedToOpen("file"));
     };
     defer file.close();
 
     file.seekTo(0) catch return ValidationResult.invalid(.mpeg_ts, "Failed to seek");
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.mpeg_ts, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.mpeg_ts, errmsg.failedToGet("file size"));
     if (file_size < mpeg_ts_parser.TS_PACKET_SIZE) {
-        return ValidationResult.invalid(.mpeg_ts, "File too small for MPEG-TS");
+        return ValidationResult.invalid(.mpeg_ts, errmsg.fileTooSmallFor("MPEG-TS"));
     }
 
     // Read up to 4MB for deep validation
@@ -608,16 +609,16 @@ pub fn validateMpegTsDeep(allocator: Allocator, path: []const u8) ValidationResu
     const read_size: usize = @min(file_size, max_read);
 
     const data = allocator.alloc(u8, read_size) catch {
-        return ValidationResult.invalid(.mpeg_ts, "Out of memory for TS data");
+        return ValidationResult.invalid(.mpeg_ts, errmsg.outOfMemory("for TS data"));
     };
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalid(.mpeg_ts, "Failed to read TS data");
+        return ValidationResult.invalid(.mpeg_ts, errmsg.failedToRead("TS data"));
     };
 
     if (bytes_read < mpeg_ts_parser.TS_PACKET_SIZE) {
-        return ValidationResult.invalid(.mpeg_ts, "Incomplete TS data");
+        return ValidationResult.invalid(.mpeg_ts, errmsg.incomplete("TS data"));
     }
 
     const result = mpeg_ts_parser.validateTsDeep(allocator, data[0..bytes_read], 50000);
@@ -645,13 +646,13 @@ pub fn validateMpegTsDeep(allocator: Allocator, path: []const u8) ValidationResu
 /// Validate MPEG Elementary Stream (raw MPEG-1/2 video).
 /// Video sequence header: 00 00 01 B3
 pub fn validateMpegEs(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.mpeg_es, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.mpeg_es, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.mpeg_es, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.mpeg_es, errmsg.failedToRead("header"));
 
     if (bytes_read < 12) {
-        return ValidationResult.invalid(.mpeg_es, "File too small for MPEG ES");
+        return ValidationResult.invalid(.mpeg_es, errmsg.fileTooSmallFor("MPEG ES"));
     }
 
     // Check for sequence header (video) or system start code
@@ -679,24 +680,24 @@ pub fn validateMpegEs(file: std.fs.File) ValidationResult {
 /// Validate IVF container file structure.
 /// IVF header: DKIF + version + header_size + codec + dimensions + frame rate
 pub fn validateIvf(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.ivf, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.ivf, errmsg.failedToSeek("to start"));
 
     var header: [32]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ivf, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ivf, errmsg.failedToRead("header"));
 
     if (bytes_read < 32) {
-        return ValidationResult.invalid(.ivf, "File too small for IVF header");
+        return ValidationResult.invalid(.ivf, errmsg.fileTooSmallFor("IVF header"));
     }
 
     // Check signature "DKIF"
     if (!std.mem.eql(u8, header[0..4], "DKIF")) {
-        return ValidationResult.invalid(.ivf, "Invalid IVF signature");
+        return ValidationResult.invalid(.ivf, errmsg.invalidSignature("IVF"));
     }
 
     // Version (should be 0)
     const version = std.mem.readInt(u16, header[4..6], .little);
     if (version != 0) {
-        return ValidationResult.invalid(.ivf, "Unsupported IVF version");
+        return ValidationResult.invalid(.ivf, errmsg.unsupported("IVF version"));
     }
 
     // Header size (should be 32)
@@ -754,13 +755,13 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.mp4, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.mp4, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.mp4, "Failed to open file", .structural),
+            else => ValidationResult.invalidWithDepth(.mp4, errmsg.failedToOpen("file"), .structural),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.mp4, "Failed to get file size", .structural);
+        return ValidationResult.invalidWithDepth(.mp4, errmsg.failedToGet("file size"), .structural);
     };
 
     // Validate all boxes in the file
@@ -801,10 +802,10 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
         if (box_size == 1) {
             var ext_size: [8]u8 = undefined;
             const ext_read = file.read(&ext_size) catch {
-                return ValidationResult.invalidWithDepth(.mp4, "Failed to read extended size", .structural);
+                return ValidationResult.invalidWithDepth(.mp4, errmsg.failedToRead("extended size"), .structural);
             };
             if (ext_read < 8) {
-                return ValidationResult.invalidWithDepth(.mp4, "Truncated extended size", .structural);
+                return ValidationResult.invalidWithDepth(.mp4, errmsg.truncated("extended size"), .structural);
             }
             actual_size = std.mem.readInt(u64, &ext_size, .big);
             if (actual_size < 16) {
@@ -840,12 +841,12 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
     // For ISO BMFF (.mp4), ftyp is required - but we already know found_ftyp is true if format is .mp4
     // For classic QuickTime (.mov), we need moov or mdat instead
     if (!found_ftyp and !found_moov and !found_mdat) {
-        return ValidationResult.invalidWithDepth(.mov, "Missing moov or mdat box", .structural);
+        return ValidationResult.invalidWithDepth(.mov, errmsg.missing("moov or mdat box"), .structural);
     }
 
     // A valid file should have either moov or mdat (or both)
     if (!found_moov and !found_mdat) {
-        return ValidationResult.invalidWithDepth(format, "Missing moov/mdat boxes", .structural);
+        return ValidationResult.invalidWithDepth(format, errmsg.missing("moov/mdat boxes"), .structural);
     }
 
     // Skip deep validation for large files (when MAX_VIDEO_SIZE is set)
@@ -941,13 +942,13 @@ pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.mkv, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.mkv, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.mkv, "Failed to open file", .structural),
+            else => ValidationResult.invalidWithDepth(.mkv, errmsg.failedToOpen("file"), .structural),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.mkv, "Failed to get file size", .structural);
+        return ValidationResult.invalidWithDepth(.mkv, errmsg.failedToGet("file size"), .structural);
     };
 
     // Skip deep validation for large files (when MAX_VIDEO_SIZE is set)
@@ -958,17 +959,17 @@ pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult 
     // Verify EBML header
     var header: [4]u8 = undefined;
     _ = file.read(&header) catch {
-        return ValidationResult.invalidWithDepth(.mkv, "Failed to read EBML header", .structural);
+        return ValidationResult.invalidWithDepth(.mkv, errmsg.failedToRead("EBML header"), .structural);
     };
 
     if (!std.mem.eql(u8, &header, &[_]u8{ 0x1A, 0x45, 0xDF, 0xA3 })) {
-        return ValidationResult.invalidWithDepth(.mkv, "Invalid EBML signature", .structural);
+        return ValidationResult.invalidWithDepth(.mkv, errmsg.invalidSignature("EBML"), .structural);
     }
 
     // Read EBML header size (variable-length integer)
     var size_byte: [1]u8 = undefined;
     _ = file.read(&size_byte) catch {
-        return ValidationResult.invalidWithDepth(.mkv, "Failed to read EBML header size", .structural);
+        return ValidationResult.invalidWithDepth(.mkv, errmsg.failedToRead("EBML header size"), .structural);
     };
 
     // VINT decoding: leading bit determines byte count
@@ -1004,10 +1005,10 @@ pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult 
     if (size_bytes > 1) {
         const remaining = size_bytes - 1;
         const read_bytes = file.read(size_data[8 - remaining ..]) catch {
-            return ValidationResult.invalidWithDepth(.mkv, "Failed to read EBML size", .structural);
+            return ValidationResult.invalidWithDepth(.mkv, errmsg.failedToRead("EBML size"), .structural);
         };
         if (read_bytes < remaining) {
-            return ValidationResult.invalidWithDepth(.mkv, "Truncated EBML size", .structural);
+            return ValidationResult.invalidWithDepth(.mkv, errmsg.truncated("EBML size"), .structural);
         }
     }
 
@@ -1020,21 +1021,21 @@ pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Look for Segment element after EBML header
     file.seekTo(header_end) catch {
-        return ValidationResult.invalidWithDepth(.mkv, "Failed to seek past EBML header", .structural);
+        return ValidationResult.invalidWithDepth(.mkv, errmsg.failedToSeek("past EBML header"), .structural);
     };
 
     var segment_id: [4]u8 = undefined;
     const seg_read = file.read(&segment_id) catch {
-        return ValidationResult.invalidWithDepth(.mkv, "Failed to read Segment ID", .structural);
+        return ValidationResult.invalidWithDepth(.mkv, errmsg.failedToRead("Segment ID"), .structural);
     };
 
     if (seg_read < 4) {
-        return ValidationResult.invalidWithDepth(.mkv, "File too small for Segment", .structural);
+        return ValidationResult.invalidWithDepth(.mkv, errmsg.fileTooSmallFor("Segment"), .structural);
     }
 
     // Segment ID is 0x18538067
     if (!std.mem.eql(u8, &segment_id, &[_]u8{ 0x18, 0x53, 0x80, 0x67 })) {
-        return ValidationResult.invalidWithDepth(.mkv, "Missing Segment element", .structural);
+        return ValidationResult.invalidWithDepth(.mkv, errmsg.missing("Segment element"), .structural);
     }
 
     // Structural validation passed - now do codec validation (video + audio)
@@ -1103,13 +1104,13 @@ pub fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.avi, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.avi, "Access denied", .structural),
-            else => ValidationResult.invalidWithDepth(.avi, "Failed to open file", .structural),
+            else => ValidationResult.invalidWithDepth(.avi, errmsg.failedToOpen("file"), .structural),
         };
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.avi, "Failed to get file size", .structural);
+        return ValidationResult.invalidWithDepth(.avi, errmsg.failedToGet("file size"), .structural);
     };
 
     // Skip deep validation for large files (when MAX_VIDEO_SIZE is set)
@@ -1120,11 +1121,11 @@ pub fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult 
     // Validate RIFF header first (structural check)
     var header: [12]u8 = undefined;
     _ = file.read(&header) catch {
-        return ValidationResult.invalidWithDepth(.avi, "Failed to read RIFF header", .structural);
+        return ValidationResult.invalidWithDepth(.avi, errmsg.failedToRead("RIFF header"), .structural);
     };
 
     if (!std.mem.eql(u8, header[0..4], "RIFF")) {
-        return ValidationResult.invalidWithDepth(.avi, "Invalid RIFF signature", .structural);
+        return ValidationResult.invalidWithDepth(.avi, errmsg.invalidSignature("RIFF"), .structural);
     }
 
     if (!std.mem.eql(u8, header[8..12], "AVI ")) {
@@ -1173,7 +1174,7 @@ pub fn validateMp4FromBuffer(data: []const u8) ValidationResult {
     if (std.mem.eql(u8, data[4..8], "ftyp")) {
         return ValidationResult.ok(.mp4);
     }
-    return ValidationResult.invalid(.mp4, "Invalid MP4 signature");
+    return ValidationResult.invalid(.mp4, errmsg.invalidSignature("MP4"));
 }
 
 pub fn validateMkvFromBuffer(data: []const u8) ValidationResult {
@@ -1182,7 +1183,7 @@ pub fn validateMkvFromBuffer(data: []const u8) ValidationResult {
     if (data[0] == 0x1A and data[1] == 0x45 and data[2] == 0xDF and data[3] == 0xA3) {
         return ValidationResult.ok(.mkv);
     }
-    return ValidationResult.invalid(.mkv, "Invalid MKV/WebM signature");
+    return ValidationResult.invalid(.mkv, errmsg.invalidSignature("MKV/WebM"));
 }
 
 pub fn validateAviFromBuffer(data: []const u8) ValidationResult {
@@ -1190,7 +1191,7 @@ pub fn validateAviFromBuffer(data: []const u8) ValidationResult {
     if (std.mem.eql(u8, data[0..4], "RIFF") and std.mem.eql(u8, data[8..12], "AVI ")) {
         return ValidationResult.ok(.avi);
     }
-    return ValidationResult.invalid(.avi, "Invalid AVI signature");
+    return ValidationResult.invalid(.avi, errmsg.invalidSignature("AVI"));
 }
 
 // ============ ASF/WMV/WMA Validator ============
@@ -1201,10 +1202,10 @@ pub fn validateAsf(file: std.fs.File) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalid(.asf, "Failed to seek");
 
     var header: [30]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.asf, "Failed to read ASF header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.asf, errmsg.failedToRead("ASF header"));
 
     if (bytes_read < 30) {
-        return ValidationResult.invalid(.asf, "File too small for ASF header");
+        return ValidationResult.invalid(.asf, errmsg.fileTooSmallFor("ASF header"));
     }
 
     // ASF Header Object GUID
@@ -1245,10 +1246,10 @@ pub fn validateDv(file: std.fs.File) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalid(.dv, "Failed to seek");
 
     var header: [80]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.dv, "Failed to read DV header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.dv, errmsg.failedToRead("DV header"));
 
     if (bytes_read < 80) {
-        return ValidationResult.invalid(.dv, "File too small for DV DIF block (need 80 bytes)");
+        return ValidationResult.invalid(.dv, errmsg.fileTooSmallFor("DV DIF block (need 80 bytes)"));
     }
 
     // Section type in high 3 bits of byte 0: should be 000 (header section)

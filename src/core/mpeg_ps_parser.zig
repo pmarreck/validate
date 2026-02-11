@@ -11,6 +11,7 @@
 //! - PES packets: audio/video elementary streams
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 /// MPEG start code prefix
 pub const START_CODE_PREFIX: [3]u8 = .{ 0x00, 0x00, 0x01 };
@@ -380,7 +381,7 @@ pub fn validatePsStream(data: []const u8, max_packs: u32) PsValidationResult {
     }
 
     if (packs_parsed == 0) {
-        return PsValidationResult.failure("No valid pack headers found");
+        return PsValidationResult.failure(errmsg.noValidXFound("pack headers"));
     }
 
     const avg_mux_rate: u32 = @intCast(total_mux_rate / packs_parsed);

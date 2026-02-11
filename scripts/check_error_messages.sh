@@ -10,17 +10,138 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 GOLDEN="$PROJECT_DIR/tests/golden_error_messages.txt"
-TMPDIR="${TMPDIR:-/tmp}"
+TMPDIR="${TMPDIR:-/tmp}/$$"
+mkdir -p "$TMPDIR"
+trap "rm -rf '$TMPDIR'" EXIT
 
-# Extract current error strings
-rg -o '\.invalid\([^,]+,\s*"([^"]*)"' --no-filename -r '$1' "$PROJECT_DIR/src/core/" | sort -u > "$TMPDIR/current_errors.txt"
-rg -o '\.invalidWithDepth\([^,]+,\s*"([^"]*)"' --no-filename -r '$1' "$PROJECT_DIR/src/core/" | sort -u >> "$TMPDIR/current_errors.txt"
-sort -u -o "$TMPDIR/current_errors.txt" "$TMPDIR/current_errors.txt"
+# errmsg template expansion map: function_name -> (prefix, suffix)
+# These must match the definitions in src/core/error_messages.zig exactly.
+declare -A ERRMSG_PREFIX=(
+    [failedToRead]="Failed to read "
+    [fileTooSmallFor]="File too small for "
+    [invalidSignature]="Invalid "
+    [missing]="Missing "
+    [failedToSeek]="Failed to seek "
+    [truncated]="Truncated "
+    [invalidMagic]="Invalid "
+    [invalidMagicNumber]="Invalid "
+    [failedToOpen]="Failed to open "
+    [failedToSkip]="Failed to skip "
+    [tooMany]="Too many "
+    [unsupported]="Unsupported "
+    [incomplete]="Incomplete "
+    [bufferTooSmallFor]="Buffer too small for "
+    [noValidXFound]="No valid "
+    [unknown]="Unknown "
+    [empty]="Empty "
+    [fileTooLargeFor]="File too large for "
+    [failedToAllocate]="Failed to allocate "
+    [failedToStat]="Failed to stat "
+    [outOfMemory]="Out of memory "
+    [failedToGet]="Failed to get "
+    [decompressionFailed]=""
+)
+
+declare -A ERRMSG_SUFFIX=(
+    [failedToRead]=""
+    [fileTooSmallFor]=""
+    [invalidSignature]=" signature"
+    [missing]=""
+    [failedToSeek]=""
+    [truncated]=""
+    [invalidMagic]=" magic bytes"
+    [invalidMagicNumber]=" magic number"
+    [failedToOpen]=""
+    [failedToSkip]=""
+    [tooMany]=""
+    [unsupported]=""
+    [incomplete]=""
+    [bufferTooSmallFor]=""
+    [noValidXFound]=" found"
+    [unknown]=""
+    [empty]=""
+    [fileTooLargeFor]=""
+    [failedToAllocate]=""
+    [failedToStat]=""
+    [outOfMemory]=""
+    [failedToGet]=""
+    [decompressionFailed]=" decompression failed"
+)
+
+# Function to expand errmsg template calls to their full string
+# Input: lines containing either "literal string" or errmsg.func("arg") or errmsg.func("arg1", "arg2")
+expand_errmsg() {
+    while IFS= read -r line; do
+        echo "$line"
+    done
+}
+
+# Extract current error strings from source
+# Pattern 1a: literal strings in .invalid(.format, "string") — two-arg form
+# Exclude lines containing errmsg. to avoid false positives from template args
+rg -v 'errmsg\.' "$PROJECT_DIR/src/core/"*.zig 2>/dev/null | rg -o '\.invalid\([^,]+,\s*"([^"]*)"' --no-filename -r '$1' 2>/dev/null > "$TMPDIR/current_errors_raw.txt" || true
+rg -v 'errmsg\.' "$PROJECT_DIR/src/core/"*.zig 2>/dev/null | rg -o '\.invalidWithDepth\([^,]+,\s*"([^"]*)"' --no-filename -r '$1' 2>/dev/null >> "$TMPDIR/current_errors_raw.txt" || true
+
+# Pattern 1b: literal strings in .invalid("string"...) — single-arg or first-string form (custom result types)
+rg -v 'errmsg\.' "$PROJECT_DIR/src/core/"*.zig 2>/dev/null | rg -o '\.invalid\("([^"]*)"' --no-filename -r '$1' 2>/dev/null >> "$TMPDIR/current_errors_raw.txt" || true
+
+# Pattern 1c: literal strings in .err("string") — e.g. DicomParseResult.err()
+rg -v 'errmsg\.' "$PROJECT_DIR/src/core/"*.zig 2>/dev/null | rg -o '\.err\("([^"]*)"' --no-filename -r '$1' 2>/dev/null >> "$TMPDIR/current_errors_raw.txt" || true
+
+# Pattern 2a: errmsg.func("arg") in .invalid(.format, errmsg) and .invalidWithDepth() — two-arg form
+rg -o '\.invalid\([^,]+,\s*errmsg\.(\w+)\("([^"]*)"\)' --no-filename -r '$1|$2' "$PROJECT_DIR/src/core/" 2>/dev/null > "$TMPDIR/current_errors_errmsg.txt" || true
+rg -o '\.invalidWithDepth\([^,]+,\s*errmsg\.(\w+)\("([^"]*)"\)' --no-filename -r '$1|$2' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_errmsg.txt" || true
+
+# Pattern 2b: errmsg.func("arg") in .invalid(errmsg) — single-arg form (custom result types)
+rg -o '\.invalid\(errmsg\.(\w+)\("([^"]*)"\)' --no-filename -r '$1|$2' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_errmsg.txt" || true
+
+# Pattern 2c: errmsg.func("arg") in .invalid(errmsg, extra) — with trailing numeric arg
+rg -o '\.invalid\(errmsg\.(\w+)\("([^"]*)"\),\s*\d+\)' --no-filename -r '$1|$2' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_errmsg.txt" || true
+
+# Pattern 2d: errmsg.func("arg") in .err(errmsg) — e.g. DicomParseResult
+rg -o '\.err\(errmsg\.(\w+)\("([^"]*)"\)' --no-filename -r '$1|$2' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_errmsg.txt" || true
+
+# Pattern 3a: errmsg.func("arg1", "arg2") — two-arg templates (invalidSignatureExpected, invalidSignatureNot)
+rg -o '\.invalid\([^,]+,\s*errmsg\.(\w+)\("([^"]*)",\s*"([^"]*)"\)' --no-filename -r '$1|$2|$3' "$PROJECT_DIR/src/core/" 2>/dev/null > "$TMPDIR/current_errors_errmsg2.txt" || true
+rg -o '\.invalidWithDepth\([^,]+,\s*errmsg\.(\w+)\("([^"]*)",\s*"([^"]*)"\)' --no-filename -r '$1|$2|$3' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_errmsg2.txt" || true
+
+# Pattern 3b: single-arg form for two-arg templates
+rg -o '\.invalid\(errmsg\.(\w+)\("([^"]*)",\s*"([^"]*)"\)' --no-filename -r '$1|$2|$3' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_errmsg2.txt" || true
+
+# Expand single-arg errmsg templates to full strings
+while IFS='|' read -r func arg; do
+    prefix="${ERRMSG_PREFIX[$func]:-}"
+    suffix="${ERRMSG_SUFFIX[$func]:-}"
+    echo "${prefix}${arg}${suffix}"
+done < "$TMPDIR/current_errors_errmsg.txt" >> "$TMPDIR/current_errors_raw.txt"
+
+# Expand two-arg errmsg templates to full strings
+while IFS='|' read -r func arg1 arg2; do
+    if [ "$func" = "invalidSignatureExpected" ]; then
+        echo "Invalid ${arg1} signature (expected ${arg2})"
+    elif [ "$func" = "invalidSignatureNot" ]; then
+        echo "Invalid ${arg1} signature (not ${arg2})"
+    fi
+done < "$TMPDIR/current_errors_errmsg2.txt" >> "$TMPDIR/current_errors_raw.txt"
+
+sort -u "$TMPDIR/current_errors_raw.txt" > "$TMPDIR/current_errors.txt"
 
 # Extract current warning strings
-rg -o '\.okWithWarning\([^,]+,\s*"([^"]*)"' --no-filename -r '$1' "$PROJECT_DIR/src/core/" | sort -u > "$TMPDIR/current_warnings.txt"
-rg -o '\.okWithDepthAndWarning\([^,]+,\s*[^,]+,\s*"([^"]*)"' --no-filename -r '$1' "$PROJECT_DIR/src/core/" | sort -u >> "$TMPDIR/current_warnings.txt"
-sort -u -o "$TMPDIR/current_warnings.txt" "$TMPDIR/current_warnings.txt"
+# Exclude lines containing errmsg. to avoid false positives from template args
+rg -v 'errmsg\.' "$PROJECT_DIR/src/core/"*.zig 2>/dev/null | rg -o '\.okWithWarning\([^,]+,\s*"([^"]*)"' --no-filename -r '$1' 2>/dev/null > "$TMPDIR/current_warnings_raw.txt" || true
+rg -v 'errmsg\.' "$PROJECT_DIR/src/core/"*.zig 2>/dev/null | rg -o '\.okWithDepthAndWarning\([^,]+,\s*[^,]+,\s*"([^"]*)"' --no-filename -r '$1' 2>/dev/null >> "$TMPDIR/current_warnings_raw.txt" || true
+
+# Warning errmsg patterns (single-arg)
+rg -o '\.okWithWarning\([^,]+,\s*errmsg\.(\w+)\("([^"]*)"\)' --no-filename -r '$1|$2' "$PROJECT_DIR/src/core/" 2>/dev/null > "$TMPDIR/current_warnings_errmsg.txt" || true
+rg -o '\.okWithDepthAndWarning\([^,]+,\s*[^,]+,\s*errmsg\.(\w+)\("([^"]*)"\)' --no-filename -r '$1|$2' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_warnings_errmsg.txt" || true
+
+while IFS='|' read -r func arg; do
+    prefix="${ERRMSG_PREFIX[$func]:-}"
+    suffix="${ERRMSG_SUFFIX[$func]:-}"
+    echo "${prefix}${arg}${suffix}"
+done < "$TMPDIR/current_warnings_errmsg.txt" >> "$TMPDIR/current_warnings_raw.txt"
+
+sort -u "$TMPDIR/current_warnings_raw.txt" > "$TMPDIR/current_warnings.txt"
 
 ERROR_COUNT=$(wc -l < "$TMPDIR/current_errors.txt" | tr -d ' ')
 WARNING_COUNT=$(wc -l < "$TMPDIR/current_warnings.txt" | tr -d ' ')

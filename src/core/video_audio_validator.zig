@@ -27,6 +27,7 @@ const mp3_validator = @import("mp3_decode_validator.zig");
 const opus_validator = @import("opus_validator.zig");
 const vorbis_validator = @import("vorbis_validator.zig");
 const ebml = @import("ebml_parser.zig");
+const errmsg = @import("error_messages.zig");
 
 /// Audio codec type
 pub const AudioCodec = enum {
@@ -436,12 +437,12 @@ fn detectMp4aSubtype(file: std.fs.File, stsd_offset: u64) AudioCodec {
 /// Validate audio track from MP4 file
 pub fn validateMp4Audio(allocator: Allocator, path: []const u8) AudioValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return AudioValidationResult.invalid("Failed to open file", .unknown);
+        return AudioValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return AudioValidationResult.invalid("Failed to get file size", .unknown);
+        return AudioValidationResult.invalid(errmsg.failedToGet("file size"), .unknown);
     };
 
     // Find moov box
@@ -559,19 +560,19 @@ fn validateMp4AacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
     // Parse sample sizes
     // stsz is a FullBox: skip header + 4 bytes version/flags, then read sample_size + sample_count
     file.seekTo(stsz.?.offset + stsz.?.header_size + 4) catch {
-        return AudioValidationResult.invalid("Failed to read sample sizes", .aac);
+        return AudioValidationResult.invalid(errmsg.failedToRead("sample sizes"), .aac);
     };
 
     var stsz_header: [8]u8 = undefined;
     _ = file.read(&stsz_header) catch {
-        return AudioValidationResult.invalid("Failed to read sample sizes", .aac);
+        return AudioValidationResult.invalid(errmsg.failedToRead("sample sizes"), .aac);
     };
 
     const default_size = std.mem.readInt(u32, stsz_header[0..4], .big);
     const sample_count = std.mem.readInt(u32, stsz_header[4..8], .big);
 
     if (sample_count > 10_000_000) {
-        return AudioValidationResult.invalid("Too many samples", .aac);
+        return AudioValidationResult.invalid(errmsg.tooMany("samples"), .aac);
     }
 
     var sample_sizes: std.ArrayListUnmanaged(u32) = .{};
@@ -598,12 +599,12 @@ fn validateMp4AacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
     const is_64bit = stco == null;
 
     file.seekTo(chunk_box.offset + chunk_box.header_size + 4) catch {
-        return AudioValidationResult.invalid("Failed to read chunk offsets", .aac);
+        return AudioValidationResult.invalid(errmsg.failedToRead("chunk offsets"), .aac);
     };
 
     var chunk_count_buf: [4]u8 = undefined;
     _ = file.read(&chunk_count_buf) catch {
-        return AudioValidationResult.invalid("Failed to read chunk offsets", .aac);
+        return AudioValidationResult.invalid(errmsg.failedToRead("chunk offsets"), .aac);
     };
     const chunk_count = std.mem.readInt(u32, &chunk_count_buf, .big);
 
@@ -745,19 +746,19 @@ fn validateMp4AlacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
 
     // stsz is a FullBox: skip header + 4 bytes version/flags, then read sample_size + sample_count
     file.seekTo(stsz.?.offset + stsz.?.header_size + 4) catch {
-        return AudioValidationResult.invalid("Failed to read sample sizes", .alac);
+        return AudioValidationResult.invalid(errmsg.failedToRead("sample sizes"), .alac);
     };
 
     var stsz_header: [8]u8 = undefined;
     _ = file.read(&stsz_header) catch {
-        return AudioValidationResult.invalid("Failed to read sample sizes", .alac);
+        return AudioValidationResult.invalid(errmsg.failedToRead("sample sizes"), .alac);
     };
 
     const default_size = std.mem.readInt(u32, stsz_header[0..4], .big);
     const sample_count = std.mem.readInt(u32, stsz_header[4..8], .big);
 
     if (sample_count > 10_000_000) {
-        return AudioValidationResult.invalid("Too many samples", .alac);
+        return AudioValidationResult.invalid(errmsg.tooMany("samples"), .alac);
     }
 
     if (default_size == 0) {
@@ -781,12 +782,12 @@ fn validateMp4AlacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
     const is_64bit = stco == null;
 
     file.seekTo(chunk_box.offset + chunk_box.header_size + 4) catch {
-        return AudioValidationResult.invalid("Failed to read chunk offsets", .alac);
+        return AudioValidationResult.invalid(errmsg.failedToRead("chunk offsets"), .alac);
     };
 
     var chunk_count_buf: [4]u8 = undefined;
     _ = file.read(&chunk_count_buf) catch {
-        return AudioValidationResult.invalid("Failed to read chunk offsets", .alac);
+        return AudioValidationResult.invalid(errmsg.failedToRead("chunk offsets"), .alac);
     };
     const chunk_count = std.mem.readInt(u32, &chunk_count_buf, .big);
 
@@ -821,7 +822,7 @@ fn validateMp4AlacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
     // (Full implementation would handle stsc for samples-per-chunk mapping)
     const first_chunk_offset = chunk_offsets.items[0];
     file.seekTo(first_chunk_offset) catch {
-        return AudioValidationResult.invalid("Failed to seek to frame data", .alac);
+        return AudioValidationResult.invalid(errmsg.failedToSeek("to frame data"), .alac);
     };
 
     var frames_collected: u32 = 0;
@@ -1074,12 +1075,12 @@ fn validateMp4Ac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
     // Read sample sizes
     // stsz is a FullBox: skip header + 4 bytes version/flags, then read sample_size + sample_count
     file.seekTo(stsz.?.offset + stsz.?.header_size + 4) catch {
-        return AudioValidationResult.invalid("Failed to read sample sizes", .ac3);
+        return AudioValidationResult.invalid(errmsg.failedToRead("sample sizes"), .ac3);
     };
 
     var stsz_header: [8]u8 = undefined;
     _ = file.read(&stsz_header) catch {
-        return AudioValidationResult.invalid("Failed to read sample sizes", .ac3);
+        return AudioValidationResult.invalid(errmsg.failedToRead("sample sizes"), .ac3);
     };
 
     const default_size = std.mem.readInt(u32, stsz_header[0..4], .big);
@@ -1094,24 +1095,24 @@ fn validateMp4Ac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
     const is_64bit = stco == null;
 
     file.seekTo(chunk_box.offset + chunk_box.header_size + 4) catch {
-        return AudioValidationResult.invalid("Failed to read chunk offsets", .ac3);
+        return AudioValidationResult.invalid(errmsg.failedToRead("chunk offsets"), .ac3);
     };
 
     var chunk_count_buf: [4]u8 = undefined;
     _ = file.read(&chunk_count_buf) catch {
-        return AudioValidationResult.invalid("Failed to read chunk offsets", .ac3);
+        return AudioValidationResult.invalid(errmsg.failedToRead("chunk offsets"), .ac3);
     };
 
     const first_offset: u64 = if (is_64bit) blk: {
         var offset_buf: [8]u8 = undefined;
         _ = file.read(&offset_buf) catch {
-            return AudioValidationResult.invalid("Failed to read chunk offset", .ac3);
+            return AudioValidationResult.invalid(errmsg.failedToRead("chunk offset"), .ac3);
         };
         break :blk std.mem.readInt(u64, &offset_buf, .big);
     } else blk: {
         var offset_buf: [4]u8 = undefined;
         _ = file.read(&offset_buf) catch {
-            return AudioValidationResult.invalid("Failed to read chunk offset", .ac3);
+            return AudioValidationResult.invalid(errmsg.failedToRead("chunk offset"), .ac3);
         };
         break :blk std.mem.readInt(u32, &offset_buf, .big);
     };
@@ -1126,11 +1127,11 @@ fn validateMp4Ac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
     defer allocator.free(buffer);
 
     file.seekTo(first_offset) catch {
-        return AudioValidationResult.invalid("Failed to seek to AC-3 data", .ac3);
+        return AudioValidationResult.invalid(errmsg.failedToSeek("to AC-3 data"), .ac3);
     };
 
     const bytes_read = file.read(buffer) catch {
-        return AudioValidationResult.invalid("Failed to read AC-3 data", .ac3);
+        return AudioValidationResult.invalid(errmsg.failedToRead("AC-3 data"), .ac3);
     };
 
     // Validate using AC-3 validator
@@ -1208,12 +1209,12 @@ fn validateMkvAacTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track
     }
 
     const frame_data = allocator.alloc(u8, total_size) catch {
-        return AudioValidationResult.invalid("Out of memory assembling AAC frames", .aac);
+        return AudioValidationResult.invalid(errmsg.outOfMemory("assembling AAC frames"), .aac);
     };
     defer allocator.free(frame_data);
 
     const au_sizes = allocator.alloc(u32, frames.len) catch {
-        return AudioValidationResult.invalid("Out of memory for AAC frame sizes", .aac);
+        return AudioValidationResult.invalid(errmsg.outOfMemory("for AAC frame sizes"), .aac);
     };
     defer allocator.free(au_sizes);
 
@@ -1250,12 +1251,12 @@ fn validateMp4Eac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
     // Read sample sizes
     // stsz is a FullBox: skip header + 4 bytes version/flags, then read sample_size + sample_count
     file.seekTo(stsz.?.offset + stsz.?.header_size + 4) catch {
-        return AudioValidationResult.invalid("Failed to read sample sizes", .eac3);
+        return AudioValidationResult.invalid(errmsg.failedToRead("sample sizes"), .eac3);
     };
 
     var stsz_header: [8]u8 = undefined;
     _ = file.read(&stsz_header) catch {
-        return AudioValidationResult.invalid("Failed to read sample sizes", .eac3);
+        return AudioValidationResult.invalid(errmsg.failedToRead("sample sizes"), .eac3);
     };
 
     const default_size = std.mem.readInt(u32, stsz_header[0..4], .big);
@@ -1270,19 +1271,19 @@ fn validateMp4Eac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
     const is_64bit = stco == null;
 
     file.seekTo(chunk_box.offset + chunk_box.header_size + 4) catch {
-        return AudioValidationResult.invalid("Failed to read chunk offsets", .eac3);
+        return AudioValidationResult.invalid(errmsg.failedToRead("chunk offsets"), .eac3);
     };
 
     const first_offset: u64 = if (is_64bit) blk: {
         var offset_buf: [8]u8 = undefined;
         _ = file.read(&offset_buf) catch {
-            return AudioValidationResult.invalid("Failed to read chunk offset", .eac3);
+            return AudioValidationResult.invalid(errmsg.failedToRead("chunk offset"), .eac3);
         };
         break :blk std.mem.readInt(u64, &offset_buf, .big);
     } else blk: {
         var offset_buf: [4]u8 = undefined;
         _ = file.read(&offset_buf) catch {
-            return AudioValidationResult.invalid("Failed to read chunk offset", .eac3);
+            return AudioValidationResult.invalid(errmsg.failedToRead("chunk offset"), .eac3);
         };
         break :blk std.mem.readInt(u32, &offset_buf, .big);
     };
@@ -1297,11 +1298,11 @@ fn validateMp4Eac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
     defer allocator.free(buffer);
 
     file.seekTo(first_offset) catch {
-        return AudioValidationResult.invalid("Failed to seek to E-AC-3 data", .eac3);
+        return AudioValidationResult.invalid(errmsg.failedToSeek("to E-AC-3 data"), .eac3);
     };
 
     const bytes_read = file.read(buffer) catch {
-        return AudioValidationResult.invalid("Failed to read E-AC-3 data", .eac3);
+        return AudioValidationResult.invalid(errmsg.failedToRead("E-AC-3 data"), .eac3);
     };
 
     // Validate using E-AC-3 validator
@@ -1348,7 +1349,7 @@ fn validateMkvEac3Track(allocator: Allocator, parser: *ebml.MatroskaParser, trac
 /// Validate audio track from MKV file
 fn validateMkvAudio(allocator: Allocator, path: []const u8) AudioValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return AudioValidationResult.invalid("Failed to open file", .unknown);
+        return AudioValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
     };
     defer file.close();
 
@@ -1456,7 +1457,7 @@ fn validateMkvOpusTrack(allocator: Allocator, parser: *ebml.MatroskaParser, trac
     // OpusHead format:
     // "OpusHead" (8 bytes) + version (1) + channels (1) + pre-skip (2) + sample_rate (4) + ...
     if (!std.mem.eql(u8, codec_private[0..8], "OpusHead")) {
-        return AudioValidationResult.invalid("Invalid Opus header signature", .opus);
+        return AudioValidationResult.invalid(errmsg.invalidSignature("Opus header"), .opus);
     }
 
     const channels: i32 = @intCast(codec_private[9]);
@@ -1480,7 +1481,7 @@ fn validateMkvOpusTrack(allocator: Allocator, parser: *ebml.MatroskaParser, trac
 
     // Convert KeyframeData to packet slices for validation
     const packets = allocator.alloc([]const u8, frame_result.frames.len) catch {
-        return AudioValidationResult.invalid("Failed to allocate packet array", .opus);
+        return AudioValidationResult.invalid(errmsg.failedToAllocate("packet array"), .opus);
     };
     defer allocator.free(packets);
 

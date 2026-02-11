@@ -26,6 +26,7 @@ const pdf_decryptor = @import("pdf_decryptor.zig");
 const zlib = @import("zlib.zig");
 const thread_pool = @import("thread_pool.zig");
 const pdf_xref_parser = @import("pdf_xref_parser.zig");
+const errmsg = @import("error_messages.zig");
 
 /// Minimum number of images to trigger parallel validation
 const PARALLEL_IMAGE_THRESHOLD: usize = 10;
@@ -1137,7 +1138,7 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
                         .object_num = img.object_num,
                         .filter = .flate_decode,
                         .valid = false,
-                        .error_message = "FlateDecode decompression failed",
+                        .error_message = errmsg.decompressionFailed("FlateDecode"),
                         .width = 0,
                         .height = 0,
                     });
@@ -1387,7 +1388,7 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
                         .object_num = img.object_num,
                         .filter = .flate_decode,
                         .valid = false,
-                        .error_message = "FlateDecode decompression failed",
+                        .error_message = errmsg.decompressionFailed("FlateDecode"),
                         .width = 0,
                         .height = 0,
                     },

@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const ogg_validator = @import("ogg_validator.zig");
+const errmsg = @import("error_messages.zig");
 
 // Import libvorbis via C interop
 const vorbis = @cImport({
@@ -230,7 +231,7 @@ pub fn validateOggVorbisAlloc(allocator: std.mem.Allocator, file: std.fs.File) V
 /// Validate OGG Vorbis from a file path.
 pub fn validateOggVorbisPath(path: []const u8) VorbisValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return VorbisValidationResult.invalid("Failed to open file", 0);
+        return VorbisValidationResult.invalid(errmsg.failedToOpen("file"), 0);
     };
     defer file.close();
     return validateOggVorbis(file);

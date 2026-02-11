@@ -12,6 +12,7 @@
 //! Reference: ATSC A/52 (Digital Audio Compression Standard)
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 /// AC-3 frame sample rate table
 const sample_rates = [_]u32{ 48000, 44100, 32000, 0 };
@@ -274,7 +275,7 @@ pub fn validateAc3Stream(data: []const u8, max_frames: u32) Ac3ValidationResult 
     }
 
     if (frames_validated == 0) {
-        return Ac3ValidationResult.invalid("No valid AC-3 frames found", 0);
+        return Ac3ValidationResult.invalid(errmsg.noValidXFound("AC-3 frames"), 0);
     }
 
     return Ac3ValidationResult.ok(
@@ -289,16 +290,16 @@ pub fn validateAc3Stream(data: []const u8, max_frames: u32) Ac3ValidationResult 
 /// Validate AC-3 from file
 pub fn validateAc3File(path: []const u8, max_frames: u32) Ac3ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return Ac3ValidationResult.invalid("Failed to open file", 0);
+        return Ac3ValidationResult.invalid(errmsg.failedToOpen("file"), 0);
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return Ac3ValidationResult.invalid("Failed to get file size", 0);
+        return Ac3ValidationResult.invalid(errmsg.failedToGet("file size"), 0);
     };
 
     if (file_size < 7) {
-        return Ac3ValidationResult.invalid("File too small for AC-3", 0);
+        return Ac3ValidationResult.invalid(errmsg.fileTooSmallFor("AC-3"), 0);
     }
 
     // Read up to 1MB for validation
@@ -306,7 +307,7 @@ pub fn validateAc3File(path: []const u8, max_frames: u32) Ac3ValidationResult {
     var buffer: [1024 * 1024]u8 = undefined;
 
     const bytes_read = file.read(buffer[0..read_size]) catch {
-        return Ac3ValidationResult.invalid("Failed to read file", 0);
+        return Ac3ValidationResult.invalid(errmsg.failedToRead("file"), 0);
     };
 
     return validateAc3Stream(buffer[0..bytes_read], max_frames);

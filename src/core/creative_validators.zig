@@ -12,19 +12,20 @@ const ValidationDepth = format_validation.ValidationDepth;
 const DoctypeStrippedResult = format_validation.DoctypeStrippedResult;
 const stripDoctypeDeclaration = format_validation.stripDoctypeDeclaration;
 const xml = @import("xml");
+const errmsg = @import("error_messages.zig");
 
 // ============ Premiere Pro (.prproj) Validator ============
 
 pub fn validatePrproj(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.prproj, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.prproj, errmsg.failedToSeek("to start"));
 
     var header: [10]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.prproj, "Failed to read PRPROJ header");
+        return ValidationResult.invalid(.prproj, errmsg.failedToRead("PRPROJ header"));
     };
 
     if (bytes_read < 5) {
-        return ValidationResult.invalid(.prproj, "File too small for PRPROJ format");
+        return ValidationResult.invalid(.prproj, errmsg.fileTooSmallFor("PRPROJ format"));
     }
 
     // Check for gzip magic (0x1f 0x8b) - modern PRPROJ format (CS6+/CC7+)
@@ -52,20 +53,20 @@ pub fn validatePrproj(file: std.fs.File) ValidationResult {
         }
     }
 
-    return ValidationResult.invalid(.prproj, "Invalid PRPROJ signature (not gzip or XML)");
+    return ValidationResult.invalid(.prproj, errmsg.invalidSignatureNot("PRPROJ", "gzip or XML"));
 }
 
 pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Read file
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.prproj, "Failed to open PRPROJ file");
+        return ValidationResult.invalid(.prproj, errmsg.failedToOpen("PRPROJ file"));
     };
     defer file.close();
 
     // Read header to determine format
     var header: [10]u8 = undefined;
     const header_read = file.read(&header) catch {
-        return ValidationResult.invalid(.prproj, "Failed to read header");
+        return ValidationResult.invalid(.prproj, errmsg.failedToRead("header"));
     };
 
     if (header_read < 5) {
@@ -92,7 +93,7 @@ pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResu
 
     // Legacy XML format - parse and validate XML structure
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.prproj, "Failed to get file size");
+        return ValidationResult.invalid(.prproj, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 500 * 1024 * 1024) { // 500MB limit for XML files
@@ -100,16 +101,16 @@ pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResu
     }
 
     const xml_data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.prproj, "Failed to allocate memory for XML");
+        return ValidationResult.invalid(.prproj, errmsg.failedToAllocate("memory for XML"));
     };
     defer allocator.free(xml_data);
 
     const xml_read = file.readAll(xml_data) catch {
-        return ValidationResult.invalid(.prproj, "Failed to read XML data");
+        return ValidationResult.invalid(.prproj, errmsg.failedToRead("XML data"));
     };
 
     if (xml_read != file_size) {
-        return ValidationResult.invalid(.prproj, "Incomplete XML read");
+        return ValidationResult.invalid(.prproj, errmsg.incomplete("XML read"));
     }
 
     // Validate XML structure using the xml module
@@ -133,7 +134,7 @@ pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResu
     }
 
     if (element_count == 0) {
-        return ValidationResult.invalid(.prproj, "Empty XML document");
+        return ValidationResult.invalid(.prproj, errmsg.empty("XML document"));
     }
 
     // Successfully parsed - validate all bytes via XML parse
@@ -152,7 +153,7 @@ pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResu
 
 pub fn validatePrprojFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 5) {
-        return ValidationResult.invalid(.prproj, "Buffer too small for PRPROJ");
+        return ValidationResult.invalid(.prproj, errmsg.bufferTooSmallFor("PRPROJ"));
     }
 
     // Check for gzip magic
@@ -175,31 +176,31 @@ pub fn validatePrprojFromBuffer(data: []const u8) ValidationResult {
         }
     }
 
-    return ValidationResult.invalid(.prproj, "Invalid PRPROJ signature");
+    return ValidationResult.invalid(.prproj, errmsg.invalidSignature("PRPROJ"));
 }
 
 // ============ InDesign (.indd) Validator ============
 
 pub fn validateIndd(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.indd, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.indd, errmsg.failedToSeek("to start"));
 
     var header: [24]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.indd, "Failed to read INDD header");
+        return ValidationResult.invalid(.indd, errmsg.failedToRead("INDD header"));
     };
 
     if (bytes_read < 24) {
-        return ValidationResult.invalid(.indd, "File too small for INDD format");
+        return ValidationResult.invalid(.indd, errmsg.fileTooSmallFor("INDD format"));
     }
 
     // Check magic bytes: 06 06 ED F5
     if (header[0] != 0x06 or header[1] != 0x06 or header[2] != 0xED or header[3] != 0xF5) {
-        return ValidationResult.invalid(.indd, "Invalid INDD magic bytes");
+        return ValidationResult.invalid(.indd, errmsg.invalidMagic("INDD"));
     }
 
     // Check for "DOCUMENT" at byte 16
     if (!std.mem.eql(u8, header[16..24], "DOCUMENT")) {
-        return ValidationResult.invalid(.indd, "Missing DOCUMENT identifier");
+        return ValidationResult.invalid(.indd, errmsg.missing("DOCUMENT identifier"));
     }
 
     // INDD is proprietary binary - structural validation only
@@ -209,7 +210,7 @@ pub fn validateIndd(file: std.fs.File) ValidationResult {
 pub fn validateInddDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.indd, "Failed to open INDD file");
+        return ValidationResult.invalid(.indd, errmsg.failedToOpen("INDD file"));
     };
     defer file.close();
 
@@ -223,17 +224,17 @@ pub fn validateInddDeep(allocator: Allocator, path: []const u8) ValidationResult
 
 pub fn validateInddFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 24) {
-        return ValidationResult.invalid(.indd, "Buffer too small for INDD");
+        return ValidationResult.invalid(.indd, errmsg.bufferTooSmallFor("INDD"));
     }
 
     // Check magic bytes: 06 06 ED F5
     if (data[0] != 0x06 or data[1] != 0x06 or data[2] != 0xED or data[3] != 0xF5) {
-        return ValidationResult.invalid(.indd, "Invalid INDD magic bytes");
+        return ValidationResult.invalid(.indd, errmsg.invalidMagic("INDD"));
     }
 
     // Check for "DOCUMENT" at byte 16
     if (!std.mem.eql(u8, data[16..24], "DOCUMENT")) {
-        return ValidationResult.invalid(.indd, "Missing DOCUMENT identifier");
+        return ValidationResult.invalid(.indd, errmsg.missing("DOCUMENT identifier"));
     }
 
     return ValidationResult.structuralOnly(.indd);
@@ -242,20 +243,20 @@ pub fn validateInddFromBuffer(data: []const u8) ValidationResult {
 // ============ IDML Validator ============
 
 pub fn validateIdml(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.idml, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.idml, errmsg.failedToSeek("to start"));
 
     var header: [4]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.idml, "Failed to read IDML header");
+        return ValidationResult.invalid(.idml, errmsg.failedToRead("IDML header"));
     };
 
     if (bytes_read < 4) {
-        return ValidationResult.invalid(.idml, "File too small for IDML format");
+        return ValidationResult.invalid(.idml, errmsg.fileTooSmallFor("IDML format"));
     }
 
     // Check for ZIP magic (PK)
     if (header[0] != 'P' or header[1] != 'K' or header[2] != 0x03 or header[3] != 0x04) {
-        return ValidationResult.invalid(.idml, "Invalid IDML signature (not ZIP)");
+        return ValidationResult.invalid(.idml, errmsg.invalidSignatureNot("IDML", "ZIP"));
     }
 
     // IDML is a ZIP container - basic structural validation passes
@@ -294,16 +295,16 @@ fn containsElement(content: []const u8, comptime element_name: []const u8) bool 
 }
 
 pub fn validateFcpxml(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.fcpxml, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.fcpxml, errmsg.failedToSeek("to start"));
 
     // Read enough for XML declaration and root element detection
     var header: [512]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.fcpxml, "Failed to read FCPXML header");
+        return ValidationResult.invalid(.fcpxml, errmsg.failedToRead("FCPXML header"));
     };
 
     if (bytes_read < 10) {
-        return ValidationResult.invalid(.fcpxml, "File too small for FCPXML format");
+        return ValidationResult.invalid(.fcpxml, errmsg.fileTooSmallFor("FCPXML format"));
     }
 
     // Skip BOM if present
@@ -326,7 +327,7 @@ pub fn validateFcpxml(file: std.fs.File) ValidationResult {
 
 pub fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.fcpxml, "Failed to open FCPXML file");
+        return ValidationResult.invalid(.fcpxml, errmsg.failedToOpen("FCPXML file"));
     };
     defer file.close();
 
@@ -338,7 +339,7 @@ pub fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResu
     file.seekTo(0) catch return ValidationResult.invalid(.fcpxml, "Failed to seek");
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.fcpxml, "Failed to get file size");
+        return ValidationResult.invalid(.fcpxml, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 500 * 1024 * 1024) { // 500MB limit
@@ -346,16 +347,16 @@ pub fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResu
     }
 
     const xml_data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.fcpxml, "Failed to allocate memory");
+        return ValidationResult.invalid(.fcpxml, errmsg.failedToAllocate("memory"));
     };
     defer allocator.free(xml_data);
 
     const xml_read = file.readAll(xml_data) catch {
-        return ValidationResult.invalid(.fcpxml, "Failed to read XML data");
+        return ValidationResult.invalid(.fcpxml, errmsg.failedToRead("XML data"));
     };
 
     if (xml_read != file_size) {
-        return ValidationResult.invalid(.fcpxml, "Incomplete read");
+        return ValidationResult.invalid(.fcpxml, errmsg.incomplete("read"));
     }
 
     // Use XML parser to validate structure
@@ -386,7 +387,7 @@ pub fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResu
     }
 
     if (!found_fcpxml) {
-        return ValidationResult.okWithDepthAndWarning(.fcpxml, .structural, "Missing fcpxml root element");
+        return ValidationResult.okWithDepthAndWarning(.fcpxml, .structural, errmsg.missing("fcpxml root element"));
     }
 
     return ValidationResult.okWithDepth(.fcpxml, .full);
@@ -394,7 +395,7 @@ pub fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResu
 
 pub fn validateFcpxmlFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 10) {
-        return ValidationResult.invalid(.fcpxml, "Buffer too small for FCPXML");
+        return ValidationResult.invalid(.fcpxml, errmsg.bufferTooSmallFor("FCPXML"));
     }
 
     // Skip BOM if present
@@ -416,20 +417,20 @@ pub fn validateFcpxmlFromBuffer(data: []const u8) ValidationResult {
 // ============ DaVinci Resolve (.drp) Validator ============
 
 pub fn validateDrp(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.drp, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.drp, errmsg.failedToSeek("to start"));
 
     var header: [4]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.drp, "Failed to read DRP header");
+        return ValidationResult.invalid(.drp, errmsg.failedToRead("DRP header"));
     };
 
     if (bytes_read < 4) {
-        return ValidationResult.invalid(.drp, "File too small for DRP format");
+        return ValidationResult.invalid(.drp, errmsg.fileTooSmallFor("DRP format"));
     }
 
     // Check for ZIP magic (PK\x03\x04)
     if (header[0] != 'P' or header[1] != 'K' or header[2] != 0x03 or header[3] != 0x04) {
-        return ValidationResult.invalid(.drp, "Invalid DRP signature (not ZIP)");
+        return ValidationResult.invalid(.drp, errmsg.invalidSignatureNot("DRP", "ZIP"));
     }
 
     // DRP is a ZIP container - basic structural validation passes
@@ -446,12 +447,12 @@ pub fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Now check for project.xml in the archive
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.drp, "Failed to open DRP file");
+        return ValidationResult.invalid(.drp, errmsg.failedToOpen("DRP file"));
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.drp, "Failed to get file size");
+        return ValidationResult.invalid(.drp, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 500 * 1024 * 1024) {
@@ -461,16 +462,16 @@ pub fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Read the file to find project.xml in the central directory
     const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.drp, "Failed to allocate memory");
+        return ValidationResult.invalid(.drp, errmsg.failedToAllocate("memory"));
     };
     defer allocator.free(data);
 
     const read_len = file.readAll(data) catch {
-        return ValidationResult.invalid(.drp, "Failed to read file");
+        return ValidationResult.invalid(.drp, errmsg.failedToRead("file"));
     };
 
     if (read_len != file_size) {
-        return ValidationResult.invalid(.drp, "Incomplete read");
+        return ValidationResult.invalid(.drp, errmsg.incomplete("read"));
     }
 
     // Look for project.xml in the file names
@@ -479,17 +480,17 @@ pub fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.okWithDepth(.drp, .full);
     }
 
-    return ValidationResult.okWithDepthAndWarning(.drp, .structural, "Missing project.xml in DRP archive");
+    return ValidationResult.okWithDepthAndWarning(.drp, .structural, errmsg.missing("project.xml in DRP archive"));
 }
 
 pub fn validateDrpFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 4) {
-        return ValidationResult.invalid(.drp, "Buffer too small for DRP");
+        return ValidationResult.invalid(.drp, errmsg.bufferTooSmallFor("DRP"));
     }
 
     // Check for ZIP magic (PK\x03\x04)
     if (data[0] != 'P' or data[1] != 'K' or data[2] != 0x03 or data[3] != 0x04) {
-        return ValidationResult.invalid(.drp, "Invalid DRP signature (not ZIP)");
+        return ValidationResult.invalid(.drp, errmsg.invalidSignatureNot("DRP", "ZIP"));
     }
 
     return ValidationResult.ok(.drp);
@@ -498,20 +499,20 @@ pub fn validateDrpFromBuffer(data: []const u8) ValidationResult {
 // ============ Sketch (.sketch) Validator ============
 
 pub fn validateSketch(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.sketch, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.sketch, errmsg.failedToSeek("to start"));
 
     var header: [4]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.sketch, "Failed to read Sketch header");
+        return ValidationResult.invalid(.sketch, errmsg.failedToRead("Sketch header"));
     };
 
     if (bytes_read < 4) {
-        return ValidationResult.invalid(.sketch, "File too small for Sketch format");
+        return ValidationResult.invalid(.sketch, errmsg.fileTooSmallFor("Sketch format"));
     }
 
     // Check for ZIP magic (PK\x03\x04)
     if (header[0] != 'P' or header[1] != 'K' or header[2] != 0x03 or header[3] != 0x04) {
-        return ValidationResult.invalid(.sketch, "Invalid Sketch signature (not ZIP)");
+        return ValidationResult.invalid(.sketch, errmsg.invalidSignatureNot("Sketch", "ZIP"));
     }
 
     // Sketch is a ZIP container - basic structural validation passes
@@ -528,12 +529,12 @@ pub fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResu
 
     // Now check for required Sketch files in the archive
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.sketch, "Failed to open Sketch file");
+        return ValidationResult.invalid(.sketch, errmsg.failedToOpen("Sketch file"));
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.sketch, "Failed to get file size");
+        return ValidationResult.invalid(.sketch, errmsg.failedToGet("file size"));
     };
 
     if (file_size > 500 * 1024 * 1024) {
@@ -543,16 +544,16 @@ pub fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResu
 
     // Read the file to find document.json and meta.json in the central directory
     const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.sketch, "Failed to allocate memory");
+        return ValidationResult.invalid(.sketch, errmsg.failedToAllocate("memory"));
     };
     defer allocator.free(data);
 
     const read_len = file.readAll(data) catch {
-        return ValidationResult.invalid(.sketch, "Failed to read file");
+        return ValidationResult.invalid(.sketch, errmsg.failedToRead("file"));
     };
 
     if (read_len != file_size) {
-        return ValidationResult.invalid(.sketch, "Incomplete read");
+        return ValidationResult.invalid(.sketch, errmsg.incomplete("read"));
     }
 
     // Look for required Sketch files
@@ -560,10 +561,10 @@ pub fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResu
     const has_meta = std.mem.indexOf(u8, data, "meta.json") != null;
 
     if (!has_document) {
-        return ValidationResult.okWithDepthAndWarning(.sketch, .structural, "Missing document.json in Sketch archive");
+        return ValidationResult.okWithDepthAndWarning(.sketch, .structural, errmsg.missing("document.json in Sketch archive"));
     }
     if (!has_meta) {
-        return ValidationResult.okWithDepthAndWarning(.sketch, .structural, "Missing meta.json in Sketch archive");
+        return ValidationResult.okWithDepthAndWarning(.sketch, .structural, errmsg.missing("meta.json in Sketch archive"));
     }
 
     return ValidationResult.okWithDepth(.sketch, .full);
@@ -571,12 +572,12 @@ pub fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResu
 
 pub fn validateSketchFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 4) {
-        return ValidationResult.invalid(.sketch, "Buffer too small for Sketch");
+        return ValidationResult.invalid(.sketch, errmsg.bufferTooSmallFor("Sketch"));
     }
 
     // Check for ZIP magic (PK\x03\x04)
     if (data[0] != 'P' or data[1] != 'K' or data[2] != 0x03 or data[3] != 0x04) {
-        return ValidationResult.invalid(.sketch, "Invalid Sketch signature (not ZIP)");
+        return ValidationResult.invalid(.sketch, errmsg.invalidSignatureNot("Sketch", "ZIP"));
     }
 
     return ValidationResult.ok(.sketch);
@@ -585,18 +586,18 @@ pub fn validateSketchFromBuffer(data: []const u8) ValidationResult {
 // ============ Illustrator (.ai) Validator ============
 
 pub fn validateAi(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.ai, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.ai, errmsg.failedToSeek("to start"));
 
     var header: [16]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ai, "Failed to read AI header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ai, errmsg.failedToRead("AI header"));
     if (bytes_read < 5) {
-        return ValidationResult.invalid(.ai, "File too small for AI header");
+        return ValidationResult.invalid(.ai, errmsg.fileTooSmallFor("AI header"));
     }
 
     // Check if it's PDF-based (modern AI files)
     if (std.mem.startsWith(u8, header[0..bytes_read], "%PDF-")) {
         // Delegate to PDF validator
-        file.seekTo(0) catch return ValidationResult.invalid(.ai, "Failed to seek to start");
+        file.seekTo(0) catch return ValidationResult.invalid(.ai, errmsg.failedToSeek("to start"));
         const pdf_result = format_validation.validatePdf(file);
         // Return AI format but with PDF validation result
         return ValidationResult{
@@ -613,12 +614,12 @@ pub fn validateAi(file: std.fs.File) ValidationResult {
         std.mem.startsWith(u8, header[0..bytes_read], "%!PS-"))
     {
         // Reset file position before validation
-        file.seekTo(0) catch return ValidationResult.invalid(.ai, "Failed to seek to start");
+        file.seekTo(0) catch return ValidationResult.invalid(.ai, errmsg.failedToSeek("to start"));
         // Do basic PostScript/EPS structural validation
         return validatePostScript(file, .ai);
     }
 
-    return ValidationResult.invalid(.ai, "Invalid AI signature (expected %PDF- or %!PS-Adobe)");
+    return ValidationResult.invalid(.ai, errmsg.invalidSignatureExpected("AI", "%PDF- or %!PS-Adobe"));
 }
 
 pub fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
@@ -626,13 +627,13 @@ pub fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.ai, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.ai, "Access denied"),
-            else => ValidationResult.invalid(.ai, "Failed to open file"),
+            else => ValidationResult.invalid(.ai, errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     var header: [16]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ai, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.ai, errmsg.failedToRead("header"));
 
     // If PDF-based, use deep PDF validation
     if (std.mem.startsWith(u8, header[0..bytes_read], "%PDF-")) {
@@ -681,18 +682,18 @@ pub fn validateAiFromBuffer(data: []const u8) ValidationResult {
         return ValidationResult.ok(.ai);
     }
 
-    return ValidationResult.invalid(.ai, "Invalid AI signature");
+    return ValidationResult.invalid(.ai, errmsg.invalidSignature("AI"));
 }
 
 // ============ EPS / PostScript Validator ============
 
 pub fn validateEps(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.eps, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.eps, errmsg.failedToSeek("to start"));
 
     var header: [16]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.eps, "Failed to read EPS header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.eps, errmsg.failedToRead("EPS header"));
     if (bytes_read < 4) {
-        return ValidationResult.invalid(.eps, "File too small for EPS header");
+        return ValidationResult.invalid(.eps, errmsg.fileTooSmallFor("EPS header"));
     }
 
     // EPS can start with binary header (0xC5D0D3C6) for DOS EPS or %!PS-Adobe for standard EPS
@@ -700,11 +701,11 @@ pub fn validateEps(file: std.fs.File) ValidationResult {
     if (std.mem.startsWith(u8, header[0..bytes_read], &dos_eps_sig)) {
         // DOS EPS with binary header - parse header to find PS data offset
         if (bytes_read < 12) {
-            return ValidationResult.invalid(.eps, "Truncated DOS EPS header");
+            return ValidationResult.invalid(.eps, errmsg.truncated("DOS EPS header"));
         }
         // DOS EPS header: 4-byte magic, 4-byte PS offset, 4-byte PS length
         const ps_offset = std.mem.readInt(u32, header[4..8], .little);
-        file.seekTo(ps_offset) catch return ValidationResult.invalid(.eps, "Failed to seek to PS data");
+        file.seekTo(ps_offset) catch return ValidationResult.invalid(.eps, errmsg.failedToSeek("to PS data"));
         return validatePostScript(file, .eps);
     }
 
@@ -712,11 +713,11 @@ pub fn validateEps(file: std.fs.File) ValidationResult {
     if (std.mem.startsWith(u8, header[0..bytes_read], "%!PS-Adobe") or
         std.mem.startsWith(u8, header[0..bytes_read], "%!PS-"))
     {
-        file.seekTo(0) catch return ValidationResult.invalid(.eps, "Failed to seek to start");
+        file.seekTo(0) catch return ValidationResult.invalid(.eps, errmsg.failedToSeek("to start"));
         return validatePostScript(file, .eps);
     }
 
-    return ValidationResult.invalid(.eps, "Invalid EPS signature");
+    return ValidationResult.invalid(.eps, errmsg.invalidSignature("EPS"));
 }
 
 pub fn validateEpsDeep(allocator: Allocator, path: []const u8) ValidationResult {
@@ -725,7 +726,7 @@ pub fn validateEpsDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.eps, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.eps, "Access denied"),
-            else => ValidationResult.invalid(.eps, "Failed to open file"),
+            else => ValidationResult.invalid(.eps, errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
@@ -750,7 +751,7 @@ pub fn validateEpsFromBuffer(data: []const u8) ValidationResult {
     const dos_eps_sig = [_]u8{ 0xC5, 0xD0, 0xD3, 0xC6 };
     if (std.mem.startsWith(u8, data, &dos_eps_sig)) {
         if (data.len < 12) {
-            return ValidationResult.invalid(.eps, "Truncated DOS EPS header");
+            return ValidationResult.invalid(.eps, errmsg.truncated("DOS EPS header"));
         }
         // For buffer validation, just verify the header structure
         return ValidationResult.ok(.eps);
@@ -766,19 +767,19 @@ pub fn validateEpsFromBuffer(data: []const u8) ValidationResult {
         return ValidationResult.invalid(.eps, "EPS missing %%BoundingBox");
     }
 
-    return ValidationResult.invalid(.eps, "Invalid EPS signature");
+    return ValidationResult.invalid(.eps, errmsg.invalidSignature("EPS"));
 }
 
 /// Shared PostScript structural validator (used by both AI and EPS)
 pub fn validatePostScript(file: std.fs.File, format: FileFormat) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(format, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(format, errmsg.failedToGet("file size"));
     if (file_size < 20) {
-        return ValidationResult.invalid(format, "File too small for valid PostScript");
+        return ValidationResult.invalid(format, errmsg.fileTooSmallFor("valid PostScript"));
     }
 
     // Read first chunk to verify header
     var header_buf: [256]u8 = undefined;
-    const header_read = file.read(&header_buf) catch return ValidationResult.invalid(format, "Failed to read header");
+    const header_read = file.read(&header_buf) catch return ValidationResult.invalid(format, errmsg.failedToRead("header"));
     if (header_read < 10) {
         return ValidationResult.invalid(format, "File too small");
     }
@@ -802,10 +803,10 @@ pub fn validatePostScript(file: std.fs.File, format: FileFormat) ValidationResul
     // Check trailer for %%EOF
     const trailer_size: u64 = @min(1024, file_size);
     const trailer_start = file_size - trailer_size;
-    file.seekTo(trailer_start) catch return ValidationResult.invalid(format, "Failed to seek to trailer");
+    file.seekTo(trailer_start) catch return ValidationResult.invalid(format, errmsg.failedToSeek("to trailer"));
 
     var trailer_buf: [1024]u8 = undefined;
-    const trailer_read = file.read(&trailer_buf) catch return ValidationResult.invalid(format, "Failed to read trailer");
+    const trailer_read = file.read(&trailer_buf) catch return ValidationResult.invalid(format, errmsg.failedToRead("trailer"));
     if (trailer_read > 0) {
         // Look for %%EOF marker (may have trailing whitespace)
         if (std.mem.indexOf(u8, trailer_buf[0..trailer_read], "%%EOF")) |_| {
@@ -833,17 +834,17 @@ pub fn validatePostScript(file: std.fs.File, format: FileFormat) ValidationResul
 // ============ After Effects (.aep) Validator ============
 
 pub fn validateAep(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.aep, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.aep, errmsg.failedToSeek("to start"));
 
     var header: [12]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.aep, "Failed to read AEP header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.aep, errmsg.failedToRead("AEP header"));
     if (bytes_read < 12) {
-        return ValidationResult.invalid(.aep, "File too small for AEP header");
+        return ValidationResult.invalid(.aep, errmsg.fileTooSmallFor("AEP header"));
     }
 
     // Verify RIFX signature (big-endian RIFF)
     if (!std.mem.eql(u8, header[0..4], "RIFX")) {
-        return ValidationResult.invalid(.aep, "Invalid AEP signature (expected RIFX)");
+        return ValidationResult.invalid(.aep, errmsg.invalidSignatureExpected("AEP", "RIFX"));
     }
 
     // Verify "Egg!" format marker
@@ -855,7 +856,7 @@ pub fn validateAep(file: std.fs.File) ValidationResult {
     const declared_size = std.mem.readInt(u32, header[4..8], .big);
 
     // Get actual file size
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.aep, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.aep, errmsg.failedToGet("file size"));
 
     // RIFX size is file size minus 8 (excludes RIFX and size field itself)
     const expected_size = @as(u64, declared_size) + 8;
@@ -914,7 +915,7 @@ pub fn validateAepDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.aep, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.aep, "Access denied"),
-            else => ValidationResult.invalid(.aep, "Failed to open file"),
+            else => ValidationResult.invalid(.aep, errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
@@ -933,12 +934,12 @@ pub fn validateAepDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 pub fn validateAepFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 12) {
-        return ValidationResult.invalid(.aep, "Buffer too small for AEP header");
+        return ValidationResult.invalid(.aep, errmsg.bufferTooSmallFor("AEP header"));
     }
 
     // Verify RIFX signature
     if (!std.mem.eql(u8, data[0..4], "RIFX")) {
-        return ValidationResult.invalid(.aep, "Invalid AEP signature");
+        return ValidationResult.invalid(.aep, errmsg.invalidSignature("AEP"));
     }
 
     // Verify "Egg!" format marker

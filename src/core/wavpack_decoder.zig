@@ -13,6 +13,7 @@
 //! Reference: WavPack Technical Specification (wavpack.com)
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 // ============================================================================
 // Constants
@@ -333,7 +334,7 @@ pub fn validateWavPackDeep(data: []const u8, max_blocks: u32) WavPackDeepValidat
     }
 
     if (blocks_validated == 0) {
-        return WavPackDeepValidationResult.invalid("No valid blocks found");
+        return WavPackDeepValidationResult.invalid(errmsg.noValidXFound("blocks"));
     }
 
     // MD5 verification would require full decode + hash comparison
@@ -359,11 +360,11 @@ pub fn validateWavPackDeep(data: []const u8, max_blocks: u32) WavPackDeepValidat
 pub fn validateWavPackFile(file: std.fs.File, max_blocks: u32, allocator: std.mem.Allocator) WavPackDeepValidationResult {
     // Get file size
     const file_size = file.getEndPos() catch {
-        return WavPackDeepValidationResult.invalid("Failed to get file size");
+        return WavPackDeepValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     if (file_size < 32) {
-        return WavPackDeepValidationResult.invalid("File too small for WavPack");
+        return WavPackDeepValidationResult.invalid(errmsg.fileTooSmallFor("WavPack"));
     }
 
     // Read file into memory (limited to reasonable size)
@@ -380,7 +381,7 @@ pub fn validateWavPackFile(file: std.fs.File, max_blocks: u32, allocator: std.me
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return WavPackDeepValidationResult.invalid("Failed to read file");
+        return WavPackDeepValidationResult.invalid(errmsg.failedToRead("file"));
     };
 
     return validateWavPackDeep(data[0..bytes_read], max_blocks);

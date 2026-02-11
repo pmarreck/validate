@@ -21,6 +21,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const prores_decoder = @import("prores_decoder.zig");
+const errmsg = @import("error_messages.zig");
 
 /// ProRes codec profile
 pub const ProResProfile = enum {
@@ -388,7 +389,7 @@ pub fn validateProResFrameDeep(data: []const u8) ProResDeepValidationResult {
     };
 
     if (data.len < header.frame_size) {
-        return ProResDeepValidationResult.invalid("Incomplete frame data", 0, 0, 0);
+        return ProResDeepValidationResult.invalid(errmsg.incomplete("frame data"), 0, 0, 0);
     }
 
     // Now do deep decode validation

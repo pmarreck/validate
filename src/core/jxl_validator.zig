@@ -21,6 +21,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const errmsg = @import("error_messages.zig");
 
 /// Threshold for warning about large image files (200MB)
 const large_image_threshold: u64 = 200 * 1024 * 1024;
@@ -58,14 +59,14 @@ pub fn validateJxlDeep(file_path: []const u8) JxlValidationResult {
         return switch (err) {
             error.FileNotFound => JxlValidationResult.invalid("File not found"),
             error.AccessDenied => JxlValidationResult.invalid("Access denied"),
-            else => JxlValidationResult.invalid("Failed to open file"),
+            else => JxlValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     // Get file size
     const file_size = file.getEndPos() catch {
-        return JxlValidationResult.invalid("Failed to get file size");
+        return JxlValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     // Track large files for warning (but don't reject them)
@@ -84,10 +85,10 @@ pub fn validateJxlDeep(file_path: []const u8) JxlValidationResult {
     // Read entire file
     const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
     const bytes_read = file.readAll(buf_slice) catch {
-        return JxlValidationResult.invalid("Failed to read file");
+        return JxlValidationResult.invalid(errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {
-        return JxlValidationResult.invalid("Incomplete file read");
+        return JxlValidationResult.invalid(errmsg.incomplete("file read"));
     }
 
     const result = validateJxlDeepFromBuffer(buf_slice);
@@ -154,7 +155,7 @@ pub fn validateJxlDeepFromBuffer(data: []const u8) JxlValidationResult {
             },
             c.JXL_DEC_BASIC_INFO => {
                 if (c.JxlDecoderGetBasicInfo(dec, &basic_info) != c.JXL_DEC_SUCCESS) {
-                    return JxlValidationResult.invalid("Failed to get basic info");
+                    return JxlValidationResult.invalid(errmsg.failedToGet("basic info"));
                 }
                 have_basic_info = true;
 

@@ -17,6 +17,7 @@
 //! Reference: RFC 6386 - VP8 Data Format and Decoding Guide
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 const math = std.math;
 
 // ============================================================================
@@ -780,15 +781,15 @@ pub fn validateKeyframeDeep(data: []const u8) Vp8DeepValidationResult {
 
     // color_space (1 bit) and clamping_type (1 bit)
     _ = decoder.readBit() orelse {
-        return Vp8DeepValidationResult.invalid("Failed to read color_space");
+        return Vp8DeepValidationResult.invalid(errmsg.failedToRead("color_space"));
     };
     _ = decoder.readBit() orelse {
-        return Vp8DeepValidationResult.invalid("Failed to read clamping_type");
+        return Vp8DeepValidationResult.invalid(errmsg.failedToRead("clamping_type"));
     };
 
     // segmentation_enabled (1 bit)
     const seg_enabled = decoder.readBit() orelse {
-        return Vp8DeepValidationResult.invalid("Failed to read segmentation_enabled");
+        return Vp8DeepValidationResult.invalid(errmsg.failedToRead("segmentation_enabled"));
     };
 
     if (seg_enabled) {
@@ -799,17 +800,17 @@ pub fn validateKeyframeDeep(data: []const u8) Vp8DeepValidationResult {
 
     // filter_type (1 bit)
     _ = decoder.readBit() orelse {
-        return Vp8DeepValidationResult.invalid("Failed to read filter_type");
+        return Vp8DeepValidationResult.invalid(errmsg.failedToRead("filter_type"));
     };
 
     // loop_filter_level (6 bits)
     _ = decoder.readLiteral(6) orelse {
-        return Vp8DeepValidationResult.invalid("Failed to read loop_filter_level");
+        return Vp8DeepValidationResult.invalid(errmsg.failedToRead("loop_filter_level"));
     };
 
     // sharpness_level (3 bits)
     _ = decoder.readLiteral(3) orelse {
-        return Vp8DeepValidationResult.invalid("Failed to read sharpness_level");
+        return Vp8DeepValidationResult.invalid(errmsg.failedToRead("sharpness_level"));
     };
 
     // Loop filter adjustments
@@ -819,27 +820,27 @@ pub fn validateKeyframeDeep(data: []const u8) Vp8DeepValidationResult {
 
     // Number of token partitions (log2, 2 bits)
     const log2_partitions = decoder.readLiteral(2) orelse {
-        return Vp8DeepValidationResult.invalid("Failed to read partition count");
+        return Vp8DeepValidationResult.invalid(errmsg.failedToRead("partition count"));
     };
     const num_partitions: usize = @as(usize, 1) << @intCast(log2_partitions);
 
     // Quantization indices
     const y_ac_qi = decoder.readLiteral(7) orelse {
-        return Vp8DeepValidationResult.invalid("Failed to read y_ac_qi");
+        return Vp8DeepValidationResult.invalid(errmsg.failedToRead("y_ac_qi"));
     };
     _ = y_ac_qi;
 
     // Delta quantizers (y_dc, y2_dc, y2_ac, uv_dc, uv_ac)
     for (0..5) |_| {
         const present = decoder.readBit() orelse {
-            return Vp8DeepValidationResult.invalid("Failed to read delta qi flag");
+            return Vp8DeepValidationResult.invalid(errmsg.failedToRead("delta qi flag"));
         };
         if (present) {
             _ = decoder.readLiteral(4) orelse {
-                return Vp8DeepValidationResult.invalid("Failed to read delta qi value");
+                return Vp8DeepValidationResult.invalid(errmsg.failedToRead("delta qi value"));
             };
             _ = decoder.readBit() orelse {
-                return Vp8DeepValidationResult.invalid("Failed to read delta qi sign");
+                return Vp8DeepValidationResult.invalid(errmsg.failedToRead("delta qi sign"));
             };
         }
     }
@@ -852,13 +853,13 @@ pub fn validateKeyframeDeep(data: []const u8) Vp8DeepValidationResult {
 
     // mb_no_coeff_skip flag
     const mb_skip = decoder.readBit() orelse {
-        return Vp8DeepValidationResult.invalid("Failed to read mb_no_coeff_skip");
+        return Vp8DeepValidationResult.invalid(errmsg.failedToRead("mb_no_coeff_skip"));
     };
 
     if (mb_skip) {
         // Read skip probability (used during macroblock decoding, not needed for validation)
         _ = decoder.readLiteral(8) orelse {
-            return Vp8DeepValidationResult.invalid("Failed to read skip probability");
+            return Vp8DeepValidationResult.invalid(errmsg.failedToRead("skip probability"));
         };
     }
 

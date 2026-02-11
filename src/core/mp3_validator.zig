@@ -18,6 +18,7 @@
 //! verifies CRCs when present, otherwise validates frame structure.
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 /// Result of MP3 deep validation
 pub const Mp3ValidationResult = struct {
@@ -121,13 +122,13 @@ pub fn validateMp3Crc(file: std.fs.File) Mp3ValidationResult {
 
     // Seek to beginning
     file.seekTo(0) catch {
-        return Mp3ValidationResult.invalid("Failed to seek to start", 0, 0);
+        return Mp3ValidationResult.invalid(errmsg.failedToSeek("to start"), 0, 0);
     };
 
     // Read initial header to check for ID3v2
     var header: [10]u8 = undefined;
     const header_bytes = file.read(&header) catch {
-        return Mp3ValidationResult.invalid("Failed to read header", 0, 0);
+        return Mp3ValidationResult.invalid(errmsg.failedToRead("header"), 0, 0);
     };
     if (header_bytes < 10) {
         return Mp3ValidationResult.invalid("File too small", 0, 0);
@@ -145,7 +146,7 @@ pub fn validateMp3Crc(file: std.fs.File) Mp3ValidationResult {
     }
 
     file.seekTo(audio_start) catch {
-        return Mp3ValidationResult.invalid("Failed to seek past ID3", 0, 0);
+        return Mp3ValidationResult.invalid(errmsg.failedToSeek("past ID3"), 0, 0);
     };
 
     // Validate frames
@@ -271,7 +272,7 @@ pub fn validateMp3Crc(file: std.fs.File) Mp3ValidationResult {
     }
 
     if (frames_checked == 0) {
-        return Mp3ValidationResult.invalid("No valid frames found", 0, 0);
+        return Mp3ValidationResult.invalid(errmsg.noValidXFound("frames"), 0, 0);
     }
 
     return Mp3ValidationResult.ok(frames_checked, frames_with_crc, crc_verified);
@@ -280,7 +281,7 @@ pub fn validateMp3Crc(file: std.fs.File) Mp3ValidationResult {
 /// Validate MP3 CRCs from a file path.
 pub fn validateMp3CrcPath(path: []const u8) Mp3ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return Mp3ValidationResult.invalid("Failed to open file", 0, 0);
+        return Mp3ValidationResult.invalid(errmsg.failedToOpen("file"), 0, 0);
     };
     defer file.close();
     return validateMp3Crc(file);

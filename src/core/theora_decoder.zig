@@ -14,6 +14,7 @@
 const std = @import("std");
 const math = std.math;
 const BitReader = @import("bitstream_reader.zig").BitReader;
+const errmsg = @import("error_messages.zig");
 
 // ============================================================================
 // Constants
@@ -270,7 +271,7 @@ pub fn parseFrameHeader(data: []const u8) ?TheoraFrameHeader {
 /// Deep validate a Theora frame
 pub fn validateFrameDeep(frame_data: []const u8, width: u32, height: u32) TheoraDeepValidationResult {
     if (frame_data.len == 0) {
-        return TheoraDeepValidationResult.invalid("Empty frame data");
+        return TheoraDeepValidationResult.invalid(errmsg.empty("frame data"));
     }
 
     // Parse frame header

@@ -17,6 +17,7 @@
 //! from random data without attempting full decompression.
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 const c = @cImport({
 	@cInclude("brotli/decode.h");
@@ -52,19 +53,19 @@ pub fn validateBrotliDeep(file_path: []const u8) BrotliValidationResult {
 		return switch (err) {
 			error.FileNotFound => BrotliValidationResult.invalid("File not found"),
 			error.AccessDenied => BrotliValidationResult.invalid("Access denied"),
-			else => BrotliValidationResult.invalid("Failed to open file"),
+			else => BrotliValidationResult.invalid(errmsg.failedToOpen("file")),
 		};
 	};
 	defer file.close();
 
 	// Get file size
 	const file_size = file.getEndPos() catch {
-		return BrotliValidationResult.invalid("Failed to get file size");
+		return BrotliValidationResult.invalid(errmsg.failedToGet("file size"));
 	};
 
 	// Limit to reasonable size (100MB compressed - brotli can be highly compressive)
 	if (file_size > 100 * 1024 * 1024) {
-		return BrotliValidationResult.invalid("File too large for deep validation");
+		return BrotliValidationResult.invalid(errmsg.fileTooLargeFor("deep validation"));
 	}
 
 	if (file_size == 0) {
@@ -80,10 +81,10 @@ pub fn validateBrotliDeep(file_path: []const u8) BrotliValidationResult {
 	// Read entire file
 	const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
 	const bytes_read = file.readAll(buf_slice) catch {
-		return BrotliValidationResult.invalid("Failed to read file");
+		return BrotliValidationResult.invalid(errmsg.failedToRead("file"));
 	};
 	if (bytes_read != file_size) {
-		return BrotliValidationResult.invalid("Incomplete file read");
+		return BrotliValidationResult.invalid(errmsg.incomplete("file read"));
 	}
 
 	return validateBrotliDeepFromBuffer(buf_slice);
@@ -93,7 +94,7 @@ pub fn validateBrotliDeep(file_path: []const u8) BrotliValidationResult {
 /// This handles unknown output sizes by using BrotliDecoderDecompressStream.
 pub fn validateBrotliDeepFromBuffer(data: []const u8) BrotliValidationResult {
 	if (data.len == 0) {
-		return BrotliValidationResult.invalid("Empty input");
+		return BrotliValidationResult.invalid(errmsg.empty("input"));
 	}
 
 	// Create streaming decoder
@@ -141,7 +142,7 @@ pub fn validateBrotliDeepFromBuffer(data: []const u8) BrotliValidationResult {
 				return BrotliValidationResult.invalid(getErrorMessage(error_code));
 			},
 			c.BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT => {
-				return BrotliValidationResult.invalid("Truncated Brotli stream");
+				return BrotliValidationResult.invalid(errmsg.truncated("Brotli stream"));
 			},
 			c.BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT => {
 				// Check if we're exceeding size limit
@@ -154,7 +155,7 @@ pub fn validateBrotliDeepFromBuffer(data: []const u8) BrotliValidationResult {
 				// (effectively discarding the output but still validating)
 			},
 			else => {
-				return BrotliValidationResult.invalid("Unknown decoder result");
+				return BrotliValidationResult.invalid(errmsg.unknown("decoder result"));
 			},
 		}
 	}
@@ -188,7 +189,7 @@ fn getErrorMessage(error_code: c.BrotliDecoderErrorCode) []const u8 {
 		c.BROTLI_DECODER_ERROR_ALLOC_RING_BUFFER_2 => "Memory allocation failed: ring buffer [2]",
 		c.BROTLI_DECODER_ERROR_ALLOC_BLOCK_TYPE_TREES => "Memory allocation failed: block type trees",
 		c.BROTLI_DECODER_ERROR_UNREACHABLE => "Unreachable code",
-		else => "Unknown Brotli error",
+		else => errmsg.unknown("Brotli error"),
 	};
 }
 

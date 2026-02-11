@@ -12,6 +12,7 @@ const std = @import("std");
 const iso9660 = @import("iso9660_parser.zig");
 const udf = @import("udf_parser.zig");
 const format_validation = @import("format_validation.zig");
+const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
 
 // ============================================================================
@@ -228,7 +229,7 @@ pub fn validateIso(
         return result;
     }
 
-    return IsoValidationResult.invalid("No valid ISO 9660 or UDF filesystem found");
+    return IsoValidationResult.invalid(errmsg.noValidXFound("ISO 9660 or UDF filesystem"));
 }
 
 /// Validate using ISO 9660
@@ -509,7 +510,7 @@ pub fn validateIsoFile(
     allocator: Allocator,
 ) IsoValidationResult {
     const file_size = file.getEndPos() catch {
-        return IsoValidationResult.invalid("Failed to get file size");
+        return IsoValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     // Limit memory usage
@@ -526,7 +527,7 @@ pub fn validateIsoFile(
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return IsoValidationResult.invalid("Failed to read file");
+        return IsoValidationResult.invalid(errmsg.failedToRead("file"));
     };
 
     return validateIso(data[0..bytes_read], deep_validate, max_files, allocator);

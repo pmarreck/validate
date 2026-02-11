@@ -26,6 +26,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const errmsg = @import("error_messages.zig");
 
 // No global mutex needed — pure-Zig validators are thread-safe.
 // VideoDecoderGuard kept as no-op for backward compatibility with any remaining references.
@@ -242,12 +243,12 @@ fn detectMp4VideoCodec(file: std.fs.File, stsd_offset: u64, stsd_size: u64) Vide
 /// Deep validate MP4/MOV video file by decoding keyframes.
 pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32) VideoValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return VideoValidationResult.invalid("Failed to open file", .unknown);
+        return VideoValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return VideoValidationResult.invalid("Failed to get file size", .unknown);
+        return VideoValidationResult.invalid(errmsg.failedToGet("file size"), .unknown);
     };
 
     // Find moov box
@@ -437,7 +438,7 @@ pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32)
         .hevc => validateHevcStream(bitstream.items, max_frames),
         .av1 => validateAv1Stream(allocator, bitstream.items, max_frames),
         .h264 => validateH264Stream(bitstream.items, max_frames),
-        else => VideoValidationResult.skipped("Unsupported codec"),
+        else => VideoValidationResult.skipped(errmsg.unsupported("codec")),
     };
 
     result.byte_validated = byte_validated;
@@ -473,7 +474,7 @@ fn validateMkvFrameBytes(ctx_ptr: ?*anyopaque, data: []const u8) bool {
 /// Deep validate MKV/WebM video file by decoding keyframes.
 pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32) VideoValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return VideoValidationResult.invalid("Failed to open file", .unknown);
+        return VideoValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
     };
     defer file.close();
 
@@ -691,7 +692,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
                 .hevc => validateHevcStream(bitstream.items, max_frames),
                 .av1 => validateAv1Stream(allocator, bitstream.items, max_frames),
                 .h264 => validateH264Stream(bitstream.items, max_frames),
-                else => VideoValidationResult.skipped("Unsupported codec"),
+                else => VideoValidationResult.skipped(errmsg.unsupported("codec")),
             };
             return result;
         }
@@ -716,7 +717,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
             frames_validated += 1;
         }
         if (frames_validated == 0) {
-            return VideoValidationResult.invalid("No valid MJPEG frames found", .mjpeg);
+            return VideoValidationResult.invalid(errmsg.noValidXFound("MJPEG frames"), .mjpeg);
         }
         return VideoValidationResult.okByteValidated(.mjpeg, frames_validated);
     }
@@ -852,7 +853,7 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         .hevc => validateHevcStream(bitstream.items, max_frames),
         .av1 => validateAv1Stream(allocator, bitstream.items, max_frames),
         .h264 => validateH264Stream(bitstream.items, max_frames),
-        else => VideoValidationResult.skipped("Unsupported codec"),
+        else => VideoValidationResult.skipped(errmsg.unsupported("codec")),
     };
 
     if (byte_validated) {
@@ -867,18 +868,18 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
 /// then validates using appropriate decoder.
 pub fn validateAviVideo(allocator: Allocator, path: []const u8, max_frames: u32) VideoValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return VideoValidationResult.invalid("Failed to open file", .unknown);
+        return VideoValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return VideoValidationResult.invalid("Failed to get file size", .unknown);
+        return VideoValidationResult.invalid(errmsg.failedToGet("file size"), .unknown);
     };
 
     // Validate RIFF/AVI header
     var header: [12]u8 = undefined;
     _ = file.read(&header) catch {
-        return VideoValidationResult.invalid("Failed to read RIFF header", .unknown);
+        return VideoValidationResult.invalid(errmsg.failedToRead("RIFF header"), .unknown);
     };
 
     if (!std.mem.eql(u8, header[0..4], "RIFF") or !std.mem.eql(u8, header[8..12], "AVI ")) {
@@ -916,7 +917,7 @@ pub fn validateAviVideo(allocator: Allocator, path: []const u8, max_frames: u32)
         return validateMpeg4P2FromAvi(allocator, file, avi_info, max_frames);
     }
 
-    return VideoValidationResult.skipped("Unsupported AVI codec");
+    return VideoValidationResult.skipped(errmsg.unsupported("AVI codec"));
 }
 
 /// AVI stream information parsed from header
@@ -2623,13 +2624,13 @@ fn validateMjpegFromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, m
 
         // Read the frame
         file.seekTo(location.offset) catch {
-            return VideoValidationResult.invalid("Failed to seek to frame", .mjpeg);
+            return VideoValidationResult.invalid(errmsg.failedToSeek("to frame"), .mjpeg);
         };
         const bytes_read = file.read(frame_buffer[0..location.size]) catch {
-            return VideoValidationResult.invalid("Failed to read frame", .mjpeg);
+            return VideoValidationResult.invalid(errmsg.failedToRead("frame"), .mjpeg);
         };
         if (bytes_read != location.size) {
-            return VideoValidationResult.invalid("Incomplete frame read", .mjpeg);
+            return VideoValidationResult.invalid(errmsg.incomplete("frame read"), .mjpeg);
         }
 
         // Validate as JPEG
@@ -2643,7 +2644,7 @@ fn validateMjpegFromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, m
     }
 
     if (frames_validated == 0) {
-        return VideoValidationResult.invalid("No valid MJPEG frames found", .mjpeg);
+        return VideoValidationResult.invalid(errmsg.noValidXFound("MJPEG frames"), .mjpeg);
     }
 
     return VideoValidationResult.okByteValidated(.mjpeg, frames_validated);
@@ -2707,10 +2708,10 @@ fn validateProResFromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, 
             continue;
         };
         const bytes_read = file.read(frame_buffer[0..location.size]) catch {
-            return VideoValidationResult.invalid("Failed to read frame", .prores);
+            return VideoValidationResult.invalid(errmsg.failedToRead("frame"), .prores);
         };
         if (bytes_read != location.size) {
-            return VideoValidationResult.invalid("Incomplete frame read", .prores);
+            return VideoValidationResult.invalid(errmsg.incomplete("frame read"), .prores);
         }
 
         // Validate as ProRes (deep validation with DCT decode)
@@ -2728,7 +2729,7 @@ fn validateProResFromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, 
     }
 
     if (frames_validated == 0) {
-        return VideoValidationResult.invalid("No valid ProRes frames found", .prores);
+        return VideoValidationResult.invalid(errmsg.noValidXFound("ProRes frames"), .prores);
     }
 
     return VideoValidationResult.okByteValidated(.prores, frames_validated);

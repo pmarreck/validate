@@ -13,6 +13,7 @@
 //! - ITU-T T.6: Facsimile coding schemes and coding control functions for Group 4
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
 
 /// CCITT Fax decode parameters (from PDF DecodeParms)
@@ -651,7 +652,7 @@ pub fn decodeGroup4(allocator: Allocator, data: []const u8, params: CcittParams)
 
     // Allocate bitmap
     const bitmap = allocator.alloc(u8, bytes_per_row * max_rows) catch {
-        return DecodeResult.failure("Out of memory allocating bitmap");
+        return DecodeResult.failure(errmsg.outOfMemory("allocating bitmap"));
     };
     errdefer allocator.free(bitmap);
 
@@ -789,7 +790,7 @@ pub fn decodeGroup3_1D(allocator: Allocator, data: []const u8, params: CcittPara
 
     // Allocate bitmap
     const bitmap = allocator.alloc(u8, bytes_per_row * max_rows) catch {
-        return DecodeResult.failure("Out of memory allocating bitmap");
+        return DecodeResult.failure(errmsg.outOfMemory("allocating bitmap"));
     };
     errdefer allocator.free(bitmap);
     @memset(bitmap, 0); // All white
@@ -846,7 +847,7 @@ pub fn decodeGroup3_1D(allocator: Allocator, data: []const u8, params: CcittPara
 /// Main decode function - dispatches based on K parameter
 pub fn decode(allocator: Allocator, data: []const u8, params: CcittParams) DecodeResult {
     if (data.len == 0) {
-        return DecodeResult.failure("Empty data");
+        return DecodeResult.failure(errmsg.empty("data"));
     }
 
     if (params.k < 0) {

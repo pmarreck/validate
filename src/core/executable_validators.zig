@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const format_validation = @import("format_validation.zig");
+const errmsg = @import("error_messages.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 
@@ -11,12 +12,12 @@ const FileFormat = format_validation.FileFormat;
 /// Validate ELF (Executable and Linkable Format) binary.
 /// Checks magic, class, endianness, version, type, and header sizes.
 pub fn validateElf(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.elf, "Failed to get file size");
-    if (file_size < 16) return ValidationResult.invalid(.elf, "File too small for ELF header");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.elf, errmsg.failedToGet("file size"));
+    if (file_size < 16) return ValidationResult.invalid(.elf, errmsg.fileTooSmallFor("ELF header"));
 
     file.seekTo(0) catch return ValidationResult.invalid(.elf, "Failed to seek");
     var header: [64]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.elf, "Failed to read ELF header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.elf, errmsg.failedToRead("ELF header"));
     if (bytes_read < 16) return ValidationResult.invalid(.elf, "ELF header too short");
 
     // Magic already verified by format detection, but double-check
@@ -80,12 +81,12 @@ pub fn validateElf(file: std.fs.File) ValidationResult {
 /// Validate Mach-O binary (single-architecture).
 /// Checks magic, CPU type, file type, and load command structure.
 pub fn validateMacho(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.macho, "Failed to get file size");
-    if (file_size < 28) return ValidationResult.invalid(.macho, "File too small for Mach-O header");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.macho, errmsg.failedToGet("file size"));
+    if (file_size < 28) return ValidationResult.invalid(.macho, errmsg.fileTooSmallFor("Mach-O header"));
 
     file.seekTo(0) catch return ValidationResult.invalid(.macho, "Failed to seek");
     var header: [32]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.macho, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.macho, errmsg.failedToRead("header"));
     if (bytes_read < 28) return ValidationResult.invalid(.macho, "Mach-O header too short");
 
     // Determine 32-bit vs 64-bit and endianness from magic
@@ -131,12 +132,12 @@ pub fn validateMacho(file: std.fs.File) ValidationResult {
 /// Validate Mach-O Universal/Fat binary (multi-architecture).
 /// Checks nfat_arch, validates each architecture entry's bounds and embedded Mach-O magic.
 pub fn validateMachoFat(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.macho_fat, "Failed to get file size");
-    if (file_size < 8) return ValidationResult.invalid(.macho_fat, "File too small for fat header");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.macho_fat, errmsg.failedToGet("file size"));
+    if (file_size < 8) return ValidationResult.invalid(.macho_fat, errmsg.fileTooSmallFor("fat header"));
 
     file.seekTo(0) catch return ValidationResult.invalid(.macho_fat, "Failed to seek");
     var header: [8]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.macho_fat, "Failed to read header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.macho_fat, errmsg.failedToRead("header"));
 
     // nfat_arch at offset 4, always big-endian
     const nfat_arch = std.mem.readInt(u32, header[4..8], .big);
@@ -187,7 +188,7 @@ pub fn validateMachoFat(file: std.fs.File) ValidationResult {
     }
 
     if (valid_archs == 0)
-        return ValidationResult.invalid(.macho_fat, "No valid Mach-O architectures found");
+        return ValidationResult.invalid(.macho_fat, errmsg.noValidXFound("Mach-O architectures"));
 
     return ValidationResult.okWithDepth(.macho_fat, .full);
 }
@@ -197,12 +198,12 @@ pub fn validateMachoFat(file: std.fs.File) ValidationResult {
 /// Validate COFF object file (.obj).
 /// Checks machine type, section count, and structural consistency.
 pub fn validateCoff(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.coff, "Failed to get file size");
-    if (file_size < 20) return ValidationResult.invalid(.coff, "File too small for COFF header");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.coff, errmsg.failedToGet("file size"));
+    if (file_size < 20) return ValidationResult.invalid(.coff, errmsg.fileTooSmallFor("COFF header"));
 
     file.seekTo(0) catch return ValidationResult.invalid(.coff, "Failed to seek");
     var header: [20]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.coff, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.coff, errmsg.failedToRead("header"));
     if (bytes_read < 20) return ValidationResult.invalid(.coff, "COFF header too short");
 
     // Machine type (2 bytes at offset 0, little-endian)
@@ -247,12 +248,12 @@ pub fn validateCoff(file: std.fs.File) ValidationResult {
 /// Validate WebAssembly binary module.
 /// Checks magic, version, and validates section ordering and sizes.
 pub fn validateWasm(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.wasm, "Failed to get file size");
-    if (file_size < 8) return ValidationResult.invalid(.wasm, "File too small for Wasm module");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.wasm, errmsg.failedToGet("file size"));
+    if (file_size < 8) return ValidationResult.invalid(.wasm, errmsg.fileTooSmallFor("Wasm module"));
 
     file.seekTo(0) catch return ValidationResult.invalid(.wasm, "Failed to seek");
     var header: [8]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.wasm, "Failed to read header");
+    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.wasm, errmsg.failedToRead("header"));
     if (bytes_read < 8) return ValidationResult.invalid(.wasm, "Wasm header too short");
 
     // Magic: \0asm
@@ -262,7 +263,7 @@ pub fn validateWasm(file: std.fs.File) ValidationResult {
     // Version: must be 1 (little-endian u32)
     const version = std.mem.readInt(u32, header[4..8], .little);
     if (version != 1)
-        return ValidationResult.invalid(.wasm, "Unsupported Wasm version");
+        return ValidationResult.invalid(.wasm, errmsg.unsupported("Wasm version"));
 
     // Validate sections: each section has a 1-byte ID and LEB128 size
     var offset: u64 = 8;
@@ -302,7 +303,7 @@ pub fn validateWasm(file: std.fs.File) ValidationResult {
         }
 
         if (leb_bytes == 0)
-            return ValidationResult.invalid(.wasm, "Missing Wasm section size");
+            return ValidationResult.invalid(.wasm, errmsg.missing("Wasm section size"));
 
         // Verify section fits within file
         const section_end = offset + 1 + leb_bytes + size;
@@ -314,7 +315,7 @@ pub fn validateWasm(file: std.fs.File) ValidationResult {
         section_count += 1;
 
         if (section_count > 10000)
-            return ValidationResult.invalid(.wasm, "Too many Wasm sections");
+            return ValidationResult.invalid(.wasm, errmsg.tooMany("Wasm sections"));
     }
 
     if (section_count == 0)
@@ -328,12 +329,12 @@ pub fn validateWasm(file: std.fs.File) ValidationResult {
 /// Validate Unix ar archive format (.a static libraries, .deb packages).
 /// Checks global header and validates member entry headers.
 pub fn validateAr(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.ar, "Failed to get file size");
-    if (file_size < 8) return ValidationResult.invalid(.ar, "File too small for ar archive");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.ar, errmsg.failedToGet("file size"));
+    if (file_size < 8) return ValidationResult.invalid(.ar, errmsg.fileTooSmallFor("ar archive"));
 
     file.seekTo(0) catch return ValidationResult.invalid(.ar, "Failed to seek");
     var magic: [8]u8 = undefined;
-    const bytes_read = file.read(&magic) catch return ValidationResult.invalid(.ar, "Failed to read header");
+    const bytes_read = file.read(&magic) catch return ValidationResult.invalid(.ar, errmsg.failedToRead("header"));
     if (bytes_read < 8) return ValidationResult.invalid(.ar, "ar header too short");
 
     if (!std.mem.eql(u8, &magic, "!<arch>\n"))
@@ -369,7 +370,7 @@ pub fn validateAr(file: std.fs.File) ValidationResult {
 
         member_count += 1;
         if (member_count > 100000)
-            return ValidationResult.invalid(.ar, "Too many ar members");
+            return ValidationResult.invalid(.ar, errmsg.tooMany("ar members"));
     }
 
     if (member_count == 0 and file_size > 8)

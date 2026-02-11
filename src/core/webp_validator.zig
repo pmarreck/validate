@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const errmsg = @import("error_messages.zig");
 
 /// Threshold for warning about large image files (200MB)
 const large_image_threshold: u64 = 200 * 1024 * 1024;
@@ -47,14 +48,14 @@ pub fn validateWebpDeep(file_path: []const u8) WebpValidationResult {
         return switch (err) {
             error.FileNotFound => WebpValidationResult.invalid("File not found"),
             error.AccessDenied => WebpValidationResult.invalid("Access denied"),
-            else => WebpValidationResult.invalid("Failed to open file"),
+            else => WebpValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
     defer file.close();
 
     // Get file size
     const file_size = file.getEndPos() catch {
-        return WebpValidationResult.invalid("Failed to get file size");
+        return WebpValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     // Track large files for warning (but don't reject them)
@@ -73,10 +74,10 @@ pub fn validateWebpDeep(file_path: []const u8) WebpValidationResult {
     // Read entire file
     const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
     const bytes_read = file.readAll(buf_slice) catch {
-        return WebpValidationResult.invalid("Failed to read file");
+        return WebpValidationResult.invalid(errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {
-        return WebpValidationResult.invalid("Incomplete file read");
+        return WebpValidationResult.invalid(errmsg.incomplete("file read"));
     }
 
     const result = validateWebpDeepFromBuffer(buf_slice);

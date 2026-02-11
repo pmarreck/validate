@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const errmsg = @import("error_messages.zig");
 
 // LZMA SDK C API
 const c = @cImport({
@@ -152,7 +153,7 @@ pub fn validateSevenZDeep(allocator: Allocator, path: []const u8) SevenZValidati
     // Open file
     var archive_stream: c.CFileInStream = undefined;
     if (c.InFile_Open(&archive_stream.file, c_path) != 0) {
-        return SevenZValidationResult.invalid("Failed to open file");
+        return SevenZValidationResult.invalid(errmsg.failedToOpen("file"));
     }
     defer _ = c.File_Close(&archive_stream.file);
 
@@ -251,7 +252,7 @@ pub fn validateSevenZFromBuffer(allocator: Allocator, data: []const u8) SevenZVa
 
     // Validate version
     if (start_header.version_major != 0 or start_header.version_minor > 4) {
-        return SevenZValidationResult.invalid("Unsupported 7z version");
+        return SevenZValidationResult.invalid(errmsg.unsupported("7z version"));
     }
 
     // Validate data size

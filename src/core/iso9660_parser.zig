@@ -11,6 +11,7 @@
 //! Reference: ECMA-119, ISO 9660:1988
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 // ============================================================================
 // Constants
@@ -371,7 +372,7 @@ pub fn validateIso9660(data: []const u8) Iso9660ValidationResult {
 /// Validate ISO 9660 from file
 pub fn validateIso9660File(file: std.fs.File, allocator: std.mem.Allocator) Iso9660ValidationResult {
     const file_size = file.getEndPos() catch {
-        return Iso9660ValidationResult.invalid("Failed to get file size");
+        return Iso9660ValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
     // Read enough to parse PVD and root directory
@@ -380,7 +381,7 @@ pub fn validateIso9660File(file: std.fs.File, allocator: std.mem.Allocator) Iso9
     const read_size: usize = @min(file_size, 100 * 1024 * 1024); // Cap at 100MB
 
     if (read_size < min_read) {
-        return Iso9660ValidationResult.invalid("File too small for ISO 9660");
+        return Iso9660ValidationResult.invalid(errmsg.fileTooSmallFor("ISO 9660"));
     }
 
     file.seekTo(0) catch {
@@ -393,7 +394,7 @@ pub fn validateIso9660File(file: std.fs.File, allocator: std.mem.Allocator) Iso9
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return Iso9660ValidationResult.invalid("Failed to read file");
+        return Iso9660ValidationResult.invalid(errmsg.failedToRead("file"));
     };
 
     return validateIso9660(data[0..bytes_read]);

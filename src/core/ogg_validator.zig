@@ -19,6 +19,7 @@
 //! OGG uses polynomial 0x04C11DB7 (reflected: 0xEDB88320).
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 /// Result of OGG deep validation
 pub const OggValidationResult = struct {
@@ -82,7 +83,7 @@ pub fn validateOggCrc(file: std.fs.File) OggValidationResult {
 
     // Seek to beginning
     file.seekTo(0) catch {
-        return OggValidationResult.invalid("Failed to seek to start", 0, 0);
+        return OggValidationResult.invalid(errmsg.failedToSeek("to start"), 0, 0);
     };
 
     // Read and verify each page
@@ -90,7 +91,7 @@ pub fn validateOggCrc(file: std.fs.File) OggValidationResult {
         // Read page header (27 bytes minimum)
         var header: [27]u8 = undefined;
         const header_bytes = file.read(&header) catch {
-            return OggValidationResult.invalid("Failed to read page header", pages_verified, total_bytes);
+            return OggValidationResult.invalid(errmsg.failedToRead("page header"), pages_verified, total_bytes);
         };
 
         // End of file
@@ -101,22 +102,22 @@ pub fn validateOggCrc(file: std.fs.File) OggValidationResult {
         // Need at least 27 bytes for a valid header
         if (header_bytes < 27) {
             if (pages_verified == 0) {
-                return OggValidationResult.invalid("File too small for OGG page", 0, 0);
+                return OggValidationResult.invalid(errmsg.fileTooSmallFor("OGG page"), 0, 0);
             }
-            return OggValidationResult.invalid("Truncated page header", pages_verified, total_bytes);
+            return OggValidationResult.invalid(errmsg.truncated("page header"), pages_verified, total_bytes);
         }
 
         // Verify capture pattern
         if (!std.mem.eql(u8, header[0..4], "OggS")) {
             if (pages_verified == 0) {
-                return OggValidationResult.invalid("Invalid OGG signature", 0, 0);
+                return OggValidationResult.invalid(errmsg.invalidSignature("OGG"), 0, 0);
             }
             return OggValidationResult.invalid("Corrupt page - invalid signature", pages_verified, total_bytes);
         }
 
         // Check version
         if (header[4] != 0) {
-            return OggValidationResult.invalid("Unsupported OGG version", pages_verified, total_bytes);
+            return OggValidationResult.invalid(errmsg.unsupported("OGG version"), pages_verified, total_bytes);
         }
 
         // Extract stored CRC (little-endian, bytes 22-25)
@@ -129,10 +130,10 @@ pub fn validateOggCrc(file: std.fs.File) OggValidationResult {
         var segment_table: [255]u8 = undefined;
         if (n_segments > 0) {
             const seg_bytes = file.read(segment_table[0..n_segments]) catch {
-                return OggValidationResult.invalid("Failed to read segment table", pages_verified, total_bytes);
+                return OggValidationResult.invalid(errmsg.failedToRead("segment table"), pages_verified, total_bytes);
             };
             if (seg_bytes < n_segments) {
-                return OggValidationResult.invalid("Truncated segment table", pages_verified, total_bytes);
+                return OggValidationResult.invalid(errmsg.truncated("segment table"), pages_verified, total_bytes);
             }
         }
 
@@ -178,10 +179,10 @@ pub fn validateOggCrc(file: std.fs.File) OggValidationResult {
         while (data_remaining > 0) {
             const to_read = @min(data_remaining, read_buf.len);
             const bytes_read = file.read(read_buf[0..to_read]) catch {
-                return OggValidationResult.invalid("Failed to read page data", pages_verified, total_bytes);
+                return OggValidationResult.invalid(errmsg.failedToRead("page data"), pages_verified, total_bytes);
             };
             if (bytes_read < to_read) {
-                return OggValidationResult.invalid("Truncated page data", pages_verified, total_bytes);
+                return OggValidationResult.invalid(errmsg.truncated("page data"), pages_verified, total_bytes);
             }
 
             // Add to CRC (MSB-first)
@@ -211,7 +212,7 @@ pub fn validateOggCrc(file: std.fs.File) OggValidationResult {
 /// Validate OGG CRCs from a file path.
 pub fn validateOggCrcPath(path: []const u8) OggValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return OggValidationResult.invalid("Failed to open file", 0, 0);
+        return OggValidationResult.invalid(errmsg.failedToOpen("file"), 0, 0);
     };
     defer file.close();
     return validateOggCrc(file);

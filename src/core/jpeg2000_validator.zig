@@ -10,6 +10,7 @@
 //! Supports both raw codestream (.j2k/.j2c) and JP2 container (.jp2) formats.
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 /// OpenJPEG C API bindings
 const opj = @cImport({
@@ -190,7 +191,7 @@ pub fn validateJpeg2000(data: []const u8) Jpeg2000DecodeResult {
     // Read header
     var image: ?*opj.opj_image_t = null;
     if (opj.opj_read_header(stream, codec, &image) == opj.OPJ_FALSE) {
-        return Jpeg2000DecodeResult.failure("Failed to read JPEG2000 header");
+        return Jpeg2000DecodeResult.failure(errmsg.failedToRead("JPEG2000 header"));
     }
     defer if (image) |img| opj.opj_image_destroy(img);
 

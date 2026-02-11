@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const format_validation = @import("format_validation.zig");
+const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
 const ValidationResult = format_validation.ValidationResult;
 
@@ -13,18 +14,18 @@ const ValidationResult = format_validation.ValidationResult;
 /// Validate NES ROM (iNES format).
 /// iNES header: "NES\x1A" + PRG ROM size + CHR ROM size + flags
 pub fn validateNes(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.nes, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.nes, errmsg.failedToSeek("to start"));
 
     var header: [16]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.nes, "Failed to read NES header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.nes, errmsg.failedToRead("NES header"));
 
     if (header_read < 16) {
-        return ValidationResult.invalid(.nes, "File too small for NES ROM");
+        return ValidationResult.invalid(.nes, errmsg.fileTooSmallFor("NES ROM"));
     }
 
     // Check iNES signature
     if (!std.mem.eql(u8, header[0..4], "NES\x1A")) {
-        return ValidationResult.invalid(.nes, "Invalid NES signature");
+        return ValidationResult.invalid(.nes, errmsg.invalidSignature("NES"));
     }
 
     // PRG ROM size in 16KB units
@@ -45,7 +46,7 @@ pub fn validateNes(file: std.fs.File) ValidationResult {
         // PRG size 0 only valid if trainer bit isn't set in a weird way
     }
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.nes, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.nes, errmsg.failedToGet("file size"));
 
     // Minimum size: 16 header + 16KB PRG
     const expected_min = 16 + (@as(u64, prg_size) * 16384) + (@as(u64, chr_size) * 8192);
@@ -60,22 +61,22 @@ pub fn validateNes(file: std.fs.File) ValidationResult {
 pub fn validateNesDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.nes, "Failed to open NES file");
+        return ValidationResult.invalid(.nes, errmsg.failedToOpen("NES file"));
     };
     defer file.close();
 
     var header: [16]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.nes, "Failed to read header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.nes, errmsg.failedToRead("header"));
 
     if (!std.mem.eql(u8, header[0..4], "NES\x1A")) {
-        return ValidationResult.invalid(.nes, "Invalid NES signature");
+        return ValidationResult.invalid(.nes, errmsg.invalidSignature("NES"));
     }
 
     const prg_size = header[4];
     const chr_size = header[5];
     const flags6 = header[6];
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.nes, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.nes, errmsg.failedToGet("file size"));
 
     // Calculate expected size
     var expected_size: u64 = 16; // Header
@@ -87,7 +88,7 @@ pub fn validateNesDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Allow some flexibility for PlayChoice/VS bits and padding
     if (file_size < expected_size) {
-        return ValidationResult.invalid(.nes, "File too small for declared ROM sizes");
+        return ValidationResult.invalid(.nes, errmsg.fileTooSmallFor("declared ROM sizes"));
     }
     if (file_size > expected_size + 16384) { // More than 16KB extra seems wrong
         return ValidationResult.okWithDepthAndWarning(.nes, .structural, "File larger than expected");
@@ -100,14 +101,14 @@ pub fn validateNesDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Validate SNES ROM - checks internal header checksum complement and computes full ROM checksum.
 pub fn validateSnes(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.snes, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.snes, errmsg.failedToGet("file size"));
 
     // SNES ROMs are typically 256KB to 6MB
     if (file_size < 32768) {
-        return ValidationResult.invalid(.snes, "File too small for SNES ROM");
+        return ValidationResult.invalid(.snes, errmsg.fileTooSmallFor("SNES ROM"));
     }
     if (file_size > 8 * 1024 * 1024) {
-        return ValidationResult.invalid(.snes, "File too large for SNES ROM");
+        return ValidationResult.invalid(.snes, errmsg.fileTooLargeFor("SNES ROM"));
     }
 
     // Detect if there's a 512-byte copier header
@@ -123,7 +124,7 @@ pub fn validateSnes(file: std.fs.File) ValidationResult {
         .{ .offset = 0x40FFC0, .mapping = .exhirom },
     };
 
-    file.seekTo(0) catch return ValidationResult.invalid(.snes, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.snes, errmsg.failedToSeek("to start"));
 
     for (header_offsets) |hdr| {
         const offset = rom_start + hdr.offset;
@@ -163,7 +164,7 @@ pub fn validateSnes(file: std.fs.File) ValidationResult {
         return ValidationResult.ok(.snes); // Power of two, likely valid
     }
 
-    return ValidationResult.invalid(.snes, "No valid SNES header found");
+    return ValidationResult.invalid(.snes, errmsg.noValidXFound("SNES header"));
 }
 
 /// Compute SNES ROM checksum (sum of all bytes, mirrored to power-of-two boundary)
@@ -213,13 +214,13 @@ fn computeSnesChecksum(file: std.fs.File, rom_start: u64, rom_size: u64) !u16 {
 
 /// Validate N64 ROM - checks signature (.z64/.n64/.v64 formats) and size bounds.
 pub fn validateN64(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.n64, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.n64, errmsg.failedToSeek("to start"));
 
     var header: [64]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.n64, "Failed to read N64 header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.n64, errmsg.failedToRead("N64 header"));
 
     if (header_read < 64) {
-        return ValidationResult.invalid(.n64, "File too small for N64 ROM");
+        return ValidationResult.invalid(.n64, errmsg.fileTooSmallFor("N64 ROM"));
     }
 
     // Check for known N64 ROM signatures
@@ -229,17 +230,17 @@ pub fn validateN64(file: std.fs.File) ValidationResult {
     const sig = std.mem.readInt(u32, header[0..4], .big);
 
     if (sig != 0x80371240 and sig != 0x40123780 and sig != 0x37804012) {
-        return ValidationResult.invalid(.n64, "Invalid N64 ROM signature");
+        return ValidationResult.invalid(.n64, errmsg.invalidSignature("N64 ROM"));
     }
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.n64, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.n64, errmsg.failedToGet("file size"));
 
     // N64 ROMs are typically 4MB to 64MB
     if (file_size < 1024 * 1024) {
-        return ValidationResult.invalid(.n64, "File too small for N64 ROM");
+        return ValidationResult.invalid(.n64, errmsg.fileTooSmallFor("N64 ROM"));
     }
     if (file_size > 64 * 1024 * 1024) {
-        return ValidationResult.invalid(.n64, "File too large for N64 ROM");
+        return ValidationResult.invalid(.n64, errmsg.fileTooLargeFor("N64 ROM"));
     }
 
     return ValidationResult.okWithDepth(.n64, .full);
@@ -249,19 +250,19 @@ pub fn validateN64(file: std.fs.File) ValidationResult {
 pub fn validateN64Deep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.n64, "Failed to open N64 file");
+        return ValidationResult.invalid(.n64, errmsg.failedToOpen("N64 file"));
     };
     defer file.close();
 
     var header: [64]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.n64, "Failed to read header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.n64, errmsg.failedToRead("header"));
 
     const sig = std.mem.readInt(u32, header[0..4], .big);
     if (sig != 0x80371240 and sig != 0x40123780 and sig != 0x37804012) {
-        return ValidationResult.invalid(.n64, "Invalid N64 signature");
+        return ValidationResult.invalid(.n64, errmsg.invalidSignature("N64"));
     }
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.n64, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.n64, errmsg.failedToGet("file size"));
     if (file_size < 1024 * 1024 or file_size > 64 * 1024 * 1024) {
         return ValidationResult.invalid(.n64, "Invalid N64 ROM size");
     }
@@ -286,7 +287,7 @@ pub fn validateN64Deep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Validate Game Boy ROM - checks Nintendo logo and header checksum.
 pub fn validateGb(file: std.fs.File) ValidationResult {
-    file.seekTo(0x104) catch return ValidationResult.invalid(.gb, "Failed to seek to logo");
+    file.seekTo(0x104) catch return ValidationResult.invalid(.gb, errmsg.failedToSeek("to logo"));
 
     // Nintendo logo (48 bytes) - must match exactly for real hardware
     const nintendo_logo = [_]u8{
@@ -297,10 +298,10 @@ pub fn validateGb(file: std.fs.File) ValidationResult {
     };
 
     var logo: [48]u8 = undefined;
-    const logo_read = file.read(&logo) catch return ValidationResult.invalid(.gb, "Failed to read Nintendo logo");
+    const logo_read = file.read(&logo) catch return ValidationResult.invalid(.gb, errmsg.failedToRead("Nintendo logo"));
 
     if (logo_read < 48) {
-        return ValidationResult.invalid(.gb, "File too small for GB ROM");
+        return ValidationResult.invalid(.gb, errmsg.fileTooSmallFor("GB ROM"));
     }
 
     // Check Nintendo logo (real GB hardware requires exact match)
@@ -309,16 +310,16 @@ pub fn validateGb(file: std.fs.File) ValidationResult {
     }
 
     // Read header checksum at 0x14D
-    file.seekTo(0x134) catch return ValidationResult.invalid(.gb, "Failed to seek to header");
+    file.seekTo(0x134) catch return ValidationResult.invalid(.gb, errmsg.failedToSeek("to header"));
 
     var header: [25]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.gb, "Failed to read GB header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.gb, errmsg.failedToRead("GB header"));
 
     // Header checksum at 0x14D (offset 25 from 0x134)
-    file.seekTo(0x14D) catch return ValidationResult.invalid(.gb, "Failed to seek to checksum");
+    file.seekTo(0x14D) catch return ValidationResult.invalid(.gb, errmsg.failedToSeek("to checksum"));
 
     var checksum_byte: [1]u8 = undefined;
-    _ = file.read(&checksum_byte) catch return ValidationResult.invalid(.gb, "Failed to read checksum");
+    _ = file.read(&checksum_byte) catch return ValidationResult.invalid(.gb, errmsg.failedToRead("checksum"));
 
     // Calculate header checksum
     var checksum: u8 = 0;
@@ -338,13 +339,13 @@ pub fn validateGb(file: std.fs.File) ValidationResult {
 
 /// Validate GBA ROM - checks ARM branch entry point, Nintendo logo, and header checksum.
 pub fn validateGba(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.gba, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.gba, errmsg.failedToSeek("to start"));
 
     var header: [192]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.gba, "Failed to read GBA header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.gba, errmsg.failedToRead("GBA header"));
 
     if (header_read < 192) {
-        return ValidationResult.invalid(.gba, "File too small for GBA ROM");
+        return ValidationResult.invalid(.gba, errmsg.fileTooSmallFor("GBA ROM"));
     }
 
     // First 4 bytes are ARM branch instruction (should be 0xEA000000 + offset)
@@ -378,20 +379,20 @@ pub fn validateGba(file: std.fs.File) ValidationResult {
 
 /// Validate NDS ROM - checks ARM9/ARM7 offsets and header CRC-16 MODBUS.
 pub fn validateNds(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.nds, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.nds, errmsg.failedToSeek("to start"));
 
     var header: [512]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.nds, "Failed to read NDS header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.nds, errmsg.failedToRead("NDS header"));
 
     if (header_read < 512) {
-        return ValidationResult.invalid(.nds, "File too small for NDS ROM");
+        return ValidationResult.invalid(.nds, errmsg.fileTooSmallFor("NDS ROM"));
     }
 
     // Check ARM9 ROM offset (should be reasonable)
     const arm9_offset = std.mem.readInt(u32, header[0x20..0x24], .little);
     const arm9_size = std.mem.readInt(u32, header[0x2C..0x30], .little);
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.nds, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.nds, errmsg.failedToGet("file size"));
 
     if (arm9_offset == 0 or arm9_offset > file_size) {
         return ValidationResult.invalid(.nds, "Invalid ARM9 offset");
@@ -442,13 +443,13 @@ pub fn validateNds(file: std.fs.File) ValidationResult {
 
 /// Validate Genesis/Mega Drive ROM - checks "SEGA" signature and SMD format detection.
 pub fn validateGenesis(file: std.fs.File) ValidationResult {
-    file.seekTo(0x100) catch return ValidationResult.invalid(.genesis, "Failed to seek to header");
+    file.seekTo(0x100) catch return ValidationResult.invalid(.genesis, errmsg.failedToSeek("to header"));
 
     var header: [256]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.genesis, "Failed to read Genesis header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.genesis, errmsg.failedToRead("Genesis header"));
 
     if (header_read < 256) {
-        return ValidationResult.invalid(.genesis, "File too small for Genesis ROM");
+        return ValidationResult.invalid(.genesis, errmsg.fileTooSmallFor("Genesis ROM"));
     }
 
     // Check for "SEGA" at offset 0x100 (console name field)
@@ -456,26 +457,26 @@ pub fn validateGenesis(file: std.fs.File) ValidationResult {
         !std.mem.eql(u8, header[0..4], " SEG"))
     {
         // Also check at offset 0 for SMD format
-        file.seekTo(0) catch return ValidationResult.invalid(.genesis, "Failed to seek to start");
+        file.seekTo(0) catch return ValidationResult.invalid(.genesis, errmsg.failedToSeek("to start"));
 
         var alt_header: [16]u8 = undefined;
-        _ = file.read(&alt_header) catch return ValidationResult.invalid(.genesis, "Failed to read SMD header");
+        _ = file.read(&alt_header) catch return ValidationResult.invalid(.genesis, errmsg.failedToRead("SMD header"));
 
         // SMD format has specific pattern
         const is_smd = (alt_header[8] == 0xAA and alt_header[9] == 0xBB);
         if (!is_smd) {
-            return ValidationResult.invalid(.genesis, "Invalid Genesis ROM signature");
+            return ValidationResult.invalid(.genesis, errmsg.invalidSignature("Genesis ROM"));
         }
     }
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.genesis, "Failed to get file size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.genesis, errmsg.failedToGet("file size"));
 
     // Genesis ROMs are typically 256KB to 4MB
     if (file_size < 128 * 1024) {
-        return ValidationResult.invalid(.genesis, "File too small for Genesis ROM");
+        return ValidationResult.invalid(.genesis, errmsg.fileTooSmallFor("Genesis ROM"));
     }
     if (file_size > 8 * 1024 * 1024) {
-        return ValidationResult.invalid(.genesis, "File too large for Genesis ROM");
+        return ValidationResult.invalid(.genesis, errmsg.fileTooLargeFor("Genesis ROM"));
     }
 
     return ValidationResult.okWithDepth(.genesis, .full);
@@ -485,14 +486,14 @@ pub fn validateGenesis(file: std.fs.File) ValidationResult {
 pub fn validateGenesisDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.genesis, "Failed to open Genesis file");
+        return ValidationResult.invalid(.genesis, errmsg.failedToOpen("Genesis file"));
     };
     defer file.close();
 
     file.seekTo(0x100) catch return ValidationResult.invalid(.genesis, "Failed to seek");
 
     var header: [256]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.genesis, "Failed to read header");
+    _ = file.read(&header) catch return ValidationResult.invalid(.genesis, errmsg.failedToRead("header"));
 
     const has_sega = std.mem.eql(u8, header[0..4], "SEGA") or std.mem.eql(u8, header[0..4], " SEG");
 
@@ -500,9 +501,9 @@ pub fn validateGenesisDeep(allocator: Allocator, path: []const u8) ValidationRes
         // Check SMD format
         file.seekTo(0) catch return ValidationResult.invalid(.genesis, "Failed to seek");
         var alt_header: [16]u8 = undefined;
-        _ = file.read(&alt_header) catch return ValidationResult.invalid(.genesis, "Failed to read SMD");
+        _ = file.read(&alt_header) catch return ValidationResult.invalid(.genesis, errmsg.failedToRead("SMD"));
         if (alt_header[8] != 0xAA or alt_header[9] != 0xBB) {
-            return ValidationResult.invalid(.genesis, "Invalid Genesis signature");
+            return ValidationResult.invalid(.genesis, errmsg.invalidSignature("Genesis"));
         }
         return ValidationResult.okWithDepth(.genesis, .structural);
     }
@@ -522,7 +523,7 @@ pub fn validateGenesisDeep(allocator: Allocator, path: []const u8) ValidationRes
         return ValidationResult.invalid(.genesis, "Invalid ROM address range");
     }
 
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.genesis, "Failed to get size");
+    const file_size = file.getEndPos() catch return ValidationResult.invalid(.genesis, errmsg.failedToGet("size"));
     if (rom_end > file_size) {
         return ValidationResult.okWithDepthAndWarning(.genesis, .structural, "ROM end exceeds file size");
     }
@@ -534,18 +535,18 @@ pub fn validateGenesisDeep(allocator: Allocator, path: []const u8) ValidationRes
 
 /// Validate CHD disk image - checks "MComprHD" signature, header length, and version.
 pub fn validateChd(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.chd, "Failed to seek to start");
+    file.seekTo(0) catch return ValidationResult.invalid(.chd, errmsg.failedToSeek("to start"));
 
     var header: [124]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.chd, "Failed to read CHD header");
+    const header_read = file.read(&header) catch return ValidationResult.invalid(.chd, errmsg.failedToRead("CHD header"));
 
     if (header_read < 124) {
-        return ValidationResult.invalid(.chd, "File too small for CHD");
+        return ValidationResult.invalid(.chd, errmsg.fileTooSmallFor("CHD"));
     }
 
     // Check signature
     if (!std.mem.eql(u8, header[0..8], "MComprHD")) {
-        return ValidationResult.invalid(.chd, "Invalid CHD signature");
+        return ValidationResult.invalid(.chd, errmsg.invalidSignature("CHD"));
     }
 
     // Header length (big-endian)
@@ -557,7 +558,7 @@ pub fn validateChd(file: std.fs.File) ValidationResult {
     // Version (big-endian) - versions 1-5 are known
     const version = std.mem.readInt(u32, header[12..16], .big);
     if (version < 1 or version > 5) {
-        return ValidationResult.invalid(.chd, "Unknown CHD version");
+        return ValidationResult.invalid(.chd, errmsg.unknown("CHD version"));
     }
 
     return ValidationResult.okWithDepth(.chd, .full);

@@ -12,6 +12,7 @@
 //! - Payload (PES packets, PSI tables)
 
 const std = @import("std");
+const errmsg = @import("error_messages.zig");
 
 /// MPEG-TS packet size
 pub const TS_PACKET_SIZE: usize = 188;
@@ -500,7 +501,7 @@ pub fn validateTsStream(data: []const u8, max_packets: u32) TsValidationResult {
     }
 
     if (packets_parsed == 0) {
-        return TsValidationResult.failure("No valid TS packets found");
+        return TsValidationResult.failure(errmsg.noValidXFound("TS packets"));
     }
 
     return TsValidationResult.success(
@@ -860,7 +861,7 @@ pub fn validateTsDeep(allocator: std.mem.Allocator, data: []const u8, max_packet
     }
 
     if (packets_parsed == 0) {
-        return TsDeepValidationResult.failure("No valid TS packets found");
+        return TsDeepValidationResult.failure(errmsg.noValidXFound("TS packets"));
     }
 
     // Now validate assembled PES streams
