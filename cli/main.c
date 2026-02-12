@@ -58,6 +58,10 @@ static output_dest_t g_slow_out;
 static output_dest_t g_debug_out;
 static output_dest_t g_begin_out;
 
+/* RTL bidirectional text support */
+static int g_rtl_enabled = 0;
+static const char* RLM = "\xE2\x80\x8F"; /* U+200F Right-to-Left Mark (UTF-8) */
+
 /* Mutex to synchronize output and TUI rendering */
 #if defined(_WIN32)
 static CRITICAL_SECTION g_output_lock;
@@ -754,11 +758,12 @@ static void write_colored_line(output_dest_t* dest, const char* color_code,
 		if (!f) continue;
 
 		/* Use colors only for stdout/stderr when colors are enabled */
+		const char* rtl_prefix = (g_rtl_enabled && (f == stdout || f == stderr)) ? RLM : "";
 		if (g_colors_enabled && (f == stdout || f == stderr)) {
-			snprintf(line_buf, sizeof(line_buf), "%s%s%s%s\n",
-					 color_code, label, COLOR_RESET, rest);
+			snprintf(line_buf, sizeof(line_buf), "%s%s%s%s%s\n",
+					 rtl_prefix, color_code, label, COLOR_RESET, rest);
 		} else {
-			snprintf(line_buf, sizeof(line_buf), "%s%s\n", label, rest);
+			snprintf(line_buf, sizeof(line_buf), "%s%s%s\n", rtl_prefix, label, rest);
 		}
 		fputs(line_buf, f);
 		fflush(f);
@@ -1804,6 +1809,7 @@ static void print_usage(const char* program) {
 	printf("    MAX_FILES     Limit number of files to validate\n");
 	printf("    LANG          Locale for output language (e.g., de_DE.UTF-8)\n");
 	printf("    LC_MESSAGES   Locale for output language (overrides LANG)\n");
+	printf("    NO_BIDI       Disable bidirectional text marks for RTL languages\n");
 	printf("\n");
 	printf("OUTPUT REDIRECTION:\n");
 	printf("    All *_OUT variables accept colon-separated destinations.\n");
@@ -1822,6 +1828,8 @@ static void print_usage(const char* program) {
 	printf("By default, the top 10%% largest files are processed first to prevent\n");
 	printf("apparent hangs at the end when only large files remain.\n");
 	printf("Use --no-frontload to disable this behavior.\n");
+	printf("\n%s\n", validate_tr(VALIDATE_STR_HELP_ENTROPY_SHIELD));
+	printf("Support: support@entropyshield.app\n");
 }
 
 /**
@@ -1875,6 +1883,7 @@ int main(int argc, char* argv[]) {
 
 	/* Auto-detect locale from environment (--lang overrides this) */
 	validate_set_locale(NULL);
+	g_rtl_enabled = validate_is_rtl() && !validate_getenv(VALIDATE_ENV_NO_BIDI);
 
 	/* Collect positional arguments (paths) */
 	const char** paths = NULL;
@@ -1933,6 +1942,7 @@ int main(int argc, char* argv[]) {
 					return 2;
 				}
 				validate_set_locale(argv[++i]);
+				g_rtl_enabled = validate_is_rtl() && !validate_getenv(VALIDATE_ENV_NO_BIDI);
 				continue;
 			case VALIDATE_ARG_NO_COLOR:
 				disable_colors();
@@ -2157,25 +2167,26 @@ int main(int argc, char* argv[]) {
 	validation_counts_t* summary_counts = (stress_iterations > 1) ? &total_counts : &counts;
 
 	/* Show summary (partial if interrupted) */
+	const char* rlm = g_rtl_enabled ? RLM : "";
 	if (was_interrupted) {
-		printf("\n%s%s%s\n", COLOR_YELLOW, validate_tr(VALIDATE_STR_SUMMARY_INTERRUPTED), COLOR_RESET);
+		printf("\n%s%s%s%s\n", rlm, COLOR_YELLOW, validate_tr(VALIDATE_STR_SUMMARY_INTERRUPTED), COLOR_RESET);
 	} else {
-		printf("\n%s%s%s\n", COLOR_CYAN, validate_tr(VALIDATE_STR_SUMMARY_TITLE), COLOR_RESET);
+		printf("\n%s%s%s%s\n", rlm, COLOR_CYAN, validate_tr(VALIDATE_STR_SUMMARY_TITLE), COLOR_RESET);
 	}
 	if (stress_iterations > 1) {
-		printf("  Iterations: %zu\n", stress_iterations);
+		printf("%s  Iterations: %zu\n", rlm, stress_iterations);
 	}
 	size_t total_processed = summary_counts->valid_count + summary_counts->invalid_count + summary_counts->unknown_count;
 	if (was_interrupted) {
-		printf("  %s %zu / %zu files\n", validate_tr(VALIDATE_STR_SUMMARY_PROCESSED), total_processed, total_file_count);
+		printf("%s  %s %zu / %zu files\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_PROCESSED), total_processed, total_file_count);
 	}
-	printf("  %-8s %s%zu%s\n", validate_tr(VALIDATE_STR_SUMMARY_VALID), COLOR_GREEN, summary_counts->valid_count, COLOR_RESET);
+	printf("%s  %-8s %s%zu%s\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_VALID), COLOR_GREEN, summary_counts->valid_count, COLOR_RESET);
 	if (summary_counts->invalid_count > 0) {
-		printf("  %-8s %s%zu%s\n", validate_tr(VALIDATE_STR_SUMMARY_INVALID), COLOR_RED, summary_counts->invalid_count, COLOR_RESET);
+		printf("%s  %-8s %s%zu%s\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_INVALID), COLOR_RED, summary_counts->invalid_count, COLOR_RESET);
 	} else {
-		printf("  %-8s %zu\n", validate_tr(VALIDATE_STR_SUMMARY_INVALID), summary_counts->invalid_count);
+		printf("%s  %-8s %zu\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_INVALID), summary_counts->invalid_count);
 	}
-	printf("  %-8s %zu\n", validate_tr(VALIDATE_STR_SUMMARY_UNKNOWN), summary_counts->unknown_count);
+	printf("%s  %-8s %zu\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_UNKNOWN), summary_counts->unknown_count);
 
 	/* Reset interrupt flag for potential future use */
 	validate_reset_interrupt();

@@ -541,6 +541,11 @@ export fn validate_set_locale(lang: ?[*:0]const u8) void {
     }
 }
 
+/// Check if the current locale is a right-to-left language.
+export fn validate_is_rtl() bool {
+    return i18n.getLocale().isRtl();
+}
+
 /// Get a translated string by numeric ID.
 /// Returns NULL for invalid IDs.
 export fn validate_tr(string_id: u32) ?[*:0]const u8 {
@@ -577,6 +582,7 @@ export fn validate_getenv(env_id: u8) ?[*:0]const u8 {
         .begin_out => i18n.getEnvLocalized(.begin_out),
         .max_files => i18n.getEnvLocalized(.max_files),
         .validate_debug => i18n.getEnvLocalized(.validate_debug),
+        .no_bidi => i18n.getEnvLocalized(.no_bidi),
     };
 }
 

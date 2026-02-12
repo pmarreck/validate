@@ -108,6 +108,7 @@ typedef enum {
     VALIDATE_STR_SCANNING_FILES_FOUND = 16,
     VALIDATE_STR_FOUND_FILES_TO_VALIDATE = 17,
     VALIDATE_STR_CHECKING = 18,
+    VALIDATE_STR_HELP_ENTROPY_SHIELD = 41,
 } validate_string_id_t;
 
 /* CLI argument IDs (returned by validate_match_arg) */
@@ -136,6 +137,7 @@ typedef enum {
     VALIDATE_ENV_BEGIN_OUT = 6,
     VALIDATE_ENV_MAX_FILES = 7,
     VALIDATE_ENV_VALIDATE_DEBUG = 8,
+    VALIDATE_ENV_NO_BIDI = 9,
 } validate_env_t;
 
 /* ========== Core Functions ========== */
@@ -288,6 +290,12 @@ const char* validate_malform_desc(int bit);
  *             Pass NULL to auto-detect from $LANG/$LC_MESSAGES.
  */
 void validate_set_locale(const char* lang);
+
+/**
+ * Check if the current locale is a right-to-left language (Arabic, Hebrew, Farsi).
+ * @return Non-zero if RTL, zero otherwise.
+ */
+int validate_is_rtl(void);
 
 /**
  * Get a translated string by numeric ID.

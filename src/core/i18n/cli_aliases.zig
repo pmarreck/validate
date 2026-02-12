@@ -43,6 +43,7 @@ pub const EnvVar = enum(u8) {
     begin_out = 6,
     max_files = 7,
     validate_debug = 8,
+    no_bidi = 9,
 };
 
 /// Locale-specific environment variable aliases (full name, e.g. "FEHLER_AUS").
@@ -56,4 +57,5 @@ pub const EnvAliases = struct {
     begin_out: [:0]const u8,
     max_files: [:0]const u8,
     validate_debug: [:0]const u8,
+    no_bidi: [:0]const u8,
 };

@@ -76,6 +76,10 @@ pub const Locale = enum {
     vi,
     zh_hans,
 
+    pub fn isRtl(self: Locale) bool {
+        return self == .ar or self == .he or self == .fa;
+    }
+
     pub fn fromString(s: []const u8) ?Locale {
         if (s.len < 2) return null;
         const prefix = s[0..2];
@@ -338,6 +342,7 @@ pub const StringId = enum(u32) {
     malform_pdf_flate_decode_failed = 38,
     malform_pdf_lzw_decode_failed = 39,
     malform_pdf_jbig2_decode_failed = 40,
+    help_entropy_shield = 41,
 };
 
 /// Look up a translated string by its numeric ID.
@@ -385,6 +390,7 @@ pub fn getStringById(id: u32) ?[:0]const u8 {
         .malform_pdf_flate_decode_failed => s.malform_pdf_flate_decode_failed,
         .malform_pdf_lzw_decode_failed => s.malform_pdf_lzw_decode_failed,
         .malform_pdf_jbig2_decode_failed => s.malform_pdf_jbig2_decode_failed,
+        .help_entropy_shield => s.help_entropy_shield,
     };
 }
 

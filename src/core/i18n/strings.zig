@@ -56,4 +56,7 @@ pub const Strings = struct {
     malform_pdf_flate_decode_failed: [:0]const u8,
     malform_pdf_lzw_decode_failed: [:0]const u8,
     malform_pdf_jbig2_decode_failed: [:0]const u8,
+
+    // Promo / help
+    help_entropy_shield: [:0]const u8,
 };

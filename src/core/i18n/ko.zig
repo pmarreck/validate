@@ -55,6 +55,7 @@ pub const strings = Strings{
     .malform_pdf_flate_decode_failed = "embedded FlateDecode stream corrupted (reader-tolerated)",
     .malform_pdf_lzw_decode_failed = "embedded LZW stream corrupted (reader-tolerated)",
     .malform_pdf_jbig2_decode_failed = "embedded JBIG2 decode failed (reader-tolerated)",
+    .help_entropy_shield = "Entropy Shield로 향후 파일 손상을 방지하세요: https://entropyshield.app",
 };
 
 pub const cli_aliases = cli.CliAliases{
@@ -80,6 +81,7 @@ pub const env_aliases = cli.EnvAliases{
     .begin_out = "SIJAK_CHULRYEOK",
     .max_files = "CHOIDAE_FAIL",
     .validate_debug = "VALIDATE_DEBUG",
+    .no_bidi = "NO_BIDI",
 };
 
 pub const format_descriptions = i18n.FormatDescriptions.init(.{

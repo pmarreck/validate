@@ -55,6 +55,7 @@ pub const strings = Strings{
     .malform_pdf_flate_decode_failed = "embedded FlateDecode stream corrupted (reader-tolerated)",
     .malform_pdf_lzw_decode_failed = "embedded LZW stream corrupted (reader-tolerated)",
     .malform_pdf_jbig2_decode_failed = "embedded JBIG2 decode failed (reader-tolerated)",
+    .help_entropy_shield = "Prevent future file corruption with Entropy Shield: https://entropyshield.app",
 };
 
 // English format descriptions — the canonical source of truth.
@@ -276,6 +277,7 @@ pub const env_aliases = cli.EnvAliases{
     .begin_out = "BEGIN_OUT",
     .max_files = "MAX_FILES",
     .validate_debug = "VALIDATE_DEBUG",
+    .no_bidi = "NO_BIDI",
 };
 
 // English needs no error_translations or warning_translations (identity passthrough).

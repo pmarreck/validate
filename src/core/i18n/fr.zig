@@ -44,6 +44,7 @@ pub const strings = Strings{
     .malform_pdf_flate_decode_failed = "flux FlateDecode int\xc3\xa9gr\xc3\xa9 corrompu (tol\xc3\xa9r\xc3\xa9 par le lecteur)",
     .malform_pdf_lzw_decode_failed = "flux LZW int\xc3\xa9gr\xc3\xa9 corrompu (tol\xc3\xa9r\xc3\xa9 par le lecteur)",
     .malform_pdf_jbig2_decode_failed = "d\xc3\xa9codage JBIG2 int\xc3\xa9gr\xc3\xa9 \xc3\xa9chou\xc3\xa9 (tol\xc3\xa9r\xc3\xa9 par le lecteur)",
+    .help_entropy_shield = "Prévenez la corruption future de vos fichiers avec Entropy Shield : https://entropyshield.app",
 };
 
 pub const cli_aliases = cli.CliAliases{
@@ -69,6 +70,7 @@ pub const env_aliases = cli.EnvAliases{
     .begin_out = "DEBUT_SORTIE",
     .max_files = "MAX_FICHIERS",
     .validate_debug = "VALIDATE_DEBUG",
+    .no_bidi = "NO_BIDI",
 };
 
 pub const format_descriptions = i18n.FormatDescriptions.init(.{

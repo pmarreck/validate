@@ -55,6 +55,7 @@ pub const strings = Strings{
     .malform_pdf_flate_decode_failed = "flujo FlateDecode incrustado da\xc3\xb1ado (tolerado por el lector)",
     .malform_pdf_lzw_decode_failed = "flujo LZW incrustado da\xc3\xb1ado (tolerado por el lector)",
     .malform_pdf_jbig2_decode_failed = "decodificaci\xc3\xb3n de JBIG2 incrustado fall\xc3\xb3 (tolerado por el lector)",
+    .help_entropy_shield = "Prevenga la corrupción futura de archivos con Entropy Shield: https://entropyshield.app",
 };
 
 pub const cli_aliases = cli.CliAliases{
@@ -80,6 +81,7 @@ pub const env_aliases = cli.EnvAliases{
     .begin_out = "INICIO_SALIDA",
     .max_files = "MAX_ARCHIVOS",
     .validate_debug = "VALIDATE_DEBUG",
+    .no_bidi = "NO_BIDI",
 };
 
 // Descripciones de formato en espa\xc3\xb1ol

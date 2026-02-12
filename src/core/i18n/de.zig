@@ -55,6 +55,7 @@ pub const strings = Strings{
     .malform_pdf_flate_decode_failed = "Eingebetteter FlateDecode-Stream besch\xc3\xa4digt (vom Reader toleriert)",
     .malform_pdf_lzw_decode_failed = "Eingebetteter LZW-Stream besch\xc3\xa4digt (vom Reader toleriert)",
     .malform_pdf_jbig2_decode_failed = "Eingebettetes JBIG2-Dekodieren fehlgeschlagen (vom Reader toleriert)",
+    .help_entropy_shield = "Zukünftige Dateibeschädigung verhindern mit Entropy Shield: https://entropyshield.app",
 };
 
 // German CLI argument aliases.
@@ -82,6 +83,7 @@ pub const env_aliases = cli.EnvAliases{
     .begin_out = "START_AUS",
     .max_files = "MAX_DATEIEN",
     .validate_debug = "VALIDATE_DEBUG",
+    .no_bidi = "NO_BIDI",
 };
 
 // German format descriptions
