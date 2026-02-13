@@ -16,33 +16,33 @@ const NETCDF_SIGNATURE = [_]u8{ 'C', 'D', 'F' };
 /// Full integrity validation: parses dimensions, variables, and attributes.
 /// NetCDF-4 is HDF5-based and will be detected as HDF5.
 pub fn validateNetcdf(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.netcdf, errmsg.failedToStat("file"));
+    const stat = file.stat() catch return ValidationResult.invalidCode(.netcdf, .failed_to_stat, "file");
     const file_size = stat.size;
 
-    file.seekTo(0) catch return ValidationResult.invalid(.netcdf, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.netcdf, .failed_to_seek, "to start");
 
     // Read enough for header and dimension/variable arrays
     const max_header_size: usize = @min(@as(usize, @intCast(file_size)), 256 * 1024);
     var header_buf: [256 * 1024]u8 = undefined;
     const header_read = file.read(header_buf[0..max_header_size]) catch {
-        return ValidationResult.invalid(.netcdf, errmsg.failedToRead("NetCDF header"));
+        return ValidationResult.invalidCode(.netcdf, .failed_to_read, "NetCDF header");
     };
 
     if (header_read < 4) {
-        return ValidationResult.invalid(.netcdf, errmsg.fileTooSmallFor("NetCDF"));
+        return ValidationResult.invalidCode(.netcdf, .file_too_small, "NetCDF");
     }
 
     const header = header_buf[0..header_read];
 
     // Check CDF signature
     if (!std.mem.eql(u8, header[0..3], &NETCDF_SIGNATURE)) {
-        return ValidationResult.invalid(.netcdf, errmsg.invalidSignature("NetCDF"));
+        return ValidationResult.invalidCode(.netcdf, .invalid_signature, "NetCDF");
     }
 
     // Check version byte (1 = classic, 2 = 64-bit offset, 5 = CDF-5)
     const version = header[3];
     if (version != 1 and version != 2 and version != 5) {
-        return ValidationResult.invalid(.netcdf, "Invalid NetCDF version");
+        return ValidationResult.invalidCode(.netcdf, .invalid_value, "NetCDF version");
     }
 
     // Offset/size width depends on version
@@ -50,14 +50,14 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
     const offset_64bit = version == 2 or version == 5;
 
     if (header_read < 8) {
-        return ValidationResult.invalid(.netcdf, errmsg.truncated("NetCDF header"));
+        return ValidationResult.invalidCode(.netcdf, .truncated, "NetCDF header");
     }
 
     // numrecs field
     var pos: usize = 4;
     if (is_cdf5) {
         if (header_read < 12) {
-            return ValidationResult.invalid(.netcdf, errmsg.truncated("CDF-5 header"));
+            return ValidationResult.invalidCode(.netcdf, .truncated, "CDF-5 header");
         }
         pos = 12;
     } else {
@@ -70,26 +70,26 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
 
     // Parse dimension list
     if (pos + 8 > header_read) {
-        return ValidationResult.invalid(.netcdf, errmsg.truncated("dimension list"));
+        return ValidationResult.invalidCode(.netcdf, .truncated, "dimension list");
     }
 
     const dim_tag = std.mem.readInt(u32, header[pos..][0..4], .big);
     pos += 4;
 
     if (dim_tag != 0x0000000A and dim_tag != 0x00000000) {
-        return ValidationResult.invalid(.netcdf, "Invalid dimension list tag");
+        return ValidationResult.invalidCode(.netcdf, .invalid_value, "dimension list tag");
     }
 
     var num_dims: u32 = 0;
     if (dim_tag == 0x0000000A) {
         if (pos + 4 > header_read) {
-            return ValidationResult.invalid(.netcdf, errmsg.truncated("dimension count"));
+            return ValidationResult.invalidCode(.netcdf, .truncated, "dimension count");
         }
         num_dims = std.mem.readInt(u32, header[pos..][0..4], .big);
         pos += 4;
 
         if (num_dims > 10000) {
-            return ValidationResult.invalid(.netcdf, errmsg.tooMany("dimensions"));
+            return ValidationResult.invalidCode(.netcdf, .too_many, "dimensions");
         }
 
         // Skip dimension entries
@@ -114,13 +114,13 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
 
     if (gatt_tag == 0x0000000C) {
         if (pos + 4 > header_read) {
-            return ValidationResult.invalid(.netcdf, errmsg.truncated("attribute count"));
+            return ValidationResult.invalidCode(.netcdf, .truncated, "attribute count");
         }
         const num_atts = std.mem.readInt(u32, header[pos..][0..4], .big);
         pos += 4;
 
         if (num_atts > 100000) {
-            return ValidationResult.invalid(.netcdf, errmsg.tooMany("attributes"));
+            return ValidationResult.invalidCode(.netcdf, .too_many, "attributes");
         }
 
         // Skip each attribute
@@ -146,7 +146,7 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
             pos += values_size;
         }
     } else if (gatt_tag != 0x00000000) {
-        return ValidationResult.invalid(.netcdf, "Invalid attribute list tag");
+        return ValidationResult.invalidCode(.netcdf, .invalid_value, "attribute list tag");
     }
 
     // Parse variable list and verify offsets
@@ -159,13 +159,13 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
 
     if (var_tag == 0x0000000B) {
         if (pos + 4 > header_read) {
-            return ValidationResult.invalid(.netcdf, errmsg.truncated("variable count"));
+            return ValidationResult.invalidCode(.netcdf, .truncated, "variable count");
         }
         const num_vars = std.mem.readInt(u32, header[pos..][0..4], .big);
         pos += 4;
 
         if (num_vars > 100000) {
-            return ValidationResult.invalid(.netcdf, errmsg.tooMany("variables"));
+            return ValidationResult.invalidCode(.netcdf, .too_many, "variables");
         }
 
         // Parse each variable and verify offsets
@@ -243,11 +243,11 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
 
             // Verify offset is within file bounds
             if (var_begin > file_size) {
-                return ValidationResult.invalid(.netcdf, "Variable data offset exceeds file size");
+                return ValidationResult.invalidCodeMsg(.netcdf, .exceeds_bounds, "Variable data offset", "Variable data offset exceeds file size");
             }
         }
     } else if (var_tag != 0x00000000) {
-        return ValidationResult.invalid(.netcdf, "Invalid variable list tag");
+        return ValidationResult.invalidCode(.netcdf, .invalid_value, "variable list tag");
     }
 
     return ValidationResult.okWithDepth(.netcdf, .full);
@@ -259,22 +259,22 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
 /// Full integrity validation: parses all header blocks, validates keyword syntax,
 /// checks NAXIS dimensions, verifies data array bounds, and validates CHECKSUM/DATASUM.
 pub fn validateFits(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.fits, errmsg.failedToStat("file"));
+    const stat = file.stat() catch return ValidationResult.invalidCode(.fits, .failed_to_stat, "file");
     const file_size = stat.size;
 
-    file.seekTo(0) catch return ValidationResult.invalid(.fits, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.fits, .failed_to_seek, "to start");
 
     // FITS header blocks are 2880 bytes
     var header: [2880]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.fits, errmsg.failedToRead("FITS header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.fits, .failed_to_read, "FITS header");
 
     if (header_read < 80) {
-        return ValidationResult.invalid(.fits, errmsg.fileTooSmallFor("FITS"));
+        return ValidationResult.invalidCode(.fits, .file_too_small, "FITS");
     }
 
     // First keyword must be SIMPLE
     if (!std.mem.eql(u8, header[0..9], "SIMPLE  =")) {
-        return ValidationResult.invalid(.fits, errmsg.invalidSignature("FITS"));
+        return ValidationResult.invalidCode(.fits, .invalid_signature, "FITS");
     }
 
     // Check SIMPLE value (should be T for conforming FITS)
@@ -324,13 +324,13 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
         if (std.mem.eql(u8, keyword_line[0..8], "BITPIX  ")) {
             found_bitpix = true;
             bitpix = parseFitsInteger(keyword_line[10..30]) catch {
-                return ValidationResult.invalid(.fits, "Invalid BITPIX value");
+                return ValidationResult.invalidCode(.fits, .invalid_value, "BITPIX value");
             };
             // Valid BITPIX values: 8, 16, 32, 64, -32, -64
             if (bitpix != 8 and bitpix != 16 and bitpix != 32 and bitpix != 64 and
                 bitpix != -32 and bitpix != -64)
             {
-                return ValidationResult.invalid(.fits, "Invalid BITPIX value");
+                return ValidationResult.invalidCode(.fits, .invalid_value, "BITPIX value");
             }
         }
 
@@ -338,10 +338,10 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
         if (std.mem.eql(u8, keyword_line[0..8], "NAXIS   ")) {
             found_naxis = true;
             const naxis_val = parseFitsInteger(keyword_line[10..30]) catch {
-                return ValidationResult.invalid(.fits, "Invalid NAXIS value");
+                return ValidationResult.invalidCode(.fits, .invalid_value, "NAXIS value");
             };
             if (naxis_val < 0 or naxis_val > 999) {
-                return ValidationResult.invalid(.fits, "Invalid NAXIS value");
+                return ValidationResult.invalidCode(.fits, .invalid_value, "NAXIS value");
             }
             naxis = @intCast(naxis_val);
         }
@@ -427,15 +427,15 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
     }
 
     if (!found_bitpix) {
-        return ValidationResult.invalid(.fits, errmsg.missing("BITPIX keyword"));
+        return ValidationResult.invalidCode(.fits, .missing, "BITPIX keyword");
     }
 
     if (!found_naxis) {
-        return ValidationResult.invalid(.fits, errmsg.missing("NAXIS keyword"));
+        return ValidationResult.invalidCode(.fits, .missing, "NAXIS keyword");
     }
 
     if (!found_end) {
-        return ValidationResult.invalid(.fits, errmsg.missing("END keyword in header"));
+        return ValidationResult.invalidCode(.fits, .missing, "END keyword in header");
     }
 
     // Calculate expected data size and data section bounds
@@ -447,7 +447,7 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
         var dim_i: u32 = 0;
         while (dim_i < naxis and dim_i < 10) : (dim_i += 1) {
             if (naxis_dims[dim_i] == 0) {
-                return ValidationResult.invalid(.fits, errmsg.missing("NAXISn dimension"));
+                return ValidationResult.invalidCode(.fits, .missing, "NAXISn dimension");
             }
             // Check for overflow
             if (data_elements > std.math.maxInt(u64) / naxis_dims[dim_i]) {
@@ -470,7 +470,7 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
         data_blocks = (expected_data_bytes + 2879) / 2880;
 
         if (file_size < header_end + expected_data_bytes) {
-            return ValidationResult.invalid(.fits, errmsg.fileTooSmallFor("declared data array"));
+            return ValidationResult.invalidCode(.fits, .file_too_small, "declared data array");
         }
     }
 
@@ -480,7 +480,7 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
         const hdu_size = header_end + data_blocks * 2880;
 
         // Read entire HDU and compute checksum
-        file.seekTo(0) catch return ValidationResult.invalid(.fits, errmsg.failedToSeek("for CHECKSUM"));
+        file.seekTo(0) catch return ValidationResult.invalidCode(.fits, .failed_to_seek, "for CHECKSUM");
 
         // Limit HDU size for checksum verification (avoid OOM on huge files)
         if (hdu_size > 1024 * 1024 * 1024) { // 1 GiB limit
@@ -495,7 +495,7 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
         while (remaining > 0) {
             const to_read = @min(remaining, 2880);
             const bytes_read = file.read(buf[0..to_read]) catch {
-                return ValidationResult.invalid(.fits, errmsg.failedToRead("HDU for CHECKSUM"));
+                return ValidationResult.invalidCode(.fits, .failed_to_read, "HDU for CHECKSUM");
             };
             if (bytes_read == 0) break;
 
@@ -538,12 +538,12 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
     if (datasum_value != null and data_blocks > 0) {
         // Parse expected checksum from DATASUM (decimal string)
         const expected_checksum = std.fmt.parseInt(u32, datasum_value.?, 10) catch {
-            return ValidationResult.invalid(.fits, "Invalid DATASUM value");
+            return ValidationResult.invalidCode(.fits, .invalid_value, "DATASUM value");
         };
 
         // Read data section and compute checksum
         file.seekTo(header_end) catch {
-            return ValidationResult.invalid(.fits, errmsg.failedToSeek("to data for DATASUM"));
+            return ValidationResult.invalidCode(.fits, .failed_to_seek, "to data for DATASUM");
         };
 
         const data_size = data_blocks * 2880;
@@ -560,7 +560,7 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
         while (remaining > 0) {
             const to_read = @min(remaining, 2880);
             const bytes_read = file.read(buf[0..to_read]) catch {
-                return ValidationResult.invalid(.fits, errmsg.failedToRead("data for DATASUM"));
+                return ValidationResult.invalidCode(.fits, .failed_to_read, "data for DATASUM");
             };
             if (bytes_read == 0) break;
 
@@ -1258,25 +1258,25 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const stat = file.stat() catch return ValidationResult.invalid(.dicom, errmsg.failedToStat("file"));
+    const stat = file.stat() catch return ValidationResult.invalidCode(.dicom, .failed_to_stat, "file");
     const file_size = stat.size;
 
     if (file_size < 132) {
-        return ValidationResult.invalid(.dicom, errmsg.fileTooSmallFor("DICOM"));
+        return ValidationResult.invalidCode(.dicom, .file_too_small, "DICOM");
     }
 
     // DICOM files have 128-byte preamble + "DICM" signature
-    file.seekTo(128) catch return ValidationResult.invalid(.dicom, errmsg.failedToSeek("past preamble"));
+    file.seekTo(128) catch return ValidationResult.invalidCode(.dicom, .failed_to_seek, "past preamble");
 
     var magic: [4]u8 = undefined;
-    const magic_read = file.read(&magic) catch return ValidationResult.invalid(.dicom, errmsg.failedToRead("DICOM magic"));
+    const magic_read = file.read(&magic) catch return ValidationResult.invalidCode(.dicom, .failed_to_read, "DICOM magic");
 
     if (magic_read < 4) {
-        return ValidationResult.invalid(.dicom, errmsg.truncated("DICOM magic"));
+        return ValidationResult.invalidCode(.dicom, .truncated, "DICOM magic");
     }
 
     if (!std.mem.eql(u8, &magic, "DICM")) {
-        return ValidationResult.invalid(.dicom, errmsg.invalidSignature("DICOM"));
+        return ValidationResult.invalidCode(.dicom, .invalid_signature, "DICOM");
     }
 
     // Parse File Meta Information (Group 0002) - always explicit VR little-endian
@@ -1288,10 +1288,10 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
 
     // Parse meta information elements (always Explicit VR Little Endian)
     while (offset < file_size) {
-        file.seekTo(offset) catch return ValidationResult.invalid(.dicom, errmsg.failedToSeek("to element"));
+        file.seekTo(offset) catch return ValidationResult.invalidCode(.dicom, .failed_to_seek, "to element");
 
         var element_buf: [12]u8 = undefined;
-        const elem_read = file.read(&element_buf) catch return ValidationResult.invalid(.dicom, errmsg.failedToRead("element"));
+        const elem_read = file.read(&element_buf) catch return ValidationResult.invalidCode(.dicom, .failed_to_read, "element");
 
         if (elem_read < 8) {
             break; // End of file or truncated
@@ -1313,7 +1313,7 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
         if (dicomVrHas4ByteLength(vr)) {
             // 4-byte length after 2-byte reserved
             if (elem_read < 12) {
-                return ValidationResult.invalid(.dicom, errmsg.truncated("element header"));
+                return ValidationResult.invalidCode(.dicom, .truncated, "element header");
             }
             value_length = std.mem.readInt(u32, element_buf[8..12], .little);
             header_size = 12;
@@ -1346,7 +1346,7 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
         if (value_length != 0xFFFFFFFF) {
             const value_end = offset + header_size + value_length;
             if (value_end > file_size) {
-                return ValidationResult.invalid(.dicom, "Meta element value exceeds file bounds");
+                return ValidationResult.invalidCodeMsg(.dicom, .exceeds_bounds, "Meta element value", "Meta element value exceeds file bounds");
             }
             offset = value_end;
         } else {
@@ -1362,7 +1362,7 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
 
         // Sanity check - DICOM files shouldn't have millions of elements in meta info
         if (element_count > 1000 and group == 0x0002) {
-            return ValidationResult.invalid(.dicom, errmsg.tooMany("meta information elements"));
+            return ValidationResult.invalidCode(.dicom, .too_many, "meta information elements");
         }
     }
 
@@ -1371,7 +1371,7 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
     }
 
     if (!found_transfer_syntax) {
-        return ValidationResult.invalid(.dicom, errmsg.missing("Transfer Syntax UID"));
+        return ValidationResult.invalidCode(.dicom, .missing, "Transfer Syntax UID");
     }
 
     // Now parse dataset elements (may be explicit or implicit VR)
@@ -1404,14 +1404,14 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
 /// Full integrity validation: parses all sequences, validates characters,
 /// and checks for proper record structure throughout the file.
 pub fn validateFasta(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.fasta, errmsg.failedToStat("file"));
+    const stat = file.stat() catch return ValidationResult.invalidCode(.fasta, .failed_to_stat, "file");
     const file_size = stat.size;
 
     if (file_size == 0) {
-        return ValidationResult.invalid(.fasta, errmsg.empty("file"));
+        return ValidationResult.invalidCode(.fasta, .empty, "file");
     }
 
-    file.seekTo(0) catch return ValidationResult.invalid(.fasta, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.fasta, .failed_to_seek, "to start");
 
     // Read file in chunks for full validation
     const chunk_size: usize = 1024 * 1024; // 1MB chunks
@@ -1429,7 +1429,7 @@ pub fn validateFasta(file: std.fs.File) ValidationResult {
     while (total_read < file_size) {
         const to_read = @min(chunk_size, @as(usize, @intCast(file_size - total_read)));
         const bytes_read = file.read(buffer[0..to_read]) catch {
-            return ValidationResult.invalid(.fasta, errmsg.failedToRead("file"));
+            return ValidationResult.invalidCode(.fasta, .failed_to_read, "file");
         };
 
         if (bytes_read == 0) break;
@@ -1447,14 +1447,14 @@ pub fn validateFasta(file: std.fs.File) ValidationResult {
             if (c == '>') {
                 // New sequence header
                 if (in_sequence and !current_seq_has_data) {
-                    return ValidationResult.invalid(.fasta, errmsg.empty("sequence (no data after header)"));
+                    return ValidationResult.invalidCode(.fasta, .empty, "sequence (no data after header)");
                 }
                 sequence_count += 1;
                 in_sequence = false;
                 current_seq_has_data = false;
 
                 if (sequence_count > 100_000_000) {
-                    return ValidationResult.invalid(.fasta, errmsg.tooMany("sequences"));
+                    return ValidationResult.invalidCode(.fasta, .too_many, "sequences");
                 }
             } else if (c == '\n' or c == '\r') {
                 // After first newline, we're in sequence data
@@ -1463,7 +1463,7 @@ pub fn validateFasta(file: std.fs.File) ValidationResult {
                 // Validate sequence character
                 if (c != ' ' and c != '\t') {
                     if (!valid_seq_chars[c]) {
-                        return ValidationResult.invalid(.fasta, "Invalid sequence character");
+                        return ValidationResult.invalidCode(.fasta, .invalid_value, "sequence character");
                     }
                     current_seq_has_data = true;
                 }
@@ -1510,14 +1510,14 @@ fn init_valid_fasta_chars() [256]bool {
 /// Full integrity validation: parses multiple records, validates sequence characters,
 /// and verifies quality score encoding.
 pub fn validateFastq(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalid(.fastq, errmsg.failedToStat("file"));
+    const stat = file.stat() catch return ValidationResult.invalidCode(.fastq, .failed_to_stat, "file");
     const file_size = stat.size;
 
     if (file_size == 0) {
-        return ValidationResult.invalid(.fastq, errmsg.empty("file"));
+        return ValidationResult.invalidCode(.fastq, .empty, "file");
     }
 
-    file.seekTo(0) catch return ValidationResult.invalid(.fastq, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.fastq, .failed_to_seek, "to start");
 
     // Read file in chunks
     const chunk_size: usize = 1024 * 1024; // 1MB
@@ -1537,7 +1537,7 @@ pub fn validateFastq(file: std.fs.File) ValidationResult {
     while (total_read < file_size) {
         const to_read = @min(chunk_size, @as(usize, @intCast(file_size - total_read)));
         const bytes_read = file.read(buffer[0..to_read]) catch {
-            return ValidationResult.invalid(.fastq, errmsg.failedToRead("file"));
+            return ValidationResult.invalidCode(.fastq, .failed_to_read, "file");
         };
 
         if (bytes_read == 0) break;
@@ -1557,7 +1557,7 @@ pub fn validateFastq(file: std.fs.File) ValidationResult {
                 if (line_in_record == 1) {
                     // End of sequence line
                     if (current_seq_len == 0) {
-                        return ValidationResult.invalid(.fastq, errmsg.empty("sequence line"));
+                        return ValidationResult.invalidCode(.fastq, .empty, "sequence line");
                     }
                 } else if (line_in_record == 3) {
                     // End of quality line
@@ -1569,7 +1569,7 @@ pub fn validateFastq(file: std.fs.File) ValidationResult {
                     current_qual_len = 0;
 
                     if (record_count > 1_000_000_000) {
-                        return ValidationResult.invalid(.fastq, errmsg.tooMany("records"));
+                        return ValidationResult.invalidCode(.fastq, .too_many, "records");
                     }
                 }
 
@@ -1591,13 +1591,13 @@ pub fn validateFastq(file: std.fs.File) ValidationResult {
                 if (line_in_record == 1) {
                     // Sequence line - validate character
                     if (!valid_seq_chars[c]) {
-                        return ValidationResult.invalid(.fastq, "Invalid sequence character");
+                        return ValidationResult.invalidCode(.fastq, .invalid_value, "sequence character");
                     }
                     current_seq_len += 1;
                 } else if (line_in_record == 3) {
                     // Quality line - any printable ASCII (Phred+33 or Phred+64)
                     if (c < 33 or c > 126) {
-                        return ValidationResult.invalid(.fastq, "Invalid quality score character");
+                        return ValidationResult.invalidCode(.fastq, .invalid_value, "quality score character");
                     }
                     current_qual_len += 1;
                 }
@@ -1613,7 +1613,7 @@ pub fn validateFastq(file: std.fs.File) ValidationResult {
 
     // Check for incomplete final record
     if (line_in_record != 0) {
-        return ValidationResult.invalid(.fastq, errmsg.incomplete("final record"));
+        return ValidationResult.invalidCode(.fastq, .incomplete, "final record");
     }
 
     return ValidationResult.okWithDepth(.fastq, .full);

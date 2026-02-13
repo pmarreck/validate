@@ -1,11 +1,11 @@
 # Error/Warning Message Catalog — Golden Reference
-# Generated: 2026-02-10T22:55:51Z
-# Commit: dcde91e
+# Generated: 2026-02-13T05:26:50Z
+# Commit: c719291
 #
 # This file captures every unique user-facing error and warning string.
 # After refactoring, regenerate and diff to catch regressions.
 #
-# ERRORS: 1920
+# ERRORS: 1922
 # WARNINGS: 48
 
 === ERRORS ===
@@ -1690,6 +1690,7 @@ Sequence item exceeds file bounds
 SIMPLE != T (non-conforming FITS)
 SNES ROM checksum mismatch
 SOF segment too small
+some custom error
 SOS segment too small
 SQLite file appears truncated
 SSND chunk extends beyond file
@@ -1746,6 +1747,7 @@ Truncated after delta time
 Truncated at color mode section
 Truncated at image resources section
 Truncated at layer section
+Truncated atom
 Truncated ATOM record
 Truncated attribute count
 Truncated AVIF data

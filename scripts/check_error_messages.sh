@@ -40,6 +40,9 @@ declare -A ERRMSG_PREFIX=(
     [outOfMemory]="Out of memory "
     [failedToGet]="Failed to get "
     [decompressionFailed]=""
+    [invalidValue]="Invalid "
+    [checksumMismatch]=""
+    [exceedsBounds]=""
 )
 
 declare -A ERRMSG_SUFFIX=(
@@ -66,6 +69,40 @@ declare -A ERRMSG_SUFFIX=(
     [outOfMemory]=""
     [failedToGet]=""
     [decompressionFailed]=" decompression failed"
+    [invalidValue]=""
+    [checksumMismatch]=" checksum mismatch"
+    [exceedsBounds]=" exceeds bounds"
+)
+
+# ValidationErrorCode enum variant -> errmsg function name mapping
+# Used to expand .invalidCode(.fmt, .code, "detail") patterns
+declare -A ERRCODE_TO_FUNC=(
+    [failed_to_read]="failedToRead"
+    [file_too_small]="fileTooSmallFor"
+    [invalid_signature]="invalidSignature"
+    [missing]="missing"
+    [failed_to_seek]="failedToSeek"
+    [truncated]="truncated"
+    [invalid_magic]="invalidMagic"
+    [invalid_magic_number]="invalidMagicNumber"
+    [failed_to_open]="failedToOpen"
+    [failed_to_skip]="failedToSkip"
+    [too_many]="tooMany"
+    [unsupported]="unsupported"
+    [incomplete]="incomplete"
+    [buffer_too_small]="bufferTooSmallFor"
+    [no_valid_x_found]="noValidXFound"
+    [unknown_element]="unknown"
+    [empty]="empty"
+    [file_too_large]="fileTooLargeFor"
+    [failed_to_allocate]="failedToAllocate"
+    [failed_to_stat]="failedToStat"
+    [out_of_memory]="outOfMemory"
+    [failed_to_get]="failedToGet"
+    [decompression_failed]="decompressionFailed"
+    [invalid_value]="invalidValue"
+    [checksum_mismatch]="checksumMismatch"
+    [exceeds_bounds]="exceedsBounds"
 )
 
 # Function to expand errmsg template calls to their full string
@@ -107,6 +144,31 @@ rg -o '\.invalidWithDepth\([^,]+,\s*errmsg\.(\w+)\("([^"]*)",\s*"([^"]*)"\)' --n
 
 # Pattern 3b: single-arg form for two-arg templates
 rg -o '\.invalid\(errmsg\.(\w+)\("([^"]*)",\s*"([^"]*)"\)' --no-filename -r '$1|$2|$3' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_errmsg2.txt" || true
+
+# Pattern 3c: errmsg.func("arg1", "arg2") in .invalidCodeMsg(.fmt, .code, "detail", errmsg.func(...))
+rg -o '\.invalidCodeMsg\([^,]+,\s*\.\w+,\s*"[^"]*",\s*errmsg\.(\w+)\("([^"]*)",\s*"([^"]*)"\)' --no-filename -r '$1|$2|$3' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_errmsg2.txt" || true
+
+# Pattern 4c: .invalidCodeMsg(.fmt, .code, "detail", "message") — raw message with code
+rg -o '\.invalidCodeMsg\([^,]+,\s*\.\w+,\s*"[^"]*",\s*"([^"]*)"' --no-filename -r '$1' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_raw.txt" || true
+
+# Pattern 4d: .invalidCodeMsgWithDepth(.fmt, .code, "detail", "message", .depth)
+rg -o '\.invalidCodeMsgWithDepth\([^,]+,\s*\.\w+,\s*"[^"]*",\s*"([^"]*)"' --no-filename -r '$1' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_raw.txt" || true
+
+# Pattern 4a: .invalidCode(.fmt, .code, "detail") — error code + detail
+rg -o '\.invalidCode\([^,]+,\s*\.(\w+),\s*"([^"]*)"' --no-filename -r '$1|$2' "$PROJECT_DIR/src/core/" 2>/dev/null > "$TMPDIR/current_errors_errcode.txt" || true
+
+# Pattern 4b: .invalidCodeWithDepth(.fmt, .code, "detail", .depth)
+rg -o '\.invalidCodeWithDepth\([^,]+,\s*\.(\w+),\s*"([^"]*)"' --no-filename -r '$1|$2' "$PROJECT_DIR/src/core/" 2>/dev/null >> "$TMPDIR/current_errors_errcode.txt" || true
+
+# Expand error code + detail to full strings using ERRCODE_TO_FUNC mapping
+while IFS='|' read -r code detail; do
+    func="${ERRCODE_TO_FUNC[$code]:-}"
+    if [ -n "$func" ]; then
+        prefix="${ERRMSG_PREFIX[$func]:-}"
+        suffix="${ERRMSG_SUFFIX[$func]:-}"
+        echo "${prefix}${detail}${suffix}"
+    fi
+done < "$TMPDIR/current_errors_errcode.txt" >> "$TMPDIR/current_errors_raw.txt"
 
 # Expand single-arg errmsg templates to full strings
 while IFS='|' read -r func arg; do

@@ -24,10 +24,10 @@ const validateDataBufferFormat = format_validation.validateDataBufferFormat;
 
 /// Validate an EML (RFC 5322) email message file.
 pub fn validateEml(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.eml, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.eml, .failed_to_seek, "to start");
 
     // Read entire file (limit to reasonable size)
-    const stat = file.stat() catch return ValidationResult.invalid(.eml, errmsg.failedToStat("file"));
+    const stat = file.stat() catch return ValidationResult.invalidCode(.eml, .failed_to_stat, "file");
     if (stat.size > 100 * 1024 * 1024) {
         // File too large, just do structural validation
         return validateEmlStructure(file);
@@ -43,9 +43,9 @@ pub fn validateEml(file: std.fs.File) ValidationResult {
     };
     defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalid(.eml, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.eml, .failed_to_seek, "to start");
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.eml, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.eml, .failed_to_read, "file");
     };
 
     return validateEmlContent(allocator, content[0..bytes_read]);
@@ -53,13 +53,13 @@ pub fn validateEml(file: std.fs.File) ValidationResult {
 
 /// Validate EML structural headers only (used for oversized files).
 pub fn validateEmlStructure(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.eml, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.eml, .failed_to_seek, "to start");
 
     var header: [4096]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.eml, errmsg.failedToRead("header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.eml, .failed_to_read, "header");
 
     if (header_read < 10) {
-        return ValidationResult.invalid(.eml, errmsg.fileTooSmallFor("EML"));
+        return ValidationResult.invalidCode(.eml, .file_too_small, "EML");
     }
 
     // Check for valid email headers
@@ -90,7 +90,7 @@ pub fn validateEmlStructure(file: std.fs.File) ValidationResult {
     }
 
     if (!found_header) {
-        return ValidationResult.invalid(.eml, errmsg.noValidXFound("email headers"));
+        return ValidationResult.invalidCode(.eml, .no_valid_x_found, "email headers");
     }
 
     return ValidationResult.okWithDepth(.eml, .structural);
@@ -124,7 +124,7 @@ pub fn validateEmlContent(allocator: Allocator, content: []const u8) ValidationR
 
     // Check for valid email headers
     if (!hasValidEmailHeaders(headers)) {
-        return ValidationResult.invalid(.eml, errmsg.noValidXFound("email headers"));
+        return ValidationResult.invalidCode(.eml, .no_valid_x_found, "email headers");
     }
 
     // Check for multipart MIME
@@ -264,7 +264,7 @@ pub fn validateBase64Attachment(allocator: Allocator, body: []const u8, headers:
 
     // Decode base64
     const decoded_len = decodeBase64(body, decode_buffer) catch {
-        return ValidationResult.invalid(.eml, "Invalid base64 encoding in attachment");
+        return ValidationResult.invalidCode(.eml, .invalid_value, "base64 encoding in attachment");
     };
 
     if (decoded_len == 0) {
@@ -302,13 +302,13 @@ pub fn validateBase64Attachment(allocator: Allocator, body: []const u8, headers:
 
 /// Validate an MBOX mailbox file structure.
 pub fn validateMbox(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.mbox, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.mbox, .failed_to_seek, "to start");
 
     var header: [4096]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.mbox, errmsg.failedToRead("header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.mbox, .failed_to_read, "header");
 
     if (header_read < 5) {
-        return ValidationResult.invalid(.mbox, errmsg.fileTooSmallFor("MBOX"));
+        return ValidationResult.invalidCode(.mbox, .file_too_small, "MBOX");
     }
 
     // MBOX must start with "From " (note the space)
@@ -335,7 +335,7 @@ pub fn validateMbox(file: std.fs.File) ValidationResult {
     }
 
     if (message_count == 0) {
-        return ValidationResult.invalid(.mbox, errmsg.noValidXFound("MBOX messages"));
+        return ValidationResult.invalidCode(.mbox, .no_valid_x_found, "MBOX messages");
     }
 
     return ValidationResult.ok(.mbox);
@@ -344,12 +344,12 @@ pub fn validateMbox(file: std.fs.File) ValidationResult {
 /// Deep-validate an MBOX mailbox file by reading all message separators.
 pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.mbox, errmsg.failedToOpen("MBOX file"));
+        return ValidationResult.invalidCode(.mbox, .failed_to_open, "MBOX file");
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.mbox, errmsg.failedToGet("file size"));
+        return ValidationResult.invalidCode(.mbox, .failed_to_get, "file size");
     };
 
     if (file_size > 1024 * 1024 * 1024) { // 1GB limit
@@ -362,10 +362,10 @@ pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalid(.mbox, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.mbox, .failed_to_read, "file");
     };
     if (bytes_read != file_size) {
-        return ValidationResult.invalid(.mbox, errmsg.incomplete("file read"));
+        return ValidationResult.invalidCode(.mbox, .incomplete, "file read");
     }
 
     // Must start with "From "
@@ -388,7 +388,7 @@ pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult
     }
 
     if (message_count == 0) {
-        return ValidationResult.invalid(.mbox, errmsg.noValidXFound("messages"));
+        return ValidationResult.invalidCode(.mbox, .no_valid_x_found, "messages");
     }
 
     return ValidationResult.okWithDepth(.mbox, .structural);

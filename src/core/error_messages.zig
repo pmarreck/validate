@@ -161,6 +161,26 @@ pub fn decompressionFailed(comptime method: []const u8) *const [(method ++ " dec
     return method ++ " decompression failed";
 }
 
+// Phase 2 templates
+
+/// "Invalid " ++ detail
+/// Example: invalidValue("chunk type") → "Invalid chunk type"
+pub fn invalidValue(comptime detail: []const u8) *const [("Invalid " ++ detail).len:0]u8 {
+    return "Invalid " ++ detail;
+}
+
+/// detail ++ " checksum mismatch"
+/// Example: checksumMismatch("CRC-32") → "CRC-32 checksum mismatch"
+pub fn checksumMismatch(comptime detail: []const u8) *const [(detail ++ " checksum mismatch").len:0]u8 {
+    return detail ++ " checksum mismatch";
+}
+
+/// detail ++ " exceeds bounds"
+/// Example: exceedsBounds("chunk size") → "chunk size exceeds bounds"
+pub fn exceedsBounds(comptime detail: []const u8) *const [(detail ++ " exceeds bounds").len:0]u8 {
+    return detail ++ " exceeds bounds";
+}
+
 // Tests
 test "template output matches expected strings" {
     const std = @import("std");
@@ -196,4 +216,103 @@ test "template output matches expected strings" {
     try testing.expectEqualStrings("Invalid DWG signature (expected AC)", invalidSignatureExpected("DWG", "AC"));
     try testing.expectEqualStrings("Invalid PRPROJ signature (not gzip or XML)", invalidSignatureNot("PRPROJ", "gzip or XML"));
     try testing.expectEqualStrings("Zlib decompression failed", decompressionFailed("Zlib"));
+
+    // Phase 2
+    try testing.expectEqualStrings("Invalid chunk type", invalidValue("chunk type"));
+    try testing.expectEqualStrings("CRC-32 checksum mismatch", checksumMismatch("CRC-32"));
+    try testing.expectEqualStrings("chunk size exceeds bounds", exceedsBounds("chunk size"));
+}
+
+test "ValidationErrorCode.message round-trips all single-param templates" {
+    const std = @import("std");
+    const testing = std.testing;
+    const ValidationErrorCode = @import("format_validation.zig").ValidationErrorCode;
+
+    // Every single-param code must produce byte-identical output to the direct errmsg call
+    try testing.expectEqualStrings(failedToRead("PNG signature"), ValidationErrorCode.failed_to_read.message("PNG signature"));
+    try testing.expectEqualStrings(fileTooSmallFor("valid ZIP"), ValidationErrorCode.file_too_small.message("valid ZIP"));
+    try testing.expectEqualStrings(invalidSignature("PNG"), ValidationErrorCode.invalid_signature.message("PNG"));
+    try testing.expectEqualStrings(missing("IHDR chunk"), ValidationErrorCode.missing.message("IHDR chunk"));
+    try testing.expectEqualStrings(failedToSeek("to chunk"), ValidationErrorCode.failed_to_seek.message("to chunk"));
+    try testing.expectEqualStrings(truncated("PNG chunk"), ValidationErrorCode.truncated.message("PNG chunk"));
+    try testing.expectEqualStrings(invalidMagic("PNG"), ValidationErrorCode.invalid_magic.message("PNG"));
+    try testing.expectEqualStrings(invalidMagicNumber("GIF"), ValidationErrorCode.invalid_magic_number.message("GIF"));
+    try testing.expectEqualStrings(failedToOpen("file"), ValidationErrorCode.failed_to_open.message("file"));
+    try testing.expectEqualStrings(failedToSkip("padding"), ValidationErrorCode.failed_to_skip.message("padding"));
+    try testing.expectEqualStrings(tooMany("chunks"), ValidationErrorCode.too_many.message("chunks"));
+    try testing.expectEqualStrings(unsupported("compression method"), ValidationErrorCode.unsupported.message("compression method"));
+    try testing.expectEqualStrings(incomplete("frame data"), ValidationErrorCode.incomplete.message("frame data"));
+    try testing.expectEqualStrings(bufferTooSmallFor("header"), ValidationErrorCode.buffer_too_small.message("header"));
+    try testing.expectEqualStrings(noValidXFound("frames"), ValidationErrorCode.no_valid_x_found.message("frames"));
+    try testing.expectEqualStrings(unknown("chunk type"), ValidationErrorCode.unknown_element.message("chunk type"));
+    try testing.expectEqualStrings(empty("file"), ValidationErrorCode.empty.message("file"));
+    try testing.expectEqualStrings(fileTooLargeFor("format detection"), ValidationErrorCode.file_too_large.message("format detection"));
+    try testing.expectEqualStrings(failedToAllocate("memory for buffer"), ValidationErrorCode.failed_to_allocate.message("memory for buffer"));
+    try testing.expectEqualStrings(failedToStat("file"), ValidationErrorCode.failed_to_stat.message("file"));
+    try testing.expectEqualStrings(outOfMemory("for JSON"), ValidationErrorCode.out_of_memory.message("for JSON"));
+    try testing.expectEqualStrings(failedToGet("file size"), ValidationErrorCode.failed_to_get.message("file size"));
+    try testing.expectEqualStrings(decompressionFailed("Zlib"), ValidationErrorCode.decompression_failed.message("Zlib"));
+    try testing.expectEqualStrings(invalidValue("chunk type"), ValidationErrorCode.invalid_value.message("chunk type"));
+    try testing.expectEqualStrings(checksumMismatch("CRC-32"), ValidationErrorCode.checksum_mismatch.message("CRC-32"));
+    try testing.expectEqualStrings(exceedsBounds("chunk size"), ValidationErrorCode.exceeds_bounds.message("chunk size"));
+}
+
+test "ValidationErrorCode.message2 round-trips two-param templates" {
+    const std = @import("std");
+    const testing = std.testing;
+    const ValidationErrorCode = @import("format_validation.zig").ValidationErrorCode;
+
+    try testing.expectEqualStrings(
+        invalidSignatureExpected("DWG", "AC"),
+        ValidationErrorCode.invalid_signature_expected.message2("DWG", "AC"),
+    );
+    try testing.expectEqualStrings(
+        invalidSignatureNot("PRPROJ", "gzip or XML"),
+        ValidationErrorCode.invalid_signature_not.message2("PRPROJ", "gzip or XML"),
+    );
+}
+
+test "ValidationResult helper methods set all fields correctly" {
+    const std = @import("std");
+    const testing = std.testing;
+    const fv = @import("format_validation.zig");
+    const ValidationResult = fv.ValidationResult;
+    const ValidationErrorCode = fv.ValidationErrorCode;
+
+    // invalidCode
+    const r1 = ValidationResult.invalidCode(.png, .failed_to_read, "PNG signature");
+    try testing.expect(!r1.is_valid);
+    try testing.expectEqual(r1.format, .png);
+    try testing.expectEqualStrings("Failed to read PNG signature", r1.error_message.?);
+    try testing.expectEqual(r1.error_code.?, ValidationErrorCode.failed_to_read);
+    try testing.expectEqualStrings("PNG signature", r1.error_detail.?);
+    try testing.expectEqual(r1.validation_depth, .structural);
+
+    // invalidCodeWithDepth
+    const r2 = ValidationResult.invalidCodeWithDepth(.mp4, .truncated, "atom", .full);
+    try testing.expect(!r2.is_valid);
+    try testing.expectEqualStrings("Truncated atom", r2.error_message.?);
+    try testing.expectEqual(r2.error_code.?, ValidationErrorCode.truncated);
+    try testing.expectEqualStrings("atom", r2.error_detail.?);
+    try testing.expectEqual(r2.validation_depth, .full);
+
+    // invalidCodeMsg
+    const r3 = ValidationResult.invalidCodeMsg(.dwg, .invalid_signature_expected, "DWG", "Invalid DWG signature (expected AC)");
+    try testing.expect(!r3.is_valid);
+    try testing.expectEqualStrings("Invalid DWG signature (expected AC)", r3.error_message.?);
+    try testing.expectEqual(r3.error_code.?, ValidationErrorCode.invalid_signature_expected);
+    try testing.expectEqualStrings("DWG", r3.error_detail.?);
+
+    // Existing .invalid() leaves error_code = null (backward compat)
+    const r4 = ValidationResult.invalid(.png, "some custom error");
+    try testing.expect(!r4.is_valid);
+    try testing.expectEqualStrings("some custom error", r4.error_message.?);
+    try testing.expectEqual(r4.error_code, null);
+    try testing.expectEqual(r4.error_detail, null);
+}
+
+test "ValidationErrorCode template_count" {
+    const ValidationErrorCode = @import("format_validation.zig").ValidationErrorCode;
+    const std = @import("std");
+    try std.testing.expectEqual(@as(u8, 28), ValidationErrorCode.template_count);
 }

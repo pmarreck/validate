@@ -12,29 +12,29 @@ const ValidationResult = format_validation.ValidationResult;
 /// Performs deep structural validation of the PE headers and section table.
 pub fn validatePe(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.pe, errmsg.failedToStat("file"));
+        return ValidationResult.invalidCode(.pe, .failed_to_stat, "file");
     };
 
     // Minimum size: DOS header (64) + PE sig (4) + COFF header (20) + minimal opt header
     if (stat.size < 128) {
-        return ValidationResult.invalid(.pe, errmsg.fileTooSmallFor("PE format"));
+        return ValidationResult.invalidCode(.pe, .file_too_small, "PE format");
     }
 
     // Read DOS header (first 64 bytes)
     var dos_header: [64]u8 = undefined;
     file.seekTo(0) catch {
-        return ValidationResult.invalid(.pe, errmsg.failedToSeek("to start"));
+        return ValidationResult.invalidCode(.pe, .failed_to_seek, "to start");
     };
     const dos_bytes = file.readAll(&dos_header) catch {
-        return ValidationResult.invalid(.pe, errmsg.failedToRead("DOS header"));
+        return ValidationResult.invalidCode(.pe, .failed_to_read, "DOS header");
     };
     if (dos_bytes < 64) {
-        return ValidationResult.invalid(.pe, errmsg.truncated("DOS header"));
+        return ValidationResult.invalidCode(.pe, .truncated, "DOS header");
     }
 
     // Verify MZ magic
     if (dos_header[0] != 'M' or dos_header[1] != 'Z') {
-        return ValidationResult.invalid(.pe, errmsg.invalidSignatureExpected("DOS", "MZ"));
+        return ValidationResult.invalidCodeMsg(.pe, .invalid_signature_expected, "DOS", errmsg.invalidSignatureExpected("DOS", "MZ"));
     }
 
     // Get PE header offset from DOS header at 0x3C (e_lfanew, little-endian)
@@ -45,32 +45,32 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
 
     // Validate PE offset is reasonable
     if (pe_offset < 64 or pe_offset > 0x10000) {
-        return ValidationResult.invalid(.pe, "Invalid PE header offset");
+        return ValidationResult.invalidCode(.pe, .invalid_value, "PE header offset");
     }
 
     if (pe_offset + 24 > stat.size) {
-        return ValidationResult.invalid(.pe, "PE header offset exceeds file size");
+        return ValidationResult.invalidCodeMsg(.pe, .exceeds_bounds, "PE header offset", "PE header offset exceeds file size");
     }
 
     // Seek to PE signature and read PE header
     file.seekTo(pe_offset) catch {
-        return ValidationResult.invalid(.pe, errmsg.failedToSeek("to PE header"));
+        return ValidationResult.invalidCode(.pe, .failed_to_seek, "to PE header");
     };
 
     // Read PE signature (4) + COFF header (20) + start of optional header (enough for magic)
     var pe_header: [256]u8 = undefined;
     const header_size = @min(256, stat.size - pe_offset);
     const pe_bytes = file.read(pe_header[0..@intCast(header_size)]) catch {
-        return ValidationResult.invalid(.pe, errmsg.failedToRead("PE header"));
+        return ValidationResult.invalidCode(.pe, .failed_to_read, "PE header");
     };
 
     if (pe_bytes < 24) {
-        return ValidationResult.invalid(.pe, errmsg.truncated("PE header"));
+        return ValidationResult.invalidCode(.pe, .truncated, "PE header");
     }
 
     // Verify PE signature: "PE\0\0"
     if (pe_header[0] != 'P' or pe_header[1] != 'E' or pe_header[2] != 0 or pe_header[3] != 0) {
-        return ValidationResult.invalid(.pe, errmsg.invalidSignature("PE"));
+        return ValidationResult.invalidCode(.pe, .invalid_signature, "PE");
     }
 
     // Parse COFF header (starts at offset 4 after PE signature)
@@ -97,14 +97,14 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
         }
     }
     if (!valid_machine) {
-        return ValidationResult.invalid(.pe, errmsg.unknown("machine type"));
+        return ValidationResult.invalidCode(.pe, .unknown_element, "machine type");
     }
 
     // Number of sections (bytes 2-3)
     const num_sections = @as(u16, coff[2]) | (@as(u16, coff[3]) << 8);
     if (num_sections == 0 or num_sections > 96) {
         // Windows loader limit is 96 sections
-        return ValidationResult.invalid(.pe, "Invalid section count");
+        return ValidationResult.invalidCode(.pe, .invalid_value, "section count");
     }
 
     // SizeOfOptionalHeader (bytes 16-17)
@@ -127,7 +127,7 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
 
     // Parse optional header (starts at offset 24)
     if (pe_bytes < 26) {
-        return ValidationResult.invalid(.pe, errmsg.missing("optional header"));
+        return ValidationResult.invalidCode(.pe, .missing, "optional header");
     }
 
     const opt_header = pe_header[24..];
@@ -145,7 +145,7 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
         // PE32+ (64-bit)
         is_pe32plus = true;
     } else {
-        return ValidationResult.invalid(.pe, "Invalid optional header magic");
+        return ValidationResult.invalidCode(.pe, .invalid_value, "optional header magic");
     }
 
     // Minimum optional header sizes
@@ -159,26 +159,26 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
     const section_table_size: u64 = @as(u64, num_sections) * 40; // Each section header is 40 bytes
 
     if (section_table_offset + section_table_size > stat.size) {
-        return ValidationResult.invalid(.pe, "Section table exceeds file size");
+        return ValidationResult.invalidCodeMsg(.pe, .exceeds_bounds, "Section table", "Section table exceeds file size");
     }
 
     // Read and validate section table
     file.seekTo(section_table_offset) catch {
-        return ValidationResult.invalid(.pe, errmsg.failedToSeek("to section table"));
+        return ValidationResult.invalidCode(.pe, .failed_to_seek, "to section table");
     };
 
     // Allocate buffer for section headers
     const section_buffer = std.heap.page_allocator.alloc(u8, @intCast(section_table_size)) catch {
-        return ValidationResult.invalid(.pe, errmsg.failedToAllocate("section buffer"));
+        return ValidationResult.invalidCode(.pe, .failed_to_allocate, "section buffer");
     };
     defer std.heap.page_allocator.free(section_buffer);
 
     const section_bytes = file.readAll(section_buffer) catch {
-        return ValidationResult.invalid(.pe, errmsg.failedToRead("section table"));
+        return ValidationResult.invalidCode(.pe, .failed_to_read, "section table");
     };
 
     if (section_bytes < section_table_size) {
-        return ValidationResult.invalid(.pe, errmsg.truncated("section table"));
+        return ValidationResult.invalidCode(.pe, .truncated, "section table");
     }
 
     // Validate each section header
@@ -206,7 +206,7 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
         if (size_of_raw_data > 0 and pointer_to_raw_data > 0) {
             const section_end = @as(u64, pointer_to_raw_data) + @as(u64, size_of_raw_data);
             if (section_end > stat.size) {
-                return ValidationResult.invalid(.pe, "Section data exceeds file bounds");
+                return ValidationResult.invalidCodeMsg(.pe, .exceeds_bounds, "Section data", "Section data exceeds file bounds");
             }
         }
     }

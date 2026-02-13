@@ -209,6 +209,14 @@ fn buildValidationResult(
     try builder.add("err", i18n.translateError(result.error_message orelse ""));
     try builder.add("warn", i18n.translateWarning(result.warning_message orelse ""));
 
+    // Symbolic error code and detail (for downstream consumers like Entropy Shield)
+    if (result.error_code) |code| {
+        try builder.add("err_code", @tagName(code));
+    } else {
+        try builder.add("err_code", "");
+    }
+    try builder.add("err_detail", result.error_detail orelse "");
+
     // Depth
     try builder.addU8("depth_u8", switch (result.validation_depth) {
         .structural => 0,

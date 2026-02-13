@@ -334,11 +334,11 @@ pub fn containsTemplateMarkers(content: []const u8) bool {
 pub fn validateJson(file: std.fs.File) ValidationResult {
     // Get file size
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.json, errmsg.failedToStat("file"));
+        return ValidationResult.invalidCode(.json, .failed_to_stat, "file");
     };
 
     if (stat.size == 0) {
-        return ValidationResult.invalid(.json, errmsg.empty("JSON file"));
+        return ValidationResult.invalidCode(.json, .empty, "JSON file");
     }
 
     if (stat.size > max_text_file_size) {
@@ -347,16 +347,16 @@ pub fn validateJson(file: std.fs.File) ValidationResult {
 
     // Read entire file - use heap allocation to avoid stack overflow with multiple threads
     const content = std.heap.page_allocator.alloc(u8, @intCast(stat.size)) catch {
-        return ValidationResult.invalid(.json, errmsg.failedToAllocate("memory"));
+        return ValidationResult.invalidCode(.json, .failed_to_allocate, "memory");
     };
     defer std.heap.page_allocator.free(content);
 
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.json, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.json, .failed_to_read, "file");
     };
 
     if (bytes_read == 0) {
-        return ValidationResult.invalid(.json, errmsg.empty("JSON file"));
+        return ValidationResult.invalidCode(.json, .empty, "JSON file");
     }
 
     // Handle UTF-16 LE/BE encoding (common on Windows)
@@ -370,7 +370,7 @@ pub fn validateJson(file: std.fs.File) ValidationResult {
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
             conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
-                return ValidationResult.invalid(.json, errmsg.failedToAllocate("conversion buffer"));
+                return ValidationResult.invalidCode(.json, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
         } else {
@@ -549,7 +549,7 @@ pub fn validateJsonLines(allocator: Allocator, content: []const u8) ValidationRe
     }
 
     if (lines_validated == 0) {
-        return ValidationResult.invalid(.json, errmsg.empty("JSON file"));
+        return ValidationResult.invalidCode(.json, .empty, "JSON file");
     }
 
     // JSON Lines validated successfully
@@ -565,11 +565,11 @@ pub fn validateToml(file: std.fs.File) ValidationResult {
 
     // Get file size
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.toml, errmsg.failedToStat("file"));
+        return ValidationResult.invalidCode(.toml, .failed_to_stat, "file");
     };
 
     if (stat.size == 0) {
-        return ValidationResult.invalid(.toml, errmsg.empty("TOML file"));
+        return ValidationResult.invalidCode(.toml, .empty, "TOML file");
     }
 
     if (stat.size > max_text_file_size) {
@@ -578,16 +578,16 @@ pub fn validateToml(file: std.fs.File) ValidationResult {
 
     // Read entire file - use heap allocation to avoid stack overflow with multiple threads
     const content = std.heap.page_allocator.alloc(u8, @intCast(stat.size)) catch {
-        return ValidationResult.invalid(.toml, errmsg.failedToAllocate("memory"));
+        return ValidationResult.invalidCode(.toml, .failed_to_allocate, "memory");
     };
     defer std.heap.page_allocator.free(content);
 
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.toml, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.toml, .failed_to_read, "file");
     };
 
     if (bytes_read == 0) {
-        return ValidationResult.invalid(.toml, errmsg.empty("TOML file"));
+        return ValidationResult.invalidCode(.toml, .empty, "TOML file");
     }
 
     // Handle UTF-16 LE/BE encoding (less common for TOML but possible on Windows)
@@ -600,7 +600,7 @@ pub fn validateToml(file: std.fs.File) ValidationResult {
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
             conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
-                return ValidationResult.invalid(.toml, errmsg.failedToAllocate("conversion buffer"));
+                return ValidationResult.invalidCode(.toml, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
             const text_result = getTextContent(content[0..bytes_read], conv_buf);
@@ -639,11 +639,11 @@ pub fn validateToml(file: std.fs.File) ValidationResult {
 pub fn validateIni(file: std.fs.File) ValidationResult {
     // Get file size
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.ini, errmsg.failedToStat("file"));
+        return ValidationResult.invalidCode(.ini, .failed_to_stat, "file");
     };
 
     if (stat.size == 0) {
-        return ValidationResult.invalid(.ini, errmsg.empty("INI file"));
+        return ValidationResult.invalidCode(.ini, .empty, "INI file");
     }
 
     if (stat.size > max_text_file_size) {
@@ -659,11 +659,11 @@ pub fn validateIni(file: std.fs.File) ValidationResult {
     };
 
     const bytes_read = file.read(buffer[0..read_size]) catch {
-        return ValidationResult.invalid(.ini, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.ini, .failed_to_read, "file");
     };
 
     if (bytes_read == 0) {
-        return ValidationResult.invalid(.ini, errmsg.empty("INI file"));
+        return ValidationResult.invalidCode(.ini, .empty, "INI file");
     }
 
     // Check for UTF-16 LE BOM and convert if needed
@@ -676,7 +676,7 @@ pub fn validateIni(file: std.fs.File) ValidationResult {
             content = utf8_content;
         } else {
             // Conversion failed - not valid UTF-16
-            return ValidationResult.invalid(.ini, "Invalid UTF-16 encoding");
+            return ValidationResult.invalidCode(.ini, .invalid_value, "UTF-16 encoding");
         }
     } else if (bytes_read >= 3 and buffer[0] == 0xEF and buffer[1] == 0xBB and buffer[2] == 0xBF) {
         // UTF-8 BOM - skip it
@@ -687,7 +687,7 @@ pub fn validateIni(file: std.fs.File) ValidationResult {
             content = utf8_content;
         } else {
             // Conversion failed - not valid UTF-16
-            return ValidationResult.invalid(.ini, "Invalid UTF-16 encoding");
+            return ValidationResult.invalidCode(.ini, .invalid_value, "UTF-16 encoding");
         }
     }
 
@@ -720,7 +720,7 @@ pub fn validateIniContent(content: []const u8) ValidationResult {
             .section, .key_value => found_structure = true, // Valid structure
             .invalid => {
                 // Return error with line number
-                return ValidationResult.invalid(.ini, "Invalid INI syntax");
+                return ValidationResult.invalidCode(.ini, .invalid_value, "INI syntax");
             },
         }
 
@@ -889,11 +889,11 @@ pub fn validateXml(file: std.fs.File) ValidationResult {
 
     // Get file size
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.xml, errmsg.failedToStat("file"));
+        return ValidationResult.invalidCode(.xml, .failed_to_stat, "file");
     };
 
     if (stat.size == 0) {
-        return ValidationResult.invalid(.xml, errmsg.empty("XML file"));
+        return ValidationResult.invalidCode(.xml, .empty, "XML file");
     }
 
     if (stat.size > max_text_file_size) {
@@ -902,16 +902,16 @@ pub fn validateXml(file: std.fs.File) ValidationResult {
 
     // Read entire file - use heap allocation to avoid stack overflow with multiple threads
     const content = std.heap.page_allocator.alloc(u8, @intCast(stat.size)) catch {
-        return ValidationResult.invalid(.xml, errmsg.failedToAllocate("memory"));
+        return ValidationResult.invalidCode(.xml, .failed_to_allocate, "memory");
     };
     defer std.heap.page_allocator.free(content);
 
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.xml, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.xml, .failed_to_read, "file");
     };
 
     if (bytes_read == 0) {
-        return ValidationResult.invalid(.xml, errmsg.empty("XML file"));
+        return ValidationResult.invalidCode(.xml, .empty, "XML file");
     }
 
     // Handle UTF-16 LE/BE encoding (Windows sometimes uses this for XML)
@@ -924,7 +924,7 @@ pub fn validateXml(file: std.fs.File) ValidationResult {
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
             conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
-                return ValidationResult.invalid(.xml, errmsg.failedToAllocate("conversion buffer"));
+                return ValidationResult.invalidCode(.xml, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
             const text_result = getTextContent(content[0..bytes_read], conv_buf);
@@ -999,7 +999,7 @@ pub fn validateXml(file: std.fs.File) ValidationResult {
                     }
                     return ValidationResult.invalid(.xml, error_msg);
                 },
-                error.OutOfMemory => return ValidationResult.invalid(.xml, errmsg.outOfMemory("during parsing")),
+                error.OutOfMemory => return ValidationResult.invalidCode(.xml, .out_of_memory, "during parsing"),
                 error.ReadFailed => return ValidationResult.invalid(.xml, "Read failed during parsing"),
             }
         };
@@ -1021,7 +1021,7 @@ pub fn validateXml(file: std.fs.File) ValidationResult {
 /// Checks for consistent column count, proper quoting, and valid UTF-8.
 pub fn validateCsv(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.csv, errmsg.failedToStat("file"));
+        return ValidationResult.invalidCode(.csv, .failed_to_stat, "file");
     };
 
     if (stat.size == 0) {
@@ -1034,12 +1034,12 @@ pub fn validateCsv(file: std.fs.File) ValidationResult {
     const sample_size: usize = @intCast(@min(stat.size, max_sample_size));
 
     const content = std.heap.page_allocator.alloc(u8, sample_size) catch {
-        return ValidationResult.invalid(.csv, errmsg.failedToAllocate("memory"));
+        return ValidationResult.invalidCode(.csv, .failed_to_allocate, "memory");
     };
     defer std.heap.page_allocator.free(content);
 
     const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalid(.csv, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.csv, .failed_to_read, "file");
     };
 
     if (bytes_read == 0) {
@@ -1056,7 +1056,7 @@ pub fn validateCsv(file: std.fs.File) ValidationResult {
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
             conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
-                return ValidationResult.invalid(.csv, errmsg.failedToAllocate("conversion buffer"));
+                return ValidationResult.invalidCode(.csv, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
             const text_result = getTextContent(content[0..bytes_read], conv_buf);
@@ -1071,7 +1071,7 @@ pub fn validateCsv(file: std.fs.File) ValidationResult {
 
     // Check for UTF-8 validity
     if (!std.unicode.utf8ValidateSlice(data)) {
-        return ValidationResult.invalid(.csv, "Invalid UTF-8 encoding");
+        return ValidationResult.invalidCode(.csv, .invalid_value, "UTF-8 encoding");
     }
 
     // Detect delimiter by looking at first line
@@ -1139,7 +1139,7 @@ pub fn validateCsv(file: std.fs.File) ValidationResult {
     // Basic sanity checks
     if (row_count == 0 and data.len > 0) {
         // File has content but no parseable rows - might be binary
-        return ValidationResult.invalid(.csv, errmsg.noValidXFound("CSV rows"));
+        return ValidationResult.invalidCode(.csv, .no_valid_x_found, "CSV rows");
     }
 
     return ValidationResult.okWithDepth(.csv, .full);
@@ -1199,26 +1199,26 @@ pub fn detectCsvDelimiter(data: []const u8) u8 {
 pub fn validateRtf(file: std.fs.File) ValidationResult {
     var header: [32]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.rtf, errmsg.failedToRead("RTF header"));
+        return ValidationResult.invalidCode(.rtf, .failed_to_read, "RTF header");
     };
 
     if (bytes_read < 6) {
-        return ValidationResult.invalid(.rtf, errmsg.fileTooSmallFor("RTF"));
+        return ValidationResult.invalidCode(.rtf, .file_too_small, "RTF");
     }
 
     // Check RTF signature
     if (!std.mem.eql(u8, header[0..5], "{\\rtf")) {
-        return ValidationResult.invalid(.rtf, errmsg.invalidSignature("RTF"));
+        return ValidationResult.invalidCode(.rtf, .invalid_signature, "RTF");
     }
 
     // Check version character (should be a digit, typically '1')
     if (header[5] < '0' or header[5] > '9') {
-        return ValidationResult.invalid(.rtf, "Invalid RTF version");
+        return ValidationResult.invalidCode(.rtf, .invalid_value, "RTF version");
     }
 
     // Verify file ends with closing brace by scanning end of file
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.rtf, errmsg.failedToGet("file size"));
+        return ValidationResult.invalidCode(.rtf, .failed_to_get, "file size");
     };
 
     if (file_size < 10) {
@@ -1228,12 +1228,12 @@ pub fn validateRtf(file: std.fs.File) ValidationResult {
     // Check last few bytes for closing brace
     const tail_start = if (file_size > 256) file_size - 256 else 0;
     file.seekTo(tail_start) catch {
-        return ValidationResult.invalid(.rtf, errmsg.failedToSeek("to end"));
+        return ValidationResult.invalidCode(.rtf, .failed_to_seek, "to end");
     };
 
     var tail: [256]u8 = undefined;
     const tail_bytes = file.read(&tail) catch {
-        return ValidationResult.invalid(.rtf, errmsg.failedToRead("RTF tail"));
+        return ValidationResult.invalidCode(.rtf, .failed_to_read, "RTF tail");
     };
 
     // Find last non-whitespace character
@@ -1257,12 +1257,12 @@ pub fn validateRtf(file: std.fs.File) ValidationResult {
 /// Validates brace matching and control word structure.
 pub fn validateRtfDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.rtf, errmsg.failedToOpen("RTF file"));
+        return ValidationResult.invalidCode(.rtf, .failed_to_open, "RTF file");
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.rtf, errmsg.failedToGet("file size"));
+        return ValidationResult.invalidCode(.rtf, .failed_to_get, "file size");
     };
 
     if (file_size > 100 * 1024 * 1024) { // 100MB limit
@@ -1275,20 +1275,20 @@ pub fn validateRtfDeep(allocator: Allocator, path: []const u8) ValidationResult 
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalid(.rtf, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.rtf, .failed_to_read, "file");
     };
     if (bytes_read != file_size) {
-        return ValidationResult.invalid(.rtf, errmsg.incomplete("file read"));
+        return ValidationResult.invalidCode(.rtf, .incomplete, "file read");
     }
 
     // Check signature
     if (data.len < 6 or !std.mem.eql(u8, data[0..5], "{\\rtf")) {
-        return ValidationResult.invalid(.rtf, errmsg.invalidSignature("RTF"));
+        return ValidationResult.invalidCode(.rtf, .invalid_signature, "RTF");
     }
 
     // Check version character
     if (data[5] < '0' or data[5] > '9') {
-        return ValidationResult.invalid(.rtf, "Invalid RTF version");
+        return ValidationResult.invalidCode(.rtf, .invalid_value, "RTF version");
     }
 
     // Validate brace matching
@@ -1330,9 +1330,9 @@ pub fn validateRtfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Validate HTML document.
 /// Checks for DOCTYPE declaration or <html> tag, validates basic tag structure.
 pub fn validateHtml(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.html, errmsg.failedToGet("file size"));
-    if (file_size < 7) return ValidationResult.invalid(.html, errmsg.fileTooSmallFor("HTML"));
-    if (file_size > 500 * 1024 * 1024) return ValidationResult.invalid(.html, errmsg.fileTooLargeFor("HTML validation"));
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.html, .failed_to_get, "file size");
+    if (file_size < 7) return ValidationResult.invalidCode(.html, .file_too_small, "HTML");
+    if (file_size > 500 * 1024 * 1024) return ValidationResult.invalidCode(.html, .file_too_large, "HTML validation");
 
     file.seekTo(0) catch return ValidationResult.invalid(.html, "Failed to seek");
 
@@ -1340,7 +1340,7 @@ pub fn validateHtml(file: std.fs.File) ValidationResult {
     var buf: [8192]u8 = undefined;
     const read_size = @min(file_size, buf.len);
     const bytes_read = file.read(buf[0..@intCast(read_size)]) catch
-        return ValidationResult.invalid(.html, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.html, .failed_to_read, "file");
     if (bytes_read < 7) return ValidationResult.invalid(.html, "HTML too short");
 
     const data = buf[0..bytes_read];
@@ -1427,13 +1427,13 @@ pub fn validateHtml(file: std.fs.File) ValidationResult {
 /// Validate KML (Keyhole Markup Language) format.
 /// KML is XML with <kml> root element.
 pub fn validateKml(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.kml, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.kml, .failed_to_seek, "to start");
 
     var header: [1024]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.kml, errmsg.failedToRead("KML header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.kml, .failed_to_read, "KML header");
 
     if (header_read < 5) {
-        return ValidationResult.invalid(.kml, errmsg.fileTooSmallFor("KML"));
+        return ValidationResult.invalidCode(.kml, .file_too_small, "KML");
     }
 
     const content = header[0..header_read];
@@ -1471,12 +1471,12 @@ pub fn validateKml(file: std.fs.File) ValidationResult {
 /// Deep validation for KML files using full XML parsing.
 pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.kml, errmsg.failedToOpen("KML file"));
+        return ValidationResult.invalidCode(.kml, .failed_to_open, "KML file");
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.kml, errmsg.failedToGet("file size"));
+        return ValidationResult.invalidCode(.kml, .failed_to_get, "file size");
     };
 
     if (file_size > 50 * 1024 * 1024) { // 50MB limit
@@ -1489,10 +1489,10 @@ pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult 
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalid(.kml, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.kml, .failed_to_read, "file");
     };
     if (bytes_read != file_size) {
-        return ValidationResult.invalid(.kml, errmsg.incomplete("file read"));
+        return ValidationResult.invalidCode(.kml, .incomplete, "file read");
     }
 
     // Import XML parser
@@ -1512,7 +1512,7 @@ pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     while (true) {
         const node = reader.read() catch {
-            return ValidationResult.invalid(.kml, "Invalid XML structure");
+            return ValidationResult.invalidCode(.kml, .invalid_value, "XML structure");
         };
         if (node == .eof) break;
 
@@ -1526,7 +1526,7 @@ pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     if (element_count == 0) {
-        return ValidationResult.invalid(.kml, errmsg.empty("XML document"));
+        return ValidationResult.invalidCode(.kml, .empty, "XML document");
     }
 
     if (!found_kml) {
@@ -1539,13 +1539,13 @@ pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Validate KMZ (compressed KML) format.
 /// KMZ is a ZIP archive containing doc.kml.
 pub fn validateKmz(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.kmz, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.kmz, .failed_to_seek, "to start");
 
     var header: [4]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.kmz, errmsg.failedToRead("KMZ header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.kmz, .failed_to_read, "KMZ header");
 
     if (header_read < 4) {
-        return ValidationResult.invalid(.kmz, errmsg.fileTooSmallFor("KMZ"));
+        return ValidationResult.invalidCode(.kmz, .file_too_small, "KMZ");
     }
 
     // KMZ is a ZIP file
@@ -1567,7 +1567,7 @@ pub fn validateKmz(file: std.fs.File) ValidationResult {
 /// If UTF-8 validation fails but content looks like text, falls back to Latin-1.
 pub fn validatePlainText(allocator: ?Allocator, file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.plain_text, errmsg.failedToStat("file"));
+        return ValidationResult.invalidCode(.plain_text, .failed_to_stat, "file");
     };
 
     if (stat.size == 0) {
@@ -1595,7 +1595,7 @@ pub fn validatePlainText(allocator: ?Allocator, file: std.fs.File) ValidationRes
     while (true) {
         // Read into buffer after any pending bytes
         const bytes_read = file.read(buffer[pending_count..chunk_size + pending_count]) catch {
-            return ValidationResult.invalid(.plain_text, errmsg.failedToRead("file"));
+            return ValidationResult.invalidCode(.plain_text, .failed_to_read, "file");
         };
 
         if (bytes_read == 0) {
@@ -1603,7 +1603,7 @@ pub fn validatePlainText(allocator: ?Allocator, file: std.fs.File) ValidationRes
             if (pending_count > 0) {
                 // Invalid UTF-8, try Latin-1 fallback
                 file.seekTo(0) catch {
-                    return ValidationResult.invalid(.plain_text, errmsg.failedToSeek("for Latin-1 check"));
+                    return ValidationResult.invalidCode(.plain_text, .failed_to_seek, "for Latin-1 check");
                 };
                 return validatePlainTextLatin1Fallback(file);
             }
@@ -1671,7 +1671,7 @@ pub fn validatePlainText(allocator: ?Allocator, file: std.fs.File) ValidationRes
             if (!utf8_result.isValid()) {
                 // Invalid UTF-8, try Latin-1 fallback
                 file.seekTo(0) catch {
-                    return ValidationResult.invalid(.plain_text, errmsg.failedToSeek("for Latin-1 check"));
+                    return ValidationResult.invalidCode(.plain_text, .failed_to_seek, "for Latin-1 check");
                 };
                 return validatePlainTextLatin1Fallback(file);
             }
@@ -1725,7 +1725,7 @@ pub fn validatePlainTextLatin1Fallback(file: std.fs.File) ValidationResult {
 
     while (true) {
         const bytes_read = file.read(&buffer) catch {
-            return ValidationResult.invalid(.plain_text, errmsg.failedToRead("file for Latin-1 check"));
+            return ValidationResult.invalidCode(.plain_text, .failed_to_read, "file for Latin-1 check");
         };
 
         if (bytes_read == 0) break;
@@ -1735,7 +1735,7 @@ pub fn validatePlainTextLatin1Fallback(file: std.fs.File) ValidationResult {
             if (b == 0x00) {
                 has_null = true;
                 // NULL bytes strongly suggest binary, not text
-                return ValidationResult.invalid(.plain_text, "Invalid UTF-8 encoding");
+                return ValidationResult.invalidCode(.plain_text, .invalid_value, "UTF-8 encoding");
             } else if (b >= 0x80) {
                 has_high_bytes = true;
             }
@@ -1759,7 +1759,7 @@ pub fn validatePlainTextLatin1Fallback(file: std.fs.File) ValidationResult {
 
     // Heuristic: if more than 5% control characters, probably binary
     if (total_bytes > 0 and control_bytes * 100 / total_bytes > 5) {
-        return ValidationResult.invalid(.plain_text, "Invalid UTF-8 encoding");
+        return ValidationResult.invalidCode(.plain_text, .invalid_value, "UTF-8 encoding");
     }
 
     // Looks like Latin-1 text
@@ -1770,7 +1770,7 @@ pub fn validatePlainTextLatin1Fallback(file: std.fs.File) ValidationResult {
 /// Supports both UTF-16 LE (0xFF 0xFE BOM) and UTF-16 BE (0xFE 0xFF BOM).
 pub fn validatePlainTextUtf16(allocator: ?Allocator, file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
-        return ValidationResult.invalid(.plain_text_utf16, errmsg.failedToStat("file"));
+        return ValidationResult.invalidCode(.plain_text_utf16, .failed_to_stat, "file");
     };
 
     if (stat.size == 0) {
@@ -1779,7 +1779,7 @@ pub fn validatePlainTextUtf16(allocator: ?Allocator, file: std.fs.File) Validati
 
     // UTF-16 files should have even number of bytes (after BOM)
     if (stat.size < 2) {
-        return ValidationResult.invalid(.plain_text_utf16, errmsg.fileTooSmallFor("UTF-16"));
+        return ValidationResult.invalidCode(.plain_text_utf16, .file_too_small, "UTF-16");
     }
 
     file.seekTo(0) catch {
@@ -1789,11 +1789,11 @@ pub fn validatePlainTextUtf16(allocator: ?Allocator, file: std.fs.File) Validati
     // Read BOM to determine endianness
     var bom: [2]u8 = undefined;
     const bom_read = file.read(&bom) catch {
-        return ValidationResult.invalid(.plain_text_utf16, errmsg.failedToRead("BOM"));
+        return ValidationResult.invalidCode(.plain_text_utf16, .failed_to_read, "BOM");
     };
 
     if (bom_read < 2) {
-        return ValidationResult.invalid(.plain_text_utf16, errmsg.failedToRead("BOM"));
+        return ValidationResult.invalidCode(.plain_text_utf16, .failed_to_read, "BOM");
     }
 
     const is_little_endian = (bom[0] == 0xFF and bom[1] == 0xFE);
@@ -1826,16 +1826,16 @@ pub fn validatePlainTextUtf16(allocator: ?Allocator, file: std.fs.File) Validati
         }
 
         const bytes_read = file.read(buffer[read_start..chunk_size + read_start]) catch {
-            return ValidationResult.invalid(.plain_text_utf16, errmsg.failedToRead("file"));
+            return ValidationResult.invalidCode(.plain_text_utf16, .failed_to_read, "file");
         };
 
         if (bytes_read == 0) {
             // End of file
             if (pending_byte != null) {
-                return ValidationResult.invalid(.plain_text_utf16, "Invalid UTF-16 (odd byte count)");
+                return ValidationResult.invalidCode(.plain_text_utf16, .invalid_value, "UTF-16 (odd byte count)");
             }
             if (pending_high_surrogate != null) {
-                return ValidationResult.invalid(.plain_text_utf16, "Invalid UTF-16 (unpaired high surrogate at EOF)");
+                return ValidationResult.invalidCode(.plain_text_utf16, .invalid_value, "UTF-16 (unpaired high surrogate at EOF)");
             }
             break;
         }
@@ -1870,14 +1870,14 @@ pub fn validatePlainTextUtf16(allocator: ?Allocator, file: std.fs.File) Validati
                         file_warning_count += 1;
                     }
                 } else {
-                    return ValidationResult.invalid(.plain_text_utf16, "Invalid UTF-16 (missing low surrogate)");
+                    return ValidationResult.invalidCode(.plain_text_utf16, .invalid_value, "UTF-16 (missing low surrogate)");
                 }
             } else if (code_unit >= 0xD800 and code_unit <= 0xDBFF) {
                 // High surrogate - expect low surrogate next
                 pending_high_surrogate = code_unit;
             } else if (code_unit >= 0xDC00 and code_unit <= 0xDFFF) {
                 // Unexpected low surrogate
-                return ValidationResult.invalid(.plain_text_utf16, "Invalid UTF-16 (unexpected low surrogate)");
+                return ValidationResult.invalidCode(.plain_text_utf16, .invalid_value, "UTF-16 (unexpected low surrogate)");
             } else {
                 // BMP codepoint -- check for suspicious characters
                 const codepoint: u21 = @as(u21, code_unit);

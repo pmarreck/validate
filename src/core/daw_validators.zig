@@ -19,24 +19,24 @@ const FLP_SIGNATURE = [_]u8{ 'F', 'L', 'h', 'd' };
 /// Validate FL Studio project file structural header.
 /// Checks FLhd signature, header length, and FLdt data chunk.
 pub fn validateFlp(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.flp, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.flp, .failed_to_seek, "to start");
 
     var header: [22]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.flp, errmsg.failedToRead("FLP header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.flp, .failed_to_read, "FLP header");
 
     if (header_read < 22) {
-        return ValidationResult.invalid(.flp, errmsg.fileTooSmallFor("FL Studio project"));
+        return ValidationResult.invalidCode(.flp, .file_too_small, "FL Studio project");
     }
 
     // Check FLhd signature
     if (!std.mem.eql(u8, header[0..4], &FLP_SIGNATURE)) {
-        return ValidationResult.invalid(.flp, errmsg.invalidSignature("FL Studio"));
+        return ValidationResult.invalidCode(.flp, .invalid_signature, "FL Studio");
     }
 
     // Bytes 4-7: header length (should be 6)
     const header_len = std.mem.readInt(u32, header[4..8], .little);
     if (header_len != 6) {
-        return ValidationResult.invalid(.flp, "Invalid FLP header length");
+        return ValidationResult.invalidCode(.flp, .invalid_value, "FLP header length");
     }
 
     // Bytes 8-9: format version
@@ -45,7 +45,7 @@ pub fn validateFlp(file: std.fs.File) ValidationResult {
 
     // Check for FLdt (data chunk) signature at offset 14
     if (!std.mem.eql(u8, header[14..18], "FLdt")) {
-        return ValidationResult.invalid(.flp, errmsg.missing("FLdt chunk"));
+        return ValidationResult.invalidCode(.flp, .missing, "FLdt chunk");
     }
 
     return ValidationResult.ok(.flp);
@@ -56,7 +56,7 @@ pub fn validateFlpDeep(allocator: Allocator, path: []const u8) ValidationResult 
     _ = allocator;
 
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.flp, errmsg.failedToOpen("FL Studio file"));
+        return ValidationResult.invalidCode(.flp, .failed_to_open, "FL Studio file");
     };
     defer file.close();
 
@@ -68,7 +68,7 @@ pub fn validateFlpDeep(allocator: Allocator, path: []const u8) ValidationResult 
     file.seekTo(0) catch return ValidationResult.invalid(.flp, "Failed to seek");
 
     var header: [22]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.flp, errmsg.failedToRead("header"));
+    _ = file.read(&header) catch return ValidationResult.invalidCode(.flp, .failed_to_read, "header");
 
     // Get FLdt data size
     const data_size = std.mem.readInt(u32, header[18..22], .little);
@@ -142,23 +142,23 @@ pub fn validateFlpDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Validate FL Studio project from in-memory buffer.
 pub fn validateFlpFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 22) {
-        return ValidationResult.invalid(.flp, errmsg.bufferTooSmallFor("FL Studio"));
+        return ValidationResult.invalidCode(.flp, .buffer_too_small, "FL Studio");
     }
 
     // Check FLhd signature
     if (!std.mem.eql(u8, data[0..4], &FLP_SIGNATURE)) {
-        return ValidationResult.invalid(.flp, errmsg.invalidSignature("FL Studio"));
+        return ValidationResult.invalidCode(.flp, .invalid_signature, "FL Studio");
     }
 
     // Check header length
     const header_len = std.mem.readInt(u32, data[4..8], .little);
     if (header_len != 6) {
-        return ValidationResult.invalid(.flp, "Invalid FLP header length");
+        return ValidationResult.invalidCode(.flp, .invalid_value, "FLP header length");
     }
 
     // Check FLdt signature
     if (!std.mem.eql(u8, data[14..18], "FLdt")) {
-        return ValidationResult.invalid(.flp, errmsg.missing("FLdt chunk"));
+        return ValidationResult.invalidCode(.flp, .missing, "FLdt chunk");
     }
 
     return ValidationResult.ok(.flp);
@@ -171,21 +171,21 @@ pub fn validateAls(file: std.fs.File) ValidationResult {
     // Check for gzip magic
     var header: [10]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.als, errmsg.failedToRead("ALS header"));
+        return ValidationResult.invalidCode(.als, .failed_to_read, "ALS header");
     };
 
     if (bytes_read < 10) {
-        return ValidationResult.invalid(.als, errmsg.fileTooSmallFor("ALS format"));
+        return ValidationResult.invalidCode(.als, .file_too_small, "ALS format");
     }
 
     // Check gzip magic (0x1f 0x8b)
     if (header[0] != 0x1f or header[1] != 0x8b) {
-        return ValidationResult.invalid(.als, errmsg.invalidSignatureNot("ALS", "gzip"));
+        return ValidationResult.invalidCodeMsg(.als, .invalid_signature_not, "ALS", errmsg.invalidSignatureNot("ALS", "gzip"));
     }
 
     // Check compression method (should be 8 = deflate)
     if (header[2] != 8) {
-        return ValidationResult.invalid(.als, "Invalid compression method");
+        return ValidationResult.invalidCode(.als, .invalid_value, "compression method");
     }
 
     // For full validation, we'd need to decompress and check for <Ableton> root element.
@@ -215,21 +215,21 @@ pub fn validateAlsDeep(allocator: Allocator, path: []const u8) ValidationResult 
 pub fn validateRpp(file: std.fs.File) ValidationResult {
     var header: [64]u8 = undefined;
     const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalid(.rpp, errmsg.failedToRead("RPP header"));
+        return ValidationResult.invalidCode(.rpp, .failed_to_read, "RPP header");
     };
 
     if (bytes_read < 16) {
-        return ValidationResult.invalid(.rpp, errmsg.fileTooSmallFor("RPP format"));
+        return ValidationResult.invalidCode(.rpp, .file_too_small, "RPP format");
     }
 
     // Check for <REAPER_PROJECT signature
     if (!std.mem.startsWith(u8, &header, "<REAPER_PROJECT")) {
-        return ValidationResult.invalid(.rpp, errmsg.invalidSignature("RPP"));
+        return ValidationResult.invalidCode(.rpp, .invalid_signature, "RPP");
     }
 
     // Verify it's UTF-8 by checking for valid UTF-8 sequences in header
     if (!text_format_validators.validateUtf8(header[0..bytes_read]).isValid()) {
-        return ValidationResult.invalid(.rpp, "Invalid UTF-8 encoding");
+        return ValidationResult.invalidCode(.rpp, .invalid_value, "UTF-8 encoding");
     }
 
     // RPP files are plain text - parsing is validation (corruption would break parse).
@@ -240,12 +240,12 @@ pub fn validateRpp(file: std.fs.File) ValidationResult {
 /// Deep validate REAPER project - verifies bracket structure and full UTF-8 validity.
 pub fn validateRppDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalid(.rpp, errmsg.failedToOpen("RPP file"));
+        return ValidationResult.invalidCode(.rpp, .failed_to_open, "RPP file");
     };
     defer file.close();
 
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalid(.rpp, errmsg.failedToGet("file size"));
+        return ValidationResult.invalidCode(.rpp, .failed_to_get, "file size");
     };
 
     if (file_size > 100 * 1024 * 1024) { // 100MB limit
@@ -258,20 +258,20 @@ pub fn validateRppDeep(allocator: Allocator, path: []const u8) ValidationResult 
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalid(.rpp, errmsg.failedToRead("file"));
+        return ValidationResult.invalidCode(.rpp, .failed_to_read, "file");
     };
     if (bytes_read != file_size) {
-        return ValidationResult.invalid(.rpp, errmsg.incomplete("file read"));
+        return ValidationResult.invalidCode(.rpp, .incomplete, "file read");
     }
 
     // Validate UTF-8
     if (!text_format_validators.validateUtf8(data).isValid()) {
-        return ValidationResult.invalid(.rpp, "Invalid UTF-8 encoding");
+        return ValidationResult.invalidCode(.rpp, .invalid_value, "UTF-8 encoding");
     }
 
     // Check for <REAPER_PROJECT signature
     if (!std.mem.startsWith(u8, data, "<REAPER_PROJECT")) {
-        return ValidationResult.invalid(.rpp, errmsg.invalidSignature("RPP"));
+        return ValidationResult.invalidCode(.rpp, .invalid_signature, "RPP");
     }
 
     // Parse bracket structure
@@ -316,16 +316,16 @@ pub fn validateRppDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Bitwig Studio project files use a proprietary binary format.
 /// This validator performs basic structural checks since the format is not publicly documented.
 pub fn validateBwproject(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.bwproject, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.bwproject, .failed_to_seek, "to start");
 
-    const stat = file.stat() catch return ValidationResult.invalid(.bwproject, errmsg.failedToStat("file"));
+    const stat = file.stat() catch return ValidationResult.invalidCode(.bwproject, .failed_to_stat, "file");
 
     if (stat.size < 100) {
-        return ValidationResult.invalid(.bwproject, errmsg.fileTooSmallFor("Bitwig project"));
+        return ValidationResult.invalidCode(.bwproject, .file_too_small, "Bitwig project");
     }
 
     var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.bwproject, errmsg.failedToRead("header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.bwproject, .failed_to_read, "header");
 
     if (header_read < 4) {
         return ValidationResult.invalid(.bwproject, "File too small to identify");
@@ -343,17 +343,17 @@ pub fn validateBwproject(file: std.fs.File) ValidationResult {
 
 /// Cubase project files (.cpr) use a RIFF-based binary format.
 pub fn validateCubase(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.cpr, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.cpr, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.cpr, errmsg.failedToRead("header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.cpr, .failed_to_read, "header");
 
     if (header_read < 12) {
-        return ValidationResult.invalid(.cpr, errmsg.fileTooSmallFor("Cubase project"));
+        return ValidationResult.invalidCode(.cpr, .file_too_small, "Cubase project");
     }
 
     if (!std.mem.eql(u8, header[0..4], "RIFF")) {
-        return ValidationResult.invalid(.cpr, errmsg.invalidSignatureNot("Cubase", "RIFF"));
+        return ValidationResult.invalidCodeMsg(.cpr, .invalid_signature_not, "Cubase", errmsg.invalidSignatureNot("Cubase", "RIFF"));
     }
 
     return ValidationResult.ok(.cpr);
@@ -363,16 +363,16 @@ pub fn validateCubase(file: std.fs.File) ValidationResult {
 
 /// Pro Tools session files (.ptx) use a proprietary binary format.
 pub fn validateProTools(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.ptx, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.ptx, .failed_to_seek, "to start");
 
-    const stat = file.stat() catch return ValidationResult.invalid(.ptx, errmsg.failedToStat("file"));
+    const stat = file.stat() catch return ValidationResult.invalidCode(.ptx, .failed_to_stat, "file");
 
     if (stat.size < 256) {
-        return ValidationResult.invalid(.ptx, errmsg.fileTooSmallFor("Pro Tools session"));
+        return ValidationResult.invalidCode(.ptx, .file_too_small, "Pro Tools session");
     }
 
     var header: [16]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.ptx, errmsg.failedToRead("header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.ptx, .failed_to_read, "header");
 
     if (header_read < 8) {
         return ValidationResult.invalid(.ptx, "File too small to identify");
@@ -389,16 +389,16 @@ pub fn validateProTools(file: std.fs.File) ValidationResult {
 
 /// GarageBand project files (.band) are macOS packages/bundles.
 pub fn validateGarageBand(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.band, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.band, .failed_to_seek, "to start");
 
-    const stat = file.stat() catch return ValidationResult.invalid(.band, errmsg.failedToStat("file"));
+    const stat = file.stat() catch return ValidationResult.invalidCode(.band, .failed_to_stat, "file");
 
     if (stat.size < 64) {
-        return ValidationResult.invalid(.band, errmsg.fileTooSmallFor("GarageBand project"));
+        return ValidationResult.invalidCode(.band, .file_too_small, "GarageBand project");
     }
 
     var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.band, errmsg.failedToRead("header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.band, .failed_to_read, "header");
 
     if (header_read < 4) {
         return ValidationResult.invalid(.band, "File too small to identify");
@@ -411,16 +411,16 @@ pub fn validateGarageBand(file: std.fs.File) ValidationResult {
 
 /// Reason project files (.reason) use a proprietary format.
 pub fn validateReason(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalid(.reason, errmsg.failedToSeek("to start"));
+    file.seekTo(0) catch return ValidationResult.invalidCode(.reason, .failed_to_seek, "to start");
 
-    const stat = file.stat() catch return ValidationResult.invalid(.reason, errmsg.failedToStat("file"));
+    const stat = file.stat() catch return ValidationResult.invalidCode(.reason, .failed_to_stat, "file");
 
     if (stat.size < 128) {
-        return ValidationResult.invalid(.reason, errmsg.fileTooSmallFor("Reason project"));
+        return ValidationResult.invalidCode(.reason, .file_too_small, "Reason project");
     }
 
     var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalid(.reason, errmsg.failedToRead("header"));
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.reason, .failed_to_read, "header");
 
     if (header_read < 4) {
         return ValidationResult.invalid(.reason, "File too small to identify");

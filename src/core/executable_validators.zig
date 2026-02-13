@@ -12,31 +12,31 @@ const FileFormat = format_validation.FileFormat;
 /// Validate ELF (Executable and Linkable Format) binary.
 /// Checks magic, class, endianness, version, type, and header sizes.
 pub fn validateElf(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.elf, errmsg.failedToGet("file size"));
-    if (file_size < 16) return ValidationResult.invalid(.elf, errmsg.fileTooSmallFor("ELF header"));
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.elf, .failed_to_get, "file size");
+    if (file_size < 16) return ValidationResult.invalidCode(.elf, .file_too_small, "ELF header");
 
     file.seekTo(0) catch return ValidationResult.invalid(.elf, "Failed to seek");
     var header: [64]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.elf, errmsg.failedToRead("ELF header"));
+    const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.elf, .failed_to_read, "ELF header");
     if (bytes_read < 16) return ValidationResult.invalid(.elf, "ELF header too short");
 
     // Magic already verified by format detection, but double-check
     if (!std.mem.eql(u8, header[0..4], &[_]u8{ 0x7F, 0x45, 0x4C, 0x46 }))
-        return ValidationResult.invalid(.elf, "Invalid ELF magic");
+        return ValidationResult.invalidCode(.elf, .invalid_value, "ELF magic");
 
     // EI_CLASS: 1 = 32-bit, 2 = 64-bit
     const ei_class = header[4];
     if (ei_class != 1 and ei_class != 2)
-        return ValidationResult.invalid(.elf, "Invalid ELF class (must be 32 or 64 bit)");
+        return ValidationResult.invalidCode(.elf, .invalid_value, "ELF class (must be 32 or 64 bit)");
 
     // EI_DATA: 1 = little-endian, 2 = big-endian
     const ei_data = header[5];
     if (ei_data != 1 and ei_data != 2)
-        return ValidationResult.invalid(.elf, "Invalid ELF data encoding");
+        return ValidationResult.invalidCode(.elf, .invalid_value, "ELF data encoding");
 
     // EI_VERSION: must be 1 (current)
     if (header[6] != 1)
-        return ValidationResult.invalid(.elf, "Invalid ELF version");
+        return ValidationResult.invalidCode(.elf, .invalid_value, "ELF version");
 
     // Minimum header size: 52 for ELF32, 64 for ELF64
     const min_header_size: usize = if (ei_class == 1) 52 else 64;
@@ -48,7 +48,7 @@ pub fn validateElf(file: std.fs.File) ValidationResult {
     const e_type = std.mem.readInt(u16, header[16..18], endian);
     // Valid types: 0=NONE, 1=REL, 2=EXEC, 3=DYN, 4=CORE, 0xFE00-0xFFFF=OS/proc specific
     if (e_type > 4 and e_type < 0xFE00)
-        return ValidationResult.invalid(.elf, "Invalid ELF type");
+        return ValidationResult.invalidCode(.elf, .invalid_value, "ELF type");
 
     // Parse e_machine (2 bytes at offset 18) — just verify it's non-zero for known types
     const e_machine = std.mem.readInt(u16, header[18..20], endian);
@@ -58,19 +58,19 @@ pub fn validateElf(file: std.fs.File) ValidationResult {
     // Parse e_version (4 bytes at offset 20)
     const e_version = std.mem.readInt(u32, header[20..24], endian);
     if (e_version != 1)
-        return ValidationResult.invalid(.elf, "Invalid ELF file version");
+        return ValidationResult.invalidCode(.elf, .invalid_value, "ELF file version");
 
     // Validate section header and program header sizes are reasonable
     if (ei_class == 1) {
         // ELF32: e_ehsize at 40, e_phentsize at 42, e_shentsize at 46
         const e_ehsize = std.mem.readInt(u16, header[40..42], endian);
         if (e_ehsize != 52)
-            return ValidationResult.invalid(.elf, "Invalid ELF32 header size");
+            return ValidationResult.invalidCode(.elf, .invalid_value, "ELF32 header size");
     } else {
         // ELF64: e_ehsize at 52, e_phentsize at 54, e_shentsize at 58
         const e_ehsize = std.mem.readInt(u16, header[52..54], endian);
         if (e_ehsize != 64)
-            return ValidationResult.invalid(.elf, "Invalid ELF64 header size");
+            return ValidationResult.invalidCode(.elf, .invalid_value, "ELF64 header size");
     }
 
     return ValidationResult.okWithDepth(.elf, .full);
@@ -81,12 +81,12 @@ pub fn validateElf(file: std.fs.File) ValidationResult {
 /// Validate Mach-O binary (single-architecture).
 /// Checks magic, CPU type, file type, and load command structure.
 pub fn validateMacho(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.macho, errmsg.failedToGet("file size"));
-    if (file_size < 28) return ValidationResult.invalid(.macho, errmsg.fileTooSmallFor("Mach-O header"));
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.macho, .failed_to_get, "file size");
+    if (file_size < 28) return ValidationResult.invalidCode(.macho, .file_too_small, "Mach-O header");
 
     file.seekTo(0) catch return ValidationResult.invalid(.macho, "Failed to seek");
     var header: [32]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.macho, errmsg.failedToRead("header"));
+    const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.macho, .failed_to_read, "header");
     if (bytes_read < 28) return ValidationResult.invalid(.macho, "Mach-O header too short");
 
     // Determine 32-bit vs 64-bit and endianness from magic
@@ -106,13 +106,13 @@ pub fn validateMacho(file: std.fs.File) ValidationResult {
         cputype == 0x0100000C or // arm64
         cputype == 18); // ppc
     if (!valid_cpu)
-        return ValidationResult.invalid(.macho, "Invalid Mach-O CPU type");
+        return ValidationResult.invalidCode(.macho, .invalid_value, "Mach-O CPU type");
 
     // filetype (4 bytes at offset 12): 1=OBJECT, 2=EXECUTE, 3=FVMLIB, 4=CORE,
     // 5=PRELOAD, 6=DYLIB, 7=DYLINKER, 8=BUNDLE, 9=DYLIB_STUB, 10=DSYM, 11=KEXT_BUNDLE, 12=FILESET
     const filetype = std.mem.readInt(u32, header[12..16], endian);
     if (filetype == 0 or filetype > 12)
-        return ValidationResult.invalid(.macho, "Invalid Mach-O file type");
+        return ValidationResult.invalidCode(.macho, .invalid_value, "Mach-O file type");
 
     // ncmds (4 bytes at offset 16) and sizeofcmds (4 bytes at offset 20)
     const ncmds = std.mem.readInt(u32, header[16..20], endian);
@@ -132,17 +132,17 @@ pub fn validateMacho(file: std.fs.File) ValidationResult {
 /// Validate Mach-O Universal/Fat binary (multi-architecture).
 /// Checks nfat_arch, validates each architecture entry's bounds and embedded Mach-O magic.
 pub fn validateMachoFat(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.macho_fat, errmsg.failedToGet("file size"));
-    if (file_size < 8) return ValidationResult.invalid(.macho_fat, errmsg.fileTooSmallFor("fat header"));
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.macho_fat, .failed_to_get, "file size");
+    if (file_size < 8) return ValidationResult.invalidCode(.macho_fat, .file_too_small, "fat header");
 
     file.seekTo(0) catch return ValidationResult.invalid(.macho_fat, "Failed to seek");
     var header: [8]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalid(.macho_fat, errmsg.failedToRead("header"));
+    _ = file.read(&header) catch return ValidationResult.invalidCode(.macho_fat, .failed_to_read, "header");
 
     // nfat_arch at offset 4, always big-endian
     const nfat_arch = std.mem.readInt(u32, header[4..8], .big);
     if (nfat_arch == 0 or nfat_arch > 30)
-        return ValidationResult.invalid(.macho_fat, "Invalid number of architectures");
+        return ValidationResult.invalidCode(.macho_fat, .invalid_value, "number of architectures");
 
     // Each fat_arch entry is 20 bytes, starting at offset 8
     const entries_end: u64 = 8 + @as(u64, nfat_arch) * 20;
@@ -188,7 +188,7 @@ pub fn validateMachoFat(file: std.fs.File) ValidationResult {
     }
 
     if (valid_archs == 0)
-        return ValidationResult.invalid(.macho_fat, errmsg.noValidXFound("Mach-O architectures"));
+        return ValidationResult.invalidCode(.macho_fat, .no_valid_x_found, "Mach-O architectures");
 
     return ValidationResult.okWithDepth(.macho_fat, .full);
 }
@@ -198,12 +198,12 @@ pub fn validateMachoFat(file: std.fs.File) ValidationResult {
 /// Validate COFF object file (.obj).
 /// Checks machine type, section count, and structural consistency.
 pub fn validateCoff(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.coff, errmsg.failedToGet("file size"));
-    if (file_size < 20) return ValidationResult.invalid(.coff, errmsg.fileTooSmallFor("COFF header"));
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.coff, .failed_to_get, "file size");
+    if (file_size < 20) return ValidationResult.invalidCode(.coff, .file_too_small, "COFF header");
 
     file.seekTo(0) catch return ValidationResult.invalid(.coff, "Failed to seek");
     var header: [20]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.coff, errmsg.failedToRead("header"));
+    const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.coff, .failed_to_read, "header");
     if (bytes_read < 20) return ValidationResult.invalid(.coff, "COFF header too short");
 
     // Machine type (2 bytes at offset 0, little-endian)
@@ -216,12 +216,12 @@ pub fn validateCoff(file: std.fs.File) ValidationResult {
         machine == 0xAA64 or // arm64
         machine == 0x0200); // ia64
     if (!valid_machine)
-        return ValidationResult.invalid(.coff, "Invalid COFF machine type");
+        return ValidationResult.invalidCode(.coff, .invalid_value, "COFF machine type");
 
     // NumberOfSections (2 bytes at offset 2)
     const num_sections = std.mem.readInt(u16, header[2..4], .little);
     if (num_sections == 0 or num_sections > 96)
-        return ValidationResult.invalid(.coff, "Invalid COFF section count");
+        return ValidationResult.invalidCode(.coff, .invalid_value, "COFF section count");
 
     // SizeOfOptionalHeader (2 bytes at offset 16)
     const opt_header_size = std.mem.readInt(u16, header[16..18], .little);
@@ -248,22 +248,22 @@ pub fn validateCoff(file: std.fs.File) ValidationResult {
 /// Validate WebAssembly binary module.
 /// Checks magic, version, and validates section ordering and sizes.
 pub fn validateWasm(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.wasm, errmsg.failedToGet("file size"));
-    if (file_size < 8) return ValidationResult.invalid(.wasm, errmsg.fileTooSmallFor("Wasm module"));
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.wasm, .failed_to_get, "file size");
+    if (file_size < 8) return ValidationResult.invalidCode(.wasm, .file_too_small, "Wasm module");
 
     file.seekTo(0) catch return ValidationResult.invalid(.wasm, "Failed to seek");
     var header: [8]u8 = undefined;
-    const bytes_read = file.read(&header) catch return ValidationResult.invalid(.wasm, errmsg.failedToRead("header"));
+    const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.wasm, .failed_to_read, "header");
     if (bytes_read < 8) return ValidationResult.invalid(.wasm, "Wasm header too short");
 
     // Magic: \0asm
     if (!std.mem.eql(u8, header[0..4], &[_]u8{ 0x00, 0x61, 0x73, 0x6D }))
-        return ValidationResult.invalid(.wasm, "Invalid Wasm magic");
+        return ValidationResult.invalidCode(.wasm, .invalid_value, "Wasm magic");
 
     // Version: must be 1 (little-endian u32)
     const version = std.mem.readInt(u32, header[4..8], .little);
     if (version != 1)
-        return ValidationResult.invalid(.wasm, errmsg.unsupported("Wasm version"));
+        return ValidationResult.invalidCode(.wasm, .unsupported, "Wasm version");
 
     // Validate sections: each section has a 1-byte ID and LEB128 size
     var offset: u64 = 8;
@@ -281,7 +281,7 @@ pub fn validateWasm(file: std.fs.File) ValidationResult {
         // Section IDs: 0=custom, 1=type, 2=import, 3=function, 4=table, 5=memory,
         // 6=global, 7=export, 8=start, 9=element, 10=code, 11=data, 12=data_count
         if (section_id > 12)
-            return ValidationResult.invalid(.wasm, "Invalid Wasm section ID");
+            return ValidationResult.invalidCode(.wasm, .invalid_value, "Wasm section ID");
 
         // Non-custom sections must be in order
         if (section_id != 0) {
@@ -299,11 +299,11 @@ pub fn validateWasm(file: std.fs.File) ValidationResult {
             size |= @as(u64, b & 0x7F) << shift_amount;
             leb_bytes += 1;
             if (b & 0x80 == 0) break;
-            if (leb_bytes >= 5) return ValidationResult.invalid(.wasm, "Invalid Wasm section size encoding");
+            if (leb_bytes >= 5) return ValidationResult.invalidCode(.wasm, .invalid_value, "Wasm section size encoding");
         }
 
         if (leb_bytes == 0)
-            return ValidationResult.invalid(.wasm, errmsg.missing("Wasm section size"));
+            return ValidationResult.invalidCode(.wasm, .missing, "Wasm section size");
 
         // Verify section fits within file
         const section_end = offset + 1 + leb_bytes + size;
@@ -315,7 +315,7 @@ pub fn validateWasm(file: std.fs.File) ValidationResult {
         section_count += 1;
 
         if (section_count > 10000)
-            return ValidationResult.invalid(.wasm, errmsg.tooMany("Wasm sections"));
+            return ValidationResult.invalidCode(.wasm, .too_many, "Wasm sections");
     }
 
     if (section_count == 0)
@@ -329,16 +329,16 @@ pub fn validateWasm(file: std.fs.File) ValidationResult {
 /// Validate Unix ar archive format (.a static libraries, .deb packages).
 /// Checks global header and validates member entry headers.
 pub fn validateAr(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalid(.ar, errmsg.failedToGet("file size"));
-    if (file_size < 8) return ValidationResult.invalid(.ar, errmsg.fileTooSmallFor("ar archive"));
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.ar, .failed_to_get, "file size");
+    if (file_size < 8) return ValidationResult.invalidCode(.ar, .file_too_small, "ar archive");
 
     file.seekTo(0) catch return ValidationResult.invalid(.ar, "Failed to seek");
     var magic: [8]u8 = undefined;
-    const bytes_read = file.read(&magic) catch return ValidationResult.invalid(.ar, errmsg.failedToRead("header"));
+    const bytes_read = file.read(&magic) catch return ValidationResult.invalidCode(.ar, .failed_to_read, "header");
     if (bytes_read < 8) return ValidationResult.invalid(.ar, "ar header too short");
 
     if (!std.mem.eql(u8, &magic, "!<arch>\n"))
-        return ValidationResult.invalid(.ar, "Invalid ar magic");
+        return ValidationResult.invalidCode(.ar, .invalid_value, "ar magic");
 
     // Validate member headers
     var offset: u64 = 8;
@@ -352,7 +352,7 @@ pub fn validateAr(file: std.fs.File) ValidationResult {
 
         // Each member header ends with 0x60 0x0A ("`\n")
         if (member_header[58] != 0x60 or member_header[59] != 0x0A)
-            return ValidationResult.invalid(.ar, "Invalid ar member header terminator");
+            return ValidationResult.invalidCode(.ar, .invalid_value, "ar member header terminator");
 
         // Parse file size from bytes 48-57 (ASCII decimal, space-padded)
         var size_end: usize = 58;
@@ -362,7 +362,7 @@ pub fn validateAr(file: std.fs.File) ValidationResult {
 
         const size_str = member_header[48..size_end];
         const member_size = std.fmt.parseInt(u64, size_str, 10) catch
-            return ValidationResult.invalid(.ar, "Invalid ar member size");
+            return ValidationResult.invalidCode(.ar, .invalid_value, "ar member size");
 
         // Advance to next member (size is padded to even boundary)
         offset += 60 + member_size;
@@ -370,7 +370,7 @@ pub fn validateAr(file: std.fs.File) ValidationResult {
 
         member_count += 1;
         if (member_count > 100000)
-            return ValidationResult.invalid(.ar, errmsg.tooMany("ar members"));
+            return ValidationResult.invalidCode(.ar, .too_many, "ar members");
     }
 
     if (member_count == 0 and file_size > 8)

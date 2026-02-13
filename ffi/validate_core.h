@@ -14,6 +14,8 @@
  *   valid         - Boolean: validation passed
  *   unknown       - Boolean: format not recognized
  *   err           - Error message (empty if none)
+ *   err_code      - Symbolic error code (e.g., "failed_to_read", empty if none)
+ *   err_detail    - Technical detail string (e.g., "PNG signature", empty if none)
  *   warn          - Warning message (empty if none)
  *   depth_u8      - Validation depth (0=structural, 1=full)
  *   malform_u64   - Malformation bitset (see malformation constants)
@@ -50,7 +52,7 @@ extern "C" {
 
 /* ABI version */
 #define VALIDATE_ABI_VERSION_MAJOR 2
-#define VALIDATE_ABI_VERSION_MINOR 0
+#define VALIDATE_ABI_VERSION_MINOR 1
 
 /* Error codes (returned by validate_batch) */
 typedef enum {
@@ -86,6 +88,39 @@ typedef enum {
     VALIDATE_MALFORM_PDF_LZW_DECODE_FAILED = 20,
     VALIDATE_MALFORM_PDF_JBIG2_DECODE_FAILED = 21,
 } validate_malform_t;
+
+/* Symbolic error codes (for err_code field, maps to error_messages.zig templates) */
+typedef enum {
+    VALIDATE_ERR_CODE_FAILED_TO_READ = 0,
+    VALIDATE_ERR_CODE_FILE_TOO_SMALL = 1,
+    VALIDATE_ERR_CODE_INVALID_SIGNATURE = 2,
+    VALIDATE_ERR_CODE_MISSING = 3,
+    VALIDATE_ERR_CODE_FAILED_TO_SEEK = 4,
+    VALIDATE_ERR_CODE_TRUNCATED = 5,
+    VALIDATE_ERR_CODE_INVALID_MAGIC = 6,
+    VALIDATE_ERR_CODE_INVALID_MAGIC_NUMBER = 7,
+    VALIDATE_ERR_CODE_FAILED_TO_OPEN = 8,
+    VALIDATE_ERR_CODE_FAILED_TO_SKIP = 9,
+    VALIDATE_ERR_CODE_TOO_MANY = 10,
+    VALIDATE_ERR_CODE_UNSUPPORTED = 11,
+    VALIDATE_ERR_CODE_INCOMPLETE = 12,
+    VALIDATE_ERR_CODE_BUFFER_TOO_SMALL = 13,
+    VALIDATE_ERR_CODE_NO_VALID_X_FOUND = 14,
+    VALIDATE_ERR_CODE_UNKNOWN_ELEMENT = 15,
+    VALIDATE_ERR_CODE_EMPTY = 16,
+    VALIDATE_ERR_CODE_FILE_TOO_LARGE = 17,
+    VALIDATE_ERR_CODE_FAILED_TO_ALLOCATE = 18,
+    VALIDATE_ERR_CODE_FAILED_TO_STAT = 19,
+    VALIDATE_ERR_CODE_OUT_OF_MEMORY = 20,
+    VALIDATE_ERR_CODE_FAILED_TO_GET = 21,
+    VALIDATE_ERR_CODE_INVALID_SIGNATURE_EXPECTED = 22,
+    VALIDATE_ERR_CODE_INVALID_SIGNATURE_NOT = 23,
+    VALIDATE_ERR_CODE_DECOMPRESSION_FAILED = 24,
+    VALIDATE_ERR_CODE_INVALID_VALUE = 25,
+    VALIDATE_ERR_CODE_CHECKSUM_MISMATCH = 26,
+    VALIDATE_ERR_CODE_EXCEEDS_BOUNDS = 27,
+    VALIDATE_ERR_CODE_OTHER = 255,
+} validate_err_code_t;
 
 /* String IDs for validate_tr() (i18n) */
 typedef enum {
