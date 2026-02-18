@@ -24,3 +24,5 @@ deps/*_source/
 # Test-generated ffmpeg symlinks
 scripts/ffmpeg-bin/
 result/
+.serena
+inbox
