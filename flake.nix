@@ -12,7 +12,7 @@
 			forAllSystems = nixpkgs.lib.genAttrs allSystems;
 
 			# Build systems (where we run builds - Linux for CI, Darwin for local)
-			buildSystems = [ "x86_64-linux" "aarch64-darwin" "x86_64-darwin" ];
+			buildSystems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
 			forBuildSystems = nixpkgs.lib.genAttrs buildSystems;
 
 			# Zig target triples for cross-compilation

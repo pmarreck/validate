@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const fv = @import("../format_validation.zig");
 pub const Strings = @import("strings.zig").Strings;
 pub const cli_aliases = @import("cli_aliases.zig");
@@ -286,6 +287,9 @@ fn toSentinel(s: []const u8) [:0]const u8 {
 /// Detect locale from environment variables ($LANG, $LC_MESSAGES).
 /// Returns the detected locale, or `.en` as fallback.
 pub fn detectFromEnv() Locale {
+    if (comptime builtin.os.tag == .windows) {
+        return .en;
+    }
     // LC_MESSAGES takes priority over LANG
     const sources = [_][]const u8{ "LC_MESSAGES", "LANG" };
     for (sources) |name| {
@@ -544,6 +548,9 @@ fn getEnvAliases(comptime env_var: EnvVar) []const [:0]const u8 {
 /// Look up an environment variable by checking all locale aliases via getenv().
 /// Returns the first non-empty match, or null.
 pub fn getEnvLocalized(comptime env_var: EnvVar) ?[*:0]const u8 {
+    if (comptime builtin.os.tag == .windows) {
+        return null;
+    }
     const aliases = comptime getEnvAliases(env_var);
     inline for (aliases) |alias| {
         if (std.posix.getenv(alias)) |val| {

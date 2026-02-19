@@ -1,5 +1,8 @@
 # validate
 
+[![CI](https://github.com/pmarreck/validate/actions/workflows/ci.yml/badge.svg?branch=yolo)](https://github.com/pmarreck/validate/actions/workflows/ci.yml)
+[![built with garnix](https://img.shields.io/endpoint.svg?url=https%3A%2F%2Fgarnix.io%2Fapi%2Fbadges%2Fpmarreck%2Fvalidate%3Fbranch%3Dyolo)](https://garnix.io)
+
 Data silently rots.
 
 - Facebook reports **hundreds of CPUs** showing silent data corruption across **hundreds of thousands of machines** over 18+ months. [Silent Data Corruptions at Scale](Silent%20Data%20Corruption%20at%20Scale.md)
