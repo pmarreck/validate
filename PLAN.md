@@ -4,6 +4,19 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ## Active
 
+### Strict Format Coverage Closure (Entropy Shield dependency)
+- [x] Add deterministic strict coverage harness (`scripts/strict_format_coverage`) using `hasValidator()` as source-of-truth (2026-02-18 22:50 EST)
+- [x] Generate strict baseline report artifacts (`inbox/strict_format_coverage.tsv`, `inbox/strict_format_coverage.md`) (2026-02-18 22:50 EST)
+- [ ] Add/curate missing ground-truth samples for 57 missing supported formats
+- [x] Add new ground-truth samples that validate cleanly for `av1`, `doc`, `exr`, `mpeg_es`, `macho`, `macho_fat`, `fcpxml`, `prproj`, `type1` (2026-02-20 EST)
+- [x] Resolve invalid baseline sample in strict audit (`rar` now validates and rejects 5/5 seeded corruptions) (2026-02-20 EST)
+- [x] Add `corruption_opacity` map + strict harness categorization (`opaque` / `mixed` allowable statuses) (2026-02-20 EST)
+- [x] Improve transparent-format corruption discrimination (PAR2 packet MD5 validation + ZIP-subformat deep routing + opacity review reduced strict hard-fails to 0) (2026-02-20 EST)
+- [x] Add pure-Zig BinHex/HQX validation (alphabet decode + RLE + header/data/resource CRC16), fixture coverage (`ground_truth_examples/hqx/sample.hqx`), and strict-harness protected prefix for non-magic corruption mutation (2026-02-20 EST)
+- [x] Expand i18n locale matrix to 30 locales by adding bootstrap locales (`bn`, `hi`, `pa`, `ps`, `sw`, `ta`, `th`, `ur`) with locale parsing + alias-map integration + compile-time coverage checks (2026-02-20 EST)
+- [x] Implement core UI translations (status/summary/progress/help + localized `--lang` alias) for new locales `bn`, `hi`, `pa`, `ps`, `sw`, `ta`, `th`, `ur`; add i18n tests for RTL coverage and localized labels (2026-02-20 EST)
+- [x] Carry new locales `bn`, `hi`, `pa`, `ps`, `sw`, `ta`, `th`, `ur` through remaining i18n layers: full `format_descriptions` + `error_translations` + `warning_translations` (machine-assisted), with regression tests for translated format/error/warning output (2026-02-20 EST)
+
 ### HIGH PRIORITY: Hexagonal Architecture FFI Refactor
 - [x] Add validate(), validate_batch(), free_result(), get_default_threads() to C FFI (2026-01-30)
 - [x] Verify new FFI functions compile and basic tests pass (2026-01-30)

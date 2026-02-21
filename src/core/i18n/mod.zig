@@ -13,22 +13,30 @@ pub const en = @import("en.zig");
 pub const de = @import("de.zig");
 pub const ar = @import("ar.zig");
 pub const az = @import("az.zig");
+pub const bn = @import("bn.zig");
 pub const el = @import("el.zig");
 pub const es = @import("es.zig");
 pub const fa = @import("fa.zig");
 pub const fr = @import("fr.zig");
 pub const he = @import("he.zig");
+pub const hi = @import("hi.zig");
 pub const hu = @import("hu.zig");
 pub const it = @import("it.zig");
 pub const ja = @import("ja.zig");
 pub const km = @import("km.zig");
 pub const ko = @import("ko.zig");
+pub const pa = @import("pa.zig");
 pub const pl = @import("pl.zig");
+pub const ps = @import("ps.zig");
 pub const pt_br = @import("pt_br.zig");
 pub const ro = @import("ro.zig");
 pub const ru = @import("ru.zig");
+pub const sw = @import("sw.zig");
+pub const ta = @import("ta.zig");
+pub const th = @import("th.zig");
 pub const tr_locale = @import("tr.zig");
 pub const uk = @import("uk.zig");
+pub const ur = @import("ur.zig");
 pub const vi = @import("vi.zig");
 pub const zh_hans = @import("zh_hans.zig");
 
@@ -57,28 +65,36 @@ pub const Locale = enum {
     en,
     ar,
     az,
+    bn,
     de,
     el,
     es,
     fa,
     fr,
     he,
+    hi,
     hu,
     it,
     ja,
     km,
     ko,
+    pa,
     pl,
+    ps,
     pt_br,
     ro,
     ru,
+    sw,
+    ta,
+    th,
     @"tr",
     uk,
+    ur,
     vi,
     zh_hans,
 
     pub fn isRtl(self: Locale) bool {
-        return self == .ar or self == .he or self == .fa;
+        return self == .ar or self == .he or self == .fa or self == .ps or self == .ur;
     }
 
     pub fn fromString(s: []const u8) ?Locale {
@@ -88,22 +104,30 @@ pub const Locale = enum {
         if (std.mem.eql(u8, prefix, "en")) return .en;
         if (std.mem.eql(u8, prefix, "ar")) return .ar;
         if (std.mem.eql(u8, prefix, "az")) return .az;
+        if (std.mem.eql(u8, prefix, "bn")) return .bn;
         if (std.mem.eql(u8, prefix, "de")) return .de;
         if (std.mem.eql(u8, prefix, "el")) return .el;
         if (std.mem.eql(u8, prefix, "es")) return .es;
         if (std.mem.eql(u8, prefix, "fa")) return .fa;
         if (std.mem.eql(u8, prefix, "fr")) return .fr;
         if (std.mem.eql(u8, prefix, "he")) return .he;
+        if (std.mem.eql(u8, prefix, "hi")) return .hi;
         if (std.mem.eql(u8, prefix, "hu")) return .hu;
         if (std.mem.eql(u8, prefix, "it")) return .it;
         if (std.mem.eql(u8, prefix, "ja")) return .ja;
         if (std.mem.eql(u8, prefix, "km")) return .km;
         if (std.mem.eql(u8, prefix, "ko")) return .ko;
+        if (std.mem.eql(u8, prefix, "pa")) return .pa;
         if (std.mem.eql(u8, prefix, "pl")) return .pl;
+        if (std.mem.eql(u8, prefix, "ps")) return .ps;
         if (std.mem.eql(u8, prefix, "ro")) return .ro;
         if (std.mem.eql(u8, prefix, "ru")) return .ru;
+        if (std.mem.eql(u8, prefix, "sw")) return .sw;
+        if (std.mem.eql(u8, prefix, "ta")) return .ta;
+        if (std.mem.eql(u8, prefix, "th")) return .th;
         if (std.mem.eql(u8, prefix, "tr")) return .@"tr";
         if (std.mem.eql(u8, prefix, "uk")) return .uk;
+        if (std.mem.eql(u8, prefix, "ur")) return .ur;
         if (std.mem.eql(u8, prefix, "vi")) return .vi;
         // Special cases: pt_BR -> pt_br, zh_Hans -> zh_hans
         if (std.mem.eql(u8, prefix, "pt")) return .pt_br;
@@ -129,22 +153,30 @@ pub fn setLocale(locale: Locale) void {
         .de => &de.strings,
         .ar => &ar.strings,
         .az => &az.strings,
+        .bn => &bn.strings,
         .el => &el.strings,
         .es => &es.strings,
         .fa => &fa.strings,
         .fr => &fr.strings,
         .he => &he.strings,
+        .hi => &hi.strings,
         .hu => &hu.strings,
         .it => &it.strings,
         .ja => &ja.strings,
         .km => &km.strings,
         .ko => &ko.strings,
+        .pa => &pa.strings,
         .pl => &pl.strings,
+        .ps => &ps.strings,
         .pt_br => &pt_br.strings,
         .ro => &ro.strings,
         .ru => &ru.strings,
+        .sw => &sw.strings,
+        .ta => &ta.strings,
+        .th => &th.strings,
         .@"tr" => &tr_locale.strings,
         .uk => &uk.strings,
+        .ur => &ur.strings,
         .vi => &vi.strings,
         .zh_hans => &zh_hans.strings,
     };
@@ -153,22 +185,30 @@ pub fn setLocale(locale: Locale) void {
         .de => &de.format_descriptions,
         .ar => &ar.format_descriptions,
         .az => &az.format_descriptions,
+        .bn => &bn.format_descriptions,
         .el => &el.format_descriptions,
         .es => &es.format_descriptions,
         .fa => &fa.format_descriptions,
         .fr => &fr.format_descriptions,
         .he => &he.format_descriptions,
+        .hi => &hi.format_descriptions,
         .hu => &hu.format_descriptions,
         .it => &it.format_descriptions,
         .ja => &ja.format_descriptions,
         .km => &km.format_descriptions,
         .ko => &ko.format_descriptions,
+        .pa => &pa.format_descriptions,
         .pl => &pl.format_descriptions,
+        .ps => &ps.format_descriptions,
         .pt_br => &pt_br.format_descriptions,
         .ro => &ro.format_descriptions,
         .ru => &ru.format_descriptions,
+        .sw => &sw.format_descriptions,
+        .ta => &ta.format_descriptions,
+        .th => &th.format_descriptions,
         .@"tr" => &tr_locale.format_descriptions,
         .uk => &uk.format_descriptions,
+        .ur => &ur.format_descriptions,
         .vi => &vi.format_descriptions,
         .zh_hans => &zh_hans.format_descriptions,
     };
@@ -177,22 +217,30 @@ pub fn setLocale(locale: Locale) void {
         .de => &de.error_translations,
         .ar => &ar.error_translations,
         .az => &az.error_translations,
+        .bn => &bn.error_translations,
         .el => &el.error_translations,
         .es => &es.error_translations,
         .fa => &fa.error_translations,
         .fr => &fr.error_translations,
         .he => &he.error_translations,
+        .hi => &hi.error_translations,
         .hu => &hu.error_translations,
         .it => &it.error_translations,
         .ja => &ja.error_translations,
         .km => &km.error_translations,
         .ko => &ko.error_translations,
+        .pa => &pa.error_translations,
         .pl => &pl.error_translations,
+        .ps => &ps.error_translations,
         .pt_br => &pt_br.error_translations,
         .ro => &ro.error_translations,
         .ru => &ru.error_translations,
+        .sw => &sw.error_translations,
+        .ta => &ta.error_translations,
+        .th => &th.error_translations,
         .@"tr" => &tr_locale.error_translations,
         .uk => &uk.error_translations,
+        .ur => &ur.error_translations,
         .vi => &vi.error_translations,
         .zh_hans => &zh_hans.error_translations,
     };
@@ -201,22 +249,30 @@ pub fn setLocale(locale: Locale) void {
         .de => &de.warning_translations,
         .ar => &ar.warning_translations,
         .az => &az.warning_translations,
+        .bn => &bn.warning_translations,
         .el => &el.warning_translations,
         .es => &es.warning_translations,
         .fa => &fa.warning_translations,
         .fr => &fr.warning_translations,
         .he => &he.warning_translations,
+        .hi => &hi.warning_translations,
         .hu => &hu.warning_translations,
         .it => &it.warning_translations,
         .ja => &ja.warning_translations,
         .km => &km.warning_translations,
         .ko => &ko.warning_translations,
+        .pa => &pa.warning_translations,
         .pl => &pl.warning_translations,
+        .ps => &ps.warning_translations,
         .pt_br => &pt_br.warning_translations,
         .ro => &ro.warning_translations,
         .ru => &ru.warning_translations,
+        .sw => &sw.warning_translations,
+        .ta => &ta.warning_translations,
+        .th => &th.warning_translations,
         .@"tr" => &tr_locale.warning_translations,
         .uk => &uk.warning_translations,
+        .ur => &ur.warning_translations,
         .vi => &vi.warning_translations,
         .zh_hans => &zh_hans.warning_translations,
     };
@@ -414,10 +470,11 @@ pub fn malformBitToStringId(bit: u32) ?StringId {
 
 /// All locale modules that provide cli_aliases and env_aliases.
 const locale_modules = .{
-    en,        de,        ar,     az,       el,    es,
-    fa,        fr,        he,     hu,       it,    ja,
-    km,        ko,        pl,     pt_br,    ro,    ru,
-    tr_locale, uk,        vi,     zh_hans,
+    en,        de,        ar,     az,       bn,    el,
+    es,        fa,        fr,     he,       hi,    hu,
+    it,        ja,        km,     ko,       pa,    pl,
+    ps,        pt_br,     ro,     ru,       sw,    ta,
+    th,        tr_locale, uk,     ur,       vi,    zh_hans,
 };
 
 /// Number of CliAliases fields.
@@ -509,7 +566,7 @@ pub const cli_arg_map = buildCliArgMap();
 pub const env_var_map = buildEnvVarMap();
 
 /// Match a CLI argument keyword (without -- prefix) to a CliArg.
-/// Matches against all 22 locales simultaneously.
+/// Matches against all supported locales simultaneously.
 pub fn matchCliArg(keyword: []const u8) ?CliArg {
     return cli_arg_map.get(keyword);
 }
@@ -632,12 +689,124 @@ test "Locale.fromString parses prefixes" {
     try std.testing.expectEqual(Locale.en, Locale.fromString("en_US.UTF-8").?);
     try std.testing.expectEqual(Locale.de, Locale.fromString("de_DE").?);
     try std.testing.expectEqual(Locale.de, Locale.fromString("de").?);
+    try std.testing.expectEqual(Locale.bn, Locale.fromString("bn_IN.UTF-8").?);
     try std.testing.expectEqual(Locale.fr, Locale.fromString("fr_FR.UTF-8").?);
+    try std.testing.expectEqual(Locale.hi, Locale.fromString("hi_IN.UTF-8").?);
     try std.testing.expectEqual(Locale.ja, Locale.fromString("ja_JP.UTF-8").?);
+    try std.testing.expectEqual(Locale.pa, Locale.fromString("pa_IN.UTF-8").?);
+    try std.testing.expectEqual(Locale.ps, Locale.fromString("ps_AF.UTF-8").?);
+    try std.testing.expectEqual(Locale.sw, Locale.fromString("sw_KE.UTF-8").?);
+    try std.testing.expectEqual(Locale.ta, Locale.fromString("ta_IN.UTF-8").?);
     try std.testing.expectEqual(Locale.zh_hans, Locale.fromString("zh_CN.UTF-8").?);
     try std.testing.expectEqual(Locale.pt_br, Locale.fromString("pt_BR.UTF-8").?);
+    try std.testing.expectEqual(Locale.th, Locale.fromString("th_TH.UTF-8").?);
     try std.testing.expectEqual(Locale.@"tr", Locale.fromString("tr_TR.UTF-8").?);
+    try std.testing.expectEqual(Locale.ur, Locale.fromString("ur_PK.UTF-8").?);
     try std.testing.expectEqual(@as(?Locale, null), Locale.fromString("x"));
+}
+
+test "isRtl includes ps and ur" {
+    try std.testing.expect(Locale.ar.isRtl());
+    try std.testing.expect(Locale.fa.isRtl());
+    try std.testing.expect(Locale.he.isRtl());
+    try std.testing.expect(Locale.ps.isRtl());
+    try std.testing.expect(Locale.ur.isRtl());
+    try std.testing.expect(!Locale.sw.isRtl());
+}
+
+test "new locale status labels are localized" {
+    setLocale(.bn);
+    try std.testing.expectEqualStrings("ব্যর্থ", tr().label_fail);
+
+    setLocale(.hi);
+    try std.testing.expectEqualStrings("विफल", tr().label_fail);
+
+    setLocale(.pa);
+    try std.testing.expectEqualStrings("ਅਸਫਲ", tr().label_fail);
+
+    setLocale(.ps);
+    try std.testing.expectEqualStrings("ناکام", tr().label_fail);
+
+    setLocale(.sw);
+    try std.testing.expectEqualStrings("IMEFELI", tr().label_fail);
+
+    setLocale(.ta);
+    try std.testing.expectEqualStrings("தோல்வி", tr().label_fail);
+
+    setLocale(.th);
+    try std.testing.expectEqualStrings("ล้มเหลว", tr().label_fail);
+
+    setLocale(.ur);
+    try std.testing.expectEqualStrings("ناکام", tr().label_fail);
+
+    setLocale(.en);
+}
+
+test "new locales include translated format descriptions" {
+    setLocale(.bn);
+    try std.testing.expect(!std.mem.eql(u8, getFormatDescription(.unknown), "Unknown"));
+
+    setLocale(.hi);
+    try std.testing.expect(!std.mem.eql(u8, getFormatDescription(.unknown), "Unknown"));
+
+    setLocale(.pa);
+    try std.testing.expect(!std.mem.eql(u8, getFormatDescription(.unknown), "Unknown"));
+
+    setLocale(.ps);
+    try std.testing.expect(!std.mem.eql(u8, getFormatDescription(.unknown), "Unknown"));
+
+    setLocale(.sw);
+    try std.testing.expect(!std.mem.eql(u8, getFormatDescription(.unknown), "Unknown"));
+
+    setLocale(.ta);
+    try std.testing.expect(!std.mem.eql(u8, getFormatDescription(.unknown), "Unknown"));
+
+    setLocale(.th);
+    try std.testing.expect(!std.mem.eql(u8, getFormatDescription(.unknown), "Unknown"));
+
+    setLocale(.ur);
+    try std.testing.expect(!std.mem.eql(u8, getFormatDescription(.unknown), "Unknown"));
+
+    setLocale(.en);
+}
+
+test "new locales include translated errors and warnings" {
+    const error_key = "Invalid PNG signature";
+    const warning_key = "Full validation unavailable";
+
+    setLocale(.bn);
+    try std.testing.expect(!std.mem.eql(u8, translateError(error_key), error_key));
+    try std.testing.expect(!std.mem.eql(u8, translateWarning(warning_key), warning_key));
+
+    setLocale(.hi);
+    try std.testing.expect(!std.mem.eql(u8, translateError(error_key), error_key));
+    try std.testing.expect(!std.mem.eql(u8, translateWarning(warning_key), warning_key));
+
+    setLocale(.pa);
+    try std.testing.expect(!std.mem.eql(u8, translateError(error_key), error_key));
+    try std.testing.expect(!std.mem.eql(u8, translateWarning(warning_key), warning_key));
+
+    setLocale(.ps);
+    try std.testing.expect(!std.mem.eql(u8, translateError(error_key), error_key));
+    try std.testing.expect(!std.mem.eql(u8, translateWarning(warning_key), warning_key));
+
+    setLocale(.sw);
+    try std.testing.expect(!std.mem.eql(u8, translateError(error_key), error_key));
+    try std.testing.expect(!std.mem.eql(u8, translateWarning(warning_key), warning_key));
+
+    setLocale(.ta);
+    try std.testing.expect(!std.mem.eql(u8, translateError(error_key), error_key));
+    try std.testing.expect(!std.mem.eql(u8, translateWarning(warning_key), warning_key));
+
+    setLocale(.th);
+    try std.testing.expect(!std.mem.eql(u8, translateError(error_key), error_key));
+    try std.testing.expect(!std.mem.eql(u8, translateWarning(warning_key), warning_key));
+
+    setLocale(.ur);
+    try std.testing.expect(!std.mem.eql(u8, translateError(error_key), error_key));
+    try std.testing.expect(!std.mem.eql(u8, translateWarning(warning_key), warning_key));
+
+    setLocale(.en);
 }
 
 test "null-terminated strings work for FFI" {
@@ -691,21 +860,21 @@ test "toSentinel works with string literals" {
     try std.testing.expectEqual(@as(u8, 0), result.ptr[result.len]);
 }
 
-test "all 22 locales compile and have format descriptions" {
+test "all locales compile and have format descriptions" {
     // This test verifies that all locale files compile and their format_descriptions
     // are valid EnumArrays (compile-time enforcement of completeness).
     inline for (.{
         en.format_descriptions, de.format_descriptions,
-        ar.format_descriptions, az.format_descriptions,
-        el.format_descriptions, es.format_descriptions,
-        fa.format_descriptions, fr.format_descriptions,
-        he.format_descriptions, hu.format_descriptions,
-        it.format_descriptions, ja.format_descriptions,
-        km.format_descriptions, ko.format_descriptions,
-        pl.format_descriptions, pt_br.format_descriptions,
-        ro.format_descriptions, ru.format_descriptions,
-        tr_locale.format_descriptions, uk.format_descriptions,
-        vi.format_descriptions, zh_hans.format_descriptions,
+        ar.format_descriptions, az.format_descriptions, bn.format_descriptions,
+        el.format_descriptions, es.format_descriptions, fa.format_descriptions,
+        fr.format_descriptions, he.format_descriptions, hi.format_descriptions,
+        hu.format_descriptions, it.format_descriptions, ja.format_descriptions,
+        km.format_descriptions, ko.format_descriptions, pa.format_descriptions,
+        pl.format_descriptions, ps.format_descriptions, pt_br.format_descriptions,
+        ro.format_descriptions, ru.format_descriptions, sw.format_descriptions,
+        ta.format_descriptions, th.format_descriptions, tr_locale.format_descriptions,
+        uk.format_descriptions, ur.format_descriptions, vi.format_descriptions,
+        zh_hans.format_descriptions,
     }) |descs| {
         // Every locale must have a non-empty description for .png
         try std.testing.expect(descs.get(.png).len > 0);
