@@ -1,0 +1,99 @@
+# format	opacity	reason
+# opacity values: transparent (default), mixed, opaque
+
+csv	opaque	Text grammar only; many byte flips keep parseable structure
+eml	opaque	MIME/message syntax can remain valid after payload flips
+fasta	opaque	Sequence text has weak intrinsic integrity guarantees
+fastq	opaque	Text record structure may survive localized mutations
+html	opaque	Lenient parsers accept many malformed byte changes
+ini	opaque	Key/value text may remain syntactically valid
+json	opaque	Subset mutations preserve lexical/syntactic validity
+kml	opaque	XML-based text format without mandatory end-to-end checksum
+mbox	opaque	Mailbox framing can survive many payload mutations
+obj	opaque	Line-based mesh syntax often remains parseable
+plain_text	opaque	No inherent integrity metadata
+plain_text_cp437	opaque	No inherent integrity metadata
+plain_text_latin1	opaque	No inherent integrity metadata
+plain_text_utf16	opaque	No inherent integrity metadata
+plist	opaque	Structured text/binary metadata can remain valid after random flips
+step	opaque	Textual CAD exchange often parser-tolerant
+svg	opaque	XML-based vector syntax is parser-tolerant
+toml	opaque	Configuration text may remain syntactically valid
+xml	opaque	Tree syntax can stay well-formed after localized edits
+dxf	opaque	Text-heavy CAD encoding with tolerant reader behavior
+eps	opaque	PostScript-like text stream can remain parseable
+ds_store	opaque	Metadata store format lacks strong content integrity checks
+hqx	transparent	BinHex 4.0 validates header/data/resource CRC16; random corruption should be rejected
+
+aac_adts	mixed	Audio frame stream may keep sync/parsability after some mutations
+ac3	mixed	Frame stream can remain decodable with partial corruption
+aiff	mixed	Container headers validate while payload may be corruption-tolerant
+alac	mixed	Codec/container may remain playable with localized payload damage
+amr	mixed	Speech frame streams can partially survive corruption
+ape	mixed	Audio bitstream robustness can vary by mutation location
+ar	mixed	Archive member metadata is weakly protected
+asf	mixed	Container-level structure can survive payload mutations
+au	mixed	Simple audio header + raw payload is weakly protected
+avi	mixed	RIFF container can remain structurally valid with payload flips
+avif	mixed	ISOBMFF container + codec stream can partially tolerate corruption
+av1	mixed	AV1 carried in ISOBMFF may remain structurally valid for some byte flips
+beam	mixed	Chunked VM bytecode format can remain structurally parseable
+bmp	mixed	Header-only checks leave pixel data corruption underconstrained
+3mf	mixed	ZIP metadata fields can mutate without violating archive integrity
+caf	mixed	Container can parse despite localized data damage
+dicom	mixed	Medical container often lacks mandatory full-payload integrity checks
+dpx	mixed	Image file with weak global integrity semantics
+eac3	mixed	Frame stream may remain decodable after some mutations
+exr	mixed	Image compression and metadata can leave some mutated files parseable
+fcpxml	mixed	XML project files can remain well-formed despite localized mutations
+fits	mixed	CHECKSUM/DATASUM keywords are optional; payload flips may remain valid
+gif	mixed	LZW image stream can be partially resilient
+gltf	mixed	JSON + external/binary payload references create mixed integrity behavior
+hdf5	mixed	Some mutations leave file navigable despite data corruption
+heic	mixed	Container/codec combination can remain syntactically valid
+ico	mixed	Multi-image container can survive localized corrupt bytes
+iff	mixed	Chunk-based formats can tolerate some chunk-data mutations
+it	mixed	Tracker data may stay parseable with localized changes
+ivf	mixed	Simple video container with weak intrinsic integrity metadata
+jbig2	mixed	Bitstream resilience depends on segment mutated
+jpeg	mixed	Entropy-coded image stream may still decode with artifacts
+jpeg2000	mixed	Codestream may remain decodable depending on mutation location
+m4a	mixed	Container/codec combination can remain parseable
+macho	mixed	Mach-O binaries can tolerate some non-critical byte-region mutations
+macho_fat	mixed	Universal binary containers may preserve parseability after localized flips
+mod	mixed	Tracker module structure can survive data-area mutations
+mov	mixed	ISOBMFF container may parse with corrupted media payload
+mp3	mixed	Frame stream can continue despite localized corruption
+mp4	mixed	Container may remain valid while damaged samples still parse
+mpeg_ps	mixed	Program stream has limited integrity guarantees
+mpeg_es	mixed	Elementary stream parsing can survive localized payload mutations
+mpeg_ts	mixed	Transport stream is designed for partial damage tolerance
+otf	mixed	Font table checks do not cover all bytes/padding regions uniformly
+pam	mixed	Netpbm payload has weak corruption detectability
+pdf	mixed	Object/xref graph may remain valid despite content corruption
+pe	mixed	Executable checksum is optional; some corruption remains structurally valid
+ply	mixed	Header/data split can preserve parseability after some mutations
+prproj	mixed	Gzip/XML project structures can survive localized content mutations
+doc	mixed	OLE2 compound storage lacks mandatory end-to-end integrity
+ppt	mixed	OLE2 compound storage lacks mandatory end-to-end integrity
+pptx	mixed	OOXML zip + XML payload can survive non-critical byte flips
+prores	mixed	Codec stream can degrade without hard parse failure
+s3m	mixed	Tracker format can remain loadable with localized damage
+sqlite	mixed	Page-level semantics may allow partial validity after mutation
+swf	mixed	Tag stream may remain parseable depending on location
+tar	mixed	Header checksum does not protect all payload bytes
+tiff	mixed	IFD/image data separation yields partial corruption resilience
+tta	mixed	Audio stream can be partly resilient to localized mutations
+ttf	mixed	Font table checks are not uniformly strict across readers
+type1	mixed	Type1/PostScript text programs can remain parseable after small flips
+woff	mixed	Webfont containers may parse despite some table-level corruption
+woff2	mixed	Compressed font stream can remain decodable in some cases
+wav	mixed	PCM payload flips are often undetectable structurally
+wavpack	mixed	Codec/container behavior is mutation-location dependent
+webm	mixed	Matroska container + codec stream often partially tolerant
+webp	mixed	Container/image payload can remain decodable with artifacts
+warc	mixed	Record framing can survive while payload is damaged
+xm	mixed	Tracker/module payload bytes can change while structure remains parseable
+xls	mixed	OLE2 compound file may stay structurally parseable
+xlsx	mixed	OOXML zip + XML parts can survive some non-critical mutations
+zstd	mixed	Frame checksum is optional; bit flips can still produce decodable streams

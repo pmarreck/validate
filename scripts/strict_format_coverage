@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+
+if [[ -z "${VALIDATE_NIX:-}" ]]; then
+	exec env VALIDATE_NIX=1 nix develop -c "$0" "$@"
+fi
+
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+VALIDATE_BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+GT_DIR="${GT_DIR:-ground_truth_examples}"
+RESULTS_FILE="${RESULTS_FILE:-inbox/strict_format_coverage.tsv}"
+REPORT_FILE="${REPORT_FILE:-inbox/strict_format_coverage.md}"
+OPACITY_FILE="${OPACITY_FILE:-scripts/corruption_opacity.tsv}"
+STRICT="${STRICT:-1}"
+TMP_CORRUPT_DIR=""
+declare -A OPACITY_MAP
+
+strip_ansi() {
+	sed 's/\x1b\[[0-9;]*m//g'
+}
+
+run_validate() {
+	local path="$1"
+	# validate returns non-zero for invalid files; the harness needs output, not exit status.
+	("$VALIDATE_BIN" --no-color "$path" 2>&1 || true) | strip_ansi
+}
+
+first_file_in_dir() {
+	local dir="$1"
+	if [[ ! -d "$dir" ]]; then
+		return 1
+	fi
+	find "$dir" -type f ! -path "*/corrupted/*" ! -name "README.md" | LC_ALL=C sort | head -n 1
+}
+
+first_file_by_ext() {
+	local dir="$1"
+	local ext="$2"
+	if [[ ! -d "$dir" ]]; then
+		return 1
+	fi
+	find "$dir" -type f -name "*.${ext}" ! -path "*/corrupted/*" | LC_ALL=C sort | head -n 1
+}
+
+sample_path_for_format() {
+	local format="$1"
+	local p=""
+
+	case "$format" in
+		3mf) p="$(first_file_in_dir "$GT_DIR/3mf" || true)" ;;
+		br) p="$(first_file_in_dir "$GT_DIR/brotli" || true)" ;;
+		sevenz) p="$(first_file_in_dir "$GT_DIR/7z" || true)" ;;
+		jpeg2000) p="$(first_file_in_dir "$GT_DIR/jpeg2k" || true)" ;;
+		ogv) p="$(first_file_in_dir "$GT_DIR/theora" || true)" ;;
+		mod) p="$(first_file_by_ext "$GT_DIR/tracker" "mod" || true)" ;;
+		xm) p="$(first_file_by_ext "$GT_DIR/tracker" "xm" || true)" ;;
+		it) p="$(first_file_by_ext "$GT_DIR/tracker" "it" || true)" ;;
+		s3m) p="$(first_file_by_ext "$GT_DIR/tracker" "s3m" || true)" ;;
+		doc) p="$GT_DIR/ole2/sample.doc" ;;
+		xls) p="$GT_DIR/ole2/sample.xls" ;;
+		ppt) p="$GT_DIR/ole2/sample.ppt" ;;
+		m4a) p="$GT_DIR/aac/sample.m4a" ;;
+		plain_text_utf16) p="tests/fixtures/utf16le.txt" ;;
+		plain_text_latin1) p="$(first_file_in_dir "$GT_DIR/plain_text" || true)" ;;
+		plain_text_cp437) p="$(first_file_in_dir "$GT_DIR/plain_text" || true)" ;;
+		ivf) p="$(first_file_in_dir "$GT_DIR/vp8" || true)" ;;
+		kmz) p="$(first_file_by_ext "$GT_DIR/kmz" "kmz" || first_file_in_dir "$GT_DIR/kmz" || true)" ;;
+		git_repository) p="$GT_DIR/git_repository/sample/.git" ;;
+		macos_app) p="$(find "$GT_DIR" -type d -name "*.app" | LC_ALL=C sort | head -n 1)" ;;
+		macos_framework) p="$(find "$GT_DIR" -type d -name "*.framework" | LC_ALL=C sort | head -n 1)" ;;
+		macos_bundle) p="$(find "$GT_DIR" -type d -name "*.bundle" | LC_ALL=C sort | head -n 1)" ;;
+		*)
+			p="$(first_file_in_dir "$GT_DIR/$format" || true)"
+			;;
+	esac
+
+	if [[ -n "${p:-}" && -e "$p" ]]; then
+		printf '%s\n' "$p"
+		return 0
+	fi
+	return 1
+}
+
+protected_prefix_for_format() {
+	local format="$1"
+	case "$format" in
+		dicom) echo 132 ;;
+		matlab) echo 128 ;;
+		nifti) echo 348 ;;
+		s3m) echo 48 ;;
+		tar) echo 263 ;;
+		hqx) echo 48 ;;
+		*) echo 8 ;;
+	esac
+}
+
+deterministic_pos() {
+	local size="$1"
+	local prefix="$2"
+	local seed="$3"
+	local format="$4"
+
+	if (( size <= prefix )); then
+		return 1
+	fi
+
+	local span=$((size - prefix))
+	local fmt_hash=0
+	local i
+	for ((i=0; i<${#format}; i++)); do
+		fmt_hash=$((fmt_hash + $(printf '%d' "'${format:$i:1}'")))
+	done
+
+	local state=$((seed * 1103515245 + 12345 + fmt_hash * 2654435761))
+	if (( state < 0 )); then
+		state=$(( -state ))
+	fi
+	local pos=$((prefix + (state % span)))
+	printf '%s\n' "$pos"
+}
+
+corrupt_copy_at_pos() {
+	local src="$1"
+	local dst="$2"
+	local pos="$3"
+	local seed="$4"
+	local size="$5"
+
+	cp "$src" "$dst"
+
+	local remaining=$((size - pos))
+	local width=32
+	if (( remaining < width )); then
+		width="$remaining"
+	fi
+	if (( width <= 0 )); then
+		return 1
+	fi
+
+	local payload=""
+	local i byte hex
+	for ((i=0; i<width; i++)); do
+		byte=$(( (seed * 73 + i * 29 + 17) % 256 ))
+		hex="$(printf '%02x' "$byte")"
+		payload+="\\x${hex}"
+	done
+
+	printf '%b' "$payload" | dd of="$dst" bs=1 seek="$pos" count="$width" conv=notrunc 2>/dev/null
+}
+
+seeded_corruption_pos() {
+	local size="$1"
+	local prefix="$2"
+	local seed="$3"
+	local format="$4"
+	local width="$5"
+
+	local pos
+	pos="$(deterministic_pos "$size" "$prefix" "$seed" "$format")"
+	if (( pos + width > size )); then
+		pos=$((size - width))
+	fi
+	if (( pos < prefix )); then
+		pos="$prefix"
+	fi
+	printf '%s\n' "$pos"
+}
+
+
+extract_supported_formats() {
+	awk '
+	/pub fn hasValidator/ { f = 1 }
+	f && /};/ { exit }
+	f && /=> true/ {
+		line = $0
+		sub(/\/\/.*$/, "", line)
+		sub(/=> true.*/, "", line)
+		gsub(/[[:space:]]/, "", line)
+		n = split(line, a, ",")
+		for (i = 1; i <= n; i++) {
+			if (a[i] ~ /^\./) {
+				sub(/^\./, "", a[i])
+				if (a[i] == "@\"3mf\"") a[i] = "3mf"
+				if (a[i] != "unknown") print a[i]
+			}
+		}
+	}
+	' src/core/format_validation.zig | LC_ALL=C sort -u
+}
+
+require_validate_bin() {
+	if [[ ! -x "$VALIDATE_BIN" ]]; then
+		echo "Building validate binary (ReleaseFast)..." >&2
+		zig build -Doptimize=ReleaseFast >/dev/null
+	fi
+}
+
+load_opacity_map() {
+	OPACITY_MAP=()
+	if [[ ! -f "$OPACITY_FILE" ]]; then
+		return 0
+	fi
+
+	while IFS=$'\t' read -r format opacity _reason; do
+		[[ -z "${format:-}" ]] && continue
+		[[ "${format:0:1}" == "#" ]] && continue
+		[[ -z "${opacity:-}" ]] && continue
+		OPACITY_MAP["$format"]="$opacity"
+	done < "$OPACITY_FILE"
+}
+
+opacity_for_format() {
+	local format="$1"
+	if [[ -n "${OPACITY_MAP[$format]:-}" ]]; then
+		printf '%s\n' "${OPACITY_MAP[$format]}"
+	else
+		printf '%s\n' "transparent"
+	fi
+}
+
+write_report_header() {
+	cat > "$REPORT_FILE" <<EOF
+# Strict Format Coverage Report
+
+- Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+- Root: \`$ROOT_DIR\`
+- Ground truth dir: \`$GT_DIR\`
+- Results TSV: \`$RESULTS_FILE\`
+- Opacity map: \`$OPACITY_FILE\` (default: transparent when not listed)
+
+| Format | Sample | Valid | C1 | C2 | C3 | C4 | C5 | Status | Opacity | Notes |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|---|
+EOF
+}
+
+append_report_row() {
+	local format="$1"
+	local sample="$2"
+	local valid="$3"
+	local c1="$4"
+	local c2="$5"
+	local c3="$6"
+	local c4="$7"
+	local c5="$8"
+	local status="$9"
+	local opacity="${10}"
+	local notes="${11}"
+	printf '| `%s` | `%s` | %s | %s | %s | %s | %s | %s | `%s` | `%s` | %s |\n' \
+		"$format" "${sample:-missing}" "$valid" "$c1" "$c2" "$c3" "$c4" "$c5" "$status" "$opacity" "${notes:-}" >> "$REPORT_FILE"
+}
+
+main() {
+	require_validate_bin
+	load_opacity_map
+	mkdir -p "$(dirname "$RESULTS_FILE")" "$(dirname "$REPORT_FILE")"
+
+	TMP_CORRUPT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/validate_strict_corrupt.XXXXXX")"
+	trap '[[ -n "${TMP_CORRUPT_DIR:-}" ]] && rm -rf "$TMP_CORRUPT_DIR"' EXIT
+
+	: > "$RESULTS_FILE"
+	write_report_header
+
+	local total=0
+	local pass=0
+	local missing_sample=0
+	local valid_fail=0
+	local corrupt_fail=0
+	local corrupt_opaque_allow=0
+	local corrupt_mixed_allow=0
+	local non_file=0
+
+	while IFS= read -r format; do
+		((total++)) || true
+		local sample=""
+		local status="pass"
+		local notes=""
+		local opacity
+		opacity="$(opacity_for_format "$format")"
+		local valid=0
+		local c1=0 c2=0 c3=0 c4=0 c5=0
+
+		if ! sample="$(sample_path_for_format "$format" 2>/dev/null)"; then
+			status="missing_sample"
+			notes="No ground-truth sample mapped"
+			((missing_sample++)) || true
+			printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$format" "" "$valid" "$c1" "$c2" "$c3" "$c4" "$c5" "$status" "$opacity" "$notes" >> "$RESULTS_FILE"
+			append_report_row "$format" "" "$valid" "$c1" "$c2" "$c3" "$c4" "$c5" "$status" "$opacity" "$notes"
+			continue
+		fi
+
+		local out
+		out="$(run_validate "$sample")"
+		if echo "$out" | grep -qE '^OK|^WARN'; then
+			valid=1
+		else
+			status="valid_failed"
+			notes="Sample did not validate"
+			((valid_fail++)) || true
+		fi
+
+		if [[ "$status" == "pass" ]]; then
+			if [[ ! -f "$sample" ]]; then
+				status="non_file_sample"
+				notes="Directory/bundle sample not byte-corruptable by this harness"
+				((non_file++)) || true
+			else
+				local size
+				size="$(stat -f%z "$sample" 2>/dev/null || stat -c%s "$sample")"
+				local prefix
+				prefix="$(protected_prefix_for_format "$format")"
+				if (( size <= prefix )); then
+					status="sample_too_small"
+					notes="size=${size} <= protected_prefix=${prefix}"
+					((corrupt_fail++)) || true
+				else
+					local i pos corrupted_path result ok
+						for i in 1 2 3 4 5; do
+						pos="$(seeded_corruption_pos "$size" "$prefix" "$i" "$format" 32)"
+						corrupted_path="$TMP_CORRUPT_DIR/${format}_corrupt_${i}"
+						corrupt_copy_at_pos "$sample" "$corrupted_path" "$pos" "$i" "$size"
+
+						result="$(run_validate "$corrupted_path")"
+						ok=0
+						if echo "$result" | grep -qE '^FAIL|^UNKNOWN'; then
+							ok=1
+						fi
+						case "$i" in
+							1) c1="$ok" ;;
+							2) c2="$ok" ;;
+							3) c3="$ok" ;;
+							4) c4="$ok" ;;
+							5) c5="$ok" ;;
+						esac
+						done
+
+						if [[ "$c1$c2$c3$c4$c5" != "11111" ]]; then
+							case "$opacity" in
+								opaque)
+									status="corruption_opaque_allowable"
+									notes="Corruption-opaque format: 5/5 strict rejection not expected; got ${c1}${c2}${c3}${c4}${c5}"
+									((corrupt_opaque_allow++)) || true
+									;;
+								mixed)
+									status="corruption_mixed_allowable"
+									notes="Mixed opacity format: partial rejection acceptable; got ${c1}${c2}${c3}${c4}${c5}"
+									((corrupt_mixed_allow++)) || true
+									;;
+								*)
+									status="corruption_detection_failed"
+									notes="Need 5/5 invalid, got ${c1}${c2}${c3}${c4}${c5}"
+									((corrupt_fail++)) || true
+									;;
+							esac
+						fi
+					fi
+				fi
+			fi
+
+		if [[ "$status" == "pass" ]]; then
+			((pass++)) || true
+		fi
+
+			printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "$format" "$sample" "$valid" "$c1" "$c2" "$c3" "$c4" "$c5" "$status" "$opacity" "$notes" >> "$RESULTS_FILE"
+			append_report_row "$format" "$sample" "$valid" "$c1" "$c2" "$c3" "$c4" "$c5" "$status" "$opacity" "$notes"
+		done < <(extract_supported_formats)
+
+	{
+		echo
+		echo "## Summary"
+		echo
+		echo "- Total supported formats (hasValidator=true): ${total}"
+			echo "- Fully passing strict checks: ${pass}"
+			echo "- Missing sample mappings: ${missing_sample}"
+			echo "- Sample failed baseline validation: ${valid_fail}"
+			echo "- Corruption checks failed: ${corrupt_fail}"
+			echo "- Corruption-opaque allowable: ${corrupt_opaque_allow}"
+			echo "- Corruption-mixed allowable: ${corrupt_mixed_allow}"
+			echo "- Non-file sample mappings: ${non_file}"
+		} >> "$REPORT_FILE"
+
+	echo "Strict coverage audit complete."
+	echo "Results TSV: $RESULTS_FILE"
+	echo "Report MD:   $REPORT_FILE"
+	echo
+	echo "Summary:"
+	echo "  total=${total} pass=${pass} missing_sample=${missing_sample} valid_fail=${valid_fail} corrupt_fail=${corrupt_fail} corrupt_opaque_allow=${corrupt_opaque_allow} corrupt_mixed_allow=${corrupt_mixed_allow} non_file=${non_file}"
+
+	local failures=$((missing_sample + valid_fail + corrupt_fail + non_file))
+	if (( STRICT == 1 && failures > 0 )); then
+		exit 1
+	fi
+}
+
+main "$@"

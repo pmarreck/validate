@@ -4,8 +4,8 @@ set -euo pipefail
 
 BIN="./zig-out/bin/validate"
 
-# Determine binary extension for Windows
-if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]] || [[ -f "$BIN.exe" ]]; then
+# Determine binary path by platform: never run .exe on non-Windows.
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
 	BIN="./zig-out/bin/validate.exe"
 fi
 

@@ -136,7 +136,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .pdf, .docx, .xlsx, .pptx, .doc, .xls, .ppt, .odt, .ods, .odp, .rtf, .pages, .wpd, .cwk, .mwd => "document",
 
         // Archives
-        .zip, .gzip, .bzip2, .xz, .zstd, .br, .rar, .sevenz, .tar, .warc, .ar => "archive",
+        .zip, .gzip, .bzip2, .xz, .zstd, .br, .hqx, .rar, .sevenz, .tar, .warc, .ar => "archive",
 
         // Disk images
         .iso, .dmg => "disk_image",

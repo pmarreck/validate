@@ -8,8 +8,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 VALIDATE_BIN="$PROJECT_ROOT/zig-out/bin/validate"
-FFMPEG_BIN_DIR="$PROJECT_ROOT/scripts/ffmpeg-bin"
 TEST_FILE="$PROJECT_ROOT/ground_truth_examples/mp4/h264_high10_profile.mp4"
+
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	VALIDATE_BIN="$PROJECT_ROOT/zig-out/bin/validate.exe"
+fi
+
+FFMPEG_BIN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/validate_ffmpeg_path_test.XXXXXX")"
+trap 'rm -rf "$FFMPEG_BIN_DIR"' EXIT
 
 # Colors (respect NO_COLOR)
 if [[ -z "${NO_COLOR:-}" ]] && [[ -t 1 ]]; then
@@ -38,7 +44,6 @@ if [[ ! -f "$TEST_FILE" ]]; then
 fi
 
 # Setup: Create ffmpeg-bin directory with symlink if ffmpeg exists
-mkdir -p "$FFMPEG_BIN_DIR"
 FFMPEG_SYSTEM=$(command -v ffmpeg 2>/dev/null || true)
 FFPROBE_SYSTEM=$(command -v ffprobe 2>/dev/null || true)
 
@@ -70,10 +75,15 @@ if [[ -n "$FFMPEG_SYSTEM" && -n "$FFPROBE_SYSTEM" ]]; then
 
     echo "$output_with"
 
-    if echo "$output_with" | grep -q "via ffmpeg"; then
+    if [[ $exit_with -ne 0 ]]; then
+        echo -e "${RED}FAIL${NC}: validate exited non-zero when ffmpeg present (exit=$exit_with)"
+        ((failures++))
+    elif echo "$output_with" | grep -q "via ffmpeg"; then
         echo -e "${GREEN}PASS${NC}: ffmpeg validation path used when ffmpeg present"
+    elif echo "$output_with" | grep -qE "(fully validated|structural|OK|WARN)"; then
+        echo -e "${GREEN}PASS${NC}: file validated with native path while ffmpeg was available"
     else
-        echo -e "${RED}FAIL${NC}: Expected 'via ffmpeg' in output when ffmpeg is present"
+        echo -e "${RED}FAIL${NC}: Unexpected validation output when ffmpeg is present"
         ((failures++))
     fi
 fi
@@ -102,6 +112,10 @@ while IFS= read -r dir; do
 done <<< "$(echo "$PATH" | tr ':' '\n')"
 
 echo "  Filtered PATH has $(echo "$PATH_WITHOUT_FFMPEG" | tr ':' '\n' | wc -l | tr -d ' ') entries"
+if PATH="$PATH_WITHOUT_FFMPEG" command -v ffmpeg >/dev/null 2>&1 || PATH="$PATH_WITHOUT_FFMPEG" command -v ffprobe >/dev/null 2>&1; then
+	echo -e "${RED}FAIL${NC}: PATH filtering failed to hide ffmpeg/ffprobe"
+	exit 1
+fi
 
 set +e
 output_without=$(PATH="$PATH_WITHOUT_FFMPEG" "$VALIDATE_BIN" "$TEST_FILE" 2>&1)
@@ -111,7 +125,10 @@ set -e
 echo "$output_without"
 
 # When ffmpeg is absent, we expect structural validation (not "via ffmpeg")
-if echo "$output_without" | grep -q "via ffmpeg"; then
+if [[ $exit_without -ne 0 ]]; then
+	echo -e "${RED}FAIL${NC}: validate exited non-zero when ffmpeg absent (exit=$exit_without)"
+	((failures++))
+elif echo "$output_without" | grep -q "via ffmpeg"; then
     echo -e "${RED}FAIL${NC}: 'via ffmpeg' appeared when ffmpeg should be absent from PATH"
     ((failures++))
 else

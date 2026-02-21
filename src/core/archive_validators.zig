@@ -806,6 +806,35 @@ pub fn validatePar2(file: std.fs.File) ValidationResult {
             return ValidationResult.invalidCodeMsg(.par2, .exceeds_bounds, "Packet length", "Packet length exceeds file size");
         }
 
+        // Verify packet MD5 digest (stored in bytes 16..31).
+        // Digest is computed over packet bytes from offset 32 to packet end.
+        var md5 = std.crypto.hash.Md5.init(.{});
+        var remaining = packet_len - 32;
+        var body_buf: [4096]u8 = undefined;
+
+        file.seekTo(offset + 32) catch {
+            return ValidationResult.invalidCode(.par2, .failed_to_seek, "to packet body");
+        };
+
+        while (remaining > 0) {
+            const chunk_len_u64 = @min(remaining, @as(u64, body_buf.len));
+            const chunk_len: usize = @intCast(chunk_len_u64);
+            const got = file.readAll(body_buf[0..chunk_len]) catch {
+                return ValidationResult.invalidCode(.par2, .failed_to_read, "packet body");
+            };
+            if (got != chunk_len) {
+                return ValidationResult.invalidCode(.par2, .truncated, "packet body");
+            }
+            md5.update(body_buf[0..got]);
+            remaining -= chunk_len_u64;
+        }
+
+        var digest: [16]u8 = undefined;
+        md5.final(&digest);
+        if (!std.mem.eql(u8, &digest, header[16..32])) {
+            return ValidationResult.invalidCodeMsg(.par2, .checksum_mismatch, "Packet MD5", "Packet MD5 digest mismatch");
+        }
+
         // Move to next packet
         offset += packet_len;
         packets_validated += 1;
@@ -815,8 +844,8 @@ pub fn validatePar2(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.par2, .no_valid_x_found, "PAR2 packets");
     }
 
-    // Successfully validated packet structure
-    return ValidationResult.okWithDepth(.par2, .structural);
+    // Successfully validated packet structure and packet digests
+    return ValidationResult.okWithDepth(.par2, .full);
 }
 
 // ============ WARC Validator ============

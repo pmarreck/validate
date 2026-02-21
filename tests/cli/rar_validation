@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -x "./zig-out/bin/validate" ]]; then
+	BIN="./zig-out/bin/validate"
+elif [[ -x "./zig-out/bin/validate.exe" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+else
+	echo "FAIL: validate binary not found (tried ./zig-out/bin/validate and .exe)"
+	exit 1
+fi
+
+if ! command -v unrar >/dev/null 2>&1 && ! command -v 7z >/dev/null 2>&1 && ! command -v bsdtar >/dev/null 2>&1; then
+	echo "SKIP: no RAR backend available (need one of: unrar, 7z, bsdtar)"
+	exit 0
+fi
+
+if [[ ! -f "ground_truth_examples/rar/sample.rar" ]]; then
+	echo "FAIL: missing ground truth sample at ground_truth_examples/rar/sample.rar"
+	exit 1
+fi
+
+strip_ansi() {
+	sed 's/\x1b\[[0-9;]*m//g'
+}
+
+failures=0
+
+echo "Test 1: valid RAR sample must validate"
+valid_out=$("$BIN" --no-color "ground_truth_examples/rar/sample.rar" 2>&1 | strip_ansi) || true
+if echo "$valid_out" | grep -qE '^(OK|WARN).*RAR Archive'; then
+	echo "  PASS: valid sample accepted"
+else
+	echo "  FAIL: valid sample rejected"
+	echo "  Output: $valid_out"
+	((failures++)) || true
+fi
+
+echo "Test 2: deterministic corruption must fail"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_rar_cli.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+cp "ground_truth_examples/rar/sample.rar" "$tmpdir/corrupt.rar"
+
+size=$(stat -f%z "$tmpdir/corrupt.rar" 2>/dev/null || stat -c%s "$tmpdir/corrupt.rar")
+if [[ "$size" -le 64 ]]; then
+	echo "  FAIL: sample too small for robust corruption test (size=$size)"
+	((failures++)) || true
+else
+	printf '\x5a' | dd of="$tmpdir/corrupt.rar" bs=1 seek=32 count=1 conv=notrunc 2>/dev/null
+	corrupt_out=$("$BIN" --no-color "$tmpdir/corrupt.rar" 2>&1 | strip_ansi) || true
+	if echo "$corrupt_out" | grep -qE '^FAIL.*RAR Archive'; then
+		echo "  PASS: corrupted sample rejected"
+	else
+		echo "  FAIL: corrupted sample was not rejected"
+		echo "  Output: $corrupt_out"
+		((failures++)) || true
+	fi
+fi
+
+if [[ "$failures" -ne 0 ]]; then
+	echo "RAR validation tests failed: $failures"
+	exit "$failures"
+fi
+
+echo "RAR validation tests passed"

@@ -104,6 +104,15 @@ pub fn validateRarDeep(allocator: Allocator, path: []const u8) RarValidationResu
         return sevenz_result;
     }
 
+    // Try bsdtar as a fallback. It supports RAR in many libarchive builds.
+    const bsdtar_result = tryBsdtarTest(allocator, path);
+    if (bsdtar_result.valid and bsdtar_result.files_checked > 0) {
+        return RarValidationResult.ok(bsdtar_result.files_checked, is_rar5, "bsdtar");
+    }
+    if (!bsdtar_result.valid and bsdtar_result.error_message != null) {
+        return bsdtar_result;
+    }
+
     // No command available - return header-only validation
     return RarValidationResult.headerOnly(is_rar5);
 }
@@ -147,6 +156,11 @@ fn tryUnrarTest(allocator: Allocator, path: []const u8) RarValidationResult {
 
 /// Try to validate using 7z command (can extract RAR)
 fn trySevenZTest(allocator: Allocator, path: []const u8) RarValidationResult {
+    if (!sevenZSupportsRar(allocator)) {
+        // 7z exists but this build has no RAR handler.
+        return RarValidationResult.headerOnly(false);
+    }
+
     const result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &[_][]const u8{ "7z", "t", "-bso0", path },
@@ -165,6 +179,12 @@ fn trySevenZTest(allocator: Allocator, path: []const u8) RarValidationResult {
                 const file_count = countFilesIn7z(allocator, path);
                 return RarValidationResult.ok(file_count, false, "7z");
             } else if (code == 2) {
+                // "Can not open the file as archive" can also indicate that
+                // this 7z build lacks RAR support. We already check support
+                // above, but keep this guard for safety.
+                if (looksLikeUnsupportedBy7z(result.stderr)) {
+                    return RarValidationResult.headerOnly(false);
+                }
                 // Fatal error - corruption
                 return RarValidationResult.invalid("RAR integrity test failed - archive corrupted");
             } else {
@@ -173,6 +193,64 @@ fn trySevenZTest(allocator: Allocator, path: []const u8) RarValidationResult {
         },
         else => {
             return RarValidationResult.invalid("7z process terminated abnormally");
+        },
+    }
+}
+
+/// Try to validate using bsdtar command (libarchive).
+/// We list entries first, then stream every entry via -xOf to force decoding.
+fn tryBsdtarTest(allocator: Allocator, path: []const u8) RarValidationResult {
+    const list_result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "bsdtar", "-tf", path },
+        .max_output_bytes = 1024 * 1024,
+    }) catch {
+        // bsdtar not available
+        return RarValidationResult.headerOnly(false);
+    };
+    defer allocator.free(list_result.stdout);
+    defer allocator.free(list_result.stderr);
+
+    switch (list_result.term) {
+        .Exited => |code| {
+            if (code != 0) {
+                if (looksLikeUnsupportedByBsdtar(list_result.stderr)) {
+                    return RarValidationResult.headerOnly(false);
+                }
+                return RarValidationResult.invalid("RAR integrity test failed - archive corrupted");
+            }
+
+            var file_count: u32 = 0;
+            var lines = std.mem.splitSequence(u8, list_result.stdout, "\n");
+            while (lines.next()) |line| {
+                const entry = std.mem.trim(u8, line, " \r\t");
+                if (entry.len == 0) continue;
+                if (std.mem.endsWith(u8, entry, "/")) continue;
+                file_count += 1;
+
+                var child = std.process.Child.init(&[_][]const u8{ "bsdtar", "-xOf", path, entry }, allocator);
+                child.stdout_behavior = .Ignore;
+                child.stderr_behavior = .Ignore;
+
+                const term = child.spawnAndWait() catch {
+                    return RarValidationResult.invalid("RAR integrity test failed - archive corrupted");
+                };
+                switch (term) {
+                    .Exited => |extract_code| {
+                        if (extract_code != 0) {
+                            return RarValidationResult.invalid("RAR integrity test failed - archive corrupted");
+                        }
+                    },
+                    else => {
+                        return RarValidationResult.invalid("bsdtar process terminated abnormally");
+                    },
+                }
+            }
+
+            return RarValidationResult.ok(file_count, false, "bsdtar");
+        },
+        else => {
+            return RarValidationResult.invalid("bsdtar process terminated abnormally");
         },
     }
 }
@@ -215,6 +293,41 @@ fn countFilesIn7z(allocator: Allocator, path: []const u8) u32 {
     return count;
 }
 
+fn sevenZSupportsRar(allocator: Allocator) bool {
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "7z", "i" },
+        .max_output_bytes = 512 * 1024,
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    switch (result.term) {
+        .Exited => |code| {
+            if (code != 0) return false;
+        },
+        else => return false,
+    }
+
+    var lines = std.mem.splitSequence(u8, result.stdout, "\n");
+    while (lines.next()) |line| {
+        // Example match in supported builds: "... Rar ..."
+        if (std.mem.indexOf(u8, line, " Rar ") != null) return true;
+        if (std.mem.indexOf(u8, line, " RAR ") != null) return true;
+    }
+    return false;
+}
+
+fn looksLikeUnsupportedBy7z(stderr: []const u8) bool {
+    return std.mem.indexOf(u8, stderr, "Can not open the file as archive") != null or
+        std.mem.indexOf(u8, stderr, "Unsupported archive type") != null;
+}
+
+fn looksLikeUnsupportedByBsdtar(stderr: []const u8) bool {
+    return std.mem.indexOf(u8, stderr, "Unrecognized archive format") != null or
+        std.mem.indexOf(u8, stderr, "Cannot open archive") != null;
+}
+
 /// Validate RAR from buffer (basic header validation only)
 pub fn validateRarFromBuffer(data: []const u8) RarValidationResult {
     if (data.len < 7) {
@@ -250,5 +363,87 @@ test "RAR5 signature detection" {
 test "invalid signature detection" {
     const invalid_data = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
     const result = validateRarFromBuffer(&invalid_data);
+    try std.testing.expect(!result.valid);
+}
+
+fn hasRarTestBackend(allocator: Allocator) bool {
+    // If unrar exists, we can test.
+    const unrar = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{"unrar"},
+        .max_output_bytes = 1024,
+    }) catch null;
+    if (unrar) |r| {
+        defer allocator.free(r.stdout);
+        defer allocator.free(r.stderr);
+        switch (r.term) {
+            .Exited => return true,
+            else => {},
+        }
+    }
+
+    // If 7z exists and has RAR support, we can test.
+    if (sevenZSupportsRar(allocator)) return true;
+
+    // If bsdtar exists, we can test through libarchive.
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{"bsdtar"},
+        .max_output_bytes = 1024,
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    return switch (result.term) {
+        .Exited => true,
+        else => false,
+    };
+}
+
+test "validateRarDeep accepts ground truth sample" {
+    const allocator = std.testing.allocator;
+
+    if (!hasRarTestBackend(allocator)) return;
+
+    const file = std.fs.cwd().openFile("ground_truth_examples/rar/sample.rar", .{}) catch return;
+    file.close();
+
+    const result = validateRarDeep(allocator, "ground_truth_examples/rar/sample.rar");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.files_checked > 0);
+}
+
+test "validateRarDeep rejects deterministic corruption of ground truth sample" {
+    const allocator = std.testing.allocator;
+
+    if (!hasRarTestBackend(allocator)) return;
+
+    const src = std.fs.cwd().openFile("ground_truth_examples/rar/sample.rar", .{}) catch return;
+    defer src.close();
+
+    const sample_size = src.getEndPos() catch return;
+    if (sample_size <= 64) return;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cwd = std.fs.cwd();
+    cwd.copyFile("ground_truth_examples/rar/sample.rar", tmp_dir.dir, "corrupt.rar", .{}) catch return;
+
+    const corrupt_file = tmp_dir.dir.openFile("corrupt.rar", .{ .mode = .read_write }) catch return;
+    defer corrupt_file.close();
+
+    // Corrupt deterministic payload byte outside the 8-byte magic area.
+    try corrupt_file.seekTo(32);
+    var byte: [1]u8 = undefined;
+    _ = try corrupt_file.readAll(&byte);
+    byte[0] ^= 0x5A;
+    try corrupt_file.seekTo(32);
+    try corrupt_file.writeAll(&byte);
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.rar");
+    defer allocator.free(path);
+
+    const result = validateRarDeep(allocator, path);
     try std.testing.expect(!result.valid);
 }
