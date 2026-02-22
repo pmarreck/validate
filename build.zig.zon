@@ -72,6 +72,14 @@
             .url = "git+https://github.com/pmarreck/7zip#2155653d901c55e5661ea02f51e47f29d9d1e049",
             .hash = "sevenz-25.1.0-GxYsU9LDFgDubsAf5lKHAVylNxpyjLz25ekkkMsRu-6Z",
         },
+        .rarz = .{
+            .url = "https://github.com/pmarreck/rarz/archive/268d5e07a01052b432e393cb36b5023d14f27a35.tar.gz",
+            .hash = "rarz-0.1.0-BNfrflC3BwAd9GKFZurx2TdTdLTKgZehrwrk2d0qvyBq",
+        },
+        .compact_pro = .{
+            .url = "https://github.com/pmarreck/compact_pro/archive/acc3cebcc485bb3bc9a474d548cd4d124ca3a4a0.tar.gz",
+            .hash = "compact_pro-0.1.0-G2wo9d_eAgAfR6jeAAGNutPGE9Nientf3mUuzkR8OgOU",
+        },
     },
     .paths = .{""},
     .fingerprint = 0x421232542dfe208d,

@@ -86,7 +86,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .bzip2 = "Bzip2 کمپریس شوی",
     .xz = "XZ کمپریس شوی",
     .zstd = "Zstandard کمپریس شوی",
-    .br = "Brotli Compressed", .hqx = "BinHex 4.0 Archive", .rar = "د RAR آرشیف",
+    .br = "Brotli Compressed", .hqx = "BinHex 4.0 Archive", .rar = "RAR Archive", .cpt = "Compact Pro Archive",
     .sevenz = "۷-زپ آرشیف",
     .tar = "د تور آرشیف",
     .epub = "EPUB eBook",

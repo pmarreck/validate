@@ -86,7 +86,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .bzip2 = "Bzip2 Imebanwa",
     .xz = "XZ Imebanwa",
     .zstd = "Zstandard Imebanwa",
-    .br = "Brotli Compressed", .hqx = "BinHex 4.0 Archive", .rar = "Kumbukumbu ya RAR",
+    .br = "Brotli Compressed", .hqx = "BinHex 4.0 Archive", .rar = "RAR Archive", .cpt = "Compact Pro Archive",
     .sevenz = "Kumbukumbu ya 7-Zip",
     .tar = "Hifadhi ya Lami",
     .epub = "EPUB eBook",

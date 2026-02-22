@@ -319,6 +319,7 @@ pub const FileFormat = enum {
     br, // Brotli compressed (.br) - no magic number, extension-detected
     hqx, // BinHex 4.0 encoded Macintosh file
     rar, // RAR archive
+    cpt, // Compact Pro archive (.cpt)
     sevenz, // 7-Zip (.7z)
     tar, // tar archive (often combined with gzip)
     epub,
@@ -532,7 +533,7 @@ pub const FileFormat = enum {
             .png, .jpeg, .jxl, .gif, .bmp, .webp, .tiff, .psd, .ai, .eps, .sketch, .aep, .heic, .avif, .exr => true, // Images/Design
             .svg => true, // SVG uses XML validation
             .dng, .cr2, .nef, .arw => true, // RAW formats (TIFF-based validation)
-            .zip, .gzip, .bzip2, .xz, .zstd, .br, .hqx, .rar, .sevenz, .tar, .epub, .docx, .xlsx, .pptx => true, // Archives
+            .zip, .gzip, .bzip2, .xz, .zstd, .br, .hqx, .rar, .cpt, .sevenz, .tar, .epub, .docx, .xlsx, .pptx => true, // Archives
             .odt, .ods, .odp, .pages, .logicx => true, // ZIP-based document/DAW formats
             .doc, .xls, .ppt => true, // OLE2/CFBF binary Office
             .pdf, .rtf => true, // Document formats
@@ -2168,6 +2169,7 @@ pub fn validateDataBufferFormat(data: []const u8, format: FileFormat) Validation
         .tiff => image_validators.validateTiffFromBuffer(data),
         .webp => image_validators.validateWebpFromBuffer(data),
         .hqx => validateHqxFromBuffer(data),
+        .cpt => archive_validators.validateCptFromBuffer(data),
         .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => archive_validators.validateZipFromBuffer(data, format),
         .mp4, .mov, .m4a => movie_validators.validateMp4FromBuffer(data),
         else => ValidationResult.ok(format), // Format not supported for buffer validation
@@ -2195,6 +2197,7 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     // Extension-only formats (no magic bytes)
     if (std.mem.eql(u8, ext_lower, "br")) return .br;
     if (std.mem.eql(u8, ext_lower, "hqx")) return .hqx;
+    if (std.mem.eql(u8, ext_lower, "cpt")) return .cpt;
     if (std.mem.eql(u8, ext_lower, "dv") or std.mem.eql(u8, ext_lower, "dif")) return .dv;
     if (std.mem.eql(u8, ext_lower, "tga") or std.mem.eql(u8, ext_lower, "targa")) return .tga;
 
@@ -2500,6 +2503,7 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "xz")) return .xz;
     if (std.mem.eql(u8, ext_lower, "zst") or std.mem.eql(u8, ext_lower, "zstd")) return .zstd;
     if (std.mem.eql(u8, ext_lower, "rar")) return .rar;
+    if (std.mem.eql(u8, ext_lower, "cpt")) return .cpt;
     if (std.mem.eql(u8, ext_lower, "7z")) return .sevenz;
     if (std.mem.eql(u8, ext_lower, "tar")) return .tar;
     if (std.mem.eql(u8, ext_lower, "br")) return .br;
@@ -13866,7 +13870,7 @@ pub const FormatValidator = struct {
                 // magic bytes, trust the extension and validate with the
                 // format-specific validator directly.
                 const ext_has_no_magic = switch (ext_format) {
-                    .br, .hqx, .dv, .tga, .html, .dmg, .iso => true,
+                    .br, .hqx, .cpt, .dv, .tga, .html, .dmg, .iso => true,
                     else => false,
                 };
                 if (ext_has_no_magic and ext_format.hasValidator()) {
@@ -13882,6 +13886,7 @@ pub const FormatValidator = struct {
                         .dmg => validateDmg(reopen_ext),
                         .iso => validateIso(reopen_ext),
                         .hqx => validateHqx(reopen_ext),
+                        .cpt => archive_validators.validateCpt(reopen_ext),
                         else => ValidationResult.ok(ext_format),
                     };
                 } else {
@@ -14294,6 +14299,7 @@ pub const FormatValidator = struct {
             .zstd => archive_validators.validateZstdDeep(allocator, path),
             .sevenz => archive_validators.validate7zDeep(allocator, path),
             .rar => archive_validators.validateRarDeep(allocator, path),
+            .cpt => archive_validators.validateCptDeep(allocator, path),
             .dmg => validateDmgDeep(allocator, path),
             .iso => validateIsoDeep(allocator, path),
             .mp3 => music_validators.validateMp3Deep(allocator, path),
@@ -14644,6 +14650,7 @@ pub const FormatValidator = struct {
             .br => ValidationResult.ok(.br), // No magic bytes - extension-only detection, deep validates
             .hqx => validateHqx(file),
             .rar => archive_validators.validateRar(file),
+            .cpt => archive_validators.validateCpt(file),
             .sevenz => archive_validators.validate7z(file),
             .tar => archive_validators.validateTar(file),
             .pdf => validatePdf(file),
@@ -14938,6 +14945,7 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
         .zstd => archive_validators.validateZstdFromBuffer(data),
         .hqx => validateHqxFromBuffer(data),
         .rar => archive_validators.validateRarFromBuffer(data),
+        .cpt => archive_validators.validateCptFromBuffer(data),
         .sevenz => archive_validators.validate7zFromBuffer(data),
         // For formats without buffer validators yet, just return format detected
         else => ValidationResult.ok(format),

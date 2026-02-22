@@ -38,8 +38,8 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/pdf_xref_parser.zig` | PDF xref table/stream parser for O(M) object lookup (traditional tables + xref streams + /Prev chain) |
 | `src/core/mp4_box_parser.zig` | Shared MP4/ISOBMFF box parsing utilities (readMp4BoxHeader, findChildBox) |
 | `src/core/video_audio_validator.zig` | MP4/MKV audio+video stream validation (AAC, ALAC, MP3, FLAC, AC-3 in containers) |
-| `src/core/archive_validators.zig` | Archive/compression validation (ZIP/Gzip/Bzip2/XZ/Zstd/RAR/7z/TAR/PAR2/WARC), including deep ZIP CRC checks and PAR2 packet MD5 verification |
-| `src/core/rar_validator.zig` | Deep RAR validation backend selection (`unrar`, `7z` with RAR support, `bsdtar` fallback) plus integrity checks and seeded-corruption tests |
+| `src/core/archive_validators.zig` | Archive/compression validation (ZIP/Gzip/Bzip2/XZ/Zstd/RAR/CPT/7z/TAR/PAR2/WARC), including deep ZIP CRC checks, PAR2 packet MD5 verification, `rarz` in-memory RAR validation, and `compact_pro` C FFI-backed CPT validation |
+| `src/core/rar_validator.zig` | Legacy external-tool RAR deep-validation helper (`unrar`/`7z`/`bsdtar`) retained in tree; primary runtime path now uses `rarz` via `archive_validators.zig` |
 | `src/core/h264_syntax_validator.zig` | Pure Zig H.264 NAL/SPS/PPS/slice header parser with full VUI and extension support |
 | `src/core/h264_cavlc_tables.zig` | H.264 CAVLC entropy decoder (coeff_token, total_zeros, run_before, level VLC) |
 | `src/core/h264_cabac_engine.zig` | H.264 CABAC arithmetic engine with context model initialization |
@@ -71,7 +71,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | Path | Purpose |
 |------|---------|
 | `tests/fixtures/` | Validation test fixtures |
-| `tests/cli/` | CLI integration tests (bash) |
+| `tests/cli/` | CLI integration tests (bash), including archive discrimination checks (`rar_validation`, `cpt_validation`) over valid + 5 deterministic corrupted fixtures |
 | `scripts/strict_format_coverage` | Deterministic strict coverage harness: enumerates `hasValidator()` formats, maps ground-truth samples (including extension-aware KMZ mapping), validates valid-path behavior, runs 5 seeded non-magic corruption checks (with per-format protected prefixes, including HQX envelope protection), and classifies failures via `corruption_opacity` policy |
 
 ## Documentation

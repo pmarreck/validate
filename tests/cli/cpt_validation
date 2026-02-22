@@ -10,14 +10,14 @@ else
 	exit 1
 fi
 
-if [[ ! -f "ground_truth_examples/rar/sample.rar" ]]; then
-	echo "FAIL: missing ground truth sample at ground_truth_examples/rar/sample.rar"
+if [[ ! -f "ground_truth_examples/cpt/sample.cpt" ]]; then
+	echo "FAIL: missing ground truth sample at ground_truth_examples/cpt/sample.cpt"
 	exit 1
 fi
 
 for i in 1 2 3 4 5; do
-	if [[ ! -f "ground_truth_examples/corrupted/rar/sample_corrupt_${i}.rar" ]]; then
-		echo "FAIL: missing corrupted sample ground_truth_examples/corrupted/rar/sample_corrupt_${i}.rar"
+	if [[ ! -f "ground_truth_examples/corrupted/cpt/sample_corrupt_${i}.cpt" ]]; then
+		echo "FAIL: missing corrupted sample ground_truth_examples/corrupted/cpt/sample_corrupt_${i}.cpt"
 		exit 1
 	fi
 done
@@ -28,9 +28,9 @@ strip_ansi() {
 
 failures=0
 
-echo "Test 1: valid RAR sample must validate"
-valid_out=$("$BIN" --no-color "ground_truth_examples/rar/sample.rar" 2>&1 | strip_ansi) || true
-if echo "$valid_out" | grep -qE '^(OK|WARN).*RAR Archive'; then
+echo "Test 1: valid CPT sample must validate"
+valid_out=$("$BIN" --no-color "ground_truth_examples/cpt/sample.cpt" 2>&1 | strip_ansi) || true
+if echo "$valid_out" | grep -qE '^(OK|WARN).*Compact Pro Archive'; then
 	echo "  PASS: valid sample accepted"
 else
 	echo "  FAIL: valid sample rejected"
@@ -40,9 +40,9 @@ fi
 
 echo "Test 2: deterministic corruption set must fail"
 for i in 1 2 3 4 5; do
-	path="ground_truth_examples/corrupted/rar/sample_corrupt_${i}.rar"
+	path="ground_truth_examples/corrupted/cpt/sample_corrupt_${i}.cpt"
 	corrupt_out=$("$BIN" --no-color "$path" 2>&1 | strip_ansi) || true
-	if echo "$corrupt_out" | grep -qE '^FAIL.*RAR Archive'; then
+	if echo "$corrupt_out" | grep -qE '^FAIL.*Compact Pro Archive'; then
 		echo "  PASS: corrupt sample ${i} rejected"
 	else
 		echo "  FAIL: corrupt sample ${i} was not rejected"
@@ -52,8 +52,8 @@ for i in 1 2 3 4 5; do
 done
 
 if [[ "$failures" -ne 0 ]]; then
-	echo "RAR validation tests failed: $failures"
+	echo "CPT validation tests failed: $failures"
 	exit "$failures"
 fi
 
-echo "RAR validation tests passed"
+echo "CPT validation tests passed"

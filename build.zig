@@ -181,6 +181,24 @@ pub fn build(b: *std.Build) void {
     });
     const sevenz_lib = sevenz_dep.artifact("7z");
 
+    // rarz for in-memory RAR validation (clean-room Zig implementation)
+    const rarz_dep = b.dependency("rarz", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const rarz_mod = b.createModule(.{
+        .root_source_file = rarz_dep.path("src/lib/root.zig"),
+        .target = target,
+        .optimize = deps_optimize,
+    });
+
+    // compact_pro for in-memory Compact Pro (.cpt) archive validation (C FFI)
+    const compact_pro_dep = b.dependency("compact_pro", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const compact_pro_lib = compact_pro_dep.artifact("compact_pro");
+
     // LibRaw for camera RAW format validation (LGPL-2.1, phcreery/LibRaw-zig)
     const libraw_dep = b.dependency("libraw", .{
         .target = target,
@@ -200,6 +218,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "xml", .module = zigxml_mod }, // XML validation (0BSD, ianprime0509/zig-xml)
             .{ .name = "cj5", .module = cj5_mod }, // JSON5 validation (MIT, septag/cj5 fork)
             .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (LGPL-2.1)
+            .{ .name = "rarz", .module = rarz_mod }, // RAR clean-room parser/validator
         },
     });
 
@@ -252,6 +271,9 @@ pub fn build(b: *std.Build) void {
     // Add 7z LZMA SDK include path (for sevenz_validator.zig @cImport)
     core_mod.addIncludePath(sevenz_lib.getEmittedIncludeTree());
 
+    // Add compact_pro C FFI headers
+    core_mod.addIncludePath(compact_pro_dep.path("include"));
+
     // Add src/core include path for any remaining C headers
     core_mod.addIncludePath(b.path("src/core"));
 
@@ -303,6 +325,8 @@ pub fn build(b: *std.Build) void {
     lib.linkLibrary(libraw_lib);
     // Link 7z LZMA SDK for 7-Zip archive deep validation (public domain)
     lib.linkLibrary(sevenz_lib);
+    // Link compact_pro for in-memory archive validation
+    lib.linkLibrary(compact_pro_lib);
     lib.linkLibC();
     lib.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
     // On Windows, LibRaw uses ntohs/htons/htonl/ntohl from ws2_32
@@ -336,6 +360,7 @@ pub fn build(b: *std.Build) void {
             brotli_lib.getEmittedBin(),
             libopenmpt_lib.getEmittedBin(),
             cj5_lib.getEmittedBin(),
+            compact_pro_lib.getEmittedBin(),
         };
 
         const libtool = LibtoolStep.create(b, .{
@@ -389,6 +414,8 @@ pub fn build(b: *std.Build) void {
     lib_shared.linkLibrary(brotli_lib);
     // Link libopenmpt for tracker format (MOD/XM/IT/S3M) deep validation (Zig-built)
     lib_shared.linkLibrary(libopenmpt_lib);
+    // Link compact_pro for in-memory archive validation
+    lib_shared.linkLibrary(compact_pro_lib);
     lib_shared.linkLibC();
     lib_shared.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
 
@@ -519,6 +546,8 @@ pub fn build(b: *std.Build) void {
     core_tests.linkLibrary(libopenmpt_lib);
     // Link 7z LZMA SDK for 7-Zip archive deep validation tests (public domain)
     core_tests.linkLibrary(sevenz_lib);
+    // Link compact_pro for archive validation tests
+    core_tests.linkLibrary(compact_pro_lib);
     core_tests.linkLibC();
     core_tests.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
 
@@ -553,6 +582,7 @@ pub fn build(b: *std.Build) void {
     ffi_tests.linkLibrary(libjxl_lib);
     ffi_tests.linkLibrary(brotli_lib);
     ffi_tests.linkLibrary(libopenmpt_lib);
+    ffi_tests.linkLibrary(compact_pro_lib);
     ffi_tests.linkLibC();
     ffi_tests.linkLibCpp();
 

@@ -13,6 +13,8 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Add `corruption_opacity` map + strict harness categorization (`opaque` / `mixed` allowable statuses) (2026-02-20 EST)
 - [x] Improve transparent-format corruption discrimination (PAR2 packet MD5 validation + ZIP-subformat deep routing + opacity review reduced strict hard-fails to 0) (2026-02-20 EST)
 - [x] Add pure-Zig BinHex/HQX validation (alphabet decode + RLE + header/data/resource CRC16), fixture coverage (`ground_truth_examples/hqx/sample.hqx`), and strict-harness protected prefix for non-magic corruption mutation (2026-02-20 EST)
+- [x] Add Compact Pro (`.cpt`) strict fixture coverage: known-good ground-truth sample + 5 deterministic non-magic corruptions + CLI discrimination test (`tests/cli/cpt_validation`) (2026-02-21 EST)
+- [x] Refresh RAR CLI discrimination test and seeded corrupted fixtures for `rarz` backend (remove legacy external-tool gate; assert 5 deterministic corrupted fixtures fail) (2026-02-21 EST)
 - [x] Expand i18n locale matrix to 30 locales by adding bootstrap locales (`bn`, `hi`, `pa`, `ps`, `sw`, `ta`, `th`, `ur`) with locale parsing + alias-map integration + compile-time coverage checks (2026-02-20 EST)
 - [x] Implement core UI translations (status/summary/progress/help + localized `--lang` alias) for new locales `bn`, `hi`, `pa`, `ps`, `sw`, `ta`, `th`, `ur`; add i18n tests for RTL coverage and localized labels (2026-02-20 EST)
 - [x] Carry new locales `bn`, `hi`, `pa`, `ps`, `sw`, `ta`, `th`, `ur` through remaining i18n layers: full `format_descriptions` + `error_translations` + `warning_translations` (machine-assisted), with regression tests for translated format/error/warning output (2026-02-20 EST)

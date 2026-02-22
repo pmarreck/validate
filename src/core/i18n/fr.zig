@@ -100,7 +100,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .bzip2 = "Compress\xc3\xa9 Bzip2",
     .xz = "Compress\xc3\xa9 XZ",
     .zstd = "Compress\xc3\xa9 Zstandard",
-        .br = "Compress\xc3\xa9 Brotli", .hqx = "BinHex 4.0 Archive", .rar = "Archive RAR",
+        .br = "Compress\xc3\xa9 Brotli", .hqx = "BinHex 4.0 Archive", .rar = "RAR Archive", .cpt = "Compact Pro Archive",
     .sevenz = "Archive 7-Zip",
     .tar = "Archive Tar",
     .epub = "Livre num\xc3\xa9rique EPUB",

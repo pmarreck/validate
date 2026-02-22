@@ -114,7 +114,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .bzip2 = "Bzip2-komprimiert",
     .xz = "XZ-komprimiert",
     .zstd = "Zstandard-komprimiert",
-        .br = "Brotli-komprimiert", .hqx = "BinHex 4.0 Archive", .rar = "RAR-Archiv",
+        .br = "Brotli-komprimiert", .hqx = "BinHex 4.0 Archive", .rar = "RAR Archive", .cpt = "Compact Pro Archive",
     .sevenz = "7-Zip-Archiv",
     .tar = "Tar-Archiv",
     .epub = "EPUB-E-Book",

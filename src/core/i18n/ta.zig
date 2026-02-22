@@ -86,7 +86,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .bzip2 = "Bzip2 சுருக்கப்பட்டது",
     .xz = "XZ சுருக்கப்பட்டது",
     .zstd = "Zstandard சுருக்கப்பட்டது",
-    .br = "Brotli Compressed", .hqx = "BinHex 4.0 Archive", .rar = "RAR காப்பகம்",
+    .br = "Brotli Compressed", .hqx = "BinHex 4.0 Archive", .rar = "RAR Archive", .cpt = "Compact Pro Archive",
     .sevenz = "7-ஜிப் காப்பகம்",
     .tar = "தார் காப்பகம்",
     .epub = "EPUB மின்புத்தகம்",

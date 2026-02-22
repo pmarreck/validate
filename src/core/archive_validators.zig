@@ -17,8 +17,11 @@ const ValidationDepth = format_validation.ValidationDepth;
 const zlib = @import("zlib.zig");
 const bzip2 = @import("bzip2.zig");
 const sevenz_validator = @import("sevenz_validator.zig");
-const rar_validator = @import("rar_validator.zig");
 const errmsg = @import("error_messages.zig");
+const rarz = @import("rarz");
+const c_compact_pro = @cImport({
+    @cInclude("compact_pro.h");
+});
 
 // ============ ZIP Validator ============
 
@@ -2299,22 +2302,74 @@ pub fn validate7zDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
 // ============ RAR Deep Validation ============
 
-/// Deep RAR validation using the rar_validator module.
-/// This validates header CRCs and uses unrar or 7z for full integrity testing.
+fn rarzDepthToValidationDepth(depth: rarz.policy.ValidationDepth) ValidationDepth {
+    return switch (depth) {
+        .full => .full,
+        else => .structural,
+    };
+}
+
+fn validateRarWithRarz(data: []const u8) ValidationResult {
+    if (data.len == 0) {
+        return ValidationResult.invalidWithDepth(.rar, "File too small", .structural);
+    }
+
+    const result = rarz.policy.validate(data);
+    const depth = rarzDepthToValidationDepth(result.depth);
+
+    if (!result.is_valid) {
+        const message = result.error_message orelse "RAR validation failed";
+        return ValidationResult.invalidWithDepth(.rar, message, depth);
+    }
+
+    if (result.has_encrypted_content) {
+        var warning_result = ValidationResult.okWithDepthAndWarning(.rar, .structural, "Encrypted archive content; full validation unavailable");
+        warning_result.has_encrypted_content = true;
+        return warning_result;
+    }
+
+    return ValidationResult.okWithDepth(.rar, depth);
+}
+
+/// Deep RAR validation using rarz (in-memory clean-room implementation).
 pub fn validateRarDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const result = rar_validator.validateRarDeep(allocator, path);
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        return switch (err) {
+            error.FileNotFound => ValidationResult.invalidWithDepth(.rar, "File not found", .structural),
+            error.AccessDenied => ValidationResult.invalidWithDepth(.rar, "Access denied", .structural),
+            else => ValidationResult.invalidCodeWithDepth(.rar, .failed_to_open, "file", .structural),
+        };
+    };
+    defer file.close();
 
-    if (!result.valid) {
-        return ValidationResult.invalidWithDepth(.rar, result.error_message orelse "RAR validation failed", .full);
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_get, "file size", .structural);
+    };
+    if (file_size == 0) {
+        return ValidationResult.invalidWithDepth(.rar, "File too small", .structural);
     }
 
-    // If files were checked via unrar/7z command, report full validation
-    if (result.files_checked > 0) {
-        return ValidationResult.okWithDepth(.rar, .full);
+    const max_size: u64 = 1024 * 1024 * 1024;
+    if (file_size > max_size) {
+        return ValidationResult.invalidCodeWithDepth(.rar, .file_too_large, "validation", .structural);
     }
 
-    // Otherwise only header validation was possible (no unrar/7z available)
-    return ValidationResult.okWithDepth(.rar, .structural);
+    const data = allocator.alloc(u8, @intCast(file_size)) catch {
+        return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_allocate, "RAR read buffer", .structural);
+    };
+    defer allocator.free(data);
+
+    file.seekTo(0) catch {
+        return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_seek, "to start", .structural);
+    };
+    const bytes_read = file.readAll(data) catch {
+        return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_read, "RAR file", .structural);
+    };
+    if (bytes_read != file_size) {
+        return ValidationResult.invalidCodeWithDepth(.rar, .incomplete, "RAR file", .structural);
+    }
+
+    return validateRarWithRarz(data);
 }
 
 // ============ Buffer Validators ============
@@ -2364,15 +2419,107 @@ pub fn validateZstdFromBuffer(data: []const u8) ValidationResult {
 }
 
 pub fn validateRarFromBuffer(data: []const u8) ValidationResult {
-    if (data.len < 7) return ValidationResult.invalid(.rar, "File too small");
-    // RAR 5.0 signature
-    const rar5_sig = [_]u8{ 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01 };
-    // RAR 4.x signature
-    const rar4_sig = [_]u8{ 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00 };
-    if (std.mem.eql(u8, data[0..7], &rar5_sig) or std.mem.eql(u8, data[0..7], &rar4_sig)) {
-        return ValidationResult.ok(.rar);
+    return validateRarWithRarz(data);
+}
+
+fn compactProDepthForError(code: i32) ValidationDepth {
+    return switch (code) {
+        c_compact_pro.CP_ERR_FILE_CRC_MISMATCH,
+        c_compact_pro.CP_ERR_INVALID_RUN_LENGTH_ONE,
+        c_compact_pro.CP_ERR_OUTPUT_LENGTH_MISMATCH,
+        c_compact_pro.CP_ERR_UNEXPECTED_END_OF_STREAM,
+        => .full,
+        else => .structural,
+    };
+}
+
+fn validateCptWithCompactPro(data: []const u8) ValidationResult {
+    if (data.len < 8) return ValidationResult.invalidWithDepth(.cpt, "File too small", .structural);
+
+    var listing = std.mem.zeroes(c_compact_pro.cp_archive_listing);
+    defer c_compact_pro.cp_archive_listing_free(&listing);
+    const list_code = c_compact_pro.cp_archive_list(data.ptr, data.len, 1, &listing);
+    if (list_code != c_compact_pro.CP_OK) {
+        return ValidationResult.invalidWithDepth(.cpt, std.mem.span(c_compact_pro.cp_error_string(list_code)), compactProDepthForError(list_code));
     }
-    return ValidationResult.invalidCode(.rar, .invalid_signature, "RAR");
+
+    var extracted = std.mem.zeroes(c_compact_pro.cp_archive_output);
+    defer c_compact_pro.cp_archive_output_free(&extracted);
+    const extract_code = c_compact_pro.cp_archive_extract(data.ptr, data.len, 1, &extracted);
+    if (extract_code == c_compact_pro.CP_OK) {
+        return ValidationResult.okWithDepth(.cpt, .full);
+    }
+
+    if (extract_code == c_compact_pro.CP_ERR_UNSUPPORTED_ENCRYPTED) {
+        var encrypted_result = ValidationResult.okWithDepthAndWarning(.cpt, .structural, "Encrypted Compact Pro content; full validation unavailable");
+        encrypted_result.has_encrypted_content = true;
+        return encrypted_result;
+    }
+
+    if (extract_code == c_compact_pro.CP_ERR_UNSUPPORTED_LZH) {
+        return ValidationResult.okWithDepthAndWarning(.cpt, .structural, "Unsupported Compact Pro compression profile; structural validation only");
+    }
+
+    return ValidationResult.invalidWithDepth(.cpt, std.mem.span(c_compact_pro.cp_error_string(extract_code)), compactProDepthForError(extract_code));
+}
+
+pub fn validateCpt(file: std.fs.File) ValidationResult {
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_get, "file size", .structural);
+    };
+    if (file_size == 0) return ValidationResult.invalidWithDepth(.cpt, "File too small", .structural);
+
+    const max_size: u64 = 1024 * 1024 * 1024;
+    if (file_size > max_size) {
+        return ValidationResult.invalidCodeWithDepth(.cpt, .file_too_large, "validation", .structural);
+    }
+
+    const data = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+        return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_allocate, "CPT read buffer", .structural);
+    };
+    defer std.heap.page_allocator.free(data);
+
+    file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_seek, "to start", .structural);
+    const bytes_read = file.readAll(data) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_read, "CPT file", .structural);
+    if (bytes_read != file_size) return ValidationResult.invalidCodeWithDepth(.cpt, .incomplete, "CPT file", .structural);
+
+    return validateCptWithCompactPro(data);
+}
+
+pub fn validateCptDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        return switch (err) {
+            error.FileNotFound => ValidationResult.invalidWithDepth(.cpt, "File not found", .structural),
+            error.AccessDenied => ValidationResult.invalidWithDepth(.cpt, "Access denied", .structural),
+            else => ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_open, "file", .structural),
+        };
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_get, "file size", .structural);
+    };
+    if (file_size == 0) return ValidationResult.invalidWithDepth(.cpt, "File too small", .structural);
+
+    const max_size: u64 = 1024 * 1024 * 1024;
+    if (file_size > max_size) {
+        return ValidationResult.invalidCodeWithDepth(.cpt, .file_too_large, "validation", .structural);
+    }
+
+    const data = allocator.alloc(u8, @intCast(file_size)) catch {
+        return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_allocate, "CPT read buffer", .structural);
+    };
+    defer allocator.free(data);
+
+    file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_seek, "to start", .structural);
+    const bytes_read = file.readAll(data) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_read, "CPT file", .structural);
+    if (bytes_read != file_size) return ValidationResult.invalidCodeWithDepth(.cpt, .incomplete, "CPT file", .structural);
+
+    return validateCptWithCompactPro(data);
+}
+
+pub fn validateCptFromBuffer(data: []const u8) ValidationResult {
+    return validateCptWithCompactPro(data);
 }
 
 pub fn validate7zFromBuffer(data: []const u8) ValidationResult {
