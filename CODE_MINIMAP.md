@@ -28,7 +28,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/build/` | Zig build helpers (libtool bundling) |
 | `src/core/path_validation.zig` | Parallel path validation with bundle-aware enumeration (.git directories validated as units, not recursed into); honors `MAX_FILES` |
 | `src/core/format_validation.zig` | Format validation logic incl. bundle detection (`detectBundleType()`, `isBundleDirectory()`), git repository deep validation routing, ZIP deep validation (central-directory parsing), PDF image lenience (JBIG2/DCT warnings), XML undefined-entity tolerance, expanded magic/extension handling (e.g., EXR, MPEG-ES), pure-Zig BinHex/HQX validation (alphabet decode, RLE, CRC16), and telemetry envs (`ZIP_TELEMETRY`, `PDF_TELEMETRY`) |
-| `src/core/codec_utils.zig` | Shared codec utilities: CRC-32 (ISO-HDLC/OGG/MPEG-2/bzip2), CRC-16/CCITT, RBSP emulation prevention byte removal, Annex B start code finder, LEB128 decoder, endian read helpers |
+| `src/core/codec_utils.zig` | Shared codec utilities: `Crc32Normal(init,xorout)` comptime-parameterized MSB-first CRC-32 (instantiated as `Crc32Ogg`/`Crc32Mpeg2`/`Crc32Bzip2`), `crc16Ccitt` (RAR4+BinHex), `removeEmulationPreventionBytes` (H.264/H.265 RBSP), `findAnnexBStartCode`, `readLeb128`, `readLe`/`readBe` endian helpers. Consumed by: ebml_parser, ogg_validator, mpeg_ts_parser, bzip2, archive_validators, format_validation, h264_syntax_validator, h265_validator, av1_obu_validator, video_validator |
 | `src/core/i18n/mod.zig` | i18n locale registry/switching, locale detection from env/CLI prefixes, translated string accessors, and cross-locale CLI/env alias maps (30 locales) |
 | `src/core/i18n/{bn,hi,pa,ps,sw,ta,th,ur}.zig` | Locale data modules for Bengali/Hindi/Punjabi/Pashto/Swahili/Tamil/Thai/Urdu including core UI strings, full format description catalog, and error/warning translation maps |
 | `src/core/git_validator.zig` | Git repository validation using SHA-1 checksums for loose objects, pack files, and index files |
@@ -55,7 +55,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/aac_huffman_tables.zig` | AAC Huffman trees (scalefactor + 11 spectral codebooks) and SWB offset tables |
 | `src/core/mpeg_ts_parser.zig` | MPEG-TS demuxer with PAT/PMT CRC-32, CC tracking, PES assembly + stream dispatch |
 | `src/core/mp3_decode_validator.zig` | MP3 frame decoder (file and buffer-based) with Huffman + IMDCT validation |
-| `src/core/ebml_parser.zig` | EBML/Matroska container parser with CRC-32 verification |
+| `src/core/ebml_parser.zig` | EBML/Matroska container parser with CRC-32 verification (uses `std.hash.Crc32` via codec_utils consolidation) |
 
 ## FFI (ffi/)
 | Path | Purpose |
