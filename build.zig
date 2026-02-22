@@ -287,46 +287,34 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // All C library dependencies that must be linked into any binary using core_mod.
+    // Defined once to avoid divergence between static lib, shared lib, tests, and fuzzers.
+    const all_c_deps: []const *std.Build.Step.Compile = &.{
+        pcre2_lib,     // regex/glob matching
+        zlib_lib,      // deflate decompression (replaces buggy std.compress.flate)
+        libjpeg_lib,   // JPEG decode validation
+        libwebp_lib,   // WebP deep validation
+        libopus_lib,   // Opus audio deep validation
+        libogg_lib,    // OGG container support (required by libvorbis)
+        libvorbis_lib, // Vorbis audio deep validation
+        minimp3_lib,   // MP3 audio deep validation
+        openjpeg_lib,  // JPEG2000 decode validation
+        libjxl_lib,    // JPEG-XL decode validation
+        brotli_lib,    // .br file decompression validation
+        libopenmpt_lib, // tracker format (MOD/XM/IT/S3M) deep validation
+        cj5_lib,       // JSON5 validation (C library)
+        libraw_lib,    // camera RAW format validation (LGPL-2.1)
+        sevenz_lib,    // 7-Zip archive deep validation (public domain)
+        compact_pro_lib, // Compact Pro archive validation
+    };
+
     // Static library for FFI
     const lib = b.addLibrary(.{
         .name = "validate_core",
         .root_module = ffi_mod,
         .linkage = .static,
     });
-    // Link PCRE2 into the static library (Zig-built)
-    lib.linkLibrary(pcre2_lib);
-    // Link zlib for robust deflate decompression (Zig-built, replaces buggy Zig std.compress.flate)
-    lib.linkLibrary(zlib_lib);
-    // Link libjpeg for JPEG deep validation (Zig-built)
-    lib.linkLibrary(libjpeg_lib);
-    // Link libwebp for WebP deep validation (built from source)
-    lib.linkLibrary(libwebp_lib);
-    // Removed: libheif, openh264 (replaced by pure-Zig validators)
-    // Link libopus for Opus audio deep validation
-    lib.linkLibrary(libopus_lib);
-    // Link libogg for OGG container support (required by libvorbis)
-    lib.linkLibrary(libogg_lib);
-    // Link libvorbis for Vorbis audio deep validation
-    lib.linkLibrary(libvorbis_lib);
-    // Link minimp3 for MP3 audio deep validation
-    lib.linkLibrary(minimp3_lib);
-    // Removed: libvpx (replaced by pure-Zig VP9 validator)
-    // Link OpenJPEG for JPEG2000 decode validation
-    lib.linkLibrary(openjpeg_lib);
-    // Link libjxl for JPEG-XL decode validation
-    lib.linkLibrary(libjxl_lib);
-    // Link brotli for .br file decompression validation
-    lib.linkLibrary(brotli_lib);
-    // Link libopenmpt for tracker format (MOD/XM/IT/S3M) deep validation (Zig-built)
-    lib.linkLibrary(libopenmpt_lib);
-    // Link cj5 for JSON5 validation (Zig-built C library)
-    lib.linkLibrary(cj5_lib);
-    // Link libraw for camera RAW format validation (LGPL-2.1/CDDL dual license)
-    lib.linkLibrary(libraw_lib);
-    // Link 7z LZMA SDK for 7-Zip archive deep validation (public domain)
-    lib.linkLibrary(sevenz_lib);
-    // Link compact_pro for in-memory archive validation
-    lib.linkLibrary(compact_pro_lib);
+    for (all_c_deps) |dep| lib.linkLibrary(dep);
     lib.linkLibC();
     lib.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
     // On Windows, LibRaw uses ntohs/htons/htonl/ntohl from ws2_32
@@ -389,33 +377,7 @@ pub fn build(b: *std.Build) void {
         .root_module = ffi_mod,
         .linkage = .dynamic,
     });
-    // Link PCRE2 into the shared library (Zig-built)
-    lib_shared.linkLibrary(pcre2_lib);
-    lib_shared.linkLibrary(zlib_lib);
-    // Link libjpeg for JPEG deep validation (Zig-built)
-    lib_shared.linkLibrary(libjpeg_lib);
-    // Link libwebp for WebP deep validation (built from source)
-    lib_shared.linkLibrary(libwebp_lib);
-    // Removed: libheif, openh264 (replaced by pure-Zig validators)
-    // Link libopus for Opus audio deep validation
-    lib_shared.linkLibrary(libopus_lib);
-    // Link libogg for OGG container support (required by libvorbis)
-    lib_shared.linkLibrary(libogg_lib);
-    // Link libvorbis for Vorbis audio deep validation
-    lib_shared.linkLibrary(libvorbis_lib);
-    // Link minimp3 for MP3 audio deep validation
-    lib_shared.linkLibrary(minimp3_lib);
-    // Removed: libvpx (replaced by pure-Zig VP9 validator)
-    // Link OpenJPEG for JPEG2000 decode validation
-    lib_shared.linkLibrary(openjpeg_lib);
-    // Link libjxl for JPEG-XL decode validation
-    lib_shared.linkLibrary(libjxl_lib);
-    // Link brotli for .br file decompression validation
-    lib_shared.linkLibrary(brotli_lib);
-    // Link libopenmpt for tracker format (MOD/XM/IT/S3M) deep validation (Zig-built)
-    lib_shared.linkLibrary(libopenmpt_lib);
-    // Link compact_pro for in-memory archive validation
-    lib_shared.linkLibrary(compact_pro_lib);
+    for (all_c_deps) |dep| lib_shared.linkLibrary(dep);
     lib_shared.linkLibC();
     lib_shared.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
 
@@ -517,37 +479,8 @@ pub fn build(b: *std.Build) void {
         .root_module = core_mod,
         .filters = test_filters,
     });
-    // Link PCRE2 for tests (Zig-built)
-    core_tests.linkLibrary(pcre2_lib);
-    core_tests.linkLibrary(zlib_lib);
-    // Link libjpeg for JPEG deep validation tests (Zig-built)
-    core_tests.linkLibrary(libjpeg_lib);
-    // Link SQLite for deep validation tests (Zig-built)
-    core_tests.linkLibrary(sqlite3_lib);
-    // Link libwebp for WebP deep validation tests
-    core_tests.linkLibrary(libwebp_lib);
-    // Removed: libheif, openh264 (replaced by pure-Zig validators)
-    // Link libopus for Opus audio deep validation tests
-    core_tests.linkLibrary(libopus_lib);
-    // Link libogg for OGG container support tests (required by libvorbis)
-    core_tests.linkLibrary(libogg_lib);
-    // Link libvorbis for Vorbis audio deep validation tests
-    core_tests.linkLibrary(libvorbis_lib);
-    // Link minimp3 for MP3 audio deep validation tests
-    core_tests.linkLibrary(minimp3_lib);
-    // Removed: libvpx (replaced by pure-Zig VP9 validator)
-    // Link OpenJPEG for JPEG2000 decode validation tests
-    core_tests.linkLibrary(openjpeg_lib);
-    // Link libjxl for JPEG-XL decode validation tests
-    core_tests.linkLibrary(libjxl_lib);
-    // Link brotli for .br file decompression validation tests
-    core_tests.linkLibrary(brotli_lib);
-    // Link libopenmpt for tracker format (MOD/XM/IT/S3M) deep validation tests (Zig-built)
-    core_tests.linkLibrary(libopenmpt_lib);
-    // Link 7z LZMA SDK for 7-Zip archive deep validation tests (public domain)
-    core_tests.linkLibrary(sevenz_lib);
-    // Link compact_pro for archive validation tests
-    core_tests.linkLibrary(compact_pro_lib);
+    for (all_c_deps) |dep| core_tests.linkLibrary(dep);
+    core_tests.linkLibrary(sqlite3_lib); // Tests need sqlite3 directly (CLI links it separately)
     core_tests.linkLibC();
     core_tests.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
 
@@ -569,20 +502,8 @@ pub fn build(b: *std.Build) void {
         .root_module = ffi_mod,
         .filters = test_filters,
     });
-    ffi_tests.linkLibrary(pcre2_lib);
-    ffi_tests.linkLibrary(zlib_lib);
-    ffi_tests.linkLibrary(libjpeg_lib);
+    for (all_c_deps) |dep| ffi_tests.linkLibrary(dep);
     ffi_tests.linkLibrary(sqlite3_lib);
-    ffi_tests.linkLibrary(libwebp_lib);
-    ffi_tests.linkLibrary(libopus_lib);
-    ffi_tests.linkLibrary(libogg_lib);
-    ffi_tests.linkLibrary(libvorbis_lib);
-    ffi_tests.linkLibrary(minimp3_lib);
-    ffi_tests.linkLibrary(openjpeg_lib);
-    ffi_tests.linkLibrary(libjxl_lib);
-    ffi_tests.linkLibrary(brotli_lib);
-    ffi_tests.linkLibrary(libopenmpt_lib);
-    ffi_tests.linkLibrary(compact_pro_lib);
     ffi_tests.linkLibC();
     ffi_tests.linkLibCpp();
 
