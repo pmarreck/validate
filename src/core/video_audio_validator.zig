@@ -636,12 +636,16 @@ fn validateMp4AacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
 
     if (stsc != null) {
         // stsc is a FullBox: skip header + 4 bytes version/flags
-        file.seekTo(stsc.?.offset + stsc.?.header_size + 4) catch {};
+        file.seekTo(stsc.?.offset + stsc.?.header_size + 4) catch {
+            return AudioValidationResult.invalid(errmsg.failedToSeek("stsc box"), .aac);
+        };
         var stsc_count_buf: [4]u8 = undefined;
         if (file.read(&stsc_count_buf)) |bytes| {
             if (bytes == 4) {
                 const stsc_count = std.mem.readInt(u32, &stsc_count_buf, .big);
-                stsc_entries.ensureTotalCapacity(allocator, stsc_count) catch {};
+                stsc_entries.ensureTotalCapacity(allocator, stsc_count) catch {
+                    return AudioValidationResult.invalid("Memory allocation failed for stsc entries", .aac);
+                };
                 for (0..stsc_count) |_| {
                     var entry_buf: [12]u8 = undefined;
                     const read = file.read(&entry_buf) catch break;

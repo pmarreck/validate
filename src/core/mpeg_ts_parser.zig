@@ -703,6 +703,8 @@ pub fn validateTsDeep(allocator: std.mem.Allocator, data: []const u8, max_packet
         }
     }
 
+    var oom_during_assembly = false;
+
     var pos = start_offset;
     while (pos + TS_PACKET_SIZE <= data.len and packets_parsed < max_packets) {
         const packet = data[pos .. pos + TS_PACKET_SIZE];
@@ -820,13 +822,17 @@ pub fn validateTsDeep(allocator: std.mem.Allocator, data: []const u8, max_packet
                         const es_data = stripPesHeader(payload);
                         if (es_data) |es| {
                             if (buf.data.items.len + es.len <= 2 * 1024 * 1024) {
-                                buf.appendPayload(allocator, es) catch {};
+                                buf.appendPayload(allocator, es) catch {
+                                    oom_during_assembly = true;
+                                };
                             }
                         }
                     } else if (buf.started) {
                         // Continuation packet: append raw payload (no PES header)
                         if (buf.data.items.len + payload.len <= 2 * 1024 * 1024) {
-                            buf.appendPayload(allocator, payload) catch {};
+                            buf.appendPayload(allocator, payload) catch {
+                                oom_during_assembly = true;
+                            };
                         }
                     }
                 }
@@ -839,6 +845,10 @@ pub fn validateTsDeep(allocator: std.mem.Allocator, data: []const u8, max_packet
 
     if (packets_parsed == 0) {
         return TsDeepValidationResult.failure(errmsg.noValidXFound("TS packets"));
+    }
+
+    if (oom_during_assembly) {
+        return TsDeepValidationResult.failure("Out of memory during PES stream assembly");
     }
 
     // Now validate assembled PES streams
