@@ -393,3 +393,89 @@ pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult
 
     return ValidationResult.okWithDepth(.mbox, .structural);
 }
+
+// ============ Tests ============
+
+test "validateEml with ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/eml/sample.eml", .{}) catch return;
+    defer file.close();
+    const result = validateEml(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateMbox with ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/mbox/sample.mbox", .{}) catch return;
+    defer file.close();
+    const result = validateMbox(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateMboxDeep with ground truth" {
+    const allocator = std.testing.allocator;
+    const result = validateMboxDeep(allocator, "ground_truth_examples/mbox/sample.mbox");
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateEml with minimal valid email" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_minimal.eml", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("From: a@b.c\r\nTo: d@e.f\r\nSubject: test\r\n\r\nbody") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateEml(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateMbox with minimal valid mbox" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_minimal.mbox", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("From sender@example.com Mon Jan  1 00:00:00 2024\r\nFrom: a@b.c\r\nTo: d@e.f\r\nSubject: test\r\n\r\nbody\r\n") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateMbox(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateEml with empty file" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_empty.eml", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        // Write nothing — empty file
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateEml(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateMbox with empty file" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_empty.mbox", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        // Write nothing — empty file
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateMbox(file);
+    try std.testing.expect(!result.is_valid);
+}

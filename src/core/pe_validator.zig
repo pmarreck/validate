@@ -216,3 +216,58 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
 
     return ValidationResult.okWithDepth(.pe, .full);
 }
+
+// -- Tests ------------------------------------------------------------------
+
+test "validatePe with ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/pe/sample.exe", .{}) catch return;
+    defer file.close();
+    const result = validatePe(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validatePe with truncated PE" {
+    const tmp_dir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmp_path = std.fmt.comptimePrint("{s}", .{"pe_truncated_test.exe"});
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ tmp_dir, tmp_path }) catch unreachable;
+
+    // Write "MZ" + 2 zero bytes (4 bytes total — well below 128 minimum)
+    {
+        const file = std.fs.createFileAbsolute(full_path, .{}) catch return;
+        defer file.close();
+        file.writeAll(&[_]u8{ 'M', 'Z', 0, 0 }) catch return;
+    }
+    defer std.fs.deleteFileAbsolute(full_path) catch {};
+
+    const file = std.fs.openFileAbsolute(full_path, .{}) catch return;
+    defer file.close();
+    const result = validatePe(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validatePe with invalid magic" {
+    const tmp_dir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmp_path = std.fmt.comptimePrint("{s}", .{"pe_badmagic_test.exe"});
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ tmp_dir, tmp_path }) catch unreachable;
+
+    // Write 4 random (non-MZ) bytes, padded to 256 bytes to pass size check
+    {
+        const file = std.fs.createFileAbsolute(full_path, .{}) catch return;
+        defer file.close();
+        var buf: [256]u8 = undefined;
+        @memset(&buf, 0);
+        buf[0] = 0xDE;
+        buf[1] = 0xAD;
+        buf[2] = 0xBE;
+        buf[3] = 0xEF;
+        file.writeAll(&buf) catch return;
+    }
+    defer std.fs.deleteFileAbsolute(full_path) catch {};
+
+    const file = std.fs.openFileAbsolute(full_path, .{}) catch return;
+    defer file.close();
+    const result = validatePe(file);
+    try std.testing.expect(!result.is_valid);
+}

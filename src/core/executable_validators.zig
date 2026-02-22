@@ -378,3 +378,233 @@ pub fn validateAr(file: std.fs.File) ValidationResult {
 
     return ValidationResult.okWithDepth(.ar, .full);
 }
+
+// ============ Tests ============
+
+test "validateElf with ground truth file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/elf/minimal.elf", .{}) catch return;
+    defer file.close();
+    const result = validateElf(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateElf rejects truncated file" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_truncated.elf", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("\x7fELF") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateElf(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateElf rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.elf", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("This is not an ELF file at all!!!!") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateElf(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateMacho with ground truth file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/macho/sample.o", .{}) catch return;
+    defer file.close();
+    const result = validateMacho(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateMacho rejects truncated file" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_truncated.macho", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("\xcf\xfa\xed\xfe") catch return; // Mach-O 64-bit LE magic only
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateMacho(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateMacho rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.macho", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("Definitely not a Mach-O binary!!") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateMacho(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateMachoFat with ground truth file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/macho_fat/sample", .{}) catch return;
+    defer file.close();
+    const result = validateMachoFat(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateMachoFat rejects truncated file" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_truncated.fat", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("\xca\xfe\xba\xbe") catch return; // Fat magic only
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateMachoFat(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateMachoFat rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.fat", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("Not a fat binary at all here!!!!!!") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateMachoFat(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateCoff rejects truncated file" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_truncated.obj", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("\x4c\x01\x03\x00") catch return; // i386 machine type + partial header
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateCoff(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateCoff rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.obj", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        // 20 bytes with invalid machine type (0xFFFF)
+        wf.writeAll("\xff\xff\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateCoff(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateWasm with ground truth file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/wasm/minimal.wasm", .{}) catch return;
+    defer file.close();
+    const result = validateWasm(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateWasm rejects truncated file" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_truncated.wasm", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("\x00\x61\x73\x6d") catch return; // Wasm magic only
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateWasm(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateWasm rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.wasm", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("This is absolutely not WebAssembly") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateWasm(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateAr with ground truth file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ar/minimal.a", .{}) catch return;
+    defer file.close();
+    const result = validateAr(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateAr rejects truncated file" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_truncated.a", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("!<ar") catch return; // Partial ar magic
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateAr(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateAr rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.a", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("Not an ar archive, no way, no how!") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateAr(file);
+    try std.testing.expect(!result.is_valid);
+}

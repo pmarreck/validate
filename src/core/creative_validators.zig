@@ -955,3 +955,150 @@ pub fn validateAepFromBuffer(data: []const u8) ValidationResult {
 
     return ValidationResult.ok(.aep);
 }
+
+// ============ Tests ============
+
+const testing = std.testing;
+
+// ---------- Ground truth file-based tests ----------
+
+test "validateEps accepts ground truth EPS" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/eps/sample.eps", .{}) catch return;
+    defer file.close();
+    const result = validateEps(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.eps, result.format);
+}
+
+test "validateFcpxml accepts ground truth FCPXML" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/fcpxml/sample.fcpxml", .{}) catch return;
+    defer file.close();
+    const result = validateFcpxml(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.fcpxml, result.format);
+}
+
+test "validatePrproj accepts ground truth PRPROJ" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/prproj/sample.prproj", .{}) catch return;
+    defer file.close();
+    const result = validatePrproj(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.prproj, result.format);
+}
+
+// ---------- Invalid data rejection (file-based) ----------
+
+test "validateEps rejects garbage file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
+    tmp.dir.writeFile(.{ .sub_path = "bad.eps", .data = &garbage }) catch return;
+    const file = tmp.dir.openFile("bad.eps", .{}) catch return;
+    defer file.close();
+    const result = validateEps(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateFcpxml rejects garbage file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
+    tmp.dir.writeFile(.{ .sub_path = "bad.fcpxml", .data = &garbage }) catch return;
+    const file = tmp.dir.openFile("bad.fcpxml", .{}) catch return;
+    defer file.close();
+    const result = validateFcpxml(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePrproj rejects garbage file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
+    tmp.dir.writeFile(.{ .sub_path = "bad.prproj", .data = &garbage }) catch return;
+    const file = tmp.dir.openFile("bad.prproj", .{}) catch return;
+    defer file.close();
+    const result = validatePrproj(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---------- Buffer-based tests ----------
+
+test "validateEpsFromBuffer accepts valid EPS header" {
+    const result = validateEpsFromBuffer("%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 200 100\n%%EOF\n");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.eps, result.format);
+}
+
+test "validateEpsFromBuffer accepts DOS EPS binary header" {
+    const data = [_]u8{ 0xC5, 0xD0, 0xD3, 0xC6 } ++ [_]u8{ 0x1C, 0x00, 0x00, 0x00 } ++ [_]u8{ 0x00, 0x01, 0x00, 0x00 };
+    const result = validateEpsFromBuffer(&data);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.eps, result.format);
+}
+
+test "validateEpsFromBuffer rejects PS without BoundingBox" {
+    const result = validateEpsFromBuffer("%!PS-Adobe-3.0 EPSF-3.0\n%%EOF\n");
+    try testing.expect(!result.is_valid);
+}
+
+test "validateEpsFromBuffer rejects garbage" {
+    const result = validateEpsFromBuffer("this is not postscript");
+    try testing.expect(!result.is_valid);
+}
+
+test "validateEpsFromBuffer rejects too-small data" {
+    const result = validateEpsFromBuffer("ab");
+    try testing.expect(!result.is_valid);
+}
+
+test "validateFcpxmlFromBuffer accepts valid FCPXML" {
+    const result = validateFcpxmlFromBuffer("<?xml version=\"1.0\"?>\n<fcpxml version=\"1.10\">\n</fcpxml>\n");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.fcpxml, result.format);
+}
+
+test "validateFcpxmlFromBuffer accepts direct fcpxml element" {
+    const result = validateFcpxmlFromBuffer("<fcpxml version=\"1.10\"><resources/></fcpxml>");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.fcpxml, result.format);
+}
+
+test "validateFcpxmlFromBuffer rejects garbage" {
+    const result = validateFcpxmlFromBuffer("this is not fcpxml at all really");
+    try testing.expect(!result.is_valid);
+}
+
+test "validateFcpxmlFromBuffer rejects too-small data" {
+    const result = validateFcpxmlFromBuffer("short");
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePrprojFromBuffer accepts gzip-compressed data" {
+    const data = [_]u8{ 0x1f, 0x8b, 0x08, 0x00, 0x00 };
+    const result = validatePrprojFromBuffer(&data);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.prproj, result.format);
+}
+
+test "validatePrprojFromBuffer accepts XML declaration" {
+    const result = validatePrprojFromBuffer("<?xml version=\"1.0\"?>\n<Project/>");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.prproj, result.format);
+}
+
+test "validatePrprojFromBuffer accepts BOM + XML" {
+    const data = [_]u8{ 0xEF, 0xBB, 0xBF } ++ "<?xml version=\"1.0\"?>";
+    const result = validatePrprojFromBuffer(data);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.prproj, result.format);
+}
+
+test "validatePrprojFromBuffer rejects garbage" {
+    const result = validatePrprojFromBuffer("this is not a premiere project");
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePrprojFromBuffer rejects too-small data" {
+    const result = validatePrprojFromBuffer("abc");
+    try testing.expect(!result.is_valid);
+}

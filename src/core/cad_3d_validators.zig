@@ -1879,3 +1879,166 @@ pub fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     return ValidationResult.okWithDepth(.glb, .full);
 }
+
+// ============ Tests ============
+
+test "validateDxf with ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/dxf/sample.dxf", .{}) catch return;
+    defer file.close();
+    const result = validateDxf(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateDxf rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.dxf", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("this is not a DXF file at all") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateDxf(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateStep with ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/step/sample.stp", .{}) catch return;
+    defer file.close();
+    const result = validateStep(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateStep rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.stp", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("this is not a STEP file at all") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateStep(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateStl with ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/stl/sample.stl", .{}) catch return;
+    defer file.close();
+    const result = validateStl(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateStl rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.stl", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("this is not a STL file at all") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateStl(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateObj with ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/obj/sample.obj", .{}) catch return;
+    defer file.close();
+    const result = validateObj(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateObj rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.obj", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("this is not an OBJ file at all") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateObj(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validatePly with ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ply/sample.ply", .{}) catch return;
+    defer file.close();
+    const result = validatePly(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validatePly rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.ply", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("this is not a PLY file at all") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validatePly(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateGltf with ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/gltf/box.gltf", .{}) catch return;
+    defer file.close();
+    const result = validateGltf(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateGltf rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.gltf", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("this is not a glTF file at all") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateGltf(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateGlb with ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/glb/box.glb", .{}) catch return;
+    defer file.close();
+    const result = validateGlb(file);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateGlb rejects invalid data" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.glb", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        wf.writeAll("this is not a GLB file at all") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateGlb(file);
+    try std.testing.expect(!result.is_valid);
+}
