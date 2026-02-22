@@ -857,7 +857,10 @@ pub fn decode(allocator: Allocator, data: []const u8, params: CcittParams) Decod
         // Group 3 1D
         return decodeGroup3_1D(allocator, data, params);
     } else {
-        // Group 3 2D - not yet implemented, fall back to Group 4
+        // Group 3 2D (mixed mode): not yet implemented as distinct decoder.
+        // Falls back to Group 4 decoder which handles the 2D-coded lines
+        // but may misinterpret periodic 1D reference lines (k parameter).
+        // Extremely rare in modern files; validation result is approximate.
         return decodeGroup4(allocator, data, params);
     }
 }

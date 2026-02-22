@@ -2363,8 +2363,8 @@ pub fn validateZipFromBuffer(data: []const u8, format: FileFormat) ValidationRes
     if (data.len < 4) return ValidationResult.invalid(format, "File too small");
     // Check local file header signature
     if (data[0] == 0x50 and data[1] == 0x4B and data[2] == 0x03 and data[3] == 0x04) {
-        // TODO: Full ZIP validation (EOCD check)
-        return ValidationResult.ok(format);
+        // Signature-only check — no EOCD or CRC verification
+        return ValidationResult.structuralOnly(format);
     }
     return ValidationResult.invalidCode(format, .invalid_signature, "ZIP");
 }
