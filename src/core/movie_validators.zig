@@ -924,12 +924,17 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
         result.malformations.insert(.video_unsupported_profile_no_ffmpeg);
         result.warning_message = "full validation of this file requires ffmpeg (v4.0+) on PATH due to H.264 profile complexity";
     }
-    // Note if audio couldn't be fully validated
-    if (has_audio and !audio_validated and result.warning_message == null) {
-        if (audio_result.codec == .pcm) {
-            result.warning_message = "PCM audio track cannot be integrity-checked (raw unstructured samples)";
-        } else {
-            result.warning_message = "audio track not fully decoded (decode validation not yet implemented for this codec)";
+    // Audio not fully validated → not every byte is verified → downgrade from .full
+    if (has_audio and !audio_validated) {
+        if (result.validation_depth == .full) {
+            result.validation_depth = .structural;
+        }
+        if (result.warning_message == null) {
+            if (audio_result.codec == .pcm) {
+                result.warning_message = "PCM audio track cannot be integrity-checked (raw unstructured samples)";
+            } else {
+                result.warning_message = "audio track not fully decoded (decode validation not yet implemented for this codec)";
+            }
         }
     }
     return result;

@@ -484,8 +484,8 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
 
         // Limit HDU size for checksum verification (avoid OOM on huge files)
         if (hdu_size > 1024 * 1024 * 1024) { // 1 GiB limit
-            // Skip checksum verification for very large files
-            return ValidationResult.okWithDepth(.fits, .full);
+            // CHECKSUM present but file too large to verify — data not actually checked
+            return ValidationResult.okWithDepthAndWarning(.fits, .structural, "CHECKSUM present but HDU exceeds 1 GiB verification limit");
         }
 
         var hdu_sum: u64 = 0;
@@ -550,7 +550,8 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
 
         // Limit data size for checksum verification
         if (data_size > 1024 * 1024 * 1024) { // 1 GiB limit
-            return ValidationResult.okWithDepth(.fits, .full);
+            // DATASUM present but data too large to verify
+            return ValidationResult.okWithDepthAndWarning(.fits, .structural, "DATASUM present but data exceeds 1 GiB verification limit");
         }
 
         var data_sum: u64 = 0;
@@ -598,7 +599,8 @@ pub fn validateFits(file: std.fs.File) ValidationResult {
         return ValidationResult.okWithDepth(.fits, .full);
     }
 
-    return ValidationResult.okWithDepth(.fits, .full);
+    // No CHECKSUM or DATASUM present — data bytes are not verified
+    return ValidationResult.okWithDepthAndWarning(.fits, .structural, "no CHECKSUM/DATASUM keyword; data integrity not verified");
 }
 
 /// Parse an integer from FITS keyword value field
@@ -1394,7 +1396,7 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
     if (embedded_data_valid) {
         return ValidationResult.okWithDepth(.dicom, .full);
     } else {
-        return ValidationResult.okWithDepthAndWarning(.dicom, .full, "Embedded pixel data validation failed");
+        return ValidationResult.okWithDepthAndWarning(.dicom, .structural, "Embedded pixel data validation failed");
     }
 }
 
@@ -1634,4 +1636,47 @@ fn init_valid_fastq_seq_chars() [256]bool {
     table['u'] = true;
 
     return table;
+}
+
+// ============ Tests ============
+
+test "FITS without CHECKSUM/DATASUM returns structural depth" {
+    // Create a minimal valid FITS file: 2880-byte header block, no CHECKSUM/DATASUM
+    var header: [2880]u8 = [_]u8{' '} ** 2880;
+    // Each FITS keyword record is exactly 80 bytes, space-padded
+    const simple = "SIMPLE  =                    T" ++ (" " ** 50);
+    const bitpix = "BITPIX  =                    8" ++ (" " ** 50);
+    const naxis = "NAXIS   =                    0" ++ (" " ** 50);
+    const end = "END" ++ (" " ** 77);
+    @memcpy(header[0..80], simple);
+    @memcpy(header[80..160], bitpix);
+    @memcpy(header[160..240], naxis);
+    @memcpy(header[240..320], end);
+
+    // Write to temp file using TMPDIR (RAM-backed)
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_fits_no_checksum.fits", .{tmpdir}) catch "/tmp/test_fits_no_checksum.fits";
+
+    {
+        const wfile = try std.fs.cwd().createFile(path, .{});
+        try wfile.writeAll(&header);
+        wfile.close();
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    const file = try std.fs.cwd().openFile(path, .{});
+    defer file.close();
+    const result = validateFits(file);
+    // Without CHECKSUM or DATASUM, data is NOT verified → must be .structural
+    try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expect(result.warning_message != null);
+}
+
+test "DICOM with failed embedded pixel data returns structural depth" {
+    // This tests the conceptual contract: if embedded pixel data fails, depth should NOT be .full
+    const result = ValidationResult.okWithDepthAndWarning(.dicom, .structural, "Embedded pixel data validation failed");
+    try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
+    try std.testing.expect(result.is_valid);
 }

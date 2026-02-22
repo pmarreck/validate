@@ -748,7 +748,11 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
             .mpeg2 => .mpeg2,
             .unknown => video_codec,
         };
-        return VideoValidationResult.okByteValidated(detected_codec, mpeg_result.structural_result.pictures);
+        // Only claim byte-validated if deep validation actually succeeded
+        if (mpeg_result.deep_valid) {
+            return VideoValidationResult.okByteValidated(detected_codec, mpeg_result.structural_result.pictures);
+        }
+        return VideoValidationResult.okDecoded(detected_codec, 0);
     }
 
     // For Theora, validate packets
@@ -1245,7 +1249,10 @@ fn validateMpeg12FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviS
     // Validate the MPEG stream with deep DCT decode
     const result = mpeg12.validateMpeg12Deep(video_data.items, max_frames);
     if (result.valid) {
-        return VideoValidationResult.okByteValidated(codec, result.structural_result.pictures);
+        if (result.deep_valid) {
+            return VideoValidationResult.okByteValidated(codec, result.structural_result.pictures);
+        }
+        return VideoValidationResult.okDecoded(codec, 0);
     } else {
         return VideoValidationResult.invalid(result.error_message orelse "MPEG decode failed", codec);
     }
@@ -2799,7 +2806,10 @@ fn validateMpeg12FromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, 
         .unknown => codec,
     };
 
-    return VideoValidationResult.okByteValidated(detected_codec, result.structural_result.pictures);
+    if (result.deep_valid) {
+        return VideoValidationResult.okByteValidated(detected_codec, result.structural_result.pictures);
+    }
+    return VideoValidationResult.okDecoded(detected_codec, 0);
 }
 
 
