@@ -14,6 +14,7 @@
 const std = @import("std");
 const BitReader = @import("bitstream_reader.zig").BitReader;
 const errmsg = @import("error_messages.zig");
+const codec_utils = @import("codec_utils.zig");
 
 // ============================================================================
 // NAL Unit Types (ITU-T H.265 Table 7-1)
@@ -535,51 +536,7 @@ fn parseSliceSegmentHeader(rbsp: []const u8, nal_type: NalUnitType) ?SliceSegmen
 // RBSP Emulation Prevention Byte Removal
 // ============================================================================
 
-/// Remove emulation prevention bytes from a NAL unit to get the RBSP.
-/// In H.265, the byte sequence 0x00 0x00 0x03 is an emulation prevention marker.
-/// 0x000003 0x00 -> 0x0000 0x00
-/// 0x000003 0x01 -> 0x0000 0x01
-/// 0x000003 0x02 -> 0x0000 0x02
-/// 0x000003 0x03 -> 0x0000 0x03
-///
-/// Returns a slice into the provided output buffer, or null if the buffer is too small.
-fn removeEmulationPreventionBytes(input: []const u8, output: []u8) ?[]u8 {
-    if (input.len == 0) return output[0..0];
-    if (output.len < input.len) return null;
-
-    var out_idx: usize = 0;
-    var i: usize = 0;
-
-    while (i < input.len) {
-        if (i + 2 < input.len and input[i] == 0x00 and input[i + 1] == 0x00 and input[i + 2] == 0x03) {
-            // Check that the byte after 0x03 is valid (0x00, 0x01, 0x02, or 0x03)
-            if (i + 3 < input.len) {
-                const next = input[i + 3];
-                if (next <= 0x03) {
-                    // Valid emulation prevention: copy 0x00 0x00, skip 0x03
-                    output[out_idx] = 0x00;
-                    output[out_idx + 1] = 0x00;
-                    out_idx += 2;
-                    i += 3; // Skip past 0x00 0x00 0x03
-                    continue;
-                }
-            } else {
-                // 0x000003 at end of data — still a valid EPB (the next byte is implicit)
-                output[out_idx] = 0x00;
-                output[out_idx + 1] = 0x00;
-                out_idx += 2;
-                i += 3;
-                continue;
-            }
-        }
-
-        output[out_idx] = input[i];
-        out_idx += 1;
-        i += 1;
-    }
-
-    return output[0..out_idx];
-}
+const removeEmulationPreventionBytes = codec_utils.removeEmulationPreventionBytes;
 
 // ============================================================================
 // NAL Unit Finder
@@ -603,20 +560,8 @@ const NalUnitIterator = struct {
 
     /// Find the next start code position (0x000001 or 0x00000001).
     /// Returns the position of the first byte of the start code, or null if not found.
-    fn findStartCode(self: *const NalUnitIterator, from: usize) ?struct { pos: usize, len: u8 } {
-        var i = from;
-        while (i + 2 < self.data.len) {
-            if (self.data[i] == 0x00 and self.data[i + 1] == 0x00) {
-                if (self.data[i + 2] == 0x01) {
-                    return .{ .pos = i, .len = 3 };
-                }
-                if (i + 3 < self.data.len and self.data[i + 2] == 0x00 and self.data[i + 3] == 0x01) {
-                    return .{ .pos = i, .len = 4 };
-                }
-            }
-            i += 1;
-        }
-        return null;
+    fn findStartCode(self: *const NalUnitIterator, from: usize) ?codec_utils.StartCode {
+        return codec_utils.findAnnexBStartCode(self.data, from);
     }
 
     /// Get the next NAL unit.

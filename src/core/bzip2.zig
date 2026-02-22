@@ -49,6 +49,7 @@
 //! based on the format specification, not a derivative of the original C code.
 
 const std = @import("std");
+const codec_utils = @import("codec_utils.zig");
 const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 
@@ -110,48 +111,7 @@ pub const Error = error{
 
 /// bzip2 uses a specific CRC32 polynomial (same as used by Ethernet)
 /// but processes bits MSB-first and uses 0xFFFFFFFF as initial value.
-pub const Crc32Bzip2 = struct {
-    crc: u32,
-
-    const POLY: u32 = 0x04C11DB7;
-
-    // Precomputed lookup table for the bzip2 CRC32
-    const table: [256]u32 = blk: {
-        @setEvalBranchQuota(3000);
-        var t: [256]u32 = undefined;
-        for (0..256) |i| {
-            var c: u32 = @as(u32, @intCast(i)) << 24;
-            for (0..8) |_| {
-                if (c & 0x80000000 != 0) {
-                    c = (c << 1) ^ POLY;
-                } else {
-                    c = c << 1;
-                }
-            }
-            t[i] = c;
-        }
-        break :blk t;
-    };
-
-    pub fn init() Crc32Bzip2 {
-        return .{ .crc = 0xFFFFFFFF };
-    }
-
-    pub fn update(self: *Crc32Bzip2, byte: u8) void {
-        const idx = ((self.crc >> 24) ^ byte) & 0xFF;
-        self.crc = (self.crc << 8) ^ table[idx];
-    }
-
-    pub fn updateSlice(self: *Crc32Bzip2, data: []const u8) void {
-        for (data) |byte| {
-            self.update(byte);
-        }
-    }
-
-    pub fn final(self: Crc32Bzip2) u32 {
-        return self.crc ^ 0xFFFFFFFF;
-    }
-};
+pub const Crc32Bzip2 = codec_utils.Crc32Bzip2;
 
 // ============ Bit Reader (Generic) ============
 

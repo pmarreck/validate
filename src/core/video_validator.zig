@@ -1741,19 +1741,10 @@ fn validateLengthPrefixedNals(sample_data: []const u8, nal_length_size: u8) bool
 }
 
 fn readLeb128(data: []const u8, start: usize) ?struct { value: u64, bytes: usize } {
-	var value: u64 = 0;
-	var shift: u6 = 0;
-	var i: usize = start;
-
-	while (i < data.len and shift <= 63) : (i += 1) {
-		const byte = data[i];
-		value |= (@as(u64, byte & 0x7f) << shift);
-		if ((byte & 0x80) == 0) {
-			return .{ .value = value, .bytes = (i - start) + 1 };
-		}
-		shift += 7;
-	}
-	return null;
+	const codec_utils = @import("codec_utils.zig");
+	var pos = start;
+	const value = codec_utils.readLeb128(data, &pos) orelse return null;
+	return .{ .value = value, .bytes = pos - start };
 }
 
 fn validateAv1ObuStream(data: []const u8) bool {

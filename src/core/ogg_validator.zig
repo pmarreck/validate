@@ -20,6 +20,7 @@
 
 const std = @import("std");
 const errmsg = @import("error_messages.zig");
+const codec_utils = @import("codec_utils.zig");
 
 /// Result of OGG deep validation
 pub const OggValidationResult = struct {
@@ -47,33 +48,8 @@ pub const OggValidationResult = struct {
     }
 };
 
-/// OGG CRC32 lookup table (polynomial 0x04C11DB7, direct/non-reflected)
-/// OGG uses MSB-first CRC, NOT the standard reflected CRC-32
-const crc32_table: [256]u32 = blk: {
-    @setEvalBranchQuota(10000);
-    var table: [256]u32 = undefined;
-    for (0..256) |i| {
-        var crc: u32 = @as(u32, @intCast(i)) << 24;
-        for (0..8) |_| {
-            if (crc & 0x80000000 != 0) {
-                crc = (crc << 1) ^ 0x04C11DB7;
-            } else {
-                crc = crc << 1;
-            }
-        }
-        table[i] = crc;
-    }
-    break :blk table;
-};
-
 /// Calculate OGG CRC32 for a buffer (MSB-first, direct polynomial)
-pub fn oggCrc32(data: []const u8) u32 {
-    var crc: u32 = 0;
-    for (data) |byte| {
-        crc = (crc << 8) ^ crc32_table[((crc >> 24) ^ byte) & 0xFF];
-    }
-    return crc;
-}
+pub const oggCrc32 = codec_utils.Crc32Ogg.hash;
 
 /// Validate all OGG page CRCs in a file.
 /// Returns the number of pages verified and total bytes covered.
@@ -161,17 +137,13 @@ pub fn validateOggCrc(file: std.fs.File) OggValidationResult {
         header_for_crc[25] = 0;
 
         // Start CRC calculation (MSB-first, direct polynomial)
-        var crc: u32 = 0;
+        var crc_state = codec_utils.Crc32Ogg.init();
 
         // CRC of header
-        for (header_for_crc) |byte| {
-            crc = (crc << 8) ^ crc32_table[((crc >> 24) ^ byte) & 0xFF];
-        }
+        crc_state.updateSlice(&header_for_crc);
 
         // CRC of segment table
-        for (segment_table[0..n_segments]) |byte| {
-            crc = (crc << 8) ^ crc32_table[((crc >> 24) ^ byte) & 0xFF];
-        }
+        crc_state.updateSlice(segment_table[0..n_segments]);
 
         // Read and CRC page data in chunks
         var data_remaining = page_data_size;
@@ -186,15 +158,13 @@ pub fn validateOggCrc(file: std.fs.File) OggValidationResult {
             }
 
             // Add to CRC (MSB-first)
-            for (read_buf[0..bytes_read]) |byte| {
-                crc = (crc << 8) ^ crc32_table[((crc >> 24) ^ byte) & 0xFF];
-            }
+            crc_state.updateSlice(read_buf[0..bytes_read]);
 
             data_remaining -= bytes_read;
         }
 
         // Verify CRC
-        if (crc != stored_crc) {
+        if (crc_state.final() != stored_crc) {
             return OggValidationResult.invalid("CRC mismatch - page corrupted", pages_verified, total_bytes);
         }
 

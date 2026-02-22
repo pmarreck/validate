@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const BitReader = @import("bitstream_reader.zig").BitReader;
+const codec_utils = @import("codec_utils.zig");
 
 // ============================================================================
 // OBU Types (AV1 spec section 6.2.2)
@@ -159,21 +160,7 @@ const ObuHeader = struct {
 // LEB128 Decoder (AV1 spec section 4.10.5)
 // ============================================================================
 
-/// Read a LEB128-encoded unsigned integer from data starting at pos.
-/// Returns the decoded value or null if the data is truncated or the
-/// encoding uses too many bytes.
-fn readLeb128(data: []const u8, pos: *usize) ?u64 {
-    var value: u64 = 0;
-    var i: u6 = 0;
-    while (i < 8) : (i += 1) {
-        if (pos.* >= data.len) return null;
-        const byte = data[pos.*];
-        pos.* += 1;
-        value |= @as(u64, byte & 0x7F) << (i * 7);
-        if (byte & 0x80 == 0) return value;
-    }
-    return null; // Too many bytes
-}
+const readLeb128 = codec_utils.readLeb128;
 
 // ============================================================================
 // OBU Header Parser

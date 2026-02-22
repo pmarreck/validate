@@ -2029,7 +2029,7 @@ pub const MatroskaParser = struct {
 
                     // Read and compute CRC
                     _ = self.reader.seekTo(data_start);
-                    var computed_crc: u32 = 0xFFFFFFFF;
+                    var crc_state = std.hash.Crc32.init();
 
                     var remaining = data_len;
                     var buf: [8192]u8 = undefined;
@@ -2038,13 +2038,11 @@ pub const MatroskaParser = struct {
                         const bytes = self.reader.file.read(buf[0..to_read]) catch break;
                         if (bytes == 0) break;
 
-                        for (buf[0..bytes]) |byte| {
-                            computed_crc = crc32_table[(computed_crc ^ byte) & 0xFF] ^ (computed_crc >> 8);
-                        }
+                        crc_state.update(buf[0..bytes]);
                         remaining -= bytes;
                     }
 
-                    computed_crc ^= 0xFFFFFFFF;
+                    const computed_crc = crc_state.final();
 
                     if (computed_crc != stored_crc) {
                         return CrcVerifyResult.invalid("CRC mismatch in cluster", clusters_checked, clusters_with_crc);
@@ -2070,24 +2068,6 @@ pub const MatroskaParser = struct {
     }
 };
 
-/// CRC-32 lookup table (polynomial 0x04C11DB7, reflected)
-/// Same polynomial as OGG/ISO-HDLC
-const crc32_table: [256]u32 = blk: {
-    @setEvalBranchQuota(10000);
-    var table: [256]u32 = undefined;
-    for (0..256) |i| {
-        var crc: u32 = @intCast(i);
-        for (0..8) |_| {
-            if (crc & 1 != 0) {
-                crc = (crc >> 1) ^ 0xEDB88320;
-            } else {
-                crc = crc >> 1;
-            }
-        }
-        table[i] = crc;
-    }
-    break :blk table;
-};
 
 // ============ Tests ============
 

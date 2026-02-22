@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const errmsg = @import("error_messages.zig");
+const codec_utils = @import("codec_utils.zig");
 
 /// MPEG-TS packet size
 pub const TS_PACKET_SIZE: usize = 188;
@@ -546,33 +547,9 @@ pub fn isMpegTs(data: []const u8) bool {
 // CRC-32 for MPEG-2 PSI tables (ISO 13818-1)
 // ============================================================================
 
-/// CRC-32/MPEG-2 lookup table (polynomial 0x04C11DB7, normal form, init=0xFFFFFFFF)
-const crc32_mpeg2_table = blk: {
-    @setEvalBranchQuota(10000);
-    var table: [256]u32 = undefined;
-    for (0..256) |i| {
-        var crc: u32 = @intCast(i << 24);
-        for (0..8) |_| {
-            if (crc & 0x80000000 != 0) {
-                crc = (crc << 1) ^ 0x04C11DB7;
-            } else {
-                crc = crc << 1;
-            }
-        }
-        table[i] = crc;
-    }
-    break :blk table;
-};
-
 /// Compute CRC-32/MPEG-2 over data. Result should be 0 when computed over
 /// the section including the CRC field.
-pub fn crc32Mpeg2(data: []const u8) u32 {
-    var crc: u32 = 0xFFFFFFFF;
-    for (data) |byte| {
-        crc = (crc << 8) ^ crc32_mpeg2_table[((crc >> 24) ^ byte) & 0xFF];
-    }
-    return crc;
-}
+pub const crc32Mpeg2 = codec_utils.Crc32Mpeg2.hash;
 
 /// Validate CRC-32 of a PSI section. The section includes table_id through CRC_32.
 /// section_length is the value from bytes 1-2 (12 bits after section_syntax_indicator).

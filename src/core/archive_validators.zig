@@ -8,6 +8,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const format_validation = @import("format_validation.zig");
+const codec_utils = @import("codec_utils.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const MalformationType = format_validation.MalformationType;
@@ -354,20 +355,7 @@ pub const RAR4_HEAD_ENDARC: u8 = 0x7B; // End of archive
 pub const RAR4_LONG_BLOCK: u16 = 0x8000; // Block has ADD_SIZE field
 
 /// RAR CRC16 for RAR4 header validation (CCITT variant)
-pub fn rarCrc16(data: []const u8) u16 {
-    var crc: u16 = 0;
-    for (data) |byte| {
-        crc = crc ^ (@as(u16, byte) << 8);
-        for (0..8) |_| {
-            if ((crc & 0x8000) != 0) {
-                crc = (crc << 1) ^ 0x1021;
-            } else {
-                crc = crc << 1;
-            }
-        }
-    }
-    return crc;
-}
+pub const rarCrc16 = codec_utils.crc16Ccitt;
 
 /// Validate RAR file structure with header CRC verification.
 pub fn validateRar(file: std.fs.File) ValidationResult {
@@ -1075,10 +1063,7 @@ fn isTruthy(value: []const u8) bool {
         std.ascii.eqlIgnoreCase(value, "yes") or std.ascii.eqlIgnoreCase(value, "on");
 }
 
-fn readLe(comptime T: type, slice: []const u8) T {
-    const ptr: *const [@sizeOf(T)]u8 = @ptrCast(slice.ptr);
-    return std.mem.readInt(T, ptr, .little);
-}
+const readLe = codec_utils.readLe;
 
 pub const ZipCentralDirectoryInfo = struct {
     offset: u64,
