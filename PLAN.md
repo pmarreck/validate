@@ -4,6 +4,9 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ## Active
 
+### Codebase Consolidation
+- [x] Consolidate duplicated codec utilities (CRC-32 x4, CRC-16, RBSP, start codes, LEB128, endian helpers) into shared `codec_utils.zig`; replaced across 10 files, net -285 lines (2026-02-22 EST)
+
 ### Strict Format Coverage Closure (Entropy Shield dependency)
 - [x] Add deterministic strict coverage harness (`scripts/strict_format_coverage`) using `hasValidator()` as source-of-truth (2026-02-18 22:50 EST)
 - [x] Generate strict baseline report artifacts (`inbox/strict_format_coverage.tsv`, `inbox/strict_format_coverage.md`) (2026-02-18 22:50 EST)
