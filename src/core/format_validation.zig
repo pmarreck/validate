@@ -183,9 +183,6 @@ const git_validator = @import("git_validator.zig");
 // Import 7-Zip validator for deep archive validation
 const sevenz_validator = @import("sevenz_validator.zig");
 
-// Import RAR validator for deep archive validation
-const rar_validator = @import("rar_validator.zig");
-
 // Import DMG validator for deep disk image validation
 const dmg_validator = @import("dmg_validator.zig");
 
@@ -13358,26 +13355,6 @@ fn validate7zDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Otherwise header CRCs were verified but no file decompression
     return ValidationResult.okWithDepth(.sevenz, .structural);
-}
-
-// ============ RAR Deep Validation ============
-
-/// Deep RAR validation using the rar_validator module.
-/// This validates header CRCs and uses unrar or 7z for full integrity testing.
-fn validateRarDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const result = rar_validator.validateRarDeep(allocator, path);
-
-    if (!result.valid) {
-        return ValidationResult.invalidWithDepth(.rar, result.error_message orelse "RAR validation failed", .full);
-    }
-
-    // If files were checked via unrar/7z command, report full validation
-    if (result.files_checked > 0) {
-        return ValidationResult.okWithDepth(.rar, .full);
-    }
-
-    // Otherwise only header validation was possible (no unrar/7z available)
-    return ValidationResult.okWithDepth(.rar, .structural);
 }
 
 /// Deep validation for DMG (Apple Disk Image) files
