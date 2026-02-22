@@ -63,10 +63,14 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
 
         // ============ Work Queue ============
 
+        /// Ring-buffer FIFO queue. O(1) push and pop (amortised O(1) with
+        /// grow), preserving submission order for frontloading strategy.
         const WorkQueue = struct {
             mutex: std.Thread.Mutex = .{},
             cond: std.Thread.Condition = .{},
-            items: std.ArrayListUnmanaged(TaskData) = .{},
+            buf: []TaskData = &.{},
+            head: usize = 0, // index of next item to dequeue
+            len: usize = 0, // number of items currently in the queue
             closed: bool = false,
             alloc: Allocator,
 
@@ -75,29 +79,36 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
             }
 
             pub fn deinit(self: *WorkQueue) void {
-                self.items.deinit(self.alloc);
+                if (self.buf.len > 0) {
+                    self.alloc.free(self.buf);
+                }
             }
 
             pub fn push(self: *WorkQueue, item: TaskData) !void {
                 self.mutex.lock();
                 defer self.mutex.unlock();
-                try self.items.append(self.alloc, item);
+                if (self.len == self.buf.len) {
+                    try self.growLocked();
+                }
+                const tail = (self.head + self.len) % self.buf.len;
+                self.buf[tail] = item;
+                self.len += 1;
                 self.cond.signal();
             }
 
             pub fn pop(self: *WorkQueue) ?TaskData {
                 self.mutex.lock();
                 defer self.mutex.unlock();
-                while (self.items.items.len == 0 and !self.closed) {
+                while (self.len == 0 and !self.closed) {
                     self.cond.wait(&self.mutex);
                 }
-                if (self.items.items.len == 0) {
+                if (self.len == 0) {
                     return null;
                 }
-                // Use FIFO ordering to preserve submission order.
-                // This is important for frontloading where large files
-                // are placed at the front and should be processed first.
-                return self.items.orderedRemove(0);
+                const item = self.buf[self.head];
+                self.head = (self.head + 1) % self.buf.len;
+                self.len -= 1;
+                return item;
             }
 
             pub fn close(self: *WorkQueue) void {
@@ -105,6 +116,31 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                 self.closed = true;
                 self.mutex.unlock();
                 self.cond.broadcast();
+            }
+
+            /// Double buffer capacity (or allocate initial 16 slots).
+            /// Caller must hold mutex.
+            fn growLocked(self: *WorkQueue) !void {
+                const new_cap = if (self.buf.len == 0) 16 else self.buf.len * 2;
+                const new_buf = try self.alloc.alloc(TaskData, new_cap);
+                // Copy existing items into contiguous region at start of new buffer
+                if (self.len > 0) {
+                    const first_part = self.buf.len - self.head;
+                    if (first_part >= self.len) {
+                        // No wrap-around
+                        @memcpy(new_buf[0..self.len], self.buf[self.head .. self.head + self.len]);
+                    } else {
+                        // Wrapped: copy tail portion then head portion
+                        @memcpy(new_buf[0..first_part], self.buf[self.head..self.buf.len]);
+                        const second_part = self.len - first_part;
+                        @memcpy(new_buf[first_part .. first_part + second_part], self.buf[0..second_part]);
+                    }
+                }
+                if (self.buf.len > 0) {
+                    self.alloc.free(self.buf);
+                }
+                self.buf = new_buf;
+                self.head = 0;
             }
         };
 
@@ -414,6 +450,60 @@ test "ThreadPool without result callback" {
     pool.wait();
 
     try std.testing.expectEqual(@as(u32, 60), sum.load(.seq_cst));
+}
+
+test "WorkQueue FIFO order preserved with 10K items" {
+    const WQ = ThreadPool(u32, void).WorkQueue;
+    var wq = WQ.init(std.testing.allocator);
+    defer wq.deinit();
+
+    const count: u32 = 10_000;
+
+    // Enqueue 10K items
+    for (0..count) |i| {
+        try wq.push(@intCast(i));
+    }
+
+    // Dequeue and verify FIFO order
+    for (0..count) |i| {
+        const val = wq.pop() orelse return error.UnexpectedNull;
+        try std.testing.expectEqual(@as(u32, @intCast(i)), val);
+    }
+}
+
+test "WorkQueue interleaved push/pop" {
+    const WQ = ThreadPool(u32, void).WorkQueue;
+    var wq = WQ.init(std.testing.allocator);
+    defer wq.deinit();
+
+    // Push 3, pop 2, push 3, pop 2... exercises ring buffer wrap-around
+    var next_push: u32 = 0;
+    var next_pop: u32 = 0;
+
+    for (0..100) |_| {
+        // Push 3
+        for (0..3) |_| {
+            try wq.push(next_push);
+            next_push += 1;
+        }
+        // Pop 2
+        for (0..2) |_| {
+            const val = wq.pop() orelse return error.UnexpectedNull;
+            try std.testing.expectEqual(next_pop, val);
+            next_pop += 1;
+        }
+    }
+
+    // Drain remaining
+    while (true) {
+        // Close to allow non-blocking pop
+        wq.close();
+        const val = wq.pop() orelse break;
+        try std.testing.expectEqual(next_pop, val);
+        next_pop += 1;
+    }
+
+    try std.testing.expectEqual(next_push, next_pop);
 }
 
 test "ThreadPool batch submit" {
