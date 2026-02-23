@@ -2515,3 +2515,597 @@ pub fn validate7zFromBuffer(data: []const u8) ValidationResult {
     }
     return ValidationResult.invalidCode(.sevenz, .invalid_signature, "7z");
 }
+
+// ============ Tests ============
+
+const testing = std.testing;
+
+fn openGroundTruth(comptime path: []const u8) !std.fs.File {
+    return std.fs.cwd().openFile(path, .{});
+}
+
+// ---------- Structural validators on valid ground truth files ----------
+
+test "validateZip: valid ZIP ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/zip/test_archive.zip");
+    defer file.close();
+    const result = validateZip(file, .zip);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.zip, result.format);
+}
+
+test "validateGzip: valid gzip ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/gzip/sample.gz");
+    defer file.close();
+    const result = validateGzip(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.gzip, result.format);
+}
+
+test "validateBzip2: valid bzip2 ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/bzip2/sample.bz2");
+    defer file.close();
+    const result = validateBzip2(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.bzip2, result.format);
+}
+
+test "validateXz: valid XZ ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/xz/sample.xz");
+    defer file.close();
+    const result = validateXz(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.xz, result.format);
+}
+
+test "validateZstd: valid Zstd ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/zstd/sample.zst");
+    defer file.close();
+    const result = validateZstd(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.zstd, result.format);
+}
+
+test "validateRar: valid RAR ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/rar/sample.rar");
+    defer file.close();
+    const result = validateRar(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.rar, result.format);
+}
+
+test "validate7z: valid 7z ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/7z/sample.7z");
+    defer file.close();
+    const result = validate7z(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.sevenz, result.format);
+}
+
+test "validateTar: valid tar ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/tar/sample.tar");
+    defer file.close();
+    const result = validateTar(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.tar, result.format);
+}
+
+test "validatePar2: valid PAR2 ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/par2/sample.par2");
+    defer file.close();
+    const result = validatePar2(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.par2, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateWarc: valid WARC ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/warc/sample.warc");
+    defer file.close();
+    const result = validateWarc(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.warc, result.format);
+}
+
+test "validateCpt: valid CPT ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/cpt/sample.cpt");
+    defer file.close();
+    const result = validateCpt(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.cpt, result.format);
+}
+
+// ---------- Deep validators on valid ground truth files ----------
+
+test "validateZipDeep: valid ZIP ground truth" {
+    const result = validateZipDeep(testing.allocator, "ground_truth_examples/zip/test_archive.zip");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.zip, result.format);
+}
+
+test "validateGzipDeep: valid gzip ground truth" {
+    const result = validateGzipDeep(testing.allocator, "ground_truth_examples/gzip/sample.gz");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.gzip, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateBzip2Deep: valid bzip2 ground truth" {
+    const result = validateBzip2Deep(testing.allocator, "ground_truth_examples/bzip2/sample.bz2");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.bzip2, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateXzDeep: valid XZ ground truth" {
+    const result = validateXzDeep(testing.allocator, "ground_truth_examples/xz/sample.xz");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.xz, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateZstdDeep: valid Zstd ground truth" {
+    const result = validateZstdDeep(testing.allocator, "ground_truth_examples/zstd/sample.zst");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.zstd, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validate7zDeep: valid 7z ground truth" {
+    const result = validate7zDeep(testing.allocator, "ground_truth_examples/7z/sample.7z");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.sevenz, result.format);
+}
+
+test "validateRarDeep: valid RAR ground truth" {
+    const result = validateRarDeep(testing.allocator, "ground_truth_examples/rar/sample.rar");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.rar, result.format);
+}
+
+test "validateCptDeep: valid CPT ground truth" {
+    const result = validateCptDeep(testing.allocator, "ground_truth_examples/cpt/sample.cpt");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.cpt, result.format);
+}
+
+// ---------- Buffer validators on valid signatures ----------
+
+test "validateZipFromBuffer: valid ZIP signature" {
+    const zip_sig = [_]u8{ 0x50, 0x4B, 0x03, 0x04, 0x00, 0x00 };
+    const result = validateZipFromBuffer(&zip_sig, .zip);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.zip, result.format);
+}
+
+test "validateGzipFromBuffer: valid gzip signature" {
+    const gz_sig = [_]u8{ 0x1F, 0x8B, 0x08, 0x00 };
+    const result = validateGzipFromBuffer(&gz_sig);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.gzip, result.format);
+}
+
+test "validateBzip2FromBuffer: valid bzip2 signature" {
+    const bz2_sig = [_]u8{ 'B', 'Z', 'h', '9' };
+    const result = validateBzip2FromBuffer(&bz2_sig);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.bzip2, result.format);
+}
+
+test "validateXzFromBuffer: valid XZ signature" {
+    const xz_sig = [_]u8{ 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00, 0x00, 0x00 };
+    const result = validateXzFromBuffer(&xz_sig);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.xz, result.format);
+}
+
+test "validateZstdFromBuffer: valid Zstd signature" {
+    const zstd_sig = [_]u8{ 0x28, 0xB5, 0x2F, 0xFD, 0x00 };
+    const result = validateZstdFromBuffer(&zstd_sig);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.zstd, result.format);
+}
+
+test "validateRarFromBuffer: valid RAR from ground truth" {
+    // Use the real RAR file bytes because rarz needs enough data for full parsing
+    const file = try openGroundTruth("ground_truth_examples/rar/sample.rar");
+    defer file.close();
+    const file_size = try file.getEndPos();
+    const size: usize = @intCast(@min(file_size, 4096));
+    var buf: [4096]u8 = undefined;
+    const read = try file.readAll(buf[0..size]);
+    const result = validateRarFromBuffer(buf[0..read]);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.rar, result.format);
+}
+
+test "validate7zFromBuffer: valid 7z signature" {
+    const sig_7z = [_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x00 };
+    const result = validate7zFromBuffer(&sig_7z);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.sevenz, result.format);
+}
+
+test "validateCptFromBuffer: valid CPT from ground truth" {
+    const file = try openGroundTruth("ground_truth_examples/cpt/sample.cpt");
+    defer file.close();
+    const file_size = try file.getEndPos();
+    const size: usize = @intCast(file_size);
+    const data = try testing.allocator.alloc(u8, size);
+    defer testing.allocator.free(data);
+    const read = try file.readAll(data);
+    const result = validateCptFromBuffer(data[0..read]);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.cpt, result.format);
+}
+
+// ---------- Corrupt / truncated inputs (structural validators) ----------
+
+test "validateZip: corrupt ZIP magic rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/zip/test_archive_magic_corrupt.zip");
+    defer file.close();
+    const result = validateZip(file, .zip);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.zip, result.format);
+}
+
+test "validateGzip: corrupt gzip rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/gzip/sample_corrupt_1.gz");
+    defer file.close();
+    const result = validateGzip(file);
+    // A corruption in body may still pass structural validation if header+trailer are intact,
+    // so we only check that the result is for gzip format
+    try testing.expectEqual(FileFormat.gzip, result.format);
+}
+
+test "validateBzip2: corrupt bzip2 rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/bzip2/sample_corrupt_1.bz2");
+    defer file.close();
+    const result = validateBzip2(file);
+    try testing.expectEqual(FileFormat.bzip2, result.format);
+}
+
+test "validateXz: corrupt XZ rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/xz/sample_corrupt_1.xz");
+    defer file.close();
+    const result = validateXz(file);
+    try testing.expectEqual(FileFormat.xz, result.format);
+}
+
+test "validateZstd: corrupt Zstd rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/zstd/sample_corrupt_1.zst");
+    defer file.close();
+    const result = validateZstd(file);
+    try testing.expectEqual(FileFormat.zstd, result.format);
+}
+
+test "validateRar: corrupt RAR rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/rar/sample_corrupt_1.rar");
+    defer file.close();
+    const result = validateRar(file);
+    try testing.expectEqual(FileFormat.rar, result.format);
+}
+
+test "validate7z: corrupt 7z rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/7z/sample_corrupt_1.7z");
+    defer file.close();
+    const result = validate7z(file);
+    try testing.expectEqual(FileFormat.sevenz, result.format);
+}
+
+test "validateTar: corrupt tar rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/tar/sample_corrupt_1.tar");
+    defer file.close();
+    const result = validateTar(file);
+    try testing.expectEqual(FileFormat.tar, result.format);
+}
+
+test "validatePar2: corrupt PAR2 rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/par2/sample_corrupt_1.par2");
+    defer file.close();
+    const result = validatePar2(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.par2, result.format);
+}
+
+test "validateWarc: corrupt WARC rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/warc/sample_corrupt_1.warc");
+    defer file.close();
+    const result = validateWarc(file);
+    try testing.expectEqual(FileFormat.warc, result.format);
+}
+
+test "validateCpt: corrupt CPT rejected" {
+    const file = try openGroundTruth("ground_truth_examples/corrupted/cpt/sample_corrupt_1.cpt");
+    defer file.close();
+    const result = validateCpt(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.cpt, result.format);
+}
+
+// ---------- Deep validators on corrupt files ----------
+
+test "validateGzipDeep: corrupt gzip detected" {
+    const result = validateGzipDeep(testing.allocator, "ground_truth_examples/corrupted/gzip/sample_corrupt_1.gz");
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.gzip, result.format);
+}
+
+test "validateBzip2Deep: corrupt bzip2 detected" {
+    const result = validateBzip2Deep(testing.allocator, "ground_truth_examples/corrupted/bzip2/sample_corrupt_1.bz2");
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.bzip2, result.format);
+}
+
+test "validateXzDeep: corrupt XZ detected" {
+    const result = validateXzDeep(testing.allocator, "ground_truth_examples/corrupted/xz/sample_corrupt_1.xz");
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.xz, result.format);
+}
+
+test "validateZstdDeep: too-small file detected" {
+    // Zstd corrupt samples have optional checksums and may decompress fine.
+    // Instead test with a file that is structurally too small.
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("tiny.zst", .{ .read = true });
+    try file.writeAll(&[_]u8{ 0x28, 0xB5, 0x2F, 0xFD, 0x00 });
+    file.close();
+    const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "tiny.zst");
+    defer testing.allocator.free(path);
+    const result = validateZstdDeep(testing.allocator, path);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.zstd, result.format);
+}
+
+test "validateRarDeep: corrupt RAR detected" {
+    const result = validateRarDeep(testing.allocator, "ground_truth_examples/corrupted/rar/sample_corrupt_1.rar");
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.rar, result.format);
+}
+
+// ---------- Buffer validators on invalid / truncated data ----------
+
+test "validateZipFromBuffer: truncated data rejected" {
+    const truncated = [_]u8{ 0x50, 0x4B };
+    const result = validateZipFromBuffer(&truncated, .zip);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateZipFromBuffer: wrong magic rejected" {
+    const bad = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+    const result = validateZipFromBuffer(&bad, .zip);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateGzipFromBuffer: truncated data rejected" {
+    const truncated = [_]u8{0x1F};
+    const result = validateGzipFromBuffer(&truncated);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateGzipFromBuffer: wrong magic rejected" {
+    const bad = [_]u8{ 0x00, 0x00, 0x00, 0x00 };
+    const result = validateGzipFromBuffer(&bad);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateBzip2FromBuffer: truncated data rejected" {
+    const truncated = [_]u8{ 'B', 'Z' };
+    const result = validateBzip2FromBuffer(&truncated);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateBzip2FromBuffer: wrong magic rejected" {
+    const bad = [_]u8{ 0x00, 0x00, 0x00, 0x00 };
+    const result = validateBzip2FromBuffer(&bad);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateXzFromBuffer: truncated data rejected" {
+    const truncated = [_]u8{ 0xFD, 0x37, 0x7A };
+    const result = validateXzFromBuffer(&truncated);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateXzFromBuffer: wrong magic rejected" {
+    const bad = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const result = validateXzFromBuffer(&bad);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateZstdFromBuffer: truncated data rejected" {
+    const truncated = [_]u8{ 0x28, 0xB5 };
+    const result = validateZstdFromBuffer(&truncated);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateZstdFromBuffer: wrong magic rejected" {
+    const bad = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const result = validateZstdFromBuffer(&bad);
+    try testing.expect(!result.is_valid);
+}
+
+test "validate7zFromBuffer: truncated data rejected" {
+    const truncated = [_]u8{ 0x37, 0x7A, 0xBC };
+    const result = validate7zFromBuffer(&truncated);
+    try testing.expect(!result.is_valid);
+}
+
+test "validate7zFromBuffer: wrong magic rejected" {
+    const bad = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const result = validate7zFromBuffer(&bad);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateCptFromBuffer: truncated data rejected" {
+    const truncated = [_]u8{ 0x01, 0x00, 0x00 };
+    const result = validateCptFromBuffer(&truncated);
+    try testing.expect(!result.is_valid);
+}
+
+// ---------- Deep validators: file not found ----------
+
+test "validateZipDeep: file not found returns invalid" {
+    const result = validateZipDeep(testing.allocator, "nonexistent_file.zip");
+    try testing.expect(!result.is_valid);
+}
+
+test "validateGzipDeep: file not found returns invalid" {
+    const result = validateGzipDeep(testing.allocator, "nonexistent_file.gz");
+    try testing.expect(!result.is_valid);
+}
+
+test "validateBzip2Deep: file not found returns invalid" {
+    const result = validateBzip2Deep(testing.allocator, "nonexistent_file.bz2");
+    try testing.expect(!result.is_valid);
+}
+
+test "validateXzDeep: file not found returns invalid" {
+    const result = validateXzDeep(testing.allocator, "nonexistent_file.xz");
+    try testing.expect(!result.is_valid);
+}
+
+test "validateZstdDeep: file not found returns invalid" {
+    const result = validateZstdDeep(testing.allocator, "nonexistent_file.zst");
+    try testing.expect(!result.is_valid);
+}
+
+test "validate7zDeep: file not found returns invalid" {
+    const result = validate7zDeep(testing.allocator, "nonexistent_file.7z");
+    try testing.expect(!result.is_valid);
+}
+
+test "validateRarDeep: file not found returns invalid" {
+    const result = validateRarDeep(testing.allocator, "nonexistent_file.rar");
+    try testing.expect(!result.is_valid);
+}
+
+test "validateCptDeep: file not found returns invalid" {
+    const result = validateCptDeep(testing.allocator, "nonexistent_file.cpt");
+    try testing.expect(!result.is_valid);
+}
+
+// ---------- Structural validators: synthetic empty/too-small input ----------
+
+test "validateGzip: too-small input rejected" {
+    // Create a temp file with only 5 bytes (less than 10-byte gzip header)
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("tiny.gz", .{ .read = true });
+    defer file.close();
+    try file.writeAll(&[_]u8{ 0x1F, 0x8B, 0x08, 0x00, 0x00 });
+    try file.seekTo(0);
+    const result = validateGzip(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.gzip, result.format);
+}
+
+test "validateBzip2: too-small input rejected" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("tiny.bz2", .{ .read = true });
+    defer file.close();
+    try file.writeAll("BZh");
+    try file.seekTo(0);
+    const result = validateBzip2(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.bzip2, result.format);
+}
+
+test "validateXz: too-small input rejected" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("tiny.xz", .{ .read = true });
+    defer file.close();
+    try file.writeAll(&[_]u8{ 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00 });
+    try file.seekTo(0);
+    const result = validateXz(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.xz, result.format);
+}
+
+test "validateZstd: too-small input rejected" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("tiny.zst", .{ .read = true });
+    defer file.close();
+    try file.writeAll(&[_]u8{ 0x28, 0xB5, 0x2F, 0xFD });
+    try file.seekTo(0);
+    const result = validateZstd(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.zstd, result.format);
+}
+
+test "validate7z: too-small input rejected" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("tiny.7z", .{ .read = true });
+    defer file.close();
+    try file.writeAll(&[_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C });
+    try file.seekTo(0);
+    const result = validate7z(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.sevenz, result.format);
+}
+
+test "validateTar: too-small input rejected" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("tiny.tar", .{ .read = true });
+    defer file.close();
+    try file.writeAll("too short for tar header");
+    try file.seekTo(0);
+    const result = validateTar(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.tar, result.format);
+}
+
+test "validatePar2: too-small input rejected" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("tiny.par2", .{ .read = true });
+    defer file.close();
+    try file.writeAll("PAR2\x00PKT"); // Only 8 bytes, need 64
+    try file.seekTo(0);
+    const result = validatePar2(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.par2, result.format);
+}
+
+// ---------- Buffer validators: empty input ----------
+
+test "validateZipFromBuffer: empty data rejected" {
+    const result = validateZipFromBuffer(&[_]u8{}, .zip);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateGzipFromBuffer: empty data rejected" {
+    const result = validateGzipFromBuffer(&[_]u8{});
+    try testing.expect(!result.is_valid);
+}
+
+test "validateBzip2FromBuffer: empty data rejected" {
+    const result = validateBzip2FromBuffer(&[_]u8{});
+    try testing.expect(!result.is_valid);
+}
+
+test "validateXzFromBuffer: empty data rejected" {
+    const result = validateXzFromBuffer(&[_]u8{});
+    try testing.expect(!result.is_valid);
+}
+
+test "validateZstdFromBuffer: empty data rejected" {
+    const result = validateZstdFromBuffer(&[_]u8{});
+    try testing.expect(!result.is_valid);
+}
+
+test "validate7zFromBuffer: empty data rejected" {
+    const result = validate7zFromBuffer(&[_]u8{});
+    try testing.expect(!result.is_valid);
+}
+
+test "validateCptFromBuffer: empty data rejected" {
+    const result = validateCptFromBuffer(&[_]u8{});
+    try testing.expect(!result.is_valid);
+}

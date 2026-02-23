@@ -1821,3 +1821,606 @@ pub fn validateAacAdts(file: std.fs.File) ValidationResult {
 
     return ValidationResult.okWithDepth(.aac_adts, .full);
 }
+
+// ============ Tests ============
+
+const testing = std.testing;
+
+// ---------- Buffer validators ----------
+
+test "validateMp3FromBuffer accepts MP3 frame sync" {
+    const data = [_]u8{ 0xFF, 0xFB, 0x90, 0x00 };
+    const result = validateMp3FromBuffer(&data);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.mp3, result.format);
+}
+
+test "validateMp3FromBuffer accepts ID3 tag" {
+    const data = "ID3" ++ [_]u8{ 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const result = validateMp3FromBuffer(data);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.mp3, result.format);
+}
+
+test "validateMp3FromBuffer rejects invalid data" {
+    const data = [_]u8{ 0x00, 0x00, 0x00, 0x00 };
+    const result = validateMp3FromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateMp3FromBuffer rejects too-small data" {
+    const data = [_]u8{0x00};
+    const result = validateMp3FromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateFlacFromBuffer accepts fLaC signature" {
+    const data = "fLaC" ++ [_]u8{0x00} ** 4;
+    const result = validateFlacFromBuffer(data);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.flac, result.format);
+}
+
+test "validateFlacFromBuffer rejects invalid data" {
+    const data = [_]u8{ 'f', 'L', 'a', 'X' };
+    const result = validateFlacFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateFlacFromBuffer rejects too-small data" {
+    const data = [_]u8{ 'f', 'L' };
+    const result = validateFlacFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateWavFromBuffer accepts RIFF/WAVE" {
+    const data = "RIFF" ++ [_]u8{ 0x24, 0x00, 0x00, 0x00 } ++ "WAVE";
+    const result = validateWavFromBuffer(data);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.wav, result.format);
+}
+
+test "validateWavFromBuffer rejects non-WAVE RIFF" {
+    const data = "RIFF" ++ [_]u8{ 0x00, 0x00, 0x00, 0x00 } ++ "AVI ";
+    const result = validateWavFromBuffer(data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateWavFromBuffer rejects too-small data" {
+    const data = "RIFF" ++ [_]u8{ 0x00, 0x00, 0x00 };
+    const result = validateWavFromBuffer(data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateAiffFromBuffer accepts FORM/AIFF" {
+    const data = "FORM" ++ [_]u8{ 0x00, 0x00, 0x00, 0x00 } ++ "AIFF";
+    const result = validateAiffFromBuffer(data);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.aiff, result.format);
+}
+
+test "validateAiffFromBuffer accepts FORM/AIFC" {
+    const data = "FORM" ++ [_]u8{ 0x00, 0x00, 0x00, 0x00 } ++ "AIFC";
+    const result = validateAiffFromBuffer(data);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.aiff, result.format);
+}
+
+test "validateAiffFromBuffer rejects invalid data" {
+    const data = "FORM" ++ [_]u8{ 0x00, 0x00, 0x00, 0x00 } ++ "XXXX";
+    const result = validateAiffFromBuffer(data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateOggFromBuffer accepts OggS" {
+    const data = "OggS" ++ [_]u8{0x00} ** 4;
+    const result = validateOggFromBuffer(data);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.ogg, result.format);
+}
+
+test "validateOggFromBuffer rejects invalid data" {
+    const data = [_]u8{ 'O', 'g', 'g', 'X' };
+    const result = validateOggFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+// ---------- CRC-16 utility ----------
+
+test "crc16Mpeg produces non-trivial output" {
+    const data = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const crc = crc16Mpeg(&data);
+    try testing.expectEqual(crc, crc16Mpeg(&data));
+    try testing.expect(crc != 0);
+}
+
+test "crc16Mpeg empty input returns initial value" {
+    const data = [_]u8{};
+    const crc = crc16Mpeg(&data);
+    try testing.expectEqual(@as(u16, 0xFFFF), crc);
+}
+
+// ---------- Ground truth file-based structural validators ----------
+
+test "validateWav accepts ground truth WAV" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch return;
+    defer file.close();
+    const result = validateWav(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.wav, result.format);
+}
+
+test "validateFlac accepts ground truth FLAC" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/flac/generated_tone_440hz.flac", .{}) catch return;
+    defer file.close();
+    const result = validateFlac(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.flac, result.format);
+}
+
+test "validateMp3 accepts ground truth MP3" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/mp3/generated_tone_440hz.mp3", .{}) catch return;
+    defer file.close();
+    const result = validateMp3(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.mp3, result.format);
+}
+
+test "validateOgg accepts ground truth OGG" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ogg/generated_tone_440hz.ogg", .{}) catch return;
+    defer file.close();
+    const result = validateOgg(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.ogg, result.format);
+}
+
+test "validateRiffAudio accepts ground truth AIFF" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/aiff/sample.aiff", .{}) catch return;
+    defer file.close();
+    const result = validateRiffAudio(file, .aiff);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.aiff, result.format);
+}
+
+test "validateMidi accepts ground truth MIDI" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch return;
+    defer file.close();
+    const result = validateMidi(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.midi, result.format);
+}
+
+test "validateAc3 accepts ground truth AC-3" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ac3/sample.ac3", .{}) catch return;
+    defer file.close();
+    const result = validateAc3(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.ac3, result.format);
+}
+
+test "validateEac3 accepts ground truth E-AC-3" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/eac3/sample.eac3", .{}) catch return;
+    defer file.close();
+    const result = validateEac3(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.eac3, result.format);
+}
+
+test "validateApe accepts ground truth APE" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ape/sample.ape", .{}) catch return;
+    defer file.close();
+    const result = validateApe(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.ape, result.format);
+}
+
+test "validateWavPack accepts ground truth WavPack" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/wavpack/sample.wv", .{}) catch return;
+    defer file.close();
+    const result = validateWavPack(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.wavpack, result.format);
+}
+
+test "validateDsf accepts ground truth DSF" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/dsf/sample.dsf", .{}) catch return;
+    defer file.close();
+    const result = validateDsf(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.dsf, result.format);
+}
+
+test "validateDff accepts ground truth DFF" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/dff/sample.dff", .{}) catch return;
+    defer file.close();
+    const result = validateDff(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.dff, result.format);
+}
+
+test "validateAmr accepts ground truth AMR" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/amr/sample.amr", .{}) catch return;
+    defer file.close();
+    const result = validateAmr(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.amr, result.format);
+}
+
+test "validateAu accepts ground truth AU" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/au/sample.au", .{}) catch return;
+    defer file.close();
+    const result = validateAu(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.au, result.format);
+}
+
+test "validateTta accepts ground truth TTA" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/tta/sample.tta", .{}) catch return;
+    defer file.close();
+    const result = validateTta(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.tta, result.format);
+}
+
+test "validateCaf accepts ground truth CAF" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/caf/sample.caf", .{}) catch return;
+    defer file.close();
+    const result = validateCaf(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.caf, result.format);
+}
+
+test "validateAacAdts accepts ground truth AAC ADTS" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/aac_adts/sample.aac", .{}) catch return;
+    defer file.close();
+    const result = validateAacAdts(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.aac_adts, result.format);
+}
+
+test "validateMod accepts ground truth MOD" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/otm.mod", .{}) catch return;
+    defer file.close();
+    const result = validateMod(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.mod, result.format);
+}
+
+test "validateXm accepts ground truth XM" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/agony.xm", .{}) catch return;
+    defer file.close();
+    const result = validateXm(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.xm, result.format);
+}
+
+test "validateIt accepts ground truth IT" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/flitter.it", .{}) catch return;
+    defer file.close();
+    const result = validateIt(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.it, result.format);
+}
+
+test "validateS3m accepts ground truth S3M" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/twilight_garden.s3m", .{}) catch return;
+    defer file.close();
+    const result = validateS3m(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.s3m, result.format);
+}
+
+// ---------- Ground truth deep validators ----------
+
+test "validateWavDeep accepts ground truth WAV" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch return;
+    file.close();
+    const result = validateWavDeep(testing.allocator, "ground_truth_examples/wav/sample.wav");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.wav, result.format);
+    try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateAiffDeep accepts ground truth AIFF" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/aiff/sample.aiff", .{}) catch return;
+    file.close();
+    const result = validateAiffDeep(testing.allocator, "ground_truth_examples/aiff/sample.aiff");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.aiff, result.format);
+    try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateFlacDeep accepts ground truth FLAC" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/flac/generated_tone_440hz.flac", .{}) catch return;
+    file.close();
+    const result = validateFlacDeep(testing.allocator, "ground_truth_examples/flac/generated_tone_440hz.flac");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.flac, result.format);
+    try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateOggDeep accepts ground truth OGG" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ogg/generated_tone_440hz.ogg", .{}) catch return;
+    file.close();
+    const result = validateOggDeep(testing.allocator, "ground_truth_examples/ogg/generated_tone_440hz.ogg");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.ogg, result.format);
+    try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateMidiDeep accepts ground truth MIDI" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch return;
+    file.close();
+    const result = validateMidiDeep("ground_truth_examples/midi/fur_elise.mid");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.midi, result.format);
+    try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateAc3Deep accepts ground truth AC-3" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ac3/sample.ac3", .{}) catch return;
+    file.close();
+    const result = validateAc3Deep("ground_truth_examples/ac3/sample.ac3");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.ac3, result.format);
+    try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateEac3Deep accepts ground truth E-AC-3" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/eac3/sample.eac3", .{}) catch return;
+    file.close();
+    const result = validateEac3Deep("ground_truth_examples/eac3/sample.eac3");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.eac3, result.format);
+    try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+// ---------- Corrupt / truncated input tests ----------
+
+test "validateWav rejects truncated WAV" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const truncated = "RIFF" ++ [_]u8{ 0xFF, 0x00, 0x00, 0x00 } ++ "WAVE";
+    tmp.dir.writeFile(.{ .sub_path = "bad.wav", .data = truncated }) catch return;
+    const file = tmp.dir.openFile("bad.wav", .{}) catch return;
+    defer file.close();
+    const result = validateWav(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateFlac rejects invalid FLAC signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = "fLaX" ++ [_]u8{0x00} ** 34;
+    tmp.dir.writeFile(.{ .sub_path = "bad.flac", .data = bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.flac", .{}) catch return;
+    defer file.close();
+    const result = validateFlac(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateFlac rejects non-STREAMINFO first block" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = "fLaC" ++ [_]u8{ 0x01, 0x00, 0x00, 0x22 } ++ [_]u8{0x00} ** 34;
+    tmp.dir.writeFile(.{ .sub_path = "bad.flac", .data = bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.flac", .{}) catch return;
+    defer file.close();
+    const result = validateFlac(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateMp3 rejects random bytes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09 };
+    tmp.dir.writeFile(.{ .sub_path = "bad.mp3", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.mp3", .{}) catch return;
+    defer file.close();
+    const result = validateMp3(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateOgg rejects non-OggS data" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 28;
+    tmp.dir.writeFile(.{ .sub_path = "bad.ogg", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.ogg", .{}) catch return;
+    defer file.close();
+    const result = validateOgg(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateMidi rejects non-MThd data" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 22;
+    tmp.dir.writeFile(.{ .sub_path = "bad.mid", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.mid", .{}) catch return;
+    defer file.close();
+    const result = validateMidi(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateAc3 rejects wrong sync word" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{ 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    tmp.dir.writeFile(.{ .sub_path = "bad.ac3", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.ac3", .{}) catch return;
+    defer file.close();
+    const result = validateAc3(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateEac3 rejects wrong bsid" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Sync word correct (0x0B77) but bsid=8 (AC-3) instead of 16 (E-AC-3)
+    const bad_data = [_]u8{ 0x0B, 0x77, 0x00, 0x00, 0x00, 0x08 << 3 };
+    tmp.dir.writeFile(.{ .sub_path = "bad.eac3", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.eac3", .{}) catch return;
+    defer file.close();
+    const result = validateEac3(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateApe rejects non-MAC signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 32;
+    tmp.dir.writeFile(.{ .sub_path = "bad.ape", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.ape", .{}) catch return;
+    defer file.close();
+    const result = validateApe(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateDsf rejects non-DSD signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 80;
+    tmp.dir.writeFile(.{ .sub_path = "bad.dsf", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.dsf", .{}) catch return;
+    defer file.close();
+    const result = validateDsf(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateDff rejects non-FRM8 signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 28;
+    tmp.dir.writeFile(.{ .sub_path = "bad.dff", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.dff", .{}) catch return;
+    defer file.close();
+    const result = validateDff(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateAmr rejects non-AMR data" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 16;
+    tmp.dir.writeFile(.{ .sub_path = "bad.amr", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.amr", .{}) catch return;
+    defer file.close();
+    const result = validateAmr(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateAu rejects non-snd magic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 24;
+    tmp.dir.writeFile(.{ .sub_path = "bad.au", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.au", .{}) catch return;
+    defer file.close();
+    const result = validateAu(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateTta rejects non-TTA1 magic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 22;
+    tmp.dir.writeFile(.{ .sub_path = "bad.tta", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.tta", .{}) catch return;
+    defer file.close();
+    const result = validateTta(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateCaf rejects non-caff magic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 20;
+    tmp.dir.writeFile(.{ .sub_path = "bad.caf", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.caf", .{}) catch return;
+    defer file.close();
+    const result = validateCaf(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateXm rejects non-XM data" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 80;
+    tmp.dir.writeFile(.{ .sub_path = "bad.xm", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.xm", .{}) catch return;
+    defer file.close();
+    const result = validateXm(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateIt rejects non-IMPM data" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 192;
+    tmp.dir.writeFile(.{ .sub_path = "bad.it", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.it", .{}) catch return;
+    defer file.close();
+    const result = validateIt(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateS3m rejects non-SCRM data" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 96;
+    tmp.dir.writeFile(.{ .sub_path = "bad.s3m", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.s3m", .{}) catch return;
+    defer file.close();
+    const result = validateS3m(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateMod rejects file too small for MOD" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const bad_data = [_]u8{0x00} ** 100;
+    tmp.dir.writeFile(.{ .sub_path = "bad.mod", .data = &bad_data }) catch return;
+    const file = tmp.dir.openFile("bad.mod", .{}) catch return;
+    defer file.close();
+    const result = validateMod(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---------- Deep validators with corrupt data ----------
+
+test "validateWavDeep rejects file not found" {
+    const result = validateWavDeep(testing.allocator, "/nonexistent/path/to/file.wav");
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.wav, result.format);
+}
+
+test "validateAiffDeep rejects file not found" {
+    const result = validateAiffDeep(testing.allocator, "/nonexistent/path/to/file.aiff");
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.aiff, result.format);
+}
+
+test "validateFlacDeep rejects file not found" {
+    const result = validateFlacDeep(testing.allocator, "/nonexistent/path/to/file.flac");
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.flac, result.format);
+}
+
+test "validateMidiDeep rejects file not found" {
+    const result = validateMidiDeep("/nonexistent/path/to/file.mid");
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.midi, result.format);
+}
+
+test "validateAc3Deep rejects file not found" {
+    const result = validateAc3Deep("/nonexistent/path/to/file.ac3");
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.ac3, result.format);
+}
+
+test "validateEac3Deep rejects file not found" {
+    const result = validateEac3Deep("/nonexistent/path/to/file.eac3");
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.eac3, result.format);
+}

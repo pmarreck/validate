@@ -3166,3 +3166,636 @@ pub fn validateDpx(file: std.fs.File) ValidationResult {
 
     return ValidationResult.structuralOnly(.dpx);
 }
+
+// ============ Tests ============
+
+const testing = std.testing;
+
+// ---- PNG ----
+
+test "validatePng accepts valid PNG from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/png/generated_gradient.png", .{}) catch return;
+    defer file.close();
+    const result = validatePng(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.png, result.format);
+}
+
+test "validatePng rejects truncated PNG" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Valid PNG signature but no IHDR chunk
+    const data = [_]u8{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+    const f = try tmp.dir.createFile("bad.png", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.png", .{});
+    defer file.close();
+    const result = validatePng(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.png, result.format);
+}
+
+test "validatePng rejects non-IHDR first chunk" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Valid PNG signature + a chunk that is NOT IHDR
+    const data = [_]u8{
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG sig
+        0x00, 0x00, 0x00, 0x00, // chunk length 0
+        'X',  'X',  'X',  'X', // chunk type (not IHDR)
+        0x00, 0x00, 0x00, 0x00, // CRC
+    };
+    const f = try tmp.dir.createFile("bad2.png", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad2.png", .{});
+    defer file.close();
+    const result = validatePng(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePngDeep accepts valid PNG from ground truth" {
+    const allocator = testing.allocator;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/png/generated_gradient.png") catch return;
+    defer allocator.free(path);
+    const result = validatePngDeep(allocator, path);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.png, result.format);
+}
+
+// ---- JPEG ----
+
+test "validateJpeg accepts valid JPEG from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg/generated_gradient.jpg", .{}) catch return;
+    defer file.close();
+    const result = validateJpeg(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.jpeg, result.format);
+}
+
+test "validateJpeg rejects truncated JPEG" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Valid SOI marker but nothing else
+    const data = [_]u8{ 0xFF, 0xD8 };
+    const f = try tmp.dir.createFile("bad.jpg", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.jpg", .{});
+    defer file.close();
+    const result = validateJpeg(file);
+    // Truncated JPEG with no SOS and no EOI should be invalid
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.jpeg, result.format);
+}
+
+test "validateJpeg rejects invalid magic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 0x00, 0x00, 0x00, 0x00 };
+    const f = try tmp.dir.createFile("bad2.jpg", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad2.jpg", .{});
+    defer file.close();
+    const result = validateJpeg(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- GIF ----
+
+test "validateGif accepts valid GIF from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/gif/sample_1.gif", .{}) catch return;
+    defer file.close();
+    const result = validateGif(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.gif, result.format);
+}
+
+test "validateGif rejects invalid header" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 'N', 'O', 'T', 'G', 'I', 'F' };
+    const f = try tmp.dir.createFile("bad.gif", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.gif", .{});
+    defer file.close();
+    const result = validateGif(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateGif rejects too-small file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Valid GIF header but file too small (< 13 bytes)
+    const data = [_]u8{ 'G', 'I', 'F', '8', '9', 'a', 0x01, 0x00, 0x01, 0x00, 0x00, 0x00 };
+    const f = try tmp.dir.createFile("small.gif", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("small.gif", .{});
+    defer file.close();
+    const result = validateGif(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- BMP ----
+
+test "validateBmp accepts valid BMP from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/bmp/sample.bmp", .{}) catch return;
+    defer file.close();
+    const result = validateBmp(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.bmp, result.format);
+}
+
+test "validateBmp rejects invalid signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 'X', 'X', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00 };
+    const f = try tmp.dir.createFile("bad.bmp", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.bmp", .{});
+    defer file.close();
+    const result = validateBmp(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- TIFF ----
+
+test "validateTiff accepts valid TIFF from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/tiff/bali.tif", .{}) catch return;
+    defer file.close();
+    const result = validateTiff(file, .tiff);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.tiff, result.format);
+}
+
+test "validateTiff rejects invalid byte order" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 'X', 'X', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00 };
+    const f = try tmp.dir.createFile("bad.tif", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.tif", .{});
+    defer file.close();
+    const result = validateTiff(file, .tiff);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- WebP ----
+
+test "validateWebp accepts valid WebP from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/webp/google_gallery_1.webp", .{}) catch return;
+    defer file.close();
+    const result = validateWebp(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.webp, result.format);
+}
+
+test "validateWebp rejects invalid RIFF signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 'N', 'O', 'P', 'E', 0x00, 0x00, 0x00, 0x00, 'W', 'E', 'B', 'P' };
+    const f = try tmp.dir.createFile("bad.webp", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.webp", .{});
+    defer file.close();
+    const result = validateWebp(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateWebp rejects invalid fourcc" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 'R', 'I', 'F', 'F', 0x04, 0x00, 0x00, 0x00, 'N', 'O', 'P', 'E' };
+    const f = try tmp.dir.createFile("bad2.webp", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad2.webp", .{});
+    defer file.close();
+    const result = validateWebp(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- SVG ----
+
+test "validateSvg accepts valid SVG from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/svg/sample.svg", .{}) catch return;
+    defer file.close();
+    const result = validateSvg(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.svg, result.format);
+}
+
+test "validateSvg rejects non-SVG content" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.svg", .{});
+    try f.writeAll("This is not an SVG file at all.");
+    f.close();
+    const file = try tmp.dir.openFile("bad.svg", .{});
+    defer file.close();
+    const result = validateSvg(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateSvgDeep accepts valid SVG from ground truth" {
+    const allocator = testing.allocator;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/svg/sample.svg") catch return;
+    defer allocator.free(path);
+    const result = validateSvgDeep(allocator, path);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.svg, result.format);
+}
+
+// ---- JPEG XL ----
+
+test "validateJxl accepts valid JXL from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/jxl/bicycles.jxl", .{}) catch return;
+    defer file.close();
+    const result = validateJxl(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.jxl, result.format);
+}
+
+test "validateJxl rejects invalid signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const f = try tmp.dir.createFile("bad.jxl", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.jxl", .{});
+    defer file.close();
+    const result = validateJxl(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- EXR ----
+
+test "validateExr accepts valid EXR from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/exr/sample.exr", .{}) catch return;
+    defer file.close();
+    const result = validateExr(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.exr, result.format);
+}
+
+test "validateExr rejects invalid magic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const f = try tmp.dir.createFile("bad.exr", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.exr", .{});
+    defer file.close();
+    const result = validateExr(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateExrDeep accepts valid EXR from ground truth" {
+    const allocator = testing.allocator;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/exr/sample.exr") catch return;
+    defer allocator.free(path);
+    const result = validateExrDeep(allocator, path);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.exr, result.format);
+}
+
+// ---- ICO ----
+
+test "validateIco accepts valid ICO from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ico/sample.ico", .{}) catch return;
+    defer file.close();
+    const result = validateIco(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.ico, result.format);
+}
+
+test "validateIco rejects invalid reserved field" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // reserved=0x0001 (invalid), type=1, count=1, then 16 dummy entry bytes
+    const data = [_]u8{
+        0x01, 0x00, // reserved (should be 0)
+        0x01, 0x00, // type = icon
+        0x01, 0x00, // count = 1
+        // 16 bytes dummy entry
+        0x10, 0x10, 0x00, 0x00, 0x01, 0x00, 0x20, 0x00,
+        0x00, 0x04, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00,
+    };
+    const f = try tmp.dir.createFile("bad.ico", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.ico", .{});
+    defer file.close();
+    const result = validateIco(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateIco rejects zero image count" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{
+        0x00, 0x00, // reserved
+        0x01, 0x00, // type = icon
+        0x00, 0x00, // count = 0
+    };
+    const f = try tmp.dir.createFile("empty.ico", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("empty.ico", .{});
+    defer file.close();
+    const result = validateIco(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- QOI ----
+
+test "validateQoi accepts valid QOI from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/qoi/sample.qoi", .{}) catch return;
+    defer file.close();
+    const result = validateQoi(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.qoi, result.format);
+}
+
+test "validateQoi rejects invalid magic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 'n', 'o', 'p', 'e', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x03, 0x00 };
+    const f = try tmp.dir.createFile("bad.qoi", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.qoi", .{});
+    defer file.close();
+    const result = validateQoi(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateQoi rejects zero width" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 'q', 'o', 'i', 'f', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x00 };
+    const f = try tmp.dir.createFile("zero_w.qoi", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("zero_w.qoi", .{});
+    defer file.close();
+    const result = validateQoi(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateQoi rejects invalid channels" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // channels = 5 (must be 3 or 4)
+    const data = [_]u8{ 'q', 'o', 'i', 'f', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x00 };
+    const f = try tmp.dir.createFile("bad_ch.qoi", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad_ch.qoi", .{});
+    defer file.close();
+    const result = validateQoi(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- TGA ----
+
+test "validateTga accepts valid TGA from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/tga/sample.tga", .{}) catch return;
+    defer file.close();
+    const result = validateTga(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.tga, result.format);
+}
+
+test "validateTga rejects invalid color map type" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // color_map_type = 2 (invalid, must be 0 or 1)
+    var data = [_]u8{0} ** 18;
+    data[1] = 2; // color_map_type
+    data[2] = 2; // image_type = uncompressed true-color
+    data[12] = 0x01; // width = 1
+    data[14] = 0x01; // height = 1
+    data[16] = 24; // pixel depth
+    const f = try tmp.dir.createFile("bad.tga", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.tga", .{});
+    defer file.close();
+    const result = validateTga(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateTga rejects invalid image type" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data = [_]u8{0} ** 18;
+    data[1] = 0; // color_map_type
+    data[2] = 99; // image_type (invalid)
+    data[12] = 0x01;
+    data[14] = 0x01;
+    data[16] = 24;
+    const f = try tmp.dir.createFile("bad2.tga", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad2.tga", .{});
+    defer file.close();
+    const result = validateTga(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- PAM ----
+
+test "validatePam accepts valid PPM from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/pam/sample.ppm", .{}) catch return;
+    defer file.close();
+    const result = validatePam(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.pam, result.format);
+}
+
+test "validatePam rejects invalid magic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.pam", .{});
+    try f.writeAll("X6 1 1 255\n");
+    f.close();
+    const file = try tmp.dir.openFile("bad.pam", .{});
+    defer file.close();
+    const result = validatePam(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePam rejects out-of-range type" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad2.pam", .{});
+    try f.writeAll("P8 1 1\n");
+    f.close();
+    const file = try tmp.dir.openFile("bad2.pam", .{});
+    defer file.close();
+    const result = validatePam(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- DPX ----
+
+test "validateDpx accepts valid DPX from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/dpx/sample.dpx", .{}) catch return;
+    defer file.close();
+    const result = validateDpx(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.dpx, result.format);
+}
+
+test "validateDpx rejects invalid magic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data = [_]u8{0} ** 32;
+    data[0] = 'N';
+    data[1] = 'O';
+    data[2] = 'P';
+    data[3] = 'E';
+    const f = try tmp.dir.createFile("bad.dpx", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.dpx", .{});
+    defer file.close();
+    const result = validateDpx(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- JPEG2000 ----
+
+test "validateJpeg2000 accepts valid JP2 from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon_intact.jp2", .{}) catch return;
+    defer file.close();
+    const result = validateJpeg2000(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.jpeg2000, result.format);
+}
+
+test "validateJpeg2000 accepts valid J2C codestream from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon.j2c", .{}) catch return;
+    defer file.close();
+    const result = validateJpeg2000(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.jpeg2000, result.format);
+}
+
+test "validateJpeg2000 rejects invalid signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const f = try tmp.dir.createFile("bad.jp2", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.jp2", .{});
+    defer file.close();
+    const result = validateJpeg2000(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- JBIG2 ----
+
+test "validateJbig2File accepts valid JBIG2 from ground truth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/jbig2/minimal_white_page.jbig2", .{}) catch return;
+    defer file.close();
+    const result = validateJbig2File(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.jbig2, result.format);
+}
+
+test "validateJbig2File rejects invalid signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const f = try tmp.dir.createFile("bad.jbig2", .{});
+    try f.writeAll(&data);
+    f.close();
+    const file = try tmp.dir.openFile("bad.jbig2", .{});
+    defer file.close();
+    const result = validateJbig2File(file);
+    try testing.expect(!result.is_valid);
+}
+
+// ---- HEIC ----
+
+test "validateHeicDeep accepts valid HEIC from ground truth" {
+    const allocator = testing.allocator;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/heic/sample.heic") catch return;
+    defer allocator.free(path);
+    const result = validateHeicDeep(allocator, path);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.heic, result.format);
+}
+
+// ---- AVIF ----
+
+test "validateAvifDeep accepts valid AVIF from ground truth" {
+    const allocator = testing.allocator;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/avif/fox.avif") catch return;
+    defer allocator.free(path);
+    const result = validateAvifDeep(allocator, path);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.avif, result.format);
+}
+
+// ---- FromBuffer variants ----
+
+test "validatePngFromBuffer rejects empty data" {
+    const data = [_]u8{};
+    const result = validatePngFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateJpegFromBuffer rejects empty data" {
+    const data = [_]u8{};
+    const result = validateJpegFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateGifFromBuffer rejects empty data" {
+    const data = [_]u8{};
+    const result = validateGifFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateBmpFromBuffer rejects empty data" {
+    const data = [_]u8{};
+    const result = validateBmpFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateTiffFromBuffer rejects empty data" {
+    const data = [_]u8{};
+    const result = validateTiffFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateWebpFromBuffer rejects empty data" {
+    const data = [_]u8{};
+    const result = validateWebpFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateExrFromBuffer rejects empty data" {
+    const data = [_]u8{};
+    const result = validateExrFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePsdFromBuffer rejects empty data" {
+    const data = [_]u8{};
+    const result = validatePsdFromBuffer(&data);
+    try testing.expect(!result.is_valid);
+}

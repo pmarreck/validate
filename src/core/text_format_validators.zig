@@ -1923,3 +1923,754 @@ pub fn utf8SequenceLength(first_byte: u8) u8 {
     if ((first_byte & 0xF8) == 0xF0) return 4;
     return 1; // Invalid, but return 1 to avoid infinite loops
 }
+
+// ============ Tests ============
+
+const testing = std.testing;
+const ValidationDepth = format_validation.ValidationDepth;
+
+// ---------- UTF-8 validator unit tests ----------
+
+test "validateUtf8 accepts valid ASCII" {
+    const result = validateUtf8("Hello, world!");
+    try testing.expect(result.isValid());
+    try testing.expect(!result.hasWarnings());
+}
+
+test "validateUtf8 accepts valid multi-byte sequences" {
+    // 2-byte: e-acute (U+00E9)
+    const r2 = validateUtf8("\xC3\xA9");
+    try testing.expect(r2.isValid());
+    // 3-byte: euro sign (U+20AC)
+    const r3 = validateUtf8("\xE2\x82\xAC");
+    try testing.expect(r3.isValid());
+    // 4-byte: Gothic letter hwair (U+10348)
+    const r4 = validateUtf8("\xF0\x90\x8D\x88");
+    try testing.expect(r4.isValid());
+}
+
+test "validateUtf8 rejects invalid continuation byte" {
+    const result = validateUtf8("\xC3\x00");
+    try testing.expect(!result.isValid());
+    try testing.expectEqual(@as(?usize, 1), result.error_offset);
+}
+
+test "validateUtf8 rejects truncated sequence" {
+    const result = validateUtf8("\xE2\x82");
+    try testing.expect(!result.isValid());
+}
+
+test "validateUtf8 rejects overlong encoding" {
+    const result = validateUtf8("\xC0\xAF");
+    try testing.expect(!result.isValid());
+    try testing.expectEqual(@as(?usize, 0), result.error_offset);
+}
+
+test "validateUtf8 rejects surrogate codepoints" {
+    const result = validateUtf8("\xED\xA0\x80");
+    try testing.expect(!result.isValid());
+}
+
+test "validateUtf8 detects noncharacter warnings" {
+    // U+FFFE: 0xEF 0xBF 0xBE
+    const result = validateUtf8("\xEF\xBF\xBE");
+    try testing.expect(result.isValid());
+    try testing.expect(result.hasWarnings());
+    try testing.expectEqual(@as(u3, 1), result.warning_count);
+    try testing.expectEqual(UnicodeWarningKind.noncharacter, result.warnings[0].kind);
+}
+
+test "validateUtf8 detects bidi override warnings" {
+    // U+202E RIGHT-TO-LEFT OVERRIDE: 0xE2 0x80 0xAE
+    const result = validateUtf8("abc\xE2\x80\xAEdef");
+    try testing.expect(result.isValid());
+    try testing.expect(result.hasWarnings());
+    try testing.expectEqual(UnicodeWarningKind.bidi_override, result.warnings[0].kind);
+    try testing.expectEqual(@as(usize, 3), result.warnings[0].byte_offset);
+}
+
+test "validateUtf8 detects zero-width char warnings" {
+    // U+200B ZERO WIDTH SPACE: 0xE2 0x80 0x8B
+    const result = validateUtf8("a\xE2\x80\x8Bb");
+    try testing.expect(result.isValid());
+    try testing.expect(result.hasWarnings());
+    try testing.expectEqual(UnicodeWarningKind.zero_width, result.warnings[0].kind);
+}
+
+test "validateUtf8 detects misplaced BOM warning" {
+    // BOM (U+FEFF) at non-zero position
+    const result = validateUtf8("x\xEF\xBB\xBF");
+    try testing.expect(result.isValid());
+    try testing.expect(result.hasWarnings());
+    try testing.expectEqual(UnicodeWarningKind.misplaced_bom, result.warnings[0].kind);
+}
+
+test "validateUtf8 BOM at position 0 does not warn" {
+    const result = validateUtf8("\xEF\xBB\xBF" ++ "hello");
+    try testing.expect(result.isValid());
+    try testing.expect(!result.hasWarnings());
+}
+
+test "validateUtf8 caps warnings at 5" {
+    // 6 noncharacters: U+FDD0..U+FDD5
+    const data = "\xEF\xB7\x90" ++ "\xEF\xB7\x91" ++ "\xEF\xB7\x92" ++ "\xEF\xB7\x93" ++ "\xEF\xB7\x94" ++ "\xEF\xB7\x95";
+    const result = validateUtf8(data);
+    try testing.expect(result.isValid());
+    try testing.expectEqual(@as(u3, 5), result.warning_count);
+}
+
+// ---------- UTF-16 validator unit tests ----------
+
+test "validateUtf16Le accepts valid BMP text" {
+    const data = [_]u8{ 0x48, 0x00, 0x69, 0x00 };
+    try testing.expectEqual(@as(?usize, null), validateUtf16Le(&data));
+}
+
+test "validateUtf16Le accepts valid surrogate pair" {
+    // U+10000: high=0xD800, low=0xDC00
+    const data = [_]u8{ 0x00, 0xD8, 0x00, 0xDC };
+    try testing.expectEqual(@as(?usize, null), validateUtf16Le(&data));
+}
+
+test "validateUtf16Le rejects orphan high surrogate" {
+    const data = [_]u8{ 0x00, 0xD8, 0x41, 0x00 };
+    try testing.expectEqual(@as(?usize, 2), validateUtf16Le(&data));
+}
+
+test "validateUtf16Le rejects orphan low surrogate" {
+    const data = [_]u8{ 0x00, 0xDC };
+    try testing.expectEqual(@as(?usize, 0), validateUtf16Le(&data));
+}
+
+test "validateUtf16Le rejects odd length" {
+    const data = [_]u8{ 0x48, 0x00, 0x69 };
+    try testing.expect(validateUtf16Le(&data) != null);
+}
+
+test "validateUtf16Be accepts valid BMP text" {
+    const data = [_]u8{ 0x00, 0x48, 0x00, 0x69 };
+    try testing.expectEqual(@as(?usize, null), validateUtf16Be(&data));
+}
+
+test "validateUtf16Be rejects orphan low surrogate" {
+    const data = [_]u8{ 0xDC, 0x00 };
+    try testing.expectEqual(@as(?usize, 0), validateUtf16Be(&data));
+}
+
+// ---------- formatUnicodeWarnings unit tests ----------
+
+test "formatUnicodeWarnings returns null for empty slice" {
+    const result = formatUnicodeWarnings(testing.allocator, &[_]UnicodeWarning{});
+    try testing.expectEqual(@as(?[]const u8, null), result);
+}
+
+test "formatUnicodeWarnings formats single warning group" {
+    const warnings = [_]UnicodeWarning{
+        .{ .kind = .noncharacter, .byte_offset = 100 },
+    };
+    const result = formatUnicodeWarnings(testing.allocator, &warnings) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("[noncharacters @ 100]", result);
+}
+
+test "formatUnicodeWarnings formats multiple groups" {
+    const warnings = [_]UnicodeWarning{
+        .{ .kind = .noncharacter, .byte_offset = 10 },
+        .{ .kind = .bidi_override, .byte_offset = 20 },
+    };
+    const result = formatUnicodeWarnings(testing.allocator, &warnings) orelse
+        return error.TestUnexpectedResult;
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("[noncharacters @ 10; bidi overrides @ 20]", result);
+}
+
+// ---------- INI line validator unit tests ----------
+
+test "validateIniLine classifies empty line" {
+    try testing.expectEqual(IniLineType.empty, validateIniLine(""));
+    try testing.expectEqual(IniLineType.empty, validateIniLine("   \t  "));
+}
+
+test "validateIniLine classifies comment" {
+    try testing.expectEqual(IniLineType.comment, validateIniLine("; this is a comment"));
+    try testing.expectEqual(IniLineType.comment, validateIniLine("# hash comment"));
+    try testing.expectEqual(IniLineType.comment, validateIniLine("  ; indented comment"));
+}
+
+test "validateIniLine classifies section header" {
+    try testing.expectEqual(IniLineType.section, validateIniLine("[section]"));
+    try testing.expectEqual(IniLineType.section, validateIniLine("[my.section]"));
+    try testing.expectEqual(IniLineType.section, validateIniLine("  [indented]  "));
+}
+
+test "validateIniLine rejects invalid sections" {
+    try testing.expectEqual(IniLineType.invalid, validateIniLine("["));
+    try testing.expectEqual(IniLineType.invalid, validateIniLine("[]"));
+    try testing.expectEqual(IniLineType.invalid, validateIniLine("[section] extra"));
+}
+
+test "validateIniLine classifies key-value pair" {
+    try testing.expectEqual(IniLineType.key_value, validateIniLine("key=value"));
+    try testing.expectEqual(IniLineType.key_value, validateIniLine("key: value"));
+    try testing.expectEqual(IniLineType.key_value, validateIniLine("some.dotted.key=val"));
+}
+
+test "validateIniLine handles Unreal Engine prefixes" {
+    try testing.expectEqual(IniLineType.key_value, validateIniLine("+Key=Value"));
+    try testing.expectEqual(IniLineType.key_value, validateIniLine("-Key=Value"));
+    try testing.expectEqual(IniLineType.key_value, validateIniLine("!Key=Value"));
+}
+
+// ---------- INI content validator unit tests ----------
+
+test "validateIniContent validates well-formed INI" {
+    const result = validateIniContent("[section]\nkey=value\n");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.ini, result.format);
+}
+
+test "validateIniContent rejects structureless content" {
+    const result = validateIniContent("; only comments\n# nothing else\n");
+    try testing.expectEqual(FileFormat.unknown, result.format);
+}
+
+// ---------- CSV delimiter detection ----------
+
+test "detectCsvDelimiter detects comma" {
+    try testing.expectEqual(@as(u8, ','), detectCsvDelimiter("name,age,city\n"));
+}
+
+test "detectCsvDelimiter detects tab" {
+    try testing.expectEqual(@as(u8, '\t'), detectCsvDelimiter("name\tage\tcity\n"));
+}
+
+test "detectCsvDelimiter detects semicolon" {
+    try testing.expectEqual(@as(u8, ';'), detectCsvDelimiter("name;age;city\n"));
+}
+
+test "detectCsvDelimiter detects pipe" {
+    try testing.expectEqual(@as(u8, '|'), detectCsvDelimiter("name|age|city\n"));
+}
+
+// ---------- containsTemplateMarkers ----------
+
+test "containsTemplateMarkers detects EEx/ERB" {
+    try testing.expect(containsTemplateMarkers("<%= @name %>"));
+}
+
+test "containsTemplateMarkers detects Handlebars" {
+    try testing.expect(containsTemplateMarkers("Hello {{name}}"));
+}
+
+test "containsTemplateMarkers detects Jinja2 blocks" {
+    try testing.expect(containsTemplateMarkers("{% if x %}ok{% endif %}"));
+}
+
+test "containsTemplateMarkers detects PHP" {
+    try testing.expect(containsTemplateMarkers("<?php echo $x; ?>"));
+}
+
+test "containsTemplateMarkers returns false for plain text" {
+    try testing.expect(!containsTemplateMarkers("just plain text"));
+}
+
+// ---------- JSON comment stripping ----------
+
+test "stripJsonComments strips line comments" {
+    const input = "{\n// comment\n\"key\": 1\n}";
+    const stripped = stripJsonComments(testing.allocator, input) orelse
+        return error.TestUnexpectedResult;
+    defer stripped.deinit(testing.allocator);
+    try testing.expect(tryParseJson(testing.allocator, stripped.data));
+}
+
+test "stripJsonComments strips block comments" {
+    const input = "{\n/* block\ncomment */\n\"key\": 1\n}";
+    const stripped = stripJsonComments(testing.allocator, input) orelse
+        return error.TestUnexpectedResult;
+    defer stripped.deinit(testing.allocator);
+    try testing.expect(tryParseJson(testing.allocator, stripped.data));
+}
+
+test "stripJsonComments returns null when no comments present" {
+    const result = stripJsonComments(testing.allocator, "{\"key\": 1}");
+    try testing.expectEqual(@as(?StrippedJson, null), result);
+}
+
+// ---------- tryParseJson ----------
+
+test "tryParseJson accepts valid JSON" {
+    try testing.expect(tryParseJson(testing.allocator, "{\"a\":1}"));
+    try testing.expect(tryParseJson(testing.allocator, "[1,2,3]"));
+    try testing.expect(tryParseJson(testing.allocator, "\"hello\""));
+}
+
+test "tryParseJson rejects invalid JSON" {
+    try testing.expect(!tryParseJson(testing.allocator, "{bad}"));
+    try testing.expect(!tryParseJson(testing.allocator, ""));
+    try testing.expect(!tryParseJson(testing.allocator, "{\"a\": }"));
+}
+
+// ---------- tryParseJson5 ----------
+
+test "tryParseJson5 accepts JSON5 features" {
+    try testing.expect(tryParseJson5("{unquoted: 'value'}"));
+    try testing.expect(tryParseJson5("{a: 1,}"));
+}
+
+test "tryParseJson5 rejects garbage" {
+    try testing.expect(!tryParseJson5("not json at all ~~~"));
+}
+
+// ---------- validateJsonLines ----------
+
+test "validateJsonLines accepts valid NDJSON" {
+    const result = validateJsonLines(testing.allocator, "{\"a\":1}\n{\"b\":2}\n{\"c\":3}\n");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.json, result.format);
+}
+
+test "validateJsonLines rejects mixed invalid lines" {
+    const result = validateJsonLines(testing.allocator, "{\"a\":1}\n{bad}\n");
+    try testing.expect(!result.is_valid);
+}
+
+// ---------- looksLikeUtf16LeWithoutBom ----------
+
+test "looksLikeUtf16LeWithoutBom detects UTF-16 LE pattern" {
+    const data = [_]u8{
+        0x5B, 0x00, 0x73, 0x00, 0x65, 0x00, 0x63, 0x00,
+        0x74, 0x00, 0x69, 0x00, 0x6F, 0x00, 0x6E, 0x00,
+    };
+    try testing.expect(looksLikeUtf16LeWithoutBom(&data));
+}
+
+test "looksLikeUtf16LeWithoutBom rejects ASCII" {
+    try testing.expect(!looksLikeUtf16LeWithoutBom("Hello, world!"));
+}
+
+// ---------- utf8SequenceLength ----------
+
+test "utf8SequenceLength returns correct lengths" {
+    try testing.expectEqual(@as(u8, 1), utf8SequenceLength(0x41));
+    try testing.expectEqual(@as(u8, 2), utf8SequenceLength(0xC3));
+    try testing.expectEqual(@as(u8, 3), utf8SequenceLength(0xE2));
+    try testing.expectEqual(@as(u8, 4), utf8SequenceLength(0xF0));
+    try testing.expectEqual(@as(u8, 1), utf8SequenceLength(0x80));
+}
+
+// ---------- decodeUtf8Codepoint ----------
+
+test "decodeUtf8Codepoint decodes correctly" {
+    try testing.expectEqual(@as(?u21, 0x41), decodeUtf8Codepoint("A"));
+    try testing.expectEqual(@as(?u21, 0xE9), decodeUtf8Codepoint("\xC3\xA9"));
+    try testing.expectEqual(@as(?u21, 0x20AC), decodeUtf8Codepoint("\xE2\x82\xAC"));
+    try testing.expectEqual(@as(?u21, null), decodeUtf8Codepoint(""));
+}
+
+// ---------- isNoncharacter / isBidiOverride / isZeroWidth ----------
+
+test "isNoncharacter identifies noncharacters" {
+    try testing.expect(isNoncharacter(0xFDD0));
+    try testing.expect(isNoncharacter(0xFDEF));
+    try testing.expect(isNoncharacter(0xFFFE));
+    try testing.expect(isNoncharacter(0xFFFF));
+    try testing.expect(isNoncharacter(0x1FFFE));
+    try testing.expect(!isNoncharacter(0x41));
+    try testing.expect(!isNoncharacter(0xFDCF));
+}
+
+test "isBidiOverride identifies bidi overrides" {
+    try testing.expect(isBidiOverride(0x202A));
+    try testing.expect(isBidiOverride(0x202E));
+    try testing.expect(isBidiOverride(0x2066));
+    try testing.expect(isBidiOverride(0x2069));
+    try testing.expect(!isBidiOverride(0x41));
+}
+
+test "isZeroWidth identifies zero-width chars" {
+    try testing.expect(isZeroWidth(0x200B));
+    try testing.expect(isZeroWidth(0x200C));
+    try testing.expect(isZeroWidth(0x200D));
+    try testing.expect(isZeroWidth(0x2060));
+    try testing.expect(!isZeroWidth(0x41));
+}
+
+// ---------- File-based validator tests using ground truth ----------
+
+test "validateJson accepts valid ground truth JSON file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/json/sample.json", .{}) catch return;
+    defer file.close();
+    const result = validateJson(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.json, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateJson rejects truncated JSON" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.json", .{});
+    try f.writeAll("{\"key\": ");
+    f.close();
+    const file = try tmp.dir.openFile("bad.json", .{});
+    defer file.close();
+    const result = validateJson(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateJson rejects empty file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("empty.json", .{});
+    f.close();
+    const file = try tmp.dir.openFile("empty.json", .{});
+    defer file.close();
+    const result = validateJson(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateToml accepts valid ground truth TOML file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/toml/sample.toml", .{}) catch return;
+    defer file.close();
+    const result = validateToml(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.toml, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateToml rejects truncated TOML" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.toml", .{});
+    try f.writeAll("[section\nkey = ");
+    f.close();
+    const file = try tmp.dir.openFile("bad.toml", .{});
+    defer file.close();
+    const result = validateToml(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateToml rejects empty file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("empty.toml", .{});
+    f.close();
+    const file = try tmp.dir.openFile("empty.toml", .{});
+    defer file.close();
+    const result = validateToml(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateIni accepts valid ground truth INI file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ini/sample.ini", .{}) catch return;
+    defer file.close();
+    const result = validateIni(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.ini, result.format);
+}
+
+test "validateIni rejects file with invalid syntax" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.ini", .{});
+    try f.writeAll("[section]\n<<<invalid>>>\n");
+    f.close();
+    const file = try tmp.dir.openFile("bad.ini", .{});
+    defer file.close();
+    const result = validateIni(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateXml accepts valid ground truth XML file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/xml/sample.xml", .{}) catch return;
+    defer file.close();
+    const result = validateXml(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.xml, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateXml rejects malformed XML" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.xml", .{});
+    try f.writeAll("<?xml version=\"1.0\"?>\n<root><unclosed>\n");
+    f.close();
+    const file = try tmp.dir.openFile("bad.xml", .{});
+    defer file.close();
+    const result = validateXml(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateXml rejects empty file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("empty.xml", .{});
+    f.close();
+    const file = try tmp.dir.openFile("empty.xml", .{});
+    defer file.close();
+    const result = validateXml(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateCsv accepts valid ground truth CSV file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/csv/sample.csv", .{}) catch return;
+    defer file.close();
+    const result = validateCsv(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.csv, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateCsv rejects unclosed quoted field" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.csv", .{});
+    try f.writeAll("name,desc\nAlice,\"unclosed\n");
+    f.close();
+    const file = try tmp.dir.openFile("bad.csv", .{});
+    defer file.close();
+    const result = validateCsv(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateRtf accepts valid ground truth RTF file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/rtf/sample.rtf", .{}) catch return;
+    defer file.close();
+    const result = validateRtf(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.rtf, result.format);
+}
+
+test "validateRtf rejects missing signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.rtf", .{});
+    try f.writeAll("not an rtf file at all");
+    f.close();
+    const file = try tmp.dir.openFile("bad.rtf", .{});
+    defer file.close();
+    const result = validateRtf(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateRtf rejects missing closing brace" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("noclosing.rtf", .{});
+    try f.writeAll("{\\rtf1\\ansi no closing brace here ");
+    f.close();
+    const file = try tmp.dir.openFile("noclosing.rtf", .{});
+    defer file.close();
+    const result = validateRtf(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateRtfDeep accepts valid ground truth RTF file" {
+    const path_buf = std.fs.cwd().realpathAlloc(
+        testing.allocator,
+        "ground_truth_examples/rtf/sample.rtf",
+    ) catch return;
+    defer testing.allocator.free(path_buf);
+    const result = validateRtfDeep(testing.allocator, path_buf);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.rtf, result.format);
+}
+
+test "validateRtfDeep detects unmatched closing brace" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("extrabrace.rtf", .{});
+    try f.writeAll("{\\rtf1\\ansi Hello}}");
+    f.close();
+    const path_buf = tmp.dir.realpathAlloc(
+        testing.allocator,
+        "extrabrace.rtf",
+    ) catch return;
+    defer testing.allocator.free(path_buf);
+    const result = validateRtfDeep(testing.allocator, path_buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateRtfDeep detects unclosed brace" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("unclosed.rtf", .{});
+    try f.writeAll("{\\rtf1\\ansi {nested text");
+    f.close();
+    const path_buf = tmp.dir.realpathAlloc(
+        testing.allocator,
+        "unclosed.rtf",
+    ) catch return;
+    defer testing.allocator.free(path_buf);
+    const result = validateRtfDeep(testing.allocator, path_buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateHtml accepts valid ground truth HTML file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/html/simple.html", .{}) catch return;
+    defer file.close();
+    const result = validateHtml(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.html, result.format);
+}
+
+test "validateHtml rejects file without DOCTYPE or html tag" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.html", .{});
+    try f.writeAll("<div>Just a div, no html or doctype</div>");
+    f.close();
+    const file = try tmp.dir.openFile("bad.html", .{});
+    defer file.close();
+    const result = validateHtml(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateHtml rejects tiny file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("tiny.html", .{});
+    try f.writeAll("hi");
+    f.close();
+    const file = try tmp.dir.openFile("tiny.html", .{});
+    defer file.close();
+    const result = validateHtml(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateKml accepts valid ground truth KML file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/kml/sample.kml", .{}) catch return;
+    defer file.close();
+    const result = validateKml(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.kml, result.format);
+}
+
+test "validateKml rejects file without kml element" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.kml", .{});
+    try f.writeAll("<?xml version=\"1.0\"?>\n<notKml>test</notKml>\n");
+    f.close();
+    const file = try tmp.dir.openFile("bad.kml", .{});
+    defer file.close();
+    const result = validateKml(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateKmlDeep accepts valid ground truth KML file" {
+    const path_buf = std.fs.cwd().realpathAlloc(
+        testing.allocator,
+        "ground_truth_examples/kml/sample.kml",
+    ) catch return;
+    defer testing.allocator.free(path_buf);
+    const result = validateKmlDeep(testing.allocator, path_buf);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.kml, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateKmz accepts valid ground truth KMZ file" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/kmz/sample.kmz", .{}) catch return;
+    defer file.close();
+    const result = validateKmz(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.kmz, result.format);
+}
+
+test "validateKmz rejects non-ZIP file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("bad.kmz", .{});
+    try f.writeAll("not a zip file");
+    f.close();
+    const file = try tmp.dir.openFile("bad.kmz", .{});
+    defer file.close();
+    const result = validateKmz(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePlainText accepts valid UTF-8 ground truth file" {
+    const file = std.fs.cwd().openFile(
+        "ground_truth_examples/plain_text/utf8/sample.txt",
+        .{},
+    ) catch return;
+    defer file.close();
+    const result = validatePlainText(testing.allocator, file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.plain_text, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validatePlainText accepts UTF-16 LE file with BOM" {
+    const file = std.fs.cwd().openFile(
+        "ground_truth_examples/plain_text/utf16/sample.txt",
+        .{},
+    ) catch return;
+    defer file.close();
+    const result = validatePlainText(testing.allocator, file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.plain_text_utf16, result.format);
+}
+
+test "validatePlainText falls back to Latin-1 for non-UTF-8 text" {
+    const file = std.fs.cwd().openFile(
+        "ground_truth_examples/plain_text/latin1/sample.txt",
+        .{},
+    ) catch return;
+    defer file.close();
+    const result = validatePlainText(testing.allocator, file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.plain_text_latin1, result.format);
+}
+
+test "validatePlainText accepts empty file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("empty.txt", .{});
+    f.close();
+    const file = try tmp.dir.openFile("empty.txt", .{});
+    defer file.close();
+    const result = validatePlainText(null, file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.plain_text, result.format);
+}
+
+test "validatePlainTextUtf16 accepts valid UTF-16 LE file" {
+    const file = std.fs.cwd().openFile(
+        "ground_truth_examples/plain_text/utf16/sample.txt",
+        .{},
+    ) catch return;
+    defer file.close();
+    const result = validatePlainTextUtf16(testing.allocator, file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.plain_text_utf16, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validatePlainTextUtf16 rejects odd byte count" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const f = try tmp.dir.createFile("odd.txt", .{});
+    // UTF-16 LE BOM + 3 bytes (odd after BOM)
+    try f.writeAll("\xFF\xFE\x41\x00\x42");
+    f.close();
+    const file = try tmp.dir.openFile("odd.txt", .{});
+    defer file.close();
+    const result = validatePlainTextUtf16(null, file);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateJson accepts JSON5 ground truth file with warning" {
+    const file = std.fs.cwd().openFile(
+        "ground_truth_examples/json5/sample.json5",
+        .{},
+    ) catch return;
+    defer file.close();
+    const result = validateJson(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.json, result.format);
+}
