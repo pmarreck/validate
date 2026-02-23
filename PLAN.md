@@ -7,6 +7,16 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 ### Codebase Consolidation
 - [x] Consolidate duplicated codec utilities (CRC-32 x4, CRC-16, RBSP, start codes, LEB128, endian helpers) into shared `codec_utils.zig`; replaced across 10 files, net -285 lines (2026-02-22 EST)
 
+### Code Review Fixes (2026-02-22)
+- [x] P1: Replace thread pool O(n^2) dequeue with O(1) ring buffer (2026-02-22 EST)
+- [x] P2: Fix depth-vs-warning asymmetry in FITS/DICOM/MP4/MPEG-1/2 validators (2026-02-22 EST)
+- [x] P3: Fix dangerous silent `catch {}` blocks in mpeg_ts_parser + video_audio_validator (2026-02-22 EST)
+- [x] P5: Remove dead validateRarDeep wrapper + unused rar_validator import (2026-02-22 EST)
+- [x] P6: Deduplicate build.zig linkLibrary calls; fix shared lib missing cj5/libraw/7z deps (2026-02-22 EST)
+- [x] P8: Fix ZIP buffer validator depth, document CCITT Group 3 2D approximation (2026-02-22 EST)
+- [x] P4: Add 52 tests across 5 previously untested validator files (executable, email, PE, CAD/3D, creative) (2026-02-22 EST)
+- [ ] P7: Further extraction of format_validation.zig god file (deferred)
+
 ### Strict Format Coverage Closure (Entropy Shield dependency)
 - [x] Add deterministic strict coverage harness (`scripts/strict_format_coverage`) using `hasValidator()` as source-of-truth (2026-02-18 22:50 EST)
 - [x] Generate strict baseline report artifacts (`inbox/strict_format_coverage.tsv`, `inbox/strict_format_coverage.md`) (2026-02-18 22:50 EST)
@@ -102,6 +112,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Fix last failed CI build (git identity in tests) (2026-02-01 ~20:45 EST)
 - [x] Create utility script to check forked dependencies for upstream updates (scripts/check-fork-updates) (2026-02-01 ~21:15 EST)
 ## Recently Completed
+- [x] Code review fixes: ring buffer, depth honesty, catch blocks, build.zig dedup, 52 new tests (2026-02-22 EST)
 - [x] Consolidate duplicated codec utilities into `codec_utils.zig` (2026-02-22 EST)
 - [x] Add Compact Pro (`.cpt`) strict fixture coverage (2026-02-21 EST)
 - [x] Refresh RAR CLI discrimination test for `rarz` backend (2026-02-21 EST)
