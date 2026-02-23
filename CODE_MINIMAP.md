@@ -27,6 +27,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/` | Validation logic and format support |
 | `src/build/` | Zig build helpers (libtool bundling) |
 | `src/core/path_validation.zig` | Parallel path validation with bundle-aware enumeration (.git directories validated as units, not recursed into); honors `MAX_FILES` |
+| `src/core/thread_pool.zig` | Thread pool with O(1) ring-buffer work queue (head/len circular buffer with doubling growth), replacing prior O(n) ArrayList dequeue |
 | `src/core/format_validation.zig` | Format validation logic incl. bundle detection (`detectBundleType()`, `isBundleDirectory()`), git repository deep validation routing, ZIP deep validation (central-directory parsing), PDF image lenience (JBIG2/DCT warnings), XML undefined-entity tolerance, expanded magic/extension handling (e.g., EXR, MPEG-ES), pure-Zig BinHex/HQX validation (alphabet decode, RLE, CRC16), and telemetry envs (`ZIP_TELEMETRY`, `PDF_TELEMETRY`) |
 | `src/core/codec_utils.zig` | Shared codec utilities: `Crc32Normal(init,xorout)` comptime-parameterized MSB-first CRC-32 (instantiated as `Crc32Ogg`/`Crc32Mpeg2`/`Crc32Bzip2`), `crc16Ccitt` (RAR4+BinHex), `removeEmulationPreventionBytes` (H.264/H.265 RBSP), `findAnnexBStartCode`, `readLeb128`, `readLe`/`readBe` endian helpers. Consumed by: ebml_parser, ogg_validator, mpeg_ts_parser, bzip2, archive_validators, format_validation, h264_syntax_validator, h265_validator, av1_obu_validator, video_validator |
 | `src/core/i18n/mod.zig` | i18n locale registry/switching, locale detection from env/CLI prefixes, translated string accessors, and cross-locale CLI/env alias maps (30 locales) |
@@ -55,6 +56,19 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/aac_huffman_tables.zig` | AAC Huffman trees (scalefactor + 11 spectral codebooks) and SWB offset tables |
 | `src/core/mpeg_ts_parser.zig` | MPEG-TS demuxer with PAT/PMT CRC-32, CC tracking, PES assembly + stream dispatch |
 | `src/core/mp3_decode_validator.zig` | MP3 frame decoder (file and buffer-based) with Huffman + IMDCT validation |
+| `src/core/error_messages.zig` | 25 comptime error message template functions (failedToRead, truncated, invalidSignature, etc.) replacing ~2076 string literals |
+| `src/core/text_format_validators.zig` | Text format validation (JSON, CSV, TOML, INI, XML, RTF, HTML, KML, plain text, Unicode) |
+| `src/core/scientific_validators.zig` | Scientific format validation (FITS, DICOM, NetCDF, FASTA, FASTQ) with honest depth reporting |
+| `src/core/music_validators.zig` | Audio format validation (WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD, AC3, EAC3, MIDI, Tracker) |
+| `src/core/movie_validators.zig` | Video container validation (MP4, MKV, AVI, MOV, FLV, WebM, SWF, ASF, DV) with depth downgrade on unvalidated audio |
+| `src/core/image_validators.zig` | Image format validation (PNG, JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR, PSD, PAM, DPX, QOI, TGA, DNG) |
+| `src/core/cad_3d_validators.zig` | 3D/CAD format validation (DWG, DXF, STEP, STL, OBJ, PLY, glTF/GLB, Blender) |
+| `src/core/creative_validators.zig` | Creative suite validation (Premiere, InDesign, IDML, FCPXML, DaVinci, Sketch, AI, EPS, AEP) |
+| `src/core/email_validators.zig` | Email format validation (EML, MBOX) |
+| `src/core/executable_validators.zig` | Binary executable validation (ELF, Mach-O, COFF, Wasm, AR) |
+| `src/core/pe_validator.zig` | Windows PE executable validation (DOS header, COFF, optional header, section table) |
+| `src/core/daw_validators.zig` | DAW project validation (FLP, ALS, RPP) |
+| `src/core/game_validator.zig` | Game ROM validation (NES, SNES, N64, GB, GBA, NDS, Genesis, CHD) |
 | `src/core/ebml_parser.zig` | EBML/Matroska container parser with CRC-32 verification (uses `std.hash.Crc32` via codec_utils consolidation) |
 
 ## FFI (ffi/)
