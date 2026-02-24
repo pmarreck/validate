@@ -34,6 +34,7 @@ For clarity, the tables below use more specific labels:
 
 | Table Label | Maps To | Examples |
 |-------------|---------|----------|
+| ⚠️ Stub | `structural` + WARN | Magic/size check only — format recognized but no real corruption detection |
 | Structure | `structural` | Bounds checking, brace matching, header parsing |
 | Checksum | `full` | CRC32 verified, MD5 verified, header checksum |
 | Decompress | `full` | Gzip/zlib/bzip2 decompression succeeded |
@@ -220,8 +221,8 @@ For clarity, the tables below use more specific labels:
 | Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
 |--------|------------|------------------|-----------------|-----------|-----|
 | **WordPerfect** | .wpd | Header signature (0xFF 'WPC') | — | Structure | — |
-| **ClarisWorks/AppleWorks** | .cwk | Header signature (BOBO) | — | Structure | — |
-| **MacWrite** | .mwd | Header signature | — | Structure | — |
+| **ClarisWorks/AppleWorks** | .cwk | Magic bytes only (BOBO) | — | ⚠️ Stub | — |
+| **MacWrite** | .mwd | Version/magic bytes only | — | ⚠️ Stub | — |
 
 ## Archives
 
@@ -247,13 +248,14 @@ For clarity, the tables below use more specific labels:
 | **Logic Pro X** | .logicx | ZIP-based package structure | CRC32 per entry | Checksum | — |
 | **FL Studio** | .flp | FLhd/FLdt chunk structure | Full TLV event parsing | Full Decode | — |
 | **Studio One** | .song | ZIP-based, metainfo.xml detection | CRC32 per entry | Checksum | — |
-| **Bitwig** | .bwproject | Basic binary validation | — | Structure | — |
-| **Cubase** | .cpr | RIFF container structure | — | Structure | — |
-| **Pro Tools** | .ptx | Basic binary validation | — | Structure | — |
-| **GarageBand** | .band | macOS bundle detection | — | Structure | — |
-| **Reason** | .reason | Basic binary validation | — | Structure | — |
+| **Bitwig** | .bwproject | Size check + ZIP rejection only | — | ⚠️ Stub | — |
+| **Cubase** | .cpr | RIFF magic only (no chunk parsing) | — | ⚠️ Stub | — |
+| **Pro Tools** | .ptx | Size check + ZIP rejection only | — | ⚠️ Stub | — |
+| **GarageBand** | .band | Size check only | — | ⚠️ Stub | — |
+| **Reason** | .reason | Size check + ZIP rejection only | — | ⚠️ Stub | — |
 
-> **Note:** Bitwig, Pro Tools, and Reason use proprietary undocumented binary formats.
+> **Note:** Bitwig, Pro Tools, GarageBand, and Reason use proprietary undocumented binary formats.
+> These return WARN (not OK) — format is recognized but corruption detection is unreliable.
 > Deep validation would require reverse-engineering these formats.
 
 ## Database
@@ -306,8 +308,8 @@ For clarity, the tables below use more specific labels:
 |--------|------------|------------------|-----------------|-----------|-----|
 | **DOOM WAD** | .wad | IWAD/PWAD signature, directory structure | Directory entry bounds validation | Structure | — |
 | **Quake PAK** | .pak | PACK signature, directory offset/size | Directory entry bounds validation | Structure | — |
-| **Quake/Source BSP** | .bsp | Version detection (29/30/VBSP), lump structure | — | Structure | — |
-| **Valve VPK** | .vpk | Signature (34 12 AA 55), version, tree structure | — | Structure | — |
+| **Quake/Source BSP** | .bsp | Version whitelist only (no lump parsing) | — | ⚠️ Stub | — |
+| **Valve VPK** | .vpk | Signature + version + tree size bounds only | — | ⚠️ Stub | — |
 
 ## Game ROM Formats
 
@@ -533,4 +535,4 @@ Formats with built-in integrity verification:
 
 ---
 
-*Last updated: 2026-02-09*
+*Last updated: 2026-02-24*

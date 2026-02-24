@@ -6,7 +6,29 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ### Depth Honesty Audit
 - [x] Fix ~50 validators dishonestly claiming `.full` depth when they only do header/structural checks or parse opaque text with no integrity mechanism (2026-02-23 EST)
+- [x] Downgrade 9 header-only stubs to WARN via `structuralOnly()`: bwproject, cpr, ptx, band, reason, cwk, mwd, bsp, vpk (2026-02-24 EST)
 - [ ] Future: Add `best_effort` tier to distinguish "parsed every byte, no integrity mechanism" from "only checked headers"
+
+### High-Priority Validation Gaps (Stub-Only Formats)
+These formats return WARN — recognized but NO real corruption detection:
+- [ ] `bwproject` (Bitwig Studio) — proprietary, undocumented
+- [ ] `cpr` (Cubase) — RIFF header only, needs chunk parsing
+- [ ] `ptx` (Pro Tools) — proprietary, undocumented
+- [ ] `band` (GarageBand) — proprietary, macOS bundle
+- [ ] `reason` (Reason Studios) — proprietary, undocumented
+- [ ] `cwk` (ClarisWorks/AppleWorks) — obsolete, magic bytes only
+- [ ] `mwd` (MacWrite) — obsolete, version bytes only
+- [ ] `bsp` (Quake/Source BSP) — version whitelist only, needs lump parsing
+- [ ] `vpk` (Valve PAK) — magic + tree bounds only, needs tree/entry parsing
+
+### God File Extraction (`format_validation.zig` → domain files)
+- [x] Phase 1: 12 domain files extracted (2026-02-10 EST)
+- [ ] Phase 2A: Move remaining validators to existing domain files (~2,400 lines)
+- [ ] Phase 2B: Create new domain files (pdf, document, game_asset, filesystem, apple) (~4,450 lines)
+- [ ] Phase 2C: Extract deep validator blocks (ZIP deep, PDF deep, compression deep) (~6,000 lines)
+
+### Ground-Truth Sample Coverage
+- [ ] Add samples for ~50 formats still missing ground-truth examples
 
 ### Validator Depth Upgrades (`.structural` → `.full`)
 - [x] Fix Blend deep → `.structural` (no checksums, missed in audit) (2026-02-24 EST)
