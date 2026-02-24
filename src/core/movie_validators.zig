@@ -15,6 +15,10 @@ const mp4_box_parser = @import("mp4_box_parser.zig");
 const mpeg_ts_parser = @import("mpeg_ts_parser.zig");
 const zlib = @import("zlib.zig");
 const errmsg = @import("error_messages.zig");
+const vp9_syntax_validator = @import("vp9_syntax_validator.zig");
+const av1_obu_validator = @import("av1_obu_validator.zig");
+const h264_syntax_validator = @import("h264_syntax_validator.zig");
+const aac_syntax_validator = @import("aac_syntax_validator.zig");
 
 // Imported helpers from format_validation
 const VideoDecodeTolerance = format_validation.VideoDecodeTolerance;
@@ -445,7 +449,9 @@ pub fn validateFlv(file: std.fs.File) ValidationResult {
     return ValidationResult.ok(.flv);
 }
 
-/// Deep validation for FLV files - parses all tag boundaries.
+/// Deep FLV validation — extracts H.264 NALs and AAC frames from tags, dispatches
+/// to codec validators. FLV video tags with codec ID 7 contain AVCC-format H.264;
+/// audio tags with sound format 10 contain raw AAC frames.
 pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
         return ValidationResult.invalidCode(.flv, .failed_to_open, "FLV file");
@@ -473,17 +479,35 @@ pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalidCode(.flv, .invalid_value, "FLV data offset");
     }
 
-    // Parse all tags
+    // Parse tags, collecting H.264 and AAC data
     file.seekTo(data_offset) catch return ValidationResult.invalidCode(.flv, .failed_to_seek, "to tags");
 
     var tag_count: u32 = 0;
     var offset: u64 = data_offset;
-    _ = allocator;
+
+    // H.264 collection
+    var h264_annexb: std.ArrayListUnmanaged(u8) = .{};
+    defer h264_annexb.deinit(allocator);
+    var nal_length_size: u8 = 4;
+    var has_h264 = false;
+
+    // AAC collection
+    var aac_data: std.ArrayListUnmanaged(u8) = .{};
+    defer aac_data.deinit(allocator);
+    var aac_sizes: std.ArrayListUnmanaged(u32) = .{};
+    defer aac_sizes.deinit(allocator);
+    var aac_config: std.ArrayListUnmanaged(u8) = .{};
+    defer aac_config.deinit(allocator);
+    var has_aac = false;
+
+    const max_codec_tags: u32 = 200; // Limit frames to validate
+    var video_tags_collected: u32 = 0;
+    var audio_tags_collected: u32 = 0;
 
     while (offset + 4 < file_size) {
         // Read PreviousTagSize
-        var prev_tag_size: [4]u8 = undefined;
-        _ = file.read(&prev_tag_size) catch break;
+        var prev_tag_buf: [4]u8 = undefined;
+        _ = file.read(&prev_tag_buf) catch break;
         offset += 4;
 
         if (offset + 11 >= file_size) break;
@@ -498,24 +522,140 @@ pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult 
         }
 
         const tag_size = (@as(u32, tag_header[1]) << 16) | (@as(u32, tag_header[2]) << 8) | @as(u32, tag_header[3]);
+        const tag_data_start = offset + 11;
 
-        // Skip tag data
-        offset += 11 + tag_size;
-        if (offset > file_size) {
+        if (tag_data_start + tag_size > file_size) {
             return ValidationResult.invalidCodeMsg(.flv, .exceeds_bounds, "FLV tag", "FLV tag exceeds file size");
         }
 
+        // Video tag (type 9): extract H.264 data
+        if (tag_type == 9 and tag_size >= 5 and video_tags_collected < max_codec_tags) {
+            var video_hdr: [5]u8 = undefined;
+            if ((file.read(&video_hdr) catch null) == 5) {
+                const codec_id = video_hdr[0] & 0x0F;
+                if (codec_id == 7) { // AVC (H.264)
+                    has_h264 = true;
+                    const avc_packet_type = video_hdr[1];
+                    const payload_size = tag_size - 5;
+
+                    if (avc_packet_type == 0 and payload_size > 6) {
+                        // AVC sequence header (AVCDecoderConfigurationRecord)
+                        // Extract nal_length_size and SPS/PPS as Annex B
+                        const config_data = allocator.alloc(u8, payload_size) catch break;
+                        defer allocator.free(config_data);
+                        const config_read = file.readAll(config_data) catch break;
+                        if (config_read >= 6) {
+                            nal_length_size = (config_data[4] & 0x03) + 1;
+                            // Extract SPS
+                            const num_sps = config_data[5] & 0x1F;
+                            var cfg_pos: usize = 6;
+                            var sps_idx: u8 = 0;
+                            while (sps_idx < num_sps and cfg_pos + 2 <= config_read) : (sps_idx += 1) {
+                                const sps_len = std.mem.readInt(u16, config_data[cfg_pos..][0..2], .big);
+                                cfg_pos += 2;
+                                if (cfg_pos + sps_len <= config_read) {
+                                    h264_annexb.appendSlice(allocator, &[_]u8{ 0, 0, 0, 1 }) catch break;
+                                    h264_annexb.appendSlice(allocator, config_data[cfg_pos..][0..sps_len]) catch break;
+                                    cfg_pos += sps_len;
+                                }
+                            }
+                            // Extract PPS
+                            if (cfg_pos < config_read) {
+                                const num_pps = config_data[cfg_pos];
+                                cfg_pos += 1;
+                                var pps_idx: u8 = 0;
+                                while (pps_idx < num_pps and cfg_pos + 2 <= config_read) : (pps_idx += 1) {
+                                    const pps_len = std.mem.readInt(u16, config_data[cfg_pos..][0..2], .big);
+                                    cfg_pos += 2;
+                                    if (cfg_pos + pps_len <= config_read) {
+                                        h264_annexb.appendSlice(allocator, &[_]u8{ 0, 0, 0, 1 }) catch break;
+                                        h264_annexb.appendSlice(allocator, config_data[cfg_pos..][0..pps_len]) catch break;
+                                        cfg_pos += pps_len;
+                                    }
+                                }
+                            }
+                        }
+                    } else if (avc_packet_type == 1 and payload_size > 0) {
+                        // AVC NALU — AVCC format (length-prefixed NALs)
+                        const nalu_data = allocator.alloc(u8, payload_size) catch break;
+                        defer allocator.free(nalu_data);
+                        const nalu_read = file.readAll(nalu_data) catch break;
+                        if (nalu_read > 0) {
+                            if (video_validator.convertToAnnexB(allocator, nalu_data[0..nalu_read], nal_length_size)) |annexb| {
+                                defer allocator.free(annexb);
+                                h264_annexb.appendSlice(allocator, annexb) catch {};
+                            }
+                        }
+                        video_tags_collected += 1;
+                    }
+                }
+            }
+        }
+
+        // Audio tag (type 8): extract AAC data
+        if (tag_type == 8 and tag_size >= 2 and audio_tags_collected < max_codec_tags) {
+            file.seekTo(tag_data_start) catch break;
+            var audio_hdr: [2]u8 = undefined;
+            if ((file.read(&audio_hdr) catch null) == 2) {
+                const sound_format = (audio_hdr[0] >> 4) & 0x0F;
+                if (sound_format == 10) { // AAC
+                    has_aac = true;
+                    const aac_packet_type = audio_hdr[1];
+                    const payload_size = tag_size - 2;
+
+                    if (aac_packet_type == 0 and payload_size > 0) {
+                        // AAC sequence header (AudioSpecificConfig)
+                        aac_config.resize(allocator, payload_size) catch break;
+                        _ = file.readAll(aac_config.items) catch break;
+                    } else if (aac_packet_type == 1 and payload_size > 0) {
+                        // AAC raw frame
+                        const frame_start = aac_data.items.len;
+                        aac_data.resize(allocator, frame_start + payload_size) catch break;
+                        _ = file.readAll(aac_data.items[frame_start..]) catch break;
+                        aac_sizes.append(allocator, @intCast(payload_size)) catch break;
+                        audio_tags_collected += 1;
+                    }
+                }
+            }
+        }
+
+        offset = tag_data_start + tag_size;
         file.seekTo(offset) catch break;
         tag_count += 1;
 
-        // Safety limit
-        if (tag_count > 10000000) break;
+        if (tag_count > 10_000_000) break;
     }
 
     if (tag_count == 0) {
         return ValidationResult.invalidCode(.flv, .no_valid_x_found, "FLV tags");
     }
 
+    // Validate collected codec data
+    var validated_codec = false;
+
+    if (has_h264 and h264_annexb.items.len > 0) {
+        const h264_result = h264_syntax_validator.validateH264Stream(h264_annexb.items, 100);
+        if (!h264_result.valid) {
+            const msg = if (h264_result.error_message) |m| std.mem.span(m) else "H.264 stream validation failed";
+            return ValidationResult.invalidWithDepth(.flv, msg, .full);
+        }
+        validated_codec = true;
+    }
+
+    if (has_aac and aac_config.items.len > 0 and aac_sizes.items.len > 0) {
+        const aac_result = aac_syntax_validator.validateAacSyntax(aac_data.items, aac_sizes.items, aac_config.items);
+        if (!aac_result.valid) {
+            const msg = aac_result.error_message orelse "AAC syntax validation failed";
+            return ValidationResult.invalidWithDepth(.flv, msg, .full);
+        }
+        validated_codec = true;
+    }
+
+    if (validated_codec) {
+        return ValidationResult.okWithDepth(.flv, .full);
+    }
+
+    // No H.264/AAC codecs found (VP6, Speex, etc.) — structural only
     return ValidationResult.okWithDepth(.flv, .structural);
 }
 
@@ -728,6 +868,156 @@ pub fn validateIvf(file: std.fs.File) ValidationResult {
     }
 
     return ValidationResult.okWithDepth(.ivf, .structural);
+}
+
+/// Deep IVF validation — dispatches to VP9/AV1 codec validators for frame-level integrity.
+/// IVF frames are preceded by 12-byte headers: frame_size(u32 LE) + timestamp(u64 LE).
+pub fn validateIvfDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        return switch (err) {
+            error.FileNotFound => ValidationResult.invalidWithDepth(.ivf, "File not found", .full),
+            error.AccessDenied => ValidationResult.invalidWithDepth(.ivf, "Access denied", .full),
+            else => ValidationResult.invalidCodeWithDepth(.ivf, .failed_to_open, "file", .full),
+        };
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCodeWithDepth(.ivf, .failed_to_get, "file size", .full);
+    };
+
+    if (file_size < 32) {
+        return ValidationResult.invalidCodeWithDepth(.ivf, .file_too_small, "IVF header", .structural);
+    }
+
+    // Read IVF 32-byte header
+    var header: [32]u8 = undefined;
+    _ = file.readAll(&header) catch {
+        return ValidationResult.invalidCodeWithDepth(.ivf, .failed_to_read, "header", .structural);
+    };
+
+    if (!std.mem.eql(u8, header[0..4], "DKIF")) {
+        return ValidationResult.invalidCodeWithDepth(.ivf, .invalid_signature, "IVF", .structural);
+    }
+
+    const codec = header[8..12];
+    const is_vp9 = std.mem.eql(u8, codec, "VP90");
+    const is_av1 = std.mem.eql(u8, codec, "AV01");
+
+    if (!is_vp9 and !is_av1) {
+        // VP80 or unknown codec — no deep validator available, structural only
+        return ValidationResult.okWithDepthAndWarning(.ivf, .structural, "No deep validator for this codec");
+    }
+
+    // Collect frame data from IVF frame table
+    const max_frames: u32 = 100;
+    var offset: u64 = 32;
+
+    if (is_av1) {
+        // AV1: concatenate all frame data for stream validation
+        var total_size: usize = 0;
+        var frame_count: u32 = 0;
+
+        // First pass: compute total size
+        var scan_offset: u64 = 32;
+        while (scan_offset + 12 <= file_size and frame_count < max_frames) {
+            var frame_header: [12]u8 = undefined;
+            file.seekTo(scan_offset) catch break;
+            const fh_read = file.read(&frame_header) catch break;
+            if (fh_read < 12) break;
+
+            const frame_size = std.mem.readInt(u32, frame_header[0..4], .little);
+            if (frame_size == 0 or scan_offset + 12 + frame_size > file_size) break;
+
+            total_size += frame_size;
+            scan_offset += 12 + frame_size;
+            frame_count += 1;
+        }
+
+        if (frame_count == 0) {
+            return ValidationResult.okWithDepthAndWarning(.ivf, .structural, "No frames found in IVF");
+        }
+
+        const av1_data = allocator.alloc(u8, total_size) catch {
+            return ValidationResult.invalidCodeWithDepth(.ivf, .out_of_memory, "for AV1 frames", .structural);
+        };
+        defer allocator.free(av1_data);
+
+        // Second pass: read frame data
+        var write_pos: usize = 0;
+        offset = 32;
+        frame_count = 0;
+        while (offset + 12 <= file_size and frame_count < max_frames) {
+            var frame_header: [12]u8 = undefined;
+            file.seekTo(offset) catch break;
+            const fh_read = file.read(&frame_header) catch break;
+            if (fh_read < 12) break;
+
+            const frame_size = std.mem.readInt(u32, frame_header[0..4], .little);
+            if (frame_size == 0 or offset + 12 + frame_size > file_size) break;
+
+            const bytes_read = file.readAll(av1_data[write_pos..][0..frame_size]) catch break;
+            if (bytes_read < frame_size) break;
+
+            write_pos += frame_size;
+            offset += 12 + frame_size;
+            frame_count += 1;
+        }
+
+        const result = av1_obu_validator.validateAv1Stream(av1_data[0..write_pos], max_frames);
+        if (!result.valid) {
+            const msg = if (result.error_message) |m| std.mem.span(m) else "AV1 stream validation failed";
+            return ValidationResult.invalidWithDepth(.ivf, msg, .full);
+        }
+        return ValidationResult.okWithDepth(.ivf, .full);
+    } else {
+        // VP9: collect individual frame slices for stream validation
+        var frame_slices: [100][]const u8 = undefined;
+        var frame_allocs: [100][]u8 = undefined;
+        var frame_count: u32 = 0;
+
+        defer {
+            for (frame_allocs[0..frame_count]) |alloc| {
+                allocator.free(alloc);
+            }
+        }
+
+        while (offset + 12 <= file_size and frame_count < max_frames) {
+            var frame_header: [12]u8 = undefined;
+            file.seekTo(offset) catch break;
+            const fh_read = file.read(&frame_header) catch break;
+            if (fh_read < 12) break;
+
+            const frame_size = std.mem.readInt(u32, frame_header[0..4], .little);
+            if (frame_size == 0 or offset + 12 + frame_size > file_size) break;
+
+            const frame_data = allocator.alloc(u8, frame_size) catch break;
+            const bytes_read = file.readAll(frame_data) catch {
+                allocator.free(frame_data);
+                break;
+            };
+            if (bytes_read < frame_size) {
+                allocator.free(frame_data);
+                break;
+            }
+
+            frame_allocs[frame_count] = frame_data;
+            frame_slices[frame_count] = frame_data;
+            frame_count += 1;
+            offset += 12 + frame_size;
+        }
+
+        if (frame_count == 0) {
+            return ValidationResult.okWithDepthAndWarning(.ivf, .structural, "No frames found in IVF");
+        }
+
+        const result = vp9_syntax_validator.validateVp9Stream(frame_slices[0..frame_count], max_frames);
+        if (!result.valid) {
+            const msg = if (result.error_message) |m| std.mem.span(m) else "VP9 stream validation failed";
+            return ValidationResult.invalidWithDepth(.ivf, msg, .full);
+        }
+        return ValidationResult.okWithDepth(.ivf, .full);
+    }
 }
 
 // ============ Video Deep Validation ============

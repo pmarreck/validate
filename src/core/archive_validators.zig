@@ -971,6 +971,253 @@ pub fn validateWarc(file: std.fs.File) ValidationResult {
     return ValidationResult.okWithDepth(.warc, .structural);
 }
 
+// ============ WARC Deep Validation (SHA-1 Block Digest) ============
+
+const Sha1 = std.crypto.hash.Sha1;
+
+/// RFC 4648 Base32 alphabet: A-Z = 0-25, 2-7 = 26-31
+fn base32CharValue(c: u8) ?u5 {
+    return switch (c) {
+        'A'...'Z' => @intCast(c - 'A'),
+        'a'...'z' => @intCast(c - 'a'), // case-insensitive per RFC 4648
+        '2'...'7' => @intCast(c - '2' + 26),
+        else => null,
+    };
+}
+
+/// Decode RFC 4648 Base32-encoded data into `out`. Returns number of bytes
+/// written, or null if the input contains invalid characters or the output
+/// buffer is too small.
+fn base32Decode(encoded: []const u8, out: []u8) ?usize {
+    // Strip trailing padding
+    var len = encoded.len;
+    while (len > 0 and encoded[len - 1] == '=') : (len -= 1) {}
+    const input = encoded[0..len];
+
+    // Each 8 base32 chars → 5 bytes; partial groups are allowed
+    const out_len = (input.len * 5) / 8;
+    if (out.len < out_len) return null;
+
+    var buf: u64 = 0;
+    var bits: u6 = 0;
+    var written: usize = 0;
+
+    for (input) |c| {
+        const val: u64 = base32CharValue(c) orelse return null;
+        buf = (buf << 5) | val;
+        bits += 5;
+        if (bits >= 8) {
+            bits -= 8;
+            if (written >= out.len) return null;
+            out[written] = @intCast((buf >> bits) & 0xFF);
+            written += 1;
+        }
+    }
+
+    return written;
+}
+
+/// Deep WARC validation: parses records and verifies WARC-Block-Digest SHA-1
+/// checksums against computed hashes of record bodies. Returns .full depth when
+/// at least one digest is present and all verify; .structural with a warning
+/// when no digests are found; invalid on any mismatch.
+pub fn validateWarcDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    _ = allocator;
+
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        return switch (err) {
+            error.FileNotFound => ValidationResult.invalidWithDepth(.warc, "File not found", .structural),
+            error.AccessDenied => ValidationResult.invalidWithDepth(.warc, "Access denied", .structural),
+            else => ValidationResult.invalidCodeWithDepth(.warc, .failed_to_open, "file", .structural),
+        };
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCodeWithDepth(.warc, .failed_to_get, "file size", .structural);
+    };
+
+    if (file_size < 20) {
+        return ValidationResult.invalidCode(.warc, .file_too_small, "WARC");
+    }
+
+    var buffer: [8192]u8 = undefined;
+    var offset: u64 = 0;
+    var record_count: u32 = 0;
+    var digest_count: u32 = 0;
+    var verified_count: u32 = 0;
+
+    while (offset < file_size) {
+        file.seekTo(offset) catch return ValidationResult.invalidCode(.warc, .failed_to_seek, "to record");
+
+        const to_read = @min(buffer.len, @as(usize, @intCast(file_size - offset)));
+        const bytes_read = file.read(buffer[0..to_read]) catch {
+            return ValidationResult.invalidCode(.warc, .failed_to_read, "record");
+        };
+
+        if (bytes_read < 10) break;
+
+        const data = buffer[0..bytes_read];
+
+        // Check WARC version
+        if (!std.mem.startsWith(u8, data, "WARC/1.0") and
+            !std.mem.startsWith(u8, data, "WARC/1.1"))
+        {
+            if (record_count == 0) {
+                return ValidationResult.invalidCode(.warc, .invalid_value, "WARC version");
+            } else {
+                return ValidationResult.invalidCode(.warc, .invalid_value, "WARC record version");
+            }
+        }
+
+        // Parse headers
+        var found_type = false;
+        var found_record_id = false;
+        var found_date = false;
+        var content_length: ?u64 = null;
+        var header_end: usize = 0;
+        var digest_value: ?[]const u8 = null; // slice into buffer pointing at "sha1:XXXXX"
+
+        var i: usize = 0;
+        while (i < data.len) {
+            const line_start = i;
+            while (i < data.len and data[i] != '\n') : (i += 1) {}
+
+            var line_end = i;
+            if (line_end > line_start and data[line_end - 1] == '\r') {
+                line_end -= 1;
+            }
+
+            const line = data[line_start..line_end];
+
+            // Check for empty line (end of headers)
+            if (line.len == 0) {
+                header_end = i + 1;
+                break;
+            }
+
+            // Parse header fields
+            if (std.mem.startsWith(u8, line, "WARC-Type:")) {
+                found_type = true;
+            } else if (std.mem.startsWith(u8, line, "WARC-Record-ID:")) {
+                found_record_id = true;
+            } else if (std.mem.startsWith(u8, line, "WARC-Date:")) {
+                found_date = true;
+            } else if (std.mem.startsWith(u8, line, "Content-Length:")) {
+                var val_start: usize = 15;
+                while (val_start < line.len and line[val_start] == ' ') : (val_start += 1) {}
+                if (val_start < line.len) {
+                    content_length = std.fmt.parseInt(u64, line[val_start..], 10) catch null;
+                }
+            } else if (std.mem.startsWith(u8, line, "WARC-Block-Digest:")) {
+                // Extract digest value, trimming leading whitespace
+                var val_start: usize = 18; // len("WARC-Block-Digest:")
+                while (val_start < line.len and line[val_start] == ' ') : (val_start += 1) {}
+                if (val_start < line.len) {
+                    digest_value = line[val_start..];
+                }
+            }
+
+            i += 1; // Skip newline
+        }
+
+        if (!found_type) {
+            return ValidationResult.invalidCode(.warc, .missing, "WARC-Type header");
+        }
+        if (!found_record_id) {
+            return ValidationResult.invalidCode(.warc, .missing, "WARC-Record-ID header");
+        }
+        if (!found_date) {
+            return ValidationResult.invalidCode(.warc, .missing, "WARC-Date header");
+        }
+        if (content_length == null) {
+            return ValidationResult.invalidCode(.warc, .missing, "Content-Length header");
+        }
+
+        const body_start = offset + header_end;
+        const body_end = body_start + content_length.?;
+        const next_record = body_end + 4; // \r\n\r\n separator
+
+        if (body_end > file_size) {
+            return ValidationResult.invalidCodeMsg(.warc, .exceeds_bounds, "Content-Length", "Content-Length exceeds file bounds");
+        }
+
+        // Verify digest if present
+        if (digest_value) |dv| {
+            if (std.mem.startsWith(u8, dv, "sha1:") or std.mem.startsWith(u8, dv, "SHA1:") or
+                std.mem.startsWith(u8, dv, "sha-1:") or std.mem.startsWith(u8, dv, "SHA-1:"))
+            {
+                // Find the colon separating algorithm from hash
+                const colon_pos = std.mem.indexOfScalar(u8, dv, ':').?;
+                const b32_encoded = dv[colon_pos + 1 ..];
+
+                // Decode the expected SHA-1 from Base32
+                var expected_hash: [20]u8 = undefined;
+                const decoded_len = base32Decode(b32_encoded, &expected_hash) orelse {
+                    return ValidationResult.invalidWithDepth(.warc, "Invalid Base32 in WARC-Block-Digest", .full);
+                };
+                if (decoded_len != 20) {
+                    return ValidationResult.invalidWithDepth(.warc, "WARC-Block-Digest SHA-1 has wrong length", .full);
+                }
+
+                // Compute SHA-1 over the record body by streaming from the file
+                file.seekTo(body_start) catch {
+                    return ValidationResult.invalidCode(.warc, .failed_to_seek, "to record body");
+                };
+
+                var hasher = Sha1.init(.{});
+                var remaining = content_length.?;
+                var hash_buf: [8192]u8 = undefined;
+
+                while (remaining > 0) {
+                    const chunk = @min(hash_buf.len, @as(usize, @intCast(remaining)));
+                    const n = file.read(hash_buf[0..chunk]) catch {
+                        return ValidationResult.invalidCode(.warc, .failed_to_read, "record body");
+                    };
+                    if (n == 0) break;
+                    hasher.update(hash_buf[0..n]);
+                    remaining -= @as(u64, @intCast(n));
+                }
+
+                if (remaining != 0) {
+                    return ValidationResult.invalidWithDepth(.warc, "Record body shorter than Content-Length", .full);
+                }
+
+                const computed_hash = hasher.finalResult();
+
+                if (!std.mem.eql(u8, &computed_hash, &expected_hash)) {
+                    return ValidationResult.invalidWithDepth(.warc, "WARC-Block-Digest SHA-1 mismatch", .full);
+                }
+
+                digest_count += 1;
+                verified_count += 1;
+            }
+            // Silently skip unsupported digest algorithms (not sha1)
+        }
+
+        record_count += 1;
+        offset = next_record;
+
+        if (record_count > 10_000_000) {
+            return ValidationResult.invalidCode(.warc, .too_many, "records");
+        }
+
+        if (record_count >= 100 and offset > file_size / 2) {
+            break;
+        }
+    }
+
+    if (record_count == 0) {
+        return ValidationResult.invalid(.warc, "No WARC records found");
+    }
+
+    if (digest_count == 0) {
+        return ValidationResult.okWithDepthAndWarning(.warc, .structural, "no WARC-Block-Digest headers found; structure valid but content not verified");
+    }
+
+    return ValidationResult.okWithDepth(.warc, .full);
+}
+
 // ============ ZIP Deep Validation (CRC-32) ============
 
 /// ZIP compression methods
@@ -2812,6 +3059,177 @@ test "validateWarc: corrupt WARC rejected" {
     const file = try openGroundTruth("ground_truth_examples/corrupted/warc/sample_corrupt_1.warc");
     defer file.close();
     const result = validateWarc(file);
+    try testing.expectEqual(FileFormat.warc, result.format);
+}
+
+// ---------- base32Decode unit tests ----------
+
+test "base32Decode: RFC 4648 test vectors" {
+    // RFC 4648 section 10 test vectors
+    var out: [32]u8 = undefined;
+
+    // "" -> ""
+    try testing.expectEqual(@as(?usize, 0), base32Decode("", &out));
+
+    // "f" -> "MY======"
+    try testing.expectEqual(@as(?usize, 1), base32Decode("MY======", &out));
+    try testing.expectEqualSlices(u8, "f", out[0..1]);
+
+    // "fo" -> "MZXQ===="
+    try testing.expectEqual(@as(?usize, 2), base32Decode("MZXQ====", &out));
+    try testing.expectEqualSlices(u8, "fo", out[0..2]);
+
+    // "foo" -> "MZXW6==="
+    try testing.expectEqual(@as(?usize, 3), base32Decode("MZXW6===", &out));
+    try testing.expectEqualSlices(u8, "foo", out[0..3]);
+
+    // "foob" -> "MZXW6YQ="
+    try testing.expectEqual(@as(?usize, 4), base32Decode("MZXW6YQ=", &out));
+    try testing.expectEqualSlices(u8, "foob", out[0..4]);
+
+    // "fooba" -> "MZXW6YTB"
+    try testing.expectEqual(@as(?usize, 5), base32Decode("MZXW6YTB", &out));
+    try testing.expectEqualSlices(u8, "fooba", out[0..5]);
+
+    // "foobar" -> "MZXW6YTBOI======"
+    try testing.expectEqual(@as(?usize, 6), base32Decode("MZXW6YTBOI======", &out));
+    try testing.expectEqualSlices(u8, "foobar", out[0..6]);
+}
+
+test "base32Decode: case insensitive" {
+    var out: [32]u8 = undefined;
+    try testing.expectEqual(@as(?usize, 3), base32Decode("mzxw6===", &out));
+    try testing.expectEqualSlices(u8, "foo", out[0..3]);
+}
+
+test "base32Decode: invalid character returns null" {
+    var out: [32]u8 = undefined;
+    try testing.expectEqual(@as(?usize, null), base32Decode("MZXW6!==", &out));
+}
+
+test "base32Decode: SHA-1 digest round trip" {
+    // SHA-1 of empty string is da39a3ee5e6b4b0d3255bfef95601890afd80709
+    // Base32 of that: 3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ
+    var out: [20]u8 = undefined;
+    const decoded = base32Decode("3I42H3S6NNFQ2MSVX7XZKYAYSCX5QBYJ", &out);
+    try testing.expectEqual(@as(?usize, 20), decoded);
+    const expected = [_]u8{
+        0xda, 0x39, 0xa3, 0xee, 0x5e, 0x6b, 0x4b, 0x0d, 0x32, 0x55,
+        0xbf, 0xef, 0x95, 0x60, 0x18, 0x90, 0xaf, 0xd8, 0x07, 0x09,
+    };
+    try testing.expectEqualSlices(u8, &expected, out[0..20]);
+}
+
+// ---------- WARC deep validator tests ----------
+
+test "validateWarcDeep: WARC without digests returns structural with warning" {
+    const result = validateWarcDeep(testing.allocator, "ground_truth_examples/warc/sample.warc");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.warc, result.format);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+    // Should have a warning about no digests
+    try testing.expect(result.warning_message != null);
+}
+
+test "validateWarcDeep: synthetic WARC with valid SHA-1 digest returns full" {
+    // Build a WARC record body
+    const body = "Hello, WARC world!\r\n";
+
+    // Compute SHA-1 of body
+    var hasher = Sha1.init(.{});
+    hasher.update(body);
+    const hash = hasher.finalResult();
+
+    // Base32-encode the SHA-1 hash
+    const b32_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    var b32_buf: [32]u8 = undefined;
+    var b32_len: usize = 0;
+    {
+        var bits: u32 = 0;
+        var n_bits: u4 = 0;
+        for (hash) |byte| {
+            bits = (bits << 8) | @as(u32, byte);
+            n_bits += 8;
+            while (n_bits >= 5) {
+                n_bits -= 5;
+                b32_buf[b32_len] = b32_alphabet[@as(usize, @intCast((bits >> n_bits) & 0x1F))];
+                b32_len += 1;
+            }
+        }
+        // Handle remaining bits (20 bytes = 160 bits, 160/5=32, no remainder)
+    }
+    const b32_hash = b32_buf[0..b32_len];
+
+    // Construct the WARC file content using a fixed buffer
+    var warc_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&warc_buf);
+    const writer = fbs.writer();
+    try writer.print("WARC/1.0\r\n", .{});
+    try writer.print("WARC-Type: resource\r\n", .{});
+    try writer.print("WARC-Record-ID: <urn:uuid:test-0001>\r\n", .{});
+    try writer.print("WARC-Date: 2025-01-28T00:00:00Z\r\n", .{});
+    try writer.print("Content-Length: {d}\r\n", .{body.len});
+    try writer.print("WARC-Block-Digest: sha1:{s}\r\n", .{b32_hash});
+    try writer.print("\r\n", .{}); // end of headers
+    try writer.writeAll(body);
+    try writer.writeAll("\r\n\r\n"); // record separator
+
+    const warc_data = fbs.getWritten();
+
+    // Write to temp file
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const tmp_file = try tmp_dir.dir.createFile("test.warc", .{});
+    try tmp_file.writeAll(warc_data);
+    tmp_file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.warc");
+    defer testing.allocator.free(path);
+
+    const result = validateWarcDeep(testing.allocator, path);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.warc, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateWarcDeep: synthetic WARC with wrong SHA-1 digest returns invalid" {
+    const body = "Hello, WARC world!\r\n";
+
+    // Use a known-wrong hash (all zeros base32)
+    const wrong_b32 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // 32 chars = 20 bytes of zeros
+
+    var warc_buf: [4096]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&warc_buf);
+    const writer = fbs.writer();
+    try writer.print("WARC/1.0\r\n", .{});
+    try writer.print("WARC-Type: resource\r\n", .{});
+    try writer.print("WARC-Record-ID: <urn:uuid:test-0002>\r\n", .{});
+    try writer.print("WARC-Date: 2025-01-28T00:00:00Z\r\n", .{});
+    try writer.print("Content-Length: {d}\r\n", .{body.len});
+    try writer.print("WARC-Block-Digest: sha1:{s}\r\n", .{wrong_b32});
+    try writer.print("\r\n", .{});
+    try writer.writeAll(body);
+    try writer.writeAll("\r\n\r\n");
+
+    const warc_data = fbs.getWritten();
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const tmp_file = try tmp_dir.dir.createFile("test_bad.warc", .{});
+    try tmp_file.writeAll(warc_data);
+    tmp_file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test_bad.warc");
+    defer testing.allocator.free(path);
+
+    const result = validateWarcDeep(testing.allocator, path);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.warc, result.format);
+}
+
+test "validateWarcDeep: file not found returns invalid" {
+    const result = validateWarcDeep(testing.allocator, "nonexistent_file.warc");
+    try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.warc, result.format);
 }
 

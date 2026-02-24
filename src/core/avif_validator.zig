@@ -158,23 +158,26 @@ pub fn validateAvifDeepFromBuffer(data: []const u8) AvifValidationResult {
         }
     }
 
-    // Verify the primary item is AV1-coded
-    if (primary_item_type != .av01) {
-        // Could be a grid or overlay — structural validation only
-        if (primary_item_type == .grid or primary_item_type == .iovl) {
-            return AvifValidationResult.structural();
-        }
+    // Route by primary item type
+    if (primary_item_type == .av01) {
+        // Direct AV1 image — validate the single item's AV1 bitstream
+        return validateDirectAv1Item(data, container);
+    } else if (primary_item_type == .grid) {
+        // Grid image (tiled) — validate each tile's AV1 bitstream
+        return validateAvifGridTiles(data, container);
+    } else if (primary_item_type == .iovl) {
+        return AvifValidationResult.structural();
+    } else {
         return AvifValidationResult.invalid("Primary item is not AV1-coded");
     }
+}
 
-    // Check dimensions
+/// Validate a direct (non-tiled) AV1 item.
+fn validateDirectAv1Item(data: []const u8, container: heif.HeifContainerInfo) AvifValidationResult {
     const width = container.width;
     const height = container.height;
-    if (width == 0 or height == 0) {
-        return AvifValidationResult.structural();
-    }
+    if (width == 0 or height == 0) return AvifValidationResult.structural();
 
-    // Extract the primary item's image data
     if (container.primary_data_length == 0) {
         return AvifValidationResult.invalid("Primary item has no data");
     }
@@ -186,22 +189,81 @@ pub fn validateAvifDeepFromBuffer(data: []const u8) AvifValidationResult {
     }
 
     const image_data = data[data_start..data_end];
+    const result = validateAv1Data(image_data, container.decoder_config);
 
-    // Build OBU stream: decoder config + image data
-    // For AVIF, the av1C config box contains an AV1 Sequence Header OBU
-    // and the image data contains a single frame's OBUs
+    if (result.valid and !result.structural_only) {
+        return AvifValidationResult.okWithDimensions(width, height);
+    }
+    return result;
+}
 
-    // First try: validate the image data as a standalone AV1 OBU stream
-    // The image data should contain sequence header + frame OBUs
+/// Validate a grid (tiled) AVIF image by resolving iref dimg tile references
+/// and validating each tile's AV1 bitstream individually.
+fn validateAvifGridTiles(data: []const u8, container: heif.HeifContainerInfo) AvifValidationResult {
+    if (container.dimg_tile_ids.len == 0) {
+        return AvifValidationResult.structural();
+    }
+
+    const decoder_config = container.tile_decoder_config orelse {
+        return AvifValidationResult.structural();
+    };
+
+    var tiles_validated: usize = 0;
+    var tiles_structural: usize = 0;
+
+    for (container.dimg_tile_ids) |tile_id| {
+        const loc = heif.findItemLocation(container.locations, tile_id) orelse continue;
+        if (loc.construction_method != 0) {
+            tiles_structural += 1;
+            continue;
+        }
+        if (loc.extents.len == 0) continue;
+
+        if (loc.extents.len == 1) {
+            const offset: usize = @intCast(loc.base_offset + loc.extents[0].offset);
+            const length: usize = @intCast(loc.extents[0].length);
+            if (offset + length > data.len) {
+                return AvifValidationResult.invalid("Tile data extends beyond file");
+            }
+
+            const tile_data = data[offset .. offset + length];
+            const result = validateAv1Data(tile_data, decoder_config);
+
+            if (!result.valid and !result.structural_only) {
+                return result;
+            }
+            if (result.valid and !result.structural_only) {
+                tiles_validated += 1;
+            } else {
+                tiles_structural += 1;
+            }
+        } else {
+            tiles_structural += 1;
+        }
+    }
+
+    if (tiles_validated > 0) {
+        const width = container.width;
+        const height = container.height;
+        if (tiles_structural > 0) {
+            return AvifValidationResult.okWithWarning(width, height, "Some grid tiles could not be fully validated");
+        }
+        return AvifValidationResult.okWithDimensions(width, height);
+    }
+    return AvifValidationResult.structural();
+}
+
+/// Validate AV1 OBU stream data from a single AVIF item (direct or tile).
+/// Prepends av1C config OBUs (sequence header) to the image data and
+/// validates the combined stream.
+fn validateAv1Data(image_data: []const u8, decoder_config: ?[]const u8) AvifValidationResult {
     var combined_buf: [2 * 1024 * 1024]u8 = undefined; // 2MB stack buffer
     var combined_len: usize = 0;
 
     // Prepend av1C sequence header OBU if available
-    if (container.decoder_config) |config| {
+    if (decoder_config) |config| {
         if (config.len >= 4) {
-            // av1C format: marker(1) + version(7) + seq_profile(3) + seq_level_idx(5) + ...
-            // The config box is followed by configOBUs which are raw OBUs
-            // In practice, bytes 0-3 are the fixed header and bytes 4+ are OBUs
+            // av1C: bytes 0-3 are fixed header, bytes 4+ are configOBUs
             const obu_data = config[4..];
             if (obu_data.len > 0 and obu_data.len <= combined_buf.len) {
                 @memcpy(combined_buf[0..obu_data.len], obu_data);
@@ -215,27 +277,21 @@ pub fn validateAvifDeepFromBuffer(data: []const u8) AvifValidationResult {
         @memcpy(combined_buf[combined_len..][0..image_data.len], image_data);
         combined_len += image_data.len;
     } else if (image_data.len <= combined_buf.len) {
-        // Config too large, try just image data
         @memcpy(combined_buf[0..image_data.len], image_data);
         combined_len = image_data.len;
     }
 
-    if (combined_len < 4) {
-        return AvifValidationResult.structural();
-    }
+    if (combined_len < 4) return AvifValidationResult.structural();
 
-    // Validate AV1 OBU stream
     // AVIF images are single frames, so max_frames=1
     const av1_result = av1.validateAv1Stream(combined_buf[0..combined_len], 1);
     if (av1_result.valid) {
-        return AvifValidationResult.okWithDimensions(width, height);
+        return AvifValidationResult.ok();
     } else {
-        // AV1 validation failed but container was valid
         if (av1_result.has_sequence_header) {
             const msg: []const u8 = if (av1_result.error_message) |e| std.mem.span(e) else "AV1 bitstream validation failed";
             return AvifValidationResult.invalid(msg);
         }
-        // No sequence header — might be unsupported encapsulation
         return AvifValidationResult.structural();
     }
 }

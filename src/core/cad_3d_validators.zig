@@ -297,7 +297,8 @@ pub fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResul
     }
 
     // Successfully validated: header + DNA1 full schema + ENDB terminator
-    return ValidationResult.okWithDepth(.blend, .full);
+    // No checksums in Blend format — structural validation only
+    return ValidationResult.okWithDepth(.blend, .structural);
 }
 
 /// Validate the DNA1 block structure in a Blender file.
@@ -1171,6 +1172,51 @@ pub const PlyFormat = enum {
     binary_big_endian,
 };
 
+/// PLY property scalar types with their byte sizes.
+pub const PlyPropType = enum {
+    char_t, // 1 byte signed
+    uchar_t, // 1 byte unsigned
+    short_t, // 2 bytes signed
+    ushort_t, // 2 bytes unsigned
+    int_t, // 4 bytes signed
+    uint_t, // 4 bytes unsigned
+    float_t, // 4 bytes IEEE 754
+    double_t, // 8 bytes IEEE 754
+
+    pub fn byteSize(self: PlyPropType) usize {
+        return switch (self) {
+            .char_t, .uchar_t => 1,
+            .short_t, .ushort_t => 2,
+            .int_t, .uint_t, .float_t => 4,
+            .double_t => 8,
+        };
+    }
+
+    pub fn isFloat(self: PlyPropType) bool {
+        return self == .float_t or self == .double_t;
+    }
+
+    pub fn fromString(s: []const u8) ?PlyPropType {
+        if (std.mem.eql(u8, s, "float") or std.mem.eql(u8, s, "float32")) return .float_t;
+        if (std.mem.eql(u8, s, "double") or std.mem.eql(u8, s, "float64")) return .double_t;
+        if (std.mem.eql(u8, s, "char") or std.mem.eql(u8, s, "int8")) return .char_t;
+        if (std.mem.eql(u8, s, "uchar") or std.mem.eql(u8, s, "uint8")) return .uchar_t;
+        if (std.mem.eql(u8, s, "short") or std.mem.eql(u8, s, "int16")) return .short_t;
+        if (std.mem.eql(u8, s, "ushort") or std.mem.eql(u8, s, "uint16")) return .ushort_t;
+        if (std.mem.eql(u8, s, "int") or std.mem.eql(u8, s, "int32")) return .int_t;
+        if (std.mem.eql(u8, s, "uint") or std.mem.eql(u8, s, "uint32")) return .uint_t;
+        return null;
+    }
+};
+
+const MAX_PLY_PROPS = 64;
+
+/// Face list property info for binary PLY validation.
+const PlyFaceListInfo = struct {
+    count_type: PlyPropType,
+    elem_type: PlyPropType,
+};
+
 pub fn validatePly(file: std.fs.File) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.ply, .failed_to_seek, "to start");
 
@@ -1195,6 +1241,11 @@ pub fn validatePly(file: std.fs.File) ValidationResult {
     var header_end_offset: usize = 0;
     var vertex_property_count: usize = 0;
     var in_vertex_element = false;
+    var in_face_element = false;
+
+    // Track vertex property types for binary validation
+    var vertex_prop_types: [MAX_PLY_PROPS]PlyPropType = undefined;
+    var face_list_info: ?PlyFaceListInfo = null;
 
     var lines = std.mem.splitScalar(u8, header_content, '\n');
     var line_offset: usize = 0;
@@ -1218,16 +1269,40 @@ pub fn validatePly(file: std.fs.File) ValidationResult {
                 return ValidationResult.invalidCode(.ply, .invalid_value, "vertex count");
             };
             in_vertex_element = true;
+            in_face_element = false;
         } else if (std.mem.startsWith(u8, trimmed, "element face ")) {
             const count_str = trimmed[13..];
             face_count = std.fmt.parseInt(usize, std.mem.trim(u8, count_str, " \t"), 10) catch {
                 return ValidationResult.invalidCode(.ply, .invalid_value, "face count");
             };
             in_vertex_element = false;
+            in_face_element = true;
         } else if (std.mem.startsWith(u8, trimmed, "element ")) {
             in_vertex_element = false;
+            in_face_element = false;
+        } else if (std.mem.startsWith(u8, trimmed, "property list ")) {
+            // "property list <count_type> <elem_type> <name>"
+            if (in_face_element) {
+                var parts = std.mem.tokenizeAny(u8, trimmed, " \t");
+                _ = parts.next(); // "property"
+                _ = parts.next(); // "list"
+                const ct_str = parts.next() orelse continue;
+                const et_str = parts.next() orelse continue;
+                const ct = PlyPropType.fromString(ct_str) orelse continue;
+                const et = PlyPropType.fromString(et_str) orelse continue;
+                face_list_info = .{ .count_type = ct, .elem_type = et };
+            }
         } else if (std.mem.startsWith(u8, trimmed, "property ")) {
             if (in_vertex_element) {
+                if (vertex_property_count < MAX_PLY_PROPS) {
+                    // "property <type> <name>"
+                    var parts = std.mem.tokenizeAny(u8, trimmed, " \t");
+                    _ = parts.next(); // "property"
+                    const type_str = parts.next();
+                    if (type_str) |ts| {
+                        vertex_prop_types[vertex_property_count] = PlyPropType.fromString(ts) orelse .float_t;
+                    }
+                }
                 vertex_property_count += 1;
             }
         } else if (std.mem.eql(u8, trimmed, "end_header")) {
@@ -1250,7 +1325,8 @@ pub fn validatePly(file: std.fs.File) ValidationResult {
     if (format.? == .ascii) {
         return validatePlyAsciiData(file, header_end_offset, vertex_count, face_count, vertex_property_count);
     } else {
-        return validatePlyBinaryData(file, header_end_offset, data_size, vertex_count, vertex_property_count, format.?);
+        const prop_count = @min(vertex_property_count, MAX_PLY_PROPS);
+        return validatePlyBinaryData(file, header_end_offset, data_size, vertex_count, prop_count, format.?, vertex_prop_types[0..prop_count], face_count, face_list_info);
     }
 }
 
@@ -1366,41 +1442,141 @@ pub fn validatePlyAsciiSample(file: std.fs.File, vertex_count: usize, face_count
     return ValidationResult.okWithDepth(.ply, .structural);
 }
 
-pub fn validatePlyBinaryData(file: std.fs.File, header_end: usize, data_size: u64, vertex_count: usize, vertex_prop_count: usize, format: PlyFormat) ValidationResult {
-    _ = format;
+/// Validate binary PLY data by parsing vertex properties (checking floats for
+/// NaN/Inf) and face vertex indices (checking range). Property types are extracted
+/// from the header by validatePly and passed here for type-aware parsing.
+pub fn validatePlyBinaryData(
+    file: std.fs.File,
+    header_end: usize,
+    data_size: u64,
+    vertex_count: usize,
+    vertex_prop_count: usize,
+    format: PlyFormat,
+    vertex_prop_types: []const PlyPropType,
+    face_count: usize,
+    face_list_info: ?PlyFaceListInfo,
+) ValidationResult {
     file.seekTo(header_end) catch return ValidationResult.invalidCode(.ply, .failed_to_seek, "to data");
 
-    // Binary PLY: each vertex is typically floats for x,y,z plus optional properties
-    // Minimum vertex size: 3 floats (12 bytes) for position
-    const min_vertex_size: usize = if (vertex_prop_count >= 3) vertex_prop_count * 4 else 12;
-    const expected_vertex_data = vertex_count * min_vertex_size;
+    // Compute vertex stride from declared property types
+    var vertex_stride: usize = 0;
+    var has_float_props = false;
+    for (vertex_prop_types) |pt| {
+        vertex_stride += pt.byteSize();
+        if (pt.isFloat()) has_float_props = true;
+    }
+    if (vertex_stride == 0) vertex_stride = if (vertex_prop_count >= 3) vertex_prop_count * 4 else 12;
 
+    const expected_vertex_data = vertex_count * vertex_stride;
     if (data_size < expected_vertex_data) {
         return ValidationResult.invalid(.ply, "Insufficient data for vertices");
     }
 
-    // Read and validate binary data
-    const chunk_size: usize = 64 * 1024;
-    var buffer: [chunk_size]u8 = undefined;
-    var bytes_validated: u64 = 0;
+    const endian: std.builtin.Endian = if (format == .binary_big_endian) .big else .little;
 
-    while (bytes_validated < data_size) {
-        const to_read = @min(chunk_size, data_size - bytes_validated);
-        const bytes_read = file.read(buffer[0..to_read]) catch {
-            return ValidationResult.invalidCode(.ply, .failed_to_read, "binary data");
+    // Read all vertex data (cap at 256MB to avoid excessive memory use)
+    const vertex_data_size = @min(expected_vertex_data, 256 * 1024 * 1024);
+    if (vertex_data_size > 0 and has_float_props) {
+        // Validate float properties for NaN/Inf in streaming chunks
+        var remaining = expected_vertex_data;
+        // Process in row-aligned chunks
+        const rows_per_chunk = @max(1, (64 * 1024) / vertex_stride);
+        const chunk_bytes = rows_per_chunk * vertex_stride;
+        var buf: [256 * 1024]u8 = undefined;
+
+        while (remaining > 0) {
+            const to_read = @min(@min(remaining, chunk_bytes), buf.len);
+            // Align to vertex stride
+            const aligned_read = (to_read / vertex_stride) * vertex_stride;
+            if (aligned_read == 0) break;
+
+            const bytes_read = file.readAll(buf[0..aligned_read]) catch {
+                return ValidationResult.invalidCode(.ply, .failed_to_read, "vertex data");
+            };
+            if (bytes_read < aligned_read) {
+                return ValidationResult.invalidCode(.ply, .truncated, "vertex data");
+            }
+
+            // Check each vertex's float properties
+            var row_offset: usize = 0;
+            while (row_offset + vertex_stride <= bytes_read) : (row_offset += vertex_stride) {
+                var prop_offset: usize = 0;
+                for (vertex_prop_types) |pt| {
+                    const sz = pt.byteSize();
+                    if (pt == .float_t) {
+                        const val: f32 = @bitCast(std.mem.readInt(u32, buf[row_offset + prop_offset ..][0..4], endian));
+                        if (std.math.isNan(val) or std.math.isInf(val)) {
+                            return ValidationResult.invalidWithDepth(.ply, "NaN/Inf in binary vertex float (corruption)", .full);
+                        }
+                    } else if (pt == .double_t) {
+                        const val: f64 = @bitCast(std.mem.readInt(u64, buf[row_offset + prop_offset ..][0..8], endian));
+                        if (std.math.isNan(val) or std.math.isInf(val)) {
+                            return ValidationResult.invalidWithDepth(.ply, "NaN/Inf in binary vertex double (corruption)", .full);
+                        }
+                    }
+                    prop_offset += sz;
+                }
+            }
+
+            remaining -= bytes_read;
+        }
+    } else {
+        // No float properties — just skip vertex data
+        file.seekTo(header_end + expected_vertex_data) catch {
+            return ValidationResult.invalidCode(.ply, .failed_to_seek, "past vertices");
         };
-        if (bytes_read == 0) break;
-
-        // For binary, just verify we can read all the data
-        // True validation would require parsing the property types from header
-        bytes_validated += bytes_read;
     }
 
-    if (bytes_validated < data_size) {
-        return ValidationResult.invalidCode(.ply, .truncated, "binary data");
+    // Validate face vertex indices (if face element with list property exists)
+    if (face_count > 0 and face_list_info != null) {
+        const fli = face_list_info.?;
+        const count_sz = fli.count_type.byteSize();
+        const elem_sz = fli.elem_type.byteSize();
+        var face_buf: [1024]u8 = undefined;
+
+        var faces_checked: usize = 0;
+        while (faces_checked < face_count) : (faces_checked += 1) {
+            // Read count byte(s)
+            if (file.readAll(face_buf[0..count_sz]) catch null) |n| {
+                if (n < count_sz) break;
+            } else break;
+
+            const n_verts: usize = switch (fli.count_type) {
+                .uchar_t => face_buf[0],
+                .ushort_t => std.mem.readInt(u16, face_buf[0..2], endian),
+                .uint_t => @intCast(std.mem.readInt(u32, face_buf[0..4], endian)),
+                .int_t => @intCast(@max(0, std.mem.readInt(i32, face_buf[0..4], endian))),
+                else => face_buf[0],
+            };
+
+            if (n_verts < 3 or n_verts > 256) {
+                return ValidationResult.invalid(.ply, "Invalid face vertex count in binary data");
+            }
+
+            // Read and validate vertex indices
+            const idx_bytes = n_verts * elem_sz;
+            if (idx_bytes > face_buf.len) break; // face too large for buffer
+            if (file.readAll(face_buf[0..idx_bytes]) catch null) |n| {
+                if (n < idx_bytes) break;
+            } else break;
+
+            var j: usize = 0;
+            while (j < n_verts) : (j += 1) {
+                const idx: usize = switch (fli.elem_type) {
+                    .uint_t => @intCast(std.mem.readInt(u32, face_buf[j * 4 ..][0..4], endian)),
+                    .int_t => @intCast(@max(0, std.mem.readInt(i32, face_buf[j * 4 ..][0..4], endian))),
+                    .ushort_t => std.mem.readInt(u16, face_buf[j * 2 ..][0..2], endian),
+                    .uchar_t => face_buf[j],
+                    else => @intCast(std.mem.readInt(u32, face_buf[j * elem_sz ..][0..4], endian)),
+                };
+                if (idx >= vertex_count) {
+                    return ValidationResult.invalidWithDepth(.ply, "Face vertex index out of range", .full);
+                }
+            }
+        }
     }
 
-    return ValidationResult.okWithDepth(.ply, .structural);
+    return ValidationResult.okWithDepth(.ply, .full);
 }
 
 // ============ glTF Validator ============

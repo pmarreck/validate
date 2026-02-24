@@ -40,7 +40,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/pdf_xref_parser.zig` | PDF xref table/stream parser for O(M) object lookup (traditional tables + xref streams + /Prev chain) |
 | `src/core/mp4_box_parser.zig` | Shared MP4/ISOBMFF box parsing utilities (readMp4BoxHeader, findChildBox) |
 | `src/core/video_audio_validator.zig` | MP4/MKV audio+video stream validation (AAC, ALAC, MP3, FLAC, AC-3 in containers) |
-| `src/core/archive_validators.zig` | Archive/compression validation (ZIP/Gzip/Bzip2/XZ/Zstd/RAR/CPT/7z/TAR/PAR2/WARC), including deep ZIP CRC checks, PAR2 packet MD5 verification, `rarz` in-memory RAR validation, and `compact_pro` C FFI-backed CPT validation |
+| `src/core/archive_validators.zig` | Archive/compression validation (ZIP/Gzip/Bzip2/XZ/Zstd/RAR/CPT/7z/TAR/PAR2/WARC), including deep ZIP CRC checks, PAR2 packet MD5 verification, `rarz` in-memory RAR validation, `compact_pro` C FFI-backed CPT validation, and WARC deep validation with SHA-1 digest verification (Base32 decode + WARC-Block-Digest) |
 | `src/core/rar_validator.zig` | Legacy external-tool RAR deep-validation helper (`unrar`/`7z`/`bsdtar`) retained in tree; primary runtime path now uses `rarz` via `archive_validators.zig` |
 | `src/core/h264_syntax_validator.zig` | Pure Zig H.264 NAL/SPS/PPS/slice header parser with full VUI and extension support |
 | `src/core/h264_cavlc_tables.zig` | H.264 CAVLC entropy decoder (coeff_token, total_zeros, run_before, level VLC) |
@@ -49,9 +49,9 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/h265_validator.zig` | Pure Zig H.265/HEVC NAL unit parser with VPS/SPS/PPS validation |
 | `src/core/av1_obu_validator.zig` | Pure Zig AV1 OBU structural validator (sequence header, frame header, tile group) |
 | `src/core/vp9_syntax_validator.zig` | Pure Zig VP9 frame header parser |
-| `src/core/heif_container_parser.zig` | HEIF ISOBMFF meta-box parsing (ftyp/hdlr/pitm/iinf/iloc/iprp) for HEIC and AVIF |
-| `src/core/heic_validator.zig` | HEIC validation: HEIF container → hvcC NALs → h265_validator |
-| `src/core/avif_validator.zig` | AVIF validation: HEIF container → av1C OBUs → av1_obu_validator |
+| `src/core/heif_container_parser.zig` | HEIF ISOBMFF meta-box parsing (ftyp/hdlr/pitm/iinf/iloc/iprp/iref) for HEIC and AVIF; supports grid images via iref dimg tile reference resolution |
+| `src/core/heic_validator.zig` | HEIC validation: HEIF container → hvcC NALs → h265_validator; supports grid (tiled) images by validating each tile's H.265 bitstream via iref dimg references |
+| `src/core/avif_validator.zig` | AVIF validation: HEIF container → av1C OBUs → av1_obu_validator; supports grid (tiled) images by validating each tile's AV1 bitstream via iref dimg references |
 | `src/core/aac_syntax_validator.zig` | AAC-LC bitstream validator (raw AU, ADTS, LATM/LOAS) with Huffman spectral decode |
 | `src/core/aac_huffman_tables.zig` | AAC Huffman trees (scalefactor + 11 spectral codebooks) and SWB offset tables |
 | `src/core/mpeg_ts_parser.zig` | MPEG-TS demuxer with PAT/PMT CRC-32, CC tracking, PES assembly + stream dispatch |
@@ -59,10 +59,10 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/error_messages.zig` | 25 comptime error message template functions (failedToRead, truncated, invalidSignature, etc.) replacing ~2076 string literals |
 | `src/core/text_format_validators.zig` | Text format validation (JSON, CSV, TOML, INI, XML, RTF, HTML, KML, plain text, Unicode) |
 | `src/core/scientific_validators.zig` | Scientific format validation (FITS, DICOM, NetCDF, FASTA, FASTQ) with honest depth reporting |
-| `src/core/music_validators.zig` | Audio format validation (WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD, AC3, EAC3, MIDI, Tracker) |
-| `src/core/movie_validators.zig` | Video container validation (MP4, MKV, AVI, MOV, FLV, WebM, SWF, ASF, DV) with depth downgrade on unvalidated audio |
-| `src/core/image_validators.zig` | Image format validation (PNG, JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR, PSD, PAM, DPX, QOI, TGA, DNG) |
-| `src/core/cad_3d_validators.zig` | 3D/CAD format validation (DWG, DXF, STEP, STL, OBJ, PLY, glTF/GLB, Blender) |
+| `src/core/music_validators.zig` | Audio format validation (WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD, AC3, EAC3, MIDI, Tracker); WAV/AIFF float PCM deep validation with IEEE 754 NaN/Inf corruption detection |
+| `src/core/movie_validators.zig` | Video container validation (MP4, MKV, AVI, MOV, FLV, WebM, SWF, ASF, DV, IVF) with depth downgrade on unvalidated audio; IVF deep validation via VP9/AV1 codec dispatch; FLV deep validation via H.264 AVCC→Annex B + AAC stream decode |
+| `src/core/image_validators.zig` | Image format validation (PNG, JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR, PSD, PAM, DPX, QOI, TGA, DNG, ICO); ICO deep validation dispatches embedded PNG entries to CRC-32 verification |
+| `src/core/cad_3d_validators.zig` | 3D/CAD format validation (DWG, DXF, STEP, STL, OBJ, PLY, glTF/GLB, Blender); PLY binary deep validation with float NaN/Inf + face index range checking |
 | `src/core/creative_validators.zig` | Creative suite validation (Premiere, InDesign, IDML, FCPXML, DaVinci, Sketch, AI, EPS, AEP) |
 | `src/core/email_validators.zig` | Email format validation (EML, MBOX) |
 | `src/core/executable_validators.zig` | Binary executable validation (ELF, Mach-O, COFF, Wasm, AR) |

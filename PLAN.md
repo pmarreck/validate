@@ -8,6 +8,21 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Fix ~50 validators dishonestly claiming `.full` depth when they only do header/structural checks or parse opaque text with no integrity mechanism (2026-02-23 EST)
 - [ ] Future: Add `best_effort` tier to distinguish "parsed every byte, no integrity mechanism" from "only checked headers"
 
+### Validator Depth Upgrades (`.structural` → `.full`)
+- [x] Fix Blend deep → `.structural` (no checksums, missed in audit) (2026-02-24 EST)
+- [x] ICO → `.full` via embedded PNG CRC-32 verification (2026-02-24 EST)
+- [x] IVF → `.full` via VP9/AV1 frame decode (2026-02-24 EST)
+- [x] WAV → `.full` for float PCM (IEEE 754 NaN/Inf detection) (2026-02-24 EST)
+- [x] AIFF → `.full` for float AIFC (fl32/fl64 NaN/Inf detection) (2026-02-24 EST)
+- [x] WARC → `.full` via SHA-1 digest verification (WARC-Block-Digest) (2026-02-24 EST)
+- [x] PLY binary → `.full` via float NaN/Inf + face index range validation (2026-02-24 EST)
+- [x] FLV → `.full` via H.264/AAC stream decode (2026-02-24 EST)
+- [x] Parquet → `.full` via page CRC-32 verification (2026-02-24 EST)
+- [x] HEIC → `.full` for grid images via iref/dimg tile H.265 validation (2026-02-24 EST)
+- [x] AVIF → `.full` for grid images via iref/dimg tile AV1 validation (2026-02-24 EST)
+- [ ] RAR content CRCs (investigate what rarz already does)
+- [ ] HDF5 Fletcher-32 (deferred — very complex format)
+
 ### Codebase Consolidation
 - [x] Consolidate duplicated codec utilities (CRC-32 x4, CRC-16, RBSP, start codes, LEB128, endian helpers) into shared `codec_utils.zig`; replaced across 10 files, net -285 lines (2026-02-22 EST)
 

@@ -651,6 +651,14 @@ pub const FileFormat = enum {
 /// Rule of thumb: If a random bit flip in the payload would NOT cause validation
 /// to fail, you must use `structural`. If it WOULD fail (because checksums or
 /// decode would catch it), use `full`.
+///
+/// IMPORTANT: ValidationDepth is orthogonal to "corruption opacity" — a format's
+/// inherent ability to detect corruption. Some formats are "opaque" (plain text,
+/// CSV, OBJ) meaning even `.full` parsing can't detect semantic bit flips because
+/// the format has no integrity mechanism. Others are "transparent" (gzip, PNG, FLAC)
+/// where checksums/decode will catch any corruption. See `scripts/corruption_opacity.tsv`
+/// for the per-format classification. ValidationDepth must honestly reflect what
+/// our validator DOES, regardless of what the format CAN detect.
 pub const ValidationDepth = enum {
     /// Headers, magic bytes, offsets, bounds checking only.
     /// Payload corruption may go UNDETECTED.
@@ -6176,6 +6184,256 @@ fn validateParquet(file: std.fs.File) ValidationResult {
 
     // No CRC/hash covers payload — Thrift footer structure check only
     return ValidationResult.okWithDepth(.parquet, .structural);
+}
+
+/// Deep Parquet validation — reads data pages sequentially, verifies page CRC-32
+/// when present. Parquet pages start at offset 4 (after "PAR1" magic) and consist
+/// of a Thrift-encoded PageHeader followed by compressed_page_size bytes of data.
+fn validateParquetDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        return switch (err) {
+            error.FileNotFound => ValidationResult.invalidWithDepth(.parquet, "File not found", .full),
+            error.AccessDenied => ValidationResult.invalidWithDepth(.parquet, "Access denied", .full),
+            else => ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_open, "file", .full),
+        };
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_get, "file size", .structural);
+    };
+
+    if (file_size < 12) {
+        return ValidationResult.invalidCodeWithDepth(.parquet, .file_too_small, "Parquet", .structural);
+    }
+
+    // Read footer length to know where data pages end
+    file.seekTo(file_size - 8) catch {
+        return ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_seek, "to footer", .structural);
+    };
+    var footer_buf: [8]u8 = undefined;
+    _ = file.readAll(&footer_buf) catch {
+        return ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_read, "footer", .structural);
+    };
+
+    if (!std.mem.eql(u8, footer_buf[4..8], &PARQUET_SIGNATURE)) {
+        return ValidationResult.invalidCodeWithDepth(.parquet, .invalid_value, "footer magic", .structural);
+    }
+
+    const footer_length = std.mem.readInt(u32, footer_buf[0..4], .little);
+    const data_end: u64 = file_size - 8 - footer_length;
+
+    // Scan data pages from offset 4 to data_end
+    file.seekTo(4) catch {
+        return ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_seek, "to data", .structural);
+    };
+
+    var pages_checked: u32 = 0;
+    var pages_with_crc: u32 = 0;
+    var crcs_verified: u32 = 0;
+    var page_header_buf: [256]u8 = undefined;
+    var read_buf: [65536]u8 = undefined;
+
+    while (pages_checked < 10000) {
+        const page_start = file.getPos() catch break;
+        if (page_start + 4 >= data_end) break;
+
+        // Read enough for the page header (Thrift struct, usually < 100 bytes)
+        const to_read = @min(page_header_buf.len, @as(usize, @intCast(data_end - page_start)));
+        const hdr_read = file.read(page_header_buf[0..to_read]) catch break;
+        if (hdr_read < 3) break;
+
+        const hdr = page_header_buf[0..hdr_read];
+
+        // Parse PageHeader Thrift compact struct fields:
+        // field 1: type (I32/type 5), field 2: uncompressed_page_size (I32),
+        // field 3: compressed_page_size (I32), field 4: crc (I32, optional)
+        var pos: usize = 0;
+        var current_field_id: i16 = 0;
+        var page_type: i64 = -1;
+        var compressed_size: i64 = 0;
+        var page_crc: ?u32 = null;
+        var header_valid = false;
+
+        while (pos < hdr.len) {
+            if (hdr[pos] == 0) { // STOP
+                pos += 1;
+                header_valid = true;
+                break;
+            }
+
+            const field_header = hdr[pos];
+            pos += 1;
+
+            const field_type = field_header & 0x0F;
+            const delta = (field_header >> 4) & 0x0F;
+
+            if (delta == 0) {
+                const fid_result = readThriftVarint(hdr[pos..]) orelse break;
+                current_field_id = @intCast(fid_result.value);
+                pos += fid_result.size;
+            } else {
+                current_field_id += @intCast(delta);
+            }
+
+            // Extract fields we need
+            switch (current_field_id) {
+                1 => { // type
+                    if (field_type == 5) {
+                        const v = readThriftVarint(hdr[pos..]) orelse break;
+                        page_type = v.value;
+                        pos += v.size;
+                        continue;
+                    }
+                },
+                3 => { // compressed_page_size
+                    if (field_type == 5) {
+                        const v = readThriftVarint(hdr[pos..]) orelse break;
+                        compressed_size = v.value;
+                        pos += v.size;
+                        continue;
+                    }
+                },
+                4 => { // crc
+                    if (field_type == 5) {
+                        const v = readThriftVarint(hdr[pos..]) orelse break;
+                        // Zigzag decoded → need unsigned interpretation
+                        page_crc = @bitCast(@as(i32, @intCast(v.value)));
+                        pos += v.size;
+                        continue;
+                    }
+                },
+                else => {},
+            }
+
+            // Skip field we don't care about
+            const skip = skipThriftCompactField(hdr[pos..], field_type) orelse break;
+            pos += skip;
+        }
+
+        if (!header_valid or compressed_size <= 0 or page_type < 0) {
+            // Can't parse this page header — stop scanning
+            break;
+        }
+
+        // Seek past the header to the page data
+        file.seekTo(page_start + pos) catch break;
+
+        if (page_crc) |expected_crc| {
+            pages_with_crc += 1;
+
+            // Compute CRC-32 over the compressed page data
+            var crc = std.hash.Crc32.init();
+            var remaining: u64 = @intCast(compressed_size);
+            while (remaining > 0) {
+                const chunk_read = @min(remaining, read_buf.len);
+                const n = file.read(read_buf[0..@intCast(chunk_read)]) catch break;
+                if (n == 0) break;
+                crc.update(read_buf[0..n]);
+                remaining -= n;
+            }
+
+            if (remaining > 0) break; // couldn't read all data
+
+            const computed = crc.final();
+            if (computed != expected_crc) {
+                return ValidationResult.invalidCodeMsgWithDepth(.parquet, .checksum_mismatch, "page CRC-32", "Parquet page CRC-32 mismatch", .full);
+            }
+            crcs_verified += 1;
+        } else {
+            // No CRC — skip past the page data
+            file.seekTo(page_start + pos + @as(u64, @intCast(compressed_size))) catch break;
+        }
+
+        pages_checked += 1;
+    }
+
+    _ = allocator;
+
+    if (crcs_verified > 0) {
+        return ValidationResult.okWithDepth(.parquet, .full);
+    }
+
+    // No CRCs found in page headers — structural only
+    return ValidationResult.okWithDepthAndWarning(.parquet, .structural, "No page CRCs present in Parquet file");
+}
+
+/// Skip a Thrift Compact Protocol field value (recursive for structs/lists).
+fn skipThriftCompactField(data: []const u8, field_type: u8) ?usize {
+    if (data.len == 0) return null;
+    return switch (field_type) {
+        1, 2 => 0, // BOOL_TRUE/FALSE (no payload)
+        3 => if (data.len >= 1) @as(usize, 1) else null, // I8
+        4, 5, 6 => skipVarint(data), // I16/I32/I64
+        7 => if (data.len >= 8) @as(usize, 8) else null, // DOUBLE
+        8 => blk: { // BINARY/STRING
+            const vi = readThriftVarint(data) orelse break :blk null;
+            const str_len: usize = @intCast(@max(0, vi.value));
+            if (vi.size + str_len > data.len) break :blk null;
+            break :blk vi.size + str_len;
+        },
+        9, 10 => blk: { // LIST/SET
+            if (data.len < 1) break :blk null;
+            const list_hdr = data[0];
+            var pos: usize = 1;
+            const size_nibble = (list_hdr >> 4) & 0x0F;
+            const elem_type = list_hdr & 0x0F;
+            var count: usize = 0;
+            if (size_nibble == 0x0F) {
+                const vi = readThriftVarint(data[pos..]) orelse break :blk null;
+                count = @intCast(@max(0, vi.value));
+                pos += vi.size;
+            } else {
+                count = size_nibble;
+            }
+            // Skip each element
+            for (0..count) |_| {
+                const skip = skipThriftCompactField(data[pos..], elem_type) orelse break :blk null;
+                pos += skip;
+            }
+            break :blk pos;
+        },
+        11 => blk: { // MAP
+            if (data.len < 1) break :blk null;
+            const vi = readThriftVarint(data) orelse break :blk null;
+            const count: usize = @intCast(@max(0, vi.value));
+            var pos: usize = vi.size;
+            if (count == 0) break :blk pos;
+            if (pos >= data.len) break :blk null;
+            const types = data[pos];
+            pos += 1;
+            const key_type = (types >> 4) & 0x0F;
+            const val_type = types & 0x0F;
+            for (0..count) |_| {
+                const k = skipThriftCompactField(data[pos..], key_type) orelse break :blk null;
+                pos += k;
+                const v = skipThriftCompactField(data[pos..], val_type) orelse break :blk null;
+                pos += v;
+            }
+            break :blk pos;
+        },
+        12 => blk: { // STRUCT
+            var pos: usize = 0;
+            while (pos < data.len) {
+                if (data[pos] == 0) { // STOP
+                    pos += 1;
+                    break;
+                }
+                const fh = data[pos];
+                pos += 1;
+                const ft = fh & 0x0F;
+                const d = (fh >> 4) & 0x0F;
+                if (d == 0) {
+                    const fi = skipVarint(data[pos..]) orelse break :blk null;
+                    pos += fi;
+                }
+                const skip = skipThriftCompactField(data[pos..], ft) orelse break :blk null;
+                pos += skip;
+            }
+            break :blk pos;
+        },
+        else => null,
+    };
 }
 
 /// Skip a Thrift Compact Protocol value, returning bytes consumed or null on error
@@ -14257,6 +14515,7 @@ pub const FormatValidator = struct {
             .webp => image_validators.validateWebpDeep(allocator, path),
             .jxl => image_validators.validateJxlDeep(allocator, path),
             .bmp => image_validators.validateBmpDeep(allocator, path),
+            .ico => image_validators.validateIcoDeep(allocator, path),
             .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .pages, .logicx, .song => archive_validators.validateZipDeep(allocator, path),
             .kmz => validateKmzDeep(allocator, path),
             .@"3mf" => validate3mfDeep(allocator, path),
@@ -14271,6 +14530,7 @@ pub const FormatValidator = struct {
             .sevenz => archive_validators.validate7zDeep(allocator, path),
             .rar => archive_validators.validateRarDeep(allocator, path),
             .cpt => archive_validators.validateCptDeep(allocator, path),
+            .warc => archive_validators.validateWarcDeep(allocator, path),
             .dmg => validateDmgDeep(allocator, path),
             .iso => validateIsoDeep(allocator, path),
             .mp3 => music_validators.validateMp3Deep(allocator, path),
@@ -14306,6 +14566,7 @@ pub const FormatValidator = struct {
             .kml => text_format_validators.validateKmlDeep(allocator, path),
             .rtf => text_format_validators.validateRtfDeep(allocator, path),
             .mpeg_ts => movie_validators.validateMpegTsDeep(allocator, path),
+            .ivf => movie_validators.validateIvfDeep(allocator, path),
             .flv => movie_validators.validateFlvDeep(allocator, path),
             .mbox => email_validators.validateMboxDeep(allocator, path),
             .wad => validateWadDeep(allocator, path),
@@ -14319,6 +14580,7 @@ pub const FormatValidator = struct {
             .accdb => validateAccdbDeep(allocator, path),
             .obj => cad_3d_validators.validateObjDeep(allocator, path),
             .sketch => creative_validators.validateSketchDeep(allocator, path),
+            .parquet => validateParquetDeep(allocator, path),
             .git_repository => validateGitRepositoryDeep(allocator, path),
             .macos_app => validateMacosAppDeep(allocator, path),
             .macos_framework => validateMacosFrameworkDeep(allocator, path),

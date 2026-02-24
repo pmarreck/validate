@@ -2179,7 +2179,7 @@ fn parseSampleTable(allocator: Allocator, file: std.fs.File, stbl_offset: u64, s
 
 /// Extract NAL units from a sample and convert to Annex B format
 /// MP4 uses length-prefixed NAL units (usually 4-byte length), Annex B uses start codes
-fn convertToAnnexB(allocator: Allocator, sample_data: []const u8, nal_length_size: u8) ?[]u8 {
+pub fn convertToAnnexB(allocator: Allocator, sample_data: []const u8, nal_length_size: u8) ?[]u8 {
     if (sample_data.len == 0) return null;
 
     // Estimate output size (start codes are 4 bytes vs length prefix)

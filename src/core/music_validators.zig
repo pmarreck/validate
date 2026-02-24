@@ -185,6 +185,8 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
     var fmt_channels: u16 = 0;
     var fmt_sample_rate: u32 = 0;
     var fmt_bits_per_sample: u16 = 0;
+    var data_chunk_offset: u64 = 0;
+    var data_chunk_size: u32 = 0;
 
     while (offset + 8 <= file_size) {
         // Seek to chunk header
@@ -246,6 +248,8 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
             }
         } else if (std.mem.eql(u8, chunk_id, "data")) {
             found_data = true;
+            data_chunk_offset = offset + 8;
+            data_chunk_size = chunk_size;
 
             // For data chunk, verify size is consistent with format
             if (found_fmt and fmt_channels > 0 and fmt_bits_per_sample > 0) {
@@ -272,7 +276,53 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalidCodeWithDepth(.wav, .missing, "data chunk", .structural);
     }
 
+    // IEEE 754 float PCM (format tag 3): scan every sample for NaN/Inf corruption
+    if (fmt_audio_format == 3 and (fmt_bits_per_sample == 32 or fmt_bits_per_sample == 64)) {
+        return validateWavFloatSamples(file, data_chunk_offset, data_chunk_size, fmt_bits_per_sample);
+    }
+
+    // Integer PCM: no corruption signal (any value is valid) — structural only
     return ValidationResult.okWithDepth(.wav, .structural);
+}
+
+/// Scan IEEE 754 float WAV samples for NaN/Inf — definitive corruption signal.
+fn validateWavFloatSamples(file: std.fs.File, data_offset: u64, data_size: u32, bits_per_sample: u16) ValidationResult {
+    file.seekTo(data_offset) catch {
+        return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_seek, "to audio data", .full);
+    };
+
+    var buf: [65536]u8 = undefined;
+    var remaining: u64 = data_size;
+    const sample_bytes: usize = if (bits_per_sample == 64) 8 else 4;
+
+    while (remaining > 0) {
+        const to_read = @min(remaining, buf.len);
+        const bytes_read = file.read(buf[0..@intCast(to_read)]) catch {
+            return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_read, "audio data", .full);
+        };
+        if (bytes_read == 0) break;
+
+        // Check each aligned sample in the buffer
+        const aligned_len = (bytes_read / sample_bytes) * sample_bytes;
+        var pos: usize = 0;
+        while (pos + sample_bytes <= aligned_len) : (pos += sample_bytes) {
+            if (sample_bytes == 4) {
+                const val: f32 = @bitCast(std.mem.readInt(u32, buf[pos..][0..4], .little));
+                if (std.math.isNan(val) or std.math.isInf(val)) {
+                    return ValidationResult.invalidWithDepth(.wav, "NaN/Inf in float audio data (corruption)", .full);
+                }
+            } else {
+                const val: f64 = @bitCast(std.mem.readInt(u64, buf[pos..][0..8], .little));
+                if (std.math.isNan(val) or std.math.isInf(val)) {
+                    return ValidationResult.invalidWithDepth(.wav, "NaN/Inf in float audio data (corruption)", .full);
+                }
+            }
+        }
+
+        remaining -= bytes_read;
+    }
+
+    return ValidationResult.okWithDepth(.wav, .full);
 }
 
 /// Deep validation for AIFF audio files.
@@ -324,7 +374,8 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
     }
 
     // Check AIFF or AIFC form type
-    if (!std.mem.eql(u8, data[8..12], "AIFF") and !std.mem.eql(u8, data[8..12], "AIFC")) {
+    const is_aifc = std.mem.eql(u8, data[8..12], "AIFC");
+    if (!std.mem.eql(u8, data[8..12], "AIFF") and !is_aifc) {
         return ValidationResult.invalidCodeWithDepth(.aiff, .invalid_value, "AIFF form type", .structural);
     }
 
@@ -332,6 +383,10 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
     var offset: usize = 12;
     var found_comm = false;
     var found_ssnd = false;
+    var comm_sample_size: u16 = 0;
+    var is_float = false;
+    var ssnd_data_start: usize = 0;
+    var ssnd_data_len: usize = 0;
 
     while (offset + 8 <= file_size) {
         const chunk_id = data[offset..][0..4];
@@ -347,12 +402,33 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
             if (chunk_size < 18) {
                 return ValidationResult.invalidWithDepth(.aiff, "COMM chunk too small", .structural);
             }
+
+            // COMM: numChannels(2) + numSampleFrames(4) + sampleSize(2) + sampleRate(10)
+            const comm_data = data[offset + 8 ..];
+            comm_sample_size = std.mem.readInt(u16, comm_data[4..6], .big);
+
+            // AIFC has compressionType after the standard COMM fields
+            if (is_aifc and chunk_size >= 22) {
+                const comp_type = comm_data[18..22];
+                // fl32/FL32 = 32-bit float, fl64/FL64 = 64-bit float
+                if (std.mem.eql(u8, comp_type, "fl32") or std.mem.eql(u8, comp_type, "FL32") or
+                    std.mem.eql(u8, comp_type, "fl64") or std.mem.eql(u8, comp_type, "FL64"))
+                {
+                    is_float = true;
+                }
+            }
         } else if (std.mem.eql(u8, chunk_id, "SSND")) {
             found_ssnd = true;
 
             // Verify SSND chunk doesn't exceed file
             if (offset + 8 + chunk_size > file_size) {
                 return ValidationResult.invalidWithDepth(.aiff, "SSND chunk extends beyond file", .structural);
+            }
+
+            // SSND: offset(4) + blockSize(4) + sound data
+            if (chunk_size >= 8) {
+                ssnd_data_start = offset + 8 + 8; // skip chunk header + offset/blockSize fields
+                ssnd_data_len = chunk_size - 8;
             }
         }
 
@@ -370,7 +446,29 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
         return ValidationResult.invalidCodeWithDepth(.aiff, .missing, "SSND chunk", .structural);
     }
 
-    // All chunks validated - structural validation achieved (no audio decode or checksum)
+    // AIFC float: scan every sample for NaN/Inf — definitive corruption signal
+    if (is_float and ssnd_data_len > 0 and ssnd_data_start + ssnd_data_len <= file_size) {
+        const sample_bytes: usize = if (comm_sample_size == 64) 8 else 4;
+        const ssnd_data = data[ssnd_data_start..][0..ssnd_data_len];
+        const aligned_len = (ssnd_data_len / sample_bytes) * sample_bytes;
+        var pos: usize = 0;
+        while (pos + sample_bytes <= aligned_len) : (pos += sample_bytes) {
+            if (sample_bytes == 4) {
+                const val: f32 = @bitCast(std.mem.readInt(u32, ssnd_data[pos..][0..4], .big));
+                if (std.math.isNan(val) or std.math.isInf(val)) {
+                    return ValidationResult.invalidWithDepth(.aiff, "NaN/Inf in float audio data (corruption)", .full);
+                }
+            } else {
+                const val: f64 = @bitCast(std.mem.readInt(u64, ssnd_data[pos..][0..8], .big));
+                if (std.math.isNan(val) or std.math.isInf(val)) {
+                    return ValidationResult.invalidWithDepth(.aiff, "NaN/Inf in float audio data (corruption)", .full);
+                }
+            }
+        }
+        return ValidationResult.okWithDepth(.aiff, .full);
+    }
+
+    // Integer PCM: no corruption signal (any value is valid) — structural only
     return ValidationResult.okWithDepth(.aiff, .structural);
 }
 

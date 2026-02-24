@@ -127,6 +127,12 @@ pub const HeifContainerInfo = struct {
     // Location of primary item data
     primary_data_offset: u64,
     primary_data_length: u64,
+    // Grid support: tile item IDs from iref dimg references
+    dimg_tile_ids: []const u32,
+    // All item locations (for tile data lookup)
+    locations: []const ItemLocation,
+    // Decoder config for tiles (hvcC/av1C from first tile's iprp)
+    tile_decoder_config: ?[]const u8,
 };
 
 // ============================================================================
@@ -637,11 +643,64 @@ fn parseIspe(data: []const u8, ispe: BoxHeader) ?ImageSpatialExtents {
 }
 
 /// Find the location entry for a specific item ID.
-fn findItemLocation(locations: []const ItemLocation, item_id: u32) ?ItemLocation {
+pub fn findItemLocation(locations: []const ItemLocation, item_id: u32) ?ItemLocation {
     for (locations) |loc| {
         if (loc.item_id == item_id) return loc;
     }
     return null;
+}
+
+/// Parse iref (Item Reference Box) to extract dimg tile references for a given item.
+/// iref is a FullBox containing SingleItemTypeReferenceBox children.
+/// Each child's box_type is the reference type (e.g., "dimg" for derived images).
+fn parseIref(data: []const u8, iref: BoxHeader, from_item_id: u32, tile_ids_buf: []u32) []const u32 {
+    const p: usize = @intCast(iref.data_offset);
+    if (p + 4 > data.len) return tile_ids_buf[0..0];
+
+    const version = data[p];
+    const box_end: usize = @intCast(@min(iref.offset + iref.size, data.len));
+
+    // Iterate child boxes (reference entries) after FullBox version+flags
+    var iter = iterateChildBoxes(data, iref.data_offset + 4, box_end);
+    var found: usize = 0;
+
+    while (iter.next()) |ref_box| {
+        // Only care about "dimg" (derived image) references
+        if (!std.mem.eql(u8, &ref_box.box_type, "dimg")) continue;
+
+        const rp: usize = @intCast(ref_box.data_offset);
+        const ref_end: usize = @intCast(@min(ref_box.offset + ref_box.size, data.len));
+
+        if (version == 0) {
+            // from_item_ID(2) + reference_count(2) + to_item_IDs(2 each)
+            if (rp + 4 > ref_end) continue;
+            const from_id: u32 = @as(u32, std.mem.readInt(u16, data[rp..][0..2], .big));
+            if (from_id != from_item_id) continue;
+            const ref_count = std.mem.readInt(u16, data[rp + 2 ..][0..2], .big);
+            var off: usize = rp + 4;
+            for (0..ref_count) |_| {
+                if (off + 2 > ref_end or found >= tile_ids_buf.len) break;
+                tile_ids_buf[found] = @as(u32, std.mem.readInt(u16, data[off..][0..2], .big));
+                found += 1;
+                off += 2;
+            }
+        } else {
+            // from_item_ID(4) + reference_count(2) + to_item_IDs(4 each)
+            if (rp + 6 > ref_end) continue;
+            const from_id = std.mem.readInt(u32, data[rp..][0..4], .big);
+            if (from_id != from_item_id) continue;
+            const ref_count = std.mem.readInt(u16, data[rp + 4 ..][0..2], .big);
+            var off: usize = rp + 6;
+            for (0..ref_count) |_| {
+                if (off + 4 > ref_end or found >= tile_ids_buf.len) break;
+                tile_ids_buf[found] = std.mem.readInt(u32, data[off..][0..4], .big);
+                found += 1;
+                off += 4;
+            }
+        }
+    }
+
+    return tile_ids_buf[0..found];
 }
 
 // ============================================================================
@@ -689,14 +748,19 @@ pub fn parseHeifContainer(data: []const u8) HeifContainerError!HeifContainerInfo
 
     // 5. Parse iinf (Item Info Box)
     const iinf = findChildBox(data, meta_data_start, meta_data_end, "iinf".*) orelse return error.NoItemInfo;
-    var items_buf: [256]ItemInfo = undefined;
-    const items = try parseIinf(data, iinf, &items_buf);
+    // Static buffers so returned slices remain valid after function returns.
+    // (Stack-local buffers would be dangling pointers in the returned struct.)
+    const StaticBufs = struct {
+        var items_buf: [256]ItemInfo = undefined;
+        var locations_buf: [256]ItemLocation = undefined;
+        var extents_buf: [1024]ItemExtent = undefined;
+        var tile_ids_buf: [256]u32 = undefined;
+    };
+    const items = try parseIinf(data, iinf, &StaticBufs.items_buf);
 
     // 6. Parse iloc (Item Location Box)
     const iloc = findChildBox(data, meta_data_start, meta_data_end, "iloc".*) orelse return error.NoItemLocation;
-    var locations_buf: [256]ItemLocation = undefined;
-    var extents_buf: [1024]ItemExtent = undefined;
-    const iloc_result = try parseIloc(data, iloc, &locations_buf, &extents_buf);
+    const iloc_result = try parseIloc(data, iloc, &StaticBufs.locations_buf, &StaticBufs.extents_buf);
     const locations = iloc_result.locations;
 
     // 7. Parse iprp (Item Properties Box) - optional, for ispe and decoder config
@@ -716,22 +780,35 @@ pub fn parseHeifContainer(data: []const u8) HeifContainerError!HeifContainerInfo
     var primary_data_length: u64 = 0;
 
     if (findItemLocation(locations, primary_item_id)) |loc| {
-        if (loc.construction_method != 0) {
-            // We only support construction_method 0 (file offset)
-            // Method 1 (idat) and 2 (item) are rarely used
-            return error.UnsupportedConstructionMethod;
-        }
-
-        // Calculate total data range from extents
-        if (loc.extents.len > 0) {
-            primary_data_offset = loc.base_offset + loc.extents[0].offset;
-            // For single extent, use its length directly
-            // For multiple extents, report first extent's offset and total length
-            var total_length: u64 = 0;
-            for (loc.extents) |ext| {
-                total_length += ext.length;
+        if (loc.construction_method == 0) {
+            // Construction method 0: file offset — extract data range from extents
+            if (loc.extents.len > 0) {
+                primary_data_offset = loc.base_offset + loc.extents[0].offset;
+                var total_length: u64 = 0;
+                for (loc.extents) |ext| {
+                    total_length += ext.length;
+                }
+                primary_data_length = total_length;
             }
-            primary_data_length = total_length;
+        }
+        // Construction method 1 (idat) or 2 (item): primary data offset/length stay 0.
+        // This is normal for grid/overlay items whose descriptors are in idat.
+        // The caller should use dimg_tile_ids to resolve actual image data.
+    }
+
+    // 9. Parse iref (Item Reference Box) for grid tile references
+    var dimg_tile_ids: []const u32 = StaticBufs.tile_ids_buf[0..0];
+    var tile_decoder_config: ?[]const u8 = null;
+
+    if (findChildBox(data, meta_data_start, meta_data_end, "iref".*)) |iref| {
+        dimg_tile_ids = parseIref(data, iref, primary_item_id, &StaticBufs.tile_ids_buf);
+
+        // If tiles were found, look up decoder config for the first tile
+        if (dimg_tile_ids.len > 0) {
+            if (findChildBox(data, meta_data_start, meta_data_end, "iprp".*)) |iprp| {
+                const tile_props = parseIprp(data, iprp, dimg_tile_ids[0]);
+                tile_decoder_config = tile_props.decoder_config;
+            }
         }
     }
 
@@ -744,6 +821,9 @@ pub fn parseHeifContainer(data: []const u8) HeifContainerError!HeifContainerInfo
         .decoder_config = decoder_config,
         .primary_data_offset = primary_data_offset,
         .primary_data_length = primary_data_length,
+        .dimg_tile_ids = dimg_tile_ids,
+        .locations = locations,
+        .tile_decoder_config = tile_decoder_config,
     };
 }
 
@@ -1300,4 +1380,64 @@ test "HEIF full synthetic container parse" {
     try std.testing.expectEqual(@as(u32, 2160), info.height);
     try std.testing.expectEqual(@as(u64, 500), info.primary_data_offset);
     try std.testing.expectEqual(@as(u64, 1000), info.primary_data_length);
+    try std.testing.expectEqual(@as(usize, 0), info.dimg_tile_ids.len);
+    try std.testing.expect(info.tile_decoder_config == null);
+}
+
+test "HEIF iref parsing - dimg references" {
+    // Build a minimal iref box v0 with one dimg entry:
+    // from_item=1 referencing tiles 2, 3, 4
+    //
+    // iref FullBox: 8(header) + 4(fullbox) + dimg_child
+    // dimg child: 8(header) + 2(from_id) + 2(ref_count) + 6(to_ids) = 18
+    // iref total: 8 + 4 + 18 = 30
+    const iref_data = [_]u8{
+        0x00, 0x00, 0x00, 0x1E, 'i', 'r', 'e', 'f',
+        0x00, 0x00, 0x00, 0x00, // version 0 + flags
+        // dimg child box: size=18
+        0x00, 0x00, 0x00, 0x12, 'd', 'i', 'm', 'g',
+        0x00, 0x01, // from_item_ID = 1
+        0x00, 0x03, // reference_count = 3
+        0x00, 0x02, // to_item_ID = 2
+        0x00, 0x03, // to_item_ID = 3
+        0x00, 0x04, // to_item_ID = 4
+    };
+
+    const header = readBoxHeader(&iref_data, 0).?;
+    var tile_ids_buf: [16]u32 = undefined;
+
+    // Look up for item 1
+    const tiles = parseIref(&iref_data, header, 1, &tile_ids_buf);
+    try std.testing.expectEqual(@as(usize, 3), tiles.len);
+    try std.testing.expectEqual(@as(u32, 2), tiles[0]);
+    try std.testing.expectEqual(@as(u32, 3), tiles[1]);
+    try std.testing.expectEqual(@as(u32, 4), tiles[2]);
+
+    // Look up for item 99 (no match)
+    const no_tiles = parseIref(&iref_data, header, 99, &tile_ids_buf);
+    try std.testing.expectEqual(@as(usize, 0), no_tiles.len);
+}
+
+test "HEIF iref parsing - version 1 with 32-bit IDs" {
+    // iref v1 with dimg: from_item=1000 referencing tiles 1001, 1002
+    // dimg child: 8(header) + 4(from_id) + 2(ref_count) + 8(to_ids) = 22
+    // iref total: 8 + 4 + 22 = 34
+    const iref_data = [_]u8{
+        0x00, 0x00, 0x00, 0x22, 'i', 'r', 'e', 'f',
+        0x01, 0x00, 0x00, 0x00, // version 1 + flags
+        // dimg child box: size=22
+        0x00, 0x00, 0x00, 0x16, 'd', 'i', 'm', 'g',
+        0x00, 0x00, 0x03, 0xE8, // from_item_ID = 1000
+        0x00, 0x02, // reference_count = 2
+        0x00, 0x00, 0x03, 0xE9, // to_item_ID = 1001
+        0x00, 0x00, 0x03, 0xEA, // to_item_ID = 1002
+    };
+
+    const header = readBoxHeader(&iref_data, 0).?;
+    var tile_ids_buf: [16]u32 = undefined;
+
+    const tiles = parseIref(&iref_data, header, 1000, &tile_ids_buf);
+    try std.testing.expectEqual(@as(usize, 2), tiles.len);
+    try std.testing.expectEqual(@as(u32, 1001), tiles[0]);
+    try std.testing.expectEqual(@as(u32, 1002), tiles[1]);
 }
