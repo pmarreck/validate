@@ -656,6 +656,11 @@ pub const ValidationDepth = enum {
     /// Payload corruption may go UNDETECTED.
     structural,
 
+    // NOTE: Future tier `best_effort` will distinguish "we parsed every byte
+    // but the format has no integrity mechanism" (e.g. JSON, OBJ, FASTA)
+    // from "we only checked headers" (e.g. ELF, NES). Both are currently
+    // `.structural`. Ship first, iterate later.
+
     /// Every byte verified via checksum, decompress, or decode.
     /// Payload corruption WILL be detected.
     full,
@@ -4612,7 +4617,7 @@ fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
         std.mem.indexOf(u8, xml_data, "<PremiereData") != null or
         std.mem.indexOf(u8, xml_data, "ObjectType=\"Sequence\"") != null)
     {
-        return ValidationResult.okWithDepth(.prproj, .full);
+        return ValidationResult.okWithDepth(.prproj, .structural);
     }
 
     // Valid XML but might not be Premiere-specific - still accept with structural depth
@@ -4735,7 +4740,8 @@ fn validateIdml(file: std.fs.File) ValidationResult {
 
     // IDML is a ZIP container - basic structural validation passes
     // Deep validation will check for designmap.xml and CRC integrity
-    return ValidationResult.okWithDepth(.idml, .full);
+    // No CRC/hash checked at this level — ZIP magic only
+    return ValidationResult.okWithDepth(.idml, .structural);
 }
 
 // ============ AutoCAD DWG Validator ============
@@ -5019,7 +5025,8 @@ fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResult {
     }
 
     // Successfully validated: header + DNA1 full schema + ENDB terminator
-    return ValidationResult.okWithDepth(.blend, .full);
+    // No CRC/hash covers payload — structural validation only
+    return ValidationResult.okWithDepth(.blend, .structural);
 }
 
 /// Validate the full DNA1 block structure.
@@ -5289,7 +5296,8 @@ fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.okWithDepthAndWarning(.fcpxml, .structural, errmsg.missing("fcpxml root element"));
     }
 
-    return ValidationResult.okWithDepth(.fcpxml, .full);
+    // No CRC/hash — XML parsing only (no integrity mechanism)
+    return ValidationResult.okWithDepth(.fcpxml, .structural);
 }
 
 /// Buffer-based validation for Final Cut Pro XML files.
@@ -5691,7 +5699,8 @@ fn validateIso(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.iso, .invalid_signature, "ISO 9660");
     }
 
-    return ValidationResult.okWithDepth(.iso, .full);
+    // No CRC/hash — signature check only
+    return ValidationResult.okWithDepth(.iso, .structural);
 }
 
 // ============ Apple DMG Validator ============
@@ -5720,7 +5729,8 @@ fn validateDmg(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.dmg, .invalid_signature, "DMG");
     }
 
-    return ValidationResult.okWithDepth(.dmg, .full);
+    // No CRC/hash — signature check only
+    return ValidationResult.okWithDepth(.dmg, .structural);
 }
 
 // ============ HDF5 Validator ============
@@ -5979,7 +5989,8 @@ fn validateHdf5(file: std.fs.File) ValidationResult {
         }
     }
 
-    return ValidationResult.okWithDepth(.hdf5, .full);
+    // Superblock checksum only covers ~48 byte header, not data payload
+    return ValidationResult.okWithDepth(.hdf5, .structural);
 }
 
 // ============ Apache Parquet Validator ============
@@ -6163,7 +6174,8 @@ fn validateParquet(file: std.fs.File) ValidationResult {
         // Very small files might have many row groups with few rows
     }
 
-    return ValidationResult.okWithDepth(.parquet, .full);
+    // No CRC/hash covers payload — Thrift footer structure check only
+    return ValidationResult.okWithDepth(.parquet, .structural);
 }
 
 /// Skip a Thrift Compact Protocol value, returning bytes consumed or null on error
@@ -6386,7 +6398,8 @@ fn validateWarc(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.warc, "No WARC records found");
     }
 
-    return ValidationResult.okWithDepth(.warc, .full);
+    // No content digest verification — record header parsing only
+    return ValidationResult.okWithDepth(.warc, .structural);
 }
 
 // ============ Game Format Validators ============
@@ -6430,7 +6443,8 @@ fn validateWad(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.wad, "Directory extends beyond file");
     }
 
-    return ValidationResult.okWithDepth(.wad, .full);
+    // No CRC/hash — header + directory bounds check only
+    return ValidationResult.okWithDepth(.wad, .structural);
 }
 
 /// Deep validation for WAD files - validates all directory entries.
@@ -6538,7 +6552,8 @@ fn validatePak(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.pak, .invalid_value, "directory size (not multiple of 64)");
     }
 
-    return ValidationResult.okWithDepth(.pak, .full);
+    // No CRC/hash — header + directory structure check only
+    return ValidationResult.okWithDepth(.pak, .structural);
 }
 
 /// Deep validation for PAK files - validates all directory entries.
@@ -6716,7 +6731,8 @@ fn validateBsp(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.bsp, .unknown_element, "BSP version");
     }
 
-    return ValidationResult.okWithDepth(.bsp, .full);
+    // No CRC/hash — version check only
+    return ValidationResult.okWithDepth(.bsp, .structural);
 }
 
 /// Validate VPK (Valve PAK) file format.
@@ -6752,7 +6768,8 @@ fn validateVpk(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCodeMsg(.vpk, .exceeds_bounds, "Tree size", "Tree size exceeds file size");
     }
 
-    return ValidationResult.okWithDepth(.vpk, .full);
+    // No CRC/hash — header + tree size check only
+    return ValidationResult.okWithDepth(.vpk, .structural);
 }
 
 // ============ IFF/Blorb Validators ============
@@ -6783,7 +6800,8 @@ fn validateIff(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.iff, "File truncated");
     }
 
-    return ValidationResult.okWithDepth(.iff, .full);
+    // No CRC/hash — FORM header + size check only
+    return ValidationResult.okWithDepth(.iff, .structural);
 }
 
 /// Deep validation for IFF files - parses all nested chunks.
@@ -6884,8 +6902,8 @@ fn validateBlorb(file: std.fs.File) ValidationResult {
         const size = std.mem.readInt(u32, chunk_header[4..8], .big);
 
         if (std.mem.eql(u8, chunk_type, "RIdx")) {
-            // Found required Resource Index - full validation passed
-            return ValidationResult.okWithDepth(.blorb, .full);
+            // Found required Resource Index — no CRC/hash, structural only
+            return ValidationResult.okWithDepth(.blorb, .structural);
         }
 
         // IFF chunks are padded to even boundaries
@@ -7022,7 +7040,8 @@ fn validateMatlab(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.matlab, "No data elements found");
     }
 
-    return ValidationResult.okWithDepth(.matlab, .full);
+    // Zlib decompression checked for compressed elements only; uncompressed data not verified
+    return ValidationResult.okWithDepth(.matlab, .structural);
 }
 
 /// Validate NIfTI (Neuroimaging Informatics Technology Initiative) format.
@@ -7192,7 +7211,8 @@ fn validateNifti(file: std.fs.File) ValidationResult {
         }
     }
 
-    return ValidationResult.okWithDepth(.nifti, .full);
+    // No CRC/hash — header field validation + bounds check only
+    return ValidationResult.okWithDepth(.nifti, .structural);
 }
 
 /// Validate PDB (Protein Data Bank) format.
@@ -7320,7 +7340,8 @@ fn validatePdb(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.pdb_struct, "No ATOM/HETATM records found");
     }
 
-    return ValidationResult.okWithDepth(.pdb_struct, .full);
+    // No CRC/hash — text record parsing only
+    return ValidationResult.okWithDepth(.pdb_struct, .structural);
 }
 
 /// Validate CIF (Crystallographic Information File) format.
@@ -7450,7 +7471,8 @@ fn validateCif(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.cif, "No tags found");
     }
 
-    return ValidationResult.okWithDepth(.cif, .full);
+    // No CRC/hash — text tag parsing only
+    return ValidationResult.okWithDepth(.cif, .structural);
 }
 
 // ============ GIS Format Validators ============
@@ -7566,7 +7588,8 @@ fn validateShapefile(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.shapefile, .no_valid_x_found, "records");
     }
 
-    return ValidationResult.okWithDepth(.shapefile, .full);
+    // No CRC/hash — header + record structure parsing only
+    return ValidationResult.okWithDepth(.shapefile, .structural);
 }
 
 // ============ CAD Format Validators ============
@@ -7748,7 +7771,8 @@ fn parseStepContent(content: []const u8) ValidationResult {
         return ValidationResult.invalid(.step, "Unmatched parentheses");
     }
 
-    return ValidationResult.okWithDepth(.step, .full);
+    // No CRC/hash — text structure parsing only
+    return ValidationResult.okWithDepth(.step, .structural);
 }
 
 /// Chunked validation for very large STEP files.
@@ -7803,7 +7827,8 @@ fn validateStepChunked(file: std.fs.File, file_size: u64) ValidationResult {
         return ValidationResult.invalidCode(.step, .missing, "END-ISO-10303-21");
     }
 
-    return ValidationResult.okWithDepth(.step, .full);
+    // No CRC/hash — text section marker search only
+    return ValidationResult.okWithDepth(.step, .structural);
 }
 
 /// Validate STL (Stereolithography) 3D model format with full decode.
@@ -8259,7 +8284,7 @@ fn parseObjContent(content: []const u8) ValidationResult {
         return ValidationResult.invalid(.obj, "No vertices found");
     }
 
-    return ValidationResult.okWithDepth(.obj, .full);
+    return ValidationResult.okWithDepth(.obj, .structural);
 }
 
 /// Count and validate space-separated floats.
@@ -8414,7 +8439,7 @@ fn validateObjChunked(file: std.fs.File, file_size: u64) ValidationResult {
         return ValidationResult.invalid(.obj, "No vertices found");
     }
 
-    return ValidationResult.okWithDepth(.obj, .full);
+    return ValidationResult.okWithDepth(.obj, .structural);
 }
 
 /// Deep validation wrapper for OBJ - uses the file-based validateObj.
@@ -8641,7 +8666,7 @@ fn validatePlyAsciiData(file: std.fs.File, header_end: usize, vertex_count: usiz
         faces_parsed += 1;
     }
 
-    return ValidationResult.okWithDepth(.ply, .full);
+    return ValidationResult.okWithDepth(.ply, .structural);
 }
 
 /// Sample validation for very large ASCII PLY files.
@@ -8665,7 +8690,7 @@ fn validatePlyAsciiSample(file: std.fs.File, vertex_count: usize, face_count: us
         return ValidationResult.invalid(.ply, "No numeric data found");
     }
 
-    return ValidationResult.okWithDepth(.ply, .full);
+    return ValidationResult.okWithDepth(.ply, .structural);
 }
 
 /// Validate binary PLY data section.
@@ -8703,7 +8728,7 @@ fn validatePlyBinaryData(file: std.fs.File, header_end: usize, data_size: u64, v
         return ValidationResult.invalidCode(.ply, .truncated, "binary data");
     }
 
-    return ValidationResult.okWithDepth(.ply, .full);
+    return ValidationResult.okWithDepth(.ply, .structural);
 }
 
 /// Validate glTF (GL Transmission Format) JSON file with full decode.
@@ -8835,7 +8860,7 @@ fn parseGltfJson(content: []const u8) ValidationResult {
     _ = has_nodes;
     _ = has_scenes;
 
-    return ValidationResult.okWithDepth(.gltf, .full);
+    return ValidationResult.okWithDepth(.gltf, .structural);
 }
 
 /// Structural validation for very large glTF files.
@@ -8860,7 +8885,7 @@ fn validateGltfStructural(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.gltf, .missing, "'asset' field");
     }
 
-    return ValidationResult.okWithDepth(.gltf, .full);
+    return ValidationResult.okWithDepth(.gltf, .structural);
 }
 
 /// Validate GLB (Binary glTF) file with full decode.
@@ -8947,10 +8972,10 @@ fn validateGlb(file: std.fs.File) ValidationResult {
     }
 
     if (version == 1) {
-        return ValidationResult.okWithDepthAndWarning(.glb, .full, "GLB version 1 (deprecated)");
+        return ValidationResult.okWithDepthAndWarning(.glb, .structural, "GLB version 1 (deprecated)");
     }
 
-    return ValidationResult.okWithDepth(.glb, .full);
+    return ValidationResult.okWithDepth(.glb, .structural);
 }
 
 /// Validate GLB JSON chunk content.
@@ -9006,7 +9031,7 @@ fn validateGlbChunkReadable(file: std.fs.File, offset: u64, length: u32) Validat
         return ValidationResult.invalidCode(.glb, .truncated, "chunk data");
     }
 
-    return ValidationResult.okWithDepth(.glb, .full);
+    return ValidationResult.okWithDepth(.glb, .structural);
 }
 
 /// Deep GLB validation - parses JSON and validates accessor/buffer relationships.
@@ -9190,7 +9215,7 @@ fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidCode(.glb, .missing, "required asset field");
     }
 
-    return ValidationResult.okWithDepth(.glb, .full);
+    return ValidationResult.okWithDepth(.glb, .structural);
 }
 
 // ============ EML/MBOX Validators ============
@@ -9620,12 +9645,9 @@ fn validateBase64Attachment(allocator: Allocator, body: []const u8, headers: []c
         return ValidationResult.invalid(.eml, attachment_result.error_message orelse "Attachment validation failed");
     }
 
-    // Attachment validated successfully - return full depth if attachment was fully validated
-    if (attachment_result.validation_depth == .full) {
-        return ValidationResult.okWithDepth(.eml, .full);
-    }
-
-    // Return structural if attachment could only be structurally validated
+    // EML envelope has no integrity mechanism — even if the attachment
+    // validates fully, the EML metadata (headers, MIME boundaries) is
+    // unprotected, so the overall depth is structural.
     return ValidationResult.okWithDepth(.eml, .structural);
 }
 
@@ -11256,10 +11278,10 @@ fn validateSqliteDeep(allocator: Allocator, path: []const u8) ValidationResult {
 fn validateOle2Deep(allocator: Allocator, path: []const u8, format: FileFormat) ValidationResult {
     const result = ole2_validator.validateOle2Deep(allocator, path);
     if (result.valid) {
-        // Use .full depth since we validate checksum/structure
-        return ValidationResult.okWithDepth(format, .full);
+        // No CRC/hash — FAT chain + directory structure only
+        return ValidationResult.okWithDepth(format, .structural);
     } else {
-        return ValidationResult.invalidWithDepth(format, result.error_message orelse "OLE2 validation failed", .full);
+        return ValidationResult.invalidWithDepth(format, result.error_message orelse "OLE2 validation failed", .structural);
     }
 }
 
@@ -13437,11 +13459,11 @@ fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const result = iso9660_parser.validateIso9660(data[0..bytes_read]);
 
     if (!result.valid) {
-        return ValidationResult.invalidWithDepth(.iso, result.error_message orelse "ISO 9660 validation failed", .full);
+        return ValidationResult.invalidWithDepth(.iso, result.error_message orelse "ISO 9660 validation failed", .structural);
     }
 
-    // Full validation passed - volume descriptors and root directory validated
-    return ValidationResult.okWithDepth(.iso, .full);
+    // No CRC/hash in ISO 9660 — volume descriptors and directory structure only
+    return ValidationResult.okWithDepth(.iso, .structural);
 }
 
 /// Simple ISO signature validation (fallback for memory-constrained situations)
@@ -14708,8 +14730,8 @@ pub const FormatValidator = struct {
             .markdown => ValidationResult.ok(.markdown), // Text format, no validation
             .plain_text => text_format_validators.validatePlainText(self.allocator, file), // UTF-8 validation
             .plain_text_utf16 => text_format_validators.validatePlainTextUtf16(self.allocator, file), // UTF-16 validation
-            .plain_text_latin1 => ValidationResult.okWithDepth(.plain_text_latin1, .full), // Latin-1 always valid
-            .plain_text_cp437 => ValidationResult.okWithDepth(.plain_text_cp437, .full), // CP437 always valid (demoscene NFO)
+            .plain_text_latin1 => ValidationResult.okWithDepth(.plain_text_latin1, .structural), // Latin-1 always valid (no integrity mechanism)
+            .plain_text_cp437 => ValidationResult.okWithDepth(.plain_text_cp437, .structural), // CP437 always valid (no integrity mechanism)
             // Font formats
             .ttf => validateTtf(file),
             .otf => validateOtf(file),
@@ -15022,7 +15044,8 @@ fn validateBeam(file: std.fs.File) ValidationResult {
     if (chunk_count == 0) return ValidationResult.invalid(.beam, "No chunks found");
     if (!has_atom_table) return ValidationResult.invalidCode(.beam, .missing, "atom table chunk");
     if (!has_code) return ValidationResult.invalidCode(.beam, .missing, "code chunk");
-    return ValidationResult.okWithDepth(.beam, .full);
+    // No CRC/hash — IFF chunk structure parsing only
+    return ValidationResult.okWithDepth(.beam, .structural);
 }
 
 // ============ Shared XML/Text Helpers ============
@@ -15276,8 +15299,8 @@ fn validateDsStore(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.ds_store, "Allocation table extends beyond file");
     }
 
-    // Full validation passed - magic verified, header consistent, allocation table size reasonable
-    return ValidationResult.okWithDepth(.ds_store, .full);
+    // No CRC/hash — header + allocation table bounds check only
+    return ValidationResult.okWithDepth(.ds_store, .structural);
 }
 
 /// Validate macOS Spotlight index file (proprietary Apple format)
@@ -15842,7 +15865,8 @@ fn validateBinaryPlist(file: std.fs.File, file_size: u64) ValidationResult {
         return ValidationResult.invalidCodeMsg(.plist, .exceeds_bounds, "Offset table", "Offset table exceeds file bounds");
     }
 
-    return ValidationResult.okWithDepth(.plist, .full);
+    // No CRC/hash — binary plist trailer parsing only
+    return ValidationResult.okWithDepth(.plist, .structural);
 }
 
 /// Validate XML plist format
@@ -15921,7 +15945,8 @@ fn validateXmlPlist(file: std.fs.File, file_size: u64) ValidationResult {
     // DOCTYPE is ubiquitous in Apple plists - don't warn about it
     _ = preprocessed.had_doctype;
 
-    return ValidationResult.okWithDepth(.plist, .full);
+    // No CRC/hash — XML parsing only (no integrity mechanism)
+    return ValidationResult.okWithDepth(.plist, .structural);
 }
 
 /// Validate ELF (Executable and Linkable Format) files.
@@ -15988,7 +16013,8 @@ fn validateElf(file: std.fs.File) ValidationResult {
             return ValidationResult.invalidCode(.elf, .invalid_value, "ELF64 header size");
     }
 
-    return ValidationResult.okWithDepth(.elf, .full);
+    // No CRC/hash — ELF header field validation only
+    return ValidationResult.okWithDepth(.elf, .structural);
 }
 
 /// Validate WebAssembly binary module.
@@ -16067,7 +16093,8 @@ fn validateWasm(file: std.fs.File) ValidationResult {
     if (section_count == 0)
         return ValidationResult.invalid(.wasm, "Wasm module has no sections");
 
-    return ValidationResult.okWithDepth(.wasm, .full);
+    // No CRC/hash — section structure validation only
+    return ValidationResult.okWithDepth(.wasm, .structural);
 }
 
 /// Validate Unix ar archive format (.a static libraries, .deb packages).
@@ -16120,7 +16147,8 @@ fn validateAr(file: std.fs.File) ValidationResult {
     if (member_count == 0 and file_size > 8)
         return ValidationResult.invalid(.ar, "ar archive has data but no valid members");
 
-    return ValidationResult.okWithDepth(.ar, .full);
+    // No CRC/hash — member header parsing only
+    return ValidationResult.okWithDepth(.ar, .structural);
 }
 
 // ============ Tests ============
@@ -17715,8 +17743,8 @@ test "FormatValidator deep validates real OLE2 XLS from ground truth" {
 
     try std.testing.expectEqual(FileFormat.xls, result.format);
     try std.testing.expect(result.is_valid);
-    // OLE2 validates structure (integrity) but not stream content
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // OLE2 validates FAT chain + directory structure but no CRC/hash
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "FormatValidator deep validates real OLE2 PPT from ground truth" {
@@ -17738,7 +17766,8 @@ test "FormatValidator deep validates real OLE2 PPT from ground truth" {
 
     try std.testing.expectEqual(FileFormat.ppt, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // OLE2 validates FAT chain + directory structure but no CRC/hash
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 // ============ Brotli Tests ============
@@ -19008,7 +19037,8 @@ test "FormatValidator deep validates real WAV from ground truth" {
 
     try std.testing.expectEqual(FileFormat.wav, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // WAV validates chunk structure but no audio decode or checksum
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 // ============ OLE2/CFBF Tests (DOC, XLS, PPT) ============
@@ -21268,10 +21298,10 @@ test "UTF-8 fallback validates plain text file" {
 
     const result = validator.validateFile(path);
 
-    // Should be detected as plain_text with integrity validation depth (UTF-8 validated)
+    // Should be detected as plain_text — UTF-8 validated but no CRC/hash
     try std.testing.expectEqual(FileFormat.plain_text, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "UTF-8 fallback validates UTF-8 with BOM" {
@@ -21299,7 +21329,8 @@ test "UTF-8 fallback validates UTF-8 with BOM" {
 
     try std.testing.expectEqual(FileFormat.plain_text, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // UTF-8 parse but no CRC/hash integrity mechanism
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "UTF-8 fallback does not validate binary file" {
@@ -21356,7 +21387,8 @@ test "UTF-8 fallback validates multi-byte UTF-8" {
 
     try std.testing.expectEqual(FileFormat.plain_text, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // UTF-8 parse but no CRC/hash integrity mechanism
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "CP437 detection for demoscene NFO files" {
@@ -21391,7 +21423,8 @@ test "CP437 detection for demoscene NFO files" {
     // Should be detected as CP437 text (demoscene NFO)
     try std.testing.expectEqual(FileFormat.plain_text_cp437, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // CP437 has no integrity mechanism — any byte is valid
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "FormatValidator accepts valid JSON" {
@@ -21424,7 +21457,8 @@ test "FormatValidator accepts valid JSON" {
 
     try std.testing.expectEqual(FileFormat.json, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // JSON parsing but no CRC/hash integrity mechanism
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "FormatValidator rejects invalid JSON" {
@@ -21619,7 +21653,8 @@ test "FormatValidator accepts valid TOML" {
 
     try std.testing.expectEqual(FileFormat.toml, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // TOML parsing but no CRC/hash integrity mechanism
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "FormatValidator rejects invalid TOML" {
@@ -21682,7 +21717,8 @@ test "FormatValidator accepts valid XML" {
 
     try std.testing.expectEqual(FileFormat.xml, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // XML parsing but no CRC/hash integrity mechanism
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "FormatValidator accepts valid SVG without extension mismatch" {

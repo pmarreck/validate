@@ -259,9 +259,8 @@ pub fn validateIdml(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCodeMsg(.idml, .invalid_signature_not, "IDML", errmsg.invalidSignatureNot("IDML", "ZIP"));
     }
 
-    // IDML is a ZIP container - basic structural validation passes
-    // Deep validation will check for designmap.xml and CRC integrity
-    return ValidationResult.okWithDepth(.idml, .full);
+    // IDML is a ZIP container - only checked magic bytes, not internal structure
+    return ValidationResult.okWithDepth(.idml, .structural);
 }
 
 // ============ Final Cut Pro (.fcpxml) Validator ============
@@ -456,8 +455,8 @@ pub fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
 
     if (file_size > 500 * 1024 * 1024) {
-        // For very large files, trust the ZIP validation
-        return ValidationResult.okWithDepth(.drp, .full);
+        // For very large files, trust the ZIP validation (container-level only)
+        return ValidationResult.okWithDepth(.drp, .structural);
     }
 
     // Read the file to find project.xml in the central directory
@@ -475,9 +474,9 @@ pub fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Look for project.xml in the file names
-    // Simple check: search for "project.xml" in the data
+    // Simple check: search for "project.xml" in the data (ZIP structure + expected file presence)
     if (std.mem.indexOf(u8, data, "project.xml") != null) {
-        return ValidationResult.okWithDepth(.drp, .full);
+        return ValidationResult.okWithDepth(.drp, .structural);
     }
 
     return ValidationResult.okWithDepthAndWarning(.drp, .structural, errmsg.missing("project.xml in DRP archive"));

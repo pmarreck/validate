@@ -30,8 +30,9 @@ the entire purpose of the tool.
 - Stay portable across platforms with a thin C FFI boundary.
 
 ## Terminology
-- **Validation (structural)**: Header/structure checks; payload corruption may go undetected.
-- **Validation (full)**: Every byte is verified via checksum, decompression, or full decode.
+- **Validation (structural)**: Header/structure checks; payload corruption may go undetected. Also used for opaque text formats (JSON, CSV, OBJ, FASTA, etc.) where every byte is parsed but the format has no integrity mechanism — a valid-to-valid mutation is undetectable.
+- **Validation (full)**: Every byte is verified via CRC, hash, decompression, or codec decode. A random bit flip WILL be caught.
+- **Validation (best_effort)** *(future tier)*: Every byte parsed but no integrity mechanism exists. Distinguishes "we parsed everything" from "we only checked headers." Both are currently reported as `structural`.
 - **Deep validation**: Shorthand for full validation when supported.
 - **Malformation**: A known, named format defect (e.g., MIME-wrapped content).
 - **Warning**: A notable condition that does not invalidate the file.

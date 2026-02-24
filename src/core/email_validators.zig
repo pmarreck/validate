@@ -289,12 +289,9 @@ pub fn validateBase64Attachment(allocator: Allocator, body: []const u8, headers:
         return ValidationResult.invalid(.eml, attachment_result.error_message orelse "Attachment validation failed");
     }
 
-    // Attachment validated successfully - return full depth if attachment was fully validated
-    if (attachment_result.validation_depth == .full) {
-        return ValidationResult.okWithDepth(.eml, .full);
-    }
-
-    // Return structural if attachment could only be structurally validated
+    // EML is an opaque text format with no integrity mechanism (no checksums,
+    // no CRCs, no signatures verified), so we never claim .full — even if an
+    // embedded attachment validated fully, the envelope itself is structural only.
     return ValidationResult.okWithDepth(.eml, .structural);
 }
 

@@ -4,6 +4,10 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ## Active
 
+### Depth Honesty Audit
+- [x] Fix ~50 validators dishonestly claiming `.full` depth when they only do header/structural checks or parse opaque text with no integrity mechanism (2026-02-23 EST)
+- [ ] Future: Add `best_effort` tier to distinguish "parsed every byte, no integrity mechanism" from "only checked headers"
+
 ### Codebase Consolidation
 - [x] Consolidate duplicated codec utilities (CRC-32 x4, CRC-16, RBSP, start codes, LEB128, endian helpers) into shared `codec_utils.zig`; replaced across 10 files, net -285 lines (2026-02-22 EST)
 

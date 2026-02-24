@@ -73,7 +73,7 @@ pub fn validateElf(file: std.fs.File) ValidationResult {
             return ValidationResult.invalidCode(.elf, .invalid_value, "ELF64 header size");
     }
 
-    return ValidationResult.okWithDepth(.elf, .full);
+    return ValidationResult.okWithDepth(.elf, .structural);
 }
 
 // ============ Mach-O Validator ============
@@ -126,7 +126,7 @@ pub fn validateMacho(file: std.fs.File) ValidationResult {
     if (@as(u64, header_size) + @as(u64, sizeofcmds) > file_size)
         return ValidationResult.invalid(.macho, "Load commands extend beyond file");
 
-    return ValidationResult.okWithDepth(.macho, .full);
+    return ValidationResult.okWithDepth(.macho, .structural);
 }
 
 /// Validate Mach-O Universal/Fat binary (multi-architecture).
@@ -190,7 +190,7 @@ pub fn validateMachoFat(file: std.fs.File) ValidationResult {
     if (valid_archs == 0)
         return ValidationResult.invalidCode(.macho_fat, .no_valid_x_found, "Mach-O architectures");
 
-    return ValidationResult.okWithDepth(.macho_fat, .full);
+    return ValidationResult.okWithDepth(.macho_fat, .structural);
 }
 
 // ============ COFF Validator ============
@@ -240,7 +240,7 @@ pub fn validateCoff(file: std.fs.File) ValidationResult {
     if (sym_table_ptr > 0 and @as(u64, sym_table_ptr) > file_size)
         return ValidationResult.invalid(.coff, "Symbol table pointer beyond file");
 
-    return ValidationResult.okWithDepth(.coff, .full);
+    return ValidationResult.okWithDepth(.coff, .structural);
 }
 
 // ============ WebAssembly Validator ============
@@ -321,7 +321,7 @@ pub fn validateWasm(file: std.fs.File) ValidationResult {
     if (section_count == 0)
         return ValidationResult.invalid(.wasm, "Wasm module has no sections");
 
-    return ValidationResult.okWithDepth(.wasm, .full);
+    return ValidationResult.okWithDepth(.wasm, .structural);
 }
 
 // ============ ar Archive Validator ============
@@ -376,7 +376,7 @@ pub fn validateAr(file: std.fs.File) ValidationResult {
     if (member_count == 0 and file_size > 8)
         return ValidationResult.invalid(.ar, "ar archive has data but no valid members");
 
-    return ValidationResult.okWithDepth(.ar, .full);
+    return ValidationResult.okWithDepth(.ar, .structural);
 }
 
 // ============ Tests ============

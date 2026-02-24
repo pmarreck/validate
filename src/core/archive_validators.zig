@@ -968,7 +968,7 @@ pub fn validateWarc(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.warc, "No WARC records found");
     }
 
-    return ValidationResult.okWithDepth(.warc, .full);
+    return ValidationResult.okWithDepth(.warc, .structural);
 }
 
 // ============ ZIP Deep Validation (CRC-32) ============

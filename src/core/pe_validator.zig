@@ -214,7 +214,7 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
     // For deep validation, we could parse data directories (imports, exports, resources, etc.)
     // For now, structural validation is sufficient
 
-    return ValidationResult.okWithDepth(.pe, .full);
+    return ValidationResult.okWithDepth(.pe, .structural);
 }
 
 // -- Tests ------------------------------------------------------------------

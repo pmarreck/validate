@@ -54,7 +54,7 @@ pub fn validateNes(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.nes, "File smaller than header indicates");
     }
 
-    return ValidationResult.okWithDepth(.nes, .full);
+    return ValidationResult.okWithDepth(.nes, .structural);
 }
 
 /// Deep validate NES ROM - checks size consistency with header declarations
@@ -243,7 +243,7 @@ pub fn validateN64(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.n64, .file_too_large, "N64 ROM");
     }
 
-    return ValidationResult.okWithDepth(.n64, .full);
+    return ValidationResult.okWithDepth(.n64, .structural);
 }
 
 /// Deep validate N64 ROM - checks game title and country code fields
@@ -332,7 +332,7 @@ pub fn validateGb(file: std.fs.File) ValidationResult {
     }
 
     // Header checksum verified
-    return ValidationResult.okWithDepth(.gb, .full);
+    return ValidationResult.okWithDepth(.gb, .structural);
 }
 
 // ============ GBA ============
@@ -372,7 +372,7 @@ pub fn validateGba(file: std.fs.File) ValidationResult {
     }
 
     // Header checksum verified
-    return ValidationResult.okWithDepth(.gba, .full);
+    return ValidationResult.okWithDepth(.gba, .structural);
 }
 
 // ============ NDS ============
@@ -436,7 +436,7 @@ pub fn validateNds(file: std.fs.File) ValidationResult {
     }
 
     // Header CRC verified
-    return ValidationResult.okWithDepth(.nds, .full);
+    return ValidationResult.okWithDepth(.nds, .structural);
 }
 
 // ============ Sega Genesis / Mega Drive ============
@@ -479,7 +479,7 @@ pub fn validateGenesis(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.genesis, .file_too_large, "Genesis ROM");
     }
 
-    return ValidationResult.okWithDepth(.genesis, .full);
+    return ValidationResult.okWithDepth(.genesis, .structural);
 }
 
 /// Deep validate Genesis ROM - checks game title printability and ROM address range.
@@ -561,5 +561,5 @@ pub fn validateChd(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.chd, .unknown_element, "CHD version");
     }
 
-    return ValidationResult.okWithDepth(.chd, .full);
+    return ValidationResult.okWithDepth(.chd, .structural);
 }

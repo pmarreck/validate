@@ -583,7 +583,7 @@ fn parseStepContent(content: []const u8) ValidationResult {
         return ValidationResult.invalid(.step, "Unmatched parentheses");
     }
 
-    return ValidationResult.okWithDepth(.step, .full);
+    return ValidationResult.okWithDepth(.step, .structural);
 }
 
 pub fn validateStepChunked(file: std.fs.File, file_size: u64) ValidationResult {
@@ -637,7 +637,7 @@ pub fn validateStepChunked(file: std.fs.File, file_size: u64) ValidationResult {
         return ValidationResult.invalidCode(.step, .missing, "END-ISO-10303-21");
     }
 
-    return ValidationResult.okWithDepth(.step, .full);
+    return ValidationResult.okWithDepth(.step, .structural);
 }
 
 // ============ STL Validator ============
@@ -1014,7 +1014,7 @@ fn parseObjContent(content: []const u8) ValidationResult {
         return ValidationResult.invalid(.obj, "No vertices found");
     }
 
-    return ValidationResult.okWithDepth(.obj, .full);
+    return ValidationResult.okWithDepth(.obj, .structural);
 }
 
 pub const ObjFaceResult = struct {
@@ -1151,7 +1151,7 @@ pub fn validateObjChunked(file: std.fs.File, file_size: u64) ValidationResult {
         return ValidationResult.invalid(.obj, "No vertices found");
     }
 
-    return ValidationResult.okWithDepth(.obj, .full);
+    return ValidationResult.okWithDepth(.obj, .structural);
 }
 
 pub fn validateObjDeep(allocator: Allocator, path: []const u8) ValidationResult {
@@ -1363,7 +1363,7 @@ pub fn validatePlyAsciiSample(file: std.fs.File, vertex_count: usize, face_count
         return ValidationResult.invalid(.ply, "No numeric data found");
     }
 
-    return ValidationResult.okWithDepth(.ply, .full);
+    return ValidationResult.okWithDepth(.ply, .structural);
 }
 
 pub fn validatePlyBinaryData(file: std.fs.File, header_end: usize, data_size: u64, vertex_count: usize, vertex_prop_count: usize, format: PlyFormat) ValidationResult {
@@ -1400,7 +1400,7 @@ pub fn validatePlyBinaryData(file: std.fs.File, header_end: usize, data_size: u6
         return ValidationResult.invalidCode(.ply, .truncated, "binary data");
     }
 
-    return ValidationResult.okWithDepth(.ply, .full);
+    return ValidationResult.okWithDepth(.ply, .structural);
 }
 
 // ============ glTF Validator ============
@@ -1531,7 +1531,7 @@ fn parseGltfJson(content: []const u8) ValidationResult {
     _ = has_nodes;
     _ = has_scenes;
 
-    return ValidationResult.okWithDepth(.gltf, .full);
+    return ValidationResult.okWithDepth(.gltf, .structural);
 }
 
 pub fn validateGltfStructural(file: std.fs.File) ValidationResult {
@@ -1555,7 +1555,7 @@ pub fn validateGltfStructural(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.gltf, .missing, "'asset' field");
     }
 
-    return ValidationResult.okWithDepth(.gltf, .full);
+    return ValidationResult.okWithDepth(.gltf, .structural);
 }
 
 // ============ GLB Validator ============
@@ -1640,10 +1640,10 @@ pub fn validateGlb(file: std.fs.File) ValidationResult {
     }
 
     if (version == 1) {
-        return ValidationResult.okWithDepthAndWarning(.glb, .full, "GLB version 1 (deprecated)");
+        return ValidationResult.okWithDepthAndWarning(.glb, .structural, "GLB version 1 (deprecated)");
     }
 
-    return ValidationResult.okWithDepth(.glb, .full);
+    return ValidationResult.okWithDepth(.glb, .structural);
 }
 
 pub fn validateGlbJsonChunk(file: std.fs.File, offset: u64, length: u32) ValidationResult {
@@ -1696,7 +1696,7 @@ pub fn validateGlbChunkReadable(file: std.fs.File, offset: u64, length: u32) Val
         return ValidationResult.invalidCode(.glb, .truncated, "chunk data");
     }
 
-    return ValidationResult.okWithDepth(.glb, .full);
+    return ValidationResult.okWithDepth(.glb, .structural);
 }
 
 pub fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult {
@@ -1877,7 +1877,7 @@ pub fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalidCode(.glb, .missing, "required asset field");
     }
 
-    return ValidationResult.okWithDepth(.glb, .full);
+    return ValidationResult.okWithDepth(.glb, .structural);
 }
 
 // ============ Tests ============

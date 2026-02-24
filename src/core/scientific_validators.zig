@@ -13,8 +13,8 @@ const errmsg = @import("error_messages.zig");
 const NETCDF_SIGNATURE = [_]u8{ 'C', 'D', 'F' };
 
 /// Validate NetCDF file structure.
-/// Full integrity validation: parses dimensions, variables, and attributes.
-/// NetCDF-4 is HDF5-based and will be detected as HDF5.
+/// Structural validation: parses dimensions, variables, and attributes; verifies offsets.
+/// No checksums exist in NetCDF classic format. NetCDF-4 is HDF5-based and detected as HDF5.
 pub fn validateNetcdf(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch return ValidationResult.invalidCode(.netcdf, .failed_to_stat, "file");
     const file_size = stat.size;
@@ -106,7 +106,7 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
 
     // Skip global attributes
     if (pos + 4 > header_read) {
-        return ValidationResult.okWithDepth(.netcdf, .full);
+        return ValidationResult.okWithDepth(.netcdf, .structural);
     }
 
     const gatt_tag = std.mem.readInt(u32, header[pos..][0..4], .big);
@@ -151,7 +151,7 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
 
     // Parse variable list and verify offsets
     if (pos + 4 > header_read) {
-        return ValidationResult.okWithDepth(.netcdf, .full);
+        return ValidationResult.okWithDepth(.netcdf, .structural);
     }
 
     const var_tag = std.mem.readInt(u32, header[pos..][0..4], .big);
@@ -250,7 +250,7 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.netcdf, .invalid_value, "variable list tag");
     }
 
-    return ValidationResult.okWithDepth(.netcdf, .full);
+    return ValidationResult.okWithDepth(.netcdf, .structural);
 }
 
 // ============ FITS Validator ============
@@ -1251,9 +1251,10 @@ fn parseDicomDataElements(
 }
 
 /// Validate DICOM (Digital Imaging and Communications in Medicine) file structure.
-/// Full integrity validation: parses all data elements, validates tag structure,
+/// Structural validation: parses all data elements, validates tag structure,
 /// handles sequences with undefined length, validates encapsulated pixel data (JPEG, etc.),
 /// and recursively validates nested sequences up to 32 levels deep.
+/// No file-level checksum — metadata field corruption is undetectable.
 pub fn validateDicom(file: std.fs.File) ValidationResult {
     // Use GPA for temporary allocations during validation
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -1392,9 +1393,12 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
         dataset_elements += 1;
     }
 
-    // Return appropriate validation depth based on embedded data validation
+    // Return appropriate validation depth based on embedded data validation.
+    // DICOM has no file-level checksum — metadata corruption (patient name, dates, etc.)
+    // would go undetected. Even with valid embedded pixel data decode, a random bit flip
+    // in a non-pixel value field would not cause validation failure, so depth is structural.
     if (embedded_data_valid) {
-        return ValidationResult.okWithDepth(.dicom, .full);
+        return ValidationResult.okWithDepth(.dicom, .structural);
     } else {
         return ValidationResult.okWithDepthAndWarning(.dicom, .structural, "Embedded pixel data validation failed");
     }
@@ -1403,8 +1407,9 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
 // ============ FASTA Validator ============
 
 /// Validate FASTA sequence file format.
-/// Full integrity validation: parses all sequences, validates characters,
+/// Structural validation: parses all sequences, validates alphabet characters,
 /// and checks for proper record structure throughout the file.
+/// No checksums — a bit flip within the valid alphabet is undetectable.
 pub fn validateFasta(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch return ValidationResult.invalidCode(.fasta, .failed_to_stat, "file");
     const file_size = stat.size;
@@ -1480,7 +1485,9 @@ pub fn validateFasta(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.fasta, "No sequences found");
     }
 
-    return ValidationResult.okWithDepth(.fasta, .full);
+    // FASTA has no checksums. Character validation catches invalid alphabet usage,
+    // but a bit flip changing one valid nucleotide to another (e.g. A->C) is undetectable.
+    return ValidationResult.okWithDepth(.fasta, .structural);
 }
 
 /// Initialize lookup table for valid FASTA sequence characters
@@ -1509,8 +1516,9 @@ fn init_valid_fasta_chars() [256]bool {
 // ============ FASTQ Validator ============
 
 /// Validate FASTQ sequencing file format.
-/// Full integrity validation: parses multiple records, validates sequence characters,
-/// and verifies quality score encoding.
+/// Structural validation: parses multiple records, validates sequence characters,
+/// verifies quality score encoding, and checks sequence/quality length agreement.
+/// No checksums — a bit flip within valid character ranges is undetectable.
 pub fn validateFastq(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch return ValidationResult.invalidCode(.fastq, .failed_to_stat, "file");
     const file_size = stat.size;
@@ -1618,7 +1626,9 @@ pub fn validateFastq(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.fastq, .incomplete, "final record");
     }
 
-    return ValidationResult.okWithDepth(.fastq, .full);
+    // FASTQ has no checksums. Sequence/quality character validation and length matching
+    // catch structural issues, but a bit flip within valid character ranges is undetectable.
+    return ValidationResult.okWithDepth(.fastq, .structural);
 }
 
 /// Initialize lookup table for valid FASTQ sequence characters

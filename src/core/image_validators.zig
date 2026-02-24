@@ -376,7 +376,7 @@ pub fn validateSvgDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalid(.svg, "No <svg> element found");
     }
 
-    return ValidationResult.okWithDepth(.svg, .full);
+    return ValidationResult.okWithDepth(.svg, .structural);
 }
 
 // ============ JPEG XL Validator ============
@@ -2917,7 +2917,7 @@ pub fn validateIco(file: std.fs.File) ValidationResult {
         };
     }
 
-    return ValidationResult.okWithDepth(.ico, .full);
+    return ValidationResult.okWithDepth(.ico, .structural);
 }
 
 // ============ QOI Validator ============

@@ -387,7 +387,7 @@ pub fn validateJson(file: std.fs.File) ValidationResult {
 
     // First try strict JSON parsing
     if (tryParseJson(gpa.allocator(), data)) {
-        return ValidationResult.okWithDepth(.json, .full);
+        return ValidationResult.okWithDepth(.json, .structural);
     }
 
     // Strict parsing failed - check if it contains template markers
@@ -405,7 +405,7 @@ pub fn validateJson(file: std.fs.File) ValidationResult {
 
     // Try JSON5 (superset of JSON with unquoted keys, trailing commas, Infinity/NaN, etc.)
     if (tryParseJson5(data)) {
-        return ValidationResult.okWithDepthAndWarning(.json, .full, "JSON5: uses JSON5 extensions (unquoted keys, trailing commas, etc.)");
+        return ValidationResult.okWithDepthAndWarning(.json, .structural, "JSON5: uses JSON5 extensions (unquoted keys, trailing commas, etc.)");
     }
 
     // Try JSON Lines (NDJSON) format
@@ -553,7 +553,7 @@ pub fn validateJsonLines(allocator: Allocator, content: []const u8) ValidationRe
     }
 
     // JSON Lines validated successfully
-    return ValidationResult.okWithDepth(.json, .full);
+    return ValidationResult.okWithDepth(.json, .structural);
 }
 
 // ============ TOML Validator ============
@@ -627,7 +627,7 @@ pub fn validateToml(file: std.fs.File) ValidationResult {
     defer parsed.deinit();
 
     // TOML parsed successfully with semantic validation
-    return ValidationResult.okWithDepth(.toml, .full);
+    return ValidationResult.okWithDepth(.toml, .structural);
 }
 
 // ============ INI Validator ============
@@ -734,7 +734,7 @@ pub fn validateIniContent(content: []const u8) ValidationResult {
     }
 
     // INI fully validated - every line is syntactically correct
-    return ValidationResult.okWithDepth(.ini, .full);
+    return ValidationResult.okWithDepth(.ini, .structural);
 }
 
 /// Result of validating a single INI line
@@ -993,7 +993,7 @@ pub fn validateXml(file: std.fs.File) ValidationResult {
                         .illegal_character => "illegal character",
                     };
                     if (error_code == .entity_reference_undefined and preprocessed.had_doctype) {
-                        var tolerated = ValidationResult.okWithDepthAndMalformation(.xml, .full, .xml_undefined_entity);
+                        var tolerated = ValidationResult.okWithDepthAndMalformation(.xml, .structural, .xml_undefined_entity);
                         tolerated.warning_message = "DOCTYPE declaration skipped (DTD not validated); undefined entity reference tolerated";
                         return tolerated;
                     }
@@ -1010,9 +1010,9 @@ pub fn validateXml(file: std.fs.File) ValidationResult {
     // XML validated with spec-compliant parser
     // Return with warning if DOCTYPE was stripped
     if (preprocessed.had_doctype) {
-        return ValidationResult.okWithDepthAndWarning(.xml, .full, "DOCTYPE declaration skipped (DTD not validated)");
+        return ValidationResult.okWithDepthAndWarning(.xml, .structural, "DOCTYPE declaration skipped (DTD not validated)");
     }
-    return ValidationResult.okWithDepth(.xml, .full);
+    return ValidationResult.okWithDepth(.xml, .structural);
 }
 
 // ============ CSV Validator ============
@@ -1142,7 +1142,7 @@ pub fn validateCsv(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.csv, .no_valid_x_found, "CSV rows");
     }
 
-    return ValidationResult.okWithDepth(.csv, .full);
+    return ValidationResult.okWithDepth(.csv, .structural);
 }
 
 /// Detect CSV delimiter by analyzing first line
@@ -1533,7 +1533,7 @@ pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalid(.kml, "No <kml> element found");
     }
 
-    return ValidationResult.okWithDepth(.kml, .full);
+    return ValidationResult.okWithDepth(.kml, .structural);
 }
 
 /// Validate KMZ (compressed KML) format.
@@ -1555,7 +1555,7 @@ pub fn validateKmz(file: std.fs.File) ValidationResult {
 
     // For now, accept any ZIP as potentially valid KMZ
     // Full validation would require extracting and checking for doc.kml
-    return ValidationResult.okWithDepth(.kmz, .full);
+    return ValidationResult.okWithDepth(.kmz, .structural);
 }
 
 // ============ Plain Text Validators ============
@@ -1572,7 +1572,7 @@ pub fn validatePlainText(allocator: ?Allocator, file: std.fs.File) ValidationRes
 
     if (stat.size == 0) {
         // Empty file is valid UTF-8 (vacuously true)
-        return ValidationResult.okWithDepth(.plain_text, .full);
+        return ValidationResult.okWithDepth(.plain_text, .structural);
     }
 
     file.seekTo(0) catch {
@@ -1703,12 +1703,12 @@ pub fn validatePlainText(allocator: ?Allocator, file: std.fs.File) ValidationRes
     if (file_warning_count > 0) {
         if (allocator) |alloc| {
             if (formatUnicodeWarnings(alloc, file_warnings[0..file_warning_count])) |warning_str| {
-                return ValidationResult.okWithDepthAndWarning(.plain_text, .full, warning_str);
+                return ValidationResult.okWithDepthAndWarning(.plain_text, .structural, warning_str);
             }
         }
     }
 
-    return ValidationResult.okWithDepth(.plain_text, .full);
+    return ValidationResult.okWithDepth(.plain_text, .structural);
 }
 
 /// Check if a file looks like Latin-1 text (fallback when UTF-8 validation fails).
@@ -1754,7 +1754,7 @@ pub fn validatePlainTextLatin1Fallback(file: std.fs.File) ValidationResult {
     // If no high bytes, it would have passed UTF-8 validation, so this shouldn't happen
     // But just in case, still accept it
     if (!has_high_bytes) {
-        return ValidationResult.okWithDepth(.plain_text, .full);
+        return ValidationResult.okWithDepth(.plain_text, .structural);
     }
 
     // Heuristic: if more than 5% control characters, probably binary
@@ -1763,7 +1763,7 @@ pub fn validatePlainTextLatin1Fallback(file: std.fs.File) ValidationResult {
     }
 
     // Looks like Latin-1 text
-    return ValidationResult.okWithDepth(.plain_text_latin1, .full);
+    return ValidationResult.okWithDepth(.plain_text_latin1, .structural);
 }
 
 /// Validate plain text file as UTF-16 using streaming validation.
@@ -1774,7 +1774,7 @@ pub fn validatePlainTextUtf16(allocator: ?Allocator, file: std.fs.File) Validati
     };
 
     if (stat.size == 0) {
-        return ValidationResult.okWithDepth(.plain_text_utf16, .full);
+        return ValidationResult.okWithDepth(.plain_text_utf16, .structural);
     }
 
     // UTF-16 files should have even number of bytes (after BOM)
@@ -1907,12 +1907,12 @@ pub fn validatePlainTextUtf16(allocator: ?Allocator, file: std.fs.File) Validati
     if (file_warning_count > 0) {
         if (allocator) |alloc| {
             if (formatUnicodeWarnings(alloc, file_warnings[0..file_warning_count])) |warning_str| {
-                return ValidationResult.okWithDepthAndWarning(.plain_text_utf16, .full, warning_str);
+                return ValidationResult.okWithDepthAndWarning(.plain_text_utf16, .structural, warning_str);
             }
         }
     }
 
-    return ValidationResult.okWithDepth(.plain_text_utf16, .full);
+    return ValidationResult.okWithDepth(.plain_text_utf16, .structural);
 }
 
 /// Get the expected length of a UTF-8 sequence from its first byte.
@@ -2305,7 +2305,7 @@ test "validateJson accepts valid ground truth JSON file" {
     const result = validateJson(file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.json, result.format);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validateJson rejects truncated JSON" {
@@ -2337,7 +2337,7 @@ test "validateToml accepts valid ground truth TOML file" {
     const result = validateToml(file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.toml, result.format);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validateToml rejects truncated TOML" {
@@ -2389,7 +2389,7 @@ test "validateXml accepts valid ground truth XML file" {
     const result = validateXml(file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.xml, result.format);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validateXml rejects malformed XML" {
@@ -2421,7 +2421,7 @@ test "validateCsv accepts valid ground truth CSV file" {
     const result = validateCsv(file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.csv, result.format);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validateCsv rejects unclosed quoted field" {
@@ -2570,7 +2570,7 @@ test "validateKmlDeep accepts valid ground truth KML file" {
     const result = validateKmlDeep(testing.allocator, path_buf);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.kml, result.format);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validateKmz accepts valid ground truth KMZ file" {
@@ -2602,7 +2602,7 @@ test "validatePlainText accepts valid UTF-8 ground truth file" {
     const result = validatePlainText(testing.allocator, file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.plain_text, result.format);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validatePlainText accepts UTF-16 LE file with BOM" {
@@ -2648,7 +2648,7 @@ test "validatePlainTextUtf16 accepts valid UTF-16 LE file" {
     const result = validatePlainTextUtf16(testing.allocator, file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.plain_text_utf16, result.format);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validatePlainTextUtf16 rejects odd byte count" {

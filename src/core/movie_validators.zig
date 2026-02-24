@@ -516,7 +516,7 @@ pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalidCode(.flv, .no_valid_x_found, "FLV tags");
     }
 
-    return ValidationResult.okWithDepth(.flv, .full);
+    return ValidationResult.okWithDepth(.flv, .structural);
 }
 
 // ============ MPEG PS/TS/ES/IVF Validators ============
@@ -727,7 +727,7 @@ pub fn validateIvf(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.ivf, .invalid_value, "IVF dimensions");
     }
 
-    return ValidationResult.okWithDepth(.ivf, .full);
+    return ValidationResult.okWithDepth(.ivf, .structural);
 }
 
 // ============ Video Deep Validation ============

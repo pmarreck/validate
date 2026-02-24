@@ -142,39 +142,39 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.wav, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.wav, "Access denied", .full),
-            else => ValidationResult.invalidCodeWithDepth(.wav, .failed_to_open, "file", .full),
+            error.FileNotFound => ValidationResult.invalidWithDepth(.wav, "File not found", .structural),
+            error.AccessDenied => ValidationResult.invalidWithDepth(.wav, "Access denied", .structural),
+            else => ValidationResult.invalidCodeWithDepth(.wav, .failed_to_open, "file", .structural),
         };
     };
     defer file.close();
 
     // Get file size for bounds checking
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_get, "file size", .full);
+        return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_get, "file size", .structural);
     };
 
     if (file_size < 44) { // Minimum WAV size: 12 (RIFF) + 24 (fmt) + 8 (data header)
-        return ValidationResult.invalidCodeWithDepth(.wav, .file_too_small, "valid WAV", .full);
+        return ValidationResult.invalidCodeWithDepth(.wav, .file_too_small, "valid WAV", .structural);
     }
 
     // Read RIFF header (12 bytes)
     var header: [12]u8 = undefined;
     const header_read = file.readAll(&header) catch {
-        return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_read, "header", .full);
+        return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_read, "header", .structural);
     };
     if (header_read < 12) {
-        return ValidationResult.invalidCodeWithDepth(.wav, .truncated, "header", .full);
+        return ValidationResult.invalidCodeWithDepth(.wav, .truncated, "header", .structural);
     }
 
     // Verify RIFF/WAVE signature
     if (!std.mem.eql(u8, header[0..4], "RIFF") or !std.mem.eql(u8, header[8..12], "WAVE")) {
-        return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "WAV header", .full);
+        return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "WAV header", .structural);
     }
 
     const riff_size = std.mem.readInt(u32, header[4..8], .little);
     if (@as(u64, riff_size) + 8 > file_size) {
-        return ValidationResult.invalidCodeMsgWithDepth(.wav, .exceeds_bounds, "RIFF size", "RIFF size exceeds file size", .full);
+        return ValidationResult.invalidCodeMsgWithDepth(.wav, .exceeds_bounds, "RIFF size", "RIFF size exceeds file size", .structural);
     }
 
     // Stream through chunks without loading entire file
@@ -189,7 +189,7 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
     while (offset + 8 <= file_size) {
         // Seek to chunk header
         file.seekTo(offset) catch {
-            return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_seek, "to chunk", .full);
+            return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_seek, "to chunk", .structural);
         };
 
         // Read chunk header (8 bytes: 4 ID + 4 size)
@@ -208,23 +208,23 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
             if (found_fmt and found_data) {
                 break;
             }
-            return ValidationResult.invalidWithDepth(.wav, "Chunk extends beyond file", .full);
+            return ValidationResult.invalidWithDepth(.wav, "Chunk extends beyond file", .structural);
         }
 
         if (std.mem.eql(u8, chunk_id, "fmt ")) {
             found_fmt = true;
 
             if (chunk_size < 16) {
-                return ValidationResult.invalidWithDepth(.wav, "fmt chunk too small", .full);
+                return ValidationResult.invalidWithDepth(.wav, "fmt chunk too small", .structural);
             }
 
             // Read fmt chunk data for validation
             var fmt_data: [16]u8 = undefined;
             const fmt_read = file.readAll(&fmt_data) catch {
-                return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_read, "fmt chunk", .full);
+                return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_read, "fmt chunk", .structural);
             };
             if (fmt_read < 16) {
-                return ValidationResult.invalidCodeWithDepth(.wav, .truncated, "fmt chunk", .full);
+                return ValidationResult.invalidCodeWithDepth(.wav, .truncated, "fmt chunk", .structural);
             }
 
             fmt_audio_format = std.mem.readInt(u16, fmt_data[0..2], .little);
@@ -236,13 +236,13 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
             // Validate format parameters
             if (fmt_channels == 0 or fmt_channels > 32) {
-                return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "channel count", .full);
+                return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "channel count", .structural);
             }
             if (fmt_sample_rate == 0 or fmt_sample_rate > 384000) {
-                return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "sample rate", .full);
+                return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "sample rate", .structural);
             }
             if (fmt_bits_per_sample == 0 or fmt_bits_per_sample > 64) {
-                return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "bits per sample", .full);
+                return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "bits per sample", .structural);
             }
         } else if (std.mem.eql(u8, chunk_id, "data")) {
             found_data = true;
@@ -266,13 +266,13 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     if (!found_fmt) {
-        return ValidationResult.invalidCodeWithDepth(.wav, .missing, "fmt chunk", .full);
+        return ValidationResult.invalidCodeWithDepth(.wav, .missing, "fmt chunk", .structural);
     }
     if (!found_data) {
-        return ValidationResult.invalidCodeWithDepth(.wav, .missing, "data chunk", .full);
+        return ValidationResult.invalidCodeWithDepth(.wav, .missing, "data chunk", .structural);
     }
 
-    return ValidationResult.okWithDepth(.wav, .full);
+    return ValidationResult.okWithDepth(.wav, .structural);
 }
 
 /// Deep validation for AIFF audio files.
@@ -280,20 +280,20 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
 pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.aiff, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.aiff, "Access denied", .full),
-            else => ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_open, "file", .full),
+            error.FileNotFound => ValidationResult.invalidWithDepth(.aiff, "File not found", .structural),
+            error.AccessDenied => ValidationResult.invalidWithDepth(.aiff, "Access denied", .structural),
+            else => ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_open, "file", .structural),
         };
     };
     defer file.close();
 
     // Read entire file for validation
     const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_get, "file size", .full);
+        return ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_get, "file size", .structural);
     };
 
     if (file_size < 12) { // Minimum AIFF: FORM header
-        return ValidationResult.invalidCodeWithDepth(.aiff, .file_too_small, "valid AIFF", .full);
+        return ValidationResult.invalidCodeWithDepth(.aiff, .file_too_small, "valid AIFF", .structural);
     }
 
     if (file_size > 100 * 1024 * 1024) { // 100MB limit for deep validation
@@ -302,30 +302,30 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
     }
 
     const data = allocator.alloc(u8, file_size) catch {
-        return ValidationResult.invalidWithDepth(.aiff, "Memory allocation failed", .full);
+        return ValidationResult.invalidWithDepth(.aiff, "Memory allocation failed", .structural);
     };
     defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_read, "file", .full);
+        return ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_read, "file", .structural);
     };
     if (bytes_read != file_size) {
-        return ValidationResult.invalidCodeWithDepth(.aiff, .incomplete, "file read", .full);
+        return ValidationResult.invalidCodeWithDepth(.aiff, .incomplete, "file read", .structural);
     }
 
     // Verify FORM header
     if (!std.mem.eql(u8, data[0..4], "FORM")) {
-        return ValidationResult.invalidCodeWithDepth(.aiff, .invalid_value, "AIFF header (not FORM)", .full);
+        return ValidationResult.invalidCodeWithDepth(.aiff, .invalid_value, "AIFF header (not FORM)", .structural);
     }
 
     const form_size = std.mem.readInt(u32, data[4..8], .big);
     if (form_size + 8 > file_size) {
-        return ValidationResult.invalidCodeMsgWithDepth(.aiff, .exceeds_bounds, "FORM size", "FORM size exceeds file size", .full);
+        return ValidationResult.invalidCodeMsgWithDepth(.aiff, .exceeds_bounds, "FORM size", "FORM size exceeds file size", .structural);
     }
 
     // Check AIFF or AIFC form type
     if (!std.mem.eql(u8, data[8..12], "AIFF") and !std.mem.eql(u8, data[8..12], "AIFC")) {
-        return ValidationResult.invalidCodeWithDepth(.aiff, .invalid_value, "AIFF form type", .full);
+        return ValidationResult.invalidCodeWithDepth(.aiff, .invalid_value, "AIFF form type", .structural);
     }
 
     // Parse chunks
@@ -342,17 +342,17 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
 
             // Validate COMM chunk contents
             if (offset + 8 + chunk_size > file_size) {
-                return ValidationResult.invalidWithDepth(.aiff, "COMM chunk extends beyond file", .full);
+                return ValidationResult.invalidWithDepth(.aiff, "COMM chunk extends beyond file", .structural);
             }
             if (chunk_size < 18) {
-                return ValidationResult.invalidWithDepth(.aiff, "COMM chunk too small", .full);
+                return ValidationResult.invalidWithDepth(.aiff, "COMM chunk too small", .structural);
             }
         } else if (std.mem.eql(u8, chunk_id, "SSND")) {
             found_ssnd = true;
 
             // Verify SSND chunk doesn't exceed file
             if (offset + 8 + chunk_size > file_size) {
-                return ValidationResult.invalidWithDepth(.aiff, "SSND chunk extends beyond file", .full);
+                return ValidationResult.invalidWithDepth(.aiff, "SSND chunk extends beyond file", .structural);
             }
         }
 
@@ -370,8 +370,8 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
         return ValidationResult.invalidCodeWithDepth(.aiff, .missing, "SSND chunk", .structural);
     }
 
-    // All chunks validated - full structural validation achieved
-    return ValidationResult.okWithDepth(.aiff, .full);
+    // All chunks validated - structural validation achieved (no audio decode or checksum)
+    return ValidationResult.okWithDepth(.aiff, .structural);
 }
 
 // ============ RIFF Audio Validator (WAV, AIFF) ============
@@ -2118,7 +2118,8 @@ test "validateWavDeep accepts ground truth WAV" {
     const result = validateWavDeep(testing.allocator, "ground_truth_examples/wav/sample.wav");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.wav, result.format);
-    try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+    // WAV validates chunk structure but no audio decode or checksum
+    try testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
 }
 
 test "validateAiffDeep accepts ground truth AIFF" {
@@ -2127,7 +2128,8 @@ test "validateAiffDeep accepts ground truth AIFF" {
     const result = validateAiffDeep(testing.allocator, "ground_truth_examples/aiff/sample.aiff");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.aiff, result.format);
-    try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+    // AIFF validates chunk structure but no audio decode or checksum
+    try testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
 }
 
 test "validateFlacDeep accepts ground truth FLAC" {
