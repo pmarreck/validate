@@ -2534,32 +2534,29 @@ pub fn validate7zDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
 // ============ RAR Deep Validation ============
 
-fn rarzDepthToValidationDepth(depth: rarz.policy.ValidationDepth) ValidationDepth {
-    return switch (depth) {
-        .full => .full,
-        else => .structural,
-    };
-}
-
 fn validateRarWithRarz(data: []const u8) ValidationResult {
     if (data.len == 0) {
         return ValidationResult.invalidWithDepth(.rar, "File too small", .structural);
     }
 
     const result = rarz.policy.validate(data);
-    const depth = rarzDepthToValidationDepth(result.depth);
 
     if (!result.is_valid) {
         const message = result.error_message orelse "RAR validation failed";
+        // rarz verified CRC/BLAKE2sp to detect the mismatch → .full depth on failure too
+        const depth: ValidationDepth = if (result.file_count > 0) .full else .structural;
         return ValidationResult.invalidWithDepth(.rar, message, depth);
     }
 
     if (result.has_encrypted_content) {
-        var warning_result = ValidationResult.okWithDepthAndWarning(.rar, .structural, "Encrypted archive content; full validation unavailable");
+        var warning_result = ValidationResult.okWithDepthAndWarning(.rar, .structural, "Encrypted archive content; integrity verification unavailable");
         warning_result.has_encrypted_content = true;
         return warning_result;
     }
 
+    // rarz now decompresses + verifies CRC32/BLAKE2sp for all files (stored and compressed).
+    // If validation passed with files present, content integrity is verified → .full
+    const depth: ValidationDepth = if (result.file_count > 0) .full else .structural;
     return ValidationResult.okWithDepth(.rar, depth);
 }
 

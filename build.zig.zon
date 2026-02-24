@@ -73,8 +73,8 @@
             .hash = "sevenz-25.1.0-GxYsU9LDFgDubsAf5lKHAVylNxpyjLz25ekkkMsRu-6Z",
         },
         .rarz = .{
-            .url = "https://github.com/pmarreck/rarz/archive/a921ec96fe134efd5f1585c06721608bc8945b6c.tar.gz",
-            .hash = "rarz-0.1.0-BNfrfuolCAAAjRnAqHpW9bNrGKb2pkM3P8jE60IHXcta",
+            .url = "https://github.com/pmarreck/rarz/archive/cc96851f8156499e26e67df006c185e53abacc4e.tar.gz",
+            .hash = "rarz-0.1.0-BNfrfndkCACcWL9diPoqs5rMWFPsBQr05A349SkJjsqc",
         },
         .compact_pro = .{
             .url = "https://github.com/pmarreck/compact_pro/archive/acc3cebcc485bb3bc9a474d548cd4d124ca3a4a0.tar.gz",

@@ -20,7 +20,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Parquet → `.full` via page CRC-32 verification (2026-02-24 EST)
 - [x] HEIC → `.full` for grid images via iref/dimg tile H.265 validation (2026-02-24 EST)
 - [x] AVIF → `.full` for grid images via iref/dimg tile AV1 validation (2026-02-24 EST)
-- [x] RAR content CRCs — investigated: rarz already verifies CRC-32 on stored entries and reports `.full`; compressed entries stay `.structural` (decompression needed for full CRC, not implemented) (2026-02-24 EST)
+- [x] RAR → `.full` via rarz decompress + CRC32/BLAKE2sp verification for all files (stored + compressed); rarz updated to cc96851 which removed ValidationDepth in favor of fact-based reporting (2026-02-24 EST)
 - [x] HDF5 v2/3 → `.full` via superblock + root OHDR Jenkins lookup3 checksum verification; also fixed Jenkins hash bug for inputs with length % 12 == 0 (2026-02-24 EST)
 
 ### Codebase Consolidation
