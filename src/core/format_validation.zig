@@ -5757,8 +5757,9 @@ fn jenkinsLookup3(data: []const u8, init_val: u32) u32 {
     var i: usize = 0;
     const len = data.len;
 
-    // Process 12-byte chunks
-    while (i + 12 <= len) {
+    // Process 12-byte chunks. Reference uses `length > 12` (strict), keeping
+    // the last <=12 bytes for the tail handler which applies final() not mix().
+    while (len -| i > 12) {
         a +%= std.mem.readInt(u32, data[i..][0..4], .little);
         b +%= std.mem.readInt(u32, data[i + 4 ..][0..4], .little);
         c +%= std.mem.readInt(u32, data[i + 8 ..][0..4], .little);
@@ -5786,21 +5787,21 @@ fn jenkinsLookup3(data: []const u8, init_val: u32) u32 {
         i += 12;
     }
 
-    // Handle remaining bytes
+    // Handle remaining 1-12 bytes with final()
     const remaining = len - i;
     if (remaining > 0) {
-        // Add remaining bytes to a, b, c based on count
-        if (remaining >= 1) a +%= data[i];
-        if (remaining >= 2) a +%= @as(u32, data[i + 1]) << 8;
-        if (remaining >= 3) a +%= @as(u32, data[i + 2]) << 16;
-        if (remaining >= 4) a +%= @as(u32, data[i + 3]) << 24;
-        if (remaining >= 5) b +%= data[i + 4];
-        if (remaining >= 6) b +%= @as(u32, data[i + 5]) << 8;
-        if (remaining >= 7) b +%= @as(u32, data[i + 6]) << 16;
-        if (remaining >= 8) b +%= @as(u32, data[i + 7]) << 24;
-        if (remaining >= 9) c +%= data[i + 8];
-        if (remaining >= 10) c +%= @as(u32, data[i + 9]) << 8;
+        if (remaining >= 12) c +%= @as(u32, data[i + 11]) << 24;
         if (remaining >= 11) c +%= @as(u32, data[i + 10]) << 16;
+        if (remaining >= 10) c +%= @as(u32, data[i + 9]) << 8;
+        if (remaining >= 9) c +%= data[i + 8];
+        if (remaining >= 8) b +%= @as(u32, data[i + 7]) << 24;
+        if (remaining >= 7) b +%= @as(u32, data[i + 6]) << 16;
+        if (remaining >= 6) b +%= @as(u32, data[i + 5]) << 8;
+        if (remaining >= 5) b +%= data[i + 4];
+        if (remaining >= 4) a +%= @as(u32, data[i + 3]) << 24;
+        if (remaining >= 3) a +%= @as(u32, data[i + 2]) << 16;
+        if (remaining >= 2) a +%= @as(u32, data[i + 1]) << 8;
+        if (remaining >= 1) a +%= data[i];
 
         // final(a, b, c)
         c ^= b;
@@ -5822,21 +5823,23 @@ fn jenkinsLookup3(data: []const u8, init_val: u32) u32 {
     return c;
 }
 
-test "jenkinsLookup3 basic hash" {
-    // Test empty input
+test "jenkinsLookup3 reference vectors" {
+    // All values verified against Bob Jenkins' reference hashlittle() from lookup3.c
     try std.testing.expectEqual(@as(u32, 0xdeadbeef), jenkinsLookup3("", 0));
+    try std.testing.expectEqual(@as(u32, 0xbe0c1952), jenkinsLookup3("test", 0));
+    try std.testing.expectEqual(@as(u32, 0xc7bc405b), jenkinsLookup3("Hello", 0));
+    try std.testing.expectEqual(@as(u32, 0xdbf0d999), jenkinsLookup3("7bytes!", 0));
 
-    // Test with simple input - verified against reference implementation
-    const hash1 = jenkinsLookup3("test", 0);
-    try std.testing.expect(hash1 != 0); // Should produce non-zero hash
+    // Exact multiple of 12 bytes — exercises loop boundary edge case
+    try std.testing.expectEqual(@as(u32, 0x031c177b), jenkinsLookup3("12bytes_data", 0));
+    try std.testing.expectEqual(@as(u32, 0x02f563a1), jenkinsLookup3("24bytes_data_here!!!!!!!", 0));
 
-    // Test that different inputs produce different hashes
-    const hash2 = jenkinsLookup3("test2", 0);
-    try std.testing.expect(hash1 != hash2);
+    // 44 bytes of 0x42 — same size as HDF5 v2 superblock checksum input (offset_size=8)
+    const buf44 = [_]u8{0x42} ** 44;
+    try std.testing.expectEqual(@as(u32, 0xd95f828e), jenkinsLookup3(&buf44, 0));
 
-    // Test with init value
-    const hash3 = jenkinsLookup3("test", 1);
-    try std.testing.expect(hash1 != hash3);
+    // Init value changes hash
+    try std.testing.expect(jenkinsLookup3("test", 0) != jenkinsLookup3("test", 1));
 }
 
 /// Validate HDF5 file structure.
@@ -5995,10 +5998,136 @@ fn validateHdf5(file: std.fs.File) ValidationResult {
         if (stored_checksum != computed_checksum) {
             return ValidationResult.invalidCodeMsg(.hdf5, .checksum_mismatch, "HDF5 superblock", "HDF5 superblock checksum mismatch");
         }
+
+        // Verify root group object header checksum (v2 OHDR has Jenkins checksum)
+        if (root_oh_addr < file_size) {
+            const ohdr_result = validateHdf5ObjectHeaderChecksum(file, root_oh_addr, file_size);
+            if (ohdr_result == .invalid) {
+                return ValidationResult.invalidCodeMsg(.hdf5, .checksum_mismatch, "root group object header", "Root group object header checksum mismatch");
+            }
+            if (ohdr_result == .verified) {
+                // Both superblock and root OHDR checksums verified
+                return ValidationResult.okWithDepth(.hdf5, .full);
+            }
+        }
+
+        // Superblock checksum passed but OHDR couldn't be verified
+        return ValidationResult.okWithDepthAndWarning(.hdf5, .structural, "Superblock checksum verified; root group header could not be verified");
     }
 
-    // Superblock checksum only covers ~48 byte header, not data payload
+    // v0/1 has no checksums
     return ValidationResult.okWithDepth(.hdf5, .structural);
+}
+
+const OhdrCheckResult = enum { verified, invalid, unverifiable };
+
+/// Verify a v2 Object Header (OHDR) Jenkins checksum.
+/// Parses the variable-length OHDR prefix to find the chunk 0 data size,
+/// then computes Jenkins lookup3 over the entire header and compares
+/// against the stored 4-byte checksum at the end.
+fn validateHdf5ObjectHeaderChecksum(file: std.fs.File, oh_addr: u64, file_size: u64) OhdrCheckResult {
+    if (oh_addr + 8 > file_size) return .unverifiable;
+
+    // Read OHDR prefix (signature + version + flags + up to 24 optional bytes + chunk size)
+    var prefix: [40]u8 = undefined;
+    file.seekTo(oh_addr) catch return .unverifiable;
+    const prefix_read = file.read(&prefix) catch return .unverifiable;
+    if (prefix_read < 8) return .unverifiable;
+
+    // Check OHDR signature
+    if (!std.mem.eql(u8, prefix[0..4], "OHDR")) return .unverifiable;
+
+    // Version must be 2
+    if (prefix[4] != 2) return .unverifiable;
+
+    const flags = prefix[5];
+    var offset: usize = 6;
+
+    // Optional: times stored (bit 5) — 4 × 4 bytes
+    if (flags & 0x20 != 0) offset += 16;
+
+    // Optional: non-default attribute storage (bit 4) — 2 × 2 bytes
+    if (flags & 0x10 != 0) offset += 4;
+
+    // Chunk 0 data size (1, 2, 4, or 8 bytes based on flag bits 0-1)
+    const size_encoding: u3 = @intCast(flags & 0x03);
+    const size_bytes: usize = @as(usize, 1) << size_encoding;
+    if (offset + size_bytes > prefix_read) return .unverifiable;
+
+    const chunk0_size: u64 = switch (size_encoding) {
+        0 => prefix[offset],
+        1 => std.mem.readInt(u16, prefix[offset..][0..2], .little),
+        2 => std.mem.readInt(u32, prefix[offset..][0..4], .little),
+        3 => std.mem.readInt(u64, prefix[offset..][0..8], .little),
+        else => unreachable,
+    };
+    offset += size_bytes;
+
+    // Total OHDR = prefix + chunk0_data + 4 (checksum)
+    const total_size = offset + chunk0_size + 4;
+    if (total_size > 65536) return .unverifiable; // sanity limit (64KB)
+    if (oh_addr + total_size > file_size) return .unverifiable;
+
+    // Read the entire OHDR
+    const total_usize: usize = @intCast(total_size);
+    var ohdr_buf: [65536]u8 = undefined;
+    file.seekTo(oh_addr) catch return .unverifiable;
+    const ohdr_read = file.read(ohdr_buf[0..total_usize]) catch return .unverifiable;
+    if (ohdr_read < total_usize) return .unverifiable;
+
+    // Checksum covers everything except the last 4 bytes
+    const checksum_offset_val = total_usize - 4;
+    const stored = std.mem.readInt(u32, ohdr_buf[checksum_offset_val..][0..4], .little);
+    const computed = jenkinsLookup3(ohdr_buf[0..checksum_offset_val], 0);
+
+    if (stored == computed) return .verified;
+    return .invalid;
+}
+
+test "HDF5 v2/3 superblock + OHDR checksum verification" {
+    // Open the v2 ground truth file and verify checksums
+    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample_v2.h5", .{}) catch {
+        return; // skip if file not available
+    };
+    defer file.close();
+
+    const stat = file.stat() catch return;
+    const file_size = stat.size;
+
+    // Root group OH addr from superblock: offset 0x24, 8 bytes LE
+    file.seekTo(0x24) catch return;
+    var addr_buf: [8]u8 = undefined;
+    _ = file.read(&addr_buf) catch return;
+    const root_oh_addr = std.mem.readInt(u64, &addr_buf, .little);
+
+    // Should be at offset 0x30
+    try std.testing.expectEqual(@as(u64, 0x30), root_oh_addr);
+
+    // Verify OHDR checksum
+    const result = validateHdf5ObjectHeaderChecksum(file, root_oh_addr, file_size);
+    try std.testing.expectEqual(OhdrCheckResult.verified, result);
+}
+
+test "HDF5 v2 file reports full depth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample_v2.h5", .{}) catch {
+        return; // skip if file not available
+    };
+    defer file.close();
+
+    const result = validateHdf5(file);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "HDF5 v0 file reports structural depth" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample.h5", .{}) catch {
+        return; // skip if file not available
+    };
+    defer file.close();
+
+    const result = validateHdf5(file);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 // ============ Apache Parquet Validator ============

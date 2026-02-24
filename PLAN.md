@@ -20,8 +20,8 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Parquet → `.full` via page CRC-32 verification (2026-02-24 EST)
 - [x] HEIC → `.full` for grid images via iref/dimg tile H.265 validation (2026-02-24 EST)
 - [x] AVIF → `.full` for grid images via iref/dimg tile AV1 validation (2026-02-24 EST)
-- [ ] RAR content CRCs (investigate what rarz already does)
-- [ ] HDF5 Fletcher-32 (deferred — very complex format)
+- [x] RAR content CRCs — investigated: rarz already verifies CRC-32 on stored entries and reports `.full`; compressed entries stay `.structural` (decompression needed for full CRC, not implemented) (2026-02-24 EST)
+- [x] HDF5 v2/3 → `.full` via superblock + root OHDR Jenkins lookup3 checksum verification; also fixed Jenkins hash bug for inputs with length % 12 == 0 (2026-02-24 EST)
 
 ### Codebase Consolidation
 - [x] Consolidate duplicated codec utilities (CRC-32 x4, CRC-16, RBSP, start codes, LEB128, endian helpers) into shared `codec_utils.zig`; replaced across 10 files, net -285 lines (2026-02-22 EST)
