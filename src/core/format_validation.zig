@@ -4370,10 +4370,8 @@ fn validateBwproject(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.bwproject, "File appears to be ZIP, not Bitwig project");
     }
 
-    // Bitwig format is proprietary - we accept any non-ZIP binary data
-    // that meets minimum size requirements. Deep validation would require
-    // reverse-engineering the format.
-    return ValidationResult.ok(.bwproject);
+    // Bitwig format is proprietary and undocumented - no structural validation possible
+    return ValidationResult.structuralOnly(.bwproject);
 }
 
 // ============ Cubase Validator ============
@@ -4395,10 +4393,8 @@ fn validateCubase(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCodeMsg(.cpr, .invalid_signature_not, "Cubase", errmsg.invalidSignatureNot("Cubase", "RIFF"));
     }
 
-    // RIFF files have a form type at offset 8
-    // Cubase-specific markers would be in the chunks
-    // For now, accepting any valid RIFF file
-    return ValidationResult.ok(.cpr);
+    // RIFF header verified but no Cubase-specific chunk validation
+    return ValidationResult.structuralOnly(.cpr);
 }
 
 // ============ Pro Tools Validator ============
@@ -4427,8 +4423,8 @@ fn validateProTools(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.ptx, "File appears to be ZIP, not Pro Tools session");
     }
 
-    // Pro Tools format is proprietary - basic validation only
-    return ValidationResult.ok(.ptx);
+    // Pro Tools format is proprietary and undocumented - no structural validation possible
+    return ValidationResult.structuralOnly(.ptx);
 }
 
 // ============ GarageBand Validator ============
@@ -4454,8 +4450,8 @@ fn validateGarageBand(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.band, "File too small to identify");
     }
 
-    // Accept the file if it reads successfully - bundle format varies
-    return ValidationResult.ok(.band);
+    // GarageBand format is proprietary - no structural validation possible
+    return ValidationResult.structuralOnly(.band);
 }
 
 // ============ Reason Validator ============
@@ -4484,8 +4480,8 @@ fn validateReason(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.reason, "File appears to be ZIP, not Reason project");
     }
 
-    // Reason format is proprietary - basic validation only
-    return ValidationResult.ok(.reason);
+    // Reason format is proprietary and undocumented - no structural validation possible
+    return ValidationResult.structuralOnly(.reason);
 }
 
 // ============ Adobe Premiere Pro Validator ============
@@ -7118,8 +7114,8 @@ fn validateBsp(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.bsp, .unknown_element, "BSP version");
     }
 
-    // No CRC/hash — version check only
-    return ValidationResult.okWithDepth(.bsp, .structural);
+    // No CRC/hash — version check only, no structural parsing
+    return ValidationResult.structuralOnly(.bsp);
 }
 
 /// Validate VPK (Valve PAK) file format.
@@ -7155,8 +7151,8 @@ fn validateVpk(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCodeMsg(.vpk, .exceeds_bounds, "Tree size", "Tree size exceeds file size");
     }
 
-    // No CRC/hash — header + tree size check only
-    return ValidationResult.okWithDepth(.vpk, .structural);
+    // No CRC/hash — header + tree size check only, no deep structural parsing
+    return ValidationResult.structuralOnly(.vpk);
 }
 
 // ============ IFF/Blorb Validators ============
@@ -14036,12 +14032,13 @@ fn validateClarisWorks(file: std.fs.File) ValidationResult {
     if (std.mem.eql(u8, header[0..4], "BOBO") or
         std.mem.eql(u8, header[4..8], "BOBO"))
     {
-        return ValidationResult.ok(.cwk);
+        // ClarisWorks format is obsolete and undocumented - magic verified only
+        return ValidationResult.structuralOnly(.cwk);
     }
 
     // AppleWorks 6 uses different magic
     if (header[0] == 0x07 and header[1] == 0x04) {
-        return ValidationResult.ok(.cwk);
+        return ValidationResult.structuralOnly(.cwk);
     }
 
     return ValidationResult.invalid(.cwk, "Unrecognized ClarisWorks format");
@@ -14061,22 +14058,21 @@ fn validateMacWrite(file: std.fs.File) ValidationResult {
 
     // MacWrite II uses version bytes at offset 0
     // Common values: 0x0003, 0x0006
+    // MacWrite format is obsolete and undocumented - magic/version verified only
     const version = std.mem.readInt(u16, header[0..2], .big);
     if (version == 0x0003 or version == 0x0006 or version == 0x0004) {
-        return ValidationResult.ok(.mwd);
+        return ValidationResult.structuralOnly(.mwd);
     }
 
     // MacWrite Pro has different magic
     if (std.mem.eql(u8, header[0..4], "MWPR")) {
-        return ValidationResult.ok(.mwd);
+        return ValidationResult.structuralOnly(.mwd);
     }
 
     // Accept any reasonable-looking MacWrite file given it's archival
     // Classic Mac files often lack clear signatures
     if (bytes_read >= 4) {
-        // MacWrite files typically have structured headers
-        // This is a best-effort validation for archival purposes
-        return ValidationResult.ok(.mwd);
+        return ValidationResult.structuralOnly(.mwd);
     }
 
     return ValidationResult.invalid(.mwd, "Unrecognized MacWrite format");

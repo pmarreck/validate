@@ -336,7 +336,8 @@ pub fn validateBwproject(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.bwproject, "File appears to be ZIP, not Bitwig project");
     }
 
-    return ValidationResult.ok(.bwproject);
+    // Bitwig format is proprietary and undocumented - no structural validation possible
+    return ValidationResult.structuralOnly(.bwproject);
 }
 
 // ============ Cubase (CPR) ============
@@ -356,7 +357,8 @@ pub fn validateCubase(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCodeMsg(.cpr, .invalid_signature_not, "Cubase", errmsg.invalidSignatureNot("Cubase", "RIFF"));
     }
 
-    return ValidationResult.ok(.cpr);
+    // RIFF header verified but no Cubase-specific chunk validation
+    return ValidationResult.structuralOnly(.cpr);
 }
 
 // ============ Pro Tools (PTX) ============
@@ -382,7 +384,8 @@ pub fn validateProTools(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.ptx, "File appears to be ZIP, not Pro Tools session");
     }
 
-    return ValidationResult.ok(.ptx);
+    // Pro Tools format is proprietary and undocumented - no structural validation possible
+    return ValidationResult.structuralOnly(.ptx);
 }
 
 // ============ GarageBand ============
@@ -404,7 +407,8 @@ pub fn validateGarageBand(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.band, "File too small to identify");
     }
 
-    return ValidationResult.ok(.band);
+    // GarageBand format is proprietary - no structural validation possible
+    return ValidationResult.structuralOnly(.band);
 }
 
 // ============ Reason ============
@@ -430,5 +434,6 @@ pub fn validateReason(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.reason, "File appears to be ZIP, not Reason project");
     }
 
-    return ValidationResult.ok(.reason);
+    // Reason format is proprietary and undocumented - no structural validation possible
+    return ValidationResult.structuralOnly(.reason);
 }
