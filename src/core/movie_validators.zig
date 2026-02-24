@@ -1383,9 +1383,18 @@ pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult 
     else
         ValidationResult.structuralOnly(.mkv);
 
-    // Add PCM warning when audio is PCM (integrity cannot be verified)
-    if (audio_is_pcm and result.warning_message == null) {
-        result.warning_message = "PCM audio track cannot be integrity-checked (raw unstructured samples)";
+    // Audio not fully validated → not every byte is verified → downgrade from .full
+    if (media_result.has_audio_track and !audio_byte_validated) {
+        if (result.validation_depth == .full) {
+            result.validation_depth = .structural;
+        }
+        if (result.warning_message == null) {
+            if (audio_is_pcm) {
+                result.warning_message = "PCM audio track cannot be integrity-checked (raw unstructured samples)";
+            } else {
+                result.warning_message = "audio track not fully decoded (decode validation not yet implemented for this codec)";
+            }
+        }
     }
 
     return result;
