@@ -23,9 +23,10 @@ These formats return WARN — recognized but NO real corruption detection:
 
 ### God File Extraction (`format_validation.zig` → domain files)
 - [x] Phase 1: 12 domain files extracted (2026-02-10 EST)
-- [ ] Phase 2A: Move remaining validators to existing domain files (~2,400 lines)
-- [ ] Phase 2B: Create new domain files (pdf, document, game_asset, filesystem, apple) (~4,450 lines)
-- [ ] Phase 2C: Extract deep validator blocks (ZIP deep, PDF deep, compression deep) (~6,000 lines)
+- [x] Phase 2A: Move remaining validators to existing domain files (~2,400 lines) (2026-02-24 EST)
+- [x] Phase 2B: Create new domain files (pdf_validator, filesystem_validators, apple_validators) (2026-02-24 EST)
+- [x] Phase 2C: Extract deep validator blocks + move ~240 tests to domain files (2026-02-24 EST)
+- **Result: format_validation.zig reduced from ~24.7K to 6,515 lines (74% reduction)**
 
 ### Ground-Truth Sample Coverage
 - [ ] Add samples for ~50 formats still missing ground-truth examples
@@ -56,7 +57,7 @@ These formats return WARN — recognized but NO real corruption detection:
 - [x] P6: Deduplicate build.zig linkLibrary calls; fix shared lib missing cj5/libraw/7z deps (2026-02-22 EST)
 - [x] P8: Fix ZIP buffer validator depth, document CCITT Group 3 2D approximation (2026-02-22 EST)
 - [x] P4: Add 52 tests across 5 previously untested validator files (executable, email, PE, CAD/3D, creative) (2026-02-22 EST)
-- [ ] P7: Further extraction of format_validation.zig god file (deferred)
+- [x] P7: Extract format_validation.zig god file (24.7K → 6,515 lines) (2026-02-24 EST)
 
 ### Strict Format Coverage Closure (Entropy Shield dependency)
 - [x] Add deterministic strict coverage harness (`scripts/strict_format_coverage`) using `hasValidator()` as source-of-truth (2026-02-18 22:50 EST)

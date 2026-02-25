@@ -28,7 +28,21 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/build/` | Zig build helpers (libtool bundling) |
 | `src/core/path_validation.zig` | Parallel path validation with bundle-aware enumeration (.git directories validated as units, not recursed into); honors `MAX_FILES` |
 | `src/core/thread_pool.zig` | Thread pool with O(1) ring-buffer work queue (head/len circular buffer with doubling growth), replacing prior O(n) ArrayList dequeue |
-| `src/core/format_validation.zig` | Format validation logic incl. bundle detection (`detectBundleType()`, `isBundleDirectory()`), git repository deep validation routing, ZIP deep validation (central-directory parsing), PDF image lenience (JBIG2/DCT warnings), XML undefined-entity tolerance, expanded magic/extension handling (e.g., EXR, MPEG-ES), pure-Zig BinHex/HQX validation (alphabet decode, RLE, CRC16), HDF5 Jenkins lookup3 superblock+OHDR checksum verification (v2/3 → `.full`), Parquet page CRC-32 verification, and telemetry envs (`ZIP_TELEMETRY`, `PDF_TELEMETRY`) |
+| `src/core/format_validation.zig` | Core infrastructure (~6.5K lines): `FileFormat`/`ValidationResult`/`ValidationDepth` types, `detectFormat()` magic-byte detection, `extensionToFormat()` mapping, `FormatValidator` dispatch interface, bundle detection, font wrappers, BEAM validator, shared XML/text helpers, buffer validation API. All domain-specific validators extracted to separate files. |
+| `src/core/archive_validators.zig` | ZIP (structural + deep CRC-32), Gzip, Bzip2, XZ, Zstd, RAR, 7-Zip, Tar, PAR2, WARC, Brotli, BinHex/HQX |
+| `src/core/image_validators.zig` | PNG (CRC-32 deep), JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR, PSD, PAM, DPX, RAW (DNG/CR2/NEF/ARW) |
+| `src/core/music_validators.zig` | WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD (DSF/DFF), AC3, EAC3, MIDI, Tracker (MOD/XM/IT/S3M), AMR, AU, TTA, CAF, AAC ADTS |
+| `src/core/movie_validators.zig` | MP4, MKV, AVI, MOV, FLV, WebM, SWF, ASF, DV, HEIC, AVIF, MPEG-TS |
+| `src/core/text_format_validators.zig` | JSON, CSV, TOML, INI, XML, RTF, HTML, KML, plain text, Unicode, CP437 detection |
+| `src/core/scientific_validators.zig` | FITS (checksum), DICOM, NetCDF, FASTA, FASTQ, HDF5, Parquet, MATLAB, NIfTI, PDB, CIF, Shapefile |
+| `src/core/creative_validators.zig` | Premiere (PRPROJ), InDesign (INDD/IDML), FCPXML, DaVinci (DRP), Sketch, AI, EPS, AEP, PostScript |
+| `src/core/cad_3d_validators.zig` | DWG, DXF, STEP, STL, OBJ, PLY, glTF/GLB, Blender, 3MF |
+| `src/core/email_validators.zig` | EML, MBOX (with attachment extraction + validation) |
+| `src/core/executable_validators.zig` | ELF, Mach-O, COFF, Wasm, AR |
+| `src/core/pdf_validator.zig` | PDF (structural + deep xref/image/font validation), AI, EPS, AEP, PostScript |
+| `src/core/game_validator.zig` | NES, SNES, N64, GB, GBA, NDS, Genesis, CHD, IFF, Blorb |
+| `src/core/daw_validators.zig` | FLP, ALS, RPP + stub-only formats (bwproject, cpr, ptx, band, reason) |
+| `src/core/pe_validator.zig` | Windows PE executables |
 | `src/core/codec_utils.zig` | Shared codec utilities: `Crc32Normal(init,xorout)` comptime-parameterized MSB-first CRC-32 (instantiated as `Crc32Ogg`/`Crc32Mpeg2`/`Crc32Bzip2`), `crc16Ccitt` (RAR4+BinHex), `removeEmulationPreventionBytes` (H.264/H.265 RBSP), `findAnnexBStartCode`, `readLeb128`, `readLe`/`readBe` endian helpers. Consumed by: ebml_parser, ogg_validator, mpeg_ts_parser, bzip2, archive_validators, format_validation, h264_syntax_validator, h265_validator, av1_obu_validator, video_validator |
 | `src/core/i18n/mod.zig` | i18n locale registry/switching, locale detection from env/CLI prefixes, translated string accessors, and cross-locale CLI/env alias maps (30 locales) |
 | `src/core/i18n/{bn,hi,pa,ps,sw,ta,th,ur}.zig` | Locale data modules for Bengali/Hindi/Punjabi/Pashto/Swahili/Tamil/Thai/Urdu including core UI strings, full format description catalog, and error/warning translation maps |
