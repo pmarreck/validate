@@ -76,6 +76,7 @@ pub const iso_validator = @import("iso_validator.zig");
 pub const game_validator = @import("game_validator.zig");
 pub const game_asset_validators = @import("game_asset_validators.zig");
 pub const document_validators = @import("document_validators.zig");
+pub const filesystem_validators = @import("filesystem_validators.zig");
 pub const pe_validator = @import("pe_validator.zig");
 pub const daw_validators = @import("daw_validators.zig");
 pub const scientific_validators = @import("scientific_validators.zig");
@@ -214,6 +215,7 @@ test {
     _ = @import("game_validator.zig");
     _ = @import("game_asset_validators.zig");
     _ = @import("document_validators.zig");
+    _ = @import("filesystem_validators.zig");
     // PE (Portable Executable) validator
     _ = @import("pe_validator.zig");
     // DAW project validators (FLP, ALS, RPP)

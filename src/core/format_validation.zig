@@ -198,6 +198,9 @@ const game_asset_validators = @import("game_asset_validators.zig");
 // Document validators (SQLite, OLE2, WordPerfect, MDB, ACCDB)
 const document_validators = @import("document_validators.zig");
 
+// Filesystem/disk image validators (ISO, DMG)
+const filesystem_validators = @import("filesystem_validators.zig");
+
 // PE (Portable Executable) validator
 const pe_validator = @import("pe_validator.zig");
 
@@ -5368,61 +5371,6 @@ pub fn validateSketchFromBuffer(data: []const u8) ValidationResult {
 
     return ValidationResult.ok(.sketch);
 }
-
-// ============ ISO 9660 Validator ============
-
-/// Validate ISO 9660 disk image structure.
-fn validateIso(file: std.fs.File) ValidationResult {
-    // ISO 9660 has "CD001" at offset 0x8001 (32769) for primary volume descriptor
-    file.seekTo(0x8001) catch return ValidationResult.invalidCode(.iso, .failed_to_seek, "to volume descriptor");
-
-    var descriptor: [5]u8 = undefined;
-    const desc_read = file.read(&descriptor) catch return ValidationResult.invalidCode(.iso, .failed_to_read, "volume descriptor");
-
-    if (desc_read < 5) {
-        return ValidationResult.invalidCode(.iso, .file_too_small, "ISO 9660");
-    }
-
-    // Check for "CD001" identifier
-    if (!std.mem.eql(u8, &descriptor, "CD001")) {
-        return ValidationResult.invalidCode(.iso, .invalid_signature, "ISO 9660");
-    }
-
-    // No CRC/hash — signature check only
-    return ValidationResult.okWithDepth(.iso, .structural);
-}
-
-// ============ Apple DMG Validator ============
-
-/// Validate Apple Disk Image structure.
-fn validateDmg(file: std.fs.File) ValidationResult {
-    // DMG has "koly" trailer at end of file (last 512 bytes contain the trailer)
-    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.dmg, .failed_to_get, "file size");
-
-    if (file_size < 512) {
-        return ValidationResult.invalidCode(.dmg, .file_too_small, "DMG");
-    }
-
-    // Seek to last 512 bytes where koly trailer should be
-    file.seekTo(file_size - 512) catch return ValidationResult.invalidCode(.dmg, .failed_to_seek, "to trailer");
-
-    var trailer: [512]u8 = undefined;
-    const trailer_read = file.read(&trailer) catch return ValidationResult.invalidCode(.dmg, .failed_to_read, "DMG trailer");
-
-    if (trailer_read < 512) {
-        return ValidationResult.invalidCode(.dmg, .failed_to_read, "full trailer");
-    }
-
-    // Look for "koly" signature at start of trailer
-    if (!std.mem.eql(u8, trailer[0..4], "koly")) {
-        return ValidationResult.invalidCode(.dmg, .invalid_signature, "DMG");
-    }
-
-    // No CRC/hash — signature check only
-    return ValidationResult.okWithDepth(.dmg, .structural);
-}
-
-// NOTE: HDF5/Parquet/MATLAB/NIfTI/PDB/CIF/Shapefile moved to scientific_validators.zig
 
 // ============ CAD Format Validators ============
 
@@ -10658,112 +10606,6 @@ fn validate7zDeep(allocator: Allocator, path: []const u8) ValidationResult {
     return ValidationResult.okWithDepth(.sevenz, .structural);
 }
 
-/// Deep validation for DMG (Apple Disk Image) files
-/// Validates koly block structure and checksums
-fn validateDmgDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.dmg, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.dmg, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.dmg, .failed_to_open, "file", .structural),
-        };
-    };
-    defer file.close();
-
-    const result = dmg_validator.validateDmgFile(file, allocator);
-
-    if (!result.valid) {
-        return ValidationResult.invalidWithDepth(.dmg, result.error_message orelse "DMG validation failed", .full);
-    }
-
-    // Check if checksums were verified
-    if (result.data_checksum_verified) {
-        return ValidationResult.okWithDepth(.dmg, .full);
-    }
-
-    // Checksum present but not verified (large file) - structural only
-    if (result.has_data_checksum) {
-        return ValidationResult.okWithDepthAndWarning(.dmg, .structural, "data checksum present but not verified (large file)");
-    }
-
-    // No checksum in file - structural validation only
-    return ValidationResult.okWithDepth(.dmg, .structural);
-}
-
-/// Deep validation for ISO 9660 disk images
-/// Validates volume descriptors and directory structure
-fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.iso, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.iso, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.iso, .failed_to_open, "file", .structural),
-        };
-    };
-    defer file.close();
-
-    // Get file size
-    const file_size = file.getEndPos() catch {
-        return ValidationResult.invalidCodeWithDepth(.iso, .failed_to_get, "file size", .structural);
-    };
-
-    // ISO 9660 minimum: 32KB system area + at least one volume descriptor sector
-    const min_iso_size: u64 = 32 * 1024 + 2048;
-    if (file_size < min_iso_size) {
-        return ValidationResult.invalidCodeWithDepth(.iso, .file_too_small, "ISO 9660", .structural);
-    }
-
-    // Read enough data for validation (volume descriptors + root directory)
-    // Volume descriptors start at sector 16 (offset 0x8000)
-    const max_read: usize = @min(@as(usize, @intCast(file_size)), 64 * 1024 * 1024); // Cap at 64MB for memory
-    const data = allocator.alloc(u8, max_read) catch {
-        // Fall back to signature-only validation
-        return validateIsoSignature(file);
-    };
-    defer allocator.free(data);
-
-    file.seekTo(0) catch {
-        return ValidationResult.invalidCodeWithDepth(.iso, .failed_to_seek, "to start", .structural);
-    };
-
-    const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalidCodeWithDepth(.iso, .failed_to_read, "file", .structural);
-    };
-
-    if (bytes_read < min_iso_size) {
-        return ValidationResult.invalidCodeWithDepth(.iso, .incomplete, "read", .structural);
-    }
-
-    // Use iso9660_parser for validation
-    const result = iso9660_parser.validateIso9660(data[0..bytes_read]);
-
-    if (!result.valid) {
-        return ValidationResult.invalidWithDepth(.iso, result.error_message orelse "ISO 9660 validation failed", .structural);
-    }
-
-    // No CRC/hash in ISO 9660 — volume descriptors and directory structure only
-    return ValidationResult.okWithDepth(.iso, .structural);
-}
-
-/// Simple ISO signature validation (fallback for memory-constrained situations)
-fn validateIsoSignature(file: std.fs.File) ValidationResult {
-    // ISO 9660 has "CD001" at offset 0x8001 (32769) for primary volume descriptor
-    file.seekTo(0x8001) catch return ValidationResult.invalidCode(.iso, .failed_to_seek, "to volume descriptor");
-
-    var descriptor: [5]u8 = undefined;
-    const desc_read = file.read(&descriptor) catch return ValidationResult.invalidCode(.iso, .failed_to_read, "volume descriptor");
-
-    if (desc_read < 5) {
-        return ValidationResult.invalidCode(.iso, .file_too_small, "ISO 9660");
-    }
-
-    if (!std.mem.eql(u8, &descriptor, "CD001")) {
-        return ValidationResult.invalidCode(.iso, .invalid_signature, "ISO 9660");
-    }
-
-    return ValidationResult.okWithDepth(.iso, .structural);
-}
-
 // ============ MP3 Deep Validation ============
 
 /// CRC-16 polynomial for MPEG audio: X^16 + X^15 + X^2 + 1 (0x8005)
@@ -11133,8 +10975,8 @@ pub const FormatValidator = struct {
                         .dv => movie_validators.validateDv(reopen_ext),
                         .tga => image_validators.validateTga(reopen_ext),
                         .html => text_format_validators.validateHtml(reopen_ext),
-                        .dmg => validateDmg(reopen_ext),
-                        .iso => validateIso(reopen_ext),
+                        .dmg => filesystem_validators.validateDmg(reopen_ext),
+                        .iso => filesystem_validators.validateIso(reopen_ext),
                         .hqx => archive_validators.validateHqx(reopen_ext),
                         .cpt => archive_validators.validateCpt(reopen_ext),
                         else => ValidationResult.ok(ext_format),
@@ -11552,8 +11394,8 @@ pub const FormatValidator = struct {
             .rar => archive_validators.validateRarDeep(allocator, path),
             .cpt => archive_validators.validateCptDeep(allocator, path),
             .warc => archive_validators.validateWarcDeep(allocator, path),
-            .dmg => validateDmgDeep(allocator, path),
-            .iso => validateIsoDeep(allocator, path),
+            .dmg => filesystem_validators.validateDmgDeep(allocator, path),
+            .iso => filesystem_validators.validateIsoDeep(allocator, path),
             .mp3 => music_validators.validateMp3Deep(allocator, path),
             .ogg => music_validators.validateOggDeep(allocator, path),
             .midi => music_validators.validateMidiDeep(path),
@@ -11958,8 +11800,8 @@ pub const FormatValidator = struct {
             .sketch => creative_validators.validateSketch(file),
             .mdb => document_validators.validateMdb(file),
             .accdb => document_validators.validateAccdb(file),
-            .iso => validateIso(file),
-            .dmg => validateDmg(file),
+            .iso => filesystem_validators.validateIso(file),
+            .dmg => filesystem_validators.validateDmg(file),
             .hdf5 => scientific_validators.validateHdf5(file),
             .parquet => scientific_validators.validateParquet(file),
             .netcdf => scientific_validators.validateNetcdf(file),
