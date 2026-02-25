@@ -2179,7 +2179,7 @@ pub fn validateDataBufferFormat(data: []const u8, format: FileFormat) Validation
         .bmp => image_validators.validateBmpFromBuffer(data),
         .tiff => image_validators.validateTiffFromBuffer(data),
         .webp => image_validators.validateWebpFromBuffer(data),
-        .hqx => validateHqxFromBuffer(data),
+        .hqx => archive_validators.validateHqxFromBuffer(data),
         .cpt => archive_validators.validateCptFromBuffer(data),
         .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => archive_validators.validateZipFromBuffer(data, format),
         .mp4, .mov, .m4a => movie_validators.validateMp4FromBuffer(data),
@@ -4340,148 +4340,6 @@ fn validateRar5Headers(file: std.fs.File) ValidationResult {
     // Note: Only header CRCs are verified, NOT file content CRCs
     // Full validation would require decompressing and verifying each file's CRC32
     return ValidationResult.okWithDepthAndWarning(.rar, .structural, "header CRCs verified, file content CRCs not checked");
-}
-
-// ============ Bitwig Studio Validator ============
-
-/// Bitwig Studio project files use a proprietary binary format.
-/// This validator performs basic structural checks since the format is not publicly documented.
-fn validateBwproject(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalidCode(.bwproject, .failed_to_seek, "to start");
-
-    // Get file size - Bitwig files should have reasonable size
-    const stat = file.stat() catch return ValidationResult.invalidCode(.bwproject, .failed_to_stat, "file");
-
-    // Bitwig projects are typically at least a few KB
-    if (stat.size < 100) {
-        return ValidationResult.invalidCode(.bwproject, .file_too_small, "Bitwig project");
-    }
-
-    // Read header to verify this is not a ZIP file (common mistake)
-    var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.bwproject, .failed_to_read, "header");
-
-    if (header_read < 4) {
-        return ValidationResult.invalid(.bwproject, "File too small to identify");
-    }
-
-    // Reject if this is actually a ZIP file (ZIP magic: PK\x03\x04)
-    if (header[0] == 'P' and header[1] == 'K' and header[2] == 0x03 and header[3] == 0x04) {
-        return ValidationResult.invalid(.bwproject, "File appears to be ZIP, not Bitwig project");
-    }
-
-    // Bitwig format is proprietary and undocumented - no structural validation possible
-    return ValidationResult.structuralOnly(.bwproject);
-}
-
-// ============ Cubase Validator ============
-
-/// Cubase project files (.cpr) use a RIFF-based binary format.
-/// We validate the RIFF structure header.
-fn validateCubase(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalidCode(.cpr, .failed_to_seek, "to start");
-
-    var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.cpr, .failed_to_read, "header");
-
-    if (header_read < 12) {
-        return ValidationResult.invalidCode(.cpr, .file_too_small, "Cubase project");
-    }
-
-    // Cubase uses RIFF format - check for "RIFF" signature
-    if (!std.mem.eql(u8, header[0..4], "RIFF")) {
-        return ValidationResult.invalidCodeMsg(.cpr, .invalid_signature_not, "Cubase", errmsg.invalidSignatureNot("Cubase", "RIFF"));
-    }
-
-    // RIFF header verified but no Cubase-specific chunk validation
-    return ValidationResult.structuralOnly(.cpr);
-}
-
-// ============ Pro Tools Validator ============
-
-/// Pro Tools session files (.ptx) use a proprietary binary format.
-/// This validator performs basic structural checks.
-fn validateProTools(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalidCode(.ptx, .failed_to_seek, "to start");
-
-    const stat = file.stat() catch return ValidationResult.invalidCode(.ptx, .failed_to_stat, "file");
-
-    // Pro Tools sessions are typically at least several KB
-    if (stat.size < 256) {
-        return ValidationResult.invalidCode(.ptx, .file_too_small, "Pro Tools session");
-    }
-
-    var header: [16]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.ptx, .failed_to_read, "header");
-
-    if (header_read < 8) {
-        return ValidationResult.invalid(.ptx, "File too small to identify");
-    }
-
-    // Reject if this is actually a ZIP file
-    if (header[0] == 'P' and header[1] == 'K' and header[2] == 0x03 and header[3] == 0x04) {
-        return ValidationResult.invalid(.ptx, "File appears to be ZIP, not Pro Tools session");
-    }
-
-    // Pro Tools format is proprietary and undocumented - no structural validation possible
-    return ValidationResult.structuralOnly(.ptx);
-}
-
-// ============ GarageBand Validator ============
-
-/// GarageBand project files (.band) are macOS packages/bundles.
-/// When accessed as a file (not directory), we perform basic checks.
-fn validateGarageBand(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalidCode(.band, .failed_to_seek, "to start");
-
-    const stat = file.stat() catch return ValidationResult.invalidCode(.band, .failed_to_stat, "file");
-
-    // GarageBand projects should have some content
-    if (stat.size < 64) {
-        return ValidationResult.invalidCode(.band, .file_too_small, "GarageBand project");
-    }
-
-    // GarageBand bundles when accessed as files may be ZIP-like
-    // or may just be the metadata. We accept basic binary data.
-    var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.band, .failed_to_read, "header");
-
-    if (header_read < 4) {
-        return ValidationResult.invalid(.band, "File too small to identify");
-    }
-
-    // GarageBand format is proprietary - no structural validation possible
-    return ValidationResult.structuralOnly(.band);
-}
-
-// ============ Reason Validator ============
-
-/// Reason project files (.reason) use a proprietary format.
-/// This validator performs basic structural checks.
-fn validateReason(file: std.fs.File) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalidCode(.reason, .failed_to_seek, "to start");
-
-    const stat = file.stat() catch return ValidationResult.invalidCode(.reason, .failed_to_stat, "file");
-
-    // Reason projects should have some content
-    if (stat.size < 128) {
-        return ValidationResult.invalidCode(.reason, .file_too_small, "Reason project");
-    }
-
-    var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.reason, .failed_to_read, "header");
-
-    if (header_read < 4) {
-        return ValidationResult.invalid(.reason, "File too small to identify");
-    }
-
-    // Reject if this is actually a ZIP file
-    if (header[0] == 'P' and header[1] == 'K' and header[2] == 0x03 and header[3] == 0x04) {
-        return ValidationResult.invalid(.reason, "File appears to be ZIP, not Reason project");
-    }
-
-    // Reason format is proprietary and undocumented - no structural validation possible
-    return ValidationResult.structuralOnly(.reason);
 }
 
 // ============ Adobe Premiere Pro Validator ============
@@ -9957,241 +9815,6 @@ fn validateBrotliDeep(path: []const u8) ValidationResult {
     }
 }
 
-// ============ BinHex (HQX) Validation ============
-
-const BINHEX4_BANNER = "(This file must be converted with BinHex 4.0)";
-const BINHEX4_ALPHABET = "!\"#$%&'()*+,-012345689@ABCDEFGHIJKLMNPQRSTUVXYZ[`abcdefhijklmpqr";
-const BINHEX4_RLE_MARKER: u8 = 0x90;
-const BINHEX4_MAX_FILE_SIZE: u64 = 64 * 1024 * 1024;
-const BINHEX4_MAX_DECODED_SIZE: usize = 128 * 1024 * 1024;
-
-const BinhexError = error{
-    InvalidEnvelope,
-    InvalidCharacter,
-    TruncatedData,
-    InvalidRunLength,
-    InvalidHeader,
-    CrcMismatch,
-    DataTooLarge,
-} || Allocator.Error;
-
-const binhex4_decode_table: [256]i16 = blk: {
-    var table: [256]i16 = [_]i16{-1} ** 256;
-    for (BINHEX4_ALPHABET, 0..) |ch, idx| {
-        table[ch] = @intCast(idx);
-    }
-    break :blk table;
-};
-
-const hqxCrc16 = codec_utils.crc16Ccitt;
-
-fn hqxDecodeValue(ch: u8) ?u8 {
-    const value = binhex4_decode_table[ch];
-    if (value < 0) return null;
-    return @intCast(value);
-}
-
-fn decodeBinhex4Payload(allocator: Allocator, file_data: []const u8) BinhexError![]u8 {
-    const start = std.mem.indexOfScalar(u8, file_data, ':') orelse return error.InvalidEnvelope;
-    const after_start = file_data[start + 1 ..];
-    const end_rel = std.mem.indexOfScalar(u8, after_start, ':') orelse return error.InvalidEnvelope;
-    const encoded = after_start[0..end_rel];
-
-    var decoded: std.ArrayListUnmanaged(u8) = .{};
-    errdefer decoded.deinit(allocator);
-
-    var group: [4]u8 = undefined;
-    var group_len: u8 = 0;
-    var non_ws_chars: usize = 0;
-
-    for (encoded) |ch| {
-        switch (ch) {
-            ' ', '\t', '\r', '\n' => continue,
-            else => {},
-        }
-        const value = hqxDecodeValue(ch) orelse return error.InvalidCharacter;
-        group[group_len] = value;
-        group_len += 1;
-        non_ws_chars += 1;
-
-        if (group_len == 4) {
-            const combined: u32 = (@as(u32, group[0]) << 18) |
-                (@as(u32, group[1]) << 12) |
-                (@as(u32, group[2]) << 6) |
-                @as(u32, group[3]);
-            if (decoded.items.len + 3 > BINHEX4_MAX_DECODED_SIZE) return error.DataTooLarge;
-            try decoded.append(allocator, @intCast((combined >> 16) & 0xFF));
-            try decoded.append(allocator, @intCast((combined >> 8) & 0xFF));
-            try decoded.append(allocator, @intCast(combined & 0xFF));
-            group_len = 0;
-        }
-    }
-
-    if (non_ws_chars == 0 or group_len != 0) return error.TruncatedData;
-    return decoded.toOwnedSlice(allocator);
-}
-
-fn expandBinhex4Rle(allocator: Allocator, packed_data: []const u8) BinhexError![]u8 {
-    var expanded: std.ArrayListUnmanaged(u8) = .{};
-    errdefer expanded.deinit(allocator);
-
-    var i: usize = 0;
-    var have_prev = false;
-    var prev: u8 = 0;
-
-    while (i < packed_data.len) {
-        const b = packed_data[i];
-        i += 1;
-
-        if (b != BINHEX4_RLE_MARKER) {
-            if (expanded.items.len + 1 > BINHEX4_MAX_DECODED_SIZE) return error.DataTooLarge;
-            try expanded.append(allocator, b);
-            prev = b;
-            have_prev = true;
-            continue;
-        }
-
-        if (i >= packed_data.len) return error.TruncatedData;
-        const count = packed_data[i];
-        i += 1;
-
-        if (count == 0) {
-            if (expanded.items.len + 1 > BINHEX4_MAX_DECODED_SIZE) return error.DataTooLarge;
-            try expanded.append(allocator, BINHEX4_RLE_MARKER);
-            prev = BINHEX4_RLE_MARKER;
-            have_prev = true;
-            continue;
-        }
-
-        if (!have_prev) return error.InvalidRunLength;
-        const repeat_count: usize = @as(usize, count) - 1;
-        if (expanded.items.len + repeat_count > BINHEX4_MAX_DECODED_SIZE) return error.DataTooLarge;
-        for (0..repeat_count) |_| {
-            try expanded.append(allocator, prev);
-        }
-    }
-
-    if (expanded.items.len == 0) return error.TruncatedData;
-    return expanded.toOwnedSlice(allocator);
-}
-
-fn validateBinhex4Decoded(decoded: []const u8) BinhexError!void {
-    var cursor: usize = 0;
-
-    if (decoded.len < 22) return error.InvalidHeader;
-
-    const name_len = decoded[cursor];
-    cursor += 1;
-    if (name_len == 0 or name_len > 63) return error.InvalidHeader;
-
-    const name_len_usize: usize = name_len;
-    if (cursor + name_len_usize + 1 + 4 + 4 + 2 + 4 + 4 + 2 > decoded.len) return error.TruncatedData;
-
-    cursor += name_len_usize;
-    if (decoded[cursor] != 0) return error.InvalidHeader;
-    cursor += 1;
-
-    cursor += 4; // type
-    cursor += 4; // creator
-    cursor += 2; // finder flags
-
-    const data_len = std.mem.readInt(u32, decoded[cursor..][0..4], .big);
-    cursor += 4;
-    const resource_len = std.mem.readInt(u32, decoded[cursor..][0..4], .big);
-    cursor += 4;
-
-    const header_crc_input = decoded[0..cursor];
-    const stored_header_crc = std.mem.readInt(u16, decoded[cursor..][0..2], .big);
-    cursor += 2;
-    if (hqxCrc16(header_crc_input) != stored_header_crc) return error.CrcMismatch;
-
-    const data_len_usize: usize = @intCast(data_len);
-    if (cursor + data_len_usize + 2 > decoded.len) return error.TruncatedData;
-    const data_fork = decoded[cursor .. cursor + data_len_usize];
-    cursor += data_len_usize;
-    const stored_data_crc = std.mem.readInt(u16, decoded[cursor..][0..2], .big);
-    cursor += 2;
-    if (hqxCrc16(data_fork) != stored_data_crc) return error.CrcMismatch;
-
-    const resource_len_usize: usize = @intCast(resource_len);
-    if (cursor + resource_len_usize + 2 > decoded.len) return error.TruncatedData;
-    const resource_fork = decoded[cursor .. cursor + resource_len_usize];
-    cursor += resource_len_usize;
-    const stored_resource_crc = std.mem.readInt(u16, decoded[cursor..][0..2], .big);
-    cursor += 2;
-    if (hqxCrc16(resource_fork) != stored_resource_crc) return error.CrcMismatch;
-
-    if (cursor != decoded.len) return error.InvalidHeader;
-}
-
-fn validateHqxBytes(file_data: []const u8) ValidationResult {
-    if (file_data.len == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
-
-    if (std.mem.indexOf(u8, file_data, BINHEX4_BANNER) == null) {
-        return ValidationResult.invalidCode(.hqx, .missing, "BinHex 4.0 banner");
-    }
-
-    const allocator = std.heap.page_allocator;
-    const packed_data = decodeBinhex4Payload(allocator, file_data) catch |err| {
-        return switch (err) {
-            error.InvalidEnvelope => ValidationResult.invalid(.hqx, "Missing BinHex data delimiters"),
-            error.InvalidCharacter => ValidationResult.invalid(.hqx, "Invalid BinHex alphabet character"),
-            error.TruncatedData => ValidationResult.invalidCode(.hqx, .truncated, "BinHex payload"),
-            error.DataTooLarge => ValidationResult.invalid(.hqx, "BinHex payload too large"),
-            error.OutOfMemory => ValidationResult.invalidCode(.hqx, .failed_to_allocate, "BinHex decode buffer"),
-            else => ValidationResult.invalid(.hqx, "Invalid BinHex payload"),
-        };
-    };
-    defer allocator.free(packed_data);
-
-    const decoded = expandBinhex4Rle(allocator, packed_data) catch |err| {
-        return switch (err) {
-            error.InvalidRunLength => ValidationResult.invalid(.hqx, "Invalid BinHex run-length encoding"),
-            error.TruncatedData => ValidationResult.invalidCode(.hqx, .truncated, "BinHex RLE payload"),
-            error.DataTooLarge => ValidationResult.invalid(.hqx, "Expanded BinHex data too large"),
-            error.OutOfMemory => ValidationResult.invalidCode(.hqx, .failed_to_allocate, "BinHex expansion buffer"),
-            else => ValidationResult.invalid(.hqx, "Invalid BinHex RLE payload"),
-        };
-    };
-    defer allocator.free(decoded);
-
-    validateBinhex4Decoded(decoded) catch |err| {
-        return switch (err) {
-            error.CrcMismatch => ValidationResult.invalidCode(.hqx, .checksum_mismatch, "BinHex fork/header CRC"),
-            error.InvalidHeader => ValidationResult.invalid(.hqx, "Invalid BinHex container header"),
-            error.TruncatedData => ValidationResult.invalidCode(.hqx, .truncated, "BinHex container"),
-            else => ValidationResult.invalid(.hqx, "Invalid BinHex container"),
-        };
-    };
-
-    return ValidationResult.okWithDepth(.hqx, .full);
-}
-
-fn validateHqx(file: std.fs.File) ValidationResult {
-    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.hqx, .failed_to_get, "file size");
-    if (file_size == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
-    if (file_size > BINHEX4_MAX_FILE_SIZE) return ValidationResult.invalid(.hqx, "BinHex file too large (>64MB)");
-
-    file.seekTo(0) catch return ValidationResult.invalidCode(.hqx, .failed_to_seek, "to start");
-
-    const allocator = std.heap.page_allocator;
-    const content = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.hqx, .failed_to_allocate, "BinHex input buffer");
-    };
-    defer allocator.free(content);
-
-    const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalidCode(.hqx, .failed_to_read, "BinHex file");
-    };
-    if (bytes_read == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
-
-    return validateHqxBytes(content[0..bytes_read]);
-}
-
-fn validateHqxFromBuffer(data: []const u8) ValidationResult {
-    return validateHqxBytes(data);
-}
-
 // ============ ZIP Deep Validation (CRC-32) ============
 
 /// ZIP compression methods
@@ -12515,7 +12138,7 @@ pub const FormatValidator = struct {
                         .html => text_format_validators.validateHtml(reopen_ext),
                         .dmg => validateDmg(reopen_ext),
                         .iso => validateIso(reopen_ext),
-                        .hqx => validateHqx(reopen_ext),
+                        .hqx => archive_validators.validateHqx(reopen_ext),
                         .cpt => archive_validators.validateCpt(reopen_ext),
                         else => ValidationResult.ok(ext_format),
                     };
@@ -13282,7 +12905,7 @@ pub const FormatValidator = struct {
             .xz => archive_validators.validateXz(file),
             .zstd => archive_validators.validateZstd(file),
             .br => ValidationResult.ok(.br), // No magic bytes - extension-only detection, deep validates
-            .hqx => validateHqx(file),
+            .hqx => archive_validators.validateHqx(file),
             .rar => archive_validators.validateRar(file),
             .cpt => archive_validators.validateCpt(file),
             .sevenz => archive_validators.validate7z(file),
@@ -13323,11 +12946,11 @@ pub const FormatValidator = struct {
             .als => daw_validators.validateAls(file),
             .rpp => daw_validators.validateRpp(file),
             .flp => daw_validators.validateFlp(file),
-            .bwproject => validateBwproject(file),
-            .cpr => validateCubase(file),
-            .ptx => validateProTools(file),
-            .band => validateGarageBand(file),
-            .reason => validateReason(file),
+            .bwproject => daw_validators.validateBwproject(file),
+            .cpr => daw_validators.validateCubase(file),
+            .ptx => daw_validators.validateProTools(file),
+            .band => daw_validators.validateGarageBand(file),
+            .reason => daw_validators.validateReason(file),
             .prproj => creative_validators.validatePrproj(file),
             .indd => creative_validators.validateIndd(file),
             .idml => creative_validators.validateIdml(file),
@@ -13577,7 +13200,7 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
         .bzip2 => archive_validators.validateBzip2FromBuffer(data),
         .xz => archive_validators.validateXzFromBuffer(data),
         .zstd => archive_validators.validateZstdFromBuffer(data),
-        .hqx => validateHqxFromBuffer(data),
+        .hqx => archive_validators.validateHqxFromBuffer(data),
         .rar => archive_validators.validateRarFromBuffer(data),
         .cpt => archive_validators.validateCptFromBuffer(data),
         .sevenz => archive_validators.validate7zFromBuffer(data),
@@ -16070,53 +15693,6 @@ test "FormatValidator rejects corrupted Brotli" {
 
     // Should be detected as Brotli but fail validation
     try std.testing.expectEqual(FileFormat.br, result.format);
-    try std.testing.expect(!result.is_valid);
-}
-
-// ============ BinHex (HQX) Tests ============
-
-const hqx_valid_sample =
-    "(This file must be converted with BinHex 4.0)\n" ++
-    ":#R0KEA\"XC5jdH(3!N!iE!*!%AU&&ER4bEh\"j)&0SD@9XC#\")89JJCQPiG(9bC3U\n" ++
-    "Z2J!!:\n";
-
-test "detectFormatFromExtension maps .hqx to BinHex format" {
-    try std.testing.expectEqual(FileFormat.hqx, detectFormatFromExtension("sample.hqx"));
-}
-
-test "FormatValidator validates BinHex sample from bytes" {
-    const result = validateHqxFromBuffer(hqx_valid_sample);
-    try std.testing.expectEqual(FileFormat.hqx, result.format);
-    try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
-}
-
-test "FormatValidator rejects corrupted BinHex sample" {
-    const allocator = std.testing.allocator;
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    const path = "corrupt.hqx";
-    const file = try tmp_dir.dir.createFile(path, .{});
-    defer file.close();
-
-    const data = try allocator.dupe(u8, hqx_valid_sample);
-    defer allocator.free(data);
-
-    const payload_start = std.mem.indexOfScalar(u8, data, ':') orelse unreachable;
-    const mutate_index = payload_start + 10;
-    try std.testing.expect(mutate_index < data.len);
-    data[mutate_index] = if (data[mutate_index] == 'A') 'B' else 'A'; // Keep alphabet-valid, force CRC mismatch
-    try file.writeAll(data);
-
-    const real = try tmp_dir.dir.realpathAlloc(allocator, path);
-    defer allocator.free(real);
-
-    var validator = FormatValidator.initDeep();
-    defer validator.deinit();
-
-    const result = validator.validateFileDeep(allocator, real);
-    try std.testing.expectEqual(FileFormat.hqx, result.format);
     try std.testing.expect(!result.is_valid);
 }
 

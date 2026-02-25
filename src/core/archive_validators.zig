@@ -3524,3 +3524,257 @@ test "validateCptFromBuffer: empty data rejected" {
     const result = validateCptFromBuffer(&[_]u8{});
     try testing.expect(!result.is_valid);
 }
+
+// ============ BinHex (HQX) Validation ============
+
+const BINHEX4_BANNER = "(This file must be converted with BinHex 4.0)";
+const BINHEX4_ALPHABET = "!\"#$%&'()*+,-012345689@ABCDEFGHIJKLMNPQRSTUVXYZ[`abcdefhijklmpqr";
+const BINHEX4_RLE_MARKER: u8 = 0x90;
+const BINHEX4_MAX_FILE_SIZE: u64 = 64 * 1024 * 1024;
+const BINHEX4_MAX_DECODED_SIZE: usize = 128 * 1024 * 1024;
+
+const BinhexError = error{
+    InvalidEnvelope,
+    InvalidCharacter,
+    TruncatedData,
+    InvalidRunLength,
+    InvalidHeader,
+    CrcMismatch,
+    DataTooLarge,
+} || Allocator.Error;
+
+const binhex4_decode_table: [256]i16 = blk: {
+    var table: [256]i16 = [_]i16{-1} ** 256;
+    for (BINHEX4_ALPHABET, 0..) |ch, idx| {
+        table[ch] = @intCast(idx);
+    }
+    break :blk table;
+};
+
+const hqxCrc16 = codec_utils.crc16Ccitt;
+
+fn hqxDecodeValue(ch: u8) ?u8 {
+    const value = binhex4_decode_table[ch];
+    if (value < 0) return null;
+    return @intCast(value);
+}
+
+fn decodeBinhex4Payload(allocator: Allocator, file_data: []const u8) BinhexError![]u8 {
+    const start = std.mem.indexOfScalar(u8, file_data, ':') orelse return error.InvalidEnvelope;
+    const after_start = file_data[start + 1 ..];
+    const end_rel = std.mem.indexOfScalar(u8, after_start, ':') orelse return error.InvalidEnvelope;
+    const encoded = after_start[0..end_rel];
+
+    var decoded: std.ArrayListUnmanaged(u8) = .{};
+    errdefer decoded.deinit(allocator);
+
+    var group: [4]u8 = undefined;
+    var group_len: u8 = 0;
+    var non_ws_chars: usize = 0;
+
+    for (encoded) |ch| {
+        switch (ch) {
+            ' ', '\t', '\r', '\n' => continue,
+            else => {},
+        }
+        const value = hqxDecodeValue(ch) orelse return error.InvalidCharacter;
+        group[group_len] = value;
+        group_len += 1;
+        non_ws_chars += 1;
+
+        if (group_len == 4) {
+            const combined: u32 = (@as(u32, group[0]) << 18) |
+                (@as(u32, group[1]) << 12) |
+                (@as(u32, group[2]) << 6) |
+                @as(u32, group[3]);
+            if (decoded.items.len + 3 > BINHEX4_MAX_DECODED_SIZE) return error.DataTooLarge;
+            try decoded.append(allocator, @intCast((combined >> 16) & 0xFF));
+            try decoded.append(allocator, @intCast((combined >> 8) & 0xFF));
+            try decoded.append(allocator, @intCast(combined & 0xFF));
+            group_len = 0;
+        }
+    }
+
+    if (non_ws_chars == 0 or group_len != 0) return error.TruncatedData;
+    return decoded.toOwnedSlice(allocator);
+}
+
+fn expandBinhex4Rle(allocator: Allocator, packed_data: []const u8) BinhexError![]u8 {
+    var expanded: std.ArrayListUnmanaged(u8) = .{};
+    errdefer expanded.deinit(allocator);
+
+    var i: usize = 0;
+    var have_prev = false;
+    var prev: u8 = 0;
+
+    while (i < packed_data.len) {
+        const b = packed_data[i];
+        i += 1;
+
+        if (b != BINHEX4_RLE_MARKER) {
+            if (expanded.items.len + 1 > BINHEX4_MAX_DECODED_SIZE) return error.DataTooLarge;
+            try expanded.append(allocator, b);
+            prev = b;
+            have_prev = true;
+            continue;
+        }
+
+        if (i >= packed_data.len) return error.TruncatedData;
+        const count = packed_data[i];
+        i += 1;
+
+        if (count == 0) {
+            if (expanded.items.len + 1 > BINHEX4_MAX_DECODED_SIZE) return error.DataTooLarge;
+            try expanded.append(allocator, BINHEX4_RLE_MARKER);
+            prev = BINHEX4_RLE_MARKER;
+            have_prev = true;
+            continue;
+        }
+
+        if (!have_prev) return error.InvalidRunLength;
+        const repeat_count: usize = @as(usize, count) - 1;
+        if (expanded.items.len + repeat_count > BINHEX4_MAX_DECODED_SIZE) return error.DataTooLarge;
+        for (0..repeat_count) |_| {
+            try expanded.append(allocator, prev);
+        }
+    }
+
+    if (expanded.items.len == 0) return error.TruncatedData;
+    return expanded.toOwnedSlice(allocator);
+}
+
+fn validateBinhex4Decoded(decoded: []const u8) BinhexError!void {
+    var cursor: usize = 0;
+
+    if (decoded.len < 22) return error.InvalidHeader;
+
+    const name_len = decoded[cursor];
+    cursor += 1;
+    if (name_len == 0 or name_len > 63) return error.InvalidHeader;
+
+    const name_len_usize: usize = name_len;
+    if (cursor + name_len_usize + 1 + 4 + 4 + 2 + 4 + 4 + 2 > decoded.len) return error.TruncatedData;
+
+    cursor += name_len_usize;
+    if (decoded[cursor] != 0) return error.InvalidHeader;
+    cursor += 1;
+
+    cursor += 4; // type
+    cursor += 4; // creator
+    cursor += 2; // finder flags
+
+    const data_len = std.mem.readInt(u32, decoded[cursor..][0..4], .big);
+    cursor += 4;
+    const resource_len = std.mem.readInt(u32, decoded[cursor..][0..4], .big);
+    cursor += 4;
+
+    const header_crc_input = decoded[0..cursor];
+    const stored_header_crc = std.mem.readInt(u16, decoded[cursor..][0..2], .big);
+    cursor += 2;
+    if (hqxCrc16(header_crc_input) != stored_header_crc) return error.CrcMismatch;
+
+    const data_len_usize: usize = @intCast(data_len);
+    if (cursor + data_len_usize + 2 > decoded.len) return error.TruncatedData;
+    const data_fork = decoded[cursor .. cursor + data_len_usize];
+    cursor += data_len_usize;
+    const stored_data_crc = std.mem.readInt(u16, decoded[cursor..][0..2], .big);
+    cursor += 2;
+    if (hqxCrc16(data_fork) != stored_data_crc) return error.CrcMismatch;
+
+    const resource_len_usize: usize = @intCast(resource_len);
+    if (cursor + resource_len_usize + 2 > decoded.len) return error.TruncatedData;
+    const resource_fork = decoded[cursor .. cursor + resource_len_usize];
+    cursor += resource_len_usize;
+    const stored_resource_crc = std.mem.readInt(u16, decoded[cursor..][0..2], .big);
+    cursor += 2;
+    if (hqxCrc16(resource_fork) != stored_resource_crc) return error.CrcMismatch;
+
+    if (cursor != decoded.len) return error.InvalidHeader;
+}
+
+pub fn validateHqxBytes(file_data: []const u8) ValidationResult {
+    if (file_data.len == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
+
+    if (std.mem.indexOf(u8, file_data, BINHEX4_BANNER) == null) {
+        return ValidationResult.invalidCode(.hqx, .missing, "BinHex 4.0 banner");
+    }
+
+    const allocator = std.heap.page_allocator;
+    const packed_data = decodeBinhex4Payload(allocator, file_data) catch |err| {
+        return switch (err) {
+            error.InvalidEnvelope => ValidationResult.invalid(.hqx, "Missing BinHex data delimiters"),
+            error.InvalidCharacter => ValidationResult.invalid(.hqx, "Invalid BinHex alphabet character"),
+            error.TruncatedData => ValidationResult.invalidCode(.hqx, .truncated, "BinHex payload"),
+            error.DataTooLarge => ValidationResult.invalid(.hqx, "BinHex payload too large"),
+            error.OutOfMemory => ValidationResult.invalidCode(.hqx, .failed_to_allocate, "BinHex decode buffer"),
+            else => ValidationResult.invalid(.hqx, "Invalid BinHex payload"),
+        };
+    };
+    defer allocator.free(packed_data);
+
+    const decoded = expandBinhex4Rle(allocator, packed_data) catch |err| {
+        return switch (err) {
+            error.InvalidRunLength => ValidationResult.invalid(.hqx, "Invalid BinHex run-length encoding"),
+            error.TruncatedData => ValidationResult.invalidCode(.hqx, .truncated, "BinHex RLE payload"),
+            error.DataTooLarge => ValidationResult.invalid(.hqx, "Expanded BinHex data too large"),
+            error.OutOfMemory => ValidationResult.invalidCode(.hqx, .failed_to_allocate, "BinHex expansion buffer"),
+            else => ValidationResult.invalid(.hqx, "Invalid BinHex RLE payload"),
+        };
+    };
+    defer allocator.free(decoded);
+
+    validateBinhex4Decoded(decoded) catch |err| {
+        return switch (err) {
+            error.CrcMismatch => ValidationResult.invalidCode(.hqx, .checksum_mismatch, "BinHex fork/header CRC"),
+            error.InvalidHeader => ValidationResult.invalid(.hqx, "Invalid BinHex container header"),
+            error.TruncatedData => ValidationResult.invalidCode(.hqx, .truncated, "BinHex container"),
+            else => ValidationResult.invalid(.hqx, "Invalid BinHex container"),
+        };
+    };
+
+    return ValidationResult.okWithDepth(.hqx, .full);
+}
+
+pub fn validateHqx(file: std.fs.File) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.hqx, .failed_to_get, "file size");
+    if (file_size == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
+    if (file_size > BINHEX4_MAX_FILE_SIZE) return ValidationResult.invalid(.hqx, "BinHex file too large (>64MB)");
+
+    file.seekTo(0) catch return ValidationResult.invalidCode(.hqx, .failed_to_seek, "to start");
+
+    const allocator = std.heap.page_allocator;
+    const content = allocator.alloc(u8, @intCast(file_size)) catch {
+        return ValidationResult.invalidCode(.hqx, .failed_to_allocate, "BinHex input buffer");
+    };
+    defer allocator.free(content);
+
+    const bytes_read = file.readAll(content) catch {
+        return ValidationResult.invalidCode(.hqx, .failed_to_read, "BinHex file");
+    };
+    if (bytes_read == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
+
+    return validateHqxBytes(content[0..bytes_read]);
+}
+
+pub fn validateHqxFromBuffer(data: []const u8) ValidationResult {
+    return validateHqxBytes(data);
+}
+
+// ============ BinHex (HQX) Tests ============
+
+const hqx_valid_sample =
+    "(This file must be converted with BinHex 4.0)\n" ++
+    ":#R0KEA\"XC5jdH(3!N!iE!*!%AU&&ER4bEh\"j)&0SD@9XC#\")89JJCQPiG(9bC3U\n" ++
+    "Z2J!!:\n";
+
+test "validateHqxFromBuffer: valid BinHex sample" {
+    const result = validateHqxFromBuffer(hqx_valid_sample);
+    try testing.expectEqual(FileFormat.hqx, result.format);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateHqxFromBuffer: empty data rejected" {
+    const result = validateHqxFromBuffer(&[_]u8{});
+    try testing.expect(!result.is_valid);
+}
