@@ -13,6 +13,7 @@ const DoctypeStrippedResult = format_validation.DoctypeStrippedResult;
 const stripDoctypeDeclaration = format_validation.stripDoctypeDeclaration;
 const xml = @import("xml");
 const errmsg = @import("error_messages.zig");
+const pdf_validator = @import("pdf_validator.zig");
 
 // ============ Premiere Pro (.prproj) Validator ============
 
@@ -597,7 +598,7 @@ pub fn validateAi(file: std.fs.File) ValidationResult {
     if (std.mem.startsWith(u8, header[0..bytes_read], "%PDF-")) {
         // Delegate to PDF validator
         file.seekTo(0) catch return ValidationResult.invalidCode(.ai, .failed_to_seek, "to start");
-        const pdf_result = format_validation.validatePdf(file);
+        const pdf_result = pdf_validator.validatePdf(file);
         // Return AI format but with PDF validation result
         return ValidationResult{
             .format = .ai,
@@ -636,7 +637,7 @@ pub fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // If PDF-based, use deep PDF validation
     if (std.mem.startsWith(u8, header[0..bytes_read], "%PDF-")) {
-        const pdf_result = format_validation.validatePdfDeep(allocator, path);
+        const pdf_result = pdf_validator.validatePdfDeep(allocator, path);
         return ValidationResult{
             .format = .ai,
             .is_valid = pdf_result.is_valid,
@@ -665,7 +666,7 @@ pub fn validateAiFromBuffer(data: []const u8) ValidationResult {
 
     // Check if PDF-based
     if (std.mem.startsWith(u8, data, "%PDF-")) {
-        const pdf_result = format_validation.validatePdfFromBuffer(data);
+        const pdf_result = pdf_validator.validatePdfFromBuffer(data);
         return ValidationResult{
             .format = .ai,
             .is_valid = pdf_result.is_valid,

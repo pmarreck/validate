@@ -86,6 +86,7 @@ pub const image_validators = @import("image_validators.zig");
 pub const cad_3d_validators = @import("cad_3d_validators.zig");
 pub const executable_validators = @import("executable_validators.zig");
 pub const apple_validators = @import("apple_validators.zig");
+pub const pdf_validator = @import("pdf_validator.zig");
 pub const gpt_parser = @import("gpt_parser.zig");
 pub const apm_parser = @import("apm_parser.zig");
 pub const hfsplus_parser = @import("hfsplus_parser.zig");
@@ -235,6 +236,8 @@ test {
     _ = @import("executable_validators.zig");
     // Apple/macOS format validators (Plist, DS_Store, Spotlight, AppleDouble, resource forks, ClarisWorks, MacWrite)
     _ = @import("apple_validators.zig");
+    // PDF format validator (structural + deep with embedded image/font/file validation)
+    _ = @import("pdf_validator.zig");
     // ProRes decoder
     _ = @import("prores_decoder.zig");
     // GPT parser
