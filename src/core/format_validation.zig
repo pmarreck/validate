@@ -5602,8 +5602,6 @@ pub fn stripDoctypeDeclaration(content: []const u8) DoctypeStrippedResult {
 }
 
 
-// ============ Tests ============
-
 test "FileFormat descriptions" {
     try std.testing.expectEqualStrings("PNG Image", FileFormat.png.description());
     try std.testing.expectEqualStrings("ZIP Archive", FileFormat.zip.description());
@@ -5700,12 +5698,6 @@ test "FormatValidator enable/disable" {
 }
 
 
-// ============ JPEG XL Tests ============
-
-// ============ GIF Tests ============
-
-// ============ BMP Tests ============
-
 test "FormatValidator deep validates real OLE2 XLS from ground truth" {
     const allocator = std.testing.allocator;
 
@@ -5752,18 +5744,6 @@ test "FormatValidator deep validates real OLE2 PPT from ground truth" {
     try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
-// ============ Brotli Tests ============
-
-// ============ Tracker/Module Tests ============
-
-// ============ WebP Tests ============
-
-// ============ TIFF Tests ============
-
-// ============ MP4/ISOBMFF Tests ============
-
-// ============ MKV/WebM Tests ============
-
 test "FormatValidator rejects invalid EBML" {
     const allocator = std.testing.allocator;
 
@@ -5792,20 +5772,6 @@ test "FormatValidator rejects invalid EBML" {
     try std.testing.expectEqual(FileFormat.mkv, result.format);
     try std.testing.expect(!result.is_valid);
 }
-
-// ============ AVI Tests ============
-
-// ============ SWF Tests ============
-
-// ============ FLV Tests ============
-
-// ============ MP3 Tests ============
-
-// ============ FLAC Tests ============
-
-// ============ WAV Tests ============
-
-// ============ OLE2/CFBF Tests (DOC, XLS, PPT) ============
 
 test "detectFormat OLE2" {
     const ole2_header = [_]u8{ 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 };
@@ -5904,10 +5870,6 @@ test "FormatValidator rejects invalid OLE2" {
     try std.testing.expect(!result.is_valid);
 }
 
-// ============ RTF Tests ============
-
-// ============ SQLite Tests ============
-
 test "detectFormat SQLite" {
     const sqlite_header = "SQLite format 3\x00";
     try std.testing.expectEqual(FileFormat.sqlite, detectFormat(sqlite_header));
@@ -6002,8 +5964,6 @@ test "FormatValidator rejects invalid SQLite page size" {
     try std.testing.expect(!result.is_valid);
 }
 
-// ============ WordPerfect Tests ============
-
 test "detectFormat WordPerfect" {
     const wpd_header = [_]u8{ 0xFF, 0x57, 0x50, 0x43 };
     try std.testing.expectEqual(FileFormat.wpd, detectFormat(&wpd_header));
@@ -6089,10 +6049,6 @@ test "FormatValidator rejects invalid WordPerfect" {
     try std.testing.expect(!result.is_valid);
 }
 
-// ============ UTF-8 Validation Tests ============
-
-// ============ SQLite Deep Validation Tests ============
-
 test "FormatValidator deep validation detects SQLite integrity" {
     const allocator = std.testing.allocator;
 
@@ -6134,8 +6090,6 @@ test "FormatValidator deep validation detects SQLite integrity" {
     // This test just verifies the structural validation works with deep mode enabled
 }
 
-// ============ ValidationDepth Tests ============
-
 test "ValidationResult tracks validation depth" {
     const structural = ValidationResult.ok(.png);
     try std.testing.expectEqual(ValidationDepth.structural, structural.validation_depth);
@@ -6154,8 +6108,6 @@ test "ValidationResult tracks resource fork info" {
     try std.testing.expect(result.has_resource_fork);
     try std.testing.expect(result.resource_fork_valid.? == true);
 }
-
-// ============ PNG CRC-32 Deep Validation Tests ============
 
 // ============ ZIP CRC-32 Deep Validation Tests ============
 
@@ -6216,18 +6168,6 @@ test "stripDoctypeDeclaration returns original when no DOCTYPE" {
     try std.testing.expectEqual(input.ptr, result.data.ptr);
 }
 
-// ============ DSD Audio Format Tests ============
-
-// ============ Institutional Format Tests ============
-
-// ============ IFF/Blorb Format Tests ============
-
-// ============ Scientific Format Tests ============
-
-// ============ GIS Format Tests ============
-
-// ============ CAD Format Tests ============
-
 test "FormatValidator accepts valid STEP" {
     const allocator = std.testing.allocator;
 
@@ -6261,12 +6201,6 @@ test "FormatValidator accepts valid STEP" {
     try std.testing.expectEqual(FileFormat.step, result.format);
     try std.testing.expect(result.is_valid);
 }
-
-// ============ EML/MBOX Format Tests ============
-
-// ============ PAR2 Tests ============
-
-// ============ Buffer-First Architecture Tests ============
 
 test "validateDataBuffer detects and validates PNG from buffer" {
     // Minimal valid PNG: signature + IHDR + IEND
@@ -6434,26 +6368,6 @@ test "FormatValidator validateFileBuffer validates from buffer directly" {
     try std.testing.expectEqual(FileFormat.jpeg, result.format);
     try std.testing.expect(result.is_valid);
 }
-
-// ============ FITS Checksum Tests ============
-
-// ============ PSD Validation Tests ============
-
-// ============ AI/EPS Validation Tests ============
-
-// ============ AEP Validation Tests ============
-
-// ============ Adobe Premiere Pro (PRPROJ) Validation Tests ============
-
-// ============ Adobe InDesign (INDD) Validation Tests ============
-
-// ============ Adobe InDesign Markup (IDML) Validation Tests ============
-
-// ============ AutoCAD DWG Validation Tests ============
-
-// ============ Blender Validation Tests ============
-
-// ============ Bundle Detection Tests ============
 
 test "detectBundleType identifies .git directories" {
     // Exact ".git" path
