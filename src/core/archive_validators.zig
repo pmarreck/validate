@@ -5463,8 +5463,8 @@ test "FormatValidator accepts valid ALS (gzip-based)" {
 
     const result = validator.validateFile(path);
 
-    // ALS files are detected as gzip since they share magic bytes
-    try std.testing.expectEqual(FileFormat.gzip, result.format);
+    // ALS files are detected as gzip by magic bytes, then remapped to .als by extension
+    try std.testing.expectEqual(FileFormat.als, result.format);
     try std.testing.expect(result.is_valid);
 }
 

@@ -3097,7 +3097,10 @@ pub fn validateShapefile(file: std.fs.File) ValidationResult {
 
     // File length at offset 24 (big-endian, in 16-bit words)
     const file_length_words = std.mem.readInt(i32, header[24..28], .big);
-    const declared_file_size: u64 = @intCast(file_length_words * 2);
+    if (file_length_words < 50) {
+        return ValidationResult.invalidCode(.shapefile, .invalid_value, "file length");
+    }
+    const declared_file_size: u64 = @as(u64, @intCast(file_length_words)) * 2;
 
     if (declared_file_size > file_size) {
         return ValidationResult.invalidCodeMsg(.shapefile, .exceeds_bounds, "Declared file length", "Declared file length exceeds actual size");
@@ -3158,7 +3161,7 @@ pub fn validateShapefile(file: std.fs.File) ValidationResult {
             return ValidationResult.invalidCode(.shapefile, .invalid_value, "content length");
         }
 
-        const content_length: u64 = @intCast(content_length_words * 2);
+        const content_length: u64 = @as(u64, @intCast(content_length_words)) * 2;
         const record_end = offset + 8 + content_length;
 
         if (record_end > declared_file_size) {

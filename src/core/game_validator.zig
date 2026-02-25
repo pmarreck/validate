@@ -140,9 +140,9 @@ pub fn validateSnes(file: std.fs.File) ValidationResult {
         const bytes_read = file.read(&header) catch continue;
         if (bytes_read < 32) continue;
 
-        // Check checksum complement (bytes 28-29 should be inverse of 30-31)
-        const stored_checksum = std.mem.readInt(u16, header[28..30], .little);
-        const complement = std.mem.readInt(u16, header[30..32], .little);
+        // Check checksum complement: offset 0x1C (28) = complement, offset 0x1E (30) = checksum
+        const complement = std.mem.readInt(u16, header[28..30], .little);
+        const stored_checksum = std.mem.readInt(u16, header[30..32], .little);
 
         if ((stored_checksum ^ complement) != 0xFFFF) {
             continue; // Header consistency check failed

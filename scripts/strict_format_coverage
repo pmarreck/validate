@@ -33,7 +33,7 @@ first_file_in_dir() {
 	if [[ ! -d "$dir" ]]; then
 		return 1
 	fi
-	find "$dir" -type f ! -path "*/corrupted/*" ! -name "README.md" | LC_ALL=C sort | head -n 1
+	find "$dir" -maxdepth 1 -type f ! -path "*/corrupted/*" ! -name "README.md" | LC_ALL=C sort | head -n 1
 }
 
 first_file_by_ext() {
@@ -63,9 +63,10 @@ sample_path_for_format() {
 		xls) p="$GT_DIR/ole2/sample.xls" ;;
 		ppt) p="$GT_DIR/ole2/sample.ppt" ;;
 		m4a) p="$GT_DIR/aac/sample.m4a" ;;
-		plain_text_utf16) p="tests/fixtures/utf16le.txt" ;;
-		plain_text_latin1) p="$(first_file_in_dir "$GT_DIR/plain_text" || true)" ;;
-		plain_text_cp437) p="$(first_file_in_dir "$GT_DIR/plain_text" || true)" ;;
+		plain_text) p="$GT_DIR/plain_text/utf8/sample.txt" ;;
+		plain_text_utf16) p="$GT_DIR/plain_text/utf16/sample.txt" ;;
+		plain_text_latin1) p="$GT_DIR/plain_text/latin1/sample.txt" ;;
+		plain_text_cp437) p="$GT_DIR/plain_text/cp437/sample.nfo" ;;
 		ivf) p="$(first_file_in_dir "$GT_DIR/vp8" || true)" ;;
 		kmz) p="$(first_file_by_ext "$GT_DIR/kmz" "kmz" || first_file_in_dir "$GT_DIR/kmz" || true)" ;;
 		git_repository) p="$GT_DIR/git_repository/sample/.git" ;;

@@ -29,7 +29,16 @@ These formats return WARN — recognized but NO real corruption detection:
 - **Result: format_validation.zig reduced from ~24.7K to 6,515 lines (74% reduction)**
 
 ### Ground-Truth Sample Coverage
-- [ ] Add samples for ~50 formats still missing ground-truth examples
+- [x] Add ground-truth samples for ~56 formats (down from 57 missing to 1 missing: `song`) (2026-02-25 EST)
+- [x] Fix format detection pipeline: add extension-based detection for game ROMs (SNES, GB, GBA, NDS, Genesis), disk images (ISO, DMG), COFF, legacy word processors (CWK, MWD) (2026-02-25 EST)
+- [x] Fix SNES checksum bug: complement/checksum fields were swapped at offsets 0x7FDC/0x7FDE (2026-02-25 EST)
+- [x] Fix shapefile integer overflow crash on corrupted data (negative file_length_words → @intCast panic) (2026-02-25 EST)
+- [x] Fix zigimg PackBits decoder crash on corrupted TIFF data (output buffer overflow → bounds check) (2026-02-25 EST)
+- [x] Classify 19 new formats in corruption_opacity.tsv (mixed/opaque as appropriate) (2026-02-25 EST)
+- [x] Fix strict harness: -maxdepth 1 for file discovery, explicit plain_text variant paths (2026-02-25 EST)
+- **Result: 186/187 formats passing (60 pass + 26 opaque + 96 mixed + 4 non-file), 0 corrupt_fail, 0 valid_fail**
+- [ ] `song` (Studio One) — needs Peter to provide sample
+- [ ] Investigate 3 remaining abort traps in corruption tests (likely zigimg LZW/other decoder bounds issues)
 
 ### Validator Depth Upgrades (`.structural` → `.full`)
 - [x] Fix Blend deep → `.structural` (no checksums, missed in audit) (2026-02-24 EST)

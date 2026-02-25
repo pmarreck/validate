@@ -34,6 +34,11 @@ the entire purpose of the tool.
 - **Validation (full)**: Every byte is verified via CRC, hash, decompression, or codec decode. A random bit flip WILL be caught.
 - **Validation (best_effort)** *(future tier)*: Every byte parsed but no integrity mechanism exists. Distinguishes "we parsed everything" from "we only checked headers." Both are currently reported as `structural`.
 - **Deep validation**: Shorthand for full validation when supported.
+- **Corruption opacity**: A format's inherent ability to detect corruption. Three tiers:
+  - *transparent*: checksums/decode will catch any bit flip (gzip, PNG, FLAC)
+  - *mixed*: depends on corruption location (MP4, JPEG, WAV)
+  - *opaque*: format has no integrity mechanism; even full parsing can't detect semantic bit flips (plain text, CSV, OBJ)
+  See `scripts/corruption_opacity.tsv` for the per-format map.
 - **Malformation**: A known, named format defect (e.g., MIME-wrapped content).
 - **Warning**: A notable condition that does not invalidate the file.
 - **Format validator**: A format-specific validator implementation.

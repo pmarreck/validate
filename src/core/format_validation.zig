@@ -1229,6 +1229,10 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "{\\rtf", .offset = 0, .format = .rtf },
     // WordPerfect: FF 57 50 43 (WPC)
     .{ .bytes = &[_]u8{ 0xFF, 0x57, 0x50, 0x43 }, .offset = 0, .format = .wpd },
+    // Microsoft Access MDB (97-2003): 00 01 00 00 + "Standard Jet DB" at offset 4
+    .{ .bytes = &[_]u8{ 0x00, 0x01, 0x00, 0x00 } ++ "Standard Jet DB", .offset = 0, .format = .mdb },
+    // Microsoft Access ACCDB (2007+): 00 01 00 00 + "Standard ACE DB" at offset 4
+    .{ .bytes = &[_]u8{ 0x00, 0x01, 0x00, 0x00 } ++ "Standard ACE DB", .offset = 0, .format = .accdb },
     // SQLite: SQLite format 3\0
     .{ .bytes = "SQLite format 3\x00", .offset = 0, .format = .sqlite },
     // HDF5: 89 48 44 46 0D 0A 1A 0A
@@ -1253,6 +1257,10 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "PACK", .offset = 0, .format = .pak },
     // Larian Studios PAK (BG3, Divinity): "LSPK" at offset 0
     .{ .bytes = "LSPK", .offset = 0, .format = .lspk },
+    // BSP (Source engine): "VBSP" at offset 0
+    .{ .bytes = "VBSP", .offset = 0, .format = .bsp },
+    // BSP (Quake 2/3): "IBSP" at offset 0
+    .{ .bytes = "IBSP", .offset = 0, .format = .bsp },
     // VPK (Valve): signature 0x55AA1234 at offset 0
     .{ .bytes = &[_]u8{ 0x34, 0x12, 0xAA, 0x55 }, .offset = 0, .format = .vpk },
     // Game ROM formats
@@ -2131,6 +2139,35 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "dv") or std.mem.eql(u8, ext_lower, "dif")) return .dv;
     if (std.mem.eql(u8, ext_lower, "tga") or std.mem.eql(u8, ext_lower, "targa")) return .tga;
 
+    // DAW/creative formats with no magic or ambiguous magic (extension-only detection)
+    if (std.mem.eql(u8, ext_lower, "bwproject")) return .bwproject;
+    if (std.mem.eql(u8, ext_lower, "ptx")) return .ptx;
+    if (std.mem.eql(u8, ext_lower, "band")) return .band;
+    if (std.mem.eql(u8, ext_lower, "reason")) return .reason;
+    if (std.mem.eql(u8, ext_lower, "cpr")) return .cpr;
+    if (std.mem.eql(u8, ext_lower, "logicx")) return .logicx;
+    if (std.mem.eql(u8, ext_lower, "song")) return .song;
+    if (std.mem.eql(u8, ext_lower, "sketch")) return .sketch;
+    if (std.mem.eql(u8, ext_lower, "drp")) return .drp;
+
+    // Game ROM formats — many lack magic bytes at offset 0
+    if (std.mem.eql(u8, ext_lower, "smc") or std.mem.eql(u8, ext_lower, "sfc")) return .snes;
+    if (std.mem.eql(u8, ext_lower, "gb") or std.mem.eql(u8, ext_lower, "gbc")) return .gb;
+    if (std.mem.eql(u8, ext_lower, "gba")) return .gba;
+    if (std.mem.eql(u8, ext_lower, "nds")) return .nds;
+    if (std.mem.eql(u8, ext_lower, "gen") or std.mem.eql(u8, ext_lower, "smd")) return .genesis;
+
+    // Disk images — magic at non-zero offsets or trailer-only
+    if (std.mem.eql(u8, ext_lower, "iso")) return .iso;
+    if (std.mem.eql(u8, ext_lower, "dmg")) return .dmg;
+
+    // COFF — 2-byte machine type at offset 0 is too short for reliable magic detection
+    if (std.mem.eql(u8, ext_lower, "o")) return .coff;
+
+    // Legacy word processors — no magic bytes
+    if (std.mem.eql(u8, ext_lower, "cwk")) return .cwk;
+    if (std.mem.eql(u8, ext_lower, "mwd")) return .mwd;
+
     // Adobe Illustrator - extension needed to distinguish from PDF/EPS
     // AI files are PDF or PostScript internally, but should be treated as AI
     if (std.mem.eql(u8, ext_lower, "ai")) return .ai;
@@ -2555,6 +2592,13 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "als")) return .als;
     if (std.mem.eql(u8, ext_lower, "rpp")) return .rpp;
     if (std.mem.eql(u8, ext_lower, "flp")) return .flp;
+    if (std.mem.eql(u8, ext_lower, "bwproject")) return .bwproject;
+    if (std.mem.eql(u8, ext_lower, "cpr")) return .cpr;
+    if (std.mem.eql(u8, ext_lower, "ptx")) return .ptx;
+    if (std.mem.eql(u8, ext_lower, "band")) return .band;
+    if (std.mem.eql(u8, ext_lower, "reason")) return .reason;
+    if (std.mem.eql(u8, ext_lower, "logicx")) return .logicx;
+    if (std.mem.eql(u8, ext_lower, "song")) return .song;
 
     // GIS
     if (std.mem.eql(u8, ext_lower, "kml")) return .kml;
@@ -4338,7 +4382,10 @@ pub const FormatValidator = struct {
                 // magic bytes, trust the extension and validate with the
                 // format-specific validator directly.
                 const ext_has_no_magic = switch (ext_format) {
-                    .br, .hqx, .cpt, .dv, .tga, .html, .dmg, .iso => true,
+                    .br, .hqx, .cpt, .dv, .tga, .html, .dmg, .iso,
+                    .bwproject, .ptx, .band, .reason, .cpr, .logicx, .song, .sketch, .drp,
+                    .snes, .gb, .gba, .nds, .genesis, .cwk, .mwd,
+                    => true,
                     else => false,
                 };
                 if (ext_has_no_magic and ext_format.hasValidator()) {
@@ -4355,6 +4402,21 @@ pub const FormatValidator = struct {
                         .iso => filesystem_validators.validateIso(reopen_ext),
                         .hqx => archive_validators.validateHqx(reopen_ext),
                         .cpt => archive_validators.validateCpt(reopen_ext),
+                        .bwproject => daw_validators.validateBwproject(reopen_ext),
+                        .ptx => daw_validators.validateProTools(reopen_ext),
+                        .band => daw_validators.validateGarageBand(reopen_ext),
+                        .reason => daw_validators.validateReason(reopen_ext),
+                        .cpr => daw_validators.validateCubase(reopen_ext),
+                        .logicx, .song => archive_validators.validateZip(reopen_ext, ext_format),
+                        .sketch => creative_validators.validateSketch(reopen_ext),
+                        .drp => creative_validators.validateDrp(reopen_ext),
+                        .snes => game_validator.validateSnes(reopen_ext),
+                        .gb => game_validator.validateGb(reopen_ext),
+                        .gba => game_validator.validateGba(reopen_ext),
+                        .nds => game_validator.validateNds(reopen_ext),
+                        .genesis => game_validator.validateGenesis(reopen_ext),
+                        .cwk => apple_validators.validateClarisWorks(reopen_ext),
+                        .mwd => apple_validators.validateMacWrite(reopen_ext),
                         else => ValidationResult.ok(ext_format),
                     };
                 } else {
@@ -4553,6 +4615,24 @@ pub const FormatValidator = struct {
             result = creative_validators.validatePrproj(reopen_file);
         }
 
+        // Special handling for Ableton Live Set files
+        // ALS files are gzip-compressed XML, detected as gzip by magic bytes
+        // If extension is .als, use ALS-specific validation
+        if (expected_format == .als and result.format == .gzip) {
+            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+                result.format = .als;
+                return result;
+            };
+            defer reopen_file.close();
+            result = daw_validators.validateAls(reopen_file);
+        }
+
+        // Special handling for Logic Pro X and Studio One files
+        // These are ZIP-based packages, detected as ZIP by magic bytes
+        if ((expected_format == .logicx or expected_format == .song) and result.format == .zip) {
+            result.format = expected_format;
+        }
+
         // Special handling for Adobe InDesign Markup (IDML) files
         // IDML files are ZIP containers with XML content, detected as ZIP by magic bytes
         // If extension is .idml, use IDML-specific validation
@@ -4662,9 +4742,19 @@ pub const FormatValidator = struct {
                 }
                 // If extraction failed, keep structural result (already has mime warning)
             } else {
-                // Preserve malformations from structural validation
+                // Preserve malformations and format from structural validation
                 const structural_malformations = result.malformations;
+                const structural_format = result.format;
                 result = self.performDeepValidation(allocator, path, result);
+                // If deep validation returned a generic container format (.zip, .gzip)
+                // but structural validation had already identified a more specific format,
+                // preserve the specific format (e.g., .logicx, .als, .drp, .song)
+                if (result.format == .zip and structural_format != .zip) {
+                    result.format = structural_format;
+                }
+                if (result.format == .gzip and structural_format != .gzip) {
+                    result.format = structural_format;
+                }
                 // Merge back any malformations from structural validation
                 var iter = structural_malformations.iterator();
                 while (iter.next()) |m| {
