@@ -14,6 +14,7 @@ const stripDoctypeDeclaration = format_validation.stripDoctypeDeclaration;
 const xml = @import("xml");
 const errmsg = @import("error_messages.zig");
 const pdf_validator = @import("pdf_validator.zig");
+const archive_validators = @import("archive_validators.zig");
 
 // ============ Premiere Pro (.prproj) Validator ============
 
@@ -81,7 +82,7 @@ pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResu
     if (header[0] == 0x1f and header[1] == 0x8b) {
         // Use gzip deep validation for CRC verification
         // This validates every byte through decompression and CRC32 check
-        const gzip_result = format_validation.validateGzipDeep(allocator, path);
+        const gzip_result = archive_validators.validateGzipDeep(allocator, path);
         if (!gzip_result.is_valid) {
             // Remap format to prproj but preserve error
             var result = gzip_result;
@@ -440,7 +441,7 @@ pub fn validateDrp(file: std.fs.File) ValidationResult {
 
 pub fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Use ZIP deep validation for the container integrity
-    const zip_result = format_validation.validateZipDeep(allocator, path);
+    const zip_result = archive_validators.validateZipDeep(allocator, path);
     if (!zip_result.is_valid) {
         return ValidationResult.invalid(.drp, zip_result.error_message orelse "Invalid ZIP structure");
     }
@@ -522,7 +523,7 @@ pub fn validateSketch(file: std.fs.File) ValidationResult {
 
 pub fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Use ZIP deep validation for the container integrity
-    const zip_result = format_validation.validateZipDeep(allocator, path);
+    const zip_result = archive_validators.validateZipDeep(allocator, path);
     if (!zip_result.is_valid) {
         return ValidationResult.invalid(.sketch, zip_result.error_message orelse "Invalid ZIP structure");
     }

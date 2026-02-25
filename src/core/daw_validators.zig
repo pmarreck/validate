@@ -9,6 +9,7 @@ const std = @import("std");
 const format_validation = @import("format_validation.zig");
 const text_format_validators = @import("text_format_validators.zig");
 const errmsg = @import("error_messages.zig");
+const archive_validators = @import("archive_validators.zig");
 const Allocator = std.mem.Allocator;
 const ValidationResult = format_validation.ValidationResult;
 
@@ -198,7 +199,7 @@ pub fn validateAls(file: std.fs.File) ValidationResult {
 pub fn validateAlsDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Use gzip deep validation for full CRC32 verification
     // This validates every byte through decompression and CRC32 check
-    const gzip_result = format_validation.validateGzipDeep(allocator, path);
+    const gzip_result = archive_validators.validateGzipDeep(allocator, path);
     if (!gzip_result.is_valid) {
         // Remap format to als but preserve error
         var result = gzip_result;

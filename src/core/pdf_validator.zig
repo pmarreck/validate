@@ -13,7 +13,10 @@ const ValidationDepth = format_validation.ValidationDepth;
 const MalformationType = format_validation.MalformationType;
 const findInBuffer = format_validation.findInBuffer;
 const getenvCrossPlatform = format_validation.getenvCrossPlatform;
-const isTruthy = format_validation.isTruthy;
+fn isTruthy(value: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(value, "1") or std.ascii.eqlIgnoreCase(value, "true") or
+        std.ascii.eqlIgnoreCase(value, "yes") or std.ascii.eqlIgnoreCase(value, "on");
+}
 
 const pdf_image_validator = @import("pdf_image_validator.zig");
 const pdf_font_validator = @import("pdf_font_validator.zig");
