@@ -74,6 +74,7 @@ pub const dvd_validator = @import("dvd_validator.zig");
 pub const blu_ray_validator = @import("blu_ray_validator.zig");
 pub const iso_validator = @import("iso_validator.zig");
 pub const game_validator = @import("game_validator.zig");
+pub const game_asset_validators = @import("game_asset_validators.zig");
 pub const pe_validator = @import("pe_validator.zig");
 pub const daw_validators = @import("daw_validators.zig");
 pub const scientific_validators = @import("scientific_validators.zig");
@@ -210,6 +211,7 @@ test {
     _ = @import("iso_validator.zig");
     // Game ROM validators (NES, SNES, N64, GB, GBA, NDS, Genesis, CHD)
     _ = @import("game_validator.zig");
+    _ = @import("game_asset_validators.zig");
     // PE (Portable Executable) validator
     _ = @import("pe_validator.zig");
     // DAW project validators (FLP, ALS, RPP)
