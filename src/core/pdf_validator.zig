@@ -13,6 +13,9 @@ const ValidationDepth = format_validation.ValidationDepth;
 const MalformationType = format_validation.MalformationType;
 const findInBuffer = format_validation.findInBuffer;
 const getenvCrossPlatform = format_validation.getenvCrossPlatform;
+const FormatValidator = format_validation.FormatValidator;
+const detectFormat = format_validation.detectFormat;
+
 fn isTruthy(value: []const u8) bool {
     return std.ascii.eqlIgnoreCase(value, "1") or std.ascii.eqlIgnoreCase(value, "true") or
         std.ascii.eqlIgnoreCase(value, "yes") or std.ascii.eqlIgnoreCase(value, "on");
@@ -768,3 +771,200 @@ test "toleratedPdfImageFailures accepts truncated JBIG2 failures" {
 	try std.testing.expect(tolerated != null);
 	try std.testing.expect(tolerated.?.malformations.contains(.pdf_jbig2_truncated));
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "detectFormat PDF" {
+    const pdf_header = "%PDF-1.7\n%\xE2\xE3\xCF\xD3\n1 ";
+    try std.testing.expectEqual(FileFormat.pdf, detectFormat(pdf_header));
+}
+
+test "FormatValidator accepts valid PDF file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid PDF (1 empty page)
+    const valid_pdf =
+        \\%PDF-1.4
+        \\1 0 obj
+        \\<< /Type /Catalog /Pages 2 0 R >>
+        \\endobj
+        \\2 0 obj
+        \\<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+        \\endobj
+        \\3 0 obj
+        \\<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
+        \\endobj
+        \\xref
+        \\0 4
+        \\0000000000 65535 f
+        \\0000000009 00000 n
+        \\0000000058 00000 n
+        \\0000000115 00000 n
+        \\trailer
+        \\<< /Size 4 /Root 1 0 R >>
+        \\startxref
+        \\190
+        \\%%EOF
+    ;
+
+    const file = try tmp_dir.dir.createFile("valid.pdf", .{});
+    try file.writeAll(valid_pdf);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.pdf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.pdf, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid PDF failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects corrupted PDF file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Corrupted PDF: has header but no end marker (truncated)
+    const corrupted_pdf =
+        \\%PDF-1.4
+        \\1 0 obj
+        \\<< /Type /Catalog /Pages 2 0 R >>
+        \\endobj
+        \\% This file is truncated - no end marker
+    ;
+
+    const file = try tmp_dir.dir.createFile("corrupted.pdf", .{});
+    try file.writeAll(corrupted_pdf);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.pdf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.pdf, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator returns structural for encrypted PDF" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Encrypted PDF with /Encrypt in trailer
+    const encrypted_pdf =
+        \\%PDF-1.4
+        \\1 0 obj
+        \\<< /Type /Catalog /Pages 2 0 R >>
+        \\endobj
+        \\2 0 obj
+        \\<< /Type /Pages /Count 0 /Kids [] >>
+        \\endobj
+        \\3 0 obj
+        \\<< /Filter /Standard /V 2 /Length 128 /R 3 /O (xxx) /U (xxx) /P -12 >>
+        \\endobj
+        \\xref
+        \\0 4
+        \\0000000000 65535 f
+        \\0000000009 00000 n
+        \\0000000058 00000 n
+        \\0000000115 00000 n
+        \\trailer
+        \\<< /Size 4 /Root 1 0 R /Encrypt 3 0 R >>
+        \\startxref
+        \\225
+        \\%%EOF
+    ;
+
+    const file = try tmp_dir.dir.createFile("encrypted.pdf", .{});
+    try file.writeAll(encrypted_pdf);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "encrypted.pdf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.pdf, result.format);
+    try std.testing.expect(result.is_valid);
+    // Should be structural only since PDF is encrypted
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "FormatValidator detects MIME-wrapped PDF and warns loudly" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // MIME-wrapped PDF (as might be returned by buggy web service)
+    const mime_wrapped_pdf =
+        \\------=_Part_1234_567890.123456789
+        \\Content-Type: application/pdf; name=test.pdf
+        \\Content-Disposition: inline; filename=test.pdf
+        \\
+        \\%PDF-1.4
+        \\1 0 obj
+        \\<< /Type /Catalog /Pages 2 0 R >>
+        \\endobj
+        \\2 0 obj
+        \\<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+        \\endobj
+        \\3 0 obj
+        \\<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>
+        \\endobj
+        \\xref
+        \\0 4
+        \\0000000000 65535 f
+        \\0000000009 00000 n
+        \\0000000058 00000 n
+        \\0000000115 00000 n
+        \\trailer
+        \\<< /Size 4 /Root 1 0 R >>
+        \\startxref
+        \\200
+        \\%%EOF
+    ;
+
+    const file = try tmp_dir.dir.createFile("mime_wrapped.pdf", .{});
+    try file.writeAll(mime_wrapped_pdf);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "mime_wrapped.pdf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should detect it as PDF (from the embedded content)
+    try std.testing.expectEqual(FileFormat.pdf, result.format);
+    // Should be valid (the embedded PDF is valid)
+    try std.testing.expect(result.is_valid);
+    // Should have the MIME-wrapped malformation in the set
+    try std.testing.expect(result.malformations.contains(.mime_wrapped_content));
+    // Should have at least one malformation
+    try std.testing.expect(result.hasMalformations());
+}
+

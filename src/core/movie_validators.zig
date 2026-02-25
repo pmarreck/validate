@@ -24,6 +24,9 @@ const aac_syntax_validator = @import("aac_syntax_validator.zig");
 const VideoDecodeTolerance = format_validation.VideoDecodeTolerance;
 const toleratedVideoDecodeFailure = format_validation.toleratedVideoDecodeFailure;
 /// Check if a box type is valid ASCII (printable, no control chars or nulls).
+const FormatValidator = format_validation.FormatValidator;
+const detectFormat = format_validation.detectFormat;
+
 fn isValidBoxType(box_type: *const [4]u8) bool {
     for (box_type) |c| {
         if (c < 0x20 or (c > 0x7E and c != 0xA9)) {
@@ -1604,3 +1607,544 @@ test "parseMaxVideoDeepSize defaults to unlimited and honors MAX_VIDEO_SIZE" {
 	try std.testing.expectEqual(std.math.maxInt(u64), parseMaxVideoDeepSize("invalid"));
 	try std.testing.expectEqual(@as(u64, 1024 * 1024), parseMaxVideoDeepSize("1"));
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "FormatValidator accepts valid MP4" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid MP4 with ftyp box
+    const valid_mp4 = [_]u8{
+        // ftyp box
+        0x00, 0x00, 0x00, 0x14, // box size (20)
+        'f', 't', 'y', 'p', // box type
+        'i', 's', 'o', 'm', // major brand
+        0x00, 0x00, 0x00, 0x00, // minor version
+        'i',  's',  'o',  'm', // compatible brand
+        // moov box (minimal)
+        0x00, 0x00, 0x00, 0x08,
+        'm',  'o',  'o',  'v',
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.mp4", .{});
+    try file.writeAll(&valid_mp4);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.mp4");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.mp4, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid MP4 failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid HEIC" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid HEIC
+    const valid_heic = [_]u8{
+        // ftyp box
+        0x00, 0x00, 0x00, 0x14,
+        'f',  't',  'y',  'p',
+        'h',  'e',  'i',  'c', // HEIC brand
+        0x00, 0x00, 0x00, 0x00,
+        'm',  'i',  'f',  '1',
+        // meta box
+        0x00, 0x00, 0x00, 0x08,
+        'm',  'e',  't',  'a',
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.heic", .{});
+    try file.writeAll(&valid_heic);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.heic");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.heic, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator deep validates real HEIC from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Use smaller HEIC file (1440x960) instead of sample.heic (3992x2992) because
+    // the large image has many grid tiles that cause stack overflow on systems
+    // with restricted stack limits (e.g., Garnix CI with ~8 MB stack limit).
+    // The smaller image still exercises the full decode path but with fewer tiles.
+    const file = std.fs.cwd().openFile("ground_truth_examples/heic/autumn_1440x960.heic", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/heic/autumn_1440x960.heic") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.heic, result.format);
+    try std.testing.expect(result.is_valid);
+    // Accept either full or structural validation - smaller HEIC images may have
+    // codec variants that can't be fully decoded (e.g., HEIF without HEVC
+    // Main profile marker), but structural validation still confirms the container.
+    try std.testing.expect(result.validation_depth == .full or result.validation_depth == .structural);
+}
+
+test "FormatValidator deep validates real AVIF from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth AVIF file (from link-u/avif-sample-images, CC-BY-SA 4.0)
+    const file = std.fs.cwd().openFile("ground_truth_examples/avif/fox.avif", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/avif/fox.avif") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.avif, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator rejects truncated MP4" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // MP4 with box extending beyond file
+    const truncated_mp4 = [_]u8{
+        0x00, 0x00, 0x00, 0xFF, // box size (255, but file is smaller)
+        'f',  't',  'y',  'p',
+        'i',  's',  'o',
+        'm',
+        // Truncated
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.mp4", .{});
+    try file.writeAll(&truncated_mp4);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.mp4");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.mp4, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts valid MKV" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid MKV with EBML header and matroska doctype
+    const valid_mkv = [_]u8{
+        0x1A, 0x45, 0xDF, 0xA3, // EBML header
+        0x93, // EBML size (19 bytes)
+        0x42, 0x82, // DocType element
+        0x88, // DocType size (8)
+        'm', 'a', 't', 'r', 'o', 's', 'k', 'a', // "matroska"
+        0x42, 0x87, // DocTypeVersion
+        0x81, // size (1)
+        0x04, // version 4
+        0x42, 0x85, // DocTypeReadVersion
+        0x81, 0x02, // size, value
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.mkv", .{});
+    try file.writeAll(&valid_mkv);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.mkv");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.mkv, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid MKV failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid WebM" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid WebM with EBML header and webm doctype
+    const valid_webm = [_]u8{
+        0x1A, 0x45, 0xDF, 0xA3, // EBML header
+        0x8B, // EBML size (11 bytes)
+        0x42, 0x82, // DocType element
+        0x84, // DocType size (4)
+        'w', 'e', 'b', 'm', // "webm"
+        0x42, 0x87, 0x81, 0x02, // DocTypeVersion
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.webm", .{});
+    try file.writeAll(&valid_webm);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.webm");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.webm, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid AVI" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid AVI
+    // Total: 4 (RIFF) + 4 (size) + 4 (AVI) + 4 (LIST) + 4 (list size) + 4 (hdrl) + 4 (avih) + 4 (avih size) + 8 (data) = 40 bytes
+    // RIFF size = 40 - 8 = 32 = 0x20
+    const valid_avi = [_]u8{
+        'R', 'I', 'F', 'F', // RIFF signature
+        0x20, 0x00, 0x00, 0x00, // file size - 8 (32 bytes)
+        'A', 'V', 'I', ' ', // AVI fourcc
+        'L', 'I', 'S', 'T', // LIST chunk
+        0x14, 0x00, 0x00, 0x00, // LIST size (20 bytes: hdrl + avih + size + data)
+        'h', 'd', 'r', 'l', // hdrl type
+        'a', 'v', 'i', 'h', // avih chunk
+        0x08, 0x00, 0x00, 0x00, // avih size (8 bytes)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // avih data
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.avi", .{});
+    try file.writeAll(&valid_avi);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.avi");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.avi, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid AVI failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects truncated AVI" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // AVI with RIFF size larger than file
+    const truncated_avi = [_]u8{
+        'R', 'I', 'F', 'F',
+        0xFF, 0x00, 0x00, 0x00, // declared size (255)
+        'A',  'V',  'I',
+        ' ',
+        // Truncated
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.avi", .{});
+    try file.writeAll(&truncated_avi);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.avi");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.avi, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts valid uncompressed SWF (FWS)" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid uncompressed SWF
+    // FWS + version + file_length + RECT (1 byte Nbits=0x08 = 1 bit per value) + frame_rate + frame_count
+    const valid_swf = [_]u8{
+        'F', 'W', 'S', // Uncompressed SWF signature
+        0x0A, // Version 10
+        0x11, 0x00, 0x00, 0x00, // File length = 17 bytes (entire file)
+        0x08, // RECT: Nbits=1 (only need 1 bit per field, but minimum useful is 8)
+        0x00, 0x00, 0x00, 0x00, // RECT data (minimum)
+        0x00, 0x01, // Frame rate (1.0 fps)
+        0x01, 0x00, // Frame count (1 frame)
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.swf", .{});
+    try file.writeAll(&valid_swf);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.swf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.swf, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid SWF failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator detects compressed SWF (CWS)" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // CWS header - compressed SWF
+    // Note: uncompressed size is larger than actual file (correct for compressed)
+    const cws_swf = [_]u8{
+        'C', 'W', 'S', // Compressed SWF signature (zlib)
+        0x0A, // Version 10
+        0x20, 0x00, 0x00, 0x00, // Uncompressed size = 32 bytes
+        // Compressed data (zlib header)
+        0x78, 0x9C, // zlib header (default compression)
+        0x00, 0x00, // Some compressed data
+    };
+
+    const file = try tmp_dir.dir.createFile("compressed.swf", .{});
+    try file.writeAll(&cws_swf);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "compressed.swf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.swf, result.format);
+    // Compressed SWF should be valid (we only check header structure)
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects invalid SWF signature" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const invalid_swf = [_]u8{
+        'X',  'W',  'S', // Invalid signature
+        0x0A, 0x10, 0x00,
+        0x00, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("invalid.swf", .{});
+    try file.writeAll(&invalid_swf);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.swf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Detected as SWF via extension fallback, reported as invalid
+    try std.testing.expectEqual(FileFormat.swf, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "detectFormat SWF variants" {
+    // Test all three SWF signatures
+    const fws = [_]u8{ 'F', 'W', 'S', 0x0A, 0x10, 0x00, 0x00, 0x00 };
+    const cws = [_]u8{ 'C', 'W', 'S', 0x0A, 0x10, 0x00, 0x00, 0x00 };
+    const zws = [_]u8{ 'Z', 'W', 'S', 0x0A, 0x10, 0x00, 0x00, 0x00 };
+
+    try std.testing.expectEqual(FileFormat.swf, detectFormat(&fws));
+    try std.testing.expectEqual(FileFormat.swf, detectFormat(&cws));
+    try std.testing.expectEqual(FileFormat.swf, detectFormat(&zws));
+}
+
+test "FormatValidator accepts valid FLV" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid FLV
+    const valid_flv = [_]u8{
+        'F', 'L', 'V', // FLV signature
+        0x01, // Version 1
+        0x05, // Flags: has video (0x01) + has audio (0x04)
+        0x00, 0x00, 0x00, 0x09, // Data offset = 9 (header size)
+        // PreviousTagSize0
+        0x00, 0x00, 0x00, 0x00, // First previous tag size is always 0
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.flv", .{});
+    try file.writeAll(&valid_flv);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.flv");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.flv, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid FLV failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects FLV with invalid flags" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const invalid_flv = [_]u8{
+        'F', 'L', 'V',
+        0x01, // Version 1
+        0xFF, // Invalid flags (reserved bits set)
+        0x00,
+        0x00,
+        0x00,
+        0x09,
+    };
+
+    const file = try tmp_dir.dir.createFile("invalid_flags.flv", .{});
+    try file.writeAll(&invalid_flv);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid_flags.flv");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.flv, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "detectFormat FLV" {
+    const flv_header = [_]u8{ 'F', 'L', 'V', 0x01, 0x05, 0x00, 0x00, 0x00, 0x09 };
+    try std.testing.expectEqual(FileFormat.flv, detectFormat(&flv_header));
+}
+
+test "toleratedVideoDecodeFailure accepts no-frames H.264" {
+    const video_result = video_validator.VideoValidationResult{
+        .valid = false,
+        .error_message = "No frames decoded from H.264 stream",
+        .codec = .h264,
+        .frames_decoded = 0,
+        .byte_validated = false,
+        .mixed_nal_prefix = false,
+    };
+
+    const tolerated = toleratedVideoDecodeFailure(video_result);
+    try std.testing.expect(tolerated != null);
+    try std.testing.expectEqual(MalformationType.video_no_frames_decoded, tolerated.?.malformation);
+}
+
+test "FormatValidator deep validates ProRes Proxy MOV from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth ProRes 422 Proxy (apco) file
+    const file = std.fs.cwd().openFile("ground_truth_examples/prores/sample.mov", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/prores/sample.mov") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.mov, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator deep validates ProRes HQ MOV from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth ProRes 422 HQ (apch) file
+    const file = std.fs.cwd().openFile("ground_truth_examples/prores/sample_hq.mov", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/prores/sample_hq.mov") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.mov, result.format);
+    try std.testing.expect(result.is_valid);
+}
+

@@ -9,6 +9,10 @@ const archive_validators = @import("archive_validators.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 
+const FormatValidator = format_validation.FormatValidator;
+const detectFormat = format_validation.detectFormat;
+const ValidationDepth = format_validation.ValidationDepth;
+
 // ============ Helper Functions ============
 
 /// Check if a byte is an ASCII digit.
@@ -2322,3 +2326,311 @@ pub fn validateObjFromBuffer(data: []const u8) ValidationResult {
     // Use parseObjContent for validation
     return parseObjContent(data);
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "FormatValidator accepts valid DXF text" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const dxf_content =
+        \\0
+        \\SECTION
+        \\2
+        \\HEADER
+        \\0
+        \\ENDSEC
+        \\0
+        \\EOF
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.dxf", .{});
+    try file.writeAll(dxf_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.dxf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.dxf, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid ASCII STL" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const stl_content =
+        \\solid test
+        \\  facet normal 0 0 1
+        \\    outer loop
+        \\      vertex 0 0 0
+        \\      vertex 1 0 0
+        \\      vertex 0 1 0
+        \\    endloop
+        \\  endfacet
+        \\endsolid test
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.stl", .{});
+    try file.writeAll(stl_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.stl");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.stl, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "detectFormat binary STL returns unknown" {
+    // Binary STL has no magic signature, so detectFormat should return .unknown
+    var stl_data: [134]u8 = undefined;
+    @memset(stl_data[0..80], 0);
+    std.mem.writeInt(u32, stl_data[80..84], 1, .little);
+    @memset(stl_data[84..134], 0);
+
+    // detectFormat should return .unknown for binary STL (no magic bytes)
+    const detected = detectFormat(&stl_data);
+    try std.testing.expectEqual(FileFormat.unknown, detected);
+}
+
+test "validateStl accepts valid binary STL structure" {
+    // Note: Binary STL has no magic bytes and cannot be auto-detected without file extension hints.
+    // This test verifies the validator accepts valid binary STL structure when the format is known.
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Binary STL: 80-byte header + 4-byte triangle count + triangles
+    // With 1 triangle: 84 + 50 = 134 bytes
+    var stl_data: [134]u8 = undefined;
+    @memset(stl_data[0..80], 0); // Header (not starting with "solid")
+    std.mem.writeInt(u32, stl_data[80..84], 1, .little); // 1 triangle
+
+    // Triangle: normal (12 bytes) + 3 vertices (36 bytes) + attribute (2 bytes) = 50 bytes
+    @memset(stl_data[84..134], 0);
+
+    const file = try tmp_dir.dir.createFile("test_binary.stl", .{});
+    try file.writeAll(&stl_data);
+    file.close();
+
+    // Open the file and call validateStl directly
+    const validate_file = try tmp_dir.dir.openFile("test_binary.stl", .{});
+    defer validate_file.close();
+
+    const result = validateStl(validate_file);
+
+    // The validator should accept the binary STL structure
+    try std.testing.expectEqual(FileFormat.stl, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateDwg accepts valid DWG file structure" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid DWG: "AC1032" (DWG 2018) + padding
+    var dwg_data: [32]u8 = undefined;
+    @memcpy(dwg_data[0..6], "AC1032"); // Version code for DWG 2018
+    @memset(dwg_data[6..32], 0); // Padding
+
+    const file = try tmp_dir.dir.createFile("test.dwg", .{});
+    try file.writeAll(&dwg_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.dwg");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    if (!result.is_valid) {
+        std.debug.print("\nDWG validation failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.dwg, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateDwg accepts older DWG version codes" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Test AC1015 (AutoCAD 2000)
+    var dwg_data: [32]u8 = undefined;
+    @memcpy(dwg_data[0..6], "AC1015");
+    @memset(dwg_data[6..32], 0);
+
+    const file = try tmp_dir.dir.createFile("old.dwg", .{});
+    try file.writeAll(&dwg_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "old.dwg");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.dwg, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateDwg rejects invalid magic" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Invalid: wrong magic bytes
+    var bad_dwg: [32]u8 = undefined;
+    @memcpy(bad_dwg[0..6], "XX1032"); // Wrong magic
+    @memset(bad_dwg[6..32], 0);
+
+    const file = try tmp_dir.dir.createFile("bad.dwg", .{});
+    try file.writeAll(&bad_dwg);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.dwg");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expect(!result.is_valid or result.format != .dwg);
+}
+
+test "validateDwgFromBuffer matches file validation" {
+    // Valid DWG buffer
+    var dwg_data: [32]u8 = undefined;
+    @memcpy(dwg_data[0..6], "AC1027"); // DWG 2013
+    @memset(dwg_data[6..32], 0);
+
+    const result = validateDwgFromBuffer(&dwg_data);
+    try std.testing.expectEqual(FileFormat.dwg, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateBlend accepts valid Blender file structure" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid Blender: "BLENDER" + "_" (32-bit) + "v" (little-endian) + "280" (version 2.80)
+    var blend_data: [32]u8 = undefined;
+    @memcpy(blend_data[0..7], "BLENDER"); // Magic
+    blend_data[7] = '_'; // 32-bit pointer
+    blend_data[8] = 'v'; // Little-endian
+    @memcpy(blend_data[9..12], "280"); // Version 2.80
+    @memset(blend_data[12..32], 0);
+
+    const file = try tmp_dir.dir.createFile("test.blend", .{});
+    try file.writeAll(&blend_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.blend");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    if (!result.is_valid) {
+        std.debug.print("\nBlender validation failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.blend, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateBlend accepts 64-bit big-endian Blender file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // 64-bit big-endian Blender file
+    var blend_data: [32]u8 = undefined;
+    @memcpy(blend_data[0..7], "BLENDER");
+    blend_data[7] = '-'; // 64-bit pointer
+    blend_data[8] = 'V'; // Big-endian
+    @memcpy(blend_data[9..12], "300"); // Version 3.00
+    @memset(blend_data[12..32], 0);
+
+    const file = try tmp_dir.dir.createFile("big.blend", .{});
+    try file.writeAll(&blend_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "big.blend");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.blend, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateBlend rejects invalid magic" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Invalid: wrong magic
+    var bad_blend: [32]u8 = undefined;
+    @memcpy(bad_blend[0..7], "BLENXXX"); // Wrong magic
+    bad_blend[7] = '_';
+    bad_blend[8] = 'v';
+    @memcpy(bad_blend[9..12], "280");
+    @memset(bad_blend[12..32], 0);
+
+    const file = try tmp_dir.dir.createFile("bad.blend", .{});
+    try file.writeAll(&bad_blend);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.blend");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expect(!result.is_valid or result.format != .blend);
+}
+
+test "validateBlendFromBuffer matches file validation" {
+    // Valid Blender buffer
+    var blend_data: [32]u8 = undefined;
+    @memcpy(blend_data[0..7], "BLENDER");
+    blend_data[7] = '-'; // 64-bit
+    blend_data[8] = 'v'; // Little-endian
+    @memcpy(blend_data[9..12], "400"); // Version 4.00
+    @memset(blend_data[12..32], 0);
+
+    const result = validateBlendFromBuffer(&blend_data);
+    try std.testing.expectEqual(FileFormat.blend, result.format);
+    try std.testing.expect(result.is_valid);
+}
+

@@ -16,6 +16,8 @@ const validateDataBufferFormat = format_validation.validateDataBufferFormat;
 const max_attachment_decode_size: usize = 16 * 1024 * 1024;
 
 /// Check if a header name is a common RFC 822/2822 email header.
+const FormatValidator = format_validation.FormatValidator;
+
 pub fn isEmailHeader(name: []const u8) bool {
     const email_headers = [_][]const u8{
         "From",                      "To",                     "Cc",             "Bcc",                 "Subject",     "Date",       "Message-ID",    "Message-Id",
@@ -636,3 +638,189 @@ test "validateMbox with empty file" {
     const result = validateMbox(file);
     try std.testing.expect(!result.is_valid);
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "detectFormat EML with From header" {
+    const eml_content = "From: sender@example.com\r\nTo: recipient@example.com\r\nSubject: Test\r\n\r\nBody";
+    try std.testing.expectEqual(FileFormat.eml, detectFormat(eml_content));
+}
+
+test "detectFormat EML with Received header" {
+    const eml_content = "Received: from mail.example.com\r\nFrom: sender@example.com\r\n\r\nBody";
+    try std.testing.expectEqual(FileFormat.eml, detectFormat(eml_content));
+}
+
+test "detectFormat EML with MIME-Version" {
+    const eml_content = "MIME-Version: 1.0\r\nFrom: sender@example.com\r\n\r\nBody";
+    try std.testing.expectEqual(FileFormat.eml, detectFormat(eml_content));
+}
+
+test "detectFormat MBOX" {
+    const mbox_content = "From sender@example.com Mon Jan 15 10:00:00 2024\r\nFrom: sender@example.com\r\n\r\nBody";
+    try std.testing.expectEqual(FileFormat.mbox, detectFormat(mbox_content));
+}
+
+test "FormatValidator accepts valid EML" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const eml_content =
+        \\From: sender@example.com
+        \\To: recipient@example.com
+        \\Subject: Test Email
+        \\Date: Mon, 15 Jan 2024 10:00:00 +0000
+        \\MIME-Version: 1.0
+        \\Content-Type: text/plain; charset=utf-8
+        \\
+        \\This is a test email body.
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.eml", .{});
+    try file.writeAll(eml_content);
+    file.close();
+
+    const validate_file = try tmp_dir.dir.openFile("test.eml", .{});
+    defer validate_file.close();
+
+    const result = validateEml(validate_file);
+
+    try std.testing.expectEqual(FileFormat.eml, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts EML with valid PNG attachment" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid PNG (1x1 transparent pixel) base64 encoded
+    const png_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+
+    const eml_content =
+        "From: sender@example.com\r\n" ++
+        "To: recipient@example.com\r\n" ++
+        "Subject: Test with attachment\r\n" ++
+        "MIME-Version: 1.0\r\n" ++
+        "Content-Type: multipart/mixed; boundary=\"----=_Part_0\"\r\n" ++
+        "\r\n" ++
+        "------=_Part_0\r\n" ++
+        "Content-Type: text/plain\r\n" ++
+        "\r\n" ++
+        "Email body\r\n" ++
+        "------=_Part_0\r\n" ++
+        "Content-Type: image/png; name=\"test.png\"\r\n" ++
+        "Content-Transfer-Encoding: base64\r\n" ++
+        "Content-Disposition: attachment; filename=\"test.png\"\r\n" ++
+        "\r\n" ++
+        png_base64 ++ "\r\n" ++
+        "------=_Part_0--\r\n";
+
+    const file = try tmp_dir.dir.createFile("test_attachment.eml", .{});
+    try file.writeAll(eml_content);
+    file.close();
+
+    const validate_file = try tmp_dir.dir.openFile("test_attachment.eml", .{});
+    defer validate_file.close();
+
+    const result = validateEml(validate_file);
+
+    try std.testing.expectEqual(FileFormat.eml, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects EML with corrupted attachment" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Corrupted PNG - valid PNG signature but invalid chunk type (XXXX instead of IHDR)
+    const corrupted_png_base64 = "iVBORw0KGgoAAAANWFhYWGV4dHJhZGF0YQ=="; // Has "XXXX" not "IHDR"
+
+    const eml_content =
+        "From: sender@example.com\r\n" ++
+        "To: recipient@example.com\r\n" ++
+        "Subject: Test with corrupted attachment\r\n" ++
+        "MIME-Version: 1.0\r\n" ++
+        "Content-Type: multipart/mixed; boundary=\"----=_Part_0\"\r\n" ++
+        "\r\n" ++
+        "------=_Part_0\r\n" ++
+        "Content-Type: text/plain\r\n" ++
+        "\r\n" ++
+        "Email body\r\n" ++
+        "------=_Part_0\r\n" ++
+        "Content-Type: image/png; name=\"corrupt.png\"\r\n" ++
+        "Content-Transfer-Encoding: base64\r\n" ++
+        "Content-Disposition: attachment; filename=\"corrupt.png\"\r\n" ++
+        "\r\n" ++
+        corrupted_png_base64 ++ "\r\n" ++
+        "------=_Part_0--\r\n";
+
+    const file = try tmp_dir.dir.createFile("test_corrupt.eml", .{});
+    try file.writeAll(eml_content);
+    file.close();
+
+    const validate_file = try tmp_dir.dir.openFile("test_corrupt.eml", .{});
+    defer validate_file.close();
+
+    const result = validateEml(validate_file);
+
+    try std.testing.expectEqual(FileFormat.eml, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "FormatValidator accepts valid MBOX" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const mbox_content =
+        \\From sender@example.com Mon Jan 15 10:00:00 2024
+        \\From: sender@example.com
+        \\To: recipient@example.com
+        \\Subject: First Message
+        \\
+        \\First message body.
+        \\
+        \\From another@example.com Mon Jan 15 11:00:00 2024
+        \\From: another@example.com
+        \\To: recipient@example.com
+        \\Subject: Second Message
+        \\
+        \\Second message body.
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.mbox", .{});
+    try file.writeAll(mbox_content);
+    file.close();
+
+    const validate_file = try tmp_dir.dir.openFile("test.mbox", .{});
+    defer validate_file.close();
+
+    const result = validateMbox(validate_file);
+
+    try std.testing.expectEqual(FileFormat.mbox, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "base64 decode valid data" {
+    const encoded = "SGVsbG8gV29ybGQh"; // "Hello World!"
+    var decoded: [64]u8 = undefined;
+    const len = decodeBase64(encoded, &decoded) catch unreachable;
+    try std.testing.expectEqualStrings("Hello World!", decoded[0..len]);
+}
+
+test "base64 decode with padding" {
+    const encoded = "SGVsbG8="; // "Hello"
+    var decoded: [64]u8 = undefined;
+    const len = decodeBase64(encoded, &decoded) catch unreachable;
+    try std.testing.expectEqualStrings("Hello", decoded[0..len]);
+}
+
+test "base64 decode invalid characters fails" {
+    const encoded = "Invalid!!!";
+    var decoded: [64]u8 = undefined;
+    const result = decodeBase64(encoded, &decoded);
+    try std.testing.expectError(error.InvalidBase64, result);
+}
+

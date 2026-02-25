@@ -16,6 +16,8 @@ const errmsg = @import("error_messages.zig");
 const pdf_validator = @import("pdf_validator.zig");
 const archive_validators = @import("archive_validators.zig");
 
+const FormatValidator = format_validation.FormatValidator;
+
 // ============ Premiere Pro (.prproj) Validator ============
 
 pub fn validatePrproj(file: std.fs.File) ValidationResult {
@@ -1103,3 +1105,450 @@ test "validatePrprojFromBuffer rejects too-small data" {
     const result = validatePrprojFromBuffer("abc");
     try testing.expect(!result.is_valid);
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "validateAi accepts valid PDF-based AI file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal PDF structure for AI file
+    const pdf_ai =
+        \\%PDF-1.4
+        \\1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+        \\2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+        \\3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj
+        \\xref
+        \\0 4
+        \\0000000000 65535 f
+        \\0000000009 00000 n
+        \\0000000052 00000 n
+        \\0000000101 00000 n
+        \\trailer<</Size 4/Root 1 0 R>>
+        \\startxref
+        \\166
+        \\%%EOF
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.ai", .{});
+    try file.writeAll(pdf_ai);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ai");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.ai, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateAi accepts valid PostScript-based AI file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal PostScript AI structure
+    const ps_ai =
+        \\%!PS-Adobe-3.0
+        \\%%Creator: Adobe Illustrator
+        \\%%BoundingBox: 0 0 612 792
+        \\%%EndComments
+        \\%%BeginProlog
+        \\%%EndProlog
+        \\%%Page: 1 1
+        \\showpage
+        \\%%EOF
+    ;
+
+    const file = try tmp_dir.dir.createFile("legacy.ai", .{});
+    try file.writeAll(ps_ai);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "legacy.ai");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.ai, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateEps accepts valid EPS file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal EPS structure
+    const eps_data =
+        \\%!PS-Adobe-3.0 EPSF-3.0
+        \\%%Creator: Test
+        \\%%BoundingBox: 0 0 100 100
+        \\%%EndComments
+        \\newpath
+        \\0 0 moveto
+        \\100 100 lineto
+        \\stroke
+        \\%%EOF
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.eps", .{});
+    try file.writeAll(eps_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.eps");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.eps, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateEps rejects EPS missing BoundingBox" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // EPS without required BoundingBox
+    const bad_eps =
+        \\%!PS-Adobe-3.0 EPSF-3.0
+        \\%%Creator: Test
+        \\%%EndComments
+        \\showpage
+        \\%%EOF
+    ;
+
+    const file = try tmp_dir.dir.createFile("bad.eps", .{});
+    try file.writeAll(bad_eps);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.eps");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.eps, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateAep accepts valid AEP file structure" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid AEP: RIFX + size + "Egg!" + one dummy chunk
+    var aep_data: [28]u8 = undefined;
+
+    // RIFX header
+    @memcpy(aep_data[0..4], "RIFX");
+    // File size minus 8 (big-endian)
+    std.mem.writeInt(u32, aep_data[4..8], 20, .big);
+    // Format type
+    @memcpy(aep_data[8..12], "Egg!");
+
+    // One dummy chunk: "LIST" + size 8 + some data
+    @memcpy(aep_data[12..16], "LIST");
+    std.mem.writeInt(u32, aep_data[16..20], 8, .big);
+    @memcpy(aep_data[20..24], "test");
+    @memset(aep_data[24..28], 0);
+
+    const file = try tmp_dir.dir.createFile("test.aep", .{});
+    try file.writeAll(&aep_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.aep");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    if (!result.is_valid) {
+        std.debug.print("\nAEP validation failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.aep, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateAep rejects file with wrong format marker" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // RIFX but wrong format marker
+    var bad_aep: [12]u8 = undefined;
+    @memcpy(bad_aep[0..4], "RIFX");
+    std.mem.writeInt(u32, bad_aep[4..8], 4, .big);
+    @memcpy(bad_aep[8..12], "XXXX"); // Wrong marker
+
+    const file = try tmp_dir.dir.createFile("bad.aep", .{});
+    try file.writeAll(&bad_aep);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.aep");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    // Should not detect as AEP since Egg! marker is wrong
+    try std.testing.expect(result.format != .aep or !result.is_valid);
+}
+
+test "validateAepFromBuffer matches file validation" {
+    // Minimal valid AEP buffer
+    var aep_data: [28]u8 = undefined;
+    @memcpy(aep_data[0..4], "RIFX");
+    std.mem.writeInt(u32, aep_data[4..8], 20, .big);
+    @memcpy(aep_data[8..12], "Egg!");
+    @memcpy(aep_data[12..16], "LIST");
+    std.mem.writeInt(u32, aep_data[16..20], 8, .big);
+    @memcpy(aep_data[20..24], "test");
+    @memset(aep_data[24..28], 0);
+
+    const result = validateAepFromBuffer(&aep_data);
+    try std.testing.expectEqual(FileFormat.aep, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validatePrproj accepts gzip-compressed PRPROJ" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid gzip-compressed PRPROJ
+    // gzip header: magic (2) + compression method (1) + flags (1) + mtime (4) + xfl (1) + os (1)
+    var prproj_data: [20]u8 = undefined;
+    prproj_data[0] = 0x1f; // Gzip magic byte 1
+    prproj_data[1] = 0x8b; // Gzip magic byte 2
+    prproj_data[2] = 0x08; // Compression method (deflate)
+    prproj_data[3] = 0x00; // Flags
+    @memset(prproj_data[4..8], 0); // MTIME
+    prproj_data[8] = 0x00; // XFL
+    prproj_data[9] = 0xff; // OS (unknown)
+    @memset(prproj_data[10..20], 0); // Dummy compressed data
+
+    const file = try tmp_dir.dir.createFile("test.prproj", .{});
+    try file.writeAll(&prproj_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.prproj");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    if (!result.is_valid) {
+        std.debug.print("\nPRPROJ validation failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.prproj, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validatePrproj accepts legacy XML PRPROJ" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Legacy uncompressed XML PRPROJ
+    const xml_content = "<?xml version=\"1.0\"?><Project></Project>";
+
+    const file = try tmp_dir.dir.createFile("legacy.prproj", .{});
+    try file.writeAll(xml_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "legacy.prproj");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.prproj, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validatePrproj rejects invalid compression method" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Invalid: gzip magic but wrong compression method
+    var bad_prproj: [20]u8 = undefined;
+    bad_prproj[0] = 0x1f;
+    bad_prproj[1] = 0x8b;
+    bad_prproj[2] = 0x07; // Wrong compression method (not deflate)
+    @memset(bad_prproj[3..20], 0);
+
+    const file = try tmp_dir.dir.createFile("bad.prproj", .{});
+    try file.writeAll(&bad_prproj);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.prproj");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    // Should either be detected as gzip (not prproj) or be invalid
+    try std.testing.expect(result.format != .prproj or !result.is_valid);
+}
+
+test "validatePrprojFromBuffer matches file validation" {
+    // Valid gzip-compressed PRPROJ buffer
+    var prproj_data: [20]u8 = undefined;
+    prproj_data[0] = 0x1f;
+    prproj_data[1] = 0x8b;
+    prproj_data[2] = 0x08;
+    prproj_data[3] = 0x00;
+    @memset(prproj_data[4..20], 0);
+
+    const result = validatePrprojFromBuffer(&prproj_data);
+    try std.testing.expectEqual(FileFormat.prproj, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validatePrprojFromBuffer accepts XML format" {
+    const xml_content = "<?xml version=\"1.0\"?>";
+    const result = validatePrprojFromBuffer(xml_content);
+    try std.testing.expectEqual(FileFormat.prproj, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateIndd accepts valid INDD file structure" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid INDD: magic bytes + padding + "DOCUMENT"
+    var indd_data: [32]u8 = undefined;
+    indd_data[0] = 0x06; // Magic byte 1
+    indd_data[1] = 0x06; // Magic byte 2
+    indd_data[2] = 0xED; // Magic byte 3
+    indd_data[3] = 0xF5; // Magic byte 4
+    @memset(indd_data[4..16], 0); // Padding
+    @memcpy(indd_data[16..24], "DOCUMENT"); // DOCUMENT identifier
+    @memset(indd_data[24..32], 0); // More padding
+
+    const file = try tmp_dir.dir.createFile("test.indd", .{});
+    try file.writeAll(&indd_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.indd");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    if (!result.is_valid) {
+        std.debug.print("\nINDD validation failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.indd, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateIndd rejects file with wrong magic bytes" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Invalid: wrong magic bytes
+    var bad_indd: [32]u8 = undefined;
+    bad_indd[0] = 0x00; // Wrong magic
+    bad_indd[1] = 0x00;
+    bad_indd[2] = 0x00;
+    bad_indd[3] = 0x00;
+    @memset(bad_indd[4..16], 0);
+    @memcpy(bad_indd[16..24], "DOCUMENT");
+    @memset(bad_indd[24..32], 0);
+
+    const file = try tmp_dir.dir.createFile("bad.indd", .{});
+    try file.writeAll(&bad_indd);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.indd");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expect(!result.is_valid or result.format != .indd);
+}
+
+test "validateInddFromBuffer matches file validation" {
+    // Valid INDD buffer
+    var indd_data: [32]u8 = undefined;
+    indd_data[0] = 0x06;
+    indd_data[1] = 0x06;
+    indd_data[2] = 0xED;
+    indd_data[3] = 0xF5;
+    @memset(indd_data[4..16], 0);
+    @memcpy(indd_data[16..24], "DOCUMENT");
+    @memset(indd_data[24..32], 0);
+
+    const result = validateInddFromBuffer(&indd_data);
+    try std.testing.expectEqual(FileFormat.indd, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateIdml accepts valid IDML file structure" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid ZIP file (IDML is ZIP-based)
+    // ZIP local file header
+    var idml_data: [30]u8 = undefined;
+    idml_data[0] = 'P'; // ZIP signature
+    idml_data[1] = 'K';
+    idml_data[2] = 0x03;
+    idml_data[3] = 0x04;
+    @memset(idml_data[4..30], 0); // Rest of local file header
+
+    const file = try tmp_dir.dir.createFile("test.idml", .{});
+    try file.writeAll(&idml_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.idml");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    if (!result.is_valid) {
+        std.debug.print("\nIDML validation failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.idml, result.format);
+    try std.testing.expect(result.is_valid);
+}
+

@@ -18,6 +18,10 @@ const mp3_validator = @import("mp3_validator.zig");
 const aac_syntax_validator = @import("aac_syntax_validator.zig");
 const errmsg = @import("error_messages.zig");
 
+const FormatValidator = format_validation.FormatValidator;
+const detectFormat = format_validation.detectFormat;
+const ValidationDepth = format_validation.ValidationDepth;
+
 // ============ Helper ============
 
 const findInBuffer = format_validation.findInBuffer;
@@ -2524,3 +2528,1128 @@ test "validateEac3Deep rejects file not found" {
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.eac3, result.format);
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "FormatValidator deep validates real MIDI from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth MIDI file (Beethoven's Für Elise from mfiles.co.uk)
+    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/midi/fur_elise.mid") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.midi, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator deep validates MOD from ground truth" {
+    const allocator = std.testing.allocator;
+
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/otm.mod", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/otm.mod") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.mod, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator deep validates XM from ground truth" {
+    const allocator = std.testing.allocator;
+
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/agony.xm", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/agony.xm") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.xm, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator deep validates IT from ground truth" {
+    const allocator = std.testing.allocator;
+
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/flitter.it", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/flitter.it") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.it, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator deep validates S3M from ground truth" {
+    const allocator = std.testing.allocator;
+
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/twilight_garden.s3m", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/twilight_garden.s3m") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.s3m, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator accepts valid MP3 with ID3" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid MP3 with ID3v2 tag
+    const valid_mp3 = [_]u8{
+        // ID3v2 header
+        'I', 'D', '3', // signature
+        0x04, 0x00, // version (2.4.0)
+        0x00, // flags
+        0x00, 0x00, 0x00, 0x00, // size (0, no frames)
+        // MP3 frame sync
+        0xFF, 0xFB, // frame sync + MPEG1 Layer3
+        0x90, 0x00, // bitrate, sample rate, etc
+    };
+
+    const file = try tmp_dir.dir.createFile("valid_id3.mp3", .{});
+    try file.writeAll(&valid_mp3);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_id3.mp3");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.mp3, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid MP3 ID3 failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid MP3 without ID3" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid MP3 starting with frame sync
+    const valid_mp3 = [_]u8{
+        0xFF, 0xFB, // frame sync + MPEG1 Layer3
+        0x90, 0x00, // bitrate, sample rate, etc
+        0x00, 0x00, 0x00, 0x00, // frame data
+    };
+
+    const file = try tmp_dir.dir.createFile("valid_raw.mp3", .{});
+    try file.writeAll(&valid_mp3);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_raw.mp3");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.mp3, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects invalid MP3" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Invalid MP3 (ID3 header but no valid frame sync after)
+    const invalid_mp3 = [_]u8{
+        'I',  'D',  '3',
+        0x04, 0x00, 0x00,
+        0x00, 0x00, 0x00,
+        0x00,
+        // No valid frame sync - just garbage
+        0x00, 0x00,
+        0x00, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("invalid.mp3", .{});
+    try file.writeAll(&invalid_mp3);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.mp3");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.mp3, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts valid FLAC" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid FLAC with STREAMINFO
+    const valid_flac = [_]u8{
+        'f', 'L', 'a', 'C', // signature
+        0x80, // metadata block header (last block, type 0 = STREAMINFO)
+        0x00, 0x00, 0x22, // block size (34 bytes)
+        // STREAMINFO (34 bytes)
+        0x00, 0x10, // min block size
+        0x00, 0x10, // max block size
+        0x00, 0x00, 0x00, // min frame size
+        0x00, 0x00, 0x00, // max frame size
+        0x0A, 0xC4, 0x40, // sample rate (44100) + channels + bits
+        0x00, 0x00, 0x00, 0x00, 0x00, // total samples (high bits)
+        0x00, 0x00, 0x00, 0x00, // total samples (low bits)
+        // MD5 signature (16 bytes)
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.flac", .{});
+    try file.writeAll(&valid_flac);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.flac");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.flac, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid FLAC failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects invalid FLAC" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // FLAC with wrong first metadata block type
+    const invalid_flac = [_]u8{
+        'f', 'L', 'a', 'C',
+        0x81, // metadata block header (type 1 = PADDING, but should be 0 = STREAMINFO)
+        0x00,
+        0x00,
+        0x22,
+    };
+
+    const file = try tmp_dir.dir.createFile("invalid.flac", .{});
+    try file.writeAll(&invalid_flac);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.flac");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.flac, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts valid WAV" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid WAV
+    const valid_wav = [_]u8{
+        'R', 'I', 'F', 'F', // RIFF signature
+        0x24, 0x00, 0x00, 0x00, // file size - 8 (36 bytes)
+        'W', 'A', 'V', 'E', // WAVE fourcc
+        'f', 'm', 't', ' ', // fmt chunk
+        0x10, 0x00, 0x00, 0x00, // fmt chunk size (16)
+        0x01, 0x00, // audio format (PCM)
+        0x01, 0x00, // num channels (1)
+        0x44, 0xAC, 0x00, 0x00, // sample rate (44100)
+        0x88, 0x58, 0x01, 0x00, // byte rate
+        0x02, 0x00, // block align
+        0x10, 0x00, // bits per sample (16)
+        'd', 'a', 't', 'a', // data chunk
+        0x00, 0x00, 0x00, 0x00, // data size (0)
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.wav", .{});
+    try file.writeAll(&valid_wav);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.wav");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.wav, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid WAV failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects truncated WAV" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // WAV with RIFF size larger than file
+    const truncated_wav = [_]u8{
+        'R', 'I', 'F', 'F',
+        0xFF, 0x00, 0x00, 0x00, // declared size (255)
+        'W',  'A',  'V',
+        'E',
+        // Missing fmt chunk
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.wav", .{});
+    try file.writeAll(&truncated_wav);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.wav");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.wav, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator deep validates real WAV from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth WAV file (440Hz sine wave)
+    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/wav/sample.wav") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.wav, result.format);
+    try std.testing.expect(result.is_valid);
+    // WAV validates chunk structure but no audio decode or checksum
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "validateMp3Deep accepts valid MP3 with frame sync" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid MP3 frame (Layer III, 128kbps, 44.1kHz, stereo)
+    // Frame sync: FF FB (11 bits of 1s + version/layer/protection)
+    // FB = 11111011 = sync(3) + MPEG1(2) + Layer3(2) + no CRC(1)
+    // 90 = 10010000 = bitrate 128(4) + 44.1kHz(2) + no padding(1) + private(1)
+    // 00 = mode/etc
+    const valid_mp3 = [_]u8{
+        0xFF, 0xFB, // Frame sync + MPEG1 Layer3 no CRC
+        0x90, 0x00, // 128kbps, 44.1kHz, stereo
+        // Frame data (padding to min frame size ~417 bytes for 128kbps@44.1kHz)
+    } ++ [_]u8{0x00} ** 417;
+
+    const file = try tmp_dir.dir.createFile("valid.mp3", .{});
+    try file.writeAll(&valid_mp3);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.mp3");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.mp3, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "validateMp3Deep accepts valid MP3 with ID3 tag" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // MP3 with ID3v2 header followed by valid frame
+    const id3_header = [_]u8{
+        'I', 'D', '3', // ID3 signature
+        0x04, 0x00, // version 2.4
+        0x00, // flags
+        0x00, 0x00, 0x00, 0x00, // size (0 bytes of tag data)
+    };
+    const frame = [_]u8{
+        0xFF, 0xFB, // Frame sync + MPEG1 Layer3 no CRC
+        0x90, 0x00, // 128kbps, 44.1kHz
+    } ++ [_]u8{0x00} ** 417;
+
+    const valid_mp3 = id3_header ++ frame;
+
+    const file = try tmp_dir.dir.createFile("valid_id3.mp3", .{});
+    try file.writeAll(&valid_mp3);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_id3.mp3");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.mp3, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateMp3Deep rejects invalid frame sync after ID3" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // MP3 with ID3 tag but invalid frame sync after it
+    const id3_header = [_]u8{
+        'I', 'D', '3', // ID3 signature
+        0x04, 0x00, // version 2.4
+        0x00, // flags
+        0x00, 0x00, 0x00, 0x00, // size (0 bytes of tag data)
+    };
+    const invalid_frame = [_]u8{
+        0xFF, 0x00, // Invalid - second byte doesn't have sync bits (should be E0+)
+        0x90, 0x00,
+    } ++ [_]u8{0x00} ** 417;
+
+    const invalid_mp3 = id3_header ++ invalid_frame;
+
+    const file = try tmp_dir.dir.createFile("invalid.mp3", .{});
+    try file.writeAll(&invalid_mp3);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.mp3");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.mp3, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "detectFormat MIDI" {
+    // Valid MIDI header: MThd + length (6) + format (1) + tracks (2) + division (480)
+    const midi_header = [_]u8{
+        'M', 'T', 'h', 'd', // Signature
+        0x00, 0x00, 0x00, 0x06, // Length = 6 (big-endian)
+        0x00, 0x01, // Format type 1
+        0x00, 0x02, // 2 tracks
+        0x01, 0xE0, // Division = 480 ticks per quarter note
+    };
+    try std.testing.expectEqual(FileFormat.midi, detectFormat(&midi_header));
+}
+
+test "FormatValidator accepts valid MIDI" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a minimal valid MIDI file (format 1, 1 track with empty events)
+    const midi_data = [_]u8{
+        // Header chunk
+        'M', 'T', 'h', 'd', // Signature
+        0x00, 0x00, 0x00, 0x06, // Length = 6
+        0x00, 0x01, // Format type 1
+        0x00, 0x01, // 1 track
+        0x01, 0xE0, // Division = 480
+        // Track chunk
+        'M', 'T', 'r', 'k', // Signature
+        0x00, 0x00, 0x00, 0x04, // Length = 4 bytes
+        0x00, 0xFF, 0x2F, 0x00, // End of track meta event
+    };
+
+    const file = try tmp_dir.dir.createFile("test.mid", .{});
+    try file.writeAll(&midi_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.mid");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.midi, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects MIDI with invalid format type" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // MIDI with invalid format type (3)
+    const midi_data = [_]u8{
+        'M',  'T',  'h',  'd',
+        0x00, 0x00, 0x00, 0x06,
+        0x00, 0x03, // Invalid format type 3
+        0x00, 0x01,
+        0x01, 0xE0,
+        'M',  'T',
+        'r',  'k',
+        0x00, 0x00,
+        0x00, 0x04,
+        0x00, 0xFF,
+        0x2F, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("invalid_format.mid", .{});
+    try file.writeAll(&midi_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid_format.mid");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.midi, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator rejects MIDI with missing track" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // MIDI header only, no track
+    const midi_data = [_]u8{
+        'M',  'T',  'h',  'd',
+        0x00, 0x00, 0x00, 0x06,
+        0x00, 0x01, 0x00, 0x01,
+        0x01,
+        0xE0,
+        // Missing MTrk chunk
+    };
+
+    const file = try tmp_dir.dir.createFile("no_track.mid", .{});
+    try file.writeAll(&midi_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "no_track.mid");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.midi, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "detectFormat XM" {
+    // Valid XM header
+    var xm_header: [60]u8 = undefined;
+    @memcpy(xm_header[0..17], "Extended Module: ");
+    @memset(xm_header[17..37], 0x20); // Module name (spaces)
+    xm_header[37] = 0x1A; // End-of-text marker
+    @memset(xm_header[38..58], 0);
+    xm_header[58] = 0x04; // Version low byte
+    xm_header[59] = 0x01; // Version high byte (0x0104)
+    try std.testing.expectEqual(FileFormat.xm, detectFormat(&xm_header));
+}
+
+test "detectFormat IT" {
+    // Valid IT header
+    const it_header: [4]u8 = "IMPM".*;
+    try std.testing.expectEqual(FileFormat.it, detectFormat(&it_header));
+}
+
+test "detectFormat S3M" {
+    // Valid S3M header with SCRM at offset 44
+    var s3m_header: [48]u8 = undefined;
+    @memset(s3m_header[0..44], 0);
+    @memcpy(s3m_header[44..48], "SCRM");
+    try std.testing.expectEqual(FileFormat.s3m, detectFormat(&s3m_header));
+}
+
+test "FormatValidator accepts valid XM" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create minimal valid XM file
+    var xm_data: [80]u8 = undefined;
+    @memcpy(xm_data[0..17], "Extended Module: ");
+    @memset(xm_data[17..37], 0x20); // Module name
+    xm_data[37] = 0x1A; // End-of-text marker
+    @memset(xm_data[38..58], 0);
+    xm_data[58] = 0x04; // Version 0x0104
+    xm_data[59] = 0x01;
+    // Header size at 60-63 (little-endian)
+    xm_data[60] = 0x14; // 276 (standard header size) - low byte
+    xm_data[61] = 0x01;
+    xm_data[62] = 0x00;
+    xm_data[63] = 0x00;
+    // Song length at 64-65
+    xm_data[64] = 0x01;
+    xm_data[65] = 0x00;
+    // Restart position at 66-67
+    xm_data[66] = 0x00;
+    xm_data[67] = 0x00;
+    // Number of channels at 68-69
+    xm_data[68] = 0x08; // 8 channels
+    xm_data[69] = 0x00;
+    @memset(xm_data[70..80], 0);
+
+    const file = try tmp_dir.dir.createFile("test.xm", .{});
+    try file.writeAll(&xm_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xm");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.xm, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid IT" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create minimal valid IT file
+    var it_data: [192]u8 = undefined;
+    @memcpy(it_data[0..4], "IMPM"); // Signature
+    @memset(it_data[4..0x20], 0); // Song name and reserved
+    it_data[0x20] = 0x10; // Number of orders (16)
+    it_data[0x21] = 0x00;
+    it_data[0x22] = 0x00; // Number of instruments (0)
+    it_data[0x23] = 0x00;
+    it_data[0x24] = 0x01; // Number of samples (1)
+    it_data[0x25] = 0x00;
+    it_data[0x26] = 0x01; // Number of patterns (1)
+    it_data[0x27] = 0x00;
+    it_data[0x28] = 0x14; // Created with version (0x0214)
+    it_data[0x29] = 0x02;
+    it_data[0x2A] = 0x14; // Compatible with version
+    it_data[0x2B] = 0x02;
+    @memset(it_data[0x2C..192], 0);
+
+    const file = try tmp_dir.dir.createFile("test.it", .{});
+    try file.writeAll(&it_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.it");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.it, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid S3M" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create minimal valid S3M file
+    var s3m_data: [96]u8 = undefined;
+    @memset(s3m_data[0..28], 0); // Song name
+    s3m_data[0x1C] = 0x1A; // 0x1A marker
+    s3m_data[0x1D] = 16; // Type (16 = S3M)
+    s3m_data[0x1E] = 0x00;
+    s3m_data[0x1F] = 0x00;
+    s3m_data[0x20] = 0x10; // Number of orders (16)
+    s3m_data[0x21] = 0x00;
+    s3m_data[0x22] = 0x01; // Number of instruments (1)
+    s3m_data[0x23] = 0x00;
+    s3m_data[0x24] = 0x01; // Number of patterns (1)
+    s3m_data[0x25] = 0x00;
+    @memset(s3m_data[0x26..44], 0);
+    @memcpy(s3m_data[44..48], "SCRM"); // Signature
+    @memset(s3m_data[48..96], 0);
+
+    const file = try tmp_dir.dir.createFile("test.s3m", .{});
+    try file.writeAll(&s3m_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.s3m");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.s3m, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "detectFormat APE" {
+    // APE files start with "MAC " followed by version info
+    const ape_data = "MAC " ++ [_]u8{ 0xC4, 0x0F }; // "MAC " + version 3980 (0x0FC4) little-endian
+    const result = detectFormat(ape_data);
+    try std.testing.expectEqual(FileFormat.ape, result);
+}
+
+test "detectFormat WavPack" {
+    // WavPack files start with "wvpk"
+    const wavpack_data = "wvpk";
+    const result = detectFormat(wavpack_data);
+    try std.testing.expectEqual(FileFormat.wavpack, result);
+}
+
+test "FormatValidator accepts valid APE" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create minimal valid APE file (version 3980+)
+    var ape_data: [32]u8 = undefined;
+    @memcpy(ape_data[0..4], "MAC "); // Signature
+    ape_data[4] = 0xC4; // Version 3980 low byte
+    ape_data[5] = 0x0F; // Version 3980 high byte
+    ape_data[6] = 0; // Padding
+    ape_data[7] = 0; // Padding
+    // Descriptor length (52 bytes minimum for modern APE)
+    ape_data[8] = 52;
+    ape_data[9] = 0;
+    ape_data[10] = 0;
+    ape_data[11] = 0;
+    // Header length (24 bytes minimum)
+    ape_data[12] = 24;
+    ape_data[13] = 0;
+    ape_data[14] = 0;
+    ape_data[15] = 0;
+    @memset(ape_data[16..32], 0);
+
+    const file = try tmp_dir.dir.createFile("test.ape", .{});
+    try file.writeAll(&ape_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ape");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.ape, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts legacy APE (version < 3980)" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create minimal valid APE file (legacy version 3900)
+    var ape_data: [32]u8 = undefined;
+    @memcpy(ape_data[0..4], "MAC "); // Signature
+    ape_data[4] = 0x3C; // Version 3900 low byte
+    ape_data[5] = 0x0F; // Version 3900 high byte
+    @memset(ape_data[6..32], 0);
+
+    const file = try tmp_dir.dir.createFile("test.ape", .{});
+    try file.writeAll(&ape_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ape");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.ape, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects APE with invalid descriptor" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create APE file with descriptor too small
+    var ape_data: [32]u8 = undefined;
+    @memcpy(ape_data[0..4], "MAC "); // Signature
+    ape_data[4] = 0xC4; // Version 3980 low byte
+    ape_data[5] = 0x0F; // Version 3980 high byte
+    ape_data[6] = 0;
+    ape_data[7] = 0;
+    // Descriptor length too small (10 instead of 52+)
+    ape_data[8] = 10;
+    ape_data[9] = 0;
+    ape_data[10] = 0;
+    ape_data[11] = 0;
+    @memset(ape_data[12..32], 0);
+
+    const file = try tmp_dir.dir.createFile("test.ape", .{});
+    try file.writeAll(&ape_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ape");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.ape, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts valid WavPack" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create minimal valid WavPack file
+    var wv_data: [32]u8 = undefined;
+    @memcpy(wv_data[0..4], "wvpk"); // Signature
+    // Block size (24 bytes - reasonable)
+    wv_data[4] = 24;
+    wv_data[5] = 0;
+    wv_data[6] = 0;
+    wv_data[7] = 0;
+    // Version 0x0410 (4.10)
+    wv_data[8] = 0x10;
+    wv_data[9] = 0x04;
+    // Track number and sub-block index
+    wv_data[10] = 0;
+    wv_data[11] = 0;
+    // Total samples
+    wv_data[12] = 0x00;
+    wv_data[13] = 0x10;
+    wv_data[14] = 0;
+    wv_data[15] = 0;
+    // Block index
+    wv_data[16] = 0;
+    wv_data[17] = 0;
+    wv_data[18] = 0;
+    wv_data[19] = 0;
+    // Block samples (reasonable value)
+    wv_data[20] = 0x00;
+    wv_data[21] = 0x10;
+    wv_data[22] = 0;
+    wv_data[23] = 0;
+    // Flags (16-bit stereo)
+    wv_data[24] = 0x01; // 16-bit
+    wv_data[25] = 0;
+    wv_data[26] = 0;
+    wv_data[27] = 0;
+    @memset(wv_data[28..32], 0);
+
+    const file = try tmp_dir.dir.createFile("test.wv", .{});
+    try file.writeAll(&wv_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.wv");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.wavpack, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects WavPack with invalid version" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create WavPack file with version too low
+    var wv_data: [32]u8 = undefined;
+    @memcpy(wv_data[0..4], "wvpk"); // Signature
+    // Block size
+    wv_data[4] = 24;
+    wv_data[5] = 0;
+    wv_data[6] = 0;
+    wv_data[7] = 0;
+    // Version 0x0300 (too old)
+    wv_data[8] = 0x00;
+    wv_data[9] = 0x03;
+    @memset(wv_data[10..32], 0);
+
+    const file = try tmp_dir.dir.createFile("test.wv", .{});
+    try file.writeAll(&wv_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.wv");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.wavpack, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "detectFormat DSF" {
+    // DSF header starts with "DSD "
+    const dsf_header = [_]u8{
+        'D', 'S', 'D', ' ', // Signature
+        0x1C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Chunk size = 28 (little-endian)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // File size placeholder
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Metadata offset
+    };
+    try std.testing.expectEqual(FileFormat.dsf, detectFormat(&dsf_header));
+}
+
+test "detectFormat DFF" {
+    // DFF (DSDIFF) header starts with "FRM8"
+    const dff_header = [_]u8{
+        'F', 'R', 'M', '8', // IFF container signature
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, // Chunk size (big-endian)
+        'D', 'S', 'D', ' ', // Form type
+    };
+    try std.testing.expectEqual(FileFormat.dff, detectFormat(&dff_header));
+}
+
+test "FormatValidator accepts valid DSF" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid DSF file (DSD64, stereo)
+    // DSD chunk (28 bytes) + fmt chunk (52 bytes) + data chunk header (12 bytes) + minimal data
+    var dsf_data: [100]u8 = undefined;
+
+    // DSD chunk
+    @memcpy(dsf_data[0..4], "DSD ");
+    std.mem.writeInt(u64, dsf_data[4..12], 28, .little); // DSD chunk size
+    std.mem.writeInt(u64, dsf_data[12..20], 100, .little); // Total file size
+    std.mem.writeInt(u64, dsf_data[20..28], 0, .little); // No metadata
+
+    // fmt chunk
+    @memcpy(dsf_data[28..32], "fmt ");
+    std.mem.writeInt(u64, dsf_data[32..40], 52, .little); // fmt chunk size
+    std.mem.writeInt(u32, dsf_data[40..44], 1, .little); // Format version
+    std.mem.writeInt(u32, dsf_data[44..48], 0, .little); // Format ID (DSD raw)
+    std.mem.writeInt(u32, dsf_data[48..52], 2, .little); // Channel type (stereo)
+    std.mem.writeInt(u32, dsf_data[52..56], 2, .little); // Channel count
+    std.mem.writeInt(u32, dsf_data[56..60], 2822400, .little); // Sample rate (DSD64)
+    std.mem.writeInt(u32, dsf_data[60..64], 1, .little); // Bits per sample
+    std.mem.writeInt(u64, dsf_data[64..72], 0, .little); // Sample count
+    std.mem.writeInt(u32, dsf_data[72..76], 4096, .little); // Block size per channel
+    std.mem.writeInt(u32, dsf_data[76..80], 0, .little); // Reserved
+
+    // data chunk (header only for minimal file)
+    @memcpy(dsf_data[80..84], "data");
+    std.mem.writeInt(u64, dsf_data[84..92], 20, .little); // data chunk size (12 header + 8 data)
+    @memset(dsf_data[92..100], 0); // Minimal audio data
+
+    const file = try tmp_dir.dir.createFile("test.dsf", .{});
+    try file.writeAll(&dsf_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.dsf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.dsf, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid DFF" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid DFF (DSDIFF) file
+    var dff_data: [40]u8 = undefined;
+
+    // FRM8 container header
+    @memcpy(dff_data[0..4], "FRM8");
+    std.mem.writeInt(u64, dff_data[4..12], 28, .big); // Chunk size (big-endian)
+    @memcpy(dff_data[12..16], "DSD "); // Form type
+
+    // FVER chunk (format version)
+    @memcpy(dff_data[16..20], "FVER");
+    std.mem.writeInt(u64, dff_data[20..28], 4, .big); // Chunk size
+    std.mem.writeInt(u32, dff_data[28..32], 0x01050000, .big); // Version 1.5
+
+    // Pad to 40 bytes
+    @memset(dff_data[32..40], 0);
+
+    const file = try tmp_dir.dir.createFile("test.dff", .{});
+    try file.writeAll(&dff_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.dff");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.dff, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects DSF with invalid sample rate" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var dsf_data: [100]u8 = undefined;
+
+    // DSD chunk
+    @memcpy(dsf_data[0..4], "DSD ");
+    std.mem.writeInt(u64, dsf_data[4..12], 28, .little);
+    std.mem.writeInt(u64, dsf_data[12..20], 100, .little);
+    std.mem.writeInt(u64, dsf_data[20..28], 0, .little);
+
+    // fmt chunk with invalid sample rate
+    @memcpy(dsf_data[28..32], "fmt ");
+    std.mem.writeInt(u64, dsf_data[32..40], 52, .little);
+    std.mem.writeInt(u32, dsf_data[40..44], 1, .little);
+    std.mem.writeInt(u32, dsf_data[44..48], 0, .little);
+    std.mem.writeInt(u32, dsf_data[48..52], 2, .little);
+    std.mem.writeInt(u32, dsf_data[52..56], 2, .little);
+    std.mem.writeInt(u32, dsf_data[56..60], 44100, .little); // Invalid! Not a DSD rate
+    std.mem.writeInt(u32, dsf_data[60..64], 1, .little);
+    std.mem.writeInt(u64, dsf_data[64..72], 0, .little);
+    std.mem.writeInt(u32, dsf_data[72..76], 4096, .little);
+    std.mem.writeInt(u32, dsf_data[76..80], 0, .little);
+    @memcpy(dsf_data[80..84], "data");
+    std.mem.writeInt(u64, dsf_data[84..92], 20, .little);
+    @memset(dsf_data[92..100], 0);
+
+    const file = try tmp_dir.dir.createFile("invalid.dsf", .{});
+    try file.writeAll(&dsf_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.dsf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.dsf, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+

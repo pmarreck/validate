@@ -18,6 +18,9 @@ const convertUtf16LeToUtf8 = format_validation.convertUtf16LeToUtf8;
 /// Files larger than this are too risky to load entirely into memory.
 const max_text_file_size: usize = 1024 * 1024 * 1024;
 
+const FormatValidator = format_validation.FormatValidator;
+const detectFormat = format_validation.detectFormat;
+
 // ============ Unicode Warning Types ============
 
 pub const UnicodeWarningKind = enum(u3) {
@@ -2682,3 +2685,700 @@ test "validateJson accepts JSON5 ground truth file with warning" {
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.json, result.format);
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "detectFormat RTF" {
+    const rtf_header = "{\\rtf1";
+    try std.testing.expectEqual(FileFormat.rtf, detectFormat(rtf_header));
+}
+
+test "FormatValidator accepts valid RTF" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Simple valid RTF document
+    const valid_rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Arial;}}Hello World}";
+
+    const file = try tmp_dir.dir.createFile("valid.rtf", .{});
+    try file.writeAll(valid_rtf);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.rtf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.rtf, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid RTF failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects RTF missing closing brace" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // RTF missing closing brace
+    const invalid_rtf = "{\\rtf1\\ansi\\deff0 Hello World";
+
+    const file = try tmp_dir.dir.createFile("invalid.rtf", .{});
+    try file.writeAll(invalid_rtf);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.rtf");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.rtf, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "UTF-8 fallback validates plain text file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create plain ASCII text file (no format signature)
+    const text_content = "Hello, world!\nThis is a plain text file.\nNo special format signature.";
+
+    const file = try tmp_dir.dir.createFile("test.txt", .{});
+    try file.writeAll(text_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.txt");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should be detected as plain_text — UTF-8 validated but no CRC/hash
+    try std.testing.expectEqual(FileFormat.plain_text, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "UTF-8 fallback validates UTF-8 with BOM" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create UTF-8 file with BOM
+    const bom = [_]u8{ 0xEF, 0xBB, 0xBF };
+    const text = "UTF-8 text with BOM: \xC3\xA9\xC3\xA0\xC3\xBC"; // é, à, ü
+
+    const file = try tmp_dir.dir.createFile("test_bom.txt", .{});
+    try file.writeAll(&bom);
+    try file.writeAll(text);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test_bom.txt");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.plain_text, result.format);
+    try std.testing.expect(result.is_valid);
+    // UTF-8 parse but no CRC/hash integrity mechanism
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "UTF-8 fallback does not validate binary file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create binary file with lots of null bytes and control characters
+    var binary_data: [100]u8 = undefined;
+    for (&binary_data, 0..) |*byte, i| {
+        byte.* = @intCast(i % 32); // Mix of control characters and nulls
+    }
+
+    const file = try tmp_dir.dir.createFile("test.bin", .{});
+    try file.writeAll(&binary_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.bin");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should be unknown with no validation depth (binary content)
+    try std.testing.expectEqual(FileFormat.unknown, result.format);
+    try std.testing.expect(result.is_valid);
+    // Binary files don't get structural validation
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "UTF-8 fallback validates multi-byte UTF-8" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create file with multi-byte UTF-8 sequences (no format signature)
+    const utf8_content = "日本語テキスト\n中文文本\n한국어 텍스트\nΕλληνικά\n";
+
+    const file = try tmp_dir.dir.createFile("test_multibyte.txt", .{});
+    try file.writeAll(utf8_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test_multibyte.txt");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.plain_text, result.format);
+    try std.testing.expect(result.is_valid);
+    // UTF-8 parse but no CRC/hash integrity mechanism
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "CP437 detection for demoscene NFO files" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Classic demoscene/warez NFO ASCII art using CP437 box-drawing characters
+    // These bytes are: ██▓▓░░ followed by newline and more box chars
+    // 0xDB = █ (full block), 0xB2 = ▓ (dark shade), 0xB0 = ░ (light shade)
+    // 0xC4 = ─ (horizontal line), 0xB3 = │ (vertical line)
+    const cp437_content = [_]u8{
+        0xDB, 0xDB, 0xB2, 0xB2, 0xB0, 0xB0, 0x20, 'H', 'E', 'L', 'L', 'O', 0x20, 0xB0, 0xB0, 0xB2, 0xB2, 0xDB, 0xDB, 0x0D, 0x0A, // ██▓▓░░ HELLO ░░▓▓██\r\n
+        0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0x0D, 0x0A, // ───────────────────\r\n
+        0xB3, 0x20, 'D', 'E', 'M', 'O', 'S', 'C', 'E', 'N', 'E', 0x20, 'N', 'F', 'O', 0x20, 0x20, 0xB3, 0x0D, 0x0A, // │ DEMOSCENE NFO  │\r\n
+        0xC0, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xD9, 0x0D, 0x0A, // └─────────────────┘\r\n
+    };
+
+    const file = try tmp_dir.dir.createFile("release.nfo", .{});
+    try file.writeAll(&cp437_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "release.nfo");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should be detected as CP437 text (demoscene NFO)
+    try std.testing.expectEqual(FileFormat.plain_text_cp437, result.format);
+    try std.testing.expect(result.is_valid);
+    // CP437 has no integrity mechanism — any byte is valid
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "FormatValidator accepts valid JSON" {
+    const allocator = std.testing.allocator;
+
+    // Create a temp file with valid JSON
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const json_content =
+        \\{
+        \\  "name": "test",
+        \\  "value": 42,
+        \\  "items": [1, 2, 3],
+        \\  "nested": {"a": true, "b": null}
+        \\}
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.json", .{});
+    try file.writeAll(json_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.json");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.json, result.format);
+    try std.testing.expect(result.is_valid);
+    // JSON parsing but no CRC/hash integrity mechanism
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "FormatValidator rejects invalid JSON" {
+    const allocator = std.testing.allocator;
+
+    // Create a temp file with invalid JSON
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const json_content =
+        \\{
+        \\  "name": "test",
+        \\  "value": 42,
+        \\  "missing_closing_brace"
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.json", .{});
+    try file.writeAll(json_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.json");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.json, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "Log files with timestamps not misidentified as JSON" {
+    const allocator = std.testing.allocator;
+
+    // Log files often start with [timestamp] which could look like JSON array with number
+    // Example: [23:24:10][game_tag][source.cpp:59]: message
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const log_content =
+        \\[23:24:10][no_game_date][equipment_graphic_database.cpp:59]: Entity referenced in equipment graphic database does not exist
+        \\[23:24:15][no_game_date][triggerimplementation.cpp:9557]: common/scripted_effects/BLT_scripted_effects.txt:77: has_game_rule
+    ;
+
+    const file = try tmp_dir.dir.createFile("game.log", .{});
+    try file.writeAll(log_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "game.log");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should NOT be detected as JSON (should be unknown since .log extension maps to unknown)
+    try std.testing.expect(result.format != FileFormat.json);
+}
+
+test "FormatValidator accepts JSONC with line comments" {
+    const allocator = std.testing.allocator;
+
+    // JSONC (JSON with Comments) - used by MAME, VS Code, TypeScript configs, etc.
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const jsonc_content =
+        \\// license:BSD-3-Clause
+        \\// copyright-holders:Ryan Holtz
+        \\{
+        \\  "name": "test",
+        \\  // This is a comment
+        \\  "value": 42
+        \\}
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.json", .{});
+    try file.writeAll(jsonc_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.json");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.json, result.format);
+    try std.testing.expect(result.is_valid);
+    // Should have a warning about comments
+    try std.testing.expect(result.warning_message != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.warning_message.?, "comment") != null);
+}
+
+test "FormatValidator accepts JSONC with block comments" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const jsonc_content =
+        \\/* This is a block comment
+        \\   that spans multiple lines */
+        \\{
+        \\  "name": "test",
+        \\  "items": [1, /* inline comment */ 2, 3]
+        \\}
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.json", .{});
+    try file.writeAll(jsonc_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.json");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.json, result.format);
+    try std.testing.expect(result.is_valid);
+    // Should have a warning about comments
+    try std.testing.expect(result.warning_message != null);
+}
+
+test "FormatValidator does not strip comments inside JSON strings" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Comments inside strings should NOT be stripped - this is valid JSON
+    const json_content =
+        \\{
+        \\  "url": "http://example.com/path",
+        \\  "comment": "This // is not a comment",
+        \\  "block": "Neither /* is */ this"
+        \\}
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.json", .{});
+    try file.writeAll(json_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.json");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.json, result.format);
+    try std.testing.expect(result.is_valid);
+    // Should NOT have a warning - this is valid standard JSON
+    try std.testing.expect(result.warning_message == null);
+}
+
+test "FormatValidator accepts valid TOML" {
+    const allocator = std.testing.allocator;
+
+    // Create a temp file with valid TOML
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const toml_content =
+        \\[server]
+        \\host = "localhost"
+        \\port = 8080
+        \\
+        \\[database]
+        \\name = "mydb"
+        \\enabled = true
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.toml", .{});
+    try file.writeAll(toml_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.toml");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.toml, result.format);
+    try std.testing.expect(result.is_valid);
+    // TOML parsing but no CRC/hash integrity mechanism
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "FormatValidator rejects invalid TOML" {
+    const allocator = std.testing.allocator;
+
+    // Create a temp file with invalid TOML
+    // Uses valid [section] header but invalid value syntax
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const toml_content =
+        \\[server]
+        \\host = invalid unquoted string
+        \\port = 8080
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.toml", .{});
+    try file.writeAll(toml_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.toml");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.toml, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts valid XML" {
+    const allocator = std.testing.allocator;
+
+    // Create a temp file with valid XML
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const xml_content =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<root>
+        \\  <item id="1">First</item>
+        \\  <item id="2">Second</item>
+        \\  <empty/>
+        \\</root>
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.xml", .{});
+    try file.writeAll(xml_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xml");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.xml, result.format);
+    try std.testing.expect(result.is_valid);
+    // XML parsing but no CRC/hash integrity mechanism
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "FormatValidator rejects invalid XML with mismatched tags" {
+    const allocator = std.testing.allocator;
+
+    // Create a temp file with invalid XML
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const xml_content =
+        \\<root>
+        \\  <item>Content</wrong>
+        \\</root>
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.xml", .{});
+    try file.writeAll(xml_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xml");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.xml, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator rejects XML with unclosed tags" {
+    const allocator = std.testing.allocator;
+
+    // Create a temp file with XML that has unclosed tags
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const xml_content =
+        \\<root>
+        \\  <item>Content
+        \\</root>
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.xml", .{});
+    try file.writeAll(xml_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xml");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.xml, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts XML with undefined entity when DOCTYPE was stripped" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const xml_content =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE root [
+        \\  <!ENTITY demo "ok">
+        \\]>
+        \\<root>&demo;</root>
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.xml", .{});
+    try file.writeAll(xml_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xml");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.xml, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expect(result.malformations.contains(.xml_undefined_entity));
+    try std.testing.expect(result.warning_message != null);
+}
+
+test "zig-xml accepts simple XML" {
+    const xml_content = "<root><child>text</child></root>";
+    try std.testing.expect(format_validation.isXmlWellFormed(xml_content));
+}
+
+test "zig-xml accepts XML with declaration" {
+    const xml_content = "<?xml version=\"1.0\"?><root><child/></root>";
+    try std.testing.expect(format_validation.isXmlWellFormed(xml_content));
+}
+
+test "zig-xml accepts XML with CDATA" {
+    const xml_content = "<root><![CDATA[<not a tag>]]></root>";
+    try std.testing.expect(format_validation.isXmlWellFormed(xml_content));
+}
+
+test "zig-xml accepts XML with comments" {
+    const xml_content = "<root><!-- comment --><child/></root>";
+    try std.testing.expect(format_validation.isXmlWellFormed(xml_content));
+}
+
+test "zig-xml rejects mismatched tags" {
+    const xml_content = "<root><child></wrong></root>";
+    try std.testing.expect(!format_validation.isXmlWellFormed(xml_content));
+}
+
+test "zig-xml rejects unclosed tags" {
+    const xml_content = "<root><child>";
+    try std.testing.expect(!format_validation.isXmlWellFormed(xml_content));
+}
+
+test "zig-xml accepts > in quoted attribute values" {
+    // This is the bug we fixed - > inside attribute values should be allowed
+    const xml_content = "<info name=\"usage\" value=\">Load\" />";
+    try std.testing.expect(format_validation.isXmlWellFormed(xml_content));
+}
+
+test "FormatValidator accepts valid KML" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const kml_content =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<kml xmlns="http://www.opengis.net/kml/2.2">
+        \\  <Document>
+        \\    <name>Test KML</name>
+        \\    <Placemark>
+        \\      <name>Point</name>
+        \\      <Point>
+        \\        <coordinates>-122.0822035425683,37.42228990140251,0</coordinates>
+        \\      </Point>
+        \\    </Placemark>
+        \\  </Document>
+        \\</kml>
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.kml", .{});
+    try file.writeAll(kml_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.kml");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.kml, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "UTF-16 LE INI detection" {
+    // UTF-16 LE BOM + "[section]\r\nkey=value\r\n"
+    const utf16_ini = [_]u8{
+        0xFF, 0xFE, // BOM
+        '[',  0x00,
+        's',  0x00,
+        'e',  0x00,
+        'c',  0x00,
+        't',  0x00,
+        'i',  0x00,
+        'o',  0x00,
+        'n',  0x00,
+        ']',  0x00,
+        0x0D, 0x00, 0x0A, 0x00, // \r\n
+        'k',  0x00, 'e',  0x00,
+        'y',  0x00, '=',  0x00,
+        'v',  0x00, 'a',  0x00,
+        'l',  0x00, 'u',  0x00,
+        'e',  0x00,
+        0x0D, 0x00, 0x0A, 0x00, // \r\n
+    };
+
+    const format = format_validation.detectTextFormat(&utf16_ini);
+    try std.testing.expect(format != null);
+    try std.testing.expectEqual(FileFormat.ini, format.?);
+}
+

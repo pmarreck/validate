@@ -24,6 +24,9 @@ const c_compact_pro = @cImport({
     @cInclude("compact_pro.h");
 });
 
+const FormatValidator = format_validation.FormatValidator;
+const detectFormat = format_validation.detectFormat;
+
 // ============ ZIP Validator ============
 
 /// ZIP signature constants
@@ -3778,3 +3781,1891 @@ test "validateHqxFromBuffer: empty data rejected" {
     const result = validateHqxFromBuffer(&[_]u8{});
     try testing.expect(!result.is_valid);
 }
+
+// Type for ZIP test file entries
+const ZipTestFile = struct { name: []const u8, content: []const u8 };
+
+// Helper function to build a minimal ZIP with given internal files
+fn buildMinimalZip(files: []const ZipTestFile) [4096]u8 {
+    var buffer: [4096]u8 = undefined;
+    @memset(&buffer, 0);
+    var offset: usize = 0;
+
+    var cd_entries: [16]struct { offset: u32, name_len: u16, name: [256]u8 } = undefined;
+    var cd_count: usize = 0;
+
+    // Write local file headers and data
+    for (files) |f| {
+        cd_entries[cd_count].offset = @intCast(offset);
+        cd_entries[cd_count].name_len = @intCast(f.name.len);
+        @memcpy(cd_entries[cd_count].name[0..f.name.len], f.name);
+        cd_count += 1;
+
+        // Local file header (30 bytes + filename + data)
+        buffer[offset] = 0x50;
+        buffer[offset + 1] = 0x4B;
+        buffer[offset + 2] = 0x03;
+        buffer[offset + 3] = 0x04; // signature
+        buffer[offset + 4] = 0x0A;
+        buffer[offset + 5] = 0x00; // version
+        buffer[offset + 6] = 0x00;
+        buffer[offset + 7] = 0x00; // flags
+        buffer[offset + 8] = 0x00;
+        buffer[offset + 9] = 0x00; // compression
+        buffer[offset + 10] = 0x00;
+        buffer[offset + 11] = 0x00; // time
+        buffer[offset + 12] = 0x00;
+        buffer[offset + 13] = 0x00; // date
+        buffer[offset + 14] = 0x00;
+        buffer[offset + 15] = 0x00;
+        buffer[offset + 16] = 0x00;
+        buffer[offset + 17] = 0x00; // CRC
+        std.mem.writeInt(u32, buffer[offset + 18 ..][0..4], @intCast(f.content.len), .little); // compressed
+        std.mem.writeInt(u32, buffer[offset + 22 ..][0..4], @intCast(f.content.len), .little); // uncompressed
+        std.mem.writeInt(u16, buffer[offset + 26 ..][0..2], @intCast(f.name.len), .little); // name len
+        buffer[offset + 28] = 0x00;
+        buffer[offset + 29] = 0x00; // extra len
+        offset += 30;
+        @memcpy(buffer[offset..][0..f.name.len], f.name);
+        offset += f.name.len;
+        @memcpy(buffer[offset..][0..f.content.len], f.content);
+        offset += f.content.len;
+    }
+
+    const cd_start = offset;
+
+    // Write central directory
+    for (cd_entries[0..cd_count]) |entry| {
+        buffer[offset] = 0x50;
+        buffer[offset + 1] = 0x4B;
+        buffer[offset + 2] = 0x01;
+        buffer[offset + 3] = 0x02; // signature
+        buffer[offset + 4] = 0x0A;
+        buffer[offset + 5] = 0x00; // version made by
+        buffer[offset + 6] = 0x0A;
+        buffer[offset + 7] = 0x00; // version needed
+        buffer[offset + 8] = 0x00;
+        buffer[offset + 9] = 0x00; // flags
+        buffer[offset + 10] = 0x00;
+        buffer[offset + 11] = 0x00; // compression
+        buffer[offset + 12] = 0x00;
+        buffer[offset + 13] = 0x00; // time
+        buffer[offset + 14] = 0x00;
+        buffer[offset + 15] = 0x00; // date
+        buffer[offset + 16] = 0x00;
+        buffer[offset + 17] = 0x00;
+        buffer[offset + 18] = 0x00;
+        buffer[offset + 19] = 0x00; // CRC
+        buffer[offset + 20] = 0x00;
+        buffer[offset + 21] = 0x00;
+        buffer[offset + 22] = 0x00;
+        buffer[offset + 23] = 0x00; // compressed
+        buffer[offset + 24] = 0x00;
+        buffer[offset + 25] = 0x00;
+        buffer[offset + 26] = 0x00;
+        buffer[offset + 27] = 0x00; // uncompressed
+        std.mem.writeInt(u16, buffer[offset + 28 ..][0..2], entry.name_len, .little); // name len
+        buffer[offset + 30] = 0x00;
+        buffer[offset + 31] = 0x00; // extra len
+        buffer[offset + 32] = 0x00;
+        buffer[offset + 33] = 0x00; // comment len
+        buffer[offset + 34] = 0x00;
+        buffer[offset + 35] = 0x00; // disk number
+        buffer[offset + 36] = 0x00;
+        buffer[offset + 37] = 0x00; // internal attrs
+        buffer[offset + 38] = 0x00;
+        buffer[offset + 39] = 0x00;
+        buffer[offset + 40] = 0x00;
+        buffer[offset + 41] = 0x00; // external attrs
+        std.mem.writeInt(u32, buffer[offset + 42 ..][0..4], entry.offset, .little); // local header offset
+        offset += 46;
+        @memcpy(buffer[offset..][0..entry.name_len], entry.name[0..entry.name_len]);
+        offset += entry.name_len;
+    }
+
+    const cd_size = offset - cd_start;
+
+    // Write EOCD
+    buffer[offset] = 0x50;
+    buffer[offset + 1] = 0x4B;
+    buffer[offset + 2] = 0x05;
+    buffer[offset + 3] = 0x06; // signature
+    buffer[offset + 4] = 0x00;
+    buffer[offset + 5] = 0x00; // disk number
+    buffer[offset + 6] = 0x00;
+    buffer[offset + 7] = 0x00; // disk with CD
+    std.mem.writeInt(u16, buffer[offset + 8 ..][0..2], @intCast(cd_count), .little); // entries on disk
+    std.mem.writeInt(u16, buffer[offset + 10 ..][0..2], @intCast(cd_count), .little); // total entries
+    std.mem.writeInt(u32, buffer[offset + 12 ..][0..4], @intCast(cd_size), .little); // CD size
+    std.mem.writeInt(u32, buffer[offset + 16 ..][0..4], @intCast(cd_start), .little); // CD offset
+    buffer[offset + 20] = 0x00;
+    buffer[offset + 21] = 0x00; // comment len
+
+    return buffer;
+}
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "detectFormat ZIP" {
+    const zip_header = [_]u8{ 0x50, 0x4B, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    try std.testing.expectEqual(FileFormat.zip, detectFormat(&zip_header));
+}
+
+test "FormatValidator accepts valid ZIP file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a minimal valid ZIP file structure:
+    // - Local file header (PK\x03\x04)
+    // - File data (empty file named "test.txt")
+    // - Central directory header (PK\x01\x02)
+    // - End of central directory (PK\x05\x06)
+    //
+    // This is a real, minimal ZIP file that any ZIP tool can read.
+    const valid_zip = [_]u8{
+        // Local file header
+        0x50, 0x4B, 0x03, 0x04, // signature
+        0x0A, 0x00, // version needed (1.0)
+        0x00, 0x00, // general purpose flag
+        0x00, 0x00, // compression method (store)
+        0x00, 0x00, // last mod time
+        0x00, 0x00, // last mod date
+        0x00, 0x00, 0x00, 0x00, // CRC-32 (0 for empty file)
+        0x00, 0x00, 0x00, 0x00, // compressed size (0)
+        0x00, 0x00, 0x00, 0x00, // uncompressed size (0)
+        0x08, 0x00, // filename length (8)
+        0x00, 0x00, // extra field length (0)
+        't', 'e', 's', 't', '.', 't', 'x', 't', // filename
+
+        // Central directory header
+        0x50, 0x4B, 0x01, 0x02, // signature
+        0x0A, 0x00, // version made by
+        0x0A, 0x00, // version needed
+        0x00, 0x00, // general purpose flag
+        0x00, 0x00, // compression method
+        0x00, 0x00, // last mod time
+        0x00, 0x00, // last mod date
+        0x00, 0x00, 0x00, 0x00, // CRC-32
+        0x00, 0x00, 0x00, 0x00, // compressed size
+        0x00, 0x00, 0x00, 0x00, // uncompressed size
+        0x08, 0x00, // filename length
+        0x00, 0x00, // extra field length
+        0x00, 0x00, // file comment length
+        0x00, 0x00, // disk number start
+        0x00, 0x00, // internal file attributes
+        0x00, 0x00, 0x00, 0x00, // external file attributes
+        0x00, 0x00, 0x00, 0x00, // relative offset of local header
+        't', 'e', 's', 't', '.', 't', 'x', 't', // filename
+
+        // End of central directory
+        0x50, 0x4B, 0x05, 0x06, // signature
+        0x00, 0x00, // disk number
+        0x00, 0x00, // disk number with CD
+        0x01, 0x00, // number of entries on this disk
+        0x01, 0x00, // total number of entries
+        0x36, 0x00, 0x00, 0x00, // size of central directory (54 bytes)
+        0x26, 0x00, 0x00, 0x00, // offset of central directory (38 bytes)
+        0x00, 0x00, // comment length
+    };
+
+    // Write valid ZIP to temp file
+    const file = try tmp_dir.dir.createFile("valid.zip", .{});
+    try file.writeAll(&valid_zip);
+    file.close();
+
+    // Get full path
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.zip");
+    defer allocator.free(path);
+
+    // Validate the file
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should detect as ZIP format and be VALID
+    try std.testing.expectEqual(FileFormat.zip, result.format);
+    try std.testing.expect(result.is_valid); // THIS IS THE KEY ASSERTION - currently failing!
+    if (!result.is_valid) {
+        std.debug.print("\nZIP validation failed with: {s}\n", .{result.error_message orelse "no message"});
+    }
+}
+
+test "FormatValidator accepts real-world ZIP file with extra fields" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // This is an actual ZIP file created by macOS zip command containing "hello world\n"
+    // It includes Unix timestamp extension fields (UT) which real ZIP tools add
+    const real_zip = [_]u8{
+        // Local file header with extra fields
+        0x50, 0x4b, 0x03, 0x04, // signature
+        0x0a, 0x00, // version needed
+        0x00, 0x00, // flags
+        0x00, 0x00, // compression (store)
+        0x51, 0x4c, // mod time
+        0x2c, 0x5c, // mod date
+        0x2d, 0x3b, 0x08, 0xaf, // CRC-32
+        0x0c, 0x00, 0x00, 0x00, // compressed size (12)
+        0x0c, 0x00, 0x00, 0x00, // uncompressed size (12)
+        0x10, 0x00, // filename length (16)
+        0x1c, 0x00, // extra field length (28)
+        // filename: "test_content.txt"
+        't',  'e',
+        's',  't',
+        '_',  'c',
+        'o',  'n',
+        't',  'e',
+        'n',  't',
+        '.',  't',
+        'x',  't',
+        // extra field (Unix timestamp)
+        'U',  'T',
+        0x09, 0x00,
+        0x03, 0x7a,
+        0x06, 0x65,
+        0x69, 0x7a,
+        0x06, 0x65,
+        0x69, 'u',
+        'x',  0x0b,
+        0x00, 0x01,
+        0x04, 0xf5,
+        0x01, 0x00,
+        0x00, 0x04,
+        0x14, 0x00,
+        0x00, 0x00,
+        // file data: "hello world\n"
+        'h',  'e',
+        'l',  'l',
+        'o',  ' ',
+        'w',  'o',
+        'r',  'l',
+        'd',
+        0x0a,
+
+        // Central directory header
+        0x50, 0x4b, 0x01, 0x02, // signature
+        0x1e, 0x03, // version made by
+        0x0a, 0x00, // version needed
+        0x00, 0x00, // flags
+        0x00, 0x00, // compression
+        0x51, 0x4c, // mod time
+        0x2c, 0x5c, // mod date
+        0x2d, 0x3b, 0x08, 0xaf, // CRC-32
+        0x0c, 0x00, 0x00, 0x00, // compressed size
+        0x0c, 0x00, 0x00, 0x00, // uncompressed size
+        0x10, 0x00, // filename length (16)
+        0x18, 0x00, // extra field length (24)
+        0x00, 0x00, // comment length
+        0x00, 0x00, // disk number
+        0x01, 0x00, // internal attrs
+        0x00, 0x00, 0xa4, 0x81, // external attrs
+        0x00, 0x00, 0x00, 0x00, // local header offset
+        // filename
+        't',  'e',  's',  't',
+        '_',  'c',  'o',  'n',
+        't',  'e',  'n',  't',
+        '.',  't',  'x',  't',
+        // extra field
+        'U',  'T',  0x05, 0x00,
+        0x03, 0x7a, 0x06, 0x65,
+        0x69, 'u',  'x',  0x0b,
+        0x00, 0x01, 0x04, 0xf5,
+        0x01, 0x00, 0x00, 0x04,
+        0x14, 0x00, 0x00,
+        0x00,
+
+        // End of central directory
+        0x50, 0x4b, 0x05, 0x06, // signature
+        0x00, 0x00, // disk number
+        0x00, 0x00, // disk with CD
+        0x01, 0x00, // entries on this disk
+        0x01, 0x00, // total entries
+        0x56, 0x00, 0x00, 0x00, // CD size
+        0x56, 0x00, 0x00, 0x00, // CD offset
+        0x00, 0x00, // comment length
+    };
+
+    const file = try tmp_dir.dir.createFile("real.zip", .{});
+    try file.writeAll(&real_zip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "real.zip");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should detect as ZIP format and be VALID
+    try std.testing.expectEqual(FileFormat.zip, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nReal ZIP validation failed with: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects corrupted ZIP file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a corrupted ZIP file - has signature but missing EOCD
+    const corrupted_zip = [_]u8{
+        // Local file header only, no central directory or EOCD
+        0x50, 0x4B, 0x03, 0x04, // signature
+        0x0A, 0x00, // version needed
+        0x00, 0x00, // flags
+        0x00, 0x00, // compression
+        0x00, 0x00, 0x00, 0x00, // time/date
+        0x00, 0x00, 0x00, 0x00, // CRC
+        0x00, 0x00, 0x00, 0x00, // compressed size
+        0x00, 0x00, 0x00, 0x00, // uncompressed size
+        0x04, 0x00, // filename length
+        0x00, 0x00, // extra length
+        't', 'e', 's', 't', // filename
+        // Missing central directory and EOCD - this is corrupted!
+    };
+
+    const file = try tmp_dir.dir.createFile("corrupted.zip", .{});
+    try file.writeAll(&corrupted_zip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.zip");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should detect as ZIP format but INVALID (missing EOCD)
+    try std.testing.expectEqual(FileFormat.zip, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts valid EPUB file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // EPUB is a ZIP with mimetype and META-INF/container.xml
+    const files = [_]ZipTestFile{
+        .{ .name = "mimetype", .content = "application/epub+zip" },
+        .{ .name = "META-INF/container.xml", .content = "<?xml version=\"1.0\"?><container/>" },
+    };
+    const epub_data = buildMinimalZip(&files);
+
+    const file = try tmp_dir.dir.createFile("valid.epub", .{});
+    // Find actual data length (up to end of EOCD + 22)
+    var data_len: usize = 0;
+    for (epub_data, 0..) |_, i| {
+        if (i >= 4 and epub_data[i - 4] == 0x50 and epub_data[i - 3] == 0x4B and
+            epub_data[i - 2] == 0x05 and epub_data[i - 1] == 0x06)
+        {
+            data_len = i + 18; // EOCD is 22 bytes, we found it at i-4
+            break;
+        }
+    }
+    if (data_len == 0) data_len = 512; // fallback
+    try file.writeAll(epub_data[0..data_len]);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.epub");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    if (!result.is_valid) {
+        std.debug.print("\nValid EPUB failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.epub, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects corrupted EPUB file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // EPUB without required structure (just a plain ZIP)
+    const files = [_]ZipTestFile{
+        .{ .name = "random.txt", .content = "not an epub" },
+    };
+    const zip_data = buildMinimalZip(&files);
+
+    const file = try tmp_dir.dir.createFile("corrupted.epub", .{});
+    var data_len: usize = 512;
+    for (zip_data, 0..) |_, i| {
+        if (i >= 4 and zip_data[i - 4] == 0x50 and zip_data[i - 3] == 0x4B and
+            zip_data[i - 2] == 0x05 and zip_data[i - 1] == 0x06)
+        {
+            data_len = i + 18;
+            break;
+        }
+    }
+    try file.writeAll(zip_data[0..data_len]);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.epub");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    // Note: This will be detected as plain ZIP since it lacks EPUB markers
+    // We need to test a file that IS detected as EPUB but is invalid
+    const result = validator.validateFile(path);
+
+    // It should be detected as ZIP (not EPUB) since it lacks the markers
+    try std.testing.expectEqual(FileFormat.zip, result.format);
+    try std.testing.expect(result.is_valid); // Valid ZIP, just not EPUB
+}
+
+test "FormatValidator accepts valid DOCX file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // DOCX requires [Content_Types].xml and word/ directory
+    const files = [_]ZipTestFile{
+        .{ .name = "[Content_Types].xml", .content = "<?xml version=\"1.0\"?><Types/>" },
+        .{ .name = "word/document.xml", .content = "<?xml version=\"1.0\"?><document/>" },
+    };
+    const docx_data = buildMinimalZip(&files);
+
+    const file = try tmp_dir.dir.createFile("valid.docx", .{});
+    var data_len: usize = 512;
+    for (docx_data, 0..) |_, i| {
+        if (i >= 4 and docx_data[i - 4] == 0x50 and docx_data[i - 3] == 0x4B and
+            docx_data[i - 2] == 0x05 and docx_data[i - 1] == 0x06)
+        {
+            data_len = i + 18;
+            break;
+        }
+    }
+    try file.writeAll(docx_data[0..data_len]);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.docx");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    if (!result.is_valid) {
+        std.debug.print("\nValid DOCX failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.docx, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects DOCX missing word directory" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Has Content_Types but no word/ directory
+    const files = [_]ZipTestFile{
+        .{ .name = "[Content_Types].xml", .content = "<?xml version=\"1.0\"?><Types/>" },
+        .{ .name = "other/file.xml", .content = "<?xml version=\"1.0\"?><data/>" },
+    };
+    const zip_data = buildMinimalZip(&files);
+
+    const file = try tmp_dir.dir.createFile("invalid.docx", .{});
+    var data_len: usize = 512;
+    for (zip_data, 0..) |_, i| {
+        if (i >= 4 and zip_data[i - 4] == 0x50 and zip_data[i - 3] == 0x4B and
+            zip_data[i - 2] == 0x05 and zip_data[i - 1] == 0x06)
+        {
+            data_len = i + 18;
+            break;
+        }
+    }
+    try file.writeAll(zip_data[0..data_len]);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.docx");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Without word/, it won't be detected as DOCX, just plain ZIP
+    try std.testing.expectEqual(FileFormat.zip, result.format);
+}
+
+test "FormatValidator accepts valid XLSX file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // XLSX requires [Content_Types].xml and xl/ directory
+    const files = [_]ZipTestFile{
+        .{ .name = "[Content_Types].xml", .content = "<?xml version=\"1.0\"?><Types/>" },
+        .{ .name = "xl/workbook.xml", .content = "<?xml version=\"1.0\"?><workbook/>" },
+    };
+    const xlsx_data = buildMinimalZip(&files);
+
+    const file = try tmp_dir.dir.createFile("valid.xlsx", .{});
+    var data_len: usize = 512;
+    for (xlsx_data, 0..) |_, i| {
+        if (i >= 4 and xlsx_data[i - 4] == 0x50 and xlsx_data[i - 3] == 0x4B and
+            xlsx_data[i - 2] == 0x05 and xlsx_data[i - 1] == 0x06)
+        {
+            data_len = i + 18;
+            break;
+        }
+    }
+    try file.writeAll(xlsx_data[0..data_len]);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.xlsx");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    if (!result.is_valid) {
+        std.debug.print("\nValid XLSX failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.xlsx, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid PPTX file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // PPTX requires [Content_Types].xml and ppt/ directory
+    const files = [_]ZipTestFile{
+        .{ .name = "[Content_Types].xml", .content = "<?xml version=\"1.0\"?><Types/>" },
+        .{ .name = "ppt/presentation.xml", .content = "<?xml version=\"1.0\"?><presentation/>" },
+    };
+    const pptx_data = buildMinimalZip(&files);
+
+    const file = try tmp_dir.dir.createFile("valid.pptx", .{});
+    var data_len: usize = 512;
+    for (pptx_data, 0..) |_, i| {
+        if (i >= 4 and pptx_data[i - 4] == 0x50 and pptx_data[i - 3] == 0x4B and
+            pptx_data[i - 2] == 0x05 and pptx_data[i - 1] == 0x06)
+        {
+            data_len = i + 18;
+            break;
+        }
+    }
+    try file.writeAll(pptx_data[0..data_len]);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.pptx");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    if (!result.is_valid) {
+        std.debug.print("\nValid PPTX failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.pptx, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects truncated ZIP-based files" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Truncated ZIP (missing EOCD) - simulates what generate_test_files bug did
+    const truncated_zip = [_]u8{
+        0x50, 0x4B, 0x03, 0x04, // Local file header signature
+        0x0A, 0x00, // version needed
+        0x00, 0x00, // flags
+        0x00, 0x00, // compression
+        0x00, 0x00, 0x00, 0x00, // time/date
+        0x00, 0x00, 0x00, 0x00, // CRC
+        0x05, 0x00, 0x00, 0x00, // compressed size
+        0x05, 0x00, 0x00, 0x00, // uncompressed size
+        0x08, 0x00, // filename length
+        0x00, 0x00, // extra length
+        't', 'e', 's', 't', '.', 't', 'x', 't', // filename
+        'h', 'e', 'l', 'l', 'o', // file content
+        // Missing central directory and EOCD - this is truncated!
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.zip", .{});
+    try file.writeAll(&truncated_zip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.zip");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should be detected as ZIP but invalid (missing EOCD)
+    try std.testing.expectEqual(FileFormat.zip, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "FormatValidator deep validates Brotli from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth Brotli file ("Hello" compressed)
+    const file = std.fs.cwd().openFile("ground_truth_examples/brotli/hello.br", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/brotli/hello.br") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.br, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator detects Brotli by extension" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid Brotli (empty string, window bits=10)
+    const empty_brotli = [_]u8{0x06};
+    const file = try tmp_dir.dir.createFile("empty.br", .{});
+    try file.writeAll(&empty_brotli);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "empty.br");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    // Should detect as Brotli by extension
+    try std.testing.expectEqual(FileFormat.br, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator rejects corrupted Brotli" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Invalid Brotli data (random bytes)
+    const invalid = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF };
+    const file = try tmp_dir.dir.createFile("invalid.br", .{});
+    try file.writeAll(&invalid);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.br");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    // Should be detected as Brotli but fail validation
+    try std.testing.expectEqual(FileFormat.br, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateZipDeep accepts valid ZIP with stored entry" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid ZIP with one stored (uncompressed) file
+    // Contains "hello.txt" with content "Hello" (5 bytes)
+    // CRC-32 of "Hello" is 0xf7d18982
+    const valid_zip = [_]u8{
+        // Local file header
+        'P', 'K', 3, 4, // signature
+        0x0A, 0x00, // version needed (1.0)
+        0x00, 0x00, // general purpose flags
+        0x00, 0x00, // compression method (stored)
+        0x00, 0x00, // last mod time
+        0x00, 0x00, // last mod date
+        0x82, 0x89, 0xD1, 0xF7, // CRC-32 of "Hello" (little endian: 0xf7d18982)
+        0x05, 0x00, 0x00, 0x00, // compressed size (5)
+        0x05, 0x00, 0x00, 0x00, // uncompressed size (5)
+        0x09, 0x00, // filename length (9)
+        0x00, 0x00, // extra field length (0)
+        'h', 'e', 'l', 'l', 'o', '.', 't', 'x', 't', // filename
+        'H', 'e', 'l', 'l', 'o', // file data
+        // Central directory header
+        'P', 'K', 1, 2, // signature
+        0x14, 0x00, // version made by
+        0x0A, 0x00, // version needed
+        0x00, 0x00, // flags
+        0x00, 0x00, // compression
+        0x00, 0x00, // mod time
+        0x00, 0x00, // mod date
+        0x82, 0x89, 0xD1, 0xF7, // CRC
+        0x05, 0x00, 0x00, 0x00, // compressed size
+        0x05, 0x00, 0x00, 0x00, // uncompressed size
+        0x09, 0x00, // filename length
+        0x00, 0x00, // extra length
+        0x00, 0x00, // comment length
+        0x00, 0x00, // disk number
+        0x00, 0x00, // internal attributes
+        0x00, 0x00, 0x00, 0x00, // external attributes
+        0x00, 0x00, 0x00, 0x00, // local header offset
+        'h', 'e', 'l', 'l', 'o', '.', 't', 'x', 't', // filename
+        // End of central directory
+        'P', 'K', 5, 6, // signature
+        0x00, 0x00, // disk number
+        0x00, 0x00, // disk with CD
+        0x01, 0x00, // entries on disk
+        0x01, 0x00, // total entries
+        0x37, 0x00, 0x00, 0x00, // CD size (55 bytes)
+        0x2C, 0x00, 0x00, 0x00, // CD offset (44 bytes)
+        0x00, 0x00, // comment length
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.zip", .{});
+    try file.writeAll(&valid_zip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.zip");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.zip, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nZIP CRC validation failed unexpectedly: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateZipDeep rejects ZIP with corrupted stored entry CRC" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // ZIP with corrupted CRC (changed last byte)
+    const corrupted_zip = [_]u8{
+        // Local file header
+        'P', 'K', 3, 4,
+        0x0A, 0x00, // version
+        0x00, 0x00, // flags
+        0x00, 0x00, // compression (stored)
+        0x00, 0x00, // mod time
+        0x00, 0x00, // mod date
+        0x82, 0x89, 0xD1, 0xFF, // CORRUPTED CRC (should be 0xF7)
+        0x05, 0x00, 0x00, 0x00, // compressed size
+        0x05, 0x00, 0x00, 0x00, // uncompressed size
+        0x09, 0x00, // filename length
+        0x00, 0x00, // extra length
+        'h',  'e',
+        'l',  'l',
+        'o',  '.',
+        't',  'x',
+        't',
+        'H', 'e', 'l', 'l', 'o', // file data
+        // Central directory header
+        'P', 'K', 1, 2, // signature
+        0x14, 0x00, // version made by
+        0x0A, 0x00, // version needed
+        0x00, 0x00, // flags
+        0x00, 0x00, // compression
+        0x00, 0x00, // mod time
+        0x00, 0x00, // mod date
+        0x82, 0x89, 0xD1, 0xFF, // corrupted CRC
+        0x05, 0x00, 0x00, 0x00, // compressed size
+        0x05, 0x00, 0x00, 0x00, // uncompressed size
+        0x09, 0x00, // filename length
+        0x00, 0x00, // extra length
+        0x00, 0x00, // comment length
+        0x00, 0x00, // disk number
+        0x00, 0x00, // internal attributes
+        0x00, 0x00, 0x00, 0x00, // external attributes
+        0x00, 0x00, 0x00, 0x00, // local header offset
+        'h',  'e',  'l',  'l',
+        'o',  '.',  't',  'x',
+        't',
+        // End of central directory
+         'P',  'K',  5,
+        6,    0x00, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x01,
+        0x00, 0x37, 0x00, 0x00,
+        0x00, 0x2C, 0x00, 0x00,
+        0x00, 0x00, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("corrupted.zip", .{});
+    try file.writeAll(&corrupted_zip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.zip");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.zip, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqualStrings("CRC mismatch in stored entry", result.error_message.?);
+}
+
+test "validateZipDeep rejects ZIP with bitrot in stored data" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // ZIP with bit flip in the data (simulating bitrot)
+    const bitrot_zip = [_]u8{
+        // Local file header
+        'P',  'K',  3,    4,
+        0x0A, 0x00, 0x00, 0x00,
+        0x00, 0x00, // compression (stored)
+        0x00, 0x00,
+        0x00, 0x00,
+        0x82, 0x89, 0xD1, 0xF7, // correct CRC for "Hello"
+        0x05, 0x00, 0x00, 0x00,
+        0x05, 0x00, 0x00, 0x00,
+        0x09, 0x00, 0x00, 0x00,
+        'h',  'e',  'l',  'l',
+        'o',  '.',  't',  'x',
+        't',
+        'H', 'e', 'l', 'l', 'p', // BIT FLIPPED: 'o' (0x6F) -> 'p' (0x70)
+        // Central directory header
+        'P', 'K', 1, 2, // signature
+        0x14, 0x00, // version made by
+        0x0A, 0x00, // version needed
+        0x00, 0x00, // flags
+        0x00, 0x00, // compression
+        0x00, 0x00, // mod time
+        0x00, 0x00, // mod date
+        0x82, 0x89, 0xD1, 0xF7, // CRC
+        0x05, 0x00, 0x00, 0x00, // compressed size
+        0x05, 0x00, 0x00, 0x00, // uncompressed size
+        0x09, 0x00, // filename length
+        0x00, 0x00, // extra length
+        0x00, 0x00, // comment length
+        0x00, 0x00, // disk number
+        0x00, 0x00, // internal attributes
+        0x00, 0x00, 0x00, 0x00, // external attributes
+        0x00, 0x00, 0x00, 0x00, // local header offset
+        'h',  'e',  'l',  'l',
+        'o',  '.',  't',  'x',
+        't',
+        // End of central directory
+         'P',  'K',  5,
+        6,    0x00, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x01,
+        0x00, 0x37, 0x00, 0x00,
+        0x00, 0x2C, 0x00, 0x00,
+        0x00, 0x00, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("bitrot.zip", .{});
+    try file.writeAll(&bitrot_zip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bitrot.zip");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.zip, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqualStrings("CRC mismatch in stored entry", result.error_message.?);
+}
+
+test "validateZipDeep returns structural for encrypted ZIP entries" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // ZIP with encryption flag set (bit 0 of general purpose flags at offset 6-7)
+    const encrypted_zip = [_]u8{
+        // Local file header
+        'P', 'K', 3, 4,
+        0x0A, 0x00, // version needed
+        0x01, 0x00, // general purpose flags with encryption bit (0x0001)
+        0x00, 0x00, // compression (stored)
+        0x00, 0x00,
+        0x00, 0x00,
+        0x82, 0x89, 0xD1, 0xF7, // CRC (doesn't matter for encrypted)
+        0x05, 0x00, 0x00, 0x00, // compressed size
+        0x05, 0x00, 0x00, 0x00, // uncompressed size
+        0x09, 0x00, // filename length
+        0x00, 0x00, // extra field length
+        'h',  'e',
+        'l',  'l',
+        'o',  '.',
+        't',  'x',
+        't',
+        // Encrypted data (just dummy bytes - would fail CRC if decrypted)
+         0xDE,
+        0xAD, 0xBE,
+        0xEF,
+        0x00,
+        // Central directory header
+        'P', 'K', 1, 2, // signature
+        0x14, 0x00, // version made by
+        0x0A, 0x00, // version needed
+        0x01, 0x00, // encryption flag
+        0x00, 0x00, // compression
+        0x00, 0x00, // mod time
+        0x00, 0x00, // mod date
+        0x82, 0x89, 0xD1, 0xF7, // CRC
+        0x05, 0x00, 0x00, 0x00, // compressed size
+        0x05, 0x00, 0x00, 0x00, // uncompressed size
+        0x09, 0x00, // filename length
+        0x00, 0x00, // extra length
+        0x00, 0x00, // comment length
+        0x00, 0x00, // disk number
+        0x00, 0x00, // internal attributes
+        0x00, 0x00, 0x00, 0x00, // external attributes
+        0x00, 0x00, 0x00, 0x00, // local header offset
+        'h',  'e',  'l',  'l',
+        'o',  '.',  't',  'x',
+        't',
+        // End of central directory
+         'P',  'K',  5,
+        6,    0x00, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x01,
+        0x00, 0x37, 0x00, 0x00,
+        0x00, 0x2C, 0x00, 0x00,
+        0x00, 0x00, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("encrypted.zip", .{});
+    try file.writeAll(&encrypted_zip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "encrypted.zip");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.zip, result.format);
+    try std.testing.expect(result.is_valid);
+    // Should be structural only since we can't validate encrypted content
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "detectFormat gzip" {
+    const gzip_data = [_]u8{ 0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03 };
+    const format = detectFormat(&gzip_data);
+    try std.testing.expectEqual(FileFormat.gzip, format);
+}
+
+test "detectFormat 7z" {
+    const sevenz_data = [_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x04 };
+    const format = detectFormat(&sevenz_data);
+    try std.testing.expectEqual(FileFormat.sevenz, format);
+}
+
+test "detectFormat tar POSIX ustar" {
+    // tar file with ustar magic at offset 257
+    var tar_data: [512]u8 = undefined;
+    @memset(&tar_data, 0);
+    // Put "ustar" at offset 257 (after null terminator at 256)
+    tar_data[257] = 'u';
+    tar_data[258] = 's';
+    tar_data[259] = 't';
+    tar_data[260] = 'a';
+    tar_data[261] = 'r';
+    tar_data[262] = 0;
+    const format = detectFormat(&tar_data);
+    try std.testing.expectEqual(FileFormat.tar, format);
+}
+
+test "FormatValidator accepts valid gzip file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid gzip file containing "Hello" (deflated)
+    // Created with: echo -n "Hello" | gzip | xxd -i
+    const valid_gzip = [_]u8{
+        0x1f, 0x8b, // magic number
+        0x08, // compression method (deflate)
+        0x00, // flags (none)
+        0x00, 0x00, 0x00, 0x00, // mtime (0)
+        0x00, // extra flags
+        0x03, // OS (Unix)
+        // Compressed data for "Hello"
+        0xf3,
+        0x48,
+        0xcd,
+        0xc9,
+        0xc9,
+        0x07,
+        0x00,
+        // CRC32 of "Hello" (0xF7D18982) in little-endian
+        0x82,
+        0x89,
+        0xd1,
+        0xf7,
+        // ISIZE (5) in little-endian
+        0x05,
+        0x00,
+        0x00,
+        0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.gz", .{});
+    try file.writeAll(&valid_gzip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.gz");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.gzip, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expect(result.error_message == null);
+}
+
+test "FormatValidator rejects truncated gzip file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Truncated gzip - missing trailer
+    const truncated_gzip = [_]u8{
+        0x1f, 0x8b, // magic number
+        0x08, // compression method
+        0x00, // flags
+        0x00, 0x00, 0x00, 0x00, // mtime
+        0x00, // extra flags
+        0x03, // OS
+        // Truncated - no compressed data or trailer
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.gz", .{});
+    try file.writeAll(&truncated_gzip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.gz");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.gzip, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "FormatValidator rejects gzip with invalid compression method" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Gzip with invalid compression method (0x09 instead of 0x08)
+    const invalid_gzip = [_]u8{
+        0x1f, 0x8b, // magic number
+        0x09, // INVALID compression method (should be 0x08)
+        0x00, // flags
+        0x00, 0x00, 0x00, 0x00, // mtime
+        0x00, // extra flags
+        0x03, // OS
+        0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, // compressed data
+        0x82, 0x89, 0xd1, 0xf7, // CRC32
+        0x05, 0x00, 0x00, 0x00, // ISIZE
+    };
+
+    const file = try tmp_dir.dir.createFile("invalid.gz", .{});
+    try file.writeAll(&invalid_gzip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.gz");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.gzip, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "detectFormat bzip2" {
+    const bzip2_data = [_]u8{ 0x42, 0x5A, 0x68, 0x39, 0x00, 0x00, 0x00, 0x00 }; // BZh9 + data
+    const format = detectFormat(&bzip2_data);
+    try std.testing.expectEqual(FileFormat.bzip2, format);
+}
+
+test "FormatValidator accepts valid bzip2 file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid bzip2 file
+    // Header: BZh9 (block size 9 = 900KB)
+    // Then we need enough bytes to look like a valid stream
+    // A real bzip2 has: header + compressed blocks + stream end magic + CRC
+    // Minimum realistic size ~14 bytes
+    var valid_bz2: [20]u8 = undefined;
+    valid_bz2[0] = 0x42; // B
+    valid_bz2[1] = 0x5A; // Z
+    valid_bz2[2] = 0x68; // h
+    valid_bz2[3] = 0x39; // 9 (block size)
+    // Fill rest with some data (would be compressed blocks in real file)
+    @memset(valid_bz2[4..], 0x00);
+
+    const file = try tmp_dir.dir.createFile("valid.bz2", .{});
+    try file.writeAll(&valid_bz2);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.bz2");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.bzip2, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects truncated bzip2 file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Truncated bzip2 - only header, file too small
+    const truncated_bz2 = [_]u8{
+        0x42, 0x5A, 0x68, 0x39, // BZh9
+        0x00, 0x00, // Only 6 bytes total
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.bz2", .{});
+    try file.writeAll(&truncated_bz2);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.bz2");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.bzip2, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "FormatValidator rejects bzip2 with invalid block size" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Invalid block size (0 instead of 1-9)
+    var invalid_bz2: [20]u8 = undefined;
+    invalid_bz2[0] = 0x42; // B
+    invalid_bz2[1] = 0x5A; // Z
+    invalid_bz2[2] = 0x68; // h
+    invalid_bz2[3] = 0x30; // 0 - invalid! (must be 1-9)
+    @memset(invalid_bz2[4..], 0x00);
+
+    const file = try tmp_dir.dir.createFile("invalid_block.bz2", .{});
+    try file.writeAll(&invalid_bz2);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid_block.bz2");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.bzip2, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "FormatValidator accepts valid 7z file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid 7z file header (32 bytes)
+    // The 7z format has a specific 32-byte signature header
+    var valid_7z: [32]u8 = undefined;
+    // Signature: 37 7A BC AF 27 1C
+    valid_7z[0] = 0x37;
+    valid_7z[1] = 0x7A;
+    valid_7z[2] = 0xBC;
+    valid_7z[3] = 0xAF;
+    valid_7z[4] = 0x27;
+    valid_7z[5] = 0x1C;
+    // Format version: 0.4
+    valid_7z[6] = 0x00;
+    valid_7z[7] = 0x04;
+    // CRC of next 20 bytes (bytes 12-31) - set to 0 initially
+    valid_7z[8] = 0x00;
+    valid_7z[9] = 0x00;
+    valid_7z[10] = 0x00;
+    valid_7z[11] = 0x00;
+    // Next header offset (0 = no compressed data)
+    @memset(valid_7z[12..20], 0);
+    // Next header size (0)
+    @memset(valid_7z[20..28], 0);
+    // Next header CRC (0 for empty)
+    @memset(valid_7z[28..32], 0);
+
+    // Calculate and set the start header CRC (bytes 8-11 cover bytes 12-31)
+    const start_crc = std.hash.Crc32.hash(valid_7z[12..32]);
+    std.mem.writeInt(u32, valid_7z[8..12], start_crc, .little);
+
+    const file = try tmp_dir.dir.createFile("valid.7z", .{});
+    try file.writeAll(&valid_7z);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.7z");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.sevenz, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expect(result.error_message == null);
+}
+
+test "FormatValidator rejects truncated 7z file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Truncated 7z - only signature, missing rest of header
+    const truncated_7z = [_]u8{
+        0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, // signature
+        0x00, 0x04, // version
+        // Missing: CRC, next header offset/size/crc
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.7z", .{});
+    try file.writeAll(&truncated_7z);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.7z");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.sevenz, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "FormatValidator accepts valid tar file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid POSIX tar file with one empty file entry
+    var valid_tar: [1024]u8 = undefined;
+    @memset(&valid_tar, 0);
+
+    // First 512-byte block: file header
+    // Name (100 bytes): "test.txt"
+    const name = "test.txt";
+    @memcpy(valid_tar[0..name.len], name);
+
+    // Mode (8 bytes at offset 100): "0000644\0"
+    const mode = "0000644";
+    @memcpy(valid_tar[100..107], mode);
+    valid_tar[107] = 0;
+
+    // UID (8 bytes at offset 108): "0000000\0"
+    @memcpy(valid_tar[108..115], "0000000");
+    valid_tar[115] = 0;
+
+    // GID (8 bytes at offset 116): "0000000\0"
+    @memcpy(valid_tar[116..123], "0000000");
+    valid_tar[123] = 0;
+
+    // Size (12 bytes at offset 124): "00000000000\0" (0 bytes)
+    @memcpy(valid_tar[124..135], "00000000000");
+    valid_tar[135] = 0;
+
+    // Mtime (12 bytes at offset 136): "00000000000\0"
+    @memcpy(valid_tar[136..147], "00000000000");
+    valid_tar[147] = 0;
+
+    // Checksum placeholder (8 spaces at offset 148)
+    @memset(valid_tar[148..156], ' ');
+
+    // Type flag (1 byte at offset 156): '0' (regular file)
+    valid_tar[156] = '0';
+
+    // Link name (100 bytes at offset 157): empty
+    // Already zeroed
+
+    // Magic (6 bytes at offset 257): "ustar\0"
+    @memcpy(valid_tar[257..262], "ustar");
+    valid_tar[262] = 0;
+
+    // Version (2 bytes at offset 263): "00"
+    valid_tar[263] = '0';
+    valid_tar[264] = '0';
+
+    // Calculate checksum: sum of all bytes in header, treating checksum field as spaces
+    var checksum: u32 = 0;
+    for (valid_tar[0..512]) |b| {
+        checksum += b;
+    }
+
+    // Write checksum as 6 octal digits + null + space
+    var checksum_buf: [8]u8 = undefined;
+    _ = std.fmt.bufPrint(&checksum_buf, "{o:0>6}", .{checksum}) catch unreachable;
+    checksum_buf[6] = 0;
+    checksum_buf[7] = ' ';
+    @memcpy(valid_tar[148..156], &checksum_buf);
+
+    // Second 512-byte block: end-of-archive (all zeros)
+    // Already zeroed
+
+    const file = try tmp_dir.dir.createFile("valid.tar", .{});
+    try file.writeAll(&valid_tar);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.tar");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.tar, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expect(result.error_message == null);
+}
+
+test "FormatValidator rejects tar with invalid checksum" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Tar file with corrupted checksum
+    var invalid_tar: [1024]u8 = undefined;
+    @memset(&invalid_tar, 0);
+
+    const name = "test.txt";
+    @memcpy(invalid_tar[0..name.len], name);
+    @memcpy(invalid_tar[100..107], "0000644");
+    invalid_tar[107] = 0;
+    @memcpy(invalid_tar[108..115], "0000000");
+    invalid_tar[115] = 0;
+    @memcpy(invalid_tar[116..123], "0000000");
+    invalid_tar[123] = 0;
+    @memcpy(invalid_tar[124..135], "00000000000");
+    invalid_tar[135] = 0;
+    @memcpy(invalid_tar[136..147], "00000000000");
+    invalid_tar[147] = 0;
+    // WRONG checksum
+    @memcpy(invalid_tar[148..156], "000000\x00 ");
+    invalid_tar[156] = '0';
+    @memcpy(invalid_tar[257..262], "ustar");
+    invalid_tar[262] = 0;
+    invalid_tar[263] = '0';
+    invalid_tar[264] = '0';
+
+    const file = try tmp_dir.dir.createFile("invalid.tar", .{});
+    try file.writeAll(&invalid_tar);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.tar");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.tar, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "validateGzipDeep accepts valid gzip and verifies trailer" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Valid gzip with correct CRC32 and ISIZE
+    const valid_gzip = [_]u8{
+        0x1f, 0x8b, // magic
+        0x08, // compression method
+        0x00, // flags
+        0x00, 0x00, 0x00, 0x00, // mtime
+        0x00, // extra flags
+        0x03, // OS
+        0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, // "Hello" deflated
+        0x82, 0x89, 0xd1, 0xf7, // CRC32 of "Hello"
+        0x05, 0x00, 0x00, 0x00, // ISIZE = 5
+    };
+
+    const file = try tmp_dir.dir.createFile("valid_deep.gz", .{});
+    try file.writeAll(&valid_gzip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_deep.gz");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.gzip, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateGzipDeep detects CRC corruption" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Valid gzip structure but with corrupted CRC32 in trailer
+    const corrupt_gzip = [_]u8{
+        0x1f, 0x8b, // magic
+        0x08, // compression method
+        0x00, // flags
+        0x00, 0x00, 0x00, 0x00, // mtime
+        0x00, // extra flags
+        0x03, // OS
+        0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, // "Hello" deflated
+        0xFF, 0xFF, 0xFF, 0xFF, // WRONG CRC32 (should be 0xf7d18982)
+        0x05, 0x00, 0x00, 0x00, // ISIZE = 5 (correct)
+    };
+
+    const file = try tmp_dir.dir.createFile("corrupt_crc.gz", .{});
+    try file.writeAll(&corrupt_gzip);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt_crc.gz");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.gzip, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "validate7zDeep detects CRC corruption in start header" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // 7z with corrupted start header CRC
+    var corrupted_7z: [32]u8 = undefined;
+    corrupted_7z[0] = 0x37;
+    corrupted_7z[1] = 0x7A;
+    corrupted_7z[2] = 0xBC;
+    corrupted_7z[3] = 0xAF;
+    corrupted_7z[4] = 0x27;
+    corrupted_7z[5] = 0x1C;
+    corrupted_7z[6] = 0x00;
+    corrupted_7z[7] = 0x04;
+    // WRONG CRC - should fail validation
+    corrupted_7z[8] = 0xDE;
+    corrupted_7z[9] = 0xAD;
+    corrupted_7z[10] = 0xBE;
+    corrupted_7z[11] = 0xEF;
+    @memset(corrupted_7z[12..32], 0);
+
+    const file = try tmp_dir.dir.createFile("corrupted_crc.7z", .{});
+    try file.writeAll(&corrupted_7z);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted_crc.7z");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.sevenz, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+    // Should mention CRC mismatch
+    try std.testing.expect(std.mem.indexOf(u8, result.error_message.?, "CRC") != null);
+}
+
+test "validate7zDeep accepts valid 7z with correct CRC" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Build a valid 7z with correct CRC
+    var valid_7z: [32]u8 = undefined;
+    valid_7z[0] = 0x37;
+    valid_7z[1] = 0x7A;
+    valid_7z[2] = 0xBC;
+    valid_7z[3] = 0xAF;
+    valid_7z[4] = 0x27;
+    valid_7z[5] = 0x1C;
+    valid_7z[6] = 0x00;
+    valid_7z[7] = 0x04;
+    // Placeholder for CRC
+    valid_7z[8] = 0x00;
+    valid_7z[9] = 0x00;
+    valid_7z[10] = 0x00;
+    valid_7z[11] = 0x00;
+    @memset(valid_7z[12..32], 0);
+
+    // Calculate correct CRC and write it
+    const correct_crc = std.hash.Crc32.hash(valid_7z[12..32]);
+    std.mem.writeInt(u32, valid_7z[8..12], correct_crc, .little);
+
+    const file = try tmp_dir.dir.createFile("valid_deep.7z", .{});
+    try file.writeAll(&valid_7z);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_deep.7z");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.sevenz, result.format);
+    try std.testing.expect(result.is_valid);
+    // 7-Zip validation is structural only (header CRC verified, but not per-file CRCs)
+    // Full validation would require LZMA decompression of encoded header + per-file CRC checks
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "FormatValidator accepts valid ALS (gzip-based)" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create minimal valid ALS file (gzip header)
+    // ALS is gzip-compressed, so it will be detected as gzip
+    var als_data: [20]u8 = undefined;
+    als_data[0] = 0x1f; // Gzip magic byte 1
+    als_data[1] = 0x8b; // Gzip magic byte 2
+    als_data[2] = 0x08; // Compression method (deflate)
+    als_data[3] = 0x00; // Flags
+    als_data[4] = 0x00; // MTIME
+    als_data[5] = 0x00;
+    als_data[6] = 0x00;
+    als_data[7] = 0x00;
+    als_data[8] = 0x00; // XFL
+    als_data[9] = 0xFF; // OS (unknown)
+    @memset(als_data[10..20], 0);
+
+    const file = try tmp_dir.dir.createFile("test.als", .{});
+    try file.writeAll(&als_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.als");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // ALS files are detected as gzip since they share magic bytes
+    try std.testing.expectEqual(FileFormat.gzip, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "detectFormat WARC" {
+    const warc_1_0 = "WARC/1.0\r\nWARC-Type: warcinfo\r\n";
+    try std.testing.expectEqual(FileFormat.warc, detectFormat(warc_1_0));
+
+    const warc_1_1 = "WARC/1.1\r\nWARC-Type: response\r\n";
+    try std.testing.expectEqual(FileFormat.warc, detectFormat(warc_1_1));
+}
+
+test "FormatValidator accepts valid WARC" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const warc_content =
+        \\WARC/1.0
+        \\WARC-Type: warcinfo
+        \\WARC-Date: 2024-01-15T00:00:00Z
+        \\WARC-Record-ID: <urn:uuid:12345678-1234-1234-1234-123456789abc>
+        \\Content-Type: application/warc-fields
+        \\Content-Length: 0
+        \\
+        \\
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.warc", .{});
+    try file.writeAll(warc_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.warc");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.warc, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "detectFormat PAR2" {
+    // PAR2 magic signature: "PAR2\x00PKT"
+    const par2_header = [_]u8{ 'P', 'A', 'R', '2', 0x00, 'P', 'K', 'T' };
+    try std.testing.expectEqual(FileFormat.par2, detectFormat(&par2_header));
+}
+
+test "FormatValidator accepts valid PAR2" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid PAR2 file: single packet header (64 bytes)
+    var par2_data: [64]u8 = undefined;
+    @memset(&par2_data, 0);
+
+    // Magic "PAR2\x00PKT"
+    par2_data[0] = 'P';
+    par2_data[1] = 'A';
+    par2_data[2] = 'R';
+    par2_data[3] = '2';
+    par2_data[4] = 0x00;
+    par2_data[5] = 'P';
+    par2_data[6] = 'K';
+    par2_data[7] = 'T';
+
+    // Packet length (64 bytes, little-endian u64)
+    par2_data[8] = 0x40; // 64
+    par2_data[9] = 0x00;
+    // Remaining length bytes are already 0
+
+    // Recovery set ID (bytes 32-47) - placeholder
+    for (0..16) |i| {
+        par2_data[32 + i] = @intCast(i + 16);
+    }
+
+    // Packet type (bytes 48-63) - "PAR 2.0\x00Main\x00..."
+    const packet_type = "PAR 2.0\x00Main\x00\x00\x00\x00";
+    @memcpy(par2_data[48..64], packet_type);
+
+    // Packet MD5 digest is computed over bytes 32..packet_len.
+    var digest: [16]u8 = undefined;
+    std.crypto.hash.Md5.hash(par2_data[32..64], &digest, .{});
+    @memcpy(par2_data[16..32], &digest);
+
+    const file = try tmp_dir.dir.createFile("test.par2", .{});
+    try file.writeAll(&par2_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.par2");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.par2, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator rejects truncated PAR2" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Truncated PAR2 (only 32 bytes, less than 64-byte header)
+    var truncated: [32]u8 = undefined;
+    @memset(&truncated, 0);
+
+    // Magic "PAR2\x00PKT"
+    truncated[0] = 'P';
+    truncated[1] = 'A';
+    truncated[2] = 'R';
+    truncated[3] = '2';
+    truncated[4] = 0x00;
+    truncated[5] = 'P';
+    truncated[6] = 'K';
+    truncated[7] = 'T';
+
+    const file = try tmp_dir.dir.createFile("truncated.par2", .{});
+    try file.writeAll(&truncated);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.par2");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.par2, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator rejects PAR2 with invalid packet length" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // PAR2 with packet length claiming 128 bytes but file is only 64
+    var bad_par2: [64]u8 = undefined;
+    @memset(&bad_par2, 0);
+
+    // Magic "PAR2\x00PKT"
+    bad_par2[0] = 'P';
+    bad_par2[1] = 'A';
+    bad_par2[2] = 'R';
+    bad_par2[3] = '2';
+    bad_par2[4] = 0x00;
+    bad_par2[5] = 'P';
+    bad_par2[6] = 'K';
+    bad_par2[7] = 'T';
+
+    // Packet length = 128 (but file is only 64 bytes)
+    bad_par2[8] = 0x80; // 128
+    bad_par2[9] = 0x00;
+
+    const file = try tmp_dir.dir.createFile("bad_length.par2", .{});
+    try file.writeAll(&bad_par2);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad_length.par2");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.par2, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator validates PAR2 from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth PAR2 file
+    const file = std.fs.cwd().openFile("ground_truth_examples/par2/sample.par2", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/par2/sample.par2") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.par2, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+

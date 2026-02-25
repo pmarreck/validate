@@ -15,6 +15,10 @@ const ValidationResult = format_validation.ValidationResult;
 
 const FLP_SIGNATURE = [_]u8{ 'F', 'L', 'h', 'd' };
 
+const FormatValidator = format_validation.FormatValidator;
+const detectFormat = format_validation.detectFormat;
+const FileFormat = format_validation.FileFormat;
+
 // ============ FL Studio (FLP) ============
 
 /// Validate FL Studio project file structural header.
@@ -438,3 +442,66 @@ pub fn validateReason(file: std.fs.File) ValidationResult {
     // Reason format is proprietary and undocumented - no structural validation possible
     return ValidationResult.structuralOnly(.reason);
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "detectFormat RPP" {
+    // Reaper project files start with "<REAPER_PROJECT"
+    const rpp_data = "<REAPER_PROJECT 0.1 \"6.0\" 1234567890";
+    const result = detectFormat(rpp_data);
+    try std.testing.expectEqual(FileFormat.rpp, result);
+}
+
+test "FormatValidator accepts valid RPP" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create minimal valid Reaper project file
+    const rpp_content = "<REAPER_PROJECT 0.1 \"6.0\" 1234567890\n  RIPPLE 0\n  GROUPOVERRIDE 0 0 0\n  AUTOXFADE 1\n>\n";
+
+    const file = try tmp_dir.dir.createFile("test.rpp", .{});
+    try file.writeAll(rpp_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.rpp");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.rpp, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects invalid RPP" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create file that starts like RPP but has invalid content
+    const bad_content = "<REAPER_PROJEC\xFF\xFE\x00\x00"; // Invalid RPP (missing T, plus invalid UTF-8)
+
+    const file = try tmp_dir.dir.createFile("test.rpp", .{});
+    try file.writeAll(bad_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.rpp");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Detected as RPP via extension fallback, reported as invalid
+    try std.testing.expectEqual(FileFormat.rpp, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+

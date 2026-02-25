@@ -9,6 +9,10 @@ const jpeg2000_validator = @import("jpeg2000_validator.zig");
 const errmsg = @import("error_messages.zig");
 const zlib = @import("zlib.zig");
 
+const FormatValidator = format_validation.FormatValidator;
+const detectFormat = format_validation.detectFormat;
+const FileFormat = format_validation.FileFormat;
+
 // ============ NetCDF Validator ============
 
 /// NetCDF classic signature: CDF\x01 or CDF\x02
@@ -3291,3 +3295,780 @@ test "DICOM with failed embedded pixel data returns structural depth" {
     try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
     try std.testing.expect(result.is_valid);
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "detectFormat NetCDF" {
+    // NetCDF classic version 1
+    const netcdf_v1 = [_]u8{ 'C', 'D', 'F', 0x01, 0x00, 0x00, 0x00, 0x00 };
+    try std.testing.expectEqual(FileFormat.netcdf, detectFormat(&netcdf_v1));
+
+    // NetCDF 64-bit offset version 2
+    const netcdf_v2 = [_]u8{ 'C', 'D', 'F', 0x02, 0x00, 0x00, 0x00, 0x00 };
+    try std.testing.expectEqual(FileFormat.netcdf, detectFormat(&netcdf_v2));
+}
+
+test "detectFormat FITS" {
+    // FITS header starts with "SIMPLE  ="
+    const fits_header = "SIMPLE  =                    T / Standard FITS file";
+    try std.testing.expectEqual(FileFormat.fits, detectFormat(fits_header));
+}
+
+test "detectFormat DICOM" {
+    // DICOM: 128-byte preamble + "DICM"
+    var dicom_header: [140]u8 = undefined;
+    @memset(dicom_header[0..128], 0); // Preamble
+    @memcpy(dicom_header[128..132], "DICM");
+    @memset(dicom_header[132..140], 0);
+    try std.testing.expectEqual(FileFormat.dicom, detectFormat(&dicom_header));
+}
+
+test "detectFormat FASTA" {
+    const fasta = ">seq1 Description\nACGTACGTACGT\n>seq2\nMKLLVVF\n";
+    try std.testing.expectEqual(FileFormat.fasta, detectFormat(fasta));
+}
+
+test "detectFormat FASTQ" {
+    const fastq = "@SEQ_ID\nGATTACA\n+\n!''***\n";
+    try std.testing.expectEqual(FileFormat.fastq, detectFormat(fastq));
+}
+
+test "FormatValidator accepts valid FITS" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal FITS header (must be 2880 bytes)
+    var fits_data: [2880]u8 = undefined;
+    @memset(&fits_data, ' ');
+
+    // SIMPLE keyword (columns 1-80) - exactly 80 characters
+    @memcpy(fits_data[0..9], "SIMPLE  =");
+    @memset(fits_data[9..29], ' ');
+    fits_data[29] = 'T';
+    @memset(fits_data[30..80], ' ');
+
+    // BITPIX keyword (columns 81-160) - exactly 80 characters
+    @memcpy(fits_data[80..86], "BITPIX");
+    @memset(fits_data[86..88], ' ');
+    fits_data[88] = '=';
+    @memset(fits_data[89..109], ' ');
+    fits_data[109] = '8';
+    @memset(fits_data[110..160], ' ');
+
+    // NAXIS keyword (columns 161-240) - exactly 80 characters
+    @memcpy(fits_data[160..165], "NAXIS");
+    @memset(fits_data[165..168], ' ');
+    fits_data[168] = '=';
+    @memset(fits_data[169..189], ' ');
+    fits_data[189] = '0';
+    @memset(fits_data[190..240], ' ');
+
+    // END keyword (columns 241-320)
+    @memcpy(fits_data[240..243], "END");
+
+    const file = try tmp_dir.dir.createFile("test.fits", .{});
+    try file.writeAll(&fits_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.fits");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.fits, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid DICOM" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal DICOM file: 128-byte preamble + DICM + meta info with Transfer Syntax
+    var dicom_data: [210]u8 = undefined;
+    @memset(&dicom_data, 0);
+    @memcpy(dicom_data[128..132], "DICM");
+
+    // File Meta Information Group Length (0002,0000) UL 4 -> value = meta length
+    dicom_data[132] = 0x02;
+    dicom_data[133] = 0x00; // Group 0002
+    dicom_data[134] = 0x00;
+    dicom_data[135] = 0x00; // Element 0000
+    @memcpy(dicom_data[136..138], "UL"); // VR
+    dicom_data[138] = 0x04;
+    dicom_data[139] = 0x00; // Length = 4
+    // Value: meta info length (little-endian) - rest of meta info
+    dicom_data[140] = 60;
+    dicom_data[141] = 0x00;
+    dicom_data[142] = 0x00;
+    dicom_data[143] = 0x00; // 60 bytes
+
+    // Transfer Syntax UID (0002,0010) UI
+    dicom_data[144] = 0x02;
+    dicom_data[145] = 0x00; // Group 0002
+    dicom_data[146] = 0x10;
+    dicom_data[147] = 0x00; // Element 0010
+    @memcpy(dicom_data[148..150], "UI"); // VR
+    dicom_data[150] = 20;
+    dicom_data[151] = 0x00; // Length = 20
+    // Value: Explicit VR Little Endian transfer syntax
+    @memcpy(dicom_data[152..172], "1.2.840.10008.1.2.1 ");
+
+    // SOP Class UID (0008,0016) - dataset element to verify transition works
+    dicom_data[172] = 0x08;
+    dicom_data[173] = 0x00; // Group 0008
+    dicom_data[174] = 0x16;
+    dicom_data[175] = 0x00; // Element 0016
+    @memcpy(dicom_data[176..178], "UI"); // VR
+    dicom_data[178] = 22;
+    dicom_data[179] = 0x00; // Length = 22 (padded)
+    @memcpy(dicom_data[180..202], "1.2.840.10008.5.1.4.1 ");
+
+    const file = try tmp_dir.dir.createFile("test.dcm", .{});
+    try file.writeAll(&dicom_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.dcm");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.dicom, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid FASTA" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const fasta_content =
+        \\>seq1 Homo sapiens hemoglobin
+        \\MVLSPADKTNVKAAWGKVGAHAGEYGAEALERMFLSFPTTKTYFPHFDLSH
+        \\>seq2 E. coli
+        \\MKRISTTITTTITITTGNGAG
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.fasta", .{});
+    try file.writeAll(fasta_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.fasta");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.fasta, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid FASTQ" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // FASTQ with complete records ending with newline
+    const fastq_content =
+        \\@SEQ_ID_1
+        \\GATTTGGGGTTCAAAGCAGTATCGATCAAATAGTAAATCCATTTGTTCAACTCACAGTTT
+        \\+
+        \\!''*((((***+))%%%++)(%%%%).1***-+*''))**55CCF>>>>>>CCCCCCC65
+        \\
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.fastq", .{});
+    try file.writeAll(fastq_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.fastq");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.fastq, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid MATLAB v5" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // MATLAB v5 header: 116 bytes text + 8 bytes subsys offset + 2 bytes version + 2 bytes endian
+    // Plus a minimal data element (double array)
+    var matlab_data: [152]u8 = undefined;
+    @memset(&matlab_data, 0);
+    // Fill with descriptive text
+    @memset(matlab_data[0..116], ' ');
+    @memcpy(matlab_data[0..19], "MATLAB 5.0 MAT-file");
+    // Subsystem offset (unused)
+    @memset(matlab_data[116..124], 0);
+    // Version: 0x0100 (v5)
+    std.mem.writeInt(u16, matlab_data[124..126], 0x0100, .little);
+    // Endian indicator: "IM" for little-endian
+    @memcpy(matlab_data[126..128], "IM");
+
+    // Add a minimal data element: miMATRIX (type 14) with size 16
+    std.mem.writeInt(u32, matlab_data[128..132], 14, .little); // Type = miMATRIX
+    std.mem.writeInt(u32, matlab_data[132..136], 16, .little); // Size = 16 bytes
+    // Minimal array content (will be skipped, just needs to exist)
+    @memset(matlab_data[136..152], 0);
+
+    const file = try tmp_dir.dir.createFile("test.mat", .{});
+    try file.writeAll(&matlab_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.mat");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.matlab, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid NIfTI" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // NIfTI-1 header: 348 bytes with magic at offset 344
+    // Must include valid dim, datatype, and bitpix fields
+    var nifti_data: [352]u8 = undefined;
+    @memset(&nifti_data, 0);
+
+    // Header size: 348
+    std.mem.writeInt(i32, nifti_data[0..4], 348, .little);
+
+    // dim array at offset 40: dim[0]=ndim, dim[1..7]=dimensions
+    // Minimal: 1D array of 10 elements
+    std.mem.writeInt(i16, nifti_data[40..42], 1, .little); // ndim = 1
+    std.mem.writeInt(i16, nifti_data[42..44], 10, .little); // dim[1] = 10
+
+    // datatype at offset 70: 8 = INT32
+    std.mem.writeInt(i16, nifti_data[70..72], 8, .little);
+
+    // bitpix at offset 72: 32 bits
+    std.mem.writeInt(i16, nifti_data[72..74], 32, .little);
+
+    // vox_offset at offset 108: where data starts (352.0 for single-file)
+    const vox_offset: f32 = 352.0;
+    std.mem.writeInt(u32, nifti_data[108..112], @bitCast(vox_offset), .little);
+
+    // Magic: "ni1\0" at offset 344 (header-only, no data in this file)
+    @memcpy(nifti_data[344..348], "ni1\x00");
+
+    const file = try tmp_dir.dir.createFile("test.nii", .{});
+    try file.writeAll(&nifti_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.nii");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.nifti, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid PDB" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const pdb_content =
+        \\HEADER    MYOGLOBIN                               01-JAN-20   1MBN
+        \\TITLE     STRUCTURE OF MYOGLOBIN
+        \\ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00
+        \\END
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.pdb", .{});
+    try file.writeAll(pdb_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.pdb");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.pdb_struct, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid CIF" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const cif_content =
+        \\data_test_structure
+        \\_cell.length_a 5.0
+        \\_cell.length_b 5.0
+        \\_cell.length_c 5.0
+        \\loop_
+        \\_atom_site.id
+        \\_atom_site.type_symbol
+        \\1 C
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.cif", .{});
+    try file.writeAll(cif_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.cif");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.cif, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid Shapefile" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Shapefile header: 100 bytes
+    var shp_data: [100]u8 = undefined;
+    @memset(&shp_data, 0);
+
+    // File code: 9994 (big-endian)
+    std.mem.writeInt(i32, shp_data[0..4], 9994, .big);
+
+    // Unused fields 4-23
+
+    // File length (in 16-bit words, big-endian)
+    std.mem.writeInt(i32, shp_data[24..28], 50, .big);
+
+    // Version: 1000 (little-endian)
+    std.mem.writeInt(i32, shp_data[28..32], 1000, .little);
+
+    // Shape type: 1 = Point (little-endian)
+    std.mem.writeInt(i32, shp_data[32..36], 1, .little);
+
+    // Bounding box (8 doubles, all zeros for now)
+    @memset(shp_data[36..100], 0);
+
+    const file = try tmp_dir.dir.createFile("test.shp", .{});
+    try file.writeAll(&shp_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.shp");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.shapefile, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FITS computeFitsChecksum ones complement sum" {
+    // Test basic 1's complement sum
+    // Simple test: four bytes 0x01020304 should give that value back
+    const data = [_]u8{ 0x01, 0x02, 0x03, 0x04 };
+    const checksum = computeFitsChecksum(&data);
+    try std.testing.expectEqual(@as(u32, 0x01020304), checksum);
+
+    // Test with multiple 32-bit words
+    const data2 = [_]u8{
+        0x00, 0x00, 0x00, 0x01, // 1
+        0x00, 0x00, 0x00, 0x02, // 2
+    };
+    const checksum2 = computeFitsChecksum(&data2);
+    try std.testing.expectEqual(@as(u32, 0x00000003), checksum2);
+
+    // Test end-around carry (1's complement)
+    // 0xFFFFFFFF + 0x00000002 = 0x100000001 -> fold carry -> 0x00000001 + 0x00000001 = 0x00000002
+    const data3 = [_]u8{
+        0xFF, 0xFF, 0xFF, 0xFF,
+        0x00, 0x00, 0x00, 0x02,
+    };
+    const checksum3 = computeFitsChecksum(&data3);
+    try std.testing.expectEqual(@as(u32, 0x00000002), checksum3);
+}
+
+test "FITS decodeFitsChecksumAscii decodes 16-char checksum" {
+    // Per FITS standard, the encoding maps each byte to 4 ASCII chars
+    // The encoding: for each of 4 bytes, generate 4 chars from high to low nibble
+    // Each nibble maps to range 0x30-0x3F (ASCII '0'-'?')
+
+    // Test zero checksum - should decode to 0
+    // For checksum 0x00000000, each byte is 0, encoding gives "0000" repeated
+    const zero_encoded = "0000000000000000";
+    const zero_decoded = decodeFitsChecksumAscii(zero_encoded);
+    try std.testing.expect(zero_decoded != null);
+    try std.testing.expectEqual(@as(u32, 0), zero_decoded.?);
+
+    // Invalid input (too short)
+    const short = "000000000000000";
+    try std.testing.expect(decodeFitsChecksumAscii(short) == null);
+
+    // Invalid input (wrong chars)
+    const invalid = "################";
+    try std.testing.expect(decodeFitsChecksumAscii(invalid) == null);
+}
+
+test "FITS encodeFitsChecksumAscii encodes 32-bit to 16-char" {
+    // Test round-trip: encode then decode should give original
+    const test_values = [_]u32{ 0, 1, 0x12345678, 0xFFFFFFFF, 0xDEADBEEF };
+
+    for (test_values) |val| {
+        const encoded = encodeFitsChecksumAscii(val);
+        const decoded = decodeFitsChecksumAscii(&encoded);
+        try std.testing.expect(decoded != null);
+        try std.testing.expectEqual(val, decoded.?);
+    }
+}
+
+test "FITS without checksums validates successfully" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create minimal FITS file without CHECKSUM/DATASUM (same as existing test)
+    var fits_data: [2880]u8 = undefined;
+    @memset(&fits_data, ' ');
+
+    // SIMPLE = T
+    @memcpy(fits_data[0..9], "SIMPLE  =");
+    @memset(fits_data[9..29], ' ');
+    fits_data[29] = 'T';
+    @memset(fits_data[30..80], ' ');
+
+    // BITPIX = 8
+    @memcpy(fits_data[80..86], "BITPIX");
+    @memset(fits_data[86..88], ' ');
+    fits_data[88] = '=';
+    @memset(fits_data[89..109], ' ');
+    fits_data[109] = '8';
+    @memset(fits_data[110..160], ' ');
+
+    // NAXIS = 0
+    @memcpy(fits_data[160..165], "NAXIS");
+    @memset(fits_data[165..168], ' ');
+    fits_data[168] = '=';
+    @memset(fits_data[169..189], ' ');
+    fits_data[189] = '0';
+    @memset(fits_data[190..240], ' ');
+
+    // END
+    @memcpy(fits_data[240..243], "END");
+
+    const file = try tmp_dir.dir.createFile("no_checksum.fits", .{});
+    try file.writeAll(&fits_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "no_checksum.fits");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.fits, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FITS with valid CHECKSUM validates successfully" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create FITS with CHECKSUM where HDU sums to 0xFFFFFFFF (-0 in 1's complement)
+    // We construct the file such that the checksum is correct.
+    var fits_data: [2880]u8 = undefined;
+    @memset(&fits_data, ' ');
+
+    // SIMPLE = T (80 bytes)
+    @memcpy(fits_data[0..9], "SIMPLE  =");
+    @memset(fits_data[9..29], ' ');
+    fits_data[29] = 'T';
+    @memset(fits_data[30..80], ' ');
+
+    // BITPIX = 8 (80 bytes)
+    @memcpy(fits_data[80..86], "BITPIX");
+    @memset(fits_data[86..88], ' ');
+    fits_data[88] = '=';
+    @memset(fits_data[89..109], ' ');
+    fits_data[109] = '8';
+    @memset(fits_data[110..160], ' ');
+
+    // NAXIS = 0 (80 bytes)
+    @memcpy(fits_data[160..165], "NAXIS");
+    @memset(fits_data[165..168], ' ');
+    fits_data[168] = '=';
+    @memset(fits_data[169..189], ' ');
+    fits_data[189] = '0';
+    @memset(fits_data[190..240], ' ');
+
+    // CHECKSUM with placeholder '0's
+    @memcpy(fits_data[240..248], "CHECKSUM");
+    fits_data[248] = '=';
+    fits_data[249] = ' ';
+    fits_data[250] = '\'';
+    @memset(fits_data[251..267], '0');
+    fits_data[267] = '\'';
+    @memset(fits_data[268..320], ' ');
+
+    // END
+    @memcpy(fits_data[320..323], "END");
+
+    // Compute checksum using our function
+    var sum = computeFitsChecksum(&fits_data);
+
+    // We want: sum + adjustment = 0xFFFFFFFF
+    // adjustment = 0xFFFFFFFF - sum (in 1's complement, this is ~sum)
+    // But we can only change 4 bytes at the end.
+    // The adjustment is ~sum, but we need to account for the current value at those bytes.
+    //
+    // Current last word (space_word = 0x20202020):
+    // sum = sum_rest + space_word (with carry folding)
+    // We want: sum_rest + new_word = 0xFFFFFFFF
+    // new_word = 0xFFFFFFFF - sum_rest
+    //
+    // In 1's complement: ~sum_rest
+    // But sum_rest = sum - space_word... which requires borrow handling.
+    //
+    // Simpler iterative approach: compute sum, then ~sum is the needed addition.
+    // We'll adjust bytes 2876-2879 to add ~sum - current_last_contribution
+
+    // Current contribution of last 4 bytes (spaces = 0x20202020)
+    const space_word: u32 = 0x20202020;
+
+    // We need: sum - space_word + new_word = 0xFFFFFFFF
+    // new_word = 0xFFFFFFFF - sum + space_word
+    // But this can overflow/underflow, so use proper arithmetic.
+
+    // Compute: new_word such that when we replace space_word with new_word,
+    // the checksum becomes 0xFFFFFFFF.
+    // sum_with_new = sum - space_word + new_word (with folding)
+    // We want sum_with_new = 0xFFFFFFFF
+    // So: new_word = 0xFFFFFFFF - sum + space_word
+
+    // Handle wraparound: if sum > 0xFFFFFFFF + space_word, we need to add carries
+    const target: u64 = 0xFFFFFFFF;
+    var new_word: u64 = target -% @as(u64, sum) +% @as(u64, space_word);
+    // If new_word is negative (wrapped around), add 2^32
+    // Actually -% handles wrapping correctly.
+    // Fold if needed
+    while (new_word > 0xFFFFFFFF) {
+        new_word = (new_word & 0xFFFFFFFF) + (new_word >> 32);
+    }
+
+    // Write new word at end (bytes 2876-2879)
+    const nw: u32 = @intCast(new_word);
+    fits_data[2876] = @truncate((nw >> 24) & 0xFF);
+    fits_data[2877] = @truncate((nw >> 16) & 0xFF);
+    fits_data[2878] = @truncate((nw >> 8) & 0xFF);
+    fits_data[2879] = @truncate(nw & 0xFF);
+
+    // Verify
+    sum = computeFitsChecksum(&fits_data);
+    try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), sum);
+
+    const file = try tmp_dir.dir.createFile("valid_checksum.fits", .{});
+    try file.writeAll(&fits_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_checksum.fits");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.fits, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FITS with invalid CHECKSUM fails validation" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create FITS with invalid CHECKSUM (wrong value)
+    var fits_data: [2880]u8 = undefined;
+    @memset(&fits_data, ' ');
+
+    // SIMPLE = T
+    @memcpy(fits_data[0..9], "SIMPLE  =");
+    @memset(fits_data[9..29], ' ');
+    fits_data[29] = 'T';
+    @memset(fits_data[30..80], ' ');
+
+    // BITPIX = 8
+    @memcpy(fits_data[80..86], "BITPIX");
+    @memset(fits_data[86..88], ' ');
+    fits_data[88] = '=';
+    @memset(fits_data[89..109], ' ');
+    fits_data[109] = '8';
+    @memset(fits_data[110..160], ' ');
+
+    // NAXIS = 0
+    @memcpy(fits_data[160..165], "NAXIS");
+    @memset(fits_data[165..168], ' ');
+    fits_data[168] = '=';
+    @memset(fits_data[169..189], ' ');
+    fits_data[189] = '0';
+    @memset(fits_data[190..240], ' ');
+
+    // CHECKSUM with deliberately wrong value
+    @memcpy(fits_data[240..248], "CHECKSUM");
+    fits_data[248] = '=';
+    fits_data[249] = ' ';
+    fits_data[250] = '\'';
+    @memcpy(fits_data[251..267], "XXXXXXXXXXXXXXXX"); // Invalid checksum
+    fits_data[267] = '\'';
+    @memset(fits_data[268..320], ' ');
+
+    // END
+    @memcpy(fits_data[320..323], "END");
+
+    const file = try tmp_dir.dir.createFile("invalid_checksum.fits", .{});
+    try file.writeAll(&fits_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid_checksum.fits");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.fits, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "FITS with valid DATASUM validates successfully" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create FITS with data and valid DATASUM
+    // We need 2880 bytes header + 2880 bytes data (padded)
+    var fits_data: [5760]u8 = undefined;
+    @memset(&fits_data, ' ');
+
+    // SIMPLE = T
+    @memcpy(fits_data[0..9], "SIMPLE  =");
+    @memset(fits_data[9..29], ' ');
+    fits_data[29] = 'T';
+    @memset(fits_data[30..80], ' ');
+
+    // BITPIX = 8
+    @memcpy(fits_data[80..86], "BITPIX");
+    @memset(fits_data[86..88], ' ');
+    fits_data[88] = '=';
+    @memset(fits_data[89..109], ' ');
+    fits_data[109] = '8';
+    @memset(fits_data[110..160], ' ');
+
+    // NAXIS = 1
+    @memcpy(fits_data[160..165], "NAXIS");
+    @memset(fits_data[165..168], ' ');
+    fits_data[168] = '=';
+    @memset(fits_data[169..189], ' ');
+    fits_data[189] = '1';
+    @memset(fits_data[190..240], ' ');
+
+    // NAXIS1 = 100 (100 bytes of data)
+    @memcpy(fits_data[240..246], "NAXIS1");
+    @memset(fits_data[246..248], ' ');
+    fits_data[248] = '=';
+    @memset(fits_data[249..266], ' ');
+    @memcpy(fits_data[266..269], "100");
+    @memset(fits_data[269..320], ' ');
+
+    // DATASUM placeholder - will be filled with decimal checksum of data
+    @memcpy(fits_data[320..327], "DATASUM");
+    fits_data[327] = ' ';
+    fits_data[328] = '=';
+    fits_data[329] = ' ';
+    fits_data[330] = '\'';
+    // 20 chars for the decimal value at 331-350
+    @memset(fits_data[331..351], ' ');
+    fits_data[351] = '\'';
+    @memset(fits_data[352..400], ' ');
+
+    // END
+    @memcpy(fits_data[400..403], "END");
+
+    // Fill data section (after header at 2880) with known values
+    const data_start = 2880;
+    for (0..100) |idx| {
+        fits_data[data_start + idx] = @intCast(idx & 0xFF);
+    }
+    // Pad rest of data block with zeros
+    @memset(fits_data[data_start + 100 ..], 0);
+
+    // Compute checksum of data block (padded to 2880)
+    const data_checksum = computeFitsChecksum(fits_data[data_start .. data_start + 2880]);
+
+    // Format DATASUM as decimal string
+    var datasum_buf: [20]u8 = undefined;
+    const datasum_str = std.fmt.bufPrint(&datasum_buf, "{d}", .{data_checksum}) catch unreachable;
+    @memcpy(fits_data[331 .. 331 + datasum_str.len], datasum_str);
+
+    const file = try tmp_dir.dir.createFile("valid_datasum.fits", .{});
+    try file.writeAll(&fits_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_datasum.fits");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.fits, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+

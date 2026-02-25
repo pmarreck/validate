@@ -25,6 +25,10 @@ const xml = @import("xml");
 const jpeg_lossless_decoder = @import("jpeg_lossless_decoder.zig");
 const errmsg = @import("error_messages.zig");
 
+const FormatValidator = format_validation.FormatValidator;
+const detectFormat = format_validation.detectFormat;
+const ValidationDepth = format_validation.ValidationDepth;
+
 // ============ PNG Validator ============
 
 /// PNG chunk types
@@ -3967,3 +3971,1404 @@ test "validatePsdFromBuffer rejects empty data" {
     const result = validatePsdFromBuffer(&data);
     try testing.expect(!result.is_valid);
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "detectFormat PNG" {
+    const png_header = [_]u8{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52 };
+    try std.testing.expectEqual(FileFormat.png, detectFormat(&png_header));
+}
+
+test "detectFormat JPEG" {
+    const jpeg_header = [_]u8{ 0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01 };
+    try std.testing.expectEqual(FileFormat.jpeg, detectFormat(&jpeg_header));
+}
+
+test "detectFormat GIF" {
+    const gif87_header = [_]u8{ 'G', 'I', 'F', '8', '7', 'a', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    const gif89_header = [_]u8{ 'G', 'I', 'F', '8', '9', 'a', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    try std.testing.expectEqual(FileFormat.gif, detectFormat(&gif87_header));
+    try std.testing.expectEqual(FileFormat.gif, detectFormat(&gif89_header));
+}
+
+test "FormatValidator detects corrupted PNG file" {
+    const allocator = std.testing.allocator;
+
+    // Create a temporary directory
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Create a corrupted PNG file (has PNG signature but invalid chunk structure)
+    // Valid PNG signature followed by garbage (no valid IHDR chunk)
+    const corrupted_png = [_]u8{
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+        0x00, 0x00, 0x00, 0x00, // Invalid chunk length (0 bytes)
+        'X', 'X', 'X', 'X', // Invalid chunk type (should be IHDR)
+        0x00, 0x00, 0x00, 0x00, // CRC placeholder
+    };
+
+    // Write corrupted PNG to temp file
+    const file = try tmp_dir.dir.createFile("corrupted.png", .{});
+    defer file.close();
+    try file.writeAll(&corrupted_png);
+
+    // Get full path
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.png");
+    defer allocator.free(path);
+
+    // Validate the file
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should detect as PNG format but invalid
+    try std.testing.expectEqual(FileFormat.png, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "FormatValidator accepts valid PNG file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid PNG: 1x1 red pixel
+    // PNG requires: signature, IHDR, IDAT, IEND
+    const valid_png = [_]u8{
+        // PNG signature
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        // IHDR chunk (13 bytes)
+        0x00, 0x00, 0x00, 0x0D, // length (13)
+        'I', 'H', 'D', 'R', // chunk type
+        0x00, 0x00, 0x00, 0x01, // width (1)
+        0x00, 0x00, 0x00, 0x01, // height (1)
+        0x08, // bit depth (8)
+        0x02, // color type (RGB)
+        0x00, // compression method
+        0x00, // filter method
+        0x00, // interlace method
+        0x90, 0x77, 0x53, 0xDE, // CRC
+        // IDAT chunk (minimal compressed data)
+        0x00, 0x00, 0x00, 0x0C, // length (12)
+        'I', 'D', 'A', 'T', // chunk type
+        0x08, 0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0x3F, 0x00, 0x05, 0xFE, 0x02, 0xFE, // compressed data
+        0xA2, 0x70, 0x20, 0x9D, // CRC
+        // IEND chunk
+        0x00, 0x00, 0x00, 0x00, // length (0)
+        'I', 'E', 'N', 'D', // chunk type
+        0xAE, 0x42, 0x60, 0x82, // CRC
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.png", .{});
+    try file.writeAll(&valid_png);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.png");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.png, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid PNG failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid JPEG file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid JPEG: 1x1 pixel
+    // JPEG requires: SOI (FFD8), APP0/SOF, SOS, image data, EOI (FFD9)
+    const valid_jpeg = [_]u8{
+        // SOI (Start of Image)
+        0xFF, 0xD8,
+        // APP0 (JFIF marker)
+        0xFF, 0xE0, 0x00, 0x10, // marker + length (16)
+        'J', 'F', 'I', 'F', 0x00, // identifier
+        0x01, 0x01, // version
+        0x00, // aspect ratio units
+        0x00, 0x01, // X density
+        0x00, 0x01, // Y density
+        0x00, 0x00, // thumbnail size
+        // DQT (Define Quantization Table)
+        0xFF, 0xDB, 0x00, 0x43, 0x00, // marker + length (67) + table ID
+        0x08, 0x06, 0x06, 0x07, 0x06,
+        0x05, 0x08, 0x07, 0x07, 0x07,
+        0x09, 0x09, 0x08, 0x0A, 0x0C,
+        0x14, 0x0D, 0x0C, 0x0B, 0x0B,
+        0x0C, 0x19, 0x12, 0x13, 0x0F,
+        0x14, 0x1D, 0x1A, 0x1F, 0x1E,
+        0x1D, 0x1A, 0x1C, 0x1C, 0x20,
+        0x24, 0x2E, 0x27, 0x20, 0x22,
+        0x2C, 0x23, 0x1C, 0x1C, 0x28,
+        0x37, 0x29, 0x2C, 0x30, 0x31,
+        0x34, 0x34, 0x34, 0x1F, 0x27,
+        0x39, 0x3D, 0x38, 0x32, 0x3C,
+        0x2E, 0x33, 0x34,
+        0x32,
+        // SOF0 (Start of Frame - Baseline DCT)
+        0xFF, 0xC0, 0x00, 0x0B, // marker + length (11)
+        0x08, // precision
+        0x00, 0x01, // height (1)
+        0x00, 0x01, // width (1)
+        0x01, // components (1 = grayscale)
+        0x01, 0x11, 0x00, // component info
+        // DHT (Define Huffman Table)
+        0xFF, 0xC4, 0x00, 0x1F, 0x00, // marker + length + table class/id
+        0x00, 0x01, 0x05, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x02, 0x03,
+        0x04, 0x05, 0x06, 0x07, 0x08,
+        0x09, 0x0A,
+        0x0B,
+        // DHT (AC table)
+        0xFF, 0xC4, 0x00, 0xB5, 0x10, // marker + length + table class/id
+        0x00, 0x02, 0x01, 0x03, 0x03,
+        0x02, 0x04, 0x03, 0x05, 0x05,
+        0x04, 0x04, 0x00, 0x00, 0x01,
+        0x7D, 0x01, 0x02, 0x03, 0x00,
+        0x04, 0x11, 0x05, 0x12, 0x21,
+        0x31, 0x41, 0x06, 0x13, 0x51,
+        0x61, 0x07, 0x22, 0x71, 0x14,
+        0x32, 0x81, 0x91, 0xA1, 0x08,
+        0x23, 0x42, 0xB1, 0xC1, 0x15,
+        0x52, 0xD1, 0xF0, 0x24, 0x33,
+        0x62, 0x72, 0x82, 0x09, 0x0A,
+        0x16, 0x17, 0x18, 0x19, 0x1A,
+        0x25, 0x26, 0x27, 0x28, 0x29,
+        0x2A, 0x34, 0x35, 0x36, 0x37,
+        0x38, 0x39, 0x3A, 0x43, 0x44,
+        0x45, 0x46, 0x47, 0x48, 0x49,
+        0x4A, 0x53, 0x54, 0x55, 0x56,
+        0x57, 0x58, 0x59, 0x5A, 0x63,
+        0x64, 0x65, 0x66, 0x67, 0x68,
+        0x69, 0x6A, 0x73, 0x74, 0x75,
+        0x76, 0x77, 0x78, 0x79, 0x7A,
+        0x83, 0x84, 0x85, 0x86, 0x87,
+        0x88, 0x89, 0x8A, 0x92, 0x93,
+        0x94, 0x95, 0x96, 0x97, 0x98,
+        0x99, 0x9A, 0xA2, 0xA3, 0xA4,
+        0xA5, 0xA6, 0xA7, 0xA8, 0xA9,
+        0xAA, 0xB2, 0xB3, 0xB4, 0xB5,
+        0xB6, 0xB7, 0xB8, 0xB9, 0xBA,
+        0xC2, 0xC3, 0xC4, 0xC5, 0xC6,
+        0xC7, 0xC8, 0xC9, 0xCA, 0xD2,
+        0xD3, 0xD4, 0xD5, 0xD6, 0xD7,
+        0xD8, 0xD9, 0xDA, 0xE1, 0xE2,
+        0xE3, 0xE4, 0xE5, 0xE6, 0xE7,
+        0xE8, 0xE9, 0xEA, 0xF1, 0xF2,
+        0xF3, 0xF4, 0xF5, 0xF6, 0xF7,
+        0xF8, 0xF9,
+        0xFA,
+        // SOS (Start of Scan)
+        0xFF, 0xDA, 0x00, 0x08, // marker + length
+        0x01, // component count
+        0x01, 0x00, // component selector + Huffman table
+        0x00, 0x3F, 0x00, // start/end of spectral selection, approx
+        // Minimal scan data (gray pixel)
+        0xFB, 0xD3, 0x28,
+        0xA1,
+        // EOI (End of Image)
+        0xFF, 0xD9,
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.jpg", .{});
+    try file.writeAll(&valid_jpeg);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.jpg");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.jpeg, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid JPEG failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects corrupted JPEG file" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Corrupted JPEG: has SOI but missing EOI
+    const corrupted_jpeg = [_]u8{
+        // SOI (Start of Image)
+        0xFF, 0xD8,
+        // APP0 (JFIF marker)
+        0xFF, 0xE0, 0x00, 0x10, // marker + length (16)
+        'J', 'F', 'I', 'F', 0x00, // identifier
+        0x01, 0x01, // version
+        0x00, // aspect ratio units
+        0x00, 0x01, // X density
+        0x00, 0x01, // Y density
+        0x00, 0x00, // thumbnail size
+        // SOS marker but then truncated (no EOI)
+        0xFF, 0xDA,
+        0x00, 0x08,
+        0x01, 0x01,
+        0x00, 0x00,
+        0x3F, 0x00,
+        0xFB, 0xD3,
+        0x28,
+        0xA1,
+        // Missing EOI - corrupted!
+    };
+
+    const file = try tmp_dir.dir.createFile("corrupted.jpg", .{});
+    try file.writeAll(&corrupted_jpeg);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.jpg");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.jpeg, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts valid JPEG XL codestream" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal JXL codestream (FF 0A followed by some data)
+    const valid_jxl = [_]u8{
+        0xFF, 0x0A, // JXL codestream signature
+        0x00, 0x00, 0x00, 0x10, // Some codestream data
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.jxl", .{});
+    try file.writeAll(&valid_jxl);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.jxl");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.jxl, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid JPEG XL container" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // JXL container signature
+    const valid_jxl_container = [_]u8{
+        0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A, // JXL container signature
+        0x00, 0x00, 0x00, 0x14, 'f', 't', 'y', 'p', // ftyp box
+        'j', 'x', 'l', ' ', // brand
+        0x00, 0x00, 0x00, 0x00, // minor version
+    };
+
+    const file = try tmp_dir.dir.createFile("valid_container.jxl", .{});
+    try file.writeAll(&valid_jxl_container);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_container.jxl");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.jxl, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects invalid JPEG XL" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Invalid JXL (wrong signature)
+    const invalid_jxl = [_]u8{
+        0xFF, 0x0B, // Wrong signature (should be FF 0A)
+        0x00, 0x00,
+        0x00, 0x10,
+    };
+
+    const file = try tmp_dir.dir.createFile("invalid.jxl", .{});
+    try file.writeAll(&invalid_jxl);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.jxl");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Detected as JXL via extension fallback, reported as invalid
+    try std.testing.expectEqual(FileFormat.jxl, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator accepts valid GIF87a" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid GIF87a (1x1 pixel)
+    const valid_gif = [_]u8{
+        // Header
+        'G', 'I', 'F', '8', '7', 'a',
+        // Logical Screen Descriptor
+        0x01, 0x00, // width (1)
+        0x01, 0x00, // height (1)
+        0x00, // packed byte (no global color table)
+        0x00, // background color index
+        0x00, // pixel aspect ratio
+        // Image Descriptor
+        0x2C, // image separator
+        0x00, 0x00, // left
+        0x00, 0x00, // top
+        0x01, 0x00, // width
+        0x01, 0x00, // height
+        0x00, // packed byte
+        // Image Data
+        0x02, // LZW minimum code size
+        0x02, 0x44, 0x01, // sub-block with data
+        0x00, // block terminator
+        // Trailer
+        0x3B,
+    };
+
+    const file = try tmp_dir.dir.createFile("valid87.gif", .{});
+    try file.writeAll(&valid_gif);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid87.gif");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.gif, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid GIF87a failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid GIF89a" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid GIF89a
+    const valid_gif = [_]u8{
+        // Header
+        'G',  'I',  'F',  '8',  '9',  'a',
+        // Logical Screen Descriptor
+        0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x00,
+        // Image Descriptor
+        0x2C, 0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x01, 0x00, 0x00,
+        // Image Data
+        0x02,
+        0x02, 0x44, 0x01, 0x00,
+        // Trailer
+        0x3B,
+    };
+
+    const file = try tmp_dir.dir.createFile("valid89.gif", .{});
+    try file.writeAll(&valid_gif);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid89.gif");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.gif, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects truncated GIF" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // GIF without trailer (truncated)
+    const truncated_gif = [_]u8{
+        'G',  'I',  'F',  '8',  '9',  'a',
+        0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x00,
+        // Missing trailer (0x3B)
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.gif", .{});
+    try file.writeAll(&truncated_gif);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.gif");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.gif, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator deep validates real GIF from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth GIF file (public domain sample)
+    const file = std.fs.cwd().openFile("ground_truth_examples/gif/sample_1.gif", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/gif/sample_1.gif") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    // Deep validation with full LZW decode via zigimg
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.gif, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator accepts valid BMP" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid BMP (1x1 pixel, 24-bit)
+    // Total size: 14 (BMP header) + 40 (DIB header) + 4 (pixel + padding) = 58 bytes
+    const valid_bmp = [_]u8{
+        // BMP header (14 bytes)
+        'B', 'M', // signature
+        0x3A, 0x00, 0x00, 0x00, // file size (58 bytes)
+        0x00, 0x00, 0x00, 0x00, // reserved
+        0x36, 0x00, 0x00, 0x00, // offset to pixel data (54)
+        // DIB header (40 bytes - BITMAPINFOHEADER)
+        0x28, 0x00, 0x00, 0x00, // header size (40)
+        0x01, 0x00, 0x00, 0x00, // width (1)
+        0x01, 0x00, 0x00, 0x00, // height (1)
+        0x01, 0x00, // planes (1)
+        0x18, 0x00, // bits per pixel (24)
+        0x00, 0x00, 0x00, 0x00, // compression (none)
+        0x04, 0x00, 0x00, 0x00, // image size (4 bytes with padding)
+        0x00, 0x00, 0x00, 0x00, // X pixels per meter
+        0x00, 0x00, 0x00, 0x00, // Y pixels per meter
+        0x00, 0x00, 0x00, 0x00, // colors used
+        0x00, 0x00, 0x00, 0x00, // important colors
+        // Pixel data (1 pixel, 24-bit BGR + 1 byte padding to 4-byte boundary)
+        0x00, 0x00, 0xFF, 0x00, // red pixel (BGR) + 1 byte padding
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.bmp", .{});
+    try file.writeAll(&valid_bmp);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.bmp");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.bmp, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects truncated BMP" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // BMP with declared size larger than actual
+    const truncated_bmp = [_]u8{
+        'B', 'M',
+        0xFF, 0x00, 0x00, 0x00, // declared file size (255, but file is much smaller)
+        0x00, 0x00, 0x00, 0x00,
+        0x36, 0x00, 0x00, 0x00,
+        0x28, 0x00, 0x00, 0x00, // header size
+        // Truncated - missing rest of header and pixel data
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.bmp", .{});
+    try file.writeAll(&truncated_bmp);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.bmp");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.bmp, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator deep validates real BMP from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth BMP file (from FSU sample data)
+    const file = std.fs.cwd().openFile("ground_truth_examples/bmp/sample.bmp", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/bmp/sample.bmp") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.bmp, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator accepts valid WebP VP8" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid WebP with VP8 chunk
+    // Total: 4 (RIFF) + 4 (size) + 4 (WEBP) + 4 (VP8) + 4 (chunk size) + 10 (data) = 30 bytes
+    // RIFF size = 30 - 8 = 22 = 0x16
+    const valid_webp = [_]u8{
+        'R', 'I', 'F', 'F', // RIFF signature
+        0x16, 0x00, 0x00, 0x00, // file size - 8 (22 bytes)
+        'W', 'E', 'B', 'P', // WEBP fourcc
+        'V', 'P', '8', ' ', // VP8 chunk type
+        0x0A, 0x00, 0x00, 0x00, // VP8 chunk size (10 bytes)
+        0x30, 0x01, 0x00, 0x9D, 0x01, 0x2A, // VP8 bitstream header
+        0x01, 0x00, 0x01, 0x00, // width/height
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.webp", .{});
+    try file.writeAll(&valid_webp);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.webp");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.webp, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid WebP failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects truncated WebP" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // WebP with RIFF size larger than file
+    const truncated_webp = [_]u8{
+        'R', 'I', 'F', 'F',
+        0xFF, 0x00, 0x00, 0x00, // declared size (255, but file is much smaller)
+        'W',  'E',  'B',  'P',
+        'V',  'P',  '8',
+        ' ',
+        // Truncated
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.webp", .{});
+    try file.writeAll(&truncated_webp);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.webp");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.webp, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator deep validates real WebP from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth WebP file (from Google WebP Gallery)
+    const file = std.fs.cwd().openFile("ground_truth_examples/webp/sample.webp", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/webp/sample.webp") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.webp, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator deep validates real JXL from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth JPEG-XL file (from libjxl conformance suite)
+    const file = std.fs.cwd().openFile("ground_truth_examples/jxl/sample.jxl", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+
+    // Verify it's actually a JXL file (check signature)
+    // JXL codestream starts with 0xFF 0x0A, or container with 0x00 0x00 0x00 0x0C 'J' 'X' 'L' ' '
+    var header: [12]u8 = undefined;
+    const bytes_read = file.read(&header) catch {
+        file.close();
+        return; // Skip if can't read
+    };
+    file.close();
+
+    if (bytes_read < 2) return; // Skip if too small
+
+    // Check for JXL codestream or container signature
+    const is_codestream = (header[0] == 0xFF and header[1] == 0x0A);
+    const is_container = (bytes_read >= 12 and
+        header[0] == 0x00 and header[1] == 0x00 and header[2] == 0x00 and header[3] == 0x0C and
+        header[4] == 'J' and header[5] == 'X' and header[6] == 'L' and header[7] == ' ');
+
+    if (!is_codestream and !is_container) {
+        return; // Skip if not a valid JXL file
+    }
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/jxl/sample.jxl") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.jxl, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "FormatValidator accepts valid TIFF little-endian" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid TIFF (little-endian)
+    const valid_tiff = [_]u8{
+        'I', 'I', // little-endian
+        0x2A, 0x00, // magic (42)
+        0x08, 0x00, 0x00, 0x00, // IFD offset (8)
+        // IFD at offset 8
+        0x01, 0x00, // number of entries (1)
+        // Entry: ImageWidth tag
+        0x00, 0x01, // tag (256 = ImageWidth)
+        0x03, 0x00, // type (SHORT)
+        0x01, 0x00, 0x00, 0x00, // count (1)
+        0x01, 0x00, 0x00, 0x00, // value (1)
+        // Next IFD offset
+        0x00, 0x00, 0x00, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("valid_le.tiff", .{});
+    try file.writeAll(&valid_tiff);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_le.tiff");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.tiff, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nValid TIFF LE failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid TIFF big-endian" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid TIFF (big-endian)
+    const valid_tiff = [_]u8{
+        'M', 'M', // big-endian
+        0x00, 0x2A, // magic (42)
+        0x00, 0x00, 0x00, 0x08, // IFD offset (8)
+        // IFD at offset 8
+        0x00, 0x01, // number of entries (1)
+        // Entry: ImageWidth tag
+        0x01, 0x00, // tag (256 = ImageWidth)
+        0x00, 0x03, // type (SHORT)
+        0x00, 0x00, 0x00, 0x01, // count (1)
+        0x00, 0x01, 0x00, 0x00, // value (1)
+        // Next IFD offset
+        0x00, 0x00, 0x00, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile("valid_be.tiff", .{});
+    try file.writeAll(&valid_tiff);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_be.tiff");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.tiff, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects truncated TIFF" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // TIFF with IFD offset beyond file
+    const truncated_tiff = [_]u8{
+        'I',  'I',
+        0x2A, 0x00,
+        0xFF, 0x00, 0x00, 0x00, // IFD offset (255, beyond file)
+    };
+
+    const file = try tmp_dir.dir.createFile("truncated.tiff", .{});
+    try file.writeAll(&truncated_tiff);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.tiff");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.tiff, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator deep validates real TIFF from ground truth" {
+    const allocator = std.testing.allocator;
+
+    // Ground truth TIFF file (from tlnagy/exampletiffs)
+    const file = std.fs.cwd().openFile("ground_truth_examples/tiff/bali.tif", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tiff/bali.tif") catch return;
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.tiff, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validatePngDeep accepts valid PNG with correct CRCs" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid PNG: 1x1 red pixel with correct CRCs
+    // Note: CRCs computed over (chunk_type + chunk_data)
+    const valid_png = [_]u8{
+        // PNG signature
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        // IHDR chunk (13 bytes)
+        0x00, 0x00, 0x00, 0x0D, // length (13)
+        'I', 'H', 'D', 'R', // chunk type
+        0x00, 0x00, 0x00, 0x01, // width (1)
+        0x00, 0x00, 0x00, 0x01, // height (1)
+        0x08, // bit depth (8)
+        0x02, // color type (RGB)
+        0x00, // compression method
+        0x00, // filter method
+        0x00, // interlace method
+        0x90, 0x77, 0x53, 0xDE, // CRC (verified correct)
+        // IDAT chunk (minimal compressed data)
+        0x00, 0x00, 0x00, 0x0C, // length (12)
+        'I', 'D', 'A', 'T', // chunk type
+        0x08, 0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0x3F, 0x00, 0x05, 0xFE, 0x02, 0xFE, // compressed data
+        0xDC, 0xCC, 0x59, 0xE7, // CRC (computed: 0xdccc59e7)
+        // IEND chunk
+        0x00, 0x00, 0x00, 0x00, // length (0)
+        'I', 'E', 'N', 'D', // chunk type
+        0xAE, 0x42, 0x60, 0x82, // CRC (verified correct)
+    };
+
+    const file = try tmp_dir.dir.createFile("valid.png", .{});
+    try file.writeAll(&valid_png);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.png");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.png, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nPNG CRC validation failed unexpectedly: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validatePngDeep rejects PNG with corrupted IHDR CRC" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // PNG with corrupted IHDR CRC (last byte changed from 0xDE to 0xFF)
+    const corrupted_png = [_]u8{
+        // PNG signature
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        // IHDR chunk with BAD CRC
+        0x00, 0x00, 0x00, 0x0D, // length (13)
+        'I', 'H', 'D', 'R', // chunk type
+        0x00, 0x00, 0x00, 0x01, // width (1)
+        0x00, 0x00, 0x00, 0x01, // height (1)
+        0x08, // bit depth (8)
+        0x02, // color type (RGB)
+        0x00, // compression method
+        0x00, // filter method
+        0x00, // interlace method
+        0x90, 0x77, 0x53, 0xFF, // CORRUPTED CRC (was 0xDE)
+        // IDAT chunk
+        0x00, 0x00, 0x00, 0x0C, // length (12)
+        'I',  'D',  'A',  'T', // chunk type
+        0x08, 0xD7, 0x63, 0xF8,
+        0xFF, 0xFF, 0x3F, 0x00,
+        0x05, 0xFE, 0x02, 0xFE,
+        0xDC, 0xCC, 0x59, 0xE7, // CRC (correct)
+        // IEND chunk
+        0x00, 0x00, 0x00, 0x00,
+        'I',  'E',  'N',  'D',
+        0xAE, 0x42, 0x60, 0x82,
+    };
+
+    const file = try tmp_dir.dir.createFile("corrupted.png", .{});
+    try file.writeAll(&corrupted_png);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.png");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.png, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqualStrings("CRC mismatch in critical chunk", result.error_message.?);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validatePngDeep rejects PNG with corrupted IDAT CRC" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // PNG with corrupted IDAT CRC
+    const corrupted_png = [_]u8{
+        // PNG signature
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        // IHDR chunk with correct CRC
+        0x00, 0x00, 0x00, 0x0D, 'I',  'H',  'D',  'R',
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+        0xDE,
+        // IDAT chunk with BAD CRC
+        0x00, 0x00, 0x00, 0x0C, 'I',  'D',  'A',
+        'T',  0x08, 0xD7, 0x63, 0xF8, 0xFF, 0xFF, 0x3F,
+        0x00, 0x05, 0xFE, 0x02, 0xFE,
+        0x00, 0x00, 0x00, 0x00, // CORRUPTED CRC (zeroed out, correct is 0xDCCC59E7)
+        // IEND chunk
+        0x00, 0x00, 0x00, 0x00,
+        'I',  'E',  'N',  'D',
+        0xAE, 0x42, 0x60, 0x82,
+    };
+
+    const file = try tmp_dir.dir.createFile("corrupted_idat.png", .{});
+    try file.writeAll(&corrupted_png);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted_idat.png");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.png, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqualStrings("CRC mismatch in critical chunk", result.error_message.?);
+}
+
+test "validatePngDeep rejects PNG with single bit flip in IDAT data" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // PNG with a single bit flipped in the IDAT data (simulating bitrot)
+    const bitrot_png = [_]u8{
+        // PNG signature
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        // IHDR chunk with correct CRC
+        0x00, 0x00, 0x00, 0x0D, 'I',  'H',  'D',  'R',
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+        0xDE,
+        // IDAT chunk with ONE BIT FLIPPED in data
+        0x00, 0x00, 0x00, 0x0C, 'I',  'D',  'A',
+        'T',
+        0x08, 0xD6, 0x63, 0xF8, 0xFF, 0xFF, 0x3F, 0x00, 0x05, 0xFE, 0x02, 0xFE, // 0xD7 changed to 0xD6 (bit flip!)
+        0xDC, 0xCC, 0x59, 0xE7, // Original CRC for 0xD7 data (now wrong due to bit flip)
+        // IEND chunk
+        0x00, 0x00, 0x00, 0x00,
+        'I',  'E',  'N',  'D',
+        0xAE, 0x42, 0x60, 0x82,
+    };
+
+    const file = try tmp_dir.dir.createFile("bitrot.png", .{});
+    try file.writeAll(&bitrot_png);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "bitrot.png");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expectEqual(FileFormat.png, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqualStrings("CRC mismatch in critical chunk", result.error_message.?);
+}
+
+test "FormatValidator accepts valid SVG without extension mismatch" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const svg_content =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+        \\  <rect x="0" y="0" width="10" height="10"/>
+        \\</svg>
+    ;
+
+    const file = try tmp_dir.dir.createFile("test.svg", .{});
+    try file.writeAll(svg_content);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.svg");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(FileFormat.svg, result.format);
+    try std.testing.expect(!result.malformations.contains(.extension_mismatch));
+}
+
+test "validatePsd accepts valid PSD with uncompressed data" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid PSD: 1x1 grayscale pixel, uncompressed
+    var valid_psd: [41]u8 = undefined;
+    var i: usize = 0;
+
+    // Header (26 bytes)
+    @memcpy(valid_psd[i..][0..4], "8BPS"); // Signature
+    i += 4;
+    std.mem.writeInt(u16, valid_psd[i..][0..2], 1, .big); // Version 1
+    i += 2;
+    @memset(valid_psd[i..][0..6], 0); // Reserved
+    i += 6;
+    std.mem.writeInt(u16, valid_psd[i..][0..2], 1, .big); // 1 channel
+    i += 2;
+    std.mem.writeInt(u32, valid_psd[i..][0..4], 1, .big); // Height = 1
+    i += 4;
+    std.mem.writeInt(u32, valid_psd[i..][0..4], 1, .big); // Width = 1
+    i += 4;
+    std.mem.writeInt(u16, valid_psd[i..][0..2], 8, .big); // 8 bits per channel
+    i += 2;
+    std.mem.writeInt(u16, valid_psd[i..][0..2], 1, .big); // Grayscale mode
+    i += 2;
+
+    // Color Mode Data section (empty)
+    std.mem.writeInt(u32, valid_psd[i..][0..4], 0, .big);
+    i += 4;
+
+    // Image Resources section (empty)
+    std.mem.writeInt(u32, valid_psd[i..][0..4], 0, .big);
+    i += 4;
+
+    // Layer and Mask Info section (empty)
+    std.mem.writeInt(u32, valid_psd[i..][0..4], 0, .big);
+    i += 4;
+
+    // Image Data section
+    std.mem.writeInt(u16, valid_psd[i..][0..2], 0, .big); // Compression = 0 (raw)
+    i += 2;
+    valid_psd[i] = 0x80; // Pixel data: 1 grayscale byte
+    i += 1;
+
+    const file = try tmp_dir.dir.createFile("valid.psd", .{});
+    try file.writeAll(&valid_psd);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.psd");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    if (!result.is_valid) {
+        std.debug.print("\nPSD validation failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.psd, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validatePsd rejects truncated PSD header" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Truncated PSD: only signature and version
+    const truncated_psd = [_]u8{ '8', 'B', 'P', 'S', 0, 1 };
+
+    const file = try tmp_dir.dir.createFile("truncated.psd", .{});
+    try file.writeAll(&truncated_psd);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.psd");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+    try std.testing.expectEqual(FileFormat.psd, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validatePsdFromBuffer matches validatePsd file result" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid PSD: 1x1 grayscale pixel, uncompressed
+    var valid_psd: [41]u8 = undefined;
+    var i: usize = 0;
+
+    // Header (26 bytes)
+    @memcpy(valid_psd[i..][0..4], "8BPS");
+    i += 4;
+    std.mem.writeInt(u16, valid_psd[i..][0..2], 1, .big);
+    i += 2;
+    @memset(valid_psd[i..][0..6], 0);
+    i += 6;
+    std.mem.writeInt(u16, valid_psd[i..][0..2], 1, .big);
+    i += 2;
+    std.mem.writeInt(u32, valid_psd[i..][0..4], 1, .big);
+    i += 4;
+    std.mem.writeInt(u32, valid_psd[i..][0..4], 1, .big);
+    i += 4;
+    std.mem.writeInt(u16, valid_psd[i..][0..2], 8, .big);
+    i += 2;
+    std.mem.writeInt(u16, valid_psd[i..][0..2], 1, .big);
+    i += 2;
+    std.mem.writeInt(u32, valid_psd[i..][0..4], 0, .big);
+    i += 4;
+    std.mem.writeInt(u32, valid_psd[i..][0..4], 0, .big);
+    i += 4;
+    std.mem.writeInt(u32, valid_psd[i..][0..4], 0, .big);
+    i += 4;
+    std.mem.writeInt(u16, valid_psd[i..][0..2], 0, .big);
+    i += 2;
+    valid_psd[i] = 0x80;
+    i += 1;
+
+    const file = try tmp_dir.dir.createFile("buffer_test.psd", .{});
+    try file.writeAll(&valid_psd);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "buffer_test.psd");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    // File-based validation
+    const file_result = validator.validateFile(path);
+
+    // Buffer-based validation
+    const buffer_result = validatePsdFromBuffer(&valid_psd);
+
+    try std.testing.expectEqual(file_result.format, buffer_result.format);
+    try std.testing.expectEqual(file_result.is_valid, buffer_result.is_valid);
+}
+
+test "validatePsdDeep accepts valid PSD with RLE compression" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // PSD with RLE compression (PackBits): 1x1 grayscale
+    // RLE for 1x1: byte count (2 bytes) = 2, then: 0x00 (copy 1 byte), 0x80 (pixel)
+    var rle_psd: [45]u8 = undefined;
+    var i: usize = 0;
+
+    // Header (26 bytes)
+    @memcpy(rle_psd[i..][0..4], "8BPS");
+    i += 4;
+    std.mem.writeInt(u16, rle_psd[i..][0..2], 1, .big); // Version 1
+    i += 2;
+    @memset(rle_psd[i..][0..6], 0); // Reserved
+    i += 6;
+    std.mem.writeInt(u16, rle_psd[i..][0..2], 1, .big); // 1 channel
+    i += 2;
+    std.mem.writeInt(u32, rle_psd[i..][0..4], 1, .big); // Height = 1
+    i += 4;
+    std.mem.writeInt(u32, rle_psd[i..][0..4], 1, .big); // Width = 1
+    i += 4;
+    std.mem.writeInt(u16, rle_psd[i..][0..2], 8, .big); // 8 bits per channel
+    i += 2;
+    std.mem.writeInt(u16, rle_psd[i..][0..2], 1, .big); // Grayscale mode
+    i += 2;
+
+    // Color Mode Data section (empty)
+    std.mem.writeInt(u32, rle_psd[i..][0..4], 0, .big);
+    i += 4;
+
+    // Image Resources section (empty)
+    std.mem.writeInt(u32, rle_psd[i..][0..4], 0, .big);
+    i += 4;
+
+    // Layer and Mask Info section (empty)
+    std.mem.writeInt(u32, rle_psd[i..][0..4], 0, .big);
+    i += 4;
+
+    // Image Data section - RLE compressed
+    std.mem.writeInt(u16, rle_psd[i..][0..2], 1, .big); // Compression = 1 (RLE)
+    i += 2;
+    // Byte counts: 1 row * 1 channel = 1 entry (u16 each)
+    std.mem.writeInt(u16, rle_psd[i..][0..2], 2, .big); // Row 0 channel 0 = 2 bytes
+    i += 2;
+    // RLE data: 0x00 = copy next 1 byte, 0x80 = the pixel value
+    rle_psd[i] = 0x00; // Literal run of 1
+    i += 1;
+    rle_psd[i] = 0x80; // The pixel
+    i += 1;
+
+    const file = try tmp_dir.dir.createFile("rle.psd", .{});
+    try file.writeAll(&rle_psd);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "rle.psd");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+
+    const result = validator.validateFileDeep(allocator, path);
+    if (!result.is_valid) {
+        std.debug.print("\nPSD RLE deep validation failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.psd, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "PNG file with .ico extension should not hang (extension mismatch)" {
+    // Regression test: A PNG file saved with .ico extension was causing infinite hangs.
+    // This test ensures validation completes within a reasonable time.
+    // Uses a thread with timeout detection to make the test deterministic.
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal valid PNG (8x8 white image)
+    const png_data = [_]u8{
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
+        0x00, 0x00, 0x00, 0x0D, // IHDR length
+        0x49, 0x48, 0x44, 0x52, // "IHDR"
+        0x00, 0x00, 0x00, 0x08, // width: 8
+        0x00, 0x00, 0x00, 0x08, // height: 8
+        0x08, 0x02, // bit depth: 8, color type: 2 (RGB)
+        0x00, 0x00, 0x00, // compression, filter, interlace
+        0x4B, 0x6D, 0x29, 0x53, // IHDR CRC
+        0x00, 0x00, 0x00, 0x00, // IEND length
+        0x49, 0x45, 0x4E, 0x44, // "IEND"
+        0xAE, 0x42, 0x60, 0x82, // IEND CRC
+    };
+
+    // Save PNG data with .ico extension (the problematic case)
+    const file = try tmp_dir.dir.createFile("test_image.ico", .{});
+    try file.writeAll(&png_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test_image.ico");
+    defer allocator.free(path);
+
+    // Heap-allocated shared state to prevent use-after-free if timeout occurs.
+    // The thread owns this memory and frees it when done.
+    const SharedState = struct {
+        completed: std.atomic.Value(bool),
+        validation_result: ?ValidationResult,
+        path: []const u8,
+
+        fn run(self: *@This()) void {
+            var validator = FormatValidator.init();
+            defer validator.deinit();
+            self.validation_result = validator.validateFile(self.path);
+            self.completed.store(true, .release);
+        }
+    };
+
+    const shared = try allocator.create(SharedState);
+    shared.* = .{
+        .completed = std.atomic.Value(bool).init(false),
+        .validation_result = null,
+        .path = path,
+    };
+    // Note: shared is freed by the test after join, or leaked on timeout (acceptable for tests)
+
+    // Spawn validation in a separate thread
+    const thread = try std.Thread.spawn(.{}, SharedState.run, .{shared});
+
+    // Wait up to 5 seconds for validation to complete
+    const timeout_ns: u64 = 5 * std.time.ns_per_s;
+    const start = std.time.nanoTimestamp();
+
+    while (!shared.completed.load(.acquire)) {
+        const elapsed = @as(u64, @intCast(std.time.nanoTimestamp() - start));
+        if (elapsed > timeout_ns) {
+            // Test fails: validation hung for more than 5 seconds
+            // Note: We detach the thread and leak shared state to avoid use-after-free.
+            // This is acceptable for a test that fails anyway.
+            thread.detach();
+            std.debug.print("\nFAILURE: PNG with .ico extension caused validation to hang (>5s)\n", .{});
+            return error.ValidationHung;
+        }
+        std.Thread.sleep(10 * std.time.ns_per_ms); // Check every 10ms
+    }
+
+    // Thread completed - join it and free shared state
+    thread.join();
+    defer allocator.destroy(shared);
+
+    // Validation completed within timeout - verify we got a sensible result
+    // The file should be detected as PNG (magic bytes win) or reported as some kind of result
+    // The key thing is it didn't hang
+    const result = shared.validation_result.?;
+
+    // Should detect as PNG based on magic bytes, not hang trying to validate as ICO
+    try std.testing.expectEqual(FileFormat.png, result.format);
+}
+

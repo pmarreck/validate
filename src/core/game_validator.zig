@@ -9,6 +9,10 @@ const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
 const ValidationResult = format_validation.ValidationResult;
 
+const FormatValidator = format_validation.FormatValidator;
+const detectFormat = format_validation.detectFormat;
+const FileFormat = format_validation.FileFormat;
+
 // ============ NES ============
 
 /// Validate NES ROM (iNES format).
@@ -563,3 +567,127 @@ pub fn validateChd(file: std.fs.File) ValidationResult {
 
     return ValidationResult.okWithDepth(.chd, .structural);
 }
+
+// ============================================================
+// Tests moved from format_validation.zig
+// ============================================================
+
+test "detectFormat IFF generic" {
+    // Generic IFF with unknown form type
+    var iff_header: [12]u8 = undefined;
+    @memcpy(iff_header[0..4], "FORM");
+    std.mem.writeInt(u32, iff_header[4..8], 100, .big); // Size
+    @memcpy(iff_header[8..12], "TEST"); // Unknown form type
+    try std.testing.expectEqual(FileFormat.iff, detectFormat(&iff_header));
+}
+
+test "detectFormat Blorb IFRS" {
+    // Blorb with Z-machine resources
+    var blorb_header: [12]u8 = undefined;
+    @memcpy(blorb_header[0..4], "FORM");
+    std.mem.writeInt(u32, blorb_header[4..8], 100, .big);
+    @memcpy(blorb_header[8..12], "IFRS");
+    try std.testing.expectEqual(FileFormat.blorb, detectFormat(&blorb_header));
+}
+
+test "detectFormat Blorb IFZS" {
+    // Blorb with Glulx resources
+    var blorb_header: [12]u8 = undefined;
+    @memcpy(blorb_header[0..4], "FORM");
+    std.mem.writeInt(u32, blorb_header[4..8], 100, .big);
+    @memcpy(blorb_header[8..12], "IFZS");
+    try std.testing.expectEqual(FileFormat.blorb, detectFormat(&blorb_header));
+}
+
+test "FormatValidator accepts valid IFF" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Minimal IFF file: FORM + size + type + data
+    var iff_data: [20]u8 = undefined;
+    @memcpy(iff_data[0..4], "FORM");
+    std.mem.writeInt(u32, iff_data[4..8], 12, .big); // Size of content
+    @memcpy(iff_data[8..12], "TEST"); // Form type
+    @memcpy(iff_data[12..16], "DATA"); // Chunk type
+    std.mem.writeInt(u32, iff_data[16..20], 0, .big); // Chunk size
+
+    const file = try tmp_dir.dir.createFile("test.iff", .{});
+    try file.writeAll(&iff_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.iff");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.iff, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid Blorb" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Blorb file with RIdx (Resource Index) chunk
+    var blorb_data: [32]u8 = undefined;
+    @memcpy(blorb_data[0..4], "FORM");
+    std.mem.writeInt(u32, blorb_data[4..8], 24, .big); // Size
+    @memcpy(blorb_data[8..12], "IFRS"); // Blorb form type
+    @memcpy(blorb_data[12..16], "RIdx"); // Resource Index chunk (required)
+    std.mem.writeInt(u32, blorb_data[16..20], 4, .big); // Chunk size
+    std.mem.writeInt(u32, blorb_data[20..24], 0, .big); // Number of resources
+    @memset(blorb_data[24..32], 0); // Padding
+
+    const file = try tmp_dir.dir.createFile("test.blorb", .{});
+    try file.writeAll(&blorb_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.blorb");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.blorb, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects Blorb without RIdx" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Blorb file without RIdx chunk (invalid)
+    var blorb_data: [20]u8 = undefined;
+    @memcpy(blorb_data[0..4], "FORM");
+    std.mem.writeInt(u32, blorb_data[4..8], 12, .big);
+    @memcpy(blorb_data[8..12], "IFRS");
+    @memcpy(blorb_data[12..16], "AUTH"); // Auth chunk, not RIdx
+    std.mem.writeInt(u32, blorb_data[16..20], 0, .big);
+
+    const file = try tmp_dir.dir.createFile("invalid.blorb", .{});
+    try file.writeAll(&blorb_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.blorb");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.blorb, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
