@@ -3422,7 +3422,7 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
         if (j < header.len and header[j] == ':') {
             // Could be email header - check for common RFC 822 headers
             const header_name = header[i..j];
-            if (isEmailHeader(header_name)) {
+            if (email_validators.isEmailHeader(header_name)) {
                 return .eml;
             }
         }
@@ -8457,7 +8457,7 @@ pub const FormatValidator = struct {
                         .jpeg => image_validators.validateJpegWithOptions(reopen_file, true),
                         .gif => image_validators.validateGifWithOptions(reopen_file, true),
                         .pdf => pdf_validator.validatePdfWithOptions(reopen_file, true),
-                        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp => validateZipWithOptions(reopen_file, secondary_format, true),
+                        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp => archive_validators.validateZipWithOptions(reopen_file, secondary_format, true),
                         .sqlite => document_validators.validateSqliteWithOptions(reopen_file, true),
                         // For formats without skip_magic support, we can only identify, not validate
                         else => null,
@@ -8772,8 +8772,8 @@ pub const FormatValidator = struct {
             .bmp => image_validators.validateBmpDeep(allocator, path),
             .ico => image_validators.validateIcoDeep(allocator, path),
             .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .pages, .logicx, .song => archive_validators.validateZipDeep(allocator, path),
-            .kmz => validateKmzDeep(allocator, path),
-            .@"3mf" => validate3mfDeep(allocator, path),
+            .kmz => text_format_validators.validateKmzDeep(allocator, path),
+            .@"3mf" => cad_3d_validators.validate3mfDeep(allocator, path),
             .flac => music_validators.validateFlacDeep(allocator, path),
             .wav => music_validators.validateWavDeep(allocator, path),
             .aiff => music_validators.validateAiffDeep(allocator, path),
@@ -9229,7 +9229,7 @@ pub const FormatValidator = struct {
             .step => cad_3d_validators.validateStep(file),
             .stl => cad_3d_validators.validateStl(file),
             // 3D printing/modeling formats
-            .@"3mf" => validate3mf(file),
+            .@"3mf" => cad_3d_validators.validate3mf(file),
             .obj => cad_3d_validators.validateObj(file),
             .ply => cad_3d_validators.validatePly(file),
             .gltf => cad_3d_validators.validateGltf(file),
@@ -9271,7 +9271,7 @@ pub const FormatValidator = struct {
             .au => music_validators.validateAu(file),
             .tta => music_validators.validateTta(file),
             .caf => music_validators.validateCaf(file),
-            .aac_adts => validateAacAdts(file),
+            .aac_adts => music_validators.validateAacAdts(file),
             // New image formats
             .qoi => image_validators.validateQoi(file),
             .pam => image_validators.validatePam(file),
@@ -9407,15 +9407,15 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
         .prproj => creative_validators.validatePrprojFromBuffer(data),
         .indd => creative_validators.validateInddFromBuffer(data),
         .idml => archive_validators.validateZipFromBuffer(data, .idml),
-        .dwg => validateDwgFromBuffer(data),
-        .blend => validateBlendFromBuffer(data),
+        .dwg => cad_3d_validators.validateDwgFromBuffer(data),
+        .blend => cad_3d_validators.validateBlendFromBuffer(data),
         .flp => daw_validators.validateFlpFromBuffer(data),
         .fcpxml => creative_validators.validateFcpxmlFromBuffer(data),
         .drp => creative_validators.validateDrpFromBuffer(data),
         .sketch => creative_validators.validateSketchFromBuffer(data),
         .mdb => document_validators.validateMdbFromBuffer(data),
         .accdb => document_validators.validateAccdbFromBuffer(data),
-        .obj => validateObjFromBuffer(data),
+        .obj => cad_3d_validators.validateObjFromBuffer(data),
         .webp => image_validators.validateWebpFromBuffer(data),
         .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => archive_validators.validateZipFromBuffer(data, format),
         .pdf => pdf_validator.validatePdfFromBuffer(data),

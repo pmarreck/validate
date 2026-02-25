@@ -5,6 +5,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const format_validation = @import("format_validation.zig");
 const errmsg = @import("error_messages.zig");
+const archive_validators = @import("archive_validators.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 
@@ -2217,4 +2218,107 @@ test "validateGlb rejects invalid data" {
     defer file.close();
     const result = validateGlb(file);
     try std.testing.expect(!result.is_valid);
+}
+
+// ============ 3MF Validator ============
+
+pub fn validate3mf(file: std.fs.File) ValidationResult {
+    const zip_result = archive_validators.validateZip(file, .@"3mf");
+    if (!zip_result.is_valid) {
+        return zip_result;
+    }
+
+    file.seekTo(0) catch return ValidationResult.invalidCode(.@"3mf", .failed_to_seek, "to start");
+
+    var header: [4096]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.@"3mf", .failed_to_read, "header");
+    if (bytes_read < 30) {
+        return ValidationResult.invalidCode(.@"3mf", .file_too_small, "3MF");
+    }
+
+    if (std.mem.indexOf(u8, header[0..bytes_read], "[Content_Types].xml") != null or
+        std.mem.indexOf(u8, header[0..bytes_read], "3dmodel.model") != null or
+        std.mem.indexOf(u8, header[0..bytes_read], "3D/") != null)
+    {
+        return ValidationResult.okWithDepth(.@"3mf", .full);
+    }
+
+    return ValidationResult.ok(.@"3mf");
+}
+
+pub fn validate3mfDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const zip_result = archive_validators.validateZipDeep(allocator, path);
+    var coerced = zip_result;
+    coerced.format = .@"3mf";
+    return coerced;
+}
+
+// ============ Buffer Validators ============
+
+pub fn validateDwgFromBuffer(data: []const u8) ValidationResult {
+    if (data.len < 6) {
+        return ValidationResult.invalidCode(.dwg, .buffer_too_small, "DWG");
+    }
+
+    // Check for "AC" magic at start
+    if (data[0] != 'A' or data[1] != 'C') {
+        return ValidationResult.invalidCodeMsg(.dwg, .invalid_signature_expected, "DWG", errmsg.invalidSignatureExpected("DWG", "AC"));
+    }
+
+    // Verify version code format: should be "AC10xx"
+    if (data[2] != '1' or data[3] != '0') {
+        return ValidationResult.invalidCode(.dwg, .invalid_value, "DWG version code");
+    }
+
+    // Check that bytes 4-5 are digits
+    if (!isDigit(data[4]) or !isDigit(data[5])) {
+        return ValidationResult.invalidCode(.dwg, .invalid_value, "DWG version format");
+    }
+
+    return ValidationResult.structuralOnly(.dwg);
+}
+
+pub fn validateBlendFromBuffer(data: []const u8) ValidationResult {
+    if (data.len < 12) {
+        return ValidationResult.invalidCode(.blend, .buffer_too_small, "Blender");
+    }
+
+    // Check for "BLENDER" magic
+    if (!std.mem.eql(u8, data[0..7], "BLENDER")) {
+        return ValidationResult.invalidCode(.blend, .invalid_signature, "Blender");
+    }
+
+    // Check pointer size
+    if (data[7] != '_' and data[7] != '-') {
+        return ValidationResult.invalidCode(.blend, .invalid_value, "pointer size indicator");
+    }
+
+    // Check endianness
+    if (data[8] != 'v' and data[8] != 'V') {
+        return ValidationResult.invalidCode(.blend, .invalid_value, "endianness indicator");
+    }
+
+    // Check version
+    if (!isDigit(data[9]) or !isDigit(data[10]) or !isDigit(data[11])) {
+        return ValidationResult.invalidCode(.blend, .invalid_value, "version number");
+    }
+
+    return ValidationResult.ok(.blend);
+}
+
+pub fn validateObjFromBuffer(data: []const u8) ValidationResult {
+    if (data.len < 2) {
+        return ValidationResult.invalidCode(.obj, .buffer_too_small, "OBJ");
+    }
+
+    // Check for ASCII content
+    const check_len = @min(data.len, 4096);
+    for (data[0..check_len]) |c| {
+        if (c > 127 and c != '\t' and c != '\n' and c != '\r') {
+            return ValidationResult.invalid(.obj, "OBJ contains non-ASCII characters");
+        }
+    }
+
+    // Use parseObjContent for validation
+    return parseObjContent(data);
 }

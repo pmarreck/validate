@@ -23,7 +23,15 @@ const aac_syntax_validator = @import("aac_syntax_validator.zig");
 // Imported helpers from format_validation
 const VideoDecodeTolerance = format_validation.VideoDecodeTolerance;
 const toleratedVideoDecodeFailure = format_validation.toleratedVideoDecodeFailure;
-const isValidBoxType = format_validation.isValidBoxType;
+/// Check if a box type is valid ASCII (printable, no control chars or nulls).
+fn isValidBoxType(box_type: *const [4]u8) bool {
+    for (box_type) |c| {
+        if (c < 0x20 or (c > 0x7E and c != 0xA9)) {
+            return false;
+        }
+    }
+    return true;
+}
 
 
 // ============ ISO BMFF (MP4/MOV) Validator ============

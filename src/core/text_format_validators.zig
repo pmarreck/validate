@@ -5,6 +5,7 @@ const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const cj5 = @import("cj5");
 const errmsg = @import("error_messages.zig");
+const archive_validators = @import("archive_validators.zig");
 const DoctypeStrippedResult = format_validation.DoctypeStrippedResult;
 const stripDoctypeDeclaration = format_validation.stripDoctypeDeclaration;
 const isAsciiCompatibleEncoding = format_validation.isAsciiCompatibleEncoding;
@@ -1556,6 +1557,13 @@ pub fn validateKmz(file: std.fs.File) ValidationResult {
     // For now, accept any ZIP as potentially valid KMZ
     // Full validation would require extracting and checking for doc.kml
     return ValidationResult.okWithDepth(.kmz, .structural);
+}
+
+pub fn validateKmzDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const zip_result = archive_validators.validateZipDeep(allocator, path);
+    var coerced = zip_result;
+    coerced.format = .kmz;
+    return coerced;
 }
 
 // ============ Plain Text Validators ============

@@ -9,16 +9,176 @@ const errmsg = @import("error_messages.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 
-// Helper references from format_validation
-const isEmailHeader = format_validation.isEmailHeader;
-const hasValidEmailHeaders = format_validation.hasValidEmailHeaders;
-const findMimeBoundary = format_validation.findMimeBoundary;
-const findHeaderValue = format_validation.findHeaderValue;
-const base64_decode_table = format_validation.base64_decode_table;
-const decodeBase64 = format_validation.decodeBase64;
-const max_attachment_decode_size = format_validation.max_attachment_decode_size;
 const detectFormat = format_validation.detectFormat;
 const validateDataBufferFormat = format_validation.validateDataBufferFormat;
+
+/// Maximum attachment size to decode and validate (16 MB)
+const max_attachment_decode_size: usize = 16 * 1024 * 1024;
+
+/// Check if a header name is a common RFC 822/2822 email header.
+pub fn isEmailHeader(name: []const u8) bool {
+    const email_headers = [_][]const u8{
+        "From",                      "To",                     "Cc",             "Bcc",                 "Subject",     "Date",       "Message-ID",    "Message-Id",
+        "Received",                  "Return-Path",            "Reply-To",       "Sender",              "In-Reply-To", "References", "MIME-Version",  "Content-Type",
+        "Content-Transfer-Encoding", "Content-Disposition",    "Content-ID",     "Content-Description", "X-Mailer",    "X-Priority", "X-Spam-Status", "X-Originating-IP",
+        "Delivered-To",              "Authentication-Results", "DKIM-Signature",
+    };
+
+    for (email_headers) |header| {
+        if (std.ascii.eqlIgnoreCase(name, header)) {
+            return true;
+        }
+    }
+
+    // Also check for X- custom headers
+    if (name.len >= 2 and (name[0] == 'X' or name[0] == 'x') and name[1] == '-') {
+        return true;
+    }
+
+    return false;
+}
+
+/// Check if headers contain at least one recognized email header.
+pub fn hasValidEmailHeaders(headers: []const u8) bool {
+    var line_start: usize = 0;
+    for (headers, 0..) |c, idx| {
+        if (c == '\n') {
+            const line = headers[line_start..idx];
+            if (line.len > 0 and line[line.len - 1] == '\r') {
+                const clean_line = line[0 .. line.len - 1];
+                if (std.mem.indexOf(u8, clean_line, ":")) |colon_pos| {
+                    if (colon_pos > 0 and isEmailHeader(clean_line[0..colon_pos])) {
+                        return true;
+                    }
+                }
+            } else if (std.mem.indexOf(u8, line, ":")) |colon_pos| {
+                if (colon_pos > 0 and isEmailHeader(line[0..colon_pos])) {
+                    return true;
+                }
+            }
+            line_start = idx + 1;
+        }
+    }
+    return false;
+}
+
+/// Find MIME boundary from Content-Type header.
+pub fn findMimeBoundary(headers: []const u8) ?[]const u8 {
+    const content_type = findHeaderValue(headers, "Content-Type") orelse return null;
+    const boundary_start = std.ascii.indexOfIgnoreCase(content_type, "boundary=") orelse return null;
+    var start = boundary_start + 9;
+
+    if (start >= content_type.len) return null;
+
+    if (content_type[start] == '"') {
+        start += 1;
+        const end = std.mem.indexOfPos(u8, content_type, start, "\"") orelse return null;
+        return content_type[start..end];
+    }
+
+    var end = start;
+    while (end < content_type.len and
+        content_type[end] != ';' and
+        content_type[end] != ' ' and
+        content_type[end] != '\t' and
+        content_type[end] != '\r' and
+        content_type[end] != '\n')
+    {
+        end += 1;
+    }
+
+    return content_type[start..end];
+}
+
+/// Find a header value by name (case-insensitive).
+pub fn findHeaderValue(headers: []const u8, name: []const u8) ?[]const u8 {
+    var line_start: usize = 0;
+    var in_continuation = false;
+    var value_start: usize = 0;
+    var value_end: usize = 0;
+
+    for (headers, 0..) |c, idx| {
+        if (c == '\n') {
+            const line = headers[line_start..idx];
+            const clean_line = if (line.len > 0 and line[line.len - 1] == '\r') line[0 .. line.len - 1] else line;
+
+            if (in_continuation) {
+                if (clean_line.len > 0 and (clean_line[0] == ' ' or clean_line[0] == '\t')) {
+                    value_end = idx;
+                } else {
+                    return headers[value_start..value_end];
+                }
+            } else if (std.mem.indexOf(u8, clean_line, ":")) |colon_pos| {
+                const header_name = clean_line[0..colon_pos];
+                if (std.ascii.eqlIgnoreCase(header_name, name)) {
+                    value_start = line_start + colon_pos + 1;
+                    while (value_start < idx and (headers[value_start] == ' ' or headers[value_start] == '\t')) {
+                        value_start += 1;
+                    }
+                    value_end = idx;
+                    in_continuation = true;
+                }
+            }
+
+            line_start = idx + 1;
+        }
+    }
+
+    if (in_continuation and value_end > value_start) {
+        return headers[value_start..value_end];
+    }
+
+    return null;
+}
+
+/// Base64 decoding table (RFC 4648)
+const base64_decode_table = blk: {
+    var table: [256]u8 = .{0xFF} ** 256;
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (alphabet, 0..) |c, i| {
+        table[c] = @intCast(i);
+    }
+    table['='] = 0xFE;
+    break :blk table;
+};
+
+/// Decode base64 data into output buffer.
+pub fn decodeBase64(encoded: []const u8, output: []u8) !usize {
+    var out_idx: usize = 0;
+    var accum: u32 = 0;
+    var bits: u8 = 0;
+    var padding_count: u8 = 0;
+
+    for (encoded) |c| {
+        if (c == ' ' or c == '\t' or c == '\r' or c == '\n') continue;
+
+        const val = base64_decode_table[c];
+        if (val == 0xFF) {
+            return error.InvalidBase64;
+        }
+        if (val == 0xFE) {
+            padding_count += 1;
+            continue;
+        }
+        if (padding_count > 0) {
+            return error.InvalidBase64;
+        }
+
+        accum = (accum << 6) | val;
+        bits += 6;
+
+        if (bits >= 8) {
+            bits -= 8;
+            if (out_idx >= output.len) {
+                return error.OutputBufferTooSmall;
+            }
+            output[out_idx] = @intCast((accum >> @as(u5, @intCast(bits))) & 0xFF);
+            out_idx += 1;
+        }
+    }
+
+    return out_idx;
+}
 
 // ============ EML Validator ============
 
