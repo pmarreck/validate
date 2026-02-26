@@ -127,3 +127,8 @@ psd	mixed	PSD header checks do not cover full layer/channel data integrity
 spotlight	opaque	macOS Spotlight store has weak intrinsic integrity metadata
 wpd	mixed	WordPerfect document prefix does not protect full payload
 shapefile	mixed	Shapefile header protects file code/length but not per-record geometry data
+qbb	mixed	OLE2 compound storage lacks mandatory end-to-end integrity
+qdf	mixed	OLE2/ZIP container variants lack full payload integrity coverage
+ofx	opaque	Text-based financial exchange format with no integrity checksums
+qif	opaque	Plain text interchange format with no integrity mechanism
+txf	opaque	Plain text tax exchange format with no integrity mechanism
