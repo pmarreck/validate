@@ -201,6 +201,7 @@ const document_validators = @import("document_validators.zig");
 // Filesystem/disk image validators (ISO, DMG)
 const filesystem_validators = @import("filesystem_validators.zig");
 const apple_validators = @import("apple_validators.zig");
+const financial_validators = @import("financial_validators.zig");
 const pdf_validator = @import("pdf_validator.zig");
 
 // PE (Portable Executable) validator
@@ -526,6 +527,13 @@ pub const FileFormat = enum {
     ar, // Unix ar archive (.a static libraries, .deb packages)
     // Web markup
     html, // HTML document (.html, .htm, .xhtml)
+    // Financial data formats
+    qbw, // QuickBooks Company File (SQL Anywhere database)
+    qbb, // QuickBooks Backup (OLE2 compound file)
+    qdf, // Quicken Data File (OLE2, ZIP, or legacy proprietary)
+    ofx, // Open Financial Exchange (SGML/XML)
+    qif, // Quicken Interchange Format (text)
+    txf, // Tax Exchange Format (text)
     // Bundle formats (directories validated as a unit)
     git_repository, // Git repository (.git directory)
     macos_app, // macOS application bundle (.app)
@@ -601,6 +609,7 @@ pub const FileFormat = enum {
             .wasm => true, // WebAssembly module
             .ar => true, // Unix ar archive
             .html => true, // HTML document
+            .qbw, .qbb, .qdf, .ofx, .qif, .txf => true, // Financial data formats
             .git_repository => true, // Git repository validation
             .macos_app => true, // macOS application bundle validation
             .macos_framework => true, // macOS framework validation
@@ -622,7 +631,7 @@ pub const FileFormat = enum {
     /// Returns true if this format uses OLE2/CFBF (Compound File Binary Format).
     pub fn isOle2(self: FileFormat) bool {
         return switch (self) {
-            .doc, .xls, .ppt => true,
+            .doc, .xls, .ppt, .qbb => true,
             else => false,
         };
     }
@@ -2168,6 +2177,14 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "cwk")) return .cwk;
     if (std.mem.eql(u8, ext_lower, "mwd")) return .mwd;
 
+    // Financial data formats — extension-based (magic is ambiguous: OLE2, ZIP, or SQL Anywhere)
+    if (std.mem.eql(u8, ext_lower, "qbw")) return .qbw;
+    if (std.mem.eql(u8, ext_lower, "qbb") or std.mem.eql(u8, ext_lower, "qbm")) return .qbb;
+    if (std.mem.eql(u8, ext_lower, "qdf")) return .qdf;
+    if (std.mem.eql(u8, ext_lower, "ofx") or std.mem.eql(u8, ext_lower, "qfx")) return .ofx;
+    if (std.mem.eql(u8, ext_lower, "qif")) return .qif;
+    if (std.mem.eql(u8, ext_lower, "txf")) return .txf;
+
     // Adobe Illustrator - extension needed to distinguish from PDF/EPS
     // AI files are PDF or PostScript internally, but should be treated as AI
     if (std.mem.eql(u8, ext_lower, "ai")) return .ai;
@@ -2600,6 +2617,14 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "logicx")) return .logicx;
     if (std.mem.eql(u8, ext_lower, "song")) return .song;
 
+    // Financial data formats
+    if (std.mem.eql(u8, ext_lower, "qbw")) return .qbw;
+    if (std.mem.eql(u8, ext_lower, "qbb") or std.mem.eql(u8, ext_lower, "qbm")) return .qbb;
+    if (std.mem.eql(u8, ext_lower, "qdf")) return .qdf;
+    if (std.mem.eql(u8, ext_lower, "ofx") or std.mem.eql(u8, ext_lower, "qfx")) return .ofx;
+    if (std.mem.eql(u8, ext_lower, "qif")) return .qif;
+    if (std.mem.eql(u8, ext_lower, "txf")) return .txf;
+
     // GIS
     if (std.mem.eql(u8, ext_lower, "kml")) return .kml;
     if (std.mem.eql(u8, ext_lower, "kmz")) return .kmz;
@@ -2828,6 +2853,11 @@ fn isFormatCompatibleWithExtension(detected: FileFormat, extension_format: FileF
 
     // Ogg container can have various codecs
     if (extension_format == .ogg and detected == .ogg) return true;
+
+    // OLE2-based financial formats detected as .doc
+    if (detected == .doc and (extension_format == .qbb or extension_format == .qdf)) return true;
+    // ZIP-based financial format
+    if (detected == .zip and extension_format == .qdf) return true;
 
     return false;
 }
@@ -4385,6 +4415,7 @@ pub const FormatValidator = struct {
                     .br, .hqx, .cpt, .dv, .tga, .html, .dmg, .iso,
                     .bwproject, .ptx, .band, .reason, .cpr, .logicx, .song, .sketch, .drp,
                     .snes, .gb, .gba, .nds, .genesis, .cwk, .mwd,
+                    .qbw, .qbb, .qdf, .ofx, .qif, .txf,
                     => true,
                     else => false,
                 };
@@ -4417,6 +4448,12 @@ pub const FormatValidator = struct {
                         .genesis => game_validator.validateGenesis(reopen_ext),
                         .cwk => apple_validators.validateClarisWorks(reopen_ext),
                         .mwd => apple_validators.validateMacWrite(reopen_ext),
+                        .qbw => financial_validators.validateQbw(reopen_ext),
+                        .qbb => financial_validators.validateQbb(reopen_ext),
+                        .qdf => financial_validators.validateQdf(reopen_ext),
+                        .ofx => financial_validators.validateOfx(reopen_ext),
+                        .qif => financial_validators.validateQif(reopen_ext),
+                        .txf => financial_validators.validateTxf(reopen_ext),
                         else => ValidationResult.ok(ext_format),
                     };
                 } else {
@@ -4683,6 +4720,30 @@ pub const FormatValidator = struct {
             };
             defer reopen_file.close();
             result = creative_validators.validateSketch(reopen_file);
+        }
+
+        // Special handling for QuickBooks Backup files
+        // QBB files are OLE2 compound files, detected as .doc by magic bytes
+        // If extension is .qbb or .qbm, use QBB-specific validation
+        if ((ext_format == .qbb) and result.format == .doc) {
+            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+                result.format = .qbb;
+                return result;
+            };
+            defer reopen_file.close();
+            result = financial_validators.validateQbb(reopen_file);
+        }
+
+        // Special handling for Quicken Data Files
+        // QDF files can be OLE2 or ZIP containers, detected as .doc or .zip by magic bytes
+        // If extension is .qdf, use QDF-specific validation
+        if (ext_format == .qdf and (result.format == .doc or result.format == .zip)) {
+            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+                result.format = .qdf;
+                return result;
+            };
+            defer reopen_file.close();
+            result = financial_validators.validateQdf(reopen_file);
         }
 
         // Debug: Log failed validations with path
@@ -5365,6 +5426,13 @@ pub const FormatValidator = struct {
             .ar => executable_validators.validateAr(file),
             // Web markup
             .html => text_format_validators.validateHtml(file),
+            // Financial data formats
+            .qbw => financial_validators.validateQbw(file),
+            .qbb => financial_validators.validateQbb(file),
+            .qdf => financial_validators.validateQdf(file),
+            .ofx => financial_validators.validateOfx(file),
+            .qif => financial_validators.validateQif(file),
+            .txf => financial_validators.validateTxf(file),
             // Bundle formats (directories) - should be handled before reaching this switch
             // If we get here, it means something went wrong - return invalid to make it obvious
             .git_repository => ValidationResult.invalid(.git_repository, "Git repositories must be validated as directories, not files"),

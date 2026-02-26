@@ -4,6 +4,16 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ## Active
 
+### Financial Format Validators
+- [x] Implement QBW (QuickBooks Company File) validator — SQL Anywhere (5E BA 7A DA @ 0x14, 4096-byte page alignment) + legacy MAUI format (2026-02-25 EST)
+- [x] Implement QBB (QuickBooks Backup) validator — OLE2 compound file detection (2026-02-25 EST)
+- [x] Implement QDF (Quicken Data File) validator — OLE2, ZIP, and legacy magic (AC 9E BD 8F) variants (2026-02-25 EST)
+- [x] Implement OFX (Open Financial Exchange) validator — SGML (OFX 1.x) and XML (OFX 2.x) (2026-02-25 EST)
+- [x] Implement QIF (Quicken Interchange Format) validator — text-based !Type:, record separator ^ (2026-02-25 EST)
+- [x] Implement TXF (Tax Exchange Format) validator — text-based V### version + A application line (2026-02-25 EST)
+- [x] Add ground-truth samples for QBW, QDF, OFX, QIF, TXF (2026-02-25 EST)
+- [x] Wire up format detection, extension mapping, OLE2/ZIP override dispatch, FFI category, i18n (all 30 locales) (2026-02-25 EST)
+
 ### Depth Honesty Audit
 - [x] Fix ~50 validators dishonestly claiming `.full` depth when they only do header/structural checks or parse opaque text with no integrity mechanism (2026-02-23 EST)
 - [x] Downgrade 9 header-only stubs to WARN via `structuralOnly()`: bwproject, cpr, ptx, band, reason, cwk, mwd, bsp, vpk (2026-02-24 EST)

@@ -177,6 +177,9 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         // Database
         .mdb, .accdb => "database",
 
+        // Financial
+        .qbw, .qbb, .qdf, .ofx, .qif, .txf => "financial",
+
         // Other
         .unknown, .par2, .beam, .ds_store, .spotlight => "other",
     };
