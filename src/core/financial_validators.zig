@@ -445,15 +445,8 @@ pub fn validateQdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	};
 
 	if (bytes_read >= 8 and std.mem.eql(u8, &header, &[8]u8{ 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 })) {
-		// OLE2 container — try OLE2 deep validation, but fall back to structural
-		// if it fails (Quicken uses OLE2 non-standardly; FAT may be non-conformant)
-		const ole2_result = document_validators.validateOle2Deep(allocator, path, .qdf);
-		if (ole2_result.is_valid) {
-			return ole2_result;
-		}
-		// OLE2 deep validation failed — the file is still a valid QDF container,
-		// just with non-standard OLE2 internals. Return structural OK with warning.
-		return ValidationResult.okWithDepthAndWarning(.qdf, .structural, "OLE2 deep validation failed (Quicken non-standard FAT structure)");
+		// OLE2 container — use OLE2 deep validation (FAT/directory integrity)
+		return document_validators.validateOle2Deep(allocator, path, .qdf);
 	}
 
 	if (bytes_read >= 4 and std.mem.eql(u8, header[0..4], &[4]u8{ 0x50, 0x4B, 0x03, 0x04 })) {
@@ -978,7 +971,6 @@ test "ground truth: QDF deep validation via OLE2" {
 	};
 
 	const result = validateQdfDeep(std.testing.allocator, path);
-	// QDF format is correctly identified regardless of OLE2 validity
-	// (Quicken uses OLE2 non-standardly; FAT may reference sectors beyond file)
+	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.qdf, result.format);
 }

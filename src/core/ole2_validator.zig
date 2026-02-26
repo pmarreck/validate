@@ -153,7 +153,11 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
     };
 
     // Calculate total sectors in file
-    const total_sectors = @as(u32, @intCast((file_size - 512) / header.sector_size));
+    // For v3 (512-byte sectors), header occupies 512 bytes; for v4 (4096-byte sectors),
+    // header occupies a full 4096-byte sector (512 bytes + zero padding per [MS-CFB]).
+    // In both cases, header.sector_size gives the correct header region size.
+    const header_region_size: u64 = header.sector_size;
+    const total_sectors = @as(u32, @intCast((file_size - header_region_size) / header.sector_size));
 
     // Validate FAT
     const fat = readFat(allocator, file, &header, total_sectors) catch |err| {
@@ -291,8 +295,8 @@ fn readFat(allocator: Allocator, file: std.fs.File, header: *const Ole2Header, t
         if (fat_sector == FREESECT) break;
         if (fat_sector > total_sectors) return error.InvalidFatSector;
 
-        // Read FAT sector
-        const sector_offset = 512 + @as(u64, fat_sector) * header.sector_size;
+        // Read FAT sector (sectors start after the header region)
+        const sector_offset = @as(u64, header.sector_size) + @as(u64, fat_sector) * header.sector_size;
         file.seekTo(sector_offset) catch return error.ReadError;
         const bytes_read = file.readAll(sector_buf) catch return error.ReadError;
         if (bytes_read < header.sector_size) return error.ReadError;
@@ -320,7 +324,7 @@ fn readFat(allocator: Allocator, file: std.fs.File, header: *const Ole2Header, t
             try visited.put(allocator, difat_sector, {});
 
             // Read DIFAT sector
-            const sector_offset = 512 + @as(u64, difat_sector) * header.sector_size;
+            const sector_offset = @as(u64, header.sector_size) + @as(u64, difat_sector) * header.sector_size;
             file.seekTo(sector_offset) catch return error.ReadError;
             const bytes_read = file.readAll(sector_buf) catch return error.ReadError;
             if (bytes_read < header.sector_size) return error.ReadError;
@@ -333,7 +337,7 @@ fn readFat(allocator: Allocator, file: std.fs.File, header: *const Ole2Header, t
                 if (fat_sector > total_sectors) return error.InvalidFatSector;
 
                 // Read this FAT sector
-                const fat_offset = 512 + @as(u64, fat_sector) * header.sector_size;
+                const fat_offset = @as(u64, header.sector_size) + @as(u64, fat_sector) * header.sector_size;
                 file.seekTo(fat_offset) catch return error.ReadError;
 
                 var fat_buf = try allocator.alloc(u8, header.sector_size);
@@ -446,7 +450,7 @@ fn validateDirectoryEntries(
     defer allocator.free(sector_buf);
 
     for (dir_sectors.items) |sector| {
-        const sector_offset = 512 + @as(u64, sector) * header.sector_size;
+        const sector_offset = @as(u64, header.sector_size) + @as(u64, sector) * header.sector_size;
         file.seekTo(sector_offset) catch return error.ReadError;
         const bytes_read = file.readAll(sector_buf) catch return error.ReadError;
         if (bytes_read < header.sector_size) return error.ReadError;
