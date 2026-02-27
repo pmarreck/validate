@@ -354,11 +354,53 @@ pub fn validateTxf(file: std.fs.File) ValidationResult {
 // ============================================================================
 
 /// Deep validation of QuickBooks Company Files (.qbw) via per-page CRC-32.
-/// SQL Anywhere databases store a CRC-32 checksum in the last 4 bytes of each
-/// 4096-byte page, computed over the preceding 4092 bytes. The SA major version
-/// is parsed from the copyright string embedded in page 0 to determine whether
-/// per-page CRC is expected: v12+ stores CRC on all pages (failures = corruption),
-/// while older versions may not — and we report structural-only for those.
+///
+/// ## QBW File Format (reverse-engineered 2026-02-26)
+///
+/// QBW files are SAP SQL Anywhere databases. Key structural facts:
+///
+/// **Page layout**: Fixed 4096-byte pages. File size is always a multiple of 4096.
+///
+/// **Header (page 0)**:
+///   - Offset 0x14: SQL Anywhere magic `5E BA 7A DA` (all modern versions)
+///   - Offset 0x06: Flags byte (0x29 for v11/Sybase, 0x09 for v17/SAP)
+///   - Offset 0x1C: Total page count (u16 LE, but only for smaller files)
+///   - Copyright string at varying offset (0x2C4 for v11, 0x349 for v17):
+///     Format: "<vendor>, Copyright (c)<year> <major>.<minor>.<patch>.<build>"
+///     Examples: "Sybase Inc., Copyright (c)2000 11.0.1.2250"
+///               "SAP SE, Copyright (c)2015 17.0.4.2182"
+///
+/// **CRC-32 integrity** (standard ISO 3309, polynomial 0xEDB88320):
+///   - Algorithm: `CRC32(page[0..4092])` stored as u32 LE at `page[4092..4096]`
+///   - v17+ (SAP era): CRC on ALL pages → full integrity verification possible
+///   - v11 (Sybase era): CRC only on system/checkpoint pages (see below)
+///
+/// **v11 system page map** (empirically verified on 3 files, 20484 pages each):
+///   - Pages 0, 1: header pages (always have CRC)
+///   - Pages 8, 9, 10: early system pages (have CRC)
+///   - Pages 56, 120, 153: system metadata (have CRC, positions may be file-specific)
+///   - Checkpoint pages at 4064-page intervals from page 1: 4065, 8129, 12193, ...
+///   - Total: ~13 system pages with CRC out of 20484
+///   - Data pages use the last 4 bytes for metadata, NOT checksums:
+///     0x00000000 (9979 pages, free/unused), 0x00010000 (4298 pages, type flag),
+///     0x00000FC0 (1233 pages), 0x00000001 (1018 pages), 0xFEFEFEFE (98 pages,
+///     uninitialized marker), plus ~2100 other structured values.
+///   - These are clearly not checksums: checksums would be pseudo-random/unique,
+///     but these are highly structured with massive repetition (0x00010000 x 4298).
+///
+/// **Password protection** (v11, password "farming" on test file):
+///   - NOT encryption — only 121 of 20484 pages changed (access control metadata)
+///   - Pages 509-510, 774, 1334-1335 had the most changes (user/permission tables)
+///   - Page 0 CRC was correctly updated after password was set, confirming v11
+///     actively maintains CRCs on system pages through write operations
+///   - v11 password protection is application-layer gating, not crypto
+///
+/// **Version detection**: We parse the SA major version from the copyright string
+/// on page 0 rather than sampling CRC pass rates (which could mask corruption on
+/// a v17 file by misclassifying it as "old version without CRC").
+///   - v12+: CRC on all pages expected → any failure = corruption FAIL
+///   - v11-: CRC only on system pages → verify those, structural for the rest
+///   - Unknown: fail-safe, treat as v12+ (CRC failures = corruption)
 pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	_ = allocator;
 
