@@ -388,6 +388,22 @@ pub fn validateTxf(file: std.fs.File) ValidationResult {
 ///   - These are clearly not checksums: checksums would be pseudo-random/unique,
 ///     but these are highly structured with massive repetition (0x00010000 x 4298).
 ///
+/// **Database encryption** (v11):
+///   - v11 data pages are encrypted ("simple encryption" / obfuscation by SA)
+///   - Entropy analysis: page 0 = 4.575 (plaintext), all other pages = 7.95-8.00
+///   - This is separate from password protection and is why data pages have no CRC:
+///     encrypted content cannot be checksummed externally without the key
+///
+/// **16-byte cleartext footer** on every page (bytes [4080:4096]):
+///   - [4080]: record/slot count (0-255)
+///   - [4081]: flag byte, always 0 or 1
+///   - [4082:4084]: page type (u16 LE): {0=bitmap, 1=index, 5=data, 8/9=system,
+///                  37/40/41/45=system/checkpoint}
+///   - [4084:4088]: object/table ID or LSN (byte 4087 always 0x00)
+///   - [4088:4092]: reserved, always 0x00000000
+///   - [4092:4096]: CRC-32 on system pages; metadata flags on data pages
+///   - Footer validation catches corruption in ~0.2% of additional bytes
+///
 /// **Password protection** (v11, password "farming" on test file):
 ///   - NOT encryption — only 121 of 20484 pages changed (access control metadata)
 ///   - Pages 509-510, 774, 1334-1335 had the most changes (user/permission tables)
@@ -395,11 +411,15 @@ pub fn validateTxf(file: std.fs.File) ValidationResult {
 ///     actively maintains CRCs on system pages through write operations
 ///   - v11 password protection is application-layer gating, not crypto
 ///
+/// **Page count fields**: offsets 0x1C and 0xC8 (both u32 LE) store total page
+///   count. On v11, this matches file_size/4096 exactly. On v17, it may differ
+///   (e.g. 3562 stored vs 3690 actual), so we only validate when it matches.
+///
 /// **Version detection**: We parse the SA major version from the copyright string
 /// on page 0 rather than sampling CRC pass rates (which could mask corruption on
 /// a v17 file by misclassifying it as "old version without CRC").
 ///   - v12+: CRC on all pages expected → any failure = corruption FAIL
-///   - v11-: CRC only on system pages → verify those, structural for the rest
+///   - v11-: CRC on system pages + footer validation on all pages → structural
 ///   - Unknown: fail-safe, treat as v12+ (CRC failures = corruption)
 pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	_ = allocator;
@@ -458,30 +478,46 @@ pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	// - Unknown version: attempt full CRC, failures = corruption (fail-safe)
 	// The threshold of 12 is conservative; v17 is confirmed, v11 is confirmed not.
 	// If we encounter a version between 12-16 with different behavior, we can adjust.
+	// Cross-validate page count from header against actual file size.
+	// v11 stores page count at offsets 0x1C (u32 LE) and 0xC8 (u32 LE).
+	const header_page_count = std.mem.readInt(u32, page_buf[0x1C..0x20], .little);
+	const header_page_count_dup = std.mem.readInt(u32, page_buf[0xC8..0xCC], .little);
+	if (header_page_count == total_pages) {
+		// v11-style: page count matches file size exactly
+		if (header_page_count_dup != header_page_count) {
+			return ValidationResult.invalidCode(.qbw, .invalid_value, "SQL Anywhere page count fields disagree");
+		}
+	}
+	// Note: v17 may store a different value here (e.g. 3562 vs 3690 actual pages),
+	// so we only validate when it matches — don't fail on v17 for this field.
+
 	if (sa_major_version != null and sa_major_version.? < 12) {
 		// Old SA version (v11 and below): CRC-32 exists only on system/checkpoint
-		// pages, not data pages. Data pages use the last 4 bytes for metadata
-		// (flags like 0x00010000, counters, etc.). We verify all known system pages:
+		// pages, not data pages (data pages are encrypted, and their last 4 bytes
+		// contain metadata like page type flags). We verify all known system pages:
 		//   - Page 0: header (already verified above)
-		//   - Page 1: second system page
+		//   - Pages 1, 8, 9, 10: fixed system pages
 		//   - Checkpoint pages at 4064-page intervals from page 1
-		// If any of these fail CRC, it's corruption of critical database metadata.
+		// Plus footer structure validation on ALL pages (catches ~0.2% extra).
+		// If any system page CRC fails, it's corruption of critical metadata.
 
-		// Verify page 1
-		if (total_pages > 1) {
-			file.seekTo(4096) catch {
-				return ValidationResult.invalidCode(.qbw, .failed_to_seek, "system page 1");
+		// Known fixed system pages with CRC (page 0 already verified)
+		const system_pages = [_]u64{ 1, 8, 9, 10 };
+		for (system_pages) |sys_page| {
+			if (sys_page >= total_pages) continue;
+			file.seekTo(sys_page * 4096) catch {
+				return ValidationResult.invalidCode(.qbw, .failed_to_seek, "system page");
 			};
 			bytes_read = file.readAll(&page_buf) catch {
-				return ValidationResult.invalidCode(.qbw, .failed_to_read, "system page 1");
+				return ValidationResult.invalidCode(.qbw, .failed_to_read, "system page");
 			};
 			if (bytes_read < 4096) {
-				return ValidationResult.invalidCode(.qbw, .truncated, "system page 1");
+				return ValidationResult.invalidCode(.qbw, .truncated, "system page");
 			}
 			const stored = std.mem.readInt(u32, page_buf[4092..4096], .little);
 			const computed = std.hash.Crc32.hash(page_buf[0..4092]);
 			if (stored != computed) {
-				return ValidationResult.invalidCode(.qbw, .checksum_mismatch, "SQL Anywhere system page 1 CRC-32");
+				return ValidationResult.invalidCode(.qbw, .checksum_mismatch, "SQL Anywhere system page CRC-32");
 			}
 		}
 
@@ -503,6 +539,45 @@ pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult 
 			const computed = std.hash.Crc32.hash(page_buf[0..4092]);
 			if (stored != computed) {
 				return ValidationResult.invalidCode(.qbw, .checksum_mismatch, "SQL Anywhere checkpoint page CRC-32");
+			}
+		}
+
+		// Footer structure validation on all data pages.
+		// Every page has a 16-byte cleartext footer at [4080:4096] with:
+		//   [4081]: flag byte, always 0 or 1
+		//   [4082:4084]: page type (u16 LE), valid set: {0,1,5,8,9,37,40,41,45}
+		//   [4088:4092]: reserved, always 0x00000000
+		// Page 0's footer area overlaps copyright text, so skip it.
+		const valid_page_types = [_]u16{ 0, 1, 5, 8, 9, 37, 40, 41, 45 };
+		file.seekTo(4096) catch {
+			return ValidationResult.invalidCode(.qbw, .failed_to_seek, "footer validation");
+		};
+		for (1..total_pages) |_| {
+			bytes_read = file.readAll(&page_buf) catch {
+				return ValidationResult.invalidCode(.qbw, .failed_to_read, "footer validation");
+			};
+			if (bytes_read < 4096) {
+				return ValidationResult.invalidCode(.qbw, .truncated, "footer validation");
+			}
+			// Flag byte at 4081 must be 0 or 1
+			if (page_buf[4081] > 1) {
+				return ValidationResult.invalidCode(.qbw, .invalid_value, "SQL Anywhere page footer flag byte");
+			}
+			// Page type at 4082 must be in valid set
+			const page_type = std.mem.readInt(u16, page_buf[4082..4084], .little);
+			var type_valid = false;
+			for (valid_page_types) |vt| {
+				if (page_type == vt) {
+					type_valid = true;
+					break;
+				}
+			}
+			if (!type_valid) {
+				return ValidationResult.invalidCode(.qbw, .invalid_value, "SQL Anywhere page type");
+			}
+			// Reserved field at 4088 must be zero
+			if (std.mem.readInt(u32, page_buf[4088..4092], .little) != 0) {
+				return ValidationResult.invalidCode(.qbw, .invalid_value, "SQL Anywhere page footer reserved field");
 			}
 		}
 
