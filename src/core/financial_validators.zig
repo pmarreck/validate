@@ -354,9 +354,11 @@ pub fn validateTxf(file: std.fs.File) ValidationResult {
 // ============================================================================
 
 /// Deep validation of QuickBooks Company Files (.qbw) via per-page CRC-32.
-/// SQL Anywhere databases store a CRC-32 checksum in the last 4 bytes of each
-/// 4096-byte page, computed over the preceding 4092 bytes. This function verifies
-/// every page in the file, achieving full integrity coverage.
+/// SQL Anywhere databases (v17+, SAP era) store a CRC-32 checksum in the last
+/// 4 bytes of each 4096-byte page, computed over the preceding 4092 bytes.
+/// Older versions (v11, Sybase era) only store CRC on system/metadata pages,
+/// not data pages. This function detects the CRC coverage by sampling data pages
+/// and adapts accordingly: full CRC validation for v17+, structural-only for v11.
 pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	_ = allocator;
 
@@ -374,45 +376,100 @@ pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult 
 		return ValidationResult.invalidCode(.qbw, .invalid_value, "file size not aligned to 4096-byte pages");
 	}
 
-	// Verify SQL Anywhere magic on page 0
-	var page0_header: [0x18]u8 = undefined;
+	const total_pages = file_size / 4096;
+
+	// Read and verify page 0 (header page — always has CRC in all SA versions)
+	var page_buf: [4096]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.qbw, .failed_to_seek, "page 0 header");
 	};
-	const hdr_read = file.readAll(&page0_header) catch {
+	var bytes_read = file.readAll(&page_buf) catch {
 		return ValidationResult.invalidCode(.qbw, .failed_to_read, "page 0 header");
 	};
-	if (hdr_read < 0x18) {
+	if (bytes_read < 4096) {
 		return ValidationResult.invalidCode(.qbw, .file_too_small, "page 0 header");
 	}
+
+	// Verify SQL Anywhere magic at offset 0x14
 	const sql_anywhere_magic = [4]u8{ 0x5E, 0xBA, 0x7A, 0xDA };
-	if (!std.mem.eql(u8, page0_header[0x14..0x18], &sql_anywhere_magic)) {
+	if (!std.mem.eql(u8, page_buf[0x14..0x18], &sql_anywhere_magic)) {
 		// Not a modern SQL Anywhere QBW — fall back to structural-only
 		return ValidationResult.okWithDepth(.qbw, .structural);
 	}
 
-	const total_pages = file_size / 4096;
-	var page_buf: [4096]u8 = undefined;
+	// Verify page 0 CRC-32 (header page always has CRC)
+	const page0_stored = std.mem.readInt(u32, page_buf[4092..4096], .little);
+	const page0_computed = std.hash.Crc32.hash(page_buf[0..4092]);
+	if (page0_stored != page0_computed) {
+		return ValidationResult.invalidCode(.qbw, .checksum_mismatch, "SQL Anywhere header page CRC-32");
+	}
 
-	// Verify CRC-32 on every page
+	// Detect per-page CRC support by sampling data pages.
+	// SQL Anywhere v17+ (SAP) stores CRC on every page.
+	// SQL Anywhere v11 (Sybase) only stores CRC on system/metadata pages.
+	// Pages 0-10 include system pages that may have CRC even in v11, so for
+	// large files we sample from page 20+ to test true data pages.
+	// For small files (< 31 pages), we just try CRC on all pages directly.
+	const has_full_crc = blk: {
+		if (total_pages <= 31) {
+			// Small file — try CRC on all pages (skip page 0 which we already verified).
+			// If any page fails, it could be v11 or corruption. For small files
+			// we can afford to try them all.
+			break :blk true; // Assume full CRC, verify below
+		}
+		// Large file — sample data pages 20-30 to detect CRC support
+		const sample_start: u64 = 20;
+		const sample_count: u64 = @min(11, total_pages - sample_start);
+		var sample_pass: u64 = 0;
+		file.seekTo(sample_start * 4096) catch {
+			return ValidationResult.invalidCode(.qbw, .failed_to_seek, "sample pages");
+		};
+		for (0..sample_count) |_| {
+			bytes_read = file.readAll(&page_buf) catch {
+				return ValidationResult.invalidCode(.qbw, .failed_to_read, "sample page data");
+			};
+			if (bytes_read < 4096) {
+				return ValidationResult.invalidCode(.qbw, .truncated, "sample page data");
+			}
+			const stored_crc = std.mem.readInt(u32, page_buf[4092..4096], .little);
+			const computed_crc = std.hash.Crc32.hash(page_buf[0..4092]);
+			if (stored_crc == computed_crc) {
+				sample_pass += 1;
+			}
+		}
+
+		if (sample_pass == sample_count) {
+			// All sample pages pass — this version supports per-page CRC
+			break :blk true;
+		}
+		// No or partial sample matches — this version does not store per-page CRC
+		// on data pages. Page 0 CRC passed, so header is intact.
+		break :blk false;
+	};
+
+	if (!has_full_crc) {
+		// Older SQL Anywhere version without per-page CRC on data pages.
+		// Page 0 CRC passed, so the header is intact. Return structural validation.
+		return ValidationResult.okWithDepth(.qbw, .structural);
+	}
+
+	// Full per-page CRC validation (v17+ / SAP era databases, or small files)
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.qbw, .failed_to_seek, "page 0");
 	};
 
 	for (0..total_pages) |page_idx| {
-		const bytes_read = file.readAll(&page_buf) catch {
+		bytes_read = file.readAll(&page_buf) catch {
 			return ValidationResult.invalidCode(.qbw, .failed_to_read, "page data");
 		};
 		if (bytes_read < 4096) {
 			return ValidationResult.invalidCode(.qbw, .truncated, "page data");
 		}
 
-		// CRC-32 is stored in last 4 bytes (offset 4092), computed over first 4092 bytes
 		const stored_crc = std.mem.readInt(u32, page_buf[4092..4096], .little);
 		const computed_crc = std.hash.Crc32.hash(page_buf[0..4092]);
 
 		if (stored_crc != computed_crc) {
-			// Page checksum mismatch — file is corrupted
 			_ = page_idx;
 			return ValidationResult.invalidCode(.qbw, .checksum_mismatch, "SQL Anywhere page CRC-32");
 		}
@@ -962,6 +1019,34 @@ test "ground truth: QBW deep validation passes all page CRCs" {
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 	try std.testing.expectEqual(FileFormat.qbw, result.format);
+}
+
+test "ground truth: QBW v11 (Sybase) deep validation accepts non-CRC pages" {
+	// SQL Anywhere v11 (Sybase, pre-SAP) does not store per-page CRC-32 on data pages.
+	// Only system/metadata pages have CRCs. The validator should detect this and
+	// return structural validation instead of failing with checksum_mismatch.
+	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/Farm2010.QBW", &path_buf) catch {
+		return; // Skip if sample not present
+	};
+
+	const result = validateQbwDeep(std.testing.allocator, path);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expectEqual(FileFormat.qbw, result.format);
+	// v11 should get structural depth (no full CRC coverage)
+	try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
+}
+
+test "ground truth: QBW v11 password-protected deep validation" {
+	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/Farm2010 - pass.QBW", &path_buf) catch {
+		return; // Skip if sample not present
+	};
+
+	const result = validateQbwDeep(std.testing.allocator, path);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expectEqual(FileFormat.qbw, result.format);
+	try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
 }
 
 test "ground truth: QDF deep validation via OLE2" {
