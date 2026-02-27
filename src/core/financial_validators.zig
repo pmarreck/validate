@@ -417,8 +417,53 @@ pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	// The threshold of 12 is conservative; v17 is confirmed, v11 is confirmed not.
 	// If we encounter a version between 12-16 with different behavior, we can adjust.
 	if (sa_major_version != null and sa_major_version.? < 12) {
-		// Old SA version — per-page CRC not available on data pages.
-		// Page 0 CRC passed, so header integrity is confirmed.
+		// Old SA version (v11 and below): CRC-32 exists only on system/checkpoint
+		// pages, not data pages. Data pages use the last 4 bytes for metadata
+		// (flags like 0x00010000, counters, etc.). We verify all known system pages:
+		//   - Page 0: header (already verified above)
+		//   - Page 1: second system page
+		//   - Checkpoint pages at 4064-page intervals from page 1
+		// If any of these fail CRC, it's corruption of critical database metadata.
+
+		// Verify page 1
+		if (total_pages > 1) {
+			file.seekTo(4096) catch {
+				return ValidationResult.invalidCode(.qbw, .failed_to_seek, "system page 1");
+			};
+			bytes_read = file.readAll(&page_buf) catch {
+				return ValidationResult.invalidCode(.qbw, .failed_to_read, "system page 1");
+			};
+			if (bytes_read < 4096) {
+				return ValidationResult.invalidCode(.qbw, .truncated, "system page 1");
+			}
+			const stored = std.mem.readInt(u32, page_buf[4092..4096], .little);
+			const computed = std.hash.Crc32.hash(page_buf[0..4092]);
+			if (stored != computed) {
+				return ValidationResult.invalidCode(.qbw, .checksum_mismatch, "SQL Anywhere system page 1 CRC-32");
+			}
+		}
+
+		// Verify checkpoint pages at 4064-page intervals from page 1
+		// (pages 4065, 8129, 12193, 16257, 20321, ...)
+		const checkpoint_interval: u64 = 4064;
+		var checkpoint_page: u64 = 1 + checkpoint_interval;
+		while (checkpoint_page < total_pages) : (checkpoint_page += checkpoint_interval) {
+			file.seekTo(checkpoint_page * 4096) catch {
+				return ValidationResult.invalidCode(.qbw, .failed_to_seek, "checkpoint page");
+			};
+			bytes_read = file.readAll(&page_buf) catch {
+				return ValidationResult.invalidCode(.qbw, .failed_to_read, "checkpoint page");
+			};
+			if (bytes_read < 4096) {
+				return ValidationResult.invalidCode(.qbw, .truncated, "checkpoint page");
+			}
+			const stored = std.mem.readInt(u32, page_buf[4092..4096], .little);
+			const computed = std.hash.Crc32.hash(page_buf[0..4092]);
+			if (stored != computed) {
+				return ValidationResult.invalidCode(.qbw, .checksum_mismatch, "SQL Anywhere checkpoint page CRC-32");
+			}
+		}
+
 		return ValidationResult.okWithDepth(.qbw, .structural);
 	}
 
