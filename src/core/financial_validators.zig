@@ -354,11 +354,11 @@ pub fn validateTxf(file: std.fs.File) ValidationResult {
 // ============================================================================
 
 /// Deep validation of QuickBooks Company Files (.qbw) via per-page CRC-32.
-/// SQL Anywhere databases (v17+, SAP era) store a CRC-32 checksum in the last
-/// 4 bytes of each 4096-byte page, computed over the preceding 4092 bytes.
-/// Older versions (v11, Sybase era) only store CRC on system/metadata pages,
-/// not data pages. This function detects the CRC coverage by sampling data pages
-/// and adapts accordingly: full CRC validation for v17+, structural-only for v11.
+/// SQL Anywhere databases store a CRC-32 checksum in the last 4 bytes of each
+/// 4096-byte page, computed over the preceding 4092 bytes. The SA major version
+/// is parsed from the copyright string embedded in page 0 to determine whether
+/// per-page CRC is expected: v12+ stores CRC on all pages (failures = corruption),
+/// while older versions may not — and we report structural-only for those.
 pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	_ = allocator;
 
@@ -378,7 +378,7 @@ pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 	const total_pages = file_size / 4096;
 
-	// Read and verify page 0 (header page — always has CRC in all SA versions)
+	// Read page 0 (header page)
 	var page_buf: [4096]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.qbw, .failed_to_seek, "page 0 header");
@@ -397,63 +397,32 @@ pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult 
 		return ValidationResult.okWithDepth(.qbw, .structural);
 	}
 
-	// Verify page 0 CRC-32 (header page always has CRC)
+	// Verify page 0 CRC-32 (header page always has CRC in all SA versions)
 	const page0_stored = std.mem.readInt(u32, page_buf[4092..4096], .little);
 	const page0_computed = std.hash.Crc32.hash(page_buf[0..4092]);
 	if (page0_stored != page0_computed) {
 		return ValidationResult.invalidCode(.qbw, .checksum_mismatch, "SQL Anywhere header page CRC-32");
 	}
 
-	// Detect per-page CRC support by sampling data pages.
-	// SQL Anywhere v17+ (SAP) stores CRC on every page.
-	// SQL Anywhere v11 (Sybase) only stores CRC on system/metadata pages.
-	// Pages 0-10 include system pages that may have CRC even in v11, so for
-	// large files we sample from page 20+ to test true data pages.
-	// For small files (< 31 pages), we just try CRC on all pages directly.
-	const has_full_crc = blk: {
-		if (total_pages <= 31) {
-			// Small file — try CRC on all pages (skip page 0 which we already verified).
-			// If any page fails, it could be v11 or corruption. For small files
-			// we can afford to try them all.
-			break :blk true; // Assume full CRC, verify below
-		}
-		// Large file — sample data pages 20-30 to detect CRC support
-		const sample_start: u64 = 20;
-		const sample_count: u64 = @min(11, total_pages - sample_start);
-		var sample_pass: u64 = 0;
-		file.seekTo(sample_start * 4096) catch {
-			return ValidationResult.invalidCode(.qbw, .failed_to_seek, "sample pages");
-		};
-		for (0..sample_count) |_| {
-			bytes_read = file.readAll(&page_buf) catch {
-				return ValidationResult.invalidCode(.qbw, .failed_to_read, "sample page data");
-			};
-			if (bytes_read < 4096) {
-				return ValidationResult.invalidCode(.qbw, .truncated, "sample page data");
-			}
-			const stored_crc = std.mem.readInt(u32, page_buf[4092..4096], .little);
-			const computed_crc = std.hash.Crc32.hash(page_buf[0..4092]);
-			if (stored_crc == computed_crc) {
-				sample_pass += 1;
-			}
-		}
+	// Parse SQL Anywhere major version from copyright string on page 0.
+	// Format: "Copyright (c)YYYY MM.N.P.BBBB" — we extract MM (major version).
+	// The copyright string appears at varying offsets (0x2C4 for v11, 0x349 for v17)
+	// so we scan page 0 for the pattern rather than using a fixed offset.
+	const sa_major_version = parseSaMajorVersion(&page_buf);
 
-		if (sample_pass == sample_count) {
-			// All sample pages pass — this version supports per-page CRC
-			break :blk true;
-		}
-		// No or partial sample matches — this version does not store per-page CRC
-		// on data pages. Page 0 CRC passed, so header is intact.
-		break :blk false;
-	};
-
-	if (!has_full_crc) {
-		// Older SQL Anywhere version without per-page CRC on data pages.
-		// Page 0 CRC passed, so the header is intact. Return structural validation.
+	// Version-based CRC coverage decision:
+	// - v12+ (SAP era): CRC-32 on ALL pages → any failure = corruption
+	// - v11 and below (Sybase era): CRC only on system pages → structural-only
+	// - Unknown version: attempt full CRC, failures = corruption (fail-safe)
+	// The threshold of 12 is conservative; v17 is confirmed, v11 is confirmed not.
+	// If we encounter a version between 12-16 with different behavior, we can adjust.
+	if (sa_major_version != null and sa_major_version.? < 12) {
+		// Old SA version — per-page CRC not available on data pages.
+		// Page 0 CRC passed, so header integrity is confirmed.
 		return ValidationResult.okWithDepth(.qbw, .structural);
 	}
 
-	// Full per-page CRC validation (v17+ / SAP era databases, or small files)
+	// Full per-page CRC validation (v12+, or unknown version — fail-safe)
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.qbw, .failed_to_seek, "page 0");
 	};
@@ -476,6 +445,33 @@ pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	}
 
 	return ValidationResult.okWithDepth(.qbw, .full);
+}
+
+/// Parse SQL Anywhere major version from the copyright string on page 0.
+/// Scans for "Copyright (c)" followed by a 4-digit year, space, then the
+/// version number (e.g. "11.0.1.2250" → returns 11, "17.0.4.2182" → returns 17).
+/// Returns null if the pattern is not found.
+fn parseSaMajorVersion(page0: *const [4096]u8) ?u32 {
+	const needle = "Copyright (c)";
+	// Search page 0 for the copyright string
+	const idx = std.mem.indexOf(u8, page0, needle) orelse return null;
+	// Skip "Copyright (c)" + 4-digit year + space
+	const version_start = idx + needle.len + 5; // "YYYY "
+	if (version_start >= 4096) return null;
+	// Parse major version digits until '.'
+	var major: u32 = 0;
+	var i = version_start;
+	var found_digit = false;
+	while (i < @min(version_start + 4, 4096)) : (i += 1) {
+		if (page0[i] >= '0' and page0[i] <= '9') {
+			major = major * 10 + (page0[i] - '0');
+			found_digit = true;
+		} else break;
+	}
+	if (!found_digit) return null;
+	// Verify it's followed by '.' (version separator)
+	if (i < 4096 and page0[i] == '.') return major;
+	return null;
 }
 
 /// Deep validation of QuickBooks Backup files (.qbb, .qbm) via OLE2 deep validation.
@@ -1021,10 +1017,27 @@ test "ground truth: QBW deep validation passes all page CRCs" {
 	try std.testing.expectEqual(FileFormat.qbw, result.format);
 }
 
-test "ground truth: QBW v11 (Sybase) deep validation accepts non-CRC pages" {
-	// SQL Anywhere v11 (Sybase, pre-SAP) does not store per-page CRC-32 on data pages.
-	// Only system/metadata pages have CRCs. The validator should detect this and
-	// return structural validation instead of failing with checksum_mismatch.
+test "parseSaMajorVersion extracts version from copyright string" {
+	// Simulate a page 0 with a v17 copyright string at a typical offset
+	var page: [4096]u8 = [_]u8{0} ** 4096;
+	const copyright = "SAP SE, Copyright (c)2015 17.0.4.2182";
+	@memcpy(page[0x349..][0..copyright.len], copyright);
+	try std.testing.expectEqual(@as(?u32, 17), parseSaMajorVersion(&page));
+
+	// Simulate v11
+	var page2: [4096]u8 = [_]u8{0} ** 4096;
+	const copyright2 = "Sybase Inc., Copyright (c)2000 11.0.1.2250";
+	@memcpy(page2[0x2C4..][0..copyright2.len], copyright2);
+	try std.testing.expectEqual(@as(?u32, 11), parseSaMajorVersion(&page2));
+
+	// No copyright string → null
+	var page3: [4096]u8 = [_]u8{0} ** 4096;
+	try std.testing.expectEqual(@as(?u32, null), parseSaMajorVersion(&page3));
+}
+
+test "ground truth: QBW v11 (Sybase) deep validation returns structural" {
+	// SQL Anywhere v11 is detected via copyright string parsing.
+	// v11 does not have per-page CRC on data pages, so we honestly report structural.
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/Farm2010.QBW", &path_buf) catch {
 		return; // Skip if sample not present
