@@ -132,3 +132,6 @@ qdf	mixed	OLE2/ZIP container variants lack full payload integrity coverage
 ofx	opaque	Text-based financial exchange format with no integrity checksums
 qif	opaque	Plain text interchange format with no integrity mechanism
 txf	opaque	Plain text tax exchange format with no integrity mechanism
+nacha	transparent	Entry hash, batch/file counts, debit/credit totals provide full integrity coverage
+mt940	transparent	Balance arithmetic (opening + transactions = closing) provides full integrity verification
+bai2	transparent	Cascading control totals at account/group/file levels provide full integrity coverage

@@ -534,6 +534,9 @@ pub const FileFormat = enum {
     ofx, // Open Financial Exchange (SGML/XML)
     qif, // Quicken Interchange Format (text)
     txf, // Tax Exchange Format (text)
+    nacha, // NACHA/ACH Electronic Payments (fixed 94-char ASCII records)
+    mt940, // SWIFT MT940 Bank Statement (tagged text fields)
+    bai2, // BAI2 Cash Management Balance Reporting (comma-separated, hierarchical)
     // Bundle formats (directories validated as a unit)
     git_repository, // Git repository (.git directory)
     macos_app, // macOS application bundle (.app)
@@ -609,7 +612,7 @@ pub const FileFormat = enum {
             .wasm => true, // WebAssembly module
             .ar => true, // Unix ar archive
             .html => true, // HTML document
-            .qbw, .qbb, .qdf, .ofx, .qif, .txf => true, // Financial data formats
+            .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2 => true, // Financial data formats
             .git_repository => true, // Git repository validation
             .macos_app => true, // macOS application bundle validation
             .macos_framework => true, // macOS framework validation
@@ -2184,6 +2187,9 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "ofx") or std.mem.eql(u8, ext_lower, "qfx")) return .ofx;
     if (std.mem.eql(u8, ext_lower, "qif")) return .qif;
     if (std.mem.eql(u8, ext_lower, "txf")) return .txf;
+    if (std.mem.eql(u8, ext_lower, "ach") or std.mem.eql(u8, ext_lower, "nacha")) return .nacha;
+    if (std.mem.eql(u8, ext_lower, "mt940") or std.mem.eql(u8, ext_lower, "sta") or std.mem.eql(u8, ext_lower, "940")) return .mt940;
+    if (std.mem.eql(u8, ext_lower, "bai") or std.mem.eql(u8, ext_lower, "bai2")) return .bai2;
 
     // Adobe Illustrator - extension needed to distinguish from PDF/EPS
     // AI files are PDF or PostScript internally, but should be treated as AI
@@ -2624,6 +2630,9 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "ofx") or std.mem.eql(u8, ext_lower, "qfx")) return .ofx;
     if (std.mem.eql(u8, ext_lower, "qif")) return .qif;
     if (std.mem.eql(u8, ext_lower, "txf")) return .txf;
+    if (std.mem.eql(u8, ext_lower, "ach") or std.mem.eql(u8, ext_lower, "nacha")) return .nacha;
+    if (std.mem.eql(u8, ext_lower, "mt940") or std.mem.eql(u8, ext_lower, "sta") or std.mem.eql(u8, ext_lower, "940")) return .mt940;
+    if (std.mem.eql(u8, ext_lower, "bai") or std.mem.eql(u8, ext_lower, "bai2")) return .bai2;
 
     // GIS
     if (std.mem.eql(u8, ext_lower, "kml")) return .kml;
@@ -4415,7 +4424,7 @@ pub const FormatValidator = struct {
                     .br, .hqx, .cpt, .dv, .tga, .html, .dmg, .iso,
                     .bwproject, .ptx, .band, .reason, .cpr, .logicx, .song, .sketch, .drp,
                     .snes, .gb, .gba, .nds, .genesis, .cwk, .mwd,
-                    .qbw, .qbb, .qdf, .ofx, .qif, .txf,
+                    .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2,
                     => true,
                     else => false,
                 };
@@ -4454,6 +4463,9 @@ pub const FormatValidator = struct {
                         .ofx => financial_validators.validateOfx(reopen_ext),
                         .qif => financial_validators.validateQif(reopen_ext),
                         .txf => financial_validators.validateTxf(reopen_ext),
+                        .nacha => financial_validators.validateNacha(reopen_ext),
+                        .mt940 => financial_validators.validateMt940(reopen_ext),
+                        .bai2 => financial_validators.validateBai2(reopen_ext),
                         else => ValidationResult.ok(ext_format),
                     };
                 } else {
@@ -4973,6 +4985,9 @@ pub const FormatValidator = struct {
             .qbw => financial_validators.validateQbwDeep(allocator, path),
             .qbb => financial_validators.validateQbbDeep(allocator, path),
             .qdf => financial_validators.validateQdfDeep(allocator, path),
+            .nacha => financial_validators.validateNachaDeep(allocator, path),
+            .mt940 => financial_validators.validateMt940Deep(allocator, path),
+            .bai2 => financial_validators.validateBai2Deep(allocator, path),
             .parquet => scientific_validators.validateParquetDeep(allocator, path),
             .git_repository => validateGitRepositoryDeep(allocator, path),
             .macos_app => validateMacosAppDeep(allocator, path),
@@ -5436,6 +5451,9 @@ pub const FormatValidator = struct {
             .ofx => financial_validators.validateOfx(file),
             .qif => financial_validators.validateQif(file),
             .txf => financial_validators.validateTxf(file),
+            .nacha => financial_validators.validateNacha(file),
+            .mt940 => financial_validators.validateMt940(file),
+            .bai2 => financial_validators.validateBai2(file),
             // Bundle formats (directories) - should be handled before reaching this switch
             // If we get here, it means something went wrong - return invalid to make it obvious
             .git_repository => ValidationResult.invalid(.git_repository, "Git repositories must be validated as directories, not files"),

@@ -92,6 +92,9 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .ofx = "Open Financial Exchange",
     .qif = "Quicken Interchange Format",
     .txf = "Tax Exchange Format",
+    .nacha = "NACHA/ACH Electronic Payments",
+    .mt940 = "SWIFT MT940 Bank Statement",
+    .bai2 = "BAI2 Balance Report",
 });
 
 pub const error_translations = i18n.ErrorMap.initComptime(.{});

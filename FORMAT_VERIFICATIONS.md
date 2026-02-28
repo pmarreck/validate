@@ -416,6 +416,20 @@ For clarity, the tables below use more specific labels:
 | **APM** | Apple Partition Map | DDM + PM signatures | Partition enumeration | Structure | — |
 | **HFS+** | Apple filesystem | Volume header, fork data | Journaling detection | Structure | — |
 
+## Financial Data Formats
+
+| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
+|--------|------------|------------------|-----------------|-----------|-----|
+| **QuickBooks Company** | .qbw | SQL Anywhere magic (5E BA 7A DA @ 0x14), MAUI legacy, page alignment | CRC-32 per 4096-byte page (v12+); structural only for v11 | Checksum | 4 |
+| **QuickBooks Backup** | .qbb, .qbm | OLE2 compound file detection | OLE2 FAT/DIFAT/directory validation | Structure | — |
+| **Quicken Data File** | .qdf | OLE2, ZIP, or legacy (AC 9E BD 8F) detection | OLE2 FAT or ZIP CRC-32 per entry (variant-dependent) | Checksum | 1 |
+| **Open Financial Exchange** | .ofx, .qfx | SGML (OFXHEADER:) or XML (<?xml + <OFX>) | — | Structure | — |
+| **Quicken Interchange** | .qif | !Type:, !Account, or !Option header | — | Structure | — |
+| **Tax Exchange Format** | .txf | V### version line + application line | — | Structure | — |
+| **NACHA/ACH** | .ach, .nacha | 94-char fixed records, type 1 header, priority code 01 | Entry hash (sum routing mod 10^10), batch/file counts, debit/credit totals, block count | Integrity | 1 |
+| **SWIFT MT940** | .mt940, .sta, .940 | SWIFT envelope ({1:F01) or bare :20: tag | Balance arithmetic (opening + transactions = closing), currency consistency | Integrity | 1 |
+| **BAI2** | .bai, .bai2 | 01, file header, version=2, / terminator | Cascading control totals: account (49) → group (98) → file (99), record counts at all levels | Integrity | 1 |
+
 ## Encrypted Files
 
 | Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
@@ -520,6 +534,10 @@ Formats with built-in integrity verification:
 | AC-3 | CRC16 | Frame header | Pure Zig |
 | WavPack | MD5 | Optional | — |
 | TTA | CRC32 | Header | Pure Zig |
+| QBW | CRC32/page | 100% (v12+) | Pure Zig |
+| NACHA | Entry hash + totals | 100% | Pure Zig |
+| MT940 | Balance arithmetic | 100% | Pure Zig |
+| BAI2 | Cascading control totals | 100% | Pure Zig |
 
 ---
 
@@ -535,4 +553,4 @@ Formats with built-in integrity verification:
 
 ---
 
-*Last updated: 2026-02-24*
+*Last updated: 2026-02-28*

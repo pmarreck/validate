@@ -13,6 +13,14 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Implement TXF (Tax Exchange Format) validator — text-based V### version + A application line (2026-02-25 EST)
 - [x] Add ground-truth samples for QBW, QDF, OFX, QIF, TXF (2026-02-25 EST)
 - [x] Wire up format detection, extension mapping, OLE2/ZIP override dispatch, FFI category, i18n (all 30 locales) (2026-02-25 EST)
+- [x] Deep validation: QBW CRC-32 per-page verification (3690/3690 pages), QBB/QDF via OLE2/ZIP deep (2026-02-26 EST)
+- [x] Fix OLE2 v4 sector offset bug: hardcoded 512-byte header → header.sector_size (fixes ALL OLE2 v4 files, not just QDF) (2026-02-26 EST)
+- [ ] Find QBB ground-truth sample (QuickBooks Backup)
+- [x] Implement NACHA/ACH validator — fixed 94-char records, entry hash, batch/file counts, debit/credit totals (2026-02-28 EST)
+- [x] Implement MT940 SWIFT validator — tagged fields, SWIFT envelope, balance arithmetic verification (2026-02-28 EST)
+- [x] Implement BAI2 validator — cascading control totals at account/group/file levels (2026-02-28 EST)
+- [x] Add ground-truth samples + tests for NACHA, MT940, BAI2 (2026-02-28 EST)
+- [x] Wire up detection, dispatch, FFI category, i18n (all 30 locales), corruption_opacity (2026-02-28 EST)
 
 ### Depth Honesty Audit
 - [x] Fix ~50 validators dishonestly claiming `.full` depth when they only do header/structural checks or parse opaque text with no integrity mechanism (2026-02-23 EST)
@@ -46,7 +54,7 @@ These formats return WARN — recognized but NO real corruption detection:
 - [x] Fix zigimg PackBits decoder crash on corrupted TIFF data (output buffer overflow → bounds check) (2026-02-25 EST)
 - [x] Classify 19 new formats in corruption_opacity.tsv (mixed/opaque as appropriate) (2026-02-25 EST)
 - [x] Fix strict harness: -maxdepth 1 for file discovery, explicit plain_text variant paths (2026-02-25 EST)
-- **Result: 186/187 formats passing (60 pass + 26 opaque + 96 mixed + 4 non-file), 0 corrupt_fail, 0 valid_fail**
+- **Result: 193 formats, 61 pass + 29 opaque + 97 mixed + 4 non-file, 0 corrupt_fail, 0 valid_fail, 2 missing (qbb, song)**
 - [ ] `song` (Studio One) — needs Peter to provide sample
 - [ ] Investigate 3 remaining abort traps in corruption tests (likely zigimg LZW/other decoder bounds issues)
 
