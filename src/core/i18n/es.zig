@@ -284,6 +284,10 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macos_app = "Paquete de aplicaci\xc3\xb3n macOS",
     .macos_framework = "Framework de macOS",
     .macos_bundle = "Bundle de macOS",
+    .icns = "macOS Icon",
+    .msgpack = "MessagePack Data",
+    .llvm_pch = "LLVM Precompiled Header",
+    .llvm_diag = "LLVM Serialized Diagnostics",
 });
 
 // Traducciones de mensajes de error al espa\xc3\xb1ol.

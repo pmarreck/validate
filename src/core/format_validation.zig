@@ -510,8 +510,10 @@ pub const FileFormat = enum {
     beam, // Erlang/Elixir BEAM bytecode
     // Icon formats
     ico, // Windows ICO icon
+    icns, // macOS ICNS icon (type/length chunk container)
     // Data formats
     csv, // Comma-Separated Values
+    msgpack, // MessagePack binary serialization
     // Apple formats
     plist, // Apple Property List (XML or binary)
     ds_store, // macOS .DS_Store (Desktop Services Store)
@@ -523,6 +525,9 @@ pub const FileFormat = enum {
     macho_fat, // Mach-O Universal/Fat binary (multi-architecture)
     coff, // COFF object file (Windows .obj)
     wasm, // WebAssembly binary module (.wasm)
+    // Compiler artifact formats
+    llvm_pch, // LLVM precompiled header (.pcm, magic "CPCH")
+    llvm_diag, // LLVM serialized diagnostics (.dia, magic "DIAG")
     // Archive formats (non-compressed)
     ar, // Unix ar archive (.a static libraries, .deb packages)
     // Web markup
@@ -600,7 +605,9 @@ pub const FileFormat = enum {
             .par2 => true, // PAR2 parity archive CRC validation
             .beam => true, // Erlang/Elixir BEAM bytecode (IFF structure validation)
             .ico => true, // Windows ICO icon format
+            .icns => true, // macOS ICNS icon format
             .csv => true, // CSV structural validation
+            .msgpack => true, // MessagePack binary serialization
             .plist => true, // Apple Property List (XML or binary)
             .ds_store => true, // macOS DS_Store (structural only)
             .spotlight => true, // macOS Spotlight index (structural only)
@@ -610,6 +617,8 @@ pub const FileFormat = enum {
             .macho_fat => true, // Mach-O universal binary
             .coff => true, // COFF object file
             .wasm => true, // WebAssembly module
+            .llvm_pch => true, // LLVM precompiled header
+            .llvm_diag => true, // LLVM serialized diagnostics
             .ar => true, // Unix ar archive
             .html => true, // HTML document
             .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2 => true, // Financial data formats
@@ -1346,6 +1355,12 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "FOR1", .offset = 0, .format = .beam },
     // Windows ICO: 00 00 01 00 (reserved, type=1 for icon)
     .{ .bytes = &[_]u8{ 0x00, 0x00, 0x01, 0x00 }, .offset = 0, .format = .ico },
+    // macOS ICNS icon: "icns"
+    .{ .bytes = "icns", .offset = 0, .format = .icns },
+    // LLVM precompiled header: "CPCH"
+    .{ .bytes = "CPCH", .offset = 0, .format = .llvm_pch },
+    // LLVM serialized diagnostics: "DIAG"
+    .{ .bytes = "DIAG", .offset = 0, .format = .llvm_diag },
     // Binary plist: "bplist00" (version 00)
     .{ .bytes = "bplist00", .offset = 0, .format = .plist },
     // macOS .DS_Store: 0x00000001 + "Bud1"
@@ -2247,6 +2262,15 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     // Erlang/Elixir BEAM bytecode (extension-based fallback)
     if (std.mem.eql(u8, ext_lower, "beam")) return .beam;
 
+    // macOS ICNS icon
+    if (std.mem.eql(u8, ext_lower, "icns")) return .icns;
+
+    // LLVM compiler artifacts
+    if (std.mem.eql(u8, ext_lower, "dia")) return .llvm_diag;
+
+    // MessagePack binary serialization
+    if (std.mem.eql(u8, ext_lower, "msgpack")) return .msgpack;
+
     // Windows-specific non-validatable formats
     // .url = Windows URL shortcut (INI-like syntax but not an INI config file)
     // .etl = Event Trace Log (binary, can have ICO-like magic bytes)
@@ -2461,6 +2485,8 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "pbm") or std.mem.eql(u8, ext_lower, "pgm") or std.mem.eql(u8, ext_lower, "ppm") or std.mem.eql(u8, ext_lower, "pam") or std.mem.eql(u8, ext_lower, "pnm")) return .pam;
     if (std.mem.eql(u8, ext_lower, "dpx")) return .dpx;
     if (std.mem.eql(u8, ext_lower, "tga") or std.mem.eql(u8, ext_lower, "targa")) return .tga;
+    if (std.mem.eql(u8, ext_lower, "ico")) return .ico;
+    if (std.mem.eql(u8, ext_lower, "icns")) return .icns;
     if (std.mem.eql(u8, ext_lower, "psd") or std.mem.eql(u8, ext_lower, "psb")) return .psd;
     if (std.mem.eql(u8, ext_lower, "ai")) return .ai;
     if (std.mem.eql(u8, ext_lower, "eps") or std.mem.eql(u8, ext_lower, "epsf")) return .eps;
@@ -2610,6 +2636,12 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
 
     // DS_Store (macOS)
     if (std.mem.eql(u8, ext_lower, "ds_store")) return .ds_store;
+
+    // LLVM compiler artifacts
+    if (std.mem.eql(u8, ext_lower, "dia")) return .llvm_diag;
+
+    // Binary serialization
+    if (std.mem.eql(u8, ext_lower, "msgpack")) return .msgpack;
 
     // DAW formats
     if (std.mem.eql(u8, ext_lower, "als")) return .als;
@@ -5413,8 +5445,10 @@ pub const FormatValidator = struct {
             .beam => validateBeam(file),
             // Icon formats
             .ico => image_validators.validateIco(file),
+            .icns => image_validators.validateIcns(file),
             // Data formats
             .csv => text_format_validators.validateCsv(file),
+            .msgpack => text_format_validators.validateMsgpack(file),
             // Apple formats
             .plist => apple_validators.validatePlist(file),
             .ds_store => apple_validators.validateDsStore(file),
@@ -5440,6 +5474,9 @@ pub const FormatValidator = struct {
             .macho_fat => executable_validators.validateMachoFat(file),
             .coff => executable_validators.validateCoff(file),
             .wasm => executable_validators.validateWasm(file),
+            // Compiler artifacts
+            .llvm_pch => executable_validators.validateLlvmPch(file),
+            .llvm_diag => executable_validators.validateLlvmDiag(file),
             // Archives
             .ar => executable_validators.validateAr(file),
             // Web markup

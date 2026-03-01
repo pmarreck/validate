@@ -129,7 +129,7 @@ const KvBuilder = struct {
 fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
     return switch (format) {
         // Images
-        .png, .jpeg, .jxl, .gif, .bmp, .webp, .tiff, .heic, .avif, .exr, .svg, .psd, .ai, .eps, .sketch, .aep, .dng, .cr2, .nef, .arw, .jpeg2000, .jbig2, .ico, .qoi, .pam, .dpx, .tga => "image",
+        .png, .jpeg, .jxl, .gif, .bmp, .webp, .tiff, .heic, .avif, .exr, .svg, .psd, .ai, .eps, .sketch, .aep, .dng, .cr2, .nef, .arw, .jpeg2000, .jbig2, .ico, .icns, .qoi, .pam, .dpx, .tga => "image",
 
         // Video
         .mp4, .mov, .mkv, .webm, .avi, .swf, .flv, .prores, .av1, .ogv, .mpeg_ps, .mpeg_ts, .mpeg_es, .ivf, .asf, .dv => "video",
@@ -150,7 +150,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .epub => "ebook",
 
         // Code/Data
-        .json, .toml, .ini, .xml, .yaml, .erlang_term, .eex, .csv, .sqlite, .plist => "data",
+        .json, .toml, .ini, .xml, .yaml, .erlang_term, .eex, .csv, .msgpack, .sqlite, .plist => "data",
 
         // Fonts
         .ttf, .otf, .woff, .woff2, .type1 => "font",
@@ -159,7 +159,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .git_repository, .macos_app, .macos_framework, .macos_bundle => "bundle",
 
         // Executables
-        .pe, .elf, .macho, .macho_fat, .coff, .wasm => "executable",
+        .pe, .elf, .macho, .macho_fat, .coff, .wasm, .llvm_pch, .llvm_diag => "executable",
 
         // Web markup
         .html => "document",

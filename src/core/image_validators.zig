@@ -3092,6 +3092,50 @@ pub fn validateIcoDeep(allocator: Allocator, path: []const u8) ValidationResult 
     return ValidationResult.okWithDepth(.ico, .structural);
 }
 
+// ============ ICNS Validator ============
+
+/// Validate macOS ICNS icon file: 8-byte header (magic "icns" + BE u32 total size),
+/// then a sequence of type/length/data entries. Walks all entries verifying bounds.
+pub fn validateIcns(file: std.fs.File) ValidationResult {
+    const stat = file.stat() catch return ValidationResult.invalidCode(.icns, .failed_to_stat, "file");
+    if (stat.size < 8) return ValidationResult.invalidCode(.icns, .file_too_small, "ICNS header (need 8 bytes)");
+
+    file.seekTo(0) catch return ValidationResult.invalidCode(.icns, .failed_to_seek, "in ICNS file");
+    var header: [8]u8 = undefined;
+    const hdr_read = file.readAll(&header) catch return ValidationResult.invalidCode(.icns, .failed_to_read, "ICNS header");
+    if (hdr_read < 8) return ValidationResult.invalidCode(.icns, .truncated, "ICNS header");
+
+    if (!std.mem.eql(u8, header[0..4], "icns"))
+        return ValidationResult.invalidCode(.icns, .invalid_magic, "ICNS");
+
+    const total_size = std.mem.readInt(u32, header[4..8], .big);
+    if (total_size < 8) return ValidationResult.invalidCode(.icns, .invalid_value, "ICNS total size < 8");
+    if (@as(u64, total_size) > stat.size)
+        return ValidationResult.invalidCode(.icns, .exceeds_bounds, "ICNS total size exceeds file");
+
+    // Walk entries
+    var offset: u64 = 8;
+    var entry_count: u32 = 0;
+    while (offset + 8 <= total_size) {
+        file.seekTo(offset) catch return ValidationResult.invalidCode(.icns, .failed_to_seek, "to ICNS entry");
+        var entry_hdr: [8]u8 = undefined;
+        const e_read = file.readAll(&entry_hdr) catch return ValidationResult.invalidCode(.icns, .failed_to_read, "ICNS entry header");
+        if (e_read < 8) return ValidationResult.invalidCode(.icns, .truncated, "ICNS entry header");
+
+        const entry_size = std.mem.readInt(u32, entry_hdr[4..8], .big);
+        if (entry_size < 8) return ValidationResult.invalidCode(.icns, .invalid_value, "ICNS entry size < 8");
+        if (offset + entry_size > total_size)
+            return ValidationResult.invalidCode(.icns, .exceeds_bounds, "ICNS entry exceeds container");
+
+        entry_count += 1;
+        offset += entry_size;
+    }
+
+    if (entry_count == 0) return ValidationResult.invalid(.icns, "ICNS file has no icon entries");
+
+    return ValidationResult.structuralOnly(.icns);
+}
+
 // ============ QOI Validator ============
 
 /// Validate QOI (Quite OK Image) file structure.

@@ -95,6 +95,10 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .nacha = "NACHA/ACH Electronic Payments",
     .mt940 = "SWIFT MT940 Bank Statement",
     .bai2 = "BAI2 Balance Report",
+    .icns = "macOS Icon",
+    .msgpack = "MessagePack Data",
+    .llvm_pch = "LLVM Precompiled Header",
+    .llvm_diag = "LLVM Serialized Diagnostics",
 });
 
 pub const error_translations = i18n.ErrorMap.initComptime(.{});

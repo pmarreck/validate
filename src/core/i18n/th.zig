@@ -258,6 +258,10 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macos_app = "ชุดแอปพลิเคชัน macOS",
     .macos_framework = "กรอบงาน macOS",
     .macos_bundle = "ชุด macOS",
+    .icns = "macOS Icon",
+    .msgpack = "MessagePack Data",
+    .llvm_pch = "LLVM Precompiled Header",
+    .llvm_diag = "LLVM Serialized Diagnostics",
 });
 
 // Thai CLI argument aliases (currently canonical English forms).

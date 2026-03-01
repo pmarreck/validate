@@ -286,6 +286,10 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macos_app = "macOS-Programmpaket",
     .macos_framework = "macOS-Framework",
     .macos_bundle = "macOS-Bundle",
+    .icns = "macOS Icon",
+    .msgpack = "MessagePack Data",
+    .llvm_pch = "LLVM Precompiled Header",
+    .llvm_diag = "LLVM Serialized Diagnostics",
 });
 
 // German error message translations.

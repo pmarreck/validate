@@ -1197,6 +1197,212 @@ pub fn detectCsvDelimiter(data: []const u8) u8 {
     return delimiter;
 }
 
+// ============ MessagePack Validator ============
+
+/// Validate MessagePack binary serialization structure by walking the top-level
+/// element tree. No magic bytes — relies on extension-based detection (.msgpack).
+/// Iteratively walks the type/length/data structure verifying all elements fit
+/// within the file and format bytes are valid.
+pub fn validateMsgpack(file: std.fs.File) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.msgpack, .failed_to_get, "file size");
+    if (file_size == 0) return ValidationResult.invalidCode(.msgpack, .empty, "MessagePack file");
+
+    file.seekTo(0) catch return ValidationResult.invalidCode(.msgpack, .failed_to_seek, "in MessagePack file");
+
+    // Read up to 64KB for structural validation
+    const read_size: usize = @min(file_size, 65536);
+    var buf: [65536]u8 = undefined;
+    const bytes_read = file.readAll(buf[0..read_size]) catch
+        return ValidationResult.invalidCode(.msgpack, .failed_to_read, "MessagePack data");
+    if (bytes_read == 0) return ValidationResult.invalidCode(.msgpack, .empty, "MessagePack file");
+
+    const data = buf[0..bytes_read];
+
+    // Walk the structure iteratively using a stack of remaining element counts
+    var stack: [128]u32 = undefined; // nesting depth limit
+    var depth: usize = 0;
+    var pos: usize = 0;
+    var elements_validated: u32 = 0;
+
+    stack[0] = 1; // expect exactly 1 top-level element
+    depth = 1;
+
+    while (depth > 0) {
+        if (stack[depth - 1] == 0) {
+            depth -= 1;
+            continue;
+        }
+        stack[depth - 1] -= 1;
+
+        if (pos >= data.len) {
+            // Ran out of data — only fail if we read the entire file
+            if (bytes_read < file_size) return ValidationResult.structuralOnly(.msgpack);
+            return ValidationResult.invalidCode(.msgpack, .truncated, "MessagePack element");
+        }
+
+        const fmt_byte = data[pos];
+        pos += 1;
+        elements_validated += 1;
+
+        // Prevent excessive processing
+        if (elements_validated > 10000) return ValidationResult.structuralOnly(.msgpack);
+
+        if (fmt_byte <= 0x7f) {
+            // positive fixint — no additional data
+        } else if (fmt_byte >= 0xe0) {
+            // negative fixint — no additional data
+        } else if ((fmt_byte & 0xf0) == 0x80) {
+            // fixmap: N key-value pairs
+            const n: u32 = @as(u32, fmt_byte & 0x0f) * 2;
+            if (depth >= stack.len) return ValidationResult.invalidCode(.msgpack, .too_many, "nesting levels");
+            stack[depth] = n;
+            depth += 1;
+        } else if ((fmt_byte & 0xf0) == 0x90) {
+            // fixarray: N elements
+            const n: u32 = fmt_byte & 0x0f;
+            if (depth >= stack.len) return ValidationResult.invalidCode(.msgpack, .too_many, "nesting levels");
+            stack[depth] = n;
+            depth += 1;
+        } else if ((fmt_byte & 0xe0) == 0xa0) {
+            // fixstr: length in lower 5 bits
+            const len: usize = fmt_byte & 0x1f;
+            if (pos + len > data.len) {
+                if (bytes_read < file_size) return ValidationResult.structuralOnly(.msgpack);
+                return ValidationResult.invalidCode(.msgpack, .truncated, "MessagePack fixstr");
+            }
+            pos += len;
+        } else switch (fmt_byte) {
+            0xc0 => {}, // nil
+            0xc1 => return ValidationResult.invalidCode(.msgpack, .invalid_value, "MessagePack reserved byte 0xc1"),
+            0xc2, 0xc3 => {}, // false, true
+            0xc4 => { // bin 8
+                if (pos >= data.len) return msgpackTruncated(bytes_read, file_size);
+                const len: usize = data[pos];
+                pos += 1;
+                if (pos + len > data.len) return msgpackTruncated(bytes_read, file_size);
+                pos += len;
+            },
+            0xc5 => { // bin 16
+                if (pos + 2 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const len: usize = std.mem.readInt(u16, data[pos..][0..2], .big);
+                pos += 2;
+                if (pos + len > data.len) return msgpackTruncated(bytes_read, file_size);
+                pos += len;
+            },
+            0xc6 => { // bin 32
+                if (pos + 4 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const len: usize = std.mem.readInt(u32, data[pos..][0..4], .big);
+                pos += 4;
+                if (pos + len > data.len) return msgpackTruncated(bytes_read, file_size);
+                pos += len;
+            },
+            0xc7 => { // ext 8
+                if (pos + 2 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const len: usize = data[pos];
+                pos += 2; // length + type byte
+                if (pos + len > data.len) return msgpackTruncated(bytes_read, file_size);
+                pos += len;
+            },
+            0xc8 => { // ext 16
+                if (pos + 3 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const len: usize = std.mem.readInt(u16, data[pos..][0..2], .big);
+                pos += 3;
+                if (pos + len > data.len) return msgpackTruncated(bytes_read, file_size);
+                pos += len;
+            },
+            0xc9 => { // ext 32
+                if (pos + 5 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const len: usize = std.mem.readInt(u32, data[pos..][0..4], .big);
+                pos += 5;
+                if (pos + len > data.len) return msgpackTruncated(bytes_read, file_size);
+                pos += len;
+            },
+            0xca => pos += 4, // float 32
+            0xcb => pos += 8, // float 64
+            0xcc => pos += 1, // uint 8
+            0xcd => pos += 2, // uint 16
+            0xce => pos += 4, // uint 32
+            0xcf => pos += 8, // uint 64
+            0xd0 => pos += 1, // int 8
+            0xd1 => pos += 2, // int 16
+            0xd2 => pos += 4, // int 32
+            0xd3 => pos += 8, // int 64
+            0xd4 => pos += 2, // fixext 1 (type + 1 byte)
+            0xd5 => pos += 3, // fixext 2
+            0xd6 => pos += 5, // fixext 4
+            0xd7 => pos += 9, // fixext 8
+            0xd8 => pos += 17, // fixext 16
+            0xd9 => { // str 8
+                if (pos >= data.len) return msgpackTruncated(bytes_read, file_size);
+                const len: usize = data[pos];
+                pos += 1;
+                if (pos + len > data.len) return msgpackTruncated(bytes_read, file_size);
+                pos += len;
+            },
+            0xda => { // str 16
+                if (pos + 2 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const len: usize = std.mem.readInt(u16, data[pos..][0..2], .big);
+                pos += 2;
+                if (pos + len > data.len) return msgpackTruncated(bytes_read, file_size);
+                pos += len;
+            },
+            0xdb => { // str 32
+                if (pos + 4 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const len: usize = std.mem.readInt(u32, data[pos..][0..4], .big);
+                pos += 4;
+                if (pos + len > data.len) return msgpackTruncated(bytes_read, file_size);
+                pos += len;
+            },
+            0xdc => { // array 16
+                if (pos + 2 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const n: u32 = std.mem.readInt(u16, data[pos..][0..2], .big);
+                pos += 2;
+                if (depth >= stack.len) return ValidationResult.invalidCode(.msgpack, .too_many, "nesting levels");
+                stack[depth] = n;
+                depth += 1;
+            },
+            0xdd => { // array 32
+                if (pos + 4 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const n: u32 = std.mem.readInt(u32, data[pos..][0..4], .big);
+                pos += 4;
+                if (depth >= stack.len) return ValidationResult.invalidCode(.msgpack, .too_many, "nesting levels");
+                stack[depth] = n;
+                depth += 1;
+            },
+            0xde => { // map 16
+                if (pos + 2 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const n: u32 = @as(u32, std.mem.readInt(u16, data[pos..][0..2], .big)) * 2;
+                pos += 2;
+                if (depth >= stack.len) return ValidationResult.invalidCode(.msgpack, .too_many, "nesting levels");
+                stack[depth] = n;
+                depth += 1;
+            },
+            0xdf => { // map 32
+                if (pos + 4 > data.len) return msgpackTruncated(bytes_read, file_size);
+                const n: u32 = std.mem.readInt(u32, data[pos..][0..4], .big) *| 2;
+                pos += 4;
+                if (depth >= stack.len) return ValidationResult.invalidCode(.msgpack, .too_many, "nesting levels");
+                stack[depth] = n;
+                depth += 1;
+            },
+            else => return ValidationResult.invalidCode(.msgpack, .invalid_value, "MessagePack format byte"),
+        }
+
+        // Bounds check for fixed-size skips
+        if (pos > data.len) {
+            if (bytes_read < file_size) return ValidationResult.structuralOnly(.msgpack);
+            return ValidationResult.invalidCode(.msgpack, .truncated, "MessagePack data");
+        }
+    }
+
+    return ValidationResult.structuralOnly(.msgpack);
+}
+
+fn msgpackTruncated(bytes_read: usize, file_size: u64) ValidationResult {
+    if (bytes_read < file_size) return ValidationResult.structuralOnly(.msgpack);
+    return ValidationResult.invalidCode(.msgpack, .truncated, "MessagePack data");
+}
+
 // ============ RTF Validator ============
 
 /// Validate RTF document structure.

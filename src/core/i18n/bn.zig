@@ -258,6 +258,10 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macos_app = "macOS অ্যাপ্লিকেশন বান্ডেল",
     .macos_framework = "macOS ফ্রেমওয়ার্ক",
     .macos_bundle = "macOS বান্ডেল",
+    .icns = "macOS Icon",
+    .msgpack = "MessagePack Data",
+    .llvm_pch = "LLVM Precompiled Header",
+    .llvm_diag = "LLVM Serialized Diagnostics",
 });
 
 // Bengali CLI argument aliases (currently canonical English forms).
