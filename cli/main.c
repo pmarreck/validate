@@ -908,6 +908,7 @@ static int g_simple_progress = 0;
 /* Forward declarations for progress system */
 static void progress_update_simple(size_t file_size);
 static void progress_render_new(void);
+static void progress_render_force(int force);
 
 /* Begin callback - called when validation of a file starts */
 static void on_validation_begin(
@@ -940,25 +941,14 @@ static void on_validation_result(
 	/* Get elapsed time in nanoseconds */
 	int64_t elapsed_ns = kv_get_i64(result, "elapsed_ns_u64");
 
-	/* Update progress counters (atomic, no lock needed) */
+	/* Look up file size for progress tracking (read-only on file list, no lock needed) */
 	size_t file_size = 0;
 	if (g_file_list_ptr) {
-		/* Find the file size for this file_id */
-		int found = 0;
 		for (size_t i = 0; i < g_file_list_ptr->count; i++) {
 			if (g_file_list_ptr->ids[i] == file_id) {
 				file_size = g_file_list_ptr->sizes[i];
-				found = 1;
 				break;
 			}
-		}
-		/* Debug: check if file_id was found */
-		if (!found && validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG)) {
-			fprintf(stderr, "[DEBUG] WARNING: file_id=%u not found in list!\n", file_id);
-		}
-		/* Update progress if TUI enabled */
-		if (g_tui_enabled) {
-			progress_update_simple(file_size);
 		}
 	}
 
@@ -966,10 +956,15 @@ static void on_validation_result(
 	int is_unknown = kv_get_bool(result, "unknown");
 	int is_valid = kv_get_bool(result, "valid");
 
-	/* Lock for output + render sequence to prevent race conditions.
-	 * This ensures output goes to the scrolling region BEFORE we render
-	 * the progress bar in the fixed bottom area. */
+	/* Lock for output + progress update + render to prevent race conditions.
+	 * The progress update (counter increment + state mutation) MUST be inside
+	 * the lock because progrez state has no internal synchronization. */
 	output_lock();
+
+	/* Update progress counters under lock (progrez state is not thread-safe) */
+	if (g_tui_enabled) {
+		progress_update_simple(file_size);
+	}
 
 	/* Print result line(s) - these go to the scrolling region */
 	if (is_unknown) {
@@ -1373,9 +1368,30 @@ static void draw_hr(int width, int simple) {
 	}
 }
 
-/* Render progress display (backed by progrez library) */
-static void progress_render_new(void) {
+/* Get monotonic time in milliseconds */
+static uint64_t get_monotonic_ms(void) {
+#if defined(_WIN32)
+	return GetTickCount64();
+#else
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+#endif
+}
+
+static uint64_t g_last_render_ms = 0;
+#define RENDER_INTERVAL_MS 33  /* ~30fps cap to prevent flicker */
+
+/* Render progress display (backed by progrez library).
+ * Rate-limited to RENDER_INTERVAL_MS to avoid flicker from rapid callbacks.
+ * Pass force=1 to bypass rate-limiting (e.g., initial render, final render). */
+static void progress_render_force(int force) {
 	if (!g_tui_enabled) return;
+
+	/* Rate-limit: skip if rendered recently (unless forced) */
+	uint64_t now_ms = get_monotonic_ms();
+	if (!force && (now_ms - g_last_render_ms) < RENDER_INTERVAL_MS) return;
+	g_last_render_ms = now_ms;
 
 	/* Poll terminal size for responsive resize handling */
 	int new_width, new_height;
@@ -1397,7 +1413,8 @@ static void progress_render_new(void) {
 
 	if (new_width < 40) return;  /* Too narrow */
 
-	fprintf(stderr, "\033[s");  /* Save cursor */
+	/* Disable line wrap + save cursor (prevents wrapping artifacts in fixed area) */
+	fprintf(stderr, "\033[?7l\033[s");
 
 	/* Draw horizontal rule on line height-1 */
 	fprintf(stderr, "\033[%d;1H\033[K", g_term_height - 1);
@@ -1412,8 +1429,14 @@ static void progress_render_new(void) {
 		fwrite(buf, 1, len, stderr);
 	}
 
-	fprintf(stderr, "\033[u");  /* Restore cursor */
+	/* Restore cursor + re-enable line wrap */
+	fprintf(stderr, "\033[u\033[?7h");
 	fflush(stderr);
+}
+
+/* Render progress display (rate-limited) */
+static void progress_render_new(void) {
+	progress_render_force(0);
 }
 
 static void print_usage(const char* program) {
@@ -1725,12 +1748,13 @@ int main(int argc, char* argv[]) {
 	if (g_tui_enabled) {
 		atexit(restore_terminal_on_exit);
 		/* Render initial progress bar immediately so user sees feedback */
-		progress_render_new();
+		progress_render_force(1);
 	}
 
 	validation_counts_t counts = {0};
 	validation_counts_t total_counts = {0};
 	int failures = 0;
+	uint64_t batch_start_ms = get_monotonic_ms();
 
 	const size_t iterations = (stress_iterations > 0) ? stress_iterations : 1;
 
@@ -1794,8 +1818,9 @@ int main(int argc, char* argv[]) {
 	int was_interrupted = (g_sigint_count > 0) || validate_is_interrupted();
 #endif
 
-	/* Save file count before freeing */
+	/* Save counts before freeing */
 	size_t total_file_count = file_list.count;
+	size_t total_byte_count = file_list.total_bytes;
 
 	/* Clean up progress display */
 	progress_cleanup_new();
@@ -1827,6 +1852,15 @@ int main(int argc, char* argv[]) {
 		printf("%s  %-8s %zu\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_INVALID), summary_counts->invalid_count);
 	}
 	printf("%s  %-8s %zu\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_UNKNOWN), summary_counts->unknown_count);
+
+	/* Elapsed time and throughput */
+	uint64_t elapsed_ms = get_monotonic_ms() - batch_start_ms;
+	if (elapsed_ms > 0 && total_processed > 0) {
+		double elapsed_s = (double)elapsed_ms / 1000.0;
+		double files_per_sec = (double)total_processed / elapsed_s;
+		double mb_per_sec = ((double)total_byte_count / (1024.0 * 1024.0)) / elapsed_s;
+		printf("%s  %-8s %.1fs (%.1f files/sec, %.1f MB/s)\n", rlm, "Time:", elapsed_s, files_per_sec, mb_per_sec);
+	}
 
 	/* Reset interrupt flag for potential future use */
 	validate_reset_interrupt();
