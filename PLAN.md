@@ -22,6 +22,14 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Add ground-truth samples + tests for NACHA, MT940, BAI2 (2026-02-28 EST)
 - [x] Wire up detection, dispatch, FFI category, i18n (all 30 locales), corruption_opacity (2026-02-28 EST)
 
+### Progrez Library Integration
+- [x] Add progrez_core module to progrez (no FFI, pure-logic only) (2026-03-01 EST)
+- [x] Add progrez path dependency to validate build.zig.zon + build.zig (2026-03-01 EST)
+- [x] Create src/core/progress.zig C FFI wrapper around progrez state/render (2026-03-01 EST)
+- [x] Update validate_core.h with progress function declarations (2026-03-01 EST)
+- [x] Replace ~455 lines of hand-rolled C progress code in main.c with progrez calls (2026-03-01 EST)
+- [x] All 1476 tests pass, all CLI tests pass (2026-03-01 EST)
+
 ### Depth Honesty Audit
 - [x] Fix ~50 validators dishonestly claiming `.full` depth when they only do header/structural checks or parse opaque text with no integrity mechanism (2026-02-23 EST)
 - [x] Downgrade 9 header-only stubs to WARN via `structuralOnly()`: bwproject, cpr, ptx, band, reason, cwk, mwd, bsp, vpk (2026-02-24 EST)
