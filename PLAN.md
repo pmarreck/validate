@@ -30,6 +30,22 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Replace ~455 lines of hand-rolled C progress code in main.c with progrez calls (2026-03-01 EST)
 - [x] All 1476 tests pass, all CLI tests pass (2026-03-01 EST)
 
+### Wave 1: Archival Format Validators (design: docs/plans/2026-02-28-wave1-archival-formats-design.md)
+- [ ] BagIt (Library of Congress digital preservation) — SHA-256/512 manifest verification, directory bundle
+- [ ] X12 EDI (healthcare/supply chain) — segment/group/interchange control totals
+- [ ] EDIFACT (international trade) — UNT/UNE/UNZ control totals
+- [ ] iCalendar (.ics) — RFC 5545, VEVENT/VTIMEZONE/RRULE
+- [ ] vCard (.vcf) — RFC 6350, structured properties
+- [ ] PEM/DER — ASN.1 structure, X.509 certificate fields
+- [ ] Ground truth samples (synthetic, flagged for future real-world replacement)
+- [ ] Wire up detection, dispatch, FFI, i18n, corruption_opacity
+
+### Future: CDC-Segmented Parity for Virtual Manifests
+- [ ] Design: Content-Defined Chunking (CDC) hashes recorded per-file BEFORE par2 parity computation
+- [ ] When a file changes, identify unchanged CDC chunks by hash to reconstruct a "virtual original"
+- [ ] Reduces par2's perceived damage from "entire file changed" to "just the delta chunks differ"
+- [ ] Effectively makes par2 content-aware without modifying par2 itself
+- [ ] Par2 block sizes align to CDC chunk boundaries rather than fixed offsets
 ### Depth Honesty Audit
 - [x] Fix ~50 validators dishonestly claiming `.full` depth when they only do header/structural checks or parse opaque text with no integrity mechanism (2026-02-23 EST)
 - [x] Downgrade 9 header-only stubs to WARN via `structuralOnly()`: bwproject, cpr, ptx, band, reason, cwk, mwd, bsp, vpk (2026-02-24 EST)
