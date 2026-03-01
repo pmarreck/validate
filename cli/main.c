@@ -899,14 +899,15 @@ static void print_validation_result(const char* path, const char* result) {
 /* Global file list pointer for callback to access file sizes */
 static path_list_t* g_file_list_ptr = NULL;
 
-/* Simple flag for TUI enabled state (set before validation starts) */
+/* Progress state — backed by progrez library via validate_progress_* FFI */
 static int g_tui_enabled = 0;
+static int g_term_width = 80;
+static int g_term_height = 24;
+static int g_simple_progress = 0;
 
-/* Forward declarations for progress system (full definitions later) */
-typedef struct progress_state_s progress_state_t;
-static progress_state_t* g_progress_ptr = NULL;
-static void progress_update(progress_state_t* state, size_t file_size, uint64_t elapsed_ms);
-static void progress_render(progress_state_t* state);
+/* Forward declarations for progress system */
+static void progress_update_simple(size_t file_size);
+static void progress_render_new(void);
 
 /* Begin callback - called when validation of a file starts */
 static void on_validation_begin(
@@ -941,7 +942,7 @@ static void on_validation_result(
 
 	/* Update progress counters (atomic, no lock needed) */
 	size_t file_size = 0;
-	if (g_progress_ptr && g_file_list_ptr) {
+	if (g_file_list_ptr) {
 		/* Find the file size for this file_id */
 		int found = 0;
 		for (size_t i = 0; i < g_file_list_ptr->count; i++) {
@@ -957,10 +958,7 @@ static void on_validation_result(
 		}
 		/* Update progress if TUI enabled */
 		if (g_tui_enabled) {
-			/* Ensure minimum 1ms to prevent division-by-zero in rate calculation.
-			 * Small files may process in under 1ms. */
-			uint64_t elapsed_ms = (elapsed_ns >= 1000000) ? (uint64_t)(elapsed_ns / 1000000) : 1;
-			progress_update(g_progress_ptr, file_size, elapsed_ms);
+			progress_update_simple(file_size);
 		}
 	}
 
@@ -996,8 +994,8 @@ static void on_validation_result(
 	}
 
 	/* Now render progress bar AFTER output (in the fixed bottom area) */
-	if (g_tui_enabled && g_progress_ptr) {
-		progress_render(g_progress_ptr);
+	if (g_tui_enabled) {
+		progress_render_new();
 	}
 
 	output_unlock();
@@ -1195,63 +1193,10 @@ static void frontload_large_files(path_list_t* list) {
 
 /* ========== TUI Progress Bar ========== */
 /*
- * Professional progress display with ETA calculation.
- * Shows status bar at bottom of terminal with:
- * - File count progress (123/456)
- * - Elapsed time (01:23)
- * - ETA (computed immediately; stabilizes as sample window fills)
- * - Progress bar [=====>    ] 45%
+ * Progress display backed by progrez library.
+ * The progrez library handles all bar rendering, ETA, rate estimation, etc.
+ * This code manages only the terminal scrolling region and cursor positioning.
  */
-
-#define ETA_SAMPLE_COUNT 100
-
-typedef struct {
-	size_t bytes;
-	uint64_t elapsed_ms;
-} eta_sample_t;
-
-typedef struct {
-	eta_sample_t samples[ETA_SAMPLE_COUNT];
-	size_t head;
-	size_t count;
-	size_t total_bytes;        /* Running total for O(1) updates */
-	uint64_t total_elapsed_ms; /* Running total */
-} eta_fifo_t;
-
-struct progress_state_s {
-	size_t total_files;
-	size_t total_bytes;
-	_Atomic size_t completed_files;
-	_Atomic size_t completed_bytes;
-#if defined(_WIN32)
-	CRITICAL_SECTION lock;
-#else
-	pthread_mutex_t lock;
-#endif
-	eta_fifo_t eta;
-	uint64_t start_time_ms;
-	_Atomic int terminal_width;
-	_Atomic int terminal_height;
-	_Atomic int resize_pending;
-	int tui_enabled;
-	int simple_progress;
-};
-
-static progress_state_t g_progress;
-
-/* Cross-platform time utilities */
-static uint64_t get_current_time_ms(void) {
-#if defined(_WIN32)
-	FILETIME ft;
-	GetSystemTimeAsFileTime(&ft);
-	uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
-	return t / 10000;  /* Convert 100ns to ms */
-#else
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
-	return (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
-#endif
-}
 
 /* Cross-platform terminal size */
 static void get_terminal_size(int* width, int* height) {
@@ -1278,122 +1223,8 @@ static void get_terminal_size(int* width, int* height) {
 #endif
 }
 
-/* UTF-8 support detection */
-static int g_vt_processing_enabled = 0;
-
-static int detect_utf8_support(void) {
-#if defined(_WIN32)
-	/* Check if we successfully enabled VT processing and have UTF-8 code page */
-	return (GetConsoleOutputCP() == 65001) && g_vt_processing_enabled;
-#else
-	const char* lang = getenv("LANG");
-	const char* lc_all = getenv("LC_ALL");
-	const char* term = getenv("TERM");
-	if ((lang && strstr(lang, "UTF-8")) ||
-		(lang && strstr(lang, "utf-8")) ||
-		(lc_all && strstr(lc_all, "UTF-8")) ||
-		(lc_all && strstr(lc_all, "utf-8")) ||
-		(term && (strstr(term, "xterm") || strstr(term, "256color")))) {
-		return 1;
-	}
-	return 0;
-#endif
-}
-
-static const char* get_hr_char(int simple) {
-	if (simple || !detect_utf8_support()) {
-		return "-";
-	}
-	return "\xe2\x94\x80";  /* UTF-8 encoding of ─ (U+2500) */
-}
-
-/* ETA FIFO operations */
-static void eta_fifo_init(eta_fifo_t* fifo) {
-	fifo->head = 0;
-	fifo->count = 0;
-	fifo->total_bytes = 0;
-	fifo->total_elapsed_ms = 0;
-}
-
-static void eta_fifo_push(eta_fifo_t* fifo, size_t bytes, uint64_t elapsed_ms) {
-	/* If FIFO is full, subtract the oldest sample from running totals */
-	if (fifo->count == ETA_SAMPLE_COUNT) {
-		eta_sample_t* oldest = &fifo->samples[fifo->head];
-		fifo->total_bytes -= oldest->bytes;
-		fifo->total_elapsed_ms -= oldest->elapsed_ms;
-	}
-
-	/* Add new sample */
-	size_t idx = (fifo->head + fifo->count) % ETA_SAMPLE_COUNT;
-	if (fifo->count == ETA_SAMPLE_COUNT) {
-		/* Overwrite oldest, move head */
-		idx = fifo->head;
-		fifo->head = (fifo->head + 1) % ETA_SAMPLE_COUNT;
-	} else {
-		fifo->count++;
-	}
-
-	fifo->samples[idx].bytes = bytes;
-	fifo->samples[idx].elapsed_ms = elapsed_ms;
-	fifo->total_bytes += bytes;
-	fifo->total_elapsed_ms += elapsed_ms;
-}
-
-/* Get processing rate in bytes per millisecond */
-static double eta_fifo_get_rate(eta_fifo_t* fifo) {
-	if (fifo->count == 0 || fifo->total_elapsed_ms == 0) return 0.0;
-	return (double)fifo->total_bytes / (double)fifo->total_elapsed_ms;
-}
-
-/* Format time as MM:SS or H:MM:SS */
-static void format_time(uint64_t ms, char* buf, size_t buf_size) {
-	uint64_t total_secs = ms / 1000;
-	uint64_t hours = total_secs / 3600;
-	uint64_t mins = (total_secs % 3600) / 60;
-	uint64_t secs = total_secs % 60;
-
-	if (hours > 0) {
-		snprintf(buf, buf_size, "%llu:%02llu:%02llu",
-				 (unsigned long long)hours,
-				 (unsigned long long)mins,
-				 (unsigned long long)secs);
-	} else {
-		snprintf(buf, buf_size, "%02llu:%02llu",
-				 (unsigned long long)mins,
-				 (unsigned long long)secs);
-	}
-}
-
-/* Build progress bar string */
-static void build_progress_bar(char* buf, size_t buf_size, int percent, int width) {
-	if (width < 5 || buf_size < (size_t)width * 4 + 32) {  /* Extra space for UTF-8 and ANSI codes */
-		buf[0] = '\0';
-		return;
-	}
-
-	/* Simple ASCII fallback: [=====>    ] */
-	int inner_width = width - 2;  /* Subtract brackets */
-	int filled = (percent * inner_width) / 100;
-	if (filled > inner_width) filled = inner_width;
-
-	buf[0] = '[';
-	int pos = 1;
-	for (int i = 0; i < filled && pos < (int)buf_size - 2; i++) {
-		buf[pos++] = '=';
-	}
-	if (filled > 0 && filled < inner_width && pos < (int)buf_size - 2) {
-		buf[pos - 1] = '>';
-	}
-	for (int i = filled; i < inner_width && pos < (int)buf_size - 2; i++) {
-		buf[pos++] = ' ';
-	}
-	buf[pos++] = ']';
-	buf[pos] = '\0';
-}
-
 /* Signal handling for terminal resize (Unix only) */
 #if !defined(_WIN32)
-/* SIGWINCH may not be defined on all systems */
 #ifndef SIGWINCH
 #define SIGWINCH 28
 #endif
@@ -1433,46 +1264,36 @@ static void sigint_handler(int sig) {
 }
 #endif
 
-/* Initialize progress state */
-static void progress_init(progress_state_t* state, size_t total_files, size_t total_bytes, int simple) {
-	state->total_files = total_files;
-	state->total_bytes = total_bytes;
-	atomic_store(&state->completed_files, 0);
-	atomic_store(&state->completed_bytes, 0);
-#if defined(_WIN32)
-	InitializeCriticalSection(&state->lock);
-#else
-	pthread_mutex_init(&state->lock, NULL);
-#endif
-	eta_fifo_init(&state->eta);
-	state->start_time_ms = get_current_time_ms();
+/* Initialize progress state (backed by progrez library) */
+static void progress_init_new(size_t total_files, size_t total_bytes, int simple) {
+	validate_progress_init("validate");
 
-	int width, height;
-	get_terminal_size(&width, &height);
-	atomic_store(&state->terminal_width, width);
-	atomic_store(&state->terminal_height, height);
-	atomic_store(&state->resize_pending, 0);
-	state->simple_progress = simple;
+	int w, h;
+	get_terminal_size(&w, &h);
+	int is_tty = isatty(STDERR_FILENO);
 
 	/* Enable TUI if:
 	 * - stderr is a TTY (not piped/redirected)
-	 * - More than 1 file to validate (progress bar is pointless for single file)
-	 * - Not using simple progress mode
+	 * - More than 1 file to validate
 	 * - Terminal height is at least 5 lines (need room for scrolling region + status)
 	 */
-	int is_tty = isatty(STDERR_FILENO);
-	state->tui_enabled = is_tty && total_files > 1 && !simple && height >= 5;
+	g_tui_enabled = is_tty && total_files > 1 && h >= 5;
+	g_simple_progress = simple;
 
-	/* Debug output for TUI enablement - only when VALIDATE_DEBUG is set */
+	validate_progress_detect_caps(is_tty, simple, (uint16_t)w);
+	validate_progress_set_determinate((uint64_t)total_files, (uint64_t)total_bytes);
+	g_term_width = w;
+	g_term_height = h;
+
+	/* Debug output for TUI enablement */
 	if (validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG)) {
 		fprintf(stderr, "[TUI] is_tty=%d, files=%zu, simple=%d, height=%d -> enabled=%d\n",
-				is_tty, total_files, simple, height, state->tui_enabled);
+				is_tty, total_files, simple, h, g_tui_enabled);
 		fprintf(stderr, "[TUI] total_bytes=%zu\n", total_bytes);
 	}
 
 #if !defined(_WIN32)
-	/* Set up signal handlers for terminal resize and clean exit */
-	if (state->tui_enabled) {
+	if (g_tui_enabled) {
 		struct sigaction sa;
 
 		/* SIGWINCH for terminal resize */
@@ -1484,284 +1305,114 @@ static void progress_init(progress_state_t* state, size_t total_files, size_t to
 		/* SIGINT for clean Ctrl+C exit (restore terminal before dying) */
 		sa.sa_handler = sigint_handler;
 		sigemptyset(&sa.sa_mask);
-		sa.sa_flags = 0;  /* Don't restart, we want to exit */
+		sa.sa_flags = 0;
 		sigaction(SIGINT, &sa, NULL);
 
-		/* Set up scrolling region: lines 1 to (height-2), reserving bottom 2 lines
-		 * for progress bar. This allows stdout to scroll normally without
-		 * interfering with the fixed progress display at the bottom.
-		 *
-		 * ANSI escape sequences:
-		 * \033[?7l     - Disable line wrap (prevents issues at edge)
-		 * \033[1;Nr    - Set scrolling region to lines 1 through N
-		 * \033[H       - Move cursor to top-left of scrolling region
-		 * \033[<row>H  - Move to specific row (for drawing progress)
-		 */
-		int scroll_bottom = height - 2;
+		/* Set up scrolling region: reserve bottom 2 lines for progress */
+		int scroll_bottom = h - 2;
 		if (scroll_bottom < 1) scroll_bottom = 1;
-
-		/* Set scrolling region (screen was already cleared before "Found X files") */
 		fprintf(stderr, "\033[1;%dr", scroll_bottom);
 		fflush(stderr);
 	}
 #else
-	/* Windows: TUI with scrolling regions requires different approach */
-	/* For now, disable TUI on Windows until we implement Console API version */
-	state->tui_enabled = 0;
+	/* Windows: TUI with scrolling regions requires Console API */
+	g_tui_enabled = 0;
 #endif
 }
 
-static void progress_cleanup(progress_state_t* state) {
-#if defined(_WIN32)
-	DeleteCriticalSection(&state->lock);
-#else
-	pthread_mutex_destroy(&state->lock);
-#endif
+static void progress_cleanup_new(void) {
+	if (!g_tui_enabled) return;
 
-	/* Clean up TUI and reset terminal state */
-	if (state->tui_enabled) {
-		int height = atomic_load(&state->terminal_height);
+	/* Clear progress bar lines BEFORE resetting scrolling region */
+	fprintf(stderr, "\033[%d;1H\033[K", g_term_height - 1);  /* Clear HR line */
+	fprintf(stderr, "\033[%d;1H\033[K", g_term_height);       /* Clear progress line */
 
-		/* First, clear the progress bar lines BEFORE resetting scrolling region.
-		 * This ensures they disappear cleanly. */
-		fprintf(stderr, "\033[%d;1H\033[K", height - 1);  /* Clear HR line */
-		fprintf(stderr, "\033[%d;1H\033[K", height);       /* Clear progress line */
+	/* Reset scrolling region to full terminal */
+	fprintf(stderr, "\033[r");
 
-		/* Reset scrolling region to full terminal.
-		 * Note: \033[r also moves cursor to position (1,1) on most terminals. */
-		fprintf(stderr, "\033[r");
+	/* Re-enable line wrap */
+	fprintf(stderr, "\033[?7h");
 
-		/* Re-enable line wrap */
-		fprintf(stderr, "\033[?7h");
+	/* Move cursor to bottom */
+	fprintf(stderr, "\033[999;1H");
 
-		/* Move cursor to the very bottom of the terminal.
-		 * Use 999 as a large number that gets clamped to actual height. */
-		fprintf(stderr, "\033[999;1H");
+	/* Scroll for Summary output */
+	fflush(stderr);
+	printf("\n");
+	fflush(stdout);
 
-		/* Scroll the screen so cursor stays at bottom with room for Summary.
-		 * Using stdout here so it syncs with the printf Summary output. */
-		fflush(stderr);
-		printf("\n");  /* One newline to scroll and position for Summary */
-		fflush(stdout);
-	}
-
-	/* Disable TUI flag so atexit handler won't send another \033[r
-	 * (which would move cursor back to 1,1 after Summary is printed) */
+	/* Disable TUI flag so atexit handler won't double-reset */
 	g_tui_enabled = 0;
 }
 
 /* atexit handler to restore terminal on abnormal exit (e.g., Ctrl+C) */
 static void restore_terminal_on_exit(void) {
 	if (g_tui_enabled) {
-		/* Reset scrolling region and re-enable line wrap */
 		fprintf(stderr, "\033[r\033[?7h");
 		fflush(stderr);
 	}
 }
 
 /* Update progress after completing a file */
-static void progress_update(progress_state_t* state, size_t file_size, uint64_t elapsed_ms) {
-	if (!state->tui_enabled) return;  /* Skip overhead when TUI disabled */
-
-	atomic_fetch_add(&state->completed_files, 1);
-	atomic_fetch_add(&state->completed_bytes, file_size);
-
-	/* Update ETA FIFO (needs lock for the complex struct) */
-#if defined(_WIN32)
-	EnterCriticalSection(&state->lock);
-#else
-	pthread_mutex_lock(&state->lock);
-#endif
-	eta_fifo_push(&state->eta, file_size, elapsed_ms);
-#if defined(_WIN32)
-	LeaveCriticalSection(&state->lock);
-#else
-	pthread_mutex_unlock(&state->lock);
-#endif
+static void progress_update_simple(size_t file_size) {
+	validate_progress_update((uint64_t)file_size);
 }
 
-/* Render progress display */
-static void progress_render(progress_state_t* state) {
-	if (!state->tui_enabled) return;
+/* Draw horizontal rule on the second-to-last terminal line */
+static void draw_hr(int width, int simple) {
+	if (simple) {
+		for (int i = 0; i < width; i++) {
+			fprintf(stderr, "-");
+		}
+	} else {
+		fprintf(stderr, "\033[38;5;240m");  /* Dark gray */
+		for (int i = 0; i < width; i++) {
+			fprintf(stderr, "\xe2\x94\x80");  /* ─ U+2500 */
+		}
+		fprintf(stderr, "\033[0m");
+	}
+}
 
-	/* Poll terminal size on every render for responsive resize handling.
-	 * This is more reliable than SIGWINCH alone since some environments
-	 * (like tmux resize-pane) don't generate the signal. */
+/* Render progress display (backed by progrez library) */
+static void progress_render_new(void) {
+	if (!g_tui_enabled) return;
+
+	/* Poll terminal size for responsive resize handling */
 	int new_width, new_height;
 	get_terminal_size(&new_width, &new_height);
 
-	int old_height = atomic_load(&state->terminal_height);
-	if (new_height != old_height) {
-		/* Height changed - re-setup scrolling region */
+	if (new_height != g_term_height) {
+		/* Height changed — re-setup scrolling region */
 		int scroll_bottom = new_height - 2;
 		if (scroll_bottom < 1) scroll_bottom = 1;
 		fprintf(stderr, "\033[1;%dr", scroll_bottom);
 	}
 
-	atomic_store(&state->terminal_width, new_width);
-	atomic_store(&state->terminal_height, new_height);
+	g_term_width = new_width;
+	g_term_height = new_height;
 
 #if !defined(_WIN32)
-	/* Also reset signal flag if it was set */
 	g_resize_signal = 0;
 #endif
 
-	int term_width = atomic_load(&state->terminal_width);
-	if (term_width < 40) return;  /* Too narrow for meaningful display */
+	if (new_width < 40) return;  /* Too narrow */
 
-	/* Debug width values if VALIDATE_DEBUG is set */
-	static int debug_printed = 0;
-	if (validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG) && debug_printed < 5) {
-		size_t cb = atomic_load(&state->completed_bytes);
-		size_t cf = atomic_load(&state->completed_files);
-		fprintf(stderr, "[TUI] files=%zu/%zu bytes=%zu/%zu\n",
-				cf, state->total_files, cb, state->total_bytes);
-		debug_printed++;
-	}
-
-	size_t completed = atomic_load(&state->completed_files);
-	size_t completed_bytes = atomic_load(&state->completed_bytes);
-	uint64_t now = get_current_time_ms();
-	uint64_t elapsed = now - state->start_time_ms;
-
-	/* Calculate percentage */
-	int percent = 0;
-	if (state->total_bytes > 0) {
-		percent = (int)((completed_bytes * 100) / state->total_bytes);
-	} else if (state->total_files > 0) {
-		percent = (int)((completed * 100) / state->total_files);
-	}
-	if (percent > 100) percent = 100;
-
-	/* Format elapsed time */
-	char elapsed_str[16];
-	format_time(elapsed, elapsed_str, sizeof(elapsed_str));
-
-	/* Calculate and format ETA */
-	char eta_str[32];
-#if defined(_WIN32)
-	EnterCriticalSection(&state->lock);
-#else
-	pthread_mutex_lock(&state->lock);
-#endif
-	size_t samples = state->eta.count;
-	double rate = eta_fifo_get_rate(&state->eta);
-#if defined(_WIN32)
-	LeaveCriticalSection(&state->lock);
-#else
-	pthread_mutex_unlock(&state->lock);
-#endif
-
-	/* Compute ETA using elapsed-time extrapolation based on percentage.
-	 * The bytes-based rate from FIFO doesn't work well because:
-	 * - Small files have high overhead per byte (constant overhead dominates)
-	 * - This causes wildly wrong ETAs when file sizes vary
-	 * Instead: if X% done in T seconds, remaining = T * (100-X)/X */
-	(void)samples;  /* Unused now */
-	(void)rate;     /* Unused now */
-	if (percent <= 0 || percent >= 100 || elapsed == 0) {
-		snprintf(eta_str, sizeof(eta_str), "--:--");
-	} else {
-		uint64_t eta_ms = (elapsed * (100 - percent)) / percent;
-		format_time(eta_ms, eta_str, sizeof(eta_str));
-	}
-
-	/* Build the status line */
-	char count_str[32];
-	snprintf(count_str, sizeof(count_str), "(%zu/%zu)", completed, state->total_files);
-
-	/* Calculate available space for progress bar */
-	/* Format: (123/456)  01:23  ETA 02:34  [=====>    ] 45% */
-	int fixed_len = (int)strlen(count_str) + 2 + (int)strlen(elapsed_str) + 6 +
-					(int)strlen(eta_str) + 2 + 5;  /* 5 for " 100%" */
-	int bar_width = term_width - fixed_len;
-	if (bar_width < 10) bar_width = 10;
-
-	/* Get terminal height for cursor positioning */
-	int term_height = atomic_load(&state->terminal_height);
-
-	/* Save cursor position, draw progress at bottom, restore cursor.
-	 * This allows the progress bar to update without disturbing
-	 * the scrolling output above it.
-	 *
-	 * Layout (bottom 2 lines):
-	 *   Line height-1: Horizontal rule (visual separator)
-	 *   Line height:   Progress bar with stats
-	 */
-	fprintf(stderr, "\033[s");  /* Save cursor position */
+	fprintf(stderr, "\033[s");  /* Save cursor */
 
 	/* Draw horizontal rule on line height-1 */
-	fprintf(stderr, "\033[%d;1H\033[K", term_height - 1);
-	if (state->simple_progress) {
-		/* Simple ASCII horizontal rule */
-		for (int i = 0; i < term_width; i++) {
-			fprintf(stderr, "-");
-		}
-	} else {
-		/* Fancy UTF-8 box drawing with color */
-		fprintf(stderr, "\033[38;5;240m");  /* Dark gray color */
-		for (int i = 0; i < term_width; i++) {
-			fprintf(stderr, "─");  /* UTF-8 box drawing horizontal */
-		}
-		fprintf(stderr, "\033[0m");  /* Reset color */
+	fprintf(stderr, "\033[%d;1H\033[K", g_term_height - 1);
+	draw_hr(g_term_width, g_simple_progress);
+
+	/* Draw progress bar on last line (rendered by progrez) */
+	fprintf(stderr, "\033[%d;1H\033[K", g_term_height);
+
+	char buf[4096];
+	size_t len = validate_progress_render_line(buf, sizeof(buf), (uint16_t)g_term_width);
+	if (len > 0) {
+		fwrite(buf, 1, len, stderr);
 	}
 
-	/* Draw progress bar on last line */
-	fprintf(stderr, "\033[%d;1H\033[K", term_height);
-
-	if (state->simple_progress) {
-		/* Simple ASCII progress bar - buffer needs to fit widest terminals */
-		char bar_str[1024];
-		build_progress_bar(bar_str, sizeof(bar_str), percent, bar_width);
-		fprintf(stderr, "%s  %s  ETA %s  %s %3d%%",
-				count_str, elapsed_str, eta_str, bar_str, percent);
-	} else {
-		/* Fancy progress bar with UTF-8 blocks and color gradient */
-		/* Print stats first */
-		fprintf(stderr, "\033[38;5;245m%s\033[0m  ", count_str);  /* Dim count */
-		fprintf(stderr, "\033[38;5;75m%s\033[0m  ", elapsed_str);  /* Cyan elapsed */
-		fprintf(stderr, "\033[38;5;245mETA \033[38;5;75m%s\033[0m  ", eta_str);  /* Cyan ETA */
-
-		/* Fancy progress bar: ▓▓▓▓▓▓▓▓░░░░░░ */
-		/* Using block characters with color gradient from cyan (38) to blue (33) */
-		int inner_width = bar_width - 2;  /* Account for brackets */
-		int filled = (percent * inner_width) / 100;
-		if (filled > inner_width) filled = inner_width;
-
-		/* Partial block characters for sub-cell precision: ▏▎▍▌▋▊▉█ */
-		/* Each represents 1/8 of a cell */
-		static const char* partial_blocks[] = {" ", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"};
-
-		/* Calculate fractional fill for sub-cell precision */
-		int fill_eighths = (percent * inner_width * 8) / 100;
-		int full_blocks = fill_eighths / 8;
-		int partial = fill_eighths % 8;
-
-		fprintf(stderr, "\033[38;5;39m");  /* Bright cyan for filled */
-		for (int i = 0; i < full_blocks && i < inner_width; i++) {
-			fprintf(stderr, "█");
-		}
-		if (full_blocks < inner_width && partial > 0) {
-			fprintf(stderr, "%s", partial_blocks[partial]);
-			full_blocks++;  /* Count the partial as taking a slot */
-		}
-		fprintf(stderr, "\033[38;5;238m");  /* Dark gray for empty */
-		for (int i = full_blocks; i < inner_width; i++) {
-			fprintf(stderr, "░");
-		}
-		fprintf(stderr, "\033[0m");  /* Reset */
-
-		/* Percentage with color based on progress */
-		if (percent >= 90) {
-			fprintf(stderr, " \033[38;5;46m%3d%%\033[0m", percent);  /* Green */
-		} else if (percent >= 50) {
-			fprintf(stderr, " \033[38;5;226m%3d%%\033[0m", percent);  /* Yellow */
-		} else {
-			fprintf(stderr, " \033[38;5;75m%3d%%\033[0m", percent);  /* Cyan */
-		}
-	}
-
-	fprintf(stderr, "\033[u");  /* Restore cursor position */
+	fprintf(stderr, "\033[u");  /* Restore cursor */
 	fflush(stderr);
 }
 
@@ -2066,17 +1717,15 @@ int main(int argc, char* argv[]) {
 		fflush(stdout);
 	}
 
-	/* Initialize progress tracking */
+	/* Initialize progress tracking (backed by progrez library) */
 	g_file_list_ptr = &file_list;
-	progress_init(&g_progress, file_list.count, file_list.total_bytes, simple_progress);
-	g_progress_ptr = &g_progress;
-	g_tui_enabled = g_progress.tui_enabled;
+	progress_init_new(file_list.count, file_list.total_bytes, simple_progress);
 
 	/* Register atexit handler to restore terminal if process exits abnormally */
 	if (g_tui_enabled) {
 		atexit(restore_terminal_on_exit);
 		/* Render initial progress bar immediately so user sees feedback */
-		progress_render(&g_progress);
+		progress_render_new();
 	}
 
 	validation_counts_t counts = {0};
@@ -2102,10 +1751,9 @@ int main(int argc, char* argv[]) {
 
 		/* Reset progress for each iteration in stress mode */
 		if (stress_iterations > 1 && iter > 0) {
-			atomic_store(&g_progress.completed_files, 0);
-			atomic_store(&g_progress.completed_bytes, 0);
-			g_progress.start_time_ms = get_current_time_ms();
-			eta_fifo_init(&g_progress.eta);
+			validate_progress_init("validate");
+			validate_progress_detect_caps(isatty(STDERR_FILENO), simple_progress, (uint16_t)g_term_width);
+			validate_progress_set_determinate((uint64_t)file_list.count, (uint64_t)file_list.total_bytes);
 		}
 
 		validate_error_t err = validate_batch(
@@ -2124,7 +1772,7 @@ int main(int argc, char* argv[]) {
 			}
 			fprintf(stderr, "%sError: Validation failed: %s\n%s", COLOR_RED,
 				validate_last_error() ? validate_last_error() : "unknown error", COLOR_RESET);
-			progress_cleanup(&g_progress);
+			progress_cleanup_new();
 			path_list_free(&file_list);
 			shutdown_output_destinations();
 			return 1;
@@ -2139,13 +1787,6 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
-	/* Debug: show final byte counts */
-	if (validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG) && g_tui_enabled) {
-		size_t final_bytes = atomic_load(&g_progress.completed_bytes);
-		fprintf(stderr, "[DEBUG] Final: completed_bytes=%zu total_bytes=%zu\n",
-				final_bytes, g_progress.total_bytes);
-	}
-
 	/* Check if we were interrupted */
 #if defined(_WIN32)
 	int was_interrupted = validate_is_interrupted();
@@ -2157,8 +1798,7 @@ int main(int argc, char* argv[]) {
 	size_t total_file_count = file_list.count;
 
 	/* Clean up progress display */
-	progress_cleanup(&g_progress);
-	g_progress_ptr = NULL;
+	progress_cleanup_new();
 	g_file_list_ptr = NULL;
 
 	path_list_free(&file_list);

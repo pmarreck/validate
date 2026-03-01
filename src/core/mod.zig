@@ -118,6 +118,7 @@ pub const email_validators = @import("email_validators.zig");
 pub const error_messages = @import("error_messages.zig");
 pub const codec_utils = @import("codec_utils.zig");
 pub const i18n = @import("i18n/mod.zig");
+pub const progress = @import("progress.zig");
 // VideoToolbox removed — all video codecs use pure-Zig syntax validators
 
 // Version information
@@ -293,4 +294,6 @@ test {
     _ = @import("codec_utils.zig");
     // i18n (internationalization)
     _ = @import("i18n/mod.zig");
+    // Progress bar (progrez wrapper)
+    _ = @import("progress.zig");
 }

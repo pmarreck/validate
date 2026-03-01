@@ -39,6 +39,7 @@
 #ifndef VALIDATE_CORE_H
 #define VALIDATE_CORE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -360,6 +361,47 @@ uint8_t validate_match_arg(const char* keyword);
  * @return Environment variable value (first non-empty match), or NULL
  */
 const char* validate_getenv(uint8_t env_id);
+
+/* ========== Progress Bar (backed by progrez library) ========== */
+
+/**
+ * Initialize progress state with a label.
+ * @param label Display label (e.g., "validate")
+ */
+void validate_progress_init(const char* label);
+
+/**
+ * Detect and cache terminal capabilities.
+ * @param is_tty Whether stderr is a TTY
+ * @param simple Force ASCII mode (no unicode, no color)
+ * @param width Terminal width in columns
+ */
+void validate_progress_detect_caps(bool is_tty, bool simple, uint16_t width);
+
+/**
+ * Set determinate mode with known totals.
+ * @param files Total number of files (0 = not tracking)
+ * @param bytes Total bytes across all files (0 = not tracking)
+ */
+void validate_progress_set_determinate(uint64_t files, uint64_t bytes);
+
+/** Set indeterminate mode (spinner, no percentage). */
+void validate_progress_set_indeterminate(void);
+
+/**
+ * Record completion of one file.
+ * @param file_bytes Size of the completed file in bytes
+ */
+void validate_progress_update(uint64_t file_bytes);
+
+/**
+ * Render the progress bar into a caller-provided buffer.
+ * @param buf Output buffer
+ * @param buf_size Buffer capacity
+ * @param width Current terminal width
+ * @return Number of bytes written (not null-terminated)
+ */
+size_t validate_progress_render_line(char* buf, size_t buf_size, uint16_t width);
 
 /* ========== Error Reporting ========== */
 

@@ -50,6 +50,11 @@ const git_validator = core.git_validator;
 const thread_pool = core.thread_pool;
 const i18n = core.i18n;
 
+// Force progress module exports into the compilation unit (C FFI symbols)
+comptime {
+    _ = core.progress;
+}
+
 // Delimiters
 const US: u8 = 0x1F; // Unit Separator: between key and value
 const RS: u8 = 0x1E; // Record Separator: between key-value pairs

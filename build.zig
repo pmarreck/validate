@@ -199,6 +199,13 @@ pub fn build(b: *std.Build) void {
     });
     const compact_pro_lib = compact_pro_dep.artifact("compact_pro");
 
+    // progrez for progress bar rendering (pure-Zig core, no FFI)
+    const progrez_dep = b.dependency("progrez", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const progrez_module = progrez_dep.module("progrez_core");
+
     // LibRaw for camera RAW format validation (LGPL-2.1, phcreery/LibRaw-zig)
     const libraw_dep = b.dependency("libraw", .{
         .target = target,
@@ -219,6 +226,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "cj5", .module = cj5_mod }, // JSON5 validation (MIT, septag/cj5 fork)
             .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (LGPL-2.1)
             .{ .name = "rarz", .module = rarz_mod }, // RAR clean-room parser/validator
+            .{ .name = "progrez", .module = progrez_module }, // Progress bar rendering (pure-Zig)
         },
     });
 

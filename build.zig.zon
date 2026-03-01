@@ -80,6 +80,9 @@
             .url = "https://github.com/pmarreck/compact_pro/archive/acc3cebcc485bb3bc9a474d548cd4d124ca3a4a0.tar.gz",
             .hash = "compact_pro-0.1.0-G2wo9d_eAgAfR6jeAAGNutPGE9Nientf3mUuzkR8OgOU",
         },
+        .progrez = .{
+            .path = "../progrez",
+        },
     },
     .paths = .{""},
     .fingerprint = 0x421232542dfe208d,
