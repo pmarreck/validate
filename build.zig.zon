@@ -81,7 +81,8 @@
             .hash = "compact_pro-0.1.0-G2wo9d_eAgAfR6jeAAGNutPGE9Nientf3mUuzkR8OgOU",
         },
         .progrez = .{
-            .path = "../progrez",
+            .url = "git+https://github.com/pmarreck/progrez#377256d88ef8e664177b88a66a361a46be4e4c83",
+            .hash = "progrez-0.1.0-0YJXrl0CAgCI-gvYCSEWEnW2rsWMTPbehyOnOveB4EJp",
         },
     },
     .paths = .{""},
