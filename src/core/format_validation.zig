@@ -2141,6 +2141,32 @@ pub fn validateDataBufferFormat(data: []const u8, format: FileFormat) Validation
     };
 }
 
+/// Check if path is a SQLite companion file (WAL, SHM, or journal).
+/// These are ephemeral files created by SQLite's WAL/journal mode and
+/// should be recognized rather than flagged as UNKNOWN.
+fn isSqliteCompanionFile(path: []const u8) bool {
+    // These are compound extensions like ".sqlite-wal", ".sqlite-shm", ".sqlite-journal"
+    // We check for the compound extension by finding the second-to-last dot
+    const last_dot = std.mem.lastIndexOfScalar(u8, path, '.') orelse return false;
+    if (last_dot + 1 >= path.len) return false;
+    const ext = path[last_dot + 1 ..];
+
+    // Convert to lowercase
+    var lower: [20]u8 = undefined;
+    if (ext.len > lower.len) return false;
+    for (ext, 0..) |c, i| {
+        lower[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    }
+    const ext_lower = lower[0..ext.len];
+
+    return std.mem.eql(u8, ext_lower, "sqlite-wal") or
+        std.mem.eql(u8, ext_lower, "sqlite-shm") or
+        std.mem.eql(u8, ext_lower, "sqlite-journal") or
+        std.mem.eql(u8, ext_lower, "db-wal") or
+        std.mem.eql(u8, ext_lower, "db-shm") or
+        std.mem.eql(u8, ext_lower, "db-journal");
+}
+
 /// Detect format from file extension.
 /// Used as fallback for formats without magic bytes (e.g., Brotli .br files).
 pub fn detectFormatFromExtension(path: []const u8) FileFormat {
@@ -2190,6 +2216,9 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
 
     // COFF — 2-byte machine type at offset 0 is too short for reliable magic detection
     if (std.mem.eql(u8, ext_lower, "o")) return .coff;
+    // .obj is ambiguous: Wavefront OBJ (text 3D model) or COFF (compiled object file)
+    // Return .obj here; the ext_has_no_magic handler tries COFF first, falls back to Wavefront OBJ
+    if (std.mem.eql(u8, ext_lower, "obj")) return .obj;
 
     // Legacy word processors — no magic bytes
     if (std.mem.eql(u8, ext_lower, "cwk")) return .cwk;
@@ -2899,6 +2928,10 @@ fn isFormatCompatibleWithExtension(detected: FileFormat, extension_format: FileF
     if (detected == .doc and (extension_format == .qbb or extension_format == .qdf)) return true;
     // ZIP-based financial format
     if (detected == .zip and extension_format == .qdf) return true;
+
+    // .obj extension is ambiguous: Wavefront OBJ 3D model OR COFF object file
+    if (extension_format == .obj and detected == .coff) return true;
+    if (extension_format == .coff and detected == .obj) return true;
 
     return false;
 }
@@ -4392,6 +4425,13 @@ pub const FormatValidator = struct {
             };
         }
 
+        // SQLite companion files (.sqlite-wal, .sqlite-shm, .sqlite-journal)
+        // These are ephemeral files used by SQLite WAL/journal mode. They're
+        // not independently meaningful but should be recognized rather than UNKNOWN.
+        if (isSqliteCompanionFile(path)) {
+            return ValidationResult.okWithDepth(.sqlite, .structural);
+        }
+
         // Check if path is a directory (but not a known bundle)
         const stat = std.fs.cwd().statFile(path) catch {
             return ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
@@ -4457,6 +4497,7 @@ pub const FormatValidator = struct {
                     .bwproject, .ptx, .band, .reason, .cpr, .logicx, .song, .sketch, .drp,
                     .snes, .gb, .gba, .nds, .genesis, .cwk, .mwd,
                     .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2,
+                    .obj, .coff, // .obj is ambiguous (Wavefront OBJ vs COFF); .o has no magic
                     => true,
                     else => false,
                 };
@@ -4498,6 +4539,17 @@ pub const FormatValidator = struct {
                         .nacha => financial_validators.validateNacha(reopen_ext),
                         .mt940 => financial_validators.validateMt940(reopen_ext),
                         .bai2 => financial_validators.validateBai2(reopen_ext),
+                        .coff => executable_validators.validateCoff(reopen_ext),
+                        .obj => blk: {
+                            // .obj is ambiguous: try COFF first (binary), fall back to Wavefront OBJ (text)
+                            const coff_result = executable_validators.validateCoff(reopen_ext);
+                            if (coff_result.format == .coff and coff_result.is_valid) {
+                                break :blk coff_result;
+                            }
+                            // Not COFF — try Wavefront OBJ
+                            reopen_ext.seekTo(0) catch break :blk ValidationResult.ok(.obj);
+                            break :blk cad_3d_validators.validateObj(reopen_ext);
+                        },
                         else => ValidationResult.ok(ext_format),
                     };
                 } else {
@@ -4814,6 +4866,12 @@ pub const FormatValidator = struct {
         // Ensure allocator is available for validators that need it (e.g. Unicode warnings)
         if (self.allocator == null) {
             self.allocator = allocator;
+        }
+
+        // SQLite companion files don't need deep validation — they're ephemeral
+        // files only meaningful alongside their parent .sqlite database
+        if (isSqliteCompanionFile(path)) {
+            return ValidationResult.okWithDepth(.sqlite, .structural);
         }
 
         // First do structural validation
