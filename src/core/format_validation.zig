@@ -2402,12 +2402,59 @@ fn isExcludedTextExtension(path: []const u8) bool {
     }
     const ext_lower = lower_ext[0..ext.len];
 
-    // Code files (various languages)
+    // Code files — systems languages
+    if (std.mem.eql(u8, ext_lower, "c")) return true; // C
+    if (std.mem.eql(u8, ext_lower, "h")) return true; // C header
+    if (std.mem.eql(u8, ext_lower, "cpp")) return true; // C++
+    if (std.mem.eql(u8, ext_lower, "cxx")) return true; // C++
+    if (std.mem.eql(u8, ext_lower, "cc")) return true; // C++
+    if (std.mem.eql(u8, ext_lower, "hpp")) return true; // C++ header
+    if (std.mem.eql(u8, ext_lower, "hxx")) return true; // C++ header
+    if (std.mem.eql(u8, ext_lower, "hh")) return true; // C++ header
+    if (std.mem.eql(u8, ext_lower, "zig")) return true; // Zig
+    if (std.mem.eql(u8, ext_lower, "zon")) return true; // Zig build config
+    if (std.mem.eql(u8, ext_lower, "rs")) return true; // Rust
+    if (std.mem.eql(u8, ext_lower, "go")) return true; // Go
+    if (std.mem.eql(u8, ext_lower, "d")) return true; // D
+    if (std.mem.eql(u8, ext_lower, "m")) return true; // Objective-C
+    if (std.mem.eql(u8, ext_lower, "mm")) return true; // Objective-C++
+    if (std.mem.eql(u8, ext_lower, "swift")) return true; // Swift
+    if (std.mem.eql(u8, ext_lower, "s")) return true; // Assembly
+    if (std.mem.eql(u8, ext_lower, "asm")) return true; // Assembly
+
+    // Code files — JVM/managed languages
+    if (std.mem.eql(u8, ext_lower, "java")) return true; // Java
+    if (std.mem.eql(u8, ext_lower, "kt")) return true; // Kotlin
+    if (std.mem.eql(u8, ext_lower, "kts")) return true; // Kotlin script
+    if (std.mem.eql(u8, ext_lower, "scala")) return true; // Scala
+    if (std.mem.eql(u8, ext_lower, "groovy")) return true; // Groovy
+    if (std.mem.eql(u8, ext_lower, "cs")) return true; // C#
+    if (std.mem.eql(u8, ext_lower, "fs")) return true; // F#
+    if (std.mem.eql(u8, ext_lower, "fsx")) return true; // F# script
+    if (std.mem.eql(u8, ext_lower, "vb")) return true; // Visual Basic
+
+    // Code files — web/scripting
+    if (std.mem.eql(u8, ext_lower, "js")) return true; // JavaScript
+    if (std.mem.eql(u8, ext_lower, "mjs")) return true; // JavaScript module
+    if (std.mem.eql(u8, ext_lower, "cjs")) return true; // CommonJS module
+    if (std.mem.eql(u8, ext_lower, "ts")) return true; // TypeScript
+    if (std.mem.eql(u8, ext_lower, "mts")) return true; // TypeScript module
+    if (std.mem.eql(u8, ext_lower, "cts")) return true; // CommonJS TypeScript
     if (std.mem.eql(u8, ext_lower, "rb")) return true; // Ruby
     if (std.mem.eql(u8, ext_lower, "py")) return true; // Python
+    if (std.mem.eql(u8, ext_lower, "pyi")) return true; // Python type stubs
     if (std.mem.eql(u8, ext_lower, "pl")) return true; // Perl
     if (std.mem.eql(u8, ext_lower, "pm")) return true; // Perl module
     if (std.mem.eql(u8, ext_lower, "lua")) return true; // Lua
+
+    // Code files — BEAM/Erlang ecosystem
+    if (std.mem.eql(u8, ext_lower, "erl")) return true; // Erlang
+    if (std.mem.eql(u8, ext_lower, "hrl")) return true; // Erlang header
+    if (std.mem.eql(u8, ext_lower, "ex")) return true; // Elixir
+    if (std.mem.eql(u8, ext_lower, "exs")) return true; // Elixir script
+    if (std.mem.eql(u8, ext_lower, "gleam")) return true; // Gleam
+
+    // Code files — shell/scripting
     if (std.mem.eql(u8, ext_lower, "sh")) return true; // Shell
     if (std.mem.eql(u8, ext_lower, "bash")) return true; // Bash
     if (std.mem.eql(u8, ext_lower, "zsh")) return true; // Zsh
@@ -2422,7 +2469,10 @@ fn isExcludedTextExtension(path: []const u8) bool {
     if (std.mem.eql(u8, ext_lower, "jl")) return true; // Julia
     if (std.mem.eql(u8, ext_lower, "nim")) return true; // Nim
     if (std.mem.eql(u8, ext_lower, "v")) return true; // V
+
+    // Code files — functional/academic
     if (std.mem.eql(u8, ext_lower, "hs")) return true; // Haskell
+    if (std.mem.eql(u8, ext_lower, "lhs")) return true; // Literate Haskell
     if (std.mem.eql(u8, ext_lower, "ml")) return true; // OCaml/SML
     if (std.mem.eql(u8, ext_lower, "mli")) return true; // OCaml interface
     if (std.mem.eql(u8, ext_lower, "clj")) return true; // Clojure
@@ -2431,6 +2481,15 @@ fn isExcludedTextExtension(path: []const u8) bool {
     if (std.mem.eql(u8, ext_lower, "scm")) return true; // Scheme
     if (std.mem.eql(u8, ext_lower, "lisp")) return true; // Lisp
     if (std.mem.eql(u8, ext_lower, "el")) return true; // Emacs Lisp
+
+    // Code files — Nix, config-as-code
+    if (std.mem.eql(u8, ext_lower, "nix")) return true; // Nix
+    if (std.mem.eql(u8, ext_lower, "dhall")) return true; // Dhall
+    if (std.mem.eql(u8, ext_lower, "tf")) return true; // Terraform
+    if (std.mem.eql(u8, ext_lower, "hcl")) return true; // HashiCorp Config
+    if (std.mem.eql(u8, ext_lower, "cmake")) return true; // CMake
+    if (std.mem.eql(u8, ext_lower, "gradle")) return true; // Gradle
+    if (std.mem.eql(u8, ext_lower, "sbt")) return true; // SBT (Scala build)
 
     // Web template files (not XML even if they start with <)
     if (std.mem.eql(u8, ext_lower, "hbs")) return true; // Handlebars
@@ -4453,12 +4512,17 @@ pub const FormatValidator = struct {
         // file extension indicates this is a code/log/template file, don't validate
         // it as that text format - it's a false positive from content detection.
         const is_content_detected_text_format = switch (result.format) {
-            .json, .xml, .ini, .toml, .yaml, .fasta, .fastq, .eml => true,
+            .json, .xml, .ini, .toml, .yaml, .csv, .erlang_term, .fasta, .fastq, .eml => true,
             else => false,
         };
         if (is_content_detected_text_format and isExcludedTextExtension(path)) {
-            // Skip validation for this file - trust the extension over content
-            return ValidationResult.unknown();
+            // Content looks like JSON/XML/INI/etc. but extension says it's source code.
+            // Validate as plain text (UTF-8 check) instead of the detected format.
+            const reopen = std.fs.cwd().openFile(path, .{}) catch {
+                return ValidationResult.okWithDepth(.plain_text, .structural);
+            };
+            defer reopen.close();
+            return text_format_validators.validatePlainText(self.allocator, reopen);
         }
 
         // Check extension-based detection
