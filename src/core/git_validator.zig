@@ -168,6 +168,48 @@ fn isGitAvailable() bool {
 
 /// Validate git repository using `git fsck --full --strict`
 /// Returns null if git is not available, otherwise returns validation result
+/// Parsed result from `git count-objects -v`
+const ObjectCounts = struct {
+    loose: u32 = 0,
+    in_pack: u32 = 0,
+    packs: u32 = 0,
+};
+
+/// Parse output of `git count-objects -v` to extract object counts.
+fn parseGitCountObjects(output: []const u8) ObjectCounts {
+    var counts = ObjectCounts{};
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "count: ")) {
+            counts.loose = std.fmt.parseInt(u32, line["count: ".len..], 10) catch 0;
+        } else if (std.mem.startsWith(u8, line, "in-pack: ")) {
+            counts.in_pack = std.fmt.parseInt(u32, line["in-pack: ".len..], 10) catch 0;
+        } else if (std.mem.startsWith(u8, line, "packs: ")) {
+            counts.packs = std.fmt.parseInt(u32, line["packs: ".len..], 10) catch 0;
+        }
+    }
+    return counts;
+}
+
+/// Run `git count-objects -v` and return parsed counts.
+fn getObjectCounts(allocator: Allocator, repo_path: []const u8) ObjectCounts {
+    const git_cmd = if (comptime builtin.os.tag == .windows) "git.exe" else "git";
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{
+            git_cmd,
+            "-C", repo_path,
+            "count-objects",
+            "-v",
+        },
+        .max_output_bytes = 4096,
+    }) catch return .{};
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    return parseGitCountObjects(result.stdout);
+}
+
 fn validateWithGitFsck(allocator: Allocator, repo_path: []const u8) ?GitValidationResult {
     if (!isGitAvailable()) {
         return null;
@@ -204,14 +246,16 @@ fn validateWithGitFsck(allocator: Allocator, repo_path: []const u8) ?GitValidati
     };
 
     if (exit_code == 0) {
-        // git fsck passed - repository is fully valid
+        // git fsck passed - get actual object counts via count-objects
+        const counts = getObjectCounts(allocator, repo_path);
+        const total_objects = counts.loose + counts.in_pack;
         return .{
             .is_valid = true,
-            .objects_checked = 0, // git fsck doesn't report counts
-            .objects_valid = 0,
+            .objects_checked = total_objects,
+            .objects_valid = total_objects,
             .objects_corrupt = 0,
-            .packs_checked = 0,
-            .packs_valid = 0,
+            .packs_checked = counts.packs,
+            .packs_valid = counts.packs,
             .error_message = null,
             .warning_message = null,
             .validation_depth = .full,
@@ -235,13 +279,16 @@ fn validateWithGitFsck(allocator: Allocator, repo_path: []const u8) ?GitValidati
         }
     }
 
+    // Get actual counts even on failure
+    const fail_counts = getObjectCounts(allocator, repo_path);
+    const fail_total = fail_counts.loose + fail_counts.in_pack;
     return .{
         .is_valid = false,
-        .objects_checked = 0,
-        .objects_valid = 0,
+        .objects_checked = fail_total,
+        .objects_valid = if (fail_total > corrupt_count) fail_total - corrupt_count else 0,
         .objects_corrupt = corrupt_count,
-        .packs_checked = 0,
-        .packs_valid = 0,
+        .packs_checked = fail_counts.packs,
+        .packs_valid = fail_counts.packs,
         .error_message = "git fsck detected repository errors",
         .warning_message = null,
         .validation_depth = .full,
@@ -649,4 +696,31 @@ test "ObjectType.fromString parses types" {
     try std.testing.expect(ObjectType.fromString("blob") == .blob);
     try std.testing.expect(ObjectType.fromString("tag") == .tag);
     try std.testing.expect(ObjectType.fromString("invalid") == null);
+}
+
+test "parseGitCountObjects parses count-objects output" {
+    const sample =
+        \\count: 25
+        \\size: 100
+        \\in-pack: 1234
+        \\packs: 2
+        \\size-pack: 5678
+        \\prune-packable: 0
+        \\garbage: 0
+        \\size-garbage: 0
+    ;
+    const counts = parseGitCountObjects(sample);
+    try std.testing.expectEqual(@as(u32, 25), counts.loose);
+    try std.testing.expectEqual(@as(u32, 1234), counts.in_pack);
+    try std.testing.expectEqual(@as(u32, 2), counts.packs);
+}
+
+test "parseGitCountObjects handles empty/malformed output" {
+    const empty = parseGitCountObjects("");
+    try std.testing.expectEqual(@as(u32, 0), empty.loose);
+    try std.testing.expectEqual(@as(u32, 0), empty.in_pack);
+    try std.testing.expectEqual(@as(u32, 0), empty.packs);
+
+    const garbage = parseGitCountObjects("not valid output\nfoo: bar\n");
+    try std.testing.expectEqual(@as(u32, 0), garbage.loose);
 }
