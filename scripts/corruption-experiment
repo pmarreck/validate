@@ -1,0 +1,349 @@
+#!/usr/bin/env luajit
+--[[
+corruption-experiment: Statistical corruption detection estimator for validate.
+Modes: sniper (single-bit flip), shotgun (4KB overwrite).
+Uses seeded PCG32 for reproducibility. Outputs TSV + human summary with Wilson CI.
+]]
+
+local ffi = require("ffi")
+local bit = require("bit")
+
+-- ===== PCG32 PRNG =====
+-- PCG-XSH-RR-64/32: minimal, fast, reproducible.
+local pcg = {}
+pcg.__index = pcg
+
+function pcg.new(seed)
+	local self = setmetatable({}, pcg)
+	self.state = ffi.new("uint64_t", 0)
+	self.inc = 1442695040888963407ULL
+	-- Seed per PCG spec: two advances
+	self:next_u32()
+	self.state = self.state + ffi.new("uint64_t", seed)
+	self:next_u32()
+	return self
+end
+
+function pcg:next_u32()
+	local oldstate = self.state
+	self.state = oldstate * 6364136223846793005ULL + self.inc
+	-- XSH-RR output function
+	local xorshifted_u64 = bit.bxor(
+		ffi.cast("uint64_t", bit.rshift(ffi.cast("uint64_t", oldstate), 18)),
+		ffi.cast("uint64_t", oldstate)
+	)
+	local xorshifted = tonumber(ffi.cast("uint32_t", bit.rshift(ffi.cast("uint64_t", xorshifted_u64), 27)))
+	local rot = tonumber(ffi.cast("uint32_t", bit.rshift(ffi.cast("uint64_t", oldstate), 59)))
+	return bit.tobit(bit.bor(
+		bit.rshift(xorshifted, rot),
+		bit.lshift(xorshifted, bit.band(-rot, 31))
+	))
+end
+
+--- Uniform random integer in [0, bound-1]. Rejection sampling avoids modulo bias.
+function pcg:uniform(bound)
+	if bound <= 1 then return 0 end
+	-- Use unsigned math via bit ops
+	local threshold = (-bound) % bound -- equivalent to (2^32 - bound) % bound
+	while true do
+		local r = self:next_u32()
+		-- Convert to unsigned for comparison
+		local ru = r
+		if ru < 0 then ru = ru + 4294967296 end
+		local tu = threshold
+		if tu < 0 then tu = tu + 4294967296 end
+		if ru >= tu then
+			return ru % bound
+		end
+	end
+end
+
+--- Random byte (0-255)
+function pcg:byte()
+	local r = self:next_u32()
+	if r < 0 then r = r + 4294967296 end
+	return r % 256
+end
+
+-- ===== Seed from /dev/urandom =====
+local function random_seed()
+	local f = io.open("/dev/urandom", "rb")
+	if not f then
+		return os.time() + tonumber(tostring({}):match("0x(%x+)"), 16)
+	end
+	local bytes = f:read(8)
+	f:close()
+	local seed = 0ULL
+	for i = 1, #bytes do
+		seed = seed * 256ULL + ffi.new("uint64_t", bytes:byte(i))
+	end
+	return tonumber(seed)
+end
+
+-- ===== CLI Parsing =====
+local function parse_args(argv)
+	local opts = {
+		mode = nil,
+		file = nil,
+		count = 38416,
+		seed = nil,
+		no_stop = false,
+		output = nil,
+	}
+
+	local i = 1
+	while i <= #argv do
+		local a = argv[i]
+		if a == "-h" or a == "--help" then
+			io.stderr:write([[
+Usage: corruption-experiment <mode> <file> [options]
+
+Modes:
+  sniper    Single-bit flip at random byte offset
+  shotgun   Overwrite 4096 consecutive bytes with random data
+
+Options:
+  --count N     Max trials (default: 38416)
+  --seed N      PRNG seed (default: from /dev/urandom)
+  --no-stop     Disable early stopping, run all N trials
+  --output F    TSV output path (default: stdout)
+  -h, --help    Show this help
+]])
+			os.exit(0)
+		elseif a == "--count" then
+			i = i + 1
+			opts.count = tonumber(argv[i]) or error("--count requires a number")
+		elseif a == "--seed" then
+			i = i + 1
+			opts.seed = tonumber(argv[i]) or error("--seed requires a number")
+		elseif a == "--no-stop" then
+			opts.no_stop = true
+		elseif a == "--output" then
+			i = i + 1
+			opts.output = argv[i] or error("--output requires a path")
+		elseif not opts.mode and (a == "sniper" or a == "shotgun") then
+			opts.mode = a
+		elseif not opts.file then
+			opts.file = a
+		else
+			error("Unknown argument: " .. a)
+		end
+		i = i + 1
+	end
+
+	if not opts.mode then error("Missing mode (sniper or shotgun)") end
+	if not opts.file then error("Missing file argument") end
+	if not opts.seed then opts.seed = random_seed() end
+
+	return opts
+end
+
+-- ===== File I/O =====
+local function read_file(path)
+	local f, err = io.open(path, "rb")
+	if not f then error("Cannot open file: " .. path .. " (" .. (err or "unknown") .. ")") end
+	local data = f:read("*a")
+	f:close()
+	return data
+end
+
+local function write_file(path, data)
+	local f = io.open(path, "wb")
+	if not f then error("Cannot write file: " .. path) end
+	f:write(data)
+	f:close()
+end
+
+-- ===== Corruption =====
+
+--- Sniper: flip one random bit at a random byte offset.
+local function corrupt_sniper(data, rng)
+	local off = rng:uniform(#data)
+	local b = rng:uniform(8)
+	local buf = ffi.new("uint8_t[?]", #data)
+	ffi.copy(buf, data, #data)
+	buf[off] = bit.bxor(buf[off], bit.lshift(1, b))
+	return ffi.string(buf, #data), off, b
+end
+
+--- Shotgun: overwrite 4096 consecutive bytes with random data.
+local function corrupt_shotgun(data, rng)
+	if #data < 4096 then error("File too small for shotgun mode (< 4096 bytes)") end
+	local off = rng:uniform(#data - 4096 + 1)
+	local buf = ffi.new("uint8_t[?]", #data)
+	ffi.copy(buf, data, #data)
+	for i = 0, 4095 do
+		buf[off + i] = rng:byte()
+	end
+	return ffi.string(buf, #data), off, nil
+end
+
+-- ===== Wilson Confidence Interval =====
+local function wilson_ci(k, n)
+	if n == 0 then return 0, 0, 0, 1 end
+	local z = 1.959963984540054
+	local p_hat = k / n
+	local z2 = z * z
+	local den = 1 + z2 / n
+	local center = (p_hat + z2 / (2 * n)) / den
+	local radius = (z * math.sqrt(p_hat * (1 - p_hat) / n + z2 / (4 * n * n))) / den
+	return p_hat, center - radius, center + radius, radius
+end
+
+-- ===== Validate =====
+-- Locate validate binary: check ./zig-out/bin/ first, then PATH
+local validate_bin
+do
+	local f = io.open("./zig-out/bin/validate", "r")
+	if f then
+		f:close()
+		validate_bin = "./zig-out/bin/validate"
+	else
+		-- Try PATH
+		local ret = os.execute("which validate > /dev/null 2>/dev/null")
+		if ret == 0 then
+			validate_bin = "validate"
+		else
+			io.stderr:write("Error: Cannot find validate binary (tried ./zig-out/bin/validate and PATH)\n")
+			os.exit(2)
+		end
+	end
+end
+
+local function validate_file(path)
+	-- LuaJIT os.execute returns raw wait status: 0=success, 256=exit(1)
+	local ret = os.execute(string.format(
+		'%s "%s" > /dev/null 2>/dev/null', validate_bin, path))
+	return ret == 0 -- true = valid (NOT detected), false = detected
+end
+
+-- ===== Number formatting =====
+local function comma_number(n)
+	local s = tostring(n)
+	local pos = #s % 3
+	if pos == 0 then pos = 3 end
+	local parts = { s:sub(1, pos) }
+	for i = pos + 1, #s, 3 do
+		parts[#parts + 1] = s:sub(i, i + 2)
+	end
+	return table.concat(parts, ",")
+end
+
+-- ===== Human-readable summary =====
+local function print_summary(opts, filesize, k, n, seed, p_hat, ci_lo, ci_hi, radius)
+	local pct = p_hat * 100
+	local margin = radius * 100
+	local basename = opts.file:match("([^/]+)$") or opts.file
+
+	io.stderr:write(string.format("\n═══ Results: %s on %s (%s bytes) ═══\n",
+		opts.mode, basename, comma_number(filesize)))
+	io.stderr:write(string.format("  Detection rate:  %.1f%% ± %.1f%%  (95%% confidence)\n", pct, margin))
+	io.stderr:write(string.format("  CI:              [%.1f%%, %.1f%%]\n", ci_lo * 100, ci_hi * 100))
+	io.stderr:write(string.format("  Trials:          %s of %s%s\n",
+		comma_number(n), comma_number(opts.count),
+		(n < opts.count and not opts.no_stop) and " (early stop)" or ""))
+	io.stderr:write(string.format("  Detected:        %s\n", comma_number(k)))
+	io.stderr:write(string.format("  Missed:          %s\n", comma_number(n - k)))
+	io.stderr:write(string.format("  Seed:            %s\n", tostring(seed)))
+	io.stderr:write("\n")
+
+	-- Plain English summary
+	local pct_round = math.floor(pct + 0.5)
+	if opts.mode == "sniper" then
+		io.stderr:write(string.format(
+			"  Plain English:   ~%d%% of the file's bytes are covered by\n" ..
+			"                   validation. A random single-bit flip has\n" ..
+			"                   a %d%% chance of being caught.\n",
+			pct_round, pct_round))
+	else
+		io.stderr:write(string.format(
+			"  Plain English:   A random 4KB sector failure has a %.1f%%\n" ..
+			"                   chance of being caught by validation.\n",
+			pct))
+	end
+	io.stderr:write("\n")
+end
+
+-- ===== Main =====
+local function main()
+	local opts = parse_args(arg)
+	local data = read_file(opts.file)
+	local filesize = #data
+	local rng = pcg.new(opts.seed)
+
+	-- Temp file in RAM-backed tmpdir
+	local ext = opts.file:match("%.([^.]+)$") or "bin"
+	local tmpdir = os.getenv("TMPDIR") or "/tmp"
+	local tmpfile = tmpdir .. "/corruption_trial." .. ext
+
+	-- TSV output
+	local tsv_out = io.stdout
+	if opts.output then
+		tsv_out = io.open(opts.output, "w")
+		if not tsv_out then error("Cannot open output file: " .. opts.output) end
+	end
+
+	local basename = opts.file:match("([^/]+)$") or opts.file
+	tsv_out:write(string.format("# seed=%s mode=%s file=%s filesize=%d\n",
+		tostring(opts.seed), opts.mode, basename, filesize))
+	tsv_out:write("trial\tmode\tfilesize\toff\tbit\tspan\tdetected\n")
+
+	local corrupt_fn = opts.mode == "sniper" and corrupt_sniper or corrupt_shotgun
+	local span = opts.mode == "sniper" and 1 or 4096
+
+	local k = 0
+	local n = 0
+
+	io.stderr:write(string.format("Starting %s experiment on %s (%s bytes, seed=%s, max=%s)\n",
+		opts.mode, basename, comma_number(filesize), tostring(opts.seed), comma_number(opts.count)))
+
+	for trial = 0, opts.count - 1 do
+		local corrupted, off, b = corrupt_fn(data, rng)
+		write_file(tmpfile, corrupted)
+
+		local valid = validate_file(tmpfile)
+		local detected = not valid
+
+		if detected then k = k + 1 end
+		n = n + 1
+
+		local bit_col = b and tostring(b) or "-"
+		tsv_out:write(string.format("%d\t%s\t%d\t%d\t%s\t%d\t%s\n",
+			trial, opts.mode, filesize, off, bit_col, span,
+			detected and "true" or "false"))
+
+		-- Progress every 100 trials
+		if n % 100 == 0 then
+			local p_hat = k / n
+			io.stderr:write(string.format(
+				"\r  [%s/%s] detected=%s (%.1f%%)   ",
+				comma_number(n), comma_number(opts.count), comma_number(k), p_hat * 100))
+		end
+
+		-- Early stopping check every 100 trials
+		if not opts.no_stop and n >= 100 and n % 100 == 0 then
+			local _, _, _, radius = wilson_ci(k, n)
+			if radius <= 0.005 then
+				io.stderr:write(string.format(
+					"\r  Early stop at trial %s: CI radius %.4f <= 0.005                \n",
+					comma_number(n), radius))
+				break
+			end
+		end
+	end
+
+	io.stderr:write("\r" .. string.rep(" ", 70) .. "\r") -- clear progress line
+
+	os.remove(tmpfile)
+
+	local p_hat, ci_lo, ci_hi, radius = wilson_ci(k, n)
+	print_summary(opts, filesize, k, n, opts.seed, p_hat, ci_lo, ci_hi, radius)
+
+	if opts.output then tsv_out:close() end
+end
+
+local ok, err = pcall(main)
+if not ok then
+	io.stderr:write("Error: " .. tostring(err) .. "\n")
+	os.exit(2)
+end
