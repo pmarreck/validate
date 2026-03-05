@@ -108,6 +108,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `tests/fixtures/` | Validation test fixtures |
 | `tests/cli/` | CLI integration tests (bash), including archive discrimination checks (`rar_validation`, `cpt_validation`) over valid + 5 deterministic corrupted fixtures |
 | `scripts/strict_format_coverage` | Deterministic strict coverage harness: enumerates `hasValidator()` formats, maps ground-truth samples (including extension-aware KMZ mapping), validates valid-path behavior, runs 5 seeded non-magic corruption checks (with per-format protected prefixes, including HQX envelope protection), and classifies failures via `corruption_opacity` policy |
+| `scripts/corruption-experiment` | LuaJIT statistical corruption detection estimator — sniper (single-bit flip) and shotgun (4KB overwrite) modes with seeded PCG32, Wilson CI, early stopping, TSV output |
 
 ## Documentation
 | File | Purpose |

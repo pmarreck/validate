@@ -37,6 +37,16 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] 8 CLI tests (4 ground truth + 4 corruption detection) all passing (2026-03-05 EST)
 - [x] Handle null padding after EOF, multi-substream Workbook layout (2026-03-05 EST)
 
+### MS-DOC Deep Decode
+- [x] Full PCD decode: follow every PCD fc to physical WordDocument position (FcCompressed Latin-1/UTF-16LE) (2026-03-05 EST)
+- [x] PlcBteChpx/PlcBtePapx validation: CP monotonicity + BTE page number bounds (2026-03-05 EST)
+- [x] Fix FibRgFcLcb97 indices: PlcBteChpx=12, PlcBtePapx=13 (not 32/33) (2026-03-05 EST)
+
+### Corruption Detection Experiment
+- [x] Design doc: docs/plans/2026-03-05-corruption-experiment-design.md (2026-03-05 EST)
+- [x] LuaJIT script: scripts/corruption-experiment — sniper + shotgun modes, PCG32, Wilson CI, TSV output (2026-03-05 EST)
+- [x] Multi-format smoke testing (doc, xls, png, jpeg, zip — all working) (2026-03-05 EST)
+
 ### Progrez Library Integration
 - [x] Add progrez_core module to progrez (no FFI, pure-logic only) (2026-03-01 EST)
 - [x] Add progrez path dependency to validate build.zig.zon + build.zig (2026-03-01 EST)
