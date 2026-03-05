@@ -30,6 +30,13 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] 9 CLI corruption detection tests (magic, nFibBack, csw, fc/lcb bounds) all passing (2026-03-04 EST)
 - [x] Word 6/95 graceful fallback to structural with warning (2026-03-04 EST)
 
+### MS-XLS Deep Validation
+- [x] Create excel_biff8_validator.zig — BIFF8 record chain, BoundSheet8 cross-validation, SST header (2026-03-05 EST)
+- [x] Wire up .xls dispatch: OLE2 structural → excel_biff8_validator.validateXlsDeep → .full depth (2026-03-05 EST)
+- [x] Ground truth: 4 .xls files (sample, poi_simple, poi_formula, poi_multisheet) all fully validated (2026-03-05 EST)
+- [x] 8 CLI tests (4 ground truth + 4 corruption detection) all passing (2026-03-05 EST)
+- [x] Handle null padding after EOF, multi-substream Workbook layout (2026-03-05 EST)
+
 ### Progrez Library Integration
 - [x] Add progrez_core module to progrez (no FFI, pure-logic only) (2026-03-01 EST)
 - [x] Add progrez path dependency to validate build.zig.zon + build.zig (2026-03-01 EST)

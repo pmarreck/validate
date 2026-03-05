@@ -105,7 +105,7 @@ webm	mixed	Matroska container + codec stream often partially tolerant
 webp	mixed	Container/image payload can remain decodable with artifacts
 warc	mixed	Record framing can survive while payload is damaged
 xm	mixed	Tracker/module payload bytes can change while structure remains parseable
-xls	mixed	OLE2 compound file may stay structurally parseable
+xls	mixed	BIFF8 record chain + BoundSheet8 cross-validation catches structural corruption; no checksums for content bytes
 xlsx	mixed	OOXML zip + XML parts can survive some non-critical mutations
 zstd	mixed	Frame checksum is optional; bit flips can still produce decodable streams
 accdb	mixed	Jet/ACE engine page structure lacks mandatory end-to-end checksums

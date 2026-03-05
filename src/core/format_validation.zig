@@ -6055,8 +6055,8 @@ test "FormatValidator deep validates real OLE2 XLS from ground truth" {
 
     try std.testing.expectEqual(FileFormat.xls, result.format);
     try std.testing.expect(result.is_valid);
-    // OLE2 validates FAT chain + directory structure but no CRC/hash
-    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+    // BIFF8 record chain + BoundSheet8 cross-validation + SST header
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 test "FormatValidator deep validates real OLE2 PPT from ground truth" {

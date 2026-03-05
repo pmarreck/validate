@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# MS-XLS deep validation tests: ground truth + corruption detection
+
+set -u
+
+BIN="./zig-out/bin/validate"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+fi
+
+PASS=0
+FAIL=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAIL=$((FAIL + 1))
+}
+
+pass() {
+	printf '  PASS: %s\n' "$1"
+	PASS=$((PASS + 1))
+}
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_xls_test.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# ---- Ground truth tests ----
+
+echo "Test 1: sample.xls validates with full depth"
+output=$("$BIN" ground_truth_examples/xls/sample.xls 2>&1) || true
+if echo "$output" | grep -q "fully validated"; then
+	pass "sample.xls fully validated"
+else
+	fail "sample.xls did not get full depth: $output"
+fi
+
+echo "Test 2: poi_simple.xls validates with full depth"
+output=$("$BIN" ground_truth_examples/xls/poi_simple.xls 2>&1) || true
+if echo "$output" | grep -q "fully validated"; then
+	pass "poi_simple.xls fully validated"
+else
+	fail "poi_simple.xls: $output"
+fi
+
+echo "Test 3: poi_formula.xls validates with full depth"
+output=$("$BIN" ground_truth_examples/xls/poi_formula.xls 2>&1) || true
+if echo "$output" | grep -q "fully validated"; then
+	pass "poi_formula.xls fully validated"
+else
+	fail "poi_formula.xls: $output"
+fi
+
+echo "Test 4: poi_multisheet.xls validates with full depth"
+output=$("$BIN" ground_truth_examples/xls/poi_multisheet.xls 2>&1) || true
+if echo "$output" | grep -q "fully validated"; then
+	pass "poi_multisheet.xls fully validated"
+else
+	fail "poi_multisheet.xls: $output"
+fi
+
+# ---- Corruption detection tests ----
+# OLE2 stream offsets vary per file, so we corrupt at the container level
+# which propagates to stream reading failures.
+
+SAMPLE="ground_truth_examples/xls/sample.xls"
+
+echo "Test 5: Truncated file detected"
+cp "$SAMPLE" "$tmpdir/truncated.xls"
+# Truncate to 256 bytes (too small for valid OLE2 + Workbook)
+dd if="$SAMPLE" of="$tmpdir/truncated.xls" bs=1 count=256 2>/dev/null
+output=$("$BIN" "$tmpdir/truncated.xls" 2>&1) || true
+if echo "$output" | grep -q "FAIL"; then
+	pass "Truncated file detected"
+else
+	fail "Truncated file not detected: $output"
+fi
+
+echo "Test 6: Corrupted OLE2 header magic detected"
+cp "$SAMPLE" "$tmpdir/corrupt_ole2.xls"
+# OLE2 magic is first 8 bytes: D0 CF 11 E0 A1 B1 1A E1
+printf '\x00\x00\x00\x00' | dd of="$tmpdir/corrupt_ole2.xls" bs=1 seek=0 count=4 conv=notrunc 2>/dev/null
+output=$("$BIN" "$tmpdir/corrupt_ole2.xls" 2>&1) || true
+if echo "$output" | grep -q "FAIL\|Unknown"; then
+	pass "Corrupted OLE2 header detected"
+else
+	fail "Corrupted OLE2 header not detected: $output"
+fi
+
+echo "Test 7: Corrupted sector size detected"
+cp "$SAMPLE" "$tmpdir/corrupt_sector.xls"
+# Sector size power is at offset 30 (u16 LE), normally 9 (=512) or 12 (=4096)
+# Set to 0xFF 0xFF which is invalid
+printf '\xFF\xFF' | dd of="$tmpdir/corrupt_sector.xls" bs=1 seek=30 count=2 conv=notrunc 2>/dev/null
+output=$("$BIN" "$tmpdir/corrupt_sector.xls" 2>&1) || true
+if echo "$output" | grep -q "FAIL"; then
+	pass "Corrupted sector size detected"
+else
+	fail "Corrupted sector size not detected: $output"
+fi
+
+echo "Test 8: Corrupted directory entry count detected"
+cp "$SAMPLE" "$tmpdir/corrupt_dir.xls"
+# Directory sector start at offset 48 (u32 LE), set to invalid sector
+printf '\xFE\xFF\xFF\x7F' | dd of="$tmpdir/corrupt_dir.xls" bs=1 seek=48 count=4 conv=notrunc 2>/dev/null
+output=$("$BIN" "$tmpdir/corrupt_dir.xls" 2>&1) || true
+if echo "$output" | grep -q "FAIL"; then
+	pass "Corrupted directory entry detected"
+else
+	fail "Corrupted directory entry not detected: $output"
+fi
+
+# ---- Summary ----
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"

@@ -51,6 +51,7 @@ pub const bmp_decoder = @import("bmp_decoder.zig");
 pub const midi_validator = @import("midi_validator.zig");
 pub const ole2_validator = @import("ole2_validator.zig");
 pub const word_doc_validator = @import("word_doc_validator.zig");
+pub const excel_biff8_validator = @import("excel_biff8_validator.zig");
 pub const font_validator = @import("font_validator.zig");
 pub const pdf_font_validator = @import("pdf_font_validator.zig");
 pub const pdf_embedded_file_validator = @import("pdf_embedded_file_validator.zig");
@@ -183,6 +184,8 @@ test {
     _ = @import("ole2_validator.zig");
     // MS-DOC (Word Binary) FIB + Table stream cross-validator
     _ = @import("word_doc_validator.zig");
+    // MS-XLS (Excel 97-2003) BIFF8 record chain validator
+    _ = @import("excel_biff8_validator.zig");
     // Compression validators
     _ = @import("brotli_validator.zig");
     // Tracker/module validators

@@ -88,6 +88,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/financial_validators.zig` | Financial format validation (QBW, QBB, QDF, OFX, QIF, TXF) |
 | `src/core/ole2_validator.zig` | OLE2/CFBF compound document validator — header, FAT, DIFAT, directory; `readNamedStream()` extracts streams by name via FAT/mini-FAT chains |
 | `src/core/word_doc_validator.zig` | MS-DOC (Word 97-2003) deep validator — FIB parsing (FibBase, FibRgLw97, FibRgFcLcb97), Table stream cross-validation, CLX/Piece Table consistency; Word 6/95 falls back to structural |
+| `src/core/excel_biff8_validator.zig` | MS-XLS (Excel 97-2003) deep validator — BIFF8 record chain parsing, BoundSheet8 offset cross-validation, SST header consistency; older BIFF/encrypted files fall back to structural |
 | `src/core/ebml_parser.zig` | EBML/Matroska container parser with CRC-32 verification (uses `std.hash.Crc32` via codec_utils consolidation) |
 
 ## FFI (ffi/)
