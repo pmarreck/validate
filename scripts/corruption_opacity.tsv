@@ -85,7 +85,7 @@ pdf	mixed	Object/xref graph may remain valid despite content corruption
 pe	mixed	Executable checksum is optional; some corruption remains structurally valid
 ply	mixed	Header/data split can preserve parseability after some mutations
 prproj	mixed	Gzip/XML project structures can survive localized content mutations
-doc	mixed	OLE2 compound storage lacks mandatory end-to-end integrity
+doc	mixed	FIB + Table stream cross-validation catches structural corruption; no checksums for content bytes
 ppt	mixed	OLE2 compound storage lacks mandatory end-to-end integrity
 pptx	mixed	OOXML zip + XML payload can survive non-critical byte flips
 prores	mixed	Codec stream can degrade without hard parse failure

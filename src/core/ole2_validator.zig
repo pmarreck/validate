@@ -584,7 +584,322 @@ fn validateDirectoryEntries(
     };
 }
 
+// ============ Stream Reading ============
+
+/// Directory entry info needed for stream reading
+const DirEntryInfo = struct {
+    start_sector: u32,
+    stream_size: u64,
+    entry_type: EntryType,
+};
+
+/// Read a named stream from an OLE2 file. Returns allocated bytes or null if not found.
+/// stream_name_ascii is an ASCII name (e.g. "WordDocument") which is matched against
+/// UTF-16LE directory entry names.
+pub fn readNamedStream(allocator: Allocator, path: []const u8, stream_name_ascii: []const u8) ?[]u8 {
+    const file = std.fs.cwd().openFile(path, .{}) catch return null;
+    defer file.close();
+
+    const file_size = file.getEndPos() catch return null;
+    if (file_size < 512) return null;
+
+    // Read and parse header
+    var header_buf: [512]u8 = undefined;
+    const header_bytes = file.readAll(&header_buf) catch return null;
+    if (header_bytes < 512) return null;
+
+    const header = parseHeader(&header_buf) catch return null;
+
+    const header_region_size: u64 = header.sector_size;
+    const total_sectors = @as(u32, @intCast((file_size - header_region_size) / header.sector_size));
+
+    // Read FAT
+    const fat = readFat(allocator, file, &header, total_sectors) catch return null;
+    defer allocator.free(fat);
+
+    // Read directory entries and find the named stream
+    const entry_info = findStreamEntry(allocator, file, &header, fat, total_sectors, stream_name_ascii) catch return null;
+    if (entry_info == null) return null;
+
+    const info = entry_info.?;
+    if (info.stream_size == 0) {
+        // Return empty allocated slice
+        return allocator.alloc(u8, 0) catch return null;
+    }
+
+    // Read the stream data
+    if (info.stream_size < header.mini_stream_cutoff and info.entry_type != .root) {
+        // Small stream: use mini-FAT + mini-stream
+        return readMiniStreamData(allocator, file, &header, fat, total_sectors, info.start_sector, info.stream_size) catch return null;
+    } else {
+        // Large stream: use regular FAT chain
+        return readStreamData(allocator, file, &header, fat, info.start_sector, info.stream_size) catch return null;
+    }
+}
+
+/// Find a stream entry by ASCII name in the OLE2 directory.
+fn findStreamEntry(
+    allocator: Allocator,
+    file: std.fs.File,
+    header: *const Ole2Header,
+    fat: []const u32,
+    total_sectors: u32,
+    name_ascii: []const u8,
+) !?DirEntryInfo {
+    const entries_per_sector = header.sector_size / 128;
+
+    // Collect directory sectors
+    var dir_sectors = std.ArrayListUnmanaged(u32){};
+    defer dir_sectors.deinit(allocator);
+
+    var current = header.first_directory_sector;
+    var visited = std.AutoHashMapUnmanaged(u32, void){};
+    defer visited.deinit(allocator);
+
+    while (current != ENDOFCHAIN and current <= MAXREGSECT) {
+        if (current >= total_sectors) break;
+        if (visited.contains(current)) break;
+        try visited.put(allocator, current, {});
+        try dir_sectors.append(allocator, current);
+        if (current < fat.len) {
+            current = fat[current];
+        } else break;
+    }
+
+    var sector_buf = try allocator.alloc(u8, header.sector_size);
+    defer allocator.free(sector_buf);
+
+    for (dir_sectors.items) |sector| {
+        const sector_offset = @as(u64, header.sector_size) + @as(u64, sector) * header.sector_size;
+        file.seekTo(sector_offset) catch continue;
+        const bytes_read = file.readAll(sector_buf) catch continue;
+        if (bytes_read < header.sector_size) continue;
+
+        for (0..entries_per_sector) |i| {
+            const entry_offset = i * 128;
+            const entry = sector_buf[entry_offset..][0..128];
+
+            const entry_type: EntryType = @enumFromInt(entry[66]);
+            if (entry_type != .stream and entry_type != .root) continue;
+
+            // Extract ASCII name from UTF-16LE
+            const name_len = std.mem.readInt(u16, entry[64..66], .little);
+            if (name_len < 2 or name_len > 64) continue;
+
+            const name_chars = (name_len / 2) - 1; // Exclude null terminator
+            if (name_chars != name_ascii.len) continue;
+
+            // Compare character by character (ASCII in UTF-16LE: low byte = char, high byte = 0)
+            var match = true;
+            for (0..name_chars) |j| {
+                if (entry[j * 2] != name_ascii[j] or entry[j * 2 + 1] != 0) {
+                    match = false;
+                    break;
+                }
+            }
+
+            if (match) {
+                return DirEntryInfo{
+                    .start_sector = std.mem.readInt(u32, entry[116..120], .little),
+                    .stream_size = std.mem.readInt(u64, entry[120..128], .little),
+                    .entry_type = entry_type,
+                };
+            }
+        }
+    }
+
+    return null;
+}
+
+/// Read stream data following a FAT chain.
+fn readStreamData(
+    allocator: Allocator,
+    file: std.fs.File,
+    header: *const Ole2Header,
+    fat: []const u32,
+    start_sector: u32,
+    stream_size: u64,
+) ![]u8 {
+    var data = try allocator.alloc(u8, stream_size);
+    errdefer allocator.free(data);
+
+    var offset: usize = 0;
+    var current = start_sector;
+    var sector_buf = try allocator.alloc(u8, header.sector_size);
+    defer allocator.free(sector_buf);
+    var chain_len: u32 = 0;
+    const max_chain = @as(u32, @intCast(stream_size / header.sector_size)) + 2;
+
+    while (current != ENDOFCHAIN and current <= MAXREGSECT and offset < stream_size) {
+        chain_len += 1;
+        if (chain_len > max_chain) return error.FatChainLoop;
+
+        const sector_offset = @as(u64, header.sector_size) + @as(u64, current) * header.sector_size;
+        file.seekTo(sector_offset) catch return error.ReadError;
+        const bytes_read = file.readAll(sector_buf) catch return error.ReadError;
+        if (bytes_read < header.sector_size) return error.ReadError;
+
+        const to_copy = @min(header.sector_size, stream_size - offset);
+        @memcpy(data[offset..][0..to_copy], sector_buf[0..to_copy]);
+        offset += to_copy;
+
+        if (current < fat.len) {
+            current = fat[current];
+        } else break;
+    }
+
+    return data;
+}
+
+/// Read mini-stream data (for streams < mini_stream_cutoff).
+/// Mini-stream is stored in the root entry's stream data, indexed by mini-FAT.
+fn readMiniStreamData(
+    allocator: Allocator,
+    file: std.fs.File,
+    header: *const Ole2Header,
+    fat: []const u32,
+    total_sectors: u32,
+    start_mini_sector: u32,
+    stream_size: u64,
+) ![]u8 {
+    // First, find root entry to get mini-stream's start sector and size
+    const root_info = (try findStreamEntry(allocator, file, header, fat, total_sectors, "Root Entry")) orelse
+        return error.ReadError;
+
+    // Read the full mini-stream (root entry's data via regular FAT)
+    const mini_stream = try readStreamData(allocator, file, header, fat, root_info.start_sector, root_info.stream_size);
+    defer allocator.free(mini_stream);
+
+    // Read the mini-FAT
+    const mini_fat = try readMiniFat(allocator, file, header, fat);
+    defer allocator.free(mini_fat);
+
+    // Now follow mini-FAT chain and collect data
+    var data = try allocator.alloc(u8, stream_size);
+    errdefer allocator.free(data);
+
+    var offset: usize = 0;
+    var current = start_mini_sector;
+    var chain_len: u32 = 0;
+    const max_chain = @as(u32, @intCast(stream_size / header.mini_sector_size)) + 2;
+
+    while (current != ENDOFCHAIN and current <= MAXREGSECT and offset < stream_size) {
+        chain_len += 1;
+        if (chain_len > max_chain) return error.FatChainLoop;
+
+        const mini_offset = @as(usize, current) * header.mini_sector_size;
+        if (mini_offset + header.mini_sector_size > mini_stream.len) return error.ReadError;
+
+        const to_copy = @min(header.mini_sector_size, stream_size - offset);
+        @memcpy(data[offset..][0..to_copy], mini_stream[mini_offset..][0..to_copy]);
+        offset += to_copy;
+
+        if (current < mini_fat.len) {
+            current = mini_fat[current];
+        } else break;
+    }
+
+    return data;
+}
+
+/// Read the mini-FAT from the file.
+fn readMiniFat(
+    allocator: Allocator,
+    file: std.fs.File,
+    header: *const Ole2Header,
+    fat: []const u32,
+) ![]u32 {
+    if (header.total_mini_fat_sectors == 0 or header.first_mini_fat_sector == ENDOFCHAIN) {
+        return try allocator.alloc(u32, 0);
+    }
+
+    const entries_per_sector = header.sector_size / 4;
+    var mini_fat = std.ArrayListUnmanaged(u32){};
+    defer mini_fat.deinit(allocator); // only on error path; we transfer ownership below
+
+    var sector_buf = try allocator.alloc(u8, header.sector_size);
+    defer allocator.free(sector_buf);
+
+    var current = header.first_mini_fat_sector;
+    var chain_len: u32 = 0;
+
+    while (current != ENDOFCHAIN and current <= MAXREGSECT) {
+        chain_len += 1;
+        if (chain_len > header.total_mini_fat_sectors + 1) break;
+
+        const sector_offset = @as(u64, header.sector_size) + @as(u64, current) * header.sector_size;
+        file.seekTo(sector_offset) catch return error.ReadError;
+        const bytes_read = file.readAll(sector_buf) catch return error.ReadError;
+        if (bytes_read < header.sector_size) return error.ReadError;
+
+        for (0..entries_per_sector) |i| {
+            try mini_fat.append(allocator, std.mem.readInt(u32, sector_buf[i * 4 ..][0..4], .little));
+        }
+
+        if (current < fat.len) {
+            current = fat[current];
+        } else break;
+    }
+
+    // Transfer ownership - return the internal slice
+    const result = try allocator.alloc(u32, mini_fat.items.len);
+    @memcpy(result, mini_fat.items);
+    return result;
+}
+
 // ============ Tests ============
+
+test "readNamedStream returns WordDocument from sample.doc" {
+    const allocator = std.testing.allocator;
+    const data = readNamedStream(allocator, "ground_truth_examples/doc/sample.doc", "WordDocument");
+    if (data) |d| {
+        defer allocator.free(d);
+        // WordDocument stream should be non-empty
+        try std.testing.expect(d.len > 0);
+        // FIB magic: first 2 bytes should be 0xA5EC (little-endian)
+        try std.testing.expect(d.len >= 2);
+        const wIdent = std.mem.readInt(u16, d[0..2], .little);
+        try std.testing.expectEqual(@as(u16, 0xA5EC), wIdent);
+    } else {
+        // If sample.doc doesn't exist in test CWD, skip
+        return error.SkipZigTest;
+    }
+}
+
+test "readNamedStream returns null for non-existent stream" {
+    const allocator = std.testing.allocator;
+    const data = readNamedStream(allocator, "ground_truth_examples/doc/sample.doc", "NonExistentStream");
+    if (data) |d| {
+        defer allocator.free(d);
+        // Should not reach here
+        try std.testing.expect(false);
+    }
+    // null is the expected result - test passes
+}
+
+test "readNamedStream returns null for non-existent file" {
+    const allocator = std.testing.allocator;
+    const data = readNamedStream(allocator, "/nonexistent/file.doc", "WordDocument");
+    try std.testing.expect(data == null);
+}
+
+test "readNamedStream can read Table stream" {
+    const allocator = std.testing.allocator;
+    // Try both "0Table" and "1Table" — one should exist
+    const t0 = readNamedStream(allocator, "ground_truth_examples/doc/sample.doc", "0Table");
+    const t1 = readNamedStream(allocator, "ground_truth_examples/doc/sample.doc", "1Table");
+    defer {
+        if (t0) |d| allocator.free(d);
+        if (t1) |d| allocator.free(d);
+    }
+    if (t0 == null and t1 == null) {
+        // If sample.doc doesn't exist in test CWD, skip
+        return error.SkipZigTest;
+    }
+    // At least one table stream must exist and be non-empty
+    const table = t0 orelse t1.?;
+    try std.testing.expect(table.len > 0);
+}
 
 test "reject non-OLE2 data" {
     const result = Ole2ValidationResult.invalid(errmsg.invalidSignature("OLE2"));

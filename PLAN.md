@@ -22,6 +22,14 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Add ground-truth samples + tests for NACHA, MT940, BAI2 (2026-02-28 EST)
 - [x] Wire up detection, dispatch, FFI category, i18n (all 30 locales), corruption_opacity (2026-02-28 EST)
 
+### MS-DOC Deep Validation
+- [x] Add OLE2 stream reading capability (readNamedStream, FAT/mini-FAT chain traversal) (2026-03-04 EST)
+- [x] Create word_doc_validator.zig — FIB parser, FibBase/FibRgLw97/FibRgFcLcb97 validation, CLX piece table (2026-03-04 EST)
+- [x] Wire up .doc dispatch: OLE2 structural → word_doc_validator.validateDocDeep → .full depth (2026-03-04 EST)
+- [x] Ground truth: 5 .doc files (sample, word97_simple, word_footnote, word_header_unicode, word95_large) (2026-03-04 EST)
+- [x] 9 CLI corruption detection tests (magic, nFibBack, csw, fc/lcb bounds) all passing (2026-03-04 EST)
+- [x] Word 6/95 graceful fallback to structural with warning (2026-03-04 EST)
+
 ### Progrez Library Integration
 - [x] Add progrez_core module to progrez (no FFI, pure-logic only) (2026-03-01 EST)
 - [x] Add progrez path dependency to validate build.zig.zon + build.zig (2026-03-01 EST)

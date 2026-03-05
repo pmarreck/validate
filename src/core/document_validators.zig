@@ -13,6 +13,7 @@ const ValidationDepth = format_validation.ValidationDepth;
 const findInBuffer = format_validation.findInBuffer;
 
 const ole2_validator = @import("ole2_validator.zig");
+const word_doc_validator = @import("word_doc_validator.zig");
 const errmsg = @import("error_messages.zig");
 
 const sqlite3 = @cImport({
@@ -510,10 +511,15 @@ pub fn validateSqliteDeep(allocator: Allocator, path: []const u8) ValidationResu
 /// See ole2_validator.zig for details on what is and isn't validated.
 pub fn validateOle2Deep(allocator: Allocator, path: []const u8, format: FileFormat) ValidationResult {
     const result = ole2_validator.validateOle2Deep(allocator, path);
-    if (result.valid) {
-        // No CRC/hash — FAT chain + directory structure only
-        return ValidationResult.okWithDepth(format, .structural);
-    } else {
+    if (!result.valid) {
         return ValidationResult.invalidWithDepth(format, result.error_message orelse "OLE2 validation failed", .structural);
     }
+
+    // For .doc, go deeper: parse FIB + cross-validate Table stream
+    if (format == .doc) {
+        return word_doc_validator.validateDocDeep(allocator, path);
+    }
+
+    // XLS, PPT: still structural-only for now
+    return ValidationResult.okWithDepth(format, .structural);
 }

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# MS-DOC deep validation tests: ground truth + corruption detection
+
+set -u
+
+BIN="./zig-out/bin/validate"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+fi
+
+PASS=0
+FAIL=0
+SAMPLE="ground_truth_examples/doc/sample.doc"
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAIL=$((FAIL + 1))
+}
+
+pass() {
+	printf '  PASS: %s\n' "$1"
+	PASS=$((PASS + 1))
+}
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_doc_test.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# ---- Ground truth tests ----
+
+echo "Test 1: sample.doc validates with full depth"
+output=$("$BIN" "$SAMPLE" 2>&1) || true
+if echo "$output" | grep -q "fully validated"; then
+	pass "sample.doc fully validated"
+else
+	fail "sample.doc did not get full depth: $output"
+fi
+
+echo "Test 2: Word 97 simple doc validates"
+output=$("$BIN" ground_truth_examples/doc/word97_simple.doc 2>&1) || true
+if echo "$output" | grep -q "fully validated"; then
+	pass "word97_simple.doc fully validated"
+else
+	fail "word97_simple.doc: $output"
+fi
+
+echo "Test 3: Word doc with footnotes validates"
+output=$("$BIN" ground_truth_examples/doc/word_footnote.doc 2>&1) || true
+if echo "$output" | grep -q "fully validated"; then
+	pass "word_footnote.doc fully validated"
+else
+	fail "word_footnote.doc: $output"
+fi
+
+echo "Test 4: Word doc with Unicode headers validates"
+output=$("$BIN" ground_truth_examples/doc/word_header_unicode.doc 2>&1) || true
+if echo "$output" | grep -q "fully validated"; then
+	pass "word_header_unicode.doc fully validated"
+else
+	fail "word_header_unicode.doc: $output"
+fi
+
+echo "Test 5: Word 95 doc gets structural with warning"
+output=$("$BIN" ground_truth_examples/doc/word95_large.doc 2>&1) || true
+if echo "$output" | grep -q "structural" && echo "$output" | grep -q "Word 6/95"; then
+	pass "word95_large.doc structural with Word 6/95 warning"
+else
+	fail "word95_large.doc: $output"
+fi
+
+# ---- Corruption detection tests ----
+
+echo "Test 6: Corrupted FIB magic detected"
+cp "$SAMPLE" "$tmpdir/corrupt_magic.doc"
+# Flip first 2 bytes of WordDocument stream
+# WordDocument is at sector 0 (offset 512 in the file for v3 OLE2)
+printf '\x00\x00' | dd of="$tmpdir/corrupt_magic.doc" bs=1 seek=512 count=2 conv=notrunc 2>/dev/null
+output=$("$BIN" "$tmpdir/corrupt_magic.doc" 2>&1) || true
+if echo "$output" | grep -q "FAIL\|Invalid FIB signature"; then
+	pass "Corrupted FIB magic detected"
+else
+	fail "Corrupted FIB magic not detected: $output"
+fi
+
+echo "Test 7: Corrupted nFibBack detected"
+cp "$SAMPLE" "$tmpdir/corrupt_nfibback.doc"
+# nFibBack is at offset 0x0C within WordDocument stream = file offset 512+0x0C=524
+printf '\xFF\xFF' | dd of="$tmpdir/corrupt_nfibback.doc" bs=1 seek=524 count=2 conv=notrunc 2>/dev/null
+output=$("$BIN" "$tmpdir/corrupt_nfibback.doc" 2>&1) || true
+if echo "$output" | grep -q "FAIL\|nFibBack"; then
+	pass "Corrupted nFibBack detected"
+else
+	fail "Corrupted nFibBack not detected: $output"
+fi
+
+echo "Test 8: Corrupted csw detected"
+cp "$SAMPLE" "$tmpdir/corrupt_csw.doc"
+# csw is at offset 0x20 within WordDocument stream = file offset 512+0x20=544
+printf '\xFF\xFF' | dd of="$tmpdir/corrupt_csw.doc" bs=1 seek=544 count=2 conv=notrunc 2>/dev/null
+output=$("$BIN" "$tmpdir/corrupt_csw.doc" 2>&1) || true
+if echo "$output" | grep -q "FAIL\|csw"; then
+	pass "Corrupted csw detected"
+else
+	fail "Corrupted csw not detected: $output"
+fi
+
+echo "Test 9: Corrupted fc/lcb pair detected (stshf at index 1)"
+cp "$SAMPLE" "$tmpdir/corrupt_fclcb.doc"
+# fc/lcb pair at index 1: offset 0x9A + 1*8 = 0xA2 within WordDocument stream
+# File offset = 512 + 0xA2 = 674
+# Set fc to a huge value that exceeds table stream
+printf '\xFF\xFF\xFF\x7F' | dd of="$tmpdir/corrupt_fclcb.doc" bs=1 seek=674 count=4 conv=notrunc 2>/dev/null
+# Set lcb to non-zero so it triggers the check
+printf '\x01\x00\x00\x00' | dd of="$tmpdir/corrupt_fclcb.doc" bs=1 seek=678 count=4 conv=notrunc 2>/dev/null
+output=$("$BIN" "$tmpdir/corrupt_fclcb.doc" 2>&1) || true
+if echo "$output" | grep -q "FAIL\|beyond Table stream"; then
+	pass "Corrupted fc/lcb pair detected"
+else
+	fail "Corrupted fc/lcb pair not detected: $output"
+fi
+
+# ---- Summary ----
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"
