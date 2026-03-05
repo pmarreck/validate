@@ -194,7 +194,7 @@ For clarity, the tables below use more specific labels:
 
 | Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
 |--------|------------|------------------|-----------------|-----------|-----|
-| **Word 97-2003** | .doc | OLE2/CFBF header, FAT structure, stream detection | FIB parsing (FibBase, FibRgLw97, FibRgFcLcb97) + Table stream cross-validation + CLX/Piece Table consistency | Full | 5 |
+| **Word 97-2003** | .doc | OLE2/CFBF header, FAT structure, stream detection | FIB parsing + Table stream cross-validation + CLX/Piece Table with full PCD decode (FcCompressed Latin-1/UTF-16LE physical offset verification) + PlcBteChpx/PlcBtePapx CP monotonicity + BTE page number bounds | Full | 5 |
 | **Excel 97-2003** | .xls | OLE2/CFBF header, FAT structure, Workbook stream | BIFF8 record chain + BoundSheet8 cross-validation + SST header | Full | 4 |
 | **PowerPoint 97-2003** | .ppt | OLE2/CFBF header, FAT structure, PowerPoint stream | FAT/DIFAT/mini-FAT + directory validation (container only) | Structure | 1 |
 

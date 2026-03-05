@@ -154,20 +154,56 @@ pub fn validateDocDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalidWithDepth(.doc, err_msg, .structural);
     }
 
-    // If CLX exists (fcClx/lcbClx at index 66), validate piece table
+    // Calculate total CP for PLCF validation
+    const total_cp = fib_lw.ccpText +| fib_lw.ccpFtn +| fib_lw.ccpHdd +|
+        fib_lw.ccpAtn +| fib_lw.ccpEdn +| fib_lw.ccpTxbx +| fib_lw.ccpHdrTxbx;
+
+    // If CLX exists (fcClx/lcbClx at index 66), validate piece table with full PCD decode
     if (cb_rg_fc_lcb > 66) {
         const fc_clx = std.mem.readInt(u32, wd_data[0x9A + 66 * 8 ..][0..4], .little);
         const lcb_clx = std.mem.readInt(u32, wd_data[0x9A + 66 * 8 + 4 ..][0..4], .little);
 
         if (lcb_clx > 0) {
-            // Validate CLX bounds in table stream
             if (@as(u64, fc_clx) + lcb_clx > table_data.len) {
                 return ValidationResult.invalidWithDepth(.doc, "CLX extends beyond Table stream", .structural);
             }
 
-            // Parse and validate the CLX/Piece Table
-            const clx_result = validateClx(table_data[fc_clx..][0..lcb_clx], fib_lw);
+            const clx_result = validateClx(table_data[fc_clx..][0..lcb_clx], fib_lw, wd_data.len);
             if (clx_result) |err_msg| {
+                return ValidationResult.invalidWithDepth(.doc, err_msg, .structural);
+            }
+        }
+    }
+
+    // Validate PlcBteChpx (character property bin table) at FibRgFcLcb97 index 12
+    if (cb_rg_fc_lcb > 12) {
+        const fc_chpx = std.mem.readInt(u32, wd_data[0x9A + 12 * 8 ..][0..4], .little);
+        const lcb_chpx = std.mem.readInt(u32, wd_data[0x9A + 12 * 8 + 4 ..][0..4], .little);
+
+        if (lcb_chpx > 0) {
+            if (@as(u64, fc_chpx) + lcb_chpx > table_data.len) {
+                return ValidationResult.invalidWithDepth(.doc, "PlcBteChpx extends beyond Table stream", .structural);
+            }
+
+            const chpx_result = validatePlcBteChpx(table_data[fc_chpx..][0..lcb_chpx], total_cp, wd_data.len);
+            if (chpx_result) |err_msg| {
+                return ValidationResult.invalidWithDepth(.doc, err_msg, .structural);
+            }
+        }
+    }
+
+    // Validate PlcBtePapx (paragraph property bin table) at FibRgFcLcb97 index 13
+    if (cb_rg_fc_lcb > 13) {
+        const fc_papx = std.mem.readInt(u32, wd_data[0x9A + 13 * 8 ..][0..4], .little);
+        const lcb_papx = std.mem.readInt(u32, wd_data[0x9A + 13 * 8 + 4 ..][0..4], .little);
+
+        if (lcb_papx > 0) {
+            if (@as(u64, fc_papx) + lcb_papx > table_data.len) {
+                return ValidationResult.invalidWithDepth(.doc, "PlcBtePapx extends beyond Table stream", .structural);
+            }
+
+            const papx_result = validatePlcBtePapx(table_data[fc_papx..][0..lcb_papx], total_cp, wd_data.len);
+            if (papx_result) |err_msg| {
                 return ValidationResult.invalidWithDepth(.doc, err_msg, .structural);
             }
         }
@@ -213,11 +249,10 @@ const KNOWN_FC_LCB_INDICES = [_]u16{
     0, // fcStshfOrig — original stylesheet
     1, // fcStshf — stylesheet
     6, // fcPlcfSed — section descriptors
-    12, // fcSttbfffn — font table
-    13, // fcPlcfLst / fcSttbfbkmk — bookmarks
+    12, // fcPlcfBteChpx — character property bin table
+    13, // fcPlcfBtePapx — paragraph property bin table
     15, // fcPlcfFldMom — field positions in main doc
     31, // fcSttbfAssoc — associated strings
-    33, // fcPlcfBtePapx — paragraph property bin table
     66, // fcClx — CLX / piece table (validated separately too)
     86, // fcCmds — macro commands
 };
@@ -243,10 +278,11 @@ fn validateKnownTableBounds(wd_data: []const u8, cb_rg_fc_lcb: u16, table_size: 
     return null;
 }
 
-/// Validate CLX structure (Piece Table) from the Table stream.
+/// Validate CLX structure (Piece Table) from the Table stream, including full PCD decode.
 /// The CLX contains optional Prc entries (type 0x01) followed by a Pcdt (type 0x02).
+/// Deep validation follows every PCD's fc to verify it points within the WordDocument stream.
 /// Returns an error message if invalid, null if OK.
-fn validateClx(clx_data: []const u8, fib_lw: FibRgLw97) ?[]const u8 {
+fn validateClx(clx_data: []const u8, fib_lw: FibRgLw97, wd_size: usize) ?[]const u8 {
     if (clx_data.len == 0) return null;
 
     var pos: usize = 0;
@@ -294,25 +330,170 @@ fn validateClx(clx_data: []const u8, fib_lw: FibRgLw97) ?[]const u8 {
     }
 
     // Cross-validate: last CP should be consistent with FIB character counts
-    // Total chars = ccpText + ccpFtn + ccpHdd + 1 + ccpAtn + ccpEdn + ccpTxbx + ccpHdrTxbx
-    // (the +1 accounts for the document separator character)
     const last_cp_offset = cp_array_start + n * 4;
     if (last_cp_offset + 4 <= clx_data.len) {
         const last_cp = std.mem.readInt(u32, clx_data[last_cp_offset..][0..4], .little);
 
-        // Only cross-validate if any text exists
         const total_ccp = fib_lw.ccpText +| fib_lw.ccpFtn +| fib_lw.ccpHdd +|
             fib_lw.ccpAtn +| fib_lw.ccpEdn +| fib_lw.ccpTxbx +| fib_lw.ccpHdrTxbx;
 
         if (total_ccp > 0) {
-            // Expected last CP = total_ccp + 1 (for all sections with content, a separator is added)
-            // But the exact formula varies; just ensure last_cp >= total text
-            // and isn't absurdly large (> 2x expected)
             if (last_cp < fib_lw.ccpText) {
                 return "CLX piece table total CP range smaller than document text";
             }
         }
-        // Word docs can have large internal CPs — no absurdity check needed
+    }
+
+    // === Deep PCD validation ===
+    // Each PCD is 8 bytes: 2-byte descriptor word + 4-byte fc + 2-byte prm
+    // fc has bit 30 = FcCompressed flag: if set, physical offset = (fc & 0x3FFFFFFF) / 2,
+    // text is Latin-1 (1 byte/char); if clear, offset = fc, text is UTF-16LE (2 bytes/char)
+    const pcd_array_start = cp_array_start + (n + 1) * 4;
+    for (0..n) |i| {
+        const pcd_offset = pcd_array_start + i * 8;
+        if (pcd_offset + 8 > clx_data.len) return "CLX PCD array truncated";
+
+        const fc_raw = std.mem.readInt(u32, clx_data[pcd_offset + 2 ..][0..4], .little);
+        const fc_compressed = (fc_raw & 0x40000000) != 0;
+
+        // Get CP range for this piece
+        const cp_start = std.mem.readInt(u32, clx_data[cp_array_start + i * 4 ..][0..4], .little);
+        const cp_end = std.mem.readInt(u32, clx_data[cp_array_start + (i + 1) * 4 ..][0..4], .little);
+        if (cp_end < cp_start) return "CLX PCD has negative character range";
+        const char_count = cp_end - cp_start;
+
+        // Calculate physical byte range in WordDocument stream
+        if (fc_compressed) {
+            const phys_offset = (fc_raw & 0x3FFFFFFF) / 2;
+            const byte_len = char_count; // 1 byte per char for Latin-1
+            if (@as(u64, phys_offset) + byte_len > wd_size) {
+                return "CLX PCD fc (compressed/Latin-1) points beyond WordDocument stream";
+            }
+        } else {
+            const phys_offset = fc_raw & 0x3FFFFFFF;
+            const byte_len = @as(u64, char_count) * 2; // 2 bytes per char for UTF-16LE
+            if (@as(u64, phys_offset) + byte_len > wd_size) {
+                return "CLX PCD fc (UTF-16LE) points beyond WordDocument stream";
+            }
+        }
+    }
+
+    return null;
+}
+
+/// Validate a PLCF (Plex of CPs) structure from the Table stream.
+/// PLCFs contain (n+1) CPs (u32) followed by n data entries of fixed size.
+/// Validates: CP monotonicity, entry count consistency, all CPs within total_cp range.
+/// Returns error message if invalid, null if OK.
+fn validatePlcf(data: []const u8, entry_size: usize, total_cp: u32) ?[]const u8 {
+    if (data.len < 8) return "PLCF too small for even one entry";
+
+    // Calculate n: data.len = (n+1)*4 + n*entry_size
+    // => data.len = 4n + 4 + n*entry_size = n*(4+entry_size) + 4
+    // => n = (data.len - 4) / (4 + entry_size)
+    if (data.len < 4) return "PLCF too small";
+    const remainder = (data.len - 4) % (4 + entry_size);
+    if (remainder != 0) return "PLCF size inconsistent with entry layout";
+
+    const n = (data.len - 4) / (4 + entry_size);
+    if (n == 0) return null; // Empty PLCF is valid (no formatting runs)
+
+    // Validate CP monotonicity and bounds
+    var prev_cp: u32 = 0;
+    for (0..n + 1) |i| {
+        const offset = i * 4;
+        if (offset + 4 > data.len) return "PLCF CP array truncated";
+        const cp = std.mem.readInt(u32, data[offset..][0..4], .little);
+
+        if (i > 0 and cp < prev_cp) {
+            return "PLCF CP positions not monotonically increasing";
+        }
+        // CPs should be within document bounds (with some slack for separators)
+        if (cp > total_cp +| 1) {
+            return "PLCF CP exceeds document character count";
+        }
+        prev_cp = cp;
+    }
+
+    return null;
+}
+
+/// Validate PLCF monotonicity and size consistency only (no CP bounds check).
+/// Used for BTEs where CPs can exceed the text-only character count.
+fn validatePlcfMonotonic(data: []const u8, entry_size: usize) ?[]const u8 {
+    if (data.len < 8) return "PLCF too small for even one entry";
+    if (data.len < 4) return "PLCF too small";
+    const remainder = (data.len - 4) % (4 + entry_size);
+    if (remainder != 0) return "PLCF size inconsistent with entry layout";
+
+    const n = (data.len - 4) / (4 + entry_size);
+    if (n == 0) return null;
+
+    var prev_cp: u32 = 0;
+    for (0..n + 1) |i| {
+        const offset = i * 4;
+        if (offset + 4 > data.len) return "PLCF CP array truncated";
+        const cp = std.mem.readInt(u32, data[offset..][0..4], .little);
+
+        if (i > 0 and cp < prev_cp) {
+            return "PLCF CP positions not monotonically increasing";
+        }
+        prev_cp = cp;
+    }
+
+    return null;
+}
+
+/// Validate PlcBteChpx (character formatting bin table) from Table stream.
+/// FibRgFcLcb97 index 32 = fcPlcfBteChpx/lcbPlcfBteChpx.
+/// Each BTE entry is 4 bytes (pn: u32 — page number in WordDocument stream).
+fn validatePlcBteChpx(data: []const u8, _: u32, wd_size: usize) ?[]const u8 {
+    // PlcBteChpx: (n+1) CPs + n BTE entries (4 bytes each)
+    // Note: BTE CPs can exceed document text range — they index ALL character positions
+    // including internal separators. Only validate monotonicity, not bounds.
+    const base_result = validatePlcfMonotonic(data, 4);
+    if (base_result != null) return "PlcBteChpx: CP structure invalid";
+
+    if (data.len < 4) return null;
+    const n = (data.len - 4) / 8; // (4+4) per entry
+    if (n == 0) return null;
+
+    // Validate each BTE page number points within WordDocument stream
+    // Each pn refers to a 512-byte page
+    const bte_start = (n + 1) * 4;
+    for (0..n) |i| {
+        const offset = bte_start + i * 4;
+        if (offset + 4 > data.len) return "PlcBteChpx: BTE array truncated";
+        const pn = std.mem.readInt(u32, data[offset..][0..4], .little);
+        const byte_offset = @as(u64, pn) * 512;
+        if (byte_offset >= wd_size) {
+            return "PlcBteChpx: BTE page number exceeds WordDocument stream";
+        }
+    }
+
+    return null;
+}
+
+/// Validate PlcBtePapx (paragraph formatting bin table) from Table stream.
+/// FibRgFcLcb97 index 33 = fcPlcfBtePapx/lcbPlcfBtePapx.
+/// Each BTE entry is 4 bytes (pn: u32 — page number in WordDocument stream).
+fn validatePlcBtePapx(data: []const u8, _: u32, wd_size: usize) ?[]const u8 {
+    const base_result = validatePlcfMonotonic(data, 4);
+    if (base_result != null) return "PlcBtePapx: CP structure invalid";
+
+    if (data.len < 4) return null;
+    const n = (data.len - 4) / 8;
+    if (n == 0) return null;
+
+    const bte_start = (n + 1) * 4;
+    for (0..n) |i| {
+        const offset = bte_start + i * 4;
+        if (offset + 4 > data.len) return "PlcBtePapx: BTE array truncated";
+        const pn = std.mem.readInt(u32, data[offset..][0..4], .little);
+        const byte_offset = @as(u64, pn) * 512;
+        if (byte_offset >= wd_size) {
+            return "PlcBtePapx: BTE page number exceeds WordDocument stream";
+        }
     }
 
     return null;
@@ -413,7 +594,7 @@ test "validateClx accepts valid piece table" {
         .ccpHdrTxbx = 0,
     };
 
-    const result = validateClx(&clx, fib_lw);
+    const result = validateClx(&clx, fib_lw, 10000);
     try std.testing.expect(result == null);
 }
 
@@ -438,7 +619,7 @@ test "validateClx rejects non-monotonic CPs" {
         .ccpHdrTxbx = 0,
     };
 
-    const result = validateClx(&clx, fib_lw);
+    const result = validateClx(&clx, fib_lw, 10000);
     try std.testing.expect(result != null);
 }
 
@@ -458,7 +639,7 @@ test "validateClx rejects missing Pcdt marker" {
         .ccpHdrTxbx = 0,
     };
 
-    const result = validateClx(&clx, fib_lw);
+    const result = validateClx(&clx, fib_lw, 10000);
     try std.testing.expect(result != null);
 }
 
@@ -472,6 +653,101 @@ test "validateDocDeep with sample.doc" {
         // File might not exist in test CWD
         return error.SkipZigTest;
     }
+}
+
+test "validateClx validates PCD physical offsets" {
+    // Build CLX with 1 piece: CP[0]=0, CP[1]=100, PCD with compressed fc
+    var clx: [1 + 4 + 16]u8 = undefined;
+    clx[0] = 0x02; // Pcdt marker
+    std.mem.writeInt(u32, clx[1..5], 16, .little); // pcdt_size
+    std.mem.writeInt(u32, clx[5..9], 0, .little); // CP[0] = 0
+    std.mem.writeInt(u32, clx[9..13], 100, .little); // CP[1] = 100
+    // PCD: descriptor(2) + fc(4) + prm(2) = 8 bytes
+    std.mem.writeInt(u16, clx[13..15], 0, .little); // descriptor
+    // fc with FcCompressed bit set (bit 30): physical offset = (fc & 0x3FFFFFFF) / 2
+    // Set fc = 0x40000000 | (200 << 1) = compressed, offset 200, 100 bytes of Latin-1
+    std.mem.writeInt(u32, clx[15..19], 0x40000000 | (200 << 1), .little);
+    std.mem.writeInt(u16, clx[19..21], 0, .little); // prm
+
+    const fib_lw = FibRgLw97{
+        .cbMac = 1000, .ccpText = 100, .ccpFtn = 0, .ccpHdd = 0,
+        .ccpAtn = 0, .ccpEdn = 0, .ccpTxbx = 0, .ccpHdrTxbx = 0,
+    };
+
+    // wd_size=400 — offset 200 + 100 bytes fits
+    const result = validateClx(&clx, fib_lw, 400);
+    try std.testing.expect(result == null);
+
+    // wd_size=250 — offset 200 + 100 bytes overflows
+    const result2 = validateClx(&clx, fib_lw, 250);
+    try std.testing.expect(result2 != null);
+}
+
+test "validateClx validates UTF-16LE PCD offsets" {
+    var clx: [1 + 4 + 16]u8 = undefined;
+    clx[0] = 0x02;
+    std.mem.writeInt(u32, clx[1..5], 16, .little);
+    std.mem.writeInt(u32, clx[5..9], 0, .little); // CP[0] = 0
+    std.mem.writeInt(u32, clx[9..13], 50, .little); // CP[1] = 50
+    std.mem.writeInt(u16, clx[13..15], 0, .little);
+    // fc without compressed bit: offset=100, 50 chars * 2 bytes = 100 bytes
+    std.mem.writeInt(u32, clx[15..19], 100, .little);
+    std.mem.writeInt(u16, clx[19..21], 0, .little);
+
+    const fib_lw = FibRgLw97{
+        .cbMac = 1000, .ccpText = 50, .ccpFtn = 0, .ccpHdd = 0,
+        .ccpAtn = 0, .ccpEdn = 0, .ccpTxbx = 0, .ccpHdrTxbx = 0,
+    };
+
+    // wd_size=200: offset 100 + 100 bytes fits exactly
+    try std.testing.expect(validateClx(&clx, fib_lw, 200) == null);
+    // wd_size=199: one byte short
+    try std.testing.expect(validateClx(&clx, fib_lw, 199) != null);
+}
+
+test "validatePlcf accepts valid PLCF" {
+    // 2 entries: 3 CPs (12 bytes) + 2 * 4-byte entries (8 bytes) = 20 bytes
+    var data: [20]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 0, .little); // CP[0]
+    std.mem.writeInt(u32, data[4..8], 10, .little); // CP[1]
+    std.mem.writeInt(u32, data[8..12], 20, .little); // CP[2]
+    @memset(data[12..20], 0); // entries
+
+    try std.testing.expect(validatePlcf(&data, 4, 100) == null);
+}
+
+test "validatePlcf rejects non-monotonic CPs" {
+    var data: [20]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 50, .little); // CP[0] = 50
+    std.mem.writeInt(u32, data[4..8], 10, .little); // CP[1] = 10 (backwards!)
+    std.mem.writeInt(u32, data[8..12], 20, .little); // CP[2]
+    @memset(data[12..20], 0);
+
+    try std.testing.expect(validatePlcf(&data, 4, 100) != null);
+}
+
+test "validatePlcBteChpx validates page numbers" {
+    // 1 entry: 2 CPs (8 bytes) + 1 * 4-byte BTE (4 bytes) = 12 bytes
+    var data: [12]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 0, .little); // CP[0]
+    std.mem.writeInt(u32, data[4..8], 100, .little); // CP[1]
+    // BTE: page number 2 -> byte offset 1024
+    std.mem.writeInt(u32, data[8..12], 2, .little);
+
+    // wd_size=2048 — page 2 (offset 1024) is within bounds
+    try std.testing.expect(validatePlcBteChpx(&data, 100, 2048) == null);
+    // wd_size=512 — page 2 (offset 1024) exceeds stream
+    try std.testing.expect(validatePlcBteChpx(&data, 100, 512) != null);
+}
+
+test "validatePlcBtePapx validates page numbers" {
+    var data: [12]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 0, .little);
+    std.mem.writeInt(u32, data[4..8], 100, .little);
+    std.mem.writeInt(u32, data[8..12], 5, .little); // page 5 -> offset 2560
+
+    try std.testing.expect(validatePlcBtePapx(&data, 100, 4096) == null);
+    try std.testing.expect(validatePlcBtePapx(&data, 100, 2000) != null);
 }
 
 test "validateDocDeep rejects corrupted FIB magic" {
