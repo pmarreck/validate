@@ -112,6 +112,10 @@ pub const ValidationOptions = struct {
 	/// When a checksum mismatch is detected, attempt a structural parse fallback
 	/// to provide a more specific reason.
 	checksum_fallback: bool = true,
+	/// When true, checksum mismatches with valid structure return okWithWarning
+	/// instead of invalid. Use for PDF-embedded fonts where subsetters break checksums.
+	/// For standalone .ttf/.otf files, this should be false (default).
+	lenient_checksums: bool = false,
 };
 
 const CHECKSUM_FALLBACK_OK = "Table checksum mismatch; parsing fallback: no structural errors";
@@ -209,16 +213,19 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 						.skip_checksums = true,
 						.checksum_fallback = false,
 					});
-					if (fallback.valid) {
+					if (fallback.valid and options.lenient_checksums) {
 						// Structural parsing succeeded despite checksum mismatch
-						// This indicates a build-time checksum error, not data corruption
-						// Return valid with warning (data is usable but checksums are wrong)
+						// In lenient mode (PDF-embedded fonts), return valid with warning
 						return FontValidationResult.okWithWarning(
 							fallback.font_type.?,
 							fallback.num_tables,
 							fallback.tables_verified,
 							CHECKSUM_FALLBACK_OK,
 						);
+					} else if (fallback.valid) {
+						// Structural parsing succeeded but we're in strict mode
+						// (standalone .ttf/.otf) - checksum mismatch = corrupt
+						return FontValidationResult.invalid("Table checksum mismatch");
 					} else {
 						// Both checksum AND structural parsing failed - actual corruption
 						const combined = checksumMismatchMessage(fallback.error_message);
@@ -258,14 +265,16 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 		const expected_head_checksum = actual_head_sum -% stored_adjustment;
 
 		if (expected_head_checksum != head_checksum.?) {
-			// Head table checksum mismatch - but structure is valid at this point
-			// Return warning since we've already verified the structure
-			return FontValidationResult.okWithWarning(
-				font_type,
-				num_tables,
-				tables_verified,
-				"head table checksum mismatch (font may have been modified)",
-			);
+			if (options.lenient_checksums) {
+				// Lenient mode (PDF-embedded fonts) - return warning
+				return FontValidationResult.okWithWarning(
+					font_type,
+					num_tables,
+					tables_verified,
+					"head table checksum mismatch (font may have been modified)",
+				);
+			}
+			return FontValidationResult.invalid("head table checksum mismatch");
 		}
 	}
 
@@ -282,13 +291,16 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 		const expected_adjustment = expected_sum -% sum_without_adj;
 
 		if (stored_adj != expected_adjustment) {
-			// Whole-file checksum adjustment is wrong but structure is valid
-			return FontValidationResult.okWithWarning(
-				font_type,
-				num_tables,
-				tables_verified,
-				"Whole-file checkSumAdjustment invalid (font may have been modified)",
-			);
+			if (options.lenient_checksums) {
+				// Lenient mode (PDF-embedded fonts) - return warning
+				return FontValidationResult.okWithWarning(
+					font_type,
+					num_tables,
+					tables_verified,
+					"Whole-file checkSumAdjustment invalid (font may have been modified)",
+				);
+			}
+			return FontValidationResult.invalid("Whole-file checkSumAdjustment invalid");
 		}
 	}
 
@@ -706,7 +718,9 @@ test "validateTtfOtf minimal valid structure" {
 	// Now calculate checksum for table record
 	// head checksum calculation is special - checkSumAdjustment is zeroed
 
-	const result = validateTtfOtf(&data);
+	// Test structural validation (skip checksums since this synthetic font
+	// doesn't have correct checksums computed)
+	const result = validateTtfOtfWithOptions(&data, .{ .skip_checksums = true });
 	try std.testing.expect(result.valid);
 	try std.testing.expectEqual(FontType.truetype, result.font_type.?);
 	try std.testing.expectEqual(@as(u16, 1), result.num_tables);
@@ -787,7 +801,81 @@ test "validateTtfOtf checksum mismatch reports fallback detail" {
 	data[101] = 4;
 
 	const result = validateTtfOtf(&data);
-	// Checksum mismatch with valid structure now returns valid with warning
+	// Checksum mismatch on standalone font returns invalid (strict mode)
+	try std.testing.expect(!result.valid);
+	try std.testing.expectEqualStrings("Table checksum mismatch", result.error_message.?);
+}
+
+test "validateTtfOtf checksum mismatch lenient mode returns warning" {
+	var data: [256]u8 = undefined;
+	@memset(&data, 0);
+
+	// sfnt version (TrueType)
+	data[0] = 0x00;
+	data[1] = 0x01;
+	data[2] = 0x00;
+	data[3] = 0x00;
+
+	// numTables = 2
+	data[4] = 0;
+	data[5] = 2;
+	data[6] = 0;
+	data[7] = 32;
+	data[8] = 0;
+	data[9] = 1;
+	data[10] = 0;
+	data[11] = 0;
+
+	// Table record 0: 'head'
+	data[12] = 'h';
+	data[13] = 'e';
+	data[14] = 'a';
+	data[15] = 'd';
+	data[20] = 0;
+	data[21] = 0;
+	data[22] = 0;
+	data[23] = 44;
+	data[24] = 0;
+	data[25] = 0;
+	data[26] = 0;
+	data[27] = 54;
+
+	// Table record 1: 'test' with wrong checksum
+	data[28] = 't';
+	data[29] = 'e';
+	data[30] = 's';
+	data[31] = 't';
+	data[32] = 0;
+	data[33] = 0;
+	data[34] = 0;
+	data[35] = 0;
+	data[36] = 0;
+	data[37] = 0;
+	data[38] = 0;
+	data[39] = 98;
+	data[40] = 0;
+	data[41] = 0;
+	data[42] = 0;
+	data[43] = 4;
+
+	// head table at offset 44
+	data[44] = 0;
+	data[45] = 1;
+	data[46] = 0;
+	data[47] = 0;
+	data[44 + 12] = 0x5F;
+	data[44 + 13] = 0x0F;
+	data[44 + 14] = 0x3C;
+	data[44 + 15] = 0xF5;
+
+	// test table data at offset 98
+	data[98] = 1;
+	data[99] = 2;
+	data[100] = 3;
+	data[101] = 4;
+
+	// Lenient mode (PDF-embedded fonts): checksum mismatch returns valid with warning
+	const result = validateTtfOtfWithOptions(&data, .{ .lenient_checksums = true });
 	try std.testing.expect(result.valid);
 	try std.testing.expectEqualStrings(CHECKSUM_FALLBACK_OK, result.warning_message.?);
 }

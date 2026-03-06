@@ -444,7 +444,7 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
         // Validate based on font type.
         // We keep PDF-level lenience (warnings instead of invalid),
         // but still compute checksums to validate every byte.
-        const strict_options = font_validator.ValidationOptions{ .skip_checksums = false };
+        const strict_options = font_validator.ValidationOptions{ .skip_checksums = false, .lenient_checksums = true };
         const result = switch (fnt.font_type) {
             .truetype => font_validator.validateTtfOtfWithOptions(font_data, strict_options),
             .type1 => font_validator.validateType1(font_data),
