@@ -1276,7 +1276,7 @@ pub fn validateMidiDeep(path: []const u8) ValidationResult {
 
 /// Deep AC-3 (Dolby Digital) validation by parsing frame structure and verifying CRCs.
 pub fn validateAc3Deep(path: []const u8) ValidationResult {
-    const result = ac3_validator.validateAc3File(path, 1000); // Validate up to 1000 frames
+    const result = ac3_validator.validateAc3File(path, std.math.maxInt(u32)); // Validate all frames
     if (result.valid) {
         return ValidationResult.okWithDepth(.ac3, .full);
     } else {
@@ -1286,7 +1286,7 @@ pub fn validateAc3Deep(path: []const u8) ValidationResult {
 
 /// Deep E-AC-3 (Dolby Digital Plus) validation by parsing frame structure and verifying CRCs.
 pub fn validateEac3Deep(path: []const u8) ValidationResult {
-    const result = eac3_validator.validateEac3File(path, 1000); // Validate up to 1000 frames
+    const result = eac3_validator.validateEac3File(path, std.math.maxInt(u32)); // Validate all frames
     if (result.valid) {
         return ValidationResult.okWithDepth(.eac3, .full);
     } else {
