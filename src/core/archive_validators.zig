@@ -726,7 +726,76 @@ pub fn validateTar(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCodeMsg(.tar, .checksum_mismatch, "Header", "Header checksum mismatch");
     }
 
-    return ValidationResult.ok(.tar);
+    // Parse file size from header (bytes 124-135, octal) and advance to next entry
+    const file_size_field = header[124..136];
+    var entry_size: u64 = 0;
+    for (file_size_field) |c| {
+        if (c == 0 or c == ' ') break;
+        if (c < '0' or c > '7') break;
+        entry_size = entry_size * 8 + (c - '0');
+    }
+
+    // Data blocks follow header: ceil(entry_size / 512) * 512 bytes
+    const data_blocks = (entry_size + 511) / 512;
+    var pos: u64 = 512 + data_blocks * 512;
+
+    const total_file_size = file.getEndPos() catch return ValidationResult.ok(.tar);
+    var headers_validated: u32 = 1;
+
+    // Validate ALL subsequent tar entry headers
+    while (pos + 512 <= total_file_size and headers_validated < 100000) {
+        file.seekTo(pos) catch break;
+        const n = file.read(&header) catch break;
+        if (n < 512) break;
+
+        // Check for end-of-archive marker (two consecutive zero blocks)
+        var is_zero = true;
+        for (header) |b| {
+            if (b != 0) {
+                is_zero = false;
+                break;
+            }
+        }
+        if (is_zero) break;
+
+        // Validate this header's checksum
+        var hdr_checksum: u32 = 0;
+        for (header, 0..) |byte, i| {
+            if (i >= 148 and i < 156) {
+                hdr_checksum += ' ';
+            } else {
+                hdr_checksum += byte;
+            }
+        }
+
+        var hdr_stored: u32 = 0;
+        for (header[148..156]) |c| {
+            if (c == 0 or c == ' ') break;
+            if (c < '0' or c > '7') {
+                return ValidationResult.invalidCode(.tar, .invalid_value, "entry checksum format");
+            }
+            hdr_stored = hdr_stored * 8 + (c - '0');
+        }
+
+        if (hdr_checksum != hdr_stored) {
+            return ValidationResult.invalidCodeMsg(.tar, .checksum_mismatch, "Entry header", "Tar entry header checksum mismatch");
+        }
+
+        headers_validated += 1;
+
+        // Parse this entry's file size and skip to next
+        entry_size = 0;
+        for (header[124..136]) |c| {
+            if (c == 0 or c == ' ') break;
+            if (c < '0' or c > '7') break;
+            entry_size = entry_size * 8 + (c - '0');
+        }
+
+        const next_data_blocks = (entry_size + 511) / 512;
+        pos += 512 + next_data_blocks * 512;
+    }
+
+    return ValidationResult.okWithDepth(.tar, .full);
 }
 
 // ============ PAR2 Validator ============
