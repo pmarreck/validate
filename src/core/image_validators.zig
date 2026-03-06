@@ -840,52 +840,77 @@ pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult 
         }
     }
 
-    // For ZIP/ZIPS compression, try to decompress some scanline blocks
-    if (compression_type == 2 or compression_type == 3) {
-        // Sample up to 10 blocks evenly distributed
-        const sample_count = @min(num_chunks, 10);
-        const step = if (num_chunks > 10) num_chunks / 10 else 1;
-
-        var sample_idx: u32 = 0;
-        while (sample_idx < sample_count) : (sample_idx += 1) {
-            const chunk_idx = sample_idx * step;
-            if (chunk_idx >= num_chunks) break;
-
-            const offset = offsets[chunk_idx];
-
-            // Seek to scanline block
-            file.seekTo(offset) catch continue;
-
-            // Read scanline block header: y coordinate (4 bytes) + pixel data size (4 bytes)
-            var block_header: [8]u8 = undefined;
-            _ = file.read(&block_header) catch continue;
-
-            const pixel_data_size = std.mem.readInt(u32, block_header[4..8], .little);
-
-            if (pixel_data_size == 0 or pixel_data_size > 50 * 1024 * 1024) {
-                continue; // Skip invalid blocks
+    // Validate offset table monotonicity (offsets should be increasing)
+    if (num_chunks > 1) {
+        var prev_offset = offsets[0];
+        for (offsets[1..]) |offset| {
+            if (offset <= prev_offset) {
+                return ValidationResult.invalid(.exr, "EXR offset table not monotonically increasing");
             }
+            prev_offset = offset;
+        }
+    }
 
-            // Read compressed data
-            const compressed = allocator.alloc(u8, pixel_data_size) catch continue;
+    // Validate ALL scanline blocks: check data size bounds and decompress if ZIP/ZIPS
+    for (offsets, 0..) |offset, chunk_idx| {
+        file.seekTo(offset) catch {
+            return ValidationResult.invalidCode(.exr, .failed_to_seek, "scanline block");
+        };
+
+        // Read scanline block header: y coordinate (4 bytes) + pixel data size (4 bytes)
+        var block_header: [8]u8 = undefined;
+        const hdr_read = file.readAll(&block_header) catch {
+            return ValidationResult.invalidCode(.exr, .failed_to_read, "scanline block header");
+        };
+        if (hdr_read < 8) {
+            return ValidationResult.invalidCode(.exr, .truncated, "scanline block header");
+        }
+
+        const pixel_data_size = std.mem.readInt(u32, block_header[4..8], .little);
+
+        if (pixel_data_size > 50 * 1024 * 1024) {
+            return ValidationResult.invalidCode(.exr, .invalid_value, "scanline pixel data size");
+        }
+
+        // Verify block data fits within file
+        const block_end = offset + 8 + @as(u64, pixel_data_size);
+        if (block_end > file_size) {
+            return ValidationResult.invalid(.exr, "EXR scanline block extends beyond file");
+        }
+
+        // For next chunk, verify it starts right after this block's data
+        if (chunk_idx + 1 < num_chunks) {
+            if (offsets[chunk_idx + 1] != block_end) {
+                return ValidationResult.invalid(.exr, "EXR scanline block gap/overlap detected");
+            }
+        }
+
+        // For ZIP/ZIPS compression, decompress ALL blocks
+        if ((compression_type == 2 or compression_type == 3) and pixel_data_size > 0) {
+            const compressed = allocator.alloc(u8, pixel_data_size) catch {
+                return ValidationResult.okWithDepth(.exr, .structural);
+            };
             defer allocator.free(compressed);
 
-            const bytes_read = file.readAll(compressed) catch continue;
-            if (bytes_read != pixel_data_size) continue;
+            const bytes_read = file.readAll(compressed) catch {
+                return ValidationResult.invalidCode(.exr, .failed_to_read, "scanline block data");
+            };
+            if (bytes_read != pixel_data_size) {
+                return ValidationResult.invalidCode(.exr, .truncated, "scanline block data");
+            }
 
-            // Try to decompress
-            const max_decompressed: usize = 16 * 1024 * 1024; // 16MB max per block
+            const max_decompressed: usize = 16 * 1024 * 1024;
             const decompressed = zlib.inflateRawAlloc(allocator, compressed, max_decompressed) catch |err| {
                 switch (err) {
                     zlib.ZlibError.DataError => {
                         return ValidationResult.invalid(.exr, "EXR scanline decompression failed: corrupt data");
                     },
-                    else => continue,
+                    else => {
+                        return ValidationResult.invalid(.exr, "EXR scanline decompression error");
+                    },
                 }
             };
-            defer allocator.free(decompressed);
-
-            // Decompression succeeded for this block
+            allocator.free(decompressed);
         }
     }
 
