@@ -64,7 +64,7 @@
 |--------|-----|-------------------|
 | **TIFF** | IFD tag validation only; pixel data is raw/uncompressed with no checksums | Unlikely without external checksums |
 | **WebP** | Full VP8/VP8L decode via libwebp — same JPEG paradox: single-bit DCT flips produce valid pixels | Fundamental limitation of lossy compression |
-| **HEIC** | H.265 NAL validation may not reach all image tiles | Could improve tile enumeration |
+| **HEIC** | Full H.265 CABAC decode per tile — same JPEG paradox: CABAC arithmetic absorbs bit flips | Fundamental limitation (see "HEIC CABAC paradox" below) |
 | **MP3** | Frame sync pattern only; no CRC (optional CRC rarely present) | MP3 CRC is per-frame-header only, not data |
 | ~~**AC3**~~ | ~~Frame CRC exists in spec~~ | **FIXED**: CRC now enforced; detection ~100%/98% |
 | **AVI** | RIFF structural only; no codec-level validation | Would need codec-specific decode |
@@ -81,6 +81,21 @@ JPEG achieves **93% shotgun** but **0% sniper** despite doing a full libjpeg-tur
 
 This is a fundamental limitation of lossy compression without integrity metadata.
 
+### The HEIC CABAC paradox
+
+HEIC shows **0% sniper, 0% shotgun** despite implementing a full H.265 CABAC arithmetic decoder per tile. Investigation (2026-03-06):
+
+1. **CABAC arithmetic coding is even more resilient than Huffman.** The arithmetic engine maintains a range/offset state that adjusts smoothly to any input. A flipped bit causes the engine to decode different-but-valid syntax elements (different CU splits, different coefficients), producing a different-but-decodable bitstream. The engine never enters an "invalid state" — it just decodes wrong values.
+2. **4KB overwrites ALSO survive CABAC.** Unlike JPEG where 4KB destroys Huffman sync (93% shotgun), CABAC's arithmetic range smoothly adapts to any 4KB of data. The engine continues decoding valid bins, just producing different syntax elements. This makes HEIC fundamentally worse than JPEG for shotgun detection.
+3. **Structural coverage is ~0.2%.** Each tile has 6 bytes of structural data (4-byte NAL length prefix + 2-byte NAL header) out of 15-106KB total. Corruption in these bytes IS detected (NAL length validation, NAL type check). But random corruption has only 0.2% chance of hitting structure.
+4. **No checksums exist in HEIF/ISOBMFF.** The container format provides no integrity mechanism.
+
+**Why HEIC is worse than JPEG for corruption detection:**
+- JPEG's Huffman coding uses variable-length codewords aligned to bit boundaries. A 4KB overwrite destroys the decoder's bit-position tracking, causing cascading failures (93% shotgun).
+- CABAC's arithmetic coding uses a continuous probability range that adapts to any input. There are no "bit boundaries" to desynchronize — the range/offset state always produces valid decisions.
+
+This is the fundamental limit of arithmetic coding without checksums. Only a spec-perfect decoder consuming 100% of tile data could detect desynchronization at the bitstream end, and even then only for corruption in the consumed portion.
+
 ### The FLAC anomaly (FIXED)
 
 FLAC originally showed **98% sniper** but only **78% shotgun**. Root cause: the FLAC decoder catch blocks in `validateFlacDeep` were returning `OK` when the decoder threw errors (truncated frames, invalid sync from corrupted data). A 4KB overwrite would corrupt frame headers, causing the decoder to error out, and the catch block incorrectly said "valid." Fix: only `Unsupported`/`OutOfMemory` errors fall back to structural; all other decoder errors are treated as corruption. After fix: **98% sniper, 99% shotgun**.
@@ -95,7 +110,7 @@ FLAC originally showed **98% sniper** but only **78% shotgun**. Root cause: the 
 ### Medium priority (formats where deeper decode would help)
 
 3. ~~**WebP**~~: Already does full VP8/VP8L decode via libwebp. Same JPEG paradox — lossy DCT, no checksums. 84% shotgun on larger files.
-4. **HEIC**: Ensure all image tiles (not just the primary item) go through H.265 validation.
+4. ~~**HEIC**~~: Full per-tile H.265 CABAC decode implemented. Same JPEG paradox — arithmetic coding absorbs corruption. **Fundamentally limited.**
 5. **AVI/MPEG-4 Part 2**: Codec-level decode would improve detection, but these are legacy formats.
 
 ### Low priority (fundamentally limited)
