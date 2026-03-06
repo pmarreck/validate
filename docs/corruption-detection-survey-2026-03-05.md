@@ -43,7 +43,7 @@
 | **Audio** | AC3 | 3.2 MB | **~100%** | **100%** | CRC-16 per syncframe |
 | | OGG | 104 KB | **100%** | **100%** | CRC32 per page |
 | | CPT | 19 KB | **100%** | **100%** | CRC per resource fork entry |
-| | EAC3 | 1.2 MB | **81%** | **85%** | CRC-16 per syncframe (see note) |
+| | EAC3 | 4.1 MB | **100%** | **100%** | CRC-16 per syncframe (fixed: was 81%/85% due to 1000-frame limit) |
 | | FLAC | 44 KB | **80%** | **88%** | MD5 + frame CRC (smaller file = lower %) |
 | | ALAC | 18 KB | 1% | **100%** | Lossless decode (4KB destroys frame) |
 | | Opus | 56 KB | 1% | 35% | OGG CRC + decode (WebM container) |
@@ -76,11 +76,12 @@
 | | Mach-O Fat | 33 KB | 0% | 0% | Architecture header only |
 | **Container** | OLE2 (PPT) | 912 KB | 0% | 0% | FAT/directory structural only |
 | | InDesign | 4 KB | 1% | 73% | Page structure |
-| **Font** | TTF | 621 KB | 0% | 0% | No checksum validation |
-| | OTF | 334 KB | 1% | 0% | Minimal structure |
-| | WOFF | 260 KB | 0% | 0% | No checksum validation |
-| | WOFF2 | 177 KB | 0% | 0% | No checksum validation |
-| **Scientific** | FITS | 699 KB | 0% | 2% | Header keyword validation only |
+| **Font** | TTF | 621 KB | **100%** | **100%** | Per-table checksum + whole-file checkSumAdjustment (fixed: was 0%/0% due to lenient fallback) |
+| | OTF | 334 KB | **100%** | **100%** | Per-table checksum + whole-file checkSumAdjustment (fixed: was 1%/0%) |
+| | WOFF | 260 KB | 0% | 0% | Compressed tables (needs decompression for checksum verification) |
+| | WOFF2 | 177 KB | 0% | 0% | Brotli-compressed tables (needs decompression) |
+| **Scientific** | FITS (w/checksum) | 5.7 KB | **100%** | **100%** | CHECKSUM per HDU (1's complement sum = 0xFFFFFFFF) |
+| | FITS (no checksum) | 699 KB | 0% | 2% | Header keyword validation only (no CHECKSUM/DATASUM in file) |
 | | DICOM | 39 KB | 5% | 20% | Tag structure + value validation |
 | **Financial** | QDF | 5.1 MB | 1% | 0% | OLE2/ZIP container structural |
 | **Other** | Blorb | 3.1 MB | 0% | 0% | IFF structural only |
@@ -103,7 +104,10 @@
 | **CPT** | CRC per resource fork entry | Full file coverage |
 | **JXL** | Container-level checksums + frame integrity | High structural + data coverage |
 | **WebP** | VP8/VP8L full decode via libwebp | Frame-level decode catches most corruption |
-| **EAC3** | CRC-16 per syncframe | ~81% sniper with 1.2MB file (see E-AC3 note) |
+| **EAC3** | CRC-16 per syncframe | Every byte in every syncframe (fixed: was 81% due to 1000-frame limit) |
+| **TTF** | Per-table checksum + whole-file checkSumAdjustment | Every byte in every table (fixed: was 0% due to lenient fallback) |
+| **OTF** | Per-table checksum + whole-file checkSumAdjustment | Every byte in every table (fixed: was 0% due to lenient fallback) |
+| **FITS** | CHECKSUM per HDU (1's complement sum) | Every byte of header+data (when CHECKSUM keyword present) |
 | **FLAC** | MD5 of decoded audio + CRC-8/CRC-16 per frame | Full coverage (80% sniper on small file) |
 
 **Common thread:** All use per-block/per-chunk checksums or full-stream decode that covers most payload bytes.
@@ -137,7 +141,8 @@
 | **MP3** | Frame sync only; optional CRC covers header not data | MP3 CRC spec is header-only |
 | **AVI/MPEG-4 Part 2** | RIFF structural only; no codec-level validation | Would need codec-specific decode |
 | **PDF** | Xref structure + image parsing, but content streams opaque | No content checksums in spec |
-| **TTF/OTF/WOFF/WOFF2** | No checksum validation implemented | TTF has table checksums — actionable |
+| ~~**TTF/OTF**~~ | ~~No checksum validation~~ | **FIXED**: Per-table checksums now enforced; 100%/100% |
+| **WOFF/WOFF2** | Compressed table data, no decompression for checksum | Would need Flate/Brotli decompression |
 | **N64/NES/GBA** | Header-only or no checksum | ROM checksums vary by game |
 | **OLE2 (PPT)** | FAT/directory structure only | Would need PowerPoint stream parsing |
 | **Blorb** | IFF structural only | Would need chunk-level CRC |
@@ -179,22 +184,25 @@ FLAC originally showed **98% sniper** but only **78% shotgun**. Root cause: the 
 
 MKV achieves **100% sniper, 100% shotgun** — the only video container with per-cluster CRC32. This is because MKV's EBML format includes optional CRC-32 elements at the cluster level, and our MKV samples have these enabled. This makes MKV the gold standard for video integrity detection.
 
-### E-AC3 file size dependency
+### E-AC3 file size dependency (FIXED)
 
-E-AC3 detection varies significantly with file size:
-- 1.2 MB file: **81% sniper, 85% shotgun**
-- 4.1 MB file: **33% sniper, 36% shotgun**
+E-AC3 detection previously varied with file size due to a hard-coded 1000-frame limit:
+- 1.2 MB file: 81% sniper, 85% shotgun (fewer than 1000 frames — full coverage)
+- 4.1 MB file: 33% sniper, 36% shotgun (more than 1000 frames — tail unvalidated)
 
-This suggests we may only be validating a portion of larger E-AC3 files (likely first 1MB). Investigate and fix for full-file CRC coverage.
+**Fix (2026-03-06):** Removed the 1000-frame limit. Now validates all frames in the file. Both files now show **100% sniper, 100% shotgun**.
 
 ## Actionable Gaps
 
-### High priority (formats with existing checksums we should be verifying)
+### High priority — FIXED (2026-03-06)
 
-1. **TTF/OTF table checksums**: TrueType and OpenType fonts have per-table CRC32 checksums in their table directory. Currently showing 0%/0%. Implementing table checksum verification would likely achieve near-100% detection.
-2. **WOFF/WOFF2 checksums**: WOFF has per-table checksums inherited from the underlying OTF/TTF. WOFF2 has a Brotli-compressed payload with inherent integrity.
-3. **E-AC3 full-file CRC**: Detection drops from 81% to 33% on larger files, suggesting partial validation. Fix to process entire file.
-4. **FITS DATASUM/CHECKSUM**: FITS files can contain HDU-level checksums. If present, we should verify them.
+1. ~~**TTF/OTF table checksums**~~: **FIXED**. Per-table checksums were already computed but mismatches returned "valid with warning" (for PDF-embedded font compatibility). Now strict for standalone fonts, lenient only for PDF-embedded. **0%/0% → 100%/100%**.
+2. ~~**E-AC3 full-file CRC**~~: **FIXED**. Hard-coded 1000-frame limit removed. Now validates all frames. **33%/36% → 100%/100%** on 4.1MB file.
+3. ~~**FITS DATASUM/CHECKSUM**~~: **Already implemented**. Verification code was present but sample file lacked keywords. Added ground truth sample with CHECKSUM. **0%/2% → 100%/100%** (when CHECKSUM present).
+
+### Remaining high priority
+
+4. **WOFF/WOFF2 checksums**: WOFF has per-table checksums inherited from the underlying OTF/TTF, but tables are Flate-compressed. WOFF2 uses Brotli. Both need decompression to verify.
 
 ### Medium priority (formats where deeper decode could help)
 
