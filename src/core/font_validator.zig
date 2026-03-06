@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const errmsg = @import("error_messages.zig");
+const zlib = @import("zlib.zig");
 const Allocator = std.mem.Allocator;
 
 pub const FontValidationError = error{
@@ -93,6 +94,32 @@ fn calcChecksum(data: []const u8) u32 {
 	}
 
 	// Handle remainder (pad with zeros)
+	if (i < data.len) {
+		var last: [4]u8 = .{ 0, 0, 0, 0 };
+		const remaining = data.len - i;
+		@memcpy(last[0..remaining], data[i..]);
+		const val = std.mem.readInt(u32, &last, .big);
+		sum +%= val;
+	}
+
+	return sum;
+}
+
+/// Calculate checksum with the 'head' table's checksumAdjustment (bytes 8-11) treated as zero.
+/// This matches the OpenType spec's convention for the head table checksum.
+fn calcChecksumZeroingHead(data: []const u8) u32 {
+	var sum: u32 = 0;
+	var i: usize = 0;
+
+	while (i + 4 <= data.len) : (i += 4) {
+		if (i == 8) {
+			// Skip checksumAdjustment field (treat as 0)
+			continue;
+		}
+		const val = std.mem.readInt(u32, data[i..][0..4], .big);
+		sum +%= val;
+	}
+
 	if (i < data.len) {
 		var last: [4]u8 = .{ 0, 0, 0, 0 };
 		const remaining = data.len - i;
@@ -317,9 +344,15 @@ fn parseTableRecord(data: *const [16]u8) TableRecord {
 	};
 }
 
-/// Validate a WOFF font.
-/// WOFF wraps TTF/OTF data with compression.
+/// Validate a WOFF font with deep table checksum verification.
+/// WOFF wraps TTF/OTF data with zlib-compressed tables, each carrying an origChecksum.
+/// Deep validation decompresses each table and verifies its checksum.
 pub fn validateWoff(data: []const u8) FontValidationResult {
+	return validateWoffWithAllocator(data, std.heap.page_allocator);
+}
+
+/// Validate WOFF with explicit allocator (for testing/embedding).
+pub fn validateWoffWithAllocator(data: []const u8, allocator: Allocator) FontValidationResult {
 	// WOFF header: 44 bytes minimum
 	if (data.len < 44) {
 		return FontValidationResult.invalid(errmsg.fileTooSmallFor("WOFF"));
@@ -332,24 +365,84 @@ pub fn validateWoff(data: []const u8) FontValidationResult {
 
 	// Parse header
 	const flavor = data[4..8]; // Original sfnt version
-	// bytes 8-11: length (we don't need it for validation)
+	const woff_length = std.mem.readInt(u32, data[8..12], .big);
 	const num_tables = std.mem.readInt(u16, data[12..14], .big);
-	// reserved, totalSfntSize, majorVersion, minorVersion follow...
+
+	// Validate declared length
+	if (woff_length != data.len) {
+		return FontValidationResult.invalid("WOFF length field mismatch");
+	}
 
 	// Validate flavor (should be TTF or CFF)
-	const font_type: FontType = blk: {
-		if (std.mem.eql(u8, flavor, &[_]u8{ 0x00, 0x01, 0x00, 0x00 })) {
-			break :blk .woff;
-		} else if (std.mem.eql(u8, flavor, "OTTO")) {
-			break :blk .woff;
-		} else {
-			return FontValidationResult.invalid("Invalid WOFF flavor");
-		}
-	};
+	if (!std.mem.eql(u8, flavor, &[_]u8{ 0x00, 0x01, 0x00, 0x00 }) and
+		!std.mem.eql(u8, flavor, "OTTO"))
+	{
+		return FontValidationResult.invalid("Invalid WOFF flavor");
+	}
 
-	// For WOFF, we trust the container structure since decompressing
-	// all tables would be expensive. The structure itself is validated.
-	return FontValidationResult.ok(font_type, num_tables, 0);
+	// Table directory: 20 bytes per entry, starting at offset 44
+	const table_dir_end = 44 + @as(usize, num_tables) * 20;
+	if (data.len < table_dir_end) {
+		return FontValidationResult.invalid(errmsg.fileTooSmallFor("WOFF table directory"));
+	}
+
+	// Verify each table's checksum by decompressing
+	var tables_verified: u16 = 0;
+	for (0..num_tables) |i| {
+		const entry_start = 44 + i * 20;
+		const entry = data[entry_start..][0..20];
+
+		// WOFF table directory entry: tag(4) + offset(4) + compLength(4) + origLength(4) + origChecksum(4)
+		const tag = entry[0..4];
+		const offset = std.mem.readInt(u32, entry[4..8], .big);
+		const comp_length = std.mem.readInt(u32, entry[8..12], .big);
+		const orig_length = std.mem.readInt(u32, entry[12..16], .big);
+		const orig_checksum = std.mem.readInt(u32, entry[16..20], .big);
+		const is_head = std.mem.eql(u8, tag, "head");
+
+		// Bounds check
+		const table_end = @as(u64, offset) + @as(u64, comp_length);
+		if (table_end > data.len) {
+			return FontValidationResult.invalid("WOFF table extends beyond file");
+		}
+
+		const table_data = data[offset..][0..comp_length];
+
+		if (comp_length == orig_length) {
+			// Uncompressed table — verify checksum directly
+			// For 'head' table, checksumAdjustment at offset 8 must be zeroed
+			const calc = if (is_head and orig_length >= 12)
+				calcChecksumZeroingHead(table_data)
+			else
+				calcChecksum(table_data);
+			if (calc != orig_checksum) {
+				return FontValidationResult.invalid("WOFF uncompressed table checksum mismatch");
+			}
+		} else {
+			// Zlib-compressed table — decompress and verify
+			const max_output = @as(usize, orig_length) + 256; // small margin
+			const decompressed = zlib.inflateZlibAlloc(allocator, table_data, max_output) catch {
+				return FontValidationResult.invalid("WOFF table decompression failed");
+			};
+			defer allocator.free(decompressed);
+
+			if (decompressed.len != orig_length) {
+				return FontValidationResult.invalid("WOFF decompressed size mismatch");
+			}
+
+			const calc = if (is_head and orig_length >= 12)
+				calcChecksumZeroingHead(decompressed)
+			else
+				calcChecksum(decompressed);
+			if (calc != orig_checksum) {
+				return FontValidationResult.invalid("WOFF table checksum mismatch");
+			}
+		}
+
+		tables_verified += 1;
+	}
+
+	return FontValidationResult.ok(.woff, num_tables, tables_verified);
 }
 
 /// Validate a WOFF2 font.

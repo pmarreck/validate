@@ -2829,8 +2829,19 @@ pub fn validatePdb(file: std.fs.File) ValidationResult {
     var total_read: u64 = 0;
     var atom_count: u32 = 0;
     var hetatm_count: u32 = 0;
+    var remark_count: u32 = 0;
+    var het_count: u32 = 0;
+    var helix_count: u32 = 0;
+    var sheet_count: u32 = 0;
+    var site_count: u32 = 0;
+    var ter_count: u32 = 0;
+    var conect_count: u32 = 0;
+    var xform_count: u32 = 0; // ORIGX + SCALE + MTRIX
+    var seqres_count: u32 = 0;
     var found_header = false;
     var found_end = false;
+    var master_line: ?[256]u8 = null;
+    var master_len: usize = 0;
     var line_buffer: [256]u8 = undefined;
     var line_len: usize = 0;
     var first_line = true;
@@ -2877,7 +2888,7 @@ pub fn validatePdb(file: std.fs.File) ValidationResult {
                             return ValidationResult.invalidCode(.pdb_struct, .invalid_value, "first record type");
                         }
 
-                        // Check specific records
+                        // Check specific records and count for MASTER validation
                         if (std.mem.eql(u8, line[0..6], "HEADER")) {
                             found_header = true;
                         } else if (std.mem.eql(u8, line[0..6], "ATOM  ")) {
@@ -2902,6 +2913,36 @@ pub fn validatePdb(file: std.fs.File) ValidationResult {
                             }
                         } else if (std.mem.eql(u8, line[0..6], "END   ") or std.mem.eql(u8, line[0..3], "END")) {
                             found_end = true;
+                        }
+
+                        // Count records for MASTER checksum cross-validation
+                        if (std.mem.eql(u8, line[0..6], "REMARK")) remark_count += 1;
+                        if (std.mem.eql(u8, line[0..6], "HET   "))
+                            het_count += 1;
+                        if (std.mem.eql(u8, line[0..6], "HELIX ")) helix_count += 1;
+                        if (std.mem.eql(u8, line[0..6], "SHEET ")) sheet_count += 1;
+                        if (std.mem.eql(u8, line[0..6], "SITE  ")) site_count += 1;
+                        if (std.mem.eql(u8, line[0..6], "TER   ") or
+                            (line.len >= 3 and line.len < 6 and std.mem.eql(u8, line[0..3], "TER")))
+                            ter_count += 1;
+                        if (std.mem.eql(u8, line[0..6], "CONECT")) conect_count += 1;
+                        if (std.mem.eql(u8, line[0..6], "SEQRES")) seqres_count += 1;
+                        if (std.mem.eql(u8, line[0..6], "ORIGX1") or
+                            std.mem.eql(u8, line[0..6], "ORIGX2") or
+                            std.mem.eql(u8, line[0..6], "ORIGX3") or
+                            std.mem.eql(u8, line[0..6], "SCALE1") or
+                            std.mem.eql(u8, line[0..6], "SCALE2") or
+                            std.mem.eql(u8, line[0..6], "SCALE3") or
+                            std.mem.eql(u8, line[0..6], "MTRIX1") or
+                            std.mem.eql(u8, line[0..6], "MTRIX2") or
+                            std.mem.eql(u8, line[0..6], "MTRIX3"))
+                            xform_count += 1;
+
+                        // Capture MASTER record for later validation
+                        if (std.mem.eql(u8, line[0..6], "MASTER")) {
+                            master_line = undefined;
+                            @memcpy(master_line.?[0..line.len], line);
+                            master_len = line.len;
                         }
                     }
 
@@ -2934,8 +2975,81 @@ pub fn validatePdb(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.pdb_struct, "No ATOM/HETATM records found");
     }
 
-    // No CRC/hash — text record parsing only
+    // MASTER record cross-validation: counts must match observed records
+    if (master_line) |ml| {
+        const mline = ml[0..master_len];
+        if (master_len >= 70) {
+            // Parse MASTER fields (fixed-width integer columns)
+            const master_remark = parsePdbInt(mline[10..15]);
+            const master_het = parsePdbInt(mline[20..25]);
+            const master_helix = parsePdbInt(mline[25..30]);
+            const master_sheet = parsePdbInt(mline[30..35]);
+            const master_site = parsePdbInt(mline[40..45]);
+            const master_xform = parsePdbInt(mline[45..50]);
+            const master_coord = parsePdbInt(mline[50..55]);
+            const master_ter = parsePdbInt(mline[55..60]);
+            const master_conect = parsePdbInt(mline[60..65]);
+            const master_seqres = parsePdbInt(mline[65..70]);
+
+            const coord_count = atom_count + hetatm_count;
+
+            // Check each field — any mismatch indicates corruption
+            if (master_remark) |v| {
+                if (v != remark_count) return ValidationResult.invalid(.pdb_struct, "MASTER REMARK count mismatch");
+            }
+            if (master_het) |v| {
+                if (v != het_count) return ValidationResult.invalid(.pdb_struct, "MASTER HET count mismatch");
+            }
+            if (master_helix) |v| {
+                if (v != helix_count) return ValidationResult.invalid(.pdb_struct, "MASTER HELIX count mismatch");
+            }
+            if (master_sheet) |v| {
+                if (v != sheet_count) return ValidationResult.invalid(.pdb_struct, "MASTER SHEET count mismatch");
+            }
+            if (master_site) |v| {
+                if (v != site_count) return ValidationResult.invalid(.pdb_struct, "MASTER SITE count mismatch");
+            }
+            if (master_xform) |v| {
+                if (v != xform_count) return ValidationResult.invalid(.pdb_struct, "MASTER transform count mismatch");
+            }
+            if (master_coord) |v| {
+                if (v != coord_count) return ValidationResult.invalid(.pdb_struct, "MASTER coordinate count mismatch");
+            }
+            if (master_ter) |v| {
+                if (v != ter_count) return ValidationResult.invalid(.pdb_struct, "MASTER TER count mismatch");
+            }
+            if (master_conect) |v| {
+                if (v != conect_count) return ValidationResult.invalid(.pdb_struct, "MASTER CONECT count mismatch");
+            }
+            if (master_seqres) |v| {
+                if (v != seqres_count) return ValidationResult.invalid(.pdb_struct, "MASTER SEQRES count mismatch");
+            }
+
+            return ValidationResult.okWithDepth(.pdb_struct, .full);
+        }
+    }
+
+    // No MASTER record — text record parsing only
     return ValidationResult.okWithDepth(.pdb_struct, .structural);
+}
+
+/// Parse a fixed-width integer field from a PDB record.
+/// Returns null if the field contains non-numeric/space characters.
+fn parsePdbInt(field: []const u8) ?u32 {
+    // Trim leading/trailing spaces
+    var start: usize = 0;
+    var end: usize = field.len;
+    while (start < end and field[start] == ' ') start += 1;
+    while (end > start and field[end - 1] == ' ') end -= 1;
+    if (start == end) return 0; // All spaces = 0
+
+    const trimmed = field[start..end];
+    var result: u32 = 0;
+    for (trimmed) |c| {
+        if (c < '0' or c > '9') return null; // Non-numeric
+        result = result * 10 + @as(u32, c - '0');
+    }
+    return result;
 }
 
 // ============ CIF Validator ============
