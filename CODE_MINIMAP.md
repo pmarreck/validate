@@ -34,7 +34,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/music_validators.zig` | WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD (DSF/DFF), AC3, EAC3 (full-file CRC), MIDI, Tracker (MOD/XM/IT/S3M), AMR, AU, TTA, CAF, AAC ADTS |
 | `src/core/movie_validators.zig` | MP4, MKV, AVI (RIFF chunk chain + idx1 index), MOV, FLV, WebM, SWF, ASF, DV (full DIF sequence validation), HEIC, AVIF, MPEG-TS |
 | `src/core/text_format_validators.zig` | JSON, CSV, TOML, INI, XML, RTF, HTML, KML, plain text, Unicode, CP437 detection |
-| `src/core/scientific_validators.zig` | FITS (checksum), DICOM, NetCDF, FASTA, FASTQ, HDF5, Parquet, MATLAB, NIfTI, PDB (MASTER record cross-validation), CIF, Shapefile |
+| `src/core/scientific_validators.zig` | FITS (checksum), DICOM, NetCDF, FASTA, FASTQ, HDF5 (superblock + OHDR/OCHK Jenkins checksum chain), Parquet, MATLAB, NIfTI, PDB (MASTER record cross-validation), CIF, Shapefile |
 | `src/core/creative_validators.zig` | Premiere (PRPROJ), InDesign (INDD/IDML), FCPXML, DaVinci (DRP), Sketch, AI, EPS, AEP, PostScript |
 | `src/core/cad_3d_validators.zig` | DWG, DXF, STEP, STL, OBJ, PLY, glTF/GLB, Blender, 3MF |
 | `src/core/email_validators.zig` | EML, MBOX (with attachment extraction + validation) |
@@ -78,8 +78,9 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/text_format_validators.zig` | Text format validation (JSON, CSV, TOML, INI, XML, RTF, HTML, KML, plain text, Unicode) |
 | `src/core/scientific_validators.zig` | Scientific format validation (FITS, DICOM, NetCDF, FASTA, FASTQ) with honest depth reporting |
 | `src/core/music_validators.zig` | Audio format validation (WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD, AC3, EAC3, MIDI, Tracker); WAV/AIFF float PCM deep validation with IEEE 754 NaN/Inf corruption detection |
-| `src/core/movie_validators.zig` | Video container validation (MP4, MKV, AVI, MOV, FLV, WebM, SWF, ASF, DV, IVF) with depth downgrade on unvalidated audio; IVF deep validation via VP9/AV1 codec dispatch; FLV deep validation via H.264 AVCC→Annex B + AAC stream decode |
-| `src/core/image_validators.zig` | Image format validation (PNG, JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR, PSD, PAM, DPX, QOI, TGA, DNG, ICO); ICO deep validation dispatches embedded PNG entries to CRC-32 verification |
+| `src/core/flac_decoder.zig` | FLAC audio decoder with MD5 verification + per-frame CRC-8 (header, poly 0x07) and CRC-16 (frame, poly 0x8005) integrity checks |
+| `src/core/movie_validators.zig` | Video container validation (MP4, MKV, AVI, MOV, FLV, WebM, SWF, ASF, DV, IVF) with depth downgrade on unvalidated audio; IVF deep validation via VP9/AV1 codec dispatch; FLV deep validation via H.264 AVCC→Annex B + AAC stream decode; ASF deep validation walks header child objects + Data Object GUID/packet chain |
+| `src/core/image_validators.zig` | Image format validation (PNG, JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR, PSD, PAM, DPX, QOI, TGA, DNG, ICO); ICO deep validation dispatches embedded PNG entries to CRC-32 verification; WebP full RIFF chunk chain walk; PSD exhaustive RLE decode + ZIP decompression |
 | `src/core/cad_3d_validators.zig` | 3D/CAD format validation (DWG, DXF, STEP, STL, OBJ, PLY, glTF/GLB, Blender); PLY binary deep validation with float NaN/Inf + face index range checking |
 | `src/core/creative_validators.zig` | Creative suite validation (Premiere, InDesign, IDML, FCPXML, DaVinci, Sketch, AI, EPS, AEP) |
 | `src/core/email_validators.zig` | Email format validation (EML, MBOX) |
@@ -89,7 +90,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/game_validator.zig` | Game ROM validation (NES, SNES, N64, GB, GBA, NDS, Genesis, CHD) |
 | `src/core/financial_validators.zig` | Financial format validation (QBW, QBB, QDF, OFX, QIF, TXF) |
 | `src/core/ole2_validator.zig` | OLE2/CFBF compound document validator — header, FAT, DIFAT, directory; `readNamedStream()` extracts streams by name via FAT/mini-FAT chains |
-| `src/core/word_doc_validator.zig` | MS-DOC (Word 97-2003) deep validator — FIB parsing, Table stream cross-validation, CLX/Piece Table with full PCD decode (FcCompressed physical offset verification), PlcBteChpx/PlcBtePapx CP monotonicity + BTE page number bounds; Word 6/95 falls back to structural |
+| `src/core/word_doc_validator.zig` | MS-DOC (Word 97-2003) deep validator — FIB parsing, 31 fc/lcb Table stream cross-validation pairs (stylesheet, fonts, bookmarks, fields, revision marks, doc properties), CLX/Piece Table with full PCD decode (FcCompressed physical offset verification), PlcBteChpx/PlcBtePapx CP monotonicity + BTE page number bounds; Word 6/95 falls back to structural |
 | `src/core/excel_biff8_validator.zig` | MS-XLS (Excel 97-2003) deep validator — BIFF8 record chain parsing, BoundSheet8 offset cross-validation, SST header consistency; older BIFF/encrypted files fall back to structural |
 | `src/core/ebml_parser.zig` | EBML/Matroska container parser with CRC-32 verification (uses `std.hash.Crc32` via codec_utils consolidation) |
 
