@@ -67,6 +67,7 @@ sample_path_for_format() {
 		plain_text_utf16) p="$GT_DIR/plain_text/utf16/sample.txt" ;;
 		plain_text_latin1) p="$GT_DIR/plain_text/latin1/sample.txt" ;;
 		plain_text_cp437) p="$GT_DIR/plain_text/cp437/sample.nfo" ;;
+		fits) p="$GT_DIR/fits/sample_with_checksum.fits" ;;
 		ivf) p="$(first_file_in_dir "$GT_DIR/vp8" || true)" ;;
 		kmz) p="$(first_file_by_ext "$GT_DIR/kmz" "kmz" || first_file_in_dir "$GT_DIR/kmz" || true)" ;;
 		git_repository) p="$GT_DIR/git_repository/sample/.git" ;;
