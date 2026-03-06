@@ -548,26 +548,59 @@ pub fn validateWebp(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCodeMsg(.webp, .exceeds_bounds, "RIFF size", "RIFF size exceeds file size (truncated)");
     }
 
-    // Read first chunk to verify it's a valid WebP chunk type
-    var chunk_header: [8]u8 = undefined;
-    const chunk_bytes = file.read(&chunk_header) catch {
-        return ValidationResult.invalidCode(.webp, .failed_to_read, "chunk header");
-    };
+    // Walk all RIFF chunks to validate structure
+    const riff_end: u64 = @as(u64, riff_size) + 8; // RIFF header (8) + declared payload
+    var chunk_pos: u64 = 12; // After RIFF(4) + size(4) + WEBP(4)
+    var chunk_count: u32 = 0;
+    var found_vp8 = false;
+    const valid_chunks = [_][]const u8{ "VP8 ", "VP8L", "VP8X", "ANIM", "ANMF", "ALPH", "ICCP", "EXIF", "XMP " };
 
-    if (chunk_bytes >= 4) {
-        const chunk_type = chunk_header[0..4];
-        // Valid WebP chunk types: VP8 , VP8L, VP8X, ANIM, ANMF, ALPH, ICCP, EXIF, XMP
-        const valid_chunks = [_][]const u8{ "VP8 ", "VP8L", "VP8X", "ANIM", "ANMF", "ALPH", "ICCP", "EXIF", "XMP " };
-        var found_valid = false;
+    while (chunk_pos + 8 <= riff_end and chunk_count < 10000) {
+        file.seekTo(chunk_pos) catch break;
+
+        var chunk_hdr: [8]u8 = undefined;
+        const chunk_bytes = file.read(&chunk_hdr) catch break;
+        if (chunk_bytes < 8) break;
+
+        const chunk_type = chunk_hdr[0..4];
+        const chunk_size = std.mem.readInt(u32, chunk_hdr[4..8], .little);
+
+        // Validate chunk type is a known WebP chunk
+        var is_valid_type = false;
         for (valid_chunks) |valid| {
             if (std.mem.eql(u8, chunk_type, valid)) {
-                found_valid = true;
+                is_valid_type = true;
                 break;
             }
         }
-        if (!found_valid) {
+        if (!is_valid_type) {
             return ValidationResult.invalidCode(.webp, .invalid_value, "WebP chunk type");
         }
+
+        // Track VP8/VP8L/VP8X presence
+        if (std.mem.eql(u8, chunk_type, "VP8 ") or std.mem.eql(u8, chunk_type, "VP8L") or std.mem.eql(u8, chunk_type, "VP8X")) {
+            found_vp8 = true;
+        }
+
+        // Validate chunk data fits within RIFF container
+        const chunk_data_end = chunk_pos + 8 + chunk_size;
+        if (chunk_data_end > riff_end) {
+            return ValidationResult.invalidCodeMsg(.webp, .exceeds_bounds, "Chunk size", "WebP chunk extends beyond RIFF container");
+        }
+
+        // RIFF chunks are 2-byte aligned (odd-size chunks have 1 byte padding)
+        const padded_size = (chunk_size + 1) & ~@as(u32, 1);
+        chunk_pos += 8 + padded_size;
+        chunk_count += 1;
+    }
+
+    if (!found_vp8) {
+        return ValidationResult.invalidCode(.webp, .missing, "VP8/VP8L/VP8X chunk");
+    }
+
+    // Verify chunks consumed the entire RIFF payload (allow small slack for padding)
+    if (chunk_pos > riff_end + 1) {
+        return ValidationResult.invalidCodeMsg(.webp, .exceeds_bounds, "RIFF chunks", "Chunks extend beyond RIFF container");
     }
 
     return ValidationResult.ok(.webp);
