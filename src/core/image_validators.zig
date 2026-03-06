@@ -241,11 +241,100 @@ pub fn validateJpegWithOptions(file: std.fs.File, skip_magic: bool) ValidationRe
             return ValidationResult.invalidCode(.jpeg, .invalid_value, "segment length");
         }
 
-        // Skip segment data (length includes the 2 length bytes)
-        file.seekBy(@as(i64, segment_length) - 2) catch |err| {
-            if (err == error.EndOfStream) break;
-            return ValidationResult.invalidCode(.jpeg, .truncated, "JPEG segment");
-        };
+        // Validate segment contents for known marker types
+        const data_length = segment_length - 2;
+
+        if (marker_type == 0xC4 and data_length >= 17) {
+            // DHT (Define Huffman Table) — validate code count consistency
+            // Format: class/id (1 byte) + 16 length bytes + symbols
+            var dht_buf: [17]u8 = undefined;
+            const dht_read = file.read(&dht_buf) catch {
+                return ValidationResult.invalidCode(.jpeg, .failed_to_read, "DHT segment");
+            };
+            if (dht_read >= 17) {
+                // Sum of 16 code length counts must not exceed 256
+                var total_codes: u32 = 0;
+                for (dht_buf[1..17]) |count| {
+                    total_codes += count;
+                }
+                if (total_codes > 256) {
+                    return ValidationResult.invalidCode(.jpeg, .invalid_value, "DHT code count exceeds 256");
+                }
+                // Total symbols + 17-byte header must fit in segment
+                if (total_codes + 17 > segment_length) {
+                    return ValidationResult.invalidCode(.jpeg, .exceeds_bounds, "DHT symbols exceed segment length");
+                }
+                // Seek past remaining segment data
+                const remaining = @as(i64, @as(u16, data_length)) - @as(i64, @as(u16, @intCast(dht_read)));
+                if (remaining > 0) {
+                    file.seekBy(remaining) catch |err| {
+                        if (err == error.EndOfStream) break;
+                        return ValidationResult.invalidCode(.jpeg, .truncated, "JPEG segment");
+                    };
+                }
+            }
+        } else if (marker_type == 0xDB and data_length >= 1) {
+            // DQT (Define Quantization Table) — validate table structure
+            // Each table: precision/id (1 byte) + 64 or 128 values
+            var dqt_byte: [1]u8 = undefined;
+            const dqt_read = file.read(&dqt_byte) catch {
+                return ValidationResult.invalidCode(.jpeg, .failed_to_read, "DQT segment");
+            };
+            if (dqt_read >= 1) {
+                const precision = dqt_byte[0] >> 4; // 0=8-bit, 1=16-bit
+                if (precision > 1) {
+                    return ValidationResult.invalidCode(.jpeg, .invalid_value, "DQT precision (must be 0 or 1)");
+                }
+                const table_id = dqt_byte[0] & 0x0F;
+                if (table_id > 3) {
+                    return ValidationResult.invalidCode(.jpeg, .invalid_value, "DQT table ID (must be 0-3)");
+                }
+                // Seek past remaining
+                const remaining = @as(i64, data_length) - 1;
+                if (remaining > 0) {
+                    file.seekBy(remaining) catch |err| {
+                        if (err == error.EndOfStream) break;
+                        return ValidationResult.invalidCode(.jpeg, .truncated, "JPEG segment");
+                    };
+                }
+            }
+        } else if (marker_type >= 0xC0 and marker_type <= 0xCF and marker_type != 0xC4 and marker_type != 0xC8 and marker_type != 0xCC and data_length >= 6) {
+            // SOF (Start of Frame) — validate frame parameters
+            var sof_buf: [6]u8 = undefined;
+            const sof_read = file.read(&sof_buf) catch {
+                return ValidationResult.invalidCode(.jpeg, .failed_to_read, "SOF segment");
+            };
+            if (sof_read >= 6) {
+                const precision_bits = sof_buf[0];
+                if (precision_bits != 8 and precision_bits != 12 and precision_bits != 16) {
+                    return ValidationResult.invalidCode(.jpeg, .invalid_value, "SOF precision (must be 8, 12, or 16)");
+                }
+                const height = std.mem.readInt(u16, sof_buf[1..3], .big);
+                const width = std.mem.readInt(u16, sof_buf[3..5], .big);
+                const num_components = sof_buf[5];
+                if (num_components == 0 or num_components > 4) {
+                    return ValidationResult.invalidCode(.jpeg, .invalid_value, "SOF component count (must be 1-4)");
+                }
+                if (width == 0) {
+                    return ValidationResult.invalidCode(.jpeg, .invalid_value, "SOF width (must be > 0)");
+                }
+                _ = height; // Height 0 is valid for progressive JPEG (defined in DNL)
+                // Seek past remaining
+                const remaining = @as(i64, @as(u16, data_length)) - @as(i64, @as(u16, @intCast(sof_read)));
+                if (remaining > 0) {
+                    file.seekBy(remaining) catch |err| {
+                        if (err == error.EndOfStream) break;
+                        return ValidationResult.invalidCode(.jpeg, .truncated, "JPEG segment");
+                    };
+                }
+            }
+        } else {
+            // Skip segment data (length includes the 2 length bytes)
+            file.seekBy(@as(i64, data_length)) catch |err| {
+                if (err == error.EndOfStream) break;
+                return ValidationResult.invalidCode(.jpeg, .truncated, "JPEG segment");
+            };
+        }
 
         segment_count += 1;
 
