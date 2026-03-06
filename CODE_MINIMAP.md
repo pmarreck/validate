@@ -62,11 +62,13 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/h264_cavlc_tables.zig` | H.264 CAVLC entropy decoder (coeff_token, total_zeros, run_before, level VLC) |
 | `src/core/h264_cabac_engine.zig` | H.264 CABAC arithmetic engine with context model initialization |
 | `src/core/h264_cabac_tables.zig` | H.264 CABAC tables (rangeTabLPS, transIdx, context init values) |
-| `src/core/h265_validator.zig` | Pure Zig H.265/HEVC NAL unit parser with VPS/SPS/PPS validation |
+| `src/core/h265_validator.zig` | Pure Zig H.265/HEVC NAL unit parser with VPS/SPS/PPS validation + CABAC decode dispatch |
+| `src/core/h265_cabac_decoder.zig` | H.265 CABAC arithmetic decoder for intra slices (split_cu, transform_tree, residual coding with diagonal scan) |
+| `src/core/h265_cabac_tables.zig` | H.265 CABAC context models (162 contexts: 48 non-residual + 114 residual), re-exports H.264 arithmetic tables |
 | `src/core/av1_obu_validator.zig` | Pure Zig AV1 OBU structural validator (sequence header, frame header, tile group) |
 | `src/core/vp9_syntax_validator.zig` | Pure Zig VP9 frame header parser |
 | `src/core/heif_container_parser.zig` | HEIF ISOBMFF meta-box parsing (ftyp/hdlr/pitm/iinf/iloc/iprp/iref) for HEIC and AVIF; supports grid images via iref dimg tile reference resolution |
-| `src/core/heic_validator.zig` | HEIC validation: HEIF container → hvcC NALs → h265_validator; supports grid (tiled) images by validating each tile's H.265 bitstream via iref dimg references |
+| `src/core/heic_validator.zig` | HEIC validation: HEIF container → hvcC NALs → h265_validator + per-tile CABAC decode; supports grid images via iref dimg; NAL length/type validation, tile count checks |
 | `src/core/avif_validator.zig` | AVIF validation: HEIF container → av1C OBUs → av1_obu_validator; supports grid (tiled) images by validating each tile's AV1 bitstream via iref dimg references |
 | `src/core/aac_syntax_validator.zig` | AAC-LC bitstream validator (raw AU, ADTS, LATM/LOAS) with Huffman spectral decode |
 | `src/core/aac_huffman_tables.zig` | AAC Huffman trees (scalefactor + 11 spectral codebooks) and SWB offset tables |

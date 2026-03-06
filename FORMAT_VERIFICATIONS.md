@@ -54,7 +54,7 @@ For clarity, the tables below use more specific labels:
 | **BMP** | .bmp | Header, DIB header, pixel data bounds | Full pixel decode via zigimg | Full Decode | 1 |
 | **WebP** | .webp | RIFF container, VP8/VP8L/VP8X chunks | Full decode via libwebp | Full Decode | 1 |
 | **TIFF** | .tiff, .tif | Header (II/MM), IFD structure, tag validation | Full decode via zigimg | Full Decode | 1 |
-| **HEIC/HEIF** | .heic, .heif | ISOBMFF structure, ftyp brand validation | Pure Zig HEIF container + H.265 NAL/SPS/PPS validation | Full Decode | 1 |
+| **HEIC/HEIF** | .heic, .heif | ISOBMFF structure, ftyp brand validation | Pure Zig HEIF container + H.265 NAL/SPS/PPS + per-tile CABAC arithmetic decode (NAL length/type, tile count). Note: CABAC absorbs corruption — 0%/0% detection (fundamental limitation) | Full Decode | 1 |
 | **AVIF** | .avif | ISOBMFF structure, ftyp brand validation | Pure Zig HEIF container + AV1 OBU validation | Full Decode | 1 |
 | **SVG** | .svg | XML declaration, `<svg>` root element | Full XML parse | Integrity | — |
 | **OpenEXR** | .exr | Signature (76 2F 31 01), header structure | Required attribute validation (channels, compression, windows) | Integrity | — |
@@ -195,7 +195,7 @@ For clarity, the tables below use more specific labels:
 | Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
 |--------|------------|------------------|-----------------|-----------|-----|
 | **Word 97-2003** | .doc | OLE2/CFBF header, FAT structure, stream detection | FIB parsing + Table stream cross-validation + CLX/Piece Table with full PCD decode (FcCompressed Latin-1/UTF-16LE physical offset verification) + PlcBteChpx/PlcBtePapx CP monotonicity + BTE page number bounds | Full | 5 |
-| **Excel 97-2003** | .xls | OLE2/CFBF header, FAT structure, Workbook stream | BIFF8 record chain + BoundSheet8 cross-validation + SST header | Full | 4 |
+| **Excel 97-2003** | .xls | OLE2/CFBF header, FAT structure, Workbook stream | BIFF8 record chain + BoundSheet8 cross-validation + SST string parsing + formula token validation + cell record cross-validation | Full | 4 |
 | **PowerPoint 97-2003** | .ppt | OLE2/CFBF header, FAT structure, PowerPoint stream | FAT/DIFAT/mini-FAT + directory validation (container only) | Structure | 1 |
 
 **Note:** Full byte-level validation of legacy Office streams is planned someday, but each format’s spec is roughly 600–1000 pages, so deeper support may take time.

@@ -42,6 +42,16 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] PlcBteChpx/PlcBtePapx validation: CP monotonicity + BTE page number bounds (2026-03-05 EST)
 - [x] Fix FibRgFcLcb97 indices: PlcBteChpx=12, PlcBtePapx=13 (not 32/33) (2026-03-05 EST)
 
+### HEIC CABAC Deep Validation Investigation
+- [x] Implement full H.265 CABAC arithmetic decoder per tile (CabacDecodeResult struct) (2026-03-06 EST)
+- [x] Add NAL length/type validation, tile count check, unconsumed data detection (2026-03-06 EST)
+- [x] Investigate corruption detection: 0% sniper, 0% shotgun — CABAC absorbs bit flips (2026-03-06 EST)
+- [x] Document "HEIC CABAC Paradox" in corruption survey + memory (2026-03-06 EST)
+- **Conclusion: Fundamentally limited** — CABAC arithmetic coding has no bit boundaries to desynchronize, unlike JPEG Huffman (93% shotgun). Only structural bytes (0.2% of file) are detectable.
+
+### MS-XLS Deep Decode
+- [x] SST string parsing + formula token validation + cell record cross-validation (2026-03-05 EST)
+
 ### Corruption Detection Experiment
 - [x] Design doc: docs/plans/2026-03-05-corruption-experiment-design.md (2026-03-05 EST)
 - [x] LuaJIT script: scripts/corruption-experiment — sniper + shotgun modes, PCG32, Wilson CI, TSV output (2026-03-05 EST)
@@ -230,6 +240,10 @@ These formats return WARN — recognized but NO real corruption detection:
 - [x] Fix last failed CI build (git identity in tests) (2026-02-01 ~20:45 EST)
 - [x] Create utility script to check forked dependencies for upstream updates (scripts/check-fork-updates) (2026-02-01 ~21:15 EST)
 ## Recently Completed
+- [x] HEIC CABAC deep validation: full H.265 CABAC per-tile decoder, documented fundamental limitation (2026-03-06 EST)
+- [x] MS-DOC deep decode: PCD physical offset verification + PlcBte validation (2026-03-05 EST)
+- [x] MS-XLS deep decode: SST strings, formula tokens, cell records (2026-03-05 EST)
+- [x] Corruption detection experiment: sniper/shotgun framework, full survey of 20+ formats (2026-03-05 EST)
 - [x] Code review fixes: ring buffer, depth honesty, catch blocks, build.zig dedup, 52 new tests (2026-02-22 EST)
 - [x] Consolidate duplicated codec utilities into `codec_utils.zig` (2026-02-22 EST)
 - [x] Add Compact Pro (`.cpt`) strict fixture coverage (2026-02-21 EST)
