@@ -292,16 +292,16 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 		const expected_head_checksum = actual_head_sum -% stored_adjustment;
 
 		if (expected_head_checksum != head_checksum.?) {
-			if (options.lenient_checksums) {
-				// Lenient mode (PDF-embedded fonts) - return warning
-				return FontValidationResult.okWithWarning(
-					font_type,
-					num_tables,
-					tables_verified,
-					"head table checksum mismatch (font may have been modified)",
-				);
-			}
-			return FontValidationResult.invalid("head table checksum mismatch");
+			// head table directory checksum is commonly wrong in real fonts —
+			// many generators compute it incorrectly (checksumAdjustment handling).
+			// Treat as warning rather than error since per-table data checksums
+			// and whole-file checksum provide stronger integrity guarantees.
+			return FontValidationResult.okWithWarning(
+				font_type,
+				num_tables,
+				tables_verified,
+				"head table checksum mismatch (font may have been modified)",
+			);
 		}
 	}
 
