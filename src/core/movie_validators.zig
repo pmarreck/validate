@@ -193,6 +193,8 @@ pub fn validateMatroska(file: std.fs.File, format: FileFormat) ValidationResult 
 // ============ AVI Validator ============
 
 /// Validate AVI file structure (RIFF container).
+/// Validate AVI by walking the RIFF chunk tree.
+/// Checks chunk boundaries, required lists (hdrl, movi), and idx1 index consistency.
 pub fn validateAvi(file: std.fs.File) ValidationResult {
     var header: [12]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.avi, .failed_to_read, "AVI header");
@@ -213,21 +215,78 @@ pub fn validateAvi(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.avi, .failed_to_get, "file size");
     };
 
-    if (riff_size + 8 > file_size) {
+    if (@as(u64, riff_size) + 8 > file_size) {
         return ValidationResult.invalidCodeMsg(.avi, .exceeds_bounds, "RIFF size", "RIFF size exceeds file size (truncated)");
     }
 
-    // Look for required LIST chunks (hdrl, movi)
-    var buffer: [4096]u8 = undefined;
-    file.seekTo(12) catch return ValidationResult.invalid(.avi, "Failed to seek");
+    // Walk top-level RIFF chunks and validate structure
+    var pos: u64 = 12; // After "RIFF" + size + "AVI "
+    const riff_end: u64 = @min(@as(u64, riff_size) + 8, file_size);
+    var found_hdrl = false;
+    var found_movi = false;
+    var movi_offset: u64 = 0;
+    var movi_size: u32 = 0;
+    var chunks_validated: u32 = 0;
 
-    const bytes_read = file.read(&buffer) catch {
-        return ValidationResult.invalidCode(.avi, .failed_to_read, "AVI data");
-    };
+    while (pos + 8 <= riff_end and chunks_validated < 10000) {
+        file.seekTo(pos) catch break;
+        var chunk_hdr: [12]u8 = undefined;
+        const n = file.read(&chunk_hdr) catch break;
+        if (n < 8) break;
 
-    const has_hdrl = format_validation.findInBuffer(&buffer, bytes_read, "hdrl");
-    if (!has_hdrl) {
+        const chunk_id = chunk_hdr[0..4];
+        const chunk_size = std.mem.readInt(u32, chunk_hdr[4..8], .little);
+
+        // Chunk data end (with padding to word boundary)
+        const data_end = pos + 8 + @as(u64, chunk_size);
+        if (data_end > riff_end + 1) {
+            return ValidationResult.invalid(.avi, "AVI chunk extends beyond RIFF container");
+        }
+
+        if (std.mem.eql(u8, chunk_id, "LIST")) {
+            if (n >= 12) {
+                const list_type = chunk_hdr[8..12];
+                if (std.mem.eql(u8, list_type, "hdrl")) {
+                    found_hdrl = true;
+                } else if (std.mem.eql(u8, list_type, "movi")) {
+                    found_movi = true;
+                    movi_offset = pos + 12; // After LIST + size + "movi"
+                    movi_size = chunk_size -| 4; // Subtract "movi" fourcc
+                }
+            }
+        } else if (std.mem.eql(u8, chunk_id, "idx1") and found_movi) {
+            // Validate idx1 index entries: each is 16 bytes (ckid[4] + flags[4] + offset[4] + size[4])
+            // Offsets should be within movi chunk bounds
+            const idx_data_size = @min(chunk_size, @as(u32, 64 * 1024)); // Cap at 64KB of index
+            if (idx_data_size >= 16) {
+                var idx_buf: [65536]u8 = undefined;
+                file.seekTo(pos + 8) catch break;
+                const idx_read = file.read(idx_buf[0..idx_data_size]) catch break;
+                const num_entries = idx_read / 16;
+                var i: usize = 0;
+                while (i < num_entries) : (i += 1) {
+                    const entry_off = i * 16;
+                    const frame_offset = std.mem.readInt(u32, idx_buf[entry_off + 8 ..][0..4], .little);
+                    const frame_size = std.mem.readInt(u32, idx_buf[entry_off + 12 ..][0..4], .little);
+                    // idx1 offsets are relative to movi start (after "movi" fourcc)
+                    if (@as(u64, frame_offset) + @as(u64, frame_size) > @as(u64, movi_size) + 8) {
+                        return ValidationResult.invalid(.avi, "AVI idx1 entry points beyond movi chunk");
+                    }
+                }
+            }
+        }
+
+        // Advance to next chunk (padded to word boundary)
+        pos = (data_end + 1) & ~@as(u64, 1);
+        chunks_validated += 1;
+    }
+
+    if (!found_hdrl) {
         return ValidationResult.invalidCode(.avi, .missing, "AVI header list");
+    }
+
+    if (found_movi) {
+        return ValidationResult.okWithDepth(.avi, .full);
     }
 
     return ValidationResult.ok(.avi);
@@ -1557,6 +1616,9 @@ pub fn validateAsf(file: std.fs.File) ValidationResult {
 /// Validate DV (Digital Video) raw stream.
 /// DV uses 80-byte DIF (Digital Interface Format) blocks.
 /// First block: section type = 000 (header section) in high 3 bits of byte 0.
+/// Validate DV (Digital Video) by checking DIF block section type sequence.
+/// DV has a rigidly fixed structure: each DIF sequence is 150 blocks of 80 bytes
+/// with section types: Header(0)×1, Subcode(1)×2, VAUX(2)×3, Audio(3)×9, Video(4)×135.
 pub fn validateDv(file: std.fs.File) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalid(.dv, "Failed to seek");
 
@@ -1568,8 +1630,8 @@ pub fn validateDv(file: std.fs.File) ValidationResult {
     }
 
     // Section type in high 3 bits of byte 0: should be 000 (header section)
-    const section_type = (header[0] >> 5) & 0x07;
-    if (section_type != 0) {
+    const first_sct = (header[0] >> 5) & 0x07;
+    if (first_sct != 0) {
         return ValidationResult.invalid(.dv, "First DIF block is not a header section");
     }
 
@@ -1578,25 +1640,60 @@ pub fn validateDv(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.dv, "First DIF block number is not 0");
     }
 
-    // Check for a second DIF block at offset 80
     const file_size = file.getEndPos() catch {
         return ValidationResult.structuralOnly(.dv);
     };
 
-    if (file_size >= 160) {
-        var second_block: [3]u8 = undefined;
-        file.seekTo(80) catch return ValidationResult.structuralOnly(.dv);
-        const second_read = file.read(&second_block) catch return ValidationResult.structuralOnly(.dv);
+    // DIF sequence: 150 blocks = Header(0)×1 + Subcode(1)×2 + VAUX(2)×3 + 9×[Audio(3)×1 + Video(4)×15]
+    const blocks_per_sequence: u64 = 150;
+    const block_size: u64 = 80;
+    const total_blocks = file_size / block_size;
 
-        if (second_read >= 1) {
-            const second_section_type = (second_block[0] >> 5) & 0x07;
-            // Second block should be subcode section (001)
-            if (second_section_type != 1) {
-                return ValidationResult.structuralOnly(.dv);
-            }
-        }
+    if (total_blocks < blocks_per_sequence) {
+        return ValidationResult.structuralOnly(.dv);
     }
 
+    var block_idx: u64 = 0;
+    var sequences_validated: u32 = 0;
+    const max_sequences: u32 = 10000;
+
+    // Read one full DIF sequence at a time (150×80 = 12000 bytes) for efficiency
+    const seq_bytes = blocks_per_sequence * block_size; // 12000
+    var seq_buf: [12000]u8 = undefined;
+
+    while (block_idx + blocks_per_sequence <= total_blocks and sequences_validated < max_sequences) {
+        const offset = block_idx * block_size;
+        file.seekTo(offset) catch return ValidationResult.structuralOnly(.dv);
+        const n = file.read(&seq_buf) catch return ValidationResult.structuralOnly(.dv);
+        if (n < seq_bytes) return ValidationResult.structuralOnly(.dv);
+
+        // Validate section type of every block in this sequence
+        for (0..blocks_per_sequence) |j| {
+            const expected_sct: u3 = if (j == 0)
+                0 // Header
+            else if (j <= 2)
+                1 // Subcode
+            else if (j <= 5)
+                2 // VAUX
+            else blk: {
+                // Audio/Video interleave: 9 groups of [1 Audio + 15 Video]
+                const av_idx = j - 6;
+                break :blk if (av_idx % 16 == 0) @as(u3, 3) else @as(u3, 4);
+            };
+
+            const actual_sct: u3 = @truncate((seq_buf[j * 80] >> 5) & 0x07);
+            if (actual_sct != expected_sct) {
+                return ValidationResult.invalid(.dv, "DIF block section type sequence violation");
+            }
+        }
+
+        block_idx += blocks_per_sequence;
+        sequences_validated += 1;
+    }
+
+    if (sequences_validated > 0) {
+        return ValidationResult.okWithDepth(.dv, .full);
+    }
     return ValidationResult.structuralOnly(.dv);
 }
 
