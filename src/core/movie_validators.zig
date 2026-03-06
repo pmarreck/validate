@@ -1608,7 +1608,111 @@ pub fn validateAsf(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.asf, "ASF header object count unreasonably large");
     }
 
-    return ValidationResult.structuralOnly(.asf);
+    // Validate reserved bytes (must be 0x01, 0x02 per MS-ASF spec)
+    if (header[28] != 0x01 or header[29] != 0x02) {
+        return ValidationResult.invalid(.asf, "ASF header reserved bytes invalid (expected 01 02)");
+    }
+
+    // --- Deep validation: walk all child objects in the header ---
+    const header_data_start: u64 = 30; // After GUID(16) + size(8) + num_objects(4) + reserved(2)
+    var child_pos: u64 = header_data_start;
+    var children_found: u32 = 0;
+    var child_buf: [24]u8 = undefined; // GUID(16) + size(8)
+
+    while (child_pos + 24 <= object_size) {
+        file.seekTo(child_pos) catch return ValidationResult.invalidWithDepth(.asf, "Failed to seek to child object", .structural);
+        const child_read = file.read(&child_buf) catch return ValidationResult.invalidWithDepth(.asf, "Failed to read child object header", .structural);
+        if (child_read < 24) {
+            return ValidationResult.invalidWithDepth(.asf, "ASF child object header truncated", .structural);
+        }
+
+        const child_size = std.mem.readInt(u64, child_buf[16..24], .little);
+
+        // Minimum object size is 24 (GUID + size field)
+        if (child_size < 24) {
+            return ValidationResult.invalidWithDepth(.asf, "ASF child object size too small (< 24)", .structural);
+        }
+
+        // Child must not extend past header boundary
+        if (child_pos + child_size > object_size) {
+            return ValidationResult.invalidWithDepth(.asf, "ASF child object extends past header boundary", .structural);
+        }
+
+        children_found += 1;
+        child_pos += child_size;
+    }
+
+    // Verify child count matches declared num_header_objects
+    if (children_found != num_header_objects) {
+        return ValidationResult.invalidWithDepth(.asf, "ASF child object count mismatch with declared count", .structural);
+    }
+
+    // Verify children exactly fill the header (no gaps)
+    if (child_pos != object_size) {
+        return ValidationResult.invalidWithDepth(.asf, "ASF child objects do not exactly fill header object", .structural);
+    }
+
+    // --- Validate Data Object (must follow immediately after header) ---
+    const data_object_guid = [_]u8{ 0x36, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C };
+    var data_hdr: [50]u8 = undefined; // GUID(16) + size(8) + FileID(16) + packets(8) + reserved(2)
+
+    file.seekTo(object_size) catch return ValidationResult.invalidWithDepth(.asf, "Failed to seek to Data Object", .structural);
+    const data_read = file.read(&data_hdr) catch return ValidationResult.invalidWithDepth(.asf, "Failed to read Data Object", .structural);
+    if (data_read < 50) {
+        return ValidationResult.invalidWithDepth(.asf, "Data Object header truncated", .structural);
+    }
+
+    if (!std.mem.eql(u8, data_hdr[0..16], &data_object_guid)) {
+        return ValidationResult.invalidWithDepth(.asf, "Data Object GUID mismatch", .structural);
+    }
+
+    const data_size = std.mem.readInt(u64, data_hdr[16..24], .little);
+    if (data_size < 50) {
+        return ValidationResult.invalidWithDepth(.asf, "Data Object size too small", .structural);
+    }
+
+    // Data Object must not extend past file
+    if (object_size + data_size > file_size) {
+        return ValidationResult.invalidWithDepth(.asf, "Data Object extends past end of file", .structural);
+    }
+
+    // Validate Data Object reserved field (must be 0x01, 0x01)
+    if (data_hdr[48] != 0x01 or data_hdr[49] != 0x01) {
+        return ValidationResult.invalidWithDepth(.asf, "Data Object reserved bytes invalid (expected 01 01)", .structural);
+    }
+
+    const total_data_packets = std.mem.readInt(u64, data_hdr[32..40], .little);
+
+    // If there are packets, ensure data object has room for them
+    if (total_data_packets > 0 and data_size <= 50) {
+        return ValidationResult.invalidWithDepth(.asf, "Data Object has packets but no room for packet data", .structural);
+    }
+
+    // --- Validate trailing top-level objects (Simple Index, Index, etc.) ---
+    var top_pos: u64 = object_size + data_size;
+    while (top_pos + 24 <= file_size) {
+        file.seekTo(top_pos) catch break;
+        var top_buf: [24]u8 = undefined;
+        const top_read = file.read(&top_buf) catch break;
+        if (top_read < 24) break;
+
+        const top_size = std.mem.readInt(u64, top_buf[16..24], .little);
+        if (top_size < 24) {
+            return ValidationResult.invalidWithDepth(.asf, "Trailing top-level object size too small", .structural);
+        }
+        if (top_pos + top_size > file_size) {
+            return ValidationResult.invalidWithDepth(.asf, "Trailing top-level object extends past end of file", .structural);
+        }
+
+        top_pos += top_size;
+    }
+
+    // Verify total coverage matches file size (allow no trailing garbage)
+    if (top_pos != file_size) {
+        return ValidationResult.invalidWithDepth(.asf, "ASF objects do not cover entire file (trailing garbage or gap)", .structural);
+    }
+
+    return ValidationResult.okWithDepth(.asf, .full);
 }
 
 // ============ DV Validator ============

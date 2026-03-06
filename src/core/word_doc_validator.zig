@@ -248,13 +248,34 @@ fn parseFibRgLw97(data: []const u8) FibRgLw97 {
 const KNOWN_FC_LCB_INDICES = [_]u16{
     0, // fcStshfOrig — original stylesheet
     1, // fcStshf — stylesheet
+    2, // fcPlcfLst — list formatting
+    4, // fcPlfLfo — list format override
     6, // fcPlcfSed — section descriptors
+    8, // fcPlcfPhe — paragraph heights
+    10, // fcSttbfGlsy — glossary strings
     12, // fcPlcfBteChpx — character property bin table
     13, // fcPlcfBtePapx — paragraph property bin table
+    14, // fcPlcfSea — private
     15, // fcPlcfFldMom — field positions in main doc
+    16, // fcPlcfFldHdr — field positions in headers
+    17, // fcPlcfFldFtn — field positions in footnotes
+    18, // fcPlcfFldAtn — field positions in annotations
+    20, // fcSttbfFfn — font table
+    23, // fcPlcfBkf — bookmark first positions
+    24, // fcPlcfBkl — bookmark last positions
+    26, // fcSttbfBkmk — bookmark names
+    28, // fcPlcfFldEdn — field positions in endnotes
     31, // fcSttbfAssoc — associated strings
+    33, // fcDop — document properties
+    39, // fcSttbfRMark — revision mark author names
+    42, // fcPlcfFldTxbx — field positions in textboxes
+    44, // fcPlcfFldHdrTxbx — field positions in header textboxes
+    58, // fcSttbfCaption — auto-caption strings
     66, // fcClx — CLX / piece table (validated separately too)
+    72, // fcSttbfBkmkArto — art object bookmark names
+    80, // fcPlcfWkb — subdocument positions
     86, // fcCmds — macro commands
+    92, // fcSttbfUsrMark — user mark names
 };
 
 /// Validate well-known fc/lcb pairs against Table stream bounds.

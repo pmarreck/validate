@@ -1893,14 +1893,17 @@ pub fn validateHdf5(file: std.fs.File) ValidationResult {
             return ValidationResult.invalidCodeMsg(.hdf5, .checksum_mismatch, "HDF5 superblock", "HDF5 superblock checksum mismatch");
         }
 
-        // Verify root group object header checksum (v2 OHDR has Jenkins checksum)
+        // Verify root group object header checksum and walk continuation chain
         if (root_oh_addr < file_size) {
-            const ohdr_result = validateHdf5ObjectHeaderChecksum(file, root_oh_addr, file_size);
-            if (ohdr_result == .invalid) {
+            const chain = validateHdf5ObjectHeaderChain(file, root_oh_addr, file_size);
+            if (chain.root_result == .invalid) {
                 return ValidationResult.invalidCodeMsg(.hdf5, .checksum_mismatch, "root group object header", "Root group object header checksum mismatch");
             }
-            if (ohdr_result == .verified) {
-                // Both superblock and root OHDR checksums verified
+            if (chain.ochk_invalid > 0) {
+                return ValidationResult.invalidCodeMsg(.hdf5, .checksum_mismatch, "object header continuation", "OCHK continuation block checksum mismatch");
+            }
+            if (chain.root_result == .verified) {
+                // Both superblock and root OHDR (+ any OCHK continuations) checksums verified
                 return ValidationResult.okWithDepth(.hdf5, .full);
             }
         }
@@ -1915,11 +1918,60 @@ pub fn validateHdf5(file: std.fs.File) ValidationResult {
 
 pub const OhdrCheckResult = enum { verified, invalid, unverifiable };
 
+/// Extended result from OHDR + OCHK chain validation.
+pub const OhdrChainResult = struct {
+    root_result: OhdrCheckResult = .unverifiable,
+    ochk_verified: u32 = 0,
+    ochk_invalid: u32 = 0,
+
+    pub fn isValid(self: OhdrChainResult) bool {
+        return self.root_result == .verified and self.ochk_invalid == 0;
+    }
+
+    pub fn totalVerified(self: OhdrChainResult) u32 {
+        return (if (self.root_result == .verified) @as(u32, 1) else @as(u32, 0)) + self.ochk_verified;
+    }
+};
+
+/// HDF5 Object Header Continuation message type.
+const HDF5_MSG_CONTINUATION: u8 = 0x10;
+
+/// Verify a v2 Object Header (OHDR) Jenkins checksum and walk all OCHK
+/// continuation blocks, verifying their checksums too.
+pub fn validateHdf5ObjectHeaderChain(file: std.fs.File, oh_addr: u64, file_size: u64) OhdrChainResult {
+    var result = OhdrChainResult{};
+    result.root_result = validateHdf5OhdrChunk(file, oh_addr, file_size, &result);
+    return result;
+}
+
 /// Verify a v2 Object Header (OHDR) Jenkins checksum.
 /// Parses the variable-length OHDR prefix to find the chunk 0 data size,
 /// then computes Jenkins lookup3 over the entire header and compares
 /// against the stored 4-byte checksum at the end.
+/// Legacy single-chunk entry point for backward compatibility.
 pub fn validateHdf5ObjectHeaderChecksum(file: std.fs.File, oh_addr: u64, file_size: u64) OhdrCheckResult {
+    return validateHdf5OhdrBlock(file, oh_addr, file_size, null);
+}
+
+/// Core OHDR chunk validator. Validates the OHDR block and optionally walks
+/// continuation chains when chain_result is non-null.
+fn validateHdf5OhdrChunk(
+    file: std.fs.File,
+    chunk_addr: u64,
+    file_size: u64,
+    chain_result: ?*OhdrChainResult,
+) OhdrCheckResult {
+    if (chunk_addr + 8 > file_size) return .unverifiable;
+    return validateHdf5OhdrBlock(file, chunk_addr, file_size, chain_result);
+}
+
+/// Validate an OHDR block: parse prefix, verify checksum, optionally walk continuations.
+fn validateHdf5OhdrBlock(
+    file: std.fs.File,
+    oh_addr: u64,
+    file_size: u64,
+    chain_result: ?*OhdrChainResult,
+) OhdrCheckResult {
     if (oh_addr + 8 > file_size) return .unverifiable;
 
     // Read OHDR prefix (signature + version + flags + up to 24 optional bytes + chunk size)
@@ -1936,6 +1988,9 @@ pub fn validateHdf5ObjectHeaderChecksum(file: std.fs.File, oh_addr: u64, file_si
 
     const flags = prefix[5];
     var offset: usize = 6;
+
+    // Track whether creation order is tracked (bit 2)
+    const has_creation_order = (flags & 0x04) != 0;
 
     // Optional: times stored (bit 5) — 4 x 4 bytes
     if (flags & 0x20 != 0) offset += 16;
@@ -1974,8 +2029,111 @@ pub fn validateHdf5ObjectHeaderChecksum(file: std.fs.File, oh_addr: u64, file_si
     const stored = std.mem.readInt(u32, ohdr_buf[checksum_offset_val..][0..4], .little);
     const computed = jenkinsLookup3(ohdr_buf[0..checksum_offset_val], 0);
 
-    if (stored == computed) return .verified;
-    return .invalid;
+    if (stored != computed) return .invalid;
+
+    // If chain walking requested, parse messages in chunk0 data for continuations
+    if (chain_result) |cr| {
+        const msg_start = offset; // offset within ohdr_buf where messages begin
+        const msg_end = checksum_offset_val; // messages end before checksum
+        parseHdf5MessagesForContinuations(file, ohdr_buf[0..total_usize], msg_start, msg_end, has_creation_order, file_size, cr);
+    }
+
+    return .verified;
+}
+
+/// Validate an OCHK block of known length. The continuation message provides
+/// both the offset and the length.
+fn validateHdf5OchkBlockWithLength(
+    file: std.fs.File,
+    ochk_addr: u64,
+    ochk_length: u64,
+    file_size: u64,
+    has_creation_order: bool,
+    chain_result: *OhdrChainResult,
+) void {
+    if (ochk_addr + ochk_length > file_size) return;
+    if (ochk_length < 8) return; // minimum: 4 magic + 4 checksum
+    if (ochk_length > 65536) return; // sanity limit
+
+    const len: usize = @intCast(ochk_length);
+    var buf: [65536]u8 = undefined;
+    file.seekTo(ochk_addr) catch return;
+    const bytes_read = file.read(buf[0..len]) catch return;
+    if (bytes_read < len) return;
+
+    // Verify OCHK magic
+    if (!std.mem.eql(u8, buf[0..4], "OCHK")) {
+        chain_result.ochk_invalid += 1;
+        return;
+    }
+
+    // Verify checksum (last 4 bytes)
+    const checksum_offset_val = len - 4;
+    const stored = std.mem.readInt(u32, buf[checksum_offset_val..][0..4], .little);
+    const computed = jenkinsLookup3(buf[0..checksum_offset_val], 0);
+
+    if (stored != computed) {
+        chain_result.ochk_invalid += 1;
+        return;
+    }
+
+    chain_result.ochk_verified += 1;
+
+    // Parse messages within OCHK for further continuations (messages start after "OCHK" magic)
+    parseHdf5MessagesForContinuations(file, buf[0..len], 4, checksum_offset_val, has_creation_order, file_size, chain_result);
+}
+
+/// Parse HDF5 v2 object header messages looking for continuation messages (type 0x10).
+/// V2 message header: type(u8) + data_size(u16 LE) + flags(u8) [+ creation_order(u16 LE) if tracked].
+/// For each continuation found, recursively validate the OCHK block.
+fn parseHdf5MessagesForContinuations(
+    file: std.fs.File,
+    buf: []const u8,
+    msg_start: usize,
+    msg_end: usize,
+    has_creation_order: bool,
+    file_size: u64,
+    chain_result: *OhdrChainResult,
+) void {
+    var pos = msg_start;
+    // Safety: limit iterations to prevent infinite loops on malformed data
+    var iterations: u32 = 0;
+    const max_iterations: u32 = 1000;
+
+    // V2 message header: type(1) + size(2) + flags(1) = 4 bytes minimum
+    const base_header_size: usize = 4;
+    const msg_header_size: usize = if (has_creation_order) base_header_size + 2 else base_header_size;
+
+    while (pos + msg_header_size <= msg_end and iterations < max_iterations) : (iterations += 1) {
+        const msg_type: u8 = buf[pos];
+        const msg_size = std.mem.readInt(u16, buf[pos + 1..][0..2], .little);
+        // flags at buf[pos + 3], creation_order at buf[pos + 4..6] if tracked
+
+        const msg_data_start = pos + msg_header_size;
+        const msg_data_end = msg_data_start + msg_size;
+
+        if (msg_data_end > msg_end) break;
+
+        // Type 0x00 = NIL message (padding), skip
+        if (msg_type == 0x00) {
+            pos = msg_data_end;
+            continue;
+        }
+
+        // Continuation message (type 0x10): offset(8) + length(8)
+        if (msg_type == HDF5_MSG_CONTINUATION and msg_size >= 16) {
+            if (msg_data_start + 16 <= msg_end) {
+                const cont_offset = std.mem.readInt(u64, buf[msg_data_start..][0..8], .little);
+                const cont_length = std.mem.readInt(u64, buf[msg_data_start + 8..][0..8], .little);
+
+                if (cont_offset < file_size and cont_length > 0) {
+                    validateHdf5OchkBlockWithLength(file, cont_offset, cont_length, file_size, has_creation_order, chain_result);
+                }
+            }
+        }
+
+        pos = msg_data_end;
+    }
 }
 
 // ============ Apache Parquet Validator ============

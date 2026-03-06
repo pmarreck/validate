@@ -1249,7 +1249,6 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
     file.seekTo(layer_section_end) catch return ValidationResult.invalidCode(.psd, .failed_to_seek, "past layers");
 
     // ---- Decode Image Data ----
-    const image_data_start = file.getPos() catch return ValidationResult.invalidCode(.psd, .failed_to_get, "position");
 
     var compression_buf: [2]u8 = undefined;
     _ = file.read(&compression_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "compression type");
@@ -1265,9 +1264,6 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
     const scanline_size = bytes_per_channel;
     const channel_size = scanline_size * height;
-    const total_uncompressed = channel_size * channels;
-
-    _ = total_uncompressed;
 
     if (compression == 0) {
         // Raw data - verify we have enough bytes
@@ -1277,9 +1273,9 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
             return ValidationResult.invalidCode(.psd, .truncated, "raw image data");
         }
     } else if (compression == 1) {
-        // RLE compression
+        // RLE compression - fully decode ALL scanlines
         // First, read byte counts for each scanline (2 bytes each for PSD, 4 bytes for PSB)
-        const scanline_count = height * channels;
+        const scanline_count: u64 = @as(u64, height) * @as(u64, channels);
         const count_size: u64 = if (is_psb) 4 else 2;
         const counts_size = scanline_count * count_size;
 
@@ -1288,83 +1284,103 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
             return ValidationResult.invalidCode(.psd, .truncated, "RLE byte counts");
         }
 
-        // Read and validate all RLE byte counts
+        // Read all RLE byte counts into an array so we know each scanline's compressed size
+        const rle_counts = allocator.alloc(u32, @intCast(scanline_count)) catch {
+            return ValidationResult.structuralOnly(.psd);
+        };
+        defer allocator.free(rle_counts);
+
         var total_rle_size: u64 = 0;
-        var scanline_idx: u64 = 0;
-        while (scanline_idx < scanline_count) : (scanline_idx += 1) {
+        for (rle_counts) |*count| {
             if (is_psb) {
                 var count_buf: [4]u8 = undefined;
                 _ = file.read(&count_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "RLE count");
-                total_rle_size += std.mem.readInt(u32, &count_buf, .big);
+                count.* = std.mem.readInt(u32, &count_buf, .big);
             } else {
                 var count_buf: [2]u8 = undefined;
                 _ = file.read(&count_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "RLE count");
-                total_rle_size += std.mem.readInt(u16, &count_buf, .big);
+                count.* = std.mem.readInt(u16, &count_buf, .big);
             }
+            total_rle_size += count.*;
         }
 
-        // Verify RLE data size
+        // Verify total RLE data fits in file
         const rle_start = file.getPos() catch 0;
         if (rle_start + total_rle_size > file_size) {
             return ValidationResult.invalidCode(.psd, .truncated, "RLE compressed data");
         }
 
-        // Actually decode RLE to verify integrity
-        // For full validation, we decode all scanlines
-        var decoded_ok = true;
-        scanline_idx = 0;
-
-        // Reset to start of RLE data
-        file.seekTo(image_data_start + 2 + counts_size) catch return ValidationResult.invalidCode(.psd, .failed_to_seek, "to RLE data");
-
-        // Allocate buffer for one scanline
-        const max_scanline = @min(scanline_size, 1024 * 1024); // Cap at 1MB per scanline
-        var scanline_buf = allocator.alloc(u8, max_scanline) catch {
-            // Can't allocate - do size check only
+        // Allocate buffer for reading compressed scanline data (max 1MB per scanline)
+        const max_rle_buf: usize = 1024 * 1024;
+        const rle_buf = allocator.alloc(u8, max_rle_buf) catch {
             return ValidationResult.structuralOnly(.psd);
         };
-        defer allocator.free(scanline_buf);
+        defer allocator.free(rle_buf);
 
-        // Read a sample of RLE data to verify it decodes correctly
-        // For very large files, sample first and last 100 scanlines
-        const sample_size = @min(scanline_count, 200);
-        var sample_idx: u64 = 0;
+        // Fully decode every scanline's RLE data
+        var total_decoded: u64 = 0;
+        for (rle_counts) |compressed_len| {
+            if (compressed_len == 0) continue;
 
-        while (sample_idx < sample_size) : (sample_idx += 1) {
-            // Read one byte to check RLE marker
-            var marker: [1]u8 = undefined;
-            const marker_read = file.read(&marker) catch break;
-            if (marker_read == 0) break;
+            // Read the compressed data for this scanline
+            const read_len: usize = @min(@as(usize, compressed_len), max_rle_buf);
+            const bytes_got = file.read(rle_buf[0..read_len]) catch {
+                return ValidationResult.invalidCode(.psd, .failed_to_read, "RLE scanline data");
+            };
+            if (bytes_got < read_len) {
+                return ValidationResult.invalidCode(.psd, .truncated, "RLE scanline data");
+            }
 
-            // RLE format: if marker >= 128, next byte repeated (257 - marker) times
-            //             if marker < 128, next (marker + 1) bytes are literal
-            const n = marker[0];
-            if (n >= 128) {
-                // Run: read 1 byte
-                var run_byte: [1]u8 = undefined;
-                _ = file.read(&run_byte) catch {
-                    decoded_ok = false;
-                    break;
+            // If compressed data exceeded our buffer, skip the rest
+            if (compressed_len > max_rle_buf) {
+                file.seekBy(@intCast(compressed_len - max_rle_buf)) catch {
+                    return ValidationResult.invalidCode(.psd, .failed_to_seek, "past large RLE scanline");
                 };
-            } else {
-                // Literal: read n+1 bytes
-                const literal_len = @as(usize, n) + 1;
-                if (literal_len <= scanline_buf.len) {
-                    _ = file.read(scanline_buf[0..literal_len]) catch {
-                        decoded_ok = false;
-                        break;
-                    };
+            }
+
+            // Decode RLE: byte N as i8:
+            //   N >= 0 (0..127):   copy next N+1 bytes literally
+            //   N < 0 (-1..-127):  repeat next byte 1-N times
+            //   N == -128 (0x80):  no-op
+            var rle_pos: usize = 0;
+            var scanline_decoded: u64 = 0;
+            while (rle_pos < read_len) {
+                const marker: i8 = @bitCast(rle_buf[rle_pos]);
+                rle_pos += 1;
+
+                if (marker >= 0) {
+                    // Literal run: copy next marker+1 bytes
+                    const literal_count: usize = @as(usize, @intCast(marker)) + 1;
+                    if (rle_pos + literal_count > read_len) {
+                        return ValidationResult.invalidCode(.psd, .decompression_failed, "RLE literal overrun");
+                    }
+                    rle_pos += literal_count;
+                    scanline_decoded += literal_count;
+                } else if (marker == -128) {
+                    // No-op
+                    continue;
                 } else {
-                    file.seekBy(@intCast(literal_len)) catch {
-                        decoded_ok = false;
-                        break;
-                    };
+                    // Repeat run: repeat next byte (1 - marker) times
+                    if (rle_pos >= read_len) {
+                        return ValidationResult.invalidCode(.psd, .decompression_failed, "RLE repeat truncated");
+                    }
+                    rle_pos += 1; // consume the repeated byte
+                    const repeat_count: u64 = @intCast(@as(u32, @intCast(1 - @as(i32, marker))));
+                    scanline_decoded += repeat_count;
                 }
             }
+
+            // Each decoded scanline should produce exactly scanline_size bytes
+            if (scanline_decoded != scanline_size) {
+                return ValidationResult.invalidCode(.psd, .decompression_failed, "RLE scanline size mismatch");
+            }
+            total_decoded += scanline_decoded;
         }
 
-        if (!decoded_ok) {
-            return ValidationResult.invalidCode(.psd, .decompression_failed, "RLE");
+        // Verify total decoded size matches expected uncompressed image size
+        const expected_total = @as(u64, scanline_size) * @as(u64, height) * @as(u64, channels);
+        if (total_decoded != expected_total) {
+            return ValidationResult.invalidCode(.psd, .decompression_failed, "RLE total size mismatch");
         }
     } else if (compression == 2 or compression == 3) {
         // ZIP compression (2 = ZIP without prediction, 3 = ZIP with prediction)
@@ -1376,8 +1392,8 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
             return ValidationResult.invalid(.psd, "No ZIP compressed data");
         }
 
-        // Read compressed data (limit to 100MB to avoid memory issues)
-        const max_compressed_read: u64 = @min(remaining, 100 * 1024 * 1024);
+        // Read compressed data (limit to 200MB to avoid memory issues)
+        const max_compressed_read: u64 = @min(remaining, 200 * 1024 * 1024);
         const compressed_data = allocator.alloc(u8, @intCast(max_compressed_read)) catch {
             return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP: out of memory for compressed data");
         };
@@ -1391,35 +1407,33 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
             return ValidationResult.invalid(.psd, "No ZIP compressed data read");
         }
 
-        // Calculate expected uncompressed size (for entire image data)
-        const expected_uncompressed = channel_size * channels;
-        // Cap decompression at 500MB to avoid memory exhaustion
-        const max_uncompressed: usize = @min(@as(usize, @intCast(expected_uncompressed)), 500 * 1024 * 1024);
+        // Calculate expected uncompressed size
+        const expected_uncompressed: u64 = @as(u64, scanline_size) * @as(u64, height) * @as(u64, channels);
+        // Cap decompression buffer at 500MB; add 10% margin for safety
+        const max_uncompressed: usize = @min(@as(usize, @intCast(expected_uncompressed + expected_uncompressed / 10)), 500 * 1024 * 1024);
 
-        // Decompress using zlib
-        const decompressed = zlib.inflateRawAlloc(allocator, compressed_data[0..bytes_read], max_uncompressed) catch |err| {
-            switch (err) {
-                zlib.ZlibError.DataError => return ValidationResult.invalid(.psd, "ZIP decompression failed: corrupt data"),
-                zlib.ZlibError.BufferError => return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP: decompressed data exceeds limit"),
-                else => return ValidationResult.invalid(.psd, "ZIP decompression error"),
-            }
+        // Try zlib (with header) first, then raw deflate — PSD ZIP can use either
+        const decompressed = zlib.inflateZlibAlloc(allocator, compressed_data[0..bytes_read], max_uncompressed) catch blk: {
+            // If zlib header parse fails, try raw deflate
+            break :blk zlib.inflateRawAlloc(allocator, compressed_data[0..bytes_read], max_uncompressed) catch |err| {
+                switch (err) {
+                    zlib.ZlibError.DataError => return ValidationResult.invalid(.psd, "ZIP decompression failed: corrupt data"),
+                    zlib.ZlibError.BufferError => return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP: decompressed data exceeds limit"),
+                    else => return ValidationResult.invalid(.psd, "ZIP decompression error"),
+                }
+            };
         };
         defer allocator.free(decompressed);
 
-        // For compression type 3 (ZIP with prediction), verify we got reasonable data
-        // The prediction filter is applied after decompression, but we just verify decompression succeeded
-        if (compression == 3) {
-            // ZIP with prediction - the decompressed data has a horizontal difference filter applied
-            // Each row starts with a filter byte, so we can't easily verify the exact size
-            // But successful decompression is enough for validation
-            if (decompressed.len == 0) {
-                return ValidationResult.invalid(.psd, "ZIP decompression produced empty output");
-            }
-        } else {
-            // ZIP without prediction - decompressed size should match expected
-            // Allow some tolerance since we might have read partial data for large files
-            if (decompressed.len == 0) {
-                return ValidationResult.invalid(.psd, "ZIP decompression produced empty output");
+        if (decompressed.len == 0) {
+            return ValidationResult.invalid(.psd, "ZIP decompression produced empty output");
+        }
+
+        // Verify decompressed size matches expected uncompressed image data size
+        // Only check exact match if we read all compressed data (not truncated by size limit)
+        if (bytes_read == remaining) {
+            if (decompressed.len != @as(usize, @intCast(expected_uncompressed))) {
+                return ValidationResult.invalidCode(.psd, .decompression_failed, "ZIP decompressed size mismatch");
             }
         }
     }
