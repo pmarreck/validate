@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# corruption-sweep: Run corruption-experiment on all ground-truth samples >= 4096 bytes.
+# Usage: corruption-sweep [--count N] [--seed N] [--batch BATCH_NUM] [--batches TOTAL]
+# Results go to docs/corruption-sweep-results/
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+EXPERIMENT="$SCRIPT_DIR/corruption-experiment"
+RESULTS_DIR="$PROJECT_DIR/docs/corruption-sweep-results"
+
+COUNT=100
+SEED=42
+BATCH_NUM=0
+TOTAL_BATCHES=1
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--count) COUNT="$2"; shift 2 ;;
+		--seed) SEED="$2"; shift 2 ;;
+		--batch) BATCH_NUM="$2"; shift 2 ;;
+		--batches) TOTAL_BATCHES="$2"; shift 2 ;;
+		*) echo "Unknown arg: $1" >&2; exit 1 ;;
+	esac
+done
+
+mkdir -p "$RESULTS_DIR"
+
+# Collect all testable format/file pairs (largest non-corrupted file per format, >= 4096 bytes)
+PAIRS=()
+while IFS='	' read -r sz fmt path; do
+	PAIRS+=("$fmt	$path	$sz")
+done < <(
+	find "$PROJECT_DIR/ground_truth_examples" -maxdepth 2 -type f \
+		-not -name '*corrupted*' -not -name 'README*' -not -name '*.txt' -not -name '.DS_Store' \
+		-size +4095c | while read -r f; do
+		dir=$(dirname "$f")
+		fmt=$(basename "$dir")
+		if [ "$fmt" = "corrupted" ] || [ "$fmt" = "ground_truth_examples" ]; then continue; fi
+		sz=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
+		printf '%s\t%s\t%s\n' "$sz" "$fmt" "$f"
+	done | sort -t'	' -k2,2 -k1,1rn | awk -F'\t' 'x[$2]++==0{print}' | sort -t'	' -k2,2
+)
+
+TOTAL=${#PAIRS[@]}
+PER_BATCH=$(( (TOTAL + TOTAL_BATCHES - 1) / TOTAL_BATCHES ))
+START=$(( BATCH_NUM * PER_BATCH ))
+END=$(( START + PER_BATCH ))
+if [ "$END" -gt "$TOTAL" ]; then END=$TOTAL; fi
+
+echo "=== Batch $BATCH_NUM of $TOTAL_BATCHES: formats $START-$((END-1)) of $TOTAL ===" >&2
+
+for i in $(seq $START $((END - 1))); do
+	IFS='	' read -r fmt path sz <<< "${PAIRS[$i]}"
+	echo "--- $fmt ($sz bytes): $path ---" >&2
+
+	for mode in sniper shotgun; do
+		outfile="$RESULTS_DIR/${fmt}_${mode}.tsv"
+		if [ -f "$outfile" ]; then
+			echo "  $mode: already done, skipping" >&2
+			continue
+		fi
+		echo "  $mode..." >&2
+		"$EXPERIMENT" "$mode" "$path" --count "$COUNT" --seed "$SEED" --output "$outfile" 2>&1 | grep -E '(Results|Detection|Early)' >&2
+	done
+done
+
+echo "" >&2
+echo "=== Batch $BATCH_NUM complete. Results in $RESULTS_DIR ===" >&2
