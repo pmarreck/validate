@@ -23,6 +23,38 @@ pub const FlacError = error{
     Unsupported,
 };
 
+/// FLAC CRC-8 (polynomial 0x07, init 0)
+fn flacCrc8(data: []const u8) u8 {
+    var crc: u8 = 0;
+    for (data) |byte| {
+        crc ^= byte;
+        for (0..8) |_| {
+            if (crc & 0x80 != 0) {
+                crc = (crc << 1) ^ 0x07;
+            } else {
+                crc = crc << 1;
+            }
+        }
+    }
+    return crc;
+}
+
+/// FLAC CRC-16 (polynomial 0x8005, init 0)
+fn flacCrc16(data: []const u8) u16 {
+    var crc: u16 = 0;
+    for (data) |byte| {
+        crc ^= @as(u16, byte) << 8;
+        for (0..8) |_| {
+            if (crc & 0x8000 != 0) {
+                crc = (crc << 1) ^ 0x8005;
+            } else {
+                crc = crc << 1;
+            }
+        }
+    }
+    return crc;
+}
+
 pub const StreamInfo = struct {
     min_block_size: u16,
     max_block_size: u16,
@@ -352,9 +384,14 @@ pub const FlacDecoder = struct {
         self.samples_decoded += header.block_size;
         self.frames_decoded += 1;
 
-        // Align to byte boundary and skip CRC-16
+        // Align to byte boundary and verify CRC-16
         reader.alignToByte();
-        _ = try reader.readBits(16); // CRC-16 (we could verify this)
+        const crc16_pos = reader.byte_pos;
+        const stored_crc16: u16 = @intCast(try reader.readBits(16));
+        if (crc16_pos <= frame_data.len) {
+            const computed_crc16 = flacCrc16(frame_data[0..crc16_pos]);
+            if (computed_crc16 != stored_crc16) return FlacError.CrcMismatch;
+        }
 
         return reader.bytesConsumed();
     }
@@ -435,8 +472,13 @@ pub const FlacDecoder = struct {
             7 => 32,
         };
 
-        // CRC-8 of header
-        _ = try reader.readBits(8);
+        // CRC-8 of header — verify against computed CRC
+        const header_end = reader.byte_pos;
+        const stored_crc8: u8 = @intCast(try reader.readBits(8));
+        if (header_end <= reader.data.len) {
+            const computed_crc8 = flacCrc8(reader.data[0..header_end]);
+            if (computed_crc8 != stored_crc8) return FlacError.CrcMismatch;
+        }
 
         return FrameHeader{
             .blocking_strategy = blocking_strategy,
