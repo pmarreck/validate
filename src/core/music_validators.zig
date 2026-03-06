@@ -1437,9 +1437,11 @@ pub fn validateFlacDeep(allocator: Allocator, path: []const u8) ValidationResult
 
     if (!has_md5) {
         // MD5 hash is missing - do full decode to validate frame CRCs
-        const decode_result = flac_decoder.decodeFlacFull(allocator, path) catch {
-            // Decoder failed - structural validation only
-            return ValidationResult.okWithDepth(.flac, .structural);
+        const decode_result = flac_decoder.decodeFlacFull(allocator, path) catch |err| {
+            if (err == flac_decoder.FlacError.Unsupported or err == flac_decoder.FlacError.OutOfMemory) {
+                return ValidationResult.okWithDepth(.flac, .structural);
+            }
+            return ValidationResult.invalidWithDepth(.flac, "FLAC decode failed: audio data corrupted", .full);
         };
 
         if (decode_result) {
@@ -1452,10 +1454,13 @@ pub fn validateFlacDeep(allocator: Allocator, path: []const u8) ValidationResult
     }
 
     // Try full MD5 verification using the decoder
-    const result = flac_decoder.verifyFlacMd5(allocator, path) catch {
-        // Decoder failed - report as checksum-level validation (MD5 present but couldn't verify)
-        // This is better than failing completely for complex files our decoder can't handle yet
-        return ValidationResult.okWithDepth(.flac, .full);
+    const result = flac_decoder.verifyFlacMd5(allocator, path) catch |err| {
+        // Unsupported features (e.g., >1GB) fall back to structural
+        if (err == flac_decoder.FlacError.Unsupported or err == flac_decoder.FlacError.OutOfMemory) {
+            return ValidationResult.okWithDepth(.flac, .structural);
+        }
+        // Any other decoder error (truncated, invalid sync, bad frame) means corruption
+        return ValidationResult.invalidWithDepth(.flac, "FLAC decode failed: audio data corrupted", .full);
     };
 
     if (result) {
