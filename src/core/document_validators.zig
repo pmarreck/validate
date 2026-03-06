@@ -420,10 +420,45 @@ pub fn validateSqliteWithOptions(file: std.fs.File, skip_magic: bool) Validation
         return ValidationResult.invalidCode(.sqlite, .invalid_value, "leaf payload fraction");
     }
 
-    // File change counter (bytes 24-27) and schema cookie (bytes 40-43) are informational
+    // File change counter (bytes 24-27) and version-valid-for (bytes 92-95)
+    // When they match, the page count is reliable
+    const file_change_counter = std.mem.readInt(u32, header[24..28], .big);
+    const version_valid_for = std.mem.readInt(u32, header[92..96], .big);
+
+    // Schema format number (bytes 44-47): 0 (empty/default), 1, 2, 3, or 4
+    const schema_format = std.mem.readInt(u32, header[44..48], .big);
+    if (schema_format > 4) {
+        return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite schema format number (must be 0-4)");
+    }
+
+    // Text encoding (bytes 56-59): 0 (unset/default), 1 (UTF-8), 2 (UTF-16le), or 3 (UTF-16be)
+    const text_encoding = std.mem.readInt(u32, header[56..60], .big);
+    if (text_encoding > 3) {
+        return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite text encoding (must be 0-3)");
+    }
+
+    // Application ID (bytes 68-71) and user version (bytes 60-63) are informational
+
+    // Bytes 72-91 must be zero (reserved for expansion)
+    var reserved_ok = true;
+    for (header[72..92]) |b| {
+        if (b != 0) {
+            reserved_ok = false;
+            break;
+        }
+    }
+    if (!reserved_ok) {
+        return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite reserved header bytes (must be zero)");
+    }
 
     // Database size in pages (bytes 28-31, big-endian)
     const db_page_count = std.mem.readInt(u32, header[28..32], .big);
+
+    // Freelist pages (bytes 32-35): first freelist trunk page, (bytes 36-39): total freelist pages
+    const total_freelist = std.mem.readInt(u32, header[36..40], .big);
+    if (db_page_count > 0 and total_freelist > db_page_count) {
+        return ValidationResult.invalidCode(.sqlite, .exceeds_bounds, "freelist page count exceeds database size");
+    }
 
     // Verify file size is consistent with page count (basic check)
     const file_size = file.getEndPos() catch {
@@ -436,6 +471,47 @@ pub fn validateSqliteWithOptions(file: std.fs.File, skip_magic: bool) Validation
         // Allow some tolerance for journaling modes
         if (file_size < expected_size - actual_page_size) {
             return ValidationResult.invalid(.sqlite, "SQLite file appears truncated");
+        }
+    }
+
+    // Validate root page B-tree header (starts at offset 100 in page 1)
+    // Page type: 2=interior index, 5=interior table, 10=leaf index, 13=leaf table
+    // Page 1 must be a table B-tree (type 5 or 13)
+    if (bytes_read >= 100) {
+        // Read root page header (first 8 bytes of B-tree at offset 100)
+        file.seekTo(100) catch return ValidationResult.ok(.sqlite);
+        var btree_hdr: [8]u8 = undefined;
+        const btree_read = file.read(&btree_hdr) catch return ValidationResult.ok(.sqlite);
+        if (btree_read >= 8) {
+            const page_type = btree_hdr[0];
+            if (page_type != 2 and page_type != 5 and page_type != 10 and page_type != 13) {
+                return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite root page B-tree type");
+            }
+            // Cell count (bytes 3-4 big-endian) should be reasonable
+            const cell_count = std.mem.readInt(u16, btree_hdr[3..5], .big);
+            // Cell content area offset (bytes 5-6): 0 means 65536
+            const content_offset = std.mem.readInt(u16, btree_hdr[5..7], .big);
+            const actual_content = if (content_offset == 0) @as(u32, 65536) else @as(u32, content_offset);
+            // Content offset must be within the page (after header)
+            if (actual_content > actual_page_size) {
+                return ValidationResult.invalidCode(.sqlite, .exceeds_bounds, "SQLite cell content area beyond page");
+            }
+            // If cells exist, content area should be before end of page
+            if (cell_count > 0 and actual_content <= 100 + 8) {
+                return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite cell content area overlaps header");
+            }
+        }
+    }
+
+    // Cross-validate: if version-valid-for matches file change counter,
+    // the page count should be consistent with file size
+    if (file_change_counter == version_valid_for and db_page_count > 0) {
+        const expected_size = @as(u64, db_page_count) * actual_page_size;
+        if (file_size != expected_size) {
+            // Allow minor tolerance (WAL mode may differ)
+            if (file_size < expected_size -| actual_page_size or file_size > expected_size + actual_page_size) {
+                return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite file size inconsistent with page count");
+            }
         }
     }
 
