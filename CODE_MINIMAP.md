@@ -29,12 +29,12 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/path_validation.zig` | Parallel path validation with bundle-aware enumeration (.git directories validated as units, not recursed into); honors `MAX_FILES` |
 | `src/core/thread_pool.zig` | Thread pool with O(1) ring-buffer work queue (head/len circular buffer with doubling growth), replacing prior O(n) ArrayList dequeue |
 | `src/core/format_validation.zig` | Core infrastructure (~6.5K lines): `FileFormat`/`ValidationResult`/`ValidationDepth` types, `detectFormat()` magic-byte detection, `extensionToFormat()` mapping, `FormatValidator` dispatch interface, bundle detection, font wrappers, BEAM validator, shared XML/text helpers, buffer validation API. All domain-specific validators extracted to separate files. |
-| `src/core/archive_validators.zig` | ZIP (structural + deep CRC-32), Gzip, Bzip2, XZ, Zstd, RAR, 7-Zip, Tar, PAR2, WARC, Brotli, BinHex/HQX |
-| `src/core/image_validators.zig` | PNG (CRC-32 deep), JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR, PSD, PAM, DPX, RAW (DNG/CR2/NEF/ARW) |
-| `src/core/music_validators.zig` | WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD (DSF/DFF), AC3, EAC3, MIDI, Tracker (MOD/XM/IT/S3M), AMR, AU, TTA, CAF, AAC ADTS |
-| `src/core/movie_validators.zig` | MP4, MKV, AVI, MOV, FLV, WebM, SWF, ASF, DV, HEIC, AVIF, MPEG-TS |
+| `src/core/archive_validators.zig` | ZIP (structural + deep CRC-32), Gzip, Bzip2, XZ, Zstd, RAR, 7-Zip, Tar (full multi-entry header checksums), PAR2, WARC, Brotli, BinHex/HQX |
+| `src/core/image_validators.zig` | PNG (CRC-32 deep), JPEG, GIF, BMP, TIFF, WebP, JXL, SVG, EXR (full scanline decompression + offset monotonicity), PSD, PAM, DPX, RAW (DNG/CR2/NEF/ARW) |
+| `src/core/music_validators.zig` | WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD (DSF/DFF), AC3, EAC3 (full-file CRC), MIDI, Tracker (MOD/XM/IT/S3M), AMR, AU, TTA, CAF, AAC ADTS |
+| `src/core/movie_validators.zig` | MP4, MKV, AVI (RIFF chunk chain + idx1 index), MOV, FLV, WebM, SWF, ASF, DV (full DIF sequence validation), HEIC, AVIF, MPEG-TS |
 | `src/core/text_format_validators.zig` | JSON, CSV, TOML, INI, XML, RTF, HTML, KML, plain text, Unicode, CP437 detection |
-| `src/core/scientific_validators.zig` | FITS (checksum), DICOM, NetCDF, FASTA, FASTQ, HDF5, Parquet, MATLAB, NIfTI, PDB, CIF, Shapefile |
+| `src/core/scientific_validators.zig` | FITS (checksum), DICOM, NetCDF, FASTA, FASTQ, HDF5, Parquet, MATLAB, NIfTI, PDB (MASTER record cross-validation), CIF, Shapefile |
 | `src/core/creative_validators.zig` | Premiere (PRPROJ), InDesign (INDD/IDML), FCPXML, DaVinci (DRP), Sketch, AI, EPS, AEP, PostScript |
 | `src/core/cad_3d_validators.zig` | DWG, DXF, STEP, STL, OBJ, PLY, glTF/GLB, Blender, 3MF |
 | `src/core/email_validators.zig` | EML, MBOX (with attachment extraction + validation) |
@@ -50,7 +50,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/i18n/{bn,hi,pa,ps,sw,ta,th,ur}.zig` | Locale data modules for Bengali/Hindi/Punjabi/Pashto/Swahili/Tamil/Thai/Urdu including core UI strings, full format description catalog, and error/warning translation maps |
 | `src/core/git_validator.zig` | Git repository validation using SHA-1 checksums for loose objects, pack files, and index files |
 | `src/core/video_validator.zig` | Video container parsing + codec decode validation (MP4/MKV/AVI), MKV byte-coverage with mixed NAL-length handling and debug envs (`MKV_BYTE_DEBUG`, `MKV_BYTE_DEBUG_OUT`, `MKV_BYTE_DEBUG_FRAME_OUT`) |
-| `src/core/font_validator.zig` | Standalone font validation (TTF/OTF/CFF/Type1) with checksum fallback to structural parsing for clearer errors |
+| `src/core/font_validator.zig` | Standalone font validation (TTF/OTF/CFF/Type1/WOFF/WOFF2) with per-table checksums, whole-file checkSumAdjustment, WOFF zlib decompression + origChecksum verification, and checksum fallback to structural parsing for clearer errors |
 | `src/core/pdf_font_validator.zig` | Extracts/validates embedded PDF fonts using strict checksums while reporting warnings instead of failing PDFs |
 | `src/core/pdf_image_validator.zig` | PDF embedded image extraction and validation (JPEG, JBIG2, JPEG2000, CCITT) |
 | `src/core/pdf_xref_parser.zig` | PDF xref table/stream parser for O(M) object lookup (traditional tables + xref streams + /Prev chain) |

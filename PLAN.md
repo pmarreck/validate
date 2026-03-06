@@ -56,6 +56,16 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Design doc: docs/plans/2026-03-05-corruption-experiment-design.md (2026-03-05 EST)
 - [x] LuaJIT script: scripts/corruption-experiment — sniper + shotgun modes, PCG32, Wilson CI, TSV output (2026-03-05 EST)
 - [x] Multi-format smoke testing (doc, xls, png, jpeg, zip — all working) (2026-03-05 EST)
+- [x] 77-format corruption sweep — 5 parallel subagents, 15,400 total validate invocations (2026-03-05 EST)
+- [x] TTF/OTF strict checksums for standalone fonts (0%→100%/100%) (2026-03-05 EST)
+- [x] EAC3 full-file CRC (remove 1000-frame limit, 33%/36%→100%/100%) (2026-03-05 EST)
+- [x] FITS CHECKSUM sample + validation (0%→100%/100%) (2026-03-05 EST)
+- [x] WOFF deep validation — zlib decompress + origChecksum per table (0%/0%→100%/100%) (2026-03-06 EST)
+- [x] PDB MASTER record cross-validation — count 10 record types (16%/39%→20%/100%) (2026-03-06 EST)
+- [x] DV full DIF sequence validation — section type of all 150 blocks/seq (0%/0%→0%/100%) (2026-03-06 EST)
+- [x] AVI RIFF chunk chain + idx1 index validation (0%/2%→0%/4%) (2026-03-06 EST)
+- [x] EXR full scanline validation — decompress ALL blocks, offset monotonicity (6%/5%→6%/100%) (2026-03-06 EST)
+- [x] Tar full-file header checksums — validate ALL entry headers (15%/73%→54%/73%) (2026-03-06 EST)
 
 ### Progrez Library Integration
 - [x] Add progrez_core module to progrez (no FFI, pure-logic only) (2026-03-01 EST)
