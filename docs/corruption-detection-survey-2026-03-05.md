@@ -19,7 +19,7 @@
 | | EXR | 25 KB | 6% | 5% | Some structural/float validation |
 | **Video** | ProRes/MOV | 4.4 MB | 7% | **100%** | MP4 box structure + ProRes frame headers |
 | | MPEG-4/AVI | 1.2 MB | 0% | 0% | RIFF structural only |
-| **Audio** | FLAC | 404 KB | **98%** | **78%** | MD5 checksum + frame CRC |
+| **Audio** | FLAC | 404 KB | **98%** | **99%** | MD5 checksum + frame CRC (fixed: decoder errors now = corruption) |
 | | OGG | 104 KB | **100%** | **100%** | CRC32 per page |
 | | MP3 | 48 KB | 0% | 0% | Frame sync only (no checksums) |
 | | WAV | 8 KB | 0% | 2% | Structural only |
@@ -63,7 +63,7 @@
 | Format | Why | Could we improve? |
 |--------|-----|-------------------|
 | **TIFF** | IFD tag validation only; pixel data is raw/uncompressed with no checksums | Unlikely without external checksums |
-| **WebP** | RIFF container check only; VP8/VP8L decode not checksummed | Could add VP8 bitstream decode |
+| **WebP** | Full VP8/VP8L decode via libwebp — same JPEG paradox: single-bit DCT flips produce valid pixels | Fundamental limitation of lossy compression |
 | **HEIC** | H.265 NAL validation may not reach all image tiles | Could improve tile enumeration |
 | **MP3** | Frame sync pattern only; no CRC (optional CRC rarely present) | MP3 CRC is per-frame-header only, not data |
 | ~~**AC3**~~ | ~~Frame CRC exists in spec~~ | **FIXED**: CRC now enforced; detection ~100%/98% |
@@ -81,12 +81,9 @@ JPEG achieves **93% shotgun** but **0% sniper** despite doing a full libjpeg-tur
 
 This is a fundamental limitation of lossy compression without integrity metadata.
 
-### The FLAC anomaly
+### The FLAC anomaly (FIXED)
 
-FLAC shows **98% sniper** but only **78% shotgun**. The 78% shotgun is surprising — lower than sniper. This is likely because:
-- FLAC frames have CRC-16 (catches single-bit flips with high probability)
-- But the file-level MD5 is checked last; if a 4KB overwrite destroys the STREAMINFO block (which contains the MD5), the validator may not be able to compute the reference hash
-- Investigation warranted to see if STREAMINFO destruction causes a false pass
+FLAC originally showed **98% sniper** but only **78% shotgun**. Root cause: the FLAC decoder catch blocks in `validateFlacDeep` were returning `OK` when the decoder threw errors (truncated frames, invalid sync from corrupted data). A 4KB overwrite would corrupt frame headers, causing the decoder to error out, and the catch block incorrectly said "valid." Fix: only `Unsupported`/`OutOfMemory` errors fall back to structural; all other decoder errors are treated as corruption. After fix: **98% sniper, 99% shotgun**.
 
 ## Actionable Gaps
 
@@ -97,7 +94,7 @@ FLAC shows **98% sniper** but only **78% shotgun**. The 78% shotgun is surprisin
 
 ### Medium priority (formats where deeper decode would help)
 
-3. **WebP**: VP8/VP8L bitstream validation could catch structural corruption in compressed data.
+3. ~~**WebP**~~: Already does full VP8/VP8L decode via libwebp. Same JPEG paradox — lossy DCT, no checksums. 84% shotgun on larger files.
 4. **HEIC**: Ensure all image tiles (not just the primary item) go through H.265 validation.
 5. **AVI/MPEG-4 Part 2**: Codec-level decode would improve detection, but these are legacy formats.
 
