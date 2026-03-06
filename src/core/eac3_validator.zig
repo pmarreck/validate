@@ -177,16 +177,13 @@ fn crc16(data: []const u8) u16 {
     return crc;
 }
 
-/// Validate CRC for E-AC-3 frame
-/// E-AC-3 uses CRC at the end of the frame
+/// Validate CRC for E-AC-3 frame.
+/// Per ETSI TS 102 366: CRC-16 MSB-first poly 0x8005 init 0 over bytes [2..frame_size).
+/// The CRC stored at the end of the frame is included in the region; result should be 0.
 pub fn validateCrc(data: []const u8, frame_size: u16) bool {
     if (data.len < frame_size or frame_size < 4) return false;
 
-    // CRC covers bytes 0 through frame_size-3
-    const crc = crc16(data[0 .. frame_size - 2]);
-    const stored_crc = std.mem.readInt(u16, data[frame_size - 2 ..][0..2], .big);
-
-    return crc == stored_crc;
+    return crc16(data[2..frame_size]) == 0;
 }
 
 /// Validate E-AC-3 stream from buffer
@@ -247,9 +244,11 @@ pub fn validateEac3Stream(data: []const u8, max_frames: u32) Eac3ValidationResul
                 max_substreamid = frame_info.substreamid;
             }
 
-            // Validate CRC
+            // Validate CRC — reject frame on failure
             if (validateCrc(frame_data, frame_info.frame_size)) {
                 crc_validated += 1;
+            } else {
+                return Eac3ValidationResult.invalid("E-AC-3 frame CRC mismatch (data corruption)", frames_validated);
             }
 
             frames_validated += 1;
@@ -291,28 +290,21 @@ pub fn validateEac3Stream(data: []const u8, max_frames: u32) Eac3ValidationResul
 
 /// Validate E-AC-3 from file
 pub fn validateEac3File(path: []const u8, max_frames: u32) Eac3ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
-        return Eac3ValidationResult.invalid(errmsg.failedToOpen("file"), 0);
+    // Read entire file for CRC validation of all frames
+    const data = std.fs.cwd().readFileAlloc(
+        std.heap.page_allocator,
+        path,
+        256 * 1024 * 1024, // 256MB max
+    ) catch {
+        return Eac3ValidationResult.invalid(errmsg.failedToRead("file"), 0);
     };
-    defer file.close();
+    defer std.heap.page_allocator.free(data);
 
-    const file_size = file.getEndPos() catch {
-        return Eac3ValidationResult.invalid(errmsg.failedToGet("file size"), 0);
-    };
-
-    if (file_size < 8) {
+    if (data.len < 8) {
         return Eac3ValidationResult.invalid(errmsg.fileTooSmallFor("E-AC-3"), 0);
     }
 
-    // Read up to 1MB for validation
-    const read_size = @min(file_size, 1024 * 1024);
-    var buffer: [1024 * 1024]u8 = undefined;
-
-    const bytes_read = file.read(buffer[0..read_size]) catch {
-        return Eac3ValidationResult.invalid(errmsg.failedToRead("file"), 0);
-    };
-
-    return validateEac3Stream(buffer[0..bytes_read], max_frames);
+    return validateEac3Stream(data, max_frames);
 }
 
 // Tests

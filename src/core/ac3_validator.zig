@@ -178,45 +178,29 @@ fn crc16Ac3(data: []const u8) u16 {
     return crc;
 }
 
-/// Validate CRC1 for first 5/8 of frame
+/// Validate CRC1 for first 5/8 of frame (word-aligned).
+/// Per ATSC A/52: CRC1 covers bytes 2 through (frame_size_words*5/8)*2 - 1.
+/// The CRC stored at bytes 2-3 is included in the region; result should be 0.
 pub fn validateCrc1(data: []const u8, frame_size: u16) bool {
-    if (data.len < frame_size) return false;
+    if (data.len < frame_size or frame_size < 6) return false;
 
-    // CRC1 covers bytes 0-1 (sync) and bytes 4 through (5/8 * frame_size - 1)
-    // Stored CRC is at bytes 2-3
-    const crc1_end = (frame_size * 5) / 8;
-    if (crc1_end < 5) return false;
+    // frame_size is in bytes; words = frame_size / 2
+    // CRC1 region: bytes [2 .. (words*5/8)*2)  (word-aligned 5/8 of frame)
+    const frame_size_words = frame_size / 2;
+    const crc1_words = (frame_size_words * 5) / 8;
+    const crc1_end = crc1_words * 2; // byte offset (exclusive)
+    if (crc1_end <= 2) return false;
 
-    // Calculate CRC over sync word and BSI portion
-    var crc: u16 = 0;
-    crc = crc16Ac3(data[0..2]); // Sync word
-    // Continue CRC from byte 4 onwards
-    for (data[4..crc1_end]) |byte| {
-        crc ^= @as(u16, byte) << 8;
-        for (0..8) |_| {
-            if ((crc & 0x8000) != 0) {
-                crc = (crc << 1) ^ 0x8005;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-
-    const stored_crc = std.mem.readInt(u16, data[2..4], .big);
-    return crc == stored_crc;
+    return crc16Ac3(data[2..crc1_end]) == 0;
 }
 
-/// Validate CRC2 for entire frame (if present)
-/// CRC2 is the last 2 bytes of the frame
+/// Validate CRC2 for entire frame.
+/// Per ATSC A/52: CRC2 covers bytes 2 through frame_size-1 (everything except sync word).
+/// The CRC stored at the end of the frame is included in the region; result should be 0.
 pub fn validateCrc2(data: []const u8, frame_size: u16) bool {
     if (data.len < frame_size or frame_size < 4) return false;
 
-    // CRC2 covers bytes 0 through frame_size-3
-    // Stored CRC is at bytes frame_size-2 to frame_size-1
-    const crc = crc16Ac3(data[0 .. frame_size - 2]);
-    const stored_crc = std.mem.readInt(u16, data[frame_size - 2 ..][0..2], .big);
-
-    return crc == stored_crc;
+    return crc16Ac3(data[2..frame_size]) == 0;
 }
 
 /// Validate AC-3 stream from buffer
@@ -260,14 +244,21 @@ pub fn validateAc3Stream(data: []const u8, max_frames: u32) Ac3ValidationResult 
             detected_channels = frame_info.channels();
         }
 
-        // Validate CRC1 (first 5/8 of frame)
-        if (validateCrc1(frame_data, frame_info.frame_size)) {
-            crc_validated += 1;
-        }
+        // Validate CRC2 (entire frame) — covers all bytes
+        // Per ATSC A/52, CRC2 covers the entire syncframe; CRC1 covers first 5/8.
+        // CRC-16-ANSI (poly 0x8005, reflected) — compute over region including stored CRC → expect 0.
+        const crc2_ok = validateCrc2(frame_data, frame_info.frame_size);
 
-        // Validate CRC2 (entire frame) - optional but recommended
-        if (validateCrc2(frame_data, frame_info.frame_size)) {
-            crc_validated += 1;
+        // Validate CRC1 (first 5/8 of frame)
+        const crc1_ok = validateCrc1(frame_data, frame_info.frame_size);
+
+        if (crc2_ok) crc_validated += 1;
+        if (crc1_ok) crc_validated += 1;
+
+        // CRC2 covers the entire frame; any single-bit error must be caught.
+        // CRC1 covers only the first 5/8, so we rely primarily on CRC2.
+        if (!crc2_ok) {
+            return Ac3ValidationResult.invalid("AC-3 frame CRC mismatch (data corruption)", frames_validated);
         }
 
         frames_validated += 1;
@@ -302,15 +293,17 @@ pub fn validateAc3File(path: []const u8, max_frames: u32) Ac3ValidationResult {
         return Ac3ValidationResult.invalid(errmsg.fileTooSmallFor("AC-3"), 0);
     }
 
-    // Read up to 1MB for validation
-    const read_size = @min(file_size, 1024 * 1024);
-    var buffer: [1024 * 1024]u8 = undefined;
-
-    const bytes_read = file.read(buffer[0..read_size]) catch {
+    // Memory-map the entire file for CRC validation of all frames
+    const data = std.fs.cwd().readFileAlloc(
+        std.heap.page_allocator,
+        path,
+        256 * 1024 * 1024, // 256MB max
+    ) catch {
         return Ac3ValidationResult.invalid(errmsg.failedToRead("file"), 0);
     };
+    defer std.heap.page_allocator.free(data);
 
-    return validateAc3Stream(buffer[0..bytes_read], max_frames);
+    return validateAc3Stream(data, max_frames);
 }
 
 // Tests
@@ -341,12 +334,117 @@ test "AC-3 frame size calculation" {
     try std.testing.expectEqual(@as(u16, 320), info2.?.frame_size);
 }
 
-test "AC-3 CRC16 calculation" {
-    // Test known CRC values
-    const test_data = [_]u8{ 0x0B, 0x77 };
-    const crc = crc16Ac3(&test_data);
-    // Just verify it runs without error
-    try std.testing.expect(crc != 0 or crc == 0);
+test "AC-3 CRC16 matches reference values" {
+    // Verified against C reference implementation
+    const ab = [_]u8{ 0x41, 0x42 };
+    try std.testing.expectEqual(@as(u16, 0x0789), crc16Ac3(&ab));
+
+    const zeros = [_]u8{ 0, 0, 0, 0 };
+    try std.testing.expectEqual(@as(u16, 0x0000), crc16Ac3(&zeros));
+
+    const ff = [_]u8{ 0xFF, 0xFF };
+    try std.testing.expectEqual(@as(u16, 0x800D), crc16Ac3(&ff));
+}
+
+test "AC-3 stream rejects corrupted CRC" {
+    // Build a minimal AC-3 frame: sync(2) + CRC1(2) + fscod/frmsizecod(1) + bsid/bsmod(1) + acmod(1) + padding
+    // fscod=0 (48kHz), frmsizecod=0 (32kbps) -> 64 words = 128 bytes
+    var frame: [128]u8 = [_]u8{0} ** 128;
+    frame[0] = 0x0B; // sync
+    frame[1] = 0x77;
+    frame[4] = 0x00; // fscod=0, frmsizecod=0
+    frame[5] = 0x00; // bsid=0, bsmod=0
+    frame[6] = 0x40; // acmod=2 (stereo), lfeon=0
+
+    // Per ATSC A/52: CRC is MSB-first poly 0x8005 init 0.
+    // CRC2 covers bytes [2..frame_size) including stored CRC at end → result = 0.
+    // So we compute CRC over bytes [2..126) and store the value that makes the whole region = 0.
+    // CRC2 at bytes [126..128): set so that crc16(bytes[2..128]) == 0
+    const crc2_partial = crc16Ac3(frame[2..126]);
+    // To make CRC of entire region = 0, stored CRC = value such that feeding it through CRC(partial) yields 0.
+    // For MSB-first CRC: if partial CRC = P, we need crc(P, byte1, byte2) = 0.
+    // Brute force: try all 65536 values (fast for a test)
+    var crc2_found = false;
+    var b0: u16 = 0;
+    while (b0 < 256) : (b0 += 1) {
+        var b1: u16 = 0;
+        while (b1 < 256) : (b1 += 1) {
+            var crc = crc2_partial;
+            crc ^= b0 << 8;
+            for (0..8) |_| {
+                if ((crc & 0x8000) != 0) {
+                    crc = (crc << 1) ^ 0x8005;
+                } else {
+                    crc <<= 1;
+                }
+            }
+            crc ^= b1 << 8;
+            for (0..8) |_| {
+                if ((crc & 0x8000) != 0) {
+                    crc = (crc << 1) ^ 0x8005;
+                } else {
+                    crc <<= 1;
+                }
+            }
+            if (crc == 0) {
+                frame[126] = @intCast(b0);
+                frame[127] = @intCast(b1);
+                crc2_found = true;
+                break;
+            }
+        }
+        if (crc2_found) break;
+    }
+    try std.testing.expect(crc2_found);
+    try std.testing.expectEqual(@as(u16, 0), crc16Ac3(frame[2..128]));
+
+    // CRC1 covers bytes [2..(words*5/8)*2) = bytes [2..80) for 128-byte frame (64 words, 5/8=40 words=80 bytes)
+    // CRC1 is stored at bytes [2..4), find values that make crc16(bytes[2..80)) = 0
+    const crc1_end: usize = 80;
+    frame[2] = 0;
+    frame[3] = 0;
+    var crc1_found = false;
+    b0 = 0;
+    while (b0 < 256) : (b0 += 1) {
+        var b1_inner: u16 = 0;
+        while (b1_inner < 256) : (b1_inner += 1) {
+            frame[2] = @intCast(b0);
+            frame[3] = @intCast(b1_inner);
+            if (crc16Ac3(frame[2..crc1_end]) == 0) {
+                crc1_found = true;
+                break;
+            }
+        }
+        if (crc1_found) break;
+    }
+    try std.testing.expect(crc1_found);
+
+    // Re-compute CRC2 since CRC1 field changed
+    crc2_found = false;
+    b0 = 0;
+    while (b0 < 256) : (b0 += 1) {
+        var b1_inner: u16 = 0;
+        while (b1_inner < 256) : (b1_inner += 1) {
+            frame[126] = @intCast(b0);
+            frame[127] = @intCast(b1_inner);
+            if (crc16Ac3(frame[2..128]) == 0) {
+                crc2_found = true;
+                break;
+            }
+        }
+        if (crc2_found) break;
+    }
+    try std.testing.expect(crc2_found);
+
+    // Valid frame should pass
+    const valid_result = validateAc3Stream(&frame, 10);
+    try std.testing.expect(valid_result.valid);
+
+    // Corrupt a data byte (not sync, not CRC fields) — should fail CRC
+    var corrupted = frame;
+    corrupted[10] ^= 0xFF;
+    const corrupt_result = validateAc3Stream(&corrupted, 10);
+    try std.testing.expect(!corrupt_result.valid);
 }
 
 test "AC-3 channel count" {

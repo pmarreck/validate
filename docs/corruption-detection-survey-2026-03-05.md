@@ -23,7 +23,7 @@
 | | OGG | 104 KB | **100%** | **100%** | CRC32 per page |
 | | MP3 | 48 KB | 0% | 0% | Frame sync only (no checksums) |
 | | WAV | 8 KB | 0% | 2% | Structural only |
-| | AC3 | 2.1 MB | 0% | 0% | CRC per frame exists, possibly not fully validated |
+| | AC3 | 24 KB | **~100%** | **98%** | CRC-16 per syncframe (fixed: was 0%/0% due to CRC enforcement bug) |
 | **Document** | DOC | 28 KB | 1% | 12% | FIB + piece table structural cross-validation |
 | | XLS | 178 KB | 0% | 6% | BIFF8 record chain, SST parsing |
 | | PDF | 1.7 MB | 0% | 0% | Xref table + image structure (no content checksums) |
@@ -43,8 +43,9 @@
 | **FLAC** | MD5 of decoded audio + CRC-8 per frame header + CRC-16 per frame | Every byte contributes to at least one checksum |
 | **OGG** | CRC32 per Ogg page | Every byte in every page is checksummed |
 | **QBW** | CRC32 per 4096-byte database page | Every byte on every page is checksummed |
+| **AC3** | CRC-16 per syncframe (MSB-first, poly 0x8005) | Every byte except 2-byte sync word (~99.8% coverage) |
 
-**Common thread:** All use per-block/per-chunk checksums that cover 100% of payload bytes.
+**Common thread:** All use per-block/per-chunk checksums that cover 100% (or near-100%) of payload bytes.
 
 ### Formats where shotgun >> sniper
 
@@ -65,7 +66,7 @@
 | **WebP** | RIFF container check only; VP8/VP8L decode not checksummed | Could add VP8 bitstream decode |
 | **HEIC** | H.265 NAL validation may not reach all image tiles | Could improve tile enumeration |
 | **MP3** | Frame sync pattern only; no CRC (optional CRC rarely present) | MP3 CRC is per-frame-header only, not data |
-| **AC3** | Frame CRC exists in spec but may not be fully validated | **Investigate: AC3 has CRCs we might not be checking** |
+| ~~**AC3**~~ | ~~Frame CRC exists in spec~~ | **FIXED**: CRC now enforced; detection ~100%/98% |
 | **AVI** | RIFF structural only; no codec-level validation | Would need codec-specific decode |
 | **PDF** | Xref structure + image parsing, but content streams are opaque | Inherently limited — PDF has no content checksums |
 | **FITS** | Header keyword checks only; data array is raw numbers | Could validate DATASUM/CHECKSUM keywords if present |
@@ -91,7 +92,7 @@ FLAC shows **98% sniper** but only **78% shotgun**. The 78% shotgun is surprisin
 
 ### High priority (formats with existing checksums we may not be verifying)
 
-1. **AC3/E-AC3**: Dolby Digital has a CRC per syncframe. If we're not validating these, adding CRC checks would bring detection from 0% to near-100%. **Investigate immediately.**
+1. ~~**AC3/E-AC3**~~: **FIXED** (2026-03-05). Three bugs: (a) CRC computed but result silently ignored (never caused rejection), (b) wrong CRC region (was comparing CRC of data-excluding-CRC vs stored CRC; correct algorithm: CRC of data-including-stored-CRC = 0, MSB-first poly 0x8005), (c) only first 1MB read for large files. AC-3 now ~100% sniper / 98% shotgun; E-AC-3 100% sniper.
 2. **FITS DATASUM/CHECKSUM**: FITS files can contain HDU-level checksums. If present, we should verify them.
 
 ### Medium priority (formats where deeper decode would help)
