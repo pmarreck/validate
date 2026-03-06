@@ -15,6 +15,7 @@ const std = @import("std");
 const BitReader = @import("bitstream_reader.zig").BitReader;
 const errmsg = @import("error_messages.zig");
 const codec_utils = @import("codec_utils.zig");
+const h265_cabac = @import("h265_cabac_decoder.zig");
 
 // ============================================================================
 // NAL Unit Types (ITU-T H.265 Table 7-1)
@@ -340,12 +341,41 @@ pub const SequenceParameterSet = struct {
     bit_depth_luma_minus8: u32,
     bit_depth_chroma_minus8: u32,
     log2_max_pic_order_cnt_lsb_minus4: u32,
+    // Extended fields for CABAC decode
+    log2_min_luma_coding_block_size_minus3: u32 = 0,
+    log2_diff_max_min_luma_coding_block_size: u32 = 0,
+    log2_min_luma_transform_block_size_minus2: u32 = 0,
+    log2_diff_max_min_luma_transform_block_size: u32 = 0,
+    max_transform_hierarchy_depth_intra: u32 = 0,
+    sample_adaptive_offset_enabled_flag: bool = false,
+    pcm_enabled_flag: bool = false,
+    pcm_sample_bit_depth_luma_minus1: u32 = 0,
+    pcm_sample_bit_depth_chroma_minus1: u32 = 0,
+    log2_min_pcm_luma_coding_block_size_minus3: u32 = 0,
+    log2_diff_max_min_pcm_luma_coding_block_size: u32 = 0,
+    amp_enabled_flag: bool = false,
+    has_extended_fields: bool = false, // true if the fields above were successfully parsed
 };
 
 /// Parse an SPS NAL unit (after RBSP byte removal).
 fn parseSps(rbsp: []const u8) ?SequenceParameterSet {
     var reader = BitReader.init(rbsp);
     var sps: SequenceParameterSet = undefined;
+
+    // Initialize extended fields to defaults (undefined doesn't apply struct defaults)
+    sps.log2_min_luma_coding_block_size_minus3 = 0;
+    sps.log2_diff_max_min_luma_coding_block_size = 0;
+    sps.log2_min_luma_transform_block_size_minus2 = 0;
+    sps.log2_diff_max_min_luma_transform_block_size = 0;
+    sps.max_transform_hierarchy_depth_intra = 0;
+    sps.sample_adaptive_offset_enabled_flag = false;
+    sps.pcm_enabled_flag = false;
+    sps.pcm_sample_bit_depth_luma_minus1 = 0;
+    sps.pcm_sample_bit_depth_chroma_minus1 = 0;
+    sps.log2_min_pcm_luma_coding_block_size_minus3 = 0;
+    sps.log2_diff_max_min_pcm_luma_coding_block_size = 0;
+    sps.amp_enabled_flag = false;
+    sps.has_extended_fields = false;
 
     // sps_video_parameter_set_id: u(4)
     sps.sps_video_parameter_set_id = @intCast(reader.readBits(4) orelse return null);
@@ -407,17 +437,107 @@ fn parseSps(rbsp: []const u8) ?SequenceParameterSet {
     sps.log2_max_pic_order_cnt_lsb_minus4 = reader.readExpGolomb() orelse return null;
     if (sps.log2_max_pic_order_cnt_lsb_minus4 > 12) return null;
 
-    // We have parsed all the critical SPS fields needed for validation.
-    // The rest of the SPS contains:
-    //   - sps_sub_layer_ordering_info_present_flag + per-layer ordering info
-    //   - CTB size, transform size, max transform hierarchy depth
-    //   - scaling_list_data, amp_enabled, sample_adaptive_offset
-    //   - PCM parameters, short_term_ref_pic_sets, long_term_ref_pics
-    //   - sps_temporal_mvp_enabled, strong_intra_smoothing
-    //   - VUI parameters
-    // These are important for decode but not critical for structural validation.
+    // Extended SPS parsing for CABAC decode support
+    // sps_sub_layer_ordering_info_present_flag: u(1)
+    const sub_layer_ordering_present = (reader.readBit() orelse return sps) != 0;
+    const start_idx: usize = if (sub_layer_ordering_present) 0 else @as(usize, sps.sps_max_sub_layers_minus1);
 
+    // Per-sublayer ordering info
+    var sl_i: usize = start_idx;
+    while (sl_i <= @as(usize, sps.sps_max_sub_layers_minus1)) : (sl_i += 1) {
+        _ = reader.readExpGolomb() orelse return sps; // max_dec_pic_buffering_minus1
+        _ = reader.readExpGolomb() orelse return sps; // max_num_reorder_pics
+        _ = reader.readExpGolomb() orelse return sps; // max_latency_increase_plus1
+    }
+
+    // log2_min_luma_coding_block_size_minus3: ue(v)
+    sps.log2_min_luma_coding_block_size_minus3 = reader.readExpGolomb() orelse return sps;
+    if (sps.log2_min_luma_coding_block_size_minus3 > 3) return sps;
+
+    // log2_diff_max_min_luma_coding_block_size: ue(v)
+    sps.log2_diff_max_min_luma_coding_block_size = reader.readExpGolomb() orelse return sps;
+    if (sps.log2_diff_max_min_luma_coding_block_size > 3) return sps;
+
+    // log2_min_luma_transform_block_size_minus2: ue(v)
+    sps.log2_min_luma_transform_block_size_minus2 = reader.readExpGolomb() orelse return sps;
+
+    // log2_diff_max_min_luma_transform_block_size: ue(v)
+    sps.log2_diff_max_min_luma_transform_block_size = reader.readExpGolomb() orelse return sps;
+
+    // max_transform_hierarchy_depth_inter: ue(v)
+    _ = reader.readExpGolomb() orelse return sps;
+
+    // max_transform_hierarchy_depth_intra: ue(v)
+    sps.max_transform_hierarchy_depth_intra = reader.readExpGolomb() orelse return sps;
+
+    // scaling_list_enabled_flag: u(1)
+    const scaling_list_enabled = (reader.readBit() orelse return sps) != 0;
+    if (scaling_list_enabled) {
+        // sps_scaling_list_data_present_flag: u(1)
+        const scaling_data_present = (reader.readBit() orelse return sps) != 0;
+        if (scaling_data_present) {
+            // Skip scaling list data (complex, not needed for CABAC validation)
+            // Each list: 4x4 (6 lists * 16 coeffs), 8x8 (6 * 64), 16x16 (6 * 64), 32x32 (2 * 64)
+            if (!skipScalingListData(&reader)) return sps;
+        }
+    }
+
+    // amp_enabled_flag: u(1)
+    sps.amp_enabled_flag = (reader.readBit() orelse return sps) != 0;
+
+    // sample_adaptive_offset_enabled_flag: u(1)
+    sps.sample_adaptive_offset_enabled_flag = (reader.readBit() orelse return sps) != 0;
+
+    // pcm_enabled_flag: u(1)
+    sps.pcm_enabled_flag = (reader.readBit() orelse return sps) != 0;
+    if (sps.pcm_enabled_flag) {
+        // pcm_sample_bit_depth_luma_minus1: u(4)
+        sps.pcm_sample_bit_depth_luma_minus1 = reader.readBits(4) orelse return sps;
+        // pcm_sample_bit_depth_chroma_minus1: u(4)
+        sps.pcm_sample_bit_depth_chroma_minus1 = reader.readBits(4) orelse return sps;
+        // log2_min_pcm_luma_coding_block_size_minus3: ue(v)
+        sps.log2_min_pcm_luma_coding_block_size_minus3 = reader.readExpGolomb() orelse return sps;
+        // log2_diff_max_min_pcm_luma_coding_block_size: ue(v)
+        sps.log2_diff_max_min_pcm_luma_coding_block_size = reader.readExpGolomb() orelse return sps;
+        // pcm_loop_filter_disabled_flag: u(1)
+        _ = reader.readBit() orelse return sps;
+    }
+
+    sps.has_extended_fields = true;
     return sps;
+}
+
+// ============================================================================
+// Scaling List Data (skip helper for SPS parsing)
+// ============================================================================
+
+/// Skip scaling_list_data() syntax element in the bitstream.
+fn skipScalingListData(reader: *BitReader) bool {
+    // 4 size groups: 4x4, 8x8, 16x16, 32x32
+    var size_id: u32 = 0;
+    while (size_id < 4) : (size_id += 1) {
+        const matrix_count: u32 = if (size_id == 3) 2 else 6;
+        var matrix_id: u32 = 0;
+        while (matrix_id < matrix_count) : (matrix_id += 1) {
+            // scaling_list_pred_mode_flag: u(1)
+            const pred_mode = reader.readBit() orelse return false;
+            if (pred_mode == 0) {
+                // scaling_list_pred_matrix_id_delta: ue(v)
+                _ = reader.readExpGolomb() orelse return false;
+            } else {
+                // DC coefficient for 16x16 and 32x32
+                if (size_id >= 2) {
+                    _ = reader.readSignedExpGolomb() orelse return false;
+                }
+                // Delta values
+                const coeff_num: u32 = @min(@as(u32, 64), @as(u32, 1) << @intCast(4 + size_id));
+                for (0..coeff_num) |_| {
+                    _ = reader.readSignedExpGolomb() orelse return false;
+                }
+            }
+        }
+    }
+    return true;
 }
 
 // ============================================================================
@@ -439,6 +559,12 @@ pub const PictureParameterSet = struct {
     constrained_intra_pred_flag: bool,
     transform_skip_enabled_flag: bool,
     cu_qp_delta_enabled_flag: bool,
+    // Extended fields
+    diff_cu_qp_delta_depth: u32 = 0,
+    transquant_bypass_enabled_flag: bool = false,
+    tiles_enabled_flag: bool = false,
+    entropy_coding_sync_enabled_flag: bool = false,
+    has_extended_fields: bool = false,
 };
 
 /// Parse a PPS NAL unit (after RBSP byte removal).
@@ -492,11 +618,36 @@ fn parsePps(rbsp: []const u8) ?PictureParameterSet {
     // cu_qp_delta_enabled_flag: u(1)
     pps.cu_qp_delta_enabled_flag = (reader.readBit() orelse return null) != 0;
 
-    // We parse the critical PPS fields. The rest includes:
-    //   - diff_cu_qp_delta_depth, cb/cr_qp_offset, slice_chroma_qp_offsets
-    //   - weighted_pred/bipred_flag, transquant_bypass, tiles, etc.
-    // These are important for decode but not critical for structural validation.
+    // Extended PPS parsing for CABAC decode
+    if (pps.cu_qp_delta_enabled_flag) {
+        pps.diff_cu_qp_delta_depth = reader.readExpGolomb() orelse return pps;
+    }
 
+    // pps_cb_qp_offset: se(v)
+    _ = reader.readSignedExpGolomb() orelse return pps;
+
+    // pps_cr_qp_offset: se(v)
+    _ = reader.readSignedExpGolomb() orelse return pps;
+
+    // pps_slice_chroma_qp_offsets_present_flag: u(1)
+    _ = reader.readBit() orelse return pps;
+
+    // weighted_pred_flag: u(1)
+    _ = reader.readBit() orelse return pps;
+
+    // weighted_bipred_flag: u(1)
+    _ = reader.readBit() orelse return pps;
+
+    // transquant_bypass_enabled_flag: u(1)
+    pps.transquant_bypass_enabled_flag = (reader.readBit() orelse return pps) != 0;
+
+    // tiles_enabled_flag: u(1)
+    pps.tiles_enabled_flag = (reader.readBit() orelse return pps) != 0;
+
+    // entropy_coding_sync_enabled_flag: u(1)
+    pps.entropy_coding_sync_enabled_flag = (reader.readBit() orelse return pps) != 0;
+
+    pps.has_extended_fields = true;
     return pps;
 }
 
@@ -508,6 +659,11 @@ fn parsePps(rbsp: []const u8) ?PictureParameterSet {
 const SliceSegmentInfo = struct {
     first_slice_segment_in_pic_flag: bool,
     nal_unit_type: NalUnitType,
+    slice_type: u32 = 2, // I=2, P=1, B=0
+    slice_qp_delta: i32 = 0,
+    slice_sao_luma_flag: bool = false,
+    slice_sao_chroma_flag: bool = false,
+    header_bits: usize = 0, // bits consumed by slice header
 };
 
 /// Parse just enough of the slice segment header to determine if it starts a new picture.
@@ -530,6 +686,106 @@ fn parseSliceSegmentHeader(rbsp: []const u8, nal_type: NalUnitType) ?SliceSegmen
         .first_slice_segment_in_pic_flag = first_slice,
         .nal_unit_type = nal_type,
     };
+}
+
+/// Parse full slice segment header for CABAC decode setup.
+/// Requires SPS and PPS to be available.
+fn parseFullSliceSegmentHeader(
+    rbsp: []const u8,
+    nal_type: NalUnitType,
+    sps: *const SequenceParameterSet,
+    pps: *const PictureParameterSet,
+) ?SliceSegmentInfo {
+    var reader = BitReader.init(rbsp);
+    var info: SliceSegmentInfo = .{
+        .first_slice_segment_in_pic_flag = false,
+        .nal_unit_type = nal_type,
+    };
+
+    // first_slice_segment_in_pic_flag: u(1)
+    info.first_slice_segment_in_pic_flag = (reader.readBit() orelse return null) != 0;
+
+    // For IRAP pictures, no_output_of_prior_pics_flag: u(1)
+    if (nal_type.isIrap()) {
+        _ = reader.readBit() orelse return null;
+    }
+
+    // slice_pic_parameter_set_id: ue(v)
+    const pps_id = reader.readExpGolomb() orelse return null;
+    _ = pps_id;
+
+    // If dependent slice segments enabled and not first slice
+    if (pps.dependent_slice_segments_enabled_flag and !info.first_slice_segment_in_pic_flag) {
+        _ = reader.readBit() orelse return null; // dependent_slice_segment_flag
+    }
+
+    // slice_segment_address (if not first slice)
+    if (!info.first_slice_segment_in_pic_flag) {
+        // Need PicSizeInCtbsY to determine address bit width
+        const log2_min_cb = sps.log2_min_luma_coding_block_size_minus3 + 3;
+        const log2_ctb = log2_min_cb + sps.log2_diff_max_min_luma_coding_block_size;
+        const ctb_size = @as(u32, 1) << @intCast(log2_ctb);
+        const pic_w_ctbs = (sps.pic_width_in_luma_samples + ctb_size - 1) / ctb_size;
+        const pic_h_ctbs = (sps.pic_height_in_luma_samples + ctb_size - 1) / ctb_size;
+        const pic_size_ctbs = pic_w_ctbs * pic_h_ctbs;
+        const addr_bits = ceilLog2(pic_size_ctbs);
+        if (!reader.skipBits(addr_bits)) return null;
+    }
+
+    // slice_reserved_flag[i] for num_extra_slice_header_bits
+    if (!reader.skipBits(@as(u32, pps.num_extra_slice_header_bits))) return null;
+
+    // slice_type: ue(v)
+    info.slice_type = reader.readExpGolomb() orelse return null;
+    if (info.slice_type > 2) return null;
+
+    // pic_output_flag (if output_flag_present_flag)
+    if (pps.output_flag_present_flag) {
+        _ = reader.readBit() orelse return null;
+    }
+
+    // For IDR: no POC, no reference picture set
+    if (!nal_type.isIdr()) {
+        // slice_pic_order_cnt_lsb
+        const poc_bits = sps.log2_max_pic_order_cnt_lsb_minus4 + 4;
+        if (!reader.skipBits(poc_bits)) return null;
+        // short_term_ref_pic_set_sps_flag + ref pic set parsing
+        // This is complex; for now return basic info without full parse
+        info.header_bits = reader.bit_pos;
+        return info;
+    }
+
+    // SAO flags (if enabled in SPS)
+    if (sps.has_extended_fields and sps.sample_adaptive_offset_enabled_flag) {
+        info.slice_sao_luma_flag = (reader.readBit() orelse return info) != 0;
+        if (sps.chroma_format_idc != 0) {
+            info.slice_sao_chroma_flag = (reader.readBit() orelse return info) != 0;
+        }
+    }
+
+    // For I-slice: no ref pic list, no prediction weights, no merge candidates
+    // slice_qp_delta: se(v)
+    info.slice_qp_delta = reader.readSignedExpGolomb() orelse {
+        info.header_bits = reader.bit_pos;
+        return info;
+    };
+
+    // Remaining fields: deblocking params, entry points, etc.
+    // Skip for now — we have enough for CABAC init
+
+    info.header_bits = reader.bit_pos;
+    return info;
+}
+
+/// Compute ceil(log2(x)) for address bit widths.
+fn ceilLog2(x: u32) u32 {
+    if (x <= 1) return 0;
+    var n: u32 = 0;
+    var v = x - 1;
+    while (v > 0) : (v >>= 1) {
+        n += 1;
+    }
+    return n;
 }
 
 // ============================================================================
@@ -698,8 +954,13 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
     var sps_parse_error = false;
     var pps_parse_error = false;
 
+    // Store parsed SPS/PPS for CABAC decode
+    var current_sps: ?SequenceParameterSet = null;
+    var current_pps: ?PictureParameterSet = null;
+    var cabac_total_ctus_decoded: u32 = 0;
+    var cabac_slices_tested: u32 = 0;
+
     // Allocate RBSP buffer on stack for parameter set parsing.
-    // 4096 bytes is sufficient for most VPS/SPS/PPS NAL units.
     var rbsp_buf: [8192]u8 = undefined;
 
     while (iterator.next()) |nal| {
@@ -743,6 +1004,7 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                 };
                 if (parseSps(rbsp)) |sps| {
                     found_sps = true;
+                    current_sps = sps;
                     width = sps.pic_width_in_luma_samples;
                     height = sps.pic_height_in_luma_samples;
                     profile_idc = sps.profile_tier_level.general_profile_idc;
@@ -761,8 +1023,9 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                     pps_parse_error = true;
                     continue;
                 };
-                if (parsePps(rbsp)) |_| {
+                if (parsePps(rbsp)) |pps| {
                     found_pps = true;
+                    current_pps = pps;
                 } else {
                     pps_parse_error = true;
                 }
@@ -772,10 +1035,86 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
             .TRAIL_N, .TRAIL_R, .TSA_N, .TSA_R, .STSA_N, .STSA_R, .RADL_N, .RADL_R, .RASL_N, .RASL_R, .BLA_W_LP, .BLA_W_RADL, .BLA_N_LP, .IDR_W_RADL, .IDR_N_LP, .CRA_NUT => {
                 found_slice = true;
 
-                // Parse slice segment header to check if this is a new picture
-                if (nal.data.len > 0) {
+                if (nal.data.len == 0) continue;
+
+                // Try CABAC decode if we have SPS+PPS with extended fields
+                const can_cabac = current_sps != null and current_pps != null and
+                    current_sps.?.has_extended_fields and current_pps.?.has_extended_fields;
+
+                if (can_cabac) {
+                    // Full RBSP removal for CABAC decode
+                    // Use a large stack buffer for the full NAL (up to 256KB)
+                    var large_rbsp_buf: [256 * 1024]u8 = undefined;
+                    const rbsp_data = if (nal.data.len <= large_rbsp_buf.len)
+                        removeEmulationPreventionBytes(nal.data, &large_rbsp_buf)
+                    else
+                        null;
+
+                    if (rbsp_data) |rbsp| {
+                        const sps = &current_sps.?;
+                        const pps = &current_pps.?;
+
+                        const maybe_slice_info = parseFullSliceSegmentHeader(rbsp, nal_type, sps, pps);
+                        if (maybe_slice_info) |slice_info| {
+                            if (slice_info.first_slice_segment_in_pic_flag) {
+                                frames_counted += 1;
+                            }
+
+                            // CABAC decode for I-slices with enough header info
+                            if (slice_info.slice_type == 2 and slice_info.header_bits > 0) {
+                                const log2_min_cb = sps.log2_min_luma_coding_block_size_minus3 + 3;
+                                const log2_ctb = log2_min_cb + sps.log2_diff_max_min_luma_coding_block_size;
+                                const ctb_size = @as(u32, 1) << @intCast(log2_ctb);
+                                const pic_w_ctbs = (sps.pic_width_in_luma_samples + ctb_size - 1) / ctb_size;
+                                const pic_h_ctbs = (sps.pic_height_in_luma_samples + ctb_size - 1) / ctb_size;
+
+                                const log2_min_tb = sps.log2_min_luma_transform_block_size_minus2 + 2;
+                                const log2_max_tb = log2_min_tb + sps.log2_diff_max_min_luma_transform_block_size;
+
+                                const slice_qp = 26 + pps.init_qp_minus26 + slice_info.slice_qp_delta;
+
+                                const decode_info = h265_cabac.H265SliceDecodeInfo{
+                                    .log2_min_cb_size = log2_min_cb,
+                                    .log2_ctb_size = log2_ctb,
+                                    .log2_min_tb_size = log2_min_tb,
+                                    .log2_max_tb_size = log2_max_tb,
+                                    .max_transform_hierarchy_depth_intra = sps.max_transform_hierarchy_depth_intra,
+                                    .pic_width_in_ctbs = pic_w_ctbs,
+                                    .pic_height_in_ctbs = pic_h_ctbs,
+                                    .pic_width_in_luma = sps.pic_width_in_luma_samples,
+                                    .pic_height_in_luma = sps.pic_height_in_luma_samples,
+                                    .chroma_format_idc = sps.chroma_format_idc,
+                                    .bit_depth_luma = sps.bit_depth_luma_minus8 + 8,
+                                    .bit_depth_chroma = sps.bit_depth_chroma_minus8 + 8,
+                                    .sao_enabled = sps.sample_adaptive_offset_enabled_flag,
+                                    .pcm_enabled = sps.pcm_enabled_flag,
+                                    .pcm_log2_min_size = if (sps.pcm_enabled_flag) sps.log2_min_pcm_luma_coding_block_size_minus3 + 3 else 0,
+                                    .pcm_log2_max_size = if (sps.pcm_enabled_flag) sps.log2_min_pcm_luma_coding_block_size_minus3 + 3 + sps.log2_diff_max_min_pcm_luma_coding_block_size else 0,
+                                    .amp_enabled = sps.amp_enabled_flag,
+                                    .cu_qp_delta_enabled = pps.cu_qp_delta_enabled_flag,
+                                    .diff_cu_qp_delta_depth = pps.diff_cu_qp_delta_depth,
+                                    .transquant_bypass_enabled = pps.transquant_bypass_enabled_flag,
+                                    .transform_skip_enabled = pps.transform_skip_enabled_flag,
+                                    .tiles_enabled = pps.tiles_enabled_flag,
+                                    .slice_qp = slice_qp,
+                                    .slice_sao_luma = slice_info.slice_sao_luma_flag,
+                                    .slice_sao_chroma = slice_info.slice_sao_chroma_flag,
+                                };
+
+                                const ctus_decoded = h265_cabac.validateH265IntraCabac(rbsp, slice_info.header_bits, &decode_info);
+                                cabac_slices_tested += 1;
+                                cabac_total_ctus_decoded += ctus_decoded;
+                            }
+
+                            // Break after CABAC decode if max_frames reached
+                            if (max_frames > 0 and frames_counted >= max_frames) {
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // Fallback: basic slice header parse (original behavior)
                     const rbsp = removeEmulationPreventionBytes(
-                        // Only need first ~64 bytes for slice header parsing
                         nal.data[0..@min(nal.data.len, 64)],
                         &rbsp_buf,
                     ) orelse continue;
@@ -840,6 +1179,18 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
     // Width and height must be reasonable
     if (width == 0 or height == 0) {
         return H265ValidationResult.invalid("H.265 SPS has zero width or height");
+    }
+
+    // CABAC decode detected corruption: if NO CTUs were decoded across all tested
+    // slices, the data is almost certainly corrupt. On valid data, our approximate
+    // decoder typically decodes several CTUs per slice before diverging.
+    if (cabac_slices_tested > 0 and cabac_total_ctus_decoded == 0) {
+        return H265ValidationResult.invalidPartial(
+            "H.265 CABAC decode failed: slice data corrupted",
+            frames_counted,
+            width,
+            height,
+        );
     }
 
     return .{
