@@ -545,7 +545,7 @@ fn validateDirectoryEntries(
             // Validate stream starting sector (for streams and root)
             if (entry_type == .stream or entry_type == .root) {
                 const start_sector = std.mem.readInt(u32, entry[116..120], .little);
-                const stream_size = std.mem.readInt(u64, entry[120..128], .little);
+                const stream_size = readStreamSize(entry, header);
 
                 if (stream_size > 0 and start_sector != ENDOFCHAIN) {
                     // Small streams use mini stream, large streams use regular FAT
@@ -585,6 +585,17 @@ fn validateDirectoryEntries(
 }
 
 // ============ Stream Reading ============
+
+/// Read stream size from a directory entry, respecting OLE2 version.
+/// For v3 (sector size 512), only the low 32 bits of the 64-bit field are valid;
+/// the high 32 bits may contain garbage per [MS-CFB] §2.6.
+fn readStreamSize(entry: []const u8, header: *const Ole2Header) u64 {
+    if (header.major_version == 3) {
+        return std.mem.readInt(u32, entry[120..124], .little);
+    } else {
+        return std.mem.readInt(u64, entry[120..128], .little);
+    }
+}
 
 /// Directory entry info needed for stream reading
 const DirEntryInfo = struct {
@@ -626,6 +637,9 @@ pub fn readNamedStream(allocator: Allocator, path: []const u8, stream_name_ascii
         // Return empty allocated slice
         return allocator.alloc(u8, 0) catch return null;
     }
+
+    // Sanity check: stream size should not exceed file size (corrupted directory entry)
+    if (info.stream_size > file_size) return null;
 
     // Read the stream data
     if (info.stream_size < header.mini_stream_cutoff and info.entry_type != .root) {
@@ -701,7 +715,7 @@ fn findStreamEntry(
             if (match) {
                 return DirEntryInfo{
                     .start_sector = std.mem.readInt(u32, entry[116..120], .little),
-                    .stream_size = std.mem.readInt(u64, entry[120..128], .little),
+                    .stream_size = readStreamSize(entry, header),
                     .entry_type = entry_type,
                 };
             }

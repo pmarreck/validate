@@ -278,6 +278,14 @@ fn validateKnownTableBounds(wd_data: []const u8, cb_rg_fc_lcb: u16, table_size: 
     return null;
 }
 
+/// Maximum number of piece descriptors before we consider the data corrupt.
+/// Real Word documents rarely exceed a few hundred pieces; 1M is extremely generous.
+const MAX_PIECE_DESCRIPTORS: u32 = 1_000_000;
+
+/// Maximum number of Prc entries in CLX before we bail.
+/// MS-DOC spec says Prc entries are rare; more than 1000 is suspicious.
+const MAX_PRC_ENTRIES: u32 = 1_000;
+
 /// Validate CLX structure (Piece Table) from the Table stream, including full PCD decode.
 /// The CLX contains optional Prc entries (type 0x01) followed by a Pcdt (type 0x02).
 /// Deep validation follows every PCD's fc to verify it points within the WordDocument stream.
@@ -288,10 +296,15 @@ fn validateClx(clx_data: []const u8, fib_lw: FibRgLw97, wd_size: usize) ?[]const
     var pos: usize = 0;
 
     // Skip any Prc entries (type 0x01)
+    var prc_count: u32 = 0;
     while (pos < clx_data.len and clx_data[pos] == 0x01) {
         if (pos + 3 > clx_data.len) return "CLX Prc entry truncated";
         const prc_size = std.mem.readInt(u16, clx_data[pos + 1 ..][0..2], .little);
-        pos += 3 + prc_size;
+        const advance = @as(usize, 3) + prc_size;
+        if (pos + advance > clx_data.len) return "CLX Prc entry extends beyond CLX data";
+        pos += advance;
+        prc_count += 1;
+        if (prc_count > MAX_PRC_ENTRIES) return "CLX has too many Prc entries (likely corrupt)";
     }
 
     // Must have Pcdt header (type 0x02)
@@ -314,6 +327,7 @@ fn validateClx(clx_data: []const u8, fib_lw: FibRgLw97, wd_size: usize) ?[]const
 
     const n = (pcdt_size - 4) / 12;
     if (n == 0) return "CLX piece table has no entries";
+    if (n > MAX_PIECE_DESCRIPTORS) return "CLX piece table has too many entries (likely corrupt)";
 
     // Read CP array and verify monotonicity
     const cp_array_start = pos;
@@ -381,12 +395,16 @@ fn validateClx(clx_data: []const u8, fib_lw: FibRgLw97, wd_size: usize) ?[]const
     return null;
 }
 
+/// Maximum PLCF entries before we consider data corrupt.
+const MAX_PLCF_ENTRIES: usize = 1_000_000;
+
 /// Validate a PLCF (Plex of CPs) structure from the Table stream.
 /// PLCFs contain (n+1) CPs (u32) followed by n data entries of fixed size.
 /// Validates: CP monotonicity, entry count consistency, all CPs within total_cp range.
 /// Returns error message if invalid, null if OK.
 fn validatePlcf(data: []const u8, entry_size: usize, total_cp: u32) ?[]const u8 {
     if (data.len < 8) return "PLCF too small for even one entry";
+    if (entry_size == 0) return "PLCF entry size is zero (invalid)";
 
     // Calculate n: data.len = (n+1)*4 + n*entry_size
     // => data.len = 4n + 4 + n*entry_size = n*(4+entry_size) + 4
@@ -397,6 +415,7 @@ fn validatePlcf(data: []const u8, entry_size: usize, total_cp: u32) ?[]const u8 
 
     const n = (data.len - 4) / (4 + entry_size);
     if (n == 0) return null; // Empty PLCF is valid (no formatting runs)
+    if (n > MAX_PLCF_ENTRIES) return "PLCF has too many entries (likely corrupt)";
 
     // Validate CP monotonicity and bounds
     var prev_cp: u32 = 0;
@@ -422,12 +441,14 @@ fn validatePlcf(data: []const u8, entry_size: usize, total_cp: u32) ?[]const u8 
 /// Used for BTEs where CPs can exceed the text-only character count.
 fn validatePlcfMonotonic(data: []const u8, entry_size: usize) ?[]const u8 {
     if (data.len < 8) return "PLCF too small for even one entry";
+    if (entry_size == 0) return "PLCF entry size is zero (invalid)";
     if (data.len < 4) return "PLCF too small";
     const remainder = (data.len - 4) % (4 + entry_size);
     if (remainder != 0) return "PLCF size inconsistent with entry layout";
 
     const n = (data.len - 4) / (4 + entry_size);
     if (n == 0) return null;
+    if (n > MAX_PLCF_ENTRIES) return "PLCF has too many entries (likely corrupt)";
 
     var prev_cp: u32 = 0;
     for (0..n + 1) |i| {
