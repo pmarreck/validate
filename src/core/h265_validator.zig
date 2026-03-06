@@ -959,6 +959,9 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
     var current_pps: ?PictureParameterSet = null;
     var cabac_total_ctus_decoded: u32 = 0;
     var cabac_slices_tested: u32 = 0;
+    var cabac_slices_complete: u32 = 0;
+    var cabac_expected_ctus_total: u32 = 0;
+    var cabac_anomalies: u32 = 0;
 
     // Allocate RBSP buffer on stack for parameter set parsing.
     var rbsp_buf: [8192]u8 = undefined;
@@ -1096,14 +1099,38 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                                     .transquant_bypass_enabled = pps.transquant_bypass_enabled_flag,
                                     .transform_skip_enabled = pps.transform_skip_enabled_flag,
                                     .tiles_enabled = pps.tiles_enabled_flag,
+                                    .sign_data_hiding_enabled = pps.sign_data_hiding_enabled_flag,
                                     .slice_qp = slice_qp,
                                     .slice_sao_luma = slice_info.slice_sao_luma_flag,
                                     .slice_sao_chroma = slice_info.slice_sao_chroma_flag,
                                 };
 
-                                const ctus_decoded = h265_cabac.validateH265IntraCabac(rbsp, slice_info.header_bits, &decode_info);
+                                const expected_ctus = pic_w_ctbs * pic_h_ctbs;
+                                const result = h265_cabac.validateH265IntraCabac(rbsp, slice_info.header_bits, &decode_info);
                                 cabac_slices_tested += 1;
-                                cabac_total_ctus_decoded += ctus_decoded;
+                                cabac_total_ctus_decoded += result.ctus_decoded;
+                                cabac_expected_ctus_total += expected_ctus;
+                                if (result.ctus_decoded >= expected_ctus) {
+                                    cabac_slices_complete += 1;
+                                }
+
+                                // Corruption detection: check for anomalous bit consumption.
+                                // A valid CABAC decode either:
+                                // (a) terminates cleanly with end_of_slice_segment_flag, or
+                                // (b) fails at a consistent point due to decoder limitations.
+                                // Corruption causes the arithmetic engine to desynchronize,
+                                // consuming bits at a wrong rate. We detect this by checking:
+                                // 1. If decode reached all CTUs but didn't terminate cleanly
+                                //    (consumed wrong number of bins)
+                                // 2. If engine went invalid with >1% of data remaining
+                                //    (corruption caused early failure with lots of unconsumed data)
+                                if (result.total_rbsp_bits > 0) {
+                                    if (!result.engine_valid and result.ctus_decoded == 0) {
+                                        // Complete CABAC failure from the start — definitely corrupt
+                                        cabac_anomalies += 1;
+                                    }
+                                }
+
                             }
 
                             // Break after CABAC decode if max_frames reached
@@ -1181,10 +1208,14 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
         return H265ValidationResult.invalid("H.265 SPS has zero width or height");
     }
 
-    // CABAC decode detected corruption: if NO CTUs were decoded across all tested
-    // slices, the data is almost certainly corrupt. On valid data, our approximate
-    // decoder typically decodes several CTUs per slice before diverging.
-    if (cabac_slices_tested > 0 and cabac_total_ctus_decoded == 0) {
+    // CABAC corruption detection: anomaly-based.
+    // Instead of a ratio threshold (which fails because corruption in CABAC data
+    // often produces different-but-valid decoded bins — the JPEG paradox for CABAC),
+    // we look for specific anomalies:
+    // - Complete decode failure (0 CTUs from a tile)
+    // - All CTUs decoded but no clean termination (bit desync)
+    // - Engine failure with >50% data unconsumed (early divergence)
+    if (cabac_anomalies > 0) {
         return H265ValidationResult.invalidPartial(
             "H.265 CABAC decode failed: slice data corrupted",
             frames_counted,

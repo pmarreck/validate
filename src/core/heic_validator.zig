@@ -248,10 +248,19 @@ fn validateGridTiles(data: []const u8, container: heif.HeifContainerInfo) HeicVa
         }
     }
 
+    const total_tiles = container.dimg_tile_ids.len;
+    const tiles_processed = tiles_validated + tiles_structural;
+
     if (tiles_validated > 0) {
-        // At least some tiles were fully validated
         const width = container.width;
         const height = container.height;
+
+        // If we expected tiles but some went missing (skipped due to corrupt
+        // NAL headers, invalid iloc offsets, etc.), flag as corruption
+        if (tiles_processed < total_tiles) {
+            return HeicValidationResult.invalid("HEIC grid tile data corrupted: expected tiles missing");
+        }
+
         if (tiles_structural > 0) {
             return HeicValidationResult.okWithWarning(width, height, "Some grid tiles could not be fully validated");
         }
@@ -282,6 +291,7 @@ fn validateHevcData(image_data: []const u8, decoder_config: ?[]const u8) HeicVal
         4;
 
     var pos: usize = 0;
+    var nal_count: usize = 0;
     while (pos + nal_length_size <= image_data.len) {
         var nal_len: u32 = 0;
         for (0..nal_length_size) |i| {
@@ -289,7 +299,22 @@ fn validateHevcData(image_data: []const u8, decoder_config: ?[]const u8) HeicVal
         }
         pos += nal_length_size;
 
-        if (nal_len == 0 or pos + nal_len > image_data.len) break;
+        if (nal_len == 0 or pos + nal_len > image_data.len) {
+            // Corrupted NAL length: either zero or extends beyond tile
+            if (nal_count > 0) break; // Had at least one valid NAL, continue
+            return HeicValidationResult.invalid("HEIC tile NAL unit length corrupted");
+        }
+        nal_count += 1;
+
+        // Validate NAL unit header — tile NALs must be intra slice types
+        if (nal_len >= 2) {
+            const nal_type = (image_data[pos] >> 1) & 0x3F;
+            // Valid intra slice types for HEIC tiles: IDR_W_RADL(19), IDR_N_LP(20), CRA(21)
+            // Also allow BLA types (16-18) for completeness
+            if (nal_type < 16 or nal_type > 21) {
+                return HeicValidationResult.invalid("HEIC tile has invalid NAL unit type");
+            }
+        }
 
         if (annex_b_len + 4 + nal_len <= annex_b_buf.len) {
             annex_b_buf[annex_b_len] = 0;
@@ -300,6 +325,16 @@ fn validateHevcData(image_data: []const u8, decoder_config: ?[]const u8) HeicVal
             annex_b_len += 4 + nal_len;
         }
         pos += nal_len;
+    }
+
+    // Tile data should be fully consumed by NAL units.
+    // Leftover bytes indicate a corrupted NAL length prefix.
+    if (pos < image_data.len and nal_count > 0) {
+        const leftover = image_data.len - pos;
+        // Allow small leftover (up to nal_length_size - 1 bytes of padding)
+        if (leftover >= nal_length_size) {
+            return HeicValidationResult.invalid("HEIC tile NAL length mismatch: unconsumed data");
+        }
     }
 
     if (annex_b_len < 8) return HeicValidationResult.structural();
