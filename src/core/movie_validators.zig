@@ -1108,6 +1108,340 @@ pub fn parseMaxVideoDeepSize(env: ?[:0]const u8) u64 {
     return mb * 1024 * 1024; // Convert MB to bytes
 }
 
+/// Find a child box by type within a parent box's data region.
+/// Returns the offset and size of the matching child box, or null if not found.
+fn findChildBox(file: std.fs.File, parent_data_offset: u64, parent_end: u64, box_type: *const [4]u8) ?struct { offset: u64, size: u64 } {
+    var pos = parent_data_offset;
+    while (pos + 8 <= parent_end) {
+        file.seekTo(pos) catch return null;
+        var hdr: [8]u8 = undefined;
+        const n = file.read(&hdr) catch return null;
+        if (n < 8) return null;
+        var size: u64 = std.mem.readInt(u32, hdr[0..4], .big);
+        if (size == 1) {
+            // Extended size (64-bit)
+            var ext: [8]u8 = undefined;
+            const en = file.read(&ext) catch return null;
+            if (en < 8) return null;
+            size = std.mem.readInt(u64, &ext, .big);
+        } else if (size == 0) {
+            size = parent_end - pos;
+        }
+        if (size < 8 or pos + size > parent_end) return null;
+        if (std.mem.eql(u8, hdr[4..8], box_type)) {
+            return .{ .offset = pos, .size = size };
+        }
+        pos += size;
+    }
+    return null;
+}
+
+/// Return the data offset (past the header) for a box at a given offset.
+/// Standard box header is 8 bytes; extended-size header is 16 bytes.
+fn boxDataOffset(file: std.fs.File, box_offset: u64) u64 {
+    file.seekTo(box_offset) catch return box_offset + 8;
+    var hdr: [4]u8 = undefined;
+    const n = file.read(&hdr) catch return box_offset + 8;
+    if (n < 4) return box_offset + 8;
+    const raw_size = std.mem.readInt(u32, &hdr, .big);
+    if (raw_size == 1) return box_offset + 16; // 64-bit extended size
+    return box_offset + 8;
+}
+
+/// Full-box data offset: past the header + version(1) + flags(3) = header + 4 bytes.
+fn fullBoxDataOffset(file: std.fs.File, box_offset: u64) u64 {
+    return boxDataOffset(file, box_offset) + 4; // skip version + flags
+}
+
+/// Validate MP4 sample tables (stco/co64/stts/stsc/stsz) across all tracks.
+/// Returns null if valid, or an error message string if corruption is found.
+fn validateMp4SampleTables(file: std.fs.File, file_size: u64) ?[]const u8 {
+    // Find moov box by scanning top-level boxes
+    var pos: u64 = 0;
+    var moov_offset: u64 = 0;
+    var moov_size: u64 = 0;
+    var found_moov = false;
+
+    while (pos + 8 <= file_size) {
+        file.seekTo(pos) catch return null;
+        var hdr: [8]u8 = undefined;
+        const n = file.read(&hdr) catch return null;
+        if (n < 8) break;
+        var size: u64 = std.mem.readInt(u32, hdr[0..4], .big);
+        if (size == 1) {
+            var ext: [8]u8 = undefined;
+            const en = file.read(&ext) catch break;
+            if (en < 8) break;
+            size = std.mem.readInt(u64, &ext, .big);
+        } else if (size == 0) {
+            size = file_size - pos;
+        }
+        if (size < 8 or pos + size > file_size) break;
+        if (std.mem.eql(u8, hdr[4..8], "moov")) {
+            moov_offset = pos;
+            moov_size = size;
+            found_moov = true;
+            break;
+        }
+        pos += size;
+    }
+
+    if (!found_moov) return null; // No moov box — skip (some valid files may lack it)
+
+    const moov_data_start = boxDataOffset(file, moov_offset);
+    const moov_end = moov_offset + moov_size;
+
+    // Iterate over trak boxes inside moov
+    var trak_search_pos = moov_data_start;
+    var trak_count: usize = 0;
+    const max_traks: usize = 64; // Sanity limit
+
+    while (trak_count < max_traks) {
+        const trak = findChildBox(file, trak_search_pos, moov_end, "trak") orelse break;
+        trak_count += 1;
+        trak_search_pos = trak.offset + trak.size; // Move past this trak for next iteration
+
+        const trak_data = boxDataOffset(file, trak.offset);
+        const trak_end = trak.offset + trak.size;
+
+        // Navigate: trak → mdia → minf → stbl
+        const mdia = findChildBox(file, trak_data, trak_end, "mdia") orelse continue;
+        const mdia_data = boxDataOffset(file, mdia.offset);
+        const mdia_end = mdia.offset + mdia.size;
+
+        const minf = findChildBox(file, mdia_data, mdia_end, "minf") orelse continue;
+        const minf_data = boxDataOffset(file, minf.offset);
+        const minf_end = minf.offset + minf.size;
+
+        const stbl = findChildBox(file, minf_data, minf_end, "stbl") orelse continue;
+        const stbl_data = boxDataOffset(file, stbl.offset);
+        const stbl_end = stbl.offset + stbl.size;
+
+        // Validate stco (Chunk Offset Box — 32-bit offsets)
+        if (findChildBox(file, stbl_data, stbl_end, "stco")) |stco| {
+            if (validateStco(file, stco.offset, stco.size, file_size)) |err| return err;
+        }
+
+        // Validate co64 (Chunk Offset Box — 64-bit offsets)
+        if (findChildBox(file, stbl_data, stbl_end, "co64")) |co64| {
+            if (validateCo64(file, co64.offset, co64.size, file_size)) |err| return err;
+        }
+
+        // Validate stts (Time-to-Sample Box)
+        if (findChildBox(file, stbl_data, stbl_end, "stts")) |stts| {
+            if (validateStts(file, stts.offset, stts.size)) |err| return err;
+        }
+
+        // Validate stsc (Sample-to-Chunk Box)
+        if (findChildBox(file, stbl_data, stbl_end, "stsc")) |stsc| {
+            if (validateStsc(file, stsc.offset, stsc.size)) |err| return err;
+        }
+
+        // Validate stsz (Sample Size Box)
+        if (findChildBox(file, stbl_data, stbl_end, "stsz")) |stsz| {
+            if (validateStsz(file, stsz.offset, stsz.size)) |err| return err;
+        }
+    }
+
+    return null; // All sample tables valid
+}
+
+/// Validate stco box: every 32-bit chunk offset must be < file_size.
+fn validateStco(file: std.fs.File, box_offset: u64, box_size: u64, file_size: u64) ?[]const u8 {
+    const data_start = fullBoxDataOffset(file, box_offset);
+    const box_end = box_offset + box_size;
+    if (data_start + 4 > box_end) return "stco box too small for entry_count";
+
+    file.seekTo(data_start) catch return "stco seek failed";
+    var count_buf: [4]u8 = undefined;
+    if ((file.read(&count_buf) catch return "stco read failed") < 4) return "stco truncated";
+    const entry_count = std.mem.readInt(u32, &count_buf, .big);
+
+    // Sanity check entry count
+    const max_entries: u32 = 100_000;
+    const check_count = @min(entry_count, max_entries);
+
+    // Check that claimed entries fit within box
+    const entries_size: u64 = @as(u64, entry_count) * 4;
+    if (data_start + 4 + entries_size > box_end) return "stco entry_count exceeds box size";
+
+    // Validate offsets in batches (read 1024 entries at a time = 4KB)
+    const batch_size: usize = 1024;
+    var buf: [batch_size * 4]u8 = undefined;
+    var validated: u32 = 0;
+
+    while (validated < check_count) {
+        const remaining = check_count - validated;
+        const to_read = @min(remaining, batch_size);
+        const bytes_to_read = @as(usize, to_read) * 4;
+        const n = file.read(buf[0..bytes_to_read]) catch return "stco read failed";
+        if (n < bytes_to_read) return "stco entries truncated";
+
+        for (0..to_read) |i| {
+            const offset_val = std.mem.readInt(u32, buf[i * 4 ..][0..4], .big);
+            if (offset_val >= file_size) return "stco chunk offset exceeds file size";
+        }
+        validated += to_read;
+    }
+
+    return null;
+}
+
+/// Validate co64 box: every 64-bit chunk offset must be < file_size.
+fn validateCo64(file: std.fs.File, box_offset: u64, box_size: u64, file_size: u64) ?[]const u8 {
+    const data_start = fullBoxDataOffset(file, box_offset);
+    const box_end = box_offset + box_size;
+    if (data_start + 4 > box_end) return "co64 box too small for entry_count";
+
+    file.seekTo(data_start) catch return "co64 seek failed";
+    var count_buf: [4]u8 = undefined;
+    if ((file.read(&count_buf) catch return "co64 read failed") < 4) return "co64 truncated";
+    const entry_count = std.mem.readInt(u32, &count_buf, .big);
+
+    const max_entries: u32 = 100_000;
+    const check_count = @min(entry_count, max_entries);
+
+    const entries_size: u64 = @as(u64, entry_count) * 8;
+    if (data_start + 4 + entries_size > box_end) return "co64 entry_count exceeds box size";
+
+    // Read 512 entries at a time = 4KB
+    const batch_size: usize = 512;
+    var buf: [batch_size * 8]u8 = undefined;
+    var validated: u32 = 0;
+
+    while (validated < check_count) {
+        const remaining = check_count - validated;
+        const to_read = @min(remaining, batch_size);
+        const bytes_to_read = @as(usize, to_read) * 8;
+        const n = file.read(buf[0..bytes_to_read]) catch return "co64 read failed";
+        if (n < bytes_to_read) return "co64 entries truncated";
+
+        for (0..to_read) |i| {
+            const offset_val = std.mem.readInt(u64, buf[i * 8 ..][0..8], .big);
+            if (offset_val >= file_size) return "co64 chunk offset exceeds file size";
+        }
+        validated += to_read;
+    }
+
+    return null;
+}
+
+/// Validate stts box: each entry's sample_count must be > 0, entry_count reasonable.
+fn validateStts(file: std.fs.File, box_offset: u64, box_size: u64) ?[]const u8 {
+    const data_start = fullBoxDataOffset(file, box_offset);
+    const box_end = box_offset + box_size;
+    if (data_start + 4 > box_end) return "stts box too small for entry_count";
+
+    file.seekTo(data_start) catch return "stts seek failed";
+    var count_buf: [4]u8 = undefined;
+    if ((file.read(&count_buf) catch return "stts read failed") < 4) return "stts truncated";
+    const entry_count = std.mem.readInt(u32, &count_buf, .big);
+
+    if (entry_count > 1_000_000) return "stts entry_count unreasonably large";
+
+    // Check that entries fit within box
+    const entries_size: u64 = @as(u64, entry_count) * 8;
+    if (data_start + 4 + entries_size > box_end) return "stts entry_count exceeds box size";
+
+    // Validate entries in batches (512 entries = 4KB)
+    const batch_size: usize = 512;
+    var buf: [batch_size * 8]u8 = undefined;
+    var validated: u32 = 0;
+    const check_count = @min(entry_count, @as(u32, 100_000));
+
+    while (validated < check_count) {
+        const remaining = check_count - validated;
+        const to_read = @min(remaining, batch_size);
+        const bytes_to_read = @as(usize, to_read) * 8;
+        const n = file.read(buf[0..bytes_to_read]) catch return "stts read failed";
+        if (n < bytes_to_read) return "stts entries truncated";
+
+        for (0..to_read) |i| {
+            const sample_count = std.mem.readInt(u32, buf[i * 8 ..][0..4], .big);
+            if (sample_count == 0) return "stts entry has zero sample_count";
+        }
+        validated += to_read;
+    }
+
+    return null;
+}
+
+/// Validate stsc box: first_chunk values must be monotonically increasing, first must be 1.
+fn validateStsc(file: std.fs.File, box_offset: u64, box_size: u64) ?[]const u8 {
+    const data_start = fullBoxDataOffset(file, box_offset);
+    const box_end = box_offset + box_size;
+    if (data_start + 4 > box_end) return "stsc box too small for entry_count";
+
+    file.seekTo(data_start) catch return "stsc seek failed";
+    var count_buf: [4]u8 = undefined;
+    if ((file.read(&count_buf) catch return "stsc read failed") < 4) return "stsc truncated";
+    const entry_count = std.mem.readInt(u32, &count_buf, .big);
+
+    if (entry_count > 1_000_000) return "stsc entry_count unreasonably large";
+
+    // Check that entries fit within box (12 bytes per entry)
+    const entries_size: u64 = @as(u64, entry_count) * 12;
+    if (data_start + 4 + entries_size > box_end) return "stsc entry_count exceeds box size";
+
+    // Validate entries in batches (341 entries ≈ 4KB)
+    const batch_size: usize = 341;
+    var buf: [batch_size * 12]u8 = undefined;
+    var validated: u32 = 0;
+    var prev_first_chunk: u32 = 0;
+    const check_count = @min(entry_count, @as(u32, 100_000));
+
+    while (validated < check_count) {
+        const remaining = check_count - validated;
+        const to_read = @min(remaining, batch_size);
+        const bytes_to_read = @as(usize, to_read) * 12;
+        const n = file.read(buf[0..bytes_to_read]) catch return "stsc read failed";
+        if (n < bytes_to_read) return "stsc entries truncated";
+
+        for (0..to_read) |i| {
+            const first_chunk = std.mem.readInt(u32, buf[i * 12 ..][0..4], .big);
+
+            // First entry must have first_chunk == 1
+            if (validated == 0 and i == 0) {
+                if (first_chunk != 1) return "stsc first entry's first_chunk must be 1";
+            }
+
+            // Must be monotonically increasing
+            if (first_chunk <= prev_first_chunk and (validated > 0 or i > 0)) {
+                return "stsc first_chunk values not monotonically increasing";
+            }
+            prev_first_chunk = first_chunk;
+        }
+        validated += to_read;
+    }
+
+    return null;
+}
+
+/// Validate stsz box: sample_count must be reasonable.
+fn validateStsz(file: std.fs.File, box_offset: u64, box_size: u64) ?[]const u8 {
+    const data_start = fullBoxDataOffset(file, box_offset);
+    const box_end = box_offset + box_size;
+    // stsz header: sample_size(4) + sample_count(4) = 8 bytes after version+flags
+    if (data_start + 8 > box_end) return "stsz box too small for header";
+
+    file.seekTo(data_start) catch return "stsz seek failed";
+    var header_buf: [8]u8 = undefined;
+    if ((file.read(&header_buf) catch return "stsz read failed") < 8) return "stsz truncated";
+
+    const sample_size = std.mem.readInt(u32, header_buf[0..4], .big);
+    const sample_count = std.mem.readInt(u32, header_buf[4..8], .big);
+
+    if (sample_count > 100_000_000) return "stsz sample_count unreasonably large";
+
+    // If sample_size == 0, per-sample sizes follow — check they fit in the box
+    if (sample_size == 0) {
+        const entries_size: u64 = @as(u64, sample_count) * 4;
+        if (data_start + 8 + entries_size > box_end) return "stsz per-sample sizes exceed box size";
+    }
+
+    return null;
+}
+
 /// Deep MP4/ISOBMFF validation - validates all box sizes and structure.
 /// Also validates video stream integrity using pure-Zig codec validators.
 pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
@@ -1207,6 +1541,11 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
     // A valid file should have either moov or mdat (or both)
     if (!found_moov and !found_mdat) {
         return ValidationResult.invalidCodeWithDepth(format, .missing, "moov/mdat boxes", .structural);
+    }
+
+    // Validate sample tables (stco/co64/stts/stsc/stsz) in moov box
+    if (validateMp4SampleTables(file, file_size)) |err_msg| {
+        return ValidationResult.invalidWithDepth(format, err_msg, .structural);
     }
 
     // Skip deep validation for large files (when MAX_VIDEO_SIZE is set)
