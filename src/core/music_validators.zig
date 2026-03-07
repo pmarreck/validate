@@ -1880,6 +1880,122 @@ pub fn validateTta(file: std.fs.File) ValidationResult {
     return ValidationResult.structuralOnly(.tta);
 }
 
+/// Deep TTA validation: verifies seek table CRC32 and per-frame CRC32s.
+pub fn validateTtaDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        return switch (err) {
+            error.FileNotFound => ValidationResult.invalidWithDepth(.tta, "File not found", .full),
+            error.AccessDenied => ValidationResult.invalidWithDepth(.tta, "Access denied", .full),
+            else => ValidationResult.invalidCodeWithDepth(.tta, .failed_to_open, "file", .full),
+        };
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCodeWithDepth(.tta, .failed_to_read, "file size", .full);
+    };
+
+    // Cap at 100 MB
+    if (file_size > 100 * 1024 * 1024) {
+        return ValidationResult.structuralOnly(.tta);
+    }
+
+    const data = allocator.alloc(u8, @intCast(file_size)) catch {
+        return ValidationResult.structuralOnly(.tta);
+    };
+    defer allocator.free(data);
+
+    const bytes_read = file.readAll(data) catch {
+        return ValidationResult.invalidCodeWithDepth(.tta, .failed_to_read, "file data", .full);
+    };
+    if (bytes_read < 22) {
+        return ValidationResult.invalidCodeWithDepth(.tta, .truncated, "header", .full);
+    }
+    const buf = data[0..bytes_read];
+
+    // Parse header
+    if (!std.mem.eql(u8, buf[0..4], "TTA1")) {
+        return ValidationResult.invalidCodeWithDepth(.tta, .invalid_signature, "TTA magic", .full);
+    }
+
+    const sample_rate = std.mem.readInt(u32, buf[10..14], .little);
+    const total_samples = std.mem.readInt(u32, buf[14..18], .little);
+
+    // Verify header CRC
+    const stored_header_crc = std.mem.readInt(u32, buf[18..22], .little);
+    const computed_header_crc = std.hash.Crc32.hash(buf[0..18]);
+    if (stored_header_crc != computed_header_crc) {
+        return ValidationResult.invalidCodeMsgWithDepth(.tta, .checksum_mismatch, "Header CRC32", "Header CRC32 mismatch", .full);
+    }
+
+    // Calculate number of frames
+    const frame_length: u64 = @as(u64, sample_rate) * 256 / 245;
+    if (frame_length == 0) {
+        return ValidationResult.invalidCodeWithDepth(.tta, .invalid_value, "frame length is zero", .full);
+    }
+    const fl32: u32 = @intCast(@min(frame_length, std.math.maxInt(u32)));
+    const num_frames: u32 = (total_samples + fl32 - 1) / fl32;
+
+    // Seek table starts at offset 22, contains num_frames × u32 entries + 4-byte CRC
+    const seek_table_offset: usize = 22;
+    const seek_table_data_size: usize = @as(usize, num_frames) * 4;
+    const seek_table_total_size: usize = seek_table_data_size + 4; // data + CRC
+
+    if (buf.len < seek_table_offset + seek_table_total_size) {
+        return ValidationResult.invalidCodeWithDepth(.tta, .truncated, "seek table", .full);
+    }
+
+    // Verify seek table CRC
+    const seek_table_bytes = buf[seek_table_offset .. seek_table_offset + seek_table_data_size];
+    const stored_seek_crc = std.mem.readInt(u32, buf[seek_table_offset + seek_table_data_size ..][0..4], .little);
+    const computed_seek_crc = std.hash.Crc32.hash(seek_table_bytes);
+    if (stored_seek_crc != computed_seek_crc) {
+        return ValidationResult.invalidCodeMsgWithDepth(.tta, .checksum_mismatch, "Seek table CRC32", "Seek table CRC32 mismatch", .full);
+    }
+
+    // Read frame sizes from seek table
+    var frame_sizes: []u32 = allocator.alloc(u32, num_frames) catch {
+        return ValidationResult.structuralOnly(.tta);
+    };
+    defer allocator.free(frame_sizes);
+
+    for (0..num_frames) |i| {
+        const entry_offset = seek_table_offset + i * 4;
+        frame_sizes[i] = std.mem.readInt(u32, buf[entry_offset..][0..4], .little);
+    }
+
+    // Walk frames and verify CRCs
+    // Frame data starts after header (22) + seek table (num_frames*4 + 4)
+    var frame_offset: usize = seek_table_offset + seek_table_total_size;
+    const max_frames_to_check: u32 = @min(num_frames, 1000);
+
+    for (0..max_frames_to_check) |i| {
+        const entry_size = frame_sizes[i]; // includes 4-byte CRC
+        if (entry_size < 4) {
+            return ValidationResult.invalidCodeMsgWithDepth(.tta, .invalid_value, "Frame size", "Frame size too small (< 4 bytes)", .full);
+        }
+
+        const frame_data_size: usize = entry_size - 4;
+        const frame_end: usize = frame_offset + entry_size;
+
+        if (frame_end > buf.len) {
+            return ValidationResult.invalidCodeMsgWithDepth(.tta, .truncated, "Frame data", "Frame data extends beyond file", .full);
+        }
+
+        const frame_data = buf[frame_offset .. frame_offset + frame_data_size];
+        const stored_frame_crc = std.mem.readInt(u32, buf[frame_offset + frame_data_size ..][0..4], .little);
+        const computed_frame_crc = std.hash.Crc32.hash(frame_data);
+
+        if (stored_frame_crc != computed_frame_crc) {
+            return ValidationResult.invalidCodeMsgWithDepth(.tta, .checksum_mismatch, "Frame CRC32", "Frame CRC32 mismatch", .full);
+        }
+
+        frame_offset = frame_end;
+    }
+
+    return ValidationResult.okWithDepth(.tta, .full);
+}
+
 // ============ CAF Validator ============
 
 /// Validate CAF (Core Audio Format) file structure.

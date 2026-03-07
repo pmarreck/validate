@@ -90,13 +90,14 @@ pub fn validateDmgDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Check if checksums were verified
-    if (result.data_checksum_verified) {
+    const any_checksum_verified = result.data_checksum_verified or result.master_checksum_verified;
+    if (any_checksum_verified) {
         return ValidationResult.okWithDepth(.dmg, .full);
     }
 
     // Checksum present but not verified (large file) - structural only
-    if (result.has_data_checksum) {
-        return ValidationResult.okWithDepthAndWarning(.dmg, .structural, "data checksum present but not verified (large file)");
+    if (result.has_data_checksum or result.has_master_checksum) {
+        return ValidationResult.okWithDepthAndWarning(.dmg, .structural, "checksum(s) present but not verified (large file)");
     }
 
     // No checksum in file - structural validation only

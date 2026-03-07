@@ -873,6 +873,23 @@ const AdtsFrameHeader = struct {
     }
 };
 
+/// CRC-16/MPEG (poly 0x8005, init 0xFFFF, MSB-first, no reflection/final-XOR).
+/// Incremental: pass previous CRC as `crc` to continue over additional data.
+fn crc16MpegUpdate(crc: u16, data: []const u8) u16 {
+    var c = crc;
+    for (data) |byte| {
+        c ^= @as(u16, byte) << 8;
+        for (0..8) |_| {
+            if (c & 0x8000 != 0) {
+                c = (c << 1) ^ 0x8005;
+            } else {
+                c = c << 1;
+            }
+        }
+    }
+    return c;
+}
+
 fn parseAdtsHeader(data: []const u8) ?AdtsFrameHeader {
     if (data.len < 7) return null;
 
@@ -964,6 +981,17 @@ pub fn validateAdtsStream(data: []const u8) AacSyntaxResult {
         }
 
         const au_data = data[offset + hdr_size .. offset + fl];
+
+        // Verify CRC-16 when protection is enabled (protection_absent == false)
+        if (!header.protection_absent) {
+            const stored_crc = std.mem.readInt(u16, data[offset + 7 ..][0..2], .big);
+            var crc = crc16MpegUpdate(0xFFFF, data[offset + 2 .. offset + 4]);
+            crc = crc16MpegUpdate(crc, au_data);
+            if (crc != stored_crc) {
+                return AacSyntaxResult.invalid("ADTS frame CRC-16 mismatch", frames);
+            }
+        }
+
         if (!validateAccessUnit(au_data, &config)) {
             return AacSyntaxResult.invalid("AAC syntax error in ADTS frame", frames);
         }

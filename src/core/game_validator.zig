@@ -339,6 +339,53 @@ pub fn validateGb(file: std.fs.File) ValidationResult {
     return ValidationResult.okWithDepth(.gb, .structural);
 }
 
+/// Deep validate Game Boy ROM - reads entire file and verifies the global checksum at 0x14E-0x14F.
+pub fn validateGbDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const file = std.fs.cwd().openFile(path, .{}) catch {
+        return ValidationResult.invalidCode(.gb, .failed_to_open, "GB file");
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.gb, .failed_to_get, "file size");
+
+    // GB ROM must be at least 0x150 bytes (header ends at 0x14F)
+    if (file_size < 0x150) {
+        return ValidationResult.invalidCode(.gb, .file_too_small, "GB ROM");
+    }
+
+    // Cap at 32 MB for safety (largest GB ROMs are 8 MB)
+    if (file_size > 32 * 1024 * 1024) {
+        return ValidationResult.invalidCode(.gb, .file_too_large, "GB ROM");
+    }
+
+    const rom = allocator.alloc(u8, @intCast(file_size)) catch {
+        return ValidationResult.invalidCode(.gb, .out_of_memory, "GB ROM");
+    };
+    defer allocator.free(rom);
+
+    file.seekTo(0) catch return ValidationResult.invalidCode(.gb, .failed_to_seek, "to start");
+    const bytes_read = file.readAll(rom) catch return ValidationResult.invalidCode(.gb, .failed_to_read, "GB ROM");
+    if (bytes_read < file_size) {
+        return ValidationResult.invalidCode(.gb, .file_too_small, "GB ROM truncated");
+    }
+
+    // Stored global checksum at 0x14E-0x14F (big-endian u16)
+    const stored_checksum = std.mem.readInt(u16, rom[0x14E..0x150], .big);
+
+    // Compute global checksum: sum of all bytes excluding 0x14E and 0x14F
+    var computed: u16 = 0;
+    for (rom, 0..) |b, i| {
+        if (i == 0x14E or i == 0x14F) continue;
+        computed +%= b;
+    }
+
+    if (computed != stored_checksum) {
+        return ValidationResult.invalidCodeMsg(.gb, .checksum_mismatch, "Global", "Global checksum mismatch");
+    }
+
+    return ValidationResult.okWithDepth(.gb, .full);
+}
+
 // ============ GBA ============
 
 /// Validate GBA ROM - checks ARM branch entry point, Nintendo logo, and header checksum.

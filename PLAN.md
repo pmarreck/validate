@@ -66,6 +66,23 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] AVI RIFF chunk chain + idx1 index validation (0%/2%→0%/4%) (2026-03-06 EST)
 - [x] EXR full scanline validation — decompress ALL blocks, offset monotonicity (6%/5%→6%/100%) (2026-03-06 EST)
 - [x] Tar full-file header checksums — validate ALL entry headers (15%/73%→54%/73%) (2026-03-06 EST)
+- [x] FLAC CRC-8/CRC-16 verification (was read & discarded, 0%/88%→80%/88%) (2026-03-07 EST)
+- [x] WebP full RIFF chunk chain walk (0%/84%→83%/84%) (2026-03-07 EST)
+- [x] ASF header object chain + Data Object validation (0%/0%→3%/22%) (2026-03-07 EST)
+- [x] HDF5 OHDR/OCHK continuation chain + Jenkins checksums (0%/13%→5%/37%) (2026-03-07 EST)
+- [x] DOC fc/lcb expansion from 9→31 indices (1%/2%→2%/52%) (2026-03-07 EST)
+- [x] SQLite header field validation (schema format, text encoding, reserved bytes) (2026-03-07 EST)
+- [x] JPEG DHT/DQT/SOF segment content validation (2026-03-07 EST)
+
+### Unverified Checksum Gaps (audit 2026-03-07)
+- [ ] Game Boy global checksum — sum all ROM bytes, compare with stored u16 at 0x14E-0x14F (`game_validator.zig`)
+- [ ] DMG master checksum — koly block offset 360-363, CRC-32 of data fork (`dmg_validator.zig` / `apple_validators.zig`)
+- [ ] WavPack per-block CRC-32 — each block has CRC field (`music_validators.zig` / `wavpack_decoder.zig`)
+- [ ] APE (Monkey's Audio) frame MD5s — per-frame integrity (`music_validators.zig`)
+- [ ] TTA frame CRCs — header CRC already verified, extend to per-frame CRCs (`music_validators.zig`)
+- [ ] AAC ADTS frame CRC-16 — when protection_absent=false (`aac_syntax_validator.zig`)
+- [ ] AAC LATM StreamMuxConfig CRC-8 — when crcCheckPresent=1 (`aac_syntax_validator.zig`)
+- [ ] MP3 Layer I/II CRC-16 — low priority, legacy format (`mp3_decode_validator.zig`)
 
 ### Progrez Library Integration
 - [x] Add progrez_core module to progrez (no FFI, pure-logic only) (2026-03-01 EST)

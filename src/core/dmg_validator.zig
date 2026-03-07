@@ -253,7 +253,10 @@ pub fn validateDmgFile(file: std.fs.File, allocator: std.mem.Allocator) DmgValid
     const has_master_ck = koly.master_checksum_type == .crc32 and koly.master_checksum_size >= 4;
 
     var data_verified = false;
-    const master_verified = false; // TODO: implement master checksum verification
+    var master_verified = false;
+
+    // Size cap for checksum verification (100 MB)
+    const verify_cap: u64 = 100 * 1024 * 1024;
 
     // Verify data fork checksum if present
     if (has_data_ck and koly.data_fork_length > 0) {
@@ -262,7 +265,7 @@ pub fn validateDmgFile(file: std.fs.File, allocator: std.mem.Allocator) DmgValid
         // Read data fork and compute CRC32
         const data_size: usize = @intCast(@min(koly.data_fork_length, 1024 * 1024 * 1024)); // Cap at 1GB for memory
 
-        if (data_size <= 100 * 1024 * 1024) { // Only verify if <= 100MB (fast path)
+        if (data_size <= verify_cap) { // Only verify if <= 100MB (fast path)
             file.seekTo(koly.data_fork_offset) catch {
                 return DmgValidationResult.invalid(errmsg.failedToSeek("to data fork"));
             };
@@ -293,9 +296,69 @@ pub fn validateDmgFile(file: std.fs.File, allocator: std.mem.Allocator) DmgValid
         }
     }
 
-    // Master checksum typically covers more than just data fork
-    // For now, we just report if it's present
-    // Full verification would require understanding exactly what it covers
+    // Verify master checksum if present
+    // The master checksum is a CRC-32 over the entire file with the 128-byte
+    // master_checksum field (koly offset 360-487) zeroed out during computation.
+    if (has_master_ck and file_size <= verify_cap) {
+        const stored_master_crc = koly.getMasterCrc32().?;
+
+        // The master checksum field is at koly_offset + 360, which is
+        // (file_size - 512) + 360 = file_size - 152
+        const master_cksum_file_offset = file_size - KOLY_SIZE + 360;
+        const master_cksum_field_size: usize = 128; // 32 x u32
+
+        // Use incremental CRC: hash 3 segments
+        // [0 .. master_cksum_file_offset] | [128 zero bytes] | [master_cksum_end .. file_size]
+        const file_size_usize: usize = @intCast(file_size);
+        const master_cksum_offset_usize: usize = @intCast(master_cksum_file_offset);
+
+        // Read entire file into buffer
+        const file_buf = allocator.alloc(u8, file_size_usize) catch {
+            // Skip master verification if allocation fails
+            return DmgValidationResult.ok(
+                has_data_ck,
+                has_master_ck,
+                data_verified,
+                false,
+                koly.data_fork_length,
+                koly.getUncompressedSize(),
+                koly.xml_length,
+                koly.segment_count,
+            );
+        };
+        defer allocator.free(file_buf);
+
+        file.seekTo(0) catch {
+            return DmgValidationResult.invalid(errmsg.failedToSeek("to start for master checksum"));
+        };
+
+        const master_read = file.readAll(file_buf) catch {
+            return DmgValidationResult.invalid(errmsg.failedToRead("file for master checksum"));
+        };
+
+        if (master_read == file_size_usize) {
+            // Compute CRC-32 incrementally: before checksum field, zeroed field, after field
+            var hasher = std.hash.Crc32.init();
+
+            // Segment 1: everything before the master checksum field
+            hasher.update(file_buf[0..master_cksum_offset_usize]);
+
+            // Segment 2: 128 zero bytes in place of the master checksum field
+            const zero_buf = [_]u8{0} ** 128;
+            hasher.update(&zero_buf);
+
+            // Segment 3: everything after the master checksum field
+            const after_offset = master_cksum_offset_usize + master_cksum_field_size;
+            hasher.update(file_buf[after_offset..file_size_usize]);
+
+            const computed_master_crc = hasher.final();
+            master_verified = (computed_master_crc == stored_master_crc);
+
+            if (!master_verified) {
+                return DmgValidationResult.invalid("DMG master checksum mismatch");
+            }
+        }
+    }
 
     return DmgValidationResult.ok(
         has_data_ck,
