@@ -17,8 +17,8 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Fix HEIC `parseHvcCConfig` static buffer → write-into-caller-buffer (2026-03-07 EST)
 
 ### Inbox Review (from entropy_shield agent + strict coverage harness)
-- [ ] Rich error struct architecture — symbolic ErrorCode enum alongside string messages for i18n at Swift layer (inbox/from_entropy_shield_agent.md Request 1)
-- [ ] Forward compatibility for enum additions — stable variant names, append-only, comptime sync assertions (inbox/from_entropy_shield_agent.md Request 2)
+- [x] Rich error struct architecture — already implemented: `ValidationErrorCode` enum (28 variants) in `ValidationResult.error_code`, exposed via FFI as `err_code` tag name + `err_detail` (2026-03-07 EST)
+- [x] Forward compatibility for enum additions — already implemented: explicit u8 values, append-only, `template_count` for comptime sync (2026-03-07 EST)
 - [x] Phoenix template `package.json` classification — already implemented: `containsTemplateMarkers()` detects EEx/ERB `<%`/`%>` in JSON files (2026-03-07 EST)
 - [x] Review strict_format_coverage results — 3 `corruption_detection_failed` formats (bai2, mt940, nacha) reclassified as `mixed` (control totals protect amounts but not all text bytes) (2026-03-07 EST)
 - [x] Review corruption_opacity classifications — all classifications verified accurate (2026-03-07 EST)
