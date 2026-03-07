@@ -18,6 +18,16 @@ If you aren't actively validating, you likely already have corrupt files that ar
 
 Drive failures are obvious. Silent sector failures, copy errors, and transmission errors are not. That's why validate exists: deterministic, byte-level validation across a wide range of file formats (100+, see [FORMAT_VERIFICATIONS.md](FORMAT_VERIFICATIONS.md)).
 
+### Why some formats resist corruption detection
+
+Not all formats are equally detectable. Some formats include checksums (PNG, FLAC, ZIP) that make corruption trivially provable — a single flipped bit anywhere in the file will be caught. Others have no integrity mechanism at all (WAV, TIFF, raw images) and can only be validated structurally.
+
+The most insidious case is **entropy-coded formats** like HEIC, JPEG, and H.264 video. These formats use arithmetic or Huffman coding where *every possible bit pattern decodes to a valid output*. A corrupted HEIC file doesn't crash the decoder — it silently produces a slightly wrong image. There are no invalid bitstream states for the decoder to catch, because the encoding is designed to use the entire code space efficiently. This is the fundamental tradeoff of high-efficiency compression: the same property that makes it compress well (no wasted bit patterns) also makes it corruption-opaque.
+
+HEIC is arguably the worst case here because it is the **default photo format on every iPhone**. Billions of photos worldwide are stored in a format where a single bit flip in the CABAC-encoded data is mathematically undetectable without the original file to compare against. Even a full decode — parsing every arithmetic-coded symbol — cannot distinguish corruption from valid data, because corruption simply produces a different valid decode.
+
+`validate` reports these realities honestly: formats are classified as "fully validated" only when every byte is covered by a checksum, decompression, or decode that would fail on corruption. Formats where corruption can hide in opaque payload data are reported as "structural" validation depth, regardless of how much parsing we perform. See [FORMAT_VERIFICATIONS.md](FORMAT_VERIFICATIONS.md#corruption-detection-rates-snipershotgun-experiments) for measured detection rates per format.
+
 ## Components
 - Zig library (core validation)
 - C FFI (stable-enough for integration, but not yet 1.0)
