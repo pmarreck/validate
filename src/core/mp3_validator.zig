@@ -113,6 +113,152 @@ fn getSideInfoSize(is_v1: bool, is_stereo: bool) usize {
     }
 }
 
+/// Get Layer I bit allocation size in bits.
+/// Layer I: 4 bits per subband, 32 subbands.
+/// Joint stereo with bound B: B subbands × 2 channels + (32-B) subbands × 1 = (B + 32) × 4 bits.
+/// Normal stereo/dual: 32 × 2 × 4 = 256 bits. Mono: 32 × 4 = 128 bits.
+fn getLayer1AllocBits(channel_mode: u2, mode_extension: u2) usize {
+    const nch: usize = if (channel_mode == 3) 1 else 2; // 3 = mono
+    if (channel_mode == 1) { // joint stereo
+        // bound = (mode_extension + 1) * 4  (4, 8, 12, 16)
+        // But for Layer I, bound can also be 32 (no joint stereo subbands)
+        const bound: usize = (@as(usize, mode_extension) + 1) * 4;
+        return (bound * 2 + (32 - bound)) * 4;
+    }
+    return 32 * nch * 4;
+}
+
+/// Layer II bit allocation table selection per ISO 11172-3 Table 3-B.2.
+/// Returns: number of subbands (sblimit) and bits-per-allocation (nbal) array.
+/// The allocation table depends on bitrate_per_channel and sample_rate.
+const Layer2AllocTable = struct {
+    sblimit: usize,
+    /// Number of bits for each subband's allocation entry.
+    /// Max 30 subbands for Layer II.
+    nbal: [30]u4,
+};
+
+/// Select Layer II allocation table based on bitrate per channel (kbps) and sample rate (Hz).
+/// Per ISO 11172-3 Table 3-B.2a/b/c/d, the table is selected based on:
+/// - bitrate_per_channel and sample_rate for MPEG-1
+/// - Always table B.2d for MPEG-2/2.5 (low sample rates)
+fn getLayer2AllocTable(bitrate_per_channel: u32, sample_rate: u32, is_v1: bool) Layer2AllocTable {
+    if (!is_v1) {
+        // MPEG-2/2.5: 30 subbands, all 4-bit allocation
+        return .{
+            .sblimit = 30,
+            .nbal = .{ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 },
+        };
+    }
+
+    // MPEG-1 table selection per ISO 11172-3 Table 3-B.2
+    if (sample_rate == 48000) {
+        if (bitrate_per_channel >= 96) {
+            // Table B.2a: 27 subbands
+            return .{
+                .sblimit = 27,
+                .nbal = .{ 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0 },
+            };
+        } else {
+            // Table B.2b: 30 subbands (all 4-bit)
+            return .{
+                .sblimit = 30,
+                .nbal = .{ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 },
+            };
+        }
+    } else if (sample_rate == 44100) {
+        if (bitrate_per_channel >= 96) {
+            // Table B.2a: 27 subbands
+            return .{
+                .sblimit = 27,
+                .nbal = .{ 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0 },
+            };
+        } else if (bitrate_per_channel >= 56) {
+            // Table B.2b: 30 subbands (all 4-bit)
+            return .{
+                .sblimit = 30,
+                .nbal = .{ 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4 },
+            };
+        } else {
+            // Table B.2c: 8 subbands (2-bit allocation)
+            return .{
+                .sblimit = 8,
+                .nbal = .{ 4, 4, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            };
+        }
+    } else {
+        // 32000 Hz
+        if (bitrate_per_channel >= 56) {
+            // Table B.2a: 27 subbands
+            return .{
+                .sblimit = 27,
+                .nbal = .{ 4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 0, 0, 0 },
+            };
+        } else {
+            // Table B.2d: 12 subbands
+            return .{
+                .sblimit = 12,
+                .nbal = .{ 4, 4, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+            };
+        }
+    }
+}
+
+/// Get Layer II bit allocation size in bits.
+/// Joint stereo: subbands below bound have separate allocations per channel,
+/// subbands at/above bound share one allocation.
+fn getLayer2AllocBits(table: Layer2AllocTable, channel_mode: u2, mode_extension: u2) usize {
+    const nch: usize = if (channel_mode == 3) 1 else 2; // 3 = mono
+    var total_bits: usize = 0;
+
+    if (channel_mode == 1) { // joint stereo
+        const bound: usize = (@as(usize, mode_extension) + 1) * 4;
+        for (0..table.sblimit) |sb| {
+            const bits = @as(usize, table.nbal[sb]);
+            if (bits == 0) continue;
+            if (sb < bound) {
+                total_bits += bits * 2; // separate per channel
+            } else {
+                total_bits += bits; // shared
+            }
+        }
+    } else {
+        for (0..table.sblimit) |sb| {
+            const bits = @as(usize, table.nbal[sb]);
+            total_bits += bits * nch;
+        }
+    }
+    return total_bits;
+}
+
+/// Compute CRC-16 over header bytes 2-3 and the bit allocation data
+/// for Layer I or Layer II frames. The CRC uses polynomial 0x8005,
+/// init 0xFFFF, MSB-first — same as Layer III.
+fn computeLayerCrc(header_23: [2]u8, alloc_data: []const u8, alloc_bits: usize) u16 {
+    // CRC over header bytes 2-3
+    var crc: u16 = 0xFFFF;
+    crc = crc16_table[((crc >> 8) ^ header_23[0]) & 0xFF] ^ (crc << 8);
+    crc = crc16_table[((crc >> 8) ^ header_23[1]) & 0xFF] ^ (crc << 8);
+
+    // CRC over allocation bits (bit-by-bit for partial byte at end)
+    const full_bytes = alloc_bits / 8;
+    const remaining_bits = alloc_bits % 8;
+
+    for (alloc_data[0..full_bytes]) |byte| {
+        crc = crc16_table[((crc >> 8) ^ byte) & 0xFF] ^ (crc << 8);
+    }
+
+    // Handle remaining bits (MSB-first, pad with zeros)
+    if (remaining_bits > 0 and full_bytes < alloc_data.len) {
+        // Mask out unused low bits and process as full byte
+        const mask: u8 = @as(u8, 0xFF) << @intCast(8 - remaining_bits);
+        const partial = alloc_data[full_bytes] & mask;
+        crc = crc16_table[((crc >> 8) ^ partial) & 0xFF] ^ (crc << 8);
+    }
+
+    return crc;
+}
+
 /// Validate MP3 file with CRC verification.
 /// Returns result with frame and CRC statistics.
 pub fn validateMp3Crc(file: std.fs.File) Mp3ValidationResult {
@@ -235,15 +381,13 @@ pub fn validateMp3Crc(file: std.fs.File) Mp3ValidationResult {
             if (crc_read < 2) break;
             const stored_crc = std.mem.readInt(u16, &crc_bytes, .big);
 
-            // Only Layer III has CRC verification implemented
             if (layer == 3) {
-                // Read side info
+                // Layer III: CRC covers header bytes 2-3 + side information
                 const side_info_size = getSideInfoSize(is_v1, is_stereo);
                 var side_info: [32]u8 = undefined;
                 const side_read = file.read(side_info[0..side_info_size]) catch break;
                 if (side_read < side_info_size) break;
 
-                // Calculate CRC over header bytes 2-3 and side info
                 var crc_data: [34]u8 = undefined;
                 crc_data[0] = frame_header[2];
                 crc_data[1] = frame_header[3];
@@ -256,12 +400,44 @@ pub fn validateMp3Crc(file: std.fs.File) Mp3ValidationResult {
                 }
                 crc_verified += 1;
 
-                // Seek to next frame
                 const remaining = frame_size - 4 - 2 - side_info_size;
                 file.seekBy(@intCast(remaining)) catch break;
             } else {
-                // Layer I/II - CRC covers different data, skip verification
-                file.seekBy(@intCast(frame_size - 4 - 2)) catch break;
+                // Layer I/II: CRC covers header bytes 2-3 + bit allocation table
+                const chan_mode: u2 = @intCast((frame_header[3] >> 6) & 0x03);
+                const mode_ext: u2 = @intCast((frame_header[3] >> 4) & 0x03);
+
+                const alloc_bits = if (layer == 1) blk: {
+                    break :blk getLayer1AllocBits(chan_mode, mode_ext);
+                } else blk: {
+                    const bitrate_per_ch: u32 = if (is_stereo) @as(u32, bitrate) / 2 else @as(u32, bitrate);
+                    const alloc_table = getLayer2AllocTable(bitrate_per_ch, sample_rate, is_v1);
+                    break :blk getLayer2AllocBits(alloc_table, chan_mode, mode_ext);
+                };
+
+                const alloc_bytes = (alloc_bits + 7) / 8;
+                if (alloc_bytes > 128) {
+                    // Sanity check — allocation table can't exceed this
+                    file.seekBy(@intCast(frame_size - 4 - 2)) catch break;
+                } else {
+                    var alloc_buf: [128]u8 = undefined;
+                    const alloc_read = file.read(alloc_buf[0..alloc_bytes]) catch break;
+                    if (alloc_read < alloc_bytes) break;
+
+                    const computed_crc = computeLayerCrc(
+                        .{ frame_header[2], frame_header[3] },
+                        alloc_buf[0..alloc_bytes],
+                        alloc_bits,
+                    );
+
+                    if (computed_crc != stored_crc) {
+                        return Mp3ValidationResult.invalid("CRC mismatch", frames_checked, frames_with_crc);
+                    }
+                    crc_verified += 1;
+
+                    const remaining = frame_size - 4 - 2 - alloc_bytes;
+                    file.seekBy(@intCast(remaining)) catch break;
+                }
             }
         } else {
             // No CRC, skip to next frame
@@ -408,6 +584,192 @@ test "MP3 validation accepts valid frame with correct CRC" {
     try std.testing.expect(result.frames_checked >= 1);
     try std.testing.expect(result.frames_with_crc >= 1);
     try std.testing.expect(result.crc_verified >= 1);
+}
+
+test "Layer I allocation bits calculation" {
+    // Mono: 32 subbands × 4 bits = 128
+    try std.testing.expectEqual(@as(usize, 128), getLayer1AllocBits(3, 0));
+    // Stereo: 32 × 2 × 4 = 256
+    try std.testing.expectEqual(@as(usize, 256), getLayer1AllocBits(0, 0));
+    // Joint stereo, bound=4 (mode_ext=0): (4*2 + 28) * 4 = 144
+    try std.testing.expectEqual(@as(usize, 144), getLayer1AllocBits(1, 0));
+    // Joint stereo, bound=16 (mode_ext=3): (16*2 + 16) * 4 = 192
+    try std.testing.expectEqual(@as(usize, 192), getLayer1AllocBits(1, 3));
+}
+
+test "Layer II allocation table selection" {
+    // MPEG-1, 48kHz, high bitrate → Table B.2a (27 subbands)
+    const t1 = getLayer2AllocTable(96, 48000, true);
+    try std.testing.expectEqual(@as(usize, 27), t1.sblimit);
+    try std.testing.expectEqual(@as(u4, 4), t1.nbal[0]); // first subband
+    try std.testing.expectEqual(@as(u4, 2), t1.nbal[12]); // mid subband
+
+    // MPEG-1, 44100Hz, low bitrate → Table B.2c (8 subbands)
+    const t2 = getLayer2AllocTable(32, 44100, true);
+    try std.testing.expectEqual(@as(usize, 8), t2.sblimit);
+
+    // MPEG-2 → always 30 subbands, all 4-bit
+    const t3 = getLayer2AllocTable(64, 24000, false);
+    try std.testing.expectEqual(@as(usize, 30), t3.sblimit);
+    try std.testing.expectEqual(@as(u4, 4), t3.nbal[29]);
+}
+
+test "Layer II allocation bits calculation" {
+    const table = getLayer2AllocTable(96, 48000, true); // Table B.2a, 27 subbands
+
+    // Mono: sum of nbal[0..27]
+    const mono_bits = getLayer2AllocBits(table, 3, 0);
+    // Table B.2a: 3×4 + 8×3 + 15×2 = 12 + 24 + 30? Let me compute...
+    // nbal = {4,4,4, 3,3,3,3,3,3,3,3,3, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2}
+    // = 3*4 + 9*3 + 15*2 = 12 + 27 + 30 = 69
+    try std.testing.expectEqual(@as(usize, 69), mono_bits);
+
+    // Stereo (non-joint): 69 * 2 = 138
+    try std.testing.expectEqual(@as(usize, 138), getLayer2AllocBits(table, 0, 0));
+}
+
+test "MP3 Layer I CRC verification with valid frame" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // MPEG-1 Layer I, 384kbps, 44100Hz, mono, CRC protected
+    // Byte 1: 111_11_11_0 = 0xFE (sync, MPEG-1, Layer I, CRC present)
+    // Byte 2: 1100_00_0_0 = 0xC0 (bitrate_idx=12→384k, sr_idx=0→44100, pad=0, priv=0)
+    // Byte 3: 11_00_0_0_00 = 0xC0 (channel=3→mono, mode_ext=0, copy=0, orig=0, emph=0)
+    // Frame size = (12 * 384000 / 44100 + 0) * 4 = 104 * 4 = 416
+    var frame: [416]u8 = undefined;
+    frame[0] = 0xFF;
+    frame[1] = 0xFE; // MPEG-1, Layer I, CRC protected
+    frame[2] = 0xC0; // 384kbps, 44100Hz, no padding
+    frame[3] = 0xC0; // mono
+
+    // CRC placeholder at bytes 4-5
+    frame[4] = 0;
+    frame[5] = 0;
+
+    // Bit allocation: mono = 32 subbands × 4 bits = 128 bits = 16 bytes
+    @memset(frame[6..22], 0x55);
+    @memset(frame[22..], 0);
+
+    // Compute CRC over header[2..4] + allocation[6..22]
+    const computed = computeLayerCrc(.{ frame[2], frame[3] }, frame[6..22], 128);
+    frame[4] = @truncate(computed >> 8);
+    frame[5] = @truncate(computed);
+
+    const file = tmp_dir.dir.createFile("layer1_crc.mp3", .{ .read = true }) catch unreachable;
+    _ = file.write(&frame) catch unreachable;
+    file.close();
+
+    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "layer1_crc.mp3") catch unreachable;
+    defer std.testing.allocator.free(path);
+
+    const result = validateMp3CrcPath(path);
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.frames_with_crc >= 1);
+    try std.testing.expect(result.crc_verified >= 1);
+}
+
+test "MP3 Layer I CRC detects corruption" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var frame: [416]u8 = undefined;
+    frame[0] = 0xFF;
+    frame[1] = 0xFE; // MPEG-1, Layer I, CRC
+    frame[2] = 0xC0; // 384kbps, 44100Hz
+    frame[3] = 0xC0; // mono
+
+    @memset(frame[6..22], 0x55);
+    @memset(frame[22..], 0);
+
+    const computed = computeLayerCrc(.{ frame[2], frame[3] }, frame[6..22], 128);
+    frame[4] = @truncate(computed >> 8);
+    frame[5] = @truncate(computed);
+
+    // Corrupt the allocation data AFTER CRC was computed
+    frame[10] = 0xAA;
+
+    const file = tmp_dir.dir.createFile("layer1_corrupt.mp3", .{ .read = true }) catch unreachable;
+    _ = file.write(&frame) catch unreachable;
+    file.close();
+
+    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "layer1_corrupt.mp3") catch unreachable;
+    defer std.testing.allocator.free(path);
+
+    const result = validateMp3CrcPath(path);
+    try std.testing.expect(!result.valid);
+}
+
+test "MP3 Layer II CRC verification with valid frame" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // MPEG-1 Layer II, 128kbps, 44100Hz, stereo, CRC protected
+    // Byte 1: 111_11_10_0 = 0xFC (sync, MPEG-1, Layer II, CRC present)
+    // Byte 2: 1001_00_0_0 = 0x90 (bitrate_idx=9→160k, sr_idx=0→44100, pad=0, priv=0)
+    // Byte 3: 00_00_0_0_00 = 0x00 (stereo, mode_ext=0, copy=0, orig=0, emph=0)
+    // bitrate_per_channel = 160/2 = 80 → Table B.2b (30 subbands, all 4-bit)
+    // alloc_bits = 30 * 2 * 4 = 240 bits = 30 bytes
+    // Frame size = 144 * 160000 / 44100 = 522 bytes
+    var frame: [522]u8 = undefined;
+    frame[0] = 0xFF;
+    frame[1] = 0xFC; // MPEG-1, Layer II, CRC protected
+    frame[2] = 0x90; // 160kbps, 44100Hz
+    frame[3] = 0x00; // stereo
+
+    frame[4] = 0;
+    frame[5] = 0;
+
+    // Bit allocation: 30 subbands × 2 channels × 4 bits = 240 bits = 30 bytes
+    @memset(frame[6..36], 0x33);
+    @memset(frame[36..], 0);
+
+    const computed = computeLayerCrc(.{ frame[2], frame[3] }, frame[6..36], 240);
+    frame[4] = @truncate(computed >> 8);
+    frame[5] = @truncate(computed);
+
+    const file = tmp_dir.dir.createFile("layer2_crc.mp3", .{ .read = true }) catch unreachable;
+    _ = file.write(&frame) catch unreachable;
+    file.close();
+
+    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "layer2_crc.mp3") catch unreachable;
+    defer std.testing.allocator.free(path);
+
+    const result = validateMp3CrcPath(path);
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.frames_with_crc >= 1);
+    try std.testing.expect(result.crc_verified >= 1);
+}
+
+test "MP3 Layer II CRC detects corruption" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var frame: [522]u8 = undefined;
+    frame[0] = 0xFF;
+    frame[1] = 0xFC; // MPEG-1, Layer II, CRC
+    frame[2] = 0x90; // 160kbps, 44100Hz
+    frame[3] = 0x00; // stereo
+
+    @memset(frame[6..36], 0x33);
+    @memset(frame[36..], 0);
+
+    const computed = computeLayerCrc(.{ frame[2], frame[3] }, frame[6..36], 240);
+    frame[4] = @truncate(computed >> 8);
+    frame[5] = @truncate(computed);
+
+    // Corrupt allocation data
+    frame[20] = 0xFF;
+
+    const file = tmp_dir.dir.createFile("layer2_corrupt.mp3", .{ .read = true }) catch unreachable;
+    _ = file.write(&frame) catch unreachable;
+    file.close();
+
+    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "layer2_corrupt.mp3") catch unreachable;
+    defer std.testing.allocator.free(path);
+
+    const result = validateMp3CrcPath(path);
+    try std.testing.expect(!result.valid);
 }
 
 test "MP3 validation detects corrupted CRC" {

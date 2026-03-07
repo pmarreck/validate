@@ -26,8 +26,8 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 ### Unverified Checksum Gaps (audit 2026-03-07)
 - [N/A] WavPack per-block CRC-32 — CRC covers decoded audio samples, requires full audio decode (infeasible without decoder)
 - [N/A] APE (Monkey's Audio) frame MD5s — requires full audio decode (infeasible without decoder)
-- [ ] AAC LATM StreamMuxConfig CRC-8 — when crcCheckPresent=1 (needs bit-range tracking in parser; uncommon in practice)
-- [ ] MP3 Layer I/II CRC-16 — low priority, legacy format
+- [x] AAC LATM StreamMuxConfig CRC-8 — poly 0x1D, init 0xFF, bit-level over StreamMuxConfig range (2026-03-07 EST)
+- [x] MP3 Layer I/II CRC-16 — same poly as Layer III, covers header[2..4] + bit allocation table (2026-03-07 EST)
 
 ### Wave 1: Archival Format Validators (design: docs/plans/2026-02-28-wave1-archival-formats-design.md)
 - [ ] BagIt (Library of Congress digital preservation) — SHA-256/512 manifest verification, directory bundle
@@ -63,7 +63,7 @@ These formats return WARN — recognized but NO real corruption detection:
 
 ### Ground-Truth Sample Coverage
 - [ ] `song` (Studio One) — needs Peter to provide sample
-- [ ] Investigate 3 remaining abort traps in corruption tests (likely zigimg LZW/other decoder bounds issues)
+- [x] 3 abort traps fixed in zigimg fork (52c4b9a: LZW, PackBits, strip reader crash fixes) (2026-03-07 EST)
 
 ### Future Investigation: Kaitai Struct as Reference Library
 - [ ] Use .ksy specs (https://github.com/kaitai-io/kaitai_struct_formats) as reference when writing new validators

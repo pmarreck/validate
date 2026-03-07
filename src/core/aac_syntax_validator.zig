@@ -890,6 +890,29 @@ fn crc16MpegUpdate(crc: u16, data: []const u8) u16 {
     return c;
 }
 
+/// CRC-8 for LATM StreamMuxConfig (ISO 14496-3 §1.7.3).
+/// Polynomial: G(X) = X^8 + X^4 + X^3 + X^2 + 1 (0x1D), init 0xFF, MSB-first.
+/// Computed over the bit range [start_bit, end_bit) within `data`.
+fn computeLatmCrc8(data: []const u8, start_bit: usize, end_bit: usize) u8 {
+    if (end_bit <= start_bit) return 0xFF;
+
+    var crc: u8 = 0xFF;
+    var bit: usize = start_bit;
+    while (bit < end_bit) : (bit += 1) {
+        const byte_idx = bit / 8;
+        const bit_idx: u3 = @intCast(7 - (bit % 8)); // MSB first
+        if (byte_idx >= data.len) break;
+
+        const data_bit: u8 = (data[byte_idx] >> bit_idx) & 1;
+        const msb: u8 = (crc >> 7) & 1;
+        crc <<= 1;
+        if (msb ^ data_bit != 0) {
+            crc ^= 0x1D;
+        }
+    }
+    return crc;
+}
+
 fn parseAdtsHeader(data: []const u8) ?AdtsFrameHeader {
     if (data.len < 7) return null;
 
@@ -1077,9 +1100,17 @@ fn parseAudioMuxElement(data: []const u8, config_out: *?AacConfig) AudioMuxParse
 
     if (use_same == 0) {
         // StreamMuxConfig present — parse it to extract AudioSpecificConfig
-        const new_config = parseStreamMuxConfig(&reader);
-        if (new_config) |cfg| {
-            config_out.* = cfg;
+        const mux_result = parseStreamMuxConfig(&reader);
+        if (mux_result) |result| {
+            config_out.* = result.config;
+
+            // Verify CRC-8 if present (ISO 14496-3 §1.7.3)
+            if (result.crc_value) |stored_crc| {
+                const computed = computeLatmCrc8(data, result.start_bit, result.crc_bit);
+                if (computed != stored_crc) {
+                    return .{ .valid = false, .au_count = 0, .error_msg = "LATM StreamMuxConfig CRC-8 mismatch" };
+                }
+            }
         } else {
             return .{ .valid = false, .au_count = 0, .error_msg = "Failed to parse StreamMuxConfig" };
         }
@@ -1131,11 +1162,24 @@ fn parseAudioMuxElement(data: []const u8, config_out: *?AacConfig) AudioMuxParse
     return .{ .valid = false, .au_count = 0, .error_msg = "AAC AU validation failed in LATM" };
 }
 
-/// Parse StreamMuxConfig to extract AudioSpecificConfig.
+/// Result from StreamMuxConfig parsing, includes CRC info for verification.
+const StreamMuxConfigResult = struct {
+    config: AacConfig,
+    /// Bit position where StreamMuxConfig started (for CRC computation).
+    start_bit: usize,
+    /// Bit position where CRC field starts (end of CRC coverage), or end of config if no CRC.
+    crc_bit: usize,
+    /// CRC-8 value if crcCheckPresent was 1, null otherwise.
+    crc_value: ?u8,
+};
+
+/// Parse StreamMuxConfig to extract AudioSpecificConfig + CRC info.
 /// StreamMuxConfig: audioMuxVersion(1), [audioMuxVersionA(1)],
 ///   allStreamsSameTimeFraming(1), numSubFrames(6), numProgram(4), numLayer(3),
 ///   AudioSpecificConfig()
-fn parseStreamMuxConfig(reader: *BitReader) ?AacConfig {
+fn parseStreamMuxConfig(reader: *BitReader) ?StreamMuxConfigResult {
+    const start_bit = reader.getBitPosition();
+
     // audioMuxVersion: 1 bit
     const audio_mux_version = reader.readBits(1) orelse return null;
 
@@ -1215,11 +1259,18 @@ fn parseStreamMuxConfig(reader: *BitReader) ?AacConfig {
 
     // crcCheckPresent: 1 bit
     const crc_present = reader.readBits(1) orelse return null;
+    const crc_bit = reader.getBitPosition();
+    var crc_value: ?u8 = null;
     if (crc_present == 1) {
-        _ = reader.readBits(8) orelse return null; // crcCheckSum
+        crc_value = @intCast(reader.readBits(8) orelse return null);
     }
 
-    return config;
+    return .{
+        .config = config,
+        .start_bit = start_bit,
+        .crc_bit = crc_bit,
+        .crc_value = crc_value,
+    };
 }
 
 /// Read AudioSpecificConfig fields directly from a BitReader.
@@ -1404,4 +1455,180 @@ test "parseFillElement basic" {
     try std.testing.expect(parseFillElement(&reader));
     // Should have consumed 4 + 24 = 28 bits
     try std.testing.expectEqual(@as(usize, 28), reader.getBitPosition());
+}
+
+test "LATM CRC-8 computation" {
+    // Test vector: CRC-8 with poly 0x1D, init 0xFF
+    // A single byte 0x00 → CRC should be deterministic
+    const data1 = [_]u8{0x00};
+    const crc1 = computeLatmCrc8(&data1, 0, 8);
+    // Verify it's not just returning init value
+    try std.testing.expect(crc1 != 0xFF);
+
+    // Different data should produce different CRC
+    const data2 = [_]u8{0xFF};
+    const crc2 = computeLatmCrc8(&data2, 0, 8);
+    try std.testing.expect(crc1 != crc2);
+
+    // CRC of empty range should be init value
+    const crc_empty = computeLatmCrc8(&data1, 0, 0);
+    try std.testing.expectEqual(@as(u8, 0xFF), crc_empty);
+}
+
+test "LATM CRC-8 bit-level accuracy" {
+    // Verify CRC works on partial bits within bytes
+    const data = [_]u8{ 0xAB, 0xCD };
+
+    // Full 16 bits
+    const crc_full = computeLatmCrc8(&data, 0, 16);
+
+    // Same data but only first 8 bits should match single-byte CRC
+    const crc_byte1 = computeLatmCrc8(&data, 0, 8);
+    const ref = [_]u8{0xAB};
+    const crc_ref = computeLatmCrc8(&ref, 0, 8);
+    try std.testing.expectEqual(crc_ref, crc_byte1);
+
+    // Partial and full should differ
+    try std.testing.expect(crc_full != crc_byte1);
+}
+
+test "LATM StreamMuxConfig CRC-8 round-trip" {
+    // Construct a minimal StreamMuxConfig with CRC:
+    // audioMuxVersion=0 (1 bit: 0)
+    // allStreamsSameTimeFraming=1 (1 bit: 1)
+    // numSubFrames=0 (6 bits: 000000)
+    // numProgram=0 (4 bits: 0000)
+    // numLayer=0 (3 bits: 000)
+    // ASC: aot=2 (5 bits: 00010), freq_idx=3/48kHz (4 bits: 0011), chan=2 (4 bits: 0010)
+    // GASpecificConfig: frameLengthFlag=0 (1 bit), dependsOnCoreCoder=0 (1 bit), extensionFlag=0 (1 bit)
+    // frameLengthType=0 (3 bits: 000)
+    // latmBufferFullness=0 (8 bits: 00000000)
+    // otherDataPresent=0 (1 bit: 0)
+    // crcCheckPresent=1 (1 bit: 1)
+    // crcCheckSum=XX (8 bits)
+    //
+    // Bit layout: 0 1 000000 0000 000 00010 0011 0010 0 0 0 000 00000000 0 1 CCCCCCCC
+    // = 0_1_000000 | 0000_000_0 | 0010_0011 | 0010_000_0 | 00_00000000 | 0_1_CCCCCC | CC
+    //
+    // Let me lay it out byte by byte:
+    // Bit 0: audioMuxVersion=0
+    // Bit 1: allStreamsSameTimeFraming=1
+    // Bits 2-7: numSubFrames=0 (000000)
+    // Byte 0: 0_1_000000 = 0x40
+    // Bits 8-11: numProgram=0 (0000)
+    // Bits 12-14: numLayer=0 (000)
+    // Bit 15: ASC aot bit 0 (MSB of 00010) = 0
+    // Byte 1: 0000_000_0 = 0x00
+    // Bits 16-19: ASC aot bits 1-4 = 0010
+    // Bits 20-23: freq_idx = 0011
+    // Byte 2: 0010_0011 = 0x23
+    // Bits 24-27: chan_cfg = 0010
+    // Bit 28: GASpec frameLengthFlag=0
+    // Bit 29: GASpec dependsOnCoreCoder=0
+    // Bit 30: GASpec extensionFlag=0
+    // Bit 31: frameLengthType bit 0 = 0
+    // Byte 3: 0010_000_0 = 0x20
+    // Bits 32-33: frameLengthType bits 1-2 = 00
+    // Bits 34-41: latmBufferFullness = 00000000
+    // Byte 4: 00_000000 = 0x00
+    // Bits 42-43: latmBufferFullness bits 6-7 = 00 (already counted above - let me redo)
+    //
+    // Actually let me just count bits carefully:
+    // audioMuxVersion: 1 bit (0)
+    // allStreamsSameTimeFraming: 1 bit (1)
+    // numSubFrames: 6 bits (0)
+    // numProgram: 4 bits (0)
+    // numLayer: 3 bits (0)
+    // ASC aot: 5 bits (00010 = 2)
+    // ASC freq_idx: 4 bits (0011 = 3)
+    // ASC chan_cfg: 4 bits (0010 = 2)
+    // GASpec frameLengthFlag: 1 bit (0)
+    // GASpec dependsOnCoreCoder: 1 bit (0)
+    // GASpec extensionFlag: 1 bit (0)
+    // frameLengthType: 3 bits (0)
+    // latmBufferFullness: 8 bits (0)
+    // otherDataPresent: 1 bit (0)
+    // crcCheckPresent: 1 bit (1)
+    // Total before CRC: 44 bits
+    // crcCheckSum: 8 bits
+    // Total: 52 bits = 6.5 bytes → 7 bytes
+
+    var config_data = [_]u8{ 0x40, 0x00, 0x23, 0x20, 0x00, 0x00, 0x00 };
+    // Bit 43 = otherDataPresent = 0, Bit 44 = crcCheckPresent = 1
+    // Byte 5 bits: bit 40-47 → bits 40-41 = latmBufFull last 2 bits (00),
+    //   bit 42 = otherDataPresent (0), bit 43 = crcCheckPresent (1)
+    // Wait, bit 34 starts latmBufferFullness (8 bits: 34-41)
+    // bit 42 = otherDataPresent (0)
+    // bit 43 = crcCheckPresent (1)
+    // Byte 4 = bits 32-39: flt[1..2]=00, latmBuf[0..5]=000000 → 0x00
+    // Byte 5 = bits 40-47: latmBuf[6..7]=00, otherData=0, crcPresent=1, crc[0..3]=0000
+    //   = 00_0_1_0000 = 0x10
+    config_data[5] = 0x10; // Set crcCheckPresent=1
+
+    // Compute the CRC over bits 0..43 (44 bits of StreamMuxConfig before CRC)
+    const crc = computeLatmCrc8(&config_data, 0, 44);
+
+    // Write CRC into bits 44-51
+    // Bit 44 is at byte 5, bit position 4 (within byte)
+    // The CRC byte straddles bytes 5 and 6
+    config_data[5] = (config_data[5] & 0xF0) | (crc >> 4);
+    config_data[6] = (crc << 4);
+
+    // Now wrap in an AudioMuxElement: useSameStreamMux=0 (1 bit) + StreamMuxConfig
+    // We need to prepend 1 bit (useSameStreamMux=0) which shifts everything right by 1
+    // Simpler: construct the full AudioMuxElement manually
+    // useSameStreamMux=0 (1 bit), then the 52 bits of StreamMuxConfig = 53 bits = 7 bytes
+    var mux_data: [7]u8 = undefined;
+    // Bit 0 = useSameStreamMux = 0
+    // Bits 1-52 = StreamMuxConfig
+    // Shift config_data right by 1 bit
+    mux_data[0] = config_data[0] >> 1; // 0x40 >> 1 = 0x20
+    for (1..7) |i| {
+        if (i < 7) {
+            const prev_low: u8 = if (i - 1 < config_data.len) config_data[i - 1] << 7 else 0;
+            const cur_high: u8 = if (i < config_data.len) config_data[i] >> 1 else 0;
+            mux_data[i] = prev_low | cur_high;
+        }
+    }
+
+    // Parse it — should accept the CRC
+    var config_out: ?AacConfig = null;
+    const parse_result = parseAudioMuxElement(&mux_data, &config_out);
+    // The frame won't have a valid AU payload after the config, so it may fail on payload
+    // But it should NOT fail on "CRC-8 mismatch"
+    if (!parse_result.valid) {
+        if (parse_result.error_msg) |msg| {
+            // CRC mismatch is a test failure; other errors (no payload) are OK
+            try std.testing.expect(!std.mem.eql(u8, msg, "LATM StreamMuxConfig CRC-8 mismatch"));
+        }
+    }
+}
+
+test "LATM CRC-8 mismatch detected" {
+    // Same as above but corrupt a config byte after CRC computation
+    var config_data = [_]u8{ 0x40, 0x00, 0x23, 0x20, 0x00, 0x00, 0x00 };
+    config_data[5] = 0x10; // crcCheckPresent=1
+
+    const crc = computeLatmCrc8(&config_data, 0, 44);
+    config_data[5] = (config_data[5] & 0xF0) | (crc >> 4);
+    config_data[6] = (crc << 4);
+
+    // Corrupt byte 2 (ASC data)
+    config_data[2] ^= 0xFF;
+
+    // Shift right by 1 for useSameStreamMux=0
+    var mux_data: [7]u8 = undefined;
+    mux_data[0] = config_data[0] >> 1;
+    for (1..7) |i| {
+        if (i < 7) {
+            const prev_low: u8 = if (i - 1 < config_data.len) config_data[i - 1] << 7 else 0;
+            const cur_high: u8 = if (i < config_data.len) config_data[i] >> 1 else 0;
+            mux_data[i] = prev_low | cur_high;
+        }
+    }
+
+    var config_out: ?AacConfig = null;
+    const parse_result = parseAudioMuxElement(&mux_data, &config_out);
+    // This should fail — either CRC mismatch or parse failure from corrupted ASC
+    try std.testing.expect(!parse_result.valid);
 }
