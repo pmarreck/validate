@@ -581,7 +581,9 @@ Measured via `scripts/corruption-experiment` with 100 trials each, PCG32 seed=42
 ### Moderate Detection
 | Format | Sniper | Shotgun | Method |
 |--------|--------|---------|--------|
+| DICOM (JPEG) | 31% | N/A | VR content validation + JPEG pixel data decode |
 | DOC | 2% | 52% | FIB + 31 fc/lcb pair bounds + CLX piece table |
+| DICOM (raw) | 7-10% | 20% | VR content validation (DA/TM/CS/DS/IS/UI/PN/SH/LO/AE) |
 | HDF5 | 5% | 37% | OHDR/OCHK continuation + Jenkins checksums |
 | ASF | 3% | 22% | Object chain + Data Object GUID/reserved |
 | PDB | 20% | 100% | MASTER record cross-validation (10 types) |
@@ -591,6 +593,7 @@ Measured via `scripts/corruption-experiment` with 100 trials each, PCG32 seed=42
 ### Low/No Detection (fundamentally limited)
 | Format | Sniper | Shotgun | Reason |
 |--------|--------|---------|--------|
+| MOV/MP4 | 0-1% | 6% | Most bytes are entropy-coded video; sample table validation helps structure |
 | HEIC | 0% | 0% | CABAC arithmetic coding absorbs bit flips |
 | AVI | 0% | 4% | Limited structural checks |
 | WAV/AIFF | - | - | No checksums in format |
