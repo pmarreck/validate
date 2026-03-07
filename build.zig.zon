@@ -41,8 +41,8 @@
             .path = "deps/brotli",
         },
         .pcre2 = .{
-            .url = "https://github.com/qaptoR-support/pcre2/archive/refs/tags/zig0.14.tar.gz",
-            .hash = "N-V-__8AAN0G3wA6horCZYad-eyYofHQ4Q9D7m9nSWiCqbXb",
+            .url = "https://github.com/pmarreck/pcre2/archive/refs/tags/zig-0.15.2.tar.gz",
+            .hash = "pcre2-10.47.0-S7QTbjnVMgAEncX1a_JtH4G6BgDWzC1tCMvL-KOMrM8b",
         },
         .libjpeg_turbo = .{
             .url = "https://github.com/chearon/libjpeg-turbo/archive/refs/heads/main.tar.gz",
