@@ -272,16 +272,17 @@ fn validateGridTiles(data: []const u8, container: heif.HeifContainerInfo) HeicVa
 /// Validate H.265 bitstream data from a single HEVC item (direct or tile).
 /// Converts length-prefixed NAL units to Annex B format, prepends decoder
 /// config parameter sets (VPS/SPS/PPS from hvcC), and runs H.265 validation.
+/// Heap-allocated buffer for thread safety (validation runs in parallel).
 fn validateHevcData(image_data: []const u8, decoder_config: ?[]const u8) HeicValidationResult {
-    var annex_b_buf: [1024 * 1024]u8 = undefined; // 1MB stack buffer
+    const allocator = std.heap.page_allocator;
+    const annex_b_buf = allocator.alloc(u8, 1024 * 1024) catch {
+        return HeicValidationResult.structural();
+    };
+    defer allocator.free(annex_b_buf);
     var annex_b_len: usize = 0;
 
     if (decoder_config) |config| {
-        const config_nals = parseHvcCConfig(config);
-        if (config_nals.len > 0 and config_nals.len <= annex_b_buf.len) {
-            @memcpy(annex_b_buf[0..config_nals.len], config_nals);
-            annex_b_len = config_nals.len;
-        }
+        annex_b_len = parseHvcCConfigInto(config, annex_b_buf);
     }
 
     // Convert length-prefixed NAL units to Annex B (start-code-prefixed)
@@ -351,21 +352,17 @@ fn validateHevcData(image_data: []const u8, decoder_config: ?[]const u8) HeicVal
     }
 }
 
-/// Parse hvcC configuration box to extract Annex B parameter set NAL units
-/// (VPS/SPS/PPS). Returns a slice into a static buffer containing start codes
-/// followed by NAL data. The hvcC format encodes NAL arrays after a 22-byte
-/// fixed header; each array has a type byte, count u16, then length-prefixed NALUs.
-fn parseHvcCConfig(config: []const u8) []const u8 {
+/// Parse hvcC configuration box and write Annex B parameter set NAL units
+/// (VPS/SPS/PPS) into the provided output buffer. Returns the number of
+/// bytes written. Thread-safe — no static state.
+fn parseHvcCConfigInto(config: []const u8, out: []u8) usize {
     // hvcC: byte 0 = configurationVersion (must be 1)
     // bytes 1-21: profile/level/compatibility
     // byte 22: numOfArrays (lower 5 bits; upper 3 reserved)
     // Then NAL arrays
-    if (config.len < 23) return &.{};
-    if (config[0] != 1) return &.{}; // Must be version 1
+    if (config.len < 23) return 0;
+    if (config[0] != 1) return 0; // Must be version 1
 
-    const Buf = struct {
-        var data: [8192]u8 = undefined;
-    };
     var out_len: usize = 0;
 
     const num_arrays = config[22] & 0x1F;
@@ -386,21 +383,21 @@ fn parseHvcCConfig(config: []const u8) []const u8 {
             pos += 2;
 
             if (pos + nal_len > config.len) break;
-            if (out_len + 4 + nal_len > Buf.data.len) break;
+            if (out_len + 4 + nal_len > out.len) break;
 
             // Write Annex B start code (0x00000001) + NAL data
-            Buf.data[out_len] = 0;
-            Buf.data[out_len + 1] = 0;
-            Buf.data[out_len + 2] = 0;
-            Buf.data[out_len + 3] = 1;
-            @memcpy(Buf.data[out_len + 4 ..][0..nal_len], config[pos..][0..nal_len]);
+            out[out_len] = 0;
+            out[out_len + 1] = 0;
+            out[out_len + 2] = 0;
+            out[out_len + 3] = 1;
+            @memcpy(out[out_len + 4 ..][0..nal_len], config[pos..][0..nal_len]);
             out_len += 4 + nal_len;
 
             pos += nal_len;
         }
     }
 
-    return Buf.data[0..out_len];
+    return out_len;
 }
 
 /// Extract NAL length size from hvcC configuration.
