@@ -870,6 +870,312 @@ fn parseDicomVR(vr_bytes: *const [2]u8) DicomVR {
     return .UN; // Unknown VR
 }
 
+/// Validate DICOM value content based on VR type.
+/// Returns true if the value is valid for the given VR, false if corruption detected.
+/// Only validates text-based VRs where format rules are strict enough to catch corruption.
+/// Reads up to 256 bytes of value data for validation (sufficient for all fixed-format VRs).
+fn validateDicomVrContent(file: std.fs.File, value_offset: u64, value_length: u32, vr: DicomVR) bool {
+    // Skip validation for binary/sequence/unknown VRs and zero-length values
+    if (value_length == 0) return true;
+    const check_len: usize = @min(@as(usize, value_length), 256);
+
+    switch (vr) {
+        // DA: Date — YYYYMMDD, exactly 8 chars (may have trailing space padding)
+        .DA => {
+            if (value_length != 8 and value_length != 10 and value_length != 18 and
+                value_length != 20 and !(value_length >= 8 and value_length <= 26))
+            {
+                // DA can be single date (8) or date range with '-' (8+1+8=17, padded to 18)
+                // Allow any length >= 8 since multi-valued DAs use '\' separator
+            }
+            var buf: [256]u8 = undefined;
+            file.seekTo(value_offset) catch return true;
+            const n = file.read(buf[0..check_len]) catch return true;
+            if (n < 8) return false;
+            // Validate first date component
+            return validateDicomDate(buf[0..@min(n, 8)]);
+        },
+
+        // TM: Time — HHMMSS.FFFFFF (2-16 chars, may be truncated)
+        .TM => {
+            var buf: [256]u8 = undefined;
+            file.seekTo(value_offset) catch return true;
+            const n = file.read(buf[0..check_len]) catch return true;
+            if (n < 2) return false;
+            return validateDicomTime(buf[0..n]);
+        },
+
+        // AS: Age String — exactly 4 chars: NNNx where x in {D,W,M,Y}
+        .AS => {
+            if (value_length < 4) return false;
+            var buf: [4]u8 = undefined;
+            file.seekTo(value_offset) catch return true;
+            const n = file.read(&buf) catch return true;
+            if (n < 4) return false;
+            if (!std.ascii.isDigit(buf[0]) or !std.ascii.isDigit(buf[1]) or !std.ascii.isDigit(buf[2]))
+                return false;
+            return buf[3] == 'D' or buf[3] == 'W' or buf[3] == 'M' or buf[3] == 'Y';
+        },
+
+        // CS: Code String — uppercase A-Z, 0-9, space, underscore only, max 16 chars per value
+        .CS => {
+            var buf: [256]u8 = undefined;
+            file.seekTo(value_offset) catch return true;
+            const n = file.read(buf[0..check_len]) catch return true;
+            // Trim trailing spaces/nulls
+            var end: usize = n;
+            while (end > 0 and (buf[end - 1] == ' ' or buf[end - 1] == 0)) end -= 1;
+            for (buf[0..end]) |c| {
+                if (!std.ascii.isUpper(c) and !std.ascii.isDigit(c) and c != ' ' and c != '_' and c != '\\')
+                    return false;
+            }
+            return true;
+        },
+
+        // DS: Decimal String — valid float representation, max 16 chars per value
+        .DS => {
+            var buf: [256]u8 = undefined;
+            file.seekTo(value_offset) catch return true;
+            const n = file.read(buf[0..check_len]) catch return true;
+            var end: usize = n;
+            while (end > 0 and (buf[end - 1] == ' ' or buf[end - 1] == 0)) end -= 1;
+            if (end == 0) return true; // empty after trim is ok
+            // Check each value (backslash-separated)
+            return validateDicomDecimalString(buf[0..end]);
+        },
+
+        // IS: Integer String — valid integer, max 12 chars per value
+        .IS => {
+            var buf: [256]u8 = undefined;
+            file.seekTo(value_offset) catch return true;
+            const n = file.read(buf[0..check_len]) catch return true;
+            var end: usize = n;
+            while (end > 0 and (buf[end - 1] == ' ' or buf[end - 1] == 0)) end -= 1;
+            if (end == 0) return true;
+            return validateDicomIntegerString(buf[0..end]);
+        },
+
+        // UI: Unique Identifier — digits and dots only, max 64 chars, null-or-space-padded
+        .UI => {
+            if (value_length > 64) return false;
+            var buf: [64]u8 = undefined;
+            const read_len = @min(check_len, 64);
+            file.seekTo(value_offset) catch return true;
+            const n = file.read(buf[0..read_len]) catch return true;
+            var end: usize = n;
+            while (end > 0 and (buf[end - 1] == 0 or buf[end - 1] == ' ')) end -= 1; // null/space-padded
+            for (buf[0..end]) |c| {
+                if (!std.ascii.isDigit(c) and c != '.') return false;
+            }
+            // Must start with digit and not end with dot
+            if (end > 0 and buf[0] == '.') return false;
+            if (end > 0 and buf[end - 1] == '.') return false;
+            return true;
+        },
+
+        // PN: Person Name — component groups separated by '=', max 5 components per group
+        // Control chars (except ESC for charset) indicate corruption
+        .PN => {
+            var buf: [256]u8 = undefined;
+            file.seekTo(value_offset) catch return true;
+            const n = file.read(buf[0..check_len]) catch return true;
+            var end: usize = n;
+            while (end > 0 and (buf[end - 1] == ' ' or buf[end - 1] == 0)) end -= 1;
+            for (buf[0..end]) |c| {
+                // Allow printable ASCII, multibyte UTF-8, ESC (0x1B for charset switching),
+                // and DICOM separators (^=\)
+                if (c < 0x20 and c != 0x1B) return false; // control char = corruption
+                if (c == 0x7F) return false; // DEL
+            }
+            return true;
+        },
+
+        // SH/LO: Short/Long String — no control chars except ESC
+        .SH, .LO => {
+            var buf: [256]u8 = undefined;
+            file.seekTo(value_offset) catch return true;
+            const n = file.read(buf[0..check_len]) catch return true;
+            for (buf[0..n]) |c| {
+                if (c < 0x20 and c != 0x1B and c != 0x0A and c != 0x0D) return false;
+                if (c == 0x7F) return false;
+            }
+            return true;
+        },
+
+        // AE: Application Entity — leading/trailing spaces ok, no control chars, max 16
+        .AE => {
+            if (value_length > 16) return false;
+            var buf: [16]u8 = undefined;
+            const read_len = @min(check_len, 16);
+            file.seekTo(value_offset) catch return true;
+            const n = file.read(buf[0..read_len]) catch return true;
+            for (buf[0..n]) |c| {
+                if (c < 0x20) return false;
+                if (c == 0x7F) return false;
+            }
+            return true;
+        },
+
+        else => return true, // Binary VRs, sequences, unknown — skip
+    }
+}
+
+/// Validate DICOM date string (YYYYMMDD)
+fn validateDicomDate(buf: []const u8) bool {
+    if (buf.len < 8) return false;
+    // All must be digits
+    for (buf[0..8]) |c| {
+        if (!std.ascii.isDigit(c)) return false;
+    }
+    // Parse and range-check
+    const year = parseDigits(buf[0..4]) orelse return false;
+    const month = parseDigits(buf[4..6]) orelse return false;
+    const day = parseDigits(buf[6..8]) orelse return false;
+    if (year < 1800 or year > 2200) return false;
+    if (month < 1 or month > 12) return false;
+    if (day < 1 or day > 31) return false;
+    return true;
+}
+
+/// Validate DICOM time string (HH, HHMM, HHMMSS, HHMMSS.F*)
+fn validateDicomTime(buf: []const u8) bool {
+    // Trim trailing spaces/nulls
+    var end: usize = buf.len;
+    while (end > 0 and (buf[end - 1] == ' ' or buf[end - 1] == 0)) end -= 1;
+    if (end < 2) return false;
+
+    // Handle multi-valued (backslash-separated) — validate first value
+    var val_end: usize = end;
+    for (buf[0..end], 0..) |c, i| {
+        if (c == '\\') {
+            val_end = i;
+            break;
+        }
+    }
+
+    // HH must be digits
+    if (!std.ascii.isDigit(buf[0]) or !std.ascii.isDigit(buf[1])) return false;
+    const hh = parseDigits(buf[0..2]) orelse return false;
+    if (hh > 23) return false;
+
+    if (val_end >= 4) {
+        if (!std.ascii.isDigit(buf[2]) or !std.ascii.isDigit(buf[3])) return false;
+        const mm = parseDigits(buf[2..4]) orelse return false;
+        if (mm > 59) return false;
+    }
+    if (val_end >= 6) {
+        if (!std.ascii.isDigit(buf[4]) or !std.ascii.isDigit(buf[5])) return false;
+        const ss = parseDigits(buf[4..6]) orelse return false;
+        if (ss > 60) return false; // 60 for leap second
+    }
+    // Fractional part after '.'
+    if (val_end > 6 and buf[6] == '.') {
+        for (buf[7..val_end]) |c| {
+            if (!std.ascii.isDigit(c)) return false;
+        }
+    }
+    return true;
+}
+
+/// Validate DICOM Decimal String (backslash-separated float values)
+fn validateDicomDecimalString(buf: []const u8) bool {
+    var start: usize = 0;
+    for (buf, 0..) |c, i| {
+        if (c == '\\') {
+            if (i > start and !isValidDsValue(buf[start..i])) return false;
+            start = i + 1;
+        }
+    }
+    // Last (or only) value
+    if (buf.len > start) {
+        return isValidDsValue(buf[start..]);
+    }
+    return true;
+}
+
+/// Check if a single DS value is valid (optional sign, digits, optional decimal point, optional exponent)
+fn isValidDsValue(val: []const u8) bool {
+    // Trim spaces
+    var s: usize = 0;
+    var e: usize = val.len;
+    while (s < e and val[s] == ' ') s += 1;
+    while (e > s and val[e - 1] == ' ') e -= 1;
+    if (s >= e) return true; // empty is ok
+
+    const v = val[s..e];
+    var i: usize = 0;
+    // Optional sign
+    if (i < v.len and (v[i] == '+' or v[i] == '-')) i += 1;
+    var has_digit = false;
+    // Integer part
+    while (i < v.len and std.ascii.isDigit(v[i])) : (i += 1) {
+        has_digit = true;
+    }
+    // Decimal point
+    if (i < v.len and v[i] == '.') {
+        i += 1;
+        while (i < v.len and std.ascii.isDigit(v[i])) : (i += 1) {
+            has_digit = true;
+        }
+    }
+    // Exponent
+    if (i < v.len and (v[i] == 'e' or v[i] == 'E')) {
+        i += 1;
+        if (i < v.len and (v[i] == '+' or v[i] == '-')) i += 1;
+        var exp_digit = false;
+        while (i < v.len and std.ascii.isDigit(v[i])) : (i += 1) {
+            exp_digit = true;
+        }
+        if (!exp_digit) return false;
+    }
+    return has_digit and i == v.len;
+}
+
+/// Validate DICOM Integer String (backslash-separated integer values)
+fn validateDicomIntegerString(buf: []const u8) bool {
+    var start: usize = 0;
+    for (buf, 0..) |c, i| {
+        if (c == '\\') {
+            if (i > start and !isValidIsValue(buf[start..i])) return false;
+            start = i + 1;
+        }
+    }
+    if (buf.len > start) {
+        return isValidIsValue(buf[start..]);
+    }
+    return true;
+}
+
+/// Check if a single IS value is valid (optional sign + digits, max 12 chars)
+fn isValidIsValue(val: []const u8) bool {
+    var s: usize = 0;
+    var e: usize = val.len;
+    while (s < e and val[s] == ' ') s += 1;
+    while (e > s and val[e - 1] == ' ') e -= 1;
+    if (s >= e) return true;
+
+    const v = val[s..e];
+    if (v.len > 12) return false;
+    var i: usize = 0;
+    if (i < v.len and (v[i] == '+' or v[i] == '-')) i += 1;
+    if (i >= v.len) return false; // sign only
+    var has_digit = false;
+    while (i < v.len and std.ascii.isDigit(v[i])) : (i += 1) {
+        has_digit = true;
+    }
+    return has_digit and i == v.len;
+}
+
+/// Parse 2-4 ASCII digits into a number
+fn parseDigits(buf: []const u8) ?u32 {
+    var result: u32 = 0;
+    for (buf) |c| {
+        if (!std.ascii.isDigit(c)) return null;
+        result = result * 10 + (c - '0');
+    }
+    return result;
+}
+
 /// Combine group and element into a single tag value for comparison
 fn dicomMakeTag(group: u16, element: u16) u32 {
     return (@as(u32, group) << 16) | @as(u32, element);
@@ -1203,6 +1509,13 @@ fn parseDicomElement(
     if (vr == .SQ and value_length > 0) {
         const result = parseDicomDataElements(allocator, file, offset + header_size, value_length, file_size, is_explicit_vr, depth + 1);
         if (result.isError()) return result;
+    }
+
+    // VR-specific content validation for text-based VRs (catches metadata corruption)
+    if (is_explicit_vr and value_length > 0 and value_length < 256) {
+        if (!validateDicomVrContent(file, offset + header_size, value_length, vr)) {
+            return DicomParseResult.err("DICOM VR content validation failed (corrupted metadata)");
+        }
     }
 
     return DicomParseResult.ok(value_end);
