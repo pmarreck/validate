@@ -1714,12 +1714,12 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
 
     // Return appropriate validation depth based on embedded data validation.
     // DICOM has no file-level checksum — metadata corruption (patient name, dates, etc.)
-    // would go undetected. Even with valid embedded pixel data decode, a random bit flip
-    // in a non-pixel value field would not cause validation failure, so depth is structural.
+    // can only be caught via VR content validation. Embedded pixel data (JPEG/JP2)
+    // decode failures indicate corruption and should be reported as invalid.
     if (embedded_data_valid) {
         return ValidationResult.okWithDepth(.dicom, .structural);
     } else {
-        return ValidationResult.okWithDepthAndWarning(.dicom, .structural, "Embedded pixel data validation failed");
+        return ValidationResult.invalidWithDepth(.dicom, "Embedded pixel data decode failed (corrupted image data)", .full);
     }
 }
 
