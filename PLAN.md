@@ -75,14 +75,14 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] JPEG DHT/DQT/SOF segment content validation (2026-03-07 EST)
 
 ### Unverified Checksum Gaps (audit 2026-03-07)
-- [ ] Game Boy global checksum — sum all ROM bytes, compare with stored u16 at 0x14E-0x14F (`game_validator.zig`)
-- [ ] DMG master checksum — koly block offset 360-363, CRC-32 of data fork (`dmg_validator.zig` / `apple_validators.zig`)
-- [ ] WavPack per-block CRC-32 — each block has CRC field (`music_validators.zig` / `wavpack_decoder.zig`)
-- [ ] APE (Monkey's Audio) frame MD5s — per-frame integrity (`music_validators.zig`)
-- [ ] TTA frame CRCs — header CRC already verified, extend to per-frame CRCs (`music_validators.zig`)
-- [ ] AAC ADTS frame CRC-16 — when protection_absent=false (`aac_syntax_validator.zig`)
-- [ ] AAC LATM StreamMuxConfig CRC-8 — when crcCheckPresent=1 (`aac_syntax_validator.zig`)
-- [ ] MP3 Layer I/II CRC-16 — low priority, legacy format (`mp3_decode_validator.zig`)
+- [x] Game Boy global checksum — deep validator reads full ROM, verifies u16 sum at 0x14E-0x14F → 100%/100% (2026-03-07 EST)
+- [x] TTA seek table CRC + per-frame CRC-32 verification → 97% sniper (2026-03-07 EST)
+- [x] AAC ADTS frame CRC-16 — verify when protection_absent=false, poly 0x8005 (2026-03-07 EST)
+- [x] DMG master checksum — CRC-32 with zeroed field, ≤100MB cap (type=1 only; sample has type=2 which is unknown) (2026-03-07 EST)
+- [N/A] WavPack per-block CRC-32 — CRC covers decoded audio samples, requires full audio decode (infeasible without decoder)
+- [N/A] APE (Monkey's Audio) frame MD5s — requires full audio decode (infeasible without decoder)
+- [ ] AAC LATM StreamMuxConfig CRC-8 — when crcCheckPresent=1 (needs bit-range tracking in parser; uncommon in practice)
+- [ ] MP3 Layer I/II CRC-16 — low priority, legacy format
 
 ### Progrez Library Integration
 - [x] Add progrez_core module to progrez (no FFI, pure-logic only) (2026-03-01 EST)
