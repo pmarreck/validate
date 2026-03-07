@@ -68,13 +68,13 @@
             .url = "git+https://github.com/phcreery/LibRaw-zig#master",
             .hash = "libraw-0.21.4-c166SaOCAABnwCAwPECgFypND-jT9Ws-iidaxsJC_N05",
         },
-        .sevenz = .{
-            .url = "git+https://github.com/pmarreck/7zip#2155653d901c55e5661ea02f51e47f29d9d1e049",
-            .hash = "sevenz-25.1.0-GxYsU9LDFgDubsAf5lKHAVylNxpyjLz25ekkkMsRu-6Z",
+        .z7z = .{
+            .url = "git+https://github.com/pmarreck/z7z#86157a5c7bf664e86c84932b5c55b7c7d573d80a",
+            .hash = "z7z-0.1.0-rkKuF5H_BQDhWYlGT2TCp0OPQx7qBkD8mcv2E-dV-rx8",
         },
         .rarz = .{
-            .url = "https://github.com/pmarreck/rarz/archive/cc96851f8156499e26e67df006c185e53abacc4e.tar.gz",
-            .hash = "rarz-0.1.0-BNfrfndkCACcWL9diPoqs5rMWFPsBQr05A349SkJjsqc",
+            .url = "https://github.com/pmarreck/rarz/archive/0e7b52457b967b7bc41ce0ca9bd5d6a823d225d4.tar.gz",
+            .hash = "rarz-0.1.0-BNfrfgjCCQAfozCZnR7ARDZkCuLFZT7xvj3NGpwjcQG_",
         },
         .compact_pro = .{
             .url = "https://github.com/pmarreck/compact_pro/archive/acc3cebcc485bb3bc9a474d548cd4d124ca3a4a0.tar.gz",

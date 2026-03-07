@@ -174,12 +174,12 @@ pub fn build(b: *std.Build) void {
     const cj5_lib = cj5_dep.artifact("cj5");
     const cj5_mod = cj5_dep.module("cj5");
 
-    // 7z LZMA SDK for 7-Zip archive validation (public domain, ip7z/7zip)
-    const sevenz_dep = b.dependency("sevenz", .{
+    // z7z cleanroom 7-Zip implementation (pmarreck/z7z)
+    const z7z_dep = b.dependency("z7z", .{
         .target = target,
         .optimize = deps_optimize,
     });
-    const sevenz_lib = sevenz_dep.artifact("7z");
+    const z7z_lib = z7z_dep.artifact("libz7z");
 
     // rarz for in-memory RAR validation (clean-room Zig implementation)
     const rarz_dep = b.dependency("rarz", .{
@@ -191,6 +191,13 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = deps_optimize,
     });
+    // rarz needs ARM hardware CRC32 C helper on aarch64
+    if (target.result.cpu.arch == .aarch64) {
+        rarz_mod.addCSourceFile(.{
+            .file = rarz_dep.path("src/lib/crc32_arm.c"),
+            .flags = &.{ "-march=armv8-a+crc", "-O3" },
+        });
+    }
 
     // compact_pro for in-memory Compact Pro (.cpt) archive validation (C FFI)
     const compact_pro_dep = b.dependency("compact_pro", .{
@@ -276,8 +283,8 @@ pub fn build(b: *std.Build) void {
     // Add libraw include path (for camera RAW validation)
     core_mod.addIncludePath(libraw_lib.getEmittedIncludeTree());
 
-    // Add 7z LZMA SDK include path (for sevenz_validator.zig @cImport)
-    core_mod.addIncludePath(sevenz_lib.getEmittedIncludeTree());
+    // Add z7z include path (for sevenz_validator.zig @cImport)
+    core_mod.addIncludePath(z7z_dep.path("include"));
 
     // Add compact_pro C FFI headers
     core_mod.addIncludePath(compact_pro_dep.path("include"));
@@ -312,7 +319,7 @@ pub fn build(b: *std.Build) void {
         libopenmpt_lib, // tracker format (MOD/XM/IT/S3M) deep validation
         cj5_lib,       // JSON5 validation (C library)
         libraw_lib,    // camera RAW format validation (LGPL-2.1)
-        sevenz_lib,    // 7-Zip archive deep validation (public domain)
+        z7z_lib,       // 7-Zip archive deep validation (z7z cleanroom)
         compact_pro_lib, // Compact Pro archive validation
     };
 

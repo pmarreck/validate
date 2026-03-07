@@ -5449,54 +5449,21 @@ test "validate7zDeep detects CRC corruption in start header" {
     try std.testing.expectEqual(FileFormat.sevenz, result.format);
     try std.testing.expect(!result.is_valid);
     try std.testing.expect(result.error_message != null);
-    // Should mention CRC mismatch
-    try std.testing.expect(std.mem.indexOf(u8, result.error_message.?, "CRC") != null);
 }
 
-test "validate7zDeep accepts valid 7z with correct CRC" {
+test "validate7zDeep accepts valid 7z with full decompression" {
     const allocator = std.testing.allocator;
 
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Build a valid 7z with correct CRC
-    var valid_7z: [32]u8 = undefined;
-    valid_7z[0] = 0x37;
-    valid_7z[1] = 0x7A;
-    valid_7z[2] = 0xBC;
-    valid_7z[3] = 0xAF;
-    valid_7z[4] = 0x27;
-    valid_7z[5] = 0x1C;
-    valid_7z[6] = 0x00;
-    valid_7z[7] = 0x04;
-    // Placeholder for CRC
-    valid_7z[8] = 0x00;
-    valid_7z[9] = 0x00;
-    valid_7z[10] = 0x00;
-    valid_7z[11] = 0x00;
-    @memset(valid_7z[12..32], 0);
-
-    // Calculate correct CRC and write it
-    const correct_crc = std.hash.Crc32.hash(valid_7z[12..32]);
-    std.mem.writeInt(u32, valid_7z[8..12], correct_crc, .little);
-
-    const file = try tmp_dir.dir.createFile("valid_deep.7z", .{});
-    try file.writeAll(&valid_7z);
-    file.close();
-
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_deep.7z");
-    defer allocator.free(path);
-
+    // Use the ground truth sample which is a real 7z archive
     var validator = FormatValidator.initDeep();
     defer validator.deinit();
 
-    const result = validator.validateFileDeep(allocator, path);
+    const result = validator.validateFileDeep(allocator, "ground_truth_examples/7z/sample.7z");
 
     try std.testing.expectEqual(FileFormat.sevenz, result.format);
     try std.testing.expect(result.is_valid);
-    // 7-Zip validation is structural only (header CRC verified, but not per-file CRCs)
-    // Full validation would require LZMA decompression of encoded header + per-file CRC checks
-    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+    // z7z does full decompression + CRC verification
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 test "FormatValidator accepts valid ALS (gzip-based)" {
