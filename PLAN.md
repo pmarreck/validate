@@ -8,16 +8,20 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [ ] Find QBB ground-truth sample (QuickBooks Backup)
 
 ### Thread Safety Audit
-- [ ] Comprehensive review of all validators for non-thread-safe patterns (static buffers, global mutable state, struct-scoped `var`)
+- [x] Comprehensive review of all validators for non-thread-safe patterns — 146 files audited, all safe (2026-03-07 EST)
+  - git_validator.zig: mutex correctly used around git_available cache
+  - progress.zig: globals only accessed from main thread (CLI event loop)
+  - i18n/mod.zig: setLocale() called once at startup before thread pool creation, read-only thereafter
+  - All other validators: stack-local vars only, no shared mutable state
 - [x] Fix HEIC `validateHevcData` 1MB stack buffer → heap allocation (2026-03-07 EST)
 - [x] Fix HEIC `parseHvcCConfig` static buffer → write-into-caller-buffer (2026-03-07 EST)
 
 ### Inbox Review (from entropy_shield agent + strict coverage harness)
 - [ ] Rich error struct architecture — symbolic ErrorCode enum alongside string messages for i18n at Swift layer (inbox/from_entropy_shield_agent.md Request 1)
 - [ ] Forward compatibility for enum additions — stable variant names, append-only, comptime sync assertions (inbox/from_entropy_shield_agent.md Request 2)
-- [ ] Phoenix template `package.json` classification — detect EEx `<%= %>` in .json, classify as template not corrupt (inbox/from_entropy_shield_agent.md Request 3)
-- [ ] Review strict_format_coverage results for improvement targets (inbox/strict_format_coverage.md + .tsv)
-- [ ] Review corruption_opacity classifications for accuracy (inbox/corruption_opacity.tsv)
+- [x] Phoenix template `package.json` classification — already implemented: `containsTemplateMarkers()` detects EEx/ERB `<%`/`%>` in JSON files (2026-03-07 EST)
+- [x] Review strict_format_coverage results — 3 `corruption_detection_failed` formats (bai2, mt940, nacha) reclassified as `mixed` (control totals protect amounts but not all text bytes) (2026-03-07 EST)
+- [x] Review corruption_opacity classifications — all classifications verified accurate (2026-03-07 EST)
 
 ### Unverified Checksum Gaps (audit 2026-03-07)
 - [N/A] WavPack per-block CRC-32 — CRC covers decoded audio samples, requires full audio decode (infeasible without decoder)

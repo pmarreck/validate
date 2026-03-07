@@ -138,6 +138,9 @@ pub const Locale = enum {
 
 // ============================================================================
 // Global state
+// Thread safety: setLocale() is called once during CLI startup (before thread
+// pool creation). After that, all globals are read-only. No synchronization
+// needed as long as this invariant holds.
 // ============================================================================
 
 var g_strings: *const Strings = &en.strings;

@@ -9,6 +9,8 @@ const terminal = progrez.terminal;
 const render = progrez.render;
 
 /// Global progress state (single-instance, managed by the CLI).
+/// Thread safety: all progress functions are called from the main thread only
+/// (cli/main.c). Worker threads never call progress functions directly.
 var g_state: core.ProgrezState = core.ProgrezState.init("validate");
 
 /// Cached terminal capabilities.
