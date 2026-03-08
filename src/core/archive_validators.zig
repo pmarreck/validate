@@ -1674,8 +1674,43 @@ pub fn validateZipDeepWithCentralDirectory(
             return ValidationResult.invalidCodeWithDepth(format, .truncated, "local file header", .full);
         }
 
+        const local_compression = readLe(u16, local_header[4..6]);
+        const local_crc = readLe(u32, local_header[10..14]);
+        const local_compressed_size = readLe(u32, local_header[14..18]);
+        const local_uncompressed_size = readLe(u32, local_header[18..22]);
         const local_filename_len = readLe(u16, local_header[22..24]);
         const local_extra_len = readLe(u16, local_header[24..26]);
+        const local_flags = readLe(u16, local_header[0..2]);
+
+        // Cross-validate central directory vs local file header fields
+        if (local_compression != compression_method) {
+            return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP compression method mismatch (central vs local)", .full);
+        }
+
+        // CRC/sizes may be zero in local header if data descriptor flag (bit 3) is set
+        const has_data_descriptor = (local_flags & 0x0008) != 0;
+        if (!has_data_descriptor) {
+            if (local_crc != 0 and stored_crc != 0 and local_crc != @as(u32, @intCast(stored_crc & 0xFFFFFFFF))) {
+                return ValidationResult.invalidCodeWithDepth(format, .checksum_mismatch, "ZIP CRC-32 mismatch (central vs local header)", .full);
+            }
+            if (local_compressed_size != 0 and compressed_size != 0 and
+                local_compressed_size != 0xFFFFFFFF and
+                local_compressed_size != @as(u32, @intCast(@min(compressed_size, std.math.maxInt(u32)))))
+            {
+                return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP compressed size mismatch (central vs local)", .full);
+            }
+            if (local_uncompressed_size != 0 and uncompressed_size != 0 and
+                local_uncompressed_size != 0xFFFFFFFF and
+                local_uncompressed_size != @as(u32, @intCast(@min(uncompressed_size, std.math.maxInt(u32)))))
+            {
+                return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP uncompressed size mismatch (central vs local)", .full);
+            }
+        }
+
+        // Cross-validate filename length
+        if (local_filename_len != filename_len) {
+            return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP filename length mismatch (central vs local)", .full);
+        }
 
         const skip_local_name: i64 = @intCast(local_filename_len);
         file.seekBy(skip_local_name) catch {

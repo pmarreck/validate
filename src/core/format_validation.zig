@@ -5790,6 +5790,9 @@ fn validateBeam(file: std.fs.File) ValidationResult {
     var chunk_count: u32 = 0;
     var has_atom_table = false;
     var has_code = false;
+    var has_strt = false;
+    var has_impt = false;
+    var has_expt = false;
 
     while (offset + 8 <= chunk_area_end) {
         var chunk_header_buf: [8]u8 = undefined;
@@ -5799,10 +5802,58 @@ fn validateBeam(file: std.fs.File) ValidationResult {
 
         const chunk_name = chunk_header_buf[0..4];
         const chunk_size = std.mem.readInt(u32, chunk_header_buf[4..8], .big);
+
+        // Validate chunk name is printable ASCII (all BEAM chunk IDs are)
+        for (chunk_name) |c| {
+            if (c < 0x20 or c > 0x7E) {
+                return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "chunk name", "Non-printable chunk name (corrupt)");
+            }
+        }
+
         if (std.mem.eql(u8, chunk_name, "AtU8") or std.mem.eql(u8, chunk_name, "Atom")) has_atom_table = true;
         if (std.mem.eql(u8, chunk_name, "Code")) has_code = true;
+        if (std.mem.eql(u8, chunk_name, "StrT")) has_strt = true;
+        if (std.mem.eql(u8, chunk_name, "ImpT")) has_impt = true;
+        if (std.mem.eql(u8, chunk_name, "ExpT")) has_expt = true;
 
         if (offset + 8 + chunk_size > chunk_area_end) return ValidationResult.invalidCodeMsg(.beam, .exceeds_bounds, "Chunk size", "Chunk size exceeds file bounds");
+
+        // For ImpT/ExpT/LocT: validate entry count × entry size matches chunk size
+        if (std.mem.eql(u8, chunk_name, "ImpT") or std.mem.eql(u8, chunk_name, "ExpT") or std.mem.eql(u8, chunk_name, "LocT")) {
+            if (chunk_size >= 4) {
+                var count_buf: [4]u8 = undefined;
+                const count_read = file.readAll(&count_buf) catch 0;
+                if (count_read == 4) {
+                    const entry_count_val = std.mem.readInt(u32, &count_buf, .big);
+                    // ImpT entries are 3 u32s (12 bytes), ExpT/LocT entries are 3 u32s (12 bytes)
+                    const entry_size: u32 = 12;
+                    const expected_size = 4 + entry_count_val * entry_size;
+                    if (expected_size != chunk_size) {
+                        return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "table chunk", "Entry count × entry size does not match chunk size");
+                    }
+                }
+            }
+        }
+
+        // For Code chunk: validate header fields
+        if (std.mem.eql(u8, chunk_name, "Code") and chunk_size >= 16) {
+            var code_hdr: [16]u8 = undefined;
+            file.seekTo(offset + 8) catch {};
+            const code_read = file.readAll(&code_hdr) catch 0;
+            if (code_read == 16) {
+                const sub_size = std.mem.readInt(u32, code_hdr[0..4], .big);
+                const instruction_set = std.mem.readInt(u32, code_hdr[4..8], .big);
+                // sub_size should be reasonable (16 is common header size)
+                if (sub_size > chunk_size) {
+                    return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "Code chunk", "Code sub-header size exceeds chunk");
+                }
+                // OTP instruction set version is typically 0
+                if (instruction_set > 1) {
+                    return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "Code chunk", "Unknown instruction set version");
+                }
+            }
+        }
+
         const padded_size = (chunk_size + 3) & ~@as(u32, 3);
         offset = offset + 8 + padded_size;
         chunk_count += 1;
@@ -5812,8 +5863,16 @@ fn validateBeam(file: std.fs.File) ValidationResult {
     if (chunk_count == 0) return ValidationResult.invalid(.beam, "No chunks found");
     if (!has_atom_table) return ValidationResult.invalidCode(.beam, .missing, "atom table chunk");
     if (!has_code) return ValidationResult.invalidCode(.beam, .missing, "code chunk");
-    // No CRC/hash — IFF chunk structure parsing only
-    return ValidationResult.okWithDepth(.beam, .structural);
+    if (!has_strt) return ValidationResult.invalidCode(.beam, .missing, "string table chunk (StrT)");
+    if (!has_impt) return ValidationResult.invalidCode(.beam, .missing, "import table chunk (ImpT)");
+    if (!has_expt) return ValidationResult.invalidCode(.beam, .missing, "export table chunk (ExpT)");
+
+    // Verify chunks exactly fill the FOR1 container (no gaps)
+    if (offset != chunk_area_end) {
+        return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "chunk layout", "Chunks do not exactly fill FOR1 container");
+    }
+
+    return ValidationResult.okWithDepth(.beam, .full);
 }
 
 // ============ Shared XML/Text Helpers ============
