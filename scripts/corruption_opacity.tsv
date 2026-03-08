@@ -135,3 +135,4 @@ txf	opaque	Plain text tax exchange format with no integrity mechanism
 nacha	mixed	Entry hash and control totals protect numeric fields but random byte flips in text/routing areas may go undetected
 mt940	mixed	Balance arithmetic verifies amounts but random byte flips in non-amount text may go undetected
 bai2	mixed	Cascading control totals protect amounts but random byte flips in text fields may go undetected
+sevenz	mixed	Start header + next header CRCs protect metadata; packed stream data between them lacks CRC verification in current validator
