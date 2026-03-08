@@ -236,8 +236,8 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
             fmt_audio_format = std.mem.readInt(u16, fmt_data[0..2], .little);
             fmt_channels = std.mem.readInt(u16, fmt_data[2..4], .little);
             fmt_sample_rate = std.mem.readInt(u32, fmt_data[4..8], .little);
-            // bytes 8-11: byte rate
-            // bytes 12-13: block align
+            const fmt_byte_rate = std.mem.readInt(u32, fmt_data[8..12], .little);
+            const fmt_block_align = std.mem.readInt(u16, fmt_data[12..14], .little);
             fmt_bits_per_sample = std.mem.readInt(u16, fmt_data[14..16], .little);
 
             // Validate format parameters
@@ -249,6 +249,18 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
             }
             if (fmt_bits_per_sample == 0 or fmt_bits_per_sample > 64) {
                 return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "bits per sample", .structural);
+            }
+
+            // Cross-validate block_align = channels * bytes_per_sample
+            const expected_block_align = fmt_channels * ((fmt_bits_per_sample + 7) / 8);
+            if (fmt_block_align != expected_block_align) {
+                return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "block align mismatch (channels * bytes_per_sample)", .structural);
+            }
+
+            // Cross-validate byte_rate = sample_rate * block_align
+            const expected_byte_rate: u64 = @as(u64, fmt_sample_rate) * @as(u64, fmt_block_align);
+            if (expected_byte_rate <= std.math.maxInt(u32) and fmt_byte_rate != @as(u32, @intCast(expected_byte_rate))) {
+                return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "byte rate mismatch (sample_rate * block_align)", .structural);
             }
         } else if (std.mem.eql(u8, chunk_id, "data")) {
             found_data = true;
@@ -387,6 +399,8 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
     var offset: usize = 12;
     var found_comm = false;
     var found_ssnd = false;
+    var comm_num_channels: u16 = 0;
+    var comm_num_sample_frames: u32 = 0;
     var comm_sample_size: u16 = 0;
     var is_float = false;
     var ssnd_data_start: usize = 0;
@@ -409,7 +423,14 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
 
             // COMM: numChannels(2) + numSampleFrames(4) + sampleSize(2) + sampleRate(10)
             const comm_data = data[offset + 8 ..];
-            comm_sample_size = std.mem.readInt(u16, comm_data[4..6], .big);
+            comm_num_channels = std.mem.readInt(u16, comm_data[0..2], .big);
+            comm_num_sample_frames = std.mem.readInt(u32, comm_data[2..6], .big);
+            comm_sample_size = std.mem.readInt(u16, comm_data[6..8], .big);
+
+            // Validate numChannels range (most reliable field for corruption detection)
+            if (comm_num_channels == 0 or comm_num_channels > 32) {
+                return ValidationResult.invalidCodeWithDepth(.aiff, .invalid_value, "COMM channel count", .structural);
+            }
 
             // AIFC has compressionType after the standard COMM fields
             if (is_aifc and chunk_size >= 22) {
@@ -448,6 +469,20 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
     }
     if (!found_ssnd) {
         return ValidationResult.invalidCodeWithDepth(.aiff, .missing, "SSND chunk", .structural);
+    }
+
+    // Cross-validate SSND size with COMM fields: expected = numFrames * numChannels * bytesPerSample
+    // Only validate when sampleSize is a standard audio bit depth (8, 16, 24, 32, 64)
+    if (comm_num_channels > 0 and comm_num_sample_frames > 0 and ssnd_data_len > 0) {
+        const valid_sample_size = (comm_sample_size == 8 or comm_sample_size == 16 or
+            comm_sample_size == 24 or comm_sample_size == 32 or comm_sample_size == 64);
+        if (valid_sample_size) {
+            const bytes_per_sample: u64 = (@as(u64, comm_sample_size) + 7) / 8;
+            const expected_ssnd_size = @as(u64, comm_num_sample_frames) * @as(u64, comm_num_channels) * bytes_per_sample;
+            if (ssnd_data_len != expected_ssnd_size) {
+                return ValidationResult.invalidCodeWithDepth(.aiff, .invalid_value, "SSND size mismatch (numFrames * channels * bytesPerSample)", .structural);
+            }
+        }
     }
 
     // AIFC float: scan every sample for NaN/Inf — definitive corruption signal
@@ -2019,6 +2054,60 @@ pub fn validateCaf(file: std.fs.File) ValidationResult {
     const chunk_size = std.mem.readInt(i64, header[12..20], .big);
     if (chunk_size != -1 and chunk_size != 32) return ValidationResult.invalid(.caf, "Unexpected CAF Audio Description chunk size");
 
+    // Parse Audio Description chunk (32 bytes): sampleRate(f64) + formatID(4) + formatFlags(4) +
+    // bytesPerPacket(4) + framesPerPacket(4) + channelsPerFrame(4) + bitsPerChannel(4)
+    var desc_data: [32]u8 = undefined;
+    const desc_read = file.read(&desc_data) catch return ValidationResult.invalidCode(.caf, .failed_to_read, "Audio Description");
+    if (desc_read < 32) return ValidationResult.invalidCode(.caf, .truncated, "Audio Description");
+
+    const sample_rate_bits = std.mem.readInt(u64, desc_data[0..8], .big);
+    const sample_rate: f64 = @bitCast(sample_rate_bits);
+    const channels_per_frame = std.mem.readInt(u32, desc_data[24..28], .big);
+    const bits_per_channel = std.mem.readInt(u32, desc_data[28..32], .big);
+
+    // Validate sample rate is finite and reasonable
+    if (std.math.isNan(sample_rate) or std.math.isInf(sample_rate) or sample_rate <= 0 or sample_rate > 768000) {
+        return ValidationResult.invalidCode(.caf, .invalid_value, "sample rate");
+    }
+
+    // Validate channels
+    if (channels_per_frame == 0 or channels_per_frame > 128) {
+        return ValidationResult.invalidCode(.caf, .invalid_value, "channels per frame");
+    }
+
+    // Validate bits per channel (0 is valid for compressed formats like AAC)
+    if (bits_per_channel > 64) {
+        return ValidationResult.invalidCode(.caf, .invalid_value, "bits per channel");
+    }
+
+    // Walk remaining chunks to validate structure
+    const file_size = file.getEndPos() catch return ValidationResult.structuralOnly(.caf);
+    var offset: u64 = 20 + 32; // caff header(8) + desc chunk header(12) + desc data(32)
+    var chunk_count: u32 = 0;
+
+    while (offset + 12 <= file_size and chunk_count < 10000) {
+        file.seekTo(offset) catch break;
+        var chunk_hdr: [12]u8 = undefined;
+        const hdr_read = file.read(&chunk_hdr) catch break;
+        if (hdr_read < 12) break;
+
+        const caf_chunk_size = std.mem.readInt(i64, chunk_hdr[4..12], .big);
+        if (caf_chunk_size < -1) {
+            return ValidationResult.invalidCode(.caf, .invalid_value, "chunk size");
+        }
+
+        // -1 means unknown size (last chunk extends to EOF)
+        if (caf_chunk_size == -1) break;
+
+        const csize: u64 = @intCast(caf_chunk_size);
+        if (offset + 12 + csize > file_size) {
+            return ValidationResult.invalidCodeMsg(.caf, .exceeds_bounds, "CAF chunk", "CAF chunk extends beyond file");
+        }
+
+        offset += 12 + csize;
+        chunk_count += 1;
+    }
+
     return ValidationResult.structuralOnly(.caf);
 }
 
@@ -2648,6 +2737,200 @@ test "validateEac3Deep rejects file not found" {
     const result = validateEac3Deep("/nonexistent/path/to/file.eac3");
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.eac3, result.format);
+}
+
+// ---------- WAV corruption detection tests ----------
+
+test "validateWavDeep rejects corrupted block_align" {
+    // Build minimal valid WAV: RIFF(12) + fmt(24) + data(8+16) = 60 bytes
+    // 16-bit stereo 44100Hz PCM
+    var wav: [60]u8 = undefined;
+    // RIFF header
+    @memcpy(wav[0..4], "RIFF");
+    std.mem.writeInt(u32, wav[4..8], 52, .little); // file size - 8
+    @memcpy(wav[8..12], "WAVE");
+    // fmt chunk
+    @memcpy(wav[12..16], "fmt ");
+    std.mem.writeInt(u32, wav[16..20], 16, .little); // chunk size
+    std.mem.writeInt(u16, wav[20..22], 1, .little); // PCM
+    std.mem.writeInt(u16, wav[22..24], 2, .little); // channels
+    std.mem.writeInt(u32, wav[24..28], 44100, .little); // sample rate
+    std.mem.writeInt(u32, wav[28..32], 176400, .little); // byte rate = 44100*2*2
+    std.mem.writeInt(u16, wav[32..34], 4, .little); // block align = 2*2
+    std.mem.writeInt(u16, wav[34..36], 16, .little); // bits per sample
+    // data chunk
+    @memcpy(wav[36..40], "data");
+    std.mem.writeInt(u32, wav[40..44], 16, .little); // 16 bytes of audio
+    @memset(wav[44..60], 0); // silence
+
+    // Verify valid first
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "good.wav", .data = &wav }) catch return;
+    const good_path = tmp.dir.realpathAlloc(testing.allocator, "good.wav") catch return;
+    defer testing.allocator.free(good_path);
+    const good_result = validateWavDeep(testing.allocator, good_path);
+    try testing.expect(good_result.is_valid);
+
+    // Corrupt block_align (byte 32-33: change from 4 to 99)
+    var bad_wav = wav;
+    std.mem.writeInt(u16, bad_wav[32..34], 99, .little);
+    tmp.dir.writeFile(.{ .sub_path = "bad_align.wav", .data = &bad_wav }) catch return;
+    const bad_path = tmp.dir.realpathAlloc(testing.allocator, "bad_align.wav") catch return;
+    defer testing.allocator.free(bad_path);
+    const bad_result = validateWavDeep(testing.allocator, bad_path);
+    try testing.expect(!bad_result.is_valid);
+}
+
+test "validateWavDeep rejects corrupted byte_rate" {
+    var wav: [60]u8 = undefined;
+    @memcpy(wav[0..4], "RIFF");
+    std.mem.writeInt(u32, wav[4..8], 52, .little);
+    @memcpy(wav[8..12], "WAVE");
+    @memcpy(wav[12..16], "fmt ");
+    std.mem.writeInt(u32, wav[16..20], 16, .little);
+    std.mem.writeInt(u16, wav[20..22], 1, .little);
+    std.mem.writeInt(u16, wav[22..24], 2, .little); // stereo
+    std.mem.writeInt(u32, wav[24..28], 44100, .little);
+    std.mem.writeInt(u32, wav[28..32], 176400, .little); // correct byte rate
+    std.mem.writeInt(u16, wav[32..34], 4, .little);
+    std.mem.writeInt(u16, wav[34..36], 16, .little);
+    @memcpy(wav[36..40], "data");
+    std.mem.writeInt(u32, wav[40..44], 16, .little);
+    @memset(wav[44..60], 0);
+
+    // Corrupt byte_rate (bytes 28-31)
+    var bad_wav = wav;
+    std.mem.writeInt(u32, bad_wav[28..32], 999999, .little);
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "bad_rate.wav", .data = &bad_wav }) catch return;
+    const path = tmp.dir.realpathAlloc(testing.allocator, "bad_rate.wav") catch return;
+    defer testing.allocator.free(path);
+    const result = validateWavDeep(testing.allocator, path);
+    try testing.expect(!result.is_valid);
+}
+
+// ---------- AIFF corruption detection tests ----------
+
+test "validateAiffDeep rejects corrupted channel count" {
+    // Build minimal AIFF: FORM(12) + COMM(26) + SSND(8+8+8) = 62 bytes
+    // 8-bit mono 8000Hz
+    var aiff: [54]u8 = undefined;
+    @memcpy(aiff[0..4], "FORM");
+    std.mem.writeInt(u32, aiff[4..8], 46, .big); // form size
+    @memcpy(aiff[8..12], "AIFF");
+    @memcpy(aiff[12..16], "COMM");
+    std.mem.writeInt(u32, aiff[16..20], 18, .big); // COMM chunk size
+    std.mem.writeInt(u16, aiff[20..22], 1, .big); // numChannels
+    std.mem.writeInt(u32, aiff[22..26], 8, .big); // numSampleFrames
+    std.mem.writeInt(u16, aiff[26..28], 8, .big); // sampleSize
+    // sampleRate as 80-bit extended (8000 Hz = 0x400B FA00...)
+    aiff[28] = 0x40;
+    aiff[29] = 0x0B;
+    aiff[30] = 0xFA;
+    @memset(aiff[31..38], 0);
+    // SSND chunk
+    @memcpy(aiff[38..42], "SSND");
+    std.mem.writeInt(u32, aiff[42..46], 16, .big); // chunk size (8 header + 8 data)
+    std.mem.writeInt(u32, aiff[46..50], 0, .big); // offset
+    std.mem.writeInt(u32, aiff[50..54], 0, .big); // blockSize
+    // (8 bytes of audio data would follow but we'll add zeros)
+
+    var full: [62]u8 = undefined;
+    @memcpy(full[0..54], &aiff);
+    @memset(full[54..62], 0); // 8 bytes of silence
+    // Fix FORM size
+    std.mem.writeInt(u32, full[4..8], 54, .big);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Verify valid
+    tmp.dir.writeFile(.{ .sub_path = "good.aiff", .data = &full }) catch return;
+    const good_path = tmp.dir.realpathAlloc(testing.allocator, "good.aiff") catch return;
+    defer testing.allocator.free(good_path);
+    const good_result = validateAiffDeep(testing.allocator, good_path);
+    try testing.expect(good_result.is_valid);
+
+    // Corrupt numChannels to 0
+    var bad = full;
+    std.mem.writeInt(u16, bad[20..22], 0, .big);
+    tmp.dir.writeFile(.{ .sub_path = "bad_ch.aiff", .data = &bad }) catch return;
+    const bad_path = tmp.dir.realpathAlloc(testing.allocator, "bad_ch.aiff") catch return;
+    defer testing.allocator.free(bad_path);
+    const result = validateAiffDeep(testing.allocator, bad_path);
+    try testing.expect(!result.is_valid);
+}
+
+// ---------- CAF corruption detection tests ----------
+
+test "validateCaf rejects corrupted sample rate" {
+    // Build minimal CAF: caff(4) + version(2) + flags(2) + desc chunk header(12) + desc data(32) = 52 bytes
+    var caf: [52]u8 = undefined;
+    @memcpy(caf[0..4], "caff");
+    std.mem.writeInt(u16, caf[4..6], 1, .big); // version
+    std.mem.writeInt(u16, caf[6..8], 0, .big); // flags
+    @memcpy(caf[8..12], "desc");
+    std.mem.writeInt(i64, caf[12..20], 32, .big); // chunk size
+    // Audio Description: sample_rate(f64) + formatID(4) + formatFlags(4) +
+    //   bytesPerPacket(4) + framesPerPacket(4) + channelsPerFrame(4) + bitsPerChannel(4)
+    const sr: f64 = 44100.0;
+    std.mem.writeInt(u64, caf[20..28], @bitCast(sr), .big); // sample rate
+    @memcpy(caf[28..32], "lpcm"); // format ID
+    std.mem.writeInt(u32, caf[32..36], 0, .big); // format flags
+    std.mem.writeInt(u32, caf[36..40], 4, .big); // bytes per packet
+    std.mem.writeInt(u32, caf[40..44], 1, .big); // frames per packet
+    std.mem.writeInt(u32, caf[44..48], 2, .big); // channels per frame
+    std.mem.writeInt(u32, caf[48..52], 16, .big); // bits per channel
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Verify valid
+    tmp.dir.writeFile(.{ .sub_path = "good.caf", .data = &caf }) catch return;
+    const good = tmp.dir.openFile("good.caf", .{}) catch return;
+    defer good.close();
+    const good_result = validateCaf(good);
+    try testing.expect(good_result.is_valid);
+
+    // Corrupt sample rate to NaN
+    var bad_caf = caf;
+    const nan_bits: u64 = @bitCast(@as(f64, std.math.nan(f64)));
+    std.mem.writeInt(u64, bad_caf[20..28], nan_bits, .big);
+    tmp.dir.writeFile(.{ .sub_path = "bad_sr.caf", .data = &bad_caf }) catch return;
+    const bad = tmp.dir.openFile("bad_sr.caf", .{}) catch return;
+    defer bad.close();
+    const bad_result = validateCaf(bad);
+    try testing.expect(!bad_result.is_valid);
+}
+
+test "validateCaf rejects corrupted channel count" {
+    var caf: [52]u8 = undefined;
+    @memcpy(caf[0..4], "caff");
+    std.mem.writeInt(u16, caf[4..6], 1, .big);
+    std.mem.writeInt(u16, caf[6..8], 0, .big);
+    @memcpy(caf[8..12], "desc");
+    std.mem.writeInt(i64, caf[12..20], 32, .big);
+    const sr: f64 = 44100.0;
+    std.mem.writeInt(u64, caf[20..28], @bitCast(sr), .big);
+    @memcpy(caf[28..32], "lpcm");
+    std.mem.writeInt(u32, caf[32..36], 0, .big);
+    std.mem.writeInt(u32, caf[36..40], 4, .big);
+    std.mem.writeInt(u32, caf[40..44], 1, .big);
+    std.mem.writeInt(u32, caf[44..48], 2, .big); // valid channels
+    std.mem.writeInt(u32, caf[48..52], 16, .big);
+
+    // Corrupt channels to 0
+    var bad_caf = caf;
+    std.mem.writeInt(u32, bad_caf[44..48], 0, .big);
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "bad_ch.caf", .data = &bad_caf }) catch return;
+    const bad = tmp.dir.openFile("bad_ch.caf", .{}) catch return;
+    defer bad.close();
+    const result = validateCaf(bad);
+    try testing.expect(!result.is_valid);
 }
 
 // ============================================================

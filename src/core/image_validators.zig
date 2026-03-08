@@ -599,10 +599,73 @@ pub fn validateBmp(file: std.fs.File) ValidationResult {
     }
 
     // Check header size (offset 14) - must be at least 12 (BITMAPCOREHEADER)
-    if (bytes_read >= 18) {
-        const header_size = std.mem.readInt(u32, header[14..18], .little);
-        if (header_size < 12) {
-            return ValidationResult.invalidCode(.bmp, .invalid_value, "BMP info header size");
+    if (bytes_read < 18) {
+        return ValidationResult.invalidCode(.bmp, .file_too_small, "BMP info header");
+    }
+
+    const header_size = std.mem.readInt(u32, header[14..18], .little);
+    if (header_size < 12) {
+        return ValidationResult.invalidCode(.bmp, .invalid_value, "BMP info header size");
+    }
+
+    // Validate BITMAPINFOHEADER fields (40-byte header, the most common)
+    if (header_size >= 40 and bytes_read >= 54) {
+        const width = std.mem.readInt(i32, header[18..22], .little);
+        const height = std.mem.readInt(i32, header[22..26], .little);
+        const planes = std.mem.readInt(u16, header[26..28], .little);
+        const bit_count = std.mem.readInt(u16, header[28..30], .little);
+        const compression = std.mem.readInt(u32, header[30..34], .little);
+        const pixel_offset = std.mem.readInt(u32, header[10..14], .little);
+
+        // planes must be 1
+        if (planes != 1) {
+            return ValidationResult.invalidCode(.bmp, .invalid_value, "BMP planes (must be 1)");
+        }
+
+        // width must be positive and reasonable
+        if (width <= 0 or width > 65536) {
+            return ValidationResult.invalidCode(.bmp, .invalid_value, "BMP width");
+        }
+
+        // height can be negative (top-down) but absolute value must be reasonable
+        const abs_height = if (height < 0) @as(u32, @intCast(-height)) else @as(u32, @intCast(height));
+        if (abs_height == 0 or abs_height > 65536) {
+            return ValidationResult.invalidCode(.bmp, .invalid_value, "BMP height");
+        }
+
+        // bit_count must be valid: 1, 4, 8, 16, 24, 32
+        if (bit_count != 1 and bit_count != 4 and bit_count != 8 and
+            bit_count != 16 and bit_count != 24 and bit_count != 32)
+        {
+            return ValidationResult.invalidCode(.bmp, .invalid_value, "BMP bit count");
+        }
+
+        // compression must be valid (0=BI_RGB, 1=BI_RLE8, 2=BI_RLE4, 3=BI_BITFIELDS, 6=BI_ALPHABITFIELDS)
+        if (compression > 6) {
+            return ValidationResult.invalidCode(.bmp, .invalid_value, "BMP compression type");
+        }
+
+        // RLE8 requires 8-bit, RLE4 requires 4-bit
+        if (compression == 1 and bit_count != 8) {
+            return ValidationResult.invalidCode(.bmp, .invalid_value, "BMP RLE8 requires 8-bit");
+        }
+        if (compression == 2 and bit_count != 4) {
+            return ValidationResult.invalidCode(.bmp, .invalid_value, "BMP RLE4 requires 4-bit");
+        }
+
+        // pixel_offset must be within file and after headers
+        if (pixel_offset < 14 + header_size or pixel_offset > actual_size) {
+            return ValidationResult.invalidCode(.bmp, .invalid_value, "BMP pixel data offset");
+        }
+
+        // For uncompressed BMPs, cross-validate pixel data size with dimensions
+        if (compression == 0 or compression == 3) {
+            const row_size: u64 = ((@as(u64, @intCast(width)) * @as(u64, bit_count) + 31) / 32) * 4;
+            const expected_pixel_data: u64 = row_size * @as(u64, abs_height);
+            const available_data: u64 = actual_size -| @as(u64, pixel_offset);
+            if (expected_pixel_data > available_data) {
+                return ValidationResult.invalidCodeMsg(.bmp, .exceeds_bounds, "BMP pixel data", "Pixel data exceeds file size");
+            }
         }
     }
 
@@ -3541,6 +3604,45 @@ pub fn validateDpx(file: std.fs.File) ValidationResult {
         return ValidationResult.invalid(.dpx, "DPX image offset beyond end of file");
     }
 
+    // Read image information header (starts at offset 768 in generic header)
+    if (actual_size >= 836) { // Need at least through basic image info
+        file.seekTo(768) catch return ValidationResult.structuralOnly(.dpx);
+        var img_hdr: [68]u8 = undefined; // orientation(2) + num_elements(2) + pixels_per_line(4) + lines_per_element(4) + ...
+        const img_read = file.read(&img_hdr) catch return ValidationResult.structuralOnly(.dpx);
+        if (img_read >= 12) {
+            const orientation = std.mem.readInt(u16, img_hdr[0..2], endian);
+            const num_elements = std.mem.readInt(u16, img_hdr[2..4], endian);
+            const pixels_per_line = std.mem.readInt(u32, img_hdr[4..8], endian);
+            const lines_per_element = std.mem.readInt(u32, img_hdr[8..12], endian);
+
+            // Orientation must be 0-7
+            if (orientation > 7) {
+                return ValidationResult.invalid(.dpx, "DPX invalid orientation value");
+            }
+
+            // Number of image elements: 1-8
+            if (num_elements == 0 or num_elements > 8) {
+                return ValidationResult.invalid(.dpx, "DPX invalid number of image elements");
+            }
+
+            // Reasonable dimension bounds
+            if (pixels_per_line == 0 or pixels_per_line > 65536) {
+                return ValidationResult.invalidCode(.dpx, .invalid_value, "DPX pixels per line");
+            }
+            if (lines_per_element == 0 or lines_per_element > 65536) {
+                return ValidationResult.invalidCode(.dpx, .invalid_value, "DPX lines per element");
+            }
+
+            // Cross-validate: image data region must fit in file
+            // Minimum: pixels * lines * elements * 1 byte (8-bit single channel)
+            const min_image_bytes: u64 = @as(u64, pixels_per_line) * @as(u64, lines_per_element) * @as(u64, num_elements);
+            const available_image_space = actual_size -| @as(u64, image_offset);
+            if (min_image_bytes > available_image_space * 8) { // Allow 1-bit per pixel minimum
+                return ValidationResult.invalidCodeMsg(.dpx, .exceeds_bounds, "DPX image data", "Image dimensions exceed available file space");
+            }
+        }
+    }
+
     return ValidationResult.structuralOnly(.dpx);
 }
 
@@ -3698,6 +3800,86 @@ test "validateBmp rejects invalid signature" {
     defer file.close();
     const result = validateBmp(file);
     try testing.expect(!result.is_valid);
+}
+
+test "validateBmp rejects corrupted planes field" {
+    // Build minimal 24-bit BMP: 54-byte header + 12 bytes pixel data (2x2 24-bit = 4*3*2 with padding)
+    var bmp: [78]u8 = undefined;
+    @memset(&bmp, 0);
+    bmp[0] = 'B';
+    bmp[1] = 'M';
+    std.mem.writeInt(u32, bmp[2..6], 78, .little); // file size
+    std.mem.writeInt(u32, bmp[10..14], 54, .little); // pixel data offset
+    std.mem.writeInt(u32, bmp[14..18], 40, .little); // DIB header size
+    std.mem.writeInt(i32, bmp[18..22], 2, .little); // width
+    std.mem.writeInt(i32, bmp[22..26], 2, .little); // height
+    std.mem.writeInt(u16, bmp[26..28], 1, .little); // planes = 1
+    std.mem.writeInt(u16, bmp[28..30], 24, .little); // bit count
+    std.mem.writeInt(u32, bmp[30..34], 0, .little); // compression = BI_RGB
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Valid BMP
+    tmp.dir.writeFile(.{ .sub_path = "good.bmp", .data = &bmp }) catch return;
+    const good = tmp.dir.openFile("good.bmp", .{}) catch return;
+    defer good.close();
+    try testing.expect(validateBmp(good).is_valid);
+
+    // Corrupt planes to 5
+    var bad = bmp;
+    std.mem.writeInt(u16, bad[26..28], 5, .little);
+    tmp.dir.writeFile(.{ .sub_path = "bad_planes.bmp", .data = &bad }) catch return;
+    const f = tmp.dir.openFile("bad_planes.bmp", .{}) catch return;
+    defer f.close();
+    try testing.expect(!validateBmp(f).is_valid);
+}
+
+test "validateBmp rejects corrupted bit count" {
+    var bmp: [78]u8 = undefined;
+    @memset(&bmp, 0);
+    bmp[0] = 'B';
+    bmp[1] = 'M';
+    std.mem.writeInt(u32, bmp[2..6], 78, .little);
+    std.mem.writeInt(u32, bmp[10..14], 54, .little);
+    std.mem.writeInt(u32, bmp[14..18], 40, .little);
+    std.mem.writeInt(i32, bmp[18..22], 2, .little);
+    std.mem.writeInt(i32, bmp[22..26], 2, .little);
+    std.mem.writeInt(u16, bmp[26..28], 1, .little);
+    std.mem.writeInt(u16, bmp[28..30], 24, .little);
+    std.mem.writeInt(u32, bmp[30..34], 0, .little);
+
+    // Corrupt bit_count to 13 (invalid)
+    var bad = bmp;
+    std.mem.writeInt(u16, bad[28..30], 13, .little);
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "bad_bpp.bmp", .data = &bad }) catch return;
+    const f = tmp.dir.openFile("bad_bpp.bmp", .{}) catch return;
+    defer f.close();
+    try testing.expect(!validateBmp(f).is_valid);
+}
+
+test "validateBmp rejects pixel data exceeding file size" {
+    var bmp: [78]u8 = undefined;
+    @memset(&bmp, 0);
+    bmp[0] = 'B';
+    bmp[1] = 'M';
+    std.mem.writeInt(u32, bmp[2..6], 78, .little);
+    std.mem.writeInt(u32, bmp[10..14], 54, .little);
+    std.mem.writeInt(u32, bmp[14..18], 40, .little);
+    std.mem.writeInt(i32, bmp[18..22], 1000, .little); // huge width
+    std.mem.writeInt(i32, bmp[22..26], 1000, .little); // huge height
+    std.mem.writeInt(u16, bmp[26..28], 1, .little);
+    std.mem.writeInt(u16, bmp[28..30], 24, .little);
+    std.mem.writeInt(u32, bmp[30..34], 0, .little);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "too_big.bmp", .data = &bmp }) catch return;
+    const f = tmp.dir.openFile("too_big.bmp", .{}) catch return;
+    defer f.close();
+    try testing.expect(!validateBmp(f).is_valid);
 }
 
 // ---- TIFF ----
@@ -4049,6 +4231,64 @@ test "validateDpx rejects invalid magic" {
     defer file.close();
     const result = validateDpx(file);
     try testing.expect(!result.is_valid);
+}
+
+test "validateDpx rejects corrupted orientation" {
+    // Build minimal DPX: 1100 bytes with valid header + image info + some image data
+    var dpx: [1100]u8 = undefined;
+    @memset(&dpx, 0);
+    @memcpy(dpx[0..4], "SDPX"); // big-endian magic
+    std.mem.writeInt(u32, dpx[4..8], 1024, .big); // image offset
+    dpx[8] = 'V'; // version string
+    dpx[9] = '2';
+    dpx[10] = '.';
+    dpx[11] = '0';
+    std.mem.writeInt(u32, dpx[16..20], 1100, .big); // file size
+    // Image info header at offset 768
+    std.mem.writeInt(u16, dpx[768..770], 0, .big); // orientation = 0
+    std.mem.writeInt(u16, dpx[770..772], 1, .big); // num_elements = 1
+    std.mem.writeInt(u32, dpx[772..776], 4, .big); // pixels_per_line (small for test)
+    std.mem.writeInt(u32, dpx[776..780], 4, .big); // lines_per_element (small for test)
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Valid first
+    tmp.dir.writeFile(.{ .sub_path = "good.dpx", .data = &dpx }) catch return;
+    const good = tmp.dir.openFile("good.dpx", .{}) catch return;
+    defer good.close();
+    try testing.expect(validateDpx(good).is_valid);
+
+    // Corrupt orientation to 99
+    var bad = dpx;
+    std.mem.writeInt(u16, bad[768..770], 99, .big);
+    tmp.dir.writeFile(.{ .sub_path = "bad_orient.dpx", .data = &bad }) catch return;
+    const f = tmp.dir.openFile("bad_orient.dpx", .{}) catch return;
+    defer f.close();
+    try testing.expect(!validateDpx(f).is_valid);
+}
+
+test "validateDpx rejects corrupted element count" {
+    var dpx: [1100]u8 = undefined;
+    @memset(&dpx, 0);
+    @memcpy(dpx[0..4], "SDPX");
+    std.mem.writeInt(u32, dpx[4..8], 1024, .big);
+    dpx[8] = 'V';
+    std.mem.writeInt(u32, dpx[16..20], 1100, .big);
+    std.mem.writeInt(u16, dpx[768..770], 0, .big);
+    std.mem.writeInt(u16, dpx[770..772], 1, .big);
+    std.mem.writeInt(u32, dpx[772..776], 4, .big);
+    std.mem.writeInt(u32, dpx[776..780], 4, .big);
+
+    // Corrupt num_elements to 0
+    var bad = dpx;
+    std.mem.writeInt(u16, bad[770..772], 0, .big);
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "bad_elem.dpx", .data = &bad }) catch return;
+    const f = tmp.dir.openFile("bad_elem.dpx", .{}) catch return;
+    defer f.close();
+    try testing.expect(!validateDpx(f).is_valid);
 }
 
 // ---- JPEG2000 ----

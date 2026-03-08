@@ -248,6 +248,34 @@ pub fn validateAvi(file: std.fs.File) ValidationResult {
                 const list_type = chunk_hdr[8..12];
                 if (std.mem.eql(u8, list_type, "hdrl")) {
                     found_hdrl = true;
+                    // Parse avih (main AVI header) - first sub-chunk of hdrl
+                    const avih_pos = pos + 12; // After LIST + size + "hdrl"
+                    if (avih_pos + 64 <= riff_end) {
+                        file.seekTo(avih_pos) catch {};
+                        var avih_hdr: [64]u8 = undefined;
+                        const avih_read = file.read(&avih_hdr) catch 0;
+                        if (avih_read >= 64 and std.mem.eql(u8, avih_hdr[0..4], "avih")) {
+                            const avih_size = std.mem.readInt(u32, avih_hdr[4..8], .little);
+                            if (avih_size >= 56) {
+                                // avih fields: microSecPerFrame(4) + maxBytesPerSec(4) + padding(4) +
+                                //   flags(4) + totalFrames(4) + initialFrames(4) + streams(4) +
+                                //   suggestedBufferSize(4) + width(4) + height(4) + reserved(16)
+                                const avi_width = std.mem.readInt(u32, avih_hdr[40..44], .little);
+                                const avi_height = std.mem.readInt(u32, avih_hdr[44..48], .little);
+                                const num_streams = std.mem.readInt(u32, avih_hdr[32..36], .little);
+
+                                if (avi_width == 0 or avi_width > 65536) {
+                                    return ValidationResult.invalid(.avi, "AVI header width invalid");
+                                }
+                                if (avi_height == 0 or avi_height > 65536) {
+                                    return ValidationResult.invalid(.avi, "AVI header height invalid");
+                                }
+                                if (num_streams == 0 or num_streams > 100) {
+                                    return ValidationResult.invalid(.avi, "AVI header stream count invalid");
+                                }
+                            }
+                        }
+                    }
                 } else if (std.mem.eql(u8, list_type, "movi")) {
                     found_movi = true;
                     movi_offset = pos + 12; // After LIST + size + "movi"
@@ -2446,6 +2474,53 @@ test "FormatValidator rejects truncated AVI" {
 
     try std.testing.expectEqual(FileFormat.avi, result.format);
     try std.testing.expect(!result.is_valid);
+}
+
+test "validateAvi rejects corrupted avih dimensions" {
+    // Build minimal AVI with proper structure
+    // RIFF(12) + LIST hdrl(8+4 + avih(8+56)) + LIST movi(8+4) = 12 + 76 + 12 = 100 bytes
+    var avi: [100]u8 = undefined;
+    @memset(&avi, 0);
+    @memcpy(avi[0..4], "RIFF");
+    std.mem.writeInt(u32, avi[4..8], 92, .little); // RIFF payload size
+    @memcpy(avi[8..12], "AVI ");
+    // LIST hdrl at offset 12
+    @memcpy(avi[12..16], "LIST");
+    std.mem.writeInt(u32, avi[16..20], 68, .little); // LIST payload = "hdrl"(4) + avih chunk(8+56)
+    @memcpy(avi[20..24], "hdrl");
+    // avih chunk at offset 24
+    @memcpy(avi[24..28], "avih");
+    std.mem.writeInt(u32, avi[28..32], 56, .little); // avih data size
+    // avih data starts at offset 32:
+    // [32..36] microSecPerFrame, [36..40] maxBytesPerSec, [40..44] padding,
+    // [44..48] flags, [48..52] totalFrames, [52..56] initialFrames,
+    // [56..60] streams, [60..64] suggestedBufferSize, [64..68] width, [68..72] height
+    std.mem.writeInt(u32, avi[32..36], 33333, .little); // ~30fps
+    std.mem.writeInt(u32, avi[56..60], 1, .little); // streams = 1
+    std.mem.writeInt(u32, avi[64..68], 320, .little); // width
+    std.mem.writeInt(u32, avi[68..72], 240, .little); // height
+    // LIST movi at offset 88
+    @memcpy(avi[88..92], "LIST");
+    std.mem.writeInt(u32, avi[92..96], 4, .little); // empty movi (just "movi" fourcc)
+    @memcpy(avi[96..100], "movi");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Valid first
+    tmp.dir.writeFile(.{ .sub_path = "good.avi", .data = &avi }) catch return;
+    const good = tmp.dir.openFile("good.avi", .{}) catch return;
+    defer good.close();
+    const good_result = validateAvi(good);
+    try std.testing.expect(good_result.is_valid);
+
+    // Corrupt width to 0
+    var bad = avi;
+    std.mem.writeInt(u32, bad[64..68], 0, .little);
+    tmp.dir.writeFile(.{ .sub_path = "bad_w.avi", .data = &bad }) catch return;
+    const f = tmp.dir.openFile("bad_w.avi", .{}) catch return;
+    defer f.close();
+    try std.testing.expect(!validateAvi(f).is_valid);
 }
 
 test "FormatValidator accepts valid uncompressed SWF (FWS)" {
