@@ -121,6 +121,7 @@ pub const creative_validators = @import("creative_validators.zig");
 pub const email_validators = @import("email_validators.zig");
 pub const error_messages = @import("error_messages.zig");
 pub const codec_utils = @import("codec_utils.zig");
+pub const xxhash64 = @import("xxhash64.zig");
 pub const i18n = @import("i18n/mod.zig");
 pub const progress = @import("progress.zig");
 // VideoToolbox removed — all video codecs use pure-Zig syntax validators
@@ -302,6 +303,8 @@ test {
     _ = @import("error_messages.zig");
     // Shared codec utilities (CRC, RBSP, LEB128, etc.)
     _ = @import("codec_utils.zig");
+    // xxHash64 (non-cryptographic hash used by Zstd content checksums)
+    _ = @import("xxhash64.zig");
     // i18n (internationalization)
     _ = @import("i18n/mod.zig");
     // Progress bar (progrez wrapper)
