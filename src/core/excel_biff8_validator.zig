@@ -40,6 +40,163 @@ const REC_INDEX: u16 = 0x020B;
 const REC_ROW: u16 = 0x0208;
 const REC_XF: u16 = 0x00E0;
 
+/// Known BIFF8 record types (from [MS-XLS] spec).
+/// Used to detect corrupted record headers — a random byte flip will
+/// almost certainly produce a type not in this set.
+fn isKnownBiff8RecordType(rec_type: u16) bool {
+    return switch (rec_type) {
+        // Core records
+        0x0006, // FORMULA
+        0x000A, // EOF
+        0x000C, // CALCCOUNT
+        0x000D, // CALCMODE
+        0x000E, // PRECISION
+        0x000F, // REFMODE
+        0x0010, // DELTA
+        0x0011, // ITERATION
+        0x0012, // PROTECT
+        0x0013, // PASSWORD
+        0x0014, // HEADER
+        0x0015, // FOOTER
+        0x0016, // EXTERNCOUNT
+        0x0017, // EXTERNSHEET
+        0x0018, // NAME/Lbl
+        0x0019, // WINDOWPROTECT
+        0x001A, // VERTICALPAGEBREAKS
+        0x001B, // HORIZONTALPAGEBREAKS
+        0x001C, // NOTE
+        0x001D, // SELECTION
+        0x0022, // 1904
+        0x0026, // LEFTMARGIN
+        0x0027, // RIGHTMARGIN
+        0x0028, // TOPMARGIN
+        0x0029, // BOTTOMMARGIN
+        0x002A, // PRINTHEADERS
+        0x002B, // PRINTGRIDLINES
+        0x002F, // FILEPASS
+        0x0031, // FONT
+        0x003C, // CONTINUE
+        0x003D, // WINDOW1
+        0x0040, // BACKUP
+        0x0041, // PANE
+        0x0042, // CODEPAGE
+        0x004D, // PLS
+        0x0050, // DCON
+        0x0051, // DCONREF
+        0x0055, // DEFCOLWIDTH
+        0x005C, // WRITEACCESS
+        0x005D, // OBJ
+        0x005E, // UNCALCED
+        0x005F, // SAVERECALC
+        0x0060, // TEMPLATE
+        0x0063, // OBJPROTECT
+        0x007D, // COLINFO
+        0x007E, // RK (old)
+        0x0080, // GUTS
+        0x0081, // WSBOOL
+        0x0082, // GRIDSET
+        0x0083, // HCENTER
+        0x0084, // VCENTER
+        0x0085, // BOUNDSHEET8
+        0x008C, // COUNTRY
+        0x008D, // HIDEOBJ
+        0x0090, // SORT
+        0x0092, // PALETTE
+        0x009B, // FILTERMODE
+        0x009C, // FNGROUPCOUNT
+        0x009D, // AUTOFILTERINFO
+        0x009E, // AUTOFILTER
+        0x00A1, // SETUP (PrintSetup)
+        0x00AB, // GCW
+        0x00BD, // MULRK
+        0x00BE, // MULBLANK
+        0x00C1, // MMS
+        0x00D6, // RSTRING
+        0x00D7, // DBCELL
+        0x00DA, // BOOKBOOL
+        0x00DD, // SCENPROTECT
+        0x00E0, // XF
+        0x00E1, // INTERFACEHDR
+        0x00E2, // INTERFACEEND
+        0x00E5, // MERGEDCELLS/MERGECELLS
+        0x00EB, // MSO_DRAWING_GROUP (MsoDrawingGroup)
+        0x00EC, // MSO_DRAWING (MsoDrawing)
+        0x00ED, // MSO_DRAWING_SELECTION
+        0x00EF, // PHONETICPR
+        0x00FC, // SST
+        0x00FD, // LABELSST
+        0x00FF, // EXTSST
+        0x013D, // TABID
+        0x015F, // LABELRANGES
+        0x0160, // USESELFS
+        0x0161, // DSF
+        0x01AE, // SUPBOOK
+        0x01AF, // PROT4REV
+        0x01B0, // CONDFMT
+        0x01B1, // CF
+        0x01B2, // DVAL
+        0x01B5, // DCONBIN
+        0x01B6, // TXO
+        0x01B7, // REFRESHALL
+        0x01B8, // HLINK
+        0x01BA, // CODENAME
+        0x01BB, // SXFDBTYPE
+        0x01BC, // PROT4REVPASS
+        0x01BE, // DV
+        0x01C0, // XL5MODIFY
+        0x01C1, // FILESHARING2
+        0x0200, // DIMENSIONS
+        0x0201, // BLANK
+        0x0203, // NUMBER
+        0x0204, // LABEL
+        0x0205, // BOOLERR
+        0x0207, // STRING (formula result)
+        0x0208, // ROW
+        0x020B, // INDEX
+        0x0221, // ARRAY
+        0x0225, // DEFAULTROWHEIGHT
+        0x0236, // TABLE (DataTable)
+        0x023E, // WINDOW2
+        0x027E, // RK
+        0x0293, // STYLE
+        0x041E, // FORMAT
+        0x04BC, // SHRFMLA (shared formula)
+        0x0800, // SCREENTIP (HLink tooltip)
+        0x0802, // QSISXTAG
+        0x0803, // DBQUERYEXT
+        0x0805, // TXTQUERY
+        0x0809, // BOF
+        0x0850, // CHARTFRTINFO
+        0x0851, // FRTWRAPPER
+        0x0852, // STARTBLOCK
+        0x0853, // ENDBLOCK
+        0x0854, // STARTOBJECT
+        0x0855, // ENDOBJECT
+        0x0856, // CATLAB
+        0x0857, // MARKETO
+        0x0858, // CRTCOOPT
+        0x0859, // DROPDOWNOBJIDS
+        0x085A, // SHEETPROTECTION (FeatHdr)
+        0x085B, // RANGEPROTECTION (Feat)
+        0x0862, // SHEETLAYOUT
+        0x0863, // BOOKEXT
+        0x0864, // SXADDL
+        0x0867, // FEATHEADR11
+        0x0868, // FEAT11
+        0x0872, // SXADDL12
+        0x087C, // PLV
+        0x0892, // COMPAT12
+        0x0896, // DXF
+        0x0897, // TABLESTYLES
+        0x089A, // TABLESTYLE
+        0x089B, // TABLESTYLEELEMENT
+        0x089C, // STYLEEXT
+        0x08A3, // FORCEFULLCALCULATION
+        => true,
+        else => false,
+    };
+}
+
 /// BIFF8 version in BOF record
 const BIFF8_VERSION: u16 = 0x0600;
 
@@ -472,6 +629,11 @@ pub fn validateWorkbookStream(allocator: Allocator, wb_data: []const u8) Validat
         // Validate record doesn't extend beyond stream
         if (pos + 4 + rec_len > wb_data.len) {
             return ValidationResult.invalidWithDepth(.xls, "BIFF8 record extends beyond Workbook stream", .structural);
+        }
+
+        // Validate record type is known — catches corrupted record headers
+        if (!isKnownBiff8RecordType(rec_type)) {
+            return ValidationResult.invalidWithDepth(.xls, "Unknown BIFF8 record type (corrupted record header)", .full);
         }
 
         // Collect specific records
