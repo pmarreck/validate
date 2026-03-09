@@ -5767,6 +5767,7 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
 // ============ BEAM Bytecode Validation ============
 
 /// Validate Erlang/Elixir BEAM bytecode files.
+/// Deep-validates compressed chunks (LitT zlib, Dbgi ETF-compressed) to catch bitrot.
 fn validateBeam(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
         return ValidationResult.invalidCode(.beam, .failed_to_stat, "file");
@@ -5793,6 +5794,8 @@ fn validateBeam(file: std.fs.File) ValidationResult {
     var has_strt = false;
     var has_impt = false;
     var has_expt = false;
+
+    const allocator = std.heap.page_allocator;
 
     while (offset + 8 <= chunk_area_end) {
         var chunk_header_buf: [8]u8 = undefined;
@@ -5850,6 +5853,80 @@ fn validateBeam(file: std.fs.File) ValidationResult {
                 // OTP instruction set version is typically 0
                 if (instruction_set > 1) {
                     return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "Code chunk", "Unknown instruction set version");
+                }
+            }
+        }
+
+        // For LitT chunk: verify zlib decompression of compressed literal table
+        if (std.mem.eql(u8, chunk_name, "LitT") and chunk_size > 4) {
+            const compressed_size = chunk_size - 4; // first 4 bytes = uncompressed size
+            if (compressed_size > 0) {
+                // Read uncompressed size to validate it
+                file.seekTo(offset + 8) catch {};
+                var uncomp_size_buf: [4]u8 = undefined;
+                const us_read = file.readAll(&uncomp_size_buf) catch 0;
+                if (us_read == 4) {
+                    const uncomp_size = std.mem.readInt(u32, &uncomp_size_buf, .big);
+                    // If uncompressed size > 0, data should be zlib-compressed
+                    if (uncomp_size > 0 and compressed_size >= 2) {
+                        const compressed_data = allocator.alloc(u8, compressed_size) catch null;
+                        if (compressed_data) |buf| {
+                            defer allocator.free(buf);
+                            const rd = file.readAll(buf) catch 0;
+                            if (rd == compressed_size) {
+                                // Check for zlib header (0x78xx)
+                                if (buf[0] == 0x78) {
+                                    const decompressed = zlib.inflateZlibAlloc(allocator, buf, 64 * 1024 * 1024) catch {
+                                        return ValidationResult.invalidCodeMsg(.beam, .decompression_failed, "LitT chunk", "zlib decompression failed (corrupt literal table)");
+                                    };
+                                    allocator.free(decompressed);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // For Dbgi/Docs/Attr/CInf chunks: verify zlib decompression of ETF-compressed data
+        // ETF compressed format: 0x83 (version), 0x50 (compressed tag), 4-byte uncompressed size, zlib data
+        if ((std.mem.eql(u8, chunk_name, "Dbgi") or std.mem.eql(u8, chunk_name, "Docs") or
+            std.mem.eql(u8, chunk_name, "Attr") or std.mem.eql(u8, chunk_name, "CInf")) and chunk_size > 6)
+        {
+            file.seekTo(offset + 8) catch {};
+            var etf_hdr: [6]u8 = undefined;
+            const etf_read = file.readAll(&etf_hdr) catch 0;
+            if (etf_read == 6 and etf_hdr[0] == 0x83 and etf_hdr[1] == 0x50) {
+                // ETF compressed: version=0x83, tag=0x50, 4 bytes uncompressed size, then zlib
+                const zlib_size = chunk_size - 6;
+                if (zlib_size >= 2) {
+                    const compressed_data = allocator.alloc(u8, zlib_size) catch null;
+                    if (compressed_data) |buf| {
+                        defer allocator.free(buf);
+                        const rd = file.readAll(buf) catch 0;
+                        if (rd == zlib_size) {
+                            if (buf[0] == 0x78) {
+                                const decompressed = zlib.inflateZlibAlloc(allocator, buf, 64 * 1024 * 1024) catch {
+                                    return ValidationResult.invalidCodeMsg(.beam, .decompression_failed, "ETF chunk", "zlib decompression failed (corrupt compressed data)");
+                                };
+                                allocator.free(decompressed);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // For FunT chunk: validate entry count × entry size (each entry is 6 u32s = 24 bytes)
+        if (std.mem.eql(u8, chunk_name, "FunT") and chunk_size >= 4) {
+            file.seekTo(offset + 8) catch {};
+            var funt_count_buf: [4]u8 = undefined;
+            const funt_read = file.readAll(&funt_count_buf) catch 0;
+            if (funt_read == 4) {
+                const fun_count = std.mem.readInt(u32, &funt_count_buf, .big);
+                const expected_size = 4 + fun_count * 24;
+                if (expected_size != chunk_size) {
+                    return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "FunT chunk", "Entry count × entry size does not match chunk size");
                 }
             }
         }
