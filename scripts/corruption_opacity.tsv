@@ -46,7 +46,7 @@ av1	mixed	AV1 carried in ISOBMFF may remain structurally valid for some byte fli
 beam	mixed	Chunked VM bytecode format can remain structurally parseable
 blorb	mixed	IFF chunk-level structure can survive data-region mutations
 bmp	mixed	Header-only checks leave pixel data corruption underconstrained
-3mf	mixed	ZIP CRC cross-validation catches most corruptions (4/5); seed 5 lands in unprotected region
+3mf	transparent	ZIP CRC + filename cross-validation catches all tested corruptions
 caf	mixed	Container can parse despite localized data damage
 cr2	mixed	Canon RAW TIFF container with large unprotected image data
 dicom	transparent	DICOM structural validation catches all tested corruptions
@@ -61,7 +61,7 @@ gltf	mixed	JSON + external/binary payload references create mixed integrity beha
 hdf5	mixed	Some mutations leave file navigable despite data corruption
 heic	mixed	Container/codec combination can remain syntactically valid
 ico	transparent	ICO structural + embedded image validation catches all tested corruptions
-idml	mixed	ZIP-based InDesign package can survive non-critical byte flips
+idml	transparent	ZIP CRC + filename cross-validation catches all tested corruptions
 iff	mixed	Chunk-based formats can tolerate some chunk-data mutations
 it	mixed	Tracker data may stay parseable with localized changes
 ivf	mixed	Simple video container with weak intrinsic integrity metadata
@@ -87,7 +87,7 @@ ply	mixed	Header/data split can preserve parseability after some mutations
 prproj	mixed	Gzip/XML project structures can survive localized content mutations
 doc	mixed	FIB + Table stream cross-validation catches structural corruption; no checksums for content bytes
 ppt	mixed	OLE2 compound storage lacks mandatory end-to-end integrity
-pptx	mixed	ZIP CRC cross-validation catches most corruptions (4/5); seed 5 lands in unprotected region
+pptx	transparent	ZIP CRC + filename cross-validation catches all tested corruptions
 prores	mixed	Codec stream can degrade without hard parse failure
 s3m	mixed	Tracker format can remain loadable with localized damage
 sqlite	mixed	Page-level semantics may allow partial validity after mutation
@@ -121,7 +121,7 @@ n64	mixed	N64 ROM CRC covers boot code only; rest of ROM is unprotected
 nes	mixed	iNES header format byte is weakly constrained; mapper/flag mutations tolerated
 netcdf	mixed	NetCDF magic + dimension structure can survive some payload mutations
 nifti	mixed	NIfTI header fields are weakly cross-validated; data blob unprotected
-pages	mixed	ZIP CRC cross-validation catches most corruptions (4/5); seed 5 lands in unprotected region
+pages	transparent	ZIP CRC + filename cross-validation catches all tested corruptions
 parquet	mixed	Parquet footer magic + Thrift metadata can survive some localized mutations
 psd	mixed	PSD header checks do not cover full layer/channel data integrity
 spotlight	opaque	macOS Spotlight store has weak intrinsic integrity metadata

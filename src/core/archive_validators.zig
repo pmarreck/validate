@@ -1713,10 +1713,35 @@ pub fn validateZipDeepWithCentralDirectory(
             return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP filename length mismatch (central vs local)", .full);
         }
 
-        const skip_local_name: i64 = @intCast(local_filename_len);
-        file.seekBy(skip_local_name) catch {
-            return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "local filename", .full);
-        };
+        // Cross-validate filename content (not just length)
+        // This catches corruption that lands on filename bytes in either the
+        // central directory or local header without affecting CRC/size fields
+        if (!name_truncated and name_slice.len > 0 and local_filename_len == filename_len) {
+            var local_name_buf: [ZIP_TELEMETRY_MAX_NAME]u8 = undefined;
+            const local_name_to_read = @min(@as(usize, local_filename_len), local_name_buf.len);
+            const local_name_read = file.readAll(local_name_buf[0..local_name_to_read]) catch {
+                return ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "local filename", .full);
+            };
+            if (local_name_read != local_name_to_read) {
+                return ValidationResult.invalidCodeWithDepth(format, .truncated, "local filename", .full);
+            }
+            if (!std.mem.eql(u8, name_slice, local_name_buf[0..local_name_to_read])) {
+                return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP filename mismatch (central vs local)", .full);
+            }
+            // Skip any remaining filename bytes beyond our buffer
+            if (local_filename_len > local_name_to_read) {
+                const remaining: i64 = @intCast(local_filename_len - local_name_to_read);
+                file.seekBy(remaining) catch {
+                    return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "local filename", .full);
+                };
+            }
+        } else {
+            // Can't compare content (truncated or empty) — just skip
+            const skip_local_name: i64 = @intCast(local_filename_len);
+            file.seekBy(skip_local_name) catch {
+                return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "local filename", .full);
+            };
+        }
         const skip_local_extra: i64 = @intCast(local_extra_len);
         file.seekBy(skip_local_extra) catch {
             return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "local extra", .full);
