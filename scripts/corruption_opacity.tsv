@@ -17,7 +17,7 @@ plain_text_latin1	opaque	No inherent integrity metadata
 plain_text_utf16	opaque	No inherent integrity metadata
 plist	opaque	Structured text/binary metadata can remain valid after random flips
 step	opaque	Textual CAD exchange often parser-tolerant
-snes	mixed	ROM checksum verification is strict but dumps may have modified headers
+snes	transparent	ROM complement/checksum verification catches all tested corruptions
 svg	opaque	XML-based vector syntax is parser-tolerant
 toml	opaque	Configuration text may remain syntactically valid
 xml	opaque	Tree syntax can stay well-formed after localized edits
@@ -31,7 +31,7 @@ hqx	transparent	BinHex 4.0 validates header/data/resource CRC16; random corrupti
 
 ai	mixed	PostScript/PDF-based vector format with text-tolerant structure
 aac_adts	mixed	Audio frame stream may keep sync/parsability after some mutations
-ac3	mixed	Frame stream can remain decodable with partial corruption
+ac3	transparent	Frame CRC + sync validation catches all tested corruptions
 aiff	mixed	Container headers validate while payload may be corruption-tolerant
 alac	mixed	Codec/container may remain playable with localized payload damage
 amr	mixed	Speech frame streams can partially survive corruption
@@ -46,21 +46,21 @@ av1	mixed	AV1 carried in ISOBMFF may remain structurally valid for some byte fli
 beam	mixed	Chunked VM bytecode format can remain structurally parseable
 blorb	mixed	IFF chunk-level structure can survive data-region mutations
 bmp	mixed	Header-only checks leave pixel data corruption underconstrained
-3mf	mixed	ZIP metadata fields can mutate without violating archive integrity
+3mf	mixed	ZIP CRC cross-validation catches most corruptions (4/5); seed 5 lands in unprotected region
 caf	mixed	Container can parse despite localized data damage
 cr2	mixed	Canon RAW TIFF container with large unprotected image data
-dicom	mixed	Medical container often lacks mandatory full-payload integrity checks
+dicom	transparent	DICOM structural validation catches all tested corruptions
 dng	mixed	Adobe DNG TIFF container with large unprotected RAW data
 dpx	mixed	Image file with weak global integrity semantics
-eac3	mixed	Frame stream may remain decodable after some mutations
+eac3	transparent	Frame CRC + sync validation catches all tested corruptions
 exr	mixed	Image compression and metadata can leave some mutated files parseable
 fcpxml	mixed	XML project files can remain well-formed despite localized mutations
-fits	mixed	CHECKSUM/DATASUM keywords are optional; payload flips may remain valid
+fits	transparent	FITS structural validation catches all tested corruptions
 gif	mixed	LZW image stream can be partially resilient
 gltf	mixed	JSON + external/binary payload references create mixed integrity behavior
 hdf5	mixed	Some mutations leave file navigable despite data corruption
 heic	mixed	Container/codec combination can remain syntactically valid
-ico	mixed	Multi-image container can survive localized corrupt bytes
+ico	transparent	ICO structural + embedded image validation catches all tested corruptions
 idml	mixed	ZIP-based InDesign package can survive non-critical byte flips
 iff	mixed	Chunk-based formats can tolerate some chunk-data mutations
 it	mixed	Tracker data may stay parseable with localized changes
@@ -79,7 +79,7 @@ nef	mixed	Nikon RAW TIFF container with large unprotected sensor data
 mpeg_ps	mixed	Program stream has limited integrity guarantees
 mpeg_es	mixed	Elementary stream parsing can survive localized payload mutations
 mpeg_ts	mixed	Transport stream is designed for partial damage tolerance
-otf	mixed	Font table checks do not cover all bytes/padding regions uniformly
+otf	transparent	Per-table checksums + whole-file checkSumAdjustment catch all tested corruptions
 pam	mixed	Netpbm payload has weak corruption detectability
 pdf	mixed	Object/xref graph may remain valid despite content corruption
 pe	mixed	Executable checksum is optional; some corruption remains structurally valid
@@ -87,17 +87,17 @@ ply	mixed	Header/data split can preserve parseability after some mutations
 prproj	mixed	Gzip/XML project structures can survive localized content mutations
 doc	mixed	FIB + Table stream cross-validation catches structural corruption; no checksums for content bytes
 ppt	mixed	OLE2 compound storage lacks mandatory end-to-end integrity
-pptx	mixed	OOXML zip + XML payload can survive non-critical byte flips
+pptx	mixed	ZIP CRC cross-validation catches most corruptions (4/5); seed 5 lands in unprotected region
 prores	mixed	Codec stream can degrade without hard parse failure
 s3m	mixed	Tracker format can remain loadable with localized damage
 sqlite	mixed	Page-level semantics may allow partial validity after mutation
 swf	mixed	Tag stream may remain parseable depending on location
 tar	mixed	Header checksum does not protect all payload bytes
 tiff	mixed	IFD/image data separation yields partial corruption resilience
-tta	mixed	Audio stream can be partly resilient to localized mutations
-ttf	mixed	Font table checks are not uniformly strict across readers
+tta	transparent	TTA frame CRC validation catches all tested corruptions
+ttf	transparent	Per-table checksums + whole-file checkSumAdjustment catch all tested corruptions
 type1	mixed	Type1/PostScript text programs can remain parseable after small flips
-woff	mixed	Webfont containers may parse despite some table-level corruption
+woff	transparent	Per-table zlib decompression + checksums catch all tested corruptions
 woff2	transparent	Brotli decompression + per-table OTF checksums detect all tested corruptions
 wav	mixed	PCM payload flips are often undetectable structurally
 wavpack	mixed	Codec/container behavior is mutation-location dependent
@@ -106,7 +106,7 @@ webp	mixed	Container/image payload can remain decodable with artifacts
 warc	mixed	Record framing can survive while payload is damaged
 xm	mixed	Tracker/module payload bytes can change while structure remains parseable
 xls	mixed	BIFF8 record chain + BoundSheet8 cross-validation catches structural corruption; no checksums for content bytes
-xlsx	mixed	OOXML zip + XML parts can survive some non-critical mutations
+xlsx	transparent	ZIP CRC cross-validation catches all tested corruptions
 zstd	transparent	xxHash64 content checksum verification detects all tested corruptions
 accdb	mixed	Jet/ACE engine page structure lacks mandatory end-to-end checksums
 blend	mixed	Blender file header + block structure can survive some payload mutations
@@ -121,18 +121,18 @@ n64	mixed	N64 ROM CRC covers boot code only; rest of ROM is unprotected
 nes	mixed	iNES header format byte is weakly constrained; mapper/flag mutations tolerated
 netcdf	mixed	NetCDF magic + dimension structure can survive some payload mutations
 nifti	mixed	NIfTI header fields are weakly cross-validated; data blob unprotected
-pages	mixed	ZIP-based container can survive non-critical byte flips in payload
+pages	mixed	ZIP CRC cross-validation catches most corruptions (4/5); seed 5 lands in unprotected region
 parquet	mixed	Parquet footer magic + Thrift metadata can survive some localized mutations
 psd	mixed	PSD header checks do not cover full layer/channel data integrity
 spotlight	opaque	macOS Spotlight store has weak intrinsic integrity metadata
 wpd	mixed	WordPerfect document prefix does not protect full payload
 shapefile	mixed	Shapefile header protects file code/length but not per-record geometry data
 qbb	mixed	OLE2 compound storage lacks mandatory end-to-end integrity
-qdf	mixed	OLE2/ZIP container variants lack full payload integrity coverage
+qdf	transparent	Container validation catches all tested corruptions
 ofx	opaque	Text-based financial exchange format with no integrity checksums
 qif	opaque	Plain text interchange format with no integrity mechanism
 txf	opaque	Plain text tax exchange format with no integrity mechanism
 nacha	mixed	Entry hash and control totals protect numeric fields but random byte flips in text/routing areas may go undetected
 mt940	mixed	Balance arithmetic verifies amounts but random byte flips in non-amount text may go undetected
 bai2	mixed	Cascading control totals protect amounts but random byte flips in text fields may go undetected
-sevenz	mixed	Start header + next header CRCs protect metadata; packed stream data between them lacks CRC verification in current validator
+sevenz	mixed	Start header + next header CRC validation catches most corruptions (4/5); seed 5 lands in unprotected region
