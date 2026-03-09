@@ -359,6 +359,59 @@ pub fn validateWordPerfect(file: std.fs.File) ValidationResult {
 
 // ============ SQLite Validator ============
 
+/// SQLite varint result: the decoded value and how many bytes were consumed.
+const VarintResult = struct {
+	value: u64,
+	bytes_read: u32,
+};
+
+/// Read a SQLite-format varint starting at `pos` within `data[0..limit]`.
+/// Returns bytes_read=0 if the varint would exceed the buffer.
+/// SQLite varints are 1-9 bytes: high bit set means "more bytes follow",
+/// except the 9th byte which uses all 8 bits.
+fn readVarint(data: []const u8, pos: u32, limit: u32) VarintResult {
+	if (pos >= limit) return .{ .value = 0, .bytes_read = 0 };
+	var result: u64 = 0;
+	var i: u32 = 0;
+	while (i < 8) : (i += 1) {
+		if (pos + i >= limit) return .{ .value = 0, .bytes_read = 0 };
+		const b = data[pos + i];
+		result = (result << 7) | @as(u64, b & 0x7F);
+		if (b & 0x80 == 0) return .{ .value = result, .bytes_read = i + 1 };
+	}
+	// 9th byte: all 8 bits are data
+	if (pos + 8 >= limit) return .{ .value = 0, .bytes_read = 0 };
+	result = (result << 8) | @as(u64, data[pos + 8]);
+	return .{ .value = result, .bytes_read = 9 };
+}
+
+/// Return the content size in bytes for a SQLite serial type code.
+/// Serial types: 0=NULL(0), 1=int8(1), 2=int16(2), 3=int24(3), 4=int32(4),
+/// 5=int48(6), 6=int64(8), 7=float64(8), 8=zero(0), 9=one(0),
+/// >=12 even: blob of (N-12)/2, >=13 odd: text of (N-13)/2.
+fn serialTypeContentSize(serial_type: u64) u64 {
+	return switch (serial_type) {
+		0 => 0, // NULL
+		1 => 1, // 8-bit int
+		2 => 2, // 16-bit int
+		3 => 3, // 24-bit int
+		4 => 4, // 32-bit int
+		5 => 6, // 48-bit int
+		6 => 8, // 64-bit int
+		7 => 8, // IEEE 754 float
+		8 => 0, // integer 0
+		9 => 0, // integer 1
+		10, 11 => 0, // reserved (should not appear)
+		else => if (serial_type >= 12)
+			if (serial_type % 2 == 0)
+				(serial_type - 12) / 2 // blob
+			else
+				(serial_type - 13) / 2 // text
+		else
+			0,
+	};
+}
+
 /// Validate SQLite database file structure.
 pub fn validateSqlite(file: std.fs.File) ValidationResult {
     return validateSqliteWithOptions(file, false);
@@ -511,6 +564,176 @@ pub fn validateSqliteWithOptions(file: std.fs.File, skip_magic: bool) Validation
             // Allow minor tolerance (WAL mode may differ)
             if (file_size < expected_size -| actual_page_size or file_size > expected_size + actual_page_size) {
                 return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite file size inconsistent with page count");
+            }
+        }
+    }
+
+    // Validate B-tree page headers, cell pointers, freeblocks, and cell record
+    // headers across all pages. This catches corruption in structural fields,
+    // cell pointer arrays, freeblock chains, and cell content (varint headers).
+    const reserved_per_page = @as(u32, header[20]);
+    const usable_size: u32 = @intCast(actual_page_size - reserved_per_page);
+    const total_pages: u32 = if (db_page_count > 0)
+        db_page_count
+    else
+        @intCast(file_size / actual_page_size);
+
+    // Validate all pages (capped at a reasonable limit for performance)
+    const max_pages_to_check: u32 = @min(total_pages, 256);
+    var page_buf: [65536]u8 = undefined;
+    const page_slice = page_buf[0..@intCast(actual_page_size)];
+
+    var page_num: u32 = 1;
+    while (page_num <= max_pages_to_check) : (page_num += 1) {
+        const page_offset: u64 = (@as(u64, page_num) - 1) * actual_page_size;
+        file.seekTo(page_offset) catch break;
+        const n = file.read(page_slice) catch break;
+        if (n < actual_page_size) break;
+
+        // Page 1 has the 100-byte database header; B-tree header starts at offset 100
+        const hdr_offset: u32 = if (page_num == 1) 100 else 0;
+        const page_type = page_slice[hdr_offset];
+
+        // Only validate B-tree pages (types 2, 5, 10, 13)
+        if (page_type != 2 and page_type != 5 and page_type != 10 and page_type != 13) {
+            continue;
+        }
+
+        const is_interior = (page_type == 2 or page_type == 5);
+        const btree_hdr_size: u32 = if (is_interior) 12 else 8;
+
+        // Parse B-tree page header
+        const first_freeblock = std.mem.readInt(u16, page_slice[hdr_offset + 1 ..][0..2], .big);
+        const pg_cell_count = std.mem.readInt(u16, page_slice[hdr_offset + 3 ..][0..2], .big);
+        const pg_content_offset = std.mem.readInt(u16, page_slice[hdr_offset + 5 ..][0..2], .big);
+        const pg_fragmented = page_slice[hdr_offset + 7];
+        const actual_pg_content: u32 = if (pg_content_offset == 0) 65536 else @as(u32, pg_content_offset);
+
+        // Validate content offset is within usable page
+        if (actual_pg_content > usable_size) {
+            return ValidationResult.invalidCode(.sqlite, .exceeds_bounds, "SQLite B-tree cell content area beyond page");
+        }
+
+        // Validate cell count is reasonable (each cell pointer is 2 bytes)
+        const ptr_array_start = hdr_offset + btree_hdr_size;
+        const ptr_array_end = ptr_array_start + @as(u32, pg_cell_count) * 2;
+        if (ptr_array_end > usable_size) {
+            return ValidationResult.invalidCode(.sqlite, .exceeds_bounds, "SQLite cell pointer array exceeds page");
+        }
+
+        // Validate each cell pointer points within the content area
+        var ptr_idx: u32 = 0;
+        while (ptr_idx < pg_cell_count) : (ptr_idx += 1) {
+            const ptr_off = ptr_array_start + ptr_idx * 2;
+            const cell_ptr = std.mem.readInt(u16, page_slice[ptr_off..][0..2], .big);
+            if (cell_ptr < actual_pg_content or cell_ptr >= usable_size) {
+                return ValidationResult.invalidCode(.sqlite, .exceeds_bounds, "SQLite cell pointer out of range");
+            }
+        }
+
+        // Walk the freeblock chain and validate consistency
+        var total_free_bytes: u32 = 0;
+        if (first_freeblock != 0) {
+            var fb_offset: u32 = @as(u32, first_freeblock);
+            var fb_count: u32 = 0;
+            while (fb_offset != 0 and fb_count < 1000) : (fb_count += 1) {
+                if (fb_offset < ptr_array_end or fb_offset + 4 > usable_size) {
+                    return ValidationResult.invalidCode(.sqlite, .exceeds_bounds, "SQLite freeblock outside page bounds");
+                }
+                const next_fb = std.mem.readInt(u16, page_slice[fb_offset..][0..2], .big);
+                const fb_size = std.mem.readInt(u16, page_slice[fb_offset + 2 ..][0..2], .big);
+                if (fb_size < 4) {
+                    return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite freeblock size too small");
+                }
+                if (fb_offset + fb_size > usable_size) {
+                    return ValidationResult.invalidCode(.sqlite, .exceeds_bounds, "SQLite freeblock extends beyond page");
+                }
+                // Freeblocks must be in ascending order
+                if (next_fb != 0 and next_fb <= fb_offset) {
+                    return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite freeblock chain not ascending");
+                }
+                total_free_bytes += fb_size;
+                fb_offset = @as(u32, next_fb);
+            }
+        }
+
+        // Page space accounting: all space on the page must be accounted for.
+        if (actual_pg_content + total_free_bytes + pg_fragmented > usable_size) {
+            return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite page space accounting overflow");
+        }
+
+        // Note: The unallocated gap between cell pointer array and cell content area
+        // may contain remnant data from previous cell allocations. SQLite does not
+        // zero this region when allocating cells from the gap, so non-zero bytes
+        // in this area are normal and cannot be used as a corruption indicator.
+
+        // Validate cell record headers on leaf pages by parsing varint payload lengths.
+        // On leaf table pages (type 13), each cell starts with: varint(payload_len), varint(rowid), then payload.
+        // On leaf index pages (type 10), each cell starts with: varint(payload_len), then payload.
+        // The payload begins with a varint header_len followed by serial type codes.
+        // Corrupted bytes in cell content will produce invalid varint sequences.
+        if (page_type == 13 or page_type == 10) {
+            var cell_idx: u32 = 0;
+            while (cell_idx < pg_cell_count) : (cell_idx += 1) {
+                const ptr_off = ptr_array_start + cell_idx * 2;
+                const cell_start = std.mem.readInt(u16, page_slice[ptr_off..][0..2], .big);
+                if (cell_start >= usable_size) continue;
+
+                var pos: u32 = cell_start;
+
+                // Parse payload length varint
+                const payload_result = readVarint(page_slice, pos, usable_size);
+                if (payload_result.bytes_read == 0) {
+                    return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite cell payload varint");
+                }
+                const payload_len = payload_result.value;
+                pos += payload_result.bytes_read;
+
+                // For table leaf pages, parse rowid varint
+                if (page_type == 13) {
+                    const rowid_result = readVarint(page_slice, pos, usable_size);
+                    if (rowid_result.bytes_read == 0) {
+                        return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite cell rowid varint");
+                    }
+                    pos += rowid_result.bytes_read;
+                }
+
+                // Parse the record header: first varint is header_len, then serial type codes
+                if (pos < usable_size and payload_len > 0) {
+                    const hdr_len_result = readVarint(page_slice, pos, usable_size);
+                    if (hdr_len_result.bytes_read == 0) {
+                        return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite record header length varint");
+                    }
+                    const record_hdr_len = hdr_len_result.value;
+                    // Header length includes itself; must be at least 1 (the varint itself)
+                    if (record_hdr_len < hdr_len_result.bytes_read or record_hdr_len > payload_len) {
+                        return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite record header length");
+                    }
+
+                    // Parse serial type codes within the header
+                    const hdr_end: u32 = @intCast(@min(@as(u64, pos) + record_hdr_len, usable_size));
+                    var hdr_pos = pos + hdr_len_result.bytes_read;
+                    var total_content_size: u64 = 0;
+                    while (hdr_pos < hdr_end) {
+                        const st_result = readVarint(page_slice, hdr_pos, hdr_end);
+                        if (st_result.bytes_read == 0) {
+                            return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite serial type varint");
+                        }
+                        total_content_size += serialTypeContentSize(st_result.value);
+                        hdr_pos += st_result.bytes_read;
+                    }
+
+                    // Verify content size is consistent with payload
+                    // payload = header + content; content = payload - header_len
+                    if (payload_len >= record_hdr_len) {
+                        const expected_content = payload_len - record_hdr_len;
+                        // For overflow pages, total_content_size can exceed what's on this page,
+                        // but it must match the declared payload content exactly
+                        if (total_content_size != expected_content) {
+                            return ValidationResult.invalidCode(.sqlite, .invalid_value, "SQLite record content size mismatch");
+                        }
+                    }
+                }
             }
         }
     }
