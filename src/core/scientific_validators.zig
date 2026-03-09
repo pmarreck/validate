@@ -3658,122 +3658,315 @@ pub fn validateCif(file: std.fs.File) ValidationResult {
 
 // ============ GIS Format Validators ============
 
+/// Check if a shape type value is one of the ESRI-defined types.
+/// Valid types per spec: 0 (Null), 1 (Point), 3 (PolyLine), 5 (Polygon),
+/// 8 (MultiPoint), 11 (PointZ), 13 (PolyLineZ), 15 (PolygonZ),
+/// 18 (MultiPointZ), 21 (PointM), 23 (PolyLineM), 25 (PolygonM),
+/// 28 (MultiPointM), 31 (MultiPatch).
+fn isValidShapeType(t: i32) bool {
+	return switch (t) {
+		0, 1, 3, 5, 8, 11, 13, 15, 18, 21, 23, 25, 28, 31 => true,
+		else => false,
+	};
+}
+
+/// Returns true if the shape type has Z coordinates (types 11-18).
+fn shapeTypeHasZ(t: i32) bool {
+	return switch (t) {
+		11, 13, 15, 18 => true,
+		else => false,
+	};
+}
+
+/// Returns true if the shape type has M coordinates (types 11-18, 21-28).
+fn shapeTypeHasM(t: i32) bool {
+	return switch (t) {
+		11, 13, 15, 18, 21, 23, 25, 28 => true,
+		else => false,
+	};
+}
+
+/// Check if a f64 is a valid, finite coordinate (not NaN, not Inf).
+fn isFiniteDouble(v: f64) bool {
+	return !std.math.isNan(v) and !std.math.isInf(v);
+}
+
+/// Expected content length in 16-bit words for fixed-size shape types.
+/// Returns null for variable-length types (PolyLine, Polygon, MultiPoint, etc.).
+fn expectedContentLengthWords(t: i32) ?i32 {
+	return switch (t) {
+		0 => 2, // Null shape: just shape type (4 bytes = 2 words)
+		1 => 10, // Point: shape type + X + Y (4 + 8 + 8 = 20 bytes = 10 words)
+		11 => 18, // PointZ: shape type + X + Y + Z + M (4 + 8 + 8 + 8 + 8 = 36 = 18 words)
+		21 => 14, // PointM: shape type + X + Y + M (4 + 8 + 8 + 8 = 28 = 14 words)
+		else => null, // Variable-length types
+	};
+}
+
 /// Validate ESRI Shapefile (.shp) format.
-/// Full integrity validation: parses all records, validates geometry bounds,
-/// and checks record lengths.
+/// Deep integrity validation: header field checks, unused-byte verification,
+/// bounding-box cross-validation against record geometry, record sequential
+/// numbering, content-length validation for fixed-size types, and NaN/Inf
+/// rejection in coordinates.
 pub fn validateShapefile(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.shapefile, .failed_to_stat, "file");
-    const file_size = stat.size;
+	const stat = file.stat() catch return ValidationResult.invalidCode(.shapefile, .failed_to_stat, "file");
+	const file_size = stat.size;
 
-    file.seekTo(0) catch return ValidationResult.invalidCode(.shapefile, .failed_to_seek, "to start");
+	file.seekTo(0) catch return ValidationResult.invalidCode(.shapefile, .failed_to_seek, "to start");
 
-    var header: [100]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.shapefile, .failed_to_read, "Shapefile header");
+	var header: [100]u8 = undefined;
+	const header_read = file.read(&header) catch return ValidationResult.invalidCode(.shapefile, .failed_to_read, "Shapefile header");
 
-    if (header_read < 100) {
-        return ValidationResult.invalidCode(.shapefile, .file_too_small, "Shapefile");
-    }
+	if (header_read < 100) {
+		return ValidationResult.invalidCode(.shapefile, .file_too_small, "Shapefile");
+	}
 
-    // File code at offset 0: 9994 (big-endian)
-    const file_code = std.mem.readInt(i32, header[0..4], .big);
-    if (file_code != 9994) {
-        return ValidationResult.invalidCode(.shapefile, .invalid_magic_number, "Shapefile");
-    }
+	// File code at offset 0: 9994 (big-endian)
+	const file_code = std.mem.readInt(i32, header[0..4], .big);
+	if (file_code != 9994) {
+		return ValidationResult.invalidCode(.shapefile, .invalid_magic_number, "Shapefile");
+	}
 
-    // File length at offset 24 (big-endian, in 16-bit words)
-    const file_length_words = std.mem.readInt(i32, header[24..28], .big);
-    if (file_length_words < 50) {
-        return ValidationResult.invalidCode(.shapefile, .invalid_value, "file length");
-    }
-    const declared_file_size: u64 = @as(u64, @intCast(file_length_words)) * 2;
+	// Bytes 4-23 must be zero (unused, reserved per spec)
+	for (header[4..24]) |b| {
+		if (b != 0) {
+			return ValidationResult.invalidCode(.shapefile, .invalid_value, "reserved header bytes (4-23) must be zero");
+		}
+	}
 
-    if (declared_file_size > file_size) {
-        return ValidationResult.invalidCodeMsg(.shapefile, .exceeds_bounds, "Declared file length", "Declared file length exceeds actual size");
-    }
+	// File length at offset 24 (big-endian, in 16-bit words)
+	const file_length_words = std.mem.readInt(i32, header[24..28], .big);
+	if (file_length_words < 50) {
+		return ValidationResult.invalidCode(.shapefile, .invalid_value, "file length");
+	}
+	const declared_file_size: u64 = @as(u64, @intCast(file_length_words)) * 2;
 
-    // Version at offset 28: 1000 (little-endian)
-    const version = std.mem.readInt(i32, header[28..32], .little);
-    if (version != 1000) {
-        return ValidationResult.invalidCode(.shapefile, .invalid_value, "Shapefile version");
-    }
+	if (declared_file_size > file_size) {
+		return ValidationResult.invalidCodeMsg(.shapefile, .exceeds_bounds, "Declared file length", "Declared file length exceeds actual size");
+	}
 
-    // Shape type at offset 32 (little-endian) - valid values 0-31
-    const shape_type = std.mem.readInt(i32, header[32..36], .little);
-    if (shape_type < 0 or shape_type > 31) {
-        return ValidationResult.invalidCode(.shapefile, .invalid_value, "shape type");
-    }
+	// Version at offset 28: 1000 (little-endian)
+	const version = std.mem.readInt(i32, header[28..32], .little);
+	if (version != 1000) {
+		return ValidationResult.invalidCode(.shapefile, .invalid_value, "Shapefile version");
+	}
 
-    // Bounding box at offsets 36-68 (doubles, little-endian)
-    // Xmin, Ymin, Xmax, Ymax
-    const x_min: f64 = @bitCast(std.mem.readInt(u64, header[36..44], .little));
-    const y_min: f64 = @bitCast(std.mem.readInt(u64, header[44..52], .little));
-    const x_max: f64 = @bitCast(std.mem.readInt(u64, header[52..60], .little));
-    const y_max: f64 = @bitCast(std.mem.readInt(u64, header[60..68], .little));
+	// Shape type at offset 32 (little-endian) — must be a known ESRI type
+	const shape_type = std.mem.readInt(i32, header[32..36], .little);
+	if (!isValidShapeType(shape_type)) {
+		return ValidationResult.invalidCode(.shapefile, .invalid_value, "shape type");
+	}
 
-    // Validate bounding box (should be reasonable geographic coordinates or NaN for empty)
-    if (!std.math.isNan(x_min) and !std.math.isNan(x_max)) {
-        if (x_min > x_max) {
-            return ValidationResult.invalidCode(.shapefile, .invalid_value, "bounding box (Xmin > Xmax)");
-        }
-    }
-    if (!std.math.isNan(y_min) and !std.math.isNan(y_max)) {
-        if (y_min > y_max) {
-            return ValidationResult.invalidCode(.shapefile, .invalid_value, "bounding box (Ymin > Ymax)");
-        }
-    }
+	// Bounding box at offsets 36-68 (doubles, little-endian): Xmin, Ymin, Xmax, Ymax
+	const x_min: f64 = @bitCast(std.mem.readInt(u64, header[36..44], .little));
+	const y_min: f64 = @bitCast(std.mem.readInt(u64, header[44..52], .little));
+	const x_max: f64 = @bitCast(std.mem.readInt(u64, header[52..60], .little));
+	const y_max: f64 = @bitCast(std.mem.readInt(u64, header[60..68], .little));
 
-    // Parse records
-    var offset: u64 = 100;
-    var record_count: u32 = 0;
+	// Reject NaN/Inf in XY bounding box (corrupted doubles indicator)
+	if (!isFiniteDouble(x_min) or !isFiniteDouble(y_min) or !isFiniteDouble(x_max) or !isFiniteDouble(y_max)) {
+		return ValidationResult.invalidCode(.shapefile, .invalid_value, "bounding box contains NaN or Inf");
+	}
 
-    while (offset + 8 <= declared_file_size and record_count < 10_000_000) {
-        file.seekTo(offset) catch break;
+	// Validate bounding box ordering
+	if (x_min > x_max) {
+		return ValidationResult.invalidCode(.shapefile, .invalid_value, "bounding box (Xmin > Xmax)");
+	}
+	if (y_min > y_max) {
+		return ValidationResult.invalidCode(.shapefile, .invalid_value, "bounding box (Ymin > Ymax)");
+	}
 
-        var record_header: [8]u8 = undefined;
-        const rec_read = file.read(&record_header) catch break;
+	// Z bounding box at offsets 68-84
+	const z_min: f64 = @bitCast(std.mem.readInt(u64, header[68..76], .little));
+	const z_max: f64 = @bitCast(std.mem.readInt(u64, header[76..84], .little));
 
-        if (rec_read < 8) break;
+	// M bounding box at offsets 84-100
+	const m_min: f64 = @bitCast(std.mem.readInt(u64, header[84..92], .little));
+	const m_max: f64 = @bitCast(std.mem.readInt(u64, header[92..100], .little));
 
-        // Record number (1-based, big-endian)
-        const record_num = std.mem.readInt(i32, record_header[0..4], .big);
-        if (record_num < 1) {
-            return ValidationResult.invalidCode(.shapefile, .invalid_value, "record number");
-        }
+	// For non-Z shape types, Z range should be zero
+	if (!shapeTypeHasZ(shape_type)) {
+		if (z_min != 0.0 or z_max != 0.0) {
+			return ValidationResult.invalidCode(.shapefile, .invalid_value, "Z bounding box non-zero for non-Z shape type");
+		}
+	} else {
+		// Z type: validate finite and ordered
+		if (!isFiniteDouble(z_min) or !isFiniteDouble(z_max)) {
+			return ValidationResult.invalidCode(.shapefile, .invalid_value, "Z bounding box contains NaN or Inf");
+		}
+		if (z_min > z_max) {
+			return ValidationResult.invalidCode(.shapefile, .invalid_value, "bounding box (Zmin > Zmax)");
+		}
+	}
 
-        // Content length in 16-bit words (big-endian)
-        const content_length_words = std.mem.readInt(i32, record_header[4..8], .big);
-        if (content_length_words < 0) {
-            return ValidationResult.invalidCode(.shapefile, .invalid_value, "content length");
-        }
+	// For non-M shape types, M range should be zero
+	if (!shapeTypeHasM(shape_type)) {
+		if (m_min != 0.0 or m_max != 0.0) {
+			return ValidationResult.invalidCode(.shapefile, .invalid_value, "M bounding box non-zero for non-M shape type");
+		}
+	} else {
+		// M type: validate finite and ordered
+		if (!isFiniteDouble(m_min) or !isFiniteDouble(m_max)) {
+			return ValidationResult.invalidCode(.shapefile, .invalid_value, "M bounding box contains NaN or Inf");
+		}
+		if (m_min > m_max) {
+			return ValidationResult.invalidCode(.shapefile, .invalid_value, "bounding box (Mmin > Mmax)");
+		}
+	}
 
-        const content_length: u64 = @as(u64, @intCast(content_length_words)) * 2;
-        const record_end = offset + 8 + content_length;
+	// Parse records and cross-validate geometry against header bounding box
+	var offset: u64 = 100;
+	var record_count: u32 = 0;
+	// Track actual geometry extents for cross-validation
+	var actual_x_min: f64 = std.math.inf(f64);
+	var actual_y_min: f64 = std.math.inf(f64);
+	var actual_x_max: f64 = -std.math.inf(f64);
+	var actual_y_max: f64 = -std.math.inf(f64);
+	var has_geometry = false;
 
-        if (record_end > declared_file_size) {
-            return ValidationResult.invalid(.shapefile, "Record extends beyond file");
-        }
+	while (offset + 8 <= declared_file_size and record_count < 10_000_000) {
+		file.seekTo(offset) catch break;
 
-        // Validate shape type in record matches file header (or is Null=0)
-        if (content_length >= 4) {
-            var shape_type_buf: [4]u8 = undefined;
-            _ = file.read(&shape_type_buf) catch 0;
-            const rec_shape_type = std.mem.readInt(i32, &shape_type_buf, .little);
+		var record_header: [8]u8 = undefined;
+		const rec_read = file.read(&record_header) catch break;
 
-            if (rec_shape_type != 0 and rec_shape_type != shape_type) {
-                return ValidationResult.invalid(.shapefile, "Record shape type mismatch");
-            }
-        }
+		if (rec_read < 8) break;
 
-        offset = record_end;
-        record_count += 1;
-    }
+		// Record number (1-based, big-endian) — must be sequential
+		const record_num = std.mem.readInt(i32, record_header[0..4], .big);
+		const expected_record_num: i32 = @as(i32, @intCast(record_count)) + 1;
+		if (record_num != expected_record_num) {
+			return ValidationResult.invalidCode(.shapefile, .invalid_value, "record number (non-sequential)");
+		}
 
-    if (record_count == 0 and declared_file_size > 100) {
-        return ValidationResult.invalidCode(.shapefile, .no_valid_x_found, "records");
-    }
+		// Content length in 16-bit words (big-endian)
+		const content_length_words = std.mem.readInt(i32, record_header[4..8], .big);
+		if (content_length_words < 2) {
+			// Minimum content is shape type (4 bytes = 2 words)
+			return ValidationResult.invalidCode(.shapefile, .invalid_value, "content length");
+		}
 
-    // No CRC/hash — header + record structure parsing only
-    return ValidationResult.okWithDepth(.shapefile, .structural);
+		const content_length: u64 = @as(u64, @intCast(content_length_words)) * 2;
+		const record_end = offset + 8 + content_length;
+
+		if (record_end > declared_file_size) {
+			return ValidationResult.invalid(.shapefile, "Record extends beyond file");
+		}
+
+		// Read record content (up to reasonable limit for geometry validation)
+		const max_content_read: u64 = @min(content_length, 256);
+		var content_buf: [256]u8 = undefined;
+		const content_read = file.read(content_buf[0..max_content_read]) catch 0;
+
+		if (content_read >= 4) {
+			const rec_shape_type = std.mem.readInt(i32, content_buf[0..4], .little);
+
+			// Record shape type must be Null(0) or match header shape type
+			if (rec_shape_type != 0 and rec_shape_type != shape_type) {
+				return ValidationResult.invalid(.shapefile, "Record shape type mismatch");
+			}
+
+			// Validate content length for fixed-size shape types
+			if (rec_shape_type != 0) {
+				if (expectedContentLengthWords(rec_shape_type)) |expected_words| {
+					if (content_length_words != expected_words) {
+						return ValidationResult.invalidCode(.shapefile, .invalid_value, "content length wrong for shape type");
+					}
+				}
+			}
+
+			// Extract point coordinates for bounding box cross-validation
+			// Point (type 1): 4 bytes shape type + 8 bytes X + 8 bytes Y = 20 bytes
+			if (rec_shape_type == 1 and content_read >= 20) {
+				const px: f64 = @bitCast(std.mem.readInt(u64, content_buf[4..12], .little));
+				const py: f64 = @bitCast(std.mem.readInt(u64, content_buf[12..20], .little));
+
+				// Reject NaN/Inf in point coordinates
+				if (!isFiniteDouble(px) or !isFiniteDouble(py)) {
+					return ValidationResult.invalidCode(.shapefile, .invalid_value, "point coordinate NaN or Inf");
+				}
+
+				actual_x_min = @min(actual_x_min, px);
+				actual_y_min = @min(actual_y_min, py);
+				actual_x_max = @max(actual_x_max, px);
+				actual_y_max = @max(actual_y_max, py);
+				has_geometry = true;
+			}
+			// PointZ (type 11): 4 + 8 + 8 + 8 + 8 = 36 bytes
+			if (rec_shape_type == 11 and content_read >= 36) {
+				const px: f64 = @bitCast(std.mem.readInt(u64, content_buf[4..12], .little));
+				const py: f64 = @bitCast(std.mem.readInt(u64, content_buf[12..20], .little));
+
+				if (!isFiniteDouble(px) or !isFiniteDouble(py)) {
+					return ValidationResult.invalidCode(.shapefile, .invalid_value, "point coordinate NaN or Inf");
+				}
+
+				actual_x_min = @min(actual_x_min, px);
+				actual_y_min = @min(actual_y_min, py);
+				actual_x_max = @max(actual_x_max, px);
+				actual_y_max = @max(actual_y_max, py);
+				has_geometry = true;
+			}
+			// PointM (type 21): 4 + 8 + 8 + 8 = 28 bytes
+			if (rec_shape_type == 21 and content_read >= 28) {
+				const px: f64 = @bitCast(std.mem.readInt(u64, content_buf[4..12], .little));
+				const py: f64 = @bitCast(std.mem.readInt(u64, content_buf[12..20], .little));
+
+				if (!isFiniteDouble(px) or !isFiniteDouble(py)) {
+					return ValidationResult.invalidCode(.shapefile, .invalid_value, "point coordinate NaN or Inf");
+				}
+
+				actual_x_min = @min(actual_x_min, px);
+				actual_y_min = @min(actual_y_min, py);
+				actual_x_max = @max(actual_x_max, px);
+				actual_y_max = @max(actual_y_max, py);
+				has_geometry = true;
+			}
+			// For multi-vertex types (PolyLine, Polygon, MultiPoint, etc.),
+			// extract the per-record bounding box from bytes 4-35 (4 doubles)
+			if ((rec_shape_type == 3 or rec_shape_type == 5 or rec_shape_type == 8 or
+				rec_shape_type == 13 or rec_shape_type == 15 or rec_shape_type == 18 or
+				rec_shape_type == 23 or rec_shape_type == 25 or rec_shape_type == 28 or
+				rec_shape_type == 31) and content_read >= 36)
+			{
+				const rx_min: f64 = @bitCast(std.mem.readInt(u64, content_buf[4..12], .little));
+				const ry_min: f64 = @bitCast(std.mem.readInt(u64, content_buf[12..20], .little));
+				const rx_max: f64 = @bitCast(std.mem.readInt(u64, content_buf[20..28], .little));
+				const ry_max: f64 = @bitCast(std.mem.readInt(u64, content_buf[28..36], .little));
+
+				if (!isFiniteDouble(rx_min) or !isFiniteDouble(ry_min) or
+					!isFiniteDouble(rx_max) or !isFiniteDouble(ry_max))
+				{
+					return ValidationResult.invalidCode(.shapefile, .invalid_value, "record bounding box NaN or Inf");
+				}
+
+				actual_x_min = @min(actual_x_min, rx_min);
+				actual_y_min = @min(actual_y_min, ry_min);
+				actual_x_max = @max(actual_x_max, rx_max);
+				actual_y_max = @max(actual_y_max, ry_max);
+				has_geometry = true;
+			}
+		}
+
+		offset = record_end;
+		record_count += 1;
+	}
+
+	if (record_count == 0 and declared_file_size > 100) {
+		return ValidationResult.invalidCode(.shapefile, .no_valid_x_found, "records");
+	}
+
+	// Cross-validate: actual geometry extents must fit within header bounding box.
+	// Use exact containment — the spec requires the header bbox to envelope all geometry.
+	if (has_geometry) {
+		if (actual_x_min < x_min or actual_x_max > x_max or
+			actual_y_min < y_min or actual_y_max > y_max)
+		{
+			return ValidationResult.invalidCode(.shapefile, .invalid_value, "record geometry outside header bounding box");
+		}
+	}
+
+	return ValidationResult.okWithDepth(.shapefile, .structural);
 }
 
 // ============ Tests ============
