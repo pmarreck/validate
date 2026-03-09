@@ -109,7 +109,7 @@ xls	mixed	BIFF8 record chain + BoundSheet8 cross-validation catches structural c
 xlsx	transparent	ZIP CRC cross-validation catches all tested corruptions
 zstd	transparent	xxHash64 content checksum verification detects all tested corruptions
 accdb	mixed	Jet/ACE engine page structure lacks mandatory end-to-end checksums
-blend	mixed	Blender file header + block structure can survive some payload mutations
+blend	transparent	Blender header + DNA1 structure + ENDB terminator fully validated
 bsp	mixed	BSP version-only check; no per-lump integrity verification
 chd	mixed	CHD has SHA1 hashes but synthetic samples may lack full metadata coverage
 dwg	mixed	DWG header sentinel checks do not cover all file regions

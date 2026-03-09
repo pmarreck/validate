@@ -298,7 +298,7 @@ pub fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResul
     }
 
     if (!dna_fully_valid) {
-        return ValidationResult.okWithDepthAndWarning(.blend, .structural, "DNA1 block has invalid structure");
+        return ValidationResult.invalidCode(.blend, .invalid_value, "DNA1 block structure");
     }
 
     // Successfully validated: header + DNA1 full schema + ENDB terminator
@@ -2670,5 +2670,100 @@ test "validateBlendFromBuffer matches file validation" {
     const result = validateBlendFromBuffer(&blend_data);
     try std.testing.expectEqual(FileFormat.blend, result.format);
     try std.testing.expect(result.is_valid);
+}
+
+test "validateBlendDeep rejects corrupted DNA1 block data" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Construct a minimal valid .blend file with proper DNA1 and ENDB blocks
+    // Header: BLENDER- (64-bit) v (little-endian) 360
+    // DNA1 block with valid SDNA structure
+    // ENDB terminator block
+    const header = "BLENDER-v360";
+    // DNA1 block: code(4) + size(4) + old_ptr(8) + sdna_idx(4) + count(4) = 24 byte block header
+    // DNA1 data: SDNA(4) + NAME(4) + name_count(4) + "x\x00"(2) + padding(2) +
+    //            TYPE(4) + type_count(4) + "x\x00"(2) + padding(2) +
+    //            TLEN(4) + tlen(2) + padding(2) + STRC(4) + struct_count(4) = 44 bytes
+    const dna1_data_size: u32 = 44;
+    const block_header_size: usize = 4 + 4 + 8 + 4 + 4; // 24
+
+    var blend_buf: [12 + block_header_size + dna1_data_size + block_header_size]u8 = undefined;
+    @memset(&blend_buf, 0);
+
+    // Header
+    @memcpy(blend_buf[0..12], header);
+
+    // DNA1 block header
+    var pos: usize = 12;
+    @memcpy(blend_buf[pos..][0..4], "DNA1");
+    std.mem.writeInt(u32, blend_buf[pos + 4 ..][0..4], dna1_data_size, .little);
+    pos += block_header_size;
+
+    // DNA1 data: SDNA section
+    @memcpy(blend_buf[pos..][0..4], "SDNA");
+    pos += 4;
+    @memcpy(blend_buf[pos..][0..4], "NAME");
+    pos += 4;
+    std.mem.writeInt(u32, blend_buf[pos..][0..4], 1, .little); // 1 name
+    pos += 4;
+    blend_buf[pos] = 'x';
+    blend_buf[pos + 1] = 0; // null terminator
+    pos += 2;
+    pos = (pos + 3) & ~@as(usize, 3); // align to 4
+    @memcpy(blend_buf[pos..][0..4], "TYPE");
+    pos += 4;
+    std.mem.writeInt(u32, blend_buf[pos..][0..4], 1, .little); // 1 type
+    pos += 4;
+    blend_buf[pos] = 'x';
+    blend_buf[pos + 1] = 0;
+    pos += 2;
+    pos = (pos + 3) & ~@as(usize, 3); // align to 4
+    @memcpy(blend_buf[pos..][0..4], "TLEN");
+    pos += 4;
+    std.mem.writeInt(u16, blend_buf[pos..][0..2], 1, .little); // type length = 1
+    pos += 2;
+    pos = (pos + 3) & ~@as(usize, 3); // align to 4
+    @memcpy(blend_buf[pos..][0..4], "STRC");
+    pos += 4;
+    std.mem.writeInt(u32, blend_buf[pos..][0..4], 0, .little); // 0 structs
+    pos += 4;
+
+    // ENDB block header
+    @memcpy(blend_buf[pos..][0..4], "ENDB");
+    std.mem.writeInt(u32, blend_buf[pos + 4 ..][0..4], 0, .little);
+
+    // First verify the valid file passes
+    const valid_file = try tmp_dir.dir.createFile("valid.blend", .{});
+    try valid_file.writeAll(&blend_buf);
+    valid_file.close();
+
+    const valid_path = try tmp_dir.dir.realpathAlloc(allocator, "valid.blend");
+    defer allocator.free(valid_path);
+
+    const valid_result = validateBlendDeep(allocator, valid_path);
+    try std.testing.expect(valid_result.is_valid);
+
+    // Now corrupt the DNA1 data area (overwrite TYPE/TLEN/STRC sections)
+    var corrupt_buf = blend_buf;
+    const dna1_data_start = 12 + block_header_size; // where DNA1 data begins
+    // Corrupt from offset 12 within DNA1 data (the TYPE section) onwards
+    const corrupt_start = dna1_data_start + 12;
+    for (corrupt_start..corrupt_start + 20) |i| {
+        corrupt_buf[i] = 0xDE;
+    }
+
+    const corrupt_file = try tmp_dir.dir.createFile("corrupt.blend", .{});
+    try corrupt_file.writeAll(&corrupt_buf);
+    corrupt_file.close();
+
+    const corrupt_path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.blend");
+    defer allocator.free(corrupt_path);
+
+    const corrupt_result = validateBlendDeep(allocator, corrupt_path);
+    // A corrupted DNA1 block should be detected as INVALID, not just a warning
+    try std.testing.expect(!corrupt_result.is_valid);
 }
 
