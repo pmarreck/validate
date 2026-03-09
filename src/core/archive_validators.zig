@@ -19,7 +19,7 @@ const zlib = @import("zlib.zig");
 const bzip2 = @import("bzip2.zig");
 const sevenz_validator = @import("sevenz_validator.zig");
 const errmsg = @import("error_messages.zig");
-const xxhash64 = @import("xxhash64.zig");
+const XxHash64 = std.hash.XxHash64;
 const rarz = @import("rarz");
 const c_compact_pro = @cImport({
     @cInclude("compact_pro.h");
@@ -2589,7 +2589,7 @@ pub fn validateZstdDeep(allocator: Allocator, path: []const u8) ValidationResult
     var zstd_stream: std.compress.zstd.Decompress = .init(&file_reader.interface, &.{}, .{});
 
     // Initialize xxHash64 hasher for content checksum verification
-    var hasher = xxhash64.XxHash64.init(0);
+    var hasher = XxHash64.init(0);
 
     // Allocate writer buffer: must be >= window_len + block_size_max for direct mode.
     const writer_buf_size = std.compress.zstd.default_window_len + (1 << 17); // 8MB + 128KB
@@ -2651,7 +2651,7 @@ pub fn validateZstdDeep(allocator: Allocator, path: []const u8) ValidationResult
 /// Writer context that hashes decompressed data with xxHash64 while discarding it.
 /// Uses @fieldParentPtr to recover the context from the embedded Writer.
 const HashingWriter = struct {
-    hasher: *xxhash64.XxHash64,
+    hasher: *XxHash64,
     has_checksum: bool,
     total_decompressed: u64,
     writer: std.Io.Writer,
