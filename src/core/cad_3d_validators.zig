@@ -1624,31 +1624,68 @@ fn parseGltfJson(content: []const u8) ValidationResult {
         return ValidationResult.invalid(.gltf, "Not valid JSON");
     }
 
-    // Validate JSON structure by tracking braces/brackets
+    // Validate JSON structure by tracking braces/brackets and checking byte validity
     var brace_depth: i32 = 0;
     var bracket_depth: i32 = 0;
     var in_string = false;
     var escape_next = false;
     var has_asset = false;
     var has_version = false;
+    const data = content[start..];
 
-    for (content[start..]) |c| {
+    var i: usize = 0;
+    while (i < data.len) {
+        const c = data[i];
+
         if (escape_next) {
             escape_next = false;
+            i += 1;
             continue;
         }
 
         if (c == '\\' and in_string) {
             escape_next = true;
+            i += 1;
             continue;
         }
 
         if (c == '"') {
             in_string = !in_string;
+            i += 1;
             continue;
         }
 
-        if (in_string) continue;
+        if (in_string) {
+            // Inside strings: validate UTF-8 encoding for high bytes
+            if (c >= 0x80) {
+                const utf8_len = std.unicode.utf8ByteSequenceLength(c) catch {
+                    return ValidationResult.invalid(.gltf, "Invalid UTF-8 byte in JSON string");
+                };
+                if (i + utf8_len > data.len) {
+                    return ValidationResult.invalid(.gltf, "Truncated UTF-8 sequence in JSON string");
+                }
+                // Validate continuation bytes
+                var j: usize = 1;
+                while (j < utf8_len) : (j += 1) {
+                    if (data[i + j] & 0xC0 != 0x80) {
+                        return ValidationResult.invalid(.gltf, "Invalid UTF-8 continuation byte in JSON string");
+                    }
+                }
+                i += utf8_len;
+                continue;
+            }
+            // Bare control chars (except \t) are invalid in JSON strings
+            if (c < 0x20 and c != '\t') {
+                return ValidationResult.invalid(.gltf, "Control character in JSON string");
+            }
+            i += 1;
+            continue;
+        }
+
+        // Outside strings: only ASCII printable chars and whitespace are valid in JSON
+        if (c > 0x7E) {
+            return ValidationResult.invalid(.gltf, "Non-ASCII byte outside JSON string");
+        }
 
         switch (c) {
             '{' => brace_depth += 1,
@@ -1667,6 +1704,7 @@ fn parseGltfJson(content: []const u8) ValidationResult {
             },
             else => {},
         }
+        i += 1;
     }
 
     if (brace_depth != 0) {
