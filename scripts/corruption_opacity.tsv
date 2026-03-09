@@ -61,6 +61,7 @@ gltf	mixed	JSON text format without magic bytes; extensionless corruption tests 
 hdf5	mixed	Some mutations leave file navigable despite data corruption
 heic	mixed	Container/codec combination can remain syntactically valid
 ico	transparent	ICO structural + embedded image validation catches all tested corruptions
+icns	transparent	Embedded PNG chunk CRC-32 validation catches all tested corruptions
 idml	transparent	ZIP CRC + filename cross-validation catches all tested corruptions
 iff	transparent	ILBM ByteRun1 compression stream + BMHD cross-validation catches all tested corruptions
 it	mixed	Tracker data may stay parseable with localized changes

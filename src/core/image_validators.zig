@@ -3320,6 +3320,79 @@ pub fn validateIcoDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Validate macOS ICNS icon file: 8-byte header (magic "icns" + BE u32 total size),
 /// then a sequence of type/length/data entries. Walks all entries verifying bounds.
+/// Validate CRC-32 checksums of all chunks in an embedded PNG stream.
+/// PNG uses ISO-HDLC CRC-32 over chunk type + chunk data.
+const EmbeddedPngCrcResult = struct {
+    is_valid: bool,
+    chunks_checked: u32,
+};
+
+fn validateEmbeddedPngCrcs(file: std.fs.File, png_offset: u64, png_size: u64) EmbeddedPngCrcResult {
+    const invalid = EmbeddedPngCrcResult{ .is_valid = false, .chunks_checked = 0 };
+
+    // PNG signature is 8 bytes, minimum chunk is 12 bytes (len + type + crc, zero data)
+    if (png_size < 20) return invalid;
+
+    // Skip 8-byte PNG signature
+    var chunk_offset = png_offset + 8;
+    const png_end = png_offset + png_size;
+    var chunks_checked: u32 = 0;
+    var read_buf: [8192]u8 = undefined;
+
+    while (chunk_offset + 12 <= png_end) {
+        // Read chunk length (4) + type (4)
+        file.seekTo(chunk_offset) catch return invalid;
+        var chunk_hdr: [8]u8 = undefined;
+        const hdr_read = file.readAll(&chunk_hdr) catch return invalid;
+        if (hdr_read < 8) return invalid;
+
+        const chunk_len = std.mem.readInt(u32, chunk_hdr[0..4], .big);
+        const chunk_type = chunk_hdr[4..8];
+
+        // chunk_offset + 8 (header) + chunk_len (data) + 4 (crc) must fit
+        const chunk_total: u64 = 8 + @as(u64, chunk_len) + 4;
+        if (chunk_offset + chunk_total > png_end) return invalid;
+
+        // CRC covers type (4 bytes) + data (chunk_len bytes)
+        var crc = std.hash.Crc32.init();
+        crc.update(chunk_type);
+
+        // Feed data in chunks
+        var data_remaining: u64 = chunk_len;
+        var data_pos = chunk_offset + 8;
+        while (data_remaining > 0) {
+            const to_read = @min(data_remaining, read_buf.len);
+            file.seekTo(data_pos) catch return invalid;
+            const got = file.readAll(read_buf[0..@intCast(to_read)]) catch return invalid;
+            if (got < to_read) return invalid;
+            crc.update(read_buf[0..@intCast(to_read)]);
+            data_remaining -= to_read;
+            data_pos += to_read;
+        }
+
+        const computed_crc = crc.final();
+
+        // Read stored CRC
+        file.seekTo(chunk_offset + 8 + @as(u64, chunk_len)) catch return invalid;
+        var stored_crc_buf: [4]u8 = undefined;
+        const crc_read = file.readAll(&stored_crc_buf) catch return invalid;
+        if (crc_read < 4) return invalid;
+        const stored_crc = std.mem.readInt(u32, &stored_crc_buf, .big);
+
+        if (computed_crc != stored_crc)
+            return EmbeddedPngCrcResult{ .is_valid = false, .chunks_checked = chunks_checked };
+
+        chunks_checked += 1;
+        chunk_offset += chunk_total;
+
+        // Stop after IEND
+        if (std.mem.eql(u8, chunk_type, "IEND")) break;
+    }
+
+    return EmbeddedPngCrcResult{ .is_valid = true, .chunks_checked = chunks_checked };
+}
+
+/// Deep ICNS validation: entry type codes, embedded PNG/ARGB/JP2 magic, entry coverage.
 pub fn validateIcns(file: std.fs.File) ValidationResult {
     const stat = file.stat() catch return ValidationResult.invalidCode(.icns, .failed_to_stat, "file");
     if (stat.size < 8) return ValidationResult.invalidCode(.icns, .file_too_small, "ICNS header (need 8 bytes)");
@@ -3337,27 +3410,163 @@ pub fn validateIcns(file: std.fs.File) ValidationResult {
     if (@as(u64, total_size) > stat.size)
         return ValidationResult.invalidCode(.icns, .exceeds_bounds, "ICNS total size exceeds file");
 
-    // Walk entries
+    // Known ICNS entry type codes (Apple Icon Image format)
+    const known_types = [_]*const [4]u8{
+        // Retina / modern PNG-based
+        "ic04", "ic05", // 16x16, 32x32 ARGB
+        "ic07", // 128x128 PNG
+        "ic08", // 256x256 PNG
+        "ic09", // 512x512 PNG
+        "ic10", // 1024x1024 PNG (512x512@2x)
+        "ic11", // 16x16@2x PNG
+        "ic12", // 32x32@2x PNG
+        "ic13", // 128x128@2x PNG
+        "ic14", // 256x256@2x PNG
+        // Classic types
+        "ICON", // 32x32 1-bit
+        "ICN#", // 32x32 1-bit with mask
+        "icm#", // 16x12 1-bit with mask
+        "icm4", // 16x12 4-bit
+        "icm8", // 16x12 8-bit
+        "ics#", // 16x16 1-bit with mask
+        "ics4", // 16x16 4-bit
+        "ics8", // 16x16 8-bit
+        "icl4", // 32x32 4-bit
+        "icl8", // 32x32 8-bit
+        "ich#", // 48x48 1-bit with mask
+        "ich4", // 48x48 4-bit
+        "ich8", // 48x48 8-bit
+        "it32", // 128x128 24-bit
+        "t8mk", // 128x128 8-bit mask
+        "ih32", // 48x48 24-bit
+        "h8mk", // 48x48 8-bit mask
+        "il32", // 32x32 24-bit
+        "l8mk", // 32x32 8-bit mask
+        "is32", // 16x16 24-bit
+        "s8mk", // 16x16 8-bit mask
+        "icp4", // 16x16 JPEG 2000/PNG
+        "icp5", // 32x32 JPEG 2000/PNG
+        "icp6", // 64x64 JPEG 2000/PNG (48x48 in some docs)
+        // Metadata
+        "TOC ", // Table of contents
+        "icnV", // Icon version
+        "name", // Name
+        "info", // Info plist
+        "sbtp", // Template
+        "slct", // Selected
+        "dark", // Dark mode
+    };
+
+    // Walk entries with deep validation
     var offset: u64 = 8;
     var entry_count: u32 = 0;
+    var entries_consumed: u64 = 8; // header
     while (offset + 8 <= total_size) {
         file.seekTo(offset) catch return ValidationResult.invalidCode(.icns, .failed_to_seek, "to ICNS entry");
-        var entry_hdr: [8]u8 = undefined;
-        const e_read = file.readAll(&entry_hdr) catch return ValidationResult.invalidCode(.icns, .failed_to_read, "ICNS entry header");
+        // Read entry header + up to 8 bytes of data for magic checking
+        var entry_buf: [16]u8 = undefined;
+        const e_read = file.readAll(&entry_buf) catch return ValidationResult.invalidCode(.icns, .failed_to_read, "ICNS entry header");
         if (e_read < 8) return ValidationResult.invalidCode(.icns, .truncated, "ICNS entry header");
 
-        const entry_size = std.mem.readInt(u32, entry_hdr[4..8], .big);
+        const entry_type = entry_buf[0..4];
+        const entry_size = std.mem.readInt(u32, entry_buf[4..8], .big);
         if (entry_size < 8) return ValidationResult.invalidCode(.icns, .invalid_value, "ICNS entry size < 8");
         if (offset + entry_size > total_size)
             return ValidationResult.invalidCode(.icns, .exceeds_bounds, "ICNS entry exceeds container");
 
+        // Validate entry type is known
+        var type_known = false;
+        for (known_types) |kt| {
+            if (std.mem.eql(u8, entry_type, kt)) {
+                type_known = true;
+                break;
+            }
+        }
+        // Entry types must be printable ASCII (even unknown ones)
+        if (!type_known) {
+            for (entry_type) |c| {
+                if (c < 0x20 or c > 0x7E)
+                    return ValidationResult.invalidCode(.icns, .invalid_value, "ICNS entry type contains non-printable bytes");
+            }
+        }
+
+        // Validate embedded image data magic for entries with enough data
+        const data_size = entry_size - 8;
+        if (data_size >= 4 and e_read >= 12) {
+            const data_magic = entry_buf[8..12];
+            const png_magic = [_]u8{ 0x89, 0x50, 0x4E, 0x47 };
+
+            // Determine if this entry should contain PNG/JP2
+            var is_png_type = false;
+            const png_types = [_]*const [4]u8{ "ic07", "ic08", "ic09", "ic10", "ic11", "ic12", "ic13", "ic14" };
+            for (png_types) |pt| {
+                if (std.mem.eql(u8, entry_type, pt)) {
+                    is_png_type = true;
+                    break;
+                }
+            }
+
+            if (is_png_type) {
+                const has_png = std.mem.eql(u8, data_magic, &png_magic);
+                const has_jp2 = (data_magic[0] == 0x00 and data_magic[1] == 0x00 and data_magic[2] == 0x00 and data_magic[3] == 0x0C);
+                if (!has_png and !has_jp2)
+                    return ValidationResult.invalidCode(.icns, .invalid_value, "ICNS PNG icon entry has invalid image magic");
+
+                // For PNG entries, validate chunk CRCs
+                if (has_png) {
+                    const png_result = validateEmbeddedPngCrcs(file, offset + 8, data_size);
+                    if (!png_result.is_valid)
+                        return ValidationResult.invalidCode(.icns, .checksum_mismatch, "ICNS embedded PNG chunk CRC mismatch");
+                }
+            }
+
+            // ARGB types (ic04, ic05) should start with "ARGB"
+            if (std.mem.eql(u8, entry_type, "ic04") or std.mem.eql(u8, entry_type, "ic05")) {
+                if (!std.mem.eql(u8, data_magic, "ARGB")) {
+                    return ValidationResult.invalidCode(.icns, .invalid_value, "ICNS ARGB icon entry missing ARGB header");
+                }
+            }
+
+            // icp4/icp5/icp6 can be PNG or JPEG 2000
+            const icp_types = [_]*const [4]u8{ "icp4", "icp5", "icp6" };
+            for (icp_types) |ipt| {
+                if (std.mem.eql(u8, entry_type, ipt)) {
+                    const is_png = std.mem.eql(u8, data_magic, &png_magic);
+                    const is_jp2 = (data_magic[0] == 0x00 and data_magic[1] == 0x00 and data_magic[2] == 0x00 and data_magic[3] == 0x0C);
+                    if (!is_png and !is_jp2) {
+                        return ValidationResult.invalidCode(.icns, .invalid_value, "ICNS icp icon has invalid image magic");
+                    }
+                    if (is_png) {
+                        const png_result = validateEmbeddedPngCrcs(file, offset + 8, data_size);
+                        if (!png_result.is_valid)
+                            return ValidationResult.invalidCode(.icns, .checksum_mismatch, "ICNS embedded PNG chunk CRC mismatch");
+                    }
+                    break;
+                }
+            }
+
+            // info entry should start with bplist/XML plist
+            if (std.mem.eql(u8, entry_type, "info")) {
+                const is_bplist = std.mem.eql(u8, data_magic, "bpli");
+                const is_xml = std.mem.eql(u8, data_magic, "<?xm");
+                if (!is_bplist and !is_xml) {
+                    return ValidationResult.invalidCode(.icns, .invalid_value, "ICNS info entry has invalid plist magic");
+                }
+            }
+        }
+
         entry_count += 1;
+        entries_consumed += entry_size;
         offset += entry_size;
     }
 
     if (entry_count == 0) return ValidationResult.invalid(.icns, "ICNS file has no icon entries");
 
-    return ValidationResult.structuralOnly(.icns);
+    // Entries should exactly fill the container (no gaps, no trailing junk)
+    if (entries_consumed != total_size)
+        return ValidationResult.invalidCode(.icns, .invalid_value, "ICNS entries do not fill container exactly");
+
+    return ValidationResult.okWithDepth(.icns, .full);
 }
 
 // ============ QOI Validator ============
