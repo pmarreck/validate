@@ -363,8 +363,35 @@ fn validateLlvmBitcodeContainer(file: std.fs.File, comptime magic: *const [4]u8,
 
 // ============ ar Archive Validator ============
 
+/// Check that an AR header numeric field contains only ASCII digits and trailing spaces.
+/// An all-spaces field is valid (some tools omit uid/gid/date).
+fn isValidArNumericField(field: []const u8) bool {
+	var seen_space = false;
+	for (field) |c| {
+		if (c == ' ') {
+			seen_space = true;
+		} else if (c >= '0' and c <= '9') {
+			// Digits must not appear after trailing spaces
+			if (seen_space) return false;
+		} else {
+			return false;
+		}
+	}
+	return true;
+}
+
+/// Check that an AR header text field contains only printable ASCII (0x20-0x7E).
+/// If allow_slash is true, also permits '/' which is used in GNU ar name conventions.
+fn isValidArTextField(field: []const u8, comptime allow_slash: bool) bool {
+	_ = allow_slash;
+	for (field) |c| {
+		if (c < 0x20 or c > 0x7E) return false;
+	}
+	return true;
+}
+
 /// Validate Unix ar archive format (.a static libraries, .deb packages).
-/// Checks global header and validates member entry headers.
+/// Checks global header and validates member entry headers including name, date, uid, gid, mode fields.
 pub fn validateAr(file: std.fs.File) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.ar, .failed_to_get, "file size");
     if (file_size < 8) return ValidationResult.invalidCode(.ar, .file_too_small, "ar archive");
@@ -390,6 +417,27 @@ pub fn validateAr(file: std.fs.File) ValidationResult {
         // Each member header ends with 0x60 0x0A ("`\n")
         if (member_header[58] != 0x60 or member_header[59] != 0x0A)
             return ValidationResult.invalidCode(.ar, .invalid_value, "ar member header terminator");
+
+        // Validate name field (bytes 0-15): printable ASCII only (0x20-0x7E)
+        // Covers regular names, BSD "#1/N" extended names, GNU "/" and "//" entries
+        if (!isValidArTextField(member_header[0..16], true))
+            return ValidationResult.invalidCode(.ar, .invalid_value, "ar member name");
+
+        // Validate date field (bytes 16-27): ASCII decimal digits + trailing spaces
+        if (!isValidArNumericField(member_header[16..28]))
+            return ValidationResult.invalidCode(.ar, .invalid_value, "ar member date");
+
+        // Validate uid field (bytes 28-33): ASCII decimal digits + trailing spaces
+        if (!isValidArNumericField(member_header[28..34]))
+            return ValidationResult.invalidCode(.ar, .invalid_value, "ar member uid");
+
+        // Validate gid field (bytes 34-39): ASCII decimal digits + trailing spaces
+        if (!isValidArNumericField(member_header[34..40]))
+            return ValidationResult.invalidCode(.ar, .invalid_value, "ar member gid");
+
+        // Validate mode field (bytes 40-47): octal digits + trailing spaces
+        if (!isValidArNumericField(member_header[40..48]))
+            return ValidationResult.invalidCode(.ar, .invalid_value, "ar member mode");
 
         // Parse file size from bytes 48-57 (ASCII decimal, space-padded)
         var size_end: usize = 58;
@@ -638,6 +686,156 @@ test "validateAr rejects invalid data" {
         const wf = std.fs.cwd().createFile(path, .{}) catch return;
         defer wf.close();
         wf.writeAll("Not an ar archive, no way, no how!") catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateAr(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateAr rejects corrupted name field" {
+    // Simulates seed 2 corruption: non-printable bytes in the name field
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_ar_corrupt_name.a", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        // Valid AR: magic + member header + data
+        const ar_data = "!<arch>\n" ++ // 8 bytes global magic
+            "test.txt/       " ++ // 16 bytes name
+            "0           " ++ // 12 bytes date
+            "0     " ++ // 6 bytes uid
+            "0     " ++ // 6 bytes gid
+            "100644  " ++ // 8 bytes mode
+            "19        " ++ // 10 bytes size
+            "`\n" ++ // 2 bytes header magic
+            "Hello, ar archive!\n" ++ // 19 bytes data
+            "\n"; // 1 byte padding
+        // Corrupt the name field with non-printable bytes
+        var buf: [88]u8 = ar_data.*;
+        buf[14] = 0xA3; // Non-printable in name field
+        buf[15] = 0xC0; // Non-printable in name field
+        wf.writeAll(&buf) catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateAr(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateAr rejects corrupted date field" {
+    // Simulates seed 4 corruption: non-digit bytes in the date field
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_ar_corrupt_date.a", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        const ar_data = "!<arch>\n" ++
+            "test.txt/       " ++
+            "0           " ++
+            "0     " ++
+            "0     " ++
+            "100644  " ++
+            "19        " ++
+            "`\n" ++
+            "Hello, ar archive!\n" ++
+            "\n";
+        var buf: [88]u8 = ar_data.*;
+        // Corrupt date field (offsets 24-35 in member header = file offsets 32-43)
+        buf[24] = 0x8C; // Non-digit in date field
+        buf[25] = 0xA9; // Non-digit in date field
+        wf.writeAll(&buf) catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateAr(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateAr rejects corrupted uid field" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_ar_corrupt_uid.a", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        const ar_data = "!<arch>\n" ++
+            "test.txt/       " ++
+            "0           " ++
+            "0     " ++
+            "0     " ++
+            "100644  " ++
+            "19        " ++
+            "`\n" ++
+            "Hello, ar archive!\n" ++
+            "\n";
+        var buf: [88]u8 = ar_data.*;
+        // Corrupt uid field (offsets 28-33 in member header = file offsets 36-41)
+        buf[36] = 0xFF;
+        wf.writeAll(&buf) catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateAr(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateAr rejects corrupted gid field" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_ar_corrupt_gid.a", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        const ar_data = "!<arch>\n" ++
+            "test.txt/       " ++
+            "0           " ++
+            "0     " ++
+            "0     " ++
+            "100644  " ++
+            "19        " ++
+            "`\n" ++
+            "Hello, ar archive!\n" ++
+            "\n";
+        var buf: [88]u8 = ar_data.*;
+        // Corrupt gid field (offsets 34-39 in member header = file offsets 42-47)
+        buf[42] = 0xAB;
+        wf.writeAll(&buf) catch return;
+    }
+    defer std.fs.cwd().deleteFile(path) catch {};
+    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    defer file.close();
+    const result = validateAr(file);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateAr rejects corrupted mode field" {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/test_ar_corrupt_mode.a", .{tmpdir}) catch return;
+    {
+        const wf = std.fs.cwd().createFile(path, .{}) catch return;
+        defer wf.close();
+        const ar_data = "!<arch>\n" ++
+            "test.txt/       " ++
+            "0           " ++
+            "0     " ++
+            "0     " ++
+            "100644  " ++
+            "19        " ++
+            "`\n" ++
+            "Hello, ar archive!\n" ++
+            "\n";
+        var buf: [88]u8 = ar_data.*;
+        // Corrupt mode field (offsets 40-47 in member header = file offsets 48-55)
+        buf[48] = 0xE3;
+        wf.writeAll(&buf) catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
     const file = std.fs.cwd().openFile(path, .{}) catch return;

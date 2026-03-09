@@ -36,7 +36,7 @@ aiff	mixed	Container headers validate while payload may be corruption-tolerant
 alac	mixed	Codec/container may remain playable with localized payload damage
 amr	mixed	Speech frame streams can partially survive corruption
 ape	mixed	Audio bitstream robustness can vary by mutation location
-ar	mixed	Archive member metadata is weakly protected
+ar	transparent	All header fields validated (name, date, uid, gid, mode, size, terminator)
 asf	mixed	Container-level structure can survive payload mutations
 au	mixed	Simple audio header + raw payload is weakly protected
 avi	mixed	RIFF container can remain structurally valid with payload flips
