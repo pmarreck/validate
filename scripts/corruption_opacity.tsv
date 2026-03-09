@@ -62,7 +62,7 @@ hdf5	mixed	Some mutations leave file navigable despite data corruption
 heic	mixed	Container/codec combination can remain syntactically valid
 ico	transparent	ICO structural + embedded image validation catches all tested corruptions
 idml	transparent	ZIP CRC + filename cross-validation catches all tested corruptions
-iff	mixed	Chunk-based formats can tolerate some chunk-data mutations
+iff	transparent	ILBM ByteRun1 compression stream + BMHD cross-validation catches all tested corruptions
 it	mixed	Tracker data may stay parseable with localized changes
 ivf	mixed	Simple video container with weak intrinsic integrity metadata
 jbig2	mixed	Bitstream resilience depends on segment mutated

@@ -428,59 +428,221 @@ pub fn validateIff(file: std.fs.File) ValidationResult {
     return ValidationResult.okWithDepth(.iff, .structural);
 }
 
-/// Deep validation for IFF files - parses all nested chunks.
+/// ILBM BMHD (BitMap Header) parsed fields for cross-validation.
+const IlbmBmhd = struct {
+	width: u16,
+	height: u16,
+	num_planes: u8,
+	masking: u8,
+	compression: u8,
+	// transparent_color, x_aspect, y_aspect, page_width, page_height omitted (not needed for validation)
+};
+
+/// Parse ILBM BMHD chunk data (20 bytes expected).
+fn parseIlbmBmhd(data: []const u8) ?IlbmBmhd {
+	if (data.len < 20) return null;
+	const width = std.mem.readInt(u16, data[0..2], .big);
+	const height = std.mem.readInt(u16, data[2..4], .big);
+	// bytes 4-7: x, y (origin offsets)
+	const num_planes = data[8];
+	const masking = data[9];
+	const compression = data[10];
+	// byte 11: pad (reserved)
+
+	// Sanity checks on field ranges
+	if (width == 0 or height == 0) return null;
+	if (num_planes == 0 or num_planes > 32) return null;
+	if (masking > 3) return null; // 0=none, 1=hasMask, 2=hasTransparent, 3=lasso
+	if (compression > 2) return null; // 0=none, 1=byteRun1, 2=vertical (rare)
+
+	return IlbmBmhd{
+		.width = width,
+		.height = height,
+		.num_planes = num_planes,
+		.masking = masking,
+		.compression = compression,
+	};
+}
+
+/// Check if a 4-byte IFF chunk ID contains only valid characters (printable ASCII 0x20-0x7E).
+fn isValidChunkId(id: *const [4]u8) bool {
+	for (id) |c| {
+		if (c < 0x20 or c > 0x7E) return false;
+	}
+	return true;
+}
+
+/// Deep validation for IFF files - parses all nested chunks with format-specific cross-validation.
+/// For ILBM containers, cross-validates BMHD dimensions against BODY chunk size.
 pub fn validateIffDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    _ = allocator;
-    const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalidCode(.iff, .failed_to_open, "IFF file");
-    };
-    defer file.close();
+	const file = std.fs.cwd().openFile(path, .{}) catch {
+		return ValidationResult.invalidCode(.iff, .failed_to_open, "IFF file");
+	};
+	defer file.close();
 
-    var header: [12]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalidCode(.iff, .failed_to_read, "header");
+	var header: [12]u8 = undefined;
+	_ = file.read(&header) catch return ValidationResult.invalidCode(.iff, .failed_to_read, "header");
 
-    if (!std.mem.eql(u8, header[0..4], "FORM")) {
-        return ValidationResult.invalidCode(.iff, .invalid_signature, "IFF");
-    }
+	if (!std.mem.eql(u8, header[0..4], "FORM")) {
+		return ValidationResult.invalidCode(.iff, .invalid_signature, "IFF");
+	}
 
-    const form_size = std.mem.readInt(u32, header[4..8], .big);
-    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.iff, .failed_to_get, "file size");
+	const form_size = std.mem.readInt(u32, header[4..8], .big);
+	const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.iff, .failed_to_get, "file size");
 
-    if (file_size < 8 + @as(u64, form_size)) {
-        return ValidationResult.invalid(.iff, "File truncated");
-    }
+	if (file_size < 8 + @as(u64, form_size)) {
+		return ValidationResult.invalid(.iff, "File truncated");
+	}
 
-    // Parse all chunks within the FORM
-    var pos: u64 = 12; // After FORM + size + type
-    var chunk_count: u32 = 0;
-    const form_end = 8 + @as(u64, form_size);
+	const form_type: *const [4]u8 = header[8..12];
+	const is_ilbm = std.mem.eql(u8, form_type, "ILBM");
 
-    while (pos + 8 <= form_end) {
-        file.seekTo(pos) catch break;
+	// Parse all chunks within the FORM, collecting ILBM-specific data
+	var pos: u64 = 12; // After FORM + size + type
+	var chunk_count: u32 = 0;
+	const form_end = 8 + @as(u64, form_size);
 
-        var chunk_header: [8]u8 = undefined;
-        const bytes_read = file.read(&chunk_header) catch break;
-        if (bytes_read < 8) break;
+	var bmhd: ?IlbmBmhd = null;
+	var body_size: ?u32 = null;
+	var has_body = false;
 
-        const chunk_sz = std.mem.readInt(u32, chunk_header[4..8], .big);
+	while (pos + 8 <= form_end) {
+		file.seekTo(pos) catch break;
 
-        // Verify chunk doesn't exceed container
-        if (pos + 8 + chunk_sz > form_end) {
-            return ValidationResult.invalid(.iff, "Chunk extends beyond FORM boundary");
-        }
+		var chunk_header: [8]u8 = undefined;
+		const bytes_read = file.read(&chunk_header) catch break;
+		if (bytes_read < 8) break;
 
-        chunk_count += 1;
+		// Validate chunk ID is printable ASCII
+		if (!isValidChunkId(chunk_header[0..4])) {
+			return ValidationResult.invalid(.iff, "Invalid chunk ID (non-printable characters)");
+		}
 
-        // Move to next chunk (pad to even boundary)
-        pos += 8 + chunk_sz;
-        if (chunk_sz % 2 == 1 and pos < form_end) pos += 1;
-    }
+		const chunk_sz = std.mem.readInt(u32, chunk_header[4..8], .big);
 
-    if (chunk_count == 0) {
-        return ValidationResult.invalid(.iff, "No chunks found in FORM");
-    }
+		// Verify chunk doesn't exceed container
+		if (pos + 8 + chunk_sz > form_end) {
+			return ValidationResult.invalid(.iff, "Chunk extends beyond FORM boundary");
+		}
 
-    return ValidationResult.okWithDepth(.iff, .structural);
+		// For ILBM: collect BMHD and BODY info for cross-validation
+		if (is_ilbm) {
+			if (std.mem.eql(u8, chunk_header[0..4], "BMHD")) {
+				if (chunk_sz >= 20) {
+					var bmhd_data: [20]u8 = undefined;
+					const bmhd_read = file.read(&bmhd_data) catch 0;
+					if (bmhd_read >= 20) {
+						bmhd = parseIlbmBmhd(&bmhd_data);
+						if (bmhd == null) {
+							return ValidationResult.invalid(.iff, "ILBM BMHD has invalid field values");
+						}
+					}
+				}
+			} else if (std.mem.eql(u8, chunk_header[0..4], "BODY")) {
+				has_body = true;
+				body_size = chunk_sz;
+
+				// For uncompressed BODY, read and validate data against BMHD
+				if (bmhd) |bm| {
+					if (bm.compression == 0) {
+						// Uncompressed: BODY must be exactly height * total_planes * row_bytes
+						const total_planes: u32 = @as(u32, bm.num_planes) + @as(u32, if (bm.masking == 1) 1 else 0);
+						const row_bytes: u32 = ((@as(u32, bm.width) + 15) / 16) * 2;
+						const expected_body = @as(u32, bm.height) * total_planes * row_bytes;
+						if (chunk_sz != expected_body) {
+							return ValidationResult.invalid(.iff, "ILBM BODY size doesn't match BMHD dimensions");
+						}
+					}
+				}
+
+				// Read BODY data for compression stream validation
+				if (chunk_sz > 0 and chunk_sz <= 1024 * 1024) { // Cap at 1MB for memory
+					const body_data = allocator.alloc(u8, chunk_sz) catch null;
+					if (body_data) |data| {
+						defer allocator.free(data);
+						const body_read = file.read(data) catch 0;
+						if (body_read < chunk_sz) {
+							return ValidationResult.invalid(.iff, "BODY chunk data truncated");
+						}
+						// For ILBM with BMHD: validate compression stream
+						if (bmhd) |bm| {
+							if (bm.compression == 0) {
+								// Uncompressed: size check already done above
+							} else if (bm.compression == 1) {
+								// ByteRun1 compressed: validate compression stream
+								var src_pos: u32 = 0;
+								var decompressed_bytes: u64 = 0;
+								const total_planes: u32 = @as(u32, bm.num_planes) + @as(u32, if (bm.masking == 1) 1 else 0);
+								const row_bytes: u32 = ((@as(u32, bm.width) + 15) / 16) * 2;
+								const expected_decompressed: u64 = @as(u64, bm.height) * total_planes * row_bytes;
+
+								while (src_pos < body_read) {
+									const control = @as(i8, @bitCast(data[src_pos]));
+									src_pos += 1;
+									if (control >= 0) {
+										// Copy n+1 bytes literally
+										const n: u32 = @as(u32, @intCast(control)) + 1;
+										if (src_pos + n > body_read) {
+											return ValidationResult.invalid(.iff, "ILBM ByteRun1 literal run exceeds data");
+										}
+										src_pos += n;
+										decompressed_bytes += n;
+									} else if (control != -128) {
+										// Repeat next byte (1-n) times
+										const n: u32 = @as(u32, @intCast(-@as(i32, control))) + 1;
+										if (src_pos >= body_read) {
+											return ValidationResult.invalid(.iff, "ILBM ByteRun1 repeat missing data byte");
+										}
+										src_pos += 1;
+										decompressed_bytes += n;
+									}
+									// control == -128: NOP
+								}
+								if (expected_decompressed > 0 and decompressed_bytes != expected_decompressed) {
+									return ValidationResult.invalid(.iff, "ILBM ByteRun1 decompressed size doesn't match BMHD dimensions");
+								}
+							}
+						}
+					}
+				}
+			} else if (std.mem.eql(u8, chunk_header[0..4], "CMAP")) {
+				// CMAP must be a multiple of 3 (RGB triples)
+				if (chunk_sz % 3 != 0) {
+					return ValidationResult.invalid(.iff, "ILBM CMAP size not a multiple of 3");
+				}
+				// Number of colors should be <= 2^num_planes (if BMHD already parsed)
+				if (bmhd) |bm| {
+					const max_colors: u32 = @as(u32, 1) << @intCast(bm.num_planes);
+					const num_colors = chunk_sz / 3;
+					if (num_colors > max_colors) {
+						return ValidationResult.invalid(.iff, "ILBM CMAP has more colors than bit depth allows");
+					}
+				}
+			}
+		}
+
+		chunk_count += 1;
+
+		// Move to next chunk (pad to even boundary)
+		pos += 8 + chunk_sz;
+		if (chunk_sz % 2 == 1 and pos < form_end) pos += 1;
+	}
+
+	if (chunk_count == 0) {
+		return ValidationResult.invalid(.iff, "No chunks found in FORM");
+	}
+
+	// ILBM-specific: must have both BMHD and BODY
+	if (is_ilbm) {
+		if (bmhd == null) {
+			return ValidationResult.invalid(.iff, "ILBM missing required BMHD chunk");
+		}
+		if (!has_body) {
+			return ValidationResult.invalid(.iff, "ILBM missing required BODY chunk");
+		}
+	}
+
+	return ValidationResult.okWithDepth(.iff, .full);
 }
 
 /// Validate Blorb (Interactive Fiction resource) format.
@@ -536,4 +698,117 @@ pub fn validateBlorb(file: std.fs.File) ValidationResult {
     }
 
     return ValidationResult.invalidCode(.blorb, .missing, "required RIdx chunk");
+}
+
+// ============ Tests ============
+
+test "IFF deep validation - valid ILBM ByteRun1 sample" {
+	const result = validateIffDeep(testing.allocator, "ground_truth_examples/iff/sample.iff");
+	try testing.expect(result.is_valid);
+	try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "IFF deep validation - corrupted ByteRun1 stream detected" {
+	// Create a corrupted copy of the sample file
+	const src = std.fs.cwd().openFile("ground_truth_examples/iff/sample.iff", .{}) catch return;
+	defer src.close();
+	const file_size = src.getEndPos() catch return;
+	const data = testing.allocator.alloc(u8, file_size) catch return;
+	defer testing.allocator.free(data);
+	_ = src.read(data) catch return;
+
+	// Corrupt bytes in the BODY data area (offset 104 = BODY header at 96 + 8)
+	// The BODY data starts at offset 104 in our sample
+	if (data.len > 120) {
+		data[110] = 0x42; // Corrupt a compression control byte
+		data[111] = 0x42;
+		data[112] = 0x42;
+		data[113] = 0x42;
+	}
+
+	// Write corrupted data to a temp file
+	const tmp_path = "/tmp/iff_test_corrupt.iff";
+	const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return;
+	tmp.writeAll(data) catch {
+		tmp.close();
+		return;
+	};
+	tmp.close();
+	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+	const result = validateIffDeep(testing.allocator, tmp_path);
+	try testing.expect(!result.is_valid);
+}
+
+test "IFF deep validation - invalid chunk ID detected" {
+	const src = std.fs.cwd().openFile("ground_truth_examples/iff/sample.iff", .{}) catch return;
+	defer src.close();
+	const file_size = src.getEndPos() catch return;
+	const data = testing.allocator.alloc(u8, file_size) catch return;
+	defer testing.allocator.free(data);
+	_ = src.read(data) catch return;
+
+	// Corrupt a chunk ID to contain non-printable characters
+	// BMHD chunk ID starts at offset 12
+	if (data.len > 15) {
+		data[12] = 0x01; // Non-printable
+	}
+
+	const tmp_path = "/tmp/iff_test_bad_id.iff";
+	const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return;
+	tmp.writeAll(data) catch {
+		tmp.close();
+		return;
+	};
+	tmp.close();
+	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+	const result = validateIffDeep(testing.allocator, tmp_path);
+	try testing.expect(!result.is_valid);
+}
+
+test "IFF BMHD parser - valid fields" {
+	const bmhd_data = [20]u8{
+		0x00, 0x10, // width = 16
+		0x00, 0x10, // height = 16
+		0x00, 0x00, // x = 0
+		0x00, 0x00, // y = 0
+		0x04, // nPlanes = 4
+		0x00, // masking = 0
+		0x01, // compression = 1 (ByteRun1)
+		0x00, // pad
+		0x00, 0x00, // transparentColor
+		0x0A, // xAspect
+		0x0B, // yAspect
+		0x01, 0x40, // pageWidth = 320
+		0x00, 0xC8, // pageHeight = 200
+	};
+	const bm = parseIlbmBmhd(&bmhd_data);
+	try testing.expect(bm != null);
+	try testing.expectEqual(@as(u16, 16), bm.?.width);
+	try testing.expectEqual(@as(u16, 16), bm.?.height);
+	try testing.expectEqual(@as(u8, 4), bm.?.num_planes);
+	try testing.expectEqual(@as(u8, 1), bm.?.compression);
+}
+
+test "IFF BMHD parser - invalid planes rejected" {
+	var bmhd_data = [20]u8{
+		0x00, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00,
+		0x00, // nPlanes = 0 (invalid)
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x0B, 0x01, 0x40, 0x00, 0xC8,
+	};
+	try testing.expect(parseIlbmBmhd(&bmhd_data) == null);
+
+	bmhd_data[8] = 33; // nPlanes = 33 (> 32, invalid)
+	try testing.expect(parseIlbmBmhd(&bmhd_data) == null);
+}
+
+test "IFF chunk ID validation" {
+	try testing.expect(isValidChunkId("BMHD"));
+	try testing.expect(isValidChunkId("BODY"));
+	try testing.expect(isValidChunkId("CMAP"));
+	try testing.expect(isValidChunkId("    ")); // spaces are valid (0x20)
+	try testing.expect(!isValidChunkId(&[4]u8{ 0x01, 'B', 'C', 'D' })); // control char
+	try testing.expect(!isValidChunkId(&[4]u8{ 'A', 'B', 'C', 0x7F })); // DEL
+	try testing.expect(!isValidChunkId(&[4]u8{ 'A', 'B', 0x80, 'D' })); // high byte
 }
