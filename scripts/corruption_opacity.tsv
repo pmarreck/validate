@@ -57,7 +57,7 @@ exr	mixed	Image compression and metadata can leave some mutated files parseable
 fcpxml	mixed	XML project files can remain well-formed despite localized mutations
 fits	transparent	FITS structural validation catches all tested corruptions
 gif	mixed	LZW image stream can be partially resilient
-gltf	transparent	UTF-8 + JSON structural validation catches all tested corruptions
+gltf	mixed	JSON text format without magic bytes; extensionless corruption tests miss format detection
 hdf5	mixed	Some mutations leave file navigable despite data corruption
 heic	mixed	Container/codec combination can remain syntactically valid
 ico	transparent	ICO structural + embedded image validation catches all tested corruptions
