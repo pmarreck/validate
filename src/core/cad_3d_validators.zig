@@ -1378,7 +1378,7 @@ pub fn validatePlyAsciiData(file: std.fs.File, header_end: usize, vertex_count: 
             };
             prop_count += 1;
         }
-        if (prop_count < vertex_prop_count) {
+        if (prop_count != vertex_prop_count) {
             return ValidationResult.invalidCode(.ply, .incomplete, "vertex data");
         }
         vertices_parsed += 1;
