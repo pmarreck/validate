@@ -749,7 +749,7 @@ pub fn validateTar(file: std.fs.File) ValidationResult {
         const n = file.read(&header) catch break;
         if (n < 512) break;
 
-        // Check for end-of-archive marker (two consecutive zero blocks)
+        // Check for end-of-archive marker (two consecutive zero blocks per POSIX)
         var is_zero = true;
         for (header) |b| {
             if (b != 0) {
@@ -757,7 +757,41 @@ pub fn validateTar(file: std.fs.File) ValidationResult {
                 break;
             }
         }
-        if (is_zero) break;
+        if (is_zero) {
+            // Validate second zero block if present
+            if (pos + 512 + 512 <= total_file_size) {
+                file.seekTo(pos + 512) catch break;
+                var second_block: [512]u8 = undefined;
+                const sb_read = file.readAll(&second_block) catch break;
+                if (sb_read == 512) {
+                    var second_zero = true;
+                    for (second_block) |b| {
+                        if (b != 0) {
+                            second_zero = false;
+                            break;
+                        }
+                    }
+                    if (!second_zero) {
+                        return ValidationResult.invalidCode(.tar, .invalid_value, "Second end-of-archive block is not zero");
+                    }
+                }
+            }
+            // Also validate any remaining blocks are zero (padding)
+            var check_pos = pos + 1024;
+            while (check_pos + 512 <= total_file_size) {
+                file.seekTo(check_pos) catch break;
+                var pad_block: [512]u8 = undefined;
+                const pb_read = file.readAll(&pad_block) catch break;
+                if (pb_read < 512) break;
+                for (pad_block) |b| {
+                    if (b != 0) {
+                        return ValidationResult.invalidCode(.tar, .invalid_value, "Non-zero data after end-of-archive marker");
+                    }
+                }
+                check_pos += 512;
+            }
+            break;
+        }
 
         // Validate this header's checksum
         var hdr_checksum: u32 = 0;
