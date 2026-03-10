@@ -25,7 +25,7 @@ cif	opaque	Crystallographic text format with no structural integrity checks
 dxf	opaque	Text-heavy CAD encoding with tolerant reader behavior
 eps	opaque	PostScript-like text stream can remain parseable
 ds_store	opaque	Metadata store format lacks strong content integrity checks
-pdb_struct	opaque	PDB text records have no intrinsic integrity metadata
+pdb_struct	transparent	MASTER record cross-validates counts of all record types; ATOM coordinate validation catches byte-level corruption
 rpp	opaque	REAPER project is plain text; byte flips keep parseable structure
 hqx	transparent	BinHex 4.0 validates header/data/resource CRC16; random corruption should be rejected
 
@@ -43,7 +43,7 @@ avi	mixed	RIFF container can remain structurally valid with payload flips
 arw	mixed	TIFF-based RAW image with large unprotected pixel data
 avif	mixed	ISOBMFF container + codec stream can partially tolerate corruption
 av1	mixed	AV1 carried in ISOBMFF may remain structurally valid for some byte flips
-beam	mixed	Chunked VM bytecode format can remain structurally parseable
+beam	transparent	LitT zlib decompression + IFF chunk structure + table entry cross-validation catches all tested corruptions
 blorb	mixed	IFF chunk-level structure can survive data-region mutations
 bmp	mixed	Header-only checks leave pixel data corruption underconstrained
 3mf	transparent	ZIP CRC + filename cross-validation catches all tested corruptions
