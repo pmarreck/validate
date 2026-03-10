@@ -75,6 +75,9 @@ These formats return WARN — recognized but NO real corruption detection:
   - Not worth integrating as a dependency (GPLv3 compiler, code-gen build step, structural-only parsing)
 
 ## Recently Completed
+- [x] OLE2 DIFAT/mini-FAT validation: unused DIFAT entries + mini-FAT bounds check, XLS 3/5 → 5/5 (transparent) (2026-03-10 EST)
+- [x] TAR data block padding validation: POSIX zero-fill check, 3/5 → 4/5 (2026-03-10 EST)
+- [x] Shapefile opacity reclassified: mixed → transparent (5/5 confirmed) (2026-03-10 EST)
 - [x] HDF5 Fletcher-32 chunk checksum verification: FADB scanning + per-chunk validation, 1/5 → 3/5 (2026-03-10 EST)
 - [x] WARC SHA-1 block digest verification: regenerated sample with digests, 1/5 → 4/5 (2026-03-10 EST)
 - [x] AppleDouble format detection via magic bytes (2026-03-10 EST)
