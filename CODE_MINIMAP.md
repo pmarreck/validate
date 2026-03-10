@@ -87,7 +87,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/executable_validators.zig` | Binary executable validation (ELF, Mach-O, COFF, Wasm, AR) |
 | `src/core/pe_validator.zig` | Windows PE executable validation (DOS header, COFF, optional header, section table) |
 | `src/core/daw_validators.zig` | DAW project validation (FLP, ALS, RPP) |
-| `src/core/game_validator.zig` | Game ROM validation (NES, SNES, N64, GB, GBA, NDS, Genesis, CHD) |
+| `src/core/game_validator.zig` | Game ROM validation (NES, SNES, N64 w/ CIC auto-detection, GB, GBA, NDS, Genesis, CHD) |
 | `src/core/financial_validators.zig` | Financial format validation (QBW, QBB, QDF, OFX, QIF, TXF) |
 | `src/core/ole2_validator.zig` | OLE2/CFBF compound document validator — header, FAT, DIFAT, directory; `readNamedStream()` extracts streams by name via FAT/mini-FAT chains |
 | `src/core/word_doc_validator.zig` | MS-DOC (Word 97-2003) deep validator — FIB parsing, 31 fc/lcb Table stream cross-validation pairs (stylesheet, fonts, bookmarks, fields, revision marks, doc properties), CLX/Piece Table with full PCD decode (FcCompressed physical offset verification), PlcBteChpx/PlcBtePapx CP monotonicity + BTE page number bounds; Word 6/95 falls back to structural |
