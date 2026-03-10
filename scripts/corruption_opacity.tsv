@@ -118,7 +118,8 @@ flp	mixed	FL Studio binary project can survive some payload byte flips
 indd	mixed	InDesign container endian markers do not protect full payload
 lspk	mixed	LSPK version-only check; no per-entry integrity verification
 mdb	mixed	Jet engine page structure lacks mandatory end-to-end checksums
-n64	mixed	N64 ROM CRC covers boot code only; rest of ROM is unprotected
+n64	mixed	N64 CRC covers first 1MB only (0x1000-0x101000); rest of ROM unprotected. CIC-dependent CRC now verified.
+genesis	transparent	16-bit ROM checksum (0x200 to EOF) catches all tested corruptions
 nes	mixed	iNES header format byte is weakly constrained; mapper/flag mutations tolerated
 netcdf	mixed	NetCDF magic + dimension structure can survive some payload mutations
 nifti	mixed	NIfTI header fields are weakly cross-validated; data blob unprotected
