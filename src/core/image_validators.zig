@@ -1803,16 +1803,41 @@ pub fn validateJpegDeep(allocator: Allocator, path: []const u8) ValidationResult
 /// This catches LZW decompression errors and corrupted image data
 /// that structural validation would miss.
 pub fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    // Allocate read buffer for zigimg (256K for larger/animated GIFs)
-    var read_buffer: [262144]u8 = undefined;
+    // Phase 1: Structural validation — walk the entire GIF block/sub-block chain.
+    // This catches corruption that zigimg's lenient LZW decoder would silently accept.
+    const file = std.fs.cwd().openFile(path, .{}) catch {
+        return ValidationResult.invalidWithDepth(.gif, "File not found", .full);
+    };
+    defer file.close();
 
-    // Try to load the image - this performs full LZW decompression and validates the data
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCode(.gif, .failed_to_get, "file size");
+    };
+
+    // Read entire file for structural validation (up to 100MB)
+    const max_size: usize = 100 * 1024 * 1024;
+    const read_size: usize = @min(@as(usize, @intCast(file_size)), max_size);
+
+    const data = allocator.alloc(u8, read_size) catch {
+        return ValidationResult.okWithDepthAndWarning(.gif, .structural, "GIF too large for structural validation");
+    };
+    defer allocator.free(data);
+
+    file.seekTo(0) catch return ValidationResult.invalidCode(.gif, .failed_to_seek, "to start");
+    const bytes_read = file.readAll(data) catch {
+        return ValidationResult.invalidCode(.gif, .failed_to_read, "GIF data");
+    };
+
+    if (validateGifStructure(data[0..bytes_read])) |err_msg| {
+        return ValidationResult.invalidWithDepth(.gif, err_msg, .full);
+    }
+
+    // Phase 2: Full pixel decode via zigimg (catches LZW decompression errors)
+    var read_buffer: [262144]u8 = undefined;
     var image = zigimg.Image.fromFilePath(allocator, path, &read_buffer) catch |err| {
         return switch (err) {
-            // These are definite file access errors
             error.FileNotFound => ValidationResult.invalidWithDepth(.gif, "File not found", .full),
             error.AccessDenied => ValidationResult.invalidWithDepth(.gif, "Access denied", .full),
-            // InvalidData means the GIF is corrupt - report as failure!
             error.InvalidData => ValidationResult.invalidWithDepth(.gif, "GIF decode failed - data may be corrupt", .full),
             error.EndOfStream => ValidationResult.invalidWithDepth(.gif, "GIF truncated - unexpected end of data", .full),
             error.OutOfMemory => ValidationResult.okWithDepthAndWarning(.gif, .structural, "GIF too large to fully decode in memory"),
@@ -1821,8 +1846,146 @@ pub fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
     image.deinit(allocator);
 
-    // If we get here, the image decoded successfully
     return ValidationResult.okWithDepth(.gif, .full);
+}
+
+/// Walk the GIF block structure and validate sub-block chains.
+/// Returns null if valid, or an error message string if corruption is detected.
+/// GIF structure: Header(6) + LSD(7) + [GCT] + blocks... + Trailer(0x3B)
+fn validateGifStructure(data: []const u8) ?[]const u8 {
+    if (data.len < 13) return "GIF too small for header + LSD";
+
+    // Header: "GIF87a" or "GIF89a"
+    if (!std.mem.eql(u8, data[0..3], "GIF")) return "Invalid GIF signature";
+    if (!std.mem.eql(u8, data[3..6], "87a") and !std.mem.eql(u8, data[3..6], "89a"))
+        return "Invalid GIF version";
+
+    // Logical Screen Descriptor at offset 6
+    const lsd_packed = data[10];
+    const has_gct = (lsd_packed & 0x80) != 0;
+    const gct_size_bits: u4 = @intCast(lsd_packed & 0x07);
+
+    var pos: usize = 13; // Past header + LSD
+
+    // Skip Global Color Table
+    if (has_gct) {
+        const gct_entries: usize = @as(usize, 1) << (@as(u4, gct_size_bits) + 1);
+        pos += gct_entries * 3;
+        if (pos > data.len) return "GCT extends past file end";
+    }
+
+    // Walk blocks
+    var image_count: u32 = 0;
+    var found_trailer = false;
+
+    while (pos < data.len) {
+        const block_type = data[pos];
+        pos += 1;
+
+        switch (block_type) {
+            0x3B => {
+                // Trailer — end of GIF
+                found_trailer = true;
+                break;
+            },
+            0x2C => {
+                // Image Descriptor (9 bytes after introducer)
+                if (pos + 9 > data.len) return "Image descriptor truncated";
+
+                const img_packed = data[pos + 8];
+                const has_lct = (img_packed & 0x80) != 0;
+                const lct_size_bits: u4 = @intCast(img_packed & 0x07);
+                pos += 9;
+
+                // Skip Local Color Table
+                if (has_lct) {
+                    const lct_entries: usize = @as(usize, 1) << (@as(u4, lct_size_bits) + 1);
+                    pos += lct_entries * 3;
+                    if (pos > data.len) return "LCT extends past file end";
+                }
+
+                // LZW Minimum Code Size
+                if (pos >= data.len) return "Missing LZW minimum code size";
+                const lzw_min = data[pos];
+                if (lzw_min < 2 or lzw_min > 12) return "Invalid LZW minimum code size";
+                pos += 1;
+
+                // Sub-block chain (LZW data)
+                if (skipSubBlockChain(data, &pos)) |err| return err;
+                image_count += 1;
+            },
+            0x21 => {
+                // Extension block
+                if (pos >= data.len) return "Extension block truncated";
+                const ext_label = data[pos];
+                pos += 1;
+
+                switch (ext_label) {
+                    0xF9 => {
+                        // Graphic Control Extension — fixed 4-byte data block
+                        if (pos >= data.len) return "GCE truncated";
+                        const block_size = data[pos];
+                        if (block_size != 4) return "Invalid GCE block size";
+                        pos += 1 + 4; // size byte + 4 data bytes
+                        if (pos >= data.len) return "GCE terminator missing";
+                        if (data[pos] != 0x00) return "GCE missing block terminator";
+                        pos += 1;
+                    },
+                    0xFF => {
+                        // Application Extension — 11-byte data block + sub-blocks
+                        if (pos >= data.len) return "Application extension truncated";
+                        const block_size = data[pos];
+                        if (block_size != 11) return "Invalid application extension block size";
+                        pos += 1 + 11;
+                        if (pos > data.len) return "Application extension data truncated";
+                        if (skipSubBlockChain(data, &pos)) |err| return err;
+                    },
+                    0xFE => {
+                        // Comment Extension — sub-blocks
+                        if (skipSubBlockChain(data, &pos)) |err| return err;
+                    },
+                    0x01 => {
+                        // Plain Text Extension — 12-byte data block + sub-blocks
+                        if (pos >= data.len) return "Plain text extension truncated";
+                        const block_size = data[pos];
+                        if (block_size != 12) return "Invalid plain text block size";
+                        pos += 1 + 12;
+                        if (pos > data.len) return "Plain text data truncated";
+                        if (skipSubBlockChain(data, &pos)) |err| return err;
+                    },
+                    else => {
+                        // Unknown extension — skip sub-blocks
+                        if (skipSubBlockChain(data, &pos)) |err| return err;
+                    },
+                }
+            },
+            0x00 => {
+                // Stray null byte — some encoders pad, allow it
+                continue;
+            },
+            else => {
+                return "Invalid GIF block type";
+            },
+        }
+    }
+
+    if (image_count == 0) return "No image data found in GIF";
+    if (!found_trailer) return "Missing GIF trailer (0x3B)";
+
+    return null; // Valid
+}
+
+/// Skip a sub-block chain: sequence of (length, data...) terminated by a zero-length block.
+/// Returns null if valid, or an error message if the chain is malformed.
+fn skipSubBlockChain(data: []const u8, pos: *usize) ?[]const u8 {
+    while (pos.* < data.len) {
+        const block_size = data[pos.*];
+        pos.* += 1;
+        if (block_size == 0) return null; // Terminator
+        if (pos.* + block_size > data.len) return "Sub-block extends past file end";
+        pos.* += block_size;
+    }
+    return "Sub-block chain truncated (no terminator)";
 }
 
 // ============ TIFF Deep Validation (zigimg full decode) ============
