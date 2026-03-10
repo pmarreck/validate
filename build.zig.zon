@@ -73,7 +73,7 @@
             .hash = "z7z-0.1.0-rkKuF5H_BQDhWYlGT2TCp0OPQx7qBkD8mcv2E-dV-rx8",
         },
         .rarz = .{
-            .url = "https://github.com/pmarreck/rarz/archive/0e7b52457b967b7bc41ce0ca9bd5d6a823d225d4.tar.gz",
+            .url = "https://github.com/pmarreck/rarz/archive/55bc25c53047fb40190b749f250978ca11f9f378.tar.gz",
             .hash = "rarz-0.1.0-BNfrfgjCCQAfozCZnR7ARDZkCuLFZT7xvj3NGpwjcQG_",
         },
         .compact_pro = .{

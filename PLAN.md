@@ -75,6 +75,9 @@ These formats return WARN — recognized but NO real corruption detection:
   - Not worth integrating as a dependency (GPLv3 compiler, code-gen build step, structural-only parsing)
 
 ## Recently Completed
+- [x] ICNS deep validation: embedded PNG CRC-32 verification, 5/5 corruption detection (2026-03-09 EST)
+- [x] XLS record type validation: 140+ known BIFF8 types, 3/5 → 4/5 corruption detection (2026-03-09 EST)
+- [x] TAR end-of-archive zero block validation, 2/5 → 3/5 corruption detection (2026-03-09 EST)
 - [x] Dependency updates: rarz (CRC32 hw accel) + switch sevenz → z7z cleanroom (2026-03-07 EST)
 - [x] HEIC stack overflow fix — thread-safe heap allocation (2026-03-07 EST)
 - [x] Corruption detection improvements: FLAC CRC, WebP RIFF, ASF, HDF5, DOC, SQLite, JPEG (2026-03-07 EST)
