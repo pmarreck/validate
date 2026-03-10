@@ -92,7 +92,7 @@ pptx	transparent	ZIP CRC + filename cross-validation catches all tested corrupti
 prores	mixed	Codec stream can degrade without hard parse failure
 s3m	mixed	Tracker format can remain loadable with localized damage
 sqlite	mixed	Page-level semantics may allow partial validity after mutation
-swf	mixed	Tag stream may remain parseable depending on location
+swf	transparent	CWS zlib Adler32 + tag stream validation catches all tested corruptions
 tar	mixed	Header checksum does not protect all payload bytes
 tiff	mixed	IFD/image data separation yields partial corruption resilience
 tta	transparent	TTA frame CRC validation catches all tested corruptions
