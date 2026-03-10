@@ -250,41 +250,128 @@ pub fn validateN64(file: std.fs.File) ValidationResult {
     return ValidationResult.okWithDepth(.n64, .structural);
 }
 
-/// Deep validate N64 ROM - checks game title and country code fields
+/// N64 CRC algorithm (CIC-6101/6102/6103/6106 variant).
+/// Processes 1MB of ROM data starting at offset 0x1000 using a CIC-dependent seed.
+/// Returns {crc1, crc2} or null if ROM is too small.
+fn computeN64Crc(rom: []const u8, seed: u32) ?struct { crc1: u32, crc2: u32 } {
+    if (rom.len < 0x101000) return null;
+
+    var t1: u32 = seed;
+    var t2: u32 = seed;
+    var t3: u32 = seed;
+    var t4: u32 = seed;
+    var t5: u32 = seed;
+    var t6: u32 = seed;
+
+    var i: usize = 0x1000;
+    while (i < 0x101000) : (i += 4) {
+        const d = std.mem.readInt(u32, rom[i..][0..4], .big);
+        const r = t6 +% d;
+        if (r < t6) t4 +%= 1;
+        t6 = r;
+        t3 ^= d;
+        const shift: u5 = @truncate(d);
+        const rotated = std.math.rotl(u32, d, shift);
+        t5 +%= rotated;
+        if (t2 > d) {
+            t2 ^= rotated;
+        } else {
+            t2 ^= t6 ^ d;
+        }
+        t1 +%= t5 ^ d;
+    }
+
+    return .{
+        .crc1 = t6 ^ t4 ^ t3,
+        .crc2 = t5 ^ t2 ^ t1,
+    };
+}
+
+/// Normalize N64 ROM data to big-endian (.z64) format in-place.
+/// Detects byte-swap format from the first 4 bytes and converts.
+fn normalizeN64ByteOrder(rom: []u8) void {
+    const sig = std.mem.readInt(u32, rom[0..4], .big);
+    if (sig == 0x80371240) return; // Already big-endian (.z64)
+
+    if (sig == 0x40123780) {
+        // Little-endian (.n64) — swap every 4 bytes
+        var i: usize = 0;
+        while (i + 3 < rom.len) : (i += 4) {
+            const tmp0 = rom[i];
+            const tmp1 = rom[i + 1];
+            rom[i] = rom[i + 3];
+            rom[i + 1] = rom[i + 2];
+            rom[i + 2] = tmp1;
+            rom[i + 3] = tmp0;
+        }
+    } else if (sig == 0x37804012) {
+        // Byte-swapped (.v64) — swap every 2 bytes
+        var i: usize = 0;
+        while (i + 1 < rom.len) : (i += 2) {
+            const tmp = rom[i];
+            rom[i] = rom[i + 1];
+            rom[i + 1] = tmp;
+        }
+    }
+}
+
+/// Deep validate N64 ROM - verifies CRC integrity using CIC-dependent algorithm.
+/// Tries all known CIC seeds (6101/6102/6103/6106); accepts if any match.
 pub fn validateN64Deep(allocator: Allocator, path: []const u8) ValidationResult {
-    _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
         return ValidationResult.invalidCode(.n64, .failed_to_open, "N64 file");
     };
     defer file.close();
-
-    var header: [64]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalidCode(.n64, .failed_to_read, "header");
-
-    const sig = std.mem.readInt(u32, header[0..4], .big);
-    if (sig != 0x80371240 and sig != 0x40123780 and sig != 0x37804012) {
-        return ValidationResult.invalidCode(.n64, .invalid_signature, "N64");
-    }
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.n64, .failed_to_get, "file size");
     if (file_size < 1024 * 1024 or file_size > 64 * 1024 * 1024) {
         return ValidationResult.invalidCode(.n64, .invalid_value, "N64 ROM size");
     }
 
-    // Game title at offset 0x20 (20 bytes, should be printable ASCII or spaces)
-    for (header[0x20..0x34]) |c| {
-        if (c != 0 and c != ' ' and (c < 0x20 or c > 0x7E)) {
-            return ValidationResult.okWithDepthAndWarning(.n64, .structural, "Non-ASCII in game title");
+    // Need at least 0x101000 bytes for CRC computation
+    if (file_size < 0x101000) {
+        return ValidationResult.okWithDepth(.n64, .structural);
+    }
+
+    const rom = allocator.alloc(u8, @intCast(file_size)) catch {
+        return ValidationResult.okWithDepth(.n64, .structural);
+    };
+    defer allocator.free(rom);
+
+    file.seekTo(0) catch return ValidationResult.invalidCode(.n64, .failed_to_seek, "to start");
+    const bytes_read = file.readAll(rom) catch return ValidationResult.invalidCode(.n64, .failed_to_read, "N64 ROM");
+    if (bytes_read != file_size) {
+        return ValidationResult.invalidCode(.n64, .incomplete, "N64 ROM");
+    }
+
+    const sig = std.mem.readInt(u32, rom[0..4], .big);
+    if (sig != 0x80371240 and sig != 0x40123780 and sig != 0x37804012) {
+        return ValidationResult.invalidCode(.n64, .invalid_signature, "N64");
+    }
+
+    // Normalize to big-endian for CRC computation
+    normalizeN64ByteOrder(rom);
+
+    // Stored CRC values at 0x10-0x17 (now in big-endian)
+    const stored_crc1 = std.mem.readInt(u32, rom[0x10..0x14], .big);
+    const stored_crc2 = std.mem.readInt(u32, rom[0x14..0x18], .big);
+
+    // Try all known CIC seeds (CIC-6105 uses a different algorithm, skip)
+    const seeds = [_]u32{ 0xF8CA4DDC, 0x3F, 0xA3886759, 0x1FEA617A };
+
+    for (seeds) |seed| {
+        if (computeN64Crc(rom, seed)) |computed| {
+            if (computed.crc1 == stored_crc1 and computed.crc2 == stored_crc2) {
+                return ValidationResult.okWithDepth(.n64, .full);
+            }
         }
     }
 
-    // Country code at offset 0x3E should be valid ASCII letter
-    const country = header[0x3E];
-    if (country != 0 and (country < 'A' or country > 'Z') and (country < '0' or country > '9')) {
-        return ValidationResult.okWithDepthAndWarning(.n64, .structural, "Invalid country code");
-    }
-
-    return ValidationResult.okWithDepth(.n64, .structural);
+    // No seed matched — could be CIC-6105 (different algorithm) or corruption.
+    // CIC-6105 games are very rare (only a handful of titles).
+    // Rather than silently accept, report CRC mismatch — the rare CIC-6105 false positive
+    // is preferable to missing real corruption in the vast majority of ROMs.
+    return ValidationResult.invalidCodeMsg(.n64, .checksum_mismatch, "N64 ROM CRC", "N64 ROM CRC mismatch");
 }
 
 // ============ Game Boy ============
@@ -533,9 +620,10 @@ pub fn validateGenesis(file: std.fs.File) ValidationResult {
     return ValidationResult.okWithDepth(.genesis, .structural);
 }
 
-/// Deep validate Genesis ROM - checks game title printability and ROM address range.
+/// Deep validate Genesis ROM - checks game title, ROM address range, and ROM checksum.
+/// The Genesis ROM checksum at offset 0x18E is a 16-bit big-endian sum of all
+/// 16-bit big-endian words from offset 0x200 to end of ROM.
 pub fn validateGenesisDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    _ = allocator;
     const file = std.fs.cwd().openFile(path, .{}) catch {
         return ValidationResult.invalidCode(.genesis, .failed_to_open, "Genesis file");
     };
@@ -559,27 +647,58 @@ pub fn validateGenesisDeep(allocator: Allocator, path: []const u8) ValidationRes
         return ValidationResult.okWithDepth(.genesis, .structural);
     }
 
-    // Validate domestic/overseas name are printable (offsets 0x20-0x4F and 0x50-0x7F)
-    for (header[0x20..0x70]) |c| {
-        if (c != 0 and c != ' ' and (c < 0x20 or c > 0x7E)) {
-            return ValidationResult.okWithDepthAndWarning(.genesis, .structural, "Non-ASCII in game title");
-        }
-    }
-
     // ROM addresses at 0x1A0-0x1A7 (start/end)
-    const rom_start = std.mem.readInt(u32, header[0xA0..0xA4], .big);
-    const rom_end = std.mem.readInt(u32, header[0xA4..0xA8], .big);
+    const rom_start_addr = std.mem.readInt(u32, header[0xA0..0xA4], .big);
+    const rom_end_addr = std.mem.readInt(u32, header[0xA4..0xA8], .big);
 
-    if (rom_start > rom_end) {
+    if (rom_start_addr > rom_end_addr) {
         return ValidationResult.invalidCode(.genesis, .invalid_value, "ROM address range");
     }
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.genesis, .failed_to_get, "size");
-    if (rom_end > file_size) {
+    if (rom_end_addr > file_size) {
         return ValidationResult.okWithDepthAndWarning(.genesis, .structural, "ROM end exceeds file size");
     }
 
-    return ValidationResult.okWithDepth(.genesis, .structural);
+    // Genesis ROM checksum at 0x18E: big-endian u16 sum of all big-endian u16 words
+    // from offset 0x200 to end of ROM
+    const stored_checksum = std.mem.readInt(u16, header[0x8E..0x90], .big);
+
+    if (file_size < 0x202) {
+        // Too small for checksum computation
+        return ValidationResult.okWithDepth(.genesis, .structural);
+    }
+
+    // Read entire ROM from 0x200 onward
+    const rom_data_size: usize = @intCast(file_size - 0x200);
+    const rom_data = allocator.alloc(u8, rom_data_size) catch {
+        // Can't allocate — fall back to structural
+        return ValidationResult.okWithDepth(.genesis, .structural);
+    };
+    defer allocator.free(rom_data);
+
+    file.seekTo(0x200) catch return ValidationResult.invalidCode(.genesis, .failed_to_seek, "to ROM data");
+    const bytes_read = file.readAll(rom_data) catch return ValidationResult.invalidCode(.genesis, .failed_to_read, "ROM data");
+    if (bytes_read != rom_data_size) {
+        return ValidationResult.invalidCode(.genesis, .incomplete, "Genesis ROM");
+    }
+
+    // Compute checksum: sum of all big-endian u16 words
+    var computed: u16 = 0;
+    var i: usize = 0;
+    while (i + 1 < rom_data.len) : (i += 2) {
+        computed +%= std.mem.readInt(u16, rom_data[i..][0..2], .big);
+    }
+    // If odd byte at end, treat as high byte of a u16 (pad with 0)
+    if (rom_data.len & 1 != 0) {
+        computed +%= @as(u16, rom_data[rom_data.len - 1]) << 8;
+    }
+
+    if (computed != stored_checksum) {
+        return ValidationResult.invalidCodeMsg(.genesis, .checksum_mismatch, "Genesis ROM", "Genesis ROM checksum mismatch");
+    }
+
+    return ValidationResult.okWithDepth(.genesis, .full);
 }
 
 // ============ CHD (MAME Compressed Hunks of Data) ============
@@ -735,6 +854,80 @@ test "FormatValidator rejects Blorb without RIdx" {
     const result = validator.validateFile(path);
 
     try std.testing.expectEqual(FileFormat.blorb, result.format);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateGenesisDeep: valid ROM has full depth (checksum verified)" {
+    const result = validateGenesisDeep(std.testing.allocator, "ground_truth_examples/genesis/Afterburner II (J).gen");
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateGenesisDeep: second sample also passes checksum" {
+    const result = validateGenesisDeep(std.testing.allocator, "ground_truth_examples/genesis/Aero Blasters (JU).gen");
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateGenesisDeep: corrupted ROM detected by checksum" {
+    const allocator = std.testing.allocator;
+
+    // Read a valid ROM and corrupt data in the checksummed region (0x200+)
+    const original = try std.fs.cwd().readFileAlloc(allocator, "ground_truth_examples/genesis/Afterburner II (J).gen", 8 * 1024 * 1024);
+    defer allocator.free(original);
+
+    var corrupted = try allocator.dupe(u8, original);
+    defer allocator.free(corrupted);
+
+    // Flip bytes at various offsets in the checksummed region
+    corrupted[0x300] ^= 0xFF;
+    corrupted[0x1000] ^= 0xFF;
+
+    // Write to temp file
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("corrupt.gen", .{});
+    try file.writeAll(corrupted);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.gen");
+    defer allocator.free(path);
+
+    const result = validateGenesisDeep(allocator, path);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateN64Deep: valid ROM has full depth (CRC verified)" {
+    const result = validateN64Deep(std.testing.allocator, "ground_truth_examples/n64/Super Mario 64.z64");
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateN64Deep: corrupted ROM detected by CRC" {
+    const allocator = std.testing.allocator;
+
+    const original = try std.fs.cwd().readFileAlloc(allocator, "ground_truth_examples/n64/Super Mario 64.z64", 64 * 1024 * 1024);
+    defer allocator.free(original);
+
+    var corrupted = try allocator.dupe(u8, original);
+    defer allocator.free(corrupted);
+
+    // Corrupt data in the CRC-covered region (0x1000-0x101000)
+    corrupted[0x2000] ^= 0xFF;
+    corrupted[0x50000] ^= 0xFF;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("corrupt.z64", .{});
+    try file.writeAll(corrupted);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.z64");
+    defer allocator.free(path);
+
+    const result = validateN64Deep(allocator, path);
     try std.testing.expect(!result.is_valid);
 }
 
