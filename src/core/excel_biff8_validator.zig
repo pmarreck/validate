@@ -192,6 +192,20 @@ fn isKnownBiff8RecordType(rec_type: u16) bool {
         0x089B, // TABLESTYLEELEMENT
         0x089C, // STYLEEXT
         0x08A3, // FORCEFULLCALCULATION
+        // Extended/POI/newer Excel types
+        0x0023, // EXTERNNAME
+        0x0099, // STANDARDWIDTH
+        0x009A, // (reserved)
+        0x00A0, // SCL
+        0x00D3, // OBPROJ
+        0x01C2, // CLRTCLIENT
+        0x087D, // XFCRC
+        0x0866, // SHEETPROTECTION2
+        0x088B, // PLV (Mac Excel)
+        0x088C, // COMPAT12EX
+        0x088E, // MTRSETTINGS
+        0x08C8, // LISTCF
+        0x105C, // SXTH
         => true,
         else => false,
     };
