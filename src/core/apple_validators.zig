@@ -120,32 +120,32 @@ pub fn isAppleDouble(data: []const u8) bool {
 pub fn validateAppleDouble(file: std.fs.File) ValidationResult {
 	var header: [26]u8 = undefined;
 	const bytes_read = file.read(&header) catch {
-		return ValidationResult.invalidCode(.unknown, .failed_to_read, "AppleDouble header");
+		return ValidationResult.invalidCode(.apple_double, .failed_to_read, "AppleDouble header");
 	};
 
 	if (bytes_read < 26) {
-		return ValidationResult.invalidCode(.unknown, .file_too_small, "AppleDouble");
+		return ValidationResult.invalidCode(.apple_double, .file_too_small, "AppleDouble");
 	}
 
 	// Check magic
 	const magic = std.mem.readInt(u32, header[0..4], .big);
 	if (magic != APPLEDOUBLE_MAGIC and magic != APPLESINGLE_MAGIC) {
-		return ValidationResult.invalidCode(.unknown, .invalid_signature, "AppleDouble");
+		return ValidationResult.invalidCode(.apple_double, .invalid_signature, "AppleDouble");
 	}
 
 	// Check version (should be 0x00020000)
 	const version = std.mem.readInt(u32, header[4..8], .big);
 	if (version != 0x00020000) {
-		return ValidationResult.invalidCode(.unknown, .unsupported, "AppleDouble version");
+		return ValidationResult.invalidCode(.apple_double, .unsupported, "AppleDouble version");
 	}
 
 	// Number of entries (bytes 24-25)
 	const num_entries = std.mem.readInt(u16, header[24..26], .big);
 	if (num_entries == 0 or num_entries > 100) {
-		return ValidationResult.invalidCode(.unknown, .invalid_value, "AppleDouble entry count");
+		return ValidationResult.invalidCode(.apple_double, .invalid_value, "AppleDouble entry count");
 	}
 
-	return ValidationResult.ok(.unknown); // AppleDouble doesn't have its own format type
+	return ValidationResult.ok(.apple_double);
 }
 
 // ============ Legacy Word Processor Validators ============

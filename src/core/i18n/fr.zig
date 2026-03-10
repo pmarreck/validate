@@ -260,6 +260,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .plist = "Apple Property List",
     .ds_store = "macOS DS_Store",
     .spotlight = "Index macOS Spotlight",
+    .apple_double = "AppleDouble Resource Fork",
     .pe = "Ex\xc3\xa9cutable Windows PE",
     .elf = "Ex\xc3\xa9cutable ELF",
     .macho = "Binaire Mach-O",

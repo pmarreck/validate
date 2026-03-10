@@ -274,6 +274,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .plist = "Apple Property List",
     .ds_store = "macOS DS_Store",
     .spotlight = "macOS Spotlight-Index",
+    .apple_double = "AppleDouble-Ressourcenzweig",
     .pe = "Windows PE Programm",
     .elf = "ELF-Programm",
     .macho = "Mach-O-Bin\xc3\xa4rdatei",

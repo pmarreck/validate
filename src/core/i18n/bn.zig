@@ -246,6 +246,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .plist = "আপেল সম্পত্তি তালিকা",
     .ds_store = "macOS DS_Store",
     .spotlight = "macOS স্পটলাইট সূচক",
+    .apple_double = "AppleDouble Resource Fork",
     .pe = "উইন্ডোজ পিই এক্সিকিউটেবল",
     .elf = "ELF এক্সিকিউটেবল",
     .macho = "মাক-ও বাইনারি",

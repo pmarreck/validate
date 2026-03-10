@@ -518,6 +518,7 @@ pub const FileFormat = enum {
     plist, // Apple Property List (XML or binary)
     ds_store, // macOS .DS_Store (Desktop Services Store)
     spotlight, // macOS Spotlight index (proprietary)
+    apple_double, // AppleDouble resource fork (._* files) / AppleSingle
     // Executable formats
     pe, // Windows PE (Portable Executable) - .exe, .dll, .sys, .scr
     elf, // ELF (Executable and Linkable Format) - Linux/Unix executables, .so, .o
@@ -611,6 +612,7 @@ pub const FileFormat = enum {
             .plist => true, // Apple Property List (XML or binary)
             .ds_store => true, // macOS DS_Store (structural only)
             .spotlight => true, // macOS Spotlight index (structural only)
+            .apple_double => true, // AppleDouble resource fork
             .pe => true, // Windows PE executable
             .elf => true, // ELF executable
             .macho => true, // Mach-O binary
@@ -1367,6 +1369,10 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x00, 0x00, 0x00, 0x01 } ++ "Bud1", .offset = 0, .format = .ds_store },
     // macOS Spotlight index: "8tsd" magic
     .{ .bytes = "8tsd", .offset = 0, .format = .spotlight },
+    // AppleDouble resource fork: 0x00051607
+    .{ .bytes = &[_]u8{ 0x00, 0x05, 0x16, 0x07 }, .offset = 0, .format = .apple_double },
+    // AppleSingle: 0x00051600
+    .{ .bytes = &[_]u8{ 0x00, 0x05, 0x16, 0x00 }, .offset = 0, .format = .apple_double },
     // AMR (Adaptive Multi-Rate): "#!AMR\n" (narrow-band) or "#!AMR-WB\n" (wide-band)
     .{ .bytes = "#!AMR-WB\n", .offset = 0, .format = .amr },
     .{ .bytes = "#!AMR\n", .offset = 0, .format = .amr },
@@ -5579,6 +5585,7 @@ pub const FormatValidator = struct {
             .plist => apple_validators.validatePlist(file),
             .ds_store => apple_validators.validateDsStore(file),
             .spotlight => apple_validators.validateSpotlight(file),
+            .apple_double => apple_validators.validateAppleDouble(file),
             // New audio formats
             .amr => music_validators.validateAmr(file),
             .au => music_validators.validateAu(file),
