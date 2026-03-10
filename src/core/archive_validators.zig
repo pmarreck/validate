@@ -3424,13 +3424,11 @@ test "base32Decode: SHA-1 digest round trip" {
 
 // ---------- WARC deep validator tests ----------
 
-test "validateWarcDeep: WARC without digests returns structural with warning" {
+test "validateWarcDeep: WARC with SHA-1 digests returns full depth" {
     const result = validateWarcDeep(testing.allocator, "ground_truth_examples/warc/sample.warc");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.warc, result.format);
-    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
-    // Should have a warning about no digests
-    try testing.expect(result.warning_message != null);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 test "validateWarcDeep: synthetic WARC with valid SHA-1 digest returns full" {

@@ -104,7 +104,7 @@ wav	mixed	PCM payload flips are often undetectable structurally
 wavpack	mixed	Codec/container behavior is mutation-location dependent
 webm	mixed	Matroska container + codec stream often partially tolerant
 webp	mixed	Container/image payload can remain decodable with artifacts
-warc	mixed	Record framing can survive while payload is damaged
+warc	mixed	SHA-1 block digest verification catches content corruption; non-critical header mutations may survive
 xm	mixed	Tracker/module payload bytes can change while structure remains parseable
 xls	mixed	BIFF8 record chain + BoundSheet8 cross-validation catches structural corruption; no checksums for content bytes
 xlsx	transparent	ZIP CRC cross-validation catches all tested corruptions
