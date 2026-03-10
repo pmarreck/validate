@@ -2216,7 +2216,11 @@ pub fn validateHdf5(file: std.fs.File) ValidationResult {
                 return ValidationResult.invalidCodeMsg(.hdf5, .checksum_mismatch, "object header continuation", "OCHK continuation block checksum mismatch");
             }
             if (chain.root_result == .verified) {
-                // Both superblock and root OHDR (+ any OCHK continuations) checksums verified
+                // Superblock + OHDR chain verified. Now scan for Fletcher-32 chunk checksums.
+                const fletcher_result = validateHdf5Fletcher32Chunks(file, file_size);
+                if (fletcher_result == .invalid) {
+                    return ValidationResult.invalidCodeMsg(.hdf5, .checksum_mismatch, "dataset chunk", "HDF5 Fletcher-32 chunk checksum mismatch");
+                }
                 return ValidationResult.okWithDepth(.hdf5, .full);
             }
         }
@@ -2227,6 +2231,133 @@ pub fn validateHdf5(file: std.fs.File) ValidationResult {
 
     // v0/1 has no checksums
     return ValidationResult.okWithDepth(.hdf5, .structural);
+}
+
+/// Compute HDF5 Fletcher-32 checksum: big-endian 16-bit word sums mod 65535.
+fn fletcher32(buf: []const u8) u32 {
+    var s1: u32 = 0;
+    var s2: u32 = 0;
+    var i: usize = 0;
+    while (i + 1 < buf.len) : (i += 2) {
+        const val: u32 = (@as(u32, buf[i]) << 8) | buf[i + 1];
+        s1 = (s1 + val) % 65535;
+        s2 = (s2 + s1) % 65535;
+    }
+    // Handle trailing byte (odd length)
+    if (i < buf.len) {
+        s1 = (s1 + @as(u32, buf[i])) % 65535;
+        s2 = (s2 + s1) % 65535;
+    }
+    return (s2 << 16) | s1;
+}
+
+/// Scan HDF5 file for Fixed Array Data Blocks (FADB) containing chunk index entries,
+/// then verify Fletcher-32 checksums on each referenced chunk.
+/// Returns .invalid if any chunk checksum mismatches, .verified if at least one verified,
+/// .unverifiable if no Fletcher-32 chunks found.
+fn validateHdf5Fletcher32Chunks(file: std.fs.File, file_size: u64) OhdrCheckResult {
+    // Scan for FAHD (Fixed Array Header) signatures
+    // FAHD structure: signature(4) + version(1) + client_id(1) + elem_size(1) + max_nelmts_bits(1) +
+    //   nelmts(8, assuming offset_size=8) + data_blk_addr(8) + page_nelmts(2) + checksum(4)
+    // Total: 30 bytes (for offset_size=8, length_size=8)
+    const FAHD_SIZE: usize = 30;
+    const FADB_HDR: usize = 14; // signature(4) + version(1) + client_id(1) + header_addr(8)
+
+    var scan_buf: [4096]u8 = undefined;
+    var scan_offset: u64 = 0;
+    var chunks_verified: u32 = 0;
+    var fadb_buf: [16384]u8 = undefined; // FADB index entries
+    var chunk_buf: [65536]u8 = undefined; // chunk data for Fletcher-32 verification
+
+    while (scan_offset < file_size) {
+        file.seekTo(scan_offset) catch return if (chunks_verified > 0) OhdrCheckResult.verified else OhdrCheckResult.unverifiable;
+        const scan_read = file.read(&scan_buf) catch return if (chunks_verified > 0) OhdrCheckResult.verified else OhdrCheckResult.unverifiable;
+        if (scan_read < FAHD_SIZE) break;
+
+        var pos: usize = 0;
+        while (pos + FAHD_SIZE <= scan_read) : (pos += 1) {
+            if (!std.mem.eql(u8, scan_buf[pos..][0..4], "FAHD")) continue;
+
+            // Found FAHD at scan_offset + pos
+            const fahd_abs = scan_offset + pos;
+            if (fahd_abs + FAHD_SIZE > file_size) continue;
+
+            // Read full FAHD
+            var fahd_buf: [FAHD_SIZE]u8 = undefined;
+            file.seekTo(fahd_abs) catch continue;
+            const fahd_read = file.read(&fahd_buf) catch continue;
+            if (fahd_read < FAHD_SIZE) continue;
+
+            const version = fahd_buf[4];
+            const client_id = fahd_buf[5];
+            if (version != 0 or client_id != 1) continue; // Only handle v0, chunked dataset client
+
+            const elem_size: usize = fahd_buf[6];
+            const nelmts = std.mem.readInt(u64, fahd_buf[8..16], .little);
+            const data_blk_addr = std.mem.readInt(u64, fahd_buf[16..24], .little);
+
+            if (nelmts == 0 or nelmts > 1_000_000) continue; // sanity
+            if (data_blk_addr >= file_size) continue;
+            if (elem_size < 12 or elem_size > 20) continue; // offset(8) + nbytes(1-8) + filter_mask(4)
+
+            // Parse FADB at data_blk_addr
+            const fadb_total = FADB_HDR + @as(usize, @intCast(nelmts)) * elem_size + 4;
+            if (fadb_total > fadb_buf.len) continue;
+            if (data_blk_addr + fadb_total > file_size) continue;
+
+            file.seekTo(data_blk_addr) catch continue;
+            const fadb_read = file.read(fadb_buf[0..fadb_total]) catch continue;
+            if (fadb_read < fadb_total) continue;
+            if (!std.mem.eql(u8, fadb_buf[0..4], "FADB")) continue;
+
+            // Parse each chunk entry from FADB, verify Fletcher-32 on each chunk
+            const nbytes_field_size: usize = elem_size - 8 - 4; // elem - offset - filter_mask
+            var entry_idx: u64 = 0;
+            while (entry_idx < nelmts) : (entry_idx += 1) {
+                const entry_off = FADB_HDR + @as(usize, @intCast(entry_idx)) * elem_size;
+                if (entry_off + elem_size > fadb_read) break;
+
+                const chunk_addr = std.mem.readInt(u64, fadb_buf[entry_off..][0..8], .little);
+                // Read chunk stored size (variable width)
+                var chunk_stored_size: u64 = 0;
+                for (0..nbytes_field_size) |b| {
+                    chunk_stored_size |= @as(u64, fadb_buf[entry_off + 8 + b]) << @intCast(b * 8);
+                }
+                // filter_mask at entry_off + 8 + nbytes_field_size (4 bytes)
+
+                if (chunk_addr == 0 or chunk_addr >= file_size) continue;
+                if (chunk_stored_size < 5 or chunk_stored_size > 16 * 1024 * 1024) continue; // sanity
+                const chunk_data_size = @as(usize, @intCast(chunk_stored_size)) - 4; // subtract Fletcher-32
+
+                if (chunk_addr + chunk_stored_size > file_size) continue;
+                if (chunk_data_size > chunk_buf.len) continue;
+
+                // Read chunk data + Fletcher-32 checksum into separate buffer
+                file.seekTo(chunk_addr) catch continue;
+                const total_read = @as(usize, @intCast(chunk_stored_size));
+                const chunk_read = file.read(chunk_buf[0..total_read]) catch continue;
+                if (chunk_read < total_read) continue;
+
+                // Verify Fletcher-32
+                const computed = fletcher32(chunk_buf[0..chunk_data_size]);
+                const stored_cksum = std.mem.readInt(u32, chunk_buf[chunk_data_size..][0..4], .little);
+
+                if (computed != stored_cksum) {
+                    return .invalid;
+                }
+                chunks_verified += 1;
+            }
+        }
+
+        // Advance scan position (overlap by FAHD_SIZE to catch signatures at boundaries)
+        if (scan_read > FAHD_SIZE) {
+            scan_offset += scan_read - FAHD_SIZE;
+        } else {
+            break;
+        }
+    }
+
+    return if (chunks_verified > 0) OhdrCheckResult.verified else OhdrCheckResult.unverifiable;
 }
 
 pub const OhdrCheckResult = enum { verified, invalid, unverifiable };
@@ -2396,9 +2527,12 @@ fn validateHdf5OchkBlockWithLength(
     parseHdf5MessagesForContinuations(file, buf[0..len], 4, checksum_offset_val, has_creation_order, file_size, chain_result);
 }
 
-/// Parse HDF5 v2 object header messages looking for continuation messages (type 0x10).
+/// HDF5 Link Message type.
+const HDF5_MSG_LINK: u8 = 0x06;
+
+/// Parse HDF5 v2 object header messages looking for continuation messages (type 0x10)
+/// and link messages (type 0x06) to walk child object headers.
 /// V2 message header: type(u8) + data_size(u16 LE) + flags(u8) [+ creation_order(u16 LE) if tracked].
-/// For each continuation found, recursively validate the OCHK block.
 fn parseHdf5MessagesForContinuations(
     file: std.fs.File,
     buf: []const u8,
@@ -2441,6 +2575,65 @@ fn parseHdf5MessagesForContinuations(
 
                 if (cont_offset < file_size and cont_length > 0) {
                     validateHdf5OchkBlockWithLength(file, cont_offset, cont_length, file_size, has_creation_order, chain_result);
+                }
+            }
+        }
+
+        // Link message (type 0x06): parse hard links to walk child object headers
+        if (msg_type == HDF5_MSG_LINK and msg_size >= 6) {
+            // Link message: version(1) + flags(1) + optional fields + name + link info
+            const msg_data = buf[msg_data_start..msg_data_end];
+            if (msg_data.len >= 6 and msg_data[0] == 1) { // version 1
+                const link_flags = msg_data[1];
+                var off: usize = 2;
+
+                // Link type field present if flag bit 3 set
+                var link_type: u8 = 0; // 0 = hard link
+                if (link_flags & 0x08 != 0) {
+                    if (off >= msg_data.len) { pos = msg_data_end; continue; }
+                    link_type = msg_data[off];
+                    off += 1;
+                }
+
+                // Creation order present if flag bit 2 set
+                if (link_flags & 0x04 != 0) {
+                    off += 8;
+                }
+
+                // Link name charset if flag bit 4 set
+                if (link_flags & 0x10 != 0) {
+                    off += 1;
+                }
+
+                // Link name length: 1/2/4/8 bytes based on flag bits 0-1
+                const name_size_enc: u2 = @intCast(link_flags & 0x03);
+                const name_len_bytes: usize = @as(usize, 1) << name_size_enc;
+                if (off + name_len_bytes > msg_data.len) { pos = msg_data_end; continue; }
+
+                const name_len: usize = switch (name_size_enc) {
+                    0 => msg_data[off],
+                    1 => std.mem.readInt(u16, msg_data[off..][0..2], .little),
+                    2 => @intCast(std.mem.readInt(u32, msg_data[off..][0..4], .little)),
+                    3 => @intCast(std.mem.readInt(u64, msg_data[off..][0..8], .little)),
+                };
+                off += name_len_bytes;
+
+                // Skip link name
+                if (off + name_len > msg_data.len) { pos = msg_data_end; continue; }
+                off += name_len;
+
+                // For hard links (type 0): 8-byte object header address follows
+                if (link_type == 0 and off + 8 <= msg_data.len) {
+                    const child_addr = std.mem.readInt(u64, msg_data[off..][0..8], .little);
+                    if (child_addr < file_size and child_addr != 0) {
+                        // Validate child object header checksum
+                        const child_result = validateHdf5OhdrChunk(file, child_addr, file_size, chain_result);
+                        switch (child_result) {
+                            .verified => chain_result.ochk_verified += 1,
+                            .invalid => chain_result.ochk_invalid += 1,
+                            .unverifiable => {}, // silently skip non-v2 headers
+                        }
+                    }
                 }
             }
         }
