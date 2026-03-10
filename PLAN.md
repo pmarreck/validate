@@ -75,6 +75,10 @@ These formats return WARN — recognized but NO real corruption detection:
   - Not worth integrating as a dependency (GPLv3 compiler, code-gen build step, structural-only parsing)
 
 ## Recently Completed
+- [x] N64 CRC validation: unified CIC variant support (6101/6102/6103/6105/6106) with auto-detection, 266/266 real-world ROMs pass (2026-03-10 EST)
+- [x] Genesis magic-byte detection: "SEGA" at offset 0x100, enables 790+ .bin ROM validation (2026-03-10 EST)
+- [x] GIF structural validation: sub-block chain + block type + extension parsing (2026-03-10 EST)
+- [x] HDF5 v2/3 sample promoted to primary for corruption testing, 0/5 → 1/5 (2026-03-10 EST)
 - [x] Opacity reclassification: BEAM (mixed→transparent), pdb_struct (opaque→transparent) — harness confirms 5/5 detection for both (2026-03-09 EST)
 - [x] ICNS deep validation: embedded PNG CRC-32 verification, 5/5 corruption detection (2026-03-09 EST)
 - [x] XLS record type validation: 140+ known BIFF8 types, 3/5 → 4/5 corruption detection (2026-03-09 EST)
