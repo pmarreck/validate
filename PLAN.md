@@ -75,6 +75,7 @@ These formats return WARN — recognized but NO real corruption detection:
   - Not worth integrating as a dependency (GPLv3 compiler, code-gen build step, structural-only parsing)
 
 ## Recently Completed
+- [x] Opacity reclassification: BEAM (mixed→transparent), pdb_struct (opaque→transparent) — harness confirms 5/5 detection for both (2026-03-09 EST)
 - [x] ICNS deep validation: embedded PNG CRC-32 verification, 5/5 corruption detection (2026-03-09 EST)
 - [x] XLS record type validation: 140+ known BIFF8 types, 3/5 → 4/5 corruption detection (2026-03-09 EST)
 - [x] TAR end-of-archive zero block validation, 2/5 → 3/5 corruption detection (2026-03-09 EST)
