@@ -827,6 +827,26 @@ pub fn validateTar(file: std.fs.File) ValidationResult {
         }
 
         const next_data_blocks = (entry_size + 511) / 512;
+
+        // Validate data block padding (POSIX requires zero-fill)
+        if (entry_size > 0 and next_data_blocks > 0) {
+            const remainder = entry_size % 512;
+            if (remainder != 0) {
+                const padding_start = pos + 512 + entry_size;
+                const padding_len = 512 - remainder;
+                file.seekTo(padding_start) catch {};
+                var pad_buf: [512]u8 = undefined;
+                const pad_read = file.readAll(pad_buf[0..padding_len]) catch 0;
+                if (pad_read == padding_len) {
+                    for (pad_buf[0..padding_len]) |b| {
+                        if (b != 0) {
+                            return ValidationResult.invalidCode(.tar, .invalid_value, "Non-zero data block padding");
+                        }
+                    }
+                }
+            }
+        }
+
         pos += 512 + next_data_blocks * 512;
     }
 

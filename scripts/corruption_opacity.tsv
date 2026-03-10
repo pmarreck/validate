@@ -106,7 +106,7 @@ webm	mixed	Matroska container + codec stream often partially tolerant
 webp	mixed	Container/image payload can remain decodable with artifacts
 warc	mixed	SHA-1 block digest verification catches content corruption; non-critical header mutations may survive
 xm	mixed	Tracker/module payload bytes can change while structure remains parseable
-xls	mixed	BIFF8 record chain + BoundSheet8 cross-validation catches structural corruption; no checksums for content bytes
+xls	transparent	BIFF8 records + OLE2 DIFAT/mini-FAT validation + BoundSheet8 cross-validation catches all tested corruptions
 xlsx	transparent	ZIP CRC cross-validation catches all tested corruptions
 zstd	transparent	xxHash64 content checksum verification detects all tested corruptions
 accdb	mixed	Jet/ACE engine page structure lacks mandatory end-to-end checksums

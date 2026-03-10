@@ -191,6 +191,22 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
         return Ole2ValidationResult.invalid(dir_result.error_message.?);
     }
 
+    // Validate mini-FAT integrity (if present)
+    if (header.total_mini_fat_sectors > 0 and header.first_mini_fat_sector != ENDOFCHAIN) {
+        const mini_fat = readMiniFat(allocator, file, &header, fat) catch {
+            return Ole2ValidationResult.invalid("Failed to read mini-FAT");
+        };
+        defer allocator.free(mini_fat);
+
+        for (mini_fat) |entry| {
+            if (entry != FREESECT and entry != ENDOFCHAIN) {
+                if (entry > mini_fat.len) {
+                    return Ole2ValidationResult.invalid("Mini-FAT entry references invalid mini-sector");
+                }
+            }
+        }
+    }
+
     return Ole2ValidationResult.ok(
         dir_result.format_detected,
         dir_result.num_entries,
@@ -291,8 +307,10 @@ fn readFat(allocator: Allocator, file: std.fs.File, header: *const Ole2Header, t
 
     // Read FAT sectors from DIFAT
     // First 109 entries are in header
+    var used_difat_count: usize = 0;
     for (header.difat_array) |fat_sector| {
         if (fat_sector == FREESECT) break;
+        used_difat_count += 1;
         if (fat_sector > total_sectors) return error.InvalidFatSector;
 
         // Read FAT sector (sectors start after the header region)
@@ -307,6 +325,11 @@ fn readFat(allocator: Allocator, file: std.fs.File, header: *const Ole2Header, t
             fat[fat_index] = std.mem.readInt(u32, sector_buf[i * 4 ..][0..4], .little);
             fat_index += 1;
         }
+    }
+
+    // Validate unused DIFAT entries are FREESECT (structural integrity check)
+    for (header.difat_array[used_difat_count..]) |entry| {
+        if (entry != FREESECT) return error.InvalidFatSector;
     }
 
     // If more FAT sectors needed, follow DIFAT chain
