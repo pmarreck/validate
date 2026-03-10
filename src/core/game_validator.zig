@@ -250,11 +250,72 @@ pub fn validateN64(file: std.fs.File) ValidationResult {
     return ValidationResult.okWithDepth(.n64, .structural);
 }
 
-/// N64 CRC algorithm (CIC-6101/6102/6103/6106 variant).
-/// Processes 1MB of ROM data starting at offset 0x1000 using a CIC-dependent seed.
-/// Returns {crc1, crc2} or null if ROM is too small.
-fn computeN64Crc(rom: []const u8, seed: u32) ?struct { crc1: u32, crc2: u32 } {
+/// CIC variant detected from bootcode CRC-32.
+const CicVariant = enum {
+    cic_6101,
+    cic_6102,
+    cic_6103,
+    cic_6105,
+    cic_6106,
+    unknown,
+};
+
+/// Detect CIC variant by computing CRC-32 of the bootcode region (0x40-0xFFF).
+/// Reference: cen64/si/cic.c, n64hijack/src/crc.h
+fn detectCicVariant(rom: []const u8) CicVariant {
+    if (rom.len < 0x1000) return .unknown;
+
+    // CRC-32 (standard polynomial 0xEDB88320) of bootcode
+    var crc: u32 = 0xFFFFFFFF;
+    for (rom[0x40..0x1000]) |byte| {
+        crc = (crc >> 8) ^ crc32Table[(crc ^ byte) & 0xFF];
+    }
+    crc = ~crc;
+
+    return switch (crc) {
+        0x6170A4A1 => .cic_6101,
+        0x90BB6CB5, 0x009E9EA3 => .cic_6102, // NUS-6102 and NUS-7102
+        0x0B050EE0 => .cic_6103,
+        0x98BC2C86 => .cic_6105,
+        0xACC8580A => .cic_6106,
+        else => .unknown,
+    };
+}
+
+/// CRC-32 lookup table (polynomial 0xEDB88320)
+const crc32Table = blk: {
+    @setEvalBranchQuota(10000);
+    var table: [256]u32 = undefined;
+    for (0..256) |n| {
+        var c: u32 = @intCast(n);
+        for (0..8) |_| {
+            if (c & 1 != 0) {
+                c = 0xEDB88320 ^ (c >> 1);
+            } else {
+                c = c >> 1;
+            }
+        }
+        table[n] = c;
+    }
+    break :blk table;
+};
+
+/// Unified N64 CRC algorithm supporting all CIC variants (6101/6102/6103/6105/6106).
+/// The core loop is identical; differences are:
+/// - CIC-6105: t1 accumulates from bootcode lookup table instead of t5^d
+/// - CIC-6103: final combine uses + instead of ^
+/// - CIC-6106: final combine uses * instead of ^
+/// Reference: n64hijack/src/crc.h by Parasyte/Andreas Sterbenz
+fn computeN64Crc(rom: []const u8, cic: CicVariant) ?struct { crc1: u32, crc2: u32 } {
     if (rom.len < 0x101000) return null;
+
+    const seed: u32 = switch (cic) {
+        .cic_6101, .cic_6102 => 0xF8CA4DDC,
+        .cic_6103 => 0xA3886759,
+        .cic_6105 => 0xDF26F436,
+        .cic_6106 => 0x1FEA617A,
+        .unknown => return null,
+    };
 
     var t1: u32 = seed;
     var t2: u32 = seed;
@@ -278,12 +339,30 @@ fn computeN64Crc(rom: []const u8, seed: u32) ?struct { crc1: u32, crc2: u32 } {
         } else {
             t2 ^= t6 ^ d;
         }
-        t1 +%= t5 ^ d;
+
+        // CIC-6105: t1 accumulates from bootcode lookup table
+        if (cic == .cic_6105) {
+            const lookup = std.mem.readInt(u32, rom[0x750 + (i & 0xFF) ..][0..4], .big);
+            t1 +%= lookup ^ d;
+        } else {
+            t1 +%= t5 ^ d;
+        }
     }
 
-    return .{
-        .crc1 = t6 ^ t4 ^ t3,
-        .crc2 = t5 ^ t2 ^ t1,
+    // Final combine differs by CIC variant
+    return switch (cic) {
+        .cic_6103 => .{
+            .crc1 = (t6 ^ t4) +% t3,
+            .crc2 = (t5 ^ t2) +% t1,
+        },
+        .cic_6106 => .{
+            .crc1 = (t6 *% t4) +% t3,
+            .crc2 = (t5 *% t2) +% t1,
+        },
+        else => .{
+            .crc1 = t6 ^ t4 ^ t3,
+            .crc2 = t5 ^ t2 ^ t1,
+        },
     };
 }
 
@@ -315,8 +394,8 @@ fn normalizeN64ByteOrder(rom: []u8) void {
     }
 }
 
-/// Deep validate N64 ROM - verifies CRC integrity using CIC-dependent algorithm.
-/// Tries all known CIC seeds (6101/6102/6103/6106); accepts if any match.
+/// Deep validate N64 ROM - verifies CRC integrity using CIC-auto-detection.
+/// Auto-detects CIC variant from bootcode CRC-32, then validates ROM CRC.
 pub fn validateN64Deep(allocator: Allocator, path: []const u8) ValidationResult {
     const file = std.fs.cwd().openFile(path, .{}) catch {
         return ValidationResult.invalidCode(.n64, .failed_to_open, "N64 file");
@@ -356,21 +435,28 @@ pub fn validateN64Deep(allocator: Allocator, path: []const u8) ValidationResult 
     const stored_crc1 = std.mem.readInt(u32, rom[0x10..0x14], .big);
     const stored_crc2 = std.mem.readInt(u32, rom[0x14..0x18], .big);
 
-    // Try all known CIC seeds (CIC-6105 uses a different algorithm, skip)
-    const seeds = [_]u32{ 0xF8CA4DDC, 0x3F, 0xA3886759, 0x1FEA617A };
+    // Auto-detect CIC variant from bootcode
+    const cic = detectCicVariant(rom);
 
-    for (seeds) |seed| {
-        if (computeN64Crc(rom, seed)) |computed| {
+    if (cic != .unknown) {
+        if (computeN64Crc(rom, cic)) |computed| {
             if (computed.crc1 == stored_crc1 and computed.crc2 == stored_crc2) {
                 return ValidationResult.okWithDepth(.n64, .full);
             }
         }
     }
 
-    // No seed matched — could be CIC-6105 (different algorithm) or corruption.
-    // CIC-6105 games are very rare (only a handful of titles).
-    // Rather than silently accept, report CRC mismatch — the rare CIC-6105 false positive
-    // is preferable to missing real corruption in the vast majority of ROMs.
+    // If auto-detect failed or CRC didn't match, try all variants as fallback
+    const all_variants = [_]CicVariant{ .cic_6102, .cic_6101, .cic_6103, .cic_6105, .cic_6106 };
+    for (all_variants) |variant| {
+        if (variant == cic) continue; // Already tried
+        if (computeN64Crc(rom, variant)) |computed| {
+            if (computed.crc1 == stored_crc1 and computed.crc2 == stored_crc2) {
+                return ValidationResult.okWithDepth(.n64, .full);
+            }
+        }
+    }
+
     return ValidationResult.invalidCodeMsg(.n64, .checksum_mismatch, "N64 ROM CRC", "N64 ROM CRC mismatch");
 }
 
