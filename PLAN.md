@@ -75,6 +75,9 @@ These formats return WARN — recognized but NO real corruption detection:
   - Not worth integrating as a dependency (GPLv3 compiler, code-gen build step, structural-only parsing)
 
 ## Recently Completed
+- [x] HDF5 Fletcher-32 chunk checksum verification: FADB scanning + per-chunk validation, 1/5 → 3/5 (2026-03-10 EST)
+- [x] WARC SHA-1 block digest verification: regenerated sample with digests, 1/5 → 4/5 (2026-03-10 EST)
+- [x] AppleDouble format detection via magic bytes (2026-03-10 EST)
 - [x] N64 CRC validation: unified CIC variant support (6101/6102/6103/6105/6106) with auto-detection, 266/266 real-world ROMs pass (2026-03-10 EST)
 - [x] Genesis magic-byte detection: "SEGA" at offset 0x100, enables 790+ .bin ROM validation (2026-03-10 EST)
 - [x] GIF structural validation: sub-block chain + block type + extension parsing (2026-03-10 EST)
