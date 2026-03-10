@@ -128,7 +128,7 @@ parquet	mixed	Parquet footer magic + Thrift metadata can survive some localized 
 psd	mixed	PSD header checks do not cover full layer/channel data integrity
 spotlight	opaque	macOS Spotlight store has weak intrinsic integrity metadata
 wpd	mixed	WordPerfect document prefix does not protect full payload
-shapefile	mixed	Shapefile header protects file code/length but not per-record geometry data
+shapefile	transparent	Shapefile header + record structure validation catches all tested corruptions
 qbb	mixed	OLE2 compound storage lacks mandatory end-to-end integrity
 qdf	transparent	Container validation catches all tested corruptions
 ofx	opaque	Text-based financial exchange format with no integrity checksums
