@@ -1405,6 +1405,8 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x00, 0x00, 0x01, 0xB3 }, .offset = 0, .format = .mpeg_es },
     // ISO 9660: "CD001" at primary volume descriptor offset 0x8001
     .{ .bytes = "CD001", .offset = 0x8001, .format = .iso },
+    // Sega Genesis / Mega Drive: "SEGA" at offset 0x100 (console name field)
+    .{ .bytes = "SEGA", .offset = 0x100, .format = .genesis },
     // Note: DV, TGA, PAM/PBM/PGM/PPM, HTML, COFF, DMG have no reliable magic bytes at offset 0 - detected by extension and/or structure
 };
 
