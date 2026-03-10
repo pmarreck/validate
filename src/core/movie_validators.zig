@@ -390,7 +390,18 @@ pub fn validateSwf(file: std.fs.File) ValidationResult {
                 return ValidationResult.invalidCode(.swf, .invalid_value, "RECT Nbits value");
             }
 
-            return ValidationResult.ok(.swf);
+            // Calculate RECT total size in bytes: 5 + 4*Nbits bits, rounded up
+            const rect_bits: u32 = 5 + 4 * @as(u32, nbits);
+            const rect_bytes: u32 = (rect_bits + 7) / 8;
+
+            // After RECT: 2 bytes frame rate + 2 bytes frame count + tag stream
+            const tag_stream_start: u64 = 8 + rect_bytes + 4;
+            if (tag_stream_start >= declared_size) {
+                return ValidationResult.invalidCode(.swf, .truncated, "SWF header");
+            }
+
+            // Walk SWF tag stream to validate structure
+            return validateSwfTagStream(file, tag_stream_start, declared_size);
         },
         .zlib => {
             // Decompress CWS (zlib) data and validate
@@ -435,18 +446,17 @@ pub fn validateSwfZlib(file: std.fs.File, declared_size: u32) ValidationResult {
 
     // Decompress using zlib (the 8-byte header has been stripped, data starts with zlib stream)
     // SWF CWS uses standard zlib format (not raw deflate)
+    // zlib internally validates Adler32 — a CRC-level integrity check
     const decompressed_size: usize = declared_size - 8; // Subtract header size
     const result = zlib.inflateZlibAlloc(gpa, compressed_data, decompressed_size + 1024) catch {
-        // Decompression failed - fall back to structural validation
-        // The header was valid, so it's a valid CWS file, just can't verify content
-        return ValidationResult.ok(.swf);
+        // zlib decompression failed — Adler32 mismatch or corrupt deflate stream
+        return ValidationResult.invalidWithDepth(.swf, "CWS zlib decompression failed (corrupt data)", .full);
     };
     defer gpa.free(result);
 
-    // Validate decompressed size matches (within tolerance for padding)
+    // Validate decompressed size matches declared size
     if (result.len < decompressed_size -| 16 or result.len > decompressed_size + 16) {
-        // Size mismatch but decompression succeeded - might be truncated
-        return ValidationResult.ok(.swf);
+        return ValidationResult.invalidWithDepth(.swf, "CWS decompressed size mismatch", .full);
     }
 
     // Validate RECT structure in decompressed data
@@ -464,10 +474,106 @@ pub fn validateSwfZlib(file: std.fs.File, declared_size: u32) ValidationResult {
     const rect_bytes = (rect_bits + 7) / 8;
 
     if (result.len < rect_bytes + 4) { // RECT + at least frame rate and count
-        return ValidationResult.ok(.swf); // Too small but format was valid
+        return ValidationResult.okWithDepth(.swf, .full); // zlib verified, just minimal content
     }
 
-    return ValidationResult.okWithDepth(.swf, .full);
+    // Walk tag stream in decompressed data
+    const tag_start = rect_bytes + 4; // After RECT + frame rate(2) + frame count(2)
+    return validateSwfTagStreamBuffer(result, tag_start, declared_size);
+}
+
+/// Walk SWF tag stream from file to validate tag structure.
+fn validateSwfTagStream(file: std.fs.File, start: u64, file_length: u32) ValidationResult {
+    file.seekTo(start) catch return ValidationResult.invalidCode(.swf, .failed_to_seek, "to tags");
+
+    var pos = start;
+    var tag_count: u32 = 0;
+
+    while (pos + 2 <= file_length) {
+        var tag_header: [6]u8 = undefined;
+        const hdr_read = file.read(tag_header[0..2]) catch break;
+        if (hdr_read < 2) break;
+
+        const tag_code_and_length = std.mem.readInt(u16, tag_header[0..2], .little);
+        const tag_code = tag_code_and_length >> 6;
+        var tag_length: u32 = tag_code_and_length & 0x3F;
+
+        // Long tag format: if length == 0x3F, next 4 bytes are actual length
+        if (tag_length == 0x3F) {
+            const ext_read = file.read(tag_header[2..6]) catch break;
+            if (ext_read < 4) break;
+            tag_length = std.mem.readInt(u32, tag_header[2..6], .little);
+            pos += 6;
+        } else {
+            pos += 2;
+        }
+
+        // End tag (code 0, length 0) terminates the stream
+        if (tag_code == 0 and tag_length == 0) {
+            return ValidationResult.okWithDepth(.swf, .structural);
+        }
+
+        // Validate tag doesn't exceed file
+        if (pos + tag_length > file_length) {
+            return ValidationResult.invalidWithDepth(.swf, "SWF tag extends beyond file", .structural);
+        }
+
+        // Known SWF tag codes: 0-93 are defined, plus some higher ones
+        // Don't validate codes since SWF has many versions with different tags
+        // Just validate structure
+
+        // Skip tag body
+        file.seekBy(@intCast(tag_length)) catch break;
+        pos += tag_length;
+        tag_count += 1;
+
+        if (tag_count > 10_000_000) break; // Safety limit
+    }
+
+    // Reached end without explicit End tag — still structurally valid if we parsed some tags
+    if (tag_count > 0) {
+        return ValidationResult.okWithDepth(.swf, .structural);
+    }
+    return ValidationResult.invalidCode(.swf, .missing, "SWF tags");
+}
+
+/// Walk SWF tag stream in a decompressed buffer.
+fn validateSwfTagStreamBuffer(data: []const u8, start: usize, declared_size: u32) ValidationResult {
+    const limit = @min(data.len, @as(usize, declared_size));
+    var pos = start;
+    var tag_count: u32 = 0;
+
+    while (pos + 2 <= limit) {
+        const tag_code_and_length = std.mem.readInt(u16, data[pos..][0..2], .little);
+        const tag_code = tag_code_and_length >> 6;
+        var tag_length: u32 = tag_code_and_length & 0x3F;
+
+        if (tag_length == 0x3F) {
+            if (pos + 6 > limit) break;
+            tag_length = std.mem.readInt(u32, data[pos + 2 ..][0..4], .little);
+            pos += 6;
+        } else {
+            pos += 2;
+        }
+
+        if (tag_code == 0 and tag_length == 0) {
+            return ValidationResult.okWithDepth(.swf, .full);
+        }
+
+        if (pos + tag_length > limit) {
+            return ValidationResult.invalidWithDepth(.swf, "SWF tag extends beyond data", .full);
+        }
+
+        pos += tag_length;
+        tag_count += 1;
+
+        if (tag_count > 10_000_000) break;
+    }
+
+    if (tag_count > 0) {
+        return ValidationResult.okWithDepth(.swf, .full);
+    }
+    return ValidationResult.invalidWithDepth(.swf, "No SWF tags found in decompressed data", .full);
 }
 
 // ============ FLV (Flash Video) Validator ============
@@ -2590,8 +2696,9 @@ test "FormatValidator detects compressed SWF (CWS)" {
     const result = validator.validateFile(path);
 
     try std.testing.expectEqual(FileFormat.swf, result.format);
-    // Compressed SWF should be valid (we only check header structure)
-    try std.testing.expect(result.is_valid);
+    // CWS with truncated zlib stream should now be detected as invalid
+    // (zlib decompression fails on corrupt/incomplete data)
+    try std.testing.expect(!result.is_valid);
 }
 
 test "FormatValidator rejects invalid SWF signature" {
