@@ -202,6 +202,9 @@ const document_validators = @import("document_validators.zig");
 const filesystem_validators = @import("filesystem_validators.zig");
 const apple_validators = @import("apple_validators.zig");
 const financial_validators = @import("financial_validators.zig");
+const edi_validators = @import("edi_validators.zig");
+const pim_validators = @import("pim_validators.zig");
+const bagit_validator = @import("bagit_validator.zig");
 const pdf_validator = @import("pdf_validator.zig");
 
 // PE (Portable Executable) validator
@@ -543,7 +546,12 @@ pub const FileFormat = enum {
     nacha, // NACHA/ACH Electronic Payments (fixed 94-char ASCII records)
     mt940, // SWIFT MT940 Bank Statement (tagged text fields)
     bai2, // BAI2 Cash Management Balance Reporting (comma-separated, hierarchical)
+    icalendar, // iCalendar (RFC 5545, .ics/.ical)
+    vcard, // vCard (RFC 6350, .vcf/.vcard)
+    x12_edi, // X12 EDI (ISA/GS/ST envelope structure)
+    edifact, // UN/EDIFACT (UNA/UNB/UNH envelope structure)
     // Bundle formats (directories validated as a unit)
+    bagit, // BagIt archive (RFC 8493, directory with bagit.txt + manifest)
     git_repository, // Git repository (.git directory)
     macos_app, // macOS application bundle (.app)
     macos_framework, // macOS framework bundle (.framework)
@@ -624,6 +632,9 @@ pub const FileFormat = enum {
             .ar => true, // Unix ar archive
             .html => true, // HTML document
             .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2 => true, // Financial data formats
+            .icalendar, .vcard => true, // PIM formats (iCalendar, vCard)
+            .x12_edi, .edifact => true, // EDI formats
+            .bagit => true, // BagIt (RFC 8493) archive validation
             .git_repository => true, // Git repository validation
             .macos_app => true, // macOS application bundle validation
             .macos_framework => true, // macOS framework validation
@@ -1413,6 +1424,10 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "CD001", .offset = 0x8001, .format = .iso },
     // Sega Genesis / Mega Drive: "SEGA" at offset 0x100 (console name field)
     .{ .bytes = "SEGA", .offset = 0x100, .format = .genesis },
+    // iCalendar: BEGIN:VCALENDAR
+    .{ .bytes = "BEGIN:VCALENDAR", .offset = 0, .format = .icalendar },
+    // vCard: BEGIN:VCARD
+    .{ .bytes = "BEGIN:VCARD", .offset = 0, .format = .vcard },
     // Note: DV, TGA, PAM/PBM/PGM/PPM, HTML, COFF, DMG have no reliable magic bytes at offset 0 - detected by extension and/or structure
 };
 
@@ -1908,6 +1923,16 @@ pub fn detectFormat(header: []const u8) FileFormat {
         }
     }
 
+    // X12 EDI: starts with "ISA" + element delimiter at position 3
+    if (header.len >= 106 and std.mem.eql(u8, header[0..3], "ISA")) {
+        return .x12_edi;
+    }
+
+    // UN/EDIFACT: starts with "UNA" (service string advice) or "UNB+" (default delimiters)
+    if (header.len >= 4 and (std.mem.eql(u8, header[0..3], "UNA") or std.mem.eql(u8, header[0..4], "UNB+"))) {
+        return .edifact;
+    }
+
     // Text-based format detection (JSON, XML, TOML, YAML)
     // These don't have magic bytes, so we detect by content patterns
     if (detectTextFormat(header)) |text_format| {
@@ -2242,6 +2267,14 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "ach") or std.mem.eql(u8, ext_lower, "nacha")) return .nacha;
     if (std.mem.eql(u8, ext_lower, "mt940") or std.mem.eql(u8, ext_lower, "sta") or std.mem.eql(u8, ext_lower, "940")) return .mt940;
     if (std.mem.eql(u8, ext_lower, "bai") or std.mem.eql(u8, ext_lower, "bai2")) return .bai2;
+
+    // PIM formats (iCalendar, vCard) — also have magic bytes, but extension mapping aids detection
+    if (std.mem.eql(u8, ext_lower, "ics") or std.mem.eql(u8, ext_lower, "ical") or std.mem.eql(u8, ext_lower, "ifb")) return .icalendar;
+    if (std.mem.eql(u8, ext_lower, "vcf") or std.mem.eql(u8, ext_lower, "vcard")) return .vcard;
+
+    // EDI formats
+    if (std.mem.eql(u8, ext_lower, "edi") or std.mem.eql(u8, ext_lower, "x12") or std.mem.eql(u8, ext_lower, "837") or std.mem.eql(u8, ext_lower, "835") or std.mem.eql(u8, ext_lower, "834") or std.mem.eql(u8, ext_lower, "270") or std.mem.eql(u8, ext_lower, "271") or std.mem.eql(u8, ext_lower, "997")) return .x12_edi;
+    if (std.mem.eql(u8, ext_lower, "edifact") or std.mem.eql(u8, ext_lower, "eancom")) return .edifact;
 
     // Adobe Illustrator - extension needed to distinguish from PDF/EPS
     // AI files are PDF or PostScript internally, but should be treated as AI
@@ -2761,6 +2794,14 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     if (std.mem.eql(u8, ext_lower, "ach") or std.mem.eql(u8, ext_lower, "nacha")) return .nacha;
     if (std.mem.eql(u8, ext_lower, "mt940") or std.mem.eql(u8, ext_lower, "sta") or std.mem.eql(u8, ext_lower, "940")) return .mt940;
     if (std.mem.eql(u8, ext_lower, "bai") or std.mem.eql(u8, ext_lower, "bai2")) return .bai2;
+
+    // PIM formats
+    if (std.mem.eql(u8, ext_lower, "ics") or std.mem.eql(u8, ext_lower, "ical") or std.mem.eql(u8, ext_lower, "ifb")) return .icalendar;
+    if (std.mem.eql(u8, ext_lower, "vcf") or std.mem.eql(u8, ext_lower, "vcard")) return .vcard;
+
+    // EDI formats
+    if (std.mem.eql(u8, ext_lower, "edi") or std.mem.eql(u8, ext_lower, "x12") or std.mem.eql(u8, ext_lower, "837") or std.mem.eql(u8, ext_lower, "835") or std.mem.eql(u8, ext_lower, "834") or std.mem.eql(u8, ext_lower, "270") or std.mem.eql(u8, ext_lower, "271") or std.mem.eql(u8, ext_lower, "997")) return .x12_edi;
+    if (std.mem.eql(u8, ext_lower, "edifact") or std.mem.eql(u8, ext_lower, "eancom")) return .edifact;
 
     // GIS
     if (std.mem.eql(u8, ext_lower, "kml")) return .kml;
@@ -4569,6 +4610,7 @@ pub const FormatValidator = struct {
                     .bwproject, .ptx, .band, .reason, .cpr, .logicx, .song, .sketch, .drp,
                     .snes, .gb, .gba, .nds, .genesis, .cwk, .mwd,
                     .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2,
+                    .x12_edi, .edifact,
                     .obj, .coff, // .obj is ambiguous (Wavefront OBJ vs COFF); .o has no magic
                     => true,
                     else => false,
@@ -4611,6 +4653,8 @@ pub const FormatValidator = struct {
                         .nacha => financial_validators.validateNacha(reopen_ext),
                         .mt940 => financial_validators.validateMt940(reopen_ext),
                         .bai2 => financial_validators.validateBai2(reopen_ext),
+                        .x12_edi => edi_validators.validateX12Edi(reopen_ext),
+                        .edifact => edi_validators.validateEdifact(reopen_ext),
                         .coff => executable_validators.validateCoff(reopen_ext),
                         .obj => blk: {
                             // .obj is ambiguous: try COFF first (binary), fall back to Wavefront OBJ (text)
@@ -5152,7 +5196,12 @@ pub const FormatValidator = struct {
             .nacha => financial_validators.validateNachaDeep(allocator, path),
             .mt940 => financial_validators.validateMt940Deep(allocator, path),
             .bai2 => financial_validators.validateBai2Deep(allocator, path),
+            .x12_edi => edi_validators.validateX12EdiDeep(allocator, path),
+            .edifact => edi_validators.validateEdifactDeep(allocator, path),
+            .icalendar => pim_validators.validateICalendarDeep(allocator, path),
+            .vcard => pim_validators.validateVCardDeep(allocator, path),
             .parquet => scientific_validators.validateParquetDeep(allocator, path),
+            .bagit => bagit_validator.validateBagitDeep(allocator, path),
             .git_repository => validateGitRepositoryDeep(allocator, path),
             .macos_app => validateMacosAppDeep(allocator, path),
             .macos_framework => validateMacosFrameworkDeep(allocator, path),
@@ -5633,8 +5682,15 @@ pub const FormatValidator = struct {
             .nacha => financial_validators.validateNacha(file),
             .mt940 => financial_validators.validateMt940(file),
             .bai2 => financial_validators.validateBai2(file),
+            // EDI formats
+            .x12_edi => edi_validators.validateX12Edi(file),
+            .edifact => edi_validators.validateEdifact(file),
+            // PIM formats
+            .icalendar => pim_validators.validateICalendar(file),
+            .vcard => pim_validators.validateVCard(file),
             // Bundle formats (directories) - should be handled before reaching this switch
             // If we get here, it means something went wrong - return invalid to make it obvious
+            .bagit => bagit_validator.validateBagit(file),
             .git_repository => ValidationResult.invalid(.git_repository, "Git repositories must be validated as directories, not files"),
             .macos_app => ValidationResult.invalid(.macos_app, "macOS app bundles must be validated as directories, not files"),
             .macos_framework => ValidationResult.invalid(.macos_framework, "macOS frameworks must be validated as directories, not files"),

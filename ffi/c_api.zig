@@ -156,7 +156,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .ttf, .otf, .woff, .woff2, .type1 => "font",
 
         // Bundles
-        .git_repository, .macos_app, .macos_framework, .macos_bundle => "bundle",
+        .bagit, .git_repository, .macos_app, .macos_framework, .macos_bundle => "bundle",
 
         // Executables
         .pe, .elf, .macho, .macho_fat, .coff, .wasm, .llvm_pch, .llvm_diag => "executable",
@@ -183,7 +183,10 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .mdb, .accdb => "database",
 
         // Financial
-        .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2 => "financial",
+        .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2, .x12_edi, .edifact => "financial",
+
+        // PIM (Personal Information Management)
+        .icalendar, .vcard => "pim",
 
         // Other
         .unknown, .par2, .beam, .ds_store, .spotlight, .apple_double => "other",

@@ -48,6 +48,7 @@ pub const run_length_decoder = @import("run_length_decoder.zig");
 pub const lzw_decoder = @import("lzw_decoder.zig");
 pub const tiff_lzw_decoder = @import("tiff_lzw_decoder.zig");
 pub const bmp_decoder = @import("bmp_decoder.zig");
+pub const bagit_validator = @import("bagit_validator.zig");
 pub const midi_validator = @import("midi_validator.zig");
 pub const ole2_validator = @import("ole2_validator.zig");
 pub const word_doc_validator = @import("word_doc_validator.zig");
@@ -89,6 +90,8 @@ pub const cad_3d_validators = @import("cad_3d_validators.zig");
 pub const executable_validators = @import("executable_validators.zig");
 pub const apple_validators = @import("apple_validators.zig");
 pub const financial_validators = @import("financial_validators.zig");
+pub const pim_validators = @import("pim_validators.zig");
+pub const edi_validators = @import("edi_validators.zig");
 pub const pdf_validator = @import("pdf_validator.zig");
 pub const gpt_parser = @import("gpt_parser.zig");
 pub const apm_parser = @import("apm_parser.zig");
@@ -248,6 +251,12 @@ test {
     _ = @import("apple_validators.zig");
     // Financial data format validators (QBW, QBB, QDF, OFX, QIF, TXF)
     _ = @import("financial_validators.zig");
+    // PIM format validators (iCalendar, vCard)
+    _ = @import("pim_validators.zig");
+    // EDI format validators (X12 EDI, UN/EDIFACT)
+    _ = @import("edi_validators.zig");
+    // BagIt (RFC 8493) bag validator
+    _ = @import("bagit_validator.zig");
     // PDF format validator (structural + deep with embedded image/font/file validation)
     _ = @import("pdf_validator.zig");
     // ProRes decoder
