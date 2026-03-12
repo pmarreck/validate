@@ -5193,27 +5193,36 @@ pub const FormatValidator = struct {
     }
 
     /// Deep validation for macOS application bundles (.app).
-    /// Validates bundle structure: Contents/Info.plist must exist and be valid.
+    /// Validates bundle structure: Contents/Info.plist (modern) or Info.plist at root (legacy flat bundle).
     fn validateMacosAppDeep(allocator: Allocator, path: []const u8) ValidationResult {
         _ = allocator;
-        // Check for Contents/Info.plist
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+        // Check for modern structure: Contents/Info.plist + Contents/MacOS/
         const info_plist_path = std.fmt.bufPrint(&path_buf, "{s}/Contents/Info.plist", .{path}) catch {
             return ValidationResult.invalidWithDepth(.macos_app, "Path too long", .structural);
         };
 
-        // Check if Info.plist exists
-        std.fs.cwd().access(info_plist_path, .{}) catch {
-            return ValidationResult.invalidCodeWithDepth(.macos_app, .missing, "Contents/Info.plist", .structural);
-        };
+        if (std.fs.cwd().access(info_plist_path, .{})) |_| {
+            // Modern bundle — also require Contents/MacOS
+            const macos_dir_path = std.fmt.bufPrint(&path_buf, "{s}/Contents/MacOS", .{path}) catch {
+                return ValidationResult.invalidWithDepth(.macos_app, "Path too long", .structural);
+            };
 
-        // Check for Contents/MacOS directory
-        const macos_dir_path = std.fmt.bufPrint(&path_buf, "{s}/Contents/MacOS", .{path}) catch {
+            std.fs.cwd().access(macos_dir_path, .{}) catch {
+                return ValidationResult.invalidCodeWithDepth(.macos_app, .missing, "Contents/MacOS directory", .structural);
+            };
+
+            return ValidationResult.okWithDepth(.macos_app, .structural);
+        } else |_| {}
+
+        // Legacy flat bundle: Info.plist directly in .app root (pre-2009 CFBundle style)
+        const flat_info_path = std.fmt.bufPrint(&path_buf, "{s}/Info.plist", .{path}) catch {
             return ValidationResult.invalidWithDepth(.macos_app, "Path too long", .structural);
         };
 
-        std.fs.cwd().access(macos_dir_path, .{}) catch {
-            return ValidationResult.invalidCodeWithDepth(.macos_app, .missing, "Contents/MacOS directory", .structural);
+        std.fs.cwd().access(flat_info_path, .{}) catch {
+            return ValidationResult.invalidCodeWithDepth(.macos_app, .missing, "Contents/Info.plist or Info.plist", .structural);
         };
 
         return ValidationResult.okWithDepth(.macos_app, .structural);
