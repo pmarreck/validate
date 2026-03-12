@@ -215,6 +215,14 @@ fn isBundleDirectory(entry_path: []const u8) bool {
 	return format_validation.isBundleDirectory(entry_path);
 }
 
+/// Check if a subdirectory is a BagIt bag (contains bagit.txt).
+fn isBagitDirectory(parent_dir: std.fs.Dir, subdir_name: []const u8) bool {
+	var subdir = parent_dir.openDir(subdir_name, .{}) catch return false;
+	defer subdir.close();
+	subdir.access("bagit.txt", .{}) catch return false;
+	return true;
+}
+
 /// Recursively enumerate files and bundle directories, adding them to work_items.
 /// Bundle directories are added as work items and NOT recursed into.
 fn enumerateWithBundles(
@@ -250,6 +258,12 @@ fn enumerateWithBundles(
 			// Check if this is a bundle directory
 			if (isBundleDirectory(display_path)) {
 				// Bundle directory - add as work item, don't recurse
+				try work_items.append(allocator, .{
+					.path = full_path,
+					.display_path = display_path,
+				});
+			} else if (isBagitDirectory(dir, entry.name)) {
+				// BagIt bag (contains bagit.txt) — treat as bundle, don't recurse
 				try work_items.append(allocator, .{
 					.path = full_path,
 					.display_path = display_path,
@@ -609,6 +623,17 @@ pub fn validatePathParallelEx(
 	// Don't enumerate its contents - treat the whole bundle as one validation unit
 	if (isBundleDirectory(path)) {
 		return validateSingleFile(allocator, validator_template, path, callback, callback_ctx);
+	}
+
+	// Check if this is a BagIt bag directory (contains bagit.txt)
+	{
+		var check_dir = std.fs.cwd().openDir(path, .{}) catch null;
+		if (check_dir) |*d| {
+			defer d.close();
+			if (d.access("bagit.txt", .{})) |_| {
+				return validateSingleFile(allocator, validator_template, path, callback, callback_ctx);
+			} else |_| {}
+		}
 	}
 
 	const max_files_limit = getMaxFilesLimit();

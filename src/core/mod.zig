@@ -92,6 +92,7 @@ pub const apple_validators = @import("apple_validators.zig");
 pub const financial_validators = @import("financial_validators.zig");
 pub const pim_validators = @import("pim_validators.zig");
 pub const edi_validators = @import("edi_validators.zig");
+pub const crypto_validators = @import("crypto_validators.zig");
 pub const pdf_validator = @import("pdf_validator.zig");
 pub const gpt_parser = @import("gpt_parser.zig");
 pub const apm_parser = @import("apm_parser.zig");
@@ -255,6 +256,8 @@ test {
     _ = @import("pim_validators.zig");
     // EDI format validators (X12 EDI, UN/EDIFACT)
     _ = @import("edi_validators.zig");
+    // Crypto/certificate format validators (PEM, DER)
+    _ = @import("crypto_validators.zig");
     // BagIt (RFC 8493) bag validator
     _ = @import("bagit_validator.zig");
     // PDF format validator (structural + deep with embedded image/font/file validation)

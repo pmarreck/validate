@@ -479,6 +479,19 @@ static int is_bundle_directory(const char* path) {
 	return 0;
 }
 
+/* Check if a directory is a BagIt bag (contains bagit.txt) */
+static int is_bagit_directory(const char* path) {
+	size_t len = strlen(path);
+	size_t bagit_len = len + 11; /* /bagit.txt\0 */
+	char* bagit_path = (char*)malloc(bagit_len);
+	if (!bagit_path) return 0;
+	snprintf(bagit_path, bagit_len, "%s/bagit.txt", path);
+	struct stat st;
+	int result = (stat(bagit_path, &st) == 0 && S_ISREG(st.st_mode));
+	free(bagit_path);
+	return result;
+}
+
 static int enumerate_path(const char* path, path_list_t* list) {
 	struct stat st;
 	if (stat(path, &st) != 0) {
@@ -493,6 +506,10 @@ static int enumerate_path(const char* path, path_list_t* list) {
 		/* Check if this is a bundle directory (e.g., .git) */
 		if (is_bundle_directory(path)) {
 			/* Add bundle directory as a single validation item - don't recurse */
+			return path_list_add(list, path, (size_t)st.st_size);
+		}
+		/* Check if this is a BagIt bag (contains bagit.txt) */
+		if (is_bagit_directory(path)) {
 			return path_list_add(list, path, (size_t)st.st_size);
 		}
 		return enumerate_directory(path, list);
@@ -1698,7 +1715,7 @@ int main(int argc, char* argv[]) {
 #else
 			g_show_enum_progress = isatty(STDERR_FILENO);
 #endif
-			if (is_bundle_directory(paths[i])) {
+			if (is_bundle_directory(paths[i]) || is_bagit_directory(paths[i])) {
 				path_list_add(&file_list, paths[i], (size_t)st.st_size);
 			} else {
 				enumerate_directory(paths[i], &file_list);

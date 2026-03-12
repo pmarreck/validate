@@ -204,6 +204,7 @@ const apple_validators = @import("apple_validators.zig");
 const financial_validators = @import("financial_validators.zig");
 const edi_validators = @import("edi_validators.zig");
 const pim_validators = @import("pim_validators.zig");
+const crypto_validators = @import("crypto_validators.zig");
 const bagit_validator = @import("bagit_validator.zig");
 const pdf_validator = @import("pdf_validator.zig");
 
@@ -550,6 +551,9 @@ pub const FileFormat = enum {
     vcard, // vCard (RFC 6350, .vcf/.vcard)
     x12_edi, // X12 EDI (ISA/GS/ST envelope structure)
     edifact, // UN/EDIFACT (UNA/UNB/UNH envelope structure)
+    // Crypto/certificate formats
+    pem, // PEM-encoded certificate/key (-----BEGIN ... -----)
+    der, // DER-encoded ASN.1 certificate/key (binary)
     // Bundle formats (directories validated as a unit)
     bagit, // BagIt archive (RFC 8493, directory with bagit.txt + manifest)
     git_repository, // Git repository (.git directory)
@@ -634,6 +638,7 @@ pub const FileFormat = enum {
             .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2 => true, // Financial data formats
             .icalendar, .vcard => true, // PIM formats (iCalendar, vCard)
             .x12_edi, .edifact => true, // EDI formats
+            .pem, .der => true, // Crypto/certificate formats
             .bagit => true, // BagIt (RFC 8493) archive validation
             .git_repository => true, // Git repository validation
             .macos_app => true, // macOS application bundle validation
@@ -1923,6 +1928,11 @@ pub fn detectFormat(header: []const u8) FileFormat {
         }
     }
 
+    // PEM: starts with "-----BEGIN "
+    if (header.len >= 20 and std.mem.startsWith(u8, header, "-----BEGIN ")) {
+        return .pem;
+    }
+
     // X12 EDI: starts with "ISA" + element delimiter at position 3
     if (header.len >= 106 and std.mem.eql(u8, header[0..3], "ISA")) {
         return .x12_edi;
@@ -2275,6 +2285,10 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     // EDI formats
     if (std.mem.eql(u8, ext_lower, "edi") or std.mem.eql(u8, ext_lower, "x12") or std.mem.eql(u8, ext_lower, "837") or std.mem.eql(u8, ext_lower, "835") or std.mem.eql(u8, ext_lower, "834") or std.mem.eql(u8, ext_lower, "270") or std.mem.eql(u8, ext_lower, "271") or std.mem.eql(u8, ext_lower, "997")) return .x12_edi;
     if (std.mem.eql(u8, ext_lower, "edifact") or std.mem.eql(u8, ext_lower, "eancom")) return .edifact;
+
+    // Crypto/certificate formats
+    if (std.mem.eql(u8, ext_lower, "pem") or std.mem.eql(u8, ext_lower, "crt") or std.mem.eql(u8, ext_lower, "key")) return .pem;
+    if (std.mem.eql(u8, ext_lower, "der") or std.mem.eql(u8, ext_lower, "cer")) return .der;
 
     // Adobe Illustrator - extension needed to distinguish from PDF/EPS
     // AI files are PDF or PostScript internally, but should be treated as AI
@@ -2802,6 +2816,10 @@ fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     // EDI formats
     if (std.mem.eql(u8, ext_lower, "edi") or std.mem.eql(u8, ext_lower, "x12") or std.mem.eql(u8, ext_lower, "837") or std.mem.eql(u8, ext_lower, "835") or std.mem.eql(u8, ext_lower, "834") or std.mem.eql(u8, ext_lower, "270") or std.mem.eql(u8, ext_lower, "271") or std.mem.eql(u8, ext_lower, "997")) return .x12_edi;
     if (std.mem.eql(u8, ext_lower, "edifact") or std.mem.eql(u8, ext_lower, "eancom")) return .edifact;
+
+    // Crypto/certificate formats
+    if (std.mem.eql(u8, ext_lower, "pem") or std.mem.eql(u8, ext_lower, "crt") or std.mem.eql(u8, ext_lower, "key")) return .pem;
+    if (std.mem.eql(u8, ext_lower, "der") or std.mem.eql(u8, ext_lower, "cer")) return .der;
 
     // GIS
     if (std.mem.eql(u8, ext_lower, "kml")) return .kml;
@@ -4545,6 +4563,15 @@ pub const FormatValidator = struct {
             return ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
         };
         if (stat.kind == .directory) {
+            // Check for BagIt bag (directory containing bagit.txt)
+            var bagit_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const bagit_txt_path = std.fmt.bufPrint(&bagit_path_buf, "{s}/bagit.txt", .{path}) catch {
+                return ValidationResult.invalidCode(.unknown, .unknown_element, "directory type (not a recognized bundle)");
+            };
+            if (std.fs.cwd().access(bagit_txt_path, .{})) |_| {
+                return ValidationResult.okWithDepth(.bagit, .structural);
+            } else |_| {}
+
             // Directory that is not a known bundle type - return continuable error
             return ValidationResult.invalidCode(.unknown, .unknown_element, "directory type (not a recognized bundle)");
         }
@@ -4611,6 +4638,7 @@ pub const FormatValidator = struct {
                     .snes, .gb, .gba, .nds, .genesis, .cwk, .mwd,
                     .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2,
                     .x12_edi, .edifact,
+                    .der, // DER: first byte 0x30 is too generic for magic detection
                     .obj, .coff, // .obj is ambiguous (Wavefront OBJ vs COFF); .o has no magic
                     => true,
                     else => false,
@@ -4656,6 +4684,7 @@ pub const FormatValidator = struct {
                         .x12_edi => edi_validators.validateX12Edi(reopen_ext),
                         .edifact => edi_validators.validateEdifact(reopen_ext),
                         .coff => executable_validators.validateCoff(reopen_ext),
+                        .der => crypto_validators.validateDer(reopen_ext),
                         .obj => blk: {
                             // .obj is ambiguous: try COFF first (binary), fall back to Wavefront OBJ (text)
                             const coff_result = executable_validators.validateCoff(reopen_ext);
@@ -5198,6 +5227,8 @@ pub const FormatValidator = struct {
             .bai2 => financial_validators.validateBai2Deep(allocator, path),
             .x12_edi => edi_validators.validateX12EdiDeep(allocator, path),
             .edifact => edi_validators.validateEdifactDeep(allocator, path),
+            .pem => crypto_validators.validatePemDeep(allocator, path),
+            .der => crypto_validators.validateDerDeep(allocator, path),
             .icalendar => pim_validators.validateICalendarDeep(allocator, path),
             .vcard => pim_validators.validateVCardDeep(allocator, path),
             .parquet => scientific_validators.validateParquetDeep(allocator, path),
@@ -5685,6 +5716,9 @@ pub const FormatValidator = struct {
             // EDI formats
             .x12_edi => edi_validators.validateX12Edi(file),
             .edifact => edi_validators.validateEdifact(file),
+            // Crypto/certificate formats
+            .pem => crypto_validators.validatePem(file),
+            .der => crypto_validators.validateDer(file),
             // PIM formats
             .icalendar => pim_validators.validateICalendar(file),
             .vcard => pim_validators.validateVCard(file),

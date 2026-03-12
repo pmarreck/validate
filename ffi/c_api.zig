@@ -185,6 +185,9 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         // Financial
         .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2, .x12_edi, .edifact => "financial",
 
+        // Crypto/certificates
+        .pem, .der => "crypto",
+
         // PIM (Personal Information Management)
         .icalendar, .vcard => "pim",
 
