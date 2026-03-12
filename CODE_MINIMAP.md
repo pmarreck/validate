@@ -92,6 +92,10 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/ole2_validator.zig` | OLE2/CFBF compound document validator — header, FAT, DIFAT, directory; `readNamedStream()` extracts streams by name via FAT/mini-FAT chains |
 | `src/core/word_doc_validator.zig` | MS-DOC (Word 97-2003) deep validator — FIB parsing, 31 fc/lcb Table stream cross-validation pairs (stylesheet, fonts, bookmarks, fields, revision marks, doc properties), CLX/Piece Table with full PCD decode (FcCompressed physical offset verification), PlcBteChpx/PlcBtePapx CP monotonicity + BTE page number bounds; Word 6/95 falls back to structural |
 | `src/core/excel_biff8_validator.zig` | MS-XLS (Excel 97-2003) deep validator — BIFF8 record chain parsing, BoundSheet8 offset cross-validation, SST header consistency; older BIFF/encrypted files fall back to structural |
+| `src/core/bagit_validator.zig` | BagIt (RFC 8493) archive validation — structural (bagit.txt format) + deep (SHA-256/SHA-512/MD5 manifest verification of payload files) |
+| `src/core/edi_validators.zig` | EDI format validation — X12 (ISA self-describing delimiters, SE/GE/IEA control totals) + EDIFACT (UNA/UNB parsing, UNT/UNZ counts) |
+| `src/core/pim_validators.zig` | PIM format validation — iCalendar (RFC 5545 BEGIN/END nesting, VERSION/PRODID, component validation) + vCard (RFC 6350 envelope, version-specific required properties) |
+| `src/core/crypto_validators.zig` | Crypto format validation — PEM (header/footer matching, base64, ASN.1 DER inside) + DER (ASN.1 TLV recursive parsing with depth limit) |
 | `src/core/ebml_parser.zig` | EBML/Matroska container parser with CRC-32 verification (uses `std.hash.Crc32` via codec_utils consolidation) |
 
 ## FFI (ffi/)

@@ -74,6 +74,7 @@ sample_path_for_format() {
 		macos_app) p="$(find "$GT_DIR" -type d -name "*.app" | LC_ALL=C sort | head -n 1)" ;;
 		macos_framework) p="$(find "$GT_DIR" -type d -name "*.framework" | LC_ALL=C sort | head -n 1)" ;;
 		macos_bundle) p="$(find "$GT_DIR" -type d -name "*.bundle" | LC_ALL=C sort | head -n 1)" ;;
+		bagit) p="$GT_DIR/bagit/sample_bag" ;;
 		*)
 			p="$(first_file_in_dir "$GT_DIR/$format" || true)"
 			;;

@@ -30,14 +30,14 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] MP3 Layer I/II CRC-16 — same poly as Layer III, covers header[2..4] + bit allocation table (2026-03-07 EST)
 
 ### Wave 1: Archival Format Validators (design: docs/plans/2026-02-28-wave1-archival-formats-design.md)
-- [ ] BagIt (Library of Congress digital preservation) — SHA-256/512 manifest verification, directory bundle
-- [ ] X12 EDI (healthcare/supply chain) — segment/group/interchange control totals
-- [ ] EDIFACT (international trade) — UNT/UNE/UNZ control totals
-- [ ] iCalendar (.ics) — RFC 5545, VEVENT/VTIMEZONE/RRULE
-- [ ] vCard (.vcf) — RFC 6350, structured properties
-- [ ] PEM/DER — ASN.1 structure, X.509 certificate fields
-- [ ] Ground truth samples (synthetic, flagged for future real-world replacement)
-- [ ] Wire up detection, dispatch, FFI, i18n, corruption_opacity
+- [x] BagIt (Library of Congress digital preservation) — SHA-256/512 manifest verification, directory bundle (completed 2026-03-12 EST)
+- [x] X12 EDI (healthcare/supply chain) — segment/group/interchange control totals (completed 2026-03-12 EST)
+- [x] EDIFACT (international trade) — UNT/UNE/UNZ control totals (completed 2026-03-12 EST)
+- [x] iCalendar (.ics) — RFC 5545, VEVENT/VTIMEZONE/RRULE (completed 2026-03-12 EST)
+- [x] vCard (.vcf) — RFC 6350, structured properties (completed 2026-03-12 EST)
+- [x] PEM/DER — ASN.1 structure, X.509 certificate fields (completed 2026-03-12 EST)
+- [x] Ground truth samples (synthetic, flagged for future real-world replacement) (completed 2026-03-12 EST)
+- [x] Wire up detection, dispatch, FFI, i18n, corruption_opacity (completed 2026-03-12 EST)
 
 ### Future: CDC-Segmented Parity for Virtual Manifests
 - [ ] Design: Content-Defined Chunking (CDC) hashes recorded per-file BEFORE par2 parity computation

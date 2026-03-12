@@ -138,3 +138,10 @@ nacha	mixed	Entry hash and control totals protect numeric fields but random byte
 mt940	mixed	Balance arithmetic verifies amounts but random byte flips in non-amount text may go undetected
 bai2	mixed	Cascading control totals protect amounts but random byte flips in text fields may go undetected
 sevenz	mixed	Start header + next header CRC validation catches most corruptions (4/5); seed 5 lands in unprotected region
+bagit	transparent	SHA-256/512 manifest checksums verify every payload file byte-for-byte
+x12_edi	mixed	ISA/GS/ST segment counts and control totals protect structure; text payload largely unprotected
+edifact	mixed	UNT/UNZ segment and message counts protect structure; text payload largely unprotected
+icalendar	opaque	Text-based calendar format with no integrity checksums
+vcard	opaque	Text-based contact format with no integrity checksums
+pem	mixed	Base64 encoding + ASN.1 DER structure validation catches many corruptions; large cert data may survive
+der	mixed	ASN.1 TLV recursive parsing catches structural corruption; payload bytes weakly protected
