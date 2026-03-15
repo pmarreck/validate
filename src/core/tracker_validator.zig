@@ -429,22 +429,173 @@ pub fn validateS3mDeep(path: []const u8) TrackerValidationResult {
 
 // ============ Tests ============
 
-test "MOD deep validation - empty file" {
+test "MOD validation rejects missing file" {
     const result = validateModDeep("/nonexistent/file.mod");
     try std.testing.expect(!result.valid);
+    try std.testing.expect(result.error_message != null);
 }
 
-test "XM deep validation - empty file" {
+test "XM validation rejects missing file" {
     const result = validateXmDeep("/nonexistent/file.xm");
     try std.testing.expect(!result.valid);
+    try std.testing.expect(result.error_message != null);
 }
 
-test "IT deep validation - empty file" {
+test "IT validation rejects missing file" {
     const result = validateItDeep("/nonexistent/file.it");
     try std.testing.expect(!result.valid);
+    try std.testing.expect(result.error_message != null);
 }
 
-test "S3M deep validation - empty file" {
+test "S3M validation rejects missing file" {
     const result = validateS3mDeep("/nonexistent/file.s3m");
     try std.testing.expect(!result.valid);
+    try std.testing.expect(result.error_message != null);
+}
+
+test "MOD validates minimal synthetic file" {
+    // Build a minimal valid 4-channel MOD: 1084-byte header + 1 pattern (64 rows * 4 bytes * 4 channels = 1024)
+    const header_size = 1084;
+    const pattern_size = 64 * 4 * 4; // 1024 bytes for one 4-channel pattern
+    var data = [_]u8{0} ** (header_size + pattern_size);
+
+    // Module name (20 bytes at offset 0) — leave as zeros (valid)
+    // 31 sample headers (30 bytes each at offset 20) — all zeros = no samples (valid)
+
+    // Song length at offset 950: 1 position
+    data[950] = 1;
+    // Pattern table at offset 952: position 0 uses pattern 0
+    data[952] = 0;
+
+    // Signature "M.K." at offset 1080
+    data[1080] = 'M';
+    data[1081] = '.';
+    data[1082] = 'K';
+    data[1083] = '.';
+
+    // Write to a temp file and validate
+    const tmp_path = "/tmp/validate_test_mod.mod";
+    const file = std.fs.cwd().createFile(tmp_path, .{}) catch return;
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer file.close();
+    file.writeAll(&data) catch return;
+
+    const result = validateModDeep(tmp_path);
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.error_message == null);
+    try std.testing.expectEqual(@as(u16, 4), result.format_details.channels);
+    try std.testing.expectEqual(@as(u16, 1), result.format_details.patterns);
+}
+
+test "XM validates minimal synthetic file" {
+    // Minimal XM: 60-byte fixed prefix + 20-byte header extension + pattern order table
+    var data = [_]u8{0} ** 360;
+
+    // Signature: "Extended Module: " (17 bytes)
+    const sig = "Extended Module: ";
+    @memcpy(data[0..17], sig);
+    // Module name (20 bytes at offset 17) — zeros
+    // 0x1A marker at offset 37
+    data[37] = 0x1A;
+    // Tracker name (20 bytes at offset 38) — zeros
+
+    // Header size at offset 60 (u32 LE) — size of header after this field
+    // Minimum: 4 (songlen) + 2 (restart) + 2 (channels) + 2 (patterns) + 2 (instruments) + 2 (flags) + 2 (tempo) + 2 (bpm) + 256 (order table) = 276
+    const header_ext_size: u32 = 276;
+    std.mem.writeInt(u32, data[60..64], header_ext_size, .little);
+
+    // Song length at offset 64 (u16 LE)
+    std.mem.writeInt(u16, data[64..66], 1, .little);
+    // Restart position at offset 66
+    std.mem.writeInt(u16, data[66..68], 0, .little);
+    // Number of channels at offset 68
+    std.mem.writeInt(u16, data[68..70], 8, .little);
+    // Number of patterns at offset 70
+    std.mem.writeInt(u16, data[70..72], 0, .little);
+    // Number of instruments at offset 72
+    std.mem.writeInt(u16, data[72..74], 0, .little);
+
+    const tmp_path = "/tmp/validate_test_xm.xm";
+    const file = std.fs.cwd().createFile(tmp_path, .{}) catch return;
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer file.close();
+    file.writeAll(&data) catch return;
+
+    const result = validateXmDeep(tmp_path);
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.error_message == null);
+    try std.testing.expectEqual(@as(u16, 8), result.format_details.channels);
+}
+
+test "IT validates minimal synthetic file" {
+    // Minimal IT file: 192-byte header + order list
+    var data = [_]u8{0} ** 256;
+
+    // Signature "IMPM" at offset 0
+    data[0] = 'I';
+    data[1] = 'M';
+    data[2] = 'P';
+    data[3] = 'M';
+
+    // Number of orders at 0x20 (u16 LE) — at least 1
+    std.mem.writeInt(u16, data[0x20..0x22], 1, .little);
+    // Number of instruments at 0x22
+    std.mem.writeInt(u16, data[0x22..0x24], 0, .little);
+    // Number of samples at 0x24
+    std.mem.writeInt(u16, data[0x24..0x26], 0, .little);
+    // Number of patterns at 0x26
+    std.mem.writeInt(u16, data[0x26..0x28], 0, .little);
+
+    // Order list starts at 0xC0, just needs 1 byte (order 0)
+    data[0xC0] = 0;
+
+    const tmp_path = "/tmp/validate_test_it.it";
+    const file = std.fs.cwd().createFile(tmp_path, .{}) catch return;
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer file.close();
+    file.writeAll(&data) catch return;
+
+    const result = validateItDeep(tmp_path);
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.error_message == null);
+    try std.testing.expectEqual(@as(u16, 0), result.format_details.patterns);
+    try std.testing.expectEqual(@as(u16, 0), result.format_details.samples);
+}
+
+test "S3M validates minimal synthetic file" {
+    // Minimal S3M: 96-byte header + order list + pointer tables
+    // Need: orders=1, instruments=0, patterns=0
+    // Total: 0x60 (header) + 1 (order) + 0 + 0 = 97 bytes
+    var data = [_]u8{0} ** 128;
+
+    // "SCRM" signature at offset 44
+    data[44] = 'S';
+    data[45] = 'C';
+    data[46] = 'R';
+    data[47] = 'M';
+
+    // Type byte at 0x1D = 16
+    data[0x1D] = 16;
+
+    // Number of orders at 0x20 (u16 LE)
+    std.mem.writeInt(u16, data[0x20..0x22], 1, .little);
+    // Number of instruments at 0x22
+    std.mem.writeInt(u16, data[0x22..0x24], 0, .little);
+    // Number of patterns at 0x24
+    std.mem.writeInt(u16, data[0x24..0x26], 0, .little);
+
+    // Order list at 0x60: one order entry
+    data[0x60] = 0;
+
+    const tmp_path = "/tmp/validate_test_s3m.s3m";
+    const file = std.fs.cwd().createFile(tmp_path, .{}) catch return;
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+    defer file.close();
+    file.writeAll(&data) catch return;
+
+    const result = validateS3mDeep(tmp_path);
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.error_message == null);
+    try std.testing.expectEqual(@as(u16, 0), result.format_details.patterns);
+    try std.testing.expectEqual(@as(u16, 32), result.format_details.channels);
 }
