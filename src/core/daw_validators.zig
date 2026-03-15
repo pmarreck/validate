@@ -505,3 +505,80 @@ test "FormatValidator rejects invalid RPP" {
     try std.testing.expect(!result.is_valid);
 }
 
+test "FLP buffer validation: valid synthetic header" {
+    // Build a minimal valid FLP header: FLhd(4) + size(4, =6) + version(2) + channels(2) + pad(2) + FLdt(4) + datasize(4)
+    var header: [22]u8 = undefined;
+    @memcpy(header[0..4], "FLhd");
+    std.mem.writeInt(u32, header[4..8], 6, .little); // header length = 6
+    std.mem.writeInt(u16, header[8..10], 0x0100, .little); // format version
+    std.mem.writeInt(u16, header[10..12], 1, .little); // channels
+    header[12] = 0;
+    header[13] = 0;
+    @memcpy(header[14..18], "FLdt");
+    std.mem.writeInt(u32, header[18..22], 0, .little); // data size
+
+    const result = validateFlpFromBuffer(&header);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(FileFormat.flp, result.format);
+}
+
+test "FLP buffer validation: wrong signature rejected" {
+    var header: [22]u8 = [_]u8{0} ** 22;
+    @memcpy(header[0..4], "XXXX"); // Wrong signature
+
+    const result = validateFlpFromBuffer(&header);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqual(FileFormat.flp, result.format);
+}
+
+test "FLP buffer validation: wrong header length rejected" {
+    var header: [22]u8 = undefined;
+    @memcpy(header[0..4], "FLhd");
+    std.mem.writeInt(u32, header[4..8], 99, .little); // Wrong header length
+    header[8] = 0;
+    header[9] = 0;
+    header[10] = 0;
+    header[11] = 0;
+    header[12] = 0;
+    header[13] = 0;
+    @memcpy(header[14..18], "FLdt");
+    std.mem.writeInt(u32, header[18..22], 0, .little);
+
+    const result = validateFlpFromBuffer(&header);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FLP buffer validation: missing FLdt chunk rejected" {
+    var header: [22]u8 = undefined;
+    @memcpy(header[0..4], "FLhd");
+    std.mem.writeInt(u32, header[4..8], 6, .little);
+    header[8] = 0;
+    header[9] = 0;
+    header[10] = 0;
+    header[11] = 0;
+    header[12] = 0;
+    header[13] = 0;
+    @memcpy(header[14..18], "XXXX"); // Wrong chunk
+    std.mem.writeInt(u32, header[18..22], 0, .little);
+
+    const result = validateFlpFromBuffer(&header);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FLP buffer validation: too small rejected" {
+    const tiny = [_]u8{ 'F', 'L', 'h', 'd' };
+    const result = validateFlpFromBuffer(&tiny);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "FLP structural: ground truth sample.flp" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/flp/sample.flp", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    defer file.close();
+
+    const result = validateFlp(file);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(FileFormat.flp, result.format);
+}
+

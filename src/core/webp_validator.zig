@@ -153,3 +153,27 @@ test "reject truncated WebP" {
     const result = validateWebpDeepFromBuffer(&truncated);
     try std.testing.expect(!result.valid);
 }
+
+test "reject too small buffer" {
+    const tiny = [_]u8{ 0x00, 0x01, 0x02 };
+    const result = validateWebpDeepFromBuffer(&tiny);
+    try std.testing.expect(!result.valid);
+}
+
+test "valid WebP from ground truth sample" {
+    const result = validateWebpDeep("ground_truth_examples/webp/sample.webp");
+    // Skip if file doesn't exist (CI may lack ground truth files)
+    if (!result.valid and result.error_message != null) {
+        if (std.mem.eql(u8, result.error_message.?, "File not found")) return;
+    }
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.error_message == null);
+}
+
+test "valid WebP from ground truth google_gallery_1" {
+    const result = validateWebpDeep("ground_truth_examples/webp/google_gallery_1.webp");
+    if (!result.valid and result.error_message != null) {
+        if (std.mem.eql(u8, result.error_message.?, "File not found")) return;
+    }
+    try std.testing.expect(result.valid);
+}
