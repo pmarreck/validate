@@ -2102,7 +2102,7 @@ pub fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult 
 // ============ Tests ============
 
 test "validateDxf with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/dxf/sample.dxf", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/dxf/sample.dxf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateDxf(file);
     try std.testing.expect(result.is_valid);
@@ -2125,7 +2125,7 @@ test "validateDxf rejects invalid data" {
 }
 
 test "validateStep with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/step/sample.stp", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/step/sample.stp", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateStep(file);
     try std.testing.expect(result.is_valid);
@@ -2148,7 +2148,7 @@ test "validateStep rejects invalid data" {
 }
 
 test "validateStl with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/stl/sample.stl", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/stl/sample.stl", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateStl(file);
     try std.testing.expect(result.is_valid);
@@ -2171,7 +2171,7 @@ test "validateStl rejects invalid data" {
 }
 
 test "validateObj with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/obj/sample.obj", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/obj/sample.obj", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateObj(file);
     try std.testing.expect(result.is_valid);
@@ -2194,7 +2194,7 @@ test "validateObj rejects invalid data" {
 }
 
 test "validatePly with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ply/sample.ply", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/ply/sample.ply", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validatePly(file);
     try std.testing.expect(result.is_valid);
@@ -2217,7 +2217,7 @@ test "validatePly rejects invalid data" {
 }
 
 test "validateGltf with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/gltf/box.gltf", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/gltf/box.gltf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateGltf(file);
     try std.testing.expect(result.is_valid);
@@ -2240,7 +2240,7 @@ test "validateGltf rejects invalid data" {
 }
 
 test "validateGlb with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/glb/box.glb", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/glb/box.glb", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateGlb(file);
     try std.testing.expect(result.is_valid);

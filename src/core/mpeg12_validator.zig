@@ -713,9 +713,9 @@ test "parsePictureHeader I-frame" {
 test "deep validation on ground truth MPEG-1 sample" {
     // Read ground truth MPEG-PS sample containing MPEG-1 video
     const allocator = std.testing.allocator;
-    const file = std.fs.cwd().openFile("ground_truth_examples/mpeg12/sample_mpeg1.mpg", .{}) catch {
-        // Skip test if file not found
-        return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/mpeg12/sample_mpeg1.mpg", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     defer file.close();
 
@@ -737,9 +737,9 @@ test "deep validation on ground truth MPEG-1 sample" {
 test "deep validation on ground truth MPEG-2 sample" {
     // Read ground truth MPEG-PS sample containing MPEG-2 video
     const allocator = std.testing.allocator;
-    const file = std.fs.cwd().openFile("ground_truth_examples/mpeg12/sample.mpg", .{}) catch {
-        // Skip test if file not found
-        return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/mpeg12/sample.mpg", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     defer file.close();
 

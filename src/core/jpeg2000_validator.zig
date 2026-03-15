@@ -270,8 +270,9 @@ test "validateJpeg2000 on real JP2 container file" {
     const allocator = std.testing.allocator;
 
     // Ground truth JP2 file (public domain balloon image)
-    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon.jp2", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon.jp2", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     defer file.close();
 
@@ -294,8 +295,9 @@ test "validateJpeg2000 on real J2K codestream file" {
     const allocator = std.testing.allocator;
 
     // Ground truth J2K codestream file (public domain balloon image)
-    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon.j2c", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon.j2c", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     defer file.close();
 

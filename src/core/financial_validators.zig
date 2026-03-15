@@ -2047,8 +2047,9 @@ test "QBW validator: SQL Anywhere with wrong page alignment" {
 }
 
 test "ground truth: QBW sample validates" {
-	const file = std.fs.cwd().openFile("ground_truth_examples/qbw/B18_Managing_Company_Files.qbw", .{}) catch {
-		return; // Skip if sample not present
+	const file = std.fs.cwd().openFile("ground_truth_examples/qbw/B18_Managing_Company_Files.qbw", .{}) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 	defer file.close();
 
@@ -2058,8 +2059,9 @@ test "ground truth: QBW sample validates" {
 }
 
 test "ground truth: QDF sample validates" {
-	const file = std.fs.cwd().openFile("ground_truth_examples/qdf/LONDON_2018.QDF", .{}) catch {
-		return; // Skip if sample not present
+	const file = std.fs.cwd().openFile("ground_truth_examples/qdf/LONDON_2018.QDF", .{}) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 	defer file.close();
 
@@ -2141,8 +2143,9 @@ test "QBW deep: corrupted CRC-32 detected" {
 
 test "ground truth: QBW deep validation passes all page CRCs" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/B18_Managing_Company_Files.qbw", &path_buf) catch {
-		return; // Skip if sample not present
+	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/B18_Managing_Company_Files.qbw", &path_buf) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 
 	const result = validateQbwDeep(std.testing.allocator, path);
@@ -2173,8 +2176,9 @@ test "ground truth: QBW v11 (Sybase) deep validation returns structural" {
 	// SQL Anywhere v11 is detected via copyright string parsing.
 	// v11 does not have per-page CRC on data pages, so we honestly report structural.
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/Farm2010.QBW", &path_buf) catch {
-		return; // Skip if sample not present
+	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/Farm2010.QBW", &path_buf) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 
 	const result = validateQbwDeep(std.testing.allocator, path);
@@ -2186,8 +2190,9 @@ test "ground truth: QBW v11 (Sybase) deep validation returns structural" {
 
 test "ground truth: QBW v11 password-protected deep validation" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/Farm2010 - pass.QBW", &path_buf) catch {
-		return; // Skip if sample not present
+	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/Farm2010 - pass.QBW", &path_buf) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 
 	const result = validateQbwDeep(std.testing.allocator, path);
@@ -2198,8 +2203,9 @@ test "ground truth: QBW v11 password-protected deep validation" {
 
 test "ground truth: QDF deep validation via OLE2" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/qdf/LONDON_2018.QDF", &path_buf) catch {
-		return; // Skip if sample not present
+	const path = std.fs.cwd().realpath("ground_truth_examples/qdf/LONDON_2018.QDF", &path_buf) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 
 	const result = validateQdfDeep(std.testing.allocator, path);
@@ -2751,8 +2757,9 @@ test "parseBai2Amount: signed parsing" {
 // ============================================================================
 
 test "ground truth: NACHA sample structural validation" {
-	const file = std.fs.cwd().openFile("ground_truth_examples/nacha/sample.ach", .{}) catch {
-		return; // Skip if sample not present
+	const file = std.fs.cwd().openFile("ground_truth_examples/nacha/sample.ach", .{}) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 	defer file.close();
 
@@ -2763,8 +2770,9 @@ test "ground truth: NACHA sample structural validation" {
 
 test "ground truth: NACHA sample deep validation" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/nacha/sample.ach", &path_buf) catch {
-		return; // Skip if sample not present
+	const path = std.fs.cwd().realpath("ground_truth_examples/nacha/sample.ach", &path_buf) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 
 	const result = validateNachaDeep(std.testing.allocator, path);
@@ -2774,8 +2782,9 @@ test "ground truth: NACHA sample deep validation" {
 }
 
 test "ground truth: MT940 sample structural validation" {
-	const file = std.fs.cwd().openFile("ground_truth_examples/mt940/sample.mt940", .{}) catch {
-		return;
+	const file = std.fs.cwd().openFile("ground_truth_examples/mt940/sample.mt940", .{}) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 	defer file.close();
 
@@ -2786,8 +2795,9 @@ test "ground truth: MT940 sample structural validation" {
 
 test "ground truth: MT940 sample deep validation" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/mt940/sample.mt940", &path_buf) catch {
-		return;
+	const path = std.fs.cwd().realpath("ground_truth_examples/mt940/sample.mt940", &path_buf) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 
 	const result = validateMt940Deep(std.testing.allocator, path);
@@ -2797,8 +2807,9 @@ test "ground truth: MT940 sample deep validation" {
 }
 
 test "ground truth: BAI2 sample structural validation" {
-	const file = std.fs.cwd().openFile("ground_truth_examples/bai2/sample.bai2", .{}) catch {
-		return;
+	const file = std.fs.cwd().openFile("ground_truth_examples/bai2/sample.bai2", .{}) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 	defer file.close();
 
@@ -2809,8 +2820,9 @@ test "ground truth: BAI2 sample structural validation" {
 
 test "ground truth: BAI2 sample deep validation" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/bai2/sample.bai2", &path_buf) catch {
-		return;
+	const path = std.fs.cwd().realpath("ground_truth_examples/bai2/sample.bai2", &path_buf) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
 	};
 
 	const result = validateBai2Deep(std.testing.allocator, path);

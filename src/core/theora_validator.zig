@@ -789,7 +789,7 @@ test "ground truth - Theora OGV sample" {
     // Test with real Theora OGV file
     const file = std.fs.cwd().openFile("ground_truth_examples/theora/sample.ogv", .{}) catch |err| {
         // Skip test if ground truth sample not available
-        if (err == error.FileNotFound) return;
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
     defer file.close();

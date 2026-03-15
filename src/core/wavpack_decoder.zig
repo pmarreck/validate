@@ -524,7 +524,7 @@ test "ground truth - WavPack sample" {
     // Read real WavPack file for validation
     const file = std.fs.cwd().openFile("ground_truth_examples/wavpack/sample.wv", .{}) catch |err| {
         // Skip test if ground truth sample not available
-        if (err == error.FileNotFound) return;
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
     defer file.close();

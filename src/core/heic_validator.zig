@@ -430,7 +430,7 @@ test "HEIC validation rejects non-HEIF data" {
 test "HEIC grid image fully validates all tiles" {
     const allocator = std.testing.allocator;
     const path = "ground_truth_examples/heic/sample.heic";
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    const file = std.fs.cwd().openFile(path, .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
 
     const file_size = try file.getEndPos();

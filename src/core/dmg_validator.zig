@@ -567,7 +567,7 @@ test "validateDmgBuffer - detects corruption" {
 test "ground truth - DMG sample" {
     // Test with real DMG file if available
     const file = std.fs.cwd().openFile("ground_truth_examples/dmg/sample.dmg", .{}) catch |err| {
-        if (err == error.FileNotFound) return;
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
     defer file.close();

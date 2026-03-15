@@ -2255,7 +2255,7 @@ test "crc16Mpeg empty input returns initial value" {
 // ---------- Ground truth file-based structural validators ----------
 
 test "validateWav accepts ground truth WAV" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateWav(file);
     try testing.expect(result.is_valid);
@@ -2263,7 +2263,7 @@ test "validateWav accepts ground truth WAV" {
 }
 
 test "validateFlac accepts ground truth FLAC" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/flac/generated_tone_440hz.flac", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/flac/generated_tone_440hz.flac", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateFlac(file);
     try testing.expect(result.is_valid);
@@ -2271,7 +2271,7 @@ test "validateFlac accepts ground truth FLAC" {
 }
 
 test "validateMp3 accepts ground truth MP3" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/mp3/generated_tone_440hz.mp3", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/mp3/generated_tone_440hz.mp3", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateMp3(file);
     try testing.expect(result.is_valid);
@@ -2279,7 +2279,7 @@ test "validateMp3 accepts ground truth MP3" {
 }
 
 test "validateOgg accepts ground truth OGG" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ogg/generated_tone_440hz.ogg", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/ogg/generated_tone_440hz.ogg", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateOgg(file);
     try testing.expect(result.is_valid);
@@ -2287,7 +2287,7 @@ test "validateOgg accepts ground truth OGG" {
 }
 
 test "validateRiffAudio accepts ground truth AIFF" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/aiff/sample.aiff", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/aiff/sample.aiff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateRiffAudio(file, .aiff);
     try testing.expect(result.is_valid);
@@ -2295,7 +2295,7 @@ test "validateRiffAudio accepts ground truth AIFF" {
 }
 
 test "validateMidi accepts ground truth MIDI" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateMidi(file);
     try testing.expect(result.is_valid);
@@ -2303,7 +2303,7 @@ test "validateMidi accepts ground truth MIDI" {
 }
 
 test "validateAc3 accepts ground truth AC-3" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ac3/sample.ac3", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/ac3/sample.ac3", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateAc3(file);
     try testing.expect(result.is_valid);
@@ -2311,7 +2311,7 @@ test "validateAc3 accepts ground truth AC-3" {
 }
 
 test "validateEac3 accepts ground truth E-AC-3" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/eac3/sample.eac3", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/eac3/sample.eac3", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateEac3(file);
     try testing.expect(result.is_valid);
@@ -2319,7 +2319,7 @@ test "validateEac3 accepts ground truth E-AC-3" {
 }
 
 test "validateApe accepts ground truth APE" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ape/sample.ape", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/ape/sample.ape", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateApe(file);
     try testing.expect(result.is_valid);
@@ -2327,7 +2327,7 @@ test "validateApe accepts ground truth APE" {
 }
 
 test "validateWavPack accepts ground truth WavPack" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/wavpack/sample.wv", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/wavpack/sample.wv", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateWavPack(file);
     try testing.expect(result.is_valid);
@@ -2335,7 +2335,7 @@ test "validateWavPack accepts ground truth WavPack" {
 }
 
 test "validateDsf accepts ground truth DSF" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/dsf/sample.dsf", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/dsf/sample.dsf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateDsf(file);
     try testing.expect(result.is_valid);
@@ -2343,7 +2343,7 @@ test "validateDsf accepts ground truth DSF" {
 }
 
 test "validateDff accepts ground truth DFF" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/dff/sample.dff", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/dff/sample.dff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateDff(file);
     try testing.expect(result.is_valid);
@@ -2351,7 +2351,7 @@ test "validateDff accepts ground truth DFF" {
 }
 
 test "validateAmr accepts ground truth AMR" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/amr/sample.amr", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/amr/sample.amr", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateAmr(file);
     try testing.expect(result.is_valid);
@@ -2359,7 +2359,7 @@ test "validateAmr accepts ground truth AMR" {
 }
 
 test "validateAu accepts ground truth AU" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/au/sample.au", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/au/sample.au", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateAu(file);
     try testing.expect(result.is_valid);
@@ -2367,7 +2367,7 @@ test "validateAu accepts ground truth AU" {
 }
 
 test "validateTta accepts ground truth TTA" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tta/sample.tta", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/tta/sample.tta", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateTta(file);
     try testing.expect(result.is_valid);
@@ -2375,7 +2375,7 @@ test "validateTta accepts ground truth TTA" {
 }
 
 test "validateCaf accepts ground truth CAF" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/caf/sample.caf", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/caf/sample.caf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateCaf(file);
     try testing.expect(result.is_valid);
@@ -2383,7 +2383,7 @@ test "validateCaf accepts ground truth CAF" {
 }
 
 test "validateAacAdts accepts ground truth AAC ADTS" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/aac_adts/sample.aac", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/aac_adts/sample.aac", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateAacAdts(file);
     try testing.expect(result.is_valid);
@@ -2391,7 +2391,7 @@ test "validateAacAdts accepts ground truth AAC ADTS" {
 }
 
 test "validateMod accepts ground truth MOD" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/otm.mod", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/otm.mod", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateMod(file);
     try testing.expect(result.is_valid);
@@ -2399,7 +2399,7 @@ test "validateMod accepts ground truth MOD" {
 }
 
 test "validateXm accepts ground truth XM" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/agony.xm", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/agony.xm", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateXm(file);
     try testing.expect(result.is_valid);
@@ -2407,7 +2407,7 @@ test "validateXm accepts ground truth XM" {
 }
 
 test "validateIt accepts ground truth IT" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/flitter.it", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/flitter.it", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateIt(file);
     try testing.expect(result.is_valid);
@@ -2415,7 +2415,7 @@ test "validateIt accepts ground truth IT" {
 }
 
 test "validateS3m accepts ground truth S3M" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/twilight_garden.s3m", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/twilight_garden.s3m", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateS3m(file);
     try testing.expect(result.is_valid);
@@ -2425,7 +2425,7 @@ test "validateS3m accepts ground truth S3M" {
 // ---------- Ground truth deep validators ----------
 
 test "validateWavDeep accepts ground truth WAV" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     file.close();
     const result = validateWavDeep(testing.allocator, "ground_truth_examples/wav/sample.wav");
     try testing.expect(result.is_valid);
@@ -2435,7 +2435,7 @@ test "validateWavDeep accepts ground truth WAV" {
 }
 
 test "validateAiffDeep accepts ground truth AIFF" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/aiff/sample.aiff", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/aiff/sample.aiff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     file.close();
     const result = validateAiffDeep(testing.allocator, "ground_truth_examples/aiff/sample.aiff");
     try testing.expect(result.is_valid);
@@ -2445,7 +2445,7 @@ test "validateAiffDeep accepts ground truth AIFF" {
 }
 
 test "validateFlacDeep accepts ground truth FLAC" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/flac/generated_tone_440hz.flac", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/flac/generated_tone_440hz.flac", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     file.close();
     const result = validateFlacDeep(testing.allocator, "ground_truth_examples/flac/generated_tone_440hz.flac");
     try testing.expect(result.is_valid);
@@ -2454,7 +2454,7 @@ test "validateFlacDeep accepts ground truth FLAC" {
 }
 
 test "validateOggDeep accepts ground truth OGG" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ogg/generated_tone_440hz.ogg", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/ogg/generated_tone_440hz.ogg", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     file.close();
     const result = validateOggDeep(testing.allocator, "ground_truth_examples/ogg/generated_tone_440hz.ogg");
     try testing.expect(result.is_valid);
@@ -2463,7 +2463,7 @@ test "validateOggDeep accepts ground truth OGG" {
 }
 
 test "validateMidiDeep accepts ground truth MIDI" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     file.close();
     const result = validateMidiDeep("ground_truth_examples/midi/fur_elise.mid");
     try testing.expect(result.is_valid);
@@ -2472,7 +2472,7 @@ test "validateMidiDeep accepts ground truth MIDI" {
 }
 
 test "validateAc3Deep accepts ground truth AC-3" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ac3/sample.ac3", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/ac3/sample.ac3", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     file.close();
     const result = validateAc3Deep("ground_truth_examples/ac3/sample.ac3");
     try testing.expect(result.is_valid);
@@ -2481,7 +2481,7 @@ test "validateAc3Deep accepts ground truth AC-3" {
 }
 
 test "validateEac3Deep accepts ground truth E-AC-3" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/eac3/sample.eac3", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/eac3/sample.eac3", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     file.close();
     const result = validateEac3Deep("ground_truth_examples/eac3/sample.eac3");
     try testing.expect(result.is_valid);
@@ -2941,12 +2941,13 @@ test "FormatValidator deep validates real MIDI from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth MIDI file (Beethoven's Für Elise from mfiles.co.uk)
-    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/midi/fur_elise.mid") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/midi/fur_elise.mid") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -2962,12 +2963,13 @@ test "FormatValidator deep validates real MIDI from ground truth" {
 test "FormatValidator deep validates MOD from ground truth" {
     const allocator = std.testing.allocator;
 
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/otm.mod", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/otm.mod", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/otm.mod") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/otm.mod") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -2983,12 +2985,13 @@ test "FormatValidator deep validates MOD from ground truth" {
 test "FormatValidator deep validates XM from ground truth" {
     const allocator = std.testing.allocator;
 
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/agony.xm", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/agony.xm", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/agony.xm") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/agony.xm") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -3004,12 +3007,13 @@ test "FormatValidator deep validates XM from ground truth" {
 test "FormatValidator deep validates IT from ground truth" {
     const allocator = std.testing.allocator;
 
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/flitter.it", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/flitter.it", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/flitter.it") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/flitter.it") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -3025,12 +3029,13 @@ test "FormatValidator deep validates IT from ground truth" {
 test "FormatValidator deep validates S3M from ground truth" {
     const allocator = std.testing.allocator;
 
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/twilight_garden.s3m", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/twilight_garden.s3m", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/twilight_garden.s3m") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/twilight_garden.s3m") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -3295,12 +3300,13 @@ test "FormatValidator deep validates real WAV from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth WAV file (440Hz sine wave)
-    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/wav/sample.wav") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/wav/sample.wav") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();

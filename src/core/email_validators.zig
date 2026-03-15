@@ -556,14 +556,14 @@ pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult
 // ============ Tests ============
 
 test "validateEml with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/eml/sample.eml", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/eml/sample.eml", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateEml(file);
     try std.testing.expect(result.is_valid);
 }
 
 test "validateMbox with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/mbox/sample.mbox", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/mbox/sample.mbox", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateMbox(file);
     try std.testing.expect(result.is_valid);

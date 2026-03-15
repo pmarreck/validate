@@ -2517,7 +2517,7 @@ test "isZeroWidth identifies zero-width chars" {
 // ---------- File-based validator tests using ground truth ----------
 
 test "validateJson accepts valid ground truth JSON file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/json/sample.json", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/json/sample.json", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateJson(file);
     try testing.expect(result.is_valid);
@@ -2549,7 +2549,7 @@ test "validateJson rejects empty file" {
 }
 
 test "validateToml accepts valid ground truth TOML file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/toml/sample.toml", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/toml/sample.toml", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateToml(file);
     try testing.expect(result.is_valid);
@@ -2581,7 +2581,7 @@ test "validateToml rejects empty file" {
 }
 
 test "validateIni accepts valid ground truth INI file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ini/sample.ini", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/ini/sample.ini", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateIni(file);
     try testing.expect(result.is_valid);
@@ -2601,7 +2601,7 @@ test "validateIni rejects file with invalid syntax" {
 }
 
 test "validateXml accepts valid ground truth XML file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/xml/sample.xml", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/xml/sample.xml", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateXml(file);
     try testing.expect(result.is_valid);
@@ -2633,7 +2633,7 @@ test "validateXml rejects empty file" {
 }
 
 test "validateCsv accepts valid ground truth CSV file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/csv/sample.csv", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/csv/sample.csv", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateCsv(file);
     try testing.expect(result.is_valid);
@@ -2654,7 +2654,7 @@ test "validateCsv rejects unclosed quoted field" {
 }
 
 test "validateRtf accepts valid ground truth RTF file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/rtf/sample.rtf", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/rtf/sample.rtf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateRtf(file);
     try testing.expect(result.is_valid);
@@ -2727,7 +2727,7 @@ test "validateRtfDeep detects unclosed brace" {
 }
 
 test "validateHtml accepts valid ground truth HTML file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/html/simple.html", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/html/simple.html", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateHtml(file);
     try testing.expect(result.is_valid);
@@ -2759,7 +2759,7 @@ test "validateHtml rejects tiny file" {
 }
 
 test "validateKml accepts valid ground truth KML file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/kml/sample.kml", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/kml/sample.kml", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateKml(file);
     try testing.expect(result.is_valid);
@@ -2791,7 +2791,7 @@ test "validateKmlDeep accepts valid ground truth KML file" {
 }
 
 test "validateKmz accepts valid ground truth KMZ file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/kmz/sample.kmz", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/kmz/sample.kmz", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateKmz(file);
     try testing.expect(result.is_valid);

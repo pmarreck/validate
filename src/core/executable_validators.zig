@@ -467,7 +467,7 @@ pub fn validateAr(file: std.fs.File) ValidationResult {
 // ============ Tests ============
 
 test "validateElf with ground truth file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/elf/minimal.elf", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/elf/minimal.elf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateElf(file);
     try std.testing.expect(result.is_valid);
@@ -506,7 +506,7 @@ test "validateElf rejects invalid data" {
 }
 
 test "validateMacho with ground truth file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/macho/sample.o", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/macho/sample.o", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateMacho(file);
     try std.testing.expect(result.is_valid);
@@ -545,7 +545,7 @@ test "validateMacho rejects invalid data" {
 }
 
 test "validateMachoFat with ground truth file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/macho_fat/sample", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/macho_fat/sample", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateMachoFat(file);
     try std.testing.expect(result.is_valid);
@@ -617,7 +617,7 @@ test "validateCoff rejects invalid data" {
 }
 
 test "validateWasm with ground truth file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/wasm/minimal.wasm", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/wasm/minimal.wasm", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateWasm(file);
     try std.testing.expect(result.is_valid);
@@ -656,7 +656,7 @@ test "validateWasm rejects invalid data" {
 }
 
 test "validateAr with ground truth file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ar/minimal.a", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/ar/minimal.a", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateAr(file);
     try std.testing.expect(result.is_valid);
