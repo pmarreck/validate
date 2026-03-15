@@ -433,7 +433,7 @@ pub fn validateSvgDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Strip DOCTYPE declarations to avoid DTD validation issues
-    const preprocessed = stripDoctypeDeclaration(data);
+    const preprocessed = stripDoctypeDeclaration(allocator, data);
     defer if (preprocessed.allocated) allocator.free(preprocessed.data);
 
     // Parse the XML to validate structure

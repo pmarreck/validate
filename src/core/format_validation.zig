@@ -4228,27 +4228,27 @@ test "looksLikeCp437 detects box-drawing characters" {
 // ============ Font Validators (TTF/OTF/WOFF/WOFF2) ============
 
 /// Validate TrueType font file with table checksum verification.
-fn validateTtf(file: std.fs.File) ValidationResult {
-    return validateFontFile(file, .ttf);
+fn validateTtf(allocator: Allocator, file: std.fs.File) ValidationResult {
+    return validateFontFile(allocator, file, .ttf);
 }
 
 /// Validate OpenType (CFF) font file with table checksum verification.
-fn validateOtf(file: std.fs.File) ValidationResult {
-    return validateFontFile(file, .otf);
+fn validateOtf(allocator: Allocator, file: std.fs.File) ValidationResult {
+    return validateFontFile(allocator, file, .otf);
 }
 
 /// Validate WOFF container.
-fn validateWoff(file: std.fs.File) ValidationResult {
-    return validateFontFile(file, .woff);
+fn validateWoff(allocator: Allocator, file: std.fs.File) ValidationResult {
+    return validateFontFile(allocator, file, .woff);
 }
 
 /// Validate WOFF2 container.
-fn validateWoff2(file: std.fs.File) ValidationResult {
-    return validateFontFile(file, .woff2);
+fn validateWoff2(allocator: Allocator, file: std.fs.File) ValidationResult {
+    return validateFontFile(allocator, file, .woff2);
 }
 
 /// Validate Type1 (PFB/PFA) font.
-fn validateType1Font(file: std.fs.File) ValidationResult {
+fn validateType1Font(allocator: Allocator, file: std.fs.File) ValidationResult {
     // Get file size
     const stat = file.stat() catch {
         return ValidationResult.invalidCode(.type1, .failed_to_stat, "font file");
@@ -4269,10 +4269,10 @@ fn validateType1Font(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.type1, .failed_to_seek, "to start");
     };
 
-    const data = std.heap.page_allocator.alloc(u8, @intCast(stat.size)) catch {
+    const data = allocator.alloc(u8, @intCast(stat.size)) catch {
         return ValidationResult.invalidCode(.type1, .failed_to_allocate, "memory");
     };
-    defer std.heap.page_allocator.free(data);
+    defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
         return ValidationResult.invalidCode(.type1, .failed_to_read, "font file");
@@ -4292,7 +4292,7 @@ fn validateType1Font(file: std.fs.File) ValidationResult {
 }
 
 /// Common font validation implementation.
-fn validateFontFile(file: std.fs.File, format: FileFormat) ValidationResult {
+fn validateFontFile(allocator: Allocator, file: std.fs.File, format: FileFormat) ValidationResult {
     // Get file size
     const stat = file.stat() catch {
         return ValidationResult.invalidCode(format, .failed_to_stat, "font file");
@@ -4313,10 +4313,10 @@ fn validateFontFile(file: std.fs.File, format: FileFormat) ValidationResult {
         return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
     };
 
-    const data = std.heap.page_allocator.alloc(u8, @intCast(stat.size)) catch {
+    const data = allocator.alloc(u8, @intCast(stat.size)) catch {
         return ValidationResult.invalidCode(format, .failed_to_allocate, "memory");
     };
-    defer std.heap.page_allocator.free(data);
+    defer allocator.free(data);
 
     const bytes_read = file.readAll(data) catch {
         return ValidationResult.invalidCode(format, .failed_to_read, "font file");
@@ -5656,14 +5656,14 @@ pub const FormatValidator = struct {
             .plain_text_latin1 => ValidationResult.okWithDepth(.plain_text_latin1, .structural), // Latin-1 always valid (no integrity mechanism)
             .plain_text_cp437 => ValidationResult.okWithDepth(.plain_text_cp437, .structural), // CP437 always valid (no integrity mechanism)
             // Font formats
-            .ttf => validateTtf(file),
-            .otf => validateOtf(file),
-            .woff => validateWoff(file),
-            .woff2 => validateWoff2(file),
-            .type1 => validateType1Font(file),
+            .ttf => validateTtf(self.allocator orelse std.heap.page_allocator, file),
+            .otf => validateOtf(self.allocator orelse std.heap.page_allocator, file),
+            .woff => validateWoff(self.allocator orelse std.heap.page_allocator, file),
+            .woff2 => validateWoff2(self.allocator orelse std.heap.page_allocator, file),
+            .type1 => validateType1Font(self.allocator orelse std.heap.page_allocator, file),
             .par2 => archive_validators.validatePar2(file),
             // VM/Bytecode formats
-            .beam => validateBeam(file),
+            .beam => validateBeam(self.allocator orelse std.heap.page_allocator, file),
             // Icon formats
             .ico => image_validators.validateIco(file),
             .icns => image_validators.validateIcns(file),
@@ -5876,7 +5876,7 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
 
 /// Validate Erlang/Elixir BEAM bytecode files.
 /// Deep-validates compressed chunks (LitT zlib, Dbgi ETF-compressed) to catch bitrot.
-fn validateBeam(file: std.fs.File) ValidationResult {
+fn validateBeam(allocator: Allocator, file: std.fs.File) ValidationResult {
     const stat = file.stat() catch {
         return ValidationResult.invalidCode(.beam, .failed_to_stat, "file");
     };
@@ -5902,8 +5902,6 @@ fn validateBeam(file: std.fs.File) ValidationResult {
     var has_strt = false;
     var has_impt = false;
     var has_expt = false;
-
-    const allocator = std.heap.page_allocator;
 
     while (offset + 8 <= chunk_area_end) {
         var chunk_header_buf: [8]u8 = undefined;
@@ -6099,7 +6097,7 @@ pub const EncodingNormalizedResult = struct {
 };
 
 /// Normalize ASCII-compatible encodings to UTF-8 in the XML declaration.
-pub fn normalizeXmlEncoding(content: []const u8) EncodingNormalizedResult {
+pub fn normalizeXmlEncoding(allocator: Allocator, content: []const u8) EncodingNormalizedResult {
     if (!std.mem.startsWith(u8, content, "<?xml")) {
         return .{ .data = content, .allocated = false };
     }
@@ -6138,7 +6136,7 @@ pub fn normalizeXmlEncoding(content: []const u8) EncodingNormalizedResult {
     const encoding = decl[value_start..value_end];
     if (std.ascii.eqlIgnoreCase(encoding, "UTF-8")) return .{ .data = content, .allocated = false };
     if (!isAsciiCompatibleEncoding(encoding)) return .{ .data = content, .allocated = false };
-    const new_content = std.heap.page_allocator.alloc(u8, content.len - encoding.len + 5) catch {
+    const new_content = allocator.alloc(u8, content.len - encoding.len + 5) catch {
         return .{ .data = content, .allocated = false };
     };
     var pos: usize = 0;
@@ -6151,7 +6149,7 @@ pub fn normalizeXmlEncoding(content: []const u8) EncodingNormalizedResult {
 }
 
 /// Strip DOCTYPE declaration from XML content.
-pub fn stripDoctypeDeclaration(content: []const u8) DoctypeStrippedResult {
+pub fn stripDoctypeDeclaration(allocator: Allocator, content: []const u8) DoctypeStrippedResult {
     const doctype_start = std.mem.indexOf(u8, content, "<!DOCTYPE");
     if (doctype_start == null) return .{ .data = content, .allocated = false, .had_doctype = false };
     const start = doctype_start.?;
@@ -6172,7 +6170,7 @@ pub fn stripDoctypeDeclaration(content: []const u8) DoctypeStrippedResult {
             } else if (c == '>' and bracket_depth == 0) {
                 const end = dt_i + 1;
                 const new_len = content.len - (end - start);
-                const new_content = std.heap.page_allocator.alloc(u8, new_len) catch {
+                const new_content = allocator.alloc(u8, new_len) catch {
                     return .{ .data = content, .allocated = false, .had_doctype = false };
                 };
                 @memcpy(new_content[0..start], content[0..start]);
@@ -6717,8 +6715,8 @@ pub fn isXmlWellFormed(content: []const u8) bool {
 
 test "stripDoctypeDeclaration removes simple DOCTYPE" {
     const input = "<?xml version=\"1.0\"?><!DOCTYPE html><html></html>";
-    const result = stripDoctypeDeclaration(input);
-    defer if (result.allocated) std.heap.page_allocator.free(result.data);
+    const result = stripDoctypeDeclaration(std.testing.allocator, input);
+    defer if (result.allocated) std.testing.allocator.free(result.data);
 
     try std.testing.expect(result.had_doctype);
     try std.testing.expect(result.allocated);
@@ -6727,8 +6725,8 @@ test "stripDoctypeDeclaration removes simple DOCTYPE" {
 
 test "stripDoctypeDeclaration removes DOCTYPE with SYSTEM" {
     const input = "<!DOCTYPE softwarelist SYSTEM \"softwarelist.dtd\"><softwarelist/>";
-    const result = stripDoctypeDeclaration(input);
-    defer if (result.allocated) std.heap.page_allocator.free(result.data);
+    const result = stripDoctypeDeclaration(std.testing.allocator, input);
+    defer if (result.allocated) std.testing.allocator.free(result.data);
 
     try std.testing.expect(result.had_doctype);
     try std.testing.expectEqualStrings("<softwarelist/>", result.data);
@@ -6736,8 +6734,8 @@ test "stripDoctypeDeclaration removes DOCTYPE with SYSTEM" {
 
 test "stripDoctypeDeclaration removes DOCTYPE with internal subset" {
     const input = "<!DOCTYPE root [<!ELEMENT root (#PCDATA)>]><root/>";
-    const result = stripDoctypeDeclaration(input);
-    defer if (result.allocated) std.heap.page_allocator.free(result.data);
+    const result = stripDoctypeDeclaration(std.testing.allocator, input);
+    defer if (result.allocated) std.testing.allocator.free(result.data);
 
     try std.testing.expect(result.had_doctype);
     try std.testing.expectEqualStrings("<root/>", result.data);
@@ -6745,7 +6743,7 @@ test "stripDoctypeDeclaration removes DOCTYPE with internal subset" {
 
 test "stripDoctypeDeclaration returns original when no DOCTYPE" {
     const input = "<root><child/></root>";
-    const result = stripDoctypeDeclaration(input);
+    const result = stripDoctypeDeclaration(std.testing.allocator, input);
 
     try std.testing.expect(!result.had_doctype);
     try std.testing.expect(!result.allocated);

@@ -276,13 +276,33 @@ fn buildGitResult(
 
     // Error message
     try builder.add("err", result.error_message orelse "");
-    try builder.add("warn", "");
+    try builder.add("warn", result.warning_message orelse "");
 
-    // Depth (git validation is always full)
-    try builder.addU8("depth_u8", 1);
+    // Symbolic error code and detail (for downstream consumers like Entropy Shield)
+    if (result.error_message != null) {
+        try builder.add("err_code", if (result.is_valid) "" else "git_validation_error");
+    } else {
+        try builder.add("err_code", "");
+    }
+    try builder.add("err_detail", result.error_message orelse "");
+
+    // Depth
+    const depth_val: u8 = switch (result.validation_depth) {
+        .full => 1,
+        .checksum_only => 0,
+    };
+    try builder.addU8("depth_u8", depth_val);
+    try builder.add("depth_desc", switch (result.validation_depth) {
+        .full => i18n.tr().depth_full,
+        .checksum_only => i18n.tr().depth_structural,
+    });
 
     // No malformations for git
     try builder.addU64("malform_u64", 0);
+
+    // Flags (git repos don't bypass protection or use ffmpeg)
+    try builder.addBool("bypass_prot", false);
+    try builder.addBool("via_ffmpeg", false);
 
     // Git-specific fields
     try builder.addU32("obj_checked_u32", result.objects_checked);
