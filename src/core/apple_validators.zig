@@ -481,7 +481,7 @@ pub fn validateXmlPlist(file: std.fs.File, file_size: u64) ValidationResult {
 	const data = content[0..bytes_read];
 
 	// Strip DOCTYPE if present (use same logic as XML validator)
-	const preprocessed = stripDoctypeDeclaration(data);
+	const preprocessed = stripDoctypeDeclaration(std.heap.page_allocator, data);
 	defer if (preprocessed.allocated) std.heap.page_allocator.free(preprocessed.data);
 
 	// Parse with zig-xml

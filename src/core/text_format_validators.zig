@@ -939,12 +939,12 @@ pub fn validateXml(file: std.fs.File) ValidationResult {
 
     // Normalize ASCII-compatible encodings (us-ascii, iso-8859-1, etc.) to UTF-8
     // These are byte-compatible for ASCII range which is what most XML files use
-    const encoding_normalized = normalizeXmlEncoding(raw_data);
+    const encoding_normalized = normalizeXmlEncoding(std.heap.page_allocator, raw_data);
     defer if (encoding_normalized.allocated) std.heap.page_allocator.free(@constCast(encoding_normalized.data));
 
     // Strip DOCTYPE declaration if present (zig-xml doesn't support DTD validation)
     // We only validate XML structure, not DTD conformance
-    const preprocessed = stripDoctypeDeclaration(encoding_normalized.data);
+    const preprocessed = stripDoctypeDeclaration(std.heap.page_allocator, encoding_normalized.data);
     defer if (preprocessed.allocated) std.heap.page_allocator.free(preprocessed.data);
 
     // Use zig-xml's spec-compliant parser for well-formedness check
@@ -1709,7 +1709,7 @@ pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult 
     const xml = @import("xml");
 
     // Strip DOCTYPE declarations
-    const preprocessed = stripDoctypeDeclaration(data);
+    const preprocessed = stripDoctypeDeclaration(allocator, data);
     defer if (preprocessed.allocated) allocator.free(preprocessed.data);
 
     // Parse the XML

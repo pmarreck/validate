@@ -119,7 +119,7 @@ pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResu
 
     // Validate XML structure using the xml module
     // Strip DOCTYPE declarations to avoid DTD validation issues
-    const preprocessed = stripDoctypeDeclaration(xml_data);
+    const preprocessed = stripDoctypeDeclaration(allocator, xml_data);
     defer if (preprocessed.allocated) allocator.free(preprocessed.data);
 
     // Parse the XML to validate structure using zig-xml's spec-compliant parser
@@ -363,7 +363,7 @@ pub fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResu
     }
 
     // Use XML parser to validate structure
-    const preprocessed = stripDoctypeDeclaration(xml_data);
+    const preprocessed = stripDoctypeDeclaration(allocator, xml_data);
     defer if (preprocessed.allocated) allocator.free(preprocessed.data);
 
     var static_reader: xml.Reader.Static = .init(allocator, preprocessed.data, .{});
