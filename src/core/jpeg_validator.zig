@@ -328,8 +328,14 @@ test "validate valid JPEG" {
     };
 
     const result = validateJpegDeepFromBuffer(&minimal_jpeg);
-    // This minimal JPEG might not be perfectly valid, so we just test the API works
-    _ = result;
+    // The synthetic JPEG must either validate successfully or fail with a specific error —
+    // either way we verify the validator actually examined the data and returned a verdict.
+    if (result.valid) {
+        try std.testing.expect(result.error_message == null);
+    } else {
+        // If invalid, there must be an error message explaining why
+        try std.testing.expect(result.error_message != null);
+    }
 }
 
 test "reject invalid data" {
