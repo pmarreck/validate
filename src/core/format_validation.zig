@@ -2210,186 +2210,628 @@ fn isSqliteCompanionFile(path: []const u8) bool {
         std.mem.eql(u8, ext_lower, "db-journal");
 }
 
+/// Extract lowercase file extension from a path into a stack buffer.
+/// Returns the lowercase extension slice, or null if no valid extension found.
+fn lowercaseExtension(path: []const u8, buf: *[16]u8) ?[]const u8 {
+    const dot_pos = std.mem.lastIndexOfScalar(u8, path, '.') orelse return null;
+    if (dot_pos + 1 >= path.len) return null;
+    const ext = path[dot_pos + 1 ..];
+    if (ext.len > buf.len) return null;
+    for (ext, 0..) |c, i| {
+        buf[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+    }
+    return buf[0..ext.len];
+}
+
+/// Unified extension-to-format map. Used by both detectFormatFromExtension (fallback
+/// when magic bytes are absent) and getExpectedFormatForExtension (mismatch detection).
+/// Note: .o is intentionally omitted — it can be COFF or ELF, so magic bytes decide.
+const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
+    // Images
+    .{ "png", .png },
+    .{ "jpg", .jpeg },
+    .{ "jpeg", .jpeg },
+    .{ "gif", .gif },
+    .{ "bmp", .bmp },
+    .{ "webp", .webp },
+    .{ "tiff", .tiff },
+    .{ "tif", .tiff },
+    .{ "heic", .heic },
+    .{ "heif", .heic },
+    .{ "avif", .avif },
+    .{ "exr", .exr },
+    .{ "jxl", .jxl },
+    .{ "svg", .svg },
+    .{ "apng", .png },
+    .{ "qoi", .qoi },
+    .{ "pbm", .pam },
+    .{ "pgm", .pam },
+    .{ "ppm", .pam },
+    .{ "pam", .pam },
+    .{ "pnm", .pam },
+    .{ "dpx", .dpx },
+    .{ "tga", .tga },
+    .{ "targa", .tga },
+    .{ "ico", .ico },
+    .{ "icns", .icns },
+    .{ "psd", .psd },
+    .{ "psb", .psd },
+    // Creative / design
+    .{ "ai", .ai },
+    .{ "eps", .eps },
+    .{ "epsf", .eps },
+    .{ "sketch", .sketch },
+    .{ "aep", .aep },
+    .{ "aepx", .aep },
+    .{ "prproj", .prproj },
+    .{ "indd", .indd },
+    .{ "indt", .indd },
+    .{ "idml", .idml },
+    .{ "dwg", .dwg },
+    .{ "blend", .blend },
+    .{ "blend1", .blend },
+    .{ "fcpxml", .fcpxml },
+    .{ "drp", .drp },
+    // Databases
+    .{ "mdb", .mdb },
+    .{ "accdb", .accdb },
+    .{ "sqlite", .sqlite },
+    .{ "sqlite3", .sqlite },
+    // RAW camera formats
+    .{ "dng", .dng },
+    .{ "cr2", .cr2 },
+    .{ "nef", .nef },
+    .{ "arw", .arw },
+    // Documents
+    .{ "pdf", .pdf },
+    .{ "rtf", .rtf },
+    // Archives
+    .{ "zip", .zip },
+    .{ "gz", .gzip },
+    .{ "gzip", .gzip },
+    .{ "bz2", .bzip2 },
+    .{ "xz", .xz },
+    .{ "zst", .zstd },
+    .{ "zstd", .zstd },
+    .{ "rar", .rar },
+    .{ "cpt", .cpt },
+    .{ "7z", .sevenz },
+    .{ "tar", .tar },
+    .{ "br", .br },
+    .{ "hqx", .hqx },
+    // Office documents
+    .{ "docx", .docx },
+    .{ "xlsx", .xlsx },
+    .{ "pptx", .pptx },
+    .{ "doc", .doc },
+    .{ "xls", .xls },
+    .{ "ppt", .ppt },
+    .{ "odt", .odt },
+    .{ "ods", .ods },
+    .{ "odp", .odp },
+    .{ "epub", .epub },
+    .{ "pages", .pages },
+    // Video
+    .{ "mp4", .mp4 },
+    .{ "m4v", .mp4 },
+    .{ "mov", .mov },
+    .{ "mkv", .mkv },
+    .{ "webm", .webm },
+    .{ "avi", .avi },
+    .{ "flv", .flv },
+    .{ "swf", .swf },
+    .{ "3gp", .mp4 },
+    .{ "3g2", .mp4 },
+    .{ "3gpp", .mp4 },
+    .{ "asf", .asf },
+    .{ "wmv", .asf },
+    .{ "wma", .asf },
+    .{ "dv", .dv },
+    .{ "dif", .dv },
+    // Audio
+    .{ "mp3", .mp3 },
+    .{ "flac", .flac },
+    .{ "wav", .wav },
+    .{ "m4a", .m4a },
+    .{ "aiff", .aiff },
+    .{ "aif", .aiff },
+    .{ "ogg", .ogg },
+    .{ "oga", .ogg },
+    .{ "ogv", .ogg },
+    .{ "opus", .ogg },
+    .{ "mid", .midi },
+    .{ "midi", .midi },
+    .{ "ape", .ape },
+    .{ "wv", .wavpack },
+    .{ "amr", .amr },
+    .{ "awb", .amr },
+    .{ "au", .au },
+    .{ "snd", .au },
+    .{ "tta", .tta },
+    .{ "caf", .caf },
+    .{ "aac", .aac_adts },
+    .{ "ac3", .ac3 },
+    .{ "eac3", .eac3 },
+    .{ "ec3", .eac3 },
+    .{ "dsf", .dsf },
+    .{ "dff", .dff },
+    // Tracker/module formats
+    .{ "mod", .mod },
+    .{ "xm", .xm },
+    .{ "it", .it },
+    .{ "s3m", .s3m },
+    // Fonts
+    .{ "ttf", .ttf },
+    .{ "otf", .otf },
+    .{ "woff", .woff },
+    .{ "woff2", .woff2 },
+    // 3D printing/modeling formats
+    .{ "3mf", .@"3mf" },
+    .{ "obj", .obj },
+    .{ "ply", .ply },
+    .{ "gltf", .gltf },
+    .{ "glb", .glb },
+    .{ "stl", .stl },
+    .{ "step", .step },
+    .{ "stp", .step },
+    .{ "dxf", .dxf },
+    // Game data/ROM formats
+    .{ "wad", .wad },
+    .{ "bsp", .bsp },
+    .{ "vpk", .vpk },
+    .{ "nes", .nes },
+    .{ "sfc", .snes },
+    .{ "smc", .snes },
+    .{ "z64", .n64 },
+    .{ "n64", .n64 },
+    .{ "v64", .n64 },
+    .{ "gb", .gb },
+    .{ "gbc", .gb },
+    .{ "gba", .gba },
+    .{ "nds", .nds },
+    .{ "gen", .genesis },
+    .{ "smd", .genesis },
+    .{ "chd", .chd },
+    // Scientific/data formats
+    .{ "h5", .hdf5 },
+    .{ "hdf5", .hdf5 },
+    .{ "hdf", .hdf5 },
+    .{ "parquet", .parquet },
+    .{ "nc", .netcdf },
+    .{ "netcdf", .netcdf },
+    .{ "fits", .fits },
+    .{ "fit", .fits },
+    .{ "dcm", .dicom },
+    .{ "dicom", .dicom },
+    .{ "fasta", .fasta },
+    .{ "fa", .fasta },
+    .{ "fna", .fasta },
+    .{ "fastq", .fastq },
+    .{ "fq", .fastq },
+    // MPEG streams
+    .{ "mpg", .mpeg_ps },
+    .{ "mpeg", .mpeg_ps },
+    .{ "vob", .mpeg_ps },
+    .{ "ts", .mpeg_ts },
+    .{ "mts", .mpeg_ts },
+    .{ "m2ts", .mpeg_ts },
+    .{ "m1v", .mpeg_es },
+    .{ "m2v", .mpeg_es },
+    .{ "mpv", .mpeg_es },
+    .{ "es", .mpeg_es },
+    .{ "ivf", .ivf },
+    // IFF/Blorb
+    .{ "iff", .iff },
+    .{ "blorb", .blorb },
+    .{ "blb", .blorb },
+    // macOS
+    .{ "ds_store", .ds_store },
+    // Disk images
+    .{ "iso", .iso },
+    .{ "dmg", .dmg },
+    // DAW formats
+    .{ "als", .als },
+    .{ "rpp", .rpp },
+    .{ "flp", .flp },
+    .{ "bwproject", .bwproject },
+    .{ "cpr", .cpr },
+    .{ "ptx", .ptx },
+    .{ "band", .band },
+    .{ "reason", .reason },
+    .{ "logicx", .logicx },
+    .{ "song", .song },
+    // Financial data formats
+    .{ "qbw", .qbw },
+    .{ "qbb", .qbb },
+    .{ "qbm", .qbb },
+    .{ "qdf", .qdf },
+    .{ "ofx", .ofx },
+    .{ "qfx", .ofx },
+    .{ "qif", .qif },
+    .{ "txf", .txf },
+    .{ "ach", .nacha },
+    .{ "nacha", .nacha },
+    .{ "mt940", .mt940 },
+    .{ "sta", .mt940 },
+    .{ "940", .mt940 },
+    .{ "bai", .bai2 },
+    .{ "bai2", .bai2 },
+    // PIM formats
+    .{ "ics", .icalendar },
+    .{ "ical", .icalendar },
+    .{ "ifb", .icalendar },
+    .{ "vcf", .vcard },
+    .{ "vcard", .vcard },
+    // EDI formats
+    .{ "edi", .x12_edi },
+    .{ "x12", .x12_edi },
+    .{ "837", .x12_edi },
+    .{ "835", .x12_edi },
+    .{ "834", .x12_edi },
+    .{ "270", .x12_edi },
+    .{ "271", .x12_edi },
+    .{ "997", .x12_edi },
+    .{ "edifact", .edifact },
+    .{ "eancom", .edifact },
+    // Crypto/certificate formats
+    .{ "pem", .pem },
+    .{ "crt", .pem },
+    .{ "key", .pem },
+    .{ "der", .der },
+    .{ "cer", .der },
+    // GIS
+    .{ "kml", .kml },
+    .{ "kmz", .kmz },
+    .{ "shp", .shapefile },
+    // Email
+    .{ "eml", .eml },
+    .{ "mbox", .mbox },
+    // Text formats
+    .{ "toml", .toml },
+    .{ "ini", .ini },
+    .{ "json", .json },
+    .{ "xml", .xml },
+    .{ "yaml", .yaml },
+    .{ "yml", .yaml },
+    .{ "md", .markdown },
+    .{ "markdown", .markdown },
+    .{ "ndjson", .json },
+    .{ "jsonl", .json },
+    .{ "json5", .json },
+    .{ "csv", .csv },
+    .{ "tsv", .csv },
+    .{ "plist", .plist },
+    .{ "html", .html },
+    .{ "htm", .html },
+    .{ "xhtml", .html },
+    // Erlang/Elixir
+    .{ "app", .erlang_term },
+    .{ "config", .erlang_term },
+    .{ "lock", .erlang_term },
+    .{ "beam", .beam },
+    .{ "eex", .eex },
+    .{ "leex", .eex },
+    .{ "heex", .eex },
+    .{ "erb", .eex },
+    // Legacy word processors
+    .{ "cwk", .cwk },
+    .{ "mwd", .mwd },
+    // LLVM compiler artifacts
+    .{ "dia", .llvm_diag },
+    // Binary serialization
+    .{ "msgpack", .msgpack },
+    // Windows PE executable extensions
+    .{ "exe", .pe },
+    .{ "dll", .pe },
+    .{ "sys", .pe },
+    .{ "scr", .pe },
+    .{ "ocx", .pe },
+    .{ "cpl", .pe },
+    // ELF executable extensions
+    .{ "so", .elf },
+    .{ "elf", .elf },
+    .{ "ko", .elf },
+    .{ "axf", .elf },
+    // WebAssembly
+    .{ "wasm", .wasm },
+    // Unix ar archive (static libraries)
+    .{ "a", .ar },
+});
+
+/// Extensions that should NOT be validated as a text format even if content
+/// detection matches JSON/XML/TOML/etc. These are code, config, log, and
+/// template files that would be false positives from content detection.
+const excluded_text_exts = std.StaticStringMap(void).initComptime(.{
+    // Systems languages
+    .{ "c", {} },
+    .{ "h", {} },
+    .{ "cpp", {} },
+    .{ "cxx", {} },
+    .{ "cc", {} },
+    .{ "hpp", {} },
+    .{ "hxx", {} },
+    .{ "hh", {} },
+    .{ "zig", {} },
+    .{ "zon", {} },
+    .{ "rs", {} },
+    .{ "go", {} },
+    .{ "d", {} },
+    .{ "m", {} },
+    .{ "mm", {} },
+    .{ "swift", {} },
+    .{ "s", {} },
+    .{ "asm", {} },
+    // JVM/managed languages
+    .{ "java", {} },
+    .{ "kt", {} },
+    .{ "kts", {} },
+    .{ "scala", {} },
+    .{ "groovy", {} },
+    .{ "cs", {} },
+    .{ "fs", {} },
+    .{ "fsx", {} },
+    .{ "vb", {} },
+    // Web/scripting
+    .{ "js", {} },
+    .{ "mjs", {} },
+    .{ "cjs", {} },
+    .{ "ts", {} },
+    .{ "mts", {} },
+    .{ "cts", {} },
+    .{ "rb", {} },
+    .{ "py", {} },
+    .{ "pyi", {} },
+    .{ "pl", {} },
+    .{ "pm", {} },
+    .{ "lua", {} },
+    // BEAM/Erlang ecosystem
+    .{ "erl", {} },
+    .{ "hrl", {} },
+    .{ "ex", {} },
+    .{ "exs", {} },
+    .{ "gleam", {} },
+    // Shell/scripting
+    .{ "sh", {} },
+    .{ "bash", {} },
+    .{ "zsh", {} },
+    .{ "fish", {} },
+    .{ "ps1", {} },
+    .{ "bat", {} },
+    .{ "cmd", {} },
+    .{ "awk", {} },
+    .{ "sed", {} },
+    .{ "tcl", {} },
+    .{ "r", {} },
+    .{ "jl", {} },
+    .{ "nim", {} },
+    .{ "v", {} },
+    // Functional/academic
+    .{ "hs", {} },
+    .{ "lhs", {} },
+    .{ "ml", {} },
+    .{ "mli", {} },
+    .{ "clj", {} },
+    .{ "cljs", {} },
+    .{ "rkt", {} },
+    .{ "scm", {} },
+    .{ "lisp", {} },
+    .{ "el", {} },
+    // Nix, config-as-code
+    .{ "nix", {} },
+    .{ "dhall", {} },
+    .{ "tf", {} },
+    .{ "hcl", {} },
+    .{ "cmake", {} },
+    .{ "gradle", {} },
+    .{ "sbt", {} },
+    // Web template files
+    .{ "hbs", {} },
+    .{ "mustache", {} },
+    .{ "htc", {} },
+    .{ "vue", {} },
+    .{ "svelte", {} },
+    .{ "astro", {} },
+    .{ "jsx", {} },
+    .{ "tsx", {} },
+    .{ "php", {} },
+    .{ "asp", {} },
+    .{ "aspx", {} },
+    .{ "jsp", {} },
+    .{ "jspx", {} },
+    .{ "twig", {} },
+    // Log and data files
+    .{ "log", {} },
+    .{ "txt", {} },
+    .{ "text", {} },
+    .{ "out", {} },
+    .{ "err", {} },
+    .{ "diff", {} },
+    .{ "patch", {} },
+    // Config files that look like JSON/TOML but aren't standard
+    .{ "conf", {} },
+    .{ "cfg", {} },
+    .{ "properties", {} },
+    .{ "env", {} },
+    // Windows-specific files that look like INI but aren't standard config
+    .{ "url", {} },
+    .{ "website", {} },
+    // Qt project files (qmake)
+    .{ "pro", {} },
+    .{ "pri", {} },
+});
+
+/// Known filenames (case-insensitive, no extension) excluded from text validation.
+const excluded_text_filenames = std.StaticStringMap(void).initComptime(.{
+    .{ "makefile", {} },
+    .{ "emakefile", {} },
+    .{ "gnumakefile", {} },
+    .{ "rakefile", {} },
+    .{ "gemfile", {} },
+    .{ "vagrantfile", {} },
+    .{ "dockerfile", {} },
+    .{ "jenkinsfile", {} },
+    .{ "procfile", {} },
+    .{ "license", {} },
+    .{ "changelog", {} },
+    .{ "authors", {} },
+    .{ "contributors", {} },
+    .{ "copying", {} },
+    .{ "install", {} },
+    .{ "todo", {} },
+    .{ "news", {} },
+    .{ "history", {} },
+});
+
+/// Extension-only detection map: formats that lack reliable magic bytes and need
+/// extension-based detection as the primary (not just mismatch) identification.
+/// This is a subset of ext_format_map — only formats where magic bytes detection
+/// fails or is too ambiguous to be the primary detection mechanism.
+const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
+    // No magic bytes at all
+    .{ "br", .br },
+    .{ "hqx", .hqx },
+    .{ "cpt", .cpt },
+    .{ "dv", .dv },
+    .{ "dif", .dv },
+    .{ "tga", .tga },
+    .{ "targa", .tga },
+    // DAW/creative formats with no magic or ambiguous magic
+    .{ "bwproject", .bwproject },
+    .{ "ptx", .ptx },
+    .{ "band", .band },
+    .{ "reason", .reason },
+    .{ "cpr", .cpr },
+    .{ "logicx", .logicx },
+    .{ "song", .song },
+    .{ "sketch", .sketch },
+    .{ "drp", .drp },
+    // Game ROM formats — many lack magic bytes at offset 0
+    .{ "smc", .snes },
+    .{ "sfc", .snes },
+    .{ "gb", .gb },
+    .{ "gbc", .gb },
+    .{ "gba", .gba },
+    .{ "nds", .nds },
+    .{ "gen", .genesis },
+    .{ "smd", .genesis },
+    // Disk images — magic at non-zero offsets or trailer-only
+    .{ "iso", .iso },
+    .{ "dmg", .dmg },
+    // .obj is ambiguous: Wavefront OBJ (text 3D model) or COFF (compiled object file)
+    // The ext_has_no_magic handler tries COFF first, falls back to Wavefront OBJ
+    .{ "obj", .obj },
+    // Legacy word processors — no magic bytes
+    .{ "cwk", .cwk },
+    .{ "mwd", .mwd },
+    // Financial data formats — magic is ambiguous (OLE2, ZIP, or SQL Anywhere)
+    .{ "qbw", .qbw },
+    .{ "qbb", .qbb },
+    .{ "qbm", .qbb },
+    .{ "qdf", .qdf },
+    .{ "ofx", .ofx },
+    .{ "qfx", .ofx },
+    .{ "qif", .qif },
+    .{ "txf", .txf },
+    .{ "ach", .nacha },
+    .{ "nacha", .nacha },
+    .{ "mt940", .mt940 },
+    .{ "sta", .mt940 },
+    .{ "940", .mt940 },
+    .{ "bai", .bai2 },
+    .{ "bai2", .bai2 },
+    // PIM formats — also have magic bytes, but extension mapping aids detection
+    .{ "ics", .icalendar },
+    .{ "ical", .icalendar },
+    .{ "ifb", .icalendar },
+    .{ "vcf", .vcard },
+    .{ "vcard", .vcard },
+    // EDI formats
+    .{ "edi", .x12_edi },
+    .{ "x12", .x12_edi },
+    .{ "837", .x12_edi },
+    .{ "835", .x12_edi },
+    .{ "834", .x12_edi },
+    .{ "270", .x12_edi },
+    .{ "271", .x12_edi },
+    .{ "997", .x12_edi },
+    .{ "edifact", .edifact },
+    .{ "eancom", .edifact },
+    // Crypto/certificate formats
+    .{ "pem", .pem },
+    .{ "crt", .pem },
+    .{ "key", .pem },
+    .{ "der", .der },
+    .{ "cer", .der },
+    // Adobe — extension needed to distinguish from underlying container format
+    .{ "ai", .ai },
+    .{ "prproj", .prproj },
+    .{ "idml", .idml },
+    // Text formats — extension is the definitive indicator
+    .{ "toml", .toml },
+    .{ "ini", .ini },
+    .{ "json", .json },
+    .{ "xml", .xml },
+    .{ "yaml", .yaml },
+    .{ "yml", .yaml },
+    // Erlang term format files
+    .{ "app", .erlang_term },
+    .{ "config", .erlang_term },
+    .{ "lock", .erlang_term },
+    // EEx/ERB template files
+    .{ "eex", .eex },
+    .{ "leex", .eex },
+    .{ "heex", .eex },
+    .{ "erb", .eex },
+    // Markdown
+    .{ "md", .markdown },
+    .{ "markdown", .markdown },
+    // NDJSON / JSON Lines / JSON5
+    .{ "ndjson", .json },
+    .{ "jsonl", .json },
+    .{ "json5", .json },
+    // CSV / TSV
+    .{ "csv", .csv },
+    .{ "tsv", .csv },
+    // Apple Property List
+    .{ "plist", .plist },
+    // Erlang/Elixir BEAM bytecode
+    .{ "beam", .beam },
+    // macOS ICNS icon
+    .{ "icns", .icns },
+    // LLVM compiler artifacts
+    .{ "dia", .llvm_diag },
+    // MessagePack binary serialization
+    .{ "msgpack", .msgpack },
+    // Windows PE executable extensions
+    .{ "exe", .pe },
+    .{ "dll", .pe },
+    .{ "sys", .pe },
+    .{ "scr", .pe },
+    .{ "ocx", .pe },
+    .{ "cpl", .pe },
+    // ELF executable extensions
+    .{ "so", .elf },
+    .{ "elf", .elf },
+    .{ "ko", .elf },
+    .{ "axf", .elf },
+    // WebAssembly
+    .{ "wasm", .wasm },
+    // Unix ar archive (static libraries)
+    .{ "a", .ar },
+    // HTML documents
+    .{ "html", .html },
+    .{ "htm", .html },
+    .{ "xhtml", .html },
+});
+
 /// Detect format from file extension.
 /// Used as fallback for formats without magic bytes (e.g., Brotli .br files).
+/// Only returns formats that need extension-based detection; formats with reliable
+/// magic bytes are not returned here (they are detected by magic bytes instead).
 pub fn detectFormatFromExtension(path: []const u8) FileFormat {
-    // Find the last dot
-    const dot_pos = std.mem.lastIndexOfScalar(u8, path, '.') orelse return .unknown;
-    if (dot_pos + 1 >= path.len) return .unknown;
-
-    const ext = path[dot_pos + 1 ..];
-
-    // Convert to lowercase for comparison (ASCII only)
-    var lower_ext: [16]u8 = undefined;
-    if (ext.len > lower_ext.len) return .unknown;
-
-    for (ext, 0..) |c, i| {
-        lower_ext[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
-    }
-    const ext_lower = lower_ext[0..ext.len];
-
-    // Extension-only formats (no magic bytes)
-    if (std.mem.eql(u8, ext_lower, "br")) return .br;
-    if (std.mem.eql(u8, ext_lower, "hqx")) return .hqx;
-    if (std.mem.eql(u8, ext_lower, "cpt")) return .cpt;
-    if (std.mem.eql(u8, ext_lower, "dv") or std.mem.eql(u8, ext_lower, "dif")) return .dv;
-    if (std.mem.eql(u8, ext_lower, "tga") or std.mem.eql(u8, ext_lower, "targa")) return .tga;
-
-    // DAW/creative formats with no magic or ambiguous magic (extension-only detection)
-    if (std.mem.eql(u8, ext_lower, "bwproject")) return .bwproject;
-    if (std.mem.eql(u8, ext_lower, "ptx")) return .ptx;
-    if (std.mem.eql(u8, ext_lower, "band")) return .band;
-    if (std.mem.eql(u8, ext_lower, "reason")) return .reason;
-    if (std.mem.eql(u8, ext_lower, "cpr")) return .cpr;
-    if (std.mem.eql(u8, ext_lower, "logicx")) return .logicx;
-    if (std.mem.eql(u8, ext_lower, "song")) return .song;
-    if (std.mem.eql(u8, ext_lower, "sketch")) return .sketch;
-    if (std.mem.eql(u8, ext_lower, "drp")) return .drp;
-
-    // Game ROM formats — many lack magic bytes at offset 0
-    if (std.mem.eql(u8, ext_lower, "smc") or std.mem.eql(u8, ext_lower, "sfc")) return .snes;
-    if (std.mem.eql(u8, ext_lower, "gb") or std.mem.eql(u8, ext_lower, "gbc")) return .gb;
-    if (std.mem.eql(u8, ext_lower, "gba")) return .gba;
-    if (std.mem.eql(u8, ext_lower, "nds")) return .nds;
-    if (std.mem.eql(u8, ext_lower, "gen") or std.mem.eql(u8, ext_lower, "smd")) return .genesis;
-
-    // Disk images — magic at non-zero offsets or trailer-only
-    if (std.mem.eql(u8, ext_lower, "iso")) return .iso;
-    if (std.mem.eql(u8, ext_lower, "dmg")) return .dmg;
-
-    // COFF — 2-byte machine type at offset 0 is too short for reliable magic detection
-    if (std.mem.eql(u8, ext_lower, "o")) return .coff;
-    // .obj is ambiguous: Wavefront OBJ (text 3D model) or COFF (compiled object file)
-    // Return .obj here; the ext_has_no_magic handler tries COFF first, falls back to Wavefront OBJ
-    if (std.mem.eql(u8, ext_lower, "obj")) return .obj;
-
-    // Legacy word processors — no magic bytes
-    if (std.mem.eql(u8, ext_lower, "cwk")) return .cwk;
-    if (std.mem.eql(u8, ext_lower, "mwd")) return .mwd;
-
-    // Financial data formats — extension-based (magic is ambiguous: OLE2, ZIP, or SQL Anywhere)
-    if (std.mem.eql(u8, ext_lower, "qbw")) return .qbw;
-    if (std.mem.eql(u8, ext_lower, "qbb") or std.mem.eql(u8, ext_lower, "qbm")) return .qbb;
-    if (std.mem.eql(u8, ext_lower, "qdf")) return .qdf;
-    if (std.mem.eql(u8, ext_lower, "ofx") or std.mem.eql(u8, ext_lower, "qfx")) return .ofx;
-    if (std.mem.eql(u8, ext_lower, "qif")) return .qif;
-    if (std.mem.eql(u8, ext_lower, "txf")) return .txf;
-    if (std.mem.eql(u8, ext_lower, "ach") or std.mem.eql(u8, ext_lower, "nacha")) return .nacha;
-    if (std.mem.eql(u8, ext_lower, "mt940") or std.mem.eql(u8, ext_lower, "sta") or std.mem.eql(u8, ext_lower, "940")) return .mt940;
-    if (std.mem.eql(u8, ext_lower, "bai") or std.mem.eql(u8, ext_lower, "bai2")) return .bai2;
-
-    // PIM formats (iCalendar, vCard) — also have magic bytes, but extension mapping aids detection
-    if (std.mem.eql(u8, ext_lower, "ics") or std.mem.eql(u8, ext_lower, "ical") or std.mem.eql(u8, ext_lower, "ifb")) return .icalendar;
-    if (std.mem.eql(u8, ext_lower, "vcf") or std.mem.eql(u8, ext_lower, "vcard")) return .vcard;
-
-    // EDI formats
-    if (std.mem.eql(u8, ext_lower, "edi") or std.mem.eql(u8, ext_lower, "x12") or std.mem.eql(u8, ext_lower, "837") or std.mem.eql(u8, ext_lower, "835") or std.mem.eql(u8, ext_lower, "834") or std.mem.eql(u8, ext_lower, "270") or std.mem.eql(u8, ext_lower, "271") or std.mem.eql(u8, ext_lower, "997")) return .x12_edi;
-    if (std.mem.eql(u8, ext_lower, "edifact") or std.mem.eql(u8, ext_lower, "eancom")) return .edifact;
-
-    // Crypto/certificate formats
-    if (std.mem.eql(u8, ext_lower, "pem") or std.mem.eql(u8, ext_lower, "crt") or std.mem.eql(u8, ext_lower, "key")) return .pem;
-    if (std.mem.eql(u8, ext_lower, "der") or std.mem.eql(u8, ext_lower, "cer")) return .der;
-
-    // Adobe Illustrator - extension needed to distinguish from PDF/EPS
-    // AI files are PDF or PostScript internally, but should be treated as AI
-    if (std.mem.eql(u8, ext_lower, "ai")) return .ai;
-
-    // Adobe Premiere Pro - extension needed to distinguish from gzip
-    // PRPROJ files are gzip-compressed XML
-    if (std.mem.eql(u8, ext_lower, "prproj")) return .prproj;
-
-    // Adobe InDesign IDML - extension needed to distinguish from ZIP
-    // IDML files are ZIP containers with XML content
-    if (std.mem.eql(u8, ext_lower, "idml")) return .idml;
-
-    // Text formats - extension is the definitive indicator
-    // (content detection can't reliably distinguish TOML from INI)
-    if (std.mem.eql(u8, ext_lower, "toml")) return .toml;
-    if (std.mem.eql(u8, ext_lower, "ini")) return .ini;
-    if (std.mem.eql(u8, ext_lower, "json")) return .json;
-    if (std.mem.eql(u8, ext_lower, "xml")) return .xml;
-    if (std.mem.eql(u8, ext_lower, "yaml") or std.mem.eql(u8, ext_lower, "yml")) return .yaml;
-
-    // Erlang term format files
-    if (std.mem.eql(u8, ext_lower, "app")) return .erlang_term;
-    if (std.mem.eql(u8, ext_lower, "config")) return .erlang_term;
-    if (std.mem.eql(u8, ext_lower, "lock")) return .erlang_term; // rebar.lock, mix.lock
-
-    // Elixir script files - look like JSON but are Elixir code
-    if (std.mem.eql(u8, ext_lower, "exs")) return .unknown; // Don't validate, just skip
-    if (std.mem.eql(u8, ext_lower, "ex")) return .unknown; // Elixir source files
-
-    // EEx/ERB template files
-    if (std.mem.eql(u8, ext_lower, "eex")) return .eex;
-    if (std.mem.eql(u8, ext_lower, "leex")) return .eex; // LiveView EEx
-    if (std.mem.eql(u8, ext_lower, "heex")) return .eex; // HTML EEx
-    if (std.mem.eql(u8, ext_lower, "erb")) return .eex; // Ruby ERB templates
-
-    // Markdown files - text format, not XML
-    if (std.mem.eql(u8, ext_lower, "md")) return .markdown;
-    if (std.mem.eql(u8, ext_lower, "markdown")) return .markdown;
-
-    // NDJSON / JSON Lines - extension-based, validated as JSON
-    if (std.mem.eql(u8, ext_lower, "ndjson")) return .json;
-    if (std.mem.eql(u8, ext_lower, "jsonl")) return .json;
-
-    // JSON5 - superset of JSON, validated through json validation with fallback to cj5
-    if (std.mem.eql(u8, ext_lower, "json5")) return .json;
-
-    // CSV / TSV data files
-    if (std.mem.eql(u8, ext_lower, "csv")) return .csv;
-    if (std.mem.eql(u8, ext_lower, "tsv")) return .csv; // Tab-separated values, same validator
-
-    // Apple Property List (extension-based for XML plist without explicit DOCTYPE)
-    if (std.mem.eql(u8, ext_lower, "plist")) return .plist;
-
-    // Erlang/Elixir BEAM bytecode (extension-based fallback)
-    if (std.mem.eql(u8, ext_lower, "beam")) return .beam;
-
-    // macOS ICNS icon
-    if (std.mem.eql(u8, ext_lower, "icns")) return .icns;
-
-    // LLVM compiler artifacts
-    if (std.mem.eql(u8, ext_lower, "dia")) return .llvm_diag;
-
-    // MessagePack binary serialization
-    if (std.mem.eql(u8, ext_lower, "msgpack")) return .msgpack;
-
-    // Windows-specific non-validatable formats
-    // .url = Windows URL shortcut (INI-like syntax but not an INI config file)
-    // .etl = Event Trace Log (binary, can have ICO-like magic bytes)
-    // .lnk = Windows Shell Link (binary shortcut)
-    if (std.mem.eql(u8, ext_lower, "url")) return .unknown;
-    if (std.mem.eql(u8, ext_lower, "etl")) return .unknown;
-    if (std.mem.eql(u8, ext_lower, "lnk")) return .unknown;
-
-    // Windows PE executable extensions
-    if (std.mem.eql(u8, ext_lower, "exe")) return .pe;
-    if (std.mem.eql(u8, ext_lower, "dll")) return .pe;
-    if (std.mem.eql(u8, ext_lower, "sys")) return .pe; // Windows drivers
-    if (std.mem.eql(u8, ext_lower, "scr")) return .pe; // Screen savers
-    if (std.mem.eql(u8, ext_lower, "ocx")) return .pe; // ActiveX controls
-    if (std.mem.eql(u8, ext_lower, "cpl")) return .pe; // Control Panel applets
-
-    // ELF executable extensions
-    if (std.mem.eql(u8, ext_lower, "so")) return .elf; // Shared objects
-    if (std.mem.eql(u8, ext_lower, "o")) return .elf; // Object files
-    if (std.mem.eql(u8, ext_lower, "elf")) return .elf;
-    if (std.mem.eql(u8, ext_lower, "ko")) return .elf; // Kernel modules
-    if (std.mem.eql(u8, ext_lower, "axf")) return .elf; // ARM executables
-
-    // WebAssembly
-    if (std.mem.eql(u8, ext_lower, "wasm")) return .wasm;
-
-    // Unix ar archive (static libraries)
-    if (std.mem.eql(u8, ext_lower, "a")) return .ar; // Static libraries
-
-    // HTML documents
-    if (std.mem.eql(u8, ext_lower, "html")) return .html;
-    if (std.mem.eql(u8, ext_lower, "htm")) return .html;
-    if (std.mem.eql(u8, ext_lower, "xhtml")) return .html;
-
-    return .unknown;
+    var buf: [16]u8 = undefined;
+    const ext_lower = lowercaseExtension(path, &buf) orelse return .unknown;
+    return ext_detect_map.get(ext_lower) orelse .unknown;
 }
 
 /// Check if a file extension indicates a code/log/template file that should NOT
@@ -2420,424 +2862,26 @@ fn isExcludedTextExtension(path: []const u8) bool {
         }
         const name_lower = lower_name[0..filename.len];
 
-        if (std.mem.eql(u8, name_lower, "makefile")) return true;
-        if (std.mem.eql(u8, name_lower, "emakefile")) return true; // Erlang make
-        if (std.mem.eql(u8, name_lower, "gnumakefile")) return true;
-        if (std.mem.eql(u8, name_lower, "rakefile")) return true; // Ruby make
-        if (std.mem.eql(u8, name_lower, "gemfile")) return true; // Ruby gems
-        if (std.mem.eql(u8, name_lower, "vagrantfile")) return true; // Vagrant
-        if (std.mem.eql(u8, name_lower, "dockerfile")) return true; // Docker
-        if (std.mem.eql(u8, name_lower, "jenkinsfile")) return true; // Jenkins
-        if (std.mem.eql(u8, name_lower, "procfile")) return true; // Heroku
+        // Check exact filename matches
+        if (excluded_text_filenames.has(name_lower)) return true;
+        // Special case: "readme" or "readme.*"
         if (std.mem.eql(u8, name_lower, "readme")) return true;
         if (std.mem.startsWith(u8, name_lower, "readme.")) return true;
-        if (std.mem.eql(u8, name_lower, "license")) return true;
-        if (std.mem.eql(u8, name_lower, "changelog")) return true;
-        if (std.mem.eql(u8, name_lower, "authors")) return true;
-        if (std.mem.eql(u8, name_lower, "contributors")) return true;
-        if (std.mem.eql(u8, name_lower, "copying")) return true;
-        if (std.mem.eql(u8, name_lower, "install")) return true;
-        if (std.mem.eql(u8, name_lower, "todo")) return true;
-        if (std.mem.eql(u8, name_lower, "news")) return true;
-        if (std.mem.eql(u8, name_lower, "history")) return true;
     }
 
     // Now check extension
-    const dot_pos = std.mem.lastIndexOfScalar(u8, path, '.') orelse return false;
-    if (dot_pos + 1 >= path.len) return false;
-
-    const ext = path[dot_pos + 1 ..];
-
-    // Convert to lowercase for comparison (ASCII only)
-    var lower_ext: [16]u8 = undefined;
-    if (ext.len > lower_ext.len) return false;
-
-    for (ext, 0..) |c, i| {
-        lower_ext[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
-    }
-    const ext_lower = lower_ext[0..ext.len];
-
-    // Code files — systems languages
-    if (std.mem.eql(u8, ext_lower, "c")) return true; // C
-    if (std.mem.eql(u8, ext_lower, "h")) return true; // C header
-    if (std.mem.eql(u8, ext_lower, "cpp")) return true; // C++
-    if (std.mem.eql(u8, ext_lower, "cxx")) return true; // C++
-    if (std.mem.eql(u8, ext_lower, "cc")) return true; // C++
-    if (std.mem.eql(u8, ext_lower, "hpp")) return true; // C++ header
-    if (std.mem.eql(u8, ext_lower, "hxx")) return true; // C++ header
-    if (std.mem.eql(u8, ext_lower, "hh")) return true; // C++ header
-    if (std.mem.eql(u8, ext_lower, "zig")) return true; // Zig
-    if (std.mem.eql(u8, ext_lower, "zon")) return true; // Zig build config
-    if (std.mem.eql(u8, ext_lower, "rs")) return true; // Rust
-    if (std.mem.eql(u8, ext_lower, "go")) return true; // Go
-    if (std.mem.eql(u8, ext_lower, "d")) return true; // D
-    if (std.mem.eql(u8, ext_lower, "m")) return true; // Objective-C
-    if (std.mem.eql(u8, ext_lower, "mm")) return true; // Objective-C++
-    if (std.mem.eql(u8, ext_lower, "swift")) return true; // Swift
-    if (std.mem.eql(u8, ext_lower, "s")) return true; // Assembly
-    if (std.mem.eql(u8, ext_lower, "asm")) return true; // Assembly
-
-    // Code files — JVM/managed languages
-    if (std.mem.eql(u8, ext_lower, "java")) return true; // Java
-    if (std.mem.eql(u8, ext_lower, "kt")) return true; // Kotlin
-    if (std.mem.eql(u8, ext_lower, "kts")) return true; // Kotlin script
-    if (std.mem.eql(u8, ext_lower, "scala")) return true; // Scala
-    if (std.mem.eql(u8, ext_lower, "groovy")) return true; // Groovy
-    if (std.mem.eql(u8, ext_lower, "cs")) return true; // C#
-    if (std.mem.eql(u8, ext_lower, "fs")) return true; // F#
-    if (std.mem.eql(u8, ext_lower, "fsx")) return true; // F# script
-    if (std.mem.eql(u8, ext_lower, "vb")) return true; // Visual Basic
-
-    // Code files — web/scripting
-    if (std.mem.eql(u8, ext_lower, "js")) return true; // JavaScript
-    if (std.mem.eql(u8, ext_lower, "mjs")) return true; // JavaScript module
-    if (std.mem.eql(u8, ext_lower, "cjs")) return true; // CommonJS module
-    if (std.mem.eql(u8, ext_lower, "ts")) return true; // TypeScript
-    if (std.mem.eql(u8, ext_lower, "mts")) return true; // TypeScript module
-    if (std.mem.eql(u8, ext_lower, "cts")) return true; // CommonJS TypeScript
-    if (std.mem.eql(u8, ext_lower, "rb")) return true; // Ruby
-    if (std.mem.eql(u8, ext_lower, "py")) return true; // Python
-    if (std.mem.eql(u8, ext_lower, "pyi")) return true; // Python type stubs
-    if (std.mem.eql(u8, ext_lower, "pl")) return true; // Perl
-    if (std.mem.eql(u8, ext_lower, "pm")) return true; // Perl module
-    if (std.mem.eql(u8, ext_lower, "lua")) return true; // Lua
-
-    // Code files — BEAM/Erlang ecosystem
-    if (std.mem.eql(u8, ext_lower, "erl")) return true; // Erlang
-    if (std.mem.eql(u8, ext_lower, "hrl")) return true; // Erlang header
-    if (std.mem.eql(u8, ext_lower, "ex")) return true; // Elixir
-    if (std.mem.eql(u8, ext_lower, "exs")) return true; // Elixir script
-    if (std.mem.eql(u8, ext_lower, "gleam")) return true; // Gleam
-
-    // Code files — shell/scripting
-    if (std.mem.eql(u8, ext_lower, "sh")) return true; // Shell
-    if (std.mem.eql(u8, ext_lower, "bash")) return true; // Bash
-    if (std.mem.eql(u8, ext_lower, "zsh")) return true; // Zsh
-    if (std.mem.eql(u8, ext_lower, "fish")) return true; // Fish
-    if (std.mem.eql(u8, ext_lower, "ps1")) return true; // PowerShell
-    if (std.mem.eql(u8, ext_lower, "bat")) return true; // Batch
-    if (std.mem.eql(u8, ext_lower, "cmd")) return true; // Command
-    if (std.mem.eql(u8, ext_lower, "awk")) return true; // AWK
-    if (std.mem.eql(u8, ext_lower, "sed")) return true; // sed
-    if (std.mem.eql(u8, ext_lower, "tcl")) return true; // Tcl
-    if (std.mem.eql(u8, ext_lower, "r")) return true; // R
-    if (std.mem.eql(u8, ext_lower, "jl")) return true; // Julia
-    if (std.mem.eql(u8, ext_lower, "nim")) return true; // Nim
-    if (std.mem.eql(u8, ext_lower, "v")) return true; // V
-
-    // Code files — functional/academic
-    if (std.mem.eql(u8, ext_lower, "hs")) return true; // Haskell
-    if (std.mem.eql(u8, ext_lower, "lhs")) return true; // Literate Haskell
-    if (std.mem.eql(u8, ext_lower, "ml")) return true; // OCaml/SML
-    if (std.mem.eql(u8, ext_lower, "mli")) return true; // OCaml interface
-    if (std.mem.eql(u8, ext_lower, "clj")) return true; // Clojure
-    if (std.mem.eql(u8, ext_lower, "cljs")) return true; // ClojureScript
-    if (std.mem.eql(u8, ext_lower, "rkt")) return true; // Racket
-    if (std.mem.eql(u8, ext_lower, "scm")) return true; // Scheme
-    if (std.mem.eql(u8, ext_lower, "lisp")) return true; // Lisp
-    if (std.mem.eql(u8, ext_lower, "el")) return true; // Emacs Lisp
-
-    // Code files — Nix, config-as-code
-    if (std.mem.eql(u8, ext_lower, "nix")) return true; // Nix
-    if (std.mem.eql(u8, ext_lower, "dhall")) return true; // Dhall
-    if (std.mem.eql(u8, ext_lower, "tf")) return true; // Terraform
-    if (std.mem.eql(u8, ext_lower, "hcl")) return true; // HashiCorp Config
-    if (std.mem.eql(u8, ext_lower, "cmake")) return true; // CMake
-    if (std.mem.eql(u8, ext_lower, "gradle")) return true; // Gradle
-    if (std.mem.eql(u8, ext_lower, "sbt")) return true; // SBT (Scala build)
-
-    // Web template files (not XML even if they start with <)
-    if (std.mem.eql(u8, ext_lower, "hbs")) return true; // Handlebars
-    if (std.mem.eql(u8, ext_lower, "mustache")) return true; // Mustache
-    if (std.mem.eql(u8, ext_lower, "htc")) return true; // HTML Component
-    if (std.mem.eql(u8, ext_lower, "vue")) return true; // Vue single-file component
-    if (std.mem.eql(u8, ext_lower, "svelte")) return true; // Svelte
-    if (std.mem.eql(u8, ext_lower, "astro")) return true; // Astro
-    if (std.mem.eql(u8, ext_lower, "jsx")) return true; // JSX
-    if (std.mem.eql(u8, ext_lower, "tsx")) return true; // TSX
-    if (std.mem.eql(u8, ext_lower, "php")) return true; // PHP
-    if (std.mem.eql(u8, ext_lower, "asp")) return true; // ASP
-    if (std.mem.eql(u8, ext_lower, "aspx")) return true; // ASPX
-    if (std.mem.eql(u8, ext_lower, "jsp")) return true; // JSP
-    if (std.mem.eql(u8, ext_lower, "jspx")) return true; // JSPX
-    if (std.mem.eql(u8, ext_lower, "twig")) return true; // Twig
-
-    // Log and data files
-    if (std.mem.eql(u8, ext_lower, "log")) return true; // Log files
-    if (std.mem.eql(u8, ext_lower, "txt")) return true; // Plain text (not FASTA)
-    if (std.mem.eql(u8, ext_lower, "text")) return true; // Plain text
-    if (std.mem.eql(u8, ext_lower, "out")) return true; // Output files
-    if (std.mem.eql(u8, ext_lower, "err")) return true; // Error logs
-    if (std.mem.eql(u8, ext_lower, "diff")) return true; // Diff files
-    if (std.mem.eql(u8, ext_lower, "patch")) return true; // Patch files
-
-    // HTML files — now validated as .html format (not strict XML)
-    // Note: html/htm/xhtml extensions are handled by detectFormatFromExtension
-
-    // Config files that look like JSON/TOML but aren't standard
-    if (std.mem.eql(u8, ext_lower, "conf")) return true;
-    if (std.mem.eql(u8, ext_lower, "cfg")) return true;
-    if (std.mem.eql(u8, ext_lower, "properties")) return true; // Java properties
-    if (std.mem.eql(u8, ext_lower, "env")) return true; // Environment files
-
-    // Windows-specific files that look like INI but aren't standard config
-    if (std.mem.eql(u8, ext_lower, "url")) return true; // Windows URL shortcuts
-    if (std.mem.eql(u8, ext_lower, "website")) return true; // Windows website shortcuts
-
-    // Qt project files (qmake)
-    if (std.mem.eql(u8, ext_lower, "pro")) return true; // Qt project file
-    if (std.mem.eql(u8, ext_lower, "pri")) return true; // Qt project include file
-
-    return false;
+    var ext_buf: [16]u8 = undefined;
+    const ext_lower = lowercaseExtension(path, &ext_buf) orelse return false;
+    return excluded_text_exts.has(ext_lower);
 }
 
 /// Get expected format for a file extension (for mismatch detection).
 /// Returns the FileFormat that a file extension normally implies.
-/// This is more comprehensive than detectFormatFromExtension which only returns
-/// formats that NEED extension-based detection (no magic bytes).
+/// Uses the same unified extension map as detectFormatFromExtension.
 fn getExpectedFormatForExtension(path: []const u8) FileFormat {
-    // Find the last dot
-    const dot_pos = std.mem.lastIndexOfScalar(u8, path, '.') orelse return .unknown;
-    if (dot_pos + 1 >= path.len) return .unknown;
-
-    const ext = path[dot_pos + 1 ..];
-
-    // Convert to lowercase for comparison (ASCII only)
-    var lower_ext: [16]u8 = undefined;
-    if (ext.len > lower_ext.len) return .unknown;
-
-    for (ext, 0..) |c, i| {
-        lower_ext[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
-    }
-    const ext_lower = lower_ext[0..ext.len];
-
-    // Images
-    if (std.mem.eql(u8, ext_lower, "png")) return .png;
-    if (std.mem.eql(u8, ext_lower, "jpg") or std.mem.eql(u8, ext_lower, "jpeg")) return .jpeg;
-    if (std.mem.eql(u8, ext_lower, "gif")) return .gif;
-    if (std.mem.eql(u8, ext_lower, "bmp")) return .bmp;
-    if (std.mem.eql(u8, ext_lower, "webp")) return .webp;
-    if (std.mem.eql(u8, ext_lower, "tiff") or std.mem.eql(u8, ext_lower, "tif")) return .tiff;
-    if (std.mem.eql(u8, ext_lower, "heic") or std.mem.eql(u8, ext_lower, "heif")) return .heic;
-    if (std.mem.eql(u8, ext_lower, "avif")) return .avif;
-    if (std.mem.eql(u8, ext_lower, "exr")) return .exr;
-    if (std.mem.eql(u8, ext_lower, "jxl")) return .jxl;
-    if (std.mem.eql(u8, ext_lower, "svg")) return .svg;
-    if (std.mem.eql(u8, ext_lower, "apng")) return .png; // APNG validated by PNG validator
-    if (std.mem.eql(u8, ext_lower, "qoi")) return .qoi;
-    if (std.mem.eql(u8, ext_lower, "pbm") or std.mem.eql(u8, ext_lower, "pgm") or std.mem.eql(u8, ext_lower, "ppm") or std.mem.eql(u8, ext_lower, "pam") or std.mem.eql(u8, ext_lower, "pnm")) return .pam;
-    if (std.mem.eql(u8, ext_lower, "dpx")) return .dpx;
-    if (std.mem.eql(u8, ext_lower, "tga") or std.mem.eql(u8, ext_lower, "targa")) return .tga;
-    if (std.mem.eql(u8, ext_lower, "ico")) return .ico;
-    if (std.mem.eql(u8, ext_lower, "icns")) return .icns;
-    if (std.mem.eql(u8, ext_lower, "psd") or std.mem.eql(u8, ext_lower, "psb")) return .psd;
-    if (std.mem.eql(u8, ext_lower, "ai")) return .ai;
-    if (std.mem.eql(u8, ext_lower, "eps") or std.mem.eql(u8, ext_lower, "epsf")) return .eps;
-    if (std.mem.eql(u8, ext_lower, "sketch")) return .sketch;
-    if (std.mem.eql(u8, ext_lower, "aep") or std.mem.eql(u8, ext_lower, "aepx")) return .aep;
-    if (std.mem.eql(u8, ext_lower, "prproj")) return .prproj;
-    if (std.mem.eql(u8, ext_lower, "indd") or std.mem.eql(u8, ext_lower, "indt")) return .indd;
-    if (std.mem.eql(u8, ext_lower, "idml")) return .idml;
-    if (std.mem.eql(u8, ext_lower, "dwg")) return .dwg;
-    if (std.mem.eql(u8, ext_lower, "blend") or std.mem.eql(u8, ext_lower, "blend1")) return .blend;
-    if (std.mem.eql(u8, ext_lower, "fcpxml")) return .fcpxml;
-    if (std.mem.eql(u8, ext_lower, "drp")) return .drp;
-    if (std.mem.eql(u8, ext_lower, "mdb")) return .mdb;
-    if (std.mem.eql(u8, ext_lower, "accdb")) return .accdb;
-
-    // RAW camera formats
-    if (std.mem.eql(u8, ext_lower, "dng")) return .dng;
-    if (std.mem.eql(u8, ext_lower, "cr2")) return .cr2;
-    if (std.mem.eql(u8, ext_lower, "nef")) return .nef;
-    if (std.mem.eql(u8, ext_lower, "arw")) return .arw;
-
-    // Documents
-    if (std.mem.eql(u8, ext_lower, "pdf")) return .pdf;
-    if (std.mem.eql(u8, ext_lower, "rtf")) return .rtf;
-
-    // Archives
-    if (std.mem.eql(u8, ext_lower, "zip")) return .zip;
-    if (std.mem.eql(u8, ext_lower, "gz") or std.mem.eql(u8, ext_lower, "gzip")) return .gzip;
-    if (std.mem.eql(u8, ext_lower, "bz2")) return .bzip2;
-    if (std.mem.eql(u8, ext_lower, "xz")) return .xz;
-    if (std.mem.eql(u8, ext_lower, "zst") or std.mem.eql(u8, ext_lower, "zstd")) return .zstd;
-    if (std.mem.eql(u8, ext_lower, "rar")) return .rar;
-    if (std.mem.eql(u8, ext_lower, "cpt")) return .cpt;
-    if (std.mem.eql(u8, ext_lower, "7z")) return .sevenz;
-    if (std.mem.eql(u8, ext_lower, "tar")) return .tar;
-    if (std.mem.eql(u8, ext_lower, "br")) return .br;
-    if (std.mem.eql(u8, ext_lower, "hqx")) return .hqx;
-
-    // Office documents
-    if (std.mem.eql(u8, ext_lower, "docx")) return .docx;
-    if (std.mem.eql(u8, ext_lower, "xlsx")) return .xlsx;
-    if (std.mem.eql(u8, ext_lower, "pptx")) return .pptx;
-    if (std.mem.eql(u8, ext_lower, "doc")) return .doc;
-    if (std.mem.eql(u8, ext_lower, "xls")) return .xls;
-    if (std.mem.eql(u8, ext_lower, "ppt")) return .ppt;
-    if (std.mem.eql(u8, ext_lower, "odt")) return .odt;
-    if (std.mem.eql(u8, ext_lower, "ods")) return .ods;
-    if (std.mem.eql(u8, ext_lower, "odp")) return .odp;
-    if (std.mem.eql(u8, ext_lower, "epub")) return .epub;
-    if (std.mem.eql(u8, ext_lower, "pages")) return .pages;
-
-    // Video
-    if (std.mem.eql(u8, ext_lower, "mp4") or std.mem.eql(u8, ext_lower, "m4v")) return .mp4;
-    if (std.mem.eql(u8, ext_lower, "mov")) return .mov;
-    if (std.mem.eql(u8, ext_lower, "mkv")) return .mkv;
-    if (std.mem.eql(u8, ext_lower, "webm")) return .webm;
-    if (std.mem.eql(u8, ext_lower, "avi")) return .avi;
-    if (std.mem.eql(u8, ext_lower, "flv")) return .flv;
-    if (std.mem.eql(u8, ext_lower, "swf")) return .swf;
-    if (std.mem.eql(u8, ext_lower, "3gp") or std.mem.eql(u8, ext_lower, "3g2") or std.mem.eql(u8, ext_lower, "3gpp")) return .mp4; // 3GP uses MP4/ISOBMFF
-    if (std.mem.eql(u8, ext_lower, "asf") or std.mem.eql(u8, ext_lower, "wmv") or std.mem.eql(u8, ext_lower, "wma")) return .asf;
-    if (std.mem.eql(u8, ext_lower, "dv") or std.mem.eql(u8, ext_lower, "dif")) return .dv;
-
-    // Audio
-    if (std.mem.eql(u8, ext_lower, "mp3")) return .mp3;
-    if (std.mem.eql(u8, ext_lower, "flac")) return .flac;
-    if (std.mem.eql(u8, ext_lower, "wav")) return .wav;
-    if (std.mem.eql(u8, ext_lower, "m4a")) return .m4a;
-    if (std.mem.eql(u8, ext_lower, "aiff") or std.mem.eql(u8, ext_lower, "aif")) return .aiff;
-    if (std.mem.eql(u8, ext_lower, "ogg") or std.mem.eql(u8, ext_lower, "oga")) return .ogg;
-    if (std.mem.eql(u8, ext_lower, "opus")) return .ogg; // Opus is typically in Ogg container
-    if (std.mem.eql(u8, ext_lower, "mid") or std.mem.eql(u8, ext_lower, "midi")) return .midi;
-    if (std.mem.eql(u8, ext_lower, "ape")) return .ape;
-    if (std.mem.eql(u8, ext_lower, "wv")) return .wavpack;
-    if (std.mem.eql(u8, ext_lower, "amr") or std.mem.eql(u8, ext_lower, "awb")) return .amr; // .awb = AMR-WB
-    if (std.mem.eql(u8, ext_lower, "au") or std.mem.eql(u8, ext_lower, "snd")) return .au;
-    if (std.mem.eql(u8, ext_lower, "tta")) return .tta;
-    if (std.mem.eql(u8, ext_lower, "caf")) return .caf;
-    if (std.mem.eql(u8, ext_lower, "aac")) return .aac_adts;
-
-    // Tracker/module formats
-    if (std.mem.eql(u8, ext_lower, "mod")) return .mod;
-    if (std.mem.eql(u8, ext_lower, "xm")) return .xm;
-    if (std.mem.eql(u8, ext_lower, "it")) return .it;
-    if (std.mem.eql(u8, ext_lower, "s3m")) return .s3m;
-
-    // Fonts
-    if (std.mem.eql(u8, ext_lower, "ttf")) return .ttf;
-    if (std.mem.eql(u8, ext_lower, "otf")) return .otf;
-    if (std.mem.eql(u8, ext_lower, "woff")) return .woff;
-    if (std.mem.eql(u8, ext_lower, "woff2")) return .woff2;
-
-    // Database
-    if (std.mem.eql(u8, ext_lower, "sqlite") or std.mem.eql(u8, ext_lower, "sqlite3")) return .sqlite;
-    // Note: .db is intentionally NOT mapped to sqlite - too ambiguous
-    // (Spotlight, Core Data, Berkeley DB, etc. all use .db)
-
-    // 3D printing/modeling formats
-    if (std.mem.eql(u8, ext_lower, "3mf")) return .@"3mf";
-    if (std.mem.eql(u8, ext_lower, "obj")) return .obj;
-    if (std.mem.eql(u8, ext_lower, "ply")) return .ply;
-    if (std.mem.eql(u8, ext_lower, "gltf")) return .gltf;
-    if (std.mem.eql(u8, ext_lower, "glb")) return .glb;
-
-    // CAD formats (also used in 3D printing)
-    if (std.mem.eql(u8, ext_lower, "stl")) return .stl;
-    if (std.mem.eql(u8, ext_lower, "step") or std.mem.eql(u8, ext_lower, "stp")) return .step;
-    if (std.mem.eql(u8, ext_lower, "dxf")) return .dxf;
-
-    // Game data/ROM formats
-    if (std.mem.eql(u8, ext_lower, "wad")) return .wad;
-    // Note: .pak is NOT mapped here because it's extremely overloaded:
-    // Quake PAK, Larian Studios (BG3), Chromium resource packs, Unreal Engine, etc.
-    // Quake PAK files are still detected via their "PACK" magic bytes.
-    if (std.mem.eql(u8, ext_lower, "bsp")) return .bsp;
-    if (std.mem.eql(u8, ext_lower, "vpk")) return .vpk;
-    if (std.mem.eql(u8, ext_lower, "nes")) return .nes;
-    if (std.mem.eql(u8, ext_lower, "sfc") or std.mem.eql(u8, ext_lower, "smc")) return .snes;
-    if (std.mem.eql(u8, ext_lower, "z64") or std.mem.eql(u8, ext_lower, "n64") or std.mem.eql(u8, ext_lower, "v64")) return .n64;
-    if (std.mem.eql(u8, ext_lower, "gen") or std.mem.eql(u8, ext_lower, "smd")) return .genesis;
-    if (std.mem.eql(u8, ext_lower, "chd")) return .chd;
-
-    // Scientific/data formats
-    if (std.mem.eql(u8, ext_lower, "h5") or std.mem.eql(u8, ext_lower, "hdf5") or std.mem.eql(u8, ext_lower, "hdf")) return .hdf5;
-    if (std.mem.eql(u8, ext_lower, "parquet")) return .parquet;
-    if (std.mem.eql(u8, ext_lower, "nc") or std.mem.eql(u8, ext_lower, "netcdf")) return .netcdf;
-    if (std.mem.eql(u8, ext_lower, "fits") or std.mem.eql(u8, ext_lower, "fit")) return .fits;
-    if (std.mem.eql(u8, ext_lower, "dcm") or std.mem.eql(u8, ext_lower, "dicom")) return .dicom;
-    if (std.mem.eql(u8, ext_lower, "fasta") or std.mem.eql(u8, ext_lower, "fa") or std.mem.eql(u8, ext_lower, "fna")) return .fasta;
-    if (std.mem.eql(u8, ext_lower, "fastq") or std.mem.eql(u8, ext_lower, "fq")) return .fastq;
-
-    // MPEG streams
-    if (std.mem.eql(u8, ext_lower, "mpg") or std.mem.eql(u8, ext_lower, "mpeg") or std.mem.eql(u8, ext_lower, "vob")) return .mpeg_ps;
-    if (std.mem.eql(u8, ext_lower, "ts") or std.mem.eql(u8, ext_lower, "mts") or std.mem.eql(u8, ext_lower, "m2ts")) return .mpeg_ts;
-    if (std.mem.eql(u8, ext_lower, "m1v") or std.mem.eql(u8, ext_lower, "m2v") or std.mem.eql(u8, ext_lower, "mpv") or std.mem.eql(u8, ext_lower, "es")) return .mpeg_es;
-    if (std.mem.eql(u8, ext_lower, "ivf")) return .ivf;
-
-    // Additional audio
-    if (std.mem.eql(u8, ext_lower, "ac3")) return .ac3;
-    if (std.mem.eql(u8, ext_lower, "eac3") or std.mem.eql(u8, ext_lower, "ec3")) return .eac3;
-    if (std.mem.eql(u8, ext_lower, "dsf")) return .dsf;
-    if (std.mem.eql(u8, ext_lower, "dff")) return .dff;
-
-    // IFF/Blorb
-    if (std.mem.eql(u8, ext_lower, "iff")) return .iff;
-    if (std.mem.eql(u8, ext_lower, "blorb") or std.mem.eql(u8, ext_lower, "blb")) return .blorb;
-
-    // DS_Store (macOS)
-    if (std.mem.eql(u8, ext_lower, "ds_store")) return .ds_store;
-
-    // LLVM compiler artifacts
-    if (std.mem.eql(u8, ext_lower, "dia")) return .llvm_diag;
-
-    // Binary serialization
-    if (std.mem.eql(u8, ext_lower, "msgpack")) return .msgpack;
-
-    // DAW formats
-    if (std.mem.eql(u8, ext_lower, "als")) return .als;
-    if (std.mem.eql(u8, ext_lower, "rpp")) return .rpp;
-    if (std.mem.eql(u8, ext_lower, "flp")) return .flp;
-    if (std.mem.eql(u8, ext_lower, "bwproject")) return .bwproject;
-    if (std.mem.eql(u8, ext_lower, "cpr")) return .cpr;
-    if (std.mem.eql(u8, ext_lower, "ptx")) return .ptx;
-    if (std.mem.eql(u8, ext_lower, "band")) return .band;
-    if (std.mem.eql(u8, ext_lower, "reason")) return .reason;
-    if (std.mem.eql(u8, ext_lower, "logicx")) return .logicx;
-    if (std.mem.eql(u8, ext_lower, "song")) return .song;
-
-    // Financial data formats
-    if (std.mem.eql(u8, ext_lower, "qbw")) return .qbw;
-    if (std.mem.eql(u8, ext_lower, "qbb") or std.mem.eql(u8, ext_lower, "qbm")) return .qbb;
-    if (std.mem.eql(u8, ext_lower, "qdf")) return .qdf;
-    if (std.mem.eql(u8, ext_lower, "ofx") or std.mem.eql(u8, ext_lower, "qfx")) return .ofx;
-    if (std.mem.eql(u8, ext_lower, "qif")) return .qif;
-    if (std.mem.eql(u8, ext_lower, "txf")) return .txf;
-    if (std.mem.eql(u8, ext_lower, "ach") or std.mem.eql(u8, ext_lower, "nacha")) return .nacha;
-    if (std.mem.eql(u8, ext_lower, "mt940") or std.mem.eql(u8, ext_lower, "sta") or std.mem.eql(u8, ext_lower, "940")) return .mt940;
-    if (std.mem.eql(u8, ext_lower, "bai") or std.mem.eql(u8, ext_lower, "bai2")) return .bai2;
-
-    // PIM formats
-    if (std.mem.eql(u8, ext_lower, "ics") or std.mem.eql(u8, ext_lower, "ical") or std.mem.eql(u8, ext_lower, "ifb")) return .icalendar;
-    if (std.mem.eql(u8, ext_lower, "vcf") or std.mem.eql(u8, ext_lower, "vcard")) return .vcard;
-
-    // EDI formats
-    if (std.mem.eql(u8, ext_lower, "edi") or std.mem.eql(u8, ext_lower, "x12") or std.mem.eql(u8, ext_lower, "837") or std.mem.eql(u8, ext_lower, "835") or std.mem.eql(u8, ext_lower, "834") or std.mem.eql(u8, ext_lower, "270") or std.mem.eql(u8, ext_lower, "271") or std.mem.eql(u8, ext_lower, "997")) return .x12_edi;
-    if (std.mem.eql(u8, ext_lower, "edifact") or std.mem.eql(u8, ext_lower, "eancom")) return .edifact;
-
-    // Crypto/certificate formats
-    if (std.mem.eql(u8, ext_lower, "pem") or std.mem.eql(u8, ext_lower, "crt") or std.mem.eql(u8, ext_lower, "key")) return .pem;
-    if (std.mem.eql(u8, ext_lower, "der") or std.mem.eql(u8, ext_lower, "cer")) return .der;
-
-    // GIS
-    if (std.mem.eql(u8, ext_lower, "kml")) return .kml;
-    if (std.mem.eql(u8, ext_lower, "kmz")) return .kmz;
-    if (std.mem.eql(u8, ext_lower, "shp")) return .shapefile;
-
-    // Email
-    if (std.mem.eql(u8, ext_lower, "eml")) return .eml;
-    if (std.mem.eql(u8, ext_lower, "mbox")) return .mbox;
-
-    // Disk images
-    if (std.mem.eql(u8, ext_lower, "iso")) return .iso;
-    if (std.mem.eql(u8, ext_lower, "dmg")) return .dmg;
-
-    // Text formats
-    if (std.mem.eql(u8, ext_lower, "md") or std.mem.eql(u8, ext_lower, "markdown")) return .markdown;
-
-    return .unknown;
+    var buf: [16]u8 = undefined;
+    const ext_lower = lowercaseExtension(path, &buf) orelse return .unknown;
+    return ext_format_map.get(ext_lower) orelse .unknown;
 }
 
 /// Detect format by secondary signatures (trailers, internal patterns).
@@ -3115,26 +3159,26 @@ pub fn getTextContent(raw_data: []const u8, conv_buf: []u8) TextContentResult {
     return .{ .content = raw_data, .was_utf16 = false, .converted_buf = conv_buf };
 }
 
-/// Convert UTF-16 BE to UTF-8 in a stack buffer.
-fn convertUtf16BeToUtf8(utf16_data: []const u8, out_buf: []u8) ?[]const u8 {
+/// Convert UTF-16 (parameterized endianness) to UTF-8 in a stack buffer.
+/// Returns the slice of converted UTF-8 data, or null if conversion fails.
+fn convertUtf16ToUtf8(comptime endian: std.builtin.Endian, utf16_data: []const u8, out_buf: []u8) ?[]const u8 {
     if (utf16_data.len < 2 or utf16_data.len % 2 != 0) return null;
+
+    // Byte indices for reading a u16: for big-endian hi is first, for little-endian lo is first.
+    const hi_off: usize = if (endian == .big) 0 else 1;
+    const lo_off: usize = if (endian == .big) 1 else 0;
 
     var out_idx: usize = 0;
     var in_idx: usize = 0;
 
     while (in_idx + 1 < utf16_data.len and out_idx < out_buf.len) {
-        // Big-endian: high byte first
-        const hi = utf16_data[in_idx];
-        const lo = utf16_data[in_idx + 1];
-        const code_unit: u16 = @as(u16, lo) | (@as(u16, hi) << 8);
+        const code_unit: u16 = @as(u16, utf16_data[in_idx + lo_off]) | (@as(u16, utf16_data[in_idx + hi_off]) << 8);
         in_idx += 2;
 
         // Handle surrogate pairs
         if (code_unit >= 0xD800 and code_unit <= 0xDBFF) {
             if (in_idx + 1 >= utf16_data.len) return null;
-            const hi2 = utf16_data[in_idx];
-            const lo2 = utf16_data[in_idx + 1];
-            const low_surrogate: u16 = @as(u16, lo2) | (@as(u16, hi2) << 8);
+            const low_surrogate: u16 = @as(u16, utf16_data[in_idx + lo_off]) | (@as(u16, utf16_data[in_idx + hi_off]) << 8);
             in_idx += 2;
 
             if (low_surrogate < 0xDC00 or low_surrogate > 0xDFFF) return null;
@@ -3171,67 +3215,15 @@ fn convertUtf16BeToUtf8(utf16_data: []const u8, out_buf: []u8) ?[]const u8 {
     return out_buf[0..out_idx];
 }
 
+/// Convert UTF-16 BE to UTF-8 in a stack buffer.
+fn convertUtf16BeToUtf8(utf16_data: []const u8, out_buf: []u8) ?[]const u8 {
+    return convertUtf16ToUtf8(.big, utf16_data, out_buf);
+}
+
 /// Convert UTF-16 LE to UTF-8 in a stack buffer.
 /// Returns the slice of converted UTF-8 data, or null if conversion fails.
 pub fn convertUtf16LeToUtf8(utf16_data: []const u8, out_buf: []u8) ?[]const u8 {
-    if (utf16_data.len < 2 or utf16_data.len % 2 != 0) return null;
-
-    var out_idx: usize = 0;
-    var in_idx: usize = 0;
-
-    while (in_idx + 1 < utf16_data.len and out_idx < out_buf.len) {
-        const lo = utf16_data[in_idx];
-        const hi = utf16_data[in_idx + 1];
-        const code_unit: u16 = @as(u16, lo) | (@as(u16, hi) << 8);
-        in_idx += 2;
-
-        // Handle surrogate pairs
-        if (code_unit >= 0xD800 and code_unit <= 0xDBFF) {
-            // High surrogate - need low surrogate
-            if (in_idx + 1 >= utf16_data.len) return null;
-            const lo2 = utf16_data[in_idx];
-            const hi2 = utf16_data[in_idx + 1];
-            const low_surrogate: u16 = @as(u16, lo2) | (@as(u16, hi2) << 8);
-            in_idx += 2;
-
-            if (low_surrogate < 0xDC00 or low_surrogate > 0xDFFF) return null;
-
-            // Decode surrogate pair to code point
-            const high_part: u21 = @as(u21, code_unit - 0xD800) << 10;
-            const low_part: u21 = @as(u21, low_surrogate - 0xDC00);
-            const code_point: u21 = high_part + low_part + 0x10000;
-
-            // Encode as UTF-8 (4 bytes)
-            if (out_idx + 4 > out_buf.len) break;
-            out_buf[out_idx] = @intCast(0xF0 | (code_point >> 18));
-            out_buf[out_idx + 1] = @intCast(0x80 | ((code_point >> 12) & 0x3F));
-            out_buf[out_idx + 2] = @intCast(0x80 | ((code_point >> 6) & 0x3F));
-            out_buf[out_idx + 3] = @intCast(0x80 | (code_point & 0x3F));
-            out_idx += 4;
-        } else if (code_unit >= 0xDC00 and code_unit <= 0xDFFF) {
-            // Unexpected low surrogate
-            return null;
-        } else if (code_unit < 0x80) {
-            // ASCII
-            out_buf[out_idx] = @intCast(code_unit);
-            out_idx += 1;
-        } else if (code_unit < 0x800) {
-            // 2-byte UTF-8
-            if (out_idx + 2 > out_buf.len) break;
-            out_buf[out_idx] = @intCast(0xC0 | (code_unit >> 6));
-            out_buf[out_idx + 1] = @intCast(0x80 | (code_unit & 0x3F));
-            out_idx += 2;
-        } else {
-            // 3-byte UTF-8
-            if (out_idx + 3 > out_buf.len) break;
-            out_buf[out_idx] = @intCast(0xE0 | (code_unit >> 12));
-            out_buf[out_idx + 1] = @intCast(0x80 | ((code_unit >> 6) & 0x3F));
-            out_buf[out_idx + 2] = @intCast(0x80 | (code_unit & 0x3F));
-            out_idx += 3;
-        }
-    }
-
-    return out_buf[0..out_idx];
+    return convertUtf16ToUtf8(.little, utf16_data, out_buf);
 }
 
 /// Detect text-based formats (JSON, XML, TOML, INI, YAML) by content patterns.
