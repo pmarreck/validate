@@ -90,6 +90,9 @@ typedef enum {
     VALIDATE_MALFORM_PDF_JBIG2_DECODE_FAILED = 21,
 } validate_malform_t;
 
+/* Total number of defined malformation bits (update when adding new entries) */
+#define VALIDATE_MALFORM_COUNT 22
+
 /* Symbolic error codes (for err_code field, maps to error_messages.zig templates) */
 typedef enum {
     VALIDATE_ERR_CODE_FAILED_TO_READ = 0,

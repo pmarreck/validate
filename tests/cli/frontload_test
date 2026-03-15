@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -u
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_frontload.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT

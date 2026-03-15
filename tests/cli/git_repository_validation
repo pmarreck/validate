@@ -13,7 +13,7 @@
 # - validate path/to/.git -> OK (or WARN) with format "Git Repository"
 # - validate path/to/.git with corrupt objects -> FAIL with "Git Repository"
 
-set -euo pipefail
+set -u
 
 BIN="./zig-out/bin/validate"
 

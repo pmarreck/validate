@@ -639,75 +639,36 @@ static void enable_colors(void) {
 	g_colors_enabled = 1;
 }
 
-/* Initialize all output destinations from environment variables */
+/* Initialize all output destinations from environment variables.
+ * validate_getenv() checks all locale aliases (e.g., FAIL_OUT, FEHLER_AUS, ECHEC_SORTIE). */
 static void init_output_destinations(void) {
-	/* Initialize all destinations */
-	output_dest_init(&g_ok_out);
-	output_dest_init(&g_warn_out);
-	output_dest_init(&g_fail_out);
-	output_dest_init(&g_unknown_out);
-	output_dest_init(&g_slow_out);
-	output_dest_init(&g_debug_out);
-	output_dest_init(&g_begin_out);
+	/* Table of output destinations: { pointer, env key, default stream, default muted }.
+	 * A NULL default_stream with default_muted=1 means muted by default (e.g., debug/begin). */
+	struct {
+		output_dest_t* dest;
+		uint8_t        env_id;
+		FILE*          default_stream;
+		int            default_muted;
+	} output_table[] = {
+		{ &g_ok_out,      VALIDATE_ENV_OK_OUT,      stdout, 0 },
+		{ &g_warn_out,    VALIDATE_ENV_WARN_OUT,     stdout, 0 },
+		{ &g_fail_out,    VALIDATE_ENV_FAIL_OUT,     stderr, 0 },
+		{ &g_unknown_out, VALIDATE_ENV_UNKNOWN_OUT,  stdout, 0 },
+		{ &g_slow_out,    VALIDATE_ENV_SLOW_OUT,     stdout, 0 },
+		{ &g_debug_out,   VALIDATE_ENV_DEBUG_OUT,    NULL,   1 },
+		{ &g_begin_out,   VALIDATE_ENV_BEGIN_OUT,    NULL,   1 },
+	};
 
-	/* Parse environment variables or use defaults.
-	 * validate_getenv() checks all locale aliases (e.g., FAIL_OUT, FEHLER_AUS, ECHEC_SORTIE). */
-	const char* ok_spec = validate_getenv(VALIDATE_ENV_OK_OUT);
-	const char* warn_spec = validate_getenv(VALIDATE_ENV_WARN_OUT);
-	const char* fail_spec = validate_getenv(VALIDATE_ENV_FAIL_OUT);
-	const char* unknown_spec = validate_getenv(VALIDATE_ENV_UNKNOWN_OUT);
-	const char* slow_spec = validate_getenv(VALIDATE_ENV_SLOW_OUT);
-	const char* debug_spec = validate_getenv(VALIDATE_ENV_DEBUG_OUT);
-	const char* begin_spec = validate_getenv(VALIDATE_ENV_BEGIN_OUT);
-
-	/* OK_OUT: default to stdout */
-	if (ok_spec && ok_spec[0] != '\0') {
-		parse_output_spec(ok_spec, &g_ok_out);
-	} else {
-		output_dest_add(&g_ok_out, stdout, 0);
-	}
-
-	/* WARN_OUT: default to stdout */
-	if (warn_spec && warn_spec[0] != '\0') {
-		parse_output_spec(warn_spec, &g_warn_out);
-	} else {
-		output_dest_add(&g_warn_out, stdout, 0);
-	}
-
-	/* FAIL_OUT: default to stderr */
-	if (fail_spec && fail_spec[0] != '\0') {
-		parse_output_spec(fail_spec, &g_fail_out);
-	} else {
-		output_dest_add(&g_fail_out, stderr, 0);
-	}
-
-	/* UNKNOWN_OUT: default to stdout */
-	if (unknown_spec && unknown_spec[0] != '\0') {
-		parse_output_spec(unknown_spec, &g_unknown_out);
-	} else {
-		output_dest_add(&g_unknown_out, stdout, 0);
-	}
-
-	/* SLOW_OUT: default to stdout */
-	if (slow_spec && slow_spec[0] != '\0') {
-		parse_output_spec(slow_spec, &g_slow_out);
-	} else {
-		output_dest_add(&g_slow_out, stdout, 0);
-	}
-
-	/* DEBUG_OUT: default to @null (muted) unless set */
-	if (debug_spec && debug_spec[0] != '\0') {
-		parse_output_spec(debug_spec, &g_debug_out);
-	} else {
-		g_debug_out.muted = 1;  /* Default: no debug output */
-	}
-
-	/* BEGIN_OUT: default to @null (muted) unless set
-	 * Shows which files are starting validation - useful for debugging crashes */
-	if (begin_spec && begin_spec[0] != '\0') {
-		parse_output_spec(begin_spec, &g_begin_out);
-	} else {
-		g_begin_out.muted = 1;  /* Default: no begin output */
+	for (size_t i = 0; i < sizeof(output_table) / sizeof(output_table[0]); i++) {
+		output_dest_init(output_table[i].dest);
+		const char* spec = validate_getenv(output_table[i].env_id);
+		if (spec && spec[0] != '\0') {
+			parse_output_spec(spec, output_table[i].dest);
+		} else if (output_table[i].default_muted) {
+			output_table[i].dest->muted = 1;
+		} else {
+			output_dest_add(output_table[i].dest, output_table[i].default_stream, 0);
+		}
 	}
 }
 
@@ -864,7 +825,7 @@ static void print_validation_result(const char* path, const char* result) {
 			int warn_pos = 0;
 			int first_warn = 1;
 			if (has_malformations) {
-				for (int i = 0; i < 22; i++) {
+				for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
 					if (malform_bits & (1ULL << i)) {
 						const char* desc = validate_malform_desc(i);
 						if (desc) {
@@ -898,7 +859,7 @@ static void print_validation_result(const char* path, const char* result) {
 		fail_pos += snprintf(fail_details, sizeof(fail_details), "%s",
 			err_msg[0] ? err_msg : "Unknown error");
 		if (has_malformations) {
-			for (int i = 0; i < 22; i++) {
+			for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
 				if (malform_bits & (1ULL << i)) {
 					const char* desc = validate_malform_desc(i);
 					if (desc) {
@@ -1016,6 +977,9 @@ static void on_validation_result(
 	validate_free(result);
 }
 
+/* Forward declaration for path_list_swap (defined below in frontloading section) */
+static void path_list_swap(path_list_t* list, size_t i, size_t j);
+
 /* Shuffle array using Fisher-Yates algorithm */
 static void shuffle_paths(path_list_t* list, uint64_t seed) {
 	if (list->count <= 1) return;
@@ -1025,15 +989,7 @@ static void shuffle_paths(path_list_t* list, uint64_t seed) {
 	for (size_t i = list->count - 1; i > 0; i--) {
 		state = state * 6364136223846793005ULL + 1442695040888963407ULL;
 		size_t j = state % (i + 1);
-		char* tmp = list->paths[i];
-		list->paths[i] = list->paths[j];
-		list->paths[j] = tmp;
-		uint32_t tmp_id = list->ids[i];
-		list->ids[i] = list->ids[j];
-		list->ids[j] = tmp_id;
-		size_t tmp_size = list->sizes[i];
-		list->sizes[i] = list->sizes[j];
-		list->sizes[j] = tmp_size;
+		path_list_swap(list, i, j);
 	}
 }
 
