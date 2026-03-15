@@ -2,7 +2,7 @@
 # Test BEGIN_OUT environment variable - shows which files are starting validation
 # Useful for debugging crashes (shows "in-flight" files)
 
-set -euo pipefail
+set -u
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_begin_env.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT

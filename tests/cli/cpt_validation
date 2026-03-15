@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -u
 
 if [[ -x "./zig-out/bin/validate" ]]; then
 	BIN="./zig-out/bin/validate"

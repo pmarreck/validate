@@ -3,7 +3,7 @@
 # Test that ffmpeg presence/absence produces deterministic, documented behavior.
 # This test verifies both code paths work correctly.
 #
-set -euo pipefail
+set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"

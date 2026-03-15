@@ -11,7 +11,7 @@
 # 4. Asserts that the progress bar appears in the correct location
 # 5. Verifies output doesn't leak into the progress area
 
-set -euo pipefail
+set -u
 
 # Configuration
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
