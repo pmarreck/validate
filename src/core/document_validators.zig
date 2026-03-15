@@ -828,3 +828,407 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8, format: FileForm
     // PPT: still structural-only for now
     return ValidationResult.okWithDepth(format, .structural);
 }
+
+// ============================================================
+// Tests
+// ============================================================
+
+test "MDB buffer validation: valid header" {
+    // Construct a synthetic valid MDB header: 00 01 00 00 + "Standard Jet DB\x00"
+    var header: [20]u8 = undefined;
+    header[0] = 0x00;
+    header[1] = 0x01;
+    header[2] = 0x00;
+    header[3] = 0x00;
+    @memcpy(header[4..19], "Standard Jet DB");
+    header[19] = 0x00;
+
+    const result = validateMdbFromBuffer(&header);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.mdb, result.format);
+}
+
+test "MDB buffer validation: wrong magic rejected" {
+    var header: [20]u8 = undefined;
+    header[0] = 0xFF;
+    header[1] = 0xFF;
+    header[2] = 0x00;
+    header[3] = 0x00;
+    @memcpy(header[4..19], "Standard Jet DB");
+    header[19] = 0x00;
+
+    const result = validateMdbFromBuffer(&header);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(FileFormat.mdb, result.format);
+}
+
+test "MDB buffer validation: wrong signature rejected" {
+    var header: [20]u8 = undefined;
+    header[0] = 0x00;
+    header[1] = 0x01;
+    header[2] = 0x00;
+    header[3] = 0x00;
+    @memcpy(header[4..19], "Standard ACE DB"); // Wrong sig (ACCDB not MDB)
+    header[19] = 0x00;
+
+    const result = validateMdbFromBuffer(&header);
+    try testing.expect(!result.is_valid);
+}
+
+test "MDB buffer validation: too small rejected" {
+    const tiny = [_]u8{ 0x00, 0x01, 0x00, 0x00 };
+    const result = validateMdbFromBuffer(&tiny);
+    try testing.expect(!result.is_valid);
+}
+
+test "ACCDB buffer validation: valid header" {
+    var header: [20]u8 = undefined;
+    header[0] = 0x00;
+    header[1] = 0x01;
+    header[2] = 0x00;
+    header[3] = 0x00;
+    @memcpy(header[4..19], "Standard ACE DB");
+    header[19] = 0x00;
+
+    const result = validateAccdbFromBuffer(&header);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.accdb, result.format);
+}
+
+test "ACCDB buffer validation: wrong signature rejected" {
+    var header: [20]u8 = undefined;
+    header[0] = 0x00;
+    header[1] = 0x01;
+    header[2] = 0x00;
+    header[3] = 0x00;
+    @memcpy(header[4..19], "Standard Jet DB"); // Wrong sig (MDB not ACCDB)
+    header[19] = 0x00;
+
+    const result = validateAccdbFromBuffer(&header);
+    try testing.expect(!result.is_valid);
+}
+
+test "OLE2 structural: valid OLE2 header accepted" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Build a synthetic 512-byte OLE2 header
+    var header: [512]u8 = [_]u8{0} ** 512;
+    // Magic: D0 CF 11 E0 A1 B1 1A E1
+    @memcpy(header[0..8], &OLE2_MAGIC);
+    // Minor version at 0x18 (e.g. 0x003E)
+    std.mem.writeInt(u16, header[0x18..0x1A], 0x003E, .little);
+    // Major version at 0x1A = 3
+    std.mem.writeInt(u16, header[0x1A..0x1C], 3, .little);
+    // Byte order at 0x1C = 0xFFFE
+    std.mem.writeInt(u16, header[0x1C..0x1E], 0xFFFE, .little);
+    // Sector size power at 0x1E = 9 (512 bytes)
+    std.mem.writeInt(u16, header[0x1E..0x20], 9, .little);
+    // Mini sector size power at 0x20 = 6 (64 bytes)
+    std.mem.writeInt(u16, header[0x20..0x22], 6, .little);
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.ole2", .data = &header });
+
+    const file = try tmp.dir.openFile("test.ole2", .{});
+    defer file.close();
+
+    const result = validateOle2(file, .doc);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.doc, result.format);
+}
+
+test "OLE2 structural: wrong magic rejected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var header: [512]u8 = [_]u8{0} ** 512;
+    // Wrong magic
+    @memcpy(header[0..8], &[_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 });
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.ole2", .data = &header });
+
+    const file = try tmp.dir.openFile("test.ole2", .{});
+    defer file.close();
+
+    const result = validateOle2(file, .doc);
+    try testing.expect(!result.is_valid);
+}
+
+test "OLE2 structural: invalid major version rejected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var header: [512]u8 = [_]u8{0} ** 512;
+    @memcpy(header[0..8], &OLE2_MAGIC);
+    std.mem.writeInt(u16, header[0x18..0x1A], 0x003E, .little);
+    std.mem.writeInt(u16, header[0x1A..0x1C], 99, .little); // Bad major version
+    std.mem.writeInt(u16, header[0x1C..0x1E], 0xFFFE, .little);
+    std.mem.writeInt(u16, header[0x1E..0x20], 9, .little);
+    std.mem.writeInt(u16, header[0x20..0x22], 6, .little);
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.ole2", .data = &header });
+
+    const file = try tmp.dir.openFile("test.ole2", .{});
+    defer file.close();
+
+    const result = validateOle2(file, .xls);
+    try testing.expect(!result.is_valid);
+}
+
+test "SQLite structural: valid synthetic header" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Build a minimal valid 4096-byte SQLite database (1 page)
+    var page: [4096]u8 = [_]u8{0} ** 4096;
+    // Magic "SQLite format 3\0"
+    @memcpy(page[0..16], "SQLite format 3\x00");
+    // Page size = 4096 big-endian
+    std.mem.writeInt(u16, page[16..18], 4096, .big);
+    // Write version = 1, Read version = 1
+    page[18] = 1;
+    page[19] = 1;
+    // Reserved per page = 0 (byte 20)
+    page[20] = 0;
+    // Max embedded payload fraction = 64
+    page[21] = 64;
+    // Min embedded payload fraction = 32
+    page[22] = 32;
+    // Leaf payload fraction = 32
+    page[23] = 32;
+    // File change counter = 1 (bytes 24-27)
+    std.mem.writeInt(u32, page[24..28], 1, .big);
+    // Database size in pages = 1 (bytes 28-31)
+    std.mem.writeInt(u32, page[28..32], 1, .big);
+    // Schema format = 4 (bytes 44-47)
+    std.mem.writeInt(u32, page[44..48], 4, .big);
+    // Text encoding = 1 (UTF-8) (bytes 56-59)
+    std.mem.writeInt(u32, page[56..60], 1, .big);
+    // Reserved bytes 72-91 = 0 (already zeroed)
+    // Version-valid-for = 1 (bytes 92-95, matches change counter)
+    std.mem.writeInt(u32, page[92..96], 1, .big);
+    // B-tree page type at offset 100: 13 = leaf table
+    page[100] = 13;
+    // Cell count = 0 (bytes 103-104)
+    std.mem.writeInt(u16, page[103..105], 0, .big);
+    // Cell content offset = 0x0FFF (near end of page) (bytes 105-106)
+    std.mem.writeInt(u16, page[105..107], 0x0FFF, .big);
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.sqlite", .data = &page });
+
+    const file = try tmp.dir.openFile("test.sqlite", .{});
+    defer file.close();
+
+    const result = validateSqlite(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.sqlite, result.format);
+}
+
+test "SQLite structural: invalid magic rejected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var data: [100]u8 = [_]u8{0} ** 100;
+    @memcpy(data[0..16], "Not a SQLite DB\x00");
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.sqlite", .data = &data });
+
+    const file = try tmp.dir.openFile("test.sqlite", .{});
+    defer file.close();
+
+    const result = validateSqlite(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "SQLite structural: invalid page size rejected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var data: [100]u8 = [_]u8{0} ** 100;
+    @memcpy(data[0..16], "SQLite format 3\x00");
+    // Bad page size: 777 (not power of 2)
+    std.mem.writeInt(u16, data[16..18], 777, .big);
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.sqlite", .data = &data });
+
+    const file = try tmp.dir.openFile("test.sqlite", .{});
+    defer file.close();
+
+    const result = validateSqlite(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "SQLite deep: ground truth chinook.sqlite" {
+    const allocator = testing.allocator;
+
+    const file = std.fs.cwd().openFile("ground_truth_examples/sqlite/chinook.sqlite", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/sqlite/chinook.sqlite") catch return;
+    defer allocator.free(path);
+
+    const result = validateSqliteDeep(allocator, path);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.sqlite, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "SQLite structural: ground truth test_sample.sqlite" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/sqlite/test_sample.sqlite", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    defer file.close();
+
+    const result = validateSqlite(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.sqlite, result.format);
+}
+
+test "WordPerfect structural: valid synthetic header" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Construct a minimal valid WordPerfect header
+    var header: [32]u8 = [_]u8{0} ** 32;
+    // Magic: FF 57 50 43
+    header[0] = 0xFF;
+    header[1] = 0x57;
+    header[2] = 0x50;
+    header[3] = 0x43;
+    // Document area offset at bytes 4-7 (little endian, pointing within file)
+    std.mem.writeInt(u32, header[4..8], 16, .little);
+    // Product type = 1 (byte 8)
+    header[8] = 1;
+    // File type = 0x0A (WPD) (byte 9)
+    header[9] = 0x0A;
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.wpd", .data = &header });
+
+    const file = try tmp.dir.openFile("test.wpd", .{});
+    defer file.close();
+
+    const result = validateWordPerfect(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.wpd, result.format);
+}
+
+test "WordPerfect structural: wrong magic rejected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var header: [32]u8 = [_]u8{0} ** 32;
+    // Wrong magic
+    header[0] = 0x00;
+    header[1] = 0x00;
+    header[2] = 0x00;
+    header[3] = 0x00;
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.wpd", .data = &header });
+
+    const file = try tmp.dir.openFile("test.wpd", .{});
+    defer file.close();
+
+    const result = validateWordPerfect(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "WordPerfect structural: ground truth sample.wpd" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/wpd/sample.wpd", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    defer file.close();
+
+    const result = validateWordPerfect(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.wpd, result.format);
+}
+
+test "MDB structural: ground truth sample.mdb" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/mdb/sample.mdb", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    defer file.close();
+
+    const result = validateMdb(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.mdb, result.format);
+}
+
+test "ACCDB structural: ground truth sample.accdb" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/accdb/sample.accdb", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    defer file.close();
+
+    const result = validateAccdb(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.accdb, result.format);
+}
+
+test "OLE2 subformat detection: ground truth DOC dispatches correctly" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.doc", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    defer file.close();
+
+    const subformat = detectOle2Subformat(file);
+    try testing.expectEqual(FileFormat.doc, subformat);
+}
+
+test "OLE2 subformat detection: ground truth XLS dispatches correctly" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.xls", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    defer file.close();
+
+    const subformat = detectOle2Subformat(file);
+    try testing.expectEqual(FileFormat.xls, subformat);
+}
+
+test "OLE2 subformat detection: ground truth PPT dispatches correctly" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.ppt", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    defer file.close();
+
+    const subformat = detectOle2Subformat(file);
+    try testing.expectEqual(FileFormat.ppt, subformat);
+}
+
+test "readVarint: single byte value" {
+    const data = [_]u8{0x05}; // value 5, high bit clear = 1 byte
+    const result = readVarint(&data, 0, 1);
+    try testing.expectEqual(@as(u64, 5), result.value);
+    try testing.expectEqual(@as(u32, 1), result.bytes_read);
+}
+
+test "readVarint: multi-byte value" {
+    const data = [_]u8{ 0x81, 0x01 }; // 0x81 -> high bit set, 0x01 -> high bit clear
+    // result = (1 << 7) | 1 = 129
+    const result = readVarint(&data, 0, 2);
+    try testing.expectEqual(@as(u64, 129), result.value);
+    try testing.expectEqual(@as(u32, 2), result.bytes_read);
+}
+
+test "readVarint: out of bounds returns zero bytes_read" {
+    const data = [_]u8{0x05};
+    const result = readVarint(&data, 5, 1); // pos > limit
+    try testing.expectEqual(@as(u32, 0), result.bytes_read);
+}
+
+test "serialTypeContentSize: standard types" {
+    try testing.expectEqual(@as(u64, 0), serialTypeContentSize(0)); // NULL
+    try testing.expectEqual(@as(u64, 1), serialTypeContentSize(1)); // int8
+    try testing.expectEqual(@as(u64, 2), serialTypeContentSize(2)); // int16
+    try testing.expectEqual(@as(u64, 4), serialTypeContentSize(4)); // int32
+    try testing.expectEqual(@as(u64, 8), serialTypeContentSize(6)); // int64
+    try testing.expectEqual(@as(u64, 8), serialTypeContentSize(7)); // float64
+    try testing.expectEqual(@as(u64, 0), serialTypeContentSize(8)); // integer 0
+    try testing.expectEqual(@as(u64, 0), serialTypeContentSize(9)); // integer 1
+    // Blob: (14 - 12) / 2 = 1
+    try testing.expectEqual(@as(u64, 1), serialTypeContentSize(14));
+    // Text: (15 - 13) / 2 = 1
+    try testing.expectEqual(@as(u64, 1), serialTypeContentSize(15));
+}

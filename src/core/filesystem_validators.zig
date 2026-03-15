@@ -179,3 +179,142 @@ pub fn validateIsoSignature(file: std.fs.File) ValidationResult {
 
     return ValidationResult.okWithDepth(.iso, .structural);
 }
+
+// ============================================================
+// Tests
+// ============================================================
+
+test "ISO structural: valid synthetic ISO with CD001 signature" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // ISO 9660 has "CD001" at offset 0x8001 (byte 32769)
+    // Volume descriptor type byte at 0x8000, then "CD001" at 0x8001
+    const header_size = 0x8001 + 5;
+    var data: [header_size]u8 = [_]u8{0} ** header_size;
+    // Primary volume descriptor type = 1 at offset 0x8000
+    data[0x8000] = 0x01;
+    // "CD001" at offset 0x8001
+    @memcpy(data[0x8001..0x8006], "CD001");
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.iso", .data = &data });
+
+    const file = try tmp.dir.openFile("test.iso", .{});
+    defer file.close();
+
+    const result = validateIso(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(format_validation.FileFormat.iso, result.format);
+    try testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
+}
+
+test "ISO structural: missing CD001 rejected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const header_size = 0x8001 + 5;
+    var data: [header_size]u8 = [_]u8{0} ** header_size;
+    // Write wrong signature
+    @memcpy(data[0x8001..0x8006], "XXXXX");
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.iso", .data = &data });
+
+    const file = try tmp.dir.openFile("test.iso", .{});
+    defer file.close();
+
+    const result = validateIso(file);
+    try testing.expect(!result.is_valid);
+    try testing.expectEqual(format_validation.FileFormat.iso, result.format);
+}
+
+test "ISO structural: file too small rejected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // File smaller than offset 0x8001 + 5
+    const small_data = [_]u8{0} ** 100;
+    try tmp.dir.writeFile(.{ .sub_path = "test.iso", .data = &small_data });
+
+    const file = try tmp.dir.openFile("test.iso", .{});
+    defer file.close();
+
+    const result = validateIso(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "ISO structural: ground truth sample.iso" {
+    const file = std.fs.cwd().openFile("ground_truth_examples/iso/sample.iso", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    defer file.close();
+
+    const result = validateIso(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(format_validation.FileFormat.iso, result.format);
+}
+
+test "ISO deep: ground truth sample.iso" {
+    const allocator = testing.allocator;
+
+    const file = std.fs.cwd().openFile("ground_truth_examples/iso/sample.iso", .{}) catch {
+        return; // Skip if file doesn't exist
+    };
+    file.close();
+
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/iso/sample.iso") catch return;
+    defer allocator.free(path);
+
+    const result = validateIsoDeep(allocator, path);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(format_validation.FileFormat.iso, result.format);
+    try testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
+}
+
+test "DMG structural: valid synthetic DMG with koly trailer" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // DMG has "koly" at the start of the last 512 bytes
+    var data: [1024]u8 = [_]u8{0} ** 1024;
+    // Write "koly" at offset 512 (= 1024 - 512)
+    @memcpy(data[512..516], "koly");
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.dmg", .data = &data });
+
+    const file = try tmp.dir.openFile("test.dmg", .{});
+    defer file.close();
+
+    const result = validateDmg(file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(format_validation.FileFormat.dmg, result.format);
+}
+
+test "DMG structural: missing koly rejected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var data: [1024]u8 = [_]u8{0} ** 1024;
+    // No "koly" signature
+
+    try tmp.dir.writeFile(.{ .sub_path = "test.dmg", .data = &data });
+
+    const file = try tmp.dir.openFile("test.dmg", .{});
+    defer file.close();
+
+    const result = validateDmg(file);
+    try testing.expect(!result.is_valid);
+}
+
+test "DMG structural: file too small rejected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const small_data = [_]u8{0} ** 100;
+    try tmp.dir.writeFile(.{ .sub_path = "test.dmg", .data = &small_data });
+
+    const file = try tmp.dir.openFile("test.dmg", .{});
+    defer file.close();
+
+    const result = validateDmg(file);
+    try testing.expect(!result.is_valid);
+}
