@@ -19,7 +19,6 @@ NC='\033[0m' # No Color
 
 # Define forks: "fork_repo upstream_repo description"
 FORKS=(
-	"pmarreck/libheif strukturag/libheif Fix for num_threads=0 single-threaded mode"
 	"pmarreck/openmpt OpenMPT/openmpt Zig build system wrapper"
 	"pmarreck/cj5 ojroques/cj5 Zig build system wrapper for JSON5 parser"
 )
