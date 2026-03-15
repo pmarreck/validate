@@ -4185,8 +4185,9 @@ test "jenkinsLookup3 reference vectors" {
 
 test "HDF5 v2/3 superblock + OHDR checksum verification" {
     // Open the v2 ground truth file and verify checksums
-    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample.h5", .{}) catch {
-        return; // skip if file not available
+    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample.h5", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     defer file.close();
 
@@ -4208,8 +4209,9 @@ test "HDF5 v2/3 superblock + OHDR checksum verification" {
 }
 
 test "HDF5 v2 file reports full depth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample.h5", .{}) catch {
-        return; // skip if file not available
+    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample.h5", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     defer file.close();
 
@@ -4219,8 +4221,9 @@ test "HDF5 v2 file reports full depth" {
 }
 
 test "HDF5 v0 file reports structural depth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample_v0_no_checksums.h5", .{}) catch {
-        return; // skip if file not available
+    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample_v0_no_checksums.h5", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     defer file.close();
 

@@ -220,7 +220,7 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
 // -- Tests ------------------------------------------------------------------
 
 test "validatePe with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/pe/sample.exe", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/pe/sample.exe", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validatePe(file);
     try std.testing.expect(result.is_valid);

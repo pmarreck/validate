@@ -2366,12 +2366,13 @@ test "FormatValidator deep validates real HEIC from ground truth" {
     // the large image has many grid tiles that cause stack overflow on systems
     // with restricted stack limits (e.g., Garnix CI with ~8 MB stack limit).
     // The smaller image still exercises the full decode path but with fewer tiles.
-    const file = std.fs.cwd().openFile("ground_truth_examples/heic/autumn_1440x960.heic", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/heic/autumn_1440x960.heic", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/heic/autumn_1440x960.heic") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/heic/autumn_1440x960.heic") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -2391,12 +2392,13 @@ test "FormatValidator deep validates real AVIF from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth AVIF file (from link-u/avif-sample-images, CC-BY-SA 4.0)
-    const file = std.fs.cwd().openFile("ground_truth_examples/avif/fox.avif", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/avif/fox.avif", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/avif/fox.avif") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/avif/fox.avif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -2832,12 +2834,13 @@ test "FormatValidator deep validates ProRes Proxy MOV from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth ProRes 422 Proxy (apco) file
-    const file = std.fs.cwd().openFile("ground_truth_examples/prores/sample.mov", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/prores/sample.mov", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/prores/sample.mov") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/prores/sample.mov") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -2853,12 +2856,13 @@ test "FormatValidator deep validates ProRes HQ MOV from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth ProRes 422 HQ (apch) file
-    const file = std.fs.cwd().openFile("ground_truth_examples/prores/sample_hq.mov", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/prores/sample_hq.mov", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/prores/sample_hq.mov") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/prores/sample_hq.mov") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();

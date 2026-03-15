@@ -6286,12 +6286,13 @@ test "FormatValidator deep validates real OLE2 XLS from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth XLS file (OLE2/CFBF format)
-    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.xls", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.xls", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/ole2/sample.xls") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/ole2/sample.xls") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -6309,12 +6310,13 @@ test "FormatValidator deep validates real OLE2 PPT from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth PPT file (OLE2/CFBF format)
-    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.ppt", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.ppt", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/ole2/sample.ppt") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/ole2/sample.ppt") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();

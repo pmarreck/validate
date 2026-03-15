@@ -724,7 +724,7 @@ test "validateIso9660 - synthetic ISO" {
 
 test "ground truth - ISO sample" {
     const file = std.fs.cwd().openFile("ground_truth_examples/iso/sample.iso", .{}) catch |err| {
-        if (err == error.FileNotFound) return;
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
     defer file.close();

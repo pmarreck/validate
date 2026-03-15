@@ -4025,7 +4025,7 @@ const testing = std.testing;
 // ---- PNG ----
 
 test "validatePng accepts valid PNG from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/png/generated_gradient.png", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/png/generated_gradient.png", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validatePng(file);
     try testing.expect(result.is_valid);
@@ -4068,7 +4068,7 @@ test "validatePng rejects non-IHDR first chunk" {
 
 test "validatePngDeep accepts valid PNG from ground truth" {
     const allocator = testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/png/generated_gradient.png") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/png/generated_gradient.png") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
     const result = validatePngDeep(allocator, path);
     try testing.expect(result.is_valid);
@@ -4078,7 +4078,7 @@ test "validatePngDeep accepts valid PNG from ground truth" {
 // ---- JPEG ----
 
 test "validateJpeg accepts valid JPEG from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg/generated_gradient.jpg", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg/generated_gradient.jpg", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateJpeg(file);
     try testing.expect(result.is_valid);
@@ -4117,7 +4117,7 @@ test "validateJpeg rejects invalid magic" {
 // ---- GIF ----
 
 test "validateGif accepts valid GIF from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/gif/sample_1.gif", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/gif/sample_1.gif", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateGif(file);
     try testing.expect(result.is_valid);
@@ -4154,7 +4154,7 @@ test "validateGif rejects too-small file" {
 // ---- BMP ----
 
 test "validateBmp accepts valid BMP from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/bmp/sample.bmp", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/bmp/sample.bmp", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateBmp(file);
     try testing.expect(result.is_valid);
@@ -4257,7 +4257,7 @@ test "validateBmp rejects pixel data exceeding file size" {
 // ---- TIFF ----
 
 test "validateTiff accepts valid TIFF from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tiff/bali.tif", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/tiff/bali.tif", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateTiff(file, .tiff);
     try testing.expect(result.is_valid);
@@ -4280,7 +4280,7 @@ test "validateTiff rejects invalid byte order" {
 // ---- WebP ----
 
 test "validateWebp accepts valid WebP from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/webp/google_gallery_1.webp", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/webp/google_gallery_1.webp", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateWebp(file);
     try testing.expect(result.is_valid);
@@ -4316,7 +4316,7 @@ test "validateWebp rejects invalid fourcc" {
 // ---- SVG ----
 
 test "validateSvg accepts valid SVG from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/svg/sample.svg", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/svg/sample.svg", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateSvg(file);
     try testing.expect(result.is_valid);
@@ -4337,7 +4337,7 @@ test "validateSvg rejects non-SVG content" {
 
 test "validateSvgDeep accepts valid SVG from ground truth" {
     const allocator = testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/svg/sample.svg") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/svg/sample.svg") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
     const result = validateSvgDeep(allocator, path);
     try testing.expect(result.is_valid);
@@ -4347,7 +4347,7 @@ test "validateSvgDeep accepts valid SVG from ground truth" {
 // ---- JPEG XL ----
 
 test "validateJxl accepts valid JXL from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/jxl/bicycles.jxl", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/jxl/bicycles.jxl", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateJxl(file);
     try testing.expect(result.is_valid);
@@ -4370,7 +4370,7 @@ test "validateJxl rejects invalid signature" {
 // ---- EXR ----
 
 test "validateExr accepts valid EXR from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/exr/sample.exr", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/exr/sample.exr", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateExr(file);
     try testing.expect(result.is_valid);
@@ -4392,7 +4392,7 @@ test "validateExr rejects invalid magic" {
 
 test "validateExrDeep accepts valid EXR from ground truth" {
     const allocator = testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/exr/sample.exr") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/exr/sample.exr") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
     const result = validateExrDeep(allocator, path);
     try testing.expect(result.is_valid);
@@ -4402,7 +4402,7 @@ test "validateExrDeep accepts valid EXR from ground truth" {
 // ---- ICO ----
 
 test "validateIco accepts valid ICO from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ico/sample.ico", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/ico/sample.ico", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateIco(file);
     try testing.expect(result.is_valid);
@@ -4450,7 +4450,7 @@ test "validateIco rejects zero image count" {
 // ---- QOI ----
 
 test "validateQoi accepts valid QOI from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/qoi/sample.qoi", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/qoi/sample.qoi", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateQoi(file);
     try testing.expect(result.is_valid);
@@ -4500,7 +4500,7 @@ test "validateQoi rejects invalid channels" {
 // ---- TGA ----
 
 test "validateTga accepts valid TGA from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tga/sample.tga", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/tga/sample.tga", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateTga(file);
     try testing.expect(result.is_valid);
@@ -4547,7 +4547,7 @@ test "validateTga rejects invalid image type" {
 // ---- PAM ----
 
 test "validatePam accepts valid PPM from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/pam/sample.ppm", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/pam/sample.ppm", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validatePam(file);
     try testing.expect(result.is_valid);
@@ -4581,7 +4581,7 @@ test "validatePam rejects out-of-range type" {
 // ---- DPX ----
 
 test "validateDpx accepts valid DPX from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/dpx/sample.dpx", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/dpx/sample.dpx", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateDpx(file);
     try testing.expect(result.is_valid);
@@ -4666,7 +4666,7 @@ test "validateDpx rejects corrupted element count" {
 // ---- JPEG2000 ----
 
 test "validateJpeg2000 accepts valid JP2 from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon_intact.jp2", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon_intact.jp2", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateJpeg2000(file);
     try testing.expect(result.is_valid);
@@ -4674,7 +4674,7 @@ test "validateJpeg2000 accepts valid JP2 from ground truth" {
 }
 
 test "validateJpeg2000 accepts valid J2C codestream from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon.j2c", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon.j2c", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateJpeg2000(file);
     try testing.expect(result.is_valid);
@@ -4697,7 +4697,7 @@ test "validateJpeg2000 rejects invalid signature" {
 // ---- JBIG2 ----
 
 test "validateJbig2File accepts valid JBIG2 from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/jbig2/minimal_white_page.jbig2", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/jbig2/minimal_white_page.jbig2", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateJbig2File(file);
     try testing.expect(result.is_valid);
@@ -4721,7 +4721,7 @@ test "validateJbig2File rejects invalid signature" {
 
 test "validateHeicDeep accepts valid HEIC from ground truth" {
     const allocator = testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/heic/sample.heic") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/heic/sample.heic") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
     const result = validateHeicDeep(allocator, path);
     try testing.expect(result.is_valid);
@@ -4732,7 +4732,7 @@ test "validateHeicDeep accepts valid HEIC from ground truth" {
 
 test "validateAvifDeep accepts valid AVIF from ground truth" {
     const allocator = testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/avif/fox.avif") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/avif/fox.avif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
     const result = validateAvifDeep(allocator, path);
     try testing.expect(result.is_valid);
@@ -5279,12 +5279,13 @@ test "FormatValidator deep validates real GIF from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth GIF file (public domain sample)
-    const file = std.fs.cwd().openFile("ground_truth_examples/gif/sample_1.gif", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/gif/sample_1.gif", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/gif/sample_1.gif") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/gif/sample_1.gif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5380,12 +5381,13 @@ test "FormatValidator deep validates real BMP from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth BMP file (from FSU sample data)
-    const file = std.fs.cwd().openFile("ground_truth_examples/bmp/sample.bmp", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/bmp/sample.bmp", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/bmp/sample.bmp") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/bmp/sample.bmp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5472,12 +5474,13 @@ test "FormatValidator deep validates real WebP from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth WebP file (from Google WebP Gallery)
-    const file = std.fs.cwd().openFile("ground_truth_examples/webp/sample.webp", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/webp/sample.webp", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/webp/sample.webp") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/webp/sample.webp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5494,8 +5497,9 @@ test "FormatValidator deep validates real JXL from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth JPEG-XL file (from libjxl conformance suite)
-    const file = std.fs.cwd().openFile("ground_truth_examples/jxl/sample.jxl", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/jxl/sample.jxl", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
 
     // Verify it's actually a JXL file (check signature)
@@ -5519,7 +5523,7 @@ test "FormatValidator deep validates real JXL from ground truth" {
         return; // Skip if not a valid JXL file
     }
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/jxl/sample.jxl") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/jxl/sample.jxl") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5644,12 +5648,13 @@ test "FormatValidator deep validates real TIFF from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth TIFF file (from tlnagy/exampletiffs)
-    const file = std.fs.cwd().openFile("ground_truth_examples/tiff/bali.tif", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/tiff/bali.tif", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tiff/bali.tif") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tiff/bali.tif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();

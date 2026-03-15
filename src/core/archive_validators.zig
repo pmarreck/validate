@@ -3190,8 +3190,9 @@ test "validateZstdDeep: xxHash64 checksum verified on ground truth" {
 
 test "validateZstdDeep: corrupted checksum detected" {
     // Create a zstd file with valid compressed data but a corrupted content checksum.
-    const src_file = std.fs.cwd().openFile("ground_truth_examples/zstd/sample.zst", .{}) catch {
-        return; // Skip if ground truth not available
+    const src_file = std.fs.cwd().openFile("ground_truth_examples/zstd/sample.zst", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     defer src_file.close();
     const file_size = try src_file.getEndPos();
@@ -4761,12 +4762,13 @@ test "FormatValidator deep validates Brotli from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth Brotli file ("Hello" compressed)
-    const file = std.fs.cwd().openFile("ground_truth_examples/brotli/hello.br", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/brotli/hello.br", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/brotli/hello.br") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/brotli/hello.br") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5938,12 +5940,13 @@ test "FormatValidator validates PAR2 from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth PAR2 file
-    const file = std.fs.cwd().openFile("ground_truth_examples/par2/sample.par2", .{}) catch {
-        return; // Skip if file doesn't exist
+    const file = std.fs.cwd().openFile("ground_truth_examples/par2/sample.par2", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
     };
     file.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/par2/sample.par2") catch return;
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/par2/sample.par2") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.init();

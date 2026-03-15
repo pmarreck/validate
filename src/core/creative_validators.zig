@@ -966,7 +966,7 @@ const testing = std.testing;
 // ---------- Ground truth file-based tests ----------
 
 test "validateEps accepts ground truth EPS" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/eps/sample.eps", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/eps/sample.eps", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateEps(file);
     try testing.expect(result.is_valid);
@@ -974,7 +974,7 @@ test "validateEps accepts ground truth EPS" {
 }
 
 test "validateFcpxml accepts ground truth FCPXML" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/fcpxml/sample.fcpxml", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/fcpxml/sample.fcpxml", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validateFcpxml(file);
     try testing.expect(result.is_valid);
@@ -982,7 +982,7 @@ test "validateFcpxml accepts ground truth FCPXML" {
 }
 
 test "validatePrproj accepts ground truth PRPROJ" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/prproj/sample.prproj", .{}) catch return;
+    const file = std.fs.cwd().openFile("ground_truth_examples/prproj/sample.prproj", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
     const result = validatePrproj(file);
     try testing.expect(result.is_valid);

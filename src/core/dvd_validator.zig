@@ -444,7 +444,7 @@ test "validateDvdIso - rejects ISO without VIDEO_TS" {
 
 test "ground truth - DVD ISO sample" {
     const file = std.fs.cwd().openFile("ground_truth_examples/dvd/sample.iso", .{}) catch |err| {
-        if (err == error.FileNotFound) return;
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
     defer file.close();

@@ -1493,7 +1493,7 @@ test "validateWoff2 validates ground truth sample" {
 
 test "validateWoff2 detects corruption in ground truth sample" {
 	const path = "ground_truth_examples/woff2/sample.woff2";
-	const file = std.fs.cwd().openFile(path, .{}) catch return;
+	const file = std.fs.cwd().openFile(path, .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
 	defer file.close();
 
 	const stat = file.stat() catch return;

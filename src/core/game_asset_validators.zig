@@ -710,7 +710,7 @@ test "IFF deep validation - valid ILBM ByteRun1 sample" {
 
 test "IFF deep validation - corrupted ByteRun1 stream detected" {
 	// Create a corrupted copy of the sample file
-	const src = std.fs.cwd().openFile("ground_truth_examples/iff/sample.iff", .{}) catch return;
+	const src = std.fs.cwd().openFile("ground_truth_examples/iff/sample.iff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
 	defer src.close();
 	const file_size = src.getEndPos() catch return;
 	const data = testing.allocator.alloc(u8, file_size) catch return;
@@ -741,7 +741,7 @@ test "IFF deep validation - corrupted ByteRun1 stream detected" {
 }
 
 test "IFF deep validation - invalid chunk ID detected" {
-	const src = std.fs.cwd().openFile("ground_truth_examples/iff/sample.iff", .{}) catch return;
+	const src = std.fs.cwd().openFile("ground_truth_examples/iff/sample.iff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
 	defer src.close();
 	const file_size = src.getEndPos() catch return;
 	const data = testing.allocator.alloc(u8, file_size) catch return;
