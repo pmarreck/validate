@@ -141,37 +141,21 @@ pub fn validateBagitDeep(allocator: Allocator, path: []const u8) ValidationResul
 		};
 		defer target_file.close();
 
-		const file_data = target_file.readToEndAlloc(allocator, 100 * 1024 * 1024) catch {
+		// Stream-hash the file and compare against the expected digest
+		const match = switch (chosen_alg) {
+			.sha256 => verifyFileHash(std.crypto.hash.sha2.Sha256, target_file, expected_hex),
+			.sha512 => verifyFileHash(std.crypto.hash.sha2.Sha512, target_file, expected_hex),
+			.md5 => verifyFileHash(std.crypto.hash.Md5, target_file, expected_hex),
+		} catch {
 			return ValidationResult.invalidCodeMsg(.bagit, .failed_to_read, file_path, "failed to read file for hashing");
 		};
-		defer allocator.free(file_data);
 
-		// Compute hash and compare
-		switch (chosen_alg) {
-			.sha256 => {
-				var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
-				std.crypto.hash.sha2.Sha256.hash(file_data, &digest, .{});
-				const computed = std.fmt.bytesToHex(digest, .lower);
-				if (!std.mem.eql(u8, &computed, expected_hex)) {
-					return ValidationResult.invalidCodeMsg(.bagit, .checksum_mismatch, file_path, "BagIt manifest SHA-256 hash mismatch");
-				}
-			},
-			.sha512 => {
-				var digest: [std.crypto.hash.sha2.Sha512.digest_length]u8 = undefined;
-				std.crypto.hash.sha2.Sha512.hash(file_data, &digest, .{});
-				const computed = std.fmt.bytesToHex(digest, .lower);
-				if (!std.mem.eql(u8, &computed, expected_hex)) {
-					return ValidationResult.invalidCodeMsg(.bagit, .checksum_mismatch, file_path, "BagIt manifest SHA-512 hash mismatch");
-				}
-			},
-			.md5 => {
-				var digest: [std.crypto.hash.Md5.digest_length]u8 = undefined;
-				std.crypto.hash.Md5.hash(file_data, &digest, .{});
-				const computed = std.fmt.bytesToHex(digest, .lower);
-				if (!std.mem.eql(u8, &computed, expected_hex)) {
-					return ValidationResult.invalidCodeMsg(.bagit, .checksum_mismatch, file_path, "BagIt manifest MD5 hash mismatch");
-				}
-			},
+		if (!match) {
+			return ValidationResult.invalidCodeMsg(.bagit, .checksum_mismatch, file_path, switch (chosen_alg) {
+				.sha256 => "BagIt manifest SHA-256 hash mismatch",
+				.sha512 => "BagIt manifest SHA-512 hash mismatch",
+				.md5 => "BagIt manifest MD5 hash mismatch",
+			});
 		}
 		files_checked += 1;
 	}
@@ -181,6 +165,23 @@ pub fn validateBagitDeep(allocator: Allocator, path: []const u8) ValidationResul
 	}
 
 	return ValidationResult.okWithDepth(.bagit, .full);
+}
+
+/// Streaming file hash verification. Reads the file in 64 KB chunks to avoid
+/// loading the entire file into memory, then compares the computed hex digest
+/// against the expected hex string.
+fn verifyFileHash(comptime Hash: type, file: std.fs.File, expected_hex: []const u8) !bool {
+	var hasher = Hash.init(.{});
+	var buf: [65536]u8 = undefined;
+	while (true) {
+		const n = try file.read(&buf);
+		if (n == 0) break;
+		hasher.update(buf[0..n]);
+	}
+	var digest: [Hash.digest_length]u8 = undefined;
+	hasher.final(&digest);
+	const computed = std.fmt.bytesToHex(digest, .lower);
+	return std.mem.eql(u8, &computed, expected_hex);
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
