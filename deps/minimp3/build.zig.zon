@@ -4,8 +4,8 @@
     .fingerprint = 0xe83a9dff595b8925,
     .dependencies = .{
         .minimp3_src = .{
-            .url = "https://github.com/lieff/minimp3/archive/refs/heads/master.tar.gz",
-            .hash = "N-V-__8AAMWyDQKCaOGUBzvzCoeJ44cpVnWVmCyVj6qGNncu",
+            .url = "https://github.com/lieff/minimp3/archive/7b590fdcfa5a79c033e76eacc05d0c3e4c79f536.tar.gz",
+            .hash = "N-V-__8AAITPDQK9zXacGDpSmTu7XxdPQyDUWldJBmJHdXWU",
         },
     },
     .paths = .{
