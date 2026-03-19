@@ -516,8 +516,8 @@ fn parseVopHeader(reader: *BitReader, vol: *const VolInfo) ?VopInfo {
         if (vop.modulo_time_base > 1000) return null; // Sanity check
     }
 
-    // marker_bit
-    if (!(reader.readMarkerBit() orelse return null)) return null;
+    // marker_bit (some encoders like early XviD don't set this correctly)
+    _ = reader.readBool() orelse return null;
 
     // vop_time_increment
     // Formula: ceil(log2(resolution)) = 16 - clz(resolution - 1) for resolution > 1
@@ -528,8 +528,8 @@ fn parseVopHeader(reader: *BitReader, vol: *const VolInfo) ?VopInfo {
         1;
     vop.vop_time_increment = reader.readBits(u16, @min(time_inc_bits, 16)) orelse return null;
 
-    // marker_bit
-    if (!(reader.readMarkerBit() orelse return null)) return null;
+    // marker_bit (lenient — early encoders may omit)
+    _ = reader.readBool() orelse return null;
 
     // vop_coded (1 bit)
     vop.vop_coded = reader.readBool() orelse return null;
@@ -546,7 +546,21 @@ fn parseVopHeader(reader: *BitReader, vol: *const VolInfo) ?VopInfo {
         return vop;
     }
 
-    // newpred stuff skipped
+    // newpred_enable: consume newpred fields if present
+    if (vol.newpred_enable) {
+        // vop_id (4-15 bits depending on time_inc_bits) + vop_id_for_prediction_indication (1)
+        const np_bits: usize = if (vol.vop_time_increment_resolution > 1)
+            16 - @as(usize, @clz(vol.vop_time_increment_resolution - 1))
+        else
+            1;
+        _ = reader.readBits(u16, @min(np_bits + 3, 16)) orelse return null;
+        const vop_id_for_pred = reader.readBool() orelse return null;
+        if (vop_id_for_pred) {
+            _ = reader.readBits(u16, @min(np_bits + 3, 16)) orelse return null;
+        }
+        // marker_bit
+        _ = reader.readBool() orelse return null;
+    }
 
     if (vol.video_object_layer_shape != .binary_only) {
         if (vop.coding_type == .p_vop) {
@@ -555,7 +569,10 @@ fn parseVopHeader(reader: *BitReader, vol: *const VolInfo) ?VopInfo {
             vop.vop_rounding_type = false;
         }
 
-        // reduced_resolution_vop skipped
+        // reduced_resolution_vop (1 bit) if enabled in VOL
+        if (vol.reduced_resolution_vop_enable) {
+            _ = reader.readBool() orelse return null;
+        }
 
         if (vol.video_object_layer_shape != .rectangular) {
             // Shape coding - skip for validation
@@ -652,7 +669,9 @@ pub fn validateMpeg4P2Stream(data: []const u8, max_frames: u32) Mpeg4P2Validatio
 
                     if (vop_count >= max_frames) break;
                 } else {
-                    return Mpeg4P2ValidationResult.invalid("Invalid VOP header");
+                    // Tolerate individual VOP parse failures — early encoders
+                    // (DivX 3/4/5, XviD) produce non-conformant headers.
+                    // Only fail if no VOP could be parsed at all (checked below).
                 }
             }
         } else if (sc.code == @intFromEnum(StartCode.visual_object_sequence_start)) {
