@@ -1045,9 +1045,24 @@ fn parseAviStructure(file: std.fs.File, file_size: u64) ?AviStreamInfo {
                     hdrl_pos += 8 + ((sub_size + 1) & ~@as(u32, 1));
                 }
             } else if (std.mem.eql(u8, &list_type, "movi")) {
-                // Movie data list
-                info.movi_offset = position + 12; // After LIST header + type
-                info.movi_size = chunk_size - 4; // Minus type field
+                // Movie data list — for OpenDML (AVI 2.0), prefer the largest
+                // movi section (AVIX segments contain the actual interleaved data,
+                // while the first RIFF AVI movi may be audio-only)
+                const this_movi_size = chunk_size -| 4; // Minus type field
+                if (this_movi_size > info.movi_size) {
+                    info.movi_offset = position + 12; // After LIST header + type
+                    info.movi_size = this_movi_size;
+                }
+            }
+        } else if (std.mem.eql(u8, chunk_id, "RIFF")) {
+            // OpenDML: RIFF AVIX continuation segments — descend into them
+            // to find their LIST movi children
+            var riff_type: [4]u8 = undefined;
+            _ = file.read(&riff_type) catch break;
+            if (std.mem.eql(u8, &riff_type, "AVIX")) {
+                // Don't skip — let the outer loop descend into the AVIX
+                position += 12;
+                continue;
             }
         }
 
@@ -1152,6 +1167,18 @@ fn validateMjpegFromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviSt
 
         const chunk_id = chunk_header[0..4];
         const chunk_size = std.mem.readInt(u32, chunk_header[4..8], .little);
+
+        // OpenDML: LIST rec chunks contain interleaved audio/video — descend into them
+        if (std.mem.eql(u8, chunk_id, "LIST")) {
+            var list_type: [4]u8 = undefined;
+            _ = file.read(&list_type) catch break;
+            if (std.mem.eql(u8, &list_type, "rec ")) {
+                position += 12;
+                continue;
+            }
+            position += 8 + ((chunk_size + 1) & ~@as(u32, 1));
+            continue;
+        }
 
         // Check if this is a video frame chunk
         if (std.mem.eql(u8, chunk_id, &video_chunk_id) or std.mem.eql(u8, chunk_id, &video_chunk_id_db)) {
@@ -1296,6 +1323,18 @@ fn validateH264FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStr
         const chunk_id = chunk_header[0..4];
         const chunk_size = std.mem.readInt(u32, chunk_header[4..8], .little);
 
+        // OpenDML: LIST rec chunks contain interleaved audio/video — descend into them
+        if (std.mem.eql(u8, chunk_id, "LIST")) {
+            var list_type: [4]u8 = undefined;
+            _ = file.read(&list_type) catch break;
+            if (std.mem.eql(u8, &list_type, "rec ")) {
+                position += 12;
+                continue;
+            }
+            position += 8 + ((chunk_size + 1) & ~@as(u32, 1));
+            continue;
+        }
+
         if (std.mem.eql(u8, chunk_id, &video_chunk_id)) {
             if (chunk_size > 0 and video_data.items.len + chunk_size < max_video_size) {
                 const old_len = video_data.items.len;
@@ -1370,6 +1409,20 @@ fn validateMpeg4P2FromAvi(allocator: Allocator, file: std.fs.File, avi_info: Avi
 
         const chunk_id = chunk_header[0..4];
         const chunk_size = std.mem.readInt(u32, chunk_header[4..8], .little);
+
+        // OpenDML: LIST rec chunks contain interleaved audio/video — descend into them
+        if (std.mem.eql(u8, chunk_id, "LIST")) {
+            var list_type: [4]u8 = undefined;
+            _ = file.read(&list_type) catch break;
+            if (std.mem.eql(u8, &list_type, "rec ")) {
+                // Descend into rec list — advance past the LIST+type header
+                position += 12;
+                continue;
+            }
+            // Other LIST types: skip
+            position += 8 + ((chunk_size + 1) & ~@as(u32, 1));
+            continue;
+        }
 
         // Check for both 'dc' (compressed) and 'db' (bitmap) video chunks
         const is_video_chunk = std.mem.eql(u8, chunk_id, &video_chunk_dc) or
