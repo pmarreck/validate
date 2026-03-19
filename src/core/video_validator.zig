@@ -114,6 +114,7 @@ pub const VideoCodec = enum {
 pub const VideoValidationResult = struct {
 	valid: bool,
 	error_message: ?[]const u8,
+	warning_message: ?[]const u8 = null,
 	codec: VideoCodec,
 	frames_decoded: u32,
 	byte_validated: bool,
@@ -1399,7 +1400,9 @@ fn validateMpeg4P2FromAvi(allocator: Allocator, file: std.fs.File, avi_info: Avi
     // Validate the MPEG-4 Part 2 stream
     const result = mpeg4p2.validateMpeg4P2Stream(video_data.items, max_frames);
     if (result.valid) {
-        return VideoValidationResult.okByteValidated(.mpeg4p2, result.vop_count);
+        var vr = VideoValidationResult.okByteValidated(.mpeg4p2, result.vop_count);
+        vr.warning_message = result.warning_message;
+        return vr;
     } else {
         return VideoValidationResult.invalid(result.error_message orelse "MPEG-4 Part 2 validation failed", .mpeg4p2);
     }
@@ -2885,7 +2888,9 @@ fn validateMpeg4P2FromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box,
     // Validate the combined bitstream
     const result = mpeg4p2.validateMpeg4P2Stream(bitstream.items, max_frames);
     if (result.valid) {
-        return VideoValidationResult.okByteValidated(.mpeg4p2, result.vop_count);
+        var vr = VideoValidationResult.okByteValidated(.mpeg4p2, result.vop_count);
+        vr.warning_message = result.warning_message;
+        return vr;
     } else {
         return VideoValidationResult.invalid(result.error_message orelse "MPEG-4 Part 2 validation failed", .mpeg4p2);
     }

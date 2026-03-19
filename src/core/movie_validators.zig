@@ -1752,6 +1752,12 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
         result.malformations.insert(.video_mixed_nal_prefix);
         result.warning_message = "mixed NAL prefix sizes detected (repairable by remux)";
     }
+    // Propagate video codec warnings (e.g., non-conformant MPEG-4 Part 2 VOP headers)
+    if (video_result.warning_message) |warn| {
+        if (result.warning_message == null) {
+            result.warning_message = warn;
+        }
+    }
     // Check for unsupported profile warning
     if (video_result.unsupported_profile_no_ffmpeg) {
         result.malformations.insert(.video_unsupported_profile_no_ffmpeg);

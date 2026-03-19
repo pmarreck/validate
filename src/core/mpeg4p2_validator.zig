@@ -143,8 +143,10 @@ pub const VopInfo = struct {
 pub const Mpeg4P2ValidationResult = struct {
     valid: bool,
     error_message: ?[]const u8,
+    warning_message: ?[]const u8,
     vol_count: u32,
     vop_count: u32,
+    vop_parse_failures: u32,
     i_vops: u32,
     p_vops: u32,
     b_vops: u32,
@@ -157,8 +159,10 @@ pub const Mpeg4P2ValidationResult = struct {
         return .{
             .valid = true,
             .error_message = null,
+            .warning_message = null,
             .vol_count = vol,
             .vop_count = vop,
+            .vop_parse_failures = 0,
             .i_vops = i,
             .p_vops = p,
             .b_vops = b,
@@ -173,8 +177,10 @@ pub const Mpeg4P2ValidationResult = struct {
         return .{
             .valid = false,
             .error_message = message,
+            .warning_message = null,
             .vol_count = 0,
             .vop_count = 0,
+            .vop_parse_failures = 0,
             .i_vops = 0,
             .p_vops = 0,
             .b_vops = 0,
@@ -634,6 +640,7 @@ pub fn validateMpeg4P2Stream(data: []const u8, max_frames: u32) Mpeg4P2Validatio
     var width: u16 = 0;
     var height: u16 = 0;
 
+    var vop_parse_failures: u32 = 0;
     var current_vol: ?VolInfo = null;
     var pos: usize = 0;
 
@@ -672,6 +679,7 @@ pub fn validateMpeg4P2Stream(data: []const u8, max_frames: u32) Mpeg4P2Validatio
                     // Tolerate individual VOP parse failures — early encoders
                     // (DivX 3/4/5, XviD) produce non-conformant headers.
                     // Only fail if no VOP could be parsed at all (checked below).
+                    vop_parse_failures += 1;
                 }
             }
         } else if (sc.code == @intFromEnum(StartCode.visual_object_sequence_start)) {
@@ -715,7 +723,12 @@ pub fn validateMpeg4P2Stream(data: []const u8, max_frames: u32) Mpeg4P2Validatio
         return Mpeg4P2ValidationResult.invalid("No VOP frames found");
     }
 
-    return Mpeg4P2ValidationResult.ok(vol_count, vop_count, i_vops, p_vops, b_vops, s_vops, width, height);
+    var result = Mpeg4P2ValidationResult.ok(vol_count, vop_count, i_vops, p_vops, b_vops, s_vops, width, height);
+    result.vop_parse_failures = vop_parse_failures;
+    if (vop_parse_failures > 0) {
+        result.warning_message = "Some VOP headers could not be parsed (non-conformant encoder)";
+    }
+    return result;
 }
 
 // ============ Tests ============
