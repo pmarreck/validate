@@ -101,8 +101,8 @@
 					default = mkValidate { };
 				} // (if buildSystem == "x86_64-linux" then {
 					# Cross-compiled builds from Linux (for CI artifacts)
-					linux-x86_64 = mkValidate { targetSystem = "x86_64-linux"; };
-					linux-aarch64 = mkValidate { targetSystem = "aarch64-linux"; cross = true; };
+					# Only cross-compile for targets without native Garnix builders
+					# Linux x86_64/aarch64 are built natively by Garnix on those platforms
 					windows-x86_64 = mkValidate { targetSystem = "x86_64-windows"; cross = true; };
 					macos-x86_64 = mkValidate { targetSystem = "x86_64-darwin"; cross = true; };
 					macos-aarch64 = mkValidate { targetSystem = "aarch64-darwin"; cross = true; };
