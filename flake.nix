@@ -85,6 +85,7 @@
 								mkdir -p $ZIG_GLOBAL_CACHE_DIR
 								cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
 								chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+								${if cross then "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS" else ""}
 								zig build -Doptimize=ReleaseFast --release=fast ${if cross then "-Dtarget=${zigTarget}" else ""}
 							'';
 
