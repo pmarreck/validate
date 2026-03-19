@@ -1006,78 +1006,83 @@ pub const MatroskaParser = struct {
 
     /// Collect keyframes into a list.
     /// Returns a list of keyframe data that must be freed by the caller.
-    pub fn collectKeyframes(
-        self: *MatroskaParser,
-        video_track_number: u64,
-        max_keyframes: usize,
-    ) ?[]KeyframeData {
-        if (self.segment_offset == 0) {
-            if (!self.findSegment()) return null;
-        }
-
-        _ = self.reader.seekTo(self.segment_offset);
-        const segment_end = if (self.segment_size) |s|
-            self.segment_offset + s
-        else
-            self.reader.file_size;
-
-        var keyframes: std.ArrayListUnmanaged(KeyframeData) = .{};
-        errdefer {
-            for (keyframes.items) |*kf| kf.deinit();
-            keyframes.deinit(self.allocator);
-        }
-
-        var current_cluster_timestamp: i64 = 0;
-
-        while ((self.reader.getPos() orelse segment_end) < segment_end and keyframes.items.len < max_keyframes) {
-            const element = self.reader.readElementHeader() orelse break;
-
-            if (element.id == Segment_ID.Cluster) {
-                const cluster_end = element.data_offset + (element.size orelse break);
-                _ = self.reader.seekTo(element.data_offset);
-
-                while ((self.reader.getPos() orelse cluster_end) < cluster_end and keyframes.items.len < max_keyframes) {
-                    const cluster_child = self.reader.readElementHeader() orelse break;
-
-                    switch (cluster_child.id) {
-                        Cluster_ID.Timestamp => {
-                            current_cluster_timestamp = @intCast(self.reader.readElementUint(cluster_child) orelse 0);
-                        },
-                        Cluster_ID.SimpleBlock => {
-                            if (self.extractSimpleBlockKeyframe(cluster_child, video_track_number, current_cluster_timestamp)) |kf| {
-                                keyframes.append(self.allocator, kf) catch {
-                                    var mutable_kf = kf;
-                                    mutable_kf.deinit();
-                                    continue;
-                                };
-                            }
-                        },
-                        Cluster_ID.BlockGroup => {
-                            if (self.extractBlockGroupKeyframe(cluster_child, video_track_number, current_cluster_timestamp)) |kf| {
-                                keyframes.append(self.allocator, kf) catch {
-                                    var mutable_kf = kf;
-                                    mutable_kf.deinit();
-                                    continue;
-                                };
-                            }
-                        },
-                        else => {
-                            _ = self.reader.skipElement(cluster_child);
-                        },
-                    }
-                }
-            } else {
-                _ = self.reader.skipElement(element);
-            }
-        }
-
-        if (keyframes.items.len == 0) {
-            keyframes.deinit(self.allocator);
-            return null;
-        }
-
-        return keyframes.toOwnedSlice(self.allocator) catch null;
-    }
+    // Previously used for partial validation (keyframe-only checks).
+    // Replaced by collectAllFrames for full validation — audio tracks
+    // don't set the keyframe flag, causing this to return null.
+    // Retained in case keyframe-only collection is ever needed again.
+    //
+    // pub fn collectKeyframes(
+    //     self: *MatroskaParser,
+    //     video_track_number: u64,
+    //     max_keyframes: usize,
+    // ) ?[]KeyframeData {
+    //     if (self.segment_offset == 0) {
+    //         if (!self.findSegment()) return null;
+    //     }
+    //
+    //     _ = self.reader.seekTo(self.segment_offset);
+    //     const segment_end = if (self.segment_size) |s|
+    //         self.segment_offset + s
+    //     else
+    //         self.reader.file_size;
+    //
+    //     var keyframes: std.ArrayListUnmanaged(KeyframeData) = .{};
+    //     errdefer {
+    //         for (keyframes.items) |*kf| kf.deinit();
+    //         keyframes.deinit(self.allocator);
+    //     }
+    //
+    //     var current_cluster_timestamp: i64 = 0;
+    //
+    //     while ((self.reader.getPos() orelse segment_end) < segment_end and keyframes.items.len < max_keyframes) {
+    //         const element = self.reader.readElementHeader() orelse break;
+    //
+    //         if (element.id == Segment_ID.Cluster) {
+    //             const cluster_end = element.data_offset + (element.size orelse break);
+    //             _ = self.reader.seekTo(element.data_offset);
+    //
+    //             while ((self.reader.getPos() orelse cluster_end) < cluster_end and keyframes.items.len < max_keyframes) {
+    //                 const cluster_child = self.reader.readElementHeader() orelse break;
+    //
+    //                 switch (cluster_child.id) {
+    //                     Cluster_ID.Timestamp => {
+    //                         current_cluster_timestamp = @intCast(self.reader.readElementUint(cluster_child) orelse 0);
+    //                     },
+    //                     Cluster_ID.SimpleBlock => {
+    //                         if (self.extractSimpleBlockKeyframe(cluster_child, video_track_number, current_cluster_timestamp)) |kf| {
+    //                             keyframes.append(self.allocator, kf) catch {
+    //                                 var mutable_kf = kf;
+    //                                 mutable_kf.deinit();
+    //                                 continue;
+    //                             };
+    //                         }
+    //                     },
+    //                     Cluster_ID.BlockGroup => {
+    //                         if (self.extractBlockGroupKeyframe(cluster_child, video_track_number, current_cluster_timestamp)) |kf| {
+    //                             keyframes.append(self.allocator, kf) catch {
+    //                                 var mutable_kf = kf;
+    //                                 mutable_kf.deinit();
+    //                                 continue;
+    //                             };
+    //                         }
+    //                     },
+    //                     else => {
+    //                         _ = self.reader.skipElement(cluster_child);
+    //                     },
+    //                 }
+    //             }
+    //         } else {
+    //             _ = self.reader.skipElement(element);
+    //         }
+    //     }
+    //
+    //     if (keyframes.items.len == 0) {
+    //         keyframes.deinit(self.allocator);
+    //         return null;
+    //     }
+    //
+    //     return keyframes.toOwnedSlice(self.allocator) catch null;
+    // }
 
     /// Extract keyframe data from a SimpleBlock (returns null if not a keyframe or wrong track)
     fn extractSimpleBlockKeyframe(
