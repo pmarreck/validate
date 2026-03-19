@@ -1150,25 +1150,25 @@ fn validateMp4Ac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
 
 /// Validate AC-3 track from MKV container
 fn validateMkvAc3Track(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.VideoTrackInfo) AudioValidationResult {
-    // Collect some audio frames using keyframe collection
-    const keyframes = parser.collectKeyframes(track.track_number, 10) orelse {
+    // Collect audio frames (use collectAllFrames since audio blocks may not have keyframe flag set)
+    const frames = parser.collectAllFrames(track.track_number, 10) orelse {
         return AudioValidationResult.invalid("Failed to collect AC-3 frames", .ac3);
     };
     defer {
-        for (keyframes) |*kf| {
+        for (frames) |*kf| {
             var mutable_kf = @constCast(kf);
             mutable_kf.deinit();
         }
-        allocator.free(keyframes);
+        allocator.free(frames);
     }
 
-    if (keyframes.len == 0) {
+    if (frames.len == 0) {
         return AudioValidationResult.invalid("No AC-3 frames found", .ac3);
     }
 
     // Validate each frame
     var total_frames: u32 = 0;
-    for (keyframes) |kf| {
+    for (frames) |kf| {
         const result = ac3_validator.validateAc3Stream(kf.data, 10);
         if (!result.valid) {
             return AudioValidationResult.invalid(result.error_message orelse "AC-3 validation failed", .ac3);
@@ -1321,25 +1321,25 @@ fn validateMp4Eac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
 
 /// Validate E-AC-3 track from MKV container
 fn validateMkvEac3Track(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.VideoTrackInfo) AudioValidationResult {
-    // Collect some audio frames using keyframe collection
-    const keyframes = parser.collectKeyframes(track.track_number, 10) orelse {
+    // Collect audio frames (use collectAllFrames since audio blocks may not have keyframe flag set)
+    const frames = parser.collectAllFrames(track.track_number, 10) orelse {
         return AudioValidationResult.invalid("Failed to collect E-AC-3 frames", .eac3);
     };
     defer {
-        for (keyframes) |*kf| {
+        for (frames) |*kf| {
             var mutable_kf = @constCast(kf);
             mutable_kf.deinit();
         }
-        allocator.free(keyframes);
+        allocator.free(frames);
     }
 
-    if (keyframes.len == 0) {
+    if (frames.len == 0) {
         return AudioValidationResult.invalid("No E-AC-3 frames found", .eac3);
     }
 
     // Validate each frame
     var total_frames: u32 = 0;
-    for (keyframes) |kf| {
+    for (frames) |kf| {
         const result = eac3_validator.validateEac3Stream(kf.data, 10);
         if (!result.valid) {
             return AudioValidationResult.invalid(result.error_message orelse "E-AC-3 validation failed", .eac3);
