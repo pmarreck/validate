@@ -166,7 +166,9 @@ pub const VideoValidationResult = struct {
 pub fn validateHevcStream(data: []const u8, max_frames: u32) VideoValidationResult {
     const result = h265.validateH265Stream(data, max_frames);
     if (result.valid) {
-        return VideoValidationResult.okDecoded(.hevc, result.frames_decoded);
+        var vr = VideoValidationResult.okDecoded(.hevc, result.frames_decoded);
+        vr.warning_message = result.warning_message;
+        return vr;
     }
     return VideoValidationResult.invalid(result.error_message orelse "H.265 validation failed", .hevc);
 }

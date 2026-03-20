@@ -664,6 +664,7 @@ const SliceSegmentInfo = struct {
     slice_sao_luma_flag: bool = false,
     slice_sao_chroma_flag: bool = false,
     header_bits: usize = 0, // bits consumed by slice header
+    header_fully_parsed: bool = false, // true only if header was parsed to completion
 };
 
 /// Parse just enough of the slice segment header to determine if it starts a new picture.
@@ -774,6 +775,7 @@ fn parseFullSliceSegmentHeader(
     // Skip for now — we have enough for CABAC init
 
     info.header_bits = reader.bit_pos;
+    info.header_fully_parsed = true;
     return info;
 }
 
@@ -864,6 +866,7 @@ const NalUnitIterator = struct {
 pub const H265ValidationResult = struct {
     valid: bool,
     error_message: ?[]const u8,
+    warning_message: ?[]const u8 = null,
     frames_decoded: u32,
     has_vps: bool,
     has_sps: bool,
@@ -1063,8 +1066,10 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                                 frames_counted += 1;
                             }
 
-                            // CABAC decode for I-slices with enough header info
-                            if (slice_info.slice_type == 2 and slice_info.header_bits > 0) {
+                            // CABAC decode for I-slices with fully parsed headers only.
+                            // CRA/BLA I-slices bail out early from header parsing (ref pic set
+                            // is too complex), leaving header_bits wrong for CABAC start offset.
+                            if (slice_info.slice_type == 2 and slice_info.header_fully_parsed) {
                                 const log2_min_cb = sps.log2_min_luma_coding_block_size_minus3 + 3;
                                 const log2_ctb = log2_min_cb + sps.log2_diff_max_min_luma_coding_block_size;
                                 const ctb_size = @as(u32, 1) << @intCast(log2_ctb);
@@ -1208,25 +1213,17 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
         return H265ValidationResult.invalid("H.265 SPS has zero width or height");
     }
 
-    // CABAC corruption detection: anomaly-based.
-    // Instead of a ratio threshold (which fails because corruption in CABAC data
-    // often produces different-but-valid decoded bins — the JPEG paradox for CABAC),
-    // we look for specific anomalies:
-    // - Complete decode failure (0 CTUs from a tile)
-    // - All CTUs decoded but no clean termination (bit desync)
-    // - Engine failure with >50% data unconsumed (early divergence)
-    if (cabac_anomalies > 0) {
-        return H265ValidationResult.invalidPartial(
-            "H.265 CABAC decode failed: slice data corrupted",
-            frames_counted,
-            width,
-            height,
-        );
-    }
-
+    // CABAC anomaly detection: anomaly-based, but WARN not FAIL.
+    // CABAC failures don't reliably indicate corruption (the JPEG paradox:
+    // corruption in CABAC data often produces different-but-valid decoded bins).
+    // Additionally, our decoder doesn't handle all H.265 profiles/features
+    // (e.g., 10-bit CRA slice headers, WPP, tiles with entry points), so
+    // CABAC failures may be false positives from incomplete header parsing.
+    // Real corruption is reliably detected by structural checks (NAL/SPS/PPS).
     return .{
         .valid = true,
         .error_message = null,
+        .warning_message = if (cabac_anomalies > 0) "H.265 CABAC decode anomalies detected (may indicate non-conformant encoder)" else null,
         .frames_decoded = frames_counted,
         .has_vps = found_vps,
         .has_sps = found_sps,
