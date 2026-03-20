@@ -7,6 +7,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
@@ -117,7 +119,7 @@ pub fn isAppleDouble(data: []const u8) bool {
 }
 
 /// Validate AppleDouble file structure.
-pub fn validateAppleDouble(file: std.fs.File) ValidationResult {
+pub fn validateAppleDouble(file: *FileSource) ValidationResult {
 	var header: [26]u8 = undefined;
 	const bytes_read = file.read(&header) catch {
 		return ValidationResult.invalidCode(.apple_double, .failed_to_read, "AppleDouble header");
@@ -152,7 +154,7 @@ pub fn validateAppleDouble(file: std.fs.File) ValidationResult {
 
 /// Validate ClarisWorks/AppleWorks document (best effort).
 /// ClarisWorks uses a proprietary format with various magic bytes depending on version.
-pub fn validateClarisWorks(file: std.fs.File) ValidationResult {
+pub fn validateClarisWorks(file: *FileSource) ValidationResult {
 	var header: [32]u8 = undefined;
 	const bytes_read = file.read(&header) catch {
 		return ValidationResult.invalidCode(.cwk, .failed_to_read, "ClarisWorks header");
@@ -183,7 +185,7 @@ pub fn validateClarisWorks(file: std.fs.File) ValidationResult {
 
 /// Validate MacWrite document (best effort).
 /// MacWrite has evolved through several versions with different formats.
-pub fn validateMacWrite(file: std.fs.File) ValidationResult {
+pub fn validateMacWrite(file: *FileSource) ValidationResult {
 	var header: [16]u8 = undefined;
 	const bytes_read = file.read(&header) catch {
 		return ValidationResult.invalidCode(.mwd, .failed_to_read, "MacWrite header");
@@ -218,12 +220,12 @@ pub fn validateMacWrite(file: std.fs.File) ValidationResult {
 // ============ Apple Property List (plist) Validation ============
 
 /// Validate Apple Property List files (XML or binary format).
-pub fn validatePlist(file: std.fs.File) ValidationResult {
-	const stat = file.stat() catch {
+pub fn validatePlist(file: *FileSource) ValidationResult {
+	const file_size = file.getEndPos() catch {
 		return ValidationResult.invalidCode(.plist, .failed_to_stat, "file");
 	};
 
-	if (stat.size < 8) {
+	if (file_size < 8) {
 		return ValidationResult.invalidCode(.plist, .file_too_small, "plist format");
 	}
 
@@ -239,23 +241,23 @@ pub fn validatePlist(file: std.fs.File) ValidationResult {
 
 	// Check for binary plist magic: "bplist00" or "bplist01"
 	if (std.mem.eql(u8, header[0..6], "bplist")) {
-		return validateBinaryPlist(file, stat.size);
+		return validateBinaryPlist(file, file_size);
 	}
 
 	// Otherwise, assume XML plist
-	return validateXmlPlist(file, stat.size);
+	return validateXmlPlist(file, file_size);
 }
 
 /// Validate macOS .DS_Store file (Desktop Services Store)
 /// DS_Store files store custom folder attributes (icon positions, view settings, etc.)
 /// Format: 0x00000001 (big-endian) + "Bud1" magic + allocator + B-tree structure
-pub fn validateDsStore(file: std.fs.File) ValidationResult {
-	const stat = file.stat() catch {
+pub fn validateDsStore(file: *FileSource) ValidationResult {
+	const file_size = file.getEndPos() catch {
 		return ValidationResult.invalidCode(.ds_store, .failed_to_stat, "file");
 	};
 
 	// Minimum size: header (32 bytes minimum)
-	if (stat.size < 32) {
+	if (file_size < 32) {
 		return ValidationResult.invalidCode(.ds_store, .file_too_small, "DS_Store format");
 	}
 
@@ -293,10 +295,10 @@ pub fn validateDsStore(file: std.fs.File) ValidationResult {
 	const bookkeeping_offset_copy = std.mem.readInt(u32, header[16..20], .big);
 
 	// Sanity checks
-	if (bookkeeping_offset > stat.size) {
+	if (bookkeeping_offset > file_size) {
 		return ValidationResult.invalidCodeMsg(.ds_store, .exceeds_bounds, "Bookkeeping offset", "Bookkeeping offset exceeds file size");
 	}
-	if (bookkeeping_size > stat.size) {
+	if (bookkeeping_size > file_size) {
 		return ValidationResult.invalidCodeMsg(.ds_store, .exceeds_bounds, "Bookkeeping size", "Bookkeeping size exceeds file size");
 	}
 	if (bookkeeping_offset != bookkeeping_offset_copy) {
@@ -310,7 +312,7 @@ pub fn validateDsStore(file: std.fs.File) ValidationResult {
 	// 4-7: number of block allocations
 	// 8+: block allocation table entries
 
-	if (bookkeeping_offset + 8 > stat.size) {
+	if (bookkeeping_offset + 8 > file_size) {
 		return ValidationResult.invalid(.ds_store, "Bookkeeping section truncated");
 	}
 
@@ -337,7 +339,7 @@ pub fn validateDsStore(file: std.fs.File) ValidationResult {
 
 	// Each allocation entry is 4 bytes, so verify we have enough room
 	const alloc_table_size = num_allocations * 4;
-	if (bookkeeping_offset + 8 + alloc_table_size > stat.size) {
+	if (bookkeeping_offset + 8 + alloc_table_size > file_size) {
 		return ValidationResult.invalid(.ds_store, "Allocation table extends beyond file");
 	}
 
@@ -348,7 +350,7 @@ pub fn validateDsStore(file: std.fs.File) ValidationResult {
 /// Validate macOS Spotlight index file (proprietary Apple format)
 /// Magic: "8tsd" at offset 0. Deep validation is not possible since the format
 /// is proprietary and undocumented, so we verify the magic and return structural.
-pub fn validateSpotlight(file: std.fs.File) ValidationResult {
+pub fn validateSpotlight(file: *FileSource) ValidationResult {
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.spotlight, .failed_to_seek, "in Spotlight file");
 	};
@@ -371,7 +373,7 @@ pub fn validateSpotlight(file: std.fs.File) ValidationResult {
 }
 
 /// Validate binary plist format (bplist00/bplist01)
-pub fn validateBinaryPlist(file: std.fs.File, file_size: u64) ValidationResult {
+pub fn validateBinaryPlist(file: *FileSource, file_size: u64) ValidationResult {
 	// Binary plist structure:
 	// - Header: "bplist00" or "bplist01" (8 bytes)
 	// - Object table (variable)
@@ -453,7 +455,7 @@ pub fn validateBinaryPlist(file: std.fs.File, file_size: u64) ValidationResult {
 }
 
 /// Validate XML plist format
-pub fn validateXmlPlist(file: std.fs.File, file_size: u64) ValidationResult {
+pub fn validateXmlPlist(file: *FileSource, file_size: u64) ValidationResult {
 	// For XML plists, delegate to XML validator but verify plist structure
 	if (file_size > max_text_file_size) {
 		return ValidationResult.invalid(.plist, "XML plist too large (>1GB)");

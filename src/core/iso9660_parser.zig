@@ -11,6 +11,8 @@
 //! Reference: ECMA-119, ISO 9660:1988
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
 
 // ============================================================================
@@ -370,7 +372,7 @@ pub fn validateIso9660(data: []const u8) Iso9660ValidationResult {
 }
 
 /// Validate ISO 9660 from file
-pub fn validateIso9660File(file: std.fs.File, allocator: std.mem.Allocator) Iso9660ValidationResult {
+pub fn validateIso9660File(file: *FileSource, allocator: std.mem.Allocator) Iso9660ValidationResult {
     const file_size = file.getEndPos() catch {
         return Iso9660ValidationResult.invalid(errmsg.failedToGet("file size"));
     };
@@ -723,14 +725,14 @@ test "validateIso9660 - synthetic ISO" {
 }
 
 test "ground truth - ISO sample" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/iso/sample.iso", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/iso/sample.iso") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer source.close();
 
     const allocator = std.testing.allocator;
-    const result = validateIso9660File(file, allocator);
+    const result = validateIso9660File(&source, allocator);
 
     try std.testing.expect(result.valid);
     try std.testing.expect(result.logical_block_size > 0);

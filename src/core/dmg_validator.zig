@@ -11,6 +11,8 @@
 //! Reference: https://newosxbook.com/DMG.html
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
 
 // ============================================================================
@@ -214,7 +216,7 @@ fn crc32(data: []const u8) u32 {
 // ============================================================================
 
 /// Validate DMG file with checksum verification
-pub fn validateDmgFile(file: std.fs.File, allocator: std.mem.Allocator) DmgValidationResult {
+pub fn validateDmgFile(file: *FileSource, allocator: std.mem.Allocator) DmgValidationResult {
     // Get file size
     const file_size = file.getEndPos() catch {
         return DmgValidationResult.invalid(errmsg.failedToGet("file size"));
@@ -566,14 +568,14 @@ test "validateDmgBuffer - detects corruption" {
 
 test "ground truth - DMG sample" {
     // Test with real DMG file if available
-    const file = std.fs.cwd().openFile("ground_truth_examples/dmg/sample.dmg", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/dmg/sample.dmg") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer source.close();
 
     const allocator = std.testing.allocator;
-    const result = validateDmgFile(file, allocator);
+    const result = validateDmgFile(&source, allocator);
 
     try std.testing.expect(result.valid);
     try std.testing.expect(result.data_fork_size > 0);

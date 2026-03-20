@@ -74,6 +74,17 @@ pub const FileSource = struct {
         };
     }
 
+    /// Wrap an existing std.fs.File into a FileSource (file-backed, no mmap).
+    /// The caller retains ownership of the underlying file handle.
+    /// Do NOT call close() on this FileSource — it does not own the handle.
+    pub fn fromFile(file: std.fs.File) FileSource {
+        const file_size = file.getEndPos() catch 0;
+        return .{
+            .backing = .{ .file = file },
+            .file_size = file_size,
+        };
+    }
+
     /// Close the file source and release resources.
     pub fn close(self: *FileSource) void {
         switch (self.backing) {
@@ -83,6 +94,16 @@ pub const FileSource = struct {
             },
             .file => |f| f.close(),
         }
+    }
+
+    /// Seek relative to current position.
+    pub fn seekBy(self: *FileSource, offset: i64) !void {
+        const current = try self.getPos();
+        const new_pos = if (offset >= 0)
+            current +| @as(u64, @intCast(offset))
+        else
+            current -| @as(u64, @intCast(-offset));
+        try self.seekTo(new_pos);
     }
 
     /// Seek to an absolute position.

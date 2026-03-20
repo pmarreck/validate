@@ -45,6 +45,8 @@
 const std = @import("std");
 const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 /// OLE2 magic signature: D0 CF 11 E0 A1 B1 1A E1
 pub const OLE2_MAGIC = [_]u8{ 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 };
@@ -115,16 +117,16 @@ const Ole2Header = struct {
 
 /// Validate OLE2/CFBF file structure deeply.
 pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => Ole2ValidationResult.invalid("File not found"),
             error.AccessDenied => Ole2ValidationResult.invalid("Access denied"),
             else => Ole2ValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return Ole2ValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
@@ -134,7 +136,7 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
 
     // Read and parse header
     var header_buf: [512]u8 = undefined;
-    const header_bytes = file.readAll(&header_buf) catch {
+    const header_bytes = source.readAll(&header_buf) catch {
         return Ole2ValidationResult.invalid(errmsg.failedToRead("OLE2 header"));
     };
 
@@ -160,7 +162,7 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
     const total_sectors = @as(u32, @intCast((file_size - header_region_size) / header.sector_size));
 
     // Validate FAT
-    const fat = readFat(allocator, file, &header, total_sectors) catch |err| {
+    const fat = readFat(allocator, &source, &header, total_sectors) catch |err| {
         return switch (err) {
             error.OutOfMemory => Ole2ValidationResult.invalid(errmsg.outOfMemory("reading FAT")),
             error.InvalidDifatChain => Ole2ValidationResult.invalid("Invalid DIFAT chain"),
@@ -178,7 +180,7 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
     }
 
     // Read and validate directory entries
-    const dir_result = validateDirectoryEntries(allocator, file, &header, fat, total_sectors) catch |err| {
+    const dir_result = validateDirectoryEntries(allocator, &source, &header, fat, total_sectors) catch |err| {
         return switch (err) {
             error.OutOfMemory => Ole2ValidationResult.invalid(errmsg.outOfMemory("reading directory")),
             error.InvalidDirectorySector => Ole2ValidationResult.invalid("Invalid directory sector"),
@@ -193,7 +195,7 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
 
     // Validate mini-FAT integrity (if present)
     if (header.total_mini_fat_sectors > 0 and header.first_mini_fat_sector != ENDOFCHAIN) {
-        const mini_fat = readMiniFat(allocator, file, &header, fat) catch {
+        const mini_fat = readMiniFat(allocator, &source, &header, fat) catch {
             return Ole2ValidationResult.invalid("Failed to read mini-FAT");
         };
         defer allocator.free(mini_fat);
@@ -294,7 +296,7 @@ const FatReadError = error{
     ReadError,
 };
 
-fn readFat(allocator: Allocator, file: std.fs.File, header: *const Ole2Header, total_sectors: u32) FatReadError![]u32 {
+fn readFat(allocator: Allocator, file: *FileSource, header: *const Ole2Header, total_sectors: u32) FatReadError![]u32 {
     const entries_per_sector = header.sector_size / 4;
     const total_fat_entries = header.total_fat_sectors * entries_per_sector;
 
@@ -425,7 +427,7 @@ const DirectoryError = error{
 
 fn validateDirectoryEntries(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     header: *const Ole2Header,
     fat: []const u32,
     total_sectors: u32,
@@ -631,15 +633,15 @@ const DirEntryInfo = struct {
 /// stream_name_ascii is an ASCII name (e.g. "WordDocument") which is matched against
 /// UTF-16LE directory entry names.
 pub fn readNamedStream(allocator: Allocator, path: []const u8, stream_name_ascii: []const u8) ?[]u8 {
-    const file = std.fs.cwd().openFile(path, .{}) catch return null;
-    defer file.close();
+    var source = FileSource.open(path) catch return null;
+    defer source.close();
 
-    const file_size = file.getEndPos() catch return null;
+    const file_size = source.getEndPos() catch return null;
     if (file_size < 512) return null;
 
     // Read and parse header
     var header_buf: [512]u8 = undefined;
-    const header_bytes = file.readAll(&header_buf) catch return null;
+    const header_bytes = source.readAll(&header_buf) catch return null;
     if (header_bytes < 512) return null;
 
     const header = parseHeader(&header_buf) catch return null;
@@ -648,11 +650,11 @@ pub fn readNamedStream(allocator: Allocator, path: []const u8, stream_name_ascii
     const total_sectors = @as(u32, @intCast((file_size - header_region_size) / header.sector_size));
 
     // Read FAT
-    const fat = readFat(allocator, file, &header, total_sectors) catch return null;
+    const fat = readFat(allocator, &source, &header, total_sectors) catch return null;
     defer allocator.free(fat);
 
     // Read directory entries and find the named stream
-    const entry_info = findStreamEntry(allocator, file, &header, fat, total_sectors, stream_name_ascii) catch return null;
+    const entry_info = findStreamEntry(allocator, &source, &header, fat, total_sectors, stream_name_ascii) catch return null;
     if (entry_info == null) return null;
 
     const info = entry_info.?;
@@ -667,17 +669,17 @@ pub fn readNamedStream(allocator: Allocator, path: []const u8, stream_name_ascii
     // Read the stream data
     if (info.stream_size < header.mini_stream_cutoff and info.entry_type != .root) {
         // Small stream: use mini-FAT + mini-stream
-        return readMiniStreamData(allocator, file, &header, fat, total_sectors, info.start_sector, info.stream_size) catch return null;
+        return readMiniStreamData(allocator, &source, &header, fat, total_sectors, info.start_sector, info.stream_size) catch return null;
     } else {
         // Large stream: use regular FAT chain
-        return readStreamData(allocator, file, &header, fat, info.start_sector, info.stream_size) catch return null;
+        return readStreamData(allocator, &source, &header, fat, info.start_sector, info.stream_size) catch return null;
     }
 }
 
 /// Find a stream entry by ASCII name in the OLE2 directory.
 fn findStreamEntry(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     header: *const Ole2Header,
     fat: []const u32,
     total_sectors: u32,
@@ -751,7 +753,7 @@ fn findStreamEntry(
 /// Read stream data following a FAT chain.
 fn readStreamData(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     header: *const Ole2Header,
     fat: []const u32,
     start_sector: u32,
@@ -792,7 +794,7 @@ fn readStreamData(
 /// Mini-stream is stored in the root entry's stream data, indexed by mini-FAT.
 fn readMiniStreamData(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     header: *const Ole2Header,
     fat: []const u32,
     total_sectors: u32,
@@ -842,7 +844,7 @@ fn readMiniStreamData(
 /// Read the mini-FAT from the file.
 fn readMiniFat(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     header: *const Ole2Header,
     fat: []const u32,
 ) ![]u32 {

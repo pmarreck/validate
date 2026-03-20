@@ -14,6 +14,8 @@
 //! 3. Report any decode errors
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
 
 // Import minimp3 via C interop
@@ -95,7 +97,7 @@ pub const Mp3Decoder = struct {
 };
 
 /// Validate MP3 file by full decode.
-pub fn validateMp3Decode(file: std.fs.File) Mp3DecodeResult {
+pub fn validateMp3Decode(file: *FileSource) Mp3DecodeResult {
     var decoder = Mp3Decoder.init();
     var frames_decoded: u32 = 0;
     var samples_decoded: u64 = 0;
@@ -103,10 +105,9 @@ pub fn validateMp3Decode(file: std.fs.File) Mp3DecodeResult {
     var sample_rate: u32 = 0;
 
     // Get file size
-    const stat = file.stat() catch {
+    const file_size = file.getEndPos() catch {
         return Mp3DecodeResult.invalid(errmsg.failedToStat("file"), 0);
     };
-    const file_size = stat.size;
 
     if (file_size == 0) {
         return Mp3DecodeResult.invalid(errmsg.empty("file"), 0);
@@ -191,11 +192,11 @@ pub fn validateMp3Decode(file: std.fs.File) Mp3DecodeResult {
 
 /// Validate MP3 decode from a file path.
 pub fn validateMp3DecodePath(path: []const u8) Mp3DecodeResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return Mp3DecodeResult.invalid(errmsg.failedToOpen("file"), 0);
     };
-    defer file.close();
-    return validateMp3Decode(file);
+    defer source.close();
+    return validateMp3Decode(&source);
 }
 
 /// Validate MP3 data from an in-memory buffer (for MPEG-TS PES streams, etc.)

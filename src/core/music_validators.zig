@@ -1,5 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
@@ -29,7 +31,7 @@ const findInBuffer = format_validation.findInBuffer;
 // ============ MP3 Validator ============
 
 /// Validate MP3 file structure.
-pub fn validateMp3(file: std.fs.File) ValidationResult {
+pub fn validateMp3(file: *FileSource) ValidationResult {
     var header: [10]u8 = undefined;
     var pos: u64 = 0;
 
@@ -67,7 +69,7 @@ pub fn validateMp3(file: std.fs.File) ValidationResult {
 // ============ FLAC Validator ============
 
 /// Validate FLAC file structure.
-pub fn validateFlac(file: std.fs.File) ValidationResult {
+pub fn validateFlac(file: *FileSource) ValidationResult {
     var header: [4]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.flac, .failed_to_read, "FLAC header");
 
@@ -103,7 +105,7 @@ pub fn validateFlac(file: std.fs.File) ValidationResult {
 // ============ WAV Validator ============
 
 /// Validate WAV file structure (RIFF container).
-pub fn validateWav(file: std.fs.File) ValidationResult {
+pub fn validateWav(file: *FileSource) ValidationResult {
     var header: [12]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.wav, .failed_to_read, "WAV header");
 
@@ -144,17 +146,17 @@ pub fn validateWav(file: std.fs.File) ValidationResult {
 pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator; // No longer needed - using streaming validation
 
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.wav, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.wav, "Access denied", .structural),
             else => ValidationResult.invalidCodeWithDepth(.wav, .failed_to_open, "file", .structural),
         };
     };
-    defer file.close();
+    defer source.close();
 
     // Get file size for bounds checking
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_get, "file size", .structural);
     };
 
@@ -164,7 +166,7 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Read RIFF header (12 bytes)
     var header: [12]u8 = undefined;
-    const header_read = file.readAll(&header) catch {
+    const header_read = source.readAll(&header) catch {
         return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_read, "header", .structural);
     };
     if (header_read < 12) {
@@ -194,13 +196,13 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     while (offset + 8 <= file_size) {
         // Seek to chunk header
-        file.seekTo(offset) catch {
+        source.seekTo(offset) catch {
             return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_seek, "to chunk", .structural);
         };
 
         // Read chunk header (8 bytes: 4 ID + 4 size)
         var chunk_header: [8]u8 = undefined;
-        const chunk_read = file.readAll(&chunk_header) catch {
+        const chunk_read = source.readAll(&chunk_header) catch {
             break; // End of file
         };
         if (chunk_read < 8) break;
@@ -226,7 +228,7 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
             // Read fmt chunk data for validation
             var fmt_data: [16]u8 = undefined;
-            const fmt_read = file.readAll(&fmt_data) catch {
+            const fmt_read = source.readAll(&fmt_data) catch {
                 return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_read, "fmt chunk", .structural);
             };
             if (fmt_read < 16) {
@@ -294,7 +296,7 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // IEEE 754 float PCM (format tag 3): scan every sample for NaN/Inf corruption
     if (fmt_audio_format == 3 and (fmt_bits_per_sample == 32 or fmt_bits_per_sample == 64)) {
-        return validateWavFloatSamples(file, data_chunk_offset, data_chunk_size, fmt_bits_per_sample);
+        return validateWavFloatSamples(&source, data_chunk_offset, data_chunk_size, fmt_bits_per_sample);
     }
 
     // Integer PCM: no corruption signal (any value is valid) — structural only
@@ -302,7 +304,7 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
 }
 
 /// Scan IEEE 754 float WAV samples for NaN/Inf — definitive corruption signal.
-fn validateWavFloatSamples(file: std.fs.File, data_offset: u64, data_size: u32, bits_per_sample: u16) ValidationResult {
+fn validateWavFloatSamples(file: *FileSource, data_offset: u64, data_size: u32, bits_per_sample: u16) ValidationResult {
     file.seekTo(data_offset) catch {
         return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_seek, "to audio data", .full);
     };
@@ -344,17 +346,17 @@ fn validateWavFloatSamples(file: std.fs.File, data_offset: u64, data_size: u32, 
 /// Deep validation for AIFF audio files.
 /// Parses all IFF chunks and validates structure similar to WAV deep validation.
 pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.aiff, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.aiff, "Access denied", .structural),
             else => ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_open, "file", .structural),
         };
     };
-    defer file.close();
+    defer source.close();
 
     // Read entire file for validation
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_get, "file size", .structural);
     };
 
@@ -372,7 +374,7 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_read, "file", .structural);
     };
     if (bytes_read != file_size) {
@@ -514,7 +516,7 @@ pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult
 // ============ RIFF Audio Validator (WAV, AIFF) ============
 
 /// Validate RIFF-based audio file structure (WAV, AIFF).
-pub fn validateRiffAudio(file: std.fs.File, format: FileFormat) ValidationResult {
+pub fn validateRiffAudio(file: *FileSource, format: FileFormat) ValidationResult {
     var header: [12]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(format, .failed_to_read, "audio header");
 
@@ -557,7 +559,7 @@ pub fn validateRiffAudio(file: std.fs.File, format: FileFormat) ValidationResult
 // ============ Ogg Validator ============
 
 /// Validate Ogg container file structure (Vorbis, Opus, etc.).
-pub fn validateOgg(file: std.fs.File) ValidationResult {
+pub fn validateOgg(file: *FileSource) ValidationResult {
     var header: [27]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.ogg, .failed_to_read, "Ogg header");
 
@@ -628,28 +630,28 @@ pub fn validateOgg(file: std.fs.File) ValidationResult {
 /// Deep OGG validation using Vorbis or Opus codec decode.
 /// First verifies OGG page CRCs, then decodes audio packets.
 pub fn validateOggDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.ogg, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.ogg, "Access denied", .structural),
             else => ValidationResult.invalidCodeWithDepth(.ogg, .failed_to_open, "file", .structural),
         };
     };
-    defer file.close();
+    defer source.close();
 
     // First, verify OGG page CRCs for container integrity
-    const crc_result = ogg_validator.validateOggCrc(file);
+    const crc_result = ogg_validator.validateOggCrc(&source);
     if (!crc_result.valid) {
         return ValidationResult.invalidWithDepth(.ogg, crc_result.error_message orelse "OGG CRC verification failed", .full);
     }
 
     // Reset file position for packet extraction
-    file.seekTo(0) catch {
+    source.seekTo(0) catch {
         return ValidationResult.invalidCodeWithDepth(.ogg, .failed_to_seek, "to start", .structural);
     };
 
     // Extract packets to determine codec type
-    var packet_result = ogg_validator.extractPackets(allocator, file) catch |err| {
+    var packet_result = ogg_validator.extractPackets(allocator, &source) catch |err| {
         return ValidationResult.invalidWithDepth(.ogg, switch (err) {
             error.TruncatedPageHeader => errmsg.truncated("OGG page header"),
             error.InvalidOggSignature => errmsg.invalidSignature("OGG"),
@@ -671,11 +673,11 @@ pub fn validateOggDeep(allocator: Allocator, path: []const u8) ValidationResult 
     // Check for Vorbis: first byte 0x01 followed by "vorbis"
     if (first_packet.len >= 7 and first_packet[0] == 0x01 and std.mem.eql(u8, first_packet[1..7], "vorbis")) {
         // Reset and validate as Vorbis
-        file.seekTo(0) catch {
+        source.seekTo(0) catch {
             return ValidationResult.invalidCodeWithDepth(.ogg, .failed_to_seek, "for Vorbis validation", .full);
         };
 
-        const vorbis_result = vorbis_validator.validateOggVorbisAlloc(allocator, file);
+        const vorbis_result = vorbis_validator.validateOggVorbisAlloc(allocator, &source);
         if (vorbis_result.valid) {
             return ValidationResult.okWithDepth(.ogg, .full);
         } else {
@@ -686,11 +688,11 @@ pub fn validateOggDeep(allocator: Allocator, path: []const u8) ValidationResult 
     // Check for Opus: starts with "OpusHead"
     if (first_packet.len >= 8 and std.mem.eql(u8, first_packet[0..8], "OpusHead")) {
         // Reset and validate as Opus
-        file.seekTo(0) catch {
+        source.seekTo(0) catch {
             return ValidationResult.invalidCodeWithDepth(.ogg, .failed_to_seek, "for Opus validation", .full);
         };
 
-        const opus_result = opus_validator.validateOggOpus(file);
+        const opus_result = opus_validator.validateOggOpus(&source);
         if (opus_result.valid) {
             return ValidationResult.okWithDepth(.ogg, .full);
         } else {
@@ -728,7 +730,7 @@ pub fn validateOggDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Validate Standard MIDI File structure.
 /// MIDI files consist of a header chunk (MThd) followed by one or more track chunks (MTrk).
-pub fn validateMidi(file: std.fs.File) ValidationResult {
+pub fn validateMidi(file: *FileSource) ValidationResult {
     // Read header chunk: "MThd" + 4-byte length + 6-byte data
     var header: [14]u8 = undefined;
     const bytes_read = file.read(&header) catch {
@@ -805,7 +807,7 @@ pub fn validateMidi(file: std.fs.File) ValidationResult {
 /// Validate DSF (DSD Stream File) format.
 /// DSF is Sony's chunk-based format for DSD audio.
 /// Structure: DSD chunk (header) + fmt chunk (format info) + data chunk
-pub fn validateDsf(file: std.fs.File) ValidationResult {
+pub fn validateDsf(file: *FileSource) ValidationResult {
     var header: [28]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.dsf, .failed_to_read, "DSF header");
@@ -909,7 +911,7 @@ pub fn validateDsf(file: std.fs.File) ValidationResult {
 /// Validate DFF (DSDIFF) format.
 /// DSDIFF is Philips' IFF-based format for DSD audio.
 /// Structure: FRM8 container with DSD form type, containing property chunks
-pub fn validateDff(file: std.fs.File) ValidationResult {
+pub fn validateDff(file: *FileSource) ValidationResult {
     var header: [16]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.dff, .failed_to_read, "DFF header");
@@ -966,7 +968,7 @@ pub fn validateDff(file: std.fs.File) ValidationResult {
 
 /// Validate AC-3 (Dolby Digital) file structure.
 /// AC-3 frames start with sync word 0x0B77, bsid 0-8 at byte 5 bits 3-7.
-pub fn validateAc3(file: std.fs.File) ValidationResult {
+pub fn validateAc3(file: *FileSource) ValidationResult {
     var header: [6]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.ac3, .failed_to_read, "AC-3 header");
@@ -993,7 +995,7 @@ pub fn validateAc3(file: std.fs.File) ValidationResult {
 
 /// Validate E-AC-3 (Dolby Digital Plus) file structure.
 /// E-AC-3 frames start with sync word 0x0B77, bsid 16 at byte 5 bits 3-7.
-pub fn validateEac3(file: std.fs.File) ValidationResult {
+pub fn validateEac3(file: *FileSource) ValidationResult {
     var header: [6]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.eac3, .failed_to_read, "E-AC-3 header");
@@ -1022,7 +1024,7 @@ pub fn validateEac3(file: std.fs.File) ValidationResult {
 
 /// Validate ProTracker MOD file structure.
 /// MOD files have a signature at offset 1080: "M.K.", "M!K!", "FLT4", "FLT8", "4CHN", etc.
-pub fn validateMod(file: std.fs.File) ValidationResult {
+pub fn validateMod(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.mod, .failed_to_get, "file size");
     };
@@ -1086,7 +1088,7 @@ pub fn validateMod(file: std.fs.File) ValidationResult {
 
 /// Validate FastTracker 2 XM file structure.
 /// XM files start with "Extended Module: " followed by module name and version info.
-pub fn validateXm(file: std.fs.File) ValidationResult {
+pub fn validateXm(file: *FileSource) ValidationResult {
     var header: [80]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.xm, .failed_to_read, "XM header");
@@ -1129,7 +1131,7 @@ pub fn validateXm(file: std.fs.File) ValidationResult {
 
 /// Validate Impulse Tracker IT file structure.
 /// IT files start with "IMPM" signature followed by module info.
-pub fn validateIt(file: std.fs.File) ValidationResult {
+pub fn validateIt(file: *FileSource) ValidationResult {
     var header: [192]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.it, .failed_to_read, "IT header");
@@ -1174,7 +1176,7 @@ pub fn validateIt(file: std.fs.File) ValidationResult {
 
 /// Validate Scream Tracker 3 S3M file structure.
 /// S3M files have "SCRM" signature at offset 44.
-pub fn validateS3m(file: std.fs.File) ValidationResult {
+pub fn validateS3m(file: *FileSource) ValidationResult {
     var header: [96]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.s3m, .failed_to_read, "S3M header");
@@ -1219,7 +1221,7 @@ pub fn validateS3m(file: std.fs.File) ValidationResult {
 
 /// Validate Monkey's Audio (APE) file structure.
 /// APE files start with "MAC " signature followed by version and descriptor info.
-pub fn validateApe(file: std.fs.File) ValidationResult {
+pub fn validateApe(file: *FileSource) ValidationResult {
     var header: [32]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.ape, .failed_to_read, "APE header");
@@ -1271,7 +1273,7 @@ pub fn validateApe(file: std.fs.File) ValidationResult {
 /// Validate WavPack audio file structure.
 /// WavPack files start with "wvpk" signature followed by block header.
 /// Uses deep validation to parse all blocks and detect MD5 sub-block.
-pub fn validateWavPack(file: std.fs.File) ValidationResult {
+pub fn validateWavPack(file: *FileSource) ValidationResult {
     // Use the deep validator which parses all blocks and looks for MD5
     const allocator = std.heap.page_allocator;
     const result = wavpack_decoder.validateWavPackFile(file, 1000, allocator);
@@ -1335,16 +1337,16 @@ pub fn validateEac3Deep(path: []const u8) ValidationResult {
 /// Reads the file and uses libopenmpt to fully decode/render audio.
 pub fn validateTrackerFullDecode(path: []const u8, format: FileFormat) ValidationResult {
     // Open and read the file
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(format, "File not found", .full),
             error.AccessDenied => ValidationResult.invalidWithDepth(format, "Access denied", .full),
             else => ValidationResult.invalidCodeWithDepth(format, .failed_to_open, "file", .full),
         };
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(format, .failed_to_get, "file size", .full);
     };
 
@@ -1360,7 +1362,7 @@ pub fn validateTrackerFullDecode(path: []const u8, format: FileFormat) Validatio
     defer std.c.free(buffer);
 
     const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
-    const bytes_read = file.readAll(buf_slice) catch {
+    const bytes_read = source.readAll(buf_slice) catch {
         return ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "file", .full);
     };
     if (bytes_read != file_size) {
@@ -1431,18 +1433,18 @@ pub fn validateS3mDeep(path: []const u8) ValidationResult {
 /// We first check the structure, then attempt full decoding if possible.
 pub fn validateFlacDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // First, verify basic FLAC structure
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.flac, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.flac, "Access denied", .structural),
             else => ValidationResult.invalidCodeWithDepth(.flac, .failed_to_open, "file", .structural),
         };
     };
-    defer file.close();
+    defer source.close();
 
     // Read FLAC header
     var header: [42]u8 = undefined;
-    const header_bytes = file.read(&header) catch {
+    const header_bytes = source.read(&header) catch {
         return ValidationResult.invalidCodeWithDepth(.flac, .failed_to_read, "FLAC header", .structural);
     };
     if (header_bytes < 42) {
@@ -1560,17 +1562,17 @@ const SAMPLE_RATE_TABLE = [_][3]u32{
 pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
 
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.mp3, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.mp3, "Access denied", .structural),
             else => ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_open, "file", .structural),
         };
     };
-    defer file.close();
+    defer source.close();
 
     var header: [10]u8 = undefined;
-    _ = file.read(&header) catch {
+    _ = source.read(&header) catch {
         return ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_read, "header", .structural);
     };
 
@@ -1585,12 +1587,12 @@ pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult 
             @as(u32, header[9] & 0x7F);
         audio_start = audio_start + 10 + size;
 
-        file.seekTo(audio_start) catch {
+        source.seekTo(audio_start) catch {
             return ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_seek, "past ID3", .structural);
         };
 
         // Read next header (might be another ID3 or audio data)
-        _ = file.read(&header) catch {
+        _ = source.read(&header) catch {
             return ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_read, "after ID3", .structural);
         };
     }
@@ -1599,7 +1601,7 @@ pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult 
     // and we read 10 bytes into header, so we need to check those bytes
     // The first bytes of audio should be the frame sync (0xFF 0xE*)
     // We already have them in header[0..1], so seek back and let the frame loop handle it
-    file.seekTo(audio_start) catch {
+    source.seekTo(audio_start) catch {
         return ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_seek, "to audio", .structural);
     };
 
@@ -1609,7 +1611,7 @@ pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult 
 
     while (true) {
         var frame_header: [4]u8 = undefined;
-        const bytes_read = file.read(&frame_header) catch break;
+        const bytes_read = source.read(&frame_header) catch break;
         if (bytes_read < 4) break;
 
         // Check frame sync (11 bits: 0xFF followed by 0xE0 or higher in next byte)
@@ -1692,7 +1694,7 @@ pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult 
             frames_with_crc += 1;
 
             var crc_bytes: [2]u8 = undefined;
-            const crc_read = file.read(&crc_bytes) catch break;
+            const crc_read = source.read(&crc_bytes) catch break;
             if (crc_read < 2) break;
 
             const stored_crc = std.mem.readInt(u16, &crc_bytes, .big);
@@ -1703,10 +1705,12 @@ pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult 
             _ = stored_crc; // Would need to compute CRC over side info
 
             // Move to next frame (frame_size includes header but we already read header+CRC)
-            file.seekBy(@intCast(frame_size - 4 - 2)) catch break;
+            const cur_pos1 = source.getPos() catch break;
+            source.seekTo(cur_pos1 + (frame_size - 4 - 2)) catch break;
         } else {
             // No CRC, skip to next frame
-            file.seekBy(@intCast(frame_size - 4)) catch break;
+            const cur_pos2 = source.getPos() catch break;
+            source.seekTo(cur_pos2 + (frame_size - 4)) catch break;
         }
 
         frames_checked += 1;
@@ -1793,7 +1797,7 @@ pub fn validateOggFromBuffer(data: []const u8) ValidationResult {
 
 /// Validate AMR (Adaptive Multi-Rate) audio file structure.
 /// AMR-NB: "#!AMR\n", AMR-WB: "#!AMR-WB\n", multi-channel variants also supported.
-pub fn validateAmr(file: std.fs.File) ValidationResult {
+pub fn validateAmr(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.amr, .failed_to_seek, "in AMR file");
 
     var header: [15]u8 = undefined;
@@ -1834,7 +1838,7 @@ pub fn validateAmr(file: std.fs.File) ValidationResult {
 // ============ AU/SND Validator ============
 
 /// Validate AU/SND (Sun/NeXT audio) file structure.
-pub fn validateAu(file: std.fs.File) ValidationResult {
+pub fn validateAu(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.au, .failed_to_seek, "in AU file");
 
     var header: [24]u8 = undefined;
@@ -1872,7 +1876,7 @@ pub fn validateAu(file: std.fs.File) ValidationResult {
 // ============ TTA Validator ============
 
 /// Validate TTA (True Audio) lossless file structure with header CRC32 verification.
-pub fn validateTta(file: std.fs.File) ValidationResult {
+pub fn validateTta(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.tta, .failed_to_seek, "in TTA file");
 
     var header: [22]u8 = undefined;
@@ -1917,16 +1921,16 @@ pub fn validateTta(file: std.fs.File) ValidationResult {
 
 /// Deep TTA validation: verifies seek table CRC32 and per-frame CRC32s.
 pub fn validateTtaDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.tta, "File not found", .full),
             error.AccessDenied => ValidationResult.invalidWithDepth(.tta, "Access denied", .full),
             else => ValidationResult.invalidCodeWithDepth(.tta, .failed_to_open, "file", .full),
         };
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.tta, .failed_to_read, "file size", .full);
     };
 
@@ -1940,7 +1944,7 @@ pub fn validateTtaDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCodeWithDepth(.tta, .failed_to_read, "file data", .full);
     };
     if (bytes_read < 22) {
@@ -2034,7 +2038,7 @@ pub fn validateTtaDeep(allocator: Allocator, path: []const u8) ValidationResult 
 // ============ CAF Validator ============
 
 /// Validate CAF (Core Audio Format) file structure.
-pub fn validateCaf(file: std.fs.File) ValidationResult {
+pub fn validateCaf(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.caf, .failed_to_seek, "in CAF file");
 
     var header: [20]u8 = undefined;
@@ -2114,7 +2118,7 @@ pub fn validateCaf(file: std.fs.File) ValidationResult {
 // ============ AAC ADTS Validator ============
 
 /// Validate standalone AAC ADTS (.aac) file using pure-Zig bitstream validator.
-pub fn validateAacAdts(file: std.fs.File) ValidationResult {
+pub fn validateAacAdts(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.aac_adts, .failed_to_seek, "in AAC ADTS file");
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.aac_adts, .failed_to_get, "file size");
@@ -2255,169 +2259,169 @@ test "crc16Mpeg empty input returns initial value" {
 // ---------- Ground truth file-based structural validators ----------
 
 test "validateWav accepts ground truth WAV" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateWav(file);
+    var source = FileSource.open("ground_truth_examples/wav/sample.wav") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateWav(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.wav, result.format);
 }
 
 test "validateFlac accepts ground truth FLAC" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/flac/generated_tone_440hz.flac", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateFlac(file);
+    var source = FileSource.open("ground_truth_examples/flac/generated_tone_440hz.flac") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateFlac(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.flac, result.format);
 }
 
 test "validateMp3 accepts ground truth MP3" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/mp3/generated_tone_440hz.mp3", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateMp3(file);
+    var source = FileSource.open("ground_truth_examples/mp3/generated_tone_440hz.mp3") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateMp3(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.mp3, result.format);
 }
 
 test "validateOgg accepts ground truth OGG" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ogg/generated_tone_440hz.ogg", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateOgg(file);
+    var source = FileSource.open("ground_truth_examples/ogg/generated_tone_440hz.ogg") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateOgg(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.ogg, result.format);
 }
 
 test "validateRiffAudio accepts ground truth AIFF" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/aiff/sample.aiff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateRiffAudio(file, .aiff);
+    var source = FileSource.open("ground_truth_examples/aiff/sample.aiff") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateRiffAudio(&source, .aiff);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.aiff, result.format);
 }
 
 test "validateMidi accepts ground truth MIDI" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateMidi(file);
+    var source = FileSource.open("ground_truth_examples/midi/fur_elise.mid") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateMidi(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.midi, result.format);
 }
 
 test "validateAc3 accepts ground truth AC-3" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ac3/sample.ac3", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateAc3(file);
+    var source = FileSource.open("ground_truth_examples/ac3/sample.ac3") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateAc3(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.ac3, result.format);
 }
 
 test "validateEac3 accepts ground truth E-AC-3" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/eac3/sample.eac3", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateEac3(file);
+    var source = FileSource.open("ground_truth_examples/eac3/sample.eac3") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateEac3(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.eac3, result.format);
 }
 
 test "validateApe accepts ground truth APE" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ape/sample.ape", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateApe(file);
+    var source = FileSource.open("ground_truth_examples/ape/sample.ape") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateApe(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.ape, result.format);
 }
 
 test "validateWavPack accepts ground truth WavPack" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/wavpack/sample.wv", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateWavPack(file);
+    var source = FileSource.open("ground_truth_examples/wavpack/sample.wv") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateWavPack(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.wavpack, result.format);
 }
 
 test "validateDsf accepts ground truth DSF" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/dsf/sample.dsf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateDsf(file);
+    var source = FileSource.open("ground_truth_examples/dsf/sample.dsf") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateDsf(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.dsf, result.format);
 }
 
 test "validateDff accepts ground truth DFF" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/dff/sample.dff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateDff(file);
+    var source = FileSource.open("ground_truth_examples/dff/sample.dff") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateDff(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.dff, result.format);
 }
 
 test "validateAmr accepts ground truth AMR" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/amr/sample.amr", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateAmr(file);
+    var source = FileSource.open("ground_truth_examples/amr/sample.amr") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateAmr(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.amr, result.format);
 }
 
 test "validateAu accepts ground truth AU" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/au/sample.au", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateAu(file);
+    var source = FileSource.open("ground_truth_examples/au/sample.au") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateAu(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.au, result.format);
 }
 
 test "validateTta accepts ground truth TTA" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tta/sample.tta", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateTta(file);
+    var source = FileSource.open("ground_truth_examples/tta/sample.tta") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateTta(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.tta, result.format);
 }
 
 test "validateCaf accepts ground truth CAF" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/caf/sample.caf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateCaf(file);
+    var source = FileSource.open("ground_truth_examples/caf/sample.caf") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateCaf(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.caf, result.format);
 }
 
 test "validateAacAdts accepts ground truth AAC ADTS" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/aac_adts/sample.aac", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateAacAdts(file);
+    var source = FileSource.open("ground_truth_examples/aac_adts/sample.aac") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateAacAdts(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.aac_adts, result.format);
 }
 
 test "validateMod accepts ground truth MOD" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/otm.mod", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateMod(file);
+    var source = FileSource.open("ground_truth_examples/tracker/otm.mod") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateMod(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.mod, result.format);
 }
 
 test "validateXm accepts ground truth XM" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/agony.xm", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateXm(file);
+    var source = FileSource.open("ground_truth_examples/tracker/agony.xm") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateXm(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.xm, result.format);
 }
 
 test "validateIt accepts ground truth IT" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/flitter.it", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateIt(file);
+    var source = FileSource.open("ground_truth_examples/tracker/flitter.it") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateIt(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.it, result.format);
 }
 
 test "validateS3m accepts ground truth S3M" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/twilight_garden.s3m", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateS3m(file);
+    var source = FileSource.open("ground_truth_examples/tracker/twilight_garden.s3m") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateS3m(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.s3m, result.format);
 }
@@ -2425,8 +2429,8 @@ test "validateS3m accepts ground truth S3M" {
 // ---------- Ground truth deep validators ----------
 
 test "validateWavDeep accepts ground truth WAV" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    file.close();
+    var source = FileSource.open("ground_truth_examples/wav/sample.wav") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    source.close();
     const result = validateWavDeep(testing.allocator, "ground_truth_examples/wav/sample.wav");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.wav, result.format);
@@ -2435,8 +2439,8 @@ test "validateWavDeep accepts ground truth WAV" {
 }
 
 test "validateAiffDeep accepts ground truth AIFF" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/aiff/sample.aiff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    file.close();
+    var source = FileSource.open("ground_truth_examples/aiff/sample.aiff") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    source.close();
     const result = validateAiffDeep(testing.allocator, "ground_truth_examples/aiff/sample.aiff");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.aiff, result.format);
@@ -2445,8 +2449,8 @@ test "validateAiffDeep accepts ground truth AIFF" {
 }
 
 test "validateFlacDeep accepts ground truth FLAC" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/flac/generated_tone_440hz.flac", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    file.close();
+    var source = FileSource.open("ground_truth_examples/flac/generated_tone_440hz.flac") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    source.close();
     const result = validateFlacDeep(testing.allocator, "ground_truth_examples/flac/generated_tone_440hz.flac");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.flac, result.format);
@@ -2454,8 +2458,8 @@ test "validateFlacDeep accepts ground truth FLAC" {
 }
 
 test "validateOggDeep accepts ground truth OGG" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ogg/generated_tone_440hz.ogg", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    file.close();
+    var source = FileSource.open("ground_truth_examples/ogg/generated_tone_440hz.ogg") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    source.close();
     const result = validateOggDeep(testing.allocator, "ground_truth_examples/ogg/generated_tone_440hz.ogg");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.ogg, result.format);
@@ -2463,8 +2467,8 @@ test "validateOggDeep accepts ground truth OGG" {
 }
 
 test "validateMidiDeep accepts ground truth MIDI" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    file.close();
+    var source = FileSource.open("ground_truth_examples/midi/fur_elise.mid") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    source.close();
     const result = validateMidiDeep("ground_truth_examples/midi/fur_elise.mid");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.midi, result.format);
@@ -2472,8 +2476,8 @@ test "validateMidiDeep accepts ground truth MIDI" {
 }
 
 test "validateAc3Deep accepts ground truth AC-3" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ac3/sample.ac3", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    file.close();
+    var source = FileSource.open("ground_truth_examples/ac3/sample.ac3") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    source.close();
     const result = validateAc3Deep("ground_truth_examples/ac3/sample.ac3");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.ac3, result.format);
@@ -2481,8 +2485,8 @@ test "validateAc3Deep accepts ground truth AC-3" {
 }
 
 test "validateEac3Deep accepts ground truth E-AC-3" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/eac3/sample.eac3", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    file.close();
+    var source = FileSource.open("ground_truth_examples/eac3/sample.eac3") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    source.close();
     const result = validateEac3Deep("ground_truth_examples/eac3/sample.eac3");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.eac3, result.format);
@@ -2496,9 +2500,11 @@ test "validateWav rejects truncated WAV" {
     defer tmp.cleanup();
     const truncated = "RIFF" ++ [_]u8{ 0xFF, 0x00, 0x00, 0x00 } ++ "WAVE";
     tmp.dir.writeFile(.{ .sub_path = "bad.wav", .data = truncated }) catch return;
-    const file = tmp.dir.openFile("bad.wav", .{}) catch return;
-    defer file.close();
-    const result = validateWav(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.wav", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateWav(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2507,9 +2513,11 @@ test "validateFlac rejects invalid FLAC signature" {
     defer tmp.cleanup();
     const bad_data = "fLaX" ++ [_]u8{0x00} ** 34;
     tmp.dir.writeFile(.{ .sub_path = "bad.flac", .data = bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.flac", .{}) catch return;
-    defer file.close();
-    const result = validateFlac(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.flac", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateFlac(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2518,9 +2526,11 @@ test "validateFlac rejects non-STREAMINFO first block" {
     defer tmp.cleanup();
     const bad_data = "fLaC" ++ [_]u8{ 0x01, 0x00, 0x00, 0x22 } ++ [_]u8{0x00} ** 34;
     tmp.dir.writeFile(.{ .sub_path = "bad.flac", .data = bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.flac", .{}) catch return;
-    defer file.close();
-    const result = validateFlac(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.flac", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateFlac(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2529,9 +2539,11 @@ test "validateMp3 rejects random bytes" {
     defer tmp.cleanup();
     const bad_data = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09 };
     tmp.dir.writeFile(.{ .sub_path = "bad.mp3", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.mp3", .{}) catch return;
-    defer file.close();
-    const result = validateMp3(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.mp3", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateMp3(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2540,9 +2552,11 @@ test "validateOgg rejects non-OggS data" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 28;
     tmp.dir.writeFile(.{ .sub_path = "bad.ogg", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.ogg", .{}) catch return;
-    defer file.close();
-    const result = validateOgg(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.ogg", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateOgg(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2551,9 +2565,11 @@ test "validateMidi rejects non-MThd data" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 22;
     tmp.dir.writeFile(.{ .sub_path = "bad.mid", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.mid", .{}) catch return;
-    defer file.close();
-    const result = validateMidi(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.mid", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateMidi(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2562,9 +2578,11 @@ test "validateAc3 rejects wrong sync word" {
     defer tmp.cleanup();
     const bad_data = [_]u8{ 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00 };
     tmp.dir.writeFile(.{ .sub_path = "bad.ac3", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.ac3", .{}) catch return;
-    defer file.close();
-    const result = validateAc3(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.ac3", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateAc3(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2574,9 +2592,11 @@ test "validateEac3 rejects wrong bsid" {
     // Sync word correct (0x0B77) but bsid=8 (AC-3) instead of 16 (E-AC-3)
     const bad_data = [_]u8{ 0x0B, 0x77, 0x00, 0x00, 0x00, 0x08 << 3 };
     tmp.dir.writeFile(.{ .sub_path = "bad.eac3", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.eac3", .{}) catch return;
-    defer file.close();
-    const result = validateEac3(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.eac3", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateEac3(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2585,9 +2605,11 @@ test "validateApe rejects non-MAC signature" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 32;
     tmp.dir.writeFile(.{ .sub_path = "bad.ape", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.ape", .{}) catch return;
-    defer file.close();
-    const result = validateApe(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.ape", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateApe(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2596,9 +2618,11 @@ test "validateDsf rejects non-DSD signature" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 80;
     tmp.dir.writeFile(.{ .sub_path = "bad.dsf", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.dsf", .{}) catch return;
-    defer file.close();
-    const result = validateDsf(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.dsf", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateDsf(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2607,9 +2631,11 @@ test "validateDff rejects non-FRM8 signature" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 28;
     tmp.dir.writeFile(.{ .sub_path = "bad.dff", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.dff", .{}) catch return;
-    defer file.close();
-    const result = validateDff(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.dff", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateDff(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2618,9 +2644,11 @@ test "validateAmr rejects non-AMR data" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 16;
     tmp.dir.writeFile(.{ .sub_path = "bad.amr", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.amr", .{}) catch return;
-    defer file.close();
-    const result = validateAmr(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.amr", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateAmr(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2629,9 +2657,11 @@ test "validateAu rejects non-snd magic" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 24;
     tmp.dir.writeFile(.{ .sub_path = "bad.au", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.au", .{}) catch return;
-    defer file.close();
-    const result = validateAu(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.au", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateAu(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2640,9 +2670,11 @@ test "validateTta rejects non-TTA1 magic" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 22;
     tmp.dir.writeFile(.{ .sub_path = "bad.tta", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.tta", .{}) catch return;
-    defer file.close();
-    const result = validateTta(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.tta", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateTta(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2651,9 +2683,11 @@ test "validateCaf rejects non-caff magic" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 20;
     tmp.dir.writeFile(.{ .sub_path = "bad.caf", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.caf", .{}) catch return;
-    defer file.close();
-    const result = validateCaf(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.caf", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateCaf(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2662,9 +2696,11 @@ test "validateXm rejects non-XM data" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 80;
     tmp.dir.writeFile(.{ .sub_path = "bad.xm", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.xm", .{}) catch return;
-    defer file.close();
-    const result = validateXm(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.xm", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateXm(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2673,9 +2709,11 @@ test "validateIt rejects non-IMPM data" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 192;
     tmp.dir.writeFile(.{ .sub_path = "bad.it", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.it", .{}) catch return;
-    defer file.close();
-    const result = validateIt(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.it", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateIt(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2684,9 +2722,11 @@ test "validateS3m rejects non-SCRM data" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 96;
     tmp.dir.writeFile(.{ .sub_path = "bad.s3m", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.s3m", .{}) catch return;
-    defer file.close();
-    const result = validateS3m(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.s3m", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateS3m(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2695,9 +2735,11 @@ test "validateMod rejects file too small for MOD" {
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 100;
     tmp.dir.writeFile(.{ .sub_path = "bad.mod", .data = &bad_data }) catch return;
-    const file = tmp.dir.openFile("bad.mod", .{}) catch return;
-    defer file.close();
-    const result = validateMod(file);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad.mod", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateMod(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2889,9 +2931,11 @@ test "validateCaf rejects corrupted sample rate" {
 
     // Verify valid
     tmp.dir.writeFile(.{ .sub_path = "good.caf", .data = &caf }) catch return;
-    const good = tmp.dir.openFile("good.caf", .{}) catch return;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const good_path = tmp.dir.realpath("good.caf", &path_buf) catch return;
+    var good = FileSource.open(good_path) catch return;
     defer good.close();
-    const good_result = validateCaf(good);
+    const good_result = validateCaf(&good);
     try testing.expect(good_result.is_valid);
 
     // Corrupt sample rate to NaN
@@ -2899,9 +2943,11 @@ test "validateCaf rejects corrupted sample rate" {
     const nan_bits: u64 = @bitCast(@as(f64, std.math.nan(f64)));
     std.mem.writeInt(u64, bad_caf[20..28], nan_bits, .big);
     tmp.dir.writeFile(.{ .sub_path = "bad_sr.caf", .data = &bad_caf }) catch return;
-    const bad = tmp.dir.openFile("bad_sr.caf", .{}) catch return;
+    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
+    const bad_path = tmp.dir.realpath("bad_sr.caf", &path_buf2) catch return;
+    var bad = FileSource.open(bad_path) catch return;
     defer bad.close();
-    const bad_result = validateCaf(bad);
+    const bad_result = validateCaf(&bad);
     try testing.expect(!bad_result.is_valid);
 }
 
@@ -2927,9 +2973,11 @@ test "validateCaf rejects corrupted channel count" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     tmp.dir.writeFile(.{ .sub_path = "bad_ch.caf", .data = &bad_caf }) catch return;
-    const bad = tmp.dir.openFile("bad_ch.caf", .{}) catch return;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const bad_path = tmp.dir.realpath("bad_ch.caf", &path_buf) catch return;
+    var bad = FileSource.open(bad_path) catch return;
     defer bad.close();
-    const result = validateCaf(bad);
+    const result = validateCaf(&bad);
     try testing.expect(!result.is_valid);
 }
 
@@ -2941,11 +2989,11 @@ test "FormatValidator deep validates real MIDI from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth MIDI file (Beethoven's Für Elise from mfiles.co.uk)
-    const file = std.fs.cwd().openFile("ground_truth_examples/midi/fur_elise.mid", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/midi/fur_elise.mid") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    source.close();
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/midi/fur_elise.mid") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
@@ -2963,11 +3011,11 @@ test "FormatValidator deep validates real MIDI from ground truth" {
 test "FormatValidator deep validates MOD from ground truth" {
     const allocator = std.testing.allocator;
 
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/otm.mod", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/tracker/otm.mod") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    source.close();
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/otm.mod") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
@@ -2985,11 +3033,11 @@ test "FormatValidator deep validates MOD from ground truth" {
 test "FormatValidator deep validates XM from ground truth" {
     const allocator = std.testing.allocator;
 
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/agony.xm", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/tracker/agony.xm") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    source.close();
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/agony.xm") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
@@ -3007,11 +3055,11 @@ test "FormatValidator deep validates XM from ground truth" {
 test "FormatValidator deep validates IT from ground truth" {
     const allocator = std.testing.allocator;
 
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/flitter.it", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/tracker/flitter.it") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    source.close();
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/flitter.it") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
@@ -3029,11 +3077,11 @@ test "FormatValidator deep validates IT from ground truth" {
 test "FormatValidator deep validates S3M from ground truth" {
     const allocator = std.testing.allocator;
 
-    const file = std.fs.cwd().openFile("ground_truth_examples/tracker/twilight_garden.s3m", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/tracker/twilight_garden.s3m") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    source.close();
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/twilight_garden.s3m") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
@@ -3300,11 +3348,11 @@ test "FormatValidator deep validates real WAV from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth WAV file (440Hz sine wave)
-    const file = std.fs.cwd().openFile("ground_truth_examples/wav/sample.wav", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/wav/sample.wav") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    source.close();
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/wav/sample.wav") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);

@@ -7,6 +7,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const format_validation = @import("format_validation.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const ValidationDepth = format_validation.ValidationDepth;
@@ -128,11 +130,18 @@ pub fn toleratedPdfImageFailures(result: pdf_image_validator.PdfImageValidationR
 // ============ PDF Structural Validator ============
 
 /// Validate PDF file structure.
-pub fn validatePdf(file: std.fs.File) ValidationResult {
+pub fn validatePdf(file: *FileSource) ValidationResult {
 	return validatePdfWithOptions(file, false);
 }
 
-pub fn validatePdfWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
+/// Backward-compatible wrapper accepting std.fs.File (for callers not yet migrated to FileSource).
+pub fn validatePdfFromFile(file: std.fs.File) ValidationResult {
+	const sz = file.getEndPos() catch 0;
+	var src = FileSource{ .backing = .{ .file = file }, .file_size = sz };
+	return validatePdf(&src);
+}
+
+pub fn validatePdfWithOptions(file: *FileSource, skip_magic: bool) ValidationResult {
 	// Check header (or skip past it if skip_magic is set)
 	var header: [8]u8 = undefined;
 	_ = file.read(&header) catch return ValidationResult.invalidCode(.pdf, .failed_to_read, "PDF header");
@@ -310,16 +319,16 @@ fn logPdfSlow(
 pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	const telemetry = PdfTelemetry.init();
 	const total_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
-	const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+	var source = FileSource.open(path) catch |err| {
 		return switch (err) {
 			error.FileNotFound => ValidationResult.invalidWithDepth(.pdf, "File not found", .structural),
 			error.AccessDenied => ValidationResult.invalidWithDepth(.pdf, "Access denied", .structural),
 			else => ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_open, "file", .structural),
 		};
 	};
-	defer file.close();
+	defer source.close();
 
-	const file_size = file.getEndPos() catch {
+	const file_size = source.getEndPos() catch {
 		return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_get, "file size", .structural);
 	};
 
@@ -340,10 +349,10 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	// First try last 1KB (covers most well-formed PDFs)
 	const small_search: usize = @min(1024, file_size);
 	search_start = file_size - small_search;
-	file.seekTo(search_start) catch {
+	source.seekTo(search_start) catch {
 		return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_seek, "to trailer area", .structural);
 	};
-	bytes_read = file.read(buffer[0..small_search]) catch {
+	bytes_read = source.read(buffer[0..small_search]) catch {
 		return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_read, "trailer area", .structural);
 	};
 
@@ -353,10 +362,10 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	if (eof_pos == null and file_size > 1024) {
 		const large_search: usize = @min(8192, file_size);
 		search_start = file_size - large_search;
-		file.seekTo(search_start) catch {
+		source.seekTo(search_start) catch {
 			return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_seek, "to trailer area", .structural);
 		};
-		bytes_read = file.read(buffer[0..large_search]) catch {
+		bytes_read = source.read(buffer[0..large_search]) catch {
 			return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_read, "trailer area", .structural);
 		};
 		eof_pos = std.mem.lastIndexOf(u8, buffer[0..bytes_read], eof_marker);
@@ -399,12 +408,12 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	}
 
 	// Seek to xref position and verify it's valid
-	file.seekTo(xref_offset) catch {
+	source.seekTo(xref_offset) catch {
 		return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_seek, "to xref table", .full);
 	};
 
 	var xref_header: [20]u8 = undefined;
-	const xref_bytes = file.read(&xref_header) catch {
+	const xref_bytes = source.read(&xref_header) catch {
 		return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_read, "at startxref position", .full);
 	};
 
@@ -427,9 +436,9 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 	// Check if this is a linearized PDF by reading start of file
 	var is_linearized = false;
-	file.seekTo(0) catch {};
+	source.seekTo(0) catch {};
 	var header_buf: [4096]u8 = undefined; // Larger buffer to catch encryption in linearized PDFs
-	const header_read = file.read(&header_buf) catch 0;
+	const header_read = source.read(&header_buf) catch 0;
 	if (header_read > 0) {
 		is_linearized = std.mem.indexOf(u8, header_buf[0..header_read], "/Linearized") != null;
 	}
@@ -453,7 +462,7 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	const structural_ns = if (telemetry.enabled) std.time.nanoTimestamp() - structural_start_ns else 0;
 
 	// Deep validation: read entire file and validate embedded content
-	file.seekTo(0) catch {
+	source.seekTo(0) catch {
 		return ValidationResult.okWithDepth(.pdf, .full); // Fallback if seek fails
 	};
 
@@ -468,7 +477,7 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	};
 	defer allocator.free(pdf_data);
 
-	const read_bytes = file.readAll(pdf_data) catch {
+	const read_bytes = source.readAll(pdf_data) catch {
 		return ValidationResult.okWithDepth(.pdf, .full);
 	};
 

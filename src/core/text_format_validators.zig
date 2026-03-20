@@ -1,6 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const format_validation = @import("format_validation.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const cj5 = @import("cj5");
@@ -335,22 +337,22 @@ pub fn containsTemplateMarkers(content: []const u8) bool {
 }
 
 /// Uses std.json to parse and verify syntactic correctness.
-pub fn validateJson(file: std.fs.File) ValidationResult {
+pub fn validateJson(file: *FileSource) ValidationResult {
     // Get file size
-    const stat = file.stat() catch {
+    const file_sz = file.getEndPos() catch {
         return ValidationResult.invalidCode(.json, .failed_to_stat, "file");
     };
 
-    if (stat.size == 0) {
+    if (file_sz == 0) {
         return ValidationResult.invalidCode(.json, .empty, "JSON file");
     }
 
-    if (stat.size > max_text_file_size) {
+    if (file_sz > max_text_file_size) {
         return ValidationResult.invalid(.json, "JSON file too large (>1GB)");
     }
 
     // Read entire file - use heap allocation to avoid stack overflow with multiple threads
-    const content = std.heap.page_allocator.alloc(u8, @intCast(stat.size)) catch {
+    const content = std.heap.page_allocator.alloc(u8, @intCast(file_sz)) catch {
         return ValidationResult.invalidCode(.json, .failed_to_allocate, "memory");
     };
     defer std.heap.page_allocator.free(content);
@@ -564,24 +566,24 @@ pub fn validateJsonLines(allocator: Allocator, content: []const u8) ValidationRe
 
 /// Validate TOML file structure.
 /// Uses the external sam701/zig-toml parser for validation.
-pub fn validateToml(file: std.fs.File) ValidationResult {
+pub fn validateToml(file: *FileSource) ValidationResult {
     const toml = @import("toml");
 
     // Get file size
-    const stat = file.stat() catch {
+    const file_sz = file.getEndPos() catch {
         return ValidationResult.invalidCode(.toml, .failed_to_stat, "file");
     };
 
-    if (stat.size == 0) {
+    if (file_sz == 0) {
         return ValidationResult.invalidCode(.toml, .empty, "TOML file");
     }
 
-    if (stat.size > max_text_file_size) {
+    if (file_sz > max_text_file_size) {
         return ValidationResult.invalid(.toml, "TOML file too large (>1GB)");
     }
 
     // Read entire file - use heap allocation to avoid stack overflow with multiple threads
-    const content = std.heap.page_allocator.alloc(u8, @intCast(stat.size)) catch {
+    const content = std.heap.page_allocator.alloc(u8, @intCast(file_sz)) catch {
         return ValidationResult.invalidCode(.toml, .failed_to_allocate, "memory");
     };
     defer std.heap.page_allocator.free(content);
@@ -640,22 +642,22 @@ pub fn validateToml(file: std.fs.File) ValidationResult {
 /// INI files have [section] headers and key=value pairs.
 /// Detection already verified basic structure, so we just do a simple parse check.
 /// Handles UTF-8 and UTF-16 LE encoded INI files (common on Windows).
-pub fn validateIni(file: std.fs.File) ValidationResult {
+pub fn validateIni(file: *FileSource) ValidationResult {
     // Get file size
-    const stat = file.stat() catch {
+    const file_sz = file.getEndPos() catch {
         return ValidationResult.invalidCode(.ini, .failed_to_stat, "file");
     };
 
-    if (stat.size == 0) {
+    if (file_sz == 0) {
         return ValidationResult.invalidCode(.ini, .empty, "INI file");
     }
 
-    if (stat.size > max_text_file_size) {
+    if (file_sz > max_text_file_size) {
         return ValidationResult.invalid(.ini, "INI file too large (>1GB)");
     }
 
     // Read first portion to verify structure
-    const read_size: usize = @min(@as(usize, @intCast(stat.size)), 8192);
+    const read_size: usize = @min(@as(usize, @intCast(file_sz)), 8192);
     var buffer: [8192]u8 = undefined;
 
     file.seekTo(0) catch {
@@ -888,24 +890,24 @@ pub fn looksLikeUtf16LeWithoutBom(data: []const u8) bool {
 /// Validate XML file structure using zig-xml library (0BSD, ianprime0509/zig-xml).
 /// Performs full XML 1.0 Fifth Edition well-formedness check.
 /// DOCTYPE declarations are stripped before parsing (DTD validation is not performed).
-pub fn validateXml(file: std.fs.File) ValidationResult {
+pub fn validateXml(file: *FileSource) ValidationResult {
     const xml = @import("xml");
 
     // Get file size
-    const stat = file.stat() catch {
+    const file_sz = file.getEndPos() catch {
         return ValidationResult.invalidCode(.xml, .failed_to_stat, "file");
     };
 
-    if (stat.size == 0) {
+    if (file_sz == 0) {
         return ValidationResult.invalidCode(.xml, .empty, "XML file");
     }
 
-    if (stat.size > max_text_file_size) {
+    if (file_sz > max_text_file_size) {
         return ValidationResult.invalid(.xml, "XML file too large (>1GB)");
     }
 
     // Read entire file - use heap allocation to avoid stack overflow with multiple threads
-    const content = std.heap.page_allocator.alloc(u8, @intCast(stat.size)) catch {
+    const content = std.heap.page_allocator.alloc(u8, @intCast(file_sz)) catch {
         return ValidationResult.invalidCode(.xml, .failed_to_allocate, "memory");
     };
     defer std.heap.page_allocator.free(content);
@@ -1023,19 +1025,19 @@ pub fn validateXml(file: std.fs.File) ValidationResult {
 
 /// Validate CSV (Comma-Separated Values) files.
 /// Checks for consistent column count, proper quoting, and valid UTF-8.
-pub fn validateCsv(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch {
+pub fn validateCsv(file: *FileSource) ValidationResult {
+    const file_sz = file.getEndPos() catch {
         return ValidationResult.invalidCode(.csv, .failed_to_stat, "file");
     };
 
-    if (stat.size == 0) {
+    if (file_sz == 0) {
         // Empty CSV is technically valid
         return ValidationResult.ok(.csv);
     }
 
     // Don't try to fully parse huge files - just sample
     const max_sample_size: u64 = 1024 * 1024; // 1MB sample
-    const sample_size: usize = @intCast(@min(stat.size, max_sample_size));
+    const sample_size: usize = @intCast(@min(file_sz, max_sample_size));
 
     const content = std.heap.page_allocator.alloc(u8, sample_size) catch {
         return ValidationResult.invalidCode(.csv, .failed_to_allocate, "memory");
@@ -1203,7 +1205,7 @@ pub fn detectCsvDelimiter(data: []const u8) u8 {
 /// element tree. No magic bytes — relies on extension-based detection (.msgpack).
 /// Iteratively walks the type/length/data structure verifying all elements fit
 /// within the file and format bytes are valid.
-pub fn validateMsgpack(file: std.fs.File) ValidationResult {
+pub fn validateMsgpack(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.msgpack, .failed_to_get, "file size");
     if (file_size == 0) return ValidationResult.invalidCode(.msgpack, .empty, "MessagePack file");
 
@@ -1406,7 +1408,7 @@ fn msgpackTruncated(bytes_read: usize, file_size: u64) ValidationResult {
 // ============ RTF Validator ============
 
 /// Validate RTF document structure.
-pub fn validateRtf(file: std.fs.File) ValidationResult {
+pub fn validateRtf(file: *FileSource) ValidationResult {
     var header: [32]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.rtf, .failed_to_read, "RTF header");
@@ -1466,12 +1468,12 @@ pub fn validateRtf(file: std.fs.File) ValidationResult {
 /// Deep validation for RTF files.
 /// Validates brace matching and control word structure.
 pub fn validateRtfDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.rtf, .failed_to_open, "RTF file");
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.rtf, .failed_to_get, "file size");
     };
 
@@ -1484,7 +1486,7 @@ pub fn validateRtfDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCode(.rtf, .failed_to_read, "file");
     };
     if (bytes_read != file_size) {
@@ -1539,7 +1541,7 @@ pub fn validateRtfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Validate HTML document.
 /// Checks for DOCTYPE declaration or <html> tag, validates basic tag structure.
-pub fn validateHtml(file: std.fs.File) ValidationResult {
+pub fn validateHtml(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.html, .failed_to_get, "file size");
     if (file_size < 7) return ValidationResult.invalidCode(.html, .file_too_small, "HTML");
     if (file_size > 500 * 1024 * 1024) return ValidationResult.invalidCode(.html, .file_too_large, "HTML validation");
@@ -1636,7 +1638,7 @@ pub fn validateHtml(file: std.fs.File) ValidationResult {
 
 /// Validate KML (Keyhole Markup Language) format.
 /// KML is XML with <kml> root element.
-pub fn validateKml(file: std.fs.File) ValidationResult {
+pub fn validateKml(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.kml, .failed_to_seek, "to start");
 
     var header: [1024]u8 = undefined;
@@ -1680,12 +1682,12 @@ pub fn validateKml(file: std.fs.File) ValidationResult {
 
 /// Deep validation for KML files using full XML parsing.
 pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var kml_source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.kml, .failed_to_open, "KML file");
     };
-    defer file.close();
+    defer kml_source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = kml_source.getEndPos() catch {
         return ValidationResult.invalidCode(.kml, .failed_to_get, "file size");
     };
 
@@ -1698,7 +1700,7 @@ pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = kml_source.readAll(data) catch {
         return ValidationResult.invalidCode(.kml, .failed_to_read, "file");
     };
     if (bytes_read != file_size) {
@@ -1748,7 +1750,7 @@ pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Validate KMZ (compressed KML) format.
 /// KMZ is a ZIP archive containing doc.kml.
-pub fn validateKmz(file: std.fs.File) ValidationResult {
+pub fn validateKmz(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.kmz, .failed_to_seek, "to start");
 
     var header: [4]u8 = undefined;
@@ -1782,12 +1784,12 @@ pub fn validateKmzDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// This allows validating arbitrarily large text files without loading them entirely into memory.
 /// If file has UTF-16 BOM, delegates to UTF-16 validation.
 /// If UTF-8 validation fails but content looks like text, falls back to Latin-1.
-pub fn validatePlainText(allocator: ?Allocator, file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch {
+pub fn validatePlainText(allocator: ?Allocator, file: *FileSource) ValidationResult {
+    const file_sz = file.getEndPos() catch {
         return ValidationResult.invalidCode(.plain_text, .failed_to_stat, "file");
     };
 
-    if (stat.size == 0) {
+    if (file_sz == 0) {
         // Empty file is valid UTF-8 (vacuously true)
         return ValidationResult.okWithDepth(.plain_text, .structural);
     }
@@ -1931,7 +1933,7 @@ pub fn validatePlainText(allocator: ?Allocator, file: std.fs.File) ValidationRes
 /// Check if a file looks like Latin-1 text (fallback when UTF-8 validation fails).
 /// Latin-1 is always "valid" since every byte 0x00-0xFF maps to a character,
 /// but we check for text-like characteristics to avoid misidentifying binary files.
-pub fn validatePlainTextLatin1Fallback(file: std.fs.File) ValidationResult {
+pub fn validatePlainTextLatin1Fallback(file: *FileSource) ValidationResult {
     const chunk_size: usize = 64 * 1024;
     var buffer: [chunk_size]u8 = undefined;
 
@@ -1985,17 +1987,17 @@ pub fn validatePlainTextLatin1Fallback(file: std.fs.File) ValidationResult {
 
 /// Validate plain text file as UTF-16 using streaming validation.
 /// Supports both UTF-16 LE (0xFF 0xFE BOM) and UTF-16 BE (0xFE 0xFF BOM).
-pub fn validatePlainTextUtf16(allocator: ?Allocator, file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch {
+pub fn validatePlainTextUtf16(allocator: ?Allocator, file: *FileSource) ValidationResult {
+    const file_sz = file.getEndPos() catch {
         return ValidationResult.invalidCode(.plain_text_utf16, .failed_to_stat, "file");
     };
 
-    if (stat.size == 0) {
+    if (file_sz == 0) {
         return ValidationResult.okWithDepth(.plain_text_utf16, .structural);
     }
 
     // UTF-16 files should have even number of bytes (after BOM)
-    if (stat.size < 2) {
+    if (file_sz < 2) {
         return ValidationResult.invalidCode(.plain_text_utf16, .file_too_small, "UTF-16");
     }
 
@@ -2517,9 +2519,9 @@ test "isZeroWidth identifies zero-width chars" {
 // ---------- File-based validator tests using ground truth ----------
 
 test "validateJson accepts valid ground truth JSON file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/json/sample.json", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateJson(file);
+    var source = FileSource.open("ground_truth_examples/json/sample.json") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateJson(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.json, result.format);
     try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
@@ -2531,9 +2533,11 @@ test "validateJson rejects truncated JSON" {
     const f = try tmp.dir.createFile("bad.json", .{});
     try f.writeAll("{\"key\": ");
     f.close();
-    const file = try tmp.dir.openFile("bad.json", .{});
-    defer file.close();
-    const result = validateJson(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("bad.json", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateJson(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2542,16 +2546,18 @@ test "validateJson rejects empty file" {
     defer tmp.cleanup();
     const f = try tmp.dir.createFile("empty.json", .{});
     f.close();
-    const file = try tmp.dir.openFile("empty.json", .{});
-    defer file.close();
-    const result = validateJson(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("empty.json", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateJson(&source);
     try testing.expect(!result.is_valid);
 }
 
 test "validateToml accepts valid ground truth TOML file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/toml/sample.toml", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateToml(file);
+    var source = FileSource.open("ground_truth_examples/toml/sample.toml") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateToml(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.toml, result.format);
     try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
@@ -2563,9 +2569,11 @@ test "validateToml rejects truncated TOML" {
     const f = try tmp.dir.createFile("bad.toml", .{});
     try f.writeAll("[section\nkey = ");
     f.close();
-    const file = try tmp.dir.openFile("bad.toml", .{});
-    defer file.close();
-    const result = validateToml(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("bad.toml", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateToml(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2574,16 +2582,18 @@ test "validateToml rejects empty file" {
     defer tmp.cleanup();
     const f = try tmp.dir.createFile("empty.toml", .{});
     f.close();
-    const file = try tmp.dir.openFile("empty.toml", .{});
-    defer file.close();
-    const result = validateToml(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("empty.toml", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateToml(&source);
     try testing.expect(!result.is_valid);
 }
 
 test "validateIni accepts valid ground truth INI file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ini/sample.ini", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateIni(file);
+    var source = FileSource.open("ground_truth_examples/ini/sample.ini") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateIni(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.ini, result.format);
 }
@@ -2594,16 +2604,18 @@ test "validateIni rejects file with invalid syntax" {
     const f = try tmp.dir.createFile("bad.ini", .{});
     try f.writeAll("[section]\n<<<invalid>>>\n");
     f.close();
-    const file = try tmp.dir.openFile("bad.ini", .{});
-    defer file.close();
-    const result = validateIni(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("bad.ini", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateIni(&source);
     try testing.expect(!result.is_valid);
 }
 
 test "validateXml accepts valid ground truth XML file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/xml/sample.xml", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateXml(file);
+    var source = FileSource.open("ground_truth_examples/xml/sample.xml") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateXml(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.xml, result.format);
     try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
@@ -2615,9 +2627,11 @@ test "validateXml rejects malformed XML" {
     const f = try tmp.dir.createFile("bad.xml", .{});
     try f.writeAll("<?xml version=\"1.0\"?>\n<root><unclosed>\n");
     f.close();
-    const file = try tmp.dir.openFile("bad.xml", .{});
-    defer file.close();
-    const result = validateXml(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("bad.xml", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateXml(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2626,16 +2640,18 @@ test "validateXml rejects empty file" {
     defer tmp.cleanup();
     const f = try tmp.dir.createFile("empty.xml", .{});
     f.close();
-    const file = try tmp.dir.openFile("empty.xml", .{});
-    defer file.close();
-    const result = validateXml(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("empty.xml", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateXml(&source);
     try testing.expect(!result.is_valid);
 }
 
 test "validateCsv accepts valid ground truth CSV file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/csv/sample.csv", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateCsv(file);
+    var source = FileSource.open("ground_truth_examples/csv/sample.csv") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateCsv(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.csv, result.format);
     try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
@@ -2647,16 +2663,18 @@ test "validateCsv rejects unclosed quoted field" {
     const f = try tmp.dir.createFile("bad.csv", .{});
     try f.writeAll("name,desc\nAlice,\"unclosed\n");
     f.close();
-    const file = try tmp.dir.openFile("bad.csv", .{});
-    defer file.close();
-    const result = validateCsv(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("bad.csv", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateCsv(&source);
     try testing.expect(!result.is_valid);
 }
 
 test "validateRtf accepts valid ground truth RTF file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/rtf/sample.rtf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateRtf(file);
+    var source = FileSource.open("ground_truth_examples/rtf/sample.rtf") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateRtf(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.rtf, result.format);
 }
@@ -2667,9 +2685,11 @@ test "validateRtf rejects missing signature" {
     const f = try tmp.dir.createFile("bad.rtf", .{});
     try f.writeAll("not an rtf file at all");
     f.close();
-    const file = try tmp.dir.openFile("bad.rtf", .{});
-    defer file.close();
-    const result = validateRtf(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("bad.rtf", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateRtf(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2679,9 +2699,11 @@ test "validateRtf rejects missing closing brace" {
     const f = try tmp.dir.createFile("noclosing.rtf", .{});
     try f.writeAll("{\\rtf1\\ansi no closing brace here ");
     f.close();
-    const file = try tmp.dir.openFile("noclosing.rtf", .{});
-    defer file.close();
-    const result = validateRtf(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("noclosing.rtf", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateRtf(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2727,9 +2749,9 @@ test "validateRtfDeep detects unclosed brace" {
 }
 
 test "validateHtml accepts valid ground truth HTML file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/html/simple.html", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateHtml(file);
+    var source = FileSource.open("ground_truth_examples/html/simple.html") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateHtml(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.html, result.format);
 }
@@ -2740,9 +2762,11 @@ test "validateHtml rejects file without DOCTYPE or html tag" {
     const f = try tmp.dir.createFile("bad.html", .{});
     try f.writeAll("<div>Just a div, no html or doctype</div>");
     f.close();
-    const file = try tmp.dir.openFile("bad.html", .{});
-    defer file.close();
-    const result = validateHtml(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("bad.html", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateHtml(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2752,16 +2776,18 @@ test "validateHtml rejects tiny file" {
     const f = try tmp.dir.createFile("tiny.html", .{});
     try f.writeAll("hi");
     f.close();
-    const file = try tmp.dir.openFile("tiny.html", .{});
-    defer file.close();
-    const result = validateHtml(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("tiny.html", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateHtml(&source);
     try testing.expect(!result.is_valid);
 }
 
 test "validateKml accepts valid ground truth KML file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/kml/sample.kml", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateKml(file);
+    var source = FileSource.open("ground_truth_examples/kml/sample.kml") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateKml(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.kml, result.format);
 }
@@ -2772,9 +2798,11 @@ test "validateKml rejects file without kml element" {
     const f = try tmp.dir.createFile("bad.kml", .{});
     try f.writeAll("<?xml version=\"1.0\"?>\n<notKml>test</notKml>\n");
     f.close();
-    const file = try tmp.dir.openFile("bad.kml", .{});
-    defer file.close();
-    const result = validateKml(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("bad.kml", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateKml(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2791,9 +2819,9 @@ test "validateKmlDeep accepts valid ground truth KML file" {
 }
 
 test "validateKmz accepts valid ground truth KMZ file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/kmz/sample.kmz", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateKmz(file);
+    var source = FileSource.open("ground_truth_examples/kmz/sample.kmz") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateKmz(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.kmz, result.format);
 }
@@ -2804,42 +2832,35 @@ test "validateKmz rejects non-ZIP file" {
     const f = try tmp.dir.createFile("bad.kmz", .{});
     try f.writeAll("not a zip file");
     f.close();
-    const file = try tmp.dir.openFile("bad.kmz", .{});
-    defer file.close();
-    const result = validateKmz(file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("bad.kmz", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validateKmz(&source);
     try testing.expect(!result.is_valid);
 }
 
 test "validatePlainText accepts valid UTF-8 ground truth file" {
-    const file = std.fs.cwd().openFile(
-        "ground_truth_examples/plain_text/utf8/sample.txt",
-        .{},
-    ) catch return;
-    defer file.close();
-    const result = validatePlainText(testing.allocator, file);
+    var source = FileSource.open("ground_truth_examples/plain_text/utf8/sample.txt") catch return;
+    defer source.close();
+    const result = validatePlainText(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.plain_text, result.format);
     try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validatePlainText accepts UTF-16 LE file with BOM" {
-    const file = std.fs.cwd().openFile(
-        "ground_truth_examples/plain_text/utf16/sample.txt",
-        .{},
-    ) catch return;
-    defer file.close();
-    const result = validatePlainText(testing.allocator, file);
+    var source2 = FileSource.open("ground_truth_examples/plain_text/utf16/sample.txt") catch return;
+    defer source2.close();
+    const result = validatePlainText(testing.allocator, &source2);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.plain_text_utf16, result.format);
 }
 
 test "validatePlainText falls back to Latin-1 for non-UTF-8 text" {
-    const file = std.fs.cwd().openFile(
-        "ground_truth_examples/plain_text/latin1/sample.txt",
-        .{},
-    ) catch return;
-    defer file.close();
-    const result = validatePlainText(testing.allocator, file);
+    var source = FileSource.open("ground_truth_examples/plain_text/latin1/sample.txt") catch return;
+    defer source.close();
+    const result = validatePlainText(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.plain_text_latin1, result.format);
 }
@@ -2849,20 +2870,19 @@ test "validatePlainText accepts empty file" {
     defer tmp.cleanup();
     const f = try tmp.dir.createFile("empty.txt", .{});
     f.close();
-    const file = try tmp.dir.openFile("empty.txt", .{});
-    defer file.close();
-    const result = validatePlainText(null, file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("empty.txt", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validatePlainText(null, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.plain_text, result.format);
 }
 
 test "validatePlainTextUtf16 accepts valid UTF-16 LE file" {
-    const file = std.fs.cwd().openFile(
-        "ground_truth_examples/plain_text/utf16/sample.txt",
-        .{},
-    ) catch return;
-    defer file.close();
-    const result = validatePlainTextUtf16(testing.allocator, file);
+    var source = FileSource.open("ground_truth_examples/plain_text/utf16/sample.txt") catch return;
+    defer source.close();
+    const result = validatePlainTextUtf16(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.plain_text_utf16, result.format);
     try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
@@ -2875,19 +2895,18 @@ test "validatePlainTextUtf16 rejects odd byte count" {
     // UTF-16 LE BOM + 3 bytes (odd after BOM)
     try f.writeAll("\xFF\xFE\x41\x00\x42");
     f.close();
-    const file = try tmp.dir.openFile("odd.txt", .{});
-    defer file.close();
-    const result = validatePlainTextUtf16(null, file);
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("odd.txt", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+    const result = validatePlainTextUtf16(null, &source);
     try testing.expect(!result.is_valid);
 }
 
 test "validateJson accepts JSON5 ground truth file with warning" {
-    const file = std.fs.cwd().openFile(
-        "ground_truth_examples/json5/sample.json5",
-        .{},
-    ) catch return;
-    defer file.close();
-    const result = validateJson(file);
+    var source = FileSource.open("ground_truth_examples/json5/sample.json5") catch return;
+    defer source.close();
+    const result = validateJson(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.json, result.format);
 }

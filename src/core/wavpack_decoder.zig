@@ -13,6 +13,8 @@
 //! Reference: WavPack Technical Specification (wavpack.com)
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
 
 // ============================================================================
@@ -357,7 +359,7 @@ pub fn validateWavPackDeep(data: []const u8, max_blocks: u32) WavPackDeepValidat
 }
 
 /// Validate WavPack file
-pub fn validateWavPackFile(file: std.fs.File, max_blocks: u32, allocator: std.mem.Allocator) WavPackDeepValidationResult {
+pub fn validateWavPackFile(file: *FileSource, max_blocks: u32, allocator: std.mem.Allocator) WavPackDeepValidationResult {
     // Get file size
     const file_size = file.getEndPos() catch {
         return WavPackDeepValidationResult.invalid(errmsg.failedToGet("file size"));
@@ -522,15 +524,15 @@ test "validateWavPackDeep - rejects invalid version" {
 
 test "ground truth - WavPack sample" {
     // Read real WavPack file for validation
-    const file = std.fs.cwd().openFile("ground_truth_examples/wavpack/sample.wv", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/wavpack/sample.wv") catch |err| {
         // Skip test if ground truth sample not available
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer source.close();
 
     const allocator = std.testing.allocator;
-    const result = validateWavPackFile(file, 100, allocator);
+    const result = validateWavPackFile(&source, 100, allocator);
 
     try std.testing.expect(result.valid);
     try std.testing.expect(result.blocks_validated >= 1);

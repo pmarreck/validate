@@ -6,6 +6,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const format_validation = @import("format_validation.zig");
 const errmsg = @import("error_messages.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 
@@ -185,12 +187,12 @@ pub fn decodeBase64(encoded: []const u8, output: []u8) !usize {
 // ============ EML Validator ============
 
 /// Validate an EML (RFC 5322) email message file.
-pub fn validateEml(file: std.fs.File) ValidationResult {
+pub fn validateEml(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.eml, .failed_to_seek, "to start");
 
     // Read entire file (limit to reasonable size)
-    const stat = file.stat() catch return ValidationResult.invalidCode(.eml, .failed_to_stat, "file");
-    if (stat.size > 100 * 1024 * 1024) {
+    const file_sz = file.getEndPos() catch return ValidationResult.invalidCode(.eml, .failed_to_stat, "file");
+    if (file_sz > 100 * 1024 * 1024) {
         // File too large, just do structural validation
         return validateEmlStructure(file);
     }
@@ -200,7 +202,7 @@ pub fn validateEml(file: std.fs.File) ValidationResult {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const content = allocator.alloc(u8, @intCast(stat.size)) catch {
+    const content = allocator.alloc(u8, @intCast(file_sz)) catch {
         return ValidationResult.invalid(.eml, "Out of memory");
     };
     defer allocator.free(content);
@@ -214,7 +216,7 @@ pub fn validateEml(file: std.fs.File) ValidationResult {
 }
 
 /// Validate EML structural headers only (used for oversized files).
-pub fn validateEmlStructure(file: std.fs.File) ValidationResult {
+pub fn validateEmlStructure(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.eml, .failed_to_seek, "to start");
 
     var header: [4096]u8 = undefined;
@@ -460,7 +462,7 @@ pub fn validateBase64Attachment(allocator: Allocator, body: []const u8, headers:
 // ============ MBOX Validator ============
 
 /// Validate an MBOX mailbox file structure.
-pub fn validateMbox(file: std.fs.File) ValidationResult {
+pub fn validateMbox(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.mbox, .failed_to_seek, "to start");
 
     var header: [4096]u8 = undefined;
@@ -502,12 +504,12 @@ pub fn validateMbox(file: std.fs.File) ValidationResult {
 
 /// Deep-validate an MBOX mailbox file by reading all message separators.
 pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.mbox, .failed_to_open, "MBOX file");
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.mbox, .failed_to_get, "file size");
     };
 
@@ -515,12 +517,12 @@ pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult
         return ValidationResult.okWithDepth(.mbox, .structural);
     }
 
-    const data = allocator.alloc(u8, file_size) catch {
+    const data = allocator.alloc(u8, @intCast(file_size)) catch {
         return ValidationResult.invalid(.mbox, "Memory allocation failed");
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCode(.mbox, .failed_to_read, "file");
     };
     if (bytes_read != file_size) {
@@ -556,16 +558,16 @@ pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult
 // ============ Tests ============
 
 test "validateEml with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/eml/sample.eml", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateEml(file);
+    var source = FileSource.open("ground_truth_examples/eml/sample.eml") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateEml(&source);
     try std.testing.expect(result.is_valid);
 }
 
 test "validateMbox with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/mbox/sample.mbox", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateMbox(file);
+    var source = FileSource.open("ground_truth_examples/mbox/sample.mbox") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateMbox(&source);
     try std.testing.expect(result.is_valid);
 }
 
@@ -585,9 +587,9 @@ test "validateEml with minimal valid email" {
         wf.writeAll("From: a@b.c\r\nTo: d@e.f\r\nSubject: test\r\n\r\nbody") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateEml(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateEml(&source);
     try std.testing.expect(result.is_valid);
 }
 
@@ -601,9 +603,9 @@ test "validateMbox with minimal valid mbox" {
         wf.writeAll("From sender@example.com Mon Jan  1 00:00:00 2024\r\nFrom: a@b.c\r\nTo: d@e.f\r\nSubject: test\r\n\r\nbody\r\n") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateMbox(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateMbox(&source);
     try std.testing.expect(result.is_valid);
 }
 
@@ -617,9 +619,9 @@ test "validateEml with empty file" {
         // Write nothing — empty file
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateEml(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateEml(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -633,9 +635,9 @@ test "validateMbox with empty file" {
         // Write nothing — empty file
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateMbox(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateMbox(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -682,10 +684,12 @@ test "FormatValidator accepts valid EML" {
     try file.writeAll(eml_content);
     file.close();
 
-    const validate_file = try tmp_dir.dir.openFile("test.eml", .{});
-    defer validate_file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp_dir.dir.realpath("test.eml", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateEml(validate_file);
+    const result = validateEml(&source);
 
     try std.testing.expectEqual(FileFormat.eml, result.format);
     try std.testing.expect(result.is_valid);
@@ -721,10 +725,12 @@ test "FormatValidator accepts EML with valid PNG attachment" {
     try file.writeAll(eml_content);
     file.close();
 
-    const validate_file = try tmp_dir.dir.openFile("test_attachment.eml", .{});
-    defer validate_file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp_dir.dir.realpath("test_attachment.eml", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateEml(validate_file);
+    const result = validateEml(&source);
 
     try std.testing.expectEqual(FileFormat.eml, result.format);
     try std.testing.expect(result.is_valid);
@@ -760,10 +766,12 @@ test "FormatValidator rejects EML with corrupted attachment" {
     try file.writeAll(eml_content);
     file.close();
 
-    const validate_file = try tmp_dir.dir.openFile("test_corrupt.eml", .{});
-    defer validate_file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp_dir.dir.realpath("test_corrupt.eml", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateEml(validate_file);
+    const result = validateEml(&source);
 
     try std.testing.expectEqual(FileFormat.eml, result.format);
     try std.testing.expect(!result.is_valid);
@@ -794,10 +802,12 @@ test "FormatValidator accepts valid MBOX" {
     try file.writeAll(mbox_content);
     file.close();
 
-    const validate_file = try tmp_dir.dir.openFile("test.mbox", .{});
-    defer validate_file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp_dir.dir.realpath("test.mbox", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateMbox(validate_file);
+    const result = validateMbox(&source);
 
     try std.testing.expectEqual(FileFormat.mbox, result.format);
     try std.testing.expect(result.is_valid);

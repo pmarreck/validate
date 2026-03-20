@@ -9,6 +9,8 @@
 //! have NO internal content checksums.
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const iso9660 = @import("iso9660_parser.zig");
 const udf = @import("udf_parser.zig");
 const format_validation = @import("format_validation.zig");
@@ -504,7 +506,7 @@ fn validateUdfDirectoryRecursive(
 
 /// Validate ISO image from file
 pub fn validateIsoFile(
-    file: std.fs.File,
+    file: *FileSource,
     deep_validate: bool,
     max_files: u32,
     allocator: Allocator,

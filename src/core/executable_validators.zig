@@ -2,6 +2,8 @@
 //! Covers ELF, Mach-O (single-arch and fat/universal), COFF (.obj), WebAssembly, and ar archives.
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const errmsg = @import("error_messages.zig");
 const ValidationResult = format_validation.ValidationResult;
@@ -11,7 +13,7 @@ const FileFormat = format_validation.FileFormat;
 
 /// Validate ELF (Executable and Linkable Format) binary.
 /// Checks magic, class, endianness, version, type, and header sizes.
-pub fn validateElf(file: std.fs.File) ValidationResult {
+pub fn validateElf(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.elf, .failed_to_get, "file size");
     if (file_size < 16) return ValidationResult.invalidCode(.elf, .file_too_small, "ELF header");
 
@@ -80,7 +82,7 @@ pub fn validateElf(file: std.fs.File) ValidationResult {
 
 /// Validate Mach-O binary (single-architecture).
 /// Checks magic, CPU type, file type, and load command structure.
-pub fn validateMacho(file: std.fs.File) ValidationResult {
+pub fn validateMacho(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.macho, .failed_to_get, "file size");
     if (file_size < 28) return ValidationResult.invalidCode(.macho, .file_too_small, "Mach-O header");
 
@@ -131,7 +133,7 @@ pub fn validateMacho(file: std.fs.File) ValidationResult {
 
 /// Validate Mach-O Universal/Fat binary (multi-architecture).
 /// Checks nfat_arch, validates each architecture entry's bounds and embedded Mach-O magic.
-pub fn validateMachoFat(file: std.fs.File) ValidationResult {
+pub fn validateMachoFat(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.macho_fat, .failed_to_get, "file size");
     if (file_size < 8) return ValidationResult.invalidCode(.macho_fat, .file_too_small, "fat header");
 
@@ -197,7 +199,7 @@ pub fn validateMachoFat(file: std.fs.File) ValidationResult {
 
 /// Validate COFF object file (.obj).
 /// Checks machine type, section count, and structural consistency.
-pub fn validateCoff(file: std.fs.File) ValidationResult {
+pub fn validateCoff(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.coff, .failed_to_get, "file size");
     if (file_size < 20) return ValidationResult.invalidCode(.coff, .file_too_small, "COFF header");
 
@@ -247,7 +249,7 @@ pub fn validateCoff(file: std.fs.File) ValidationResult {
 
 /// Validate WebAssembly binary module.
 /// Checks magic, version, and validates section ordering and sizes.
-pub fn validateWasm(file: std.fs.File) ValidationResult {
+pub fn validateWasm(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.wasm, .failed_to_get, "file size");
     if (file_size < 8) return ValidationResult.invalidCode(.wasm, .file_too_small, "Wasm module");
 
@@ -328,21 +330,21 @@ pub fn validateWasm(file: std.fs.File) ValidationResult {
 
 /// Validate LLVM precompiled header (.pcm): magic "CPCH" + version + bitcode.
 /// Structural: verify magic, minimum size, and LLVM bitcode signature.
-pub fn validateLlvmPch(file: std.fs.File) ValidationResult {
+pub fn validateLlvmPch(file: *FileSource) ValidationResult {
     return validateLlvmBitcodeContainer(file, "CPCH", .llvm_pch);
 }
 
 // ============ LLVM Serialized Diagnostics Validator ============
 
 /// Validate LLVM serialized diagnostics (.dia): magic "DIAG" + version + bitcode.
-pub fn validateLlvmDiag(file: std.fs.File) ValidationResult {
+pub fn validateLlvmDiag(file: *FileSource) ValidationResult {
     return validateLlvmBitcodeContainer(file, "DIAG", .llvm_diag);
 }
 
 /// Shared LLVM bitcode container validation: 4-byte magic, then LLVM bitcode.
 /// LLVM bitcode starts at offset 4 with signature 0xDEC04342 ("BC\xC0\xDE") or
 /// a wrapper header, or the raw bitcode stream prefixed by version bytes.
-fn validateLlvmBitcodeContainer(file: std.fs.File, comptime magic: *const [4]u8, comptime format: format_validation.FileFormat) ValidationResult {
+fn validateLlvmBitcodeContainer(file: *FileSource, comptime magic: *const [4]u8, comptime format: format_validation.FileFormat) ValidationResult {
     const label = comptime @tagName(format);
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(format, .failed_to_get, "file size");
     if (file_size < 8) return ValidationResult.invalidCode(format, .file_too_small, label);
@@ -392,7 +394,7 @@ fn isValidArTextField(field: []const u8, comptime allow_slash: bool) bool {
 
 /// Validate Unix ar archive format (.a static libraries, .deb packages).
 /// Checks global header and validates member entry headers including name, date, uid, gid, mode fields.
-pub fn validateAr(file: std.fs.File) ValidationResult {
+pub fn validateAr(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.ar, .failed_to_get, "file size");
     if (file_size < 8) return ValidationResult.invalidCode(.ar, .file_too_small, "ar archive");
 
@@ -467,9 +469,9 @@ pub fn validateAr(file: std.fs.File) ValidationResult {
 // ============ Tests ============
 
 test "validateElf with ground truth file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/elf/minimal.elf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateElf(file);
+    var source = FileSource.open("ground_truth_examples/elf/minimal.elf") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateElf(&source);
     try std.testing.expect(result.is_valid);
 }
 
@@ -483,9 +485,9 @@ test "validateElf rejects truncated file" {
         wf.writeAll("\x7fELF") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateElf(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateElf(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -499,16 +501,16 @@ test "validateElf rejects invalid data" {
         wf.writeAll("This is not an ELF file at all!!!!") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateElf(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateElf(&source);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validateMacho with ground truth file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/macho/sample.o", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateMacho(file);
+    var source = FileSource.open("ground_truth_examples/macho/sample.o") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateMacho(&source);
     try std.testing.expect(result.is_valid);
 }
 
@@ -522,9 +524,9 @@ test "validateMacho rejects truncated file" {
         wf.writeAll("\xcf\xfa\xed\xfe") catch return; // Mach-O 64-bit LE magic only
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateMacho(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateMacho(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -538,16 +540,16 @@ test "validateMacho rejects invalid data" {
         wf.writeAll("Definitely not a Mach-O binary!!") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateMacho(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateMacho(&source);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validateMachoFat with ground truth file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/macho_fat/sample", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateMachoFat(file);
+    var source = FileSource.open("ground_truth_examples/macho_fat/sample") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateMachoFat(&source);
     try std.testing.expect(result.is_valid);
 }
 
@@ -561,9 +563,9 @@ test "validateMachoFat rejects truncated file" {
         wf.writeAll("\xca\xfe\xba\xbe") catch return; // Fat magic only
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateMachoFat(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateMachoFat(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -577,9 +579,9 @@ test "validateMachoFat rejects invalid data" {
         wf.writeAll("Not a fat binary at all here!!!!!!") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateMachoFat(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateMachoFat(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -593,9 +595,9 @@ test "validateCoff rejects truncated file" {
         wf.writeAll("\x4c\x01\x03\x00") catch return; // i386 machine type + partial header
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateCoff(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateCoff(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -610,16 +612,16 @@ test "validateCoff rejects invalid data" {
         wf.writeAll("\xff\xff\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateCoff(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateCoff(&source);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validateWasm with ground truth file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/wasm/minimal.wasm", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateWasm(file);
+    var source = FileSource.open("ground_truth_examples/wasm/minimal.wasm") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateWasm(&source);
     try std.testing.expect(result.is_valid);
 }
 
@@ -633,9 +635,9 @@ test "validateWasm rejects truncated file" {
         wf.writeAll("\x00\x61\x73\x6d") catch return; // Wasm magic only
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateWasm(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateWasm(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -649,16 +651,16 @@ test "validateWasm rejects invalid data" {
         wf.writeAll("This is absolutely not WebAssembly") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateWasm(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateWasm(&source);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validateAr with ground truth file" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ar/minimal.a", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateAr(file);
+    var source = FileSource.open("ground_truth_examples/ar/minimal.a") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateAr(&source);
     try std.testing.expect(result.is_valid);
 }
 
@@ -672,9 +674,9 @@ test "validateAr rejects truncated file" {
         wf.writeAll("!<ar") catch return; // Partial ar magic
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateAr(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateAr(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -688,9 +690,9 @@ test "validateAr rejects invalid data" {
         wf.writeAll("Not an ar archive, no way, no how!") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateAr(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateAr(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -720,9 +722,9 @@ test "validateAr rejects corrupted name field" {
         wf.writeAll(&buf) catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateAr(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateAr(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -751,9 +753,9 @@ test "validateAr rejects corrupted date field" {
         wf.writeAll(&buf) catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateAr(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateAr(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -780,9 +782,9 @@ test "validateAr rejects corrupted uid field" {
         wf.writeAll(&buf) catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateAr(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateAr(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -809,9 +811,9 @@ test "validateAr rejects corrupted gid field" {
         wf.writeAll(&buf) catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateAr(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateAr(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -838,8 +840,8 @@ test "validateAr rejects corrupted mode field" {
         wf.writeAll(&buf) catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
-    defer file.close();
-    const result = validateAr(file);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateAr(&source);
     try std.testing.expect(!result.is_valid);
 }

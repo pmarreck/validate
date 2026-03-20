@@ -7,6 +7,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const format_validation = @import("format_validation.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const ValidationDepth = format_validation.ValidationDepth;
@@ -19,7 +21,7 @@ const testing = std.testing;
 // ============ ISO 9660 Validator ============
 
 /// Validate ISO 9660 disk image structure.
-pub fn validateIso(file: std.fs.File) ValidationResult {
+pub fn validateIso(file: *FileSource) ValidationResult {
     // ISO 9660 has "CD001" at offset 0x8001 (32769) for primary volume descriptor
     file.seekTo(0x8001) catch return ValidationResult.invalidCode(.iso, .failed_to_seek, "to volume descriptor");
 
@@ -42,7 +44,7 @@ pub fn validateIso(file: std.fs.File) ValidationResult {
 // ============ Apple DMG Validator ============
 
 /// Validate Apple Disk Image structure.
-pub fn validateDmg(file: std.fs.File) ValidationResult {
+pub fn validateDmg(file: *FileSource) ValidationResult {
     // DMG has "koly" trailer at end of file (last 512 bytes contain the trailer)
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.dmg, .failed_to_get, "file size");
 
@@ -83,7 +85,8 @@ pub fn validateDmgDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
     defer file.close();
 
-    const result = dmg_validator.validateDmgFile(file, allocator);
+    var dmg_source = FileSource.fromFile(file);
+    const result = dmg_validator.validateDmgFile(&dmg_source, allocator);
 
     if (!result.valid) {
         return ValidationResult.invalidWithDepth(.dmg, result.error_message orelse "DMG validation failed", .full);
@@ -109,17 +112,17 @@ pub fn validateDmgDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Deep validation for ISO 9660 disk images.
 /// Validates volume descriptors and directory structure.
 pub fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.iso, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.iso, "Access denied", .structural),
             else => ValidationResult.invalidCodeWithDepth(.iso, .failed_to_open, "file", .structural),
         };
     };
-    defer file.close();
+    defer source.close();
 
     // Get file size
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.iso, .failed_to_get, "file size", .structural);
     };
 
@@ -134,15 +137,15 @@ pub fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult 
     const max_read: usize = @min(@as(usize, @intCast(file_size)), 64 * 1024 * 1024); // Cap at 64MB for memory
     const data = allocator.alloc(u8, max_read) catch {
         // Fall back to signature-only validation
-        return validateIsoSignature(file);
+        return validateIsoSignature(&source);
     };
     defer allocator.free(data);
 
-    file.seekTo(0) catch {
+    source.seekTo(0) catch {
         return ValidationResult.invalidCodeWithDepth(.iso, .failed_to_seek, "to start", .structural);
     };
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCodeWithDepth(.iso, .failed_to_read, "file", .structural);
     };
 
@@ -162,7 +165,7 @@ pub fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult 
 }
 
 /// Simple ISO signature validation (fallback for memory-constrained situations).
-pub fn validateIsoSignature(file: std.fs.File) ValidationResult {
+pub fn validateIsoSignature(file: *FileSource) ValidationResult {
     // ISO 9660 has "CD001" at offset 0x8001 (32769) for primary volume descriptor
     file.seekTo(0x8001) catch return ValidationResult.invalidCode(.iso, .failed_to_seek, "to volume descriptor");
 
@@ -199,10 +202,12 @@ test "ISO structural: valid synthetic ISO with CD001 signature" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.iso", .data = &data });
 
-    const file = try tmp.dir.openFile("test.iso", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.iso", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateIso(file);
+    const result = validateIso(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(format_validation.FileFormat.iso, result.format);
     try testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
@@ -219,10 +224,12 @@ test "ISO structural: missing CD001 rejected" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.iso", .data = &data });
 
-    const file = try tmp.dir.openFile("test.iso", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.iso", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateIso(file);
+    const result = validateIso(&source);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(format_validation.FileFormat.iso, result.format);
 }
@@ -235,20 +242,22 @@ test "ISO structural: file too small rejected" {
     const small_data = [_]u8{0} ** 100;
     try tmp.dir.writeFile(.{ .sub_path = "test.iso", .data = &small_data });
 
-    const file = try tmp.dir.openFile("test.iso", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.iso", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateIso(file);
+    const result = validateIso(&source);
     try testing.expect(!result.is_valid);
 }
 
 test "ISO structural: ground truth sample.iso" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/iso/sample.iso", .{}) catch {
+    var source = FileSource.open("ground_truth_examples/iso/sample.iso") catch {
         return; // Skip if file doesn't exist
     };
-    defer file.close();
+    defer source.close();
 
-    const result = validateIso(file);
+    const result = validateIso(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(format_validation.FileFormat.iso, result.format);
 }
@@ -256,10 +265,8 @@ test "ISO structural: ground truth sample.iso" {
 test "ISO deep: ground truth sample.iso" {
     const allocator = testing.allocator;
 
-    const file = std.fs.cwd().openFile("ground_truth_examples/iso/sample.iso", .{}) catch {
-        return; // Skip if file doesn't exist
-    };
-    file.close();
+    // Just check file exists
+    std.fs.cwd().access("ground_truth_examples/iso/sample.iso", .{}) catch return;
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/iso/sample.iso") catch return;
     defer allocator.free(path);
@@ -281,10 +288,12 @@ test "DMG structural: valid synthetic DMG with koly trailer" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.dmg", .data = &data });
 
-    const file = try tmp.dir.openFile("test.dmg", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.dmg", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateDmg(file);
+    const result = validateDmg(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(format_validation.FileFormat.dmg, result.format);
 }
@@ -298,10 +307,12 @@ test "DMG structural: missing koly rejected" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.dmg", .data = &data });
 
-    const file = try tmp.dir.openFile("test.dmg", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.dmg", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateDmg(file);
+    const result = validateDmg(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -312,9 +323,11 @@ test "DMG structural: file too small rejected" {
     const small_data = [_]u8{0} ** 100;
     try tmp.dir.writeFile(.{ .sub_path = "test.dmg", .data = &small_data });
 
-    const file = try tmp.dir.openFile("test.dmg", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.dmg", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateDmg(file);
+    const result = validateDmg(&source);
     try testing.expect(!result.is_valid);
 }

@@ -1,5 +1,7 @@
 const std = @import("std");
 const format_validation = @import("format_validation.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const Allocator = std.mem.Allocator;
@@ -87,7 +89,7 @@ const LineIterator = struct {
 
 /// Validates iCalendar structural integrity (RFC 5545).
 /// Checks for BEGIN:VCALENDAR, VERSION:2.0, PRODID, and at least one component.
-pub fn validateICalendar(file: std.fs.File) ValidationResult {
+pub fn validateICalendar(file: *FileSource) ValidationResult {
 	var buf: [8192]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.icalendar, .failed_to_seek, "iCalendar header");
@@ -180,12 +182,12 @@ fn isValidIcalDatetime(value: []const u8) bool {
 /// Verifies balanced BEGIN/END nesting, known component types, datetime formats,
 /// and proper VCALENDAR envelope.
 pub fn validateICalendarDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	var source = FileSource.open(path) catch {
 		return ValidationResult.invalidCode(.icalendar, .failed_to_read, "failed to open file");
 	};
-	defer file.close();
+	defer source.close();
 
-	const file_size = file.getEndPos() catch {
+	const file_size = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.icalendar, .failed_to_read, "failed to get file size");
 	};
 
@@ -204,7 +206,7 @@ pub fn validateICalendarDeep(allocator: Allocator, path: []const u8) ValidationR
 	};
 	defer allocator.free(data);
 
-	const bytes_read = file.readAll(data) catch {
+	const bytes_read = source.readAll(data) catch {
 		return ValidationResult.invalidCode(.icalendar, .failed_to_read, "failed to read file");
 	};
 	const content = data[0..bytes_read];
@@ -284,7 +286,7 @@ pub fn validateICalendarDeep(allocator: Allocator, path: []const u8) ValidationR
 
 /// Validates vCard structural integrity (RFC 6350 / RFC 2426 / vCard 2.1).
 /// Checks for BEGIN:VCARD and VERSION property.
-pub fn validateVCard(file: std.fs.File) ValidationResult {
+pub fn validateVCard(file: *FileSource) ValidationResult {
 	var buf: [4096]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.vcard, .failed_to_seek, "vCard header");
@@ -322,12 +324,12 @@ pub fn validateVCard(file: std.fs.File) ValidationResult {
 /// Deep validation for vCard files (RFC 6350 / RFC 2426).
 /// Verifies balanced BEGIN/END pairs, required properties per version, and property line format.
 pub fn validateVCardDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	var source = FileSource.open(path) catch {
 		return ValidationResult.invalidCode(.vcard, .failed_to_read, "failed to open file");
 	};
-	defer file.close();
+	defer source.close();
 
-	const file_size = file.getEndPos() catch {
+	const file_size = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.vcard, .failed_to_read, "failed to get file size");
 	};
 
@@ -345,7 +347,7 @@ pub fn validateVCardDeep(allocator: Allocator, path: []const u8) ValidationResul
 	};
 	defer allocator.free(data);
 
-	const bytes_read = file.readAll(data) catch {
+	const bytes_read = source.readAll(data) catch {
 		return ValidationResult.invalidCode(.vcard, .failed_to_read, "failed to read file");
 	};
 	const content = data[0..bytes_read];
@@ -472,12 +474,16 @@ test "iCalendar structural: valid VCALENDAR" {
 	// Write to temp file
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
-	const file = try tmp_dir.dir.createFile("test.ics", .{ .read = true });
-	defer file.close();
-	try file.writeAll(data);
-	try file.seekTo(0);
+	const wf = try tmp_dir.dir.createFile("test.ics", .{});
+	try wf.writeAll(data);
+	wf.close();
 
-	const result = validateICalendar(file);
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = try tmp_dir.dir.realpath("test.ics", &real_path_buf);
+	var source = try FileSource.open(real_path);
+	defer source.close();
+
+	const result = validateICalendar(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.icalendar, result.format);
 }
@@ -501,12 +507,16 @@ test "vCard structural: valid VCARD v4" {
 	const data = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:John Doe\r\nN:Doe;John;;;\r\nEND:VCARD\r\n";
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
-	const file = try tmp_dir.dir.createFile("test.vcf", .{ .read = true });
-	defer file.close();
-	try file.writeAll(data);
-	try file.seekTo(0);
+	const wf = try tmp_dir.dir.createFile("test.vcf", .{});
+	try wf.writeAll(data);
+	wf.close();
 
-	const result = validateVCard(file);
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = try tmp_dir.dir.realpath("test.vcf", &real_path_buf);
+	var source = try FileSource.open(real_path);
+	defer source.close();
+
+	const result = validateVCard(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.vcard, result.format);
 }
@@ -556,11 +566,15 @@ test "iCalendar with bare LF line endings" {
 	const data = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Test//EN\nBEGIN:VEVENT\nDTSTART:20250101T120000Z\nSUMMARY:Test\nEND:VEVENT\nEND:VCALENDAR\n";
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
-	const file = try tmp_dir.dir.createFile("test.ics", .{ .read = true });
-	defer file.close();
-	try file.writeAll(data);
-	try file.seekTo(0);
+	const wf = try tmp_dir.dir.createFile("test.ics", .{});
+	try wf.writeAll(data);
+	wf.close();
 
-	const result = validateICalendar(file);
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = try tmp_dir.dir.realpath("test.ics", &real_path_buf);
+	var source = try FileSource.open(real_path);
+	defer source.close();
+
+	const result = validateICalendar(&source);
 	try std.testing.expect(result.is_valid);
 }

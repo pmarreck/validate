@@ -14,6 +14,8 @@
 //! for the Opus bitstream itself.
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ogg_validator = @import("ogg_validator.zig");
 const errmsg = @import("error_messages.zig");
 
@@ -130,12 +132,12 @@ pub fn validateOpusPackets(
 
 /// Parse OGG Opus stream and validate all packets.
 /// This is the high-level API for validating OGG Opus files.
-pub fn validateOggOpus(file: std.fs.File) OpusValidationResult {
+pub fn validateOggOpus(file: *FileSource) OpusValidationResult {
     return validateOggOpusAlloc(std.heap.page_allocator, file);
 }
 
 /// Validate OGG Opus file with custom allocator.
-pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: std.fs.File) OpusValidationResult {
+pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: *FileSource) OpusValidationResult {
     // Extract packets from OGG container
     var packet_result = ogg_validator.extractPackets(allocator, file) catch |err| {
         return OpusValidationResult.invalid(switch (err) {
@@ -218,11 +220,11 @@ pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: std.fs.File) Opu
 
 /// Validate OGG Opus from a file path.
 pub fn validateOggOpusPath(path: []const u8) OpusValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return OpusValidationResult.invalid(errmsg.failedToOpen("file"), 0);
     };
-    defer file.close();
-    return validateOggOpus(file);
+    defer source.close();
+    return validateOggOpus(&source);
 }
 
 // ============ Tests ============

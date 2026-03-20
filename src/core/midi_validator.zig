@@ -12,6 +12,8 @@
 //! - Running status is used correctly
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
 
 pub const MidiValidationResult = struct {
@@ -54,17 +56,17 @@ pub const MidiValidationResult = struct {
 
 /// Validate MIDI file deeply by parsing all track data.
 pub fn validateMidiDeep(path: []const u8) MidiValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => MidiValidationResult.invalid("File not found"),
             error.AccessDenied => MidiValidationResult.invalid("Access denied"),
             else => MidiValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
-    defer file.close();
+    defer source.close();
 
     // Get file size
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return MidiValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
@@ -74,7 +76,7 @@ pub fn validateMidiDeep(path: []const u8) MidiValidationResult {
 
     // Read header chunk (14 bytes)
     var header: [14]u8 = undefined;
-    const header_read = file.readAll(&header) catch {
+    const header_read = source.readAll(&header) catch {
         return MidiValidationResult.invalid(errmsg.failedToRead("header"));
     };
 
@@ -123,11 +125,11 @@ pub fn validateMidiDeep(path: []const u8) MidiValidationResult {
     while (tracks_validated < num_tracks) : (tracks_validated += 1) {
         // Read track header
         var track_header: [8]u8 = undefined;
-        file.seekTo(pos) catch {
+        source.seekTo(pos) catch {
             return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, errmsg.failedToSeek("to track"));
         };
 
-        const track_header_read = file.readAll(&track_header) catch {
+        const track_header_read = source.readAll(&track_header) catch {
             return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, errmsg.failedToRead("track header"));
         };
 
@@ -149,7 +151,7 @@ pub fn validateMidiDeep(path: []const u8) MidiValidationResult {
         }
 
         // Validate track data
-        const track_result = validateTrackData(file, pos + 8, track_length);
+        const track_result = validateTrackData(&source, pos + 8, track_length);
         if (!track_result.valid) {
             return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, track_result.error_message.?);
         }
@@ -161,7 +163,7 @@ pub fn validateMidiDeep(path: []const u8) MidiValidationResult {
 }
 
 /// Validate track data by parsing all events
-fn validateTrackData(file: std.fs.File, start_pos: u64, length: u32) MidiValidationResult {
+fn validateTrackData(file: *FileSource, start_pos: u64, length: u32) MidiValidationResult {
     if (length == 0) {
         return MidiValidationResult.invalid(errmsg.empty("track"));
     }

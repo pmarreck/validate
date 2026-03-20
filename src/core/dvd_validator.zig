@@ -15,6 +15,8 @@
 //! to detect corruption before PAR2 generation.
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const iso9660 = @import("iso9660_parser.zig");
 const udf = @import("udf_parser.zig");
 const mpeg_ps = @import("mpeg_ps_parser.zig");
@@ -312,7 +314,7 @@ fn validateDvdIsoViaUdf(data: []const u8, deep_validate: bool, max_vobs: u8, all
 
 /// Validate DVD ISO from file
 pub fn validateDvdIsoFile(
-    file: std.fs.File,
+    file: *FileSource,
     deep_validate: bool,
     max_vobs: u8,
     allocator: std.mem.Allocator,
@@ -443,14 +445,14 @@ test "validateDvdIso - rejects ISO without VIDEO_TS" {
 }
 
 test "ground truth - DVD ISO sample" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/dvd/sample.iso", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/dvd/sample.iso") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer source.close();
 
     const allocator = std.testing.allocator;
-    const result = validateDvdIsoFile(file, false, 5, allocator);
+    const result = validateDvdIsoFile(&source, false, 5, allocator);
 
     // If valid, check DVD structure
     if (result.valid) {

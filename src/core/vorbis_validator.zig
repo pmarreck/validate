@@ -14,6 +14,8 @@
 //! for the Vorbis bitstream itself.
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ogg_validator = @import("ogg_validator.zig");
 const errmsg = @import("error_messages.zig");
 
@@ -138,12 +140,12 @@ pub const VorbisDecoder = struct {
 
 /// Validate OGG Vorbis file using libvorbis decode.
 /// This validates both container (via OGG CRCs) and codec (via decode).
-pub fn validateOggVorbis(file: std.fs.File) VorbisValidationResult {
+pub fn validateOggVorbis(file: *FileSource) VorbisValidationResult {
     return validateOggVorbisAlloc(std.heap.page_allocator, file);
 }
 
 /// Validate OGG Vorbis file with custom allocator.
-pub fn validateOggVorbisAlloc(allocator: std.mem.Allocator, file: std.fs.File) VorbisValidationResult {
+pub fn validateOggVorbisAlloc(allocator: std.mem.Allocator, file: *FileSource) VorbisValidationResult {
     // Extract packets from OGG container
     var packet_result = ogg_validator.extractPackets(allocator, file) catch |err| {
         return VorbisValidationResult.invalid(switch (err) {
@@ -230,11 +232,11 @@ pub fn validateOggVorbisAlloc(allocator: std.mem.Allocator, file: std.fs.File) V
 
 /// Validate OGG Vorbis from a file path.
 pub fn validateOggVorbisPath(path: []const u8) VorbisValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return VorbisValidationResult.invalid(errmsg.failedToOpen("file"), 0);
     };
-    defer file.close();
-    return validateOggVorbis(file);
+    defer source.close();
+    return validateOggVorbis(&source);
 }
 
 // ============ Tests ============

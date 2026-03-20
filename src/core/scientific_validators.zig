@@ -1,5 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const ValidationDepth = format_validation.ValidationDepth;
@@ -21,9 +23,8 @@ const NETCDF_SIGNATURE = [_]u8{ 'C', 'D', 'F' };
 /// Validate NetCDF file structure.
 /// Structural validation: parses dimensions, variables, and attributes; verifies offsets.
 /// No checksums exist in NetCDF classic format. NetCDF-4 is HDF5-based and detected as HDF5.
-pub fn validateNetcdf(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.netcdf, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validateNetcdf(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.netcdf, .failed_to_stat, "file");
 
     file.seekTo(0) catch return ValidationResult.invalidCode(.netcdf, .failed_to_seek, "to start");
 
@@ -264,9 +265,8 @@ pub fn validateNetcdf(file: std.fs.File) ValidationResult {
 /// Validate FITS (Flexible Image Transport System) file structure.
 /// Full integrity validation: parses all header blocks, validates keyword syntax,
 /// checks NAXIS dimensions, verifies data array bounds, and validates CHECKSUM/DATASUM.
-pub fn validateFits(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.fits, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validateFits(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.fits, .failed_to_stat, "file");
 
     file.seekTo(0) catch return ValidationResult.invalidCode(.fits, .failed_to_seek, "to start");
 
@@ -874,7 +874,7 @@ fn parseDicomVR(vr_bytes: *const [2]u8) DicomVR {
 /// Returns true if the value is valid for the given VR, false if corruption detected.
 /// Only validates text-based VRs where format rules are strict enough to catch corruption.
 /// Reads up to 256 bytes of value data for validation (sufficient for all fixed-format VRs).
-fn validateDicomVrContent(file: std.fs.File, value_offset: u64, value_length: u32, vr: DicomVR) bool {
+fn validateDicomVrContent(file: *FileSource, value_offset: u64, value_length: u32, vr: DicomVR) bool {
     // Skip validation for binary/sequence/unknown VRs and zero-length values
     if (value_length == 0) return true;
     const check_len: usize = @min(@as(usize, value_length), 256);
@@ -1187,7 +1187,7 @@ fn isDicomDelimiterTag(group: u16, element: u16) bool {
 }
 
 /// Validate JPEG data from encapsulated pixel data fragment
-fn validateDicomJpegFragment(allocator: Allocator, file: std.fs.File, offset: u64, length: u32) bool {
+fn validateDicomJpegFragment(allocator: Allocator, file: *FileSource, offset: u64, length: u32) bool {
     if (length < 4) return true; // Empty or tiny fragments are OK (padding)
 
     // Allocate buffer and read the fragment
@@ -1233,7 +1233,7 @@ fn validateDicomJpegFragment(allocator: Allocator, file: std.fs.File, offset: u6
 /// Returns new offset after sequence delimiter, or error.
 fn skipAndValidateEncapsulatedPixelData(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     start_offset: u64,
     file_size: u64,
 ) DicomParseResult {
@@ -1303,7 +1303,7 @@ fn skipAndValidateEncapsulatedPixelData(
 /// Items may contain nested data elements, including nested sequences.
 fn skipUndefinedLengthSequence(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     start_offset: u64,
     file_size: u64,
     is_explicit_vr: bool,
@@ -1372,7 +1372,7 @@ fn skipUndefinedLengthSequence(
 /// Skip an item with undefined length by parsing until Item Delimitation tag.
 fn skipUndefinedLengthItem(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     start_offset: u64,
     file_size: u64,
     is_explicit_vr: bool,
@@ -1422,7 +1422,7 @@ fn skipUndefinedLengthItem(
 /// Returns offset == file_size to signal end of data (not an error).
 fn parseDicomElement(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     offset: u64,
     file_size: u64,
     is_explicit_vr: bool,
@@ -1524,7 +1524,7 @@ fn parseDicomElement(
 /// Parse DICOM data elements within a bounded region (e.g., inside an item).
 fn parseDicomDataElements(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     start_offset: u64,
     length: u32,
     file_size: u64,
@@ -1574,14 +1574,13 @@ fn parseDicomDataElements(
 /// handles sequences with undefined length, validates encapsulated pixel data (JPEG, etc.),
 /// and recursively validates nested sequences up to 32 levels deep.
 /// No file-level checksum — metadata field corruption is undetectable.
-pub fn validateDicom(file: std.fs.File) ValidationResult {
+pub fn validateDicom(file: *FileSource) ValidationResult {
     // Use GPA for temporary allocations during validation
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const stat = file.stat() catch return ValidationResult.invalidCode(.dicom, .failed_to_stat, "file");
-    const file_size = stat.size;
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.dicom, .failed_to_stat, "file");
 
     if (file_size < 132) {
         return ValidationResult.invalidCode(.dicom, .file_too_small, "DICOM");
@@ -1729,9 +1728,8 @@ pub fn validateDicom(file: std.fs.File) ValidationResult {
 /// Structural validation: parses all sequences, validates alphabet characters,
 /// and checks for proper record structure throughout the file.
 /// No checksums — a bit flip within the valid alphabet is undetectable.
-pub fn validateFasta(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.fasta, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validateFasta(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.fasta, .failed_to_stat, "file");
 
     if (file_size == 0) {
         return ValidationResult.invalidCode(.fasta, .empty, "file");
@@ -1838,9 +1836,8 @@ fn init_valid_fasta_chars() [256]bool {
 /// Structural validation: parses multiple records, validates sequence characters,
 /// verifies quality score encoding, and checks sequence/quality length agreement.
 /// No checksums — a bit flip within valid character ranges is undetectable.
-pub fn validateFastq(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.fastq, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validateFastq(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.fastq, .failed_to_stat, "file");
 
     if (file_size == 0) {
         return ValidationResult.invalidCode(.fastq, .empty, "file");
@@ -2052,9 +2049,8 @@ pub fn jenkinsLookup3(data: []const u8, init_val: u32) u32 {
 /// Validate HDF5 file structure.
 /// Full integrity validation: parses superblock, validates version-specific fields,
 /// and checks root group object header.
-pub fn validateHdf5(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.hdf5, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validateHdf5(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.hdf5, .failed_to_stat, "file");
 
     file.seekTo(0) catch return ValidationResult.invalidCode(.hdf5, .failed_to_seek, "to start");
 
@@ -2255,7 +2251,7 @@ fn fletcher32(buf: []const u8) u32 {
 /// then verify Fletcher-32 checksums on each referenced chunk.
 /// Returns .invalid if any chunk checksum mismatches, .verified if at least one verified,
 /// .unverifiable if no Fletcher-32 chunks found.
-fn validateHdf5Fletcher32Chunks(file: std.fs.File, file_size: u64) OhdrCheckResult {
+fn validateHdf5Fletcher32Chunks(file: *FileSource, file_size: u64) OhdrCheckResult {
     // Scan for FAHD (Fixed Array Header) signatures
     // FAHD structure: signature(4) + version(1) + client_id(1) + elem_size(1) + max_nelmts_bits(1) +
     //   nelmts(8, assuming offset_size=8) + data_blk_addr(8) + page_nelmts(2) + checksum(4)
@@ -2382,7 +2378,7 @@ const HDF5_MSG_CONTINUATION: u8 = 0x10;
 
 /// Verify a v2 Object Header (OHDR) Jenkins checksum and walk all OCHK
 /// continuation blocks, verifying their checksums too.
-pub fn validateHdf5ObjectHeaderChain(file: std.fs.File, oh_addr: u64, file_size: u64) OhdrChainResult {
+pub fn validateHdf5ObjectHeaderChain(file: *FileSource, oh_addr: u64, file_size: u64) OhdrChainResult {
     var result = OhdrChainResult{};
     result.root_result = validateHdf5OhdrChunk(file, oh_addr, file_size, &result);
     return result;
@@ -2393,14 +2389,14 @@ pub fn validateHdf5ObjectHeaderChain(file: std.fs.File, oh_addr: u64, file_size:
 /// then computes Jenkins lookup3 over the entire header and compares
 /// against the stored 4-byte checksum at the end.
 /// Legacy single-chunk entry point for backward compatibility.
-pub fn validateHdf5ObjectHeaderChecksum(file: std.fs.File, oh_addr: u64, file_size: u64) OhdrCheckResult {
+pub fn validateHdf5ObjectHeaderChecksum(file: *FileSource, oh_addr: u64, file_size: u64) OhdrCheckResult {
     return validateHdf5OhdrBlock(file, oh_addr, file_size, null);
 }
 
 /// Core OHDR chunk validator. Validates the OHDR block and optionally walks
 /// continuation chains when chain_result is non-null.
 fn validateHdf5OhdrChunk(
-    file: std.fs.File,
+    file: *FileSource,
     chunk_addr: u64,
     file_size: u64,
     chain_result: ?*OhdrChainResult,
@@ -2411,7 +2407,7 @@ fn validateHdf5OhdrChunk(
 
 /// Validate an OHDR block: parse prefix, verify checksum, optionally walk continuations.
 fn validateHdf5OhdrBlock(
-    file: std.fs.File,
+    file: *FileSource,
     oh_addr: u64,
     file_size: u64,
     chain_result: ?*OhdrChainResult,
@@ -2488,7 +2484,7 @@ fn validateHdf5OhdrBlock(
 /// Validate an OCHK block of known length. The continuation message provides
 /// both the offset and the length.
 fn validateHdf5OchkBlockWithLength(
-    file: std.fs.File,
+    file: *FileSource,
     ochk_addr: u64,
     ochk_length: u64,
     file_size: u64,
@@ -2534,7 +2530,7 @@ const HDF5_MSG_LINK: u8 = 0x06;
 /// and link messages (type 0x06) to walk child object headers.
 /// V2 message header: type(u8) + data_size(u16 LE) + flags(u8) [+ creation_order(u16 LE) if tracked].
 fn parseHdf5MessagesForContinuations(
-    file: std.fs.File,
+    file: *FileSource,
     buf: []const u8,
     msg_start: usize,
     msg_end: usize,
@@ -2650,9 +2646,8 @@ const PARQUET_SIGNATURE = [_]u8{ 'P', 'A', 'R', '1' };
 /// Validate Apache Parquet file structure.
 /// Full integrity validation: parses footer metadata, validates row group structure,
 /// and checks column chunk bounds.
-pub fn validateParquet(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.parquet, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validateParquet(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.parquet, .failed_to_stat, "file");
 
     file.seekTo(0) catch return ValidationResult.invalidCode(.parquet, .failed_to_seek, "to start");
 
@@ -3172,9 +3167,8 @@ pub fn readThriftVarint(data: []const u8) ?struct { value: i64, size: usize } {
 
 /// Validate MATLAB v5+ .mat file format.
 /// Full integrity validation: parses data element structure and validates types.
-pub fn validateMatlab(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.matlab, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validateMatlab(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.matlab, .failed_to_stat, "file");
 
     file.seekTo(0) catch return ValidationResult.invalidCode(.matlab, .failed_to_seek, "to start");
 
@@ -3302,9 +3296,8 @@ pub fn validateMatlab(file: std.fs.File) ValidationResult {
 
 /// Validate NIfTI (Neuroimaging Informatics Technology Initiative) format.
 /// Full integrity validation: parses all header fields and validates data bounds.
-pub fn validateNifti(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.nifti, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validateNifti(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.nifti, .failed_to_stat, "file");
 
     file.seekTo(0) catch return ValidationResult.invalidCode(.nifti, .failed_to_seek, "to start");
 
@@ -3476,9 +3469,8 @@ pub fn validateNifti(file: std.fs.File) ValidationResult {
 /// Validate PDB (Protein Data Bank) format.
 /// Full integrity validation: parses record types, validates ATOM/HETATM format,
 /// and checks coordinate bounds.
-pub fn validatePdb(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.pdb_struct, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validatePdb(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.pdb_struct, .failed_to_stat, "file");
 
     if (file_size == 0) {
         return ValidationResult.invalidCode(.pdb_struct, .empty, "file");
@@ -3721,9 +3713,8 @@ fn parsePdbInt(field: []const u8) ?u32 {
 /// Validate CIF (Crystallographic Information File) format.
 /// Full integrity validation: parses data blocks, validates tag syntax,
 /// and checks loop structure.
-pub fn validateCif(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.cif, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validateCif(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.cif, .failed_to_stat, "file");
 
     if (file_size == 0) {
         return ValidationResult.invalidCode(.cif, .empty, "file");
@@ -3901,9 +3892,8 @@ fn expectedContentLengthWords(t: i32) ?i32 {
 /// bounding-box cross-validation against record geometry, record sequential
 /// numbering, content-length validation for fixed-size types, and NaN/Inf
 /// rejection in coordinates.
-pub fn validateShapefile(file: std.fs.File) ValidationResult {
-	const stat = file.stat() catch return ValidationResult.invalidCode(.shapefile, .failed_to_stat, "file");
-	const file_size = stat.size;
+pub fn validateShapefile(file: *FileSource) ValidationResult {
+	const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.shapefile, .failed_to_stat, "file");
 
 	file.seekTo(0) catch return ValidationResult.invalidCode(.shapefile, .failed_to_seek, "to start");
 
@@ -4185,14 +4175,13 @@ test "jenkinsLookup3 reference vectors" {
 
 test "HDF5 v2/3 superblock + OHDR checksum verification" {
     // Open the v2 ground truth file and verify checksums
-    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample.h5", .{}) catch |err| {
+    var file = FileSource.open("ground_truth_examples/hdf5/sample.h5") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
     defer file.close();
 
-    const stat = file.stat() catch return;
-    const file_size = stat.size;
+    const file_size = file.getEndPos() catch return;
 
     // Root group OH addr from superblock: offset 0x24, 8 bytes LE
     file.seekTo(0x24) catch return;
@@ -4204,30 +4193,30 @@ test "HDF5 v2/3 superblock + OHDR checksum verification" {
     try std.testing.expectEqual(@as(u64, 0x30), root_oh_addr);
 
     // Verify OHDR checksum
-    const result = validateHdf5ObjectHeaderChecksum(file, root_oh_addr, file_size);
+    const result = validateHdf5ObjectHeaderChecksum(&file, root_oh_addr, file_size);
     try std.testing.expectEqual(OhdrCheckResult.verified, result);
 }
 
 test "HDF5 v2 file reports full depth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample.h5", .{}) catch |err| {
+    var file = FileSource.open("ground_truth_examples/hdf5/sample.h5") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
     defer file.close();
 
-    const result = validateHdf5(file);
+    const result = validateHdf5(&file);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 test "HDF5 v0 file reports structural depth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/hdf5/sample_v0_no_checksums.h5", .{}) catch |err| {
+    var file = FileSource.open("ground_truth_examples/hdf5/sample_v0_no_checksums.h5") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
     defer file.close();
 
-    const result = validateHdf5(file);
+    const result = validateHdf5(&file);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
@@ -4257,9 +4246,9 @@ test "FITS without CHECKSUM/DATASUM returns structural depth" {
     }
     defer std.fs.cwd().deleteFile(path) catch {};
 
-    const file = try std.fs.cwd().openFile(path, .{});
+    var file = try FileSource.open(path);
     defer file.close();
-    const result = validateFits(file);
+    const result = validateFits(&file);
     // Without CHECKSUM or DATASUM, data is NOT verified → must be .structural
     try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
     try std.testing.expect(result.is_valid);

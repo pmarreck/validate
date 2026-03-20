@@ -3,6 +3,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const errmsg = @import("error_messages.zig");
 const archive_validators = @import("archive_validators.zig");
@@ -61,7 +63,7 @@ fn countAndValidateFloats(s: []const u8) usize {
 
 // ============ DWG Validator ============
 
-pub fn validateDwg(file: std.fs.File) ValidationResult {
+pub fn validateDwg(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.dwg, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -96,13 +98,13 @@ pub fn validateDwg(file: std.fs.File) ValidationResult {
 
 pub fn validateDwgDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var file = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.dwg, .failed_to_open, "DWG file");
     };
     defer file.close();
 
     // Basic validation first
-    const result = validateDwg(file);
+    const result = validateDwg(&file);
     if (!result.is_valid) return result;
 
     // Get file size for bounds checking
@@ -169,7 +171,7 @@ pub fn validateDwgDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 // ============ Blender Validator ============
 
-pub fn validateBlend(file: std.fs.File) ValidationResult {
+pub fn validateBlend(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.blend, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -207,13 +209,13 @@ pub fn validateBlend(file: std.fs.File) ValidationResult {
 }
 
 pub fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var file = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.blend, .failed_to_open, "Blender file");
     };
     defer file.close();
 
     // First do structural validation
-    const structural_result = validateBlend(file);
+    const structural_result = validateBlend(&file);
     if (!structural_result.is_valid) return structural_result;
 
     // Reset to start
@@ -415,7 +417,7 @@ pub fn validateDNA1Block(data: []const u8, endian: std.builtin.Endian) bool {
 
 // ============ DXF Validator ============
 
-pub fn validateDxf(file: std.fs.File) ValidationResult {
+pub fn validateDxf(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.dxf, .failed_to_seek, "to start");
 
     var header: [256]u8 = undefined;
@@ -454,7 +456,7 @@ pub fn validateDxf(file: std.fs.File) ValidationResult {
 
 // ============ STEP Validator ============
 
-pub fn validateStep(file: std.fs.File) ValidationResult {
+pub fn validateStep(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.step, .failed_to_seek, "to start");
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.step, .failed_to_get, "file size");
@@ -592,7 +594,7 @@ fn parseStepContent(content: []const u8) ValidationResult {
     return ValidationResult.okWithDepth(.step, .structural);
 }
 
-pub fn validateStepChunked(file: std.fs.File, file_size: u64) ValidationResult {
+pub fn validateStepChunked(file: *FileSource, file_size: u64) ValidationResult {
     const chunk_size: usize = 64 * 1024;
     var buffer: [chunk_size]u8 = undefined;
     var position: u64 = 0;
@@ -648,7 +650,7 @@ pub fn validateStepChunked(file: std.fs.File, file_size: u64) ValidationResult {
 
 // ============ STL Validator ============
 
-pub fn validateStl(file: std.fs.File) ValidationResult {
+pub fn validateStl(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.stl, .failed_to_seek, "to start");
 
     var header: [84]u8 = undefined;
@@ -681,7 +683,7 @@ pub fn validateStl(file: std.fs.File) ValidationResult {
     return ValidationResult.invalidCode(.stl, .invalid_value, "STL format");
 }
 
-pub fn validateStlAscii(file: std.fs.File) ValidationResult {
+pub fn validateStlAscii(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.stl, .failed_to_seek, "to start");
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.stl, .failed_to_get, "file size");
@@ -787,7 +789,7 @@ fn parseStlAsciiContent(content: []const u8) ValidationResult {
     return ValidationResult.okWithDepth(.stl, .full);
 }
 
-pub fn validateStlAsciiChunked(file: std.fs.File, file_size: u64) ValidationResult {
+pub fn validateStlAsciiChunked(file: *FileSource, file_size: u64) ValidationResult {
     // For huge ASCII files, read in chunks and validate structure
     const chunk_size: usize = 64 * 1024; // 64KB chunks
     var buffer: [chunk_size]u8 = undefined;
@@ -835,7 +837,7 @@ pub fn validateStlAsciiChunked(file: std.fs.File, file_size: u64) ValidationResu
     return ValidationResult.okWithDepth(.stl, .full);
 }
 
-pub fn validateStlBinary(file: std.fs.File, header: [84]u8) ValidationResult {
+pub fn validateStlBinary(file: *FileSource, header: [84]u8) ValidationResult {
     const triangle_count = std.mem.readInt(u32, header[80..84], .little);
 
     // Each triangle is 50 bytes: normal (12) + v1 (12) + v2 (12) + v3 (12) + attr (2)
@@ -912,7 +914,7 @@ pub fn validateStlBinary(file: std.fs.File, header: [84]u8) ValidationResult {
 
 // ============ OBJ Validator ============
 
-pub fn validateObj(file: std.fs.File) ValidationResult {
+pub fn validateObj(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.obj, .failed_to_seek, "to start");
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.obj, .failed_to_get, "file size");
@@ -1109,7 +1111,7 @@ pub fn validateObjFace(face_data: []const u8, vertex_count: usize, texcoord_coun
     return .{ .valid = true, .message = "" };
 }
 
-pub fn validateObjChunked(file: std.fs.File, file_size: u64) ValidationResult {
+pub fn validateObjChunked(file: *FileSource, file_size: u64) ValidationResult {
     const chunk_size: usize = 64 * 1024;
     var buffer: [chunk_size]u8 = undefined;
     var position: u64 = 0;
@@ -1162,11 +1164,11 @@ pub fn validateObjChunked(file: std.fs.File, file_size: u64) ValidationResult {
 
 pub fn validateObjDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var file = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.obj, .failed_to_open, "OBJ file");
     };
     defer file.close();
-    return validateObj(file);
+    return validateObj(&file);
 }
 
 // ============ PLY Validator ============
@@ -1222,7 +1224,7 @@ const PlyFaceListInfo = struct {
     elem_type: PlyPropType,
 };
 
-pub fn validatePly(file: std.fs.File) ValidationResult {
+pub fn validatePly(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.ply, .failed_to_seek, "to start");
 
     // Read header (up to 64KB - headers can be large with many properties)
@@ -1335,7 +1337,7 @@ pub fn validatePly(file: std.fs.File) ValidationResult {
     }
 }
 
-pub fn validatePlyAsciiData(file: std.fs.File, header_end: usize, vertex_count: usize, face_count: usize, vertex_prop_count: usize) ValidationResult {
+pub fn validatePlyAsciiData(file: *FileSource, header_end: usize, vertex_count: usize, face_count: usize, vertex_prop_count: usize) ValidationResult {
     file.seekTo(header_end) catch return ValidationResult.invalidCode(.ply, .failed_to_seek, "to data");
 
     // For large files, validate a sample
@@ -1424,7 +1426,7 @@ pub fn validatePlyAsciiData(file: std.fs.File, header_end: usize, vertex_count: 
     return ValidationResult.okWithDepth(.ply, .full);
 }
 
-pub fn validatePlyAsciiSample(file: std.fs.File, vertex_count: usize, face_count: usize) ValidationResult {
+pub fn validatePlyAsciiSample(file: *FileSource, vertex_count: usize, face_count: usize) ValidationResult {
     _ = vertex_count;
     _ = face_count;
     // Read first and last chunks, verify structure
@@ -1451,7 +1453,7 @@ pub fn validatePlyAsciiSample(file: std.fs.File, vertex_count: usize, face_count
 /// NaN/Inf) and face vertex indices (checking range). Property types are extracted
 /// from the header by validatePly and passed here for type-aware parsing.
 pub fn validatePlyBinaryData(
-    file: std.fs.File,
+    file: *FileSource,
     header_end: usize,
     data_size: u64,
     vertex_count: usize,
@@ -1586,7 +1588,7 @@ pub fn validatePlyBinaryData(
 
 // ============ glTF Validator ============
 
-pub fn validateGltf(file: std.fs.File) ValidationResult {
+pub fn validateGltf(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.gltf, .failed_to_seek, "to start");
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.gltf, .failed_to_get, "file size");
@@ -1753,7 +1755,7 @@ fn parseGltfJson(content: []const u8) ValidationResult {
     return ValidationResult.okWithDepth(.gltf, .structural);
 }
 
-pub fn validateGltfStructural(file: std.fs.File) ValidationResult {
+pub fn validateGltfStructural(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.gltf, .failed_to_seek, "in glTF file");
 
     var buffer: [8192]u8 = undefined;
@@ -1779,7 +1781,7 @@ pub fn validateGltfStructural(file: std.fs.File) ValidationResult {
 
 // ============ GLB Validator ============
 
-pub fn validateGlb(file: std.fs.File) ValidationResult {
+pub fn validateGlb(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.glb, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -1865,7 +1867,7 @@ pub fn validateGlb(file: std.fs.File) ValidationResult {
     return ValidationResult.okWithDepth(.glb, .structural);
 }
 
-pub fn validateGlbJsonChunk(file: std.fs.File, offset: u64, length: u32) ValidationResult {
+pub fn validateGlbJsonChunk(file: *FileSource, offset: u64, length: u32) ValidationResult {
     if (length > 100 * 1024 * 1024) {
         // Very large JSON - just read to verify accessibility
         return validateGlbChunkReadable(file, offset, length);
@@ -1891,11 +1893,11 @@ pub fn validateGlbJsonChunk(file: std.fs.File, offset: u64, length: u32) Validat
     return parseGltfJson(json_data);
 }
 
-pub fn validateGlbBinChunk(file: std.fs.File, offset: u64, length: u32) ValidationResult {
+pub fn validateGlbBinChunk(file: *FileSource, offset: u64, length: u32) ValidationResult {
     return validateGlbChunkReadable(file, offset, length);
 }
 
-pub fn validateGlbChunkReadable(file: std.fs.File, offset: u64, length: u32) ValidationResult {
+pub fn validateGlbChunkReadable(file: *FileSource, offset: u64, length: u32) ValidationResult {
     file.seekTo(offset) catch return ValidationResult.invalidCode(.glb, .failed_to_seek, "to chunk");
 
     const chunk_size: usize = 64 * 1024;
@@ -1919,7 +1921,7 @@ pub fn validateGlbChunkReadable(file: std.fs.File, offset: u64, length: u32) Val
 }
 
 pub fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var file = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.glb, .failed_to_open, "GLB file");
     };
     defer file.close();
@@ -2102,9 +2104,9 @@ pub fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult 
 // ============ Tests ============
 
 test "validateDxf with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/dxf/sample.dxf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    var file = FileSource.open("ground_truth_examples/dxf/sample.dxf") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
-    const result = validateDxf(file);
+    const result = validateDxf(&file);
     try std.testing.expect(result.is_valid);
 }
 
@@ -2118,16 +2120,16 @@ test "validateDxf rejects invalid data" {
         wf.writeAll("this is not a DXF file at all") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    var file = FileSource.open(path) catch return;
     defer file.close();
-    const result = validateDxf(file);
+    const result = validateDxf(&file);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validateStep with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/step/sample.stp", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    var file = FileSource.open("ground_truth_examples/step/sample.stp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
-    const result = validateStep(file);
+    const result = validateStep(&file);
     try std.testing.expect(result.is_valid);
 }
 
@@ -2141,16 +2143,16 @@ test "validateStep rejects invalid data" {
         wf.writeAll("this is not a STEP file at all") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    var file = FileSource.open(path) catch return;
     defer file.close();
-    const result = validateStep(file);
+    const result = validateStep(&file);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validateStl with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/stl/sample.stl", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    var file = FileSource.open("ground_truth_examples/stl/sample.stl") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
-    const result = validateStl(file);
+    const result = validateStl(&file);
     try std.testing.expect(result.is_valid);
 }
 
@@ -2164,16 +2166,16 @@ test "validateStl rejects invalid data" {
         wf.writeAll("this is not a STL file at all") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    var file = FileSource.open(path) catch return;
     defer file.close();
-    const result = validateStl(file);
+    const result = validateStl(&file);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validateObj with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/obj/sample.obj", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    var file = FileSource.open("ground_truth_examples/obj/sample.obj") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
-    const result = validateObj(file);
+    const result = validateObj(&file);
     try std.testing.expect(result.is_valid);
 }
 
@@ -2187,16 +2189,16 @@ test "validateObj rejects invalid data" {
         wf.writeAll("this is not an OBJ file at all") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    var file = FileSource.open(path) catch return;
     defer file.close();
-    const result = validateObj(file);
+    const result = validateObj(&file);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validatePly with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ply/sample.ply", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    var file = FileSource.open("ground_truth_examples/ply/sample.ply") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
-    const result = validatePly(file);
+    const result = validatePly(&file);
     try std.testing.expect(result.is_valid);
 }
 
@@ -2210,16 +2212,16 @@ test "validatePly rejects invalid data" {
         wf.writeAll("this is not a PLY file at all") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    var file = FileSource.open(path) catch return;
     defer file.close();
-    const result = validatePly(file);
+    const result = validatePly(&file);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validateGltf with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/gltf/box.gltf", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    var file = FileSource.open("ground_truth_examples/gltf/box.gltf") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
-    const result = validateGltf(file);
+    const result = validateGltf(&file);
     try std.testing.expect(result.is_valid);
 }
 
@@ -2233,16 +2235,16 @@ test "validateGltf rejects invalid data" {
         wf.writeAll("this is not a glTF file at all") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    var file = FileSource.open(path) catch return;
     defer file.close();
-    const result = validateGltf(file);
+    const result = validateGltf(&file);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validateGlb with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/glb/box.glb", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    var file = FileSource.open("ground_truth_examples/glb/box.glb") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close();
-    const result = validateGlb(file);
+    const result = validateGlb(&file);
     try std.testing.expect(result.is_valid);
 }
 
@@ -2256,15 +2258,15 @@ test "validateGlb rejects invalid data" {
         wf.writeAll("this is not a GLB file at all") catch return;
     }
     defer std.fs.cwd().deleteFile(path) catch {};
-    const file = std.fs.cwd().openFile(path, .{}) catch return;
+    var file = FileSource.open(path) catch return;
     defer file.close();
-    const result = validateGlb(file);
+    const result = validateGlb(&file);
     try std.testing.expect(!result.is_valid);
 }
 
 // ============ 3MF Validator ============
 
-pub fn validate3mf(file: std.fs.File) ValidationResult {
+pub fn validate3mf(file: *FileSource) ValidationResult {
     const zip_result = archive_validators.validateZip(file, .@"3mf");
     if (!zip_result.is_valid) {
         return zip_result;
@@ -2463,15 +2465,19 @@ test "validateStl accepts valid binary STL structure" {
     // Triangle: normal (12 bytes) + 3 vertices (36 bytes) + attribute (2 bytes) = 50 bytes
     @memset(stl_data[84..134], 0);
 
-    const file = try tmp_dir.dir.createFile("test_binary.stl", .{});
-    try file.writeAll(&stl_data);
-    file.close();
+    {
+        const wf = try tmp_dir.dir.createFile("test_binary.stl", .{});
+        defer wf.close();
+        try wf.writeAll(&stl_data);
+    }
 
     // Open the file and call validateStl directly
-    const validate_file = try tmp_dir.dir.openFile("test_binary.stl", .{});
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const stl_path = try tmp_dir.dir.realpath("test_binary.stl", &path_buf);
+    var validate_file = try FileSource.open(stl_path);
     defer validate_file.close();
 
-    const result = validateStl(validate_file);
+    const result = validateStl(&validate_file);
 
     // The validator should accept the binary STL structure
     try std.testing.expectEqual(FileFormat.stl, result.format);

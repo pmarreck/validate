@@ -225,6 +225,8 @@ const archive_validators = @import("archive_validators.zig");
 pub const creative_validators = @import("creative_validators.zig");
 const cad_3d_validators = @import("cad_3d_validators.zig");
 const i18n = @import("i18n/mod.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 // ============ Constants ============
 
@@ -4586,11 +4588,11 @@ pub const FormatValidator = struct {
         if (is_content_detected_text_format and isExcludedTextExtension(path)) {
             // Content looks like JSON/XML/INI/etc. but extension says it's source code.
             // Validate as plain text (UTF-8 check) instead of the detected format.
-            const reopen = std.fs.cwd().openFile(path, .{}) catch {
+            var reopen_source = file_source.FileSource.open(path) catch {
                 return ValidationResult.okWithDepth(.plain_text, .structural);
             };
-            defer reopen.close();
-            return text_format_validators.validatePlainText(self.allocator, reopen);
+            defer reopen_source.close();
+            return text_format_validators.validatePlainText(self.allocator, &reopen_source);
         }
 
         // Check extension-based detection
@@ -4613,11 +4615,12 @@ pub const FormatValidator = struct {
                     return result;
                 };
                 defer reopen_file.close();
+                var ext_source = file_source.FileSource.fromFile(reopen_file);
                 result = switch (ext_format) {
-                    .json => text_format_validators.validateJson(reopen_file),
-                    .toml => text_format_validators.validateToml(reopen_file),
-                    .ini => text_format_validators.validateIni(reopen_file),
-                    .xml => text_format_validators.validateXml(reopen_file),
+                    .json => text_format_validators.validateJson(&ext_source),
+                    .toml => text_format_validators.validateToml(&ext_source),
+                    .ini => text_format_validators.validateIni(&ext_source),
+                    .xml => text_format_validators.validateXml(&ext_source),
                     else => ValidationResult.ok(ext_format),
                 };
             } else {
@@ -4641,51 +4644,53 @@ pub const FormatValidator = struct {
                         return result;
                     };
                     defer reopen_ext.close();
+                    var reopen_ext_src = FileSource.fromFile(reopen_ext);
+                    const reopen_ext_ptr = &reopen_ext_src;
                     result = switch (ext_format) {
-                        .dv => movie_validators.validateDv(reopen_ext),
-                        .tga => image_validators.validateTga(reopen_ext),
-                        .html => text_format_validators.validateHtml(reopen_ext),
-                        .dmg => filesystem_validators.validateDmg(reopen_ext),
-                        .iso => filesystem_validators.validateIso(reopen_ext),
-                        .hqx => archive_validators.validateHqx(reopen_ext),
-                        .cpt => archive_validators.validateCpt(reopen_ext),
-                        .bwproject => daw_validators.validateBwproject(reopen_ext),
-                        .ptx => daw_validators.validateProTools(reopen_ext),
-                        .band => daw_validators.validateGarageBand(reopen_ext),
-                        .reason => daw_validators.validateReason(reopen_ext),
-                        .cpr => daw_validators.validateCubase(reopen_ext),
-                        .logicx, .song => archive_validators.validateZip(reopen_ext, ext_format),
-                        .sketch => creative_validators.validateSketch(reopen_ext),
-                        .drp => creative_validators.validateDrp(reopen_ext),
-                        .snes => game_validator.validateSnes(reopen_ext),
-                        .gb => game_validator.validateGb(reopen_ext),
-                        .gba => game_validator.validateGba(reopen_ext),
-                        .nds => game_validator.validateNds(reopen_ext),
-                        .genesis => game_validator.validateGenesis(reopen_ext),
-                        .cwk => apple_validators.validateClarisWorks(reopen_ext),
-                        .mwd => apple_validators.validateMacWrite(reopen_ext),
-                        .qbw => financial_validators.validateQbw(reopen_ext),
-                        .qbb => financial_validators.validateQbb(reopen_ext),
-                        .qdf => financial_validators.validateQdf(reopen_ext),
-                        .ofx => financial_validators.validateOfx(reopen_ext),
-                        .qif => financial_validators.validateQif(reopen_ext),
-                        .txf => financial_validators.validateTxf(reopen_ext),
-                        .nacha => financial_validators.validateNacha(reopen_ext),
-                        .mt940 => financial_validators.validateMt940(reopen_ext),
-                        .bai2 => financial_validators.validateBai2(reopen_ext),
-                        .x12_edi => edi_validators.validateX12Edi(reopen_ext),
-                        .edifact => edi_validators.validateEdifact(reopen_ext),
-                        .coff => executable_validators.validateCoff(reopen_ext),
-                        .der => crypto_validators.validateDer(reopen_ext),
+                        .dv => movie_validators.validateDv(reopen_ext_ptr),
+                        .tga => image_validators.validateTga(reopen_ext_ptr),
+                        .html => text_format_validators.validateHtml(reopen_ext_ptr),
+                        .dmg => filesystem_validators.validateDmg(reopen_ext_ptr),
+                        .iso => filesystem_validators.validateIso(reopen_ext_ptr),
+                        .hqx => archive_validators.validateHqx(reopen_ext_ptr),
+                        .cpt => archive_validators.validateCpt(reopen_ext_ptr),
+                        .bwproject => daw_validators.validateBwproject(reopen_ext_ptr),
+                        .ptx => daw_validators.validateProTools(reopen_ext_ptr),
+                        .band => daw_validators.validateGarageBand(reopen_ext_ptr),
+                        .reason => daw_validators.validateReason(reopen_ext_ptr),
+                        .cpr => daw_validators.validateCubase(reopen_ext_ptr),
+                        .logicx, .song => archive_validators.validateZip(reopen_ext_ptr, ext_format),
+                        .sketch => creative_validators.validateSketch(reopen_ext_ptr),
+                        .drp => creative_validators.validateDrp(reopen_ext_ptr),
+                        .snes => game_validator.validateSnes(reopen_ext_ptr),
+                        .gb => game_validator.validateGb(reopen_ext_ptr),
+                        .gba => game_validator.validateGba(reopen_ext_ptr),
+                        .nds => game_validator.validateNds(reopen_ext_ptr),
+                        .genesis => game_validator.validateGenesis(reopen_ext_ptr),
+                        .cwk => apple_validators.validateClarisWorks(reopen_ext_ptr),
+                        .mwd => apple_validators.validateMacWrite(reopen_ext_ptr),
+                        .qbw => financial_validators.validateQbw(reopen_ext_ptr),
+                        .qbb => financial_validators.validateQbb(reopen_ext_ptr),
+                        .qdf => financial_validators.validateQdf(reopen_ext_ptr),
+                        .ofx => financial_validators.validateOfx(reopen_ext_ptr),
+                        .qif => financial_validators.validateQif(reopen_ext_ptr),
+                        .txf => financial_validators.validateTxf(reopen_ext_ptr),
+                        .nacha => financial_validators.validateNacha(reopen_ext_ptr),
+                        .mt940 => financial_validators.validateMt940(reopen_ext_ptr),
+                        .bai2 => financial_validators.validateBai2(reopen_ext_ptr),
+                        .x12_edi => edi_validators.validateX12Edi(reopen_ext_ptr),
+                        .edifact => edi_validators.validateEdifact(reopen_ext_ptr),
+                        .coff => executable_validators.validateCoff(reopen_ext_ptr),
+                        .der => crypto_validators.validateDer(reopen_ext_ptr),
                         .obj => blk: {
                             // .obj is ambiguous: try COFF first (binary), fall back to Wavefront OBJ (text)
-                            const coff_result = executable_validators.validateCoff(reopen_ext);
+                            const coff_result = executable_validators.validateCoff(reopen_ext_ptr);
                             if (coff_result.format == .coff and coff_result.is_valid) {
                                 break :blk coff_result;
                             }
                             // Not COFF — try Wavefront OBJ
-                            reopen_ext.seekTo(0) catch break :blk ValidationResult.ok(.obj);
-                            break :blk cad_3d_validators.validateObj(reopen_ext);
+                            reopen_ext_ptr.seekTo(0) catch break :blk ValidationResult.ok(.obj);
+                            break :blk cad_3d_validators.validateObj(reopen_ext_ptr);
                         },
                         else => ValidationResult.ok(ext_format),
                     };
@@ -4768,13 +4773,15 @@ pub const FormatValidator = struct {
                         return result;
                     };
 
+                    var reopen_file_src = file_source.FileSource.fromFile(reopen_file);
+                    const reopen_file_ptr = &reopen_file_src;
                     const skip_magic_result: ?ValidationResult = switch (secondary_format) {
-                        .png => image_validators.validatePngWithOptions(reopen_file, true),
-                        .jpeg => image_validators.validateJpegWithOptions(reopen_file, true),
-                        .gif => image_validators.validateGifWithOptions(reopen_file, true),
-                        .pdf => pdf_validator.validatePdfWithOptions(reopen_file, true),
-                        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp => archive_validators.validateZipWithOptions(reopen_file, secondary_format, true),
-                        .sqlite => document_validators.validateSqliteWithOptions(reopen_file, true),
+                        .png => image_validators.validatePngWithOptions(reopen_file_ptr, true),
+                        .jpeg => image_validators.validateJpegWithOptions(reopen_file_ptr, true),
+                        .gif => image_validators.validateGifWithOptions(reopen_file_ptr, true),
+                        .pdf => pdf_validator.validatePdfWithOptions(reopen_file_ptr, true),
+                        .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp => archive_validators.validateZipWithOptions(reopen_file_ptr, secondary_format, true),
+                        .sqlite => document_validators.validateSqliteWithOptions(reopen_file_ptr, true),
                         // For formats without skip_magic support, we can only identify, not validate
                         else => null,
                     };
@@ -4829,13 +4836,15 @@ pub const FormatValidator = struct {
                     return result;
                 };
                 defer reopen_file.close();
+                var text_src = file_source.FileSource.fromFile(reopen_file);
+                const text_src_ptr = &text_src;
 
                 // Run the correct validator for the extension-based format
                 result = switch (ext_format) {
-                    .json => text_format_validators.validateJson(reopen_file),
-                    .toml => text_format_validators.validateToml(reopen_file),
-                    .ini => text_format_validators.validateIni(reopen_file),
-                    .xml => text_format_validators.validateXml(reopen_file),
+                    .json => text_format_validators.validateJson(text_src_ptr),
+                    .toml => text_format_validators.validateToml(text_src_ptr),
+                    .ini => text_format_validators.validateIni(text_src_ptr),
+                    .xml => text_format_validators.validateXml(text_src_ptr),
                     .yaml => ValidationResult.ok(.yaml),
                     .erlang_term => ValidationResult.ok(.erlang_term),
                     .eex => ValidationResult.ok(.eex),
@@ -4849,25 +4858,25 @@ pub const FormatValidator = struct {
         // SVG is XML-based and often detected as generic XML by content scanning
         // If extension is .svg, validate as SVG and report that format
         if (expected_format == .svg and result.format == .xml) {
-            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+            var svg_source = file_source.FileSource.open(path) catch {
                 result.format = .svg;
                 return result;
             };
-            defer reopen_file.close();
-            result = image_validators.validateSvg(reopen_file);
+            defer svg_source.close();
+            result = image_validators.validateSvg(&svg_source);
         }
 
         // Special handling for Adobe Illustrator files
         // AI files are detected as PDF or EPS by magic bytes, but if extension is .ai,
         // use AI-specific validation and report as AI format
         if (ext_format == .ai and (result.format == .pdf or result.format == .eps)) {
-            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+            var reopen_src = FileSource.open(path) catch {
                 // Couldn't reopen, just remap format
                 result.format = .ai;
                 return result;
             };
-            defer reopen_file.close();
-            result = creative_validators.validateAi(reopen_file);
+            defer reopen_src.close();
+            result = creative_validators.validateAi(&reopen_src);
         }
 
         // Special handling for Adobe Premiere Pro files
@@ -4876,25 +4885,25 @@ pub const FormatValidator = struct {
         // Legacy: detected as xml by content detection
         // If extension is .prproj, use PRPROJ-specific validation
         if (ext_format == .prproj and (result.format == .gzip or result.format == .xml)) {
-            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+            var reopen_src = FileSource.open(path) catch {
                 // Couldn't reopen, just remap format
                 result.format = .prproj;
                 return result;
             };
-            defer reopen_file.close();
-            result = creative_validators.validatePrproj(reopen_file);
+            defer reopen_src.close();
+            result = creative_validators.validatePrproj(&reopen_src);
         }
 
         // Special handling for Ableton Live Set files
         // ALS files are gzip-compressed XML, detected as gzip by magic bytes
         // If extension is .als, use ALS-specific validation
         if (expected_format == .als and result.format == .gzip) {
-            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+            var reopen_src = FileSource.open(path) catch {
                 result.format = .als;
                 return result;
             };
-            defer reopen_file.close();
-            result = daw_validators.validateAls(reopen_file);
+            defer reopen_src.close();
+            result = daw_validators.validateAls(&reopen_src);
         }
 
         // Special handling for Logic Pro X and Studio One files
@@ -4907,76 +4916,76 @@ pub const FormatValidator = struct {
         // IDML files are ZIP containers with XML content, detected as ZIP by magic bytes
         // If extension is .idml, use IDML-specific validation
         if (ext_format == .idml and result.format == .zip) {
-            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+            var reopen_src = FileSource.open(path) catch {
                 // Couldn't reopen, just remap format
                 result.format = .idml;
                 return result;
             };
-            defer reopen_file.close();
-            result = creative_validators.validateIdml(reopen_file);
+            defer reopen_src.close();
+            result = creative_validators.validateIdml(&reopen_src);
         }
 
         // Special handling for Final Cut Pro XML files
         // FCPXML files are XML with specific structure, detected as XML by content
         // If extension is .fcpxml, use FCPXML-specific validation
         if (ext_format == .fcpxml and result.format == .xml) {
-            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+            var reopen_src = FileSource.open(path) catch {
                 // Couldn't reopen, just remap format
                 result.format = .fcpxml;
                 return result;
             };
-            defer reopen_file.close();
-            result = creative_validators.validateFcpxml(reopen_file);
+            defer reopen_src.close();
+            result = creative_validators.validateFcpxml(&reopen_src);
         }
 
         // Special handling for DaVinci Resolve Project files
         // DRP files are ZIP containers with project.xml, detected as ZIP by magic bytes
         // If extension is .drp, use DRP-specific validation
         if (ext_format == .drp and result.format == .zip) {
-            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+            var reopen_src = FileSource.open(path) catch {
                 // Couldn't reopen, just remap format
                 result.format = .drp;
                 return result;
             };
-            defer reopen_file.close();
-            result = creative_validators.validateDrp(reopen_file);
+            defer reopen_src.close();
+            result = creative_validators.validateDrp(&reopen_src);
         }
 
         // Special handling for Sketch design files
         // Sketch files are ZIP containers with JSON content (document.json, meta.json)
         // If extension is .sketch, use Sketch-specific validation
         if (ext_format == .sketch and result.format == .zip) {
-            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+            var reopen_src = FileSource.open(path) catch {
                 // Couldn't reopen, just remap format
                 result.format = .sketch;
                 return result;
             };
-            defer reopen_file.close();
-            result = creative_validators.validateSketch(reopen_file);
+            defer reopen_src.close();
+            result = creative_validators.validateSketch(&reopen_src);
         }
 
         // Special handling for QuickBooks Backup files
         // QBB files are OLE2 compound files, detected as .doc by magic bytes
         // If extension is .qbb or .qbm, use QBB-specific validation
         if ((ext_format == .qbb) and result.format == .doc) {
-            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+            var reopen_src = FileSource.open(path) catch {
                 result.format = .qbb;
                 return result;
             };
-            defer reopen_file.close();
-            result = financial_validators.validateQbb(reopen_file);
+            defer reopen_src.close();
+            result = financial_validators.validateQbb(&reopen_src);
         }
 
         // Special handling for Quicken Data Files
         // QDF files can be OLE2 or ZIP containers, detected as .doc or .zip by magic bytes
         // If extension is .qdf, use QDF-specific validation
         if (ext_format == .qdf and (result.format == .doc or result.format == .zip)) {
-            const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+            var reopen_src = FileSource.open(path) catch {
                 result.format = .qdf;
                 return result;
             };
-            defer reopen_file.close();
-            result = financial_validators.validateQdf(reopen_file);
+            defer reopen_src.close();
+            result = financial_validators.validateQdf(&reopen_src);
         }
 
         // Debug: Log failed validations with path
@@ -5498,7 +5507,8 @@ pub const FormatValidator = struct {
 
         // For OLE2, try to detect DOC vs XLS vs PPT
         if (format == .doc) {
-            format = document_validators.detectOle2Subformat(file);
+            var ole2_source = file_source.FileSource.fromFile(file);
+            format = document_validators.detectOle2Subformat(&ole2_source);
             file.seekTo(0) catch {
                 return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
             };
@@ -5514,137 +5524,140 @@ pub const FormatValidator = struct {
         }
 
         // Use format-specific validator
+        // Wrap file in FileSource for validators that have been migrated
+        var file_src = FileSource.fromFile(file);
+        const file_src_ptr = &file_src;
         var result = switch (format) {
-            .png => image_validators.validatePng(file),
-            .jpeg => image_validators.validateJpeg(file),
-            .jxl => image_validators.validateJxl(file),
-            .gif => image_validators.validateGif(file),
-            .bmp => image_validators.validateBmp(file),
-            .webp => image_validators.validateWebp(file),
-            .psd => image_validators.validatePsd(file),
-            .ai => creative_validators.validateAi(file),
-            .eps => creative_validators.validateEps(file),
-            .aep => creative_validators.validateAep(file),
-            .tiff, .dng, .cr2, .nef, .arw => image_validators.validateTiff(file, format),
-            .exr => image_validators.validateExr(file),
-            .zip, .epub, .docx, .xlsx, .pptx => archive_validators.validateZip(file, format),
-            .odt, .ods, .odp, .pages, .logicx, .song => archive_validators.validateZip(file, format), // ZIP-based document/DAW formats
-            .gzip => archive_validators.validateGzip(file),
-            .bzip2 => archive_validators.validateBzip2(file),
-            .xz => archive_validators.validateXz(file),
-            .zstd => archive_validators.validateZstd(file),
+            .png => image_validators.validatePng(file_src_ptr),
+            .jpeg => image_validators.validateJpeg(file_src_ptr),
+            .jxl => image_validators.validateJxl(file_src_ptr),
+            .gif => image_validators.validateGif(file_src_ptr),
+            .bmp => image_validators.validateBmp(file_src_ptr),
+            .webp => image_validators.validateWebp(file_src_ptr),
+            .psd => image_validators.validatePsd(file_src_ptr),
+            .ai => creative_validators.validateAi(file_src_ptr),
+            .eps => creative_validators.validateEps(file_src_ptr),
+            .aep => creative_validators.validateAep(file_src_ptr),
+            .tiff, .dng, .cr2, .nef, .arw => image_validators.validateTiff(file_src_ptr, format),
+            .exr => image_validators.validateExr(file_src_ptr),
+            .zip, .epub, .docx, .xlsx, .pptx => archive_validators.validateZip(file_src_ptr, format),
+            .odt, .ods, .odp, .pages, .logicx, .song => archive_validators.validateZip(file_src_ptr, format), // ZIP-based document/DAW formats
+            .gzip => archive_validators.validateGzip(file_src_ptr),
+            .bzip2 => archive_validators.validateBzip2(file_src_ptr),
+            .xz => archive_validators.validateXz(file_src_ptr),
+            .zstd => archive_validators.validateZstd(file_src_ptr),
             .br => ValidationResult.ok(.br), // No magic bytes - extension-only detection, deep validates
-            .hqx => archive_validators.validateHqx(file),
-            .rar => archive_validators.validateRar(file),
-            .cpt => archive_validators.validateCpt(file),
-            .sevenz => archive_validators.validate7z(file),
-            .tar => archive_validators.validateTar(file),
-            .pdf => pdf_validator.validatePdf(file),
-            .rtf => text_format_validators.validateRtf(file),
-            .doc, .xls, .ppt => document_validators.validateOle2(file, format), // OLE2/CFBF binary Office
-            .wpd => document_validators.validateWordPerfect(file),
-            .cwk => apple_validators.validateClarisWorks(file),
-            .mwd => apple_validators.validateMacWrite(file),
-            .sqlite => document_validators.validateSqlite(file),
-            .mp4, .mov, .heic, .avif, .m4a, .alac, .prores, .av1 => movie_validators.validateIsobmff(file, format),
-            .mkv, .webm => movie_validators.validateMatroska(file, format),
-            .avi => movie_validators.validateAvi(file),
-            .swf => movie_validators.validateSwf(file),
-            .flv => movie_validators.validateFlv(file),
-            .mpeg_ps => movie_validators.validateMpegPs(file),
-            .mpeg_ts => movie_validators.validateMpegTs(file),
-            .mpeg_es => movie_validators.validateMpegEs(file),
-            .ivf => movie_validators.validateIvf(file),
-            .mp3 => music_validators.validateMp3(file),
-            .flac => music_validators.validateFlac(file),
-            .wav, .aiff => music_validators.validateRiffAudio(file, format),
-            .ogg, .ogv => music_validators.validateOgg(file),
-            .ape => music_validators.validateApe(file),
-            .wavpack => music_validators.validateWavPack(file),
-            .midi => music_validators.validateMidi(file),
-            .dsf => music_validators.validateDsf(file),
-            .dff => music_validators.validateDff(file),
-            .ac3 => music_validators.validateAc3(file),
-            .eac3 => music_validators.validateEac3(file),
-            .jpeg2000 => image_validators.validateJpeg2000(file),
-            .jbig2 => image_validators.validateJbig2File(file),
-            .mod => music_validators.validateMod(file),
-            .xm => music_validators.validateXm(file),
-            .it => music_validators.validateIt(file),
-            .s3m => music_validators.validateS3m(file),
-            .als => daw_validators.validateAls(file),
-            .rpp => daw_validators.validateRpp(file),
-            .flp => daw_validators.validateFlp(file),
-            .bwproject => daw_validators.validateBwproject(file),
-            .cpr => daw_validators.validateCubase(file),
-            .ptx => daw_validators.validateProTools(file),
-            .band => daw_validators.validateGarageBand(file),
-            .reason => daw_validators.validateReason(file),
-            .prproj => creative_validators.validatePrproj(file),
-            .indd => creative_validators.validateIndd(file),
-            .idml => creative_validators.validateIdml(file),
-            .dwg => cad_3d_validators.validateDwg(file),
-            .blend => cad_3d_validators.validateBlend(file),
-            .fcpxml => creative_validators.validateFcpxml(file),
-            .drp => creative_validators.validateDrp(file),
-            .sketch => creative_validators.validateSketch(file),
-            .mdb => document_validators.validateMdb(file),
-            .accdb => document_validators.validateAccdb(file),
-            .iso => filesystem_validators.validateIso(file),
-            .dmg => filesystem_validators.validateDmg(file),
-            .hdf5 => scientific_validators.validateHdf5(file),
-            .parquet => scientific_validators.validateParquet(file),
-            .netcdf => scientific_validators.validateNetcdf(file),
-            .fits => scientific_validators.validateFits(file),
-            .dicom => scientific_validators.validateDicom(file),
-            .fasta => scientific_validators.validateFasta(file),
-            .fastq => scientific_validators.validateFastq(file),
-            .warc => archive_validators.validateWarc(file),
-            .wad => game_asset_validators.validateWad(file),
-            .pak => game_asset_validators.validatePak(file),
-            .lspk => game_asset_validators.validateLspk(file),
-            .chromium_pak => game_asset_validators.validateChromiumPak(file),
-            .bsp => game_asset_validators.validateBsp(file),
-            .vpk => game_asset_validators.validateVpk(file),
-            .nes => game_validator.validateNes(file),
-            .snes => game_validator.validateSnes(file),
-            .n64 => game_validator.validateN64(file),
-            .gb => game_validator.validateGb(file),
-            .gba => game_validator.validateGba(file),
-            .nds => game_validator.validateNds(file),
-            .genesis => game_validator.validateGenesis(file),
-            .chd => game_validator.validateChd(file),
-            .iff => game_asset_validators.validateIff(file),
-            .blorb => game_asset_validators.validateBlorb(file),
-            .matlab => scientific_validators.validateMatlab(file),
-            .nifti => scientific_validators.validateNifti(file),
-            .pdb_struct => scientific_validators.validatePdb(file),
-            .cif => scientific_validators.validateCif(file),
-            .shapefile => scientific_validators.validateShapefile(file),
-            .kml => text_format_validators.validateKml(file),
-            .kmz => text_format_validators.validateKmz(file),
-            .dxf => cad_3d_validators.validateDxf(file),
-            .step => cad_3d_validators.validateStep(file),
-            .stl => cad_3d_validators.validateStl(file),
+            .hqx => archive_validators.validateHqx(file_src_ptr),
+            .rar => archive_validators.validateRar(file_src_ptr),
+            .cpt => archive_validators.validateCpt(file_src_ptr),
+            .sevenz => archive_validators.validate7z(file_src_ptr),
+            .tar => archive_validators.validateTar(file_src_ptr),
+            .pdf => pdf_validator.validatePdf(file_src_ptr),
+            .rtf => text_format_validators.validateRtf(file_src_ptr),
+            .doc, .xls, .ppt => document_validators.validateOle2(file_src_ptr, format), // OLE2/CFBF binary Office
+            .wpd => document_validators.validateWordPerfect(file_src_ptr),
+            .cwk => apple_validators.validateClarisWorks(file_src_ptr),
+            .mwd => apple_validators.validateMacWrite(file_src_ptr),
+            .sqlite => document_validators.validateSqlite(file_src_ptr),
+            .mp4, .mov, .heic, .avif, .m4a, .alac, .prores, .av1 => movie_validators.validateIsobmff(file_src_ptr, format),
+            .mkv, .webm => movie_validators.validateMatroska(file_src_ptr, format),
+            .avi => movie_validators.validateAvi(file_src_ptr),
+            .swf => movie_validators.validateSwf(file_src_ptr),
+            .flv => movie_validators.validateFlv(file_src_ptr),
+            .mpeg_ps => movie_validators.validateMpegPs(file_src_ptr),
+            .mpeg_ts => movie_validators.validateMpegTs(file_src_ptr),
+            .mpeg_es => movie_validators.validateMpegEs(file_src_ptr),
+            .ivf => movie_validators.validateIvf(file_src_ptr),
+            .mp3 => music_validators.validateMp3(file_src_ptr),
+            .flac => music_validators.validateFlac(file_src_ptr),
+            .wav, .aiff => music_validators.validateRiffAudio(file_src_ptr, format),
+            .ogg, .ogv => music_validators.validateOgg(file_src_ptr),
+            .ape => music_validators.validateApe(file_src_ptr),
+            .wavpack => music_validators.validateWavPack(file_src_ptr),
+            .midi => music_validators.validateMidi(file_src_ptr),
+            .dsf => music_validators.validateDsf(file_src_ptr),
+            .dff => music_validators.validateDff(file_src_ptr),
+            .ac3 => music_validators.validateAc3(file_src_ptr),
+            .eac3 => music_validators.validateEac3(file_src_ptr),
+            .jpeg2000 => image_validators.validateJpeg2000(file_src_ptr),
+            .jbig2 => image_validators.validateJbig2File(file_src_ptr),
+            .mod => music_validators.validateMod(file_src_ptr),
+            .xm => music_validators.validateXm(file_src_ptr),
+            .it => music_validators.validateIt(file_src_ptr),
+            .s3m => music_validators.validateS3m(file_src_ptr),
+            .als => daw_validators.validateAls(file_src_ptr),
+            .rpp => daw_validators.validateRpp(file_src_ptr),
+            .flp => daw_validators.validateFlp(file_src_ptr),
+            .bwproject => daw_validators.validateBwproject(file_src_ptr),
+            .cpr => daw_validators.validateCubase(file_src_ptr),
+            .ptx => daw_validators.validateProTools(file_src_ptr),
+            .band => daw_validators.validateGarageBand(file_src_ptr),
+            .reason => daw_validators.validateReason(file_src_ptr),
+            .prproj => creative_validators.validatePrproj(file_src_ptr),
+            .indd => creative_validators.validateIndd(file_src_ptr),
+            .idml => creative_validators.validateIdml(file_src_ptr),
+            .dwg => cad_3d_validators.validateDwg(file_src_ptr),
+            .blend => cad_3d_validators.validateBlend(file_src_ptr),
+            .fcpxml => creative_validators.validateFcpxml(file_src_ptr),
+            .drp => creative_validators.validateDrp(file_src_ptr),
+            .sketch => creative_validators.validateSketch(file_src_ptr),
+            .mdb => document_validators.validateMdb(file_src_ptr),
+            .accdb => document_validators.validateAccdb(file_src_ptr),
+            .iso => filesystem_validators.validateIso(file_src_ptr),
+            .dmg => filesystem_validators.validateDmg(file_src_ptr),
+            .hdf5 => scientific_validators.validateHdf5(file_src_ptr),
+            .parquet => scientific_validators.validateParquet(file_src_ptr),
+            .netcdf => scientific_validators.validateNetcdf(file_src_ptr),
+            .fits => scientific_validators.validateFits(file_src_ptr),
+            .dicom => scientific_validators.validateDicom(file_src_ptr),
+            .fasta => scientific_validators.validateFasta(file_src_ptr),
+            .fastq => scientific_validators.validateFastq(file_src_ptr),
+            .warc => archive_validators.validateWarc(file_src_ptr),
+            .wad => game_asset_validators.validateWad(file_src_ptr),
+            .pak => game_asset_validators.validatePak(file_src_ptr),
+            .lspk => game_asset_validators.validateLspk(file_src_ptr),
+            .chromium_pak => game_asset_validators.validateChromiumPak(file_src_ptr),
+            .bsp => game_asset_validators.validateBsp(file_src_ptr),
+            .vpk => game_asset_validators.validateVpk(file_src_ptr),
+            .nes => game_validator.validateNes(file_src_ptr),
+            .snes => game_validator.validateSnes(file_src_ptr),
+            .n64 => game_validator.validateN64(file_src_ptr),
+            .gb => game_validator.validateGb(file_src_ptr),
+            .gba => game_validator.validateGba(file_src_ptr),
+            .nds => game_validator.validateNds(file_src_ptr),
+            .genesis => game_validator.validateGenesis(file_src_ptr),
+            .chd => game_validator.validateChd(file_src_ptr),
+            .iff => game_asset_validators.validateIff(file_src_ptr),
+            .blorb => game_asset_validators.validateBlorb(file_src_ptr),
+            .matlab => scientific_validators.validateMatlab(file_src_ptr),
+            .nifti => scientific_validators.validateNifti(file_src_ptr),
+            .pdb_struct => scientific_validators.validatePdb(file_src_ptr),
+            .cif => scientific_validators.validateCif(file_src_ptr),
+            .shapefile => scientific_validators.validateShapefile(file_src_ptr),
+            .kml => text_format_validators.validateKml(file_src_ptr),
+            .kmz => text_format_validators.validateKmz(file_src_ptr),
+            .dxf => cad_3d_validators.validateDxf(file_src_ptr),
+            .step => cad_3d_validators.validateStep(file_src_ptr),
+            .stl => cad_3d_validators.validateStl(file_src_ptr),
             // 3D printing/modeling formats
-            .@"3mf" => cad_3d_validators.validate3mf(file),
-            .obj => cad_3d_validators.validateObj(file),
-            .ply => cad_3d_validators.validatePly(file),
-            .gltf => cad_3d_validators.validateGltf(file),
-            .glb => cad_3d_validators.validateGlb(file),
-            .eml => email_validators.validateEml(file),
-            .mbox => email_validators.validateMbox(file),
-            .svg => image_validators.validateSvg(file),
-            .json => text_format_validators.validateJson(file),
-            .toml => text_format_validators.validateToml(file),
-            .ini => text_format_validators.validateIni(file),
-            .xml => text_format_validators.validateXml(file),
+            .@"3mf" => cad_3d_validators.validate3mf(file_src_ptr),
+            .obj => cad_3d_validators.validateObj(file_src_ptr),
+            .ply => cad_3d_validators.validatePly(file_src_ptr),
+            .gltf => cad_3d_validators.validateGltf(file_src_ptr),
+            .glb => cad_3d_validators.validateGlb(file_src_ptr),
+            .eml => email_validators.validateEml(file_src_ptr),
+            .mbox => email_validators.validateMbox(file_src_ptr),
+            .svg => image_validators.validateSvg(file_src_ptr),
+            .json => text_format_validators.validateJson(file_src_ptr),
+            .toml => text_format_validators.validateToml(file_src_ptr),
+            .ini => text_format_validators.validateIni(file_src_ptr),
+            .xml => text_format_validators.validateXml(file_src_ptr),
             .yaml => ValidationResult.ok(.yaml), // Structural detection only
             .erlang_term => ValidationResult.ok(.erlang_term), // Structural detection only
             .eex => ValidationResult.ok(.eex), // Structural detection only
             .markdown => ValidationResult.ok(.markdown), // Text format, no validation
-            .plain_text => text_format_validators.validatePlainText(self.allocator, file), // UTF-8 validation
-            .plain_text_utf16 => text_format_validators.validatePlainTextUtf16(self.allocator, file), // UTF-16 validation
+            .plain_text => text_format_validators.validatePlainText(self.allocator, file_src_ptr), // UTF-8 validation
+            .plain_text_utf16 => text_format_validators.validatePlainTextUtf16(self.allocator, file_src_ptr), // UTF-16 validation
             .plain_text_latin1 => ValidationResult.okWithDepth(.plain_text_latin1, .structural), // Latin-1 always valid (no integrity mechanism)
             .plain_text_cp437 => ValidationResult.okWithDepth(.plain_text_cp437, .structural), // CP437 always valid (no integrity mechanism)
             // Font formats
@@ -5653,70 +5666,70 @@ pub const FormatValidator = struct {
             .woff => validateWoff(self.allocator orelse std.heap.page_allocator, file),
             .woff2 => validateWoff2(self.allocator orelse std.heap.page_allocator, file),
             .type1 => validateType1Font(self.allocator orelse std.heap.page_allocator, file),
-            .par2 => archive_validators.validatePar2(file),
+            .par2 => archive_validators.validatePar2(file_src_ptr),
             // VM/Bytecode formats
             .beam => validateBeam(self.allocator orelse std.heap.page_allocator, file),
             // Icon formats
-            .ico => image_validators.validateIco(file),
-            .icns => image_validators.validateIcns(file),
+            .ico => image_validators.validateIco(file_src_ptr),
+            .icns => image_validators.validateIcns(file_src_ptr),
             // Data formats
-            .csv => text_format_validators.validateCsv(file),
-            .msgpack => text_format_validators.validateMsgpack(file),
+            .csv => text_format_validators.validateCsv(file_src_ptr),
+            .msgpack => text_format_validators.validateMsgpack(file_src_ptr),
             // Apple formats
-            .plist => apple_validators.validatePlist(file),
-            .ds_store => apple_validators.validateDsStore(file),
-            .spotlight => apple_validators.validateSpotlight(file),
-            .apple_double => apple_validators.validateAppleDouble(file),
+            .plist => apple_validators.validatePlist(file_src_ptr),
+            .ds_store => apple_validators.validateDsStore(file_src_ptr),
+            .spotlight => apple_validators.validateSpotlight(file_src_ptr),
+            .apple_double => apple_validators.validateAppleDouble(file_src_ptr),
             // New audio formats
-            .amr => music_validators.validateAmr(file),
-            .au => music_validators.validateAu(file),
-            .tta => music_validators.validateTta(file),
-            .caf => music_validators.validateCaf(file),
-            .aac_adts => music_validators.validateAacAdts(file),
+            .amr => music_validators.validateAmr(file_src_ptr),
+            .au => music_validators.validateAu(file_src_ptr),
+            .tta => music_validators.validateTta(file_src_ptr),
+            .caf => music_validators.validateCaf(file_src_ptr),
+            .aac_adts => music_validators.validateAacAdts(file_src_ptr),
             // New image formats
-            .qoi => image_validators.validateQoi(file),
-            .pam => image_validators.validatePam(file),
-            .dpx => image_validators.validateDpx(file),
-            .tga => image_validators.validateTga(file),
+            .qoi => image_validators.validateQoi(file_src_ptr),
+            .pam => image_validators.validatePam(file_src_ptr),
+            .dpx => image_validators.validateDpx(file_src_ptr),
+            .tga => image_validators.validateTga(file_src_ptr),
             // New container formats
-            .asf => movie_validators.validateAsf(file),
-            .dv => movie_validators.validateDv(file),
+            .asf => movie_validators.validateAsf(file_src_ptr),
+            .dv => movie_validators.validateDv(file_src_ptr),
             // Executable formats
-            .pe => pe_validator.validatePe(file),
-            .elf => executable_validators.validateElf(file),
-            .macho => executable_validators.validateMacho(file),
-            .macho_fat => executable_validators.validateMachoFat(file),
-            .coff => executable_validators.validateCoff(file),
-            .wasm => executable_validators.validateWasm(file),
+            .pe => pe_validator.validatePe(file_src_ptr),
+            .elf => executable_validators.validateElf(file_src_ptr),
+            .macho => executable_validators.validateMacho(file_src_ptr),
+            .macho_fat => executable_validators.validateMachoFat(file_src_ptr),
+            .coff => executable_validators.validateCoff(file_src_ptr),
+            .wasm => executable_validators.validateWasm(file_src_ptr),
             // Compiler artifacts
-            .llvm_pch => executable_validators.validateLlvmPch(file),
-            .llvm_diag => executable_validators.validateLlvmDiag(file),
+            .llvm_pch => executable_validators.validateLlvmPch(file_src_ptr),
+            .llvm_diag => executable_validators.validateLlvmDiag(file_src_ptr),
             // Archives
-            .ar => executable_validators.validateAr(file),
+            .ar => executable_validators.validateAr(file_src_ptr),
             // Web markup
-            .html => text_format_validators.validateHtml(file),
+            .html => text_format_validators.validateHtml(file_src_ptr),
             // Financial data formats
-            .qbw => financial_validators.validateQbw(file),
-            .qbb => financial_validators.validateQbb(file),
-            .qdf => financial_validators.validateQdf(file),
-            .ofx => financial_validators.validateOfx(file),
-            .qif => financial_validators.validateQif(file),
-            .txf => financial_validators.validateTxf(file),
-            .nacha => financial_validators.validateNacha(file),
-            .mt940 => financial_validators.validateMt940(file),
-            .bai2 => financial_validators.validateBai2(file),
+            .qbw => financial_validators.validateQbw(file_src_ptr),
+            .qbb => financial_validators.validateQbb(file_src_ptr),
+            .qdf => financial_validators.validateQdf(file_src_ptr),
+            .ofx => financial_validators.validateOfx(file_src_ptr),
+            .qif => financial_validators.validateQif(file_src_ptr),
+            .txf => financial_validators.validateTxf(file_src_ptr),
+            .nacha => financial_validators.validateNacha(file_src_ptr),
+            .mt940 => financial_validators.validateMt940(file_src_ptr),
+            .bai2 => financial_validators.validateBai2(file_src_ptr),
             // EDI formats
-            .x12_edi => edi_validators.validateX12Edi(file),
-            .edifact => edi_validators.validateEdifact(file),
+            .x12_edi => edi_validators.validateX12Edi(file_src_ptr),
+            .edifact => edi_validators.validateEdifact(file_src_ptr),
             // Crypto/certificate formats
-            .pem => crypto_validators.validatePem(file),
-            .der => crypto_validators.validateDer(file),
+            .pem => crypto_validators.validatePem(file_src_ptr),
+            .der => crypto_validators.validateDer(file_src_ptr),
             // PIM formats
-            .icalendar => pim_validators.validateICalendar(file),
-            .vcard => pim_validators.validateVCard(file),
+            .icalendar => pim_validators.validateICalendar(file_src_ptr),
+            .vcard => pim_validators.validateVCard(file_src_ptr),
             // Bundle formats (directories) - should be handled before reaching this switch
             // If we get here, it means something went wrong - return invalid to make it obvious
-            .bagit => bagit_validator.validateBagit(file),
+            .bagit => bagit_validator.validateBagit(file_src_ptr),
             .git_repository => ValidationResult.invalid(.git_repository, "Git repositories must be validated as directories, not files"),
             .macos_app => ValidationResult.invalid(.macos_app, "macOS app bundles must be validated as directories, not files"),
             .macos_framework => ValidationResult.invalid(.macos_framework, "macOS frameworks must be validated as directories, not files"),
@@ -6876,7 +6889,8 @@ test "validatePngFromBuffer matches validatePng file result" {
     // Validate via file
     const reopen = try tmp_dir.dir.openFile("test.png", .{});
     defer reopen.close();
-    const file_result = image_validators.validatePng(reopen);
+    var test_src = file_source.FileSource.fromFile(reopen);
+    const file_result = image_validators.validatePng(&test_src);
 
     // Validate via buffer
     const buffer_result = image_validators.validatePngFromBuffer(&valid_png);

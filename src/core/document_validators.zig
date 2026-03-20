@@ -7,6 +7,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const format_validation = @import("format_validation.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const ValidationDepth = format_validation.ValidationDepth;
@@ -27,7 +29,7 @@ const testing = std.testing;
 
 /// Validate Microsoft Access MDB file structure (Access 97-2003).
 /// MDB files have magic bytes 00 01 00 00 followed by "Standard Jet DB" at offset 4.
-pub fn validateMdb(file: std.fs.File) ValidationResult {
+pub fn validateMdb(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.mdb, .failed_to_seek, "to start");
 
     var header: [20]u8 = undefined;
@@ -55,7 +57,7 @@ pub fn validateMdb(file: std.fs.File) ValidationResult {
 
 /// Validate Microsoft Access ACCDB file structure (Access 2007+).
 /// ACCDB files have magic bytes 00 01 00 00 followed by "Standard ACE DB" at offset 4.
-pub fn validateAccdb(file: std.fs.File) ValidationResult {
+pub fn validateAccdb(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.accdb, .failed_to_seek, "to start");
 
     var header: [20]u8 = undefined;
@@ -209,7 +211,7 @@ pub const OLE2_MAGIC = [_]u8{ 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 };
 
 /// Validate OLE2/CFBF compound file structure.
 /// This covers DOC, XLS, PPT (Office 97-2003) formats.
-pub fn validateOle2(file: std.fs.File, format: FileFormat) ValidationResult {
+pub fn validateOle2(file: *FileSource, format: FileFormat) ValidationResult {
     var header: [512]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(format, .failed_to_read, "OLE2 header");
@@ -257,7 +259,7 @@ pub fn validateOle2(file: std.fs.File, format: FileFormat) ValidationResult {
 
 /// Detect specific OLE2 subformat (DOC, XLS, PPT) by examining directory entries.
 /// OLE2 stores stream names as UTF-16LE in directory entry structures.
-pub fn detectOle2Subformat(file: std.fs.File) FileFormat {
+pub fn detectOle2Subformat(file: *FileSource) FileFormat {
     // First try reading from the start (works for small files)
     var buffer: [65536]u8 = undefined;
     file.seekTo(0) catch return .doc;
@@ -315,7 +317,7 @@ pub fn detectOle2Subformat(file: std.fs.File) FileFormat {
 // ============ WordPerfect Validator ============
 
 /// Validate WordPerfect document structure.
-pub fn validateWordPerfect(file: std.fs.File) ValidationResult {
+pub fn validateWordPerfect(file: *FileSource) ValidationResult {
     var header: [16]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.wpd, .failed_to_read, "WordPerfect header");
@@ -413,11 +415,11 @@ fn serialTypeContentSize(serial_type: u64) u64 {
 }
 
 /// Validate SQLite database file structure.
-pub fn validateSqlite(file: std.fs.File) ValidationResult {
+pub fn validateSqlite(file: *FileSource) ValidationResult {
     return validateSqliteWithOptions(file, false);
 }
 
-pub fn validateSqliteWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
+pub fn validateSqliteWithOptions(file: *FileSource, skip_magic: bool) ValidationResult {
     var header: [100]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.sqlite, .failed_to_read, "SQLite header");
@@ -929,10 +931,12 @@ test "OLE2 structural: valid OLE2 header accepted" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.ole2", .data = &header });
 
-    const file = try tmp.dir.openFile("test.ole2", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.ole2", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateOle2(file, .doc);
+    const result = validateOle2(&source, .doc);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.doc, result.format);
 }
@@ -947,10 +951,12 @@ test "OLE2 structural: wrong magic rejected" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.ole2", .data = &header });
 
-    const file = try tmp.dir.openFile("test.ole2", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.ole2", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateOle2(file, .doc);
+    const result = validateOle2(&source, .doc);
     try testing.expect(!result.is_valid);
 }
 
@@ -968,10 +974,12 @@ test "OLE2 structural: invalid major version rejected" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.ole2", .data = &header });
 
-    const file = try tmp.dir.openFile("test.ole2", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.ole2", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateOle2(file, .xls);
+    const result = validateOle2(&source, .xls);
     try testing.expect(!result.is_valid);
 }
 
@@ -1016,10 +1024,12 @@ test "SQLite structural: valid synthetic header" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.sqlite", .data = &page });
 
-    const file = try tmp.dir.openFile("test.sqlite", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.sqlite", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateSqlite(file);
+    const result = validateSqlite(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.sqlite, result.format);
 }
@@ -1033,10 +1043,12 @@ test "SQLite structural: invalid magic rejected" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.sqlite", .data = &data });
 
-    const file = try tmp.dir.openFile("test.sqlite", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.sqlite", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateSqlite(file);
+    const result = validateSqlite(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -1051,20 +1063,19 @@ test "SQLite structural: invalid page size rejected" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.sqlite", .data = &data });
 
-    const file = try tmp.dir.openFile("test.sqlite", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.sqlite", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateSqlite(file);
+    const result = validateSqlite(&source);
     try testing.expect(!result.is_valid);
 }
 
 test "SQLite deep: ground truth chinook.sqlite" {
     const allocator = testing.allocator;
 
-    const file = std.fs.cwd().openFile("ground_truth_examples/sqlite/chinook.sqlite", .{}) catch {
-        return; // Skip if file doesn't exist
-    };
-    file.close();
+    std.fs.cwd().access("ground_truth_examples/sqlite/chinook.sqlite", .{}) catch return;
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/sqlite/chinook.sqlite") catch return;
     defer allocator.free(path);
@@ -1076,12 +1087,12 @@ test "SQLite deep: ground truth chinook.sqlite" {
 }
 
 test "SQLite structural: ground truth test_sample.sqlite" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/sqlite/test_sample.sqlite", .{}) catch {
+    var source = FileSource.open("ground_truth_examples/sqlite/test_sample.sqlite") catch {
         return; // Skip if file doesn't exist
     };
-    defer file.close();
+    defer source.close();
 
-    const result = validateSqlite(file);
+    const result = validateSqlite(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.sqlite, result.format);
 }
@@ -1106,10 +1117,12 @@ test "WordPerfect structural: valid synthetic header" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.wpd", .data = &header });
 
-    const file = try tmp.dir.openFile("test.wpd", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.wpd", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateWordPerfect(file);
+    const result = validateWordPerfect(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.wpd, result.format);
 }
@@ -1127,73 +1140,75 @@ test "WordPerfect structural: wrong magic rejected" {
 
     try tmp.dir.writeFile(.{ .sub_path = "test.wpd", .data = &header });
 
-    const file = try tmp.dir.openFile("test.wpd", .{});
-    defer file.close();
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test.wpd", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
 
-    const result = validateWordPerfect(file);
+    const result = validateWordPerfect(&source);
     try testing.expect(!result.is_valid);
 }
 
 test "WordPerfect structural: ground truth sample.wpd" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/wpd/sample.wpd", .{}) catch {
+    var source = FileSource.open("ground_truth_examples/wpd/sample.wpd") catch {
         return; // Skip if file doesn't exist
     };
-    defer file.close();
+    defer source.close();
 
-    const result = validateWordPerfect(file);
+    const result = validateWordPerfect(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.wpd, result.format);
 }
 
 test "MDB structural: ground truth sample.mdb" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/mdb/sample.mdb", .{}) catch {
+    var source = FileSource.open("ground_truth_examples/mdb/sample.mdb") catch {
         return; // Skip if file doesn't exist
     };
-    defer file.close();
+    defer source.close();
 
-    const result = validateMdb(file);
+    const result = validateMdb(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.mdb, result.format);
 }
 
 test "ACCDB structural: ground truth sample.accdb" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/accdb/sample.accdb", .{}) catch {
+    var source = FileSource.open("ground_truth_examples/accdb/sample.accdb") catch {
         return; // Skip if file doesn't exist
     };
-    defer file.close();
+    defer source.close();
 
-    const result = validateAccdb(file);
+    const result = validateAccdb(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.accdb, result.format);
 }
 
 test "OLE2 subformat detection: ground truth DOC dispatches correctly" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.doc", .{}) catch {
+    var source = FileSource.open("ground_truth_examples/ole2/sample.doc") catch {
         return; // Skip if file doesn't exist
     };
-    defer file.close();
+    defer source.close();
 
-    const subformat = detectOle2Subformat(file);
+    const subformat = detectOle2Subformat(&source);
     try testing.expectEqual(FileFormat.doc, subformat);
 }
 
 test "OLE2 subformat detection: ground truth XLS dispatches correctly" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.xls", .{}) catch {
+    var source = FileSource.open("ground_truth_examples/ole2/sample.xls") catch {
         return; // Skip if file doesn't exist
     };
-    defer file.close();
+    defer source.close();
 
-    const subformat = detectOle2Subformat(file);
+    const subformat = detectOle2Subformat(&source);
     try testing.expectEqual(FileFormat.xls, subformat);
 }
 
 test "OLE2 subformat detection: ground truth PPT dispatches correctly" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.ppt", .{}) catch {
+    var source = FileSource.open("ground_truth_examples/ole2/sample.ppt") catch {
         return; // Skip if file doesn't exist
     };
-    defer file.close();
+    defer source.close();
 
-    const subformat = detectOle2Subformat(file);
+    const subformat = detectOle2Subformat(&source);
     try testing.expectEqual(FileFormat.ppt, subformat);
 }
 

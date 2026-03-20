@@ -6,6 +6,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
@@ -21,7 +23,7 @@ const testing = std.testing;
 /// Validate WAD (DOOM) archive format.
 /// WAD files start with "IWAD" (internal) or "PWAD" (patch) followed by
 /// lump count (4 bytes, little-endian) and directory offset (4 bytes, little-endian).
-pub fn validateWad(file: std.fs.File) ValidationResult {
+pub fn validateWad(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.wad, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -63,10 +65,11 @@ pub fn validateWad(file: std.fs.File) ValidationResult {
 
 /// Deep validation for WAD files - validates all directory entries.
 pub fn validateWadDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.wad, .failed_to_open, "WAD file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.wad, .failed_to_get, "file size");
@@ -126,7 +129,7 @@ pub fn validateWadDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Validate PAK (Quake) archive format.
 /// PAK files start with "PACK" followed by directory offset and size (both 4 bytes, little-endian).
 /// NOTE: Git pack files also start with "PACK" but have different structure (version + object count, big-endian).
-pub fn validatePak(file: std.fs.File) ValidationResult {
+pub fn validatePak(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.pak, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -174,10 +177,11 @@ pub fn validatePak(file: std.fs.File) ValidationResult {
 
 /// Deep validation for PAK files - validates all directory entries.
 pub fn validatePakDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.pak, .failed_to_open, "PAK file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.pak, .failed_to_get, "file size");
@@ -237,7 +241,7 @@ pub fn validatePakDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Validate Larian Studios PAK (BG3, Divinity: Original Sin) structural header.
 /// "LSPK" magic + version + file list offset/size + MD5 hash.
-pub fn validateLspk(file: std.fs.File) ValidationResult {
+pub fn validateLspk(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.lspk, .failed_to_seek, "in LSPK file");
     var header: [32]u8 = undefined;
     const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.lspk, .failed_to_read, "LSPK header");
@@ -262,7 +266,7 @@ pub fn validateLspk(file: std.fs.File) ValidationResult {
 
 /// Validate Chromium/Electron resource PAK structural header.
 /// Version 4 or 5 format with resource table and encoding byte.
-pub fn validateChromiumPak(file: std.fs.File) ValidationResult {
+pub fn validateChromiumPak(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.chromium_pak, .failed_to_seek, "in Chromium PAK file");
     var header: [18]u8 = undefined;
     const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.chromium_pak, .failed_to_read, "Chromium PAK header");
@@ -306,7 +310,7 @@ pub fn validateChromiumPak(file: std.fs.File) ValidationResult {
 
 /// Validate BSP (Quake/Source map) file format.
 /// BSP files use version numbers at offset 0 to identify the format variant.
-pub fn validateBsp(file: std.fs.File) ValidationResult {
+pub fn validateBsp(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.bsp, .failed_to_seek, "to start");
 
     var header: [8]u8 = undefined;
@@ -361,7 +365,7 @@ pub fn validateBsp(file: std.fs.File) ValidationResult {
 
 /// Validate VPK (Valve PAK) file format.
 /// VPK files start with signature 0x55AA1234 followed by version.
-pub fn validateVpk(file: std.fs.File) ValidationResult {
+pub fn validateVpk(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.vpk, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -400,7 +404,7 @@ pub fn validateVpk(file: std.fs.File) ValidationResult {
 
 /// Validate generic IFF (Interchange File Format) container.
 /// IFF files have "FORM" signature followed by 4-byte size (big-endian) and 4-byte type.
-pub fn validateIff(file: std.fs.File) ValidationResult {
+pub fn validateIff(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.iff, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -475,10 +479,11 @@ fn isValidChunkId(id: *const [4]u8) bool {
 /// Deep validation for IFF files - parses all nested chunks with format-specific cross-validation.
 /// For ILBM containers, cross-validates BMHD dimensions against BODY chunk size.
 pub fn validateIffDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	var source = FileSource.open(path) catch {
 		return ValidationResult.invalidCode(.iff, .failed_to_open, "IFF file");
 	};
-	defer file.close();
+	defer source.close();
+	const file = &source;
 
 	var header: [12]u8 = undefined;
 	_ = file.read(&header) catch return ValidationResult.invalidCode(.iff, .failed_to_read, "header");
@@ -647,7 +652,7 @@ pub fn validateIffDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Validate Blorb (Interactive Fiction resource) format.
 /// Blorb is an IFF container with IFRS (Z-machine) or IFZS (Glulx) form type.
-pub fn validateBlorb(file: std.fs.File) ValidationResult {
+pub fn validateBlorb(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.blorb, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;

@@ -1,5 +1,7 @@
 const std = @import("std");
 const format_validation = @import("format_validation.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const ValidationDepth = format_validation.ValidationDepth;
@@ -7,7 +9,7 @@ const Allocator = std.mem.Allocator;
 
 /// Structural validator for BagIt (RFC 8493) bags.
 /// Reads and validates the bagit.txt tag file: version line + encoding line.
-pub fn validateBagit(file: std.fs.File) ValidationResult {
+pub fn validateBagit(file: *FileSource) ValidationResult {
 	var buf: [4096]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.bagit, .failed_to_seek, "bagit.txt");
@@ -139,13 +141,18 @@ pub fn validateBagitDeep(allocator: Allocator, path: []const u8) ValidationResul
 		const target_file = bag_dir.openFile(file_path, .{}) catch {
 			return ValidationResult.invalidCodeMsg(.bagit, .checksum_mismatch, file_path, "file listed in manifest not found");
 		};
-		defer target_file.close();
+		const target_size = target_file.getEndPos() catch {
+			target_file.close();
+			return ValidationResult.invalidCodeMsg(.bagit, .failed_to_read, file_path, "failed to get file size for hashing");
+		};
+		var target_source = FileSource{ .backing = .{ .file = target_file }, .file_size = target_size };
+		defer target_source.close();
 
 		// Stream-hash the file and compare against the expected digest
 		const match = switch (chosen_alg) {
-			.sha256 => verifyFileHash(std.crypto.hash.sha2.Sha256, target_file, expected_hex),
-			.sha512 => verifyFileHash(std.crypto.hash.sha2.Sha512, target_file, expected_hex),
-			.md5 => verifyFileHash(std.crypto.hash.Md5, target_file, expected_hex),
+			.sha256 => verifyFileHash(std.crypto.hash.sha2.Sha256, &target_source, expected_hex),
+			.sha512 => verifyFileHash(std.crypto.hash.sha2.Sha512, &target_source, expected_hex),
+			.md5 => verifyFileHash(std.crypto.hash.Md5, &target_source, expected_hex),
 		} catch {
 			return ValidationResult.invalidCodeMsg(.bagit, .failed_to_read, file_path, "failed to read file for hashing");
 		};
@@ -170,7 +177,7 @@ pub fn validateBagitDeep(allocator: Allocator, path: []const u8) ValidationResul
 /// Streaming file hash verification. Reads the file in 64 KB chunks to avoid
 /// loading the entire file into memory, then compares the computed hex digest
 /// against the expected hex string.
-fn verifyFileHash(comptime Hash: type, file: std.fs.File, expected_hex: []const u8) !bool {
+fn verifyFileHash(comptime Hash: type, file: *FileSource, expected_hex: []const u8) !bool {
 	var hasher = Hash.init(.{});
 	var buf: [65536]u8 = undefined;
 	while (true) {
@@ -192,10 +199,12 @@ test "BagIt structural: valid bagit.txt" {
 
 	try tmp.dir.writeFile(.{ .sub_path = "bagit.txt", .data = "BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n" });
 
-	const file = try tmp.dir.openFile("bagit.txt", .{});
-	defer file.close();
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = try tmp.dir.realpath("bagit.txt", &real_path_buf);
+	var source = try FileSource.open(real_path);
+	defer source.close();
 
-	const result = validateBagit(file);
+	const result = validateBagit(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.bagit, result.format);
 	try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
@@ -207,10 +216,12 @@ test "BagIt structural: missing version line" {
 
 	try tmp.dir.writeFile(.{ .sub_path = "bagit.txt", .data = "Not a valid bagit file\n" });
 
-	const file = try tmp.dir.openFile("bagit.txt", .{});
-	defer file.close();
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = try tmp.dir.realpath("bagit.txt", &real_path_buf);
+	var source = try FileSource.open(real_path);
+	defer source.close();
 
-	const result = validateBagit(file);
+	const result = validateBagit(&source);
 	try std.testing.expect(!result.is_valid);
 	try std.testing.expectEqual(FileFormat.bagit, result.format);
 }

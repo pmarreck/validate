@@ -1,6 +1,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const format_validation = @import("format_validation.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ValidationResult = format_validation.ValidationResult;
 const ValidationDepth = format_validation.ValidationDepth;
 const FileFormat = format_validation.FileFormat;
@@ -9,7 +11,7 @@ const FileFormat = format_validation.FileFormat;
 
 /// Structural validation of X12 EDI files.
 /// Verifies the ISA segment header: fixed 106 characters with self-describing delimiters.
-pub fn validateX12Edi(file: std.fs.File) ValidationResult {
+pub fn validateX12Edi(file: *FileSource) ValidationResult {
 	var buf: [4096]u8 = undefined;
 	const bytes_read = file.read(&buf) catch {
 		return ValidationResult.invalid(.x12_edi, "Failed to read file");
@@ -62,30 +64,30 @@ fn validateX12EdiFromBuffer(data: []const u8) ValidationResult {
 
 /// Deep validation of X12 EDI: verifies envelope hierarchy and control totals.
 pub fn validateX12EdiDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	var source = FileSource.open(path) catch {
 		return ValidationResult.invalid(.x12_edi, "Failed to open file");
 	};
-	defer file.close();
+	defer source.close();
 
-	const stat = file.stat() catch {
+	const file_sz = source.getEndPos() catch {
 		return ValidationResult.invalid(.x12_edi, "Failed to stat file");
 	};
 
-	if (stat.size < 106) {
+	if (file_sz < 106) {
 		return ValidationResult.invalid(.x12_edi, "File too short for ISA segment");
 	}
 
 	// Cap at 10MB for safety
-	if (stat.size > 10 * 1024 * 1024) {
+	if (file_sz > 10 * 1024 * 1024) {
 		return ValidationResult.invalid(.x12_edi, "File too large for deep validation (>10MB)");
 	}
 
-	const data = allocator.alloc(u8, @intCast(stat.size)) catch {
+	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
 		return ValidationResult.invalid(.x12_edi, "Out of memory");
 	};
 	defer allocator.free(data);
 
-	const bytes_read = file.readAll(data) catch {
+	const bytes_read = source.readAll(data) catch {
 		return ValidationResult.invalid(.x12_edi, "Failed to read file");
 	};
 
@@ -301,7 +303,7 @@ const default_edifact_delimiters = EdifactDelimiters{
 
 /// Structural validation of EDIFACT files.
 /// Verifies UNA/UNB header and basic segment structure.
-pub fn validateEdifact(file: std.fs.File) ValidationResult {
+pub fn validateEdifact(file: *FileSource) ValidationResult {
 	var buf: [4096]u8 = undefined;
 	const bytes_read = file.read(&buf) catch {
 		return ValidationResult.invalid(.edifact, "Failed to read file");
@@ -361,29 +363,29 @@ fn validateEdifactFromBuffer(data: []const u8) ValidationResult {
 
 /// Deep validation of EDIFACT: verifies envelope hierarchy and control totals.
 pub fn validateEdifactDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	var source = FileSource.open(path) catch {
 		return ValidationResult.invalid(.edifact, "Failed to open file");
 	};
-	defer file.close();
+	defer source.close();
 
-	const stat = file.stat() catch {
+	const file_sz = source.getEndPos() catch {
 		return ValidationResult.invalid(.edifact, "Failed to stat file");
 	};
 
-	if (stat.size < 4) {
+	if (file_sz < 4) {
 		return ValidationResult.invalid(.edifact, "File too short for EDIFACT");
 	}
 
-	if (stat.size > 10 * 1024 * 1024) {
+	if (file_sz > 10 * 1024 * 1024) {
 		return ValidationResult.invalid(.edifact, "File too large for deep validation (>10MB)");
 	}
 
-	const data = allocator.alloc(u8, @intCast(stat.size)) catch {
+	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
 		return ValidationResult.invalid(.edifact, "Out of memory");
 	};
 	defer allocator.free(data);
 
-	const bytes_read = file.readAll(data) catch {
+	const bytes_read = source.readAll(data) catch {
 		return ValidationResult.invalid(.edifact, "Failed to read file");
 	};
 

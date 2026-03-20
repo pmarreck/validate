@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
@@ -9,7 +11,7 @@ const Allocator = std.mem.Allocator;
 /// Validates a QuickBooks Company File (.qbw).
 /// Modern QBW files (2007+) are SQL Anywhere databases with an Intuit header overlay.
 /// Legacy QBW files (pre-2007) use a MAUI/Btrieve format with 1024-byte blocks.
-pub fn validateQbw(file: std.fs.File) ValidationResult {
+pub fn validateQbw(file: *FileSource) ValidationResult {
 	const file_size = file.getEndPos() catch {
 		return ValidationResult.invalidCode(.qbw, .file_too_small, "failed to get file size");
 	};
@@ -84,7 +86,7 @@ pub fn validateQbw(file: std.fs.File) ValidationResult {
 
 /// Validates a QuickBooks Backup/Portable file (.qbb, .qbm).
 /// QBB/QBM files are OLE2 compound files containing a compressed QBW database.
-pub fn validateQbb(file: std.fs.File) ValidationResult {
+pub fn validateQbb(file: *FileSource) ValidationResult {
 	var header: [8]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.qbb, .failed_to_seek, "QuickBooks backup header");
@@ -118,7 +120,7 @@ pub fn validateQbb(file: std.fs.File) ValidationResult {
 /// 1. Modern (2010+): ZIP container with internal .QDF, .QEL, .QPH, .IDX entries
 /// 2. OLE2 variant: Microsoft Compound File containing Quicken data streams
 /// 3. Legacy (pre-2010): Proprietary format with AC 9E BD 8F 00 00 magic
-pub fn validateQdf(file: std.fs.File) ValidationResult {
+pub fn validateQdf(file: *FileSource) ValidationResult {
 	var header: [8]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.qdf, .failed_to_seek, "Quicken data file header");
@@ -154,7 +156,7 @@ pub fn validateQdf(file: std.fs.File) ValidationResult {
 
 /// Validates an Open Financial Exchange file (.ofx, .qfx).
 /// OFX files use either SGML (OFX 1.x) or XML (OFX 2.x) format.
-pub fn validateOfx(file: std.fs.File) ValidationResult {
+pub fn validateOfx(file: *FileSource) ValidationResult {
 	var header: [512]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.ofx, .failed_to_seek, "OFX header");
@@ -244,7 +246,7 @@ fn validateOfxSgml(data: []const u8) ValidationResult {
 
 /// Validates a Quicken Interchange Format file (.qif).
 /// QIF is a plain text format with single-character field codes.
-pub fn validateQif(file: std.fs.File) ValidationResult {
+pub fn validateQif(file: *FileSource) ValidationResult {
 	var header: [256]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.qif, .failed_to_seek, "QIF header");
@@ -297,7 +299,7 @@ pub fn validateQif(file: std.fs.File) ValidationResult {
 
 /// Validates a Tax Exchange Format file (.txf).
 /// TXF is a plain text format for US federal income tax data, version-prefixed.
-pub fn validateTxf(file: std.fs.File) ValidationResult {
+pub fn validateTxf(file: *FileSource) ValidationResult {
 	var header: [128]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.txf, .failed_to_seek, "TXF header");
@@ -424,10 +426,11 @@ pub fn validateTxf(file: std.fs.File) ValidationResult {
 pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	_ = allocator;
 
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	var source = FileSource.open(path) catch {
 		return ValidationResult.invalidCode(.qbw, .failed_to_open, "QuickBooks company file");
 	};
-	defer file.close();
+	defer source.close();
+	const file = &source;
 
 	const file_size = file.getEndPos() catch {
 		return ValidationResult.invalidCode(.qbw, .failed_to_read, "QuickBooks file size");
@@ -649,10 +652,11 @@ pub fn validateQbbDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// - Legacy variant → structural only (no known integrity mechanism)
 pub fn validateQdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
 	// Detect the container type by reading magic bytes
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	var source = FileSource.open(path) catch {
 		return ValidationResult.invalidCode(.qdf, .failed_to_open, "Quicken data file");
 	};
-	defer file.close();
+	defer source.close();
+	const file = &source;
 
 	var header: [8]u8 = undefined;
 	const bytes_read = file.readAll(&header) catch {
@@ -683,7 +687,7 @@ pub fn validateQdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Validates a NACHA/ACH file (.ach, .nacha).
 /// NACHA files are fixed 94-character ASCII records with strict record type sequencing:
 /// File Header (1) → Batch Header (5) → Entry Detail (6) / Addenda (7) → Batch Control (8) → File Control (9)
-pub fn validateNacha(file: std.fs.File) ValidationResult {
+pub fn validateNacha(file: *FileSource) ValidationResult {
 	var header: [512]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.nacha, .failed_to_seek, "NACHA header");
@@ -986,7 +990,7 @@ fn parseNachaNumber(field: []const u8) ?u64 {
 
 /// Validates an MT940 SWIFT bank statement (.mt940, .sta, .940).
 /// MT940 messages use tagged fields (:XX:) and may optionally have a SWIFT envelope ({1:F01...}).
-pub fn validateMt940(file: std.fs.File) ValidationResult {
+pub fn validateMt940(file: *FileSource) ValidationResult {
 	var header: [2048]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.mt940, .failed_to_seek, "MT940 header");
@@ -1280,7 +1284,7 @@ fn parseMt940Transaction(field: []const u8) ?i64 {
 /// Validates a BAI2 file (.bai, .bai2).
 /// BAI2 files are comma-separated with '/' record terminators and hierarchical structure:
 /// File Header (01) → Group Header (02) → Account (03) → Transactions (16/88) → Account Trailer (49) → Group Trailer (98) → File Trailer (99)
-pub fn validateBai2(file: std.fs.File) ValidationResult {
+pub fn validateBai2(file: *FileSource) ValidationResult {
 	var header: [512]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.bai2, .failed_to_seek, "BAI2 header");
@@ -1674,8 +1678,11 @@ test "QBW validator: modern SQL Anywhere format" {
 	try file.writeAll(&header);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test.qbw", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.qbw");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQbw(read_file);
 	try std.testing.expect(result.is_valid);
@@ -1708,8 +1715,11 @@ test "QBW validator: legacy MAUI format" {
 	try file.writeAll(&file_data);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test_maui.qbw", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_maui.qbw");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQbw(read_file);
 	try std.testing.expect(result.is_valid);
@@ -1726,8 +1736,11 @@ test "QBW validator: invalid signature" {
 	try file.writeAll(&header);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test_bad.qbw", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_bad.qbw");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQbw(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -1755,8 +1768,11 @@ test "QBW validator: MAUI block count mismatch" {
 	try file.writeAll(&file_data);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test_mismatch.qbw", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_mismatch.qbw");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQbw(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -1782,8 +1798,11 @@ test "QBB validator: OLE2 format" {
 	try file.writeAll(&header);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test.qbb", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.qbb");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQbb(read_file);
 	try std.testing.expect(result.is_valid);
@@ -1809,8 +1828,11 @@ test "QDF validator: OLE2 variant" {
 	try file.writeAll(&header);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test.qdf", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.qdf");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQdf(read_file);
 	try std.testing.expect(result.is_valid);
@@ -1833,8 +1855,11 @@ test "QDF validator: ZIP variant" {
 	try file.writeAll(&header);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test_zip.qdf", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_zip.qdf");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQdf(read_file);
 	try std.testing.expect(result.is_valid);
@@ -1858,8 +1883,11 @@ test "QDF validator: legacy format" {
 	try file.writeAll(&header);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test_legacy.qdf", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_legacy.qdf");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQdf(read_file);
 	try std.testing.expect(result.is_valid);
@@ -1886,8 +1914,11 @@ test "OFX validator: SGML format (OFX 1.x)" {
 	try file.writeAll(ofx_content);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test.ofx", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.ofx");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateOfx(read_file);
 	try std.testing.expect(result.is_valid);
@@ -1911,8 +1942,11 @@ test "OFX validator: XML format (OFX 2.x)" {
 	try file.writeAll(ofx_content);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test.ofx", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.ofx");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateOfx(read_file);
 	try std.testing.expect(result.is_valid);
@@ -1939,8 +1973,11 @@ test "QIF validator: Bank type" {
 	try file.writeAll(qif_content);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test.qif", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.qif");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQif(read_file);
 	try std.testing.expect(result.is_valid);
@@ -1957,8 +1994,11 @@ test "QIF validator: invalid content" {
 	try file.writeAll(bad_content);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test_bad.qif", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_bad.qif");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQif(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -1983,8 +2023,11 @@ test "TXF validator: valid format" {
 	try file.writeAll(txf_content);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test.txf", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.txf");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateTxf(read_file);
 	try std.testing.expect(result.is_valid);
@@ -2001,8 +2044,11 @@ test "TXF validator: invalid content" {
 	try file.writeAll(bad_content);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test_bad.txf", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_bad.txf");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateTxf(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -2016,8 +2062,11 @@ test "QBW validator: too small" {
 	try file.writeAll("tiny");
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test_tiny.qbw", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_tiny.qbw");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQbw(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -2039,33 +2088,36 @@ test "QBW validator: SQL Anywhere with wrong page alignment" {
 	try file.writeAll(&header);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test_misaligned.qbw", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_misaligned.qbw");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateQbw(read_file);
 	try std.testing.expect(!result.is_valid);
 }
 
 test "ground truth: QBW sample validates" {
-	const file = std.fs.cwd().openFile("ground_truth_examples/qbw/B18_Managing_Company_Files.qbw", .{}) catch |err| {
+	var source = FileSource.open("ground_truth_examples/qbw/B18_Managing_Company_Files.qbw") catch |err| {
 		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
 		return err;
 	};
-	defer file.close();
+	defer source.close();
 
-	const result = validateQbw(file);
+	const result = validateQbw(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.qbw, result.format);
 }
 
 test "ground truth: QDF sample validates" {
-	const file = std.fs.cwd().openFile("ground_truth_examples/qdf/LONDON_2018.QDF", .{}) catch |err| {
+	var source = FileSource.open("ground_truth_examples/qdf/LONDON_2018.QDF") catch |err| {
 		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
 		return err;
 	};
-	defer file.close();
+	defer source.close();
 
-	const result = validateQdf(file);
+	const result = validateQdf(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.qdf, result.format);
 }
@@ -2237,8 +2289,11 @@ test "NACHA structural: valid file header" {
 	try file.writeAll("\n");
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test.ach", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.ach");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateNacha(read_file);
 	try std.testing.expect(result.is_valid);
@@ -2257,8 +2312,11 @@ test "NACHA structural: invalid record type" {
 	try file.writeAll("\n");
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("bad.ach", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"bad.ach");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateNacha(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -2275,8 +2333,11 @@ test "NACHA structural: invalid priority code" {
 	try file.writeAll("\n");
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("bad_priority.ach", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"bad_priority.ach");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateNacha(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -2290,8 +2351,11 @@ test "NACHA structural: file too small" {
 	try file.writeAll("101 short");
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("tiny.ach", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"tiny.ach");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateNacha(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -2416,8 +2480,11 @@ test "MT940 structural: SWIFT envelope" {
 	try file.writeAll(mt940);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test.mt940", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.mt940");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateMt940(read_file);
 	try std.testing.expect(result.is_valid);
@@ -2439,8 +2506,11 @@ test "MT940 structural: bare format (starts with :20:)" {
 	try file.writeAll(mt940);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test_bare.mt940", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_bare.mt940");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateMt940(read_file);
 	try std.testing.expect(result.is_valid);
@@ -2456,8 +2526,11 @@ test "MT940 structural: invalid content" {
 	try file.writeAll(bad);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("bad.mt940", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"bad.mt940");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateMt940(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -2597,8 +2670,11 @@ test "BAI2 structural: valid file header" {
 	try file.writeAll(bai2);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("test.bai2", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.bai2");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateBai2(read_file);
 	try std.testing.expect(result.is_valid);
@@ -2615,8 +2691,11 @@ test "BAI2 structural: invalid start" {
 	try file.writeAll(bad);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("bad.bai2", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"bad.bai2");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateBai2(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -2632,8 +2711,11 @@ test "BAI2 structural: missing terminator" {
 	try file.writeAll(bad);
 	file.close();
 
-	const read_file = try tmp_dir.dir.openFile("no_slash.bai2", .{});
-	defer read_file.close();
+	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"no_slash.bai2");
+	defer std.testing.allocator.free(read_path);
+	var read_source = try FileSource.open(read_path);
+	defer read_source.close();
+	const read_file = &read_source;
 
 	const result = validateBai2(read_file);
 	try std.testing.expect(!result.is_valid);
@@ -2757,13 +2839,13 @@ test "parseBai2Amount: signed parsing" {
 // ============================================================================
 
 test "ground truth: NACHA sample structural validation" {
-	const file = std.fs.cwd().openFile("ground_truth_examples/nacha/sample.ach", .{}) catch |err| {
+	var source = FileSource.open("ground_truth_examples/nacha/sample.ach") catch |err| {
 		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
 		return err;
 	};
-	defer file.close();
+	defer source.close();
 
-	const result = validateNacha(file);
+	const result = validateNacha(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.nacha, result.format);
 }
@@ -2782,13 +2864,13 @@ test "ground truth: NACHA sample deep validation" {
 }
 
 test "ground truth: MT940 sample structural validation" {
-	const file = std.fs.cwd().openFile("ground_truth_examples/mt940/sample.mt940", .{}) catch |err| {
+	var source = FileSource.open("ground_truth_examples/mt940/sample.mt940") catch |err| {
 		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
 		return err;
 	};
-	defer file.close();
+	defer source.close();
 
-	const result = validateMt940(file);
+	const result = validateMt940(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.mt940, result.format);
 }
@@ -2807,13 +2889,13 @@ test "ground truth: MT940 sample deep validation" {
 }
 
 test "ground truth: BAI2 sample structural validation" {
-	const file = std.fs.cwd().openFile("ground_truth_examples/bai2/sample.bai2", .{}) catch |err| {
+	var source = FileSource.open("ground_truth_examples/bai2/sample.bai2") catch |err| {
 		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
 		return err;
 	};
-	defer file.close();
+	defer source.close();
 
-	const result = validateBai2(file);
+	const result = validateBai2(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.bai2, result.format);
 }

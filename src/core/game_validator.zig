@@ -4,6 +4,8 @@
 //! Sega Genesis/Mega Drive, and CHD (MAME compressed disk images).
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const errmsg = @import("error_messages.zig");
 const Allocator = std.mem.Allocator;
@@ -17,7 +19,7 @@ const FileFormat = format_validation.FileFormat;
 
 /// Validate NES ROM (iNES format).
 /// iNES header: "NES\x1A" + PRG ROM size + CHR ROM size + flags
-pub fn validateNes(file: std.fs.File) ValidationResult {
+pub fn validateNes(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.nes, .failed_to_seek, "to start");
 
     var header: [16]u8 = undefined;
@@ -64,10 +66,11 @@ pub fn validateNes(file: std.fs.File) ValidationResult {
 /// Deep validate NES ROM - checks size consistency with header declarations
 pub fn validateNesDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.nes, .failed_to_open, "NES file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     var header: [16]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.nes, .failed_to_read, "header");
@@ -104,7 +107,7 @@ pub fn validateNesDeep(allocator: Allocator, path: []const u8) ValidationResult 
 // ============ SNES ============
 
 /// Validate SNES ROM - checks internal header checksum complement and computes full ROM checksum.
-pub fn validateSnes(file: std.fs.File) ValidationResult {
+pub fn validateSnes(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.snes, .failed_to_get, "file size");
 
     // SNES ROMs are typically 256KB to 6MB
@@ -172,7 +175,7 @@ pub fn validateSnes(file: std.fs.File) ValidationResult {
 }
 
 /// Compute SNES ROM checksum (sum of all bytes, mirrored to power-of-two boundary)
-fn computeSnesChecksum(file: std.fs.File, rom_start: u64, rom_size: u64) !u16 {
+fn computeSnesChecksum(file: *FileSource, rom_start: u64, rom_size: u64) !u16 {
     // Find next power of 2 for mirroring
     var target_size: u64 = 32768; // Minimum 32KB
     while (target_size < rom_size) {
@@ -217,7 +220,7 @@ fn computeSnesChecksum(file: std.fs.File, rom_start: u64, rom_size: u64) !u16 {
 // ============ N64 ============
 
 /// Validate N64 ROM - checks signature (.z64/.n64/.v64 formats) and size bounds.
-pub fn validateN64(file: std.fs.File) ValidationResult {
+pub fn validateN64(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.n64, .failed_to_seek, "to start");
 
     var header: [64]u8 = undefined;
@@ -397,10 +400,11 @@ fn normalizeN64ByteOrder(rom: []u8) void {
 /// Deep validate N64 ROM - verifies CRC integrity using CIC-auto-detection.
 /// Auto-detects CIC variant from bootcode CRC-32, then validates ROM CRC.
 pub fn validateN64Deep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.n64, .failed_to_open, "N64 file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.n64, .failed_to_get, "file size");
     if (file_size < 1024 * 1024 or file_size > 64 * 1024 * 1024) {
@@ -463,7 +467,7 @@ pub fn validateN64Deep(allocator: Allocator, path: []const u8) ValidationResult 
 // ============ Game Boy ============
 
 /// Validate Game Boy ROM - checks Nintendo logo and header checksum.
-pub fn validateGb(file: std.fs.File) ValidationResult {
+pub fn validateGb(file: *FileSource) ValidationResult {
     file.seekTo(0x104) catch return ValidationResult.invalidCode(.gb, .failed_to_seek, "to logo");
 
     // Nintendo logo (48 bytes) - must match exactly for real hardware
@@ -514,10 +518,11 @@ pub fn validateGb(file: std.fs.File) ValidationResult {
 
 /// Deep validate Game Boy ROM - reads entire file and verifies the global checksum at 0x14E-0x14F.
 pub fn validateGbDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.gb, .failed_to_open, "GB file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.gb, .failed_to_get, "file size");
 
@@ -562,7 +567,7 @@ pub fn validateGbDeep(allocator: Allocator, path: []const u8) ValidationResult {
 // ============ GBA ============
 
 /// Validate GBA ROM - checks ARM branch entry point, Nintendo logo, and header checksum.
-pub fn validateGba(file: std.fs.File) ValidationResult {
+pub fn validateGba(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.gba, .failed_to_seek, "to start");
 
     var header: [192]u8 = undefined;
@@ -602,7 +607,7 @@ pub fn validateGba(file: std.fs.File) ValidationResult {
 // ============ NDS ============
 
 /// Validate NDS ROM - checks ARM9/ARM7 offsets and header CRC-16 MODBUS.
-pub fn validateNds(file: std.fs.File) ValidationResult {
+pub fn validateNds(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.nds, .failed_to_seek, "to start");
 
     var header: [512]u8 = undefined;
@@ -666,7 +671,7 @@ pub fn validateNds(file: std.fs.File) ValidationResult {
 // ============ Sega Genesis / Mega Drive ============
 
 /// Validate Genesis/Mega Drive ROM - checks "SEGA" signature and SMD format detection.
-pub fn validateGenesis(file: std.fs.File) ValidationResult {
+pub fn validateGenesis(file: *FileSource) ValidationResult {
     file.seekTo(0x100) catch return ValidationResult.invalidCode(.genesis, .failed_to_seek, "to header");
 
     var header: [256]u8 = undefined;
@@ -710,10 +715,11 @@ pub fn validateGenesis(file: std.fs.File) ValidationResult {
 /// The Genesis ROM checksum at offset 0x18E is a 16-bit big-endian sum of all
 /// 16-bit big-endian words from offset 0x200 to end of ROM.
 pub fn validateGenesisDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.genesis, .failed_to_open, "Genesis file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     file.seekTo(0x100) catch return ValidationResult.invalid(.genesis, "Failed to seek");
 
@@ -790,7 +796,7 @@ pub fn validateGenesisDeep(allocator: Allocator, path: []const u8) ValidationRes
 // ============ CHD (MAME Compressed Hunks of Data) ============
 
 /// Validate CHD disk image - checks "MComprHD" signature, header length, and version.
-pub fn validateChd(file: std.fs.File) ValidationResult {
+pub fn validateChd(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.chd, .failed_to_seek, "to start");
 
     var header: [124]u8 = undefined;

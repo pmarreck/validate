@@ -6,6 +6,8 @@
 //! - RPP (REAPER Project)
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const text_format_validators = @import("text_format_validators.zig");
 const errmsg = @import("error_messages.zig");
@@ -23,7 +25,7 @@ const FileFormat = format_validation.FileFormat;
 
 /// Validate FL Studio project file structural header.
 /// Checks FLhd signature, header length, and FLdt data chunk.
-pub fn validateFlp(file: std.fs.File) ValidationResult {
+pub fn validateFlp(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.flp, .failed_to_seek, "to start");
 
     var header: [22]u8 = undefined;
@@ -60,10 +62,11 @@ pub fn validateFlp(file: std.fs.File) ValidationResult {
 pub fn validateFlpDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
 
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.flp, .failed_to_open, "FL Studio file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     // Basic validation first
     const basic_result = validateFlp(file);
@@ -123,7 +126,8 @@ pub fn validateFlpDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         // Skip event data
         if (event_size > 0) {
-            file.seekBy(@intCast(event_size)) catch break;
+            const cur_pos = file.getPos() catch break;
+            file.seekTo(cur_pos + event_size) catch break;
             bytes_consumed += event_size;
         }
 
@@ -172,7 +176,7 @@ pub fn validateFlpFromBuffer(data: []const u8) ValidationResult {
 // ============ Ableton Live (ALS) ============
 
 /// Validate Ableton Live Set - checks gzip container structure.
-pub fn validateAls(file: std.fs.File) ValidationResult {
+pub fn validateAls(file: *FileSource) ValidationResult {
     // Check for gzip magic
     var header: [10]u8 = undefined;
     const bytes_read = file.read(&header) catch {
@@ -217,7 +221,7 @@ pub fn validateAlsDeep(allocator: Allocator, path: []const u8) ValidationResult 
 // ============ REAPER (RPP) ============
 
 /// Validate REAPER project file - checks signature and UTF-8 encoding.
-pub fn validateRpp(file: std.fs.File) ValidationResult {
+pub fn validateRpp(file: *FileSource) ValidationResult {
     var header: [64]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.rpp, .failed_to_read, "RPP header");
@@ -244,10 +248,11 @@ pub fn validateRpp(file: std.fs.File) ValidationResult {
 
 /// Deep validate REAPER project - verifies bracket structure and full UTF-8 validity.
 pub fn validateRppDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.rpp, .failed_to_open, "RPP file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.rpp, .failed_to_get, "file size");
@@ -320,12 +325,12 @@ pub fn validateRppDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Bitwig Studio project files use a proprietary binary format.
 /// This validator performs basic structural checks since the format is not publicly documented.
-pub fn validateBwproject(file: std.fs.File) ValidationResult {
+pub fn validateBwproject(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.bwproject, .failed_to_seek, "to start");
 
-    const stat = file.stat() catch return ValidationResult.invalidCode(.bwproject, .failed_to_stat, "file");
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.bwproject, .failed_to_stat, "file");
 
-    if (stat.size < 100) {
+    if (file_size < 100) {
         return ValidationResult.invalidCode(.bwproject, .file_too_small, "Bitwig project");
     }
 
@@ -348,7 +353,7 @@ pub fn validateBwproject(file: std.fs.File) ValidationResult {
 // ============ Cubase (CPR) ============
 
 /// Cubase project files (.cpr) use a RIFF-based binary format.
-pub fn validateCubase(file: std.fs.File) ValidationResult {
+pub fn validateCubase(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.cpr, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -369,12 +374,12 @@ pub fn validateCubase(file: std.fs.File) ValidationResult {
 // ============ Pro Tools (PTX) ============
 
 /// Pro Tools session files (.ptx) use a proprietary binary format.
-pub fn validateProTools(file: std.fs.File) ValidationResult {
+pub fn validateProTools(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.ptx, .failed_to_seek, "to start");
 
-    const stat = file.stat() catch return ValidationResult.invalidCode(.ptx, .failed_to_stat, "file");
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.ptx, .failed_to_stat, "file");
 
-    if (stat.size < 256) {
+    if (file_size < 256) {
         return ValidationResult.invalidCode(.ptx, .file_too_small, "Pro Tools session");
     }
 
@@ -396,12 +401,12 @@ pub fn validateProTools(file: std.fs.File) ValidationResult {
 // ============ GarageBand ============
 
 /// GarageBand project files (.band) are macOS packages/bundles.
-pub fn validateGarageBand(file: std.fs.File) ValidationResult {
+pub fn validateGarageBand(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.band, .failed_to_seek, "to start");
 
-    const stat = file.stat() catch return ValidationResult.invalidCode(.band, .failed_to_stat, "file");
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.band, .failed_to_stat, "file");
 
-    if (stat.size < 64) {
+    if (file_size < 64) {
         return ValidationResult.invalidCode(.band, .file_too_small, "GarageBand project");
     }
 
@@ -419,12 +424,12 @@ pub fn validateGarageBand(file: std.fs.File) ValidationResult {
 // ============ Reason ============
 
 /// Reason project files (.reason) use a proprietary format.
-pub fn validateReason(file: std.fs.File) ValidationResult {
+pub fn validateReason(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.reason, .failed_to_seek, "to start");
 
-    const stat = file.stat() catch return ValidationResult.invalidCode(.reason, .failed_to_stat, "file");
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.reason, .failed_to_stat, "file");
 
-    if (stat.size < 128) {
+    if (file_size < 128) {
         return ValidationResult.invalidCode(.reason, .file_too_small, "Reason project");
     }
 
@@ -572,12 +577,12 @@ test "FLP buffer validation: too small rejected" {
 }
 
 test "FLP structural: ground truth sample.flp" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/flp/sample.flp", .{}) catch {
+    var source = FileSource.open("ground_truth_examples/flp/sample.flp") catch {
         return; // Skip if file doesn't exist
     };
-    defer file.close();
+    defer source.close();
 
-    const result = validateFlp(file);
+    const result = validateFlp(&source);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(FileFormat.flp, result.format);
 }

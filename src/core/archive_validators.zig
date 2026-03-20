@@ -7,6 +7,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const codec_utils = @import("codec_utils.zig");
 const ValidationResult = format_validation.ValidationResult;
@@ -36,11 +38,11 @@ pub const ZIP_CENTRAL_DIR_HEADER: u32 = 0x02014B50;
 pub const ZIP_END_CENTRAL_DIR: u32 = 0x06054B50;
 
 /// Validate ZIP file structure (also handles EPUB, DOCX, XLSX, PPTX).
-pub fn validateZip(file: std.fs.File, format: FileFormat) ValidationResult {
+pub fn validateZip(file: *FileSource, format: FileFormat) ValidationResult {
     return validateZipWithOptions(file, format, false);
 }
 
-pub fn validateZipWithOptions(file: std.fs.File, format: FileFormat, skip_magic: bool) ValidationResult {
+pub fn validateZipWithOptions(file: *FileSource, format: FileFormat, skip_magic: bool) ValidationResult {
     // Reset to start
     file.seekTo(0) catch return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
 
@@ -142,7 +144,7 @@ pub const GZIP_FNAME: u8 = 0x08;
 pub const GZIP_FCOMMENT: u8 = 0x10;
 
 /// Validate gzip file structure (header and trailer).
-pub fn validateGzip(file: std.fs.File) ValidationResult {
+pub fn validateGzip(file: *FileSource) ValidationResult {
     // Reset to start
     file.seekTo(0) catch return ValidationResult.invalidCode(.gzip, .failed_to_seek, "to start");
 
@@ -238,7 +240,7 @@ pub fn validateGzip(file: std.fs.File) ValidationResult {
 pub const BZIP2_SIGNATURE = [_]u8{ 0x42, 0x5A, 0x68 }; // "BZh"
 
 /// Validate Bzip2 file structure.
-pub fn validateBzip2(file: std.fs.File) ValidationResult {
+pub fn validateBzip2(file: *FileSource) ValidationResult {
     // Reset to start
     file.seekTo(0) catch return ValidationResult.invalidCode(.bzip2, .failed_to_seek, "to start");
 
@@ -279,7 +281,7 @@ pub fn validateBzip2(file: std.fs.File) ValidationResult {
 pub const XZ_SIGNATURE = [_]u8{ 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00 };
 
 /// Validate XZ file structure.
-pub fn validateXz(file: std.fs.File) ValidationResult {
+pub fn validateXz(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.xz, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -312,7 +314,7 @@ pub fn validateXz(file: std.fs.File) ValidationResult {
 pub const ZSTD_SIGNATURE = [_]u8{ 0x28, 0xB5, 0x2F, 0xFD };
 
 /// Validate Zstandard file structure.
-pub fn validateZstd(file: std.fs.File) ValidationResult {
+pub fn validateZstd(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.zstd, .failed_to_seek, "to start");
 
     var header: [18]u8 = undefined;
@@ -362,7 +364,7 @@ pub const RAR4_LONG_BLOCK: u16 = 0x8000; // Block has ADD_SIZE field
 pub const rarCrc16 = codec_utils.crc16Ccitt;
 
 /// Validate RAR file structure with header CRC verification.
-pub fn validateRar(file: std.fs.File) ValidationResult {
+pub fn validateRar(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.rar, .failed_to_seek, "to start");
 
     var signature: [8]u8 = undefined;
@@ -386,7 +388,7 @@ pub fn validateRar(file: std.fs.File) ValidationResult {
 }
 
 /// Validate RAR4 archive headers with CRC16 verification
-pub fn validateRar4Headers(file: std.fs.File) ValidationResult {
+pub fn validateRar4Headers(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.rar, .failed_to_get, "file size");
 
     // Start after 7-byte signature
@@ -473,7 +475,7 @@ pub fn validateRar4Headers(file: std.fs.File) ValidationResult {
 }
 
 /// Read RAR5 variable-length integer
-pub fn readRar5Vint(file: std.fs.File) !u64 {
+pub fn readRar5Vint(file: *FileSource) !u64 {
     var result: u64 = 0;
     var shift: u6 = 0;
     for (0..10) |_| { // Max 10 bytes for 64-bit vint
@@ -489,7 +491,7 @@ pub fn readRar5Vint(file: std.fs.File) !u64 {
 }
 
 /// Validate RAR5 archive headers with CRC32 verification
-pub fn validateRar5Headers(file: std.fs.File) ValidationResult {
+pub fn validateRar5Headers(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.rar, .failed_to_get, "file size");
 
     // Start after 8-byte signature
@@ -598,7 +600,7 @@ pub fn validateRar5Headers(file: std.fs.File) ValidationResult {
 pub const SEVENZ_SIGNATURE = [_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C };
 
 /// Validate 7-Zip file structure.
-pub fn validate7z(file: std.fs.File) ValidationResult {
+pub fn validate7z(file: *FileSource) ValidationResult {
     // Reset to start
     file.seekTo(0) catch return ValidationResult.invalidCode(.sevenz, .failed_to_seek, "to start");
 
@@ -648,7 +650,7 @@ pub fn validate7z(file: std.fs.File) ValidationResult {
 // ============ Tar Validator ============
 
 /// Validate tar file structure.
-pub fn validateTar(file: std.fs.File) ValidationResult {
+pub fn validateTar(file: *FileSource) ValidationResult {
     // Reset to start
     file.seekTo(0) catch return ValidationResult.invalidCode(.tar, .failed_to_seek, "to start");
 
@@ -859,7 +861,7 @@ pub fn validateTar(file: std.fs.File) ValidationResult {
 /// PAR2 files contain packets with 64-byte headers followed by packet data.
 /// Each packet header includes: magic (8 bytes), length (8 bytes), MD5 (16 bytes),
 /// recovery set ID (16 bytes), and packet type (16 bytes).
-pub fn validatePar2(file: std.fs.File) ValidationResult {
+pub fn validatePar2(file: *FileSource) ValidationResult {
     // Reset to start
     file.seekTo(0) catch return ValidationResult.invalidCode(.par2, .failed_to_seek, "to start");
 
@@ -971,9 +973,8 @@ pub fn validatePar2(file: std.fs.File) ValidationResult {
 /// Validate WARC (Web ARChive) file structure.
 /// Full integrity validation: parses multiple records, validates headers,
 /// and verifies Content-Length consistency.
-pub fn validateWarc(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.warc, .failed_to_stat, "file");
-    const file_size = stat.size;
+pub fn validateWarc(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.warc, .failed_to_stat, "file");
 
     if (file_size < 20) {
         return ValidationResult.invalidCode(.warc, .file_too_small, "WARC");
@@ -1151,7 +1152,7 @@ fn base32Decode(encoded: []const u8, out: []u8) ?usize {
 pub fn validateWarcDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
 
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var file = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.warc, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.warc, "Access denied", .structural),
@@ -1460,7 +1461,7 @@ pub const Zip64Sizes = struct {
     local_header_offset: u64,
 };
 
-pub fn findZipCentralDirectory(allocator: Allocator, file: std.fs.File, file_size: u64) ?ZipCentralDirectoryInfo {
+pub fn findZipCentralDirectory(allocator: Allocator, file: *FileSource, file_size: u64) ?ZipCentralDirectoryInfo {
     if (file_size < 22) {
         return null;
     }
@@ -1587,7 +1588,7 @@ pub fn readZip64Extra(
 
 pub fn validateZipDeepWithCentralDirectory(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     format: FileFormat,
     telemetry: ZipTelemetry,
 ) ?ValidationResult {
@@ -1881,7 +1882,7 @@ pub fn validateZipDeepWithCentralDirectory(
 /// ZIP stores a CRC-32 for each file entry, computed over the uncompressed data.
 /// For stored files, we CRC the data directly. For deflated files, we decompress first.
 pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.zip, "File not found", .full),
             error.AccessDenied => ValidationResult.invalidWithDepth(.zip, "Access denied", .full),
@@ -1895,8 +1896,10 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalidCodeWithDepth(format, .failed_to_seek, "to start", .full);
     };
 
+    var source = FileSource.fromFile(file);
+
     const telemetry = ZipTelemetry.init();
-    if (validateZipDeepWithCentralDirectory(allocator, file, format, telemetry)) |result| {
+    if (validateZipDeepWithCentralDirectory(allocator, &source, format, telemetry)) |result| {
         return result;
     }
 
@@ -2097,14 +2100,14 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
         switch (@as(ZipCompressionMethod, @enumFromInt(compression_method))) {
             .store => {
                 // Stored (uncompressed) - CRC the data directly
-                const result = validateZipStoredEntry(file, stored_crc, compressed_size);
+                const result = validateZipStoredEntry(&source, stored_crc, compressed_size);
                 if (!result.is_valid) {
                     return ValidationResult.invalidWithDepth(format, result.error_message orelse "CRC mismatch", .full);
                 }
             },
             .deflate => {
                 // Deflated - decompress and verify CRC
-                const result = validateZipDeflatedEntry(allocator, file, stored_crc, compressed_size, uncompressed_size);
+                const result = validateZipDeflatedEntry(allocator, &source, stored_crc, compressed_size, uncompressed_size);
                 if (!result.is_valid) {
                     return ValidationResult.invalidWithDepth(format, result.error_message orelse "Deflate CRC mismatch", .full);
                 }
@@ -2148,7 +2151,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
 }
 
 /// Validate a stored (uncompressed) ZIP entry by computing CRC-32.
-pub fn validateZipStoredEntry(file: std.fs.File, stored_crc: u32, size: u32) ValidationResult {
+pub fn validateZipStoredEntry(file: *FileSource, stored_crc: u32, size: u32) ValidationResult {
     var crc = std.hash.Crc32.init();
     var remaining: u32 = size;
     var read_buffer: [65536]u8 = undefined;
@@ -2178,7 +2181,7 @@ pub fn validateZipStoredEntry(file: std.fs.File, stored_crc: u32, size: u32) Val
 
 /// Validate a deflated ZIP entry by decompressing and computing CRC-32.
 /// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
-pub fn validateZipDeflatedEntry(allocator: Allocator, file: std.fs.File, stored_crc: u32, compressed_size: u32, uncompressed_size: u32) ValidationResult {
+pub fn validateZipDeflatedEntry(allocator: Allocator, file: *FileSource, stored_crc: u32, compressed_size: u32, uncompressed_size: u32) ValidationResult {
     // Skip if uncompressed size exceeds limit (zip bomb protection)
     if (uncompressed_size > format_validation.MAX_ZIP_ENTRY_SIZE) {
         // Skip validation for huge entries - just seek past
@@ -2252,7 +2255,7 @@ pub fn validateZipDeflatedEntry(allocator: Allocator, file: std.fs.File, stored_
 /// - CRC32 of decompressed data matches trailer
 /// - ISIZE (uncompressed size mod 2^32) matches
 pub fn validateGzipDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var file = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.gzip, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.gzip, "Access denied", .structural),
@@ -2428,7 +2431,7 @@ pub const CrcHashingWriter = struct {
 /// Bzip2 uses CRC32 for each block and a combined CRC at the end.
 /// Our pure Zig bzip2 decompressor verifies all checksums during decompression.
 pub fn validateBzip2Deep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var file = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.bzip2, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.bzip2, "Access denied", .structural),
@@ -2451,7 +2454,7 @@ pub fn validateBzip2Deep(allocator: Allocator, path: []const u8) ValidationResul
     const max_compressed_size: usize = 1024 * 1024 * 1024;
     if (file_size > max_compressed_size) {
         // For very large files, fall back to structural validation
-        return validateBzip2LargeFile(file);
+        return validateBzip2LargeFile(&file);
     }
 
     const compressed_data = allocator.alloc(u8, @intCast(file_size)) catch {
@@ -2510,7 +2513,7 @@ pub fn validateBzip2Deep(allocator: Allocator, path: []const u8) ValidationResul
 }
 
 /// Structural validation for large bzip2 files (>1GB compressed)
-pub fn validateBzip2LargeFile(file: std.fs.File) ValidationResult {
+pub fn validateBzip2LargeFile(file: *FileSource) ValidationResult {
     file.seekTo(0) catch {
         return ValidationResult.invalidCodeWithDepth(.bzip2, .failed_to_seek, "in bzip2 data", .structural);
     };
@@ -2539,7 +2542,7 @@ pub fn validateBzip2LargeFile(file: std.fs.File) ValidationResult {
 /// Deep XZ validation by streaming decompression.
 /// XZ format includes CRC32/CRC64 checksums that are verified during decompression.
 pub fn validateXzDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.xz, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.xz, "Access denied", .structural),
@@ -2605,7 +2608,7 @@ pub fn validateXzDeep(allocator: Allocator, path: []const u8) ValidationResult {
 /// Deep Zstandard validation by streaming decompression.
 /// Zstd has optional xxHash checksum that is verified during decompression.
 pub fn validateZstdDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var file = std.fs.cwd().openFile(path, .{}) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.zstd, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.zstd, "Access denied", .structural),
@@ -2846,7 +2849,7 @@ fn validateRarWithRarz(data: []const u8) ValidationResult {
 
 /// Deep RAR validation using rarz (in-memory clean-room implementation).
 pub fn validateRarDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var file = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.rar, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.rar, "Access denied", .structural),
@@ -2976,7 +2979,7 @@ fn validateCptWithCompactPro(data: []const u8) ValidationResult {
     return ValidationResult.invalidWithDepth(.cpt, std.mem.span(c_compact_pro.cp_error_string(extract_code)), compactProDepthForError(extract_code));
 }
 
-pub fn validateCpt(file: std.fs.File) ValidationResult {
+pub fn validateCpt(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_get, "file size", .structural);
     };
@@ -3000,7 +3003,7 @@ pub fn validateCpt(file: std.fs.File) ValidationResult {
 }
 
 pub fn validateCptDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var file = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.cpt, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.cpt, "Access denied", .structural),
@@ -3048,97 +3051,97 @@ pub fn validate7zFromBuffer(data: []const u8) ValidationResult {
 
 const testing = std.testing;
 
-fn openGroundTruth(comptime path: []const u8) !std.fs.File {
-    return std.fs.cwd().openFile(path, .{});
+fn openGroundTruth(comptime path: []const u8) !FileSource {
+    return FileSource.open(path);
 }
 
 // ---------- Structural validators on valid ground truth files ----------
 
 test "validateZip: valid ZIP ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/zip/test_archive.zip");
+    var file = try openGroundTruth("ground_truth_examples/zip/test_archive.zip");
     defer file.close();
-    const result = validateZip(file, .zip);
+    const result = validateZip(&file, .zip);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.zip, result.format);
 }
 
 test "validateGzip: valid gzip ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/gzip/sample.gz");
+    var file = try openGroundTruth("ground_truth_examples/gzip/sample.gz");
     defer file.close();
-    const result = validateGzip(file);
+    const result = validateGzip(&file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.gzip, result.format);
 }
 
 test "validateBzip2: valid bzip2 ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/bzip2/sample.bz2");
+    var file = try openGroundTruth("ground_truth_examples/bzip2/sample.bz2");
     defer file.close();
-    const result = validateBzip2(file);
+    const result = validateBzip2(&file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.bzip2, result.format);
 }
 
 test "validateXz: valid XZ ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/xz/sample.xz");
+    var file = try openGroundTruth("ground_truth_examples/xz/sample.xz");
     defer file.close();
-    const result = validateXz(file);
+    const result = validateXz(&file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.xz, result.format);
 }
 
 test "validateZstd: valid Zstd ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/zstd/sample.zst");
+    var file = try openGroundTruth("ground_truth_examples/zstd/sample.zst");
     defer file.close();
-    const result = validateZstd(file);
+    const result = validateZstd(&file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.zstd, result.format);
 }
 
 test "validateRar: valid RAR ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/rar/sample.rar");
+    var file = try openGroundTruth("ground_truth_examples/rar/sample.rar");
     defer file.close();
-    const result = validateRar(file);
+    const result = validateRar(&file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.rar, result.format);
 }
 
 test "validate7z: valid 7z ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/7z/sample.7z");
+    var file = try openGroundTruth("ground_truth_examples/7z/sample.7z");
     defer file.close();
-    const result = validate7z(file);
+    const result = validate7z(&file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.sevenz, result.format);
 }
 
 test "validateTar: valid tar ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/tar/sample.tar");
+    var file = try openGroundTruth("ground_truth_examples/tar/sample.tar");
     defer file.close();
-    const result = validateTar(file);
+    const result = validateTar(&file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.tar, result.format);
 }
 
 test "validatePar2: valid PAR2 ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/par2/sample.par2");
+    var file = try openGroundTruth("ground_truth_examples/par2/sample.par2");
     defer file.close();
-    const result = validatePar2(file);
+    const result = validatePar2(&file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.par2, result.format);
     try testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 test "validateWarc: valid WARC ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/warc/sample.warc");
+    var file = try openGroundTruth("ground_truth_examples/warc/sample.warc");
     defer file.close();
-    const result = validateWarc(file);
+    const result = validateWarc(&file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.warc, result.format);
 }
 
 test "validateCpt: valid CPT ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/cpt/sample.cpt");
+    var file = try openGroundTruth("ground_truth_examples/cpt/sample.cpt");
     defer file.close();
-    const result = validateCpt(file);
+    const result = validateCpt(&file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.cpt, result.format);
 }
@@ -3278,7 +3281,7 @@ test "validateZstdFromBuffer: valid Zstd signature" {
 
 test "validateRarFromBuffer: valid RAR from ground truth" {
     // Use the real RAR file bytes because rarz needs enough data for full parsing
-    const file = try openGroundTruth("ground_truth_examples/rar/sample.rar");
+    var file = try openGroundTruth("ground_truth_examples/rar/sample.rar");
     defer file.close();
     const file_size = try file.getEndPos();
     const size: usize = @intCast(@min(file_size, 4096));
@@ -3297,7 +3300,7 @@ test "validate7zFromBuffer: valid 7z signature" {
 }
 
 test "validateCptFromBuffer: valid CPT from ground truth" {
-    const file = try openGroundTruth("ground_truth_examples/cpt/sample.cpt");
+    var file = try openGroundTruth("ground_truth_examples/cpt/sample.cpt");
     defer file.close();
     const file_size = try file.getEndPos();
     const size: usize = @intCast(file_size);
@@ -3312,76 +3315,76 @@ test "validateCptFromBuffer: valid CPT from ground truth" {
 // ---------- Corrupt / truncated inputs (structural validators) ----------
 
 test "validateZip: corrupt ZIP magic rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/zip/test_archive_magic_corrupt.zip");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/zip/test_archive_magic_corrupt.zip");
     defer file.close();
-    const result = validateZip(file, .zip);
+    const result = validateZip(&file, .zip);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.zip, result.format);
 }
 
 test "validateGzip: corrupt gzip rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/gzip/sample_corrupt_1.gz");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/gzip/sample_corrupt_1.gz");
     defer file.close();
-    const result = validateGzip(file);
+    const result = validateGzip(&file);
     // A corruption in body may still pass structural validation if header+trailer are intact,
     // so we only check that the result is for gzip format
     try testing.expectEqual(FileFormat.gzip, result.format);
 }
 
 test "validateBzip2: corrupt bzip2 rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/bzip2/sample_corrupt_1.bz2");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/bzip2/sample_corrupt_1.bz2");
     defer file.close();
-    const result = validateBzip2(file);
+    const result = validateBzip2(&file);
     try testing.expectEqual(FileFormat.bzip2, result.format);
 }
 
 test "validateXz: corrupt XZ rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/xz/sample_corrupt_1.xz");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/xz/sample_corrupt_1.xz");
     defer file.close();
-    const result = validateXz(file);
+    const result = validateXz(&file);
     try testing.expectEqual(FileFormat.xz, result.format);
 }
 
 test "validateZstd: corrupt Zstd rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/zstd/sample_corrupt_1.zst");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/zstd/sample_corrupt_1.zst");
     defer file.close();
-    const result = validateZstd(file);
+    const result = validateZstd(&file);
     try testing.expectEqual(FileFormat.zstd, result.format);
 }
 
 test "validateRar: corrupt RAR rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/rar/sample_corrupt_1.rar");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/rar/sample_corrupt_1.rar");
     defer file.close();
-    const result = validateRar(file);
+    const result = validateRar(&file);
     try testing.expectEqual(FileFormat.rar, result.format);
 }
 
 test "validate7z: corrupt 7z rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/7z/sample_corrupt_1.7z");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/7z/sample_corrupt_1.7z");
     defer file.close();
-    const result = validate7z(file);
+    const result = validate7z(&file);
     try testing.expectEqual(FileFormat.sevenz, result.format);
 }
 
 test "validateTar: corrupt tar rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/tar/sample_corrupt_1.tar");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/tar/sample_corrupt_1.tar");
     defer file.close();
-    const result = validateTar(file);
+    const result = validateTar(&file);
     try testing.expectEqual(FileFormat.tar, result.format);
 }
 
 test "validatePar2: corrupt PAR2 rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/par2/sample_corrupt_1.par2");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/par2/sample_corrupt_1.par2");
     defer file.close();
-    const result = validatePar2(file);
+    const result = validatePar2(&file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.par2, result.format);
 }
 
 test "validateWarc: corrupt WARC rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/warc/sample_corrupt_1.warc");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/warc/sample_corrupt_1.warc");
     defer file.close();
-    const result = validateWarc(file);
+    const result = validateWarc(&file);
     try testing.expectEqual(FileFormat.warc, result.format);
 }
 
@@ -3555,9 +3558,9 @@ test "validateWarcDeep: file not found returns invalid" {
 }
 
 test "validateCpt: corrupt CPT rejected" {
-    const file = try openGroundTruth("ground_truth_examples/corrupted/cpt/sample_corrupt_1.cpt");
+    var file = try openGroundTruth("ground_truth_examples/corrupted/cpt/sample_corrupt_1.cpt");
     defer file.close();
-    const result = validateCpt(file);
+    const result = validateCpt(&file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.cpt, result.format);
 }
@@ -3731,11 +3734,16 @@ test "validateGzip: too-small input rejected" {
     // Create a temp file with only 5 bytes (less than 10-byte gzip header)
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("tiny.gz", .{ .read = true });
+    {
+        const wf = try tmp_dir.dir.createFile("tiny.gz", .{});
+        defer wf.close();
+        try wf.writeAll(&[_]u8{ 0x1F, 0x8B, 0x08, 0x00, 0x00 });
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp_dir.dir.realpath("tiny.gz", &path_buf);
+    var file = try FileSource.open(path);
     defer file.close();
-    try file.writeAll(&[_]u8{ 0x1F, 0x8B, 0x08, 0x00, 0x00 });
-    try file.seekTo(0);
-    const result = validateGzip(file);
+    const result = validateGzip(&file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.gzip, result.format);
 }
@@ -3743,11 +3751,16 @@ test "validateGzip: too-small input rejected" {
 test "validateBzip2: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("tiny.bz2", .{ .read = true });
+    {
+        const wf = try tmp_dir.dir.createFile("tiny.bz2", .{});
+        defer wf.close();
+        try wf.writeAll("BZh");
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp_dir.dir.realpath("tiny.bz2", &path_buf);
+    var file = try FileSource.open(path);
     defer file.close();
-    try file.writeAll("BZh");
-    try file.seekTo(0);
-    const result = validateBzip2(file);
+    const result = validateBzip2(&file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.bzip2, result.format);
 }
@@ -3755,11 +3768,16 @@ test "validateBzip2: too-small input rejected" {
 test "validateXz: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("tiny.xz", .{ .read = true });
+    {
+        const wf = try tmp_dir.dir.createFile("tiny.xz", .{});
+        defer wf.close();
+        try wf.writeAll(&[_]u8{ 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00 });
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp_dir.dir.realpath("tiny.xz", &path_buf);
+    var file = try FileSource.open(path);
     defer file.close();
-    try file.writeAll(&[_]u8{ 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00 });
-    try file.seekTo(0);
-    const result = validateXz(file);
+    const result = validateXz(&file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.xz, result.format);
 }
@@ -3767,11 +3785,16 @@ test "validateXz: too-small input rejected" {
 test "validateZstd: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("tiny.zst", .{ .read = true });
+    {
+        const wf = try tmp_dir.dir.createFile("tiny.zst", .{});
+        defer wf.close();
+        try wf.writeAll(&[_]u8{ 0x28, 0xB5, 0x2F, 0xFD });
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp_dir.dir.realpath("tiny.zst", &path_buf);
+    var file = try FileSource.open(path);
     defer file.close();
-    try file.writeAll(&[_]u8{ 0x28, 0xB5, 0x2F, 0xFD });
-    try file.seekTo(0);
-    const result = validateZstd(file);
+    const result = validateZstd(&file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.zstd, result.format);
 }
@@ -3779,11 +3802,16 @@ test "validateZstd: too-small input rejected" {
 test "validate7z: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("tiny.7z", .{ .read = true });
+    {
+        const wf = try tmp_dir.dir.createFile("tiny.7z", .{});
+        defer wf.close();
+        try wf.writeAll(&[_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C });
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp_dir.dir.realpath("tiny.7z", &path_buf);
+    var file = try FileSource.open(path);
     defer file.close();
-    try file.writeAll(&[_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C });
-    try file.seekTo(0);
-    const result = validate7z(file);
+    const result = validate7z(&file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.sevenz, result.format);
 }
@@ -3791,11 +3819,16 @@ test "validate7z: too-small input rejected" {
 test "validateTar: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("tiny.tar", .{ .read = true });
+    {
+        const wf = try tmp_dir.dir.createFile("tiny.tar", .{});
+        defer wf.close();
+        try wf.writeAll("too short for tar header");
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp_dir.dir.realpath("tiny.tar", &path_buf);
+    var file = try FileSource.open(path);
     defer file.close();
-    try file.writeAll("too short for tar header");
-    try file.seekTo(0);
-    const result = validateTar(file);
+    const result = validateTar(&file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.tar, result.format);
 }
@@ -3803,11 +3836,16 @@ test "validateTar: too-small input rejected" {
 test "validatePar2: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("tiny.par2", .{ .read = true });
+    {
+        const wf = try tmp_dir.dir.createFile("tiny.par2", .{});
+        defer wf.close();
+        try wf.writeAll("PAR2\x00PKT"); // Only 8 bytes, need 64
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try tmp_dir.dir.realpath("tiny.par2", &path_buf);
+    var file = try FileSource.open(path);
     defer file.close();
-    try file.writeAll("PAR2\x00PKT"); // Only 8 bytes, need 64
-    try file.seekTo(0);
-    const result = validatePar2(file);
+    const result = validatePar2(&file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.par2, result.format);
 }
@@ -4059,7 +4097,7 @@ pub fn validateHqxBytes(file_data: []const u8) ValidationResult {
     return ValidationResult.okWithDepth(.hqx, .full);
 }
 
-pub fn validateHqx(file: std.fs.File) ValidationResult {
+pub fn validateHqx(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.hqx, .failed_to_get, "file size");
     if (file_size == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
     if (file_size > BINHEX4_MAX_FILE_SIZE) return ValidationResult.invalid(.hqx, "BinHex file too large (>64MB)");

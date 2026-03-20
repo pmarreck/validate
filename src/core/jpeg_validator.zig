@@ -14,6 +14,8 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
 
 /// Threshold for warning about large image files (200MB)
@@ -127,17 +129,17 @@ fn validateJpegStructurally(data: []const u8) JpegValidationResult {
 /// Note: On Windows, falls back to a structural marker scan.
 pub fn validateJpegDeep(file_path: []const u8) JpegValidationResult {
     // Open file using Zig's stdlib
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
+    var source = FileSource.open(file_path) catch |err| {
         return switch (err) {
             error.FileNotFound => JpegValidationResult.invalid("File not found"),
             error.AccessDenied => JpegValidationResult.invalid("Access denied"),
             else => JpegValidationResult.invalid(errmsg.failedToOpen("file")),
         };
     };
-    defer file.close();
+    defer source.close();
 
     // Get file size
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return JpegValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
@@ -156,7 +158,7 @@ pub fn validateJpegDeep(file_path: []const u8) JpegValidationResult {
 
     // Read entire file
     const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
-    const bytes_read = file.readAll(buf_slice) catch {
+    const bytes_read = source.readAll(buf_slice) catch {
         return JpegValidationResult.invalid(errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {
@@ -173,7 +175,7 @@ pub fn validateJpegDeep(file_path: []const u8) JpegValidationResult {
 }
 
 /// Validate JPEG from a file handle (seeks to start first).
-pub fn validateJpegDeepFromHandle(file: std.fs.File) JpegValidationResult {
+pub fn validateJpegDeepFromHandle(file: *FileSource) JpegValidationResult {
     // Get file path from handle is not directly possible in Zig
     // We need the path for libjpeg's stdio interface
     // Alternative: use memory buffer approach
@@ -182,7 +184,7 @@ pub fn validateJpegDeepFromHandle(file: std.fs.File) JpegValidationResult {
 
 /// Validate JPEG by reading into memory buffer.
 /// More flexible but uses more memory for large files.
-fn validateJpegDeepFromMemory(file: std.fs.File) JpegValidationResult {
+fn validateJpegDeepFromMemory(file: *FileSource) JpegValidationResult {
     // Seek to start
     file.seekTo(0) catch {
         return JpegValidationResult.invalid(errmsg.failedToSeek("to start"));

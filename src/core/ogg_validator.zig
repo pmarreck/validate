@@ -19,6 +19,8 @@
 //! OGG uses polynomial 0x04C11DB7 (reflected: 0xEDB88320).
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
 const codec_utils = @import("codec_utils.zig");
 
@@ -53,7 +55,7 @@ pub const oggCrc32 = codec_utils.Crc32Ogg.hash;
 
 /// Validate all OGG page CRCs in a file.
 /// Returns the number of pages verified and total bytes covered.
-pub fn validateOggCrc(file: std.fs.File) OggValidationResult {
+pub fn validateOggCrc(file: *FileSource) OggValidationResult {
     var pages_verified: u32 = 0;
     var total_bytes: u64 = 0;
 
@@ -181,11 +183,11 @@ pub fn validateOggCrc(file: std.fs.File) OggValidationResult {
 
 /// Validate OGG CRCs from a file path.
 pub fn validateOggCrcPath(path: []const u8) OggValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return OggValidationResult.invalid(errmsg.failedToOpen("file"), 0, 0);
     };
-    defer file.close();
-    return validateOggCrc(file);
+    defer source.close();
+    return validateOggCrc(&source);
 }
 
 // ============ OGG Packet Extraction ============
@@ -220,7 +222,7 @@ pub const PacketExtractResult = struct {
 /// Extract all packets from an OGG file.
 /// Caller must call result.deinit() when done.
 /// Only extracts packets from the first logical bitstream encountered.
-pub fn extractPackets(allocator: std.mem.Allocator, file: std.fs.File) !PacketExtractResult {
+pub fn extractPackets(allocator: std.mem.Allocator, file: *FileSource) !PacketExtractResult {
     var packets: std.ArrayListUnmanaged(OggPacket) = .{};
     errdefer {
         for (packets.items) |packet| {
@@ -378,9 +380,9 @@ pub fn extractPackets(allocator: std.mem.Allocator, file: std.fs.File) !PacketEx
 
 /// Extract packets from a file path.
 pub fn extractPacketsPath(allocator: std.mem.Allocator, path: []const u8) !PacketExtractResult {
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
-    return extractPackets(allocator, file);
+    var source = try FileSource.open(path);
+    defer source.close();
+    return extractPackets(allocator, &source);
 }
 
 // ============ Tests ============

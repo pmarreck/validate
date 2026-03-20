@@ -17,6 +17,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const theora_decoder = @import("theora_decoder.zig");
 
 /// Theora version info
@@ -275,7 +277,7 @@ pub fn validateTheoraStream(allocator: Allocator, data: []const u8, max_frames: 
 
 /// Validate Theora from an Ogg file by extracting Theora stream data.
 /// This parses Ogg pages and validates the Theora packets.
-pub fn validateTheoraFromOgg(allocator: Allocator, file: std.fs.File, max_frames: u32) TheoraValidationResult {
+pub fn validateTheoraFromOgg(allocator: Allocator, file: *FileSource, max_frames: u32) TheoraValidationResult {
     var packets: std.ArrayListUnmanaged([]u8) = .{};
     defer {
         for (packets.items) |pkt| {
@@ -547,7 +549,7 @@ pub const TheoraDeepValidationCombinedResult = struct {
 };
 
 /// Validate Theora from Ogg file with deep decode validation
-pub fn validateTheoraDeepFromOgg(allocator: Allocator, file: std.fs.File, max_frames: u32) TheoraDeepValidationCombinedResult {
+pub fn validateTheoraDeepFromOgg(allocator: Allocator, file: *FileSource, max_frames: u32) TheoraDeepValidationCombinedResult {
     // First do structural validation
     const structural = validateTheoraFromOgg(allocator, file, max_frames);
     if (!structural.valid) {
@@ -787,15 +789,15 @@ test "deep validation - synthetic frame" {
 
 test "ground truth - Theora OGV sample" {
     // Test with real Theora OGV file
-    const file = std.fs.cwd().openFile("ground_truth_examples/theora/sample.ogv", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/theora/sample.ogv") catch |err| {
         // Skip test if ground truth sample not available
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer source.close();
 
     const allocator = std.testing.allocator;
-    const result = validateTheoraDeepFromOgg(allocator, file, 10);
+    const result = validateTheoraDeepFromOgg(allocator, &source, 10);
 
     try std.testing.expect(result.structural_valid);
     // Deep validation may or may not succeed depending on frame complexity

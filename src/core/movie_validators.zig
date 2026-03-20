@@ -42,7 +42,7 @@ fn isValidBoxType(box_type: *const [4]u8) bool {
 // ============ ISO BMFF (MP4/MOV) Validator ============
 
 /// Validate ISO BMFF (MP4, MOV, HEIC, M4A) file structure.
-pub fn validateIsobmff(file: std.fs.File, format: FileFormat) ValidationResult {
+pub fn validateIsobmff(file: *FileSource, format: FileFormat) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
 
     const file_size = file.getEndPos() catch {
@@ -144,7 +144,7 @@ pub fn validateIsobmff(file: std.fs.File, format: FileFormat) ValidationResult {
 // ============ Matroska/WebM Validator ============
 
 /// Validate Matroska (MKV/WebM) file structure using EBML.
-pub fn validateMatroska(file: std.fs.File, format: FileFormat) ValidationResult {
+pub fn validateMatroska(file: *FileSource, format: FileFormat) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
 
     var header: [4]u8 = undefined;
@@ -197,7 +197,7 @@ pub fn validateMatroska(file: std.fs.File, format: FileFormat) ValidationResult 
 /// Validate AVI file structure (RIFF container).
 /// Validate AVI by walking the RIFF chunk tree.
 /// Checks chunk boundaries, required lists (hdrl, movi), and idx1 index consistency.
-pub fn validateAvi(file: std.fs.File) ValidationResult {
+pub fn validateAvi(file: *FileSource) ValidationResult {
     var header: [12]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.avi, .failed_to_read, "AVI header");
 
@@ -326,7 +326,7 @@ pub fn validateAvi(file: std.fs.File) ValidationResult {
 
 /// Validate Adobe Flash SWF file structure.
 /// Supports FWS (uncompressed), CWS (zlib), and ZWS (LZMA) formats.
-pub fn validateSwf(file: std.fs.File) ValidationResult {
+pub fn validateSwf(file: *FileSource) ValidationResult {
     var header: [8]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.swf, .failed_to_read, "SWF header");
 
@@ -419,7 +419,7 @@ pub fn validateSwf(file: std.fs.File) ValidationResult {
 }
 
 /// Validate zlib-compressed SWF (CWS) by decompressing and validating RECT structure
-pub fn validateSwfZlib(file: std.fs.File, declared_size: u32) ValidationResult {
+pub fn validateSwfZlib(file: *FileSource, declared_size: u32) ValidationResult {
     // Read compressed data (after 8-byte header)
     file.seekTo(8) catch return ValidationResult.ok(.swf); // Fall back to structural
 
@@ -485,7 +485,7 @@ pub fn validateSwfZlib(file: std.fs.File, declared_size: u32) ValidationResult {
 }
 
 /// Walk SWF tag stream from file to validate tag structure.
-fn validateSwfTagStream(file: std.fs.File, start: u64, file_length: u32) ValidationResult {
+fn validateSwfTagStream(file: *FileSource, start: u64, file_length: u32) ValidationResult {
     file.seekTo(start) catch return ValidationResult.invalidCode(.swf, .failed_to_seek, "to tags");
 
     var pos = start;
@@ -525,8 +525,8 @@ fn validateSwfTagStream(file: std.fs.File, start: u64, file_length: u32) Validat
         // Just validate structure
 
         // Skip tag body
-        file.seekBy(@intCast(tag_length)) catch break;
         pos += tag_length;
+        file.seekTo(pos) catch break;
         tag_count += 1;
 
         if (tag_count > 10_000_000) break; // Safety limit
@@ -581,7 +581,7 @@ fn validateSwfTagStreamBuffer(data: []const u8, start: usize, declared_size: u32
 // ============ FLV (Flash Video) Validator ============
 
 /// Validate Adobe Flash Video (FLV) container structure.
-pub fn validateFlv(file: std.fs.File) ValidationResult {
+pub fn validateFlv(file: *FileSource) ValidationResult {
     var header: [9]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.flv, .failed_to_read, "FLV header");
 
@@ -870,7 +870,7 @@ pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Validate MPEG Program Stream file structure.
 /// Pack start code: 00 00 01 BA followed by SCR and mux rate
-pub fn validateMpegPs(file: std.fs.File) ValidationResult {
+pub fn validateMpegPs(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.mpeg_ps, .failed_to_seek, "to start");
 
     var header: [14]u8 = undefined;
@@ -902,7 +902,7 @@ pub fn validateMpegPs(file: std.fs.File) ValidationResult {
 
 /// Validate MPEG Transport Stream file structure.
 /// 188-byte packets starting with 0x47 sync byte
-pub fn validateMpegTs(file: std.fs.File) ValidationResult {
+pub fn validateMpegTs(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.mpeg_ts, .failed_to_seek, "to start");
 
     // Read enough to check multiple sync bytes
@@ -993,7 +993,7 @@ pub fn validateMpegTsDeep(allocator: Allocator, path: []const u8) ValidationResu
 
 /// Validate MPEG Elementary Stream (raw MPEG-1/2 video).
 /// Video sequence header: 00 00 01 B3
-pub fn validateMpegEs(file: std.fs.File) ValidationResult {
+pub fn validateMpegEs(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.mpeg_es, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -1027,7 +1027,7 @@ pub fn validateMpegEs(file: std.fs.File) ValidationResult {
 
 /// Validate IVF container file structure.
 /// IVF header: DKIF + version + header_size + codec + dimensions + frame rate
-pub fn validateIvf(file: std.fs.File) ValidationResult {
+pub fn validateIvf(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.ivf, .failed_to_seek, "to start");
 
     var header: [32]u8 = undefined;
@@ -2066,7 +2066,7 @@ pub fn validateAviFromBuffer(data: []const u8) ValidationResult {
 
 /// Validate ASF (Advanced Systems Format) file structure. Used by WMV video and WMA audio.
 /// 16-byte GUID header + object size(8,LE) + num_objects(4,LE) + reserved(2) = 30 bytes minimum.
-pub fn validateAsf(file: std.fs.File) ValidationResult {
+pub fn validateAsf(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalid(.asf, "Failed to seek");
 
     var header: [30]u8 = undefined;
@@ -2217,7 +2217,7 @@ pub fn validateAsf(file: std.fs.File) ValidationResult {
 /// Validate DV (Digital Video) by checking DIF block section type sequence.
 /// DV has a rigidly fixed structure: each DIF sequence is 150 blocks of 80 bytes
 /// with section types: Header(0)×1, Subcode(1)×2, VAUX(2)×3, Audio(3)×9, Video(4)×135.
-pub fn validateDv(file: std.fs.File) ValidationResult {
+pub fn validateDv(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalid(.dv, "Failed to seek");
 
     var header: [80]u8 = undefined;
@@ -2638,18 +2638,22 @@ test "validateAvi rejects corrupted avih dimensions" {
 
     // Valid first
     tmp.dir.writeFile(.{ .sub_path = "good.avi", .data = &avi }) catch return;
-    const good = tmp.dir.openFile("good.avi", .{}) catch return;
-    defer good.close();
-    const good_result = validateAvi(good);
+    const good_path = tmp.dir.realpathAlloc(std.testing.allocator, "good.avi") catch return;
+    defer std.testing.allocator.free(good_path);
+    var good_src = FileSource.open(good_path) catch return;
+    defer good_src.close();
+    const good_result = validateAvi(&good_src);
     try std.testing.expect(good_result.is_valid);
 
     // Corrupt width to 0
     var bad = avi;
     std.mem.writeInt(u32, bad[64..68], 0, .little);
     tmp.dir.writeFile(.{ .sub_path = "bad_w.avi", .data = &bad }) catch return;
-    const f = tmp.dir.openFile("bad_w.avi", .{}) catch return;
-    defer f.close();
-    try std.testing.expect(!validateAvi(f).is_valid);
+    const bad_path = tmp.dir.realpathAlloc(std.testing.allocator, "bad_w.avi") catch return;
+    defer std.testing.allocator.free(bad_path);
+    var bad_src = FileSource.open(bad_path) catch return;
+    defer bad_src.close();
+    try std.testing.expect(!validateAvi(&bad_src).is_valid);
 }
 
 test "FormatValidator accepts valid uncompressed SWF (FWS)" {

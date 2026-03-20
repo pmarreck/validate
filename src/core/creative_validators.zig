@@ -5,6 +5,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
@@ -20,7 +22,7 @@ const FormatValidator = format_validation.FormatValidator;
 
 // ============ Premiere Pro (.prproj) Validator ============
 
-pub fn validatePrproj(file: std.fs.File) ValidationResult {
+pub fn validatePrproj(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.prproj, .failed_to_seek, "to start");
 
     var header: [10]u8 = undefined;
@@ -62,10 +64,11 @@ pub fn validatePrproj(file: std.fs.File) ValidationResult {
 
 pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Read file
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.prproj, .failed_to_open, "PRPROJ file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     // Read header to determine format
     var header: [10]u8 = undefined;
@@ -185,7 +188,7 @@ pub fn validatePrprojFromBuffer(data: []const u8) ValidationResult {
 
 // ============ InDesign (.indd) Validator ============
 
-pub fn validateIndd(file: std.fs.File) ValidationResult {
+pub fn validateIndd(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.indd, .failed_to_seek, "to start");
 
     var header: [24]u8 = undefined;
@@ -213,10 +216,11 @@ pub fn validateIndd(file: std.fs.File) ValidationResult {
 
 pub fn validateInddDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.indd, .failed_to_open, "INDD file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     // Structural validation is all we can do for proprietary format
     const result = validateIndd(file);
@@ -246,7 +250,7 @@ pub fn validateInddFromBuffer(data: []const u8) ValidationResult {
 
 // ============ IDML Validator ============
 
-pub fn validateIdml(file: std.fs.File) ValidationResult {
+pub fn validateIdml(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.idml, .failed_to_seek, "to start");
 
     var header: [4]u8 = undefined;
@@ -297,7 +301,7 @@ fn containsElement(content: []const u8, comptime element_name: []const u8) bool 
     return std.mem.indexOf(u8, content, search_pattern) != null;
 }
 
-pub fn validateFcpxml(file: std.fs.File) ValidationResult {
+pub fn validateFcpxml(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.fcpxml, .failed_to_seek, "to start");
 
     // Read enough for XML declaration and root element detection
@@ -329,10 +333,11 @@ pub fn validateFcpxml(file: std.fs.File) ValidationResult {
 }
 
 pub fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.fcpxml, .failed_to_open, "FCPXML file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     // First do structural validation
     const structural_result = validateFcpxml(file);
@@ -419,7 +424,7 @@ pub fn validateFcpxmlFromBuffer(data: []const u8) ValidationResult {
 
 // ============ DaVinci Resolve (.drp) Validator ============
 
-pub fn validateDrp(file: std.fs.File) ValidationResult {
+pub fn validateDrp(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.drp, .failed_to_seek, "to start");
 
     var header: [4]u8 = undefined;
@@ -449,10 +454,11 @@ pub fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Now check for project.xml in the archive
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.drp, .failed_to_open, "DRP file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.drp, .failed_to_get, "file size");
@@ -501,7 +507,7 @@ pub fn validateDrpFromBuffer(data: []const u8) ValidationResult {
 
 // ============ Sketch (.sketch) Validator ============
 
-pub fn validateSketch(file: std.fs.File) ValidationResult {
+pub fn validateSketch(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.sketch, .failed_to_seek, "to start");
 
     var header: [4]u8 = undefined;
@@ -531,10 +537,11 @@ pub fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResu
     }
 
     // Now check for required Sketch files in the archive
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.sketch, .failed_to_open, "Sketch file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.sketch, .failed_to_get, "file size");
@@ -588,7 +595,7 @@ pub fn validateSketchFromBuffer(data: []const u8) ValidationResult {
 
 // ============ Illustrator (.ai) Validator ============
 
-pub fn validateAi(file: std.fs.File) ValidationResult {
+pub fn validateAi(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.ai, .failed_to_seek, "to start");
 
     var header: [16]u8 = undefined;
@@ -599,9 +606,8 @@ pub fn validateAi(file: std.fs.File) ValidationResult {
 
     // Check if it's PDF-based (modern AI files)
     if (std.mem.startsWith(u8, header[0..bytes_read], "%PDF-")) {
-        // Delegate to PDF validator
-        file.seekTo(0) catch return ValidationResult.invalidCode(.ai, .failed_to_seek, "to start");
-        const pdf_result = pdf_validator.validatePdf(file);
+        // Delegate to PDF buffer validator for structural check
+        const pdf_result = pdf_validator.validatePdfFromBuffer(header[0..bytes_read]);
         // Return AI format but with PDF validation result
         return ValidationResult{
             .format = .ai,
@@ -626,14 +632,15 @@ pub fn validateAi(file: std.fs.File) ValidationResult {
 }
 
 pub fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.ai, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.ai, "Access denied"),
             else => ValidationResult.invalidCode(.ai, .failed_to_open, "file"),
         };
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     var header: [16]u8 = undefined;
     const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.ai, .failed_to_read, "header");
@@ -690,7 +697,7 @@ pub fn validateAiFromBuffer(data: []const u8) ValidationResult {
 
 // ============ EPS / PostScript Validator ============
 
-pub fn validateEps(file: std.fs.File) ValidationResult {
+pub fn validateEps(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.eps, .failed_to_seek, "to start");
 
     var header: [16]u8 = undefined;
@@ -725,14 +732,15 @@ pub fn validateEps(file: std.fs.File) ValidationResult {
 
 pub fn validateEpsDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.eps, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.eps, "Access denied"),
             else => ValidationResult.invalidCode(.eps, .failed_to_open, "file"),
         };
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     // EPS is PostScript-based, structural validation is the best we can do
     const basic_result = validateEps(file);
@@ -774,7 +782,7 @@ pub fn validateEpsFromBuffer(data: []const u8) ValidationResult {
 }
 
 /// Shared PostScript structural validator (used by both AI and EPS)
-pub fn validatePostScript(file: std.fs.File, format: FileFormat) ValidationResult {
+pub fn validatePostScript(file: *FileSource, format: FileFormat) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(format, .failed_to_get, "file size");
     if (file_size < 20) {
         return ValidationResult.invalidCode(format, .file_too_small, "valid PostScript");
@@ -836,7 +844,7 @@ pub fn validatePostScript(file: std.fs.File, format: FileFormat) ValidationResul
 
 // ============ After Effects (.aep) Validator ============
 
-pub fn validateAep(file: std.fs.File) ValidationResult {
+pub fn validateAep(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.aep, .failed_to_seek, "to start");
 
     var header: [12]u8 = undefined;
@@ -914,14 +922,15 @@ pub fn validateAep(file: std.fs.File) ValidationResult {
 
 pub fn validateAepDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalid(.aep, "File not found"),
             error.AccessDenied => ValidationResult.invalid(.aep, "Access denied"),
             else => ValidationResult.invalidCode(.aep, .failed_to_open, "file"),
         };
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     // AEP uses RIFX which doesn't have internal checksums
     // Structural validation is the best we can do
@@ -966,25 +975,25 @@ const testing = std.testing;
 // ---------- Ground truth file-based tests ----------
 
 test "validateEps accepts ground truth EPS" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/eps/sample.eps", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateEps(file);
+    var source = FileSource.open("ground_truth_examples/eps/sample.eps") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateEps(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.eps, result.format);
 }
 
 test "validateFcpxml accepts ground truth FCPXML" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/fcpxml/sample.fcpxml", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateFcpxml(file);
+    var source = FileSource.open("ground_truth_examples/fcpxml/sample.fcpxml") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateFcpxml(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.fcpxml, result.format);
 }
 
 test "validatePrproj accepts ground truth PRPROJ" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/prproj/sample.prproj", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validatePrproj(file);
+    var source = FileSource.open("ground_truth_examples/prproj/sample.prproj") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validatePrproj(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.prproj, result.format);
 }
@@ -996,9 +1005,11 @@ test "validateEps rejects garbage file" {
     defer tmp.cleanup();
     const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
     tmp.dir.writeFile(.{ .sub_path = "bad.eps", .data = &garbage }) catch return;
-    const file = tmp.dir.openFile("bad.eps", .{}) catch return;
-    defer file.close();
-    const result = validateEps(file);
+    const path = tmp.dir.realpathAlloc(testing.allocator, "bad.eps") catch return;
+    defer testing.allocator.free(path);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateEps(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -1007,9 +1018,11 @@ test "validateFcpxml rejects garbage file" {
     defer tmp.cleanup();
     const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
     tmp.dir.writeFile(.{ .sub_path = "bad.fcpxml", .data = &garbage }) catch return;
-    const file = tmp.dir.openFile("bad.fcpxml", .{}) catch return;
-    defer file.close();
-    const result = validateFcpxml(file);
+    const path = tmp.dir.realpathAlloc(testing.allocator, "bad.fcpxml") catch return;
+    defer testing.allocator.free(path);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateFcpxml(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -1018,9 +1031,11 @@ test "validatePrproj rejects garbage file" {
     defer tmp.cleanup();
     const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
     tmp.dir.writeFile(.{ .sub_path = "bad.prproj", .data = &garbage }) catch return;
-    const file = tmp.dir.openFile("bad.prproj", .{}) catch return;
-    defer file.close();
-    const result = validatePrproj(file);
+    const path = tmp.dir.realpathAlloc(testing.allocator, "bad.prproj") catch return;
+    defer testing.allocator.free(path);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validatePrproj(&source);
     try testing.expect(!result.is_valid);
 }
 

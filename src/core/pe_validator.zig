@@ -4,19 +4,21 @@
 //! DOS header (MZ), PE signature, COFF header, optional header, and section table.
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const errmsg = @import("error_messages.zig");
 const ValidationResult = format_validation.ValidationResult;
 
 /// Validate Windows PE (Portable Executable) format (.exe, .dll, .sys, etc.)
 /// Performs deep structural validation of the PE headers and section table.
-pub fn validatePe(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch {
+pub fn validatePe(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.pe, .failed_to_stat, "file");
     };
 
     // Minimum size: DOS header (64) + PE sig (4) + COFF header (20) + minimal opt header
-    if (stat.size < 128) {
+    if (file_size < 128) {
         return ValidationResult.invalidCode(.pe, .file_too_small, "PE format");
     }
 
@@ -48,7 +50,7 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
         return ValidationResult.invalidCode(.pe, .invalid_value, "PE header offset");
     }
 
-    if (pe_offset + 24 > stat.size) {
+    if (pe_offset + 24 > file_size) {
         return ValidationResult.invalidCodeMsg(.pe, .exceeds_bounds, "PE header offset", "PE header offset exceeds file size");
     }
 
@@ -59,7 +61,7 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
 
     // Read PE signature (4) + COFF header (20) + start of optional header (enough for magic)
     var pe_header: [256]u8 = undefined;
-    const header_size = @min(256, stat.size - pe_offset);
+    const header_size = @min(256, file_size - pe_offset);
     const pe_bytes = file.read(pe_header[0..@intCast(header_size)]) catch {
         return ValidationResult.invalidCode(.pe, .failed_to_read, "PE header");
     };
@@ -158,7 +160,7 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
     const section_table_offset: u64 = pe_offset + 24 + optional_header_size;
     const section_table_size: u64 = @as(u64, num_sections) * 40; // Each section header is 40 bytes
 
-    if (section_table_offset + section_table_size > stat.size) {
+    if (section_table_offset + section_table_size > file_size) {
         return ValidationResult.invalidCodeMsg(.pe, .exceeds_bounds, "Section table", "Section table exceeds file size");
     }
 
@@ -205,7 +207,7 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
         // Validate section data doesn't exceed file
         if (size_of_raw_data > 0 and pointer_to_raw_data > 0) {
             const section_end = @as(u64, pointer_to_raw_data) + @as(u64, size_of_raw_data);
-            if (section_end > stat.size) {
+            if (section_end > file_size) {
                 return ValidationResult.invalidCodeMsg(.pe, .exceeds_bounds, "Section data", "Section data exceeds file bounds");
             }
         }
@@ -220,9 +222,9 @@ pub fn validatePe(file: std.fs.File) ValidationResult {
 // -- Tests ------------------------------------------------------------------
 
 test "validatePe with ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/pe/sample.exe", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validatePe(file);
+    var source = FileSource.open("ground_truth_examples/pe/sample.exe") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validatePe(&source);
     try std.testing.expect(result.is_valid);
 }
 
@@ -240,9 +242,9 @@ test "validatePe with truncated PE" {
     }
     defer std.fs.deleteFileAbsolute(full_path) catch {};
 
-    const file = std.fs.openFileAbsolute(full_path, .{}) catch return;
-    defer file.close();
-    const result = validatePe(file);
+    var source = FileSource.open(full_path) catch return;
+    defer source.close();
+    const result = validatePe(&source);
     try std.testing.expect(!result.is_valid);
 }
 
@@ -266,8 +268,8 @@ test "validatePe with invalid magic" {
     }
     defer std.fs.deleteFileAbsolute(full_path) catch {};
 
-    const file = std.fs.openFileAbsolute(full_path, .{}) catch return;
-    defer file.close();
-    const result = validatePe(file);
+    var source = FileSource.open(full_path) catch return;
+    defer source.close();
+    const result = validatePe(&source);
     try std.testing.expect(!result.is_valid);
 }

@@ -18,6 +18,8 @@
 //! verifies CRCs when present, otherwise validates frame structure.
 
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
 
 /// Result of MP3 deep validation
@@ -261,7 +263,7 @@ fn computeLayerCrc(header_23: [2]u8, alloc_data: []const u8, alloc_bits: usize) 
 
 /// Validate MP3 file with CRC verification.
 /// Returns result with frame and CRC statistics.
-pub fn validateMp3Crc(file: std.fs.File) Mp3ValidationResult {
+pub fn validateMp3Crc(file: *FileSource) Mp3ValidationResult {
     var frames_checked: u32 = 0;
     var frames_with_crc: u32 = 0;
     var crc_verified: u32 = 0;
@@ -456,11 +458,11 @@ pub fn validateMp3Crc(file: std.fs.File) Mp3ValidationResult {
 
 /// Validate MP3 CRCs from a file path.
 pub fn validateMp3CrcPath(path: []const u8) Mp3ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return Mp3ValidationResult.invalid(errmsg.failedToOpen("file"), 0, 0);
     };
-    defer file.close();
-    return validateMp3Crc(file);
+    defer source.close();
+    return validateMp3Crc(&source);
 }
 
 // ============ Tests ============

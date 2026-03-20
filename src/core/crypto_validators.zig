@@ -1,5 +1,7 @@
 const std = @import("std");
 const format_validation = @import("format_validation.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const Allocator = std.mem.Allocator;
@@ -89,7 +91,7 @@ fn isBase64Byte(b: u8) bool {
 }
 
 /// Structural PEM validation: verify BEGIN/END markers and base64 content.
-pub fn validatePem(file: std.fs.File) ValidationResult {
+pub fn validatePem(file: *FileSource) ValidationResult {
 	var buf: [8192]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.pem, .failed_to_seek, "PEM header");
@@ -163,23 +165,23 @@ pub fn validatePem(file: std.fs.File) ValidationResult {
 
 /// Deep PEM validation: decode base64, parse inner ASN.1 DER structure.
 pub fn validatePemDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	var source = FileSource.open(path) catch {
 		return ValidationResult.invalidCode(.pem, .failed_to_read, "PEM file");
 	};
-	defer file.close();
+	defer source.close();
 
-	const stat = file.stat() catch {
+	const file_sz = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.pem, .failed_to_read, "PEM file stat");
 	};
-	if (stat.size > 10 * 1024 * 1024) {
+	if (file_sz > 10 * 1024 * 1024) {
 		return ValidationResult.invalid(.pem, "PEM file too large (>10MB)");
 	}
 
-	const data = allocator.alloc(u8, @intCast(stat.size)) catch {
+	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
 		return ValidationResult.invalidCode(.pem, .out_of_memory, "PEM file");
 	};
 	defer allocator.free(data);
-	const bytes_read = file.readAll(data) catch {
+	const bytes_read = source.readAll(data) catch {
 		return ValidationResult.invalidCode(.pem, .failed_to_read, "PEM file");
 	};
 	const file_data = data[0..bytes_read];
@@ -307,7 +309,7 @@ pub fn validatePemDeep(allocator: Allocator, path: []const u8) ValidationResult 
 // ========== DER Validator ==========
 
 /// Structural DER validation: verify ASN.1 SEQUENCE tag and length.
-pub fn validateDer(file: std.fs.File) ValidationResult {
+pub fn validateDer(file: *FileSource) ValidationResult {
 	var buf: [4096]u8 = undefined;
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCode(.der, .failed_to_seek, "DER header");
@@ -331,15 +333,15 @@ pub fn validateDer(file: std.fs.File) ValidationResult {
 	};
 
 	// Verify declared length is consistent with file size
-	const stat = file.stat() catch {
+	const file_sz = file.getEndPos() catch {
 		return ValidationResult.invalidCode(.der, .failed_to_read, "DER file stat");
 	};
-	if (tlv.total_len != stat.size) {
+	if (tlv.total_len != file_sz) {
 		// Allow up to a few trailing bytes (some tools append newlines)
-		if (tlv.total_len > stat.size) {
+		if (tlv.total_len > file_sz) {
 			return ValidationResult.invalid(.der, "ASN.1 declared length exceeds file size");
 		}
-		if (stat.size - tlv.total_len > 2) {
+		if (file_sz - tlv.total_len > 2) {
 			return ValidationResult.invalid(.der, "Significant trailing data after ASN.1 structure");
 		}
 	}
@@ -349,26 +351,26 @@ pub fn validateDer(file: std.fs.File) ValidationResult {
 
 /// Deep DER validation: recursively verify all ASN.1 TLV structures.
 pub fn validateDerDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	var source = FileSource.open(path) catch {
 		return ValidationResult.invalidCode(.der, .failed_to_read, "DER file");
 	};
-	defer file.close();
+	defer source.close();
 
-	const stat = file.stat() catch {
+	const file_sz = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.der, .failed_to_read, "DER file stat");
 	};
-	if (stat.size > 10 * 1024 * 1024) {
+	if (file_sz > 10 * 1024 * 1024) {
 		return ValidationResult.invalid(.der, "DER file too large (>10MB)");
 	}
-	if (stat.size < 2) {
+	if (file_sz < 2) {
 		return ValidationResult.invalid(.der, "File too small for DER format");
 	}
 
-	const data = allocator.alloc(u8, @intCast(stat.size)) catch {
+	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
 		return ValidationResult.invalidCode(.der, .out_of_memory, "DER file");
 	};
 	defer allocator.free(data);
-	const bytes_read = file.readAll(data) catch {
+	const bytes_read = source.readAll(data) catch {
 		return ValidationResult.invalidCode(.der, .failed_to_read, "DER file");
 	};
 	const file_data = data[0..bytes_read];
@@ -413,10 +415,12 @@ test "PEM structural: valid certificate" {
 	tmp_file.writeAll(pem_content) catch unreachable;
 	tmp_file.close();
 
-	const file = tmp_dir.dir.openFile("test.pem", .{}) catch unreachable;
-	defer file.close();
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("test.pem", &real_path_buf) catch unreachable;
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
 
-	const result = validatePem(file);
+	const result = validatePem(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.pem, result.format);
 }
@@ -454,10 +458,12 @@ test "DER structural: valid ASN.1 sequence" {
 	tmp_file.writeAll(&der_data) catch unreachable;
 	tmp_file.close();
 
-	const file = tmp_dir.dir.openFile("test.der", .{}) catch unreachable;
-	defer file.close();
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("test.der", &real_path_buf) catch unreachable;
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
 
-	const result = validateDer(file);
+	const result = validateDer(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.der, result.format);
 }
@@ -472,10 +478,12 @@ test "PEM structural: invalid base64 rejected" {
 	tmp_file.writeAll(pem_content) catch unreachable;
 	tmp_file.close();
 
-	const file = tmp_dir.dir.openFile("bad.pem", .{}) catch unreachable;
-	defer file.close();
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("bad.pem", &real_path_buf) catch unreachable;
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
 
-	const result = validatePem(file);
+	const result = validatePem(&source);
 	try std.testing.expect(!result.is_valid);
 	try std.testing.expectEqual(FileFormat.pem, result.format);
 }
@@ -512,10 +520,12 @@ test "DER structural: rejects non-SEQUENCE" {
 	tmp_file.writeAll(&der_data) catch unreachable;
 	tmp_file.close();
 
-	const file = tmp_dir.dir.openFile("bad.der", .{}) catch unreachable;
-	defer file.close();
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("bad.der", &real_path_buf) catch unreachable;
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
 
-	const result = validateDer(file);
+	const result = validateDer(&source);
 	try std.testing.expect(!result.is_valid);
 }
 

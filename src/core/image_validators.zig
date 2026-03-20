@@ -4,6 +4,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
@@ -36,11 +38,11 @@ pub const PNG_IHDR: u32 = 0x49484452; // IHDR
 pub const PNG_IEND: u32 = 0x49454E44; // IEND
 
 /// Validate PNG file structure.
-pub fn validatePng(file: std.fs.File) ValidationResult {
+pub fn validatePng(file: *FileSource) ValidationResult {
     return validatePngWithOptions(file, false);
 }
 
-pub fn validatePngWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
+pub fn validatePngWithOptions(file: *FileSource, skip_magic: bool) ValidationResult {
     // Check PNG signature (or skip past it if skip_magic is set)
     var signature: [8]u8 = undefined;
     _ = file.read(&signature) catch return ValidationResult.invalidCode(.png, .failed_to_read, "PNG signature");
@@ -123,11 +125,11 @@ fn debugLog(comptime fmt: []const u8, args: anytype) void {
 // ============ JPEG Validator ============
 
 /// Validate JPEG file structure.
-pub fn validateJpeg(file: std.fs.File) ValidationResult {
+pub fn validateJpeg(file: *FileSource) ValidationResult {
     return validateJpegWithOptions(file, false);
 }
 
-pub fn validateJpegWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
+pub fn validateJpegWithOptions(file: *FileSource, skip_magic: bool) ValidationResult {
     // Check SOI marker (or skip past it if skip_magic is set)
     var header: [2]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.jpeg, .failed_to_read, "JPEG header");
@@ -357,7 +359,7 @@ pub fn validateJpegWithOptions(file: std.fs.File, skip_magic: bool) ValidationRe
 // ============ SVG Validator ============
 
 /// Validate SVG (XML-based vector graphics) file structure.
-pub fn validateSvg(file: std.fs.File) ValidationResult {
+pub fn validateSvg(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.svg, .failed_to_seek, "to start");
 
     // Read enough to find <?xml or <svg
@@ -407,12 +409,12 @@ const stripDoctypeDeclaration = format_validation.stripDoctypeDeclaration;
 
 /// Deep validation for SVG files using full XML parsing.
 pub fn validateSvgDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.svg, .failed_to_open, "SVG file");
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.svg, .failed_to_get, "file size");
     };
 
@@ -425,7 +427,7 @@ pub fn validateSvgDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCode(.svg, .failed_to_read, "file");
     };
     if (bytes_read != file_size) {
@@ -476,7 +478,7 @@ pub fn validateSvgDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Validate JPEG XL file structure.
 /// Supports both naked codestream (FF 0A) and ISO BMFF container formats.
-pub fn validateJxl(file: std.fs.File) ValidationResult {
+pub fn validateJxl(file: *FileSource) ValidationResult {
     var header: [12]u8 = undefined;
     const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.jxl, .failed_to_read, "JXL header");
 
@@ -505,11 +507,11 @@ pub fn validateJxl(file: std.fs.File) ValidationResult {
 // ============ GIF Validator ============
 
 /// Validate GIF file structure.
-pub fn validateGif(file: std.fs.File) ValidationResult {
+pub fn validateGif(file: *FileSource) ValidationResult {
     return validateGifWithOptions(file, false);
 }
 
-pub fn validateGifWithOptions(file: std.fs.File, skip_magic: bool) ValidationResult {
+pub fn validateGifWithOptions(file: *FileSource, skip_magic: bool) ValidationResult {
     // Check header (GIF87a or GIF89a) - or skip past it if skip_magic is set
     var header: [6]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.gif, .failed_to_read, "GIF header");
@@ -544,7 +546,7 @@ pub fn validateGifWithOptions(file: std.fs.File, skip_magic: bool) ValidationRes
         const remaining = file_size - scanned;
         const to_read: usize = @min(chunk_size, @as(usize, @intCast(remaining)));
 
-        file.seekFromEnd(-@as(i64, @intCast(scanned + to_read))) catch {
+        file.seekTo(file_size - (scanned + to_read)) catch {
             return ValidationResult.invalidCode(.gif, .failed_to_seek, "in GIF data");
         };
 
@@ -575,7 +577,7 @@ pub fn validateGifWithOptions(file: std.fs.File, skip_magic: bool) ValidationRes
 // ============ BMP Validator ============
 
 /// Validate BMP file structure.
-pub fn validateBmp(file: std.fs.File) ValidationResult {
+pub fn validateBmp(file: *FileSource) ValidationResult {
     var header: [54]u8 = undefined; // Minimum BMP header size
     const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.bmp, .failed_to_read, "BMP header");
 
@@ -675,7 +677,7 @@ pub fn validateBmp(file: std.fs.File) ValidationResult {
 // ============ WebP Validator ============
 
 /// Validate WebP file structure (RIFF container with VP8/VP8L/VP8X chunks).
-pub fn validateWebp(file: std.fs.File) ValidationResult {
+pub fn validateWebp(file: *FileSource) ValidationResult {
     var header: [12]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.webp, .failed_to_read, "WebP header");
 
@@ -761,7 +763,7 @@ pub fn validateWebp(file: std.fs.File) ValidationResult {
 // ============ TIFF Validator ============
 
 /// Validate TIFF file structure (also used for RAW formats).
-pub fn validateTiff(file: std.fs.File, format: FileFormat) ValidationResult {
+pub fn validateTiff(file: *FileSource, format: FileFormat) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
 
     var header: [8]u8 = undefined;
@@ -827,7 +829,7 @@ pub fn validateTiff(file: std.fs.File, format: FileFormat) ValidationResult {
 
 /// Validate OpenEXR file structure.
 /// OpenEXR files have magic bytes 76 2F 31 01 (little-endian 20000630).
-pub fn validateExr(file: std.fs.File) ValidationResult {
+pub fn validateExr(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.exr, .failed_to_seek, "to start");
 
     var header: [8]u8 = undefined;
@@ -870,19 +872,19 @@ pub fn validateExr(file: std.fs.File) ValidationResult {
 /// Required attributes per OpenEXR spec: channels, compression, dataWindow, displayWindow,
 /// lineOrder, pixelAspectRatio, screenWindowCenter, screenWindowWidth.
 pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.exr, .failed_to_open, "EXR file");
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.exr, .failed_to_get, "file size");
     };
 
     // Read and validate header
     var header: [8]u8 = undefined;
-    file.seekTo(0) catch return ValidationResult.invalidCode(.exr, .failed_to_seek, "to start");
-    _ = file.read(&header) catch return ValidationResult.invalidCode(.exr, .failed_to_read, "header");
+    source.seekTo(0) catch return ValidationResult.invalidCode(.exr, .failed_to_seek, "to start");
+    _ = source.read(&header) catch return ValidationResult.invalidCode(.exr, .failed_to_read, "header");
 
     if (header[0] != 0x76 or header[1] != 0x2f or header[2] != 0x31 or header[3] != 0x01) {
         return ValidationResult.invalidCode(.exr, .invalid_magic, "EXR");
@@ -901,7 +903,7 @@ pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult 
     var data_window_max_y: i32 = 0;
 
     // Parse header attributes
-    file.seekTo(8) catch return ValidationResult.invalidCode(.exr, .failed_to_seek, "past magic");
+    source.seekTo(8) catch return ValidationResult.invalidCode(.exr, .failed_to_seek, "past magic");
 
     var name_buf: [256]u8 = undefined;
     var type_buf: [256]u8 = undefined;
@@ -911,7 +913,7 @@ pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult 
         // Read attribute name
         var name_len: usize = 0;
         while (name_len < 255) {
-            const byte_read = file.read(name_buf[name_len .. name_len + 1]) catch break;
+            const byte_read = source.read(name_buf[name_len .. name_len + 1]) catch break;
             if (byte_read == 0) break;
             if (name_buf[name_len] == 0) break;
             name_len += 1;
@@ -924,7 +926,7 @@ pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult 
         // Read attribute type
         var type_len: usize = 0;
         while (type_len < 255) {
-            const byte_read = file.read(type_buf[type_len .. type_len + 1]) catch break;
+            const byte_read = source.read(type_buf[type_len .. type_len + 1]) catch break;
             if (byte_read == 0) break;
             if (type_buf[type_len] == 0) break;
             type_len += 1;
@@ -932,7 +934,7 @@ pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         // Read attribute size
         var size_bytes: [4]u8 = undefined;
-        _ = file.read(&size_bytes) catch break;
+        _ = source.read(&size_bytes) catch break;
         const attr_size: u32 = @bitCast(std.mem.readInt(i32, &size_bytes, .little));
 
         if (attr_size > 16 * 1024 * 1024) {
@@ -941,11 +943,11 @@ pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         // Read attribute value for specific attributes
         const read_size = @min(attr_size, 128);
-        _ = file.read(attr_value[0..read_size]) catch break;
+        _ = source.read(attr_value[0..read_size]) catch break;
 
         // Skip remainder if attribute is larger
         if (attr_size > 128) {
-            file.seekBy(@intCast(attr_size - 128)) catch break;
+            source.seekBy(@intCast(attr_size - 128)) catch break;
         }
 
         if (std.mem.eql(u8, attr_name, "channels")) has_channels = true;
@@ -970,7 +972,7 @@ pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Get position after header (this is where offset table starts)
-    const offset_table_pos = file.getPos() catch {
+    const offset_table_pos = source.getPos() catch {
         return ValidationResult.invalidCode(.exr, .failed_to_get, "offset table position");
     };
 
@@ -1014,7 +1016,7 @@ pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     for (offsets) |*offset| {
         var offset_bytes: [8]u8 = undefined;
-        _ = file.read(&offset_bytes) catch {
+        _ = source.read(&offset_bytes) catch {
             return ValidationResult.invalidCode(.exr, .failed_to_read, "offset table");
         };
         offset.* = std.mem.readInt(u64, &offset_bytes, .little);
@@ -1038,13 +1040,13 @@ pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Validate ALL scanline blocks: check data size bounds and decompress if ZIP/ZIPS
     for (offsets, 0..) |offset, chunk_idx| {
-        file.seekTo(offset) catch {
+        source.seekTo(offset) catch {
             return ValidationResult.invalidCode(.exr, .failed_to_seek, "scanline block");
         };
 
         // Read scanline block header: y coordinate (4 bytes) + pixel data size (4 bytes)
         var block_header: [8]u8 = undefined;
-        const hdr_read = file.readAll(&block_header) catch {
+        const hdr_read = source.readAll(&block_header) catch {
             return ValidationResult.invalidCode(.exr, .failed_to_read, "scanline block header");
         };
         if (hdr_read < 8) {
@@ -1077,7 +1079,7 @@ pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult 
             };
             defer allocator.free(compressed);
 
-            const bytes_read = file.readAll(compressed) catch {
+            const bytes_read = source.readAll(compressed) catch {
                 return ValidationResult.invalidCode(.exr, .failed_to_read, "scanline block data");
             };
             if (bytes_read != pixel_data_size) {
@@ -1138,7 +1140,7 @@ pub const PsdColorMode = enum(u16) {
 
 /// Validate PSD/PSB file structure.
 /// PSD uses big-endian byte order throughout.
-pub fn validatePsd(file: std.fs.File) ValidationResult {
+pub fn validatePsd(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.psd, .failed_to_seek, "to start");
 
     // Read header (26 bytes)
@@ -1269,22 +1271,22 @@ pub fn validatePsd(file: std.fs.File) ValidationResult {
 
 /// Deep validation of PSD file - fully parse all sections and decode image data.
 pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.psd, .failed_to_open, "file");
     };
-    defer file.close();
+    defer source.close();
 
     // First do basic validation
-    const basic = validatePsd(file);
+    const basic = validatePsd(&source);
     if (!basic.is_valid) {
         return basic;
     }
 
-    file.seekTo(0) catch return ValidationResult.invalidCode(.psd, .failed_to_seek, "to start");
+    source.seekTo(0) catch return ValidationResult.invalidCode(.psd, .failed_to_seek, "to start");
 
     // Re-read header
     var header: [26]u8 = undefined;
-    _ = file.read(&header) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "header");
+    _ = source.read(&header) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "header");
 
     const version = std.mem.readInt(u16, header[4..6], .big);
     const is_psb = version == 2;
@@ -1293,30 +1295,30 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
     const width = std.mem.readInt(u32, header[18..22], .big);
     const depth = std.mem.readInt(u16, header[22..24], .big);
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.psd, .failed_to_get, "file size");
     };
 
     // ---- Skip Color Mode Data ----
     var color_mode_len_buf: [4]u8 = undefined;
-    _ = file.read(&color_mode_len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "color mode length");
+    _ = source.read(&color_mode_len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "color mode length");
     const color_mode_len = std.mem.readInt(u32, &color_mode_len_buf, .big);
-    file.seekBy(@intCast(color_mode_len)) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "color mode data");
+    source.seekBy(@intCast(color_mode_len)) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "color mode data");
 
     // ---- Parse Image Resources Section (8BIM blocks) ----
     var img_res_len_buf: [4]u8 = undefined;
-    _ = file.read(&img_res_len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "image resources length");
+    _ = source.read(&img_res_len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "image resources length");
     const img_res_len = std.mem.readInt(u32, &img_res_len_buf, .big);
 
-    const img_res_start = file.getPos() catch return ValidationResult.invalidCode(.psd, .failed_to_get, "position");
+    const img_res_start = source.getPos() catch return ValidationResult.invalidCode(.psd, .failed_to_get, "position");
     const img_res_end = img_res_start + img_res_len;
 
     // Parse all 8BIM resource blocks
     var resource_count: u32 = 0;
-    while (file.getPos() catch 0 < img_res_end) {
+    while (source.getPos() catch 0 < img_res_end) {
         // Read resource signature (should be "8BIM")
         var sig: [4]u8 = undefined;
-        const sig_bytes = file.read(&sig) catch break;
+        const sig_bytes = source.read(&sig) catch break;
         if (sig_bytes < 4) break;
 
         if (!std.mem.eql(u8, &sig, "8BIM")) {
@@ -1328,24 +1330,24 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         // Resource ID (2 bytes)
         var id_buf: [2]u8 = undefined;
-        _ = file.read(&id_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "resource ID");
+        _ = source.read(&id_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "resource ID");
 
         // Pascal string (1 byte length + string, padded to even)
         var name_len_buf: [1]u8 = undefined;
-        _ = file.read(&name_len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "resource name length");
+        _ = source.read(&name_len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "resource name length");
         const name_len = name_len_buf[0];
         // Pad to even boundary: if name_len is even, we need 1 more byte padding; if odd, name itself makes it even
         const name_padded_len: u32 = if (name_len % 2 == 0) @as(u32, name_len) + 1 else @as(u32, name_len);
-        file.seekBy(@intCast(name_padded_len)) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "resource name");
+        source.seekBy(@intCast(name_padded_len)) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "resource name");
 
         // Resource data length (4 bytes)
         var data_len_buf: [4]u8 = undefined;
-        _ = file.read(&data_len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "resource data length");
+        _ = source.read(&data_len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "resource data length");
         const data_len = std.mem.readInt(u32, &data_len_buf, .big);
 
         // Pad to even boundary
         const data_padded_len = (data_len + 1) & ~@as(u32, 1);
-        file.seekBy(@intCast(data_padded_len)) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "resource data");
+        source.seekBy(@intCast(data_padded_len)) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "resource data");
 
         resource_count += 1;
         if (resource_count > 10000) {
@@ -1354,21 +1356,21 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Seek to end of image resources section
-    file.seekTo(img_res_end) catch return ValidationResult.invalidCode(.psd, .failed_to_seek, "past image resources");
+    source.seekTo(img_res_end) catch return ValidationResult.invalidCode(.psd, .failed_to_seek, "past image resources");
 
     // ---- Parse Layer and Mask Information ----
     var layer_mask_len: u64 = 0;
     if (is_psb) {
         var len_buf: [8]u8 = undefined;
-        _ = file.read(&len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer/mask length");
+        _ = source.read(&len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer/mask length");
         layer_mask_len = std.mem.readInt(u64, &len_buf, .big);
     } else {
         var len_buf: [4]u8 = undefined;
-        _ = file.read(&len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer/mask length");
+        _ = source.read(&len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer/mask length");
         layer_mask_len = std.mem.readInt(u32, &len_buf, .big);
     }
 
-    const layer_section_start = file.getPos() catch return ValidationResult.invalidCode(.psd, .failed_to_get, "position");
+    const layer_section_start = source.getPos() catch return ValidationResult.invalidCode(.psd, .failed_to_get, "position");
     const layer_section_end = layer_section_start + layer_mask_len;
 
     // Parse layer info if present
@@ -1377,18 +1379,18 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
         var layer_info_len: u64 = 0;
         if (is_psb) {
             var len_buf: [8]u8 = undefined;
-            _ = file.read(&len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer info length");
+            _ = source.read(&len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer info length");
             layer_info_len = std.mem.readInt(u64, &len_buf, .big);
         } else {
             var len_buf: [4]u8 = undefined;
-            _ = file.read(&len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer info length");
+            _ = source.read(&len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer info length");
             layer_info_len = std.mem.readInt(u32, &len_buf, .big);
         }
 
         if (layer_info_len > 0) {
             // Layer count (2 bytes, can be negative for merged alpha)
             var count_buf: [2]u8 = undefined;
-            _ = file.read(&count_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer count");
+            _ = source.read(&count_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer count");
             const layer_count_raw = std.mem.readInt(i16, &count_buf, .big);
             const layer_count: u16 = @abs(layer_count_raw);
 
@@ -1397,33 +1399,33 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
             while (layer_idx < layer_count) : (layer_idx += 1) {
                 // Layer record: top, left, bottom, right (4 bytes each)
                 var bounds: [16]u8 = undefined;
-                _ = file.read(&bounds) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer bounds");
+                _ = source.read(&bounds) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer bounds");
 
                 // Number of channels
                 var ch_count_buf: [2]u8 = undefined;
-                _ = file.read(&ch_count_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer channel count");
+                _ = source.read(&ch_count_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "layer channel count");
                 const ch_count = std.mem.readInt(u16, &ch_count_buf, .big);
 
                 // Channel info (2 bytes ID + 4/8 bytes length per channel)
                 const ch_info_size: u32 = if (is_psb) 6 else 6; // Actually both are 2 + 4 for PSD
                 const ch_size: u64 = if (is_psb) 10 else 6; // PSB uses 8-byte lengths
-                file.seekBy(@intCast(ch_count * ch_size)) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "channel info");
+                source.seekBy(@intCast(ch_count * ch_size)) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "channel info");
 
                 // Blend mode signature (should be "8BIM")
                 var blend_sig: [4]u8 = undefined;
-                _ = file.read(&blend_sig) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "blend signature");
+                _ = source.read(&blend_sig) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "blend signature");
                 if (!std.mem.eql(u8, &blend_sig, "8BIM")) {
                     return ValidationResult.invalidCode(.psd, .invalid_signature, "layer blend mode");
                 }
 
                 // Blend mode key, opacity, clipping, flags, filler
-                file.seekBy(4 + 1 + 1 + 1 + 1) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "layer properties");
+                source.seekBy(4 + 1 + 1 + 1 + 1) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "layer properties");
 
                 // Extra data length
                 var extra_len_buf: [4]u8 = undefined;
-                _ = file.read(&extra_len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "extra data length");
+                _ = source.read(&extra_len_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "extra data length");
                 const extra_len = std.mem.readInt(u32, &extra_len_buf, .big);
-                file.seekBy(@intCast(extra_len)) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "extra data");
+                source.seekBy(@intCast(extra_len)) catch return ValidationResult.invalidCode(.psd, .failed_to_skip, "extra data");
 
                 _ = ch_info_size;
             }
@@ -1431,12 +1433,12 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Seek to layer section end
-    file.seekTo(layer_section_end) catch return ValidationResult.invalidCode(.psd, .failed_to_seek, "past layers");
+    source.seekTo(layer_section_end) catch return ValidationResult.invalidCode(.psd, .failed_to_seek, "past layers");
 
     // ---- Decode Image Data ----
 
     var compression_buf: [2]u8 = undefined;
-    _ = file.read(&compression_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "compression type");
+    _ = source.read(&compression_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "compression type");
     const compression = std.mem.readInt(u16, &compression_buf, .big);
 
     // Calculate expected image size
@@ -1452,7 +1454,7 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     if (compression == 0) {
         // Raw data - verify we have enough bytes
-        const remaining = file_size - (file.getPos() catch 0);
+        const remaining = file_size - (source.getPos() catch 0);
         const expected_raw = channel_size * channels;
         if (remaining < expected_raw) {
             return ValidationResult.invalidCode(.psd, .truncated, "raw image data");
@@ -1464,7 +1466,7 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
         const count_size: u64 = if (is_psb) 4 else 2;
         const counts_size = scanline_count * count_size;
 
-        const remaining = file_size - (file.getPos() catch 0);
+        const remaining = file_size - (source.getPos() catch 0);
         if (remaining < counts_size) {
             return ValidationResult.invalidCode(.psd, .truncated, "RLE byte counts");
         }
@@ -1479,18 +1481,18 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
         for (rle_counts) |*count| {
             if (is_psb) {
                 var count_buf: [4]u8 = undefined;
-                _ = file.read(&count_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "RLE count");
+                _ = source.read(&count_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "RLE count");
                 count.* = std.mem.readInt(u32, &count_buf, .big);
             } else {
                 var count_buf: [2]u8 = undefined;
-                _ = file.read(&count_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "RLE count");
+                _ = source.read(&count_buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "RLE count");
                 count.* = std.mem.readInt(u16, &count_buf, .big);
             }
             total_rle_size += count.*;
         }
 
         // Verify total RLE data fits in file
-        const rle_start = file.getPos() catch 0;
+        const rle_start = source.getPos() catch 0;
         if (rle_start + total_rle_size > file_size) {
             return ValidationResult.invalidCode(.psd, .truncated, "RLE compressed data");
         }
@@ -1509,7 +1511,7 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
             // Read the compressed data for this scanline
             const read_len: usize = @min(@as(usize, compressed_len), max_rle_buf);
-            const bytes_got = file.read(rle_buf[0..read_len]) catch {
+            const bytes_got = source.read(rle_buf[0..read_len]) catch {
                 return ValidationResult.invalidCode(.psd, .failed_to_read, "RLE scanline data");
             };
             if (bytes_got < read_len) {
@@ -1518,7 +1520,7 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
             // If compressed data exceeded our buffer, skip the rest
             if (compressed_len > max_rle_buf) {
-                file.seekBy(@intCast(compressed_len - max_rle_buf)) catch {
+                source.seekBy(@intCast(compressed_len - max_rle_buf)) catch {
                     return ValidationResult.invalidCode(.psd, .failed_to_seek, "past large RLE scanline");
                 };
             }
@@ -1569,7 +1571,7 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
         }
     } else if (compression == 2 or compression == 3) {
         // ZIP compression (2 = ZIP without prediction, 3 = ZIP with prediction)
-        const zip_data_start = file.getPos() catch {
+        const zip_data_start = source.getPos() catch {
             return ValidationResult.invalidCode(.psd, .failed_to_get, "ZIP data position");
         };
         const remaining = file_size - zip_data_start;
@@ -1584,7 +1586,7 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
         };
         defer allocator.free(compressed_data);
 
-        const bytes_read = file.readAll(compressed_data) catch {
+        const bytes_read = source.readAll(compressed_data) catch {
             return ValidationResult.invalidCode(.psd, .failed_to_read, "ZIP compressed data");
         };
 
@@ -1721,7 +1723,7 @@ pub fn validatePsdFromBuffer(data: []const u8) ValidationResult {
 /// Validate JPEG2000 file structure (.jp2 container or .j2k/.j2c codestream).
 /// JP2 container: starts with 00 00 00 0C 6A 50 20 20 (jP box)
 /// J2K codestream: starts with FF 4F FF 51 (SOC + SIZ markers)
-pub fn validateJpeg2000(file: std.fs.File) ValidationResult {
+pub fn validateJpeg2000(file: *FileSource) ValidationResult {
     var header: [12]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.jpeg2000, .failed_to_read, "JPEG2000 header");
@@ -1760,7 +1762,7 @@ pub fn validateJpeg2000(file: std.fs.File) ValidationResult {
 
 /// Validate standalone JBIG2 file structure (.jbig2, .jb2).
 /// JBIG2 files have signature: 97 4A 42 32 0D 0A 1A 0A (0x97 "JB2" CR LF SUB LF)
-pub fn validateJbig2File(file: std.fs.File) ValidationResult {
+pub fn validateJbig2File(file: *FileSource) ValidationResult {
     var header: [8]u8 = undefined;
     const bytes_read = file.read(&header) catch {
         return ValidationResult.invalidCode(.jbig2, .failed_to_read, "JBIG2 header");
@@ -1805,12 +1807,12 @@ pub fn validateJpegDeep(allocator: Allocator, path: []const u8) ValidationResult
 pub fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Phase 1: Structural validation — walk the entire GIF block/sub-block chain.
     // This catches corruption that zigimg's lenient LZW decoder would silently accept.
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidWithDepth(.gif, "File not found", .full);
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.gif, .failed_to_get, "file size");
     };
 
@@ -1823,8 +1825,8 @@ pub fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
     defer allocator.free(data);
 
-    file.seekTo(0) catch return ValidationResult.invalidCode(.gif, .failed_to_seek, "to start");
-    const bytes_read = file.readAll(data) catch {
+    source.seekTo(0) catch return ValidationResult.invalidCode(.gif, .failed_to_seek, "to start");
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCode(.gif, .failed_to_read, "GIF data");
     };
 
@@ -2079,12 +2081,12 @@ pub fn checkTiffTagSupport(path: []const u8) TiffTagCheckResult {
     var compression: u16 = 0;
     var bits_per_sample: u16 = 0;
 
-    const file = std.fs.cwd().openFile(path, .{}) catch return result;
-    defer file.close();
+    var source = FileSource.open(path) catch return result;
+    defer source.close();
 
     // Read TIFF header
     var header: [8]u8 = undefined;
-    _ = file.readAll(&header) catch return result;
+    _ = source.readAll(&header) catch return result;
 
     // Check byte order
     const is_big_endian = std.mem.eql(u8, header[0..2], "MM");
@@ -2098,11 +2100,11 @@ pub fn checkTiffTagSupport(path: []const u8) TiffTagCheckResult {
         std.mem.readInt(u32, header[4..8], .little);
 
     // Seek to IFD
-    file.seekTo(ifd_offset) catch return result;
+    source.seekTo(ifd_offset) catch return result;
 
     // Read number of IFD entries
     var count_bytes: [2]u8 = undefined;
-    _ = file.readAll(&count_bytes) catch return result;
+    _ = source.readAll(&count_bytes) catch return result;
     const entry_count = if (is_big_endian)
         std.mem.readInt(u16, &count_bytes, .big)
     else
@@ -2116,7 +2118,7 @@ pub fn checkTiffTagSupport(path: []const u8) TiffTagCheckResult {
     // approach: only tags explicitly in zigimg's TagId enum are safe.
     var entry: [12]u8 = undefined;
     for (0..max_entries) |_| {
-        _ = file.readAll(&entry) catch return result;
+        _ = source.readAll(&entry) catch return result;
         const tag = if (is_big_endian)
             std.mem.readInt(u16, entry[0..2], .big)
         else
@@ -2216,18 +2218,18 @@ pub fn checkTiffTagSupport(path: []const u8) TiffTagCheckResult {
 /// Validate 1-bit TIFF with LZW compression using our pure Zig LZW decoder.
 /// zigimg's LZW decoder can't handle 1-bit images, so we do it ourselves.
 pub fn validateTiff1BitLzw(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.tiff, .failed_to_open, "TIFF file");
     };
-    defer file.close();
+    defer source.close();
 
-    const stat = file.stat() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.tiff, .failed_to_stat, "TIFF file");
     };
 
     // Read TIFF header to determine byte order
     var header: [8]u8 = undefined;
-    _ = file.readAll(&header) catch {
+    _ = source.readAll(&header) catch {
         return ValidationResult.invalidCode(.tiff, .failed_to_read, "TIFF header");
     };
 
@@ -2245,12 +2247,12 @@ pub fn validateTiff1BitLzw(allocator: Allocator, path: []const u8) ValidationRes
     const ifd_offset = std.mem.readInt(u32, header[4..8], endian);
 
     // Seek to IFD and read entry count
-    file.seekTo(ifd_offset) catch {
+    source.seekTo(ifd_offset) catch {
         return ValidationResult.invalidCode(.tiff, .failed_to_seek, "to TIFF IFD");
     };
 
     var count_bytes: [2]u8 = undefined;
-    _ = file.readAll(&count_bytes) catch {
+    _ = source.readAll(&count_bytes) catch {
         return ValidationResult.invalidCode(.tiff, .failed_to_read, "IFD entry count");
     };
     const entry_count = std.mem.readInt(u16, &count_bytes, endian);
@@ -2269,7 +2271,7 @@ pub fn validateTiff1BitLzw(allocator: Allocator, path: []const u8) ValidationRes
     var entry: [12]u8 = undefined;
 
     for (0..max_entries) |_| {
-        _ = file.readAll(&entry) catch {
+        _ = source.readAll(&entry) catch {
             return ValidationResult.invalidCode(.tiff, .failed_to_read, "IFD entry");
         };
 
@@ -2289,12 +2291,12 @@ pub fn validateTiff1BitLzw(allocator: Allocator, path: []const u8) ValidationRes
             257 => image_length = single_value, // ImageLength
             278 => rows_per_strip = single_value, // RowsPerStrip
             273 => { // StripOffsets
-                strip_offsets = readTiffTagArray(allocator, file, entry[0..12], field_type, count, endian, stat.size) catch {
+                strip_offsets = readTiffTagArray(allocator, &source, entry[0..12], field_type, count, endian, file_size) catch {
                     return ValidationResult.invalidCode(.tiff, .failed_to_read, "StripOffsets");
                 };
             },
             279 => { // StripByteCounts
-                strip_byte_counts = readTiffTagArray(allocator, file, entry[0..12], field_type, count, endian, stat.size) catch {
+                strip_byte_counts = readTiffTagArray(allocator, &source, entry[0..12], field_type, count, endian, file_size) catch {
                     return ValidationResult.invalidCode(.tiff, .failed_to_read, "StripByteCounts");
                 };
             },
@@ -2333,7 +2335,7 @@ pub fn validateTiff1BitLzw(allocator: Allocator, path: []const u8) ValidationRes
         const compressed_size = byte_counts[i];
 
         // Sanity check strip offset/size
-        if (strip_offset + compressed_size > stat.size) {
+        if (strip_offset + compressed_size > file_size) {
             return ValidationResult.invalid(.tiff, "Strip extends beyond file end");
         }
 
@@ -2343,7 +2345,7 @@ pub fn validateTiff1BitLzw(allocator: Allocator, path: []const u8) ValidationRes
         remaining_rows -|= rows_in_strip;
 
         // Read compressed strip data
-        file.seekTo(strip_offset) catch {
+        source.seekTo(strip_offset) catch {
             return ValidationResult.invalidCode(.tiff, .failed_to_seek, "to strip");
         };
 
@@ -2352,7 +2354,7 @@ pub fn validateTiff1BitLzw(allocator: Allocator, path: []const u8) ValidationRes
         };
         defer allocator.free(compressed_data);
 
-        const bytes_read = file.readAll(compressed_data) catch {
+        const bytes_read = source.readAll(compressed_data) catch {
             return ValidationResult.invalidCode(.tiff, .failed_to_read, "strip data");
         };
         if (bytes_read != compressed_size) {
@@ -2377,7 +2379,7 @@ pub fn validateTiff1BitLzw(allocator: Allocator, path: []const u8) ValidationRes
 /// Read a TIFF tag array value (StripOffsets or StripByteCounts).
 pub fn readTiffTagArray(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     entry: *const [12]u8,
     field_type: u16,
     count: u32,
@@ -2440,31 +2442,31 @@ pub fn readTiffTagArray(
 /// 2. Decode and validate each embedded JPEG preview via libjpeg-turbo
 /// 3. Check for RawImageDigest tag (MD5 of raw data) and verify if present
 pub fn validateDngDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.dng, .failed_to_open, "DNG file");
     };
-    defer file.close();
+    defer source.close();
 
-    const stat = file.stat() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.dng, .failed_to_stat, "DNG file");
     };
 
     // Read entire file for embedded JPEG scanning
     // DNG files can be large (50-100MB+) but we need to scan for JPEGs
     const max_size: usize = 500 * 1024 * 1024; // 500MB max
-    if (stat.size > max_size) {
+    if (file_size > max_size) {
         return ValidationResult.okWithWarning(.dng, "DNG too large for deep validation");
     }
 
-    const data = allocator.alloc(u8, @intCast(stat.size)) catch {
+    const data = allocator.alloc(u8, @intCast(file_size)) catch {
         return ValidationResult.okWithWarning(.dng, "DNG: out of memory for deep validation");
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCode(.dng, .failed_to_read, "DNG file");
     };
-    if (bytes_read != stat.size) {
+    if (bytes_read != file_size) {
         return ValidationResult.invalid(.dng, "DNG file read incomplete");
     }
 
@@ -2635,12 +2637,12 @@ pub fn validateJxlDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Deep JPEG2000 validation using OpenJPEG to fully decode the image.
 pub fn validateJpeg2000Deep(allocator: Allocator, path: []const u8) ValidationResult {
     // Read the file into memory for OpenJPEG
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_open, "file", .full);
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_get, "file size", .full);
     };
 
@@ -2653,7 +2655,7 @@ pub fn validateJpeg2000Deep(allocator: Allocator, path: []const u8) ValidationRe
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_read, "file", .full);
     };
 
@@ -2671,12 +2673,12 @@ pub fn validateJpeg2000Deep(allocator: Allocator, path: []const u8) ValidationRe
 /// This validates file header, segment headers, page info, and segment data.
 pub fn validateJbig2Deep(allocator: Allocator, path: []const u8) ValidationResult {
     // Read the file into memory for JBIG2 decoder
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_open, "file", .full);
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_get, "file size", .full);
     };
 
@@ -2689,7 +2691,7 @@ pub fn validateJbig2Deep(allocator: Allocator, path: []const u8) ValidationResul
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_read, "file", .full);
     };
 
@@ -2752,17 +2754,17 @@ pub fn validateAvifDeep(allocator: Allocator, path: []const u8) ValidationResult
 /// Per PNG spec, a chunk is ancillary if the first byte has bit 5 set (lowercase letter).
 pub fn validatePngDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator; // May use allocator for detailed error message in future
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.png, "File not found", .full),
             error.AccessDenied => ValidationResult.invalidWithDepth(.png, "Access denied", .full),
             else => ValidationResult.invalidCodeWithDepth(.png, .failed_to_open, "file", .full),
         };
     };
-    defer file.close();
+    defer source.close();
 
     // Skip PNG signature (8 bytes) - already validated in structural check
-    file.seekTo(8) catch {
+    source.seekTo(8) catch {
         return ValidationResult.invalidCodeWithDepth(.png, .failed_to_seek, "past signature", .full);
     };
 
@@ -2776,7 +2778,7 @@ pub fn validatePngDeep(allocator: Allocator, path: []const u8) ValidationResult 
     while (true) {
         // Read chunk header (4 bytes length + 4 bytes type)
         var chunk_header: [8]u8 = undefined;
-        const header_bytes = file.read(&chunk_header) catch |err| {
+        const header_bytes = source.read(&chunk_header) catch |err| {
             if (err == error.EndOfStream) break;
             return ValidationResult.invalidCodeWithDepth(.png, .failed_to_read, "chunk header", .full);
         };
@@ -2805,7 +2807,7 @@ pub fn validatePngDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         while (data_remaining > 0) {
             const to_read = @min(data_remaining, read_buffer.len);
-            const bytes_read = file.read(read_buffer[0..to_read]) catch |err| {
+            const bytes_read = source.read(read_buffer[0..to_read]) catch |err| {
                 if (err == error.EndOfStream) {
                     return ValidationResult.invalidWithDepth(.png, "Unexpected EOF in chunk data", .full);
                 }
@@ -2820,7 +2822,7 @@ pub fn validatePngDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         // Read stored CRC (4 bytes, big endian)
         var stored_crc_bytes: [4]u8 = undefined;
-        const crc_bytes_read = file.read(&stored_crc_bytes) catch |err| {
+        const crc_bytes_read = source.read(&stored_crc_bytes) catch |err| {
             if (err == error.EndOfStream) {
                 return ValidationResult.invalidCodeWithDepth(.png, .missing, "chunk CRC", .full);
             }
@@ -3253,12 +3255,12 @@ pub fn validateWebpFromBuffer(data: []const u8) ValidationResult {
 
 /// Validate Windows ICO icon files.
 /// ICO format: ICONDIR header + ICONDIRENTRY array + image data (BMP or PNG)
-pub fn validateIco(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch {
+pub fn validateIco(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.ico, .failed_to_stat, "file");
     };
 
-    if (stat.size < 6) {
+    if (file_size < 6) {
         return ValidationResult.invalidCode(.ico, .file_too_small, "ICO format");
     }
 
@@ -3297,7 +3299,7 @@ pub fn validateIco(file: std.fs.File) ValidationResult {
 
     // Verify file is large enough for directory entries (16 bytes each)
     const dir_size: u64 = 6 + @as(u64, count) * 16;
-    if (stat.size < dir_size) {
+    if (file_size < dir_size) {
         return ValidationResult.invalidCode(.ico, .file_too_small, "directory entries");
     }
 
@@ -3338,7 +3340,7 @@ pub fn validateIco(file: std.fs.File) ValidationResult {
         }
 
         const image_end: u64 = @as(u64, data_offset) + @as(u64, data_size);
-        if (image_end > stat.size) {
+        if (image_end > file_size) {
             return ValidationResult.invalidCodeMsg(.ico, .exceeds_bounds, "Image data", "Image data exceeds file bounds");
         }
 
@@ -3378,25 +3380,25 @@ pub fn validateIco(file: std.fs.File) ValidationResult {
 /// Deep ICO validation — verifies embedded PNG CRC-32 checksums and BMP structure.
 /// Returns .full if all entries are PNG with valid CRCs, .structural if any are BMP/unknown.
 pub fn validateIcoDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.ico, "File not found", .full),
             error.AccessDenied => ValidationResult.invalidWithDepth(.ico, "Access denied", .full),
             else => ValidationResult.invalidCodeWithDepth(.ico, .failed_to_open, "file", .full),
         };
     };
-    defer file.close();
+    defer source.close();
 
-    const stat = file.stat() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.ico, .failed_to_stat, "file", .structural);
     };
 
-    if (stat.size < 6) {
+    if (file_size < 6) {
         return ValidationResult.invalidCodeWithDepth(.ico, .file_too_small, "ICO format", .structural);
     }
 
     var header: [6]u8 = undefined;
-    _ = file.readAll(&header) catch {
+    _ = source.readAll(&header) catch {
         return ValidationResult.invalidCodeWithDepth(.ico, .failed_to_read, "header", .structural);
     };
 
@@ -3412,7 +3414,7 @@ pub fn validateIcoDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
     defer allocator.free(dir_buf);
 
-    const dir_read = file.readAll(dir_buf) catch {
+    const dir_read = source.readAll(dir_buf) catch {
         return ValidationResult.invalidCodeWithDepth(.ico, .failed_to_read, "directory", .structural);
     };
     if (dir_read < dir_size) {
@@ -3431,7 +3433,7 @@ pub fn validateIcoDeep(allocator: Allocator, path: []const u8) ValidationResult 
         }
 
         const image_end: u64 = @as(u64, data_offset) + @as(u64, data_size);
-        if (image_end > stat.size) {
+        if (image_end > file_size) {
             return ValidationResult.invalidCodeMsgWithDepth(.ico, .exceeds_bounds, "Image data", "Image data exceeds file bounds", .structural);
         }
 
@@ -3441,10 +3443,10 @@ pub fn validateIcoDeep(allocator: Allocator, path: []const u8) ValidationResult 
         };
         defer allocator.free(img_data);
 
-        file.seekTo(data_offset) catch {
+        source.seekTo(data_offset) catch {
             return ValidationResult.invalidCodeWithDepth(.ico, .failed_to_seek, "to image data", .structural);
         };
-        const img_read = file.readAll(img_data) catch {
+        const img_read = source.readAll(img_data) catch {
             return ValidationResult.invalidCodeWithDepth(.ico, .failed_to_read, "image data", .structural);
         };
         if (img_read < data_size) {
@@ -3490,7 +3492,7 @@ const EmbeddedPngCrcResult = struct {
     chunks_checked: u32,
 };
 
-fn validateEmbeddedPngCrcs(file: std.fs.File, png_offset: u64, png_size: u64) EmbeddedPngCrcResult {
+fn validateEmbeddedPngCrcs(file: *FileSource, png_offset: u64, png_size: u64) EmbeddedPngCrcResult {
     const invalid = EmbeddedPngCrcResult{ .is_valid = false, .chunks_checked = 0 };
 
     // PNG signature is 8 bytes, minimum chunk is 12 bytes (len + type + crc, zero data)
@@ -3556,9 +3558,9 @@ fn validateEmbeddedPngCrcs(file: std.fs.File, png_offset: u64, png_size: u64) Em
 }
 
 /// Deep ICNS validation: entry type codes, embedded PNG/ARGB/JP2 magic, entry coverage.
-pub fn validateIcns(file: std.fs.File) ValidationResult {
-    const stat = file.stat() catch return ValidationResult.invalidCode(.icns, .failed_to_stat, "file");
-    if (stat.size < 8) return ValidationResult.invalidCode(.icns, .file_too_small, "ICNS header (need 8 bytes)");
+pub fn validateIcns(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.icns, .failed_to_stat, "file");
+    if (file_size < 8) return ValidationResult.invalidCode(.icns, .file_too_small, "ICNS header (need 8 bytes)");
 
     file.seekTo(0) catch return ValidationResult.invalidCode(.icns, .failed_to_seek, "in ICNS file");
     var header: [8]u8 = undefined;
@@ -3570,7 +3572,7 @@ pub fn validateIcns(file: std.fs.File) ValidationResult {
 
     const total_size = std.mem.readInt(u32, header[4..8], .big);
     if (total_size < 8) return ValidationResult.invalidCode(.icns, .invalid_value, "ICNS total size < 8");
-    if (@as(u64, total_size) > stat.size)
+    if (@as(u64, total_size) > file_size)
         return ValidationResult.invalidCode(.icns, .exceeds_bounds, "ICNS total size exceeds file");
 
     // Known ICNS entry type codes (Apple Icon Image format)
@@ -3736,7 +3738,7 @@ pub fn validateIcns(file: std.fs.File) ValidationResult {
 
 /// Validate QOI (Quite OK Image) file structure.
 /// Header: "qoif"(4) + width(4,BE) + height(4,BE) + channels(1) + colorspace(1) = 14 bytes.
-pub fn validateQoi(file: std.fs.File) ValidationResult {
+pub fn validateQoi(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.qoi, .failed_to_seek, "in QOI file");
 
     var header: [14]u8 = undefined;
@@ -3777,7 +3779,7 @@ pub fn validateQoi(file: std.fs.File) ValidationResult {
 
 /// Validate TGA (Truevision TGA/TARGA) file structure.
 /// No magic bytes - 18-byte header with: id_length(1) + color_map_type(1) + image_type(1) + color_map_spec(5) + image_spec(10).
-pub fn validateTga(file: std.fs.File) ValidationResult {
+pub fn validateTga(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.tga, .failed_to_seek, "in TGA file");
 
     var header: [18]u8 = undefined;
@@ -3861,7 +3863,7 @@ pub fn validateTga(file: std.fs.File) ValidationResult {
 
 /// Validate Portable Anymap (PBM/PGM/PPM/PAM) file structure.
 /// P1=PBM ASCII, P2=PGM ASCII, P3=PPM ASCII, P4=PBM binary, P5=PGM binary, P6=PPM binary, P7=PAM.
-pub fn validatePam(file: std.fs.File) ValidationResult {
+pub fn validatePam(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.pam, .failed_to_seek, "in PAM file");
 
     var header: [256]u8 = undefined;
@@ -3931,7 +3933,7 @@ pub fn validatePam(file: std.fs.File) ValidationResult {
 
 /// Validate DPX (Digital Picture Exchange) file structure.
 /// Magic: "SDPX" (LE) or "XPDS" (BE). Minimum header 2048 bytes in practice.
-pub fn validateDpx(file: std.fs.File) ValidationResult {
+pub fn validateDpx(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.dpx, .failed_to_seek, "in DPX file");
 
     var header: [32]u8 = undefined;
@@ -4025,9 +4027,9 @@ const testing = std.testing;
 // ---- PNG ----
 
 test "validatePng accepts valid PNG from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/png/generated_gradient.png", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validatePng(file);
+    var source = FileSource.open("ground_truth_examples/png/generated_gradient.png") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validatePng(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.png, result.format);
 }
@@ -4040,9 +4042,11 @@ test "validatePng rejects truncated PNG" {
     const f = try tmp.dir.createFile("bad.png", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.png", .{});
-    defer file.close();
-    const result = validatePng(file);
+    var path_buf_bad_png: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_png = tmp.dir.realpath("bad.png", &path_buf_bad_png) catch return;
+    var source = FileSource.open(realpath_bad_png) catch return;
+    defer source.close();
+    const result = validatePng(&source);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.png, result.format);
 }
@@ -4060,9 +4064,11 @@ test "validatePng rejects non-IHDR first chunk" {
     const f = try tmp.dir.createFile("bad2.png", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad2.png", .{});
-    defer file.close();
-    const result = validatePng(file);
+    var path_buf_bad2_png: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad2_png = tmp.dir.realpath("bad2.png", &path_buf_bad2_png) catch return;
+    var source = FileSource.open(realpath_bad2_png) catch return;
+    defer source.close();
+    const result = validatePng(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4078,9 +4084,9 @@ test "validatePngDeep accepts valid PNG from ground truth" {
 // ---- JPEG ----
 
 test "validateJpeg accepts valid JPEG from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg/generated_gradient.jpg", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateJpeg(file);
+    var source = FileSource.open("ground_truth_examples/jpeg/generated_gradient.jpg") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateJpeg(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.jpeg, result.format);
 }
@@ -4093,9 +4099,11 @@ test "validateJpeg rejects truncated JPEG" {
     const f = try tmp.dir.createFile("bad.jpg", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.jpg", .{});
-    defer file.close();
-    const result = validateJpeg(file);
+    var path_buf_bad_jpg: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_jpg = tmp.dir.realpath("bad.jpg", &path_buf_bad_jpg) catch return;
+    var source = FileSource.open(realpath_bad_jpg) catch return;
+    defer source.close();
+    const result = validateJpeg(&source);
     // Truncated JPEG with no SOS and no EOI should be invalid
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.jpeg, result.format);
@@ -4108,18 +4116,20 @@ test "validateJpeg rejects invalid magic" {
     const f = try tmp.dir.createFile("bad2.jpg", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad2.jpg", .{});
-    defer file.close();
-    const result = validateJpeg(file);
+    var path_buf_bad2_jpg: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad2_jpg = tmp.dir.realpath("bad2.jpg", &path_buf_bad2_jpg) catch return;
+    var source = FileSource.open(realpath_bad2_jpg) catch return;
+    defer source.close();
+    const result = validateJpeg(&source);
     try testing.expect(!result.is_valid);
 }
 
 // ---- GIF ----
 
 test "validateGif accepts valid GIF from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/gif/sample_1.gif", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateGif(file);
+    var source = FileSource.open("ground_truth_examples/gif/sample_1.gif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateGif(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.gif, result.format);
 }
@@ -4131,9 +4141,11 @@ test "validateGif rejects invalid header" {
     const f = try tmp.dir.createFile("bad.gif", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.gif", .{});
-    defer file.close();
-    const result = validateGif(file);
+    var path_buf_bad_gif: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_gif = tmp.dir.realpath("bad.gif", &path_buf_bad_gif) catch return;
+    var source = FileSource.open(realpath_bad_gif) catch return;
+    defer source.close();
+    const result = validateGif(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4145,18 +4157,20 @@ test "validateGif rejects too-small file" {
     const f = try tmp.dir.createFile("small.gif", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("small.gif", .{});
-    defer file.close();
-    const result = validateGif(file);
+    var path_buf_small_gif: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_small_gif = tmp.dir.realpath("small.gif", &path_buf_small_gif) catch return;
+    var source = FileSource.open(realpath_small_gif) catch return;
+    defer source.close();
+    const result = validateGif(&source);
     try testing.expect(!result.is_valid);
 }
 
 // ---- BMP ----
 
 test "validateBmp accepts valid BMP from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/bmp/sample.bmp", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateBmp(file);
+    var source = FileSource.open("ground_truth_examples/bmp/sample.bmp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateBmp(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.bmp, result.format);
 }
@@ -4168,9 +4182,11 @@ test "validateBmp rejects invalid signature" {
     const f = try tmp.dir.createFile("bad.bmp", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.bmp", .{});
-    defer file.close();
-    const result = validateBmp(file);
+    var path_buf_bad_bmp: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_bmp = tmp.dir.realpath("bad.bmp", &path_buf_bad_bmp) catch return;
+    var source = FileSource.open(realpath_bad_bmp) catch return;
+    defer source.close();
+    const result = validateBmp(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4194,17 +4210,21 @@ test "validateBmp rejects corrupted planes field" {
 
     // Valid BMP
     tmp.dir.writeFile(.{ .sub_path = "good.bmp", .data = &bmp }) catch return;
-    const good = tmp.dir.openFile("good.bmp", .{}) catch return;
+    var pb_good_bmp: [std.fs.max_path_bytes]u8 = undefined;
+    const rp_good_bmp = tmp.dir.realpath("good.bmp", &pb_good_bmp) catch return;
+    var good = FileSource.open(rp_good_bmp) catch return;
     defer good.close();
-    try testing.expect(validateBmp(good).is_valid);
+    try testing.expect(validateBmp(&good).is_valid);
 
     // Corrupt planes to 5
     var bad = bmp;
     std.mem.writeInt(u16, bad[26..28], 5, .little);
     tmp.dir.writeFile(.{ .sub_path = "bad_planes.bmp", .data = &bad }) catch return;
-    const f = tmp.dir.openFile("bad_planes.bmp", .{}) catch return;
+    var pb_bad_planes_bmp: [std.fs.max_path_bytes]u8 = undefined;
+    const rp_bad_planes_bmp = tmp.dir.realpath("bad_planes.bmp", &pb_bad_planes_bmp) catch return;
+    var f = FileSource.open(rp_bad_planes_bmp) catch return;
     defer f.close();
-    try testing.expect(!validateBmp(f).is_valid);
+    try testing.expect(!validateBmp(&f).is_valid);
 }
 
 test "validateBmp rejects corrupted bit count" {
@@ -4227,9 +4247,11 @@ test "validateBmp rejects corrupted bit count" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     tmp.dir.writeFile(.{ .sub_path = "bad_bpp.bmp", .data = &bad }) catch return;
-    const f = tmp.dir.openFile("bad_bpp.bmp", .{}) catch return;
+    var pb_bad_bpp_bmp: [std.fs.max_path_bytes]u8 = undefined;
+    const rp_bad_bpp_bmp = tmp.dir.realpath("bad_bpp.bmp", &pb_bad_bpp_bmp) catch return;
+    var f = FileSource.open(rp_bad_bpp_bmp) catch return;
     defer f.close();
-    try testing.expect(!validateBmp(f).is_valid);
+    try testing.expect(!validateBmp(&f).is_valid);
 }
 
 test "validateBmp rejects pixel data exceeding file size" {
@@ -4249,17 +4271,19 @@ test "validateBmp rejects pixel data exceeding file size" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     tmp.dir.writeFile(.{ .sub_path = "too_big.bmp", .data = &bmp }) catch return;
-    const f = tmp.dir.openFile("too_big.bmp", .{}) catch return;
+    var pb_too_big_bmp: [std.fs.max_path_bytes]u8 = undefined;
+    const rp_too_big_bmp = tmp.dir.realpath("too_big.bmp", &pb_too_big_bmp) catch return;
+    var f = FileSource.open(rp_too_big_bmp) catch return;
     defer f.close();
-    try testing.expect(!validateBmp(f).is_valid);
+    try testing.expect(!validateBmp(&f).is_valid);
 }
 
 // ---- TIFF ----
 
 test "validateTiff accepts valid TIFF from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tiff/bali.tif", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateTiff(file, .tiff);
+    var source = FileSource.open("ground_truth_examples/tiff/bali.tif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateTiff(&source, .tiff);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.tiff, result.format);
 }
@@ -4271,18 +4295,20 @@ test "validateTiff rejects invalid byte order" {
     const f = try tmp.dir.createFile("bad.tif", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.tif", .{});
-    defer file.close();
-    const result = validateTiff(file, .tiff);
+    var path_buf_bad_tif: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_tif = tmp.dir.realpath("bad.tif", &path_buf_bad_tif) catch return;
+    var source = FileSource.open(realpath_bad_tif) catch return;
+    defer source.close();
+    const result = validateTiff(&source, .tiff);
     try testing.expect(!result.is_valid);
 }
 
 // ---- WebP ----
 
 test "validateWebp accepts valid WebP from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/webp/google_gallery_1.webp", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateWebp(file);
+    var source = FileSource.open("ground_truth_examples/webp/google_gallery_1.webp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateWebp(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.webp, result.format);
 }
@@ -4294,9 +4320,11 @@ test "validateWebp rejects invalid RIFF signature" {
     const f = try tmp.dir.createFile("bad.webp", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.webp", .{});
-    defer file.close();
-    const result = validateWebp(file);
+    var path_buf_bad_webp: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_webp = tmp.dir.realpath("bad.webp", &path_buf_bad_webp) catch return;
+    var source = FileSource.open(realpath_bad_webp) catch return;
+    defer source.close();
+    const result = validateWebp(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4307,18 +4335,20 @@ test "validateWebp rejects invalid fourcc" {
     const f = try tmp.dir.createFile("bad2.webp", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad2.webp", .{});
-    defer file.close();
-    const result = validateWebp(file);
+    var path_buf_bad2_webp: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad2_webp = tmp.dir.realpath("bad2.webp", &path_buf_bad2_webp) catch return;
+    var source = FileSource.open(realpath_bad2_webp) catch return;
+    defer source.close();
+    const result = validateWebp(&source);
     try testing.expect(!result.is_valid);
 }
 
 // ---- SVG ----
 
 test "validateSvg accepts valid SVG from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/svg/sample.svg", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateSvg(file);
+    var source = FileSource.open("ground_truth_examples/svg/sample.svg") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateSvg(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.svg, result.format);
 }
@@ -4329,9 +4359,11 @@ test "validateSvg rejects non-SVG content" {
     const f = try tmp.dir.createFile("bad.svg", .{});
     try f.writeAll("This is not an SVG file at all.");
     f.close();
-    const file = try tmp.dir.openFile("bad.svg", .{});
-    defer file.close();
-    const result = validateSvg(file);
+    var path_buf_bad_svg: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_svg = tmp.dir.realpath("bad.svg", &path_buf_bad_svg) catch return;
+    var source = FileSource.open(realpath_bad_svg) catch return;
+    defer source.close();
+    const result = validateSvg(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4347,9 +4379,9 @@ test "validateSvgDeep accepts valid SVG from ground truth" {
 // ---- JPEG XL ----
 
 test "validateJxl accepts valid JXL from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/jxl/bicycles.jxl", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateJxl(file);
+    var source = FileSource.open("ground_truth_examples/jxl/bicycles.jxl") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateJxl(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.jxl, result.format);
 }
@@ -4361,18 +4393,20 @@ test "validateJxl rejects invalid signature" {
     const f = try tmp.dir.createFile("bad.jxl", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.jxl", .{});
-    defer file.close();
-    const result = validateJxl(file);
+    var path_buf_bad_jxl: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_jxl = tmp.dir.realpath("bad.jxl", &path_buf_bad_jxl) catch return;
+    var source = FileSource.open(realpath_bad_jxl) catch return;
+    defer source.close();
+    const result = validateJxl(&source);
     try testing.expect(!result.is_valid);
 }
 
 // ---- EXR ----
 
 test "validateExr accepts valid EXR from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/exr/sample.exr", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateExr(file);
+    var source = FileSource.open("ground_truth_examples/exr/sample.exr") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateExr(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.exr, result.format);
 }
@@ -4384,9 +4418,11 @@ test "validateExr rejects invalid magic" {
     const f = try tmp.dir.createFile("bad.exr", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.exr", .{});
-    defer file.close();
-    const result = validateExr(file);
+    var path_buf_bad_exr: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_exr = tmp.dir.realpath("bad.exr", &path_buf_bad_exr) catch return;
+    var source = FileSource.open(realpath_bad_exr) catch return;
+    defer source.close();
+    const result = validateExr(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4402,9 +4438,9 @@ test "validateExrDeep accepts valid EXR from ground truth" {
 // ---- ICO ----
 
 test "validateIco accepts valid ICO from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/ico/sample.ico", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateIco(file);
+    var source = FileSource.open("ground_truth_examples/ico/sample.ico") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateIco(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.ico, result.format);
 }
@@ -4424,9 +4460,11 @@ test "validateIco rejects invalid reserved field" {
     const f = try tmp.dir.createFile("bad.ico", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.ico", .{});
-    defer file.close();
-    const result = validateIco(file);
+    var path_buf_bad_ico: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_ico = tmp.dir.realpath("bad.ico", &path_buf_bad_ico) catch return;
+    var source = FileSource.open(realpath_bad_ico) catch return;
+    defer source.close();
+    const result = validateIco(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4441,18 +4479,20 @@ test "validateIco rejects zero image count" {
     const f = try tmp.dir.createFile("empty.ico", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("empty.ico", .{});
-    defer file.close();
-    const result = validateIco(file);
+    var path_buf_empty_ico: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_empty_ico = tmp.dir.realpath("empty.ico", &path_buf_empty_ico) catch return;
+    var source = FileSource.open(realpath_empty_ico) catch return;
+    defer source.close();
+    const result = validateIco(&source);
     try testing.expect(!result.is_valid);
 }
 
 // ---- QOI ----
 
 test "validateQoi accepts valid QOI from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/qoi/sample.qoi", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateQoi(file);
+    var source = FileSource.open("ground_truth_examples/qoi/sample.qoi") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateQoi(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.qoi, result.format);
 }
@@ -4464,9 +4504,11 @@ test "validateQoi rejects invalid magic" {
     const f = try tmp.dir.createFile("bad.qoi", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.qoi", .{});
-    defer file.close();
-    const result = validateQoi(file);
+    var path_buf_bad_qoi: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_qoi = tmp.dir.realpath("bad.qoi", &path_buf_bad_qoi) catch return;
+    var source = FileSource.open(realpath_bad_qoi) catch return;
+    defer source.close();
+    const result = validateQoi(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4477,9 +4519,11 @@ test "validateQoi rejects zero width" {
     const f = try tmp.dir.createFile("zero_w.qoi", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("zero_w.qoi", .{});
-    defer file.close();
-    const result = validateQoi(file);
+    var path_buf_zero_w_qoi: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_zero_w_qoi = tmp.dir.realpath("zero_w.qoi", &path_buf_zero_w_qoi) catch return;
+    var source = FileSource.open(realpath_zero_w_qoi) catch return;
+    defer source.close();
+    const result = validateQoi(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4491,18 +4535,20 @@ test "validateQoi rejects invalid channels" {
     const f = try tmp.dir.createFile("bad_ch.qoi", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad_ch.qoi", .{});
-    defer file.close();
-    const result = validateQoi(file);
+    var path_buf_bad_ch_qoi: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_ch_qoi = tmp.dir.realpath("bad_ch.qoi", &path_buf_bad_ch_qoi) catch return;
+    var source = FileSource.open(realpath_bad_ch_qoi) catch return;
+    defer source.close();
+    const result = validateQoi(&source);
     try testing.expect(!result.is_valid);
 }
 
 // ---- TGA ----
 
 test "validateTga accepts valid TGA from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/tga/sample.tga", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateTga(file);
+    var source = FileSource.open("ground_truth_examples/tga/sample.tga") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateTga(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.tga, result.format);
 }
@@ -4520,9 +4566,11 @@ test "validateTga rejects invalid color map type" {
     const f = try tmp.dir.createFile("bad.tga", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.tga", .{});
-    defer file.close();
-    const result = validateTga(file);
+    var path_buf_bad_tga: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_tga = tmp.dir.realpath("bad.tga", &path_buf_bad_tga) catch return;
+    var source = FileSource.open(realpath_bad_tga) catch return;
+    defer source.close();
+    const result = validateTga(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4538,18 +4586,20 @@ test "validateTga rejects invalid image type" {
     const f = try tmp.dir.createFile("bad2.tga", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad2.tga", .{});
-    defer file.close();
-    const result = validateTga(file);
+    var path_buf_bad2_tga: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad2_tga = tmp.dir.realpath("bad2.tga", &path_buf_bad2_tga) catch return;
+    var source = FileSource.open(realpath_bad2_tga) catch return;
+    defer source.close();
+    const result = validateTga(&source);
     try testing.expect(!result.is_valid);
 }
 
 // ---- PAM ----
 
 test "validatePam accepts valid PPM from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/pam/sample.ppm", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validatePam(file);
+    var source = FileSource.open("ground_truth_examples/pam/sample.ppm") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validatePam(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.pam, result.format);
 }
@@ -4560,9 +4610,11 @@ test "validatePam rejects invalid magic" {
     const f = try tmp.dir.createFile("bad.pam", .{});
     try f.writeAll("X6 1 1 255\n");
     f.close();
-    const file = try tmp.dir.openFile("bad.pam", .{});
-    defer file.close();
-    const result = validatePam(file);
+    var path_buf_bad_pam: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_pam = tmp.dir.realpath("bad.pam", &path_buf_bad_pam) catch return;
+    var source = FileSource.open(realpath_bad_pam) catch return;
+    defer source.close();
+    const result = validatePam(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4572,18 +4624,20 @@ test "validatePam rejects out-of-range type" {
     const f = try tmp.dir.createFile("bad2.pam", .{});
     try f.writeAll("P8 1 1\n");
     f.close();
-    const file = try tmp.dir.openFile("bad2.pam", .{});
-    defer file.close();
-    const result = validatePam(file);
+    var path_buf_bad2_pam: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad2_pam = tmp.dir.realpath("bad2.pam", &path_buf_bad2_pam) catch return;
+    var source = FileSource.open(realpath_bad2_pam) catch return;
+    defer source.close();
+    const result = validatePam(&source);
     try testing.expect(!result.is_valid);
 }
 
 // ---- DPX ----
 
 test "validateDpx accepts valid DPX from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/dpx/sample.dpx", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateDpx(file);
+    var source = FileSource.open("ground_truth_examples/dpx/sample.dpx") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateDpx(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.dpx, result.format);
 }
@@ -4599,9 +4653,11 @@ test "validateDpx rejects invalid magic" {
     const f = try tmp.dir.createFile("bad.dpx", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.dpx", .{});
-    defer file.close();
-    const result = validateDpx(file);
+    var path_buf_bad_dpx: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_dpx = tmp.dir.realpath("bad.dpx", &path_buf_bad_dpx) catch return;
+    var source = FileSource.open(realpath_bad_dpx) catch return;
+    defer source.close();
+    const result = validateDpx(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -4627,17 +4683,21 @@ test "validateDpx rejects corrupted orientation" {
 
     // Valid first
     tmp.dir.writeFile(.{ .sub_path = "good.dpx", .data = &dpx }) catch return;
-    const good = tmp.dir.openFile("good.dpx", .{}) catch return;
+    var pb_good_dpx: [std.fs.max_path_bytes]u8 = undefined;
+    const rp_good_dpx = tmp.dir.realpath("good.dpx", &pb_good_dpx) catch return;
+    var good = FileSource.open(rp_good_dpx) catch return;
     defer good.close();
-    try testing.expect(validateDpx(good).is_valid);
+    try testing.expect(validateDpx(&good).is_valid);
 
     // Corrupt orientation to 99
     var bad = dpx;
     std.mem.writeInt(u16, bad[768..770], 99, .big);
     tmp.dir.writeFile(.{ .sub_path = "bad_orient.dpx", .data = &bad }) catch return;
-    const f = tmp.dir.openFile("bad_orient.dpx", .{}) catch return;
+    var pb_bad_orient_dpx: [std.fs.max_path_bytes]u8 = undefined;
+    const rp_bad_orient_dpx = tmp.dir.realpath("bad_orient.dpx", &pb_bad_orient_dpx) catch return;
+    var f = FileSource.open(rp_bad_orient_dpx) catch return;
     defer f.close();
-    try testing.expect(!validateDpx(f).is_valid);
+    try testing.expect(!validateDpx(&f).is_valid);
 }
 
 test "validateDpx rejects corrupted element count" {
@@ -4658,25 +4718,27 @@ test "validateDpx rejects corrupted element count" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     tmp.dir.writeFile(.{ .sub_path = "bad_elem.dpx", .data = &bad }) catch return;
-    const f = tmp.dir.openFile("bad_elem.dpx", .{}) catch return;
+    var pb_bad_elem_dpx: [std.fs.max_path_bytes]u8 = undefined;
+    const rp_bad_elem_dpx = tmp.dir.realpath("bad_elem.dpx", &pb_bad_elem_dpx) catch return;
+    var f = FileSource.open(rp_bad_elem_dpx) catch return;
     defer f.close();
-    try testing.expect(!validateDpx(f).is_valid);
+    try testing.expect(!validateDpx(&f).is_valid);
 }
 
 // ---- JPEG2000 ----
 
 test "validateJpeg2000 accepts valid JP2 from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon_intact.jp2", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateJpeg2000(file);
+    var source = FileSource.open("ground_truth_examples/jpeg2k/balloon_intact.jp2") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateJpeg2000(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.jpeg2000, result.format);
 }
 
 test "validateJpeg2000 accepts valid J2C codestream from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon.j2c", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateJpeg2000(file);
+    var source = FileSource.open("ground_truth_examples/jpeg2k/balloon.j2c") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateJpeg2000(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.jpeg2000, result.format);
 }
@@ -4688,18 +4750,20 @@ test "validateJpeg2000 rejects invalid signature" {
     const f = try tmp.dir.createFile("bad.jp2", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.jp2", .{});
-    defer file.close();
-    const result = validateJpeg2000(file);
+    var path_buf_bad_jp2: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_jp2 = tmp.dir.realpath("bad.jp2", &path_buf_bad_jp2) catch return;
+    var source = FileSource.open(realpath_bad_jp2) catch return;
+    defer source.close();
+    const result = validateJpeg2000(&source);
     try testing.expect(!result.is_valid);
 }
 
 // ---- JBIG2 ----
 
 test "validateJbig2File accepts valid JBIG2 from ground truth" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/jbig2/minimal_white_page.jbig2", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
-    const result = validateJbig2File(file);
+    var source = FileSource.open("ground_truth_examples/jbig2/minimal_white_page.jbig2") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateJbig2File(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.jbig2, result.format);
 }
@@ -4711,9 +4775,11 @@ test "validateJbig2File rejects invalid signature" {
     const f = try tmp.dir.createFile("bad.jbig2", .{});
     try f.writeAll(&data);
     f.close();
-    const file = try tmp.dir.openFile("bad.jbig2", .{});
-    defer file.close();
-    const result = validateJbig2File(file);
+    var path_buf_bad_jbig2: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath_bad_jbig2 = tmp.dir.realpath("bad.jbig2", &path_buf_bad_jbig2) catch return;
+    var source = FileSource.open(realpath_bad_jbig2) catch return;
+    defer source.close();
+    const result = validateJbig2File(&source);
     try testing.expect(!result.is_valid);
 }
 
@@ -5279,11 +5345,11 @@ test "FormatValidator deep validates real GIF from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth GIF file (public domain sample)
-    const file = std.fs.cwd().openFile("ground_truth_examples/gif/sample_1.gif", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/gif/sample_1.gif") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    source.close();
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/gif/sample_1.gif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
@@ -5381,11 +5447,11 @@ test "FormatValidator deep validates real BMP from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth BMP file (from FSU sample data)
-    const file = std.fs.cwd().openFile("ground_truth_examples/bmp/sample.bmp", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/bmp/sample.bmp") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    source.close();
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/bmp/sample.bmp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
@@ -5474,11 +5540,11 @@ test "FormatValidator deep validates real WebP from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth WebP file (from Google WebP Gallery)
-    const file = std.fs.cwd().openFile("ground_truth_examples/webp/sample.webp", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/webp/sample.webp") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    source.close();
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/webp/sample.webp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
@@ -5497,7 +5563,7 @@ test "FormatValidator deep validates real JXL from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth JPEG-XL file (from libjxl conformance suite)
-    const file = std.fs.cwd().openFile("ground_truth_examples/jxl/sample.jxl", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/jxl/sample.jxl") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
@@ -5505,11 +5571,11 @@ test "FormatValidator deep validates real JXL from ground truth" {
     // Verify it's actually a JXL file (check signature)
     // JXL codestream starts with 0xFF 0x0A, or container with 0x00 0x00 0x00 0x0C 'J' 'X' 'L' ' '
     var header: [12]u8 = undefined;
-    const bytes_read = file.read(&header) catch {
-        file.close();
+    const bytes_read = source.read(&header) catch {
+        source.close();
         return; // Skip if can't read
     };
-    file.close();
+    source.close();
 
     if (bytes_read < 2) return; // Skip if too small
 
@@ -5648,11 +5714,11 @@ test "FormatValidator deep validates real TIFF from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth TIFF file (from tlnagy/exampletiffs)
-    const file = std.fs.cwd().openFile("ground_truth_examples/tiff/bali.tif", .{}) catch |err| {
+    var source = FileSource.open("ground_truth_examples/tiff/bali.tif") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    source.close();
 
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tiff/bali.tif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
