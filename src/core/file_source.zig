@@ -19,7 +19,7 @@ pub const FileSource = struct {
     };
 
     const MappedData = struct {
-        data: []align(std.mem.page_size) const u8,
+        data: []align(std.heap.page_size_min) const u8,
     };
 
     /// Open a file, preferring mmap on POSIX systems.
@@ -56,7 +56,7 @@ pub const FileSource = struct {
             };
 
             // Advise the kernel that we'll access randomly
-            std.posix.madvise(@constCast(mapped.ptr), mapped.len, .RANDOM) catch {};
+            std.posix.madvise(@constCast(mapped.ptr), mapped.len, std.posix.MADV.RANDOM) catch {};
 
             // Close the file handle — the mapping keeps the file alive
             file.close();
@@ -78,7 +78,7 @@ pub const FileSource = struct {
     pub fn close(self: *FileSource) void {
         switch (self.backing) {
             .mapped => |m| {
-                const ptr: [*]align(std.mem.page_size) u8 = @constCast(m.data.ptr);
+                const ptr: [*]align(std.heap.page_size_min) u8 = @constCast(m.data.ptr);
                 std.posix.munmap(ptr[0..m.data.len]);
             },
             .file => |f| f.close(),
@@ -149,7 +149,7 @@ pub const FileSource = struct {
 
 test "FileSource mmap read and seek" {
     // Create a temp file with known content
-    const tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const content = "Hello, mmap world! This is a test of the file source abstraction.";
     tmp.dir.writeFile(.{ .sub_path = "test.bin", .data = content }) catch return;
@@ -185,7 +185,7 @@ test "FileSource mmap read and seek" {
 }
 
 test "FileSource read past end returns partial" {
-    const tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     tmp.dir.writeFile(.{ .sub_path = "small.bin", .data = "abc" }) catch return;
 
@@ -203,7 +203,7 @@ test "FileSource read past end returns partial" {
 }
 
 test "FileSource seek past end returns error" {
-    const tmp = std.testing.tmpDir(.{});
+    var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     tmp.dir.writeFile(.{ .sub_path = "tiny.bin", .data = "x" }) catch return;
 

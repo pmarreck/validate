@@ -8,6 +8,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 // ============ EBML Element IDs (Matroska) ============
 
@@ -418,12 +420,12 @@ pub const EbmlElement = struct {
 
 // ============ EBML Reader ============
 
-/// Streaming EBML reader that works with file handles.
+/// Streaming EBML reader that works with FileSource handles.
 pub const EbmlReader = struct {
-    file: std.fs.File,
+    file: *FileSource,
     file_size: u64,
 
-    pub fn init(file: std.fs.File) EbmlReader {
+    pub fn init(file: *FileSource) EbmlReader {
         const file_size = file.getEndPos() catch 0;
         return .{
             .file = file,
@@ -634,7 +636,7 @@ pub const MatroskaParser = struct {
     segment_offset: u64,
     segment_size: ?u64,
 
-    pub fn init(allocator: Allocator, file: std.fs.File) MatroskaParser {
+    pub fn init(allocator: Allocator, file: *FileSource) MatroskaParser {
         return .{
             .reader = EbmlReader.init(file),
             .allocator = allocator,

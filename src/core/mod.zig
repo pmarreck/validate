@@ -19,6 +19,7 @@ const builtin = @import("builtin");
 pub const types = @import("types.zig");
 pub const errors = @import("errors.zig");
 pub const compat = @import("compat.zig");
+pub const file_source = @import("file_source.zig");
 pub const format_validation = @import("format_validation.zig");
 pub const jpeg_validator = @import("jpeg_validator.zig");
 pub const alac_validator = @import("alac_validator.zig");
@@ -170,6 +171,7 @@ test "version" {
 
 // Include integration tests
 test {
+    _ = @import("file_source.zig");
     _ = @import("bzip2_test.zig");
     // PDF filter decoders
     _ = @import("ascii_hex_decoder.zig");

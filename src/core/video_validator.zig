@@ -27,6 +27,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const errmsg = @import("error_messages.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 // No global mutex needed — pure-Zig validators are thread-safe.
 // VideoDecoderGuard kept as no-op for backward compatibility with any remaining references.
@@ -192,7 +194,7 @@ const readMp4BoxHeader = mp4_parser.readMp4BoxHeader;
 const findChildBox = mp4_parser.findChildBox;
 
 /// Detect video codec from MP4 sample description
-fn detectMp4VideoCodec(file: std.fs.File, stsd_offset: u64, stsd_size: u64) VideoCodec {
+fn detectMp4VideoCodec(file: *FileSource, stsd_offset: u64, stsd_size: u64) VideoCodec {
     _ = stsd_size; // Size not needed for basic codec detection
     // Skip stsd header (8 bytes) + version/flags (4 bytes) + entry count (4 bytes)
     file.seekTo(stsd_offset + 16) catch return .unknown;
@@ -245,10 +247,11 @@ fn detectMp4VideoCodec(file: std.fs.File, stsd_offset: u64, stsd_size: u64) Vide
 
 /// Deep validate MP4/MOV video file by decoding keyframes.
 pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32) VideoValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return VideoValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return VideoValidationResult.invalid(errmsg.failedToGet("file size"), .unknown);
@@ -476,13 +479,13 @@ fn validateMkvFrameBytes(ctx_ptr: ?*anyopaque, data: []const u8) bool {
 
 /// Deep validate MKV/WebM video file by decoding keyframes.
 pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32) VideoValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return VideoValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
     };
-    defer file.close();
+    defer source.close();
 
     // Initialize Matroska parser
-    var parser = ebml.MatroskaParser.init(allocator, file);
+    var parser = ebml.MatroskaParser.init(allocator, &source);
 
     // Parse and validate EBML header
     const doc_info = parser.parseEbmlHeader() orelse {
@@ -874,10 +877,11 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
 /// Parses the RIFF/AVI container to extract video codec and frames,
 /// then validates using appropriate decoder.
 pub fn validateAviVideo(allocator: Allocator, path: []const u8, max_frames: u32) VideoValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return VideoValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return VideoValidationResult.invalid(errmsg.failedToGet("file size"), .unknown);
@@ -939,7 +943,7 @@ const AviStreamInfo = struct {
 };
 
 /// Parse AVI structure to extract video stream info
-fn parseAviStructure(file: std.fs.File, file_size: u64) ?AviStreamInfo {
+fn parseAviStructure(file: *FileSource, file_size: u64) ?AviStreamInfo {
     var info = AviStreamInfo{
         .codec_fourcc = [_]u8{ 0, 0, 0, 0 },
         .video_stream_id = 0,
@@ -1134,7 +1138,7 @@ fn detectAviVideoCodec(fourcc: [4]u8) VideoCodec {
 }
 
 /// Validate MJPEG frames from AVI container
-fn validateMjpegFromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStreamInfo, max_frames: u32) VideoValidationResult {
+fn validateMjpegFromAvi(allocator: Allocator, file: *FileSource, avi_info: AviStreamInfo, max_frames: u32) VideoValidationResult {
     // Validate video_stream_id is in valid range (0-99 for two-digit chunk IDs)
     if (avi_info.video_stream_id >= 100) {
         return VideoValidationResult.invalid("Video stream ID out of range", .mjpeg);
@@ -1218,7 +1222,7 @@ fn validateMjpegFromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviSt
 }
 
 /// Validate MPEG-1/2 frames from AVI container
-fn validateMpeg12FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStreamInfo, max_frames: u32, codec: VideoCodec) VideoValidationResult {
+fn validateMpeg12FromAvi(allocator: Allocator, file: *FileSource, avi_info: AviStreamInfo, max_frames: u32, codec: VideoCodec) VideoValidationResult {
     // Validate video_stream_id is in valid range (0-99 for two-digit chunk IDs)
     if (avi_info.video_stream_id >= 100) {
         return VideoValidationResult.invalid("Video stream ID out of range", codec);
@@ -1289,7 +1293,7 @@ fn validateMpeg12FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviS
 }
 
 /// Validate H.264 frames from AVI container
-fn validateH264FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStreamInfo, max_frames: u32) VideoValidationResult {
+fn validateH264FromAvi(allocator: Allocator, file: *FileSource, avi_info: AviStreamInfo, max_frames: u32) VideoValidationResult {
     // Validate video_stream_id is in valid range (0-99 for two-digit chunk IDs)
     if (avi_info.video_stream_id >= 100) {
         return VideoValidationResult.invalid("Video stream ID out of range", .h264);
@@ -1370,7 +1374,7 @@ fn validateH264FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStr
 }
 
 /// Validate MPEG-4 Part 2 frames from AVI container
-fn validateMpeg4P2FromAvi(allocator: Allocator, file: std.fs.File, avi_info: AviStreamInfo, max_frames: u32) VideoValidationResult {
+fn validateMpeg4P2FromAvi(allocator: Allocator, file: *FileSource, avi_info: AviStreamInfo, max_frames: u32) VideoValidationResult {
     // Validate video_stream_id is in valid range (0-99 for two-digit chunk IDs)
     if (avi_info.video_stream_id >= 100) {
         return VideoValidationResult.invalid("Video stream ID out of range", .mpeg4p2);
@@ -1701,7 +1705,7 @@ const SampleTableInfo = struct {
 
 fn appendMp4SamplesToBitstream(
     allocator: Allocator,
-    file: std.fs.File,
+    file: *FileSource,
     sample_table: SampleTableInfo,
     video_codec: VideoCodec,
     nal_length_size: u8,
@@ -1966,7 +1970,7 @@ fn validateMkvNalFrame(data: []const u8, codec: VideoCodec, nal_length_size: u8,
 
 fn validateMp4SamplesByteCoverage(
 	allocator: Allocator,
-	file: std.fs.File,
+	file: *FileSource,
 	sample_table: SampleTableInfo,
 	video_codec: VideoCodec,
 	nal_length_size: u8,
@@ -2011,7 +2015,7 @@ fn validateMp4SamplesByteCoverage(
 }
 
 /// Parse stsz (sample size) box
-fn parseStsz(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size: u64) ?struct { sizes: []u32, default_size: u32, count: u32 } {
+fn parseStsz(allocator: Allocator, file: *FileSource, box_offset: u64, box_size: u64) ?struct { sizes: []u32, default_size: u32, count: u32 } {
     _ = box_size;
     // stsz format: version(1) + flags(3) + sample_size(4) + sample_count(4) + [sizes if sample_size==0]
     file.seekTo(box_offset + 8) catch return null; // Skip box header
@@ -2047,7 +2051,7 @@ fn parseStsz(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
 }
 
 /// Parse stss (sync sample) box - identifies keyframes
-fn parseStss(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size: u64) ?[]u32 {
+fn parseStss(allocator: Allocator, file: *FileSource, box_offset: u64, box_size: u64) ?[]u32 {
     _ = box_size;
     // stss format: version(1) + flags(3) + entry_count(4) + entries[]
     file.seekTo(box_offset + 8) catch return null; // Skip box header
@@ -2079,7 +2083,7 @@ fn parseStss(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
 }
 
 /// Parse stco (chunk offset) box - 32-bit offsets
-fn parseStco(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size: u64) ?[]u64 {
+fn parseStco(allocator: Allocator, file: *FileSource, box_offset: u64, box_size: u64) ?[]u64 {
     _ = box_size;
     // stco format: version(1) + flags(3) + entry_count(4) + entries[]
     file.seekTo(box_offset + 8) catch return null;
@@ -2109,7 +2113,7 @@ fn parseStco(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
 }
 
 /// Parse co64 (chunk offset) box - 64-bit offsets
-fn parseCo64(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size: u64) ?[]u64 {
+fn parseCo64(allocator: Allocator, file: *FileSource, box_offset: u64, box_size: u64) ?[]u64 {
     _ = box_size;
     file.seekTo(box_offset + 8) catch return null;
 
@@ -2138,7 +2142,7 @@ fn parseCo64(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
 }
 
 /// Parse stsc (sample-to-chunk) box
-fn parseStsc(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size: u64) ?[]SampleTableInfo.StscEntry {
+fn parseStsc(allocator: Allocator, file: *FileSource, box_offset: u64, box_size: u64) ?[]SampleTableInfo.StscEntry {
     _ = box_size;
     file.seekTo(box_offset + 8) catch return null;
 
@@ -2171,7 +2175,7 @@ fn parseStsc(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
 }
 
 /// Parse all sample table boxes from stbl container
-fn parseSampleTable(allocator: Allocator, file: std.fs.File, stbl_offset: u64, stbl_size: u64, stbl_header_size: u8) ?SampleTableInfo {
+fn parseSampleTable(allocator: Allocator, file: *FileSource, stbl_offset: u64, stbl_size: u64, stbl_header_size: u8) ?SampleTableInfo {
     const stbl_data_start = stbl_offset + stbl_header_size;
     const stbl_end = stbl_offset + stbl_size;
 
@@ -2278,7 +2282,7 @@ pub fn convertToAnnexB(allocator: Allocator, sample_data: []const u8, nal_length
 }
 
 /// Extract codec private data (SPS/PPS for H.264/HEVC) and convert to Annex B
-fn extractCodecPrivate(allocator: Allocator, file: std.fs.File, stsd_offset: u64, codec: VideoCodec) ?CodecPrivateData {
+fn extractCodecPrivate(allocator: Allocator, file: *FileSource, stsd_offset: u64, codec: VideoCodec) ?CodecPrivateData {
     // Skip stsd header (8 bytes) + version/flags (4 bytes) + entry count (4 bytes)
     file.seekTo(stsd_offset + 16) catch return null;
 
@@ -2318,7 +2322,7 @@ fn extractCodecPrivate(allocator: Allocator, file: std.fs.File, stsd_offset: u64
 
 /// Extract raw codec private data (avcC/hvcC box contents) without Annex B conversion.
 /// Raw box format used for codec configuration extraction.
-fn extractRawCodecPrivate(allocator: Allocator, file: std.fs.File, stsd_offset: u64, codec: VideoCodec) ?struct { data: []u8, nal_length_size: u8 } {
+fn extractRawCodecPrivate(allocator: Allocator, file: *FileSource, stsd_offset: u64, codec: VideoCodec) ?struct { data: []u8, nal_length_size: u8 } {
     // Skip stsd header (8 bytes) + version/flags (4 bytes) + entry count (4 bytes)
     file.seekTo(stsd_offset + 16) catch return null;
 
@@ -2374,7 +2378,7 @@ fn extractRawCodecPrivate(allocator: Allocator, file: std.fs.File, stsd_offset: 
 }
 
 /// Parse avcC (AVC decoder configuration) and extract SPS/PPS as Annex B
-fn parseAvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size: u64) ?CodecPrivateData {
+fn parseAvcC(allocator: Allocator, file: *FileSource, box_offset: u64, box_size: u64) ?CodecPrivateData {
     _ = box_size;
     file.seekTo(box_offset + 8) catch return null; // Skip box header
 
@@ -2461,7 +2465,7 @@ fn parseAvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
 }
 
 /// Parse hvcC (HEVC decoder configuration) and extract VPS/SPS/PPS as Annex B
-fn parseHvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size: u64) ?CodecPrivateData {
+fn parseHvcC(allocator: Allocator, file: *FileSource, box_offset: u64, box_size: u64) ?CodecPrivateData {
     _ = box_size;
     file.seekTo(box_offset + 8) catch return null; // Skip box header
 
@@ -2505,7 +2509,7 @@ fn parseHvcC(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size:
 }
 
 /// Parse av1C (AV1 codec configuration) - returns config OBU
-fn parseAv1C(allocator: Allocator, file: std.fs.File, box_offset: u64, box_size: u64) ?CodecPrivateData {
+fn parseAv1C(allocator: Allocator, file: *FileSource, box_offset: u64, box_size: u64) ?CodecPrivateData {
     file.seekTo(box_offset + 8) catch return null; // Skip box header
 
     // av1C format: 4-byte fixed header (marker/version/profile/level/flags)
@@ -2626,7 +2630,7 @@ fn parseMkvHvcC(allocator: Allocator, data: []const u8) ?CodecPrivateData {
 
 /// Validate Motion JPEG from MP4/MOV container.
 /// Each frame in MJPEG is a complete JPEG image.
-fn validateMjpegFromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, max_frames: u32) VideoValidationResult {
+fn validateMjpegFromMp4(allocator: Allocator, file: *FileSource, stbl: Mp4Box, max_frames: u32) VideoValidationResult {
     // Parse sample table for frame extraction
     var sample_table = parseSampleTable(allocator, file, stbl.offset, stbl.size, stbl.header_size) orelse {
         return VideoValidationResult.invalid("Failed to parse sample tables", .mjpeg);
@@ -2707,7 +2711,7 @@ fn validateMjpegFromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, m
 }
 
 /// Validate ProRes from MP4/MOV container.
-fn validateProResFromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, max_frames: u32) VideoValidationResult {
+fn validateProResFromMp4(allocator: Allocator, file: *FileSource, stbl: Mp4Box, max_frames: u32) VideoValidationResult {
     // Parse sample table for frame extraction
     var sample_table = parseSampleTable(allocator, file, stbl.offset, stbl.size, stbl.header_size) orelse {
         return VideoValidationResult.invalid("Failed to parse sample tables", .prores);
@@ -2792,7 +2796,7 @@ fn validateProResFromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, 
 }
 
 /// Validate MPEG-1/2 from MP4/MOV container.
-fn validateMpeg12FromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, max_frames: u32, codec: VideoCodec) VideoValidationResult {
+fn validateMpeg12FromMp4(allocator: Allocator, file: *FileSource, stbl: Mp4Box, max_frames: u32, codec: VideoCodec) VideoValidationResult {
     // Parse sample table for frame extraction
     var sample_table = parseSampleTable(allocator, file, stbl.offset, stbl.size, stbl.header_size) orelse {
         return VideoValidationResult.invalid("Failed to parse sample tables", codec);
@@ -2871,7 +2875,7 @@ fn validateMpeg12FromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, 
 }
 
 
-fn validateMpeg4P2FromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box, max_frames: u32) VideoValidationResult {
+fn validateMpeg4P2FromMp4(allocator: Allocator, file: *FileSource, stbl: Mp4Box, max_frames: u32) VideoValidationResult {
     // Parse sample table for frame extraction
     var sample_table = parseSampleTable(allocator, file, stbl.offset, stbl.size, stbl.header_size) orelse {
         return VideoValidationResult.invalid("Failed to parse sample tables", .mpeg4p2);
@@ -2951,7 +2955,7 @@ fn validateMpeg4P2FromMp4(allocator: Allocator, file: std.fs.File, stbl: Mp4Box,
     }
 }
 
-fn extractMpeg4DecoderConfig(allocator: Allocator, file: std.fs.File, stsd_offset: u64, stsd_size: u64) ?[]u8 {
+fn extractMpeg4DecoderConfig(allocator: Allocator, file: *FileSource, stsd_offset: u64, stsd_size: u64) ?[]u8 {
     // Skip stsd header (8) + version/flags (4) + entry count (4) = 16 bytes
     file.seekTo(stsd_offset + 16) catch return null;
 
@@ -2996,7 +3000,7 @@ fn extractMpeg4DecoderConfig(allocator: Allocator, file: std.fs.File, stsd_offse
     return null;
 }
 
-fn parseEsdsDecoderConfig(allocator: Allocator, file: std.fs.File, max_size: u32) ?[]u8 {
+fn parseEsdsDecoderConfig(allocator: Allocator, file: *FileSource, max_size: u32) ?[]u8 {
     // ES descriptor parsing - look for decoder config descriptor (tag 0x04)
     // then decoder specific info (tag 0x05)
     var bytes_read: u32 = 0;

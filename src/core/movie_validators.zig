@@ -3,6 +3,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
@@ -657,10 +659,11 @@ pub fn validateFlv(file: std.fs.File) ValidationResult {
 /// to codec validators. FLV video tags with codec ID 7 contain AVCC-format H.264;
 /// audio tags with sound format 10 contain raw AAC frames.
 pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.flv, .failed_to_open, "FLV file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.flv, .failed_to_get, "file size");
@@ -936,10 +939,11 @@ pub fn validateMpegTs(file: std.fs.File) ValidationResult {
 
 /// Deep MPEG-TS validation: CRC-32 for PAT/PMT, continuity counters, PES assembly + stream validation
 pub fn validateMpegTsDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.invalidCode(.mpeg_ts, .failed_to_open, "file");
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     file.seekTo(0) catch return ValidationResult.invalid(.mpeg_ts, "Failed to seek");
 
@@ -1077,14 +1081,15 @@ pub fn validateIvf(file: std.fs.File) ValidationResult {
 /// Deep IVF validation — dispatches to VP9/AV1 codec validators for frame-level integrity.
 /// IVF frames are preceded by 12-byte headers: frame_size(u32 LE) + timestamp(u64 LE).
 pub fn validateIvfDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.ivf, "File not found", .full),
             error.AccessDenied => ValidationResult.invalidWithDepth(.ivf, "Access denied", .full),
             else => ValidationResult.invalidCodeWithDepth(.ivf, .failed_to_open, "file", .full),
         };
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.ivf, .failed_to_get, "file size", .full);
@@ -1244,7 +1249,7 @@ pub fn parseMaxVideoDeepSize(env: ?[:0]const u8) u64 {
 
 /// Find a child box by type within a parent box's data region.
 /// Returns the offset and size of the matching child box, or null if not found.
-fn findChildBox(file: std.fs.File, parent_data_offset: u64, parent_end: u64, box_type: *const [4]u8) ?struct { offset: u64, size: u64 } {
+fn findChildBox(file: *FileSource, parent_data_offset: u64, parent_end: u64, box_type: *const [4]u8) ?struct { offset: u64, size: u64 } {
     var pos = parent_data_offset;
     while (pos + 8 <= parent_end) {
         file.seekTo(pos) catch return null;
@@ -1272,7 +1277,7 @@ fn findChildBox(file: std.fs.File, parent_data_offset: u64, parent_end: u64, box
 
 /// Return the data offset (past the header) for a box at a given offset.
 /// Standard box header is 8 bytes; extended-size header is 16 bytes.
-fn boxDataOffset(file: std.fs.File, box_offset: u64) u64 {
+fn boxDataOffset(file: *FileSource, box_offset: u64) u64 {
     file.seekTo(box_offset) catch return box_offset + 8;
     var hdr: [4]u8 = undefined;
     const n = file.read(&hdr) catch return box_offset + 8;
@@ -1283,13 +1288,13 @@ fn boxDataOffset(file: std.fs.File, box_offset: u64) u64 {
 }
 
 /// Full-box data offset: past the header + version(1) + flags(3) = header + 4 bytes.
-fn fullBoxDataOffset(file: std.fs.File, box_offset: u64) u64 {
+fn fullBoxDataOffset(file: *FileSource, box_offset: u64) u64 {
     return boxDataOffset(file, box_offset) + 4; // skip version + flags
 }
 
 /// Validate MP4 sample tables (stco/co64/stts/stsc/stsz) across all tracks.
 /// Returns null if valid, or an error message string if corruption is found.
-fn validateMp4SampleTables(file: std.fs.File, file_size: u64) ?[]const u8 {
+fn validateMp4SampleTables(file: *FileSource, file_size: u64) ?[]const u8 {
     // Find moov box by scanning top-level boxes
     var pos: u64 = 0;
     var moov_offset: u64 = 0;
@@ -1381,7 +1386,7 @@ fn validateMp4SampleTables(file: std.fs.File, file_size: u64) ?[]const u8 {
 }
 
 /// Validate stco box: every 32-bit chunk offset must be < file_size.
-fn validateStco(file: std.fs.File, box_offset: u64, box_size: u64, file_size: u64) ?[]const u8 {
+fn validateStco(file: *FileSource, box_offset: u64, box_size: u64, file_size: u64) ?[]const u8 {
     const data_start = fullBoxDataOffset(file, box_offset);
     const box_end = box_offset + box_size;
     if (data_start + 4 > box_end) return "stco box too small for entry_count";
@@ -1422,7 +1427,7 @@ fn validateStco(file: std.fs.File, box_offset: u64, box_size: u64, file_size: u6
 }
 
 /// Validate co64 box: every 64-bit chunk offset must be < file_size.
-fn validateCo64(file: std.fs.File, box_offset: u64, box_size: u64, file_size: u64) ?[]const u8 {
+fn validateCo64(file: *FileSource, box_offset: u64, box_size: u64, file_size: u64) ?[]const u8 {
     const data_start = fullBoxDataOffset(file, box_offset);
     const box_end = box_offset + box_size;
     if (data_start + 4 > box_end) return "co64 box too small for entry_count";
@@ -1461,7 +1466,7 @@ fn validateCo64(file: std.fs.File, box_offset: u64, box_size: u64, file_size: u6
 }
 
 /// Validate stts box: each entry's sample_count must be > 0, entry_count reasonable.
-fn validateStts(file: std.fs.File, box_offset: u64, box_size: u64) ?[]const u8 {
+fn validateStts(file: *FileSource, box_offset: u64, box_size: u64) ?[]const u8 {
     const data_start = fullBoxDataOffset(file, box_offset);
     const box_end = box_offset + box_size;
     if (data_start + 4 > box_end) return "stts box too small for entry_count";
@@ -1501,7 +1506,7 @@ fn validateStts(file: std.fs.File, box_offset: u64, box_size: u64) ?[]const u8 {
 }
 
 /// Validate stsc box: first_chunk values must be monotonically increasing, first must be 1.
-fn validateStsc(file: std.fs.File, box_offset: u64, box_size: u64) ?[]const u8 {
+fn validateStsc(file: *FileSource, box_offset: u64, box_size: u64) ?[]const u8 {
     const data_start = fullBoxDataOffset(file, box_offset);
     const box_end = box_offset + box_size;
     if (data_start + 4 > box_end) return "stsc box too small for entry_count";
@@ -1552,7 +1557,7 @@ fn validateStsc(file: std.fs.File, box_offset: u64, box_size: u64) ?[]const u8 {
 }
 
 /// Validate stsz box: sample_count must be reasonable.
-fn validateStsz(file: std.fs.File, box_offset: u64, box_size: u64) ?[]const u8 {
+fn validateStsz(file: *FileSource, box_offset: u64, box_size: u64) ?[]const u8 {
     const data_start = fullBoxDataOffset(file, box_offset);
     const box_end = box_offset + box_size;
     // stsz header: sample_size(4) + sample_count(4) = 8 bytes after version+flags
@@ -1579,14 +1584,15 @@ fn validateStsz(file: std.fs.File, box_offset: u64, box_size: u64) ?[]const u8 {
 /// Deep MP4/ISOBMFF validation - validates all box sizes and structure.
 /// Also validates video stream integrity using pure-Zig codec validators.
 pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.mp4, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.mp4, "Access denied", .structural),
             else => ValidationResult.invalidCodeWithDepth(.mp4, .failed_to_open, "file", .structural),
         };
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.mp4, .failed_to_get, "file size", .structural);
@@ -1788,14 +1794,15 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Deep MKV/EBML validation - validates element structure.
 /// Only performs deep validation for files under 100MB.
 pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.mkv, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.mkv, "Access denied", .structural),
             else => ValidationResult.invalidCodeWithDepth(.mkv, .failed_to_open, "file", .structural),
         };
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.mkv, .failed_to_get, "file size", .structural);
@@ -1960,14 +1967,15 @@ pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Supports MJPEG, H.264, MPEG-1/2 codecs.
 /// Only performs deep validation for files under 100MB.
 pub fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.avi, "File not found", .structural),
             error.AccessDenied => ValidationResult.invalidWithDepth(.avi, "Access denied", .structural),
             else => ValidationResult.invalidCodeWithDepth(.avi, .failed_to_open, "file", .structural),
         };
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.avi, .failed_to_get, "file size", .structural);

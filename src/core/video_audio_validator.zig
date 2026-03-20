@@ -16,6 +16,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 // Import existing validators
 const video_validator = @import("video_validator.zig");
@@ -271,7 +273,7 @@ const MkvCrcResult = struct {
 
 /// Try to validate MKV using Cluster CRCs.
 fn validateMkvCrc(allocator: Allocator, path: []const u8) MkvCrcResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return .{
             .crc_valid = false,
             .has_full_crc_coverage = false,
@@ -283,9 +285,9 @@ fn validateMkvCrc(allocator: Allocator, path: []const u8) MkvCrcResult {
             .audio_codec = .unknown,
         };
     };
-    defer file.close();
+    defer source.close();
 
-    var parser = ebml.MatroskaParser.init(allocator, file);
+    var parser = ebml.MatroskaParser.init(allocator, &source);
 
     // Parse header to verify it's a valid MKV
     const doc_info = parser.parseEbmlHeader() orelse {
@@ -389,7 +391,7 @@ const readMp4BoxHeader = mp4_parser.readMp4BoxHeader;
 const findChildBox = mp4_parser.findChildBox;
 
 /// Detect audio codec from MP4 sample description
-fn detectMp4AudioCodec(file: std.fs.File, stsd_offset: u64) AudioCodec {
+fn detectMp4AudioCodec(file: *FileSource, stsd_offset: u64) AudioCodec {
     // Skip stsd header (8 bytes) + version/flags (4 bytes) + entry count (4 bytes)
     file.seekTo(stsd_offset + 16) catch return .unknown;
 
@@ -426,7 +428,7 @@ fn detectMp4AudioCodec(file: std.fs.File, stsd_offset: u64) AudioCodec {
 }
 
 /// Detect mp4a subtype (AAC vs MP3 vs others)
-fn detectMp4aSubtype(file: std.fs.File, stsd_offset: u64) AudioCodec {
+fn detectMp4aSubtype(file: *FileSource, stsd_offset: u64) AudioCodec {
     // The esds box contains the audio object type
     // For simplicity, assume AAC if mp4a is present
     // A proper implementation would parse esds and check objectTypeIndication
@@ -437,10 +439,11 @@ fn detectMp4aSubtype(file: std.fs.File, stsd_offset: u64) AudioCodec {
 
 /// Validate audio track from MP4 file
 pub fn validateMp4Audio(allocator: Allocator, path: []const u8) AudioValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return AudioValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
     };
-    defer file.close();
+    defer source.close();
+    const file = &source;
 
     const file_size = file.getEndPos() catch {
         return AudioValidationResult.invalid(errmsg.failedToGet("file size"), .unknown);
@@ -533,7 +536,7 @@ pub fn validateMp4Audio(allocator: Allocator, path: []const u8) AudioValidationR
 }
 
 /// Validate AAC track from MP4 by extracting and decoding samples
-fn validateMp4AacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) AudioValidationResult {
+fn validateMp4AacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) AudioValidationResult {
     // Get stsd to extract AAC config
     const stsd = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stsd");
     if (stsd == null) {
@@ -723,7 +726,7 @@ fn validateMp4AacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
 }
 
 /// Validate ALAC track from MP4/M4A by extracting and decoding samples
-fn validateMp4AlacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) AudioValidationResult {
+fn validateMp4AlacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) AudioValidationResult {
     // Get stsd to extract ALAC config
     const stsd = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stsd");
     if (stsd == null) {
@@ -874,7 +877,7 @@ fn validateMp4AlacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) A
 }
 
 /// Extract ALAC config (magic cookie) from stsd box
-fn extractAlacConfig(file: std.fs.File, stsd: Mp4Box) ?[24]u8 {
+fn extractAlacConfig(file: *FileSource, stsd: Mp4Box) ?[24]u8 {
     // stsd structure: version (1) + flags (3) + entry_count (4) + entries
     // Each entry: size (4) + type (4) + data
     // For ALAC: ... > alac (codec specific) > alac (magic cookie)
@@ -930,7 +933,7 @@ fn extractAlacConfig(file: std.fs.File, stsd: Mp4Box) ?[24]u8 {
     return null;
 }
 
-fn extractAacConfig(allocator: Allocator, file: std.fs.File, stsd: Mp4Box) ?[]u8 {
+fn extractAacConfig(allocator: Allocator, file: *FileSource, stsd: Mp4Box) ?[]u8 {
     // stsd structure: version (1) + flags (3) + entry_count (4) + entries
     // For AAC: mp4a entry > esds box (or wave > esds for QuickTime)
 
@@ -1013,7 +1016,7 @@ fn extractAacConfig(allocator: Allocator, file: std.fs.File, stsd: Mp4Box) ?[]u8
     return null;
 }
 
-fn parseEsdsAudioConfig(allocator: Allocator, file: std.fs.File, max_size: u32) ?[]u8 {
+fn parseEsdsAudioConfig(allocator: Allocator, file: *FileSource, max_size: u32) ?[]u8 {
     // ES descriptor parsing - look for tag 0x05 (DecoderSpecificInfo) which contains the ASC
     var bytes_read: u32 = 0;
     while (bytes_read < max_size) {
@@ -1066,7 +1069,7 @@ fn parseEsdsAudioConfig(allocator: Allocator, file: std.fs.File, max_size: u32) 
 }
 
 /// Validate AC-3 track from MP4 container
-fn validateMp4Ac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) AudioValidationResult {
+fn validateMp4Ac3Track(allocator: Allocator, file: *FileSource, stbl: Mp4Box) AudioValidationResult {
     // Parse sample table for frame extraction
     const stsz = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stsz");
     if (stsz == null) {
@@ -1244,7 +1247,7 @@ fn validateMkvAacTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track
 }
 
 /// Validate E-AC-3 track from MP4 container
-fn validateMp4Eac3Track(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) AudioValidationResult {
+fn validateMp4Eac3Track(allocator: Allocator, file: *FileSource, stbl: Mp4Box) AudioValidationResult {
     // Parse sample table for frame extraction
     const stsz = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stsz");
     if (stsz == null) {
@@ -1357,13 +1360,13 @@ fn validateMkvEac3Track(allocator: Allocator, parser: *ebml.MatroskaParser, trac
 
 /// Validate audio track from MKV file
 fn validateMkvAudio(allocator: Allocator, path: []const u8) AudioValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return AudioValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
     };
-    defer file.close();
+    defer source.close();
 
     // Use existing Matroska parser
-    var parser = ebml.MatroskaParser.init(allocator, file);
+    var parser = ebml.MatroskaParser.init(allocator, &source);
 
     // Parse EBML header
     const doc_info = parser.parseEbmlHeader() orelse {

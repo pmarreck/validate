@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 /// MP4/ISOBMFF box header information.
 /// Shared between video_validator.zig and video_audio_validator.zig.
@@ -11,7 +13,7 @@ pub const Mp4Box = struct {
 
 /// Read MP4 box header at current file position.
 /// Returns null if the header is unreadable or the box size is invalid.
-pub fn readMp4BoxHeader(file: std.fs.File) ?Mp4Box {
+pub fn readMp4BoxHeader(file: *FileSource) ?Mp4Box {
     var header: [16]u8 = undefined;
     const bytes_read = file.read(header[0..8]) catch return null;
     if (bytes_read < 8) return null;
@@ -48,7 +50,7 @@ pub fn readMp4BoxHeader(file: std.fs.File) ?Mp4Box {
 
 /// Find a child box of the given type within a parent box.
 /// Seeks through sibling boxes starting at parent_offset.
-pub fn findChildBox(file: std.fs.File, parent_offset: u64, parent_size: u64, target_type: []const u8) ?Mp4Box {
+pub fn findChildBox(file: *FileSource, parent_offset: u64, parent_size: u64, target_type: []const u8) ?Mp4Box {
     const end_offset = parent_offset + parent_size;
     file.seekTo(parent_offset) catch return null;
 
@@ -72,15 +74,20 @@ test "readMp4BoxHeader parses standard box" {
         0x00, 0x00, 0x02, 0x00, // version
     };
 
-    // Write to a temp file
+    // Write to a temp file, then open via FileSource
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = tmp_dir.dir.createFile("test.mp4", .{ .read = true }) catch unreachable;
-    defer file.close();
-    file.writeAll(&box_data) catch unreachable;
-    file.seekTo(0) catch unreachable;
+    {
+        const wf = tmp_dir.dir.createFile("test.mp4", .{}) catch unreachable;
+        wf.writeAll(&box_data) catch unreachable;
+        wf.close();
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmp_dir.dir.realpath("test.mp4", &path_buf) catch unreachable;
+    var source = FileSource.open(path) catch unreachable;
+    defer source.close();
 
-    const box = readMp4BoxHeader(file);
+    const box = readMp4BoxHeader(&source);
     try std.testing.expect(box != null);
     try std.testing.expectEqualSlices(u8, "ftyp", &box.?.box_type);
     try std.testing.expectEqual(@as(u64, 0), box.?.offset);
@@ -99,11 +106,16 @@ test "readMp4BoxHeader rejects zero-size extended box" {
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = tmp_dir.dir.createFile("test.mp4", .{ .read = true }) catch unreachable;
-    defer file.close();
-    file.writeAll(&box_data) catch unreachable;
-    file.seekTo(0) catch unreachable;
+    {
+        const wf = tmp_dir.dir.createFile("test.mp4", .{}) catch unreachable;
+        wf.writeAll(&box_data) catch unreachable;
+        wf.close();
+    }
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmp_dir.dir.realpath("test.mp4", &path_buf) catch unreachable;
+    var source = FileSource.open(path) catch unreachable;
+    defer source.close();
 
-    const box = readMp4BoxHeader(file);
+    const box = readMp4BoxHeader(&source);
     try std.testing.expect(box == null);
 }
