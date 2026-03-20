@@ -1,0 +1,220 @@
+/// FileSource provides uniform file read access backed by either mmap or
+/// traditional file I/O. On POSIX systems, files are memory-mapped for
+/// zero-syscall random access; on Windows or when mmap fails, falls back
+/// to regular file I/O. This dramatically improves performance on network
+/// mounts (NAS/SMB/NFS) where each seekTo+read is a network round-trip.
+const std = @import("std");
+
+pub const FileSource = struct {
+    /// The backing storage — either mmap'd memory or a file handle
+    backing: Backing,
+    /// Current read position (for mmap mode)
+    pos: usize = 0,
+    /// Total file size
+    file_size: u64,
+
+    const Backing = union(enum) {
+        mapped: MappedData,
+        file: std.fs.File,
+    };
+
+    const MappedData = struct {
+        data: []align(std.mem.page_size) const u8,
+    };
+
+    /// Open a file, preferring mmap on POSIX systems.
+    /// Falls back to regular file I/O if mmap fails.
+    pub fn open(path: []const u8) !FileSource {
+        const file = try std.fs.cwd().openFile(path, .{});
+        errdefer file.close();
+
+        const file_size = try file.getEndPos();
+
+        // Don't mmap empty files or files > 8GB (virtual address space caution)
+        if (file_size == 0 or file_size > 8 * 1024 * 1024 * 1024) {
+            return .{
+                .backing = .{ .file = file },
+                .file_size = file_size,
+            };
+        }
+
+        // Try mmap on POSIX systems
+        if (comptime @import("builtin").os.tag != .windows) {
+            const mapped = std.posix.mmap(
+                null,
+                @intCast(file_size),
+                std.posix.PROT.READ,
+                .{ .TYPE = .SHARED },
+                file.handle,
+                0,
+            ) catch {
+                // mmap failed — fall back to file I/O
+                return .{
+                    .backing = .{ .file = file },
+                    .file_size = file_size,
+                };
+            };
+
+            // Advise the kernel that we'll access randomly
+            std.posix.madvise(@constCast(mapped.ptr), mapped.len, .RANDOM) catch {};
+
+            // Close the file handle — the mapping keeps the file alive
+            file.close();
+
+            return .{
+                .backing = .{ .mapped = .{ .data = mapped } },
+                .file_size = file_size,
+            };
+        }
+
+        // Windows: fall back to file I/O (TODO: CreateFileMapping)
+        return .{
+            .backing = .{ .file = file },
+            .file_size = file_size,
+        };
+    }
+
+    /// Close the file source and release resources.
+    pub fn close(self: *FileSource) void {
+        switch (self.backing) {
+            .mapped => |m| {
+                const ptr: [*]align(std.mem.page_size) u8 = @constCast(m.data.ptr);
+                std.posix.munmap(ptr[0..m.data.len]);
+            },
+            .file => |f| f.close(),
+        }
+    }
+
+    /// Seek to an absolute position.
+    pub fn seekTo(self: *FileSource, pos: u64) !void {
+        switch (self.backing) {
+            .mapped => {
+                if (pos > self.file_size) return error.Unseekable;
+                self.pos = @intCast(pos);
+            },
+            .file => |f| try f.seekTo(pos),
+        }
+    }
+
+    /// Read into a buffer, returning the number of bytes read.
+    pub fn read(self: *FileSource, dest: []u8) !usize {
+        switch (self.backing) {
+            .mapped => |m| {
+                if (self.pos >= m.data.len) return 0;
+                const available = m.data.len - self.pos;
+                const to_read = @min(dest.len, available);
+                @memcpy(dest[0..to_read], m.data[self.pos..][0..to_read]);
+                self.pos += to_read;
+                return to_read;
+            },
+            .file => |f| return f.read(dest),
+        }
+    }
+
+    /// Read exactly `dest.len` bytes, returning the count actually read.
+    pub fn readAll(self: *FileSource, dest: []u8) !usize {
+        switch (self.backing) {
+            .mapped => |m| {
+                if (self.pos >= m.data.len) return 0;
+                const available = m.data.len - self.pos;
+                const to_read = @min(dest.len, available);
+                @memcpy(dest[0..to_read], m.data[self.pos..][0..to_read]);
+                self.pos += to_read;
+                return to_read;
+            },
+            .file => |f| return f.readAll(dest),
+        }
+    }
+
+    /// Get current position.
+    pub fn getPos(self: *FileSource) !u64 {
+        switch (self.backing) {
+            .mapped => return @intCast(self.pos),
+            .file => |f| return f.getPos(),
+        }
+    }
+
+    /// Get file size (end position).
+    pub fn getEndPos(self: *FileSource) !u64 {
+        return self.file_size;
+    }
+
+    /// Check if this source is backed by mmap.
+    pub fn isMapped(self: *const FileSource) bool {
+        return self.backing == .mapped;
+    }
+};
+
+// ============ Tests ============
+
+test "FileSource mmap read and seek" {
+    // Create a temp file with known content
+    const tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "Hello, mmap world! This is a test of the file source abstraction.";
+    tmp.dir.writeFile(.{ .sub_path = "test.bin", .data = content }) catch return;
+
+    // Get absolute path
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmp.dir.realpath("test.bin", &path_buf) catch return;
+
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+
+    try std.testing.expectEqual(@as(u64, content.len), source.file_size);
+
+    // Read first 5 bytes
+    var buf: [5]u8 = undefined;
+    const n = try source.read(&buf);
+    try std.testing.expectEqual(@as(usize, 5), n);
+    try std.testing.expectEqualStrings("Hello", &buf);
+
+    // Seek and read
+    try source.seekTo(7);
+    const n2 = try source.read(&buf);
+    try std.testing.expectEqual(@as(usize, 5), n2);
+    try std.testing.expectEqualStrings("mmap ", &buf);
+
+    // getPos
+    const pos = try source.getPos();
+    try std.testing.expectEqual(@as(u64, 12), pos);
+
+    // getEndPos
+    const end = try source.getEndPos();
+    try std.testing.expectEqual(@as(u64, content.len), end);
+}
+
+test "FileSource read past end returns partial" {
+    const tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "small.bin", .data = "abc" }) catch return;
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmp.dir.realpath("small.bin", &path_buf) catch return;
+
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+
+    try source.seekTo(1);
+    var buf: [10]u8 = undefined;
+    const n = try source.read(&buf);
+    try std.testing.expectEqual(@as(usize, 2), n);
+    try std.testing.expectEqualStrings("bc", buf[0..2]);
+}
+
+test "FileSource seek past end returns error" {
+    const tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "tiny.bin", .data = "x" }) catch return;
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmp.dir.realpath("tiny.bin", &path_buf) catch return;
+
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+
+    // Seeking to exact end is OK
+    try source.seekTo(1);
+    // Seeking past end is error
+    try std.testing.expectError(error.Unseekable, source.seekTo(100));
+}
