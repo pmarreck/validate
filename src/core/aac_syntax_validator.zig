@@ -21,6 +21,7 @@ const errmsg = @import("error_messages.zig");
 pub const AacSyntaxResult = struct {
     valid: bool,
     error_message: ?[]const u8,
+    warning_message: ?[]const u8 = null,
     frames_checked: u32,
 
     pub fn ok(frames: u32) AacSyntaxResult {
@@ -837,6 +838,7 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
 
     var offset: usize = 0;
     var frames: u32 = 0;
+    var au_parse_failures: u32 = 0;
     for (au_sizes) |size| {
         if (offset + size > data.len) break;
         const au_slice = data[offset..][0..size];
@@ -849,14 +851,22 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
             continue;
         }
         if (!validateAccessUnit(au_slice, &config)) {
-            return AacSyntaxResult.invalid("AAC syntax error in access unit", frames);
+            // Tolerate individual AU parse failures — some encoders (iTunes,
+            // Nero) produce AUs with edge-case syntax our parser doesn't handle.
+            // Only fail if no AUs could be parsed at all (checked below).
+            au_parse_failures += 1;
+        } else {
+            frames += 1;
         }
         offset += size;
-        frames += 1;
     }
 
-    if (frames == 0) return AacSyntaxResult.invalid("No frames validated", 0);
-    return AacSyntaxResult.ok(frames);
+    if (frames == 0) return AacSyntaxResult.invalid("No AAC frames validated", 0);
+    var result = AacSyntaxResult.ok(frames);
+    if (au_parse_failures > 0) {
+        result.warning_message = "Some AAC access units could not be parsed";
+    }
+    return result;
 }
 
 /// ADTS frame header (7 or 9 bytes)

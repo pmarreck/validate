@@ -129,6 +129,7 @@ pub const MediaValidationResult = struct {
 pub const AudioValidationResult = struct {
     valid: bool,
     error_message: ?[]const u8,
+    warning_message: ?[]const u8 = null,
     codec: AudioCodec,
     frames_decoded: u32,
 
@@ -716,7 +717,9 @@ fn validateMp4AacTrack(allocator: Allocator, file: std.fs.File, stbl: Mp4Box) Au
         return AudioValidationResult.invalid(syntax_result.error_message orelse "AAC syntax error", .aac);
     }
 
-    return AudioValidationResult.ok(.aac, syntax_result.frames_checked);
+    var ar = AudioValidationResult.ok(.aac, syntax_result.frames_checked);
+    ar.warning_message = syntax_result.warning_message;
+    return ar;
 }
 
 /// Validate ALAC track from MP4/M4A by extracting and decoding samples
@@ -1235,7 +1238,9 @@ fn validateMkvAacTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track
         return AudioValidationResult.invalid(result.error_message orelse "AAC syntax validation failed", .aac);
     }
 
-    return AudioValidationResult.ok(.aac, result.frames_checked);
+    var ar = AudioValidationResult.ok(.aac, result.frames_checked);
+    ar.warning_message = result.warning_message;
+    return ar;
 }
 
 /// Validate E-AC-3 track from MP4 container

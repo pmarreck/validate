@@ -1763,6 +1763,12 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
         result.malformations.insert(.video_unsupported_profile_no_ffmpeg);
         result.warning_message = "full validation of this file requires ffmpeg (v4.0+) on PATH due to H.264 profile complexity";
     }
+    // Propagate audio codec warnings (e.g., unparseable AAC access units)
+    if (audio_result.warning_message) |warn| {
+        if (result.warning_message == null) {
+            result.warning_message = warn;
+        }
+    }
     // Audio not fully validated → not every byte is verified → downgrade from .full
     if (has_audio and !audio_validated) {
         if (result.validation_depth == .full) {
