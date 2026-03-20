@@ -1939,7 +1939,8 @@ pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult 
         ValidationResult.structuralOnly(.mkv);
 
     // Audio not fully validated → not every byte is verified → downgrade from .full
-    if (media_result.has_audio_track and !audio_byte_validated) {
+    // Skip this check when CRC validation succeeded (CRCs cover all cluster data including audio)
+    if (media_result.has_audio_track and !audio_byte_validated and !media_result.crc_validated) {
         if (result.validation_depth == .full) {
             result.validation_depth = .structural;
         }
