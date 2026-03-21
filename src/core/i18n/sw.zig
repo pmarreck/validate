@@ -134,6 +134,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .dsf = "Faili ya Utiririshaji ya DSD",
     .dff = "Sauti ya DSDIFF",
     .ac3 = "Sauti ya Dolby Digital AC-3",
+    .dts = "DTS Digital Surround Audio",
     .eac3 = "Sauti ya Dolby Digital Plus",
     .amr = "Sauti ya AMR",
     .au = "Sauti ya AU/SND",

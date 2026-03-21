@@ -162,6 +162,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .dsf = "DSD-Streamdatei",
     .dff = "DSDIFF-Audio",
     .ac3 = "Dolby Digital AC-3 Audio",
+    .dts = "DTS Digital Surround Audio",
     .eac3 = "Dolby Digital Plus Audio",
     .amr = "AMR-Audio",
     .au = "AU/SND-Audio",

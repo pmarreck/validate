@@ -135,7 +135,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .mp4, .mov, .mkv, .webm, .avi, .swf, .flv, .prores, .av1, .ogv, .mpeg_ps, .mpeg_ts, .mpeg_es, .ivf, .asf, .dv => "video",
 
         // Audio
-        .mp3, .flac, .wav, .m4a, .alac, .aiff, .ogg, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .eac3, .amr, .au, .tta, .caf, .aac_adts, .mod, .xm, .it, .s3m => "audio",
+        .mp3, .flac, .wav, .m4a, .alac, .aiff, .ogg, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .dts, .eac3, .amr, .au, .tta, .caf, .aac_adts, .mod, .xm, .it, .s3m => "audio",
 
         // Documents
         .pdf, .docx, .xlsx, .pptx, .doc, .xls, .ppt, .odt, .ods, .odp, .rtf, .pages, .wpd, .cwk, .mwd => "document",

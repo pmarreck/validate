@@ -9,6 +9,7 @@ const ogg_validator = @import("ogg_validator.zig");
 const vorbis_validator = @import("vorbis_validator.zig");
 const opus_validator = @import("opus_validator.zig");
 const ac3_validator = @import("ac3_validator.zig");
+const dts_validator = @import("dts_validator.zig");
 const eac3_validator = @import("eac3_validator.zig");
 const wavpack_decoder = @import("wavpack_decoder.zig");
 const midi_validator = @import("midi_validator.zig");
@@ -1328,6 +1329,47 @@ pub fn validateEac3Deep(path: []const u8) ValidationResult {
         return ValidationResult.okWithDepth(.eac3, .full);
     } else {
         return ValidationResult.invalidWithDepth(.eac3, result.error_message orelse "E-AC-3 validation failed", .full);
+    }
+}
+
+/// Validate DTS (Digital Theater Systems) file structure.
+/// DTS Core frames start with sync word 0x7FFE8001.
+pub fn validateDts(file: *FileSource) ValidationResult {
+    var header: [12]u8 = undefined;
+    const bytes_read = file.read(&header) catch {
+        return ValidationResult.invalidCode(.dts, .failed_to_read, "DTS header");
+    };
+
+    if (bytes_read < 12) {
+        return ValidationResult.invalidCode(.dts, .file_too_small, "DTS");
+    }
+
+    // Check DTS Core sync word 0x7FFE8001
+    const sync = std.mem.readInt(u32, header[0..4], .big);
+    if (sync != 0x7FFE8001) {
+        return ValidationResult.invalidCode(.dts, .invalid_value, "DTS sync word");
+    }
+
+    return ValidationResult.ok(.dts);
+}
+
+/// Deep DTS validation by parsing frame headers and verifying frame boundaries.
+pub fn validateDtsDeep(path: []const u8) ValidationResult {
+    const file = std.fs.cwd().openFile(path, .{}) catch {
+        return ValidationResult.invalidCodeWithDepth(.dts, .failed_to_open, "DTS file", .structural);
+    };
+    defer file.close();
+
+    const data = file.readToEndAlloc(std.heap.page_allocator, 10 * 1024 * 1024) catch {
+        return ValidationResult.invalidCodeWithDepth(.dts, .failed_to_read, "DTS data", .structural);
+    };
+    defer std.heap.page_allocator.free(data);
+
+    const result = dts_validator.validateDtsStream(data, 100);
+    if (result.valid) {
+        return ValidationResult.okWithDepth(.dts, .full);
+    } else {
+        return ValidationResult.invalidWithDepth(.dts, result.error_message orelse "DTS validation failed", .full);
     }
 }
 

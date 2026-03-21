@@ -134,6 +134,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .dsf = "ไฟล์สตรีม DSD",
     .dff = "เสียง DSDIFF",
     .ac3 = "ระบบเสียง Dolby Digital AC-3",
+    .dts = "DTS Digital Surround Audio",
     .eac3 = "ระบบเสียงดอลบี้ดิจิตอลพลัส",
     .amr = "เครื่องเสียง AMR",
     .au = "เสียงออสเตรเลีย/SND",

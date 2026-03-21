@@ -24,6 +24,7 @@ pub const format_validation = @import("format_validation.zig");
 pub const jpeg_validator = @import("jpeg_validator.zig");
 pub const alac_validator = @import("alac_validator.zig");
 pub const ac3_validator = @import("ac3_validator.zig");
+pub const dts_validator = @import("dts_validator.zig");
 pub const eac3_validator = @import("eac3_validator.zig");
 pub const prores_validator = @import("prores_validator.zig");
 pub const prores_decoder = @import("prores_decoder.zig");
@@ -172,6 +173,7 @@ test "version" {
 // Include integration tests
 test {
     _ = @import("file_source.zig");
+    _ = @import("dts_validator.zig");
     _ = @import("bzip2_test.zig");
     // PDF filter decoders
     _ = @import("ascii_hex_decoder.zig");

@@ -24,6 +24,7 @@ const video_validator = @import("video_validator.zig");
 const aac_syntax_validator = @import("aac_syntax_validator.zig");
 const alac_validator = @import("alac_validator.zig");
 const ac3_validator = @import("ac3_validator.zig");
+const dts_validator = @import("dts_validator.zig");
 const eac3_validator = @import("eac3_validator.zig");
 const mp3_validator = @import("mp3_decode_validator.zig");
 const opus_validator = @import("opus_validator.zig");
@@ -410,6 +411,10 @@ fn detectMp4AudioCodec(file: *FileSource, stsd_offset: u64) AudioCodec {
         return .ac3;
     } else if (std.mem.eql(u8, entry_type, "ec-3")) {
         return .eac3;
+    } else if (std.mem.eql(u8, entry_type, "dtsc") or std.mem.eql(u8, entry_type, "dtsh") or
+        std.mem.eql(u8, entry_type, "dtsl") or std.mem.eql(u8, entry_type, "dtse"))
+    {
+        return .dts;
     } else if (std.mem.eql(u8, entry_type, "fLaC") or std.mem.eql(u8, entry_type, "flac")) {
         return .flac;
     } else if (std.mem.eql(u8, entry_type, "Opus")) {
@@ -528,7 +533,7 @@ pub fn validateMp4Audio(allocator: Allocator, path: []const u8) AudioValidationR
         .flac => AudioValidationResult.unsupported(.flac),
         .ac3 => validateMp4Ac3Track(allocator, file, stbl_box.?),
         .eac3 => validateMp4Eac3Track(allocator, file, stbl_box.?),
-        .dts => AudioValidationResult.unsupported(audio_codec),
+        .dts => validateMp4DtsTrack(allocator, file, stbl_box.?),
         .alac => validateMp4AlacTrack(allocator, file, stbl_box.?),
         .pcm => AudioValidationResult.pcmUnverifiable(), // PCM doesn't need decode validation
         else => AudioValidationResult.unsupported(.unknown),
@@ -1161,6 +1166,76 @@ fn validateMp4Ac3Track(allocator: Allocator, file: *FileSource, stbl: Mp4Box) Au
     return AudioValidationResult.ok(.ac3, result.frames_validated);
 }
 
+/// Validate DTS track from MP4 container (same sample-table approach as AC-3)
+fn validateMp4DtsTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) AudioValidationResult {
+    const stsz = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stsz");
+    if (stsz == null) return AudioValidationResult.invalid("No sample size table found", .dts);
+
+    file.seekTo(stsz.?.offset + stsz.?.header_size + 4) catch {
+        return AudioValidationResult.invalid(errmsg.failedToRead("sample sizes"), .dts);
+    };
+
+    var stsz_header: [8]u8 = undefined;
+    _ = file.read(&stsz_header) catch {
+        return AudioValidationResult.invalid(errmsg.failedToRead("sample sizes"), .dts);
+    };
+
+    const default_size = std.mem.readInt(u32, stsz_header[0..4], .big);
+    const sample_count = std.mem.readInt(u32, stsz_header[4..8], .big);
+
+    if (sample_count == 0) return AudioValidationResult.invalid("No DTS samples found", .dts);
+
+    const stco = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stco");
+    const co64 = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "co64");
+    if (stco == null and co64 == null) return AudioValidationResult.invalid("No chunk offset table found", .dts);
+
+    const chunk_box = if (stco != null) stco.? else co64.?;
+    const is_64bit = stco == null;
+
+    file.seekTo(chunk_box.offset + chunk_box.header_size + 4) catch {
+        return AudioValidationResult.invalid(errmsg.failedToRead("chunk offsets"), .dts);
+    };
+
+    var chunk_count_buf: [4]u8 = undefined;
+    _ = file.read(&chunk_count_buf) catch {
+        return AudioValidationResult.invalid(errmsg.failedToRead("chunk offsets"), .dts);
+    };
+
+    const first_offset: u64 = if (is_64bit) blk: {
+        var offset_buf: [8]u8 = undefined;
+        _ = file.read(&offset_buf) catch return AudioValidationResult.invalid(errmsg.failedToRead("chunk offset"), .dts);
+        break :blk std.mem.readInt(u64, &offset_buf, .big);
+    } else blk: {
+        var offset_buf: [4]u8 = undefined;
+        _ = file.read(&offset_buf) catch return AudioValidationResult.invalid(errmsg.failedToRead("chunk offset"), .dts);
+        break :blk std.mem.readInt(u32, &offset_buf, .big);
+    };
+
+    const max_read: u32 = 64 * 1024;
+    const read_size = @min(if (default_size > 0) default_size * @min(sample_count, 100) else max_read, max_read);
+
+    const buffer = allocator.alloc(u8, read_size) catch {
+        return AudioValidationResult.invalid("Memory allocation failed", .dts);
+    };
+    defer allocator.free(buffer);
+
+    file.seekTo(first_offset) catch {
+        return AudioValidationResult.invalid(errmsg.failedToSeek("to DTS data"), .dts);
+    };
+
+    const bytes_read = file.read(buffer) catch {
+        return AudioValidationResult.invalid(errmsg.failedToRead("DTS data"), .dts);
+    };
+
+    const result = dts_validator.validateDtsStream(buffer[0..bytes_read], 10);
+
+    if (!result.valid) {
+        return AudioValidationResult.invalid(result.error_message orelse "DTS validation failed", .dts);
+    }
+
+    return AudioValidationResult.ok(.dts, result.frames_validated);
+}
+
 /// Validate AC-3 track from MKV container
 fn validateMkvAc3Track(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.VideoTrackInfo) AudioValidationResult {
     // Collect audio frames (use collectAllFrames since audio blocks may not have keyframe flag set)
@@ -1365,6 +1440,37 @@ fn validateMkvEac3Track(allocator: Allocator, parser: *ebml.MatroskaParser, trac
     return AudioValidationResult.ok(.eac3, total_frames);
 }
 
+/// Validate DTS track from MKV container
+fn validateMkvDtsTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.VideoTrackInfo) AudioValidationResult {
+    // Collect audio frames (use collectAllFrames since audio blocks may not have keyframe flag set)
+    const frames = parser.collectAllFrames(track.track_number, 10) orelse {
+        return AudioValidationResult.invalid("Failed to collect DTS frames", .dts);
+    };
+    defer {
+        for (frames) |*kf| {
+            var mutable_kf = @constCast(kf);
+            mutable_kf.deinit();
+        }
+        allocator.free(frames);
+    }
+
+    if (frames.len == 0) {
+        return AudioValidationResult.invalid("No DTS frames found", .dts);
+    }
+
+    // Validate each collected block — DTS frames in MKV are typically one frame per block
+    var total_frames: u32 = 0;
+    for (frames) |kf| {
+        const result = dts_validator.validateDtsStream(kf.data, 10);
+        if (!result.valid) {
+            return AudioValidationResult.invalid(result.error_message orelse "DTS validation failed", .dts);
+        }
+        total_frames += result.frames_validated;
+    }
+
+    return AudioValidationResult.ok(.dts, total_frames);
+}
+
 /// Validate audio track from MKV file
 fn validateMkvAudio(allocator: Allocator, path: []const u8) AudioValidationResult {
     var source = FileSource.open(path) catch {
@@ -1430,7 +1536,7 @@ fn validateMkvAudio(allocator: Allocator, path: []const u8) AudioValidationResul
         .flac => AudioValidationResult.unsupported(.flac), // Could use existing FLAC validator
         .ac3 => validateMkvAc3Track(allocator, &parser, audio_track.?),
         .eac3 => validateMkvEac3Track(allocator, &parser, audio_track.?),
-        .dts => AudioValidationResult.unsupported(audio_codec),
+        .dts => validateMkvDtsTrack(allocator, &parser, audio_track.?),
         .pcm => AudioValidationResult.pcmUnverifiable(),
         else => AudioValidationResult.unsupported(.unknown),
     };

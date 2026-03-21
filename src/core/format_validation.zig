@@ -390,6 +390,7 @@ pub const FileFormat = enum {
     dsf, // DSD Stream File (hi-res audio)
     dff, // DSDIFF - DSD Interchange File Format (hi-res audio)
     ac3, // Dolby Digital AC-3 audio
+    dts, // DTS Digital Surround audio
     eac3, // Dolby Digital Plus (E-AC-3) audio
     amr, // AMR (Adaptive Multi-Rate) audio
     au, // AU/SND (Sun/NeXT audio)
@@ -583,7 +584,7 @@ pub const FileFormat = enum {
             .asf, .dv => true, // ASF/WMV/WMA and DV
             .prores, .av1 => true, // Video codecs (detected within containers)
             .mp3, .flac, .wav, .m4a => true, // Audio
-            .alac, .aiff, .ogg, .ogv, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .eac3 => true, // Additional audio/video formats
+            .alac, .aiff, .ogg, .ogv, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .dts, .eac3 => true, // Additional audio/video formats
             .amr, .au, .tta, .caf, .aac_adts => true, // AMR, AU/SND, TTA, CAF, AAC ADTS audio
             .jpeg2000, .jbig2 => true, // JPEG2000 and JBIG2 image formats
             .qoi, .pam, .dpx, .tga => true, // QOI, Portable Anymap, DPX, TGA image formats
@@ -1243,6 +1244,8 @@ const magic_signatures = [_]MagicSignature{
     // AC-3 (Dolby Digital): 0B 77 sync word
     // Note: E-AC-3 uses same sync word but different bsid - detected in extended check
     .{ .bytes = &[_]u8{ 0x0B, 0x77 }, .offset = 0, .format = .ac3 },
+    // DTS Digital Surround: sync word 7F FE 80 01
+    .{ .bytes = &[_]u8{ 0x7F, 0xFE, 0x80, 0x01 }, .offset = 0, .format = .dts },
     // JPEG2000 JP2 container: 00 00 00 0C 6A 50 20 20 (JP2 signature box)
     .{ .bytes = &[_]u8{ 0x00, 0x00, 0x00, 0x0C, 0x6A, 0x50, 0x20, 0x20 }, .offset = 0, .format = .jpeg2000 },
     // JPEG2000 codestream: FF 4F FF 51 (SOC + SIZ markers)
@@ -2353,6 +2356,7 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "caf", .caf },
     .{ "aac", .aac_adts },
     .{ "ac3", .ac3 },
+    .{ "dts", .dts },
     .{ "eac3", .eac3 },
     .{ "ec3", .eac3 },
     .{ "dsf", .dsf },
@@ -5191,6 +5195,7 @@ pub const FormatValidator = struct {
             .jpeg2000 => image_validators.validateJpeg2000Deep(allocator, path),
             .jbig2 => image_validators.validateJbig2Deep(allocator, path),
             .ac3 => music_validators.validateAc3Deep(path),
+            .dts => music_validators.validateDtsDeep(path),
             .eac3 => music_validators.validateEac3Deep(path),
             .prproj => creative_validators.validatePrprojDeep(allocator, path),
             .indd => creative_validators.validateInddDeep(allocator, path),
@@ -5578,6 +5583,7 @@ pub const FormatValidator = struct {
             .dsf => music_validators.validateDsf(file_src_ptr),
             .dff => music_validators.validateDff(file_src_ptr),
             .ac3 => music_validators.validateAc3(file_src_ptr),
+            .dts => music_validators.validateDts(file_src_ptr),
             .eac3 => music_validators.validateEac3(file_src_ptr),
             .jpeg2000 => image_validators.validateJpeg2000(file_src_ptr),
             .jbig2 => image_validators.validateJbig2File(file_src_ptr),

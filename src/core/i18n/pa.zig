@@ -134,6 +134,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .dsf = "DSD ਸਟ੍ਰੀਮ ਫਾਈਲ",
     .dff = "DSDIFF ਆਡੀਓ",
     .ac3 = "ਡੌਲਬੀ ਡਿਜੀਟਲ AC-3 ਆਡੀਓ",
+    .dts = "DTS Digital Surround Audio",
     .eac3 = "ਡੌਲਬੀ ਡਿਜੀਟਲ ਪਲੱਸ ਆਡੀਓ",
     .amr = "AMR ਆਡੀਓ",
     .au = "AU/SND ਆਡੀਓ",
