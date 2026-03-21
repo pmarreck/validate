@@ -668,7 +668,7 @@ fn validateMp4AacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) Au
     // are typically < 8 bytes (Apple AAC encoder emits ~4-6 byte silence frames
     // at the start). We need max_real_frames of actual audio data.
     const max_real_frames: u32 = 10;
-    const max_total_samples: u32 = 200; // scan limit to find enough real frames
+    const max_total_samples: u32 = 5000; // scan limit to skip past priming region (Apple encoder can emit 1000+ priming frames)
     var frame_data: std.ArrayListUnmanaged(u8) = .{};
     defer frame_data.deinit(allocator);
     var frame_sizes: std.ArrayListUnmanaged(u32) = .{};
