@@ -726,6 +726,9 @@ static void output_unlock(void) {
 #endif
 }
 
+/* Forward declaration — defined in TUI section below */
+static int g_tui_enabled;
+
 /* Write to an output destination, with colors only for stdout/stderr when colors enabled */
 static void write_colored_line(output_dest_t* dest, const char* color_code,
 							   const char* label, const char* rest) {
@@ -737,11 +740,14 @@ static void write_colored_line(output_dest_t* dest, const char* color_code,
 
 		/* Use colors only for stdout/stderr when colors are enabled */
 		const char* rtl_prefix = (g_rtl_enabled && (f == stdout || f == stderr)) ? RLM : "";
+		/* When TUI is active, append clear-to-EOL (\033[K) before newline to prevent
+		 * progress bar remnants from trailing after shorter result lines */
+		const char* eol_clear = (g_tui_enabled && (f == stdout || f == stderr)) ? "\033[K" : "";
 		if (g_colors_enabled && (f == stdout || f == stderr)) {
-			snprintf(line_buf, sizeof(line_buf), "%s%s%s%s%s\n",
-					 rtl_prefix, color_code, label, COLOR_RESET, rest);
+			snprintf(line_buf, sizeof(line_buf), "%s%s%s%s%s%s\n",
+					 rtl_prefix, color_code, label, COLOR_RESET, rest, eol_clear);
 		} else {
-			snprintf(line_buf, sizeof(line_buf), "%s%s%s\n", rtl_prefix, label, rest);
+			snprintf(line_buf, sizeof(line_buf), "%s%s%s%s\n", rtl_prefix, label, rest, eol_clear);
 		}
 		fputs(line_buf, f);
 		fflush(f);
@@ -878,7 +884,7 @@ static void print_validation_result(const char* path, const char* result) {
 static path_list_t* g_file_list_ptr = NULL;
 
 /* Progress state — backed by progrez library via validate_progress_* FFI */
-static int g_tui_enabled = 0;
+/* g_tui_enabled forward-declared above write_colored_line */
 static int g_term_width = 80;
 static int g_term_height = 24;
 static int g_simple_progress = 0;
