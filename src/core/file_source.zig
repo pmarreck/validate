@@ -89,8 +89,10 @@ pub const FileSource = struct {
     pub fn close(self: *FileSource) void {
         switch (self.backing) {
             .mapped => |m| {
-                const ptr: [*]align(std.heap.page_size_min) u8 = @constCast(m.data.ptr);
-                std.posix.munmap(ptr[0..m.data.len]);
+                if (comptime @import("builtin").os.tag != .windows) {
+                    const ptr: [*]align(std.heap.page_size_min) u8 = @constCast(m.data.ptr);
+                    std.posix.munmap(ptr[0..m.data.len]);
+                }
             },
             .file => |f| f.close(),
         }
