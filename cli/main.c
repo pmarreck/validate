@@ -726,14 +726,64 @@ static void output_unlock(void) {
 #endif
 }
 
-/* Forward declaration — defined in TUI section below */
+/* Forward declarations — defined in TUI section below */
 static int g_tui_enabled;
+static int g_term_width;
+static int g_term_height;
+static void get_terminal_size(int* width, int* height);
+#if !defined(_WIN32)
+static volatile sig_atomic_t g_resize_signal;
+#endif
+
+/* Truncate a string to max_visible visible characters, skipping ANSI escape sequences.
+ * Writes the truncated result into dst (must be at least dst_size bytes).
+ * Handles UTF-8 by counting bytes per character. */
+static void truncate_to_width(char* dst, size_t dst_size, const char* src, int max_visible) {
+	size_t si = 0, di = 0;
+	int visible = 0;
+	size_t src_len = strlen(src);
+
+	while (si < src_len && di < dst_size - 1) {
+		if (src[si] == '\033' && si + 1 < src_len && src[si + 1] == '[') {
+			/* ANSI CSI escape: copy everything through the terminator (letter) */
+			while (si < src_len && di < dst_size - 1) {
+				dst[di++] = src[si];
+				if (src[si] >= 0x40 && src[si] <= 0x7E && src[si] != '[') {
+					si++;
+					break;
+				}
+				si++;
+			}
+		} else if (src[si] == '\n') {
+			/* Preserve newlines */
+			dst[di++] = src[si++];
+		} else {
+			/* Visible character — check if we've hit the limit */
+			if (visible >= max_visible) {
+				/* Stop copying visible content */
+				break;
+			}
+			/* Copy UTF-8 character (1-4 bytes) */
+			unsigned char c = (unsigned char)src[si];
+			int char_bytes = 1;
+			if (c >= 0xF0) char_bytes = 4;
+			else if (c >= 0xE0) char_bytes = 3;
+			else if (c >= 0xC0) char_bytes = 2;
+			for (int b = 0; b < char_bytes && si < src_len && di < dst_size - 1; b++) {
+				dst[di++] = src[si++];
+			}
+			visible++;
+		}
+	}
+	dst[di] = '\0';
+}
 
 /* Write to an output destination, with colors only for stdout/stderr when colors enabled */
 static void write_colored_line(output_dest_t* dest, const char* color_code,
 							   const char* label, const char* rest) {
 	if (dest->muted) return;  /* @null - no output */
 	char line_buf[4096];
+	char trunc_buf[4096];
 	for (int i = 0; i < dest->count; i++) {
 		FILE* f = dest->handles[i];
 		if (!f) continue;
@@ -749,7 +799,14 @@ static void write_colored_line(output_dest_t* dest, const char* color_code,
 		} else {
 			snprintf(line_buf, sizeof(line_buf), "%s%s%s%s\n", rtl_prefix, label, rest, eol_clear);
 		}
-		fputs(line_buf, f);
+
+		/* When TUI is active, truncate to terminal width to prevent wrapping */
+		if (g_tui_enabled && g_term_width > 0 && (f == stdout || f == stderr)) {
+			truncate_to_width(trunc_buf, sizeof(trunc_buf), line_buf, g_term_width);
+			fputs(trunc_buf, f);
+		} else {
+			fputs(line_buf, f);
+		}
 		fflush(f);
 	}
 }
@@ -948,6 +1005,24 @@ static void on_validation_result(
 	/* Update progress counters under lock (progrez state is not thread-safe) */
 	if (g_tui_enabled) {
 		progress_update_simple(file_size);
+
+		/* Check for terminal resize — update width/height for result line truncation
+		 * and scroll region adjustment. Progress rendering also checks this, but we
+		 * need the updated width BEFORE printing result lines. */
+#if !defined(_WIN32)
+		if (g_resize_signal) {
+			int new_w, new_h;
+			get_terminal_size(&new_w, &new_h);
+			if (new_h != g_term_height || new_w != g_term_width) {
+				g_term_width = new_w;
+				g_term_height = new_h;
+				int scroll_bottom = new_h - 2;
+				if (scroll_bottom < 1) scroll_bottom = 1;
+				fprintf(stderr, "\033[1;%dr", scroll_bottom);
+			}
+			g_resize_signal = 0;
+		}
+#endif
 	}
 
 	/* Print result line(s) - these go to the scrolling region */
