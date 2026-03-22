@@ -145,3 +145,4 @@ icalendar	opaque	Text-based calendar format with no integrity checksums
 vcard	opaque	Text-based contact format with no integrity checksums
 pem	mixed	Base64 encoding + ASN.1 DER structure validation catches many corruptions; large cert data may survive
 der	mixed	ASN.1 TLV recursive parsing catches structural corruption; payload bytes weakly protected
+dts	mixed	Frame header cross-validation (sample rate, channels, AMODE, VERNUM, PCMR, NBLKS consistency) + sync word chaining; no CRC in most streams (CPF=0 is standard); body corruption within frames is undetectable without CRC
