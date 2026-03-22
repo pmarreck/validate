@@ -221,9 +221,33 @@ pub fn validateAvi(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCodeMsg(.avi, .exceeds_bounds, "RIFF size", "RIFF size exceeds file size (truncated)");
     }
 
+    // Check for OpenDML (AVI 2.0) AVIX continuation segments after the first RIFF.
+    // If present, bounds checking must use total file size rather than first RIFF size,
+    // because chunks and idx1 entries may reference data in AVIX continuation segments.
+    var has_avix = false;
+    {
+        const scan_pos: u64 = @as(u64, riff_size) + 8;
+        // Scan for up to 4 RIFF AVIX segments after the first RIFF AVI segment
+        var avix_scanned: u32 = 0;
+        while (scan_pos + 12 <= file_size and avix_scanned < 4) : (avix_scanned += 1) {
+            file.seekTo(scan_pos) catch break;
+            var avix_hdr: [12]u8 = undefined;
+            const avix_read = file.read(&avix_hdr) catch break;
+            if (avix_read < 12) break;
+            if (std.mem.eql(u8, avix_hdr[0..4], "RIFF") and std.mem.eql(u8, avix_hdr[8..12], "AVIX")) {
+                has_avix = true;
+                break;
+            }
+            // Not AVIX — stop scanning
+            break;
+        }
+    }
+
     // Walk top-level RIFF chunks and validate structure
     var pos: u64 = 12; // After "RIFF" + size + "AVI "
     const riff_end: u64 = @min(@as(u64, riff_size) + 8, file_size);
+    // For OpenDML files with AVIX segments, allow chunks to reference data up to end of file
+    const bounds_end: u64 = if (has_avix) file_size else riff_end;
     var found_hdrl = false;
     var found_movi = false;
     var movi_offset: u64 = 0;
@@ -241,7 +265,7 @@ pub fn validateAvi(file: *FileSource) ValidationResult {
 
         // Chunk data end (with padding to word boundary)
         const data_end = pos + 8 + @as(u64, chunk_size);
-        if (data_end > riff_end + 1) {
+        if (data_end > bounds_end + 1) {
             return ValidationResult.invalid(.avi, "AVI chunk extends beyond RIFF container");
         }
 
@@ -286,21 +310,25 @@ pub fn validateAvi(file: *FileSource) ValidationResult {
             }
         } else if (std.mem.eql(u8, chunk_id, "idx1") and found_movi) {
             // Validate idx1 index entries: each is 16 bytes (ckid[4] + flags[4] + offset[4] + size[4])
-            // Offsets should be within movi chunk bounds
-            const idx_data_size = @min(chunk_size, @as(u32, 64 * 1024)); // Cap at 64KB of index
-            if (idx_data_size >= 16) {
-                var idx_buf: [65536]u8 = undefined;
-                file.seekTo(pos + 8) catch break;
-                const idx_read = file.read(idx_buf[0..idx_data_size]) catch break;
-                const num_entries = idx_read / 16;
-                var i: usize = 0;
-                while (i < num_entries) : (i += 1) {
-                    const entry_off = i * 16;
-                    const frame_offset = std.mem.readInt(u32, idx_buf[entry_off + 8 ..][0..4], .little);
-                    const frame_size = std.mem.readInt(u32, idx_buf[entry_off + 12 ..][0..4], .little);
-                    // idx1 offsets are relative to movi start (after "movi" fourcc)
-                    if (@as(u64, frame_offset) + @as(u64, frame_size) > @as(u64, movi_size) + 8) {
-                        return ValidationResult.invalid(.avi, "AVI idx1 entry points beyond movi chunk");
+            // Offsets should be within movi chunk bounds.
+            // For OpenDML files with AVIX continuation segments, idx1 entries may reference
+            // data beyond the first RIFF's movi chunk, so skip bounds checking entirely.
+            if (!has_avix) {
+                const idx_data_size = @min(chunk_size, @as(u32, 64 * 1024)); // Cap at 64KB of index
+                if (idx_data_size >= 16) {
+                    var idx_buf: [65536]u8 = undefined;
+                    file.seekTo(pos + 8) catch break;
+                    const idx_read = file.read(idx_buf[0..idx_data_size]) catch break;
+                    const num_entries = idx_read / 16;
+                    var i: usize = 0;
+                    while (i < num_entries) : (i += 1) {
+                        const entry_off = i * 16;
+                        const frame_offset = std.mem.readInt(u32, idx_buf[entry_off + 8 ..][0..4], .little);
+                        const frame_size = std.mem.readInt(u32, idx_buf[entry_off + 12 ..][0..4], .little);
+                        // idx1 offsets are relative to movi start (after "movi" fourcc)
+                        if (@as(u64, frame_offset) + @as(u64, frame_size) > @as(u64, movi_size) + 8) {
+                            return ValidationResult.invalid(.avi, "AVI idx1 entry points beyond movi chunk");
+                        }
                     }
                 }
             }

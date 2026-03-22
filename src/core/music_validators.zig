@@ -255,14 +255,18 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
             }
 
             // Cross-validate block_align = channels * bytes_per_sample
+            // Note: ADPCM and other compressed formats use non-standard block_align values,
+            // so a mismatch is not a corruption signal — treat as informational only.
+            // Only hard-fail for uncompressed PCM (format 1) and IEEE float (format 3).
             const expected_block_align = fmt_channels * ((fmt_bits_per_sample + 7) / 8);
-            if (fmt_block_align != expected_block_align) {
+            if (fmt_block_align != expected_block_align and (fmt_audio_format == 1 or fmt_audio_format == 3)) {
                 return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "block align mismatch (channels * bytes_per_sample)", .structural);
             }
 
             // Cross-validate byte_rate = sample_rate * block_align
+            // Same rationale: only enforce for uncompressed PCM and IEEE float.
             const expected_byte_rate: u64 = @as(u64, fmt_sample_rate) * @as(u64, fmt_block_align);
-            if (expected_byte_rate <= std.math.maxInt(u32) and fmt_byte_rate != @as(u32, @intCast(expected_byte_rate))) {
+            if (expected_byte_rate <= std.math.maxInt(u32) and fmt_byte_rate != @as(u32, @intCast(expected_byte_rate)) and (fmt_audio_format == 1 or fmt_audio_format == 3)) {
                 return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "byte rate mismatch (sample_rate * block_align)", .structural);
             }
         } else if (std.mem.eql(u8, chunk_id, "data")) {
