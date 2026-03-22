@@ -22,6 +22,24 @@ const testing = std.testing;
 
 /// Validate ISO 9660 disk image structure.
 pub fn validateIso(file: *FileSource) ValidationResult {
+    // First check for Apple Driver Map (0x4552 'ER') + Apple Partition Map (0x504D 'PM').
+    // These are macOS disk images (HFS/HFS+) often named .iso but not ISO 9660.
+    file.seekTo(0) catch return ValidationResult.invalidCode(.iso, .failed_to_seek, "to start");
+    var apple_check: [0x202]u8 = undefined;
+    if (file.readAll(&apple_check)) |n| {
+        if (n >= 8 and apple_check[0] == 0x45 and apple_check[1] == 0x52 and
+            // Validate block size is reasonable (512, 1024, 2048, or 4096)
+            (std.mem.readInt(u16, apple_check[2..4], .big) == 512 or
+            std.mem.readInt(u16, apple_check[2..4], .big) == 1024 or
+            std.mem.readInt(u16, apple_check[2..4], .big) == 2048 or
+            std.mem.readInt(u16, apple_check[2..4], .big) == 4096))
+        {
+            var result = ValidationResult.okWithDepth(.iso, .structural);
+            result.warning_message = "Apple Disk Image (HFS/HFS+) detected, not ISO 9660; recommended extension: .img or .dmg";
+            return result;
+        }
+    } else |_| {}
+
     // ISO 9660 has "CD001" at offset 0x8001 (32769) for primary volume descriptor
     file.seekTo(0x8001) catch return ValidationResult.invalidCode(.iso, .failed_to_seek, "to volume descriptor");
 
@@ -151,6 +169,19 @@ pub fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     if (bytes_read < min_iso_size) {
         return ValidationResult.invalidCodeWithDepth(.iso, .incomplete, "read", .structural);
+    }
+
+    // Check for Apple Driver Map (0x4552 'ER' at offset 0 with valid block size).
+    // These are macOS disk images (classic HFS/HFS+) often misnamed as .iso.
+    if (bytes_read >= 8 and data[0] == 0x45 and data[1] == 0x52 and
+        (std.mem.readInt(u16, data[2..4], .big) == 512 or
+        std.mem.readInt(u16, data[2..4], .big) == 1024 or
+        std.mem.readInt(u16, data[2..4], .big) == 2048 or
+        std.mem.readInt(u16, data[2..4], .big) == 4096))
+    {
+        var apple_result = ValidationResult.okWithDepth(.iso, .structural);
+        apple_result.warning_message = "Apple Disk Image (HFS/HFS+) detected, not ISO 9660; recommended extension: .img or .dmg";
+        return apple_result;
     }
 
     // Use iso9660_parser for validation
