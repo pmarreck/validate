@@ -19,9 +19,10 @@ const FileSource = file_source.FileSource;
 const ogg_validator = @import("ogg_validator.zig");
 const errmsg = @import("error_messages.zig");
 
-// Import libopus via C interop
+// Import libopus via C interop (including multistream for >2 channels)
 const opus = @cImport({
     @cInclude("opus/opus.h");
+    @cInclude("opus/opus_multistream.h");
 });
 
 /// Result of Opus deep validation
@@ -53,18 +54,30 @@ pub const OpusValidationResult = struct {
 /// Validate a single Opus packet using libopus decoder.
 /// Returns number of samples decoded, or error.
 pub fn validateOpusPacket(
-    decoder: *opus.OpusDecoder,
+    handle: DecoderHandle,
     packet: []const u8,
     output_buffer: []i16,
+    channels: i32,
 ) !i32 {
-    const result = opus.opus_decode(
-        decoder,
-        packet.ptr,
-        @intCast(packet.len),
-        output_buffer.ptr,
-        @intCast(output_buffer.len / 2), // frame_size in samples per channel
-        0, // decode_fec = false
-    );
+    const frame_size: c_int = @intCast(output_buffer.len / @as(usize, @intCast(@max(channels, 1))));
+    const result = switch (handle) {
+        .simple => |decoder| opus.opus_decode(
+            decoder,
+            packet.ptr,
+            @intCast(packet.len),
+            output_buffer.ptr,
+            frame_size,
+            0,
+        ),
+        .multistream => |decoder| opus.opus_multistream_decode(
+            decoder,
+            packet.ptr,
+            @intCast(packet.len),
+            output_buffer.ptr,
+            frame_size,
+            0,
+        ),
+    };
 
     if (result < 0) {
         return error.OpusDecodeError;
@@ -73,40 +86,82 @@ pub fn validateOpusPacket(
     return result;
 }
 
-/// Create an Opus decoder.
-/// Caller must call destroyDecoder when done.
-pub fn createDecoder(sample_rate: i32, channels: i32) !*opus.OpusDecoder {
-    var err: c_int = 0;
-    const decoder = opus.opus_decoder_create(sample_rate, channels, &err);
+/// Opus decoder handle — either simple (1-2 ch) or multistream (>2 ch)
+pub const DecoderHandle = union(enum) {
+    simple: *opus.OpusDecoder,
+    multistream: *opus.OpusMSDecoder,
+};
 
-    if (err != opus.OPUS_OK or decoder == null) {
-        return error.OpusDecoderCreateFailed;
+/// Create an Opus decoder. Uses multistream API for >2 channels.
+/// `opus_head` is the raw OpusHead data from the container (needed for channel mapping).
+/// Caller must call destroyDecoder when done.
+pub fn createDecoder(sample_rate: i32, channels: i32, opus_head: ?[]const u8) !DecoderHandle {
+    var err: c_int = 0;
+
+    if (channels <= 2) {
+        const decoder = opus.opus_decoder_create(sample_rate, channels, &err);
+        if (err != opus.OPUS_OK or decoder == null) {
+            return error.OpusDecoderCreateFailed;
+        }
+        return .{ .simple = decoder.? };
     }
 
-    return decoder.?;
+    // Multichannel: need channel mapping from OpusHead
+    // OpusHead layout: "OpusHead"(8) + version(1) + channels(1) + pre_skip(2) +
+    //   sample_rate(4) + output_gain(2) + mapping_family(1) + [if family>0: stream_count(1) +
+    //   coupled_count(1) + channel_mapping(channels)]
+    const head = opus_head orelse return error.OpusDecoderCreateFailed;
+    if (head.len < 19) return error.OpusDecoderCreateFailed;
+
+    const mapping_family = head[18];
+    if (mapping_family == 0) {
+        // Family 0: standard stereo/mono mapping — shouldn't have >2 channels but try
+        const decoder = opus.opus_decoder_create(sample_rate, @min(channels, 2), &err);
+        if (err != opus.OPUS_OK or decoder == null) return error.OpusDecoderCreateFailed;
+        return .{ .simple = decoder.? };
+    }
+
+    // Family 1 (Vorbis order) or Family 255 (custom)
+    if (head.len < 21 + @as(usize, @intCast(channels))) return error.OpusDecoderCreateFailed;
+    const streams: c_int = @intCast(head[19]);
+    const coupled: c_int = @intCast(head[20]);
+    const mapping_ptr: [*c]const u8 = @ptrCast(head[21..].ptr);
+
+    const ms_decoder = opus.opus_multistream_decoder_create(
+        sample_rate, channels, streams, coupled, mapping_ptr, &err,
+    );
+    if (err != opus.OPUS_OK or ms_decoder == null) {
+        return error.OpusDecoderCreateFailed;
+    }
+    return .{ .multistream = ms_decoder.? };
 }
 
-/// Destroy an Opus decoder.
-pub fn destroyDecoder(decoder: *opus.OpusDecoder) void {
-    opus.opus_decoder_destroy(decoder);
+/// Destroy an Opus decoder (simple or multistream).
+pub fn destroyDecoder(handle: DecoderHandle) void {
+    switch (handle) {
+        .simple => |d| opus.opus_decoder_destroy(d),
+        .multistream => |d| opus.opus_multistream_decoder_destroy(d),
+    }
 }
 
 /// Validate Opus stream from raw packets.
 /// This is the low-level API for validating Opus data extracted from containers.
+/// `opus_head` is the raw OpusHead data (needed for multichannel mapping).
 pub fn validateOpusPackets(
     allocator: std.mem.Allocator,
     packets: []const []const u8,
     sample_rate: i32,
     channels: i32,
+    opus_head: ?[]const u8,
 ) OpusValidationResult {
-    // Create decoder
-    const decoder = createDecoder(sample_rate, channels) catch {
+    // Create decoder (uses multistream API for >2 channels)
+    const decoder = createDecoder(sample_rate, channels, opus_head) catch {
         return OpusValidationResult.invalid("Failed to create Opus decoder", 0);
     };
     defer destroyDecoder(decoder);
 
-    // Allocate output buffer (max 120ms at 48kHz stereo = 5760 samples * 2 channels)
-    const max_frame_size: usize = 5760 * 2;
+    // Allocate output buffer (max 120ms at 48kHz, scaled by channels)
+    const max_frame_size: usize = 5760 * @as(usize, @intCast(@max(channels, 1)));
     const output_buffer = allocator.alloc(i16, max_frame_size) catch {
         return OpusValidationResult.invalid(errmsg.failedToAllocate("decode buffer"), 0);
     };
@@ -116,7 +171,7 @@ pub fn validateOpusPackets(
     var samples_decoded: u64 = 0;
 
     for (packets) |packet| {
-        const samples = validateOpusPacket(decoder, packet, output_buffer) catch {
+        const samples = validateOpusPacket(decoder, packet, output_buffer, channels) catch {
             return OpusValidationResult.invalid("Opus decode error", packets_decoded);
         };
         packets_decoded += 1;
@@ -172,9 +227,8 @@ pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: *FileSource) Opu
     }
 
     const channels: i32 = opus_head[9];
-    if (channels < 1 or channels > 2) {
-        // libopus only supports mono and stereo for basic decoding
-        return OpusValidationResult.invalid(errmsg.unsupported("channel count for decoding"), 0);
+    if (channels < 1 or channels > 255) {
+        return OpusValidationResult.invalid(errmsg.unsupported("channel count"), 0);
     }
 
     // Sample rate from OpusHead is just informational (original input sample rate)
@@ -188,14 +242,14 @@ pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: *FileSource) Opu
         return OpusValidationResult.invalid("Invalid OpusTags packet", 0);
     }
 
-    // Create decoder
-    const decoder = createDecoder(decode_sample_rate, channels) catch {
+    // Create decoder (multistream for >2 channels, simple for 1-2)
+    const decoder = createDecoder(decode_sample_rate, channels, opus_head) catch {
         return OpusValidationResult.invalid("Failed to create Opus decoder", 0);
     };
     defer destroyDecoder(decoder);
 
-    // Allocate output buffer (max 120ms at 48kHz stereo = 5760 samples * 2 channels)
-    const max_frame_size: usize = 5760 * 2;
+    // Allocate output buffer (max 120ms at 48kHz, scaled by channels)
+    const max_frame_size: usize = 5760 * @as(usize, @intCast(@max(channels, 1)));
     const output_buffer = allocator.alloc(i16, max_frame_size) catch {
         return OpusValidationResult.invalid(errmsg.failedToAllocate("decode buffer"), 0);
     };
@@ -206,7 +260,7 @@ pub fn validateOggOpusAlloc(allocator: std.mem.Allocator, file: *FileSource) Opu
     var samples_decoded: u64 = 0;
 
     for (packets[2..]) |packet| {
-        const samples = validateOpusPacket(decoder, packet.data, output_buffer) catch {
+        const samples = validateOpusPacket(decoder, packet.data, output_buffer, channels) catch {
             return OpusValidationResult.invalid("Opus decode error", packets_decoded);
         };
         packets_decoded += 1;
@@ -231,43 +285,43 @@ pub fn validateOggOpusPath(path: []const u8) OpusValidationResult {
 
 test "Opus decoder creation and destruction" {
     // Test that we can create and destroy a decoder
-    const decoder = try createDecoder(48000, 2);
+    const decoder = try createDecoder(48000, 2, null);
     destroyDecoder(decoder);
 }
 
 test "Opus decoder rejects invalid parameters" {
     // Invalid sample rate
-    const result1 = createDecoder(12345, 2);
+    const result1 = createDecoder(12345, 2, null);
     try std.testing.expectError(error.OpusDecoderCreateFailed, result1);
 
     // Invalid channel count
-    const result2 = createDecoder(48000, 0);
+    const result2 = createDecoder(48000, 0, null);
     try std.testing.expectError(error.OpusDecoderCreateFailed, result2);
 }
 
 test "Opus decode handles empty packet via PLC" {
     // Opus handles empty packets through Packet Loss Concealment (PLC)
     // It doesn't error, but generates concealed audio
-    const decoder = try createDecoder(48000, 2);
+    const decoder = try createDecoder(48000, 2, null);
     defer destroyDecoder(decoder);
 
     var output: [5760 * 2]i16 = undefined;
     const empty_packet: []const u8 = &.{};
 
-    const result = validateOpusPacket(decoder, empty_packet, &output);
+    const result = validateOpusPacket(decoder, empty_packet, &output, 2);
     // PLC returns samples, not an error
     const samples = result catch unreachable;
     try std.testing.expect(samples > 0);
 }
 
 test "Opus decode rejects garbage data" {
-    const decoder = try createDecoder(48000, 2);
+    const decoder = try createDecoder(48000, 2, null);
     defer destroyDecoder(decoder);
 
     var output: [5760 * 2]i16 = undefined;
     const garbage: []const u8 = &.{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 };
 
-    const result = validateOpusPacket(decoder, garbage, &output);
+    const result = validateOpusPacket(decoder, garbage, &output, 2);
     // Garbage data might either decode with errors or produce garbage output
     // Libopus is quite resilient, so it might not always error
     _ = result catch {
@@ -283,12 +337,13 @@ test "Opus validation with no packets returns invalid" {
         &.{},
         48000,
         2,
+        null,
     );
     try std.testing.expect(!result.valid);
 }
 
 test "Opus decode valid silence packet" {
-    const decoder = try createDecoder(48000, 2);
+    const decoder = try createDecoder(48000, 2, null);
     defer destroyDecoder(decoder);
 
     var output: [5760 * 2]i16 = undefined;
@@ -303,7 +358,7 @@ test "Opus decode valid silence packet" {
 
     // This may or may not decode depending on libopus validation
     // The point is to verify we can call the decode function
-    _ = validateOpusPacket(decoder, silence_toc, &output) catch {
+    _ = validateOpusPacket(decoder, silence_toc, &output, 2) catch {
         // Some simplified packets might be rejected - that's OK
         return;
     };

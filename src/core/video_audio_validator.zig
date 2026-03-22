@@ -1645,7 +1645,7 @@ fn validateMkvOpusTrack(allocator: Allocator, parser: *ebml.MatroskaParser, trac
     }
 
     // Validate all Opus packets through the decoder
-    const result = opus_validator.validateOpusPackets(allocator, packets, sample_rate, channels);
+    const result = opus_validator.validateOpusPackets(allocator, packets, sample_rate, channels, codec_private);
 
     if (!result.valid) {
         return AudioValidationResult.invalid(result.error_message orelse "Opus decode error", .opus);
