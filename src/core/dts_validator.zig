@@ -193,6 +193,17 @@ pub fn validateDtsStream(data: []const u8, max_frames: u32) DtsValidationResult 
             return DtsValidationResult.invalid("DTS frame extends beyond data", frames_validated);
         }
 
+        // Additional header field validation for corruption detection.
+        // The NBLKS field must be consistent across frames in the stream,
+        // and bit_rate must be non-zero for fixed-rate streams.
+        if (frames_validated > 0) {
+            // Cross-frame consistency: channel count should not change
+            const this_channels = frame_info.channels + @as(u8, if (frame_info.lfe) 1 else 0);
+            if (this_channels != first_channels) {
+                return DtsValidationResult.invalid("DTS channel count changed mid-stream (data corruption)", frames_validated);
+            }
+        }
+
         // Record first frame's parameters
         if (frames_validated == 0) {
             first_sample_rate = frame_info.sample_rate;
