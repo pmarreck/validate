@@ -77,7 +77,10 @@ const FibRgLw97 = struct {
 pub fn validateDocDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Read WordDocument stream
     const wd_data = ole2_validator.readNamedStream(allocator, path, "WordDocument") orelse {
-        return ValidationResult.invalidWithDepth(.doc, "Failed to read WordDocument stream from OLE2 container", .structural);
+        // No WordDocument stream — this OLE2 container is not a Word document.
+        // It may be an MSI (Windows Installer), Thumbs.db, or other OLE2/CFBF format.
+        // The OLE2 structure itself is valid, so return structural OK with a warning.
+        return ValidationResult.okWithDepthAndWarning(.doc, .structural, "OLE2 container has no WordDocument stream (may be MSI or other CFBF format)");
     };
     defer allocator.free(wd_data);
 

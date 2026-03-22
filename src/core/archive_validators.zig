@@ -2830,6 +2830,13 @@ fn validateRarWithRarz(data: []const u8) ValidationResult {
 
     if (!result.is_valid) {
         const message = result.error_message orelse "RAR validation failed";
+        // Header CRC mismatches are tolerated by WinRAR/7z — treat as WARN, not FAIL.
+        // rarz reports these as errors, but the archive is still extractable.
+        if (std.mem.indexOf(u8, message, "header CRC") != null or
+            std.mem.indexOf(u8, message, "Header CRC") != null)
+        {
+            return ValidationResult.okWithDepthAndMalformation(.rar, .full, .rar_header_crc_mismatch);
+        }
         // rarz verified CRC/BLAKE2sp to detect the mismatch → .full depth on failure too
         const depth: ValidationDepth = if (result.file_count > 0) .full else .structural;
         return ValidationResult.invalidWithDepth(.rar, message, depth);
@@ -3600,10 +3607,13 @@ test "validateZstdDeep: too-small file detected" {
     try testing.expectEqual(FileFormat.zstd, result.format);
 }
 
-test "validateRarDeep: corrupt RAR detected" {
+test "validateRarDeep: header CRC mismatch is WARN not FAIL" {
     const result = validateRarDeep(testing.allocator, "ground_truth_examples/corrupted/rar/sample_corrupt_1.rar");
-    try testing.expect(!result.is_valid);
+    // Header CRC mismatches are tolerated by WinRAR/7z — should be WARN (valid with malformation)
+    try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.rar, result.format);
+    try testing.expect(result.hasMalformations());
+    try testing.expect(result.malformations.contains(.rar_header_crc_mismatch));
 }
 
 // ---------- Buffer validators on invalid / truncated data ----------
