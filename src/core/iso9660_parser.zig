@@ -326,7 +326,9 @@ pub const DirectoryIterator = struct {
 // ============================================================================
 
 /// Validate ISO 9660 filesystem
-pub fn validateIso9660(data: []const u8) Iso9660ValidationResult {
+/// `actual_file_size` is the real file size on disk (may be larger than `data.len`
+/// when the file exceeds the read buffer limit).
+pub fn validateIso9660(data: []const u8, actual_file_size: u64) Iso9660ValidationResult {
     if (data.len < (VOLUME_DESCRIPTOR_START + 1) * SECTOR_SIZE) {
         return Iso9660ValidationResult.invalid("Data too small for ISO 9660");
     }
@@ -336,9 +338,11 @@ pub fn validateIso9660(data: []const u8) Iso9660ValidationResult {
         return Iso9660ValidationResult.invalid("No Primary Volume Descriptor found");
     };
 
-    // Validate volume size
+    // Validate volume size against ACTUAL file size (not buffer size).
+    // The read buffer may be smaller than the file due to memory limits.
     const declared_size = pvd.getTotalSize();
-    if (declared_size > data.len + SECTOR_SIZE * 10) {
+    const reference_size = @max(data.len, actual_file_size);
+    if (declared_size > reference_size + SECTOR_SIZE * 10) {
         // Allow some slack for partial images
         return Iso9660ValidationResult.invalid("Volume size exceeds data length");
     }
@@ -399,7 +403,7 @@ pub fn validateIso9660File(file: *FileSource, allocator: std.mem.Allocator) Iso9
         return Iso9660ValidationResult.invalid(errmsg.failedToRead("file"));
     };
 
-    return validateIso9660(data[0..bytes_read]);
+    return validateIso9660(data[0..bytes_read], file_size);
 }
 
 // ============================================================================
@@ -718,7 +722,7 @@ test "validateIso9660 - synthetic ISO" {
     iso_data[parent_rec + 32] = 1;
     iso_data[parent_rec + 33] = 1; // .. = 0x01
 
-    const result = validateIso9660(&iso_data);
+    const result = validateIso9660(&iso_data, iso_data.len);
     try std.testing.expect(result.valid);
     try std.testing.expectEqual(@as(u16, 2048), result.logical_block_size);
     try std.testing.expectEqual(@as(u32, 20), result.root_directory_location);

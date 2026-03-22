@@ -154,7 +154,7 @@ pub fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Use iso9660_parser for validation
-    const result = iso9660_parser.validateIso9660(data[0..bytes_read]);
+    const result = iso9660_parser.validateIso9660(data[0..bytes_read], file_size);
 
     if (!result.valid) {
         return ValidationResult.invalidWithDepth(.iso, result.error_message orelse "ISO 9660 validation failed", .structural);
