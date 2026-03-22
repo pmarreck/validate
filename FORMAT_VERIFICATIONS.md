@@ -124,7 +124,7 @@ For clarity, the tables below use more specific labels:
 | **AU/SND** | .au, .snd | Pure Zig | — | ✅ Structural | Sun/NeXT header, encoding/rate/channel validation | — |
 | **TTA** | .tta | Pure Zig | — | ✅ Checksum | TTA1 header CRC32 verification | — |
 | **CAF** | .caf | Pure Zig | — | ✅ Structural | Apple Core Audio, version/desc chunk validation | — |
-| **DTS** | .dts | — | ⚠️ GPL | ⚠️ Blocked | Blu-ray surround | — |
+| **DTS** | .dts | Pure Zig | — | ✅ Full Decode | Sync word + frame header + boundary chaining | 1 |
 
 **Legend:** ✅ = Implemented | ⚠️ = Blocked (GPL dependency) | **GT** = Ground Truth examples verified
 
@@ -238,6 +238,10 @@ For clarity, the tables below use more specific labels:
 | **RAR** | .rar | Signature (Rar!), archive header | RAR4 CRC16 + RAR5 CRC32 header verification | Checksum | — |
 | **Tar** | .tar | POSIX/GNU header, checksum field | Header checksum verified (first entry) | Checksum | — |
 | **EPUB** | .epub | ZIP structure, META-INF/container.xml | CRC32 per entry | Checksum | — |
+| **PAR2** | .par2 | Parity archive magic, packet structure | MD5 per packet | Checksum | — |
+| **WARC** | .warc | WARC/ version header, record structure | SHA-1 block digest verification | Checksum | — |
+| **BinHex** | .hqx | BinHex 4.0 header, 6-bit encoding | Header/data/resource CRC16 | Checksum | — |
+| **BagIt** | directory | bagit.txt version/encoding, bag-info.txt | SHA-256/SHA-512/MD5 manifest verification (streaming 64KB hash) | Checksum | 1 |
 
 ## DAW Project Formats
 
@@ -430,6 +434,27 @@ For clarity, the tables below use more specific labels:
 | **SWIFT MT940** | .mt940, .sta, .940 | SWIFT envelope ({1:F01) or bare :20: tag | Balance arithmetic (opening + transactions = closing), currency consistency | Integrity | 1 |
 | **BAI2** | .bai, .bai2 | 01, file header, version=2, / terminator | Cascading control totals: account (49) → group (98) → file (99), record counts at all levels | Integrity | 1 |
 
+## EDI (Electronic Data Interchange)
+
+| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
+|--------|------------|------------------|-----------------|-----------|-----|
+| **X12 EDI** | .edi, .x12 | ISA segment parsing, self-describing delimiters | SE/GE/IEA control total cross-validation | Integrity | 1 |
+| **UN/EDIFACT** | .edifact | UNA/UNB segment parsing, delimiter detection | UNT/UNZ message and interchange count validation | Integrity | 1 |
+
+## PIM (Personal Information Management)
+
+| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
+|--------|------------|------------------|-----------------|-----------|-----|
+| **iCalendar** | .ics | BEGIN/END nesting, VERSION/PRODID required | Component validation (VEVENT/VTIMEZONE), DTSTART format | Integrity | 1 |
+| **vCard** | .vcf | BEGIN/END:VCARD envelope | Version-specific required properties (FN for v4, N+FN for v3) | Integrity | 1 |
+
+## Crypto/Certificate Formats
+
+| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
+|--------|------------|------------------|-----------------|-----------|-----|
+| **PEM** | .pem, .crt, .key | Header/footer matching (-----BEGIN/END-----) | Base64 validation + ASN.1 DER parsing inside | Integrity | 1 |
+| **DER** | .der, .cer | ASN.1 tag 0x30 (SEQUENCE), length encoding | Recursive TLV parsing with depth limit | Integrity | 1 |
+
 ## Encrypted Files
 
 | Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
@@ -543,11 +568,11 @@ Formats with built-in integrity verification:
 
 ## Implementation Notes
 
-**Pure Zig (no external dependencies):** FLAC, WAV, AIFF, ALAC, AC-3, E-AC-3, AMR, AU/SND, TTA, CAF, ProRes, MPEG-1/2, MPEG-4 Part 2, VP8, VP9, Theora, DV, H.264, H.265/HEVC, AV1, AAC, HEIC, AVIF, PNG, QOI, DPX, TGA, PBM/PGM/PPM/PAM, ZIP, GZIP, BZIP2, 7-Zip, all container parsing
+**Pure Zig (no external dependencies):** FLAC, WAV, AIFF, ALAC, AC-3, DTS, E-AC-3, AMR, AU/SND, TTA, CAF, ProRes, MPEG-1/2, MPEG-4 Part 2, VP8, VP9, Theora, DV, H.264, H.265/HEVC, AV1, AAC, HEIC, AVIF, PNG, QOI, DPX, TGA, PBM/PGM/PPM/PAM, ZIP, GZIP, BZIP2, 7-Zip, BagIt, X12 EDI, EDIFACT, iCalendar, vCard, PEM, DER, all container parsing
 
 **BSD/MIT Licensed Libraries:** libopus, libvorbis, libjpeg-turbo, OpenJPEG, zigimg (GIF, BMP, TIFF, RAW), libwebp (WebP), libjxl (JPEG XL), libbrotli (Brotli)
 
-**GPL Blocked:** WMV/VC-1, DTS, RealVideo/Audio - would require optional plugin architecture
+**GPL Blocked:** WMV/VC-1, RealVideo/Audio - would require optional plugin architecture (DTS was previously blocked, now implemented in pure Zig)
 
 **Note:** Six C library dependencies (OpenH264, libde265, dav1d, libvpx, libheif, libfdk-aac) were replaced with pure-Zig validators in February 2026. VideoToolbox (macOS hardware decoder) was also removed.
 
