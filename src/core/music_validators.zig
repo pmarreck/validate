@@ -64,6 +64,22 @@ pub fn validateMp3(file: *FileSource) ValidationResult {
         return ValidationResult.ok(.mp3);
     }
 
+    // MP3 files often have zero-padding between ID3v2 tag and first audio frame.
+    // Scan forward up to 4KB looking for the first frame sync.
+    if (pos > 0) { // Only scan if we skipped an ID3 tag
+        const scan_limit: u64 = pos + 4096;
+        var scan_buf: [2]u8 = undefined;
+        while (pos < scan_limit) {
+            file.seekTo(pos) catch break;
+            const n = file.read(&scan_buf) catch break;
+            if (n < 2) break;
+            if (scan_buf[0] == 0xFF and (scan_buf[1] & 0xE0) == 0xE0) {
+                return ValidationResult.ok(.mp3);
+            }
+            pos += 1;
+        }
+    }
+
     return ValidationResult.invalidCode(.mp3, .invalid_value, "MP3 frame sync");
 }
 
@@ -1650,6 +1666,26 @@ pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult 
     source.seekTo(audio_start) catch {
         return ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_seek, "to audio", .structural);
     };
+
+    // Scan past zero-padding between ID3v2 tag and first audio frame
+    if (audio_start > 0) {
+        const scan_limit = audio_start + 4096;
+        var scan_buf: [2]u8 = undefined;
+        var scan_pos = audio_start;
+        while (scan_pos < scan_limit) {
+            source.seekTo(scan_pos) catch break;
+            const n = source.read(&scan_buf) catch break;
+            if (n < 2) break;
+            if (scan_buf[0] == 0xFF and (scan_buf[1] & 0xE0) == 0xE0) {
+                audio_start = scan_pos;
+                break;
+            }
+            scan_pos += 1;
+        }
+        source.seekTo(audio_start) catch {
+            return ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_seek, "to audio", .structural);
+        };
+    }
 
     // Validate all frames
     var frames_checked: usize = 0;
