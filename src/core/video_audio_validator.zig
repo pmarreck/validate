@@ -549,8 +549,10 @@ fn validateMp4AacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) Au
     }
 
     // Extract AAC AudioSpecificConfig from stsd > mp4a > esds
+    // Some MP4 files have non-standard esds layouts that our parser can't handle;
+    // in that case, return unsupported (WARN) instead of failing the whole file
     const asc = extractAacConfig(allocator, file, stsd.?) orelse {
-        return AudioValidationResult.invalid("Failed to extract AAC config from esds", .aac);
+        return AudioValidationResult.unsupported(.aac);
     };
     defer allocator.free(asc);
 
@@ -1141,7 +1143,8 @@ fn validateMp4Ac3Track(allocator: Allocator, file: *FileSource, stbl: Mp4Box) Au
 
     // Read AC-3 data from first chunk (up to 64KB)
     const max_read: u32 = 64 * 1024;
-    const read_size = @min(default_size * @min(sample_count, 100), max_read);
+    // Handle variable-size samples (default_size == 0) by reading up to max_read
+    const read_size = if (default_size == 0) max_read else @min(default_size * @min(sample_count, 100), max_read);
 
     const buffer = allocator.alloc(u8, read_size) catch {
         return AudioValidationResult.invalid("Memory allocation failed", .ac3);
@@ -1156,10 +1159,16 @@ fn validateMp4Ac3Track(allocator: Allocator, file: *FileSource, stbl: Mp4Box) Au
         return AudioValidationResult.invalid(errmsg.failedToRead("AC-3 data"), .ac3);
     };
 
-    // Validate using AC-3 validator
+    // Validate using AC-3 validator; fall back to E-AC-3 if AC-3 fails
+    // (some MP4 files use sample entry type 'ac-3' for E-AC-3 audio)
     const result = ac3_validator.validateAc3Stream(buffer[0..bytes_read], 10);
 
     if (!result.valid) {
+        // Try E-AC-3 as fallback
+        const eac3_result = eac3_validator.validateEac3Stream(buffer[0..bytes_read], 10);
+        if (eac3_result.valid) {
+            return AudioValidationResult.ok(.eac3, eac3_result.frames_validated);
+        }
         return AudioValidationResult.invalid(result.error_message orelse "AC-3 validation failed", .ac3);
     }
 
@@ -1254,17 +1263,37 @@ fn validateMkvAc3Track(allocator: Allocator, parser: *ebml.MatroskaParser, track
         return AudioValidationResult.invalid("No AC-3 frames found", .ac3);
     }
 
-    // Validate each frame
+    // Validate each frame as AC-3; if all fail, try E-AC-3 as fallback
+    // (some MKV muxers use codec ID A_AC3 for both AC-3 and E-AC-3)
     var total_frames: u32 = 0;
+    var ac3_failed = false;
+    var last_ac3_error: ?[]const u8 = null;
     for (frames) |kf| {
         const result = ac3_validator.validateAc3Stream(kf.data, 10);
         if (!result.valid) {
-            return AudioValidationResult.invalid(result.error_message orelse "AC-3 validation failed", .ac3);
+            ac3_failed = true;
+            last_ac3_error = result.error_message;
+            break;
         }
         total_frames += result.frames_validated;
     }
 
-    return AudioValidationResult.ok(.ac3, total_frames);
+    if (!ac3_failed) {
+        return AudioValidationResult.ok(.ac3, total_frames);
+    }
+
+    // AC-3 failed — try E-AC-3 as fallback (bsid=16 sometimes muxed as A_AC3)
+    var eac3_total: u32 = 0;
+    for (frames) |kf| {
+        const eac3_result = eac3_validator.validateEac3Stream(kf.data, 10);
+        if (!eac3_result.valid) {
+            // Neither AC-3 nor E-AC-3 worked — return the original AC-3 error
+            return AudioValidationResult.invalid(last_ac3_error orelse "AC-3 validation failed", .ac3);
+        }
+        eac3_total += eac3_result.frames_validated;
+    }
+
+    return AudioValidationResult.ok(.eac3, eac3_total);
 }
 
 /// Validate AAC track from MKV container using pure-Zig syntax validator
@@ -1278,8 +1307,9 @@ fn validateMkvAacTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track
         return AudioValidationResult.invalid("AudioSpecificConfig too short", .aac);
     }
 
-    // Collect audio frames (use collectAllFrames since audio may not be flagged as keyframes)
-    const frames = parser.collectAllFrames(track.track_number, 10) orelse {
+    // Collect more audio frames to get past priming/silence frames at start
+    // (some encoders like Apple emit 1000+ priming frames of < 8 bytes each)
+    const frames = parser.collectAllFrames(track.track_number, 50) orelse {
         return AudioValidationResult.invalid("Failed to collect AAC frames from MKV", .aac);
     };
     defer {
