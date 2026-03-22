@@ -1488,17 +1488,47 @@ fn validateMkvDtsTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track
         return AudioValidationResult.invalid("No DTS frames found", .dts);
     }
 
-    // Validate each collected block — DTS frames in MKV are typically one frame per block
-    var total_frames: u32 = 0;
+    // Validate collected blocks. DTS in MKV may have blocks that are individually
+    // too small to contain a full DTS frame — concatenate all block data first,
+    // then validate the combined stream (same approach as AAC in MKV).
+    var total_size: usize = 0;
     for (frames) |kf| {
-        const result = dts_validator.validateDtsStream(kf.data, 10);
-        if (!result.valid) {
-            return AudioValidationResult.invalid(result.error_message orelse "DTS validation failed", .dts);
-        }
-        total_frames += result.frames_validated;
+        total_size += kf.data.len;
     }
 
-    return AudioValidationResult.ok(.dts, total_frames);
+    if (total_size == 0) {
+        return AudioValidationResult.invalid("No DTS data found", .dts);
+    }
+
+    // MKV strips the 4-byte DTS sync word (0x7FFE8001) from each block since
+    // the container provides its own framing. Reconstruct full DTS frames by
+    // prepending the sync word to each block before concatenation.
+    const sync_word = [_]u8{ 0x7F, 0xFE, 0x80, 0x01 };
+    const combined_size = total_size + frames.len * 4;
+    const combined = allocator.alloc(u8, combined_size) catch {
+        return AudioValidationResult.invalid("Memory allocation failed", .dts);
+    };
+    defer allocator.free(combined);
+
+    var offset: usize = 0;
+    for (frames) |kf| {
+        // Check if block already has sync word (some muxers keep it)
+        if (kf.data.len >= 4 and std.mem.eql(u8, kf.data[0..4], &sync_word)) {
+            @memcpy(combined[offset..][0..kf.data.len], kf.data);
+            offset += kf.data.len;
+        } else {
+            @memcpy(combined[offset..][0..4], &sync_word);
+            @memcpy(combined[offset + 4 ..][0..kf.data.len], kf.data);
+            offset += 4 + kf.data.len;
+        }
+    }
+
+    const result = dts_validator.validateDtsStream(combined[0..offset], 100);
+    if (!result.valid) {
+        return AudioValidationResult.invalid(result.error_message orelse "DTS validation failed", .dts);
+    }
+
+    return AudioValidationResult.ok(.dts, result.frames_validated);
 }
 
 /// Validate audio track from MKV file
