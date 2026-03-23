@@ -1598,7 +1598,10 @@ fn validateStsz(file: *FileSource, box_offset: u64, box_size: u64) ?[]const u8 {
     const sample_size = std.mem.readInt(u32, header_buf[0..4], .big);
     const sample_count = std.mem.readInt(u32, header_buf[4..8], .big);
 
-    if (sample_count > 100_000_000) return "stsz sample_count unreasonably large";
+    // PCM audio at 48kHz stereo generates ~5.6M samples/minute — a 2-hour movie
+    // has ~672M samples. Use a generous limit that accommodates long PCM recordings.
+    const max_samples: u64 = if (sample_size <= 4) 1_000_000_000 else 100_000_000;
+    if (sample_count > max_samples) return "stsz sample_count unreasonably large";
 
     // If sample_size == 0, per-sample sizes follow — check they fit in the box
     if (sample_size == 0) {

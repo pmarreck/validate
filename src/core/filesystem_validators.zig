@@ -50,13 +50,25 @@ pub fn validateIso(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCode(.iso, .file_too_small, "ISO 9660");
     }
 
-    // Check for "CD001" identifier
-    if (!std.mem.eql(u8, &descriptor, "CD001")) {
-        return ValidationResult.invalidCode(.iso, .invalid_signature, "ISO 9660");
+    // Check for "CD001" (ISO 9660) or "BEA01" (UDF Beginning Extended Area)
+    if (std.mem.eql(u8, &descriptor, "CD001")) {
+        return ValidationResult.okWithDepth(.iso, .structural);
     }
 
-    // No CRC/hash — signature check only
-    return ValidationResult.okWithDepth(.iso, .structural);
+    // UDF discs have "BEA01" at sector 16 instead of "CD001"
+    if (std.mem.eql(u8, &descriptor, "BEA01")) {
+        return ValidationResult.okWithDepth(.iso, .structural);
+    }
+
+    // Also check for "NSR02" or "NSR03" (UDF structure identifiers) at sector 17
+    file.seekTo(0x8001 + 0x800) catch return ValidationResult.invalidCode(.iso, .failed_to_seek, "to UDF descriptor");
+    var udf_desc: [5]u8 = undefined;
+    const udf_read = file.read(&udf_desc) catch return ValidationResult.invalidCode(.iso, .failed_to_read, "UDF descriptor");
+    if (udf_read >= 5 and (std.mem.eql(u8, &udf_desc, "NSR02") or std.mem.eql(u8, &udf_desc, "NSR03"))) {
+        return ValidationResult.okWithDepth(.iso, .structural);
+    }
+
+    return ValidationResult.invalidCode(.iso, .invalid_signature, "ISO 9660");
 }
 
 // ============ Apple DMG Validator ============
@@ -188,6 +200,10 @@ pub fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult 
     const result = iso9660_parser.validateIso9660(data[0..bytes_read], file_size);
 
     if (!result.valid) {
+        // ISO 9660 failed — check if this is a UDF-only disc (BEA01 at sector 16)
+        if (bytes_read >= 0x8006 and std.mem.eql(u8, data[0x8001..0x8006], "BEA01")) {
+            return ValidationResult.okWithDepth(.iso, .structural);
+        }
         return ValidationResult.invalidWithDepth(.iso, result.error_message orelse "ISO 9660 validation failed", .structural);
     }
 
