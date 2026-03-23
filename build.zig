@@ -191,8 +191,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = deps_optimize,
     });
-    // rarz needs ARM hardware CRC32 C helper on aarch64
-    if (target.result.cpu.arch == .aarch64) {
+    // rarz needs ARM hardware CRC32 C helper on aarch64 with CRC extension
+    // (baseline aarch64 cross-compilation targets don't have CRC; -mcpu overrides -march)
+    if (target.result.cpu.arch == .aarch64 and
+        std.Target.aarch64.featureSetHas(target.result.cpu.features, .crc))
+    {
         rarz_mod.addCSourceFile(.{
             .file = rarz_dep.path("src/lib/crc32_arm.c"),
             .flags = &.{ "-march=armv8-a+crc", "-O3" },
