@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+
+if [[ -z "${VALIDATE_NIX:-}" ]]; then
+	exec env VALIDATE_NIX=1 nix develop -c "$0" "$@"
+fi
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+unset LD
+unset SDKROOT
+
+# Cross-compilation targets (matching flake.nix zigTargets)
+# Format: <output-dir-name>=<zig-target-triple>
+declare -A TARGETS=(
+	["x86_64-linux"]="x86_64-linux-musl"
+	["aarch64-linux"]="aarch64-linux-musl"
+	["x86_64-windows"]="x86_64-windows-gnu"
+	["x86_64-macos"]="x86_64-macos"
+	["aarch64-macos"]="aarch64-macos"
+)
+
+EXEC_NAME="validate"
+
+# Parse args
+run_tests=true
+optimize="-Doptimize=ReleaseFast"
+for arg in "$@"; do
+	case "$arg" in
+		--no-test|--no-tests) run_tests=false ;;
+		--debug) optimize="-Doptimize=Debug" ;;
+		-Doptimize=*) optimize="$arg" ;;
+	esac
+done
+
+# Run tests first (native only)
+if [[ "$run_tests" == true ]]; then
+	echo "=== Running tests ==="
+	"$SCRIPT_DIR/test" || { echo "Tests failed — aborting cross builds."; exit 1; }
+fi
+
+# Build native first (zig-out/bin/validate)
+echo "=== Building native ==="
+zig build "$optimize"
+echo "  -> zig-out/bin/$EXEC_NAME"
+
+# Save native binary (cross-compiles overwrite zig-out/bin/)
+cp "zig-out/bin/$EXEC_NAME" "zig-out/bin/${EXEC_NAME}.native"
+
+# Cross-compile for each target
+failed=0
+for dir_name in "${!TARGETS[@]}"; do
+	target="${TARGETS[$dir_name]}"
+	out_dir="zig-out/$dir_name/bin"
+	exec_name="$EXEC_NAME"
+	if [[ "$dir_name" == *windows* ]]; then
+		exec_name="${EXEC_NAME}.exe"
+	fi
+
+	echo "=== Cross-compiling: $dir_name ($target) ==="
+	mkdir -p "$out_dir"
+	if zig build "$optimize" -Dtarget="$target" 2>&1; then
+		cp "zig-out/bin/$exec_name" "$out_dir/$exec_name"
+		echo "  -> $out_dir/$exec_name"
+	else
+		echo "  FAILED: $dir_name"
+		((failed++)) || true
+	fi
+done
+
+# Restore native binary
+mv "zig-out/bin/${EXEC_NAME}.native" "zig-out/bin/$EXEC_NAME"
+
+echo
+echo "=== Build complete ==="
+echo "Native:  zig-out/bin/$EXEC_NAME"
+for dir_name in $(echo "${!TARGETS[@]}" | tr ' ' '\n' | sort); do
+	exec_name="$EXEC_NAME"
+	if [[ "$dir_name" == *windows* ]]; then
+		exec_name="${EXEC_NAME}.exe"
+	fi
+	if [[ -f "zig-out/$dir_name/bin/$exec_name" ]]; then
+		echo "Cross:   zig-out/$dir_name/bin/$exec_name"
+	else
+		echo "Cross:   zig-out/$dir_name/bin/$exec_name  (FAILED)"
+	fi
+done
+
+if [[ "$failed" -gt 0 ]]; then
+	echo
+	echo "$failed cross-compilation target(s) failed."
+	exit 1
+fi
