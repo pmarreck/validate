@@ -34,6 +34,106 @@
 #endif
 #include "validate_core.h"
 
+/* ========== Self-Hash: SHA-256 of the running binary ========== */
+/* Computed at startup, written as the first line of every output file
+ * to prove which binary version produced the output. */
+static char g_self_hash[65] = {0}; /* 64 hex chars + null */
+
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
+/* Minimal SHA-256 implementation (RFC 6234) for self-hashing */
+static const uint32_t sha256_k[64] = {
+	0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+	0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+	0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+	0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+	0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+	0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+	0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+	0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+};
+
+#define SHA256_RR(x,n) (((x)>>(n))|((x)<<(32-(n))))
+
+static void sha256_transform(uint32_t state[8], const uint8_t block[64]) {
+	uint32_t w[64], a,b,c,d,e,f,g,h,t1,t2;
+	for (int i=0;i<16;i++) w[i]=(uint32_t)block[i*4]<<24|(uint32_t)block[i*4+1]<<16|(uint32_t)block[i*4+2]<<8|block[i*4+3];
+	for (int i=16;i<64;i++) {uint32_t s0=SHA256_RR(w[i-15],7)^SHA256_RR(w[i-15],18)^(w[i-15]>>3);uint32_t s1=SHA256_RR(w[i-2],17)^SHA256_RR(w[i-2],19)^(w[i-2]>>10);w[i]=w[i-16]+s0+w[i-7]+s1;}
+	a=state[0];b=state[1];c=state[2];d=state[3];e=state[4];f=state[5];g=state[6];h=state[7];
+	for (int i=0;i<64;i++){t1=h+(SHA256_RR(e,6)^SHA256_RR(e,11)^SHA256_RR(e,25))+((e&f)^(~e&g))+sha256_k[i]+w[i];t2=(SHA256_RR(a,2)^SHA256_RR(a,13)^SHA256_RR(a,22))+((a&b)^(a&c)^(b&c));h=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;}
+	state[0]+=a;state[1]+=b;state[2]+=c;state[3]+=d;state[4]+=e;state[5]+=f;state[6]+=g;state[7]+=h;
+}
+
+static void compute_self_hash(const char* argv0) {
+	char exe_path[4096] = {0};
+#if defined(__linux__)
+	ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path)-1);
+	if (len <= 0) strncpy(exe_path, argv0, sizeof(exe_path)-1);
+	else exe_path[len] = '\0';
+#elif defined(__APPLE__)
+	uint32_t size = sizeof(exe_path);
+	if (_NSGetExecutablePath(exe_path, &size) != 0) strncpy(exe_path, argv0, sizeof(exe_path)-1);
+#elif defined(_WIN32)
+	GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
+#else
+	strncpy(exe_path, argv0, sizeof(exe_path)-1);
+#endif
+
+	FILE* f = fopen(exe_path, "rb");
+	if (!f) { snprintf(g_self_hash, sizeof(g_self_hash), "(unable to hash self)"); return; }
+
+	uint32_t state[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+	uint8_t buf[4096];
+	uint64_t total = 0;
+	size_t n;
+	while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+		size_t off = 0;
+		while (off + 64 <= n) { sha256_transform(state, buf + off); off += 64; total += 64; }
+		if (off < n) {
+			/* Handle partial block at end of chunk — accumulate */
+			uint8_t partial[64] = {0};
+			size_t remaining = n - off;
+			memcpy(partial, buf + off, remaining);
+			/* Check if more data follows */
+			size_t n2 = fread(buf, 1, 64 - remaining, f);
+			memcpy(partial + remaining, buf, n2);
+			total += remaining + n2;
+			if (remaining + n2 == 64) { sha256_transform(state, partial); }
+			else {
+				/* Final padding */
+				size_t last = remaining + n2;
+				partial[last] = 0x80;
+				if (last >= 56) { sha256_transform(state, partial); memset(partial, 0, 64); }
+				uint64_t bits = total * 8;
+				for (int i=0;i<8;i++) partial[63-i] = (uint8_t)(bits>>(i*8));
+				sha256_transform(state, partial);
+				goto done;
+			}
+		}
+	}
+	{ /* Final padding for block-aligned data */
+		uint8_t pad[64] = {0};
+		pad[0] = 0x80;
+		if ((total % 64) >= 56) { sha256_transform(state, pad); memset(pad, 0, 64); }
+		uint64_t bits = total * 8;
+		for (int i=0;i<8;i++) pad[63-i] = (uint8_t)(bits>>(i*8));
+		sha256_transform(state, pad);
+	}
+done:
+	fclose(f);
+	for (int i=0;i<8;i++) snprintf(g_self_hash + i*8, 9, "%08x", state[i]);
+}
+
+/* Write the self-hash header to a FILE* stream */
+static void write_self_hash(FILE* f) {
+	if (g_self_hash[0] && f) {
+		fprintf(f, "# validate sha256:%s\n", g_self_hash);
+		fflush(f);
+	}
+}
+
 /* ========== Multi-Output Destination System ========== */
 /*
  * Supports colon-delimited output destinations for *_OUT environment variables.
@@ -157,6 +257,8 @@ static int parse_single_dest(const char* token, size_t len, output_dest_t* dest)
 		return -1;
 	}
 	free(path);
+	/* Write self-hash as first line for provenance tracking */
+	write_self_hash(f);
 	output_dest_add(dest, f, 1);
 	return 0;
 }
@@ -1597,6 +1699,12 @@ static uint8_t parse_cli_arg(const char* arg) {
 }
 
 int main(int argc, char* argv[]) {
+	/* Compute SHA-256 of the running binary for provenance tracking */
+	compute_self_hash(argv[0]);
+	/* Write hash to stdout/stderr so it's always visible in output */
+	write_self_hash(stdout);
+	write_self_hash(stderr);
+
 	/* Initialize color support based on terminal capabilities */
 	init_colors();
 	if (!g_colors_enabled) {

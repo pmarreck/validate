@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Test that validate's self-reported SHA-256 matches the actual binary hash
+set -u
+
+VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
+
+# Get validate's self-reported hash from its first line of output
+reported_hash=$("$VALIDATE" --help 2>&1 | head -1 | grep -oP 'sha256:\K[0-9a-f]{64}')
+if [[ -z "$reported_hash" ]]; then
+	echo "FAIL: validate did not output self-hash"
+	exit 1
+fi
+
+# Compute the actual hash
+actual_hash=$(shasum -a 256 "$VALIDATE" | awk '{print $1}')
+
+if [[ "$reported_hash" == "$actual_hash" ]]; then
+	echo "PASS: self-hash matches ($reported_hash)"
+	exit 0
+else
+	echo "FAIL: self-hash mismatch"
+	echo "  reported: $reported_hash"
+	echo "  actual:   $actual_hash"
+	exit 1
+fi

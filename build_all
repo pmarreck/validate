@@ -34,13 +34,38 @@ for arg in "$@"; do
 	esac
 done
 
+# Collect all binary paths
+all_paths=("zig-out/bin/$EXEC_NAME")
+for dir_name in $(echo "${!TARGETS[@]}" | tr ' ' '\n' | sort); do
+	exec_name="$EXEC_NAME"
+	if [[ "$dir_name" == *windows* ]]; then
+		exec_name="${EXEC_NAME}.exe"
+	fi
+	all_paths+=("zig-out/$dir_name/bin/$exec_name")
+done
+
+# Step A: Hash all existing binaries BEFORE building
+echo "=== Pre-build hashes ==="
+declare -A PRE_HASHES
+for p in "${all_paths[@]}"; do
+	if [[ -f "$p" ]]; then
+		hash=$(shasum -a 256 "$p" | awk '{print $1}')
+		PRE_HASHES["$p"]="$hash"
+		echo "  $hash  $p"
+	else
+		PRE_HASHES["$p"]="(not found)"
+		echo "  (not found)          $p"
+	fi
+done
+echo
+
 # Run tests first (native only)
 if [[ "$run_tests" == true ]]; then
 	echo "=== Running tests ==="
 	"$SCRIPT_DIR/test" || { echo "Tests failed — aborting cross builds."; exit 1; }
 fi
 
-# Build native first (zig-out/bin/validate)
+# Step B: Build native first (zig-out/bin/validate)
 echo "=== Building native ==="
 zig build "$optimize"
 echo "  -> zig-out/bin/$EXEC_NAME"
@@ -72,23 +97,36 @@ done
 # Restore native binary
 mv "zig-out/bin/${EXEC_NAME}.native" "zig-out/bin/$EXEC_NAME"
 
+# Step C: Hash all binaries AFTER building, report changes
 echo
-echo "=== Build complete ==="
-echo "Native:  zig-out/bin/$EXEC_NAME"
-for dir_name in $(echo "${!TARGETS[@]}" | tr ' ' '\n' | sort); do
-	exec_name="$EXEC_NAME"
-	if [[ "$dir_name" == *windows* ]]; then
-		exec_name="${EXEC_NAME}.exe"
-	fi
-	if [[ -f "zig-out/$dir_name/bin/$exec_name" ]]; then
-		echo "Cross:   zig-out/$dir_name/bin/$exec_name"
+echo "=== Post-build hashes ==="
+any_changed=0
+for p in "${all_paths[@]}"; do
+	if [[ -f "$p" ]]; then
+		hash=$(shasum -a 256 "$p" | awk '{print $1}')
+		pre="${PRE_HASHES["$p"]}"
+		if [[ "$pre" == "(not found)" ]]; then
+			echo "  NEW       $hash  $p"
+			any_changed=1
+		elif [[ "$pre" == "$hash" ]]; then
+			echo "  UNCHANGED $hash  $p"
+		else
+			echo "  CHANGED   $hash  $p"
+			echo "    was:    $pre"
+			any_changed=1
+		fi
 	else
-		echo "Cross:   zig-out/$dir_name/bin/$exec_name  (FAILED)"
+		echo "  MISSING   $p"
 	fi
 done
 
+echo
+echo "=== Build complete ==="
+if [[ "$any_changed" -eq 0 ]]; then
+	echo "WARNING: No binaries changed! Build may be cached."
+fi
+
 if [[ "$failed" -gt 0 ]]; then
-	echo
 	echo "$failed cross-compilation target(s) failed."
 	exit 1
 fi
