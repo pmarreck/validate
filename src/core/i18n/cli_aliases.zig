@@ -16,6 +16,7 @@ pub const CliArg = enum(u8) {
     color = 7,
     simple_progress = 8,
     no_frontload = 9,
+    append = 10,
 };
 
 /// Locale-specific CLI argument aliases (without -- prefix).
@@ -30,6 +31,7 @@ pub const CliAliases = struct {
     color: [:0]const u8,
     simple_progress: [:0]const u8,
     no_frontload: [:0]const u8,
+    append: [:0]const u8,
 };
 
 /// Environment variable identifiers (matches validate_env_t in C header).

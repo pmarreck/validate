@@ -41,6 +41,9 @@
  * Windows-aware parsing: Don't split on colons in C:\ style paths
  */
 
+/* File output mode: "w" (overwrite, default) or "a" (append with --append) */
+static const char* g_file_open_mode = "w";
+
 #define MAX_OUTPUT_DESTINATIONS 8
 
 typedef struct {
@@ -146,7 +149,7 @@ static int parse_single_dest(const char* token, size_t len, output_dest_t* dest)
 	memcpy(path, token, len);
 	path[len] = '\0';
 
-	FILE* f = fopen(path, "a");
+	FILE* f = fopen(path, g_file_open_mode);
 	if (!f) {
 		fprintf(stderr, "%sWarning: failed to open output path: %s (%s)\n",
 				COLOR_YELLOW ? COLOR_YELLOW : "", path, strerror(errno));
@@ -1509,6 +1512,7 @@ static void print_usage(const char* program) {
 	printf("    --stress N              Repeat validation N times with shuffling\n");
 	printf("    --no-frontload          Don't prioritize large files (default: top 10%% largest first)\n");
 	printf("    --simple-progress       Use simple ASCII progress instead of TUI status bar\n");
+	printf("    --append                Append to output files instead of overwriting\n");
 	printf("    --lang CODE             Set output language (e.g., en, de)\n");
 #else
 	printf("    --version          Print version\n");
@@ -1521,6 +1525,7 @@ static void print_usage(const char* program) {
 	printf("    --stress N         Repeat validation N times with shuffling\n");
 	printf("    --no-frontload     Don't prioritize large files (default: top 10%% largest first)\n");
 	printf("    --simple-progress  Use simple ASCII progress instead of TUI status bar\n");
+	printf("    --append           Append to output files instead of overwriting\n");
 	printf("    --lang CODE        Set output language (e.g., en, de)\n");
 #endif
 	printf("\n");
@@ -1683,6 +1688,9 @@ int main(int argc, char* argv[]) {
 				continue;
 			case VALIDATE_ARG_SIMPLE_PROGRESS:
 				simple_progress = 1;
+				continue;
+			case VALIDATE_ARG_APPEND:
+				g_file_open_mode = "a";
 				continue;
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);

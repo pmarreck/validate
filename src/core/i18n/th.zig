@@ -285,6 +285,7 @@ pub const cli_aliases = cli.CliAliases{
     .color = "color",
     .simple_progress = "simple-progress",
     .no_frontload = "no-frontload",
+    .append = "append",
 };
 
 // Thai environment variable aliases (currently canonical English forms).

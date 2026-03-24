@@ -70,6 +70,7 @@ pub const cli_aliases = cli.CliAliases{
     .color = "farbe",
     .simple_progress = "einfacher-fortschritt",
     .no_frontload = "ohne-vorrang",
+    .append = "append",
 };
 
 // German environment variable aliases.

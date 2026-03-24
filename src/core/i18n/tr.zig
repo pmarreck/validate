@@ -58,6 +58,7 @@ pub const cli_aliases = cli.CliAliases{
     .color = "renk",
     .simple_progress = "basit-ilerleme",
     .no_frontload = "onceleksiz",
+    .append = "append",
 };
 
 pub const env_aliases = cli.EnvAliases{

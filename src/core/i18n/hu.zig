@@ -58,6 +58,7 @@ pub const cli_aliases = cli.CliAliases{
     .color = "szin",
     .simple_progress = "egyszeru-haladas",
     .no_frontload = "sorrend-nelkul",
+    .append = "append",
 };
 
 pub const env_aliases = cli.EnvAliases{

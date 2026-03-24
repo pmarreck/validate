@@ -69,6 +69,7 @@ pub const cli_aliases = cli.CliAliases{
     .color = "mau",
     .simple_progress = "tien-trinh-don-gian",
     .no_frontload = "khong-uu-tien",
+    .append = "append",
 };
 
 pub const env_aliases = cli.EnvAliases{

@@ -69,6 +69,7 @@ pub const cli_aliases = cli.CliAliases{
     .color = "\xe8\x89\xb2\xe5\xbd\xa9",
     .simple_progress = "\xe7\xae\x80\xe5\x8d\x95\xe8\xbf\x9b\xe5\xba\xa6",
     .no_frontload = "\xe6\x97\xa0\xe4\xbc\x98\xe5\x85\x88",
+    .append = "append",
 };
 
 pub const env_aliases = cli.EnvAliases{
