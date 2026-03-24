@@ -266,8 +266,13 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
             if (fmt_sample_rate == 0 or fmt_sample_rate > 384000) {
                 return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "sample rate", .structural);
             }
-            if (fmt_bits_per_sample == 0 or fmt_bits_per_sample > 64) {
-                return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "bits per sample", .structural);
+            // For PCM (1) and IEEE float (3), bits_per_sample must be valid.
+            // For compressed/custom codecs (ADPCM, Wwise, etc.), bits_per_sample
+            // may be 0 or non-standard — the codec handles its own sample format.
+            if (fmt_audio_format == 1 or fmt_audio_format == 3) {
+                if (fmt_bits_per_sample == 0 or fmt_bits_per_sample > 64) {
+                    return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "bits per sample", .structural);
+                }
             }
 
             // Cross-validate block_align = channels * bytes_per_sample
