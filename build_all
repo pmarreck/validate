@@ -120,6 +120,15 @@ for p in "${all_paths[@]}"; do
 	fi
 done
 
+# Step D: Sign all binaries with integrity trailer
+echo
+echo "=== Signing binaries ==="
+for p in "${all_paths[@]}"; do
+	if [[ -f "$p" ]]; then
+		"$SCRIPT_DIR/scripts/sign-binary" "$p"
+	fi
+done
+
 echo
 echo "=== Build complete ==="
 if [[ "$any_changed" -eq 0 ]]; then

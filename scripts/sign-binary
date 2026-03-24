@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Append integrity trailer to a validate binary.
+# Trailer format: "VALIDATE_INTEGRITY" (16 bytes) + SHA-256 (32 bytes raw)
+# The binary verifies this at startup, catching corruption/tampering.
+set -u
+
+if [[ $# -lt 1 ]]; then
+	echo "Usage: $0 <binary-path> [binary-path...]"
+	exit 1
+fi
+
+MARKER="VALIDATE_INTEGRITY"
+
+for binary in "$@"; do
+	if [[ ! -f "$binary" ]]; then
+		echo "ERROR: $binary not found"
+		continue
+	fi
+
+	# Check if already signed (last 16 bytes match marker)
+	tail_bytes=$(tail -c 48 "$binary" | head -c 16)
+	if [[ "$tail_bytes" == "$MARKER" ]]; then
+		echo "SKIP: $binary already signed"
+		continue
+	fi
+
+	# Compute SHA-256 of the binary
+	hash_hex=$(shasum -a 256 "$binary" | awk '{print $1}')
+
+	# Convert hex to raw bytes and append marker + hash
+	printf '%s' "$MARKER" >> "$binary"
+	echo -n "$hash_hex" | xxd -r -p >> "$binary"
+
+	echo "SIGNED: $binary (sha256:$hash_hex)"
+done

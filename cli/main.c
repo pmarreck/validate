@@ -126,6 +126,123 @@ done:
 	for (int i=0;i<8;i++) snprintf(g_self_hash + i*8, 9, "%08x", state[i]);
 }
 
+/* ========== Self-Integrity Verification ========== */
+/* The binary may have a 48-byte integrity trailer appended by the build:
+ *   "VALIDATE_INTEGRITY" (16 bytes) + SHA-256 (32 bytes raw)
+ * If present, verify the hash of everything before the trailer. */
+#define INTEGRITY_MARKER "VALIDATE_INTEGRITY"
+#define INTEGRITY_MARKER_LEN 18
+#define INTEGRITY_TRAILER_LEN (INTEGRITY_MARKER_LEN + 32) /* 50 bytes */
+
+static int g_integrity_verified = 0;  /* 1=passed, -1=failed, 0=no trailer */
+
+/* Compute SHA-256 of first `limit` bytes of a file, result in raw[32] */
+static void sha256_file_range(const char* path, uint64_t limit, uint8_t raw[32]) {
+	FILE* f = fopen(path, "rb");
+	if (!f) { memset(raw, 0, 32); return; }
+
+	uint32_t state[8] = {0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19};
+	uint8_t buf[4096];
+	uint64_t total = 0;
+	while (total < limit) {
+		size_t to_read = sizeof(buf);
+		if (total + to_read > limit) to_read = (size_t)(limit - total);
+		size_t n = fread(buf, 1, to_read, f);
+		if (n == 0) break;
+		size_t off = 0;
+		while (off + 64 <= n) { sha256_transform(state, buf + off); off += 64; total += 64; }
+		if (off < n) {
+			uint8_t partial[64] = {0};
+			size_t remaining = n - off;
+			memcpy(partial, buf + off, remaining);
+			total += remaining;
+			size_t need = 64 - remaining;
+			if (total < limit && need > 0) {
+				size_t can = (total + need > limit) ? (size_t)(limit - total) : need;
+				size_t n2 = fread(partial + remaining, 1, can, f);
+				total += n2;
+				remaining += n2;
+			}
+			if (remaining == 64) { sha256_transform(state, partial); }
+			else {
+				partial[remaining] = 0x80;
+				if (remaining >= 56) { sha256_transform(state, partial); memset(partial, 0, 64); }
+				uint64_t bits = total * 8;
+				for (int i=0;i<8;i++) partial[63-i] = (uint8_t)(bits>>(i*8));
+				sha256_transform(state, partial);
+				goto hash_done;
+			}
+		}
+	}
+	{ uint8_t pad[64]={0}; pad[0]=0x80;
+	  if((total%64)>=56){sha256_transform(state,pad);memset(pad,0,64);}
+	  uint64_t bits=total*8;
+	  for(int i=0;i<8;i++)pad[63-i]=(uint8_t)(bits>>(i*8));
+	  sha256_transform(state,pad);
+	}
+hash_done:
+	fclose(f);
+	for (int i = 0; i < 8; i++) {
+		raw[i*4]   = (uint8_t)(state[i] >> 24);
+		raw[i*4+1] = (uint8_t)(state[i] >> 16);
+		raw[i*4+2] = (uint8_t)(state[i] >> 8);
+		raw[i*4+3] = (uint8_t)(state[i]);
+	}
+}
+
+static void verify_self_integrity(const char* argv0) {
+	char exe_path[4096] = {0};
+#if defined(__linux__)
+	ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path)-1);
+	if (len <= 0) strncpy(exe_path, argv0, sizeof(exe_path)-1);
+	else exe_path[len] = '\0';
+#elif defined(__APPLE__)
+	uint32_t size = sizeof(exe_path);
+	if (_NSGetExecutablePath(exe_path, &size) != 0) strncpy(exe_path, argv0, sizeof(exe_path)-1);
+#elif defined(_WIN32)
+	GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
+#else
+	strncpy(exe_path, argv0, sizeof(exe_path)-1);
+#endif
+
+	/* Get file size */
+	FILE* f = fopen(exe_path, "rb");
+	if (!f) return;
+	fseek(f, 0, SEEK_END);
+	long file_size = ftell(f);
+	if (file_size < INTEGRITY_TRAILER_LEN + 1024) { fclose(f); return; } /* Too small */
+
+	/* Read the trailer */
+	uint8_t trailer[INTEGRITY_TRAILER_LEN];
+	fseek(f, file_size - INTEGRITY_TRAILER_LEN, SEEK_SET);
+	if (fread(trailer, 1, INTEGRITY_TRAILER_LEN, f) != INTEGRITY_TRAILER_LEN) { fclose(f); return; }
+	fclose(f);
+
+	/* Check for marker */
+	if (memcmp(trailer, INTEGRITY_MARKER, INTEGRITY_MARKER_LEN) != 0) {
+		g_integrity_verified = 0; /* No trailer — development build */
+		return;
+	}
+
+	/* Compute SHA-256 of everything before the trailer */
+	uint8_t computed[32];
+	sha256_file_range(exe_path, (uint64_t)(file_size - INTEGRITY_TRAILER_LEN), computed);
+
+	/* Compare */
+	const uint8_t* expected = trailer + INTEGRITY_MARKER_LEN;
+	if (memcmp(computed, expected, 32) == 0) {
+		g_integrity_verified = 1;
+	} else {
+		g_integrity_verified = -1;
+		fprintf(stderr, "\033[1;31mWARNING: Binary integrity check FAILED — this executable may be corrupted!\033[0m\n");
+		fprintf(stderr, "  Expected: ");
+		for (int i=0;i<32;i++) fprintf(stderr, "%02x", expected[i]);
+		fprintf(stderr, "\n  Computed: ");
+		for (int i=0;i<32;i++) fprintf(stderr, "%02x", computed[i]);
+		fprintf(stderr, "\n");
+	}
+}
+
 /* Write the self-hash header to a FILE* stream */
 static void write_self_hash(FILE* f) {
 	if (g_self_hash[0] && f) {
@@ -1701,6 +1818,8 @@ static uint8_t parse_cli_arg(const char* arg) {
 int main(int argc, char* argv[]) {
 	/* Compute SHA-256 of the running binary for provenance tracking */
 	compute_self_hash(argv[0]);
+	/* Verify binary integrity (if build appended integrity trailer) */
+	verify_self_integrity(argv[0]);
 	/* Write hash to stdout/stderr so it's always visible in output */
 	write_self_hash(stdout);
 	write_self_hash(stderr);
