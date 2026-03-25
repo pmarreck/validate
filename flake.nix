@@ -8,11 +8,12 @@
 	outputs = { self, nixpkgs }:
 		let
 			# All systems for devShells (local development)
-			allSystems = [ "aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" ];
+			# No x86_64-darwin: Apple is phasing out Rosetta; native aarch64 build suffices
+			allSystems = [ "aarch64-darwin" "x86_64-linux" "aarch64-linux" ];
 			forAllSystems = nixpkgs.lib.genAttrs allSystems;
 
 			# Build systems (where we run builds - Linux for CI, Darwin for local)
-			buildSystems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
+			buildSystems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
 			forBuildSystems = nixpkgs.lib.genAttrs buildSystems;
 
 			# Zig target triples for cross-compilation
@@ -104,7 +105,6 @@
 					# Only cross-compile for targets without native Garnix builders
 					# Linux x86_64/aarch64 are built natively by Garnix on those platforms
 					windows-x86_64 = mkValidate { targetSystem = "x86_64-windows"; cross = true; };
-					macos-x86_64 = mkValidate { targetSystem = "x86_64-darwin"; cross = true; };
 					macos-aarch64 = mkValidate { targetSystem = "aarch64-darwin"; cross = true; };
 				} else { }));
 
@@ -160,7 +160,7 @@
 							# Force non-interactive: Zig's test runner emits terminal escape
 							# sequences when stderr is a TTY, which can hang in CI.
 							export TERM=dumb
-							timeout 1200 zig build test 2>&1 || {
+							timeout 600 zig build test 2>&1 || {
 							  echo "Tests timed out or failed after 10 minutes"
 							  exit 1
 							}
