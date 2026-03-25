@@ -26,11 +26,6 @@ jobs:
             name: linux-aarch64
             package: default
             binary: validate
-          - runner: ubuntu-latest
-            system: x86_64-linux
-            name: macos-x86_64
-            package: macos-x86_64
-            binary: validate
           - runner: macos-14
             system: aarch64-darwin
             name: macos-aarch64
