@@ -157,8 +157,10 @@
 							mkdir -p $ZIG_GLOBAL_CACHE_DIR
 							cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
 							chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
-							# Timeout after 10 minutes to prevent CI hangs
-							timeout 900 zig build test || {
+							# Force non-interactive: Zig's test runner emits terminal escape
+							# sequences when stderr is a TTY, which can hang in CI.
+							export TERM=dumb
+							timeout 600 zig build test 2>&1 || {
 							  echo "Tests timed out or failed after 10 minutes"
 							  exit 1
 							}
