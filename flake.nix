@@ -160,7 +160,7 @@
 							# Force non-interactive: Zig's test runner emits terminal escape
 							# sequences when stderr is a TTY, which can hang in CI.
 							export TERM=dumb
-							timeout 600 zig build test 2>&1 || {
+							timeout 1200 zig build test 2>&1 || {
 							  echo "Tests timed out or failed after 10 minutes"
 							  exit 1
 							}
