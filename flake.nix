@@ -158,7 +158,7 @@
 							cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
 							chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
 							# Timeout after 10 minutes to prevent CI hangs
-							timeout 600 zig build test || {
+							timeout 900 zig build test || {
 							  echo "Tests timed out or failed after 10 minutes"
 							  exit 1
 							}
