@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Test that output files are OVERWRITTEN by default (not appended)
+# and that --append flag enables appending.
+set -u
+
+VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_overwrite.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+ok_path="$tmpdir/ok.out"
+
+# Run 1: create output file
+OK_OUT="$ok_path" "$VALIDATE" ground_truth_examples/png > /dev/null 2>&1 || true
+count1=$(wc -l < "$ok_path" | tr -d ' ')
+
+if [ "$count1" -lt 2 ]; then
+	printf 'FAIL: expected at least 2 lines (hash + results), got %s\n' "$count1" >&2
+	exit 1
+fi
+
+# Run 2: without --append, file should be OVERWRITTEN (same line count)
+OK_OUT="$ok_path" "$VALIDATE" ground_truth_examples/png > /dev/null 2>&1 || true
+count2=$(wc -l < "$ok_path" | tr -d ' ')
+
+if [ "$count2" -ne "$count1" ]; then
+	printf 'FAIL: overwrite mode — expected %s lines (same as run 1), got %s (appended?)\n' "$count1" "$count2" >&2
+	exit 1
+fi
+
+# Run 3: WITH --append, file should grow
+OK_OUT="$ok_path" "$VALIDATE" --append ground_truth_examples/png > /dev/null 2>&1 || true
+count3=$(wc -l < "$ok_path" | tr -d ' ')
+
+if [ "$count3" -le "$count2" ]; then
+	printf 'FAIL: append mode — expected more than %s lines, got %s\n' "$count2" "$count3" >&2
+	exit 1
+fi
+
+# Verify self-hash is first line
+first_line=$(head -1 "$ok_path")
+if ! echo "$first_line" | grep -q "^# validate sha256:"; then
+	printf 'FAIL: expected self-hash as first line, got: %s\n' "$first_line" >&2
+	exit 1
+fi
+
+printf 'PASS: output overwrite/append behavior correct (run1=%s, run2=%s, run3=%s)\n' "$count1" "$count2" "$count3"

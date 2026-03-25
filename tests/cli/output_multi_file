@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Test colon-separated multi-output to multiple files
+set -u
+
+VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_multi.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+file1="$tmpdir/out1.txt"
+file2="$tmpdir/out2.txt"
+
+# Test: OK_OUT to two files via colon separator
+OK_OUT="$file1:$file2" "$VALIDATE" ground_truth_examples/png > /dev/null 2>&1 || true
+
+# Both files should exist
+if [ ! -f "$file1" ]; then
+	printf 'FAIL: expected %s to exist\n' "$file1" >&2
+	exit 1
+fi
+if [ ! -f "$file2" ]; then
+	printf 'FAIL: expected %s to exist\n' "$file2" >&2
+	exit 1
+fi
+
+# Both should have OK results
+if ! grep -q "OK" "$file1"; then
+	printf 'FAIL: expected OK in %s\n' "$file1" >&2
+	exit 1
+fi
+if ! grep -q "OK" "$file2"; then
+	printf 'FAIL: expected OK in %s\n' "$file2" >&2
+	exit 1
+fi
+
+# Both should have self-hash as first line
+if ! head -1 "$file1" | grep -q "^# validate sha256:"; then
+	printf 'FAIL: expected self-hash in %s\n' "$file1" >&2
+	exit 1
+fi
+if ! head -1 "$file2" | grep -q "^# validate sha256:"; then
+	printf 'FAIL: expected self-hash in %s\n' "$file2" >&2
+	exit 1
+fi
+
+# Both should have same content
+if ! diff -q "$file1" "$file2" > /dev/null 2>&1; then
+	printf 'FAIL: multi-output files should be identical\n' >&2
+	diff "$file1" "$file2" >&2
+	exit 1
+fi
+
+printf 'PASS: colon-separated multi-file output works correctly\n'
