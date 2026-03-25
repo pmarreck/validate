@@ -1,27 +1,21 @@
 #!/usr/bin/env bash
-
-if [[ -z "${VALIDATE_NIX:-}" ]]; then
-	exec env VALIDATE_NIX=1 nix develop -c "$0" "$@"
-fi
-
-set -euo pipefail
+# Build validate using Nix for deterministic, reproducible builds.
+# This uses `nix build` (sandboxed) rather than `nix develop -c zig build`
+# to avoid host OS version detection issues (e.g., macOS 26.x with Zig 0.15.2).
+set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-unset LD
-unset SDKROOT
-
-# Check for --update-deps flag
+# Parse args
+run_tests=true
 update_deps=false
-remaining_args=()
 for arg in "$@"; do
-	if [[ "$arg" == "--update-deps" ]]; then
-		update_deps=true
-	else
-		remaining_args+=("$arg")
-	fi
+	case "$arg" in
+		--no-test|--no-tests) run_tests=false ;;
+		--update-deps) update_deps=true ;;
+	esac
 done
-set -- "${remaining_args[@]+"${remaining_args[@]}"}"
 
 # Update Zig deps hash if requested or if build.zig.zon is newer than flake.nix
 if [[ "$update_deps" == true ]]; then
@@ -31,39 +25,21 @@ elif [[ -f "$SCRIPT_DIR/build.zig.zon" && -f "$SCRIPT_DIR/flake.nix" ]]; then
 	if [[ "$SCRIPT_DIR/build.zig.zon" -nt "$SCRIPT_DIR/flake.nix" ]]; then
 		echo "=== build.zig.zon is newer than flake.nix, checking deps hash ==="
 		"$SCRIPT_DIR/scripts/update-zig-deps-hash.sh"
-		# Touch flake.nix to update mtime even if hash unchanged
 		touch "$SCRIPT_DIR/flake.nix"
 	fi
 fi
 
-is_debug=false
-case "${DEBUG:-}" in
-	1|true|TRUE|True|yes|YES|on|ON)
-		is_debug=true
-		;;
-	0|false|FALSE|False|no|NO|off|OFF|"")
-		is_debug=false
-		;;
-	*)
-		is_debug=false
-		;;
-esac
-
-zig_args=("$@")
-has_optimize=false
-for arg in "${zig_args[@]}"; do
-	if [[ "$arg" == -Doptimize=* ]]; then
-		has_optimize=true
-		break
-	fi
-done
-
-if [[ "$is_debug" == false && "$has_optimize" == false ]]; then
-	zig_args+=("-Doptimize=ReleaseFast")
+# Run tests first
+if [[ "$run_tests" == true ]]; then
+	echo "=== Running tests ==="
+	"$SCRIPT_DIR/test" || { echo "Tests failed — aborting build."; exit 1; }
 fi
 
-echo "=== Running tests ==="
-./test
+# Build via nix (sandboxed, deterministic)
+echo "=== Building (nix build) ==="
+nix build || { echo "Build failed."; exit 1; }
 
-echo "=== Building ==="
-zig build "${zig_args[@]}"
+# Copy to zig-out/bin/ for compatibility with scripts that expect it there
+mkdir -p zig-out/bin
+cp -f result/bin/validate zig-out/bin/validate
+echo "  -> zig-out/bin/validate ($(file -b zig-out/bin/validate | head -c 60))"

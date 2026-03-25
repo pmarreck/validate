@@ -1,46 +1,34 @@
 #!/usr/bin/env bash
-
-if [[ -z "${VALIDATE_NIX:-}" ]]; then
-	exec env VALIDATE_NIX=1 nix develop -c "$0" "$@"
-fi
-
+# Build validate for all platforms via Nix (sandboxed, deterministic).
+# Outputs to zig-out/<arch>-<os>/bin/validate for each target.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-unset LD
-unset SDKROOT
-
-# Cross-compilation targets (matching flake.nix zigTargets)
-# Format: <output-dir-name>=<zig-target-triple>
-declare -A TARGETS=(
-	["x86_64-linux"]="x86_64-linux-musl"
-	["aarch64-linux"]="aarch64-linux-musl"
-	["x86_64-windows"]="x86_64-windows-gnu"
-	["x86_64-macos"]="x86_64-macos"
-	["aarch64-macos"]="aarch64-macos"
-)
+cd "$SCRIPT_DIR"
 
 EXEC_NAME="validate"
 
+# Cross-compilation targets available from x86_64-linux in flake.nix
+# Native targets are built by their respective platforms
+declare -A CROSS_TARGETS=(
+	["windows-x86_64"]="packages.x86_64-linux.windows-x86_64"
+	["x86_64-macos"]="packages.x86_64-linux.macos-x86_64"
+	["aarch64-macos"]="packages.x86_64-linux.macos-aarch64"
+)
+
 # Parse args
 run_tests=true
-optimize="-Doptimize=ReleaseFast"
 for arg in "$@"; do
 	case "$arg" in
 		--no-test|--no-tests) run_tests=false ;;
-		--debug) optimize="-Doptimize=Debug" ;;
-		-Doptimize=*) optimize="$arg" ;;
 	esac
 done
 
-# Collect all binary paths
+# Collect all binary paths for hashing
 all_paths=("zig-out/bin/$EXEC_NAME")
-for dir_name in $(echo "${!TARGETS[@]}" | tr ' ' '\n' | sort); do
+for dir_name in x86_64-linux aarch64-linux x86_64-windows x86_64-macos aarch64-macos; do
 	exec_name="$EXEC_NAME"
-	if [[ "$dir_name" == *windows* ]]; then
-		exec_name="${EXEC_NAME}.exe"
-	fi
+	[[ "$dir_name" == *windows* ]] && exec_name="${EXEC_NAME}.exe"
 	all_paths+=("zig-out/$dir_name/bin/$exec_name")
 done
 
@@ -59,33 +47,36 @@ for p in "${all_paths[@]}"; do
 done
 echo
 
-# Run tests first (native only)
+# Run tests first
 if [[ "$run_tests" == true ]]; then
 	echo "=== Running tests ==="
-	"$SCRIPT_DIR/test" || { echo "Tests failed — aborting cross builds."; exit 1; }
+	"$SCRIPT_DIR/test" || { echo "Tests failed — aborting."; exit 1; }
 fi
 
-# Step B: Build native first (zig-out/bin/validate)
+# Step B: Build native via nix build
 echo "=== Building native ==="
-zig build "$optimize"
+nix build || { echo "Native build failed."; exit 1; }
+mkdir -p zig-out/bin
+cp -f result/bin/$EXEC_NAME zig-out/bin/$EXEC_NAME
 echo "  -> zig-out/bin/$EXEC_NAME"
 
-# Save native binary (cross-compiles overwrite zig-out/bin/)
-cp "zig-out/bin/$EXEC_NAME" "zig-out/bin/${EXEC_NAME}.native"
-
-# Cross-compile for each target
+# Cross-compile targets via nix build
+# These require x86_64-linux builders (Garnix CI handles this; local cross-compile
+# uses zig directly for targets that don't need Nix sandbox)
 failed=0
-for dir_name in "${!TARGETS[@]}"; do
-	target="${TARGETS[$dir_name]}"
+echo
+echo "=== Cross-compiling via zig (musl targets) ==="
+for target_pair in "x86_64-linux:x86_64-linux-musl" "aarch64-linux:aarch64-linux-musl" "x86_64-windows:x86_64-windows-gnu" "x86_64-macos:x86_64-macos" "aarch64-macos:aarch64-macos"; do
+	dir_name="${target_pair%%:*}"
+	zig_target="${target_pair##*:}"
 	out_dir="zig-out/$dir_name/bin"
 	exec_name="$EXEC_NAME"
-	if [[ "$dir_name" == *windows* ]]; then
-		exec_name="${EXEC_NAME}.exe"
-	fi
+	[[ "$dir_name" == *windows* ]] && exec_name="${EXEC_NAME}.exe"
 
-	echo "=== Cross-compiling: $dir_name ($target) ==="
+	echo "=== Cross-compiling: $dir_name ($zig_target) ==="
 	mkdir -p "$out_dir"
-	if zig build "$optimize" -Dtarget="$target" 2>&1; then
+	# Use nix develop for cross-compilation (zig handles its own sysroot for non-native targets)
+	if nix develop -c zig build -Doptimize=ReleaseFast -Dtarget="$zig_target" 2>&1; then
 		cp "zig-out/bin/$exec_name" "$out_dir/$exec_name"
 		echo "  -> $out_dir/$exec_name"
 	else
@@ -94,10 +85,19 @@ for dir_name in "${!TARGETS[@]}"; do
 	fi
 done
 
-# Restore native binary
-mv "zig-out/bin/${EXEC_NAME}.native" "zig-out/bin/$EXEC_NAME"
+# Restore native binary (cross-compiles overwrite zig-out/bin/)
+cp -f result/bin/$EXEC_NAME zig-out/bin/$EXEC_NAME
 
-# Step C: Hash all binaries AFTER building, report changes
+# Step C: Sign all binaries with integrity trailer
+echo
+echo "=== Signing binaries ==="
+for p in "${all_paths[@]}"; do
+	if [[ -f "$p" ]]; then
+		"$SCRIPT_DIR/scripts/sign-binary" "$p"
+	fi
+done
+
+# Step D: Hash all binaries AFTER building, report changes
 echo
 echo "=== Post-build hashes ==="
 any_changed=0
@@ -117,15 +117,6 @@ for p in "${all_paths[@]}"; do
 		fi
 	else
 		echo "  MISSING   $p"
-	fi
-done
-
-# Step D: Sign all binaries with integrity trailer
-echo
-echo "=== Signing binaries ==="
-for p in "${all_paths[@]}"; do
-	if [[ -f "$p" ]]; then
-		"$SCRIPT_DIR/scripts/sign-binary" "$p"
 	fi
 done
 

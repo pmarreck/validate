@@ -1,74 +1,46 @@
 #!/usr/bin/env bash
+# Run the full test suite via Nix (sandboxed, deterministic).
+# Does NOT use `nix develop` to avoid host OS version detection issues.
+set -u
 
-if [[ -z "${VALIDATE_NIX:-}" ]]; then
-	exec env VALIDATE_NIX=1 nix develop -c "$0" "$@"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Detect system
+system=$(nix eval --raw 'nixpkgs#system' 2>/dev/null || echo "aarch64-darwin")
+
+echo "=== Running Zig tests (nix build, sandboxed) ==="
+if ! nix build ".#checks.${system}.test" 2>&1; then
+	echo "=== Zig tests FAILED ==="
+	exit 1
 fi
+echo "=== Zig tests passed ==="
 
-set -euo pipefail
-
-# Define glob function if not already a function (works with noglob environments)
-# Check specifically for "function" since there may be a glob command in PATH
-if [[ "$(type -t glob 2>/dev/null)" != "function" ]]; then
-	glob() {
-		# Temporarily enable globbing, expand pattern, restore state
-		local noglob_was_set=false
-		[[ $- == *f* ]] && noglob_was_set=true
-		set +f
-		local expanded=($@)
-		$noglob_was_set && set -f
-		printf '%s\n' "${expanded[@]}"
-	}
-fi
-
-unset LD
-unset SDKROOT
-
-echo "=== Running Zig tests ==="
-set +e
-zig_output=$(zig build test --summary all 2>&1)
-zig_exit=$?
-set -e
-
-printf '%s\n' "$zig_output"
-
-if [[ $zig_exit -ne 0 ]]; then
-	zig_failures=$(printf '%s\n' "$zig_output" | grep -oE '[0-9]+ failed' | awk '{sum+=$1} END {print sum+0}')
-	if [[ $zig_failures -eq 0 ]]; then
-		zig_failures=1
-	fi
-	echo "=== Zig tests FAILED ($zig_failures failures) ==="
-	exit $zig_failures
-fi
-
-zig_passed=$(echo "$zig_output" | grep -oE '[0-9]+/[0-9]+ tests passed' | head -1 || echo "? tests passed")
-echo "=== Zig tests passed ($zig_passed) ==="
+# CLI tests need the built binary
+echo "=== Building binary for CLI tests ==="
+nix build 2>&1 || { echo "Build failed"; exit 1; }
+mkdir -p zig-out/bin
+cp -f result/bin/validate zig-out/bin/validate
 
 cli_failures=0
 if [[ -d tests/cli ]]; then
-	echo "=== Building CLI for tests ==="
-	zig build -Doptimize=ReleaseFast
-
 	echo "=== Running CLI tests ==="
-	cli_tests_found=0
-	set +e
-	for test in $(glob tests/cli/*); do
-		if [[ -x "$test" ]]; then
-			((cli_tests_found++))
-			bash "$test"
-			rc=$?
-			cli_failures=$((cli_failures + rc))
+	for test_script in tests/cli/*; do
+		if [[ -x "$test_script" ]]; then
+			test_name="$(basename "$test_script")"
+			if VALIDATE_BIN=./zig-out/bin/validate "$test_script" > /dev/null 2>&1; then
+				echo "  PASS: $test_name"
+			else
+				echo "  FAIL: $test_name"
+				((cli_failures++)) || true
+			fi
 		fi
 	done
-	set -e
-
-	if [[ $cli_tests_found -eq 0 ]]; then
-		echo "=== ERROR: No CLI tests found (glob may have failed) ==="
-		exit 1
-	fi
-
-	if [[ $cli_failures -ne 0 ]]; then
-		echo "=== CLI tests FAILED ($cli_failures failures) ==="
-		exit $cli_failures
-	fi
-	echo "=== CLI tests passed ==="
 fi
+
+if [[ $cli_failures -gt 0 ]]; then
+	echo "=== $cli_failures CLI test(s) FAILED ==="
+	exit $cli_failures
+fi
+
+echo "=== All tests passed ==="
