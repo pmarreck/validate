@@ -257,7 +257,11 @@ fn validateAvifGridTiles(data: []const u8, container: heif.HeifContainerInfo) Av
 /// Prepends av1C config OBUs (sequence header) to the image data and
 /// validates the combined stream.
 fn validateAv1Data(image_data: []const u8, decoder_config: ?[]const u8) AvifValidationResult {
-    var combined_buf: [2 * 1024 * 1024]u8 = undefined; // 2MB stack buffer
+    const max_combined = 2 * 1024 * 1024;
+    const combined_buf = std.heap.page_allocator.alloc(u8, max_combined) catch {
+        return AvifValidationResult.structural();
+    };
+    defer std.heap.page_allocator.free(combined_buf);
     var combined_len: usize = 0;
 
     // Prepend av1C sequence header OBU if available
@@ -314,4 +318,22 @@ test "AVIF validation rejects non-HEIF data" {
     const data = [_]u8{0xFF} ** 100;
     const result = validateAvifDeepFromBuffer(&data);
     try std.testing.expect(!result.valid);
+}
+
+test "validateAv1Data does not blow the stack on small thread" {
+    // Regression test: validateAv1Data previously used a 2MB stack buffer
+    // which crashed on worker threads with 512KB-1MB stacks.
+    // Run the function on a thread with a small (256KB) stack to verify
+    // it no longer stack-overflows.
+    const Thread = std.Thread;
+    const thread = try Thread.spawn(.{ .stack_size = 256 * 1024 }, struct {
+        fn run() void {
+            // Minimal valid-looking AV1 data (will fail validation but must not crash)
+            const fake_av1 = [_]u8{ 0x0A, 0x0D, 0x00, 0x00, 0x00, 0x24, 0x4F, 0x7E, 0x7F, 0x00, 0x68, 0x83, 0x00, 0x83, 0x02 };
+            const result = validateAv1Data(&fake_av1, null);
+            // We don't care if it's valid — only that it didn't segfault
+            _ = result;
+        }
+    }.run, .{});
+    thread.join();
 }
