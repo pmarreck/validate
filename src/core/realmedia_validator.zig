@@ -101,7 +101,15 @@ pub fn validateRealMedia(file: *FileSource) ValidationResult {
 		}
 
 		// Sanity: chunk must not extend past end of file
+		// Tolerate minor overrun on DATA chunk — ffmpeg writes DATA size before knowing
+		// final byte count, often leaving the last chunk a few bytes past EOF
 		if (pos + chunk_size > file_size) {
+			if (std.mem.eql(u8, fourcc, "DATA") and pos + chunk_size <= file_size + 64) {
+				// Accept slightly oversized DATA as the last chunk
+				data_found = true;
+				chunk_count += 1;
+				break;
+			}
 			return ValidationResult.invalidWithDepth(.rm, "RealMedia chunk extends past end of file", .structural);
 		}
 

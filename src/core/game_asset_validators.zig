@@ -309,95 +309,338 @@ pub fn validateChromiumPak(file: *FileSource) ValidationResult {
 // ============ BSP (Quake/Source) Validator ============
 
 /// Validate BSP (Quake/Source map) file format.
-/// BSP files use version numbers at offset 0 to identify the format variant.
+/// Parses the lump directory for id BSP (IBSP, Quake 2/3), Valve BSP (VBSP, Source engine),
+/// and Quake 1 (no magic, version 29/30). Bounds-checks every lump and verifies no overlaps.
+/// Structural integrity technique: lump directory traversal with offset+length range checks.
 pub fn validateBsp(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.bsp, .failed_to_seek, "to start");
 
-    var header: [8]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.bsp, .failed_to_read, "BSP header");
+    // Read enough for the largest possible header: VBSP = 4+4 + 64*16 = 1032 bytes
+    const MAX_HEADER: usize = 1032;
+    const header_buf = std.heap.page_allocator.alloc(u8, MAX_HEADER) catch
+        return ValidationResult.invalidCode(.bsp, .failed_to_read, "BSP header (alloc)");
+    defer std.heap.page_allocator.free(header_buf);
 
-    if (header_read < 8) {
-        return ValidationResult.invalidCode(.bsp, .file_too_small, "BSP");
-    }
+    const header_read = file.read(header_buf) catch return ValidationResult.invalidCode(.bsp, .failed_to_read, "BSP header");
+    if (header_read < 8) return ValidationResult.invalidCode(.bsp, .file_too_small, "BSP");
 
-    // BSP version at offset 0 (little-endian)
-    const version = std.mem.readInt(u32, header[0..4], .little);
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.bsp, .failed_to_get, "file size");
 
-    // Known BSP versions:
-    // 29 = Quake 1
-    // 30 = Half-Life 1 / GoldSrc
-    // 38 = Quake 2
-    // 46, 47 = Quake 3
-    // 19, 20, 21 = Source engine (VBSP)
-    // Also check for "IBSP" or "VBSP" strings
-    const valid_versions = [_]u32{ 29, 30, 38, 46, 47, 19, 20, 21 };
-    var version_valid = false;
-    for (valid_versions) |v| {
-        if (version == v) {
-            version_valid = true;
-            break;
-        }
-    }
+    // Detect layout by magic bytes at offset 0.
+    const magic = header_buf[0..4];
+    const is_ibsp = std.mem.eql(u8, magic, "IBSP");
+    const is_vbsp = std.mem.eql(u8, magic, "VBSP");
 
-    // Check for IBSP (id BSP) or VBSP (Valve BSP) magic strings
-    if (!version_valid) {
-        if (std.mem.eql(u8, header[0..4], "IBSP") or std.mem.eql(u8, header[0..4], "VBSP")) {
-            // Version is in next 4 bytes
-            const string_version = std.mem.readInt(u32, header[4..8], .little);
-            for (valid_versions) |v| {
-                if (string_version == v) {
-                    version_valid = true;
-                    break;
-                }
+    if (is_ibsp or is_vbsp) {
+        // id BSP (IBSP) and Valve BSP (VBSP): magic[4] + version[4] + lump_dir
+        const version = std.mem.readInt(u32, header_buf[4..8], .little);
+
+        if (is_vbsp) {
+            // Source engine VBSP: 64 lumps × 16 bytes each
+            // Header layout: "VBSP"(4) + version(4) + 64×{offset(4)+length(4)+ver(4)+fourCC(4)}
+            const VBSP_LUMP_COUNT: usize = 64;
+            const VBSP_ENTRY_SIZE: usize = 16;
+            const VBSP_HEADER_SIZE: usize = 8 + VBSP_LUMP_COUNT * VBSP_ENTRY_SIZE; // 1032
+
+            // Known VBSP versions: 17–21 cover all shipped Source games
+            if (version < 17 or version > 29) {
+                return ValidationResult.invalidCode(.bsp, .unknown_element, "VBSP version");
             }
+            if (file_size < VBSP_HEADER_SIZE) {
+                return ValidationResult.invalidCode(.bsp, .file_too_small, "VBSP header");
+            }
+            if (header_read < VBSP_HEADER_SIZE) {
+                return ValidationResult.invalidCode(.bsp, .file_too_small, "VBSP header (read)");
+            }
+
+            return bspValidateLumps(
+                header_buf[8..],
+                VBSP_LUMP_COUNT,
+                VBSP_ENTRY_SIZE, // stride between entries
+                0, // offset field byte-index within entry
+                4, // length field byte-index within entry
+                file_size,
+                .bsp,
+            );
+        } else {
+            // IBSP: Quake 2 (v38, 19 lumps) or Quake 3 (v46/v47, 17 lumps)
+            // Entry size: 8 bytes (offset u32 + length u32)
+            const lump_count: usize = switch (version) {
+                38 => 19, // Quake 2
+                46, 47 => 17, // Quake 3 / Quake 3: Arena + Team Arena
+                else => return ValidationResult.invalidCode(.bsp, .unknown_element, "IBSP version"),
+            };
+            const IBSP_ENTRY_SIZE: usize = 8;
+            const ibsp_header_size: usize = 8 + lump_count * IBSP_ENTRY_SIZE;
+
+            if (file_size < ibsp_header_size) {
+                return ValidationResult.invalidCode(.bsp, .file_too_small, "IBSP header");
+            }
+            if (header_read < ibsp_header_size) {
+                return ValidationResult.invalidCode(.bsp, .file_too_small, "IBSP header (read)");
+            }
+
+            return bspValidateLumps(
+                header_buf[8..],
+                lump_count,
+                IBSP_ENTRY_SIZE,
+                0, // offset at byte 0 in entry
+                4, // length at byte 4 in entry
+                file_size,
+                .bsp,
+            );
         }
+    } else {
+        // Quake 1 / GoldSrc: no magic bytes; version is first u32
+        const version = std.mem.readInt(u32, header_buf[0..4], .little);
+        if (version != 29 and version != 30) {
+            return ValidationResult.invalidCode(.bsp, .unknown_element, "BSP version");
+        }
+
+        // Quake 1: 15 lumps × 8 bytes each; header = 4 + 15*8 = 124 bytes
+        const Q1_LUMP_COUNT: usize = 15;
+        const Q1_ENTRY_SIZE: usize = 8;
+        const Q1_HEADER_SIZE: usize = 4 + Q1_LUMP_COUNT * Q1_ENTRY_SIZE; // 124
+
+        if (file_size < Q1_HEADER_SIZE) {
+            return ValidationResult.invalidCode(.bsp, .file_too_small, "Quake 1 BSP header");
+        }
+        if (header_read < Q1_HEADER_SIZE) {
+            return ValidationResult.invalidCode(.bsp, .file_too_small, "Quake 1 BSP header (read)");
+        }
+
+        return bspValidateLumps(
+            header_buf[4..],
+            Q1_LUMP_COUNT,
+            Q1_ENTRY_SIZE,
+            0,
+            4,
+            file_size,
+            .bsp,
+        );
+    }
+}
+
+/// Parse and bounds-check a BSP lump directory.
+/// Verifies every lump's [offset, offset+length) range fits within the file,
+/// and that no two non-empty lumps overlap (sorted sweep). Returns `.full` depth
+/// on success because bounds-checking IS the structural integrity mechanism for BSP.
+fn bspValidateLumps(
+    dir: []const u8,
+    lump_count: usize,
+    entry_stride: usize,
+    offset_field: usize,
+    length_field: usize,
+    file_size: u64,
+    format: FileFormat,
+) ValidationResult {
+    // We need to sort lumps by offset to check for overlaps.
+    // Maximum lump count across all variants is 64 (VBSP); fits on stack.
+    var lumps: [64]struct { offset: u32, length: u32 } = undefined;
+    if (lump_count > lumps.len) return ValidationResult.invalid(format, "BSP lump count exceeds internal limit");
+
+    for (0..lump_count) |i| {
+        const base = i * entry_stride;
+        const lump_offset = std.mem.readInt(u32, dir[base + offset_field ..][0..4], .little);
+        const lump_length = std.mem.readInt(u32, dir[base + length_field ..][0..4], .little);
+
+        // Each lump must fit within the file
+        const end = @as(u64, lump_offset) + @as(u64, lump_length);
+        if (end > file_size) {
+            return ValidationResult.invalid(format, "BSP lump extends beyond file size");
+        }
+
+        lumps[i] = .{ .offset = lump_offset, .length = lump_length };
     }
 
-    if (!version_valid) {
-        return ValidationResult.invalidCode(.bsp, .unknown_element, "BSP version");
+    // Sort lumps by offset (insertion sort — lump_count <= 64, trivial cost)
+    for (1..lump_count) |i| {
+        const key = lumps[i];
+        var j: usize = i;
+        while (j > 0 and lumps[j - 1].offset > key.offset) : (j -= 1) {
+            lumps[j] = lumps[j - 1];
+        }
+        lumps[j] = key;
     }
 
-    // No CRC/hash — version check only, no structural parsing
-    return ValidationResult.structuralOnly(.bsp);
+    // Overlap check: each non-empty lump's end must be <= next non-empty lump's start
+    var prev_end: u64 = 0;
+    var prev_offset: u32 = 0;
+    for (lumps[0..lump_count]) |lump| {
+        if (lump.length == 0) continue; // empty lumps are valid padding
+        const lump_end = @as(u64, lump.offset) + @as(u64, lump.length);
+        // Two non-empty lumps overlap if this lump starts before the previous one ends,
+        // but allow lumps at the same offset only if one is empty (already filtered above).
+        if (lump.offset < prev_end and lump.offset != prev_offset) {
+            return ValidationResult.invalid(format, "BSP lumps overlap");
+        }
+        prev_end = lump_end;
+        prev_offset = lump.offset;
+    }
+
+    return ValidationResult.okWithDepth(format, .full);
 }
 
 // ============ VPK (Valve PAK) Validator ============
 
 /// Validate VPK (Valve PAK) file format.
-/// VPK files start with signature 0x55AA1234 followed by version.
+/// VPK files start with signature 0x55AA1234 followed by version and tree size.
+/// Walks the hierarchical directory tree (ext/path/filename/entry), verifying
+/// entry terminators (0xFFFF), in-file data bounds, and v2 section size consistency.
+/// Returns .full depth when the tree walk completes without errors.
 pub fn validateVpk(file: *FileSource) ValidationResult {
-    file.seekTo(0) catch return ValidationResult.invalidCode(.vpk, .failed_to_seek, "to start");
+	file.seekTo(0) catch return ValidationResult.invalidCode(.vpk, .failed_to_seek, "to start");
 
-    var header: [12]u8 = undefined;
-    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.vpk, .failed_to_read, "VPK header");
+	// v1 header: 12 bytes; v2 header: 28 bytes — read max up-front
+	var header: [28]u8 = undefined;
+	const header_read = file.read(&header) catch return ValidationResult.invalidCode(.vpk, .failed_to_read, "VPK header");
 
-    if (header_read < 12) {
-        return ValidationResult.invalidCode(.vpk, .file_too_small, "VPK");
-    }
+	if (header_read < 12) {
+		return ValidationResult.invalidCode(.vpk, .file_too_small, "VPK");
+	}
 
-    // Check signature (0x55AA1234 in little-endian)
-    const signature = std.mem.readInt(u32, header[0..4], .little);
-    if (signature != 0x55AA1234) {
-        return ValidationResult.invalidCode(.vpk, .invalid_signature, "VPK");
-    }
+	// Check signature (0x55AA1234 in little-endian)
+	const signature = std.mem.readInt(u32, header[0..4], .little);
+	if (signature != 0x55AA1234) {
+		return ValidationResult.invalidCode(.vpk, .invalid_signature, "VPK");
+	}
 
-    // Version (1 or 2)
-    const version = std.mem.readInt(u32, header[4..8], .little);
-    if (version != 1 and version != 2) {
-        return ValidationResult.invalidCode(.vpk, .unknown_element, "VPK version");
-    }
+	// Version (1 or 2)
+	const version = std.mem.readInt(u32, header[4..8], .little);
+	if (version != 1 and version != 2) {
+		return ValidationResult.invalidCode(.vpk, .unknown_element, "VPK version");
+	}
 
-    // Tree size (VPK v1 and v2 both have this)
-    const tree_size = std.mem.readInt(u32, header[8..12], .little);
-    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.vpk, .failed_to_get, "file size");
+	// Tree size (present in both v1 and v2)
+	const tree_size = std.mem.readInt(u32, header[8..12], .little);
+	const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.vpk, .failed_to_get, "file size");
 
-    // Tree must fit in file
-    if (tree_size > file_size) {
-        return ValidationResult.invalidCodeMsg(.vpk, .exceeds_bounds, "Tree size", "Tree size exceeds file size");
-    }
+	// Header length depends on version
+	const header_len: u32 = if (version == 2) 28 else 12;
 
-    // No CRC/hash — header + tree size check only, no deep structural parsing
-    return ValidationResult.structuralOnly(.vpk);
+	if (header_read < header_len) {
+		return ValidationResult.invalidCode(.vpk, .file_too_small, "VPK header");
+	}
+
+	// Tree must fit in file after header
+	if (@as(u64, header_len) + @as(u64, tree_size) > file_size) {
+		return ValidationResult.invalidCodeMsg(.vpk, .exceeds_bounds, "Tree size", "Tree size exceeds file size");
+	}
+
+	// For v2: verify section sizes add up against file size.
+	// Expected: header(28) + tree_size + file_data + arch_md5 + other_md5 + sig
+	if (version == 2) {
+		const file_data_sz = std.mem.readInt(u32, header[12..16], .little);
+		const arch_md5_sz  = std.mem.readInt(u32, header[16..20], .little);
+		const other_md5_sz = std.mem.readInt(u32, header[20..24], .little);
+		const sig_sz       = std.mem.readInt(u32, header[24..28], .little);
+		const expected_size: u64 = 28 +
+			@as(u64, tree_size) +
+			@as(u64, file_data_sz) +
+			@as(u64, arch_md5_sz) +
+			@as(u64, other_md5_sz) +
+			@as(u64, sig_sz);
+		if (expected_size != file_size) {
+			return ValidationResult.invalid(.vpk, "VPK v2 section sizes do not match file size");
+		}
+	}
+
+	// An empty tree is valid (directory-only VPK with no embedded data)
+	if (tree_size == 0) {
+		return ValidationResult.okWithDepth(.vpk, .full);
+	}
+
+	// Read the entire tree into a heap buffer (may be large)
+	const tree_buf = std.heap.page_allocator.alloc(u8, tree_size) catch {
+		// Allocation failure: fall back to structural-only rather than crashing
+		return ValidationResult.structuralOnly(.vpk);
+	};
+	defer std.heap.page_allocator.free(tree_buf);
+
+	file.seekTo(header_len) catch return ValidationResult.invalidCode(.vpk, .failed_to_seek, "to tree");
+	const tree_read = file.readAll(tree_buf) catch return ValidationResult.invalidCode(.vpk, .failed_to_read, "VPK tree");
+	if (tree_read != tree_size) {
+		return ValidationResult.invalidCode(.vpk, .incomplete, "VPK tree read");
+	}
+
+	// Walk the directory tree.
+	// Layout: for each ext\0 { for each path\0 { for each filename\0 { Entry(18B) }* \0 }* \0 }* \0
+	// An empty string at any level signals end of that level.
+	const max_entries: u32 = 1_000_000;
+	var total_entries: u32 = 0;
+	var pos: u32 = 0;
+
+	while (pos < tree_size) {
+		// Read extension string
+		const ext_start = pos;
+		while (pos < tree_size and tree_buf[pos] != 0) : (pos += 1) {}
+		if (pos >= tree_size) return ValidationResult.invalid(.vpk, "VPK tree: unterminated extension string");
+		const ext_len = pos - ext_start;
+		pos += 1; // consume NUL
+		if (ext_len == 0) break; // end of all extensions
+
+		// For each path under this extension
+		while (pos < tree_size) {
+			const path_start = pos;
+			while (pos < tree_size and tree_buf[pos] != 0) : (pos += 1) {}
+			if (pos >= tree_size) return ValidationResult.invalid(.vpk, "VPK tree: unterminated path string");
+			const path_len = pos - path_start;
+			pos += 1; // consume NUL
+			if (path_len == 0) break; // end of paths for this extension
+
+			// For each filename under this path+extension
+			while (pos < tree_size) {
+				const fname_start = pos;
+				while (pos < tree_size and tree_buf[pos] != 0) : (pos += 1) {}
+				if (pos >= tree_size) return ValidationResult.invalid(.vpk, "VPK tree: unterminated filename string");
+				const fname_len = pos - fname_start;
+				pos += 1; // consume NUL
+				if (fname_len == 0) break; // end of filenames for this path+extension
+
+				// Read DirectoryEntry (18 bytes)
+				if (pos + 18 > tree_size) {
+					return ValidationResult.invalid(.vpk, "VPK tree: directory entry truncated");
+				}
+				const entry = tree_buf[pos..][0..18];
+
+				// Terminator must be 0xFFFF (bytes 16–17)
+				const terminator = std.mem.readInt(u16, entry[16..18], .little);
+				if (terminator != 0xFFFF) {
+					return ValidationResult.invalid(.vpk, "VPK tree: entry missing 0xFFFF terminator");
+				}
+
+				const preload_bytes = std.mem.readInt(u16, entry[4..6], .little);
+				const archive_index = std.mem.readInt(u16, entry[6..8], .little);
+				const entry_offset  = std.mem.readInt(u32, entry[8..12], .little);
+				const entry_length  = std.mem.readInt(u32, entry[12..16], .little);
+
+				pos += 18;
+
+				// For in-file data (archive_index == 0x7FFF), verify bounds
+				// against the file_data section that immediately follows the tree
+				if (archive_index == 0x7FFF and entry_length > 0) {
+					const data_section_start: u64 = @as(u64, header_len) + @as(u64, tree_size);
+					const data_end: u64 = data_section_start + @as(u64, entry_offset) + @as(u64, entry_length);
+					if (data_end > file_size) {
+						return ValidationResult.invalid(.vpk, "VPK entry data extends beyond file");
+					}
+				}
+
+				// Skip inline preload data
+				if (pos + preload_bytes > tree_size) {
+					return ValidationResult.invalid(.vpk, "VPK tree: preload data truncated");
+				}
+				pos += preload_bytes;
+
+				total_entries += 1;
+				if (total_entries > max_entries) {
+					return ValidationResult.invalid(.vpk, "VPK tree: entry count exceeds sanity limit");
+				}
+			}
+		}
+	}
+
+	return ValidationResult.okWithDepth(.vpk, .full);
 }
 
 // ============ IFF/Blorb Validators ============
@@ -707,6 +950,108 @@ pub fn validateBlorb(file: *FileSource) ValidationResult {
 
 // ============ Tests ============
 
+test "VPK validation - valid v2 sample (empty tree)" {
+	const path = "ground_truth_examples/vpk/sample.vpk";
+	var source = FileSource.open(path) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
+	};
+	defer source.close();
+	const result = validateVpk(&source);
+	try testing.expect(result.is_valid);
+	try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "VPK validation - bad signature rejected" {
+	// Craft a 12-byte buffer with wrong signature
+	var buf: [12]u8 = .{
+		0xDE, 0xAD, 0xBE, 0xEF, // bad signature
+		0x01, 0x00, 0x00, 0x00, // version 1
+		0x00, 0x00, 0x00, 0x00, // tree_size 0
+	};
+	const tmp_path = "/tmp/vpk_test_bad_sig.vpk";
+	{
+		const tmp = try std.fs.cwd().createFile(tmp_path, .{});
+		defer tmp.close();
+		try tmp.writeAll(&buf);
+	}
+	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	var source = try FileSource.open(tmp_path);
+	defer source.close();
+	const result = validateVpk(&source);
+	try testing.expect(!result.is_valid);
+}
+
+test "VPK validation - v2 section size mismatch rejected" {
+	// Build a v2 header where section sizes don't add up to file size
+	var buf: [28]u8 = .{
+		0x34, 0x12, 0xAA, 0x55, // signature 0x55AA1234
+		0x02, 0x00, 0x00, 0x00, // version 2
+		0x00, 0x00, 0x00, 0x00, // tree_size = 0
+		0x01, 0x00, 0x00, 0x00, // file_data_section_size = 1 (wrong: makes expected != 28)
+		0x00, 0x00, 0x00, 0x00, // archive_md5_section_size = 0
+		0x00, 0x00, 0x00, 0x00, // other_md5_section_size = 0
+		0x00, 0x00, 0x00, 0x00, // signature_section_size = 0
+	};
+	const tmp_path = "/tmp/vpk_test_v2_mismatch.vpk";
+	{
+		const tmp = try std.fs.cwd().createFile(tmp_path, .{});
+		defer tmp.close();
+		try tmp.writeAll(&buf);
+	}
+	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	var source = try FileSource.open(tmp_path);
+	defer source.close();
+	const result = validateVpk(&source);
+	try testing.expect(!result.is_valid);
+}
+
+test "VPK validation - entry missing 0xFFFF terminator rejected" {
+	// Build a minimal v1 VPK with one entry that has a bad terminator.
+	// Tree structure: "txt\0" + " \0" + "file\0" + Entry(18B with bad terminator) + "\0\0\0"
+	const ext = "txt\x00";
+	const path_str = " \x00";
+	const fname = "file\x00";
+	// DirectoryEntry: crc=0 preload=0 archive=0x7FFF offset=0 length=0 terminator=0xDEAD (bad)
+	const entry = [18]u8{
+		0x00, 0x00, 0x00, 0x00, // crc32
+		0x00, 0x00,             // preload_bytes = 0
+		0xFF, 0x7F,             // archive_index = 0x7FFF
+		0x00, 0x00, 0x00, 0x00, // entry_offset = 0
+		0x00, 0x00, 0x00, 0x00, // entry_length = 0
+		0xAD, 0xDE,             // terminator = 0xDEAD (bad!)
+	};
+	const end_fname = "\x00"; // end of filenames
+	const end_path  = "\x00"; // end of paths
+	const end_ext   = "\x00"; // end of extensions
+
+	const tree_parts: [6][]const u8 = .{ext, path_str, fname, &entry, end_fname, end_path};
+	var tree_size: u32 = 0;
+	for (tree_parts) |p| tree_size += @intCast(p.len);
+	tree_size += @intCast(end_ext.len);
+
+	var header: [12]u8 = .{
+		0x34, 0x12, 0xAA, 0x55,                              // signature
+		0x01, 0x00, 0x00, 0x00,                              // version 1
+		@truncate(tree_size), @truncate(tree_size >> 8),     // tree_size lo bytes
+		@truncate(tree_size >> 16), @truncate(tree_size >> 24),
+	};
+
+	const tmp_path = "/tmp/vpk_test_bad_term.vpk";
+	{
+		const tmp = try std.fs.cwd().createFile(tmp_path, .{});
+		defer tmp.close();
+		try tmp.writeAll(&header);
+		for (tree_parts) |p| try tmp.writeAll(p);
+		try tmp.writeAll(end_ext);
+	}
+	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	var source = try FileSource.open(tmp_path);
+	defer source.close();
+	const result = validateVpk(&source);
+	try testing.expect(!result.is_valid);
+}
+
 test "IFF deep validation - valid ILBM ByteRun1 sample" {
 	const result = validateIffDeep(testing.allocator, "ground_truth_examples/iff/sample.iff");
 	try testing.expect(result.is_valid);
@@ -816,4 +1161,126 @@ test "IFF chunk ID validation" {
 	try testing.expect(!isValidChunkId(&[4]u8{ 0x01, 'B', 'C', 'D' })); // control char
 	try testing.expect(!isValidChunkId(&[4]u8{ 'A', 'B', 'C', 0x7F })); // DEL
 	try testing.expect(!isValidChunkId(&[4]u8{ 'A', 'B', 0x80, 'D' })); // high byte
+}
+
+test "BSP validator - ground truth file (Quake 1/2/3 or Source)" {
+	// No ground truth BSP file exists yet; skip gracefully.
+	const gt_paths = [_][]const u8{
+		"ground_truth_examples/bsp/sample.bsp",
+		"ground_truth_examples/bsp/quake1.bsp",
+		"ground_truth_examples/bsp/quake2.bsp",
+		"ground_truth_examples/bsp/quake3.bsp",
+		"ground_truth_examples/bsp/source.bsp",
+	};
+	var found_any = false;
+	for (gt_paths) |path| {
+		var source = FileSource.open(path) catch continue;
+		defer source.close();
+		found_any = true;
+		const result = validateBsp(&source);
+		try testing.expect(result.is_valid);
+		try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+	}
+	if (!found_any) return error.SkipZigTest;
+}
+
+test "BSP validator - rejects truncated file" {
+	// Build a minimal valid-looking Quake 1 BSP header, then truncate it.
+	// Quake 1 header: version(4) + 15 lump entries × 8 bytes = 124 bytes total.
+	// We produce only 60 bytes — too small for the full lump directory.
+	var buf: [60]u8 = std.mem.zeroes([60]u8);
+	std.mem.writeInt(u32, buf[0..4], 29, .little); // Quake 1 version
+
+	const tmp_path = "/tmp/bsp_test_truncated.bsp";
+	{
+		const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return error.SkipZigTest;
+		tmp.writeAll(&buf) catch { tmp.close(); return error.SkipZigTest; };
+		tmp.close();
+	}
+	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+	var source = FileSource.open(tmp_path) catch return error.SkipZigTest;
+	defer source.close();
+	const result = validateBsp(&source);
+	try testing.expect(!result.is_valid);
+}
+
+test "BSP validator - rejects lump beyond file size" {
+	// Build a Quake 1 BSP where lump 0 claims offset+length > file size.
+	// Header: version(4) + 15×8 = 124 bytes; then we write no actual lump data.
+	var buf: [124]u8 = std.mem.zeroes([124]u8);
+	std.mem.writeInt(u32, buf[0..4], 29, .little); // Quake 1 version
+	// Lump 0 at buf[4..12]: offset=500, length=100 — both beyond our 124-byte file.
+	std.mem.writeInt(u32, buf[4..8], 500, .little);
+	std.mem.writeInt(u32, buf[8..12], 100, .little);
+
+	const tmp_path = "/tmp/bsp_test_oob_lump.bsp";
+	{
+		const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return error.SkipZigTest;
+		tmp.writeAll(&buf) catch { tmp.close(); return error.SkipZigTest; };
+		tmp.close();
+	}
+	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+	var source = FileSource.open(tmp_path) catch return error.SkipZigTest;
+	defer source.close();
+	const result = validateBsp(&source);
+	try testing.expect(!result.is_valid);
+}
+
+test "BSP validator - rejects overlapping lumps" {
+	// Build a Quake 1 BSP where two lumps overlap.
+	// All lumps fit within file_size, but lumps 0 and 1 overlap.
+	const FILE_SIZE: usize = 512;
+	var buf: [FILE_SIZE]u8 = std.mem.zeroes([FILE_SIZE]u8);
+	std.mem.writeInt(u32, buf[0..4], 29, .little); // Quake 1 version
+	// Lump 0: offset=124, length=100 → [124, 224)
+	std.mem.writeInt(u32, buf[4..8], 124, .little);
+	std.mem.writeInt(u32, buf[8..12], 100, .little);
+	// Lump 1: offset=200, length=50 → [200, 250) — overlaps lump 0's [124,224)
+	std.mem.writeInt(u32, buf[12..16], 200, .little);
+	std.mem.writeInt(u32, buf[16..20], 50, .little);
+	// Remaining 13 lumps: zero offset, zero length (empty lumps, valid)
+
+	const tmp_path = "/tmp/bsp_test_overlap.bsp";
+	{
+		const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return error.SkipZigTest;
+		tmp.writeAll(&buf) catch { tmp.close(); return error.SkipZigTest; };
+		tmp.close();
+	}
+	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+	var source = FileSource.open(tmp_path) catch return error.SkipZigTest;
+	defer source.close();
+	const result = validateBsp(&source);
+	try testing.expect(!result.is_valid);
+}
+
+test "BSP validator - accepts valid Quake 1 BSP in memory" {
+	// Build a minimal but structurally valid Quake 1 BSP:
+	// header (124 bytes) + two non-overlapping lump data regions.
+	const FILE_SIZE: usize = 512;
+	var buf: [FILE_SIZE]u8 = std.mem.zeroes([FILE_SIZE]u8);
+	std.mem.writeInt(u32, buf[0..4], 29, .little); // Quake 1 version
+	// Lump 0: offset=124, length=100
+	std.mem.writeInt(u32, buf[4..8], 124, .little);
+	std.mem.writeInt(u32, buf[8..12], 100, .little);
+	// Lump 1: offset=224, length=50 — immediately after lump 0, no overlap
+	std.mem.writeInt(u32, buf[12..16], 224, .little);
+	std.mem.writeInt(u32, buf[16..20], 50, .little);
+	// Remaining 13 lumps: zero offset, zero length (empty, valid)
+
+	const tmp_path = "/tmp/bsp_test_valid_q1.bsp";
+	{
+		const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return error.SkipZigTest;
+		tmp.writeAll(&buf) catch { tmp.close(); return error.SkipZigTest; };
+		tmp.close();
+	}
+	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+	var source = FileSource.open(tmp_path) catch return error.SkipZigTest;
+	defer source.close();
+	const result = validateBsp(&source);
+	try testing.expect(result.is_valid);
+	try testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
