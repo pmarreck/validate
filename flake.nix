@@ -118,6 +118,9 @@
 					# Linux x86_64/aarch64 are built natively by Garnix on those platforms
 					windows-x86_64 = mkValidate { targetSystem = "x86_64-windows"; cross = true; };
 					macos-aarch64 = mkValidate { targetSystem = "aarch64-darwin"; cross = true; };
+				} else if buildSystem == "aarch64-darwin" then {
+					# Cross-compile Linux from macOS (for NAS deployment)
+					linux-x86_64 = mkValidate { targetSystem = "x86_64-linux"; cross = true; };
 				} else { }));
 
 			# Checks for `nix flake check` / Garnix
