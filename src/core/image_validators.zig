@@ -3751,6 +3751,8 @@ pub fn validateIcns(file: *FileSource) ValidationResult {
 
 /// Validate QOI (Quite OK Image) file structure.
 /// Header: "qoif"(4) + width(4,BE) + height(4,BE) + channels(1) + colorspace(1) = 14 bytes.
+/// End marker: 0x00*7 + 0x01 (8 bytes) — proves encoder completed without truncation.
+/// Minimum valid file: 14 (header) + 8 (end marker) = 22 bytes.
 pub fn validateQoi(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.qoi, .failed_to_seek, "in QOI file");
 
@@ -3785,7 +3787,26 @@ pub fn validateQoi(file: *FileSource) ValidationResult {
         return ValidationResult.invalid(.qoi, "QOI colorspace must be 0 (sRGB) or 1 (linear)");
     }
 
-    return ValidationResult.structuralOnly(.qoi);
+    // Check minimum size: 14 header + 8 end marker = 22 bytes
+    const file_size = file.getEndPos() catch return ValidationResult.structuralOnly(.qoi);
+    if (file_size < 22) {
+        return ValidationResult.invalidCode(.qoi, .file_too_small, "QOI file (need at least 22 bytes for header + end marker)");
+    }
+
+    // Verify the mandatory 8-byte end marker at EOF: 0x00*7 followed by 0x01
+    file.seekTo(file_size - 8) catch return ValidationResult.structuralOnly(.qoi);
+    var end_marker: [8]u8 = undefined;
+    const end_read = file.read(&end_marker) catch return ValidationResult.structuralOnly(.qoi);
+    if (end_read < 8) {
+        return ValidationResult.structuralOnly(.qoi);
+    }
+
+    const expected_end_marker = [8]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
+    if (!std.mem.eql(u8, &end_marker, &expected_end_marker)) {
+        return ValidationResult.invalid(.qoi, "QOI end marker missing or corrupted");
+    }
+
+    return ValidationResult.okWithDepth(.qoi, .full);
 }
 
 // ============ TGA Validator ============
@@ -3846,12 +3867,17 @@ pub fn validateTga(file: *FileSource) ValidationResult {
         }
     }
 
-    // Check for TGA v2 footer
+    // Check for TGA v2 footer (last 26 bytes):
+    //   bytes 0..4  : extension_offset (u32 LE)
+    //   bytes 4..8  : dev_area_offset  (u32 LE)
+    //   bytes 8..24 : "TRUEVISION-XFILE" (16 bytes, no null)
+    //   byte  24    : '.' (0x2E)
+    //   byte  25    : 0x00
     const file_size = file.getEndPos() catch {
         return ValidationResult.structuralOnly(.tga);
     };
 
-    if (file_size >= 26) {
+    if (file_size >= 18 + 26) {
         file.seekTo(file_size - 26) catch {
             return ValidationResult.structuralOnly(.tga);
         };
@@ -3861,12 +3887,24 @@ pub fn validateTga(file: *FileSource) ValidationResult {
             return ValidationResult.structuralOnly(.tga);
         };
 
-        if (footer_bytes == 26) {
-            const tga_sig = "TRUEVISION-XFILE.\x00";
-            if (std.mem.eql(u8, footer[8..26], tga_sig)) {
-                return ValidationResult.structuralOnly(.tga);
+        if (footer_bytes == 26 and
+            std.mem.eql(u8, footer[8..24], "TRUEVISION-XFILE") and
+            footer[24] == '.' and footer[25] == 0x00)
+        {
+            // TGA v2 confirmed — validate optional offsets
+            const ext_offset = std.mem.readInt(u32, footer[0..4], .little);
+            const dev_offset = std.mem.readInt(u32, footer[4..8], .little);
+
+            if (ext_offset != 0 and ext_offset >= file_size) {
+                return ValidationResult.invalid(.tga, "TGA v2 extension_offset out of bounds");
             }
+            if (dev_offset != 0 and dev_offset >= file_size) {
+                return ValidationResult.invalid(.tga, "TGA v2 dev_area_offset out of bounds");
+            }
+
+            return ValidationResult.okWithDepth(.tga, .full);
         }
+
     }
 
     return ValidationResult.structuralOnly(.tga);
@@ -4602,6 +4640,109 @@ test "validateTga rejects invalid image type" {
     var path_buf_bad2_tga: [std.fs.max_path_bytes]u8 = undefined;
     const realpath_bad2_tga = tmp.dir.realpath("bad2.tga", &path_buf_bad2_tga) catch return;
     var source = FileSource.open(realpath_bad2_tga) catch return;
+    defer source.close();
+    const result = validateTga(&source);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateTga v2 footer returns full depth" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Minimal valid TGA v1 header (18 bytes): uncompressed true-color, 1x1, 24bpp
+    var data = [_]u8{0} ** (18 + 26);
+    data[1] = 0;  // color_map_type
+    data[2] = 2;  // image_type: uncompressed true-color
+    data[12] = 1; // width lo
+    data[14] = 1; // height lo
+    data[16] = 24; // pixel depth
+    // TGA v2 footer at bytes 18..44
+    // extension_offset = 0, dev_area_offset = 0 (both absent)
+    data[18] = 0; data[19] = 0; data[20] = 0; data[21] = 0;
+    data[22] = 0; data[23] = 0; data[24] = 0; data[25] = 0;
+    // "TRUEVISION-XFILE"
+    const sig = "TRUEVISION-XFILE";
+    @memcpy(data[26..42], sig);
+    data[42] = '.';
+    data[43] = 0x00;
+    const f = try tmp.dir.createFile("v2.tga", .{});
+    try f.writeAll(&data);
+    f.close();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("v2.tga", &path_buf) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateTga(&source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateTga v1 (no footer) returns structural depth" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // 18-byte header only — no footer bytes at all
+    var data = [_]u8{0} ** 18;
+    data[1] = 0;
+    data[2] = 2;
+    data[12] = 1;
+    data[14] = 1;
+    data[16] = 24;
+    const f = try tmp.dir.createFile("v1.tga", .{});
+    try f.writeAll(&data);
+    f.close();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("v1.tga", &path_buf) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateTga(&source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "validateTga v2 rejects out-of-bounds extension_offset" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data = [_]u8{0} ** (18 + 26);
+    data[1] = 0; data[2] = 2; data[12] = 1; data[14] = 1; data[16] = 24;
+    // extension_offset = 9999 (way beyond file size of 44)
+    const ext: u32 = 9999;
+    data[18] = @truncate(ext);
+    data[19] = @truncate(ext >> 8);
+    data[20] = @truncate(ext >> 16);
+    data[21] = @truncate(ext >> 24);
+    const sig = "TRUEVISION-XFILE";
+    @memcpy(data[26..42], sig);
+    data[42] = '.'; data[43] = 0x00;
+    const f = try tmp.dir.createFile("bad_ext.tga", .{});
+    try f.writeAll(&data);
+    f.close();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("bad_ext.tga", &path_buf) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateTga(&source);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateTga v2 rejects out-of-bounds dev_area_offset" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data = [_]u8{0} ** (18 + 26);
+    data[1] = 0; data[2] = 2; data[12] = 1; data[14] = 1; data[16] = 24;
+    // dev_area_offset = 9999 (way beyond file size of 44)
+    const dev: u32 = 9999;
+    data[22] = @truncate(dev);
+    data[23] = @truncate(dev >> 8);
+    data[24] = @truncate(dev >> 16);
+    data[25] = @truncate(dev >> 24);
+    const sig = "TRUEVISION-XFILE";
+    @memcpy(data[26..42], sig);
+    data[42] = '.'; data[43] = 0x00;
+    const f = try tmp.dir.createFile("bad_dev.tga", .{});
+    try f.writeAll(&data);
+    f.close();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("bad_dev.tga", &path_buf) catch return;
+    var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateTga(&source);
     try testing.expect(!result.is_valid);

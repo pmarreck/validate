@@ -188,30 +188,70 @@ pub fn validatePrprojFromBuffer(data: []const u8) ValidationResult {
 
 // ============ InDesign (.indd) Validator ============
 
+/// Validate an InDesign (.indd) file.
+/// InDesign files are structured as a stream of 4096-byte pages. Pages come in
+/// redundant pairs (master + duplicate), so the file size must be a multiple of
+/// 4096 and at least 8192 bytes. Both the primary master page (offset 0) and its
+/// duplicate (offset 4096) must carry the 16-byte InDesign magic signature.
 pub fn validateIndd(file: *FileSource) ValidationResult {
+    // ---- Size checks ----
+    const file_size = file.getEndPos() catch
+        return ValidationResult.invalidCode(.indd, .failed_to_read, "INDD file size");
+
+    if (file_size < 8192) {
+        return ValidationResult.invalidCode(.indd, .file_too_small, "INDD format (need at least two 4096-byte master pages)");
+    }
+
+    if (file_size % 4096 != 0) {
+        return ValidationResult.invalidCode(.indd, .invalid_value, "INDD file size is not a multiple of 4096");
+    }
+
+    // Full 16-byte InDesign magic signature
+    const indd_magic = "\x06\x06\xED\xF5\xD8\x1D\x46\xE5\xBD\x31\xEF\xE7\xFE\x74\xB7\x1D";
+
+    // ---- Primary master page (offset 0) ----
     file.seekTo(0) catch return ValidationResult.invalidCode(.indd, .failed_to_seek, "to start");
 
-    var header: [24]u8 = undefined;
-    const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalidCode(.indd, .failed_to_read, "INDD header");
-    };
+    var page0: [32]u8 = undefined;
+    const read0 = file.read(&page0) catch
+        return ValidationResult.invalidCode(.indd, .failed_to_read, "INDD primary master page");
 
-    if (bytes_read < 24) {
-        return ValidationResult.invalidCode(.indd, .file_too_small, "INDD format");
+    if (read0 < 32) {
+        return ValidationResult.invalidCode(.indd, .file_too_small, "INDD primary master page header");
     }
 
-    // Check magic bytes: 06 06 ED F5
-    if (header[0] != 0x06 or header[1] != 0x06 or header[2] != 0xED or header[3] != 0xF5) {
-        return ValidationResult.invalidCode(.indd, .invalid_magic, "INDD");
+    if (!std.mem.eql(u8, page0[0..16], indd_magic)) {
+        return ValidationResult.invalidCode(.indd, .invalid_magic, "INDD primary master page");
     }
 
-    // Check for "DOCUMENT" at byte 16
-    if (!std.mem.eql(u8, header[16..24], "DOCUMENT")) {
-        return ValidationResult.invalidCode(.indd, .missing, "DOCUMENT identifier");
+    // Sequence number (bytes 28-31, u32 LE) for the first master page should be 0
+    const seq0 = std.mem.readInt(u32, page0[28..32], .little);
+    if (seq0 != 0) {
+        return ValidationResult.invalidCode(.indd, .invalid_value, "INDD primary master page sequence number (expected 0)");
     }
 
-    // INDD is proprietary binary - structural validation only
-    return ValidationResult.structuralOnly(.indd);
+    // ---- Duplicate master page (offset 4096) ----
+    file.seekTo(4096) catch return ValidationResult.invalidCode(.indd, .failed_to_seek, "to duplicate master page");
+
+    var page1: [32]u8 = undefined;
+    const read1 = file.read(&page1) catch
+        return ValidationResult.invalidCode(.indd, .failed_to_read, "INDD duplicate master page");
+
+    if (read1 < 32) {
+        return ValidationResult.invalidCode(.indd, .file_too_small, "INDD duplicate master page header");
+    }
+
+    if (!std.mem.eql(u8, page1[0..16], indd_magic)) {
+        return ValidationResult.invalidCode(.indd, .invalid_magic, "INDD duplicate master page");
+    }
+
+    // Sequence number in the duplicate must match the primary
+    const seq1 = std.mem.readInt(u32, page1[28..32], .little);
+    if (seq1 != seq0) {
+        return ValidationResult.invalidCode(.indd, .invalid_value, "INDD master page sequence number mismatch between primary and duplicate");
+    }
+
+    return ValidationResult.okWithDepth(.indd, .full);
 }
 
 pub fn validateInddDeep(allocator: Allocator, path: []const u8) ValidationResult {
@@ -231,23 +271,18 @@ pub fn validateInddDeep(allocator: Allocator, path: []const u8) ValidationResult
 }
 
 pub fn validateInddFromBuffer(data: []const u8) ValidationResult {
-    if (data.len < 24) {
+    if (data.len < 16) {
         return ValidationResult.invalidCode(.indd, .buffer_too_small, "INDD");
     }
 
-    // Check magic bytes: 06 06 ED F5
-    if (data[0] != 0x06 or data[1] != 0x06 or data[2] != 0xED or data[3] != 0xF5) {
+    // Check 16-byte InDesign magic
+    const indd_magic = [16]u8{ 0x06, 0x06, 0xED, 0xF5, 0xD8, 0x1D, 0x46, 0xE5, 0xBD, 0x31, 0xEF, 0xE7, 0xFE, 0x74, 0xB7, 0x1D };
+    if (!std.mem.eql(u8, data[0..16], &indd_magic)) {
         return ValidationResult.invalidCode(.indd, .invalid_magic, "INDD");
-    }
-
-    // Check for "DOCUMENT" at byte 16
-    if (!std.mem.eql(u8, data[16..24], "DOCUMENT")) {
-        return ValidationResult.invalidCode(.indd, .missing, "DOCUMENT identifier");
     }
 
     return ValidationResult.structuralOnly(.indd);
 }
-
 // ============ IDML Validator ============
 
 pub fn validateIdml(file: *FileSource) ValidationResult {
@@ -1460,19 +1495,16 @@ test "validateIndd accepts valid INDD file structure" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    // Minimal valid INDD: magic bytes + padding + "DOCUMENT"
-    var indd_data: [32]u8 = undefined;
-    indd_data[0] = 0x06; // Magic byte 1
-    indd_data[1] = 0x06; // Magic byte 2
-    indd_data[2] = 0xED; // Magic byte 3
-    indd_data[3] = 0xF5; // Magic byte 4
-    @memset(indd_data[4..16], 0); // Padding
-    @memcpy(indd_data[16..24], "DOCUMENT"); // DOCUMENT identifier
-    @memset(indd_data[24..32], 0); // More padding
+    // Minimal valid INDD: two 4096-byte master pages, each with 16-byte magic + sequence number
+    const indd_magic = [16]u8{ 0x06, 0x06, 0xED, 0xF5, 0xD8, 0x1D, 0x46, 0xE5, 0xBD, 0x31, 0xEF, 0xE7, 0xFE, 0x74, 0xB7, 0x1D };
+    var indd_data: [8192]u8 = [_]u8{0} ** 8192;
+    // Primary master page: magic at offset 0, seq=0 at offset 28
+    @memcpy(indd_data[0..16], &indd_magic);
+    // Duplicate master page: magic at offset 4096, seq=0 at offset 4124
+    @memcpy(indd_data[4096..4112], &indd_magic);
 
     const file = try tmp_dir.dir.createFile("test.indd", .{});
-    try file.writeAll(&indd_data);
-    file.close();
+    try file.writeAll(&indd_data);    file.close();
 
     const path = try tmp_dir.dir.realpathAlloc(allocator, "test.indd");
     defer allocator.free(path);
@@ -1519,21 +1551,15 @@ test "validateIndd rejects file with wrong magic bytes" {
 }
 
 test "validateInddFromBuffer matches file validation" {
-    // Valid INDD buffer
-    var indd_data: [32]u8 = undefined;
-    indd_data[0] = 0x06;
-    indd_data[1] = 0x06;
-    indd_data[2] = 0xED;
-    indd_data[3] = 0xF5;
-    @memset(indd_data[4..16], 0);
-    @memcpy(indd_data[16..24], "DOCUMENT");
-    @memset(indd_data[24..32], 0);
+    // Valid INDD buffer — just needs magic at offset 0
+    const indd_magic = [16]u8{ 0x06, 0x06, 0xED, 0xF5, 0xD8, 0x1D, 0x46, 0xE5, 0xBD, 0x31, 0xEF, 0xE7, 0xFE, 0x74, 0xB7, 0x1D };
+    var indd_data: [32]u8 = [_]u8{0} ** 32;
+    @memcpy(indd_data[0..16], &indd_magic);
 
     const result = validateInddFromBuffer(&indd_data);
     try std.testing.expectEqual(FileFormat.indd, result.format);
     try std.testing.expect(result.is_valid);
 }
-
 test "validateIdml accepts valid IDML file structure" {
     const allocator = std.testing.allocator;
 
