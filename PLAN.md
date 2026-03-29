@@ -4,6 +4,23 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ## Active
 
+### Real-World Scan Findings (2026-03-27)
+
+#### Extension/Detection Tweaks
+- [x] DMG+bzip2: Accept .dmg files with bzip2 magic bytes without extension-mismatch warning (2026-03-27 ~15:00 EST)
+- [x] MSI/OLE2 disambiguation: Add MSI as recognized OLE2/CFBF subtype with stream-name detection (2026-03-27 ~15:00 EST)
+
+#### New Format Support (from 23K unknowns across 283K-file scan)
+- [x] MP2 — MPEG Audio Layer II; reuses MP3 frame validator with format tag override (2026-03-27 ~15:00 EST)
+- [x] VMDK — VMware virtual disk; VMDK4/COWD/descriptor sub-format detection + structural validation (2026-03-27 ~15:00 EST)
+- [x] CAB — Microsoft Cabinet archive; full header/folder/file structure walk + XOR-fold checksum verification (2026-03-27 ~15:00 EST)
+- [x] ESD/WIM — Windows Imaging Format; 208-byte header validation, version/flag discrimination, resource header bounds checking (2026-03-27 ~15:00 EST)
+- [x] StuffIt (.sit/.sitx) — Classic v1-4.5 (SIT! magic + CRC-16/IBM), v5 (82-byte text header + CCITT CRC), StuffIt X (element stream) (2026-03-27 ~15:00 EST)
+- [x] Toast — Roxio Toast disc image; APM DDR detection + ISO 9660 PVD validation + Application Identifier check (2026-03-27 ~15:00 EST)
+- [x] CDG — CD+Graphics karaoke; packet size divisibility, CDG command analysis, tile coordinate bounds checking (2026-03-27 ~15:00 EST)
+- [x] RealMedia (.rm) — Chunk-based container walk; .RMF/PROP/MDPR/CONT/DATA/INDX structure validation, num_streams cross-check (2026-03-27 ~15:00 EST)
+  - [ ] TODO: Generate proper RealMedia ground truth file with ffmpeg (hand-crafted sample has chunk size issues)
+
 ### Financial Format Validators
 - [ ] Find QBB ground-truth sample (QuickBooks Backup)
 

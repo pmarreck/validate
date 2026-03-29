@@ -334,9 +334,12 @@ fn validateRleFromBuffer(data: []const u8, height: u32, is_rle4: bool) BmpValida
 
 /// Validate V4/V5 BMP using zigimg
 fn validateBmpV4V5(allocator: Allocator, path: []const u8) BmpValidationResult {
-    var read_buffer: [65536]u8 = undefined;
+    const read_buffer = allocator.alloc(u8, 65536) catch {
+        return BmpValidationResult.invalid(errmsg.outOfMemory("read buffer for BMP"));
+    };
+    defer allocator.free(read_buffer);
 
-    var image = zigimg.Image.fromFilePath(allocator, path, &read_buffer) catch |err| {
+    var image = zigimg.Image.fromFilePath(allocator, path, read_buffer) catch |err| {
         return switch (err) {
             error.OutOfMemory => BmpValidationResult.invalid(errmsg.outOfMemory("for BMP")),
             error.InvalidData => BmpValidationResult.invalid("Invalid BMP data"),

@@ -174,7 +174,10 @@ fn validateTrackData(file: *FileSource, start_pos: u64, length: u32) MidiValidat
     }
 
     // Read track data into buffer
-    var data_buf: [65536]u8 = undefined;
+    const data_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+        return MidiValidationResult.invalid("Out of memory for track data buffer");
+    };
+    defer std.heap.page_allocator.free(data_buf);
     var pos: u32 = 0;
     var running_status: u8 = 0;
     var found_end_of_track = false;

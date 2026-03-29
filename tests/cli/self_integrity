@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# Test that validate's self-integrity check catches corruption and tampering.
+# Copies the binary, corrupts it in various ways, and verifies FATAL exit.
+set -u
+
+VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
+PASS=0
+FAIL=0
+
+pass() { echo "PASS: $1"; PASS=$((PASS + 1)); }
+fail() { echo "FAIL: $1"; FAIL=$((FAIL + 1)); }
+
+# Prerequisite: signed binary must work
+if ! "$VALIDATE" --help >/dev/null 2>&1; then
+	echo "FAIL: prerequisite — signed binary doesn't run"
+	exit 1
+fi
+
+WORKDIR="${TMPDIR:-/tmp}/validate-integrity-test-$$"
+mkdir -p "$WORKDIR"
+trap 'rm -rf "$WORKDIR"' EXIT
+
+# --- Test 1: Signed binary passes ---
+output=$("$VALIDATE" --help 2>&1)
+if echo "$output" | grep -q "FATAL"; then
+	fail "signed binary should not produce FATAL"
+else
+	pass "signed binary runs without FATAL"
+fi
+
+# --- Test 2: Appended byte shifts trailer out of position ---
+cp "$VALIDATE" "$WORKDIR/validate-appended"
+chmod 755 "$WORKDIR/validate-appended"
+printf 'x' >> "$WORKDIR/validate-appended"
+output=$("$WORKDIR/validate-appended" --help 2>&1 || true)
+if echo "$output" | grep -q "FATAL"; then
+	pass "appended byte detected (trailer shifted)"
+else
+	fail "appended byte not detected"
+fi
+
+# --- Test 3: Random byte flip in code section ---
+cp "$VALIDATE" "$WORKDIR/validate-flipped"
+chmod 755 "$WORKDIR/validate-flipped"
+file_size=$(wc -c < "$WORKDIR/validate-flipped" | tr -d ' ')
+# Flip a byte in the first quarter of the binary (well before trailer)
+flip_offset=$((RANDOM % (file_size / 4) + 1024))
+orig_byte=$(dd if="$WORKDIR/validate-flipped" bs=1 skip="$flip_offset" count=1 2>/dev/null | xxd -p)
+flipped=$(printf '%02x' $(( 0x$orig_byte ^ 0xFF )))
+printf "\\x$flipped" | dd of="$WORKDIR/validate-flipped" bs=1 seek="$flip_offset" conv=notrunc 2>/dev/null
+output=$("$WORKDIR/validate-flipped" --help 2>&1 || true)
+if echo "$output" | grep -q "FATAL"; then
+	pass "random byte flip detected (hash mismatch)"
+else
+	# The flip might have made the binary crash before reaching integrity check,
+	# which is also acceptable — corruption was not silently accepted
+	exit_code=0
+	"$WORKDIR/validate-flipped" --help >/dev/null 2>&1 || exit_code=$?
+	if [[ $exit_code -ne 0 ]]; then
+		pass "random byte flip caused crash (corruption not silently accepted)"
+	else
+		fail "random byte flip not detected — binary ran successfully"
+	fi
+fi
+
+# --- Test 4: Truncated binary (trailer removed) ---
+cp "$VALIDATE" "$WORKDIR/validate-truncated"
+chmod 755 "$WORKDIR/validate-truncated"
+file_size=$(wc -c < "$WORKDIR/validate-truncated" | tr -d ' ')
+truncated_size=$((file_size - 50))  # Remove the 50-byte trailer
+dd if="$WORKDIR/validate-truncated" of="$WORKDIR/validate-truncated2" bs=1 count="$truncated_size" 2>/dev/null
+chmod 755 "$WORKDIR/validate-truncated2"
+output=$("$WORKDIR/validate-truncated2" --help 2>&1 || true)
+if echo "$output" | grep -q "FATAL"; then
+	pass "truncated binary detected (trailer removed)"
+else
+	exit_code=0
+	"$WORKDIR/validate-truncated2" --help >/dev/null 2>&1 || exit_code=$?
+	if [[ $exit_code -ne 0 ]]; then
+		pass "truncated binary caused crash (corruption not silently accepted)"
+	else
+		fail "truncated binary not detected — binary ran successfully"
+	fi
+fi
+
+# --- Test 5: Zeroed trailer ---
+cp "$VALIDATE" "$WORKDIR/validate-zeroed"
+chmod 755 "$WORKDIR/validate-zeroed"
+file_size=$(wc -c < "$WORKDIR/validate-zeroed" | tr -d ' ')
+trailer_offset=$((file_size - 50))
+dd if=/dev/zero of="$WORKDIR/validate-zeroed" bs=1 seek="$trailer_offset" count=50 conv=notrunc 2>/dev/null
+output=$("$WORKDIR/validate-zeroed" --help 2>&1 || true)
+if echo "$output" | grep -q "FATAL"; then
+	pass "zeroed trailer detected"
+else
+	fail "zeroed trailer not detected"
+fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit $FAIL

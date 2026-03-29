@@ -10,6 +10,10 @@ zig-cache/
 *.swp
 *~
 
+# Build artifacts
+*.o
+*.a
+
 # macOS
 .DS_Store
 

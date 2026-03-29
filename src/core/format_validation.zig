@@ -208,6 +208,16 @@ const crypto_validators = @import("crypto_validators.zig");
 const bagit_validator = @import("bagit_validator.zig");
 const pdf_validator = @import("pdf_validator.zig");
 
+// New format validators (2026-03-27 scan findings)
+const cab_validator = @import("cab_validator.zig");
+const wim_validator = @import("wim_validator.zig");
+const vmdk_validator = @import("vmdk_validator.zig");
+const stuffit_validator = @import("stuffit_validator.zig");
+const realmedia_validator = @import("realmedia_validator.zig");
+const cdg_validator = @import("cdg_validator.zig");
+const toast_validator = @import("toast_validator.zig");
+const blar_validator = @import("blar_validator.zig");
+
 // PE (Portable Executable) validator
 const pe_validator = @import("pe_validator.zig");
 
@@ -557,6 +567,28 @@ pub const FileFormat = enum {
     // Crypto/certificate formats
     pem, // PEM-encoded certificate/key (-----BEGIN ... -----)
     der, // DER-encoded ASN.1 certificate/key (binary)
+    // Additional archive formats
+    cab, // Microsoft Cabinet archive (.cab)
+    sit, // StuffIt archive (.sit, classic through v5/6)
+    sitx, // StuffIt X archive (.sitx, v7+)
+    // Additional audio formats
+    mp2, // MPEG Audio Layer II
+    // Additional media container formats
+    rm, // RealMedia (.rm, .rmvb)
+    // Karaoke formats
+    cdg, // CD+Graphics (.cdg, karaoke subchannel data)
+    // Disc image formats
+    toast, // Roxio Toast disc image (.toast)
+    // Virtual machine formats
+    vmdk, // VMware Virtual Disk (.vmdk)
+    // Windows imaging formats
+    wim, // Windows Imaging Format (.wim)
+    esd, // Windows Electronic Software Distribution (.esd, WIM variant)
+    // Windows installer formats
+    msi, // Microsoft Installer (.msi, OLE2/CFBF container)
+    // BLIP archive formats
+    blar, // BLIP archive (.blar, with directory support)
+    mblar, // BLIP mini-archive (.mblar, flat files only)
     // Bundle formats (directories validated as a unit)
     bagit, // BagIt archive (RFC 8493, directory with bagit.txt + manifest)
     git_repository, // Git repository (.git directory)
@@ -642,6 +674,16 @@ pub const FileFormat = enum {
             .icalendar, .vcard => true, // PIM formats (iCalendar, vCard)
             .x12_edi, .edifact => true, // EDI formats
             .pem, .der => true, // Crypto/certificate formats
+            .cab => true, // Microsoft Cabinet archive
+            .sit, .sitx => true, // StuffIt archives
+            .mp2 => true, // MPEG Audio Layer II (reuses MP3 validator)
+            .rm => true, // RealMedia container
+            .cdg => true, // CD+Graphics karaoke
+            .toast => true, // Roxio Toast disc image
+            .vmdk => true, // VMware Virtual Disk
+            .wim, .esd => true, // Windows Imaging Format
+            .msi => true, // Microsoft Installer (OLE2)
+            .blar, .mblar => true, // BLIP archive formats
             .bagit => true, // BagIt (RFC 8493) archive validation
             .git_repository => true, // Git repository validation
             .macos_app => true, // macOS application bundle validation
@@ -664,7 +706,7 @@ pub const FileFormat = enum {
     /// Returns true if this format uses OLE2/CFBF (Compound File Binary Format).
     pub fn isOle2(self: FileFormat) bool {
         return switch (self) {
-            .doc, .xls, .ppt, .qbb => true,
+            .doc, .xls, .ppt, .qbb, .msi => true,
             else => false,
         };
     }
@@ -1208,6 +1250,19 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00 }, .offset = 0, .format = .rar },
     // RAR4: 52 61 72 21 1A 07 00
     .{ .bytes = &[_]u8{ 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00 }, .offset = 0, .format = .rar },
+    // StuffIt X Base-N: "StuffIt?" (byte 7 = 0x3F instead of 0x21)
+    .{ .bytes = &[_]u8{ 0x53, 0x74, 0x75, 0x66, 0x66, 0x49, 0x74, 0x3F }, .offset = 0, .format = .sitx },
+    // StuffIt 5/6: ASCII header "StuffIt (c)1997-" (first 16 bytes)
+    .{ .bytes = "StuffIt (c)1997-", .offset = 0, .format = .sit },
+    // StuffIt variant magics: "ST46", "ST50", "ST60", "ST65", "STin", "STi2", "STi3", "STi4"
+    .{ .bytes = "ST46", .offset = 0, .format = .sit },
+    .{ .bytes = "ST50", .offset = 0, .format = .sit },
+    .{ .bytes = "ST60", .offset = 0, .format = .sit },
+    .{ .bytes = "ST65", .offset = 0, .format = .sit },
+    .{ .bytes = "STin", .offset = 0, .format = .sit },
+    .{ .bytes = "STi2", .offset = 0, .format = .sit },
+    .{ .bytes = "STi3", .offset = 0, .format = .sit },
+    .{ .bytes = "STi4", .offset = 0, .format = .sit },
     // 7-Zip: 37 7A BC AF 27 1C
     .{ .bytes = &[_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C }, .offset = 0, .format = .sevenz },
     // PDF: %PDF-
@@ -1438,7 +1493,21 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "BEGIN:VCALENDAR", .offset = 0, .format = .icalendar },
     // vCard: BEGIN:VCARD
     .{ .bytes = "BEGIN:VCARD", .offset = 0, .format = .vcard },
-    // Note: DV, TGA, PAM/PBM/PGM/PPM, HTML, COFF, DMG have no reliable magic bytes at offset 0 - detected by extension and/or structure
+    // Microsoft Cabinet: "MSCF" (4D 53 43 46)
+    .{ .bytes = "MSCF", .offset = 0, .format = .cab },
+    // RealMedia: ".RMF" (2E 52 4D 46)
+    .{ .bytes = ".RMF", .offset = 0, .format = .rm },
+    // WIM/ESD: "MSWIM\x00\x00\x00"
+    .{ .bytes = &[_]u8{ 0x4D, 0x53, 0x57, 0x49, 0x4D, 0x00, 0x00, 0x00 }, .offset = 0, .format = .wim },
+    // StuffIt Classic: "SIT!" + "rLau" at offset 10
+    .{ .bytes = "SIT!", .offset = 0, .format = .sit },
+    // StuffIt X: "StuffIt!" (8 bytes)
+    .{ .bytes = "StuffIt!", .offset = 0, .format = .sitx },
+    // VMDK Hosted Sparse: magic 0x564D444B stored as LE = bytes "KDMV"
+    .{ .bytes = "KDMV", .offset = 0, .format = .vmdk },
+    // VMDK COWD (ESXi Sparse): magic 0x44574F43 stored as LE = bytes "COWD"
+    .{ .bytes = "COWD", .offset = 0, .format = .vmdk },
+    // Note: DV, TGA, PAM/PBM/PGM/PPM, HTML, COFF, DMG, CDG, Toast have no reliable magic bytes at offset 0 - detected by extension and/or structure
 };
 
 /// Maximum number of magic signatures that can share the same first byte.
@@ -1813,6 +1882,29 @@ fn checkSpecialCases(sig: MagicSignature, header: []const u8) ?FileFormat {
             return null;
         }
     }
+    // WIM vs ESD: check wim_version and LZMS flag to distinguish
+    if (sig.format == .wim) {
+        if (header.len >= 20) {
+            const wim_version = std.mem.readInt(u32, header[12..16], .little);
+            const wim_flags = std.mem.readInt(u32, header[16..20], .little);
+            // ESD: version 0x0E00 and LZMS compression (0x00080000)
+            if (wim_version == 0x0E00 and (wim_flags & 0x00080000) != 0) return .esd;
+        }
+        return .wim;
+    }
+    // StuffIt Classic: verify "rLau" secondary signature at offset 10
+    if (sig.format == .sit) {
+        if (header.len >= 14 and std.mem.eql(u8, header[10..14], "rLau")) return .sit;
+        // Accept installer/variant magics: "ST46", "ST50", "ST60", "ST65", "STin", "STi2"/"STi3"/"STi4"
+        // and StuffIt 5/6 ASCII header ("StuffIt (c)1997-"): no secondary check needed
+        if (header.len >= 2 and header[0] == 'S' and header[1] == 'T') return .sit;
+        if (header.len >= 8 and std.mem.startsWith(u8, header, "StuffIt ")) return .sit;
+        return null;
+    }
+    // VMDK: "KDMV" and "COWD" both detected as .vmdk, also check for text descriptor
+    if (sig.format == .vmdk) {
+        return .vmdk;
+    }
     return sig.format;
 }
 
@@ -1926,6 +2018,21 @@ pub fn detectFormat(header: []const u8) FileFormat {
         }
     }
 
+    // BLIP archive: first byte has bit 7 set (LP envelope), magic "BLAR\x02" or "MBAR\x02" within first 32 bytes
+    if (header.len >= 20 and (header[0] & 0x80) != 0) {
+        const scan_len = @min(header.len, 32);
+        if (scan_len >= 5) {
+            for (0..scan_len - 4) |i| {
+                if (std.mem.eql(u8, header[i..][0..5], "BLAR\x02")) {
+                    return .blar;
+                }
+                if (std.mem.eql(u8, header[i..][0..5], "MBAR\x02")) {
+                    return .mblar;
+                }
+            }
+        }
+    }
+
     // PBM/PGM/PPM/PAM: "P1"-"P7" followed by whitespace
     if (header.len >= 3 and header[0] == 'P' and header[1] >= '1' and header[1] <= '7') {
         if (header[2] == ' ' or header[2] == '\t' or header[2] == '\n' or header[2] == '\r') {
@@ -2025,6 +2132,27 @@ pub fn detectFormat(header: []const u8) FileFormat {
                 }
             }
         }
+    }
+
+    // StuffIt 5: 82-byte ASCII header starting with "StuffIt (c)"
+    if (header.len >= 83 and std.mem.startsWith(u8, header, "StuffIt (c)")) {
+        return .sit;
+    }
+
+    // StuffIt installer variants: "ST46", "ST50", "ST60", "ST65", "STin", "STi2", "STi3", "STi4"
+    if (header.len >= 4 and header[0] == 'S' and header[1] == 'T') {
+        if (std.mem.eql(u8, header[2..4], "46") or std.mem.eql(u8, header[2..4], "50") or
+            std.mem.eql(u8, header[2..4], "60") or std.mem.eql(u8, header[2..4], "65") or
+            std.mem.eql(u8, header[2..4], "in") or std.mem.eql(u8, header[2..4], "i2") or
+            std.mem.eql(u8, header[2..4], "i3") or std.mem.eql(u8, header[2..4], "i4"))
+        {
+            return .sit;
+        }
+    }
+
+    // VMDK descriptor-only: text file starting with "# Disk DescriptorFile"
+    if (header.len >= 21 and std.mem.startsWith(u8, header, "# Disk DescriptorFile")) {
+        return .vmdk;
     }
 
     return .unknown;
@@ -2183,6 +2311,8 @@ pub fn validateDataBufferFormat(data: []const u8, format: FileFormat) Validation
         .webp => image_validators.validateWebpFromBuffer(data),
         .hqx => archive_validators.validateHqxFromBuffer(data),
         .cpt => archive_validators.validateCptFromBuffer(data),
+        .sit => stuffit_validator.validateSitFromBuffer(data),
+        .sitx => stuffit_validator.validateSitxFromBuffer(data),
         .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => archive_validators.validateZipFromBuffer(data, format),
         .mp4, .mov, .m4a => movie_validators.validateMp4FromBuffer(data),
         else => ValidationResult.ok(format), // Format not supported for buffer validation
@@ -2435,6 +2565,35 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     // Disk images
     .{ "iso", .iso },
     .{ "dmg", .dmg },
+    .{ "toast", .toast },
+    // Virtual machine disk formats
+    .{ "vmdk", .vmdk },
+    // Windows imaging formats
+    .{ "wim", .wim },
+    .{ "esd", .esd },
+    .{ "swm", .wim },
+    // Microsoft Cabinet
+    .{ "cab", .cab },
+    // Microsoft Installer
+    .{ "msi", .msi },
+    .{ "msp", .msi },
+    .{ "mst", .msi },
+    // BLIP archives
+    .{ "blar", .blar },
+    .{ "mblar", .mblar },
+    // StuffIt archives
+    .{ "sit", .sit },
+    .{ "sitx", .sitx },
+    // MPEG Audio Layer II
+    .{ "mp2", .mp2 },
+    .{ "mpa", .mp2 },
+    // RealMedia
+    .{ "rm", .rm },
+    .{ "rmvb", .rm },
+    .{ "ra", .rm },
+    .{ "ram", .rm },
+    // Karaoke
+    .{ "cdg", .cdg },
     // DAW formats
     .{ "als", .als },
     .{ "rpp", .rpp },
@@ -2507,6 +2666,16 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "csv", .csv },
     .{ "tsv", .csv },
     .{ "plist", .plist },
+    // Subtitle formats (plain text with timestamps)
+    .{ "srt", .plain_text },
+    .{ "vtt", .plain_text },
+    .{ "ass", .plain_text },
+    .{ "ssa", .plain_text },
+    .{ "sub", .plain_text },
+    // Common plain text extensions
+    .{ "txt", .plain_text },
+    .{ "log", .plain_text },
+    .{ "nfo", .plain_text_cp437 }, // IBM PC/DOS box-drawing art
     .{ "html", .html },
     .{ "htm", .html },
     .{ "xhtml", .html },
@@ -2840,6 +3009,22 @@ pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     return ext_detect_map.get(ext_lower) orelse .unknown;
 }
 
+/// Check if a file extension indicates a subtitle format where bidi overrides are expected.
+fn isSubtitleExtension(path: []const u8) bool {
+    const subtitle_exts = std.StaticStringMap(void).initComptime(.{
+        .{ "srt", {} },
+        .{ "vtt", {} },
+        .{ "ass", {} },
+        .{ "ssa", {} },
+        .{ "sub", {} },
+        .{ "sbv", {} },
+        .{ "lrc", {} },
+    });
+    var buf: [16]u8 = undefined;
+    const ext_lower = lowercaseExtension(path, &buf) orelse return false;
+    return subtitle_exts.has(ext_lower);
+}
+
 /// Check if a file extension indicates a code/log/template file that should NOT
 /// be validated as a text format (JSON, XML, etc.) even if content detection
 /// matches those patterns. These are false positives from content detection.
@@ -3108,6 +3293,36 @@ fn isFormatCompatibleWithExtension(detected: FileFormat, extension_format: FileF
     // .obj extension is ambiguous: Wavefront OBJ 3D model OR COFF object file
     if (extension_format == .obj and detected == .coff) return true;
     if (extension_format == .coff and detected == .obj) return true;
+
+    // DMG files are commonly bzip2-compressed; validate as bzip2 without extension mismatch
+    if (extension_format == .dmg and detected == .bzip2) return true;
+
+    // OLE2-based MSI detected as .doc by magic bytes before OLE2 subformat dispatch
+    if (detected == .doc and extension_format == .msi) return true;
+
+    // MP2 and MP3 share the same MPEG audio frame structure
+    if (extension_format == .mp2 and detected == .mp3) return true;
+    if (extension_format == .mp3 and detected == .mp2) return true;
+
+    // Toast disc images are commonly ISO 9660 internally
+    if (extension_format == .toast and detected == .iso) return true;
+
+    // WIM and ESD are the same container format
+    if ((extension_format == .wim and detected == .esd) or (extension_format == .esd and detected == .wim)) return true;
+
+    // WebM is a subset of Matroska (MKV) — same EBML container
+    if ((extension_format == .webm and detected == .mkv) or (extension_format == .mkv and detected == .webm)) return true;
+
+    // Plain text encoding variants are all compatible (UTF-8, UTF-16, Latin-1, CP437)
+    const ext_is_plaintext = switch (extension_format) {
+        .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437 => true,
+        else => false,
+    };
+    const det_is_plaintext = switch (detected) {
+        .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437 => true,
+        else => false,
+    };
+    if (ext_is_plaintext and det_is_plaintext) return true;
 
     return false;
 }
@@ -4582,6 +4797,14 @@ pub const FormatValidator = struct {
 
         var result = self.validateFileHandle(file);
 
+        // Bidi overrides are normal in subtitle files (RTL languages like Hebrew, Arabic)
+        // — suppress the trojan-source warning for known subtitle extensions
+        if (result.warning_message != null and isSubtitleExtension(path)) {
+            if (std.mem.indexOf(u8, result.warning_message.?, "bidi") != null) {
+                result.warning_message = null;
+            }
+        }
+
         // If content-based detection found a text format (JSON, XML, etc.) but the
         // file extension indicates this is a code/log/template file, don't validate
         // it as that text format - it's a false positive from content detection.
@@ -4639,6 +4862,10 @@ pub const FormatValidator = struct {
                     .x12_edi, .edifact,
                     .der, // DER: first byte 0x30 is too generic for magic detection
                     .obj, .coff, // .obj is ambiguous (Wavefront OBJ vs COFF); .o has no magic
+                    .cdg, // CDG has no magic bytes, only extension + size divisibility
+                    .toast, // Toast may be ISO internally or APM-prefixed
+                    .mp2, // MP2 shares MPEG sync word with MP3, needs extension hint
+                    .msi, // MSI uses OLE2 magic, needs subformat detection
                     => true,
                     else => false,
                 };
@@ -4686,6 +4913,14 @@ pub const FormatValidator = struct {
                         .edifact => edi_validators.validateEdifact(reopen_ext_ptr),
                         .coff => executable_validators.validateCoff(reopen_ext_ptr),
                         .der => crypto_validators.validateDer(reopen_ext_ptr),
+                        .cdg => cdg_validator.validateCdg(reopen_ext_ptr),
+                        .toast => toast_validator.validateToast(reopen_ext_ptr),
+                        .mp2 => blk: {
+                            var mp2_result = music_validators.validateMp3(reopen_ext_ptr);
+                            mp2_result.format = .mp2;
+                            break :blk mp2_result;
+                        },
+                        .msi => document_validators.validateMsi(reopen_ext_ptr),
                         .obj => blk: {
                             // .obj is ambiguous: try COFF first (binary), fall back to Wavefront OBJ (text)
                             const coff_result = executable_validators.validateCoff(reopen_ext_ptr);
@@ -4717,6 +4952,10 @@ pub const FormatValidator = struct {
                 .br => false, // Brotli has no magic, extension-only
                 .dv => false, // DV has no magic bytes, extension-only
                 .tga => false, // TGA has no magic bytes at start, extension-only
+                .cdg => false, // CDG has no magic bytes, extension+size only
+                .toast => false, // Toast may be ISO internally, extension-only
+                .mp2 => false, // MP2 shares sync word with MP3, extension-driven
+                .msi => false, // MSI uses OLE2 magic, detected via subformat dispatch
                 else => true,
             };
 
@@ -4733,8 +4972,11 @@ pub const FormatValidator = struct {
                 };
 
                 // Read up to 64KB from start for signature detection
-                var buffer: [65536]u8 = undefined;
-                const bytes_read = reopen_file.read(&buffer) catch {
+                const buffer = (self.allocator orelse std.heap.page_allocator).alloc(u8, 65536) catch {
+                    return result;
+                };
+                defer (self.allocator orelse std.heap.page_allocator).free(buffer);
+                const bytes_read = reopen_file.read(buffer) catch {
                     return result;
                 };
 
@@ -4816,8 +5058,18 @@ pub const FormatValidator = struct {
         // This catches corrupted files where both magic bytes AND secondary
         // signatures are destroyed, but the extension is still informative.
         if (result.format == .unknown and expected_format != .unknown and expected_format.hasValidator()) {
-            result = ValidationResult.invalid(expected_format, "detected via extension, magic bytes corrupted");
-            result.malformations.insert(.magic_bytes_corrupted);
+            // Don't flag "magic bytes corrupted" for formats that inherently lack magic bytes
+            const has_no_magic = switch (expected_format) {
+                .cdg, .toast, .mp2, .msi, .br, .dv, .tga => true,
+                else => false,
+            };
+            if (has_no_magic) {
+                // These formats are extension-only; lack of magic is expected, not corruption
+                result = ValidationResult.ok(expected_format);
+            } else {
+                result = ValidationResult.invalid(expected_format, "detected via extension, magic bytes corrupted");
+                result.malformations.insert(.magic_bytes_corrupted);
+            }
         }
 
         // For text formats, extension is more reliable than content detection
@@ -5237,7 +5489,14 @@ pub const FormatValidator = struct {
             .der => crypto_validators.validateDerDeep(allocator, path),
             .icalendar => pim_validators.validateICalendarDeep(allocator, path),
             .vcard => pim_validators.validateVCardDeep(allocator, path),
+            .cab => cab_validator.validateCabDeep(allocator, path),
+            .sit, .sitx => stuffit_validator.validateStuffitDeep(allocator, path),
+            .vmdk => vmdk_validator.validateVmdkDeep(allocator, path).toValidationResult(),
+            .wim, .esd => wim_validator.validateWimDeep(allocator, path),
+            .rm => realmedia_validator.validateRealMediaDeep(allocator, path),
             .parquet => scientific_validators.validateParquetDeep(allocator, path),
+            .blar => blar_validator.validateBlarDeepFromPath(allocator, path, .blar),
+            .mblar => blar_validator.validateBlarDeepFromPath(allocator, path, .mblar),
             .bagit => bagit_validator.validateBagitDeep(allocator, path),
             .git_repository => validateGitRepositoryDeep(allocator, path),
             .macos_app => validateMacosAppDeep(allocator, path),
@@ -5469,8 +5728,14 @@ pub const FormatValidator = struct {
                     return ValidationResult.invalidCode(format, .failed_to_seek, "to embedded content");
                 };
 
-                // Read embedded content into stack buffer if small enough
-                var embedded_buffer: [65536]u8 = undefined;
+                // Read embedded content into heap buffer if small enough
+                const embedded_buffer = (self.allocator orelse std.heap.page_allocator).alloc(u8, 65536) catch {
+                    var result = ValidationResult.ok(format);
+                    result.malformations.insert(.mime_wrapped_content);
+                    result.validation_depth = .structural;
+                    return result;
+                };
+                defer (self.allocator orelse std.heap.page_allocator).free(embedded_buffer);
                 if (embedded_size <= embedded_buffer.len) {
                     const read_bytes = file.read(embedded_buffer[0..@intCast(embedded_size)]) catch {
                         return ValidationResult.invalidCode(format, .failed_to_read, "embedded content");
@@ -5733,6 +5998,21 @@ pub const FormatValidator = struct {
             // PIM formats
             .icalendar => pim_validators.validateICalendar(file_src_ptr),
             .vcard => pim_validators.validateVCard(file_src_ptr),
+            // New format validators (2026-03-27 scan findings)
+            .cab => cab_validator.validateCab(file_src_ptr),
+            .sit, .sitx => stuffit_validator.validateStuffit(file_src_ptr),
+            .mp2 => blk: {
+                var mp2_result = music_validators.validateMp3(file_src_ptr);
+                mp2_result.format = .mp2;
+                break :blk mp2_result;
+            },
+            .rm => realmedia_validator.validateRealMedia(file_src_ptr),
+            .cdg => cdg_validator.validateCdg(file_src_ptr),
+            .toast => toast_validator.validateToast(file_src_ptr),
+            .vmdk => vmdk_validator.validateVmdk(file_src_ptr).toValidationResult(),
+            .wim, .esd => wim_validator.validateWim(file_src_ptr),
+            .msi => document_validators.validateMsi(file_src_ptr),
+            .blar, .mblar => |fmt| blar_validator.validateBlarStructural(self.allocator orelse std.heap.page_allocator, file_src_ptr, fmt),
             // Bundle formats (directories) - should be handled before reaching this switch
             // If we get here, it means something went wrong - return invalid to make it obvious
             .bagit => bagit_validator.validateBagit(file_src_ptr),
@@ -5877,7 +6157,10 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
         .hqx => archive_validators.validateHqxFromBuffer(data),
         .rar => archive_validators.validateRarFromBuffer(data),
         .cpt => archive_validators.validateCptFromBuffer(data),
+        .sit => stuffit_validator.validateSitFromBuffer(data),
+        .sitx => stuffit_validator.validateSitxFromBuffer(data),
         .sevenz => archive_validators.validate7zFromBuffer(data),
+        .wim, .esd => wim_validator.validateWimFromBuffer(data),
         // For formats without buffer validators yet, just return format detected
         else => ValidationResult.ok(format),
     };

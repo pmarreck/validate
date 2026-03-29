@@ -207,21 +207,33 @@ static void verify_self_integrity(const char* argv0) {
 
 	/* Get file size */
 	FILE* f = fopen(exe_path, "rb");
-	if (!f) return;
+	if (!f) {
+		fprintf(stderr, "\033[1;31mFATAL: Cannot open own executable for integrity check: %s\033[0m\n", exe_path);
+		exit(1);
+	}
 	fseek(f, 0, SEEK_END);
 	long file_size = ftell(f);
-	if (file_size < INTEGRITY_TRAILER_LEN + 1024) { fclose(f); return; } /* Too small */
+	if (file_size < INTEGRITY_TRAILER_LEN + 1024) {
+		fclose(f);
+		fprintf(stderr, "\033[1;31mFATAL: Binary too small to contain integrity trailer — unsigned or truncated\033[0m\n");
+		exit(1);
+	}
 
 	/* Read the trailer */
 	uint8_t trailer[INTEGRITY_TRAILER_LEN];
 	fseek(f, file_size - INTEGRITY_TRAILER_LEN, SEEK_SET);
-	if (fread(trailer, 1, INTEGRITY_TRAILER_LEN, f) != INTEGRITY_TRAILER_LEN) { fclose(f); return; }
+	if (fread(trailer, 1, INTEGRITY_TRAILER_LEN, f) != INTEGRITY_TRAILER_LEN) {
+		fclose(f);
+		fprintf(stderr, "\033[1;31mFATAL: Cannot read integrity trailer\033[0m\n");
+		exit(1);
+	}
 	fclose(f);
 
 	/* Check for marker */
 	if (memcmp(trailer, INTEGRITY_MARKER, INTEGRITY_MARKER_LEN) != 0) {
-		g_integrity_verified = 0; /* No trailer — development build */
-		return;
+		fprintf(stderr, "\033[1;31mFATAL: No integrity trailer — this binary was not signed.\033[0m\n");
+		fprintf(stderr, "All builds must be signed. Use ./build or nix build, not raw zig build.\n");
+		exit(1);
 	}
 
 	/* Compute SHA-256 of everything before the trailer */
@@ -233,13 +245,13 @@ static void verify_self_integrity(const char* argv0) {
 	if (memcmp(computed, expected, 32) == 0) {
 		g_integrity_verified = 1;
 	} else {
-		g_integrity_verified = -1;
-		fprintf(stderr, "\033[1;31mWARNING: Binary integrity check FAILED — this executable may be corrupted!\033[0m\n");
+		fprintf(stderr, "\033[1;31mFATAL: Binary integrity check FAILED — this executable may be corrupted or tampered with!\033[0m\n");
 		fprintf(stderr, "  Expected: ");
 		for (int i=0;i<32;i++) fprintf(stderr, "%02x", expected[i]);
 		fprintf(stderr, "\n  Computed: ");
 		for (int i=0;i<32;i++) fprintf(stderr, "%02x", computed[i]);
 		fprintf(stderr, "\n");
+		exit(1);
 	}
 }
 
@@ -1820,9 +1832,51 @@ int main(int argc, char* argv[]) {
 	compute_self_hash(argv[0]);
 	/* Verify binary integrity (if build appended integrity trailer) */
 	verify_self_integrity(argv[0]);
-	/* Write hash to stdout/stderr so it's always visible in output */
-	write_self_hash(stdout);
-	write_self_hash(stderr);
+	/* Write hash to stdout and stderr — but only once if they go to the same place.
+	 * Compare via fstat: if both are the same device+inode (same file/TTY), write once to stderr.
+	 * If either fstat fails (pipe, etc.), compare isatty: both TTYs means same terminal. */
+	{
+		int same_dest = 0;
+#if defined(_WIN32)
+		/* Windows: compare console handles via GetFileInformationByHandle */
+		HANDLE h_out = GetStdHandle(STD_OUTPUT_HANDLE);
+		HANDLE h_err = GetStdHandle(STD_ERROR_HANDLE);
+		if (h_out != INVALID_HANDLE_VALUE && h_err != INVALID_HANDLE_VALUE) {
+			BY_HANDLE_FILE_INFORMATION info_out, info_err;
+			if (GetFileInformationByHandle(h_out, &info_out) &&
+				GetFileInformationByHandle(h_err, &info_err)) {
+				if (info_out.dwVolumeSerialNumber == info_err.dwVolumeSerialNumber &&
+					info_out.nFileIndexHigh == info_err.nFileIndexHigh &&
+					info_out.nFileIndexLow == info_err.nFileIndexLow) {
+					same_dest = 1;
+				}
+			} else {
+				/* GetFileInformationByHandle fails for console handles;
+				 * if both are consoles, they're the same terminal */
+				DWORD mode_out, mode_err;
+				if (GetConsoleMode(h_out, &mode_out) && GetConsoleMode(h_err, &mode_err)) {
+					same_dest = 1;
+				}
+			}
+		}
+#else
+		/* POSIX: compare via fstat dev+ino, fall back to isatty */
+		struct stat st_out, st_err;
+		int have_out = (fstat(STDOUT_FILENO, &st_out) == 0);
+		int have_err = (fstat(STDERR_FILENO, &st_err) == 0);
+		if (have_out && have_err && st_out.st_dev == st_err.st_dev && st_out.st_ino == st_err.st_ino) {
+			same_dest = 1;
+		} else if (isatty(STDOUT_FILENO) && isatty(STDERR_FILENO)) {
+			same_dest = 1;
+		}
+#endif
+		if (same_dest) {
+			write_self_hash(stderr);
+		} else {
+			write_self_hash(stdout);
+			write_self_hash(stderr);
+		}
+	}
 
 	/* Initialize color support based on terminal capabilities */
 	init_colors();

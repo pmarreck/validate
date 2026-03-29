@@ -316,7 +316,8 @@ pub fn validateAvi(file: *FileSource) ValidationResult {
             if (!has_avix) {
                 const idx_data_size = @min(chunk_size, @as(u32, 64 * 1024)); // Cap at 64KB of index
                 if (idx_data_size >= 16) {
-                    var idx_buf: [65536]u8 = undefined;
+                    const idx_buf = std.heap.page_allocator.alloc(u8, 65536) catch break;
+                    defer std.heap.page_allocator.free(idx_buf);
                     file.seekTo(pos + 8) catch break;
                     const idx_read = file.read(idx_buf[0..idx_data_size]) catch break;
                     const num_entries = idx_read / 16;

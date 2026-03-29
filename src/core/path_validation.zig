@@ -666,7 +666,7 @@ pub fn validatePathParallelEx(
 	defer allocator.free(threads);
 
 	for (threads) |*thread| {
-		thread.* = try std.Thread.spawn(.{}, workerMain, .{&shared});
+		thread.* = try std.Thread.spawn(.{ .stack_size = 4 * 1024 * 1024 }, workerMain, .{&shared});
 	}
 
 	var dir = try openDirForPath(path);

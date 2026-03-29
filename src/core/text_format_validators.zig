@@ -1213,7 +1213,10 @@ pub fn validateMsgpack(file: *FileSource) ValidationResult {
 
     // Read up to 64KB for structural validation
     const read_size: usize = @min(file_size, 65536);
-    var buf: [65536]u8 = undefined;
+    const buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+        return ValidationResult.invalidCode(.msgpack, .out_of_memory, "MessagePack read buffer");
+    };
+    defer std.heap.page_allocator.free(buf);
     const bytes_read = file.readAll(buf[0..read_size]) catch
         return ValidationResult.invalidCode(.msgpack, .failed_to_read, "MessagePack data");
     if (bytes_read == 0) return ValidationResult.invalidCode(.msgpack, .empty, "MessagePack file");

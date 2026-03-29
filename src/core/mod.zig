@@ -96,6 +96,14 @@ pub const pim_validators = @import("pim_validators.zig");
 pub const edi_validators = @import("edi_validators.zig");
 pub const crypto_validators = @import("crypto_validators.zig");
 pub const pdf_validator = @import("pdf_validator.zig");
+pub const cab_validator = @import("cab_validator.zig");
+pub const wim_validator = @import("wim_validator.zig");
+pub const vmdk_validator = @import("vmdk_validator.zig");
+pub const stuffit_validator = @import("stuffit_validator.zig");
+pub const realmedia_validator = @import("realmedia_validator.zig");
+pub const cdg_validator = @import("cdg_validator.zig");
+pub const toast_validator = @import("toast_validator.zig");
+pub const blar_validator = @import("blar_validator.zig");
 pub const gpt_parser = @import("gpt_parser.zig");
 pub const apm_parser = @import("apm_parser.zig");
 pub const hfsplus_parser = @import("hfsplus_parser.zig");
@@ -238,6 +246,8 @@ test {
     _ = @import("filesystem_validators.zig");
     // PE (Portable Executable) validator
     _ = @import("pe_validator.zig");
+    // RealMedia container validator (.rm, .rmvb)
+    _ = @import("realmedia_validator.zig");
     // DAW project validators (FLP, ALS, RPP)
     _ = @import("daw_validators.zig");
     // Scientific format validators (NetCDF, FITS, DICOM, FASTA, FASTQ)
@@ -264,6 +274,20 @@ test {
     _ = @import("crypto_validators.zig");
     // BagIt (RFC 8493) bag validator
     _ = @import("bagit_validator.zig");
+    // StuffIt archive validator (.sit / .sitx)
+    _ = @import("stuffit_validator.zig");
+    // WIM/ESD (Windows Imaging Format) validator
+    _ = @import("wim_validator.zig");
+    // Microsoft Cabinet archive validator
+    _ = @import("cab_validator.zig");
+    // VMware Virtual Disk validator
+    _ = @import("vmdk_validator.zig");
+    // CD+Graphics karaoke validator
+    _ = @import("cdg_validator.zig");
+    // Roxio Toast disc image validator
+    _ = @import("toast_validator.zig");
+    // BLIP archive validator (.blar / .mblar)
+    _ = @import("blar_validator.zig");
     // PDF format validator (structural + deep with embedded image/font/file validation)
     _ = @import("pdf_validator.zig");
     // ProRes decoder

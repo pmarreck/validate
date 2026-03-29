@@ -132,19 +132,22 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .png, .jpeg, .jxl, .gif, .bmp, .webp, .tiff, .heic, .avif, .exr, .svg, .psd, .ai, .eps, .sketch, .aep, .dng, .cr2, .nef, .arw, .jpeg2000, .jbig2, .ico, .icns, .qoi, .pam, .dpx, .tga => "image",
 
         // Video
-        .mp4, .mov, .mkv, .webm, .avi, .swf, .flv, .prores, .av1, .ogv, .mpeg_ps, .mpeg_ts, .mpeg_es, .ivf, .asf, .dv => "video",
+        .mp4, .mov, .mkv, .webm, .avi, .swf, .flv, .prores, .av1, .ogv, .mpeg_ps, .mpeg_ts, .mpeg_es, .ivf, .asf, .dv, .rm => "video",
 
         // Audio
-        .mp3, .flac, .wav, .m4a, .alac, .aiff, .ogg, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .dts, .eac3, .amr, .au, .tta, .caf, .aac_adts, .mod, .xm, .it, .s3m => "audio",
+        .mp3, .flac, .wav, .m4a, .alac, .aiff, .ogg, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .dts, .eac3, .amr, .au, .tta, .caf, .aac_adts, .mod, .xm, .it, .s3m, .mp2 => "audio",
 
         // Documents
         .pdf, .docx, .xlsx, .pptx, .doc, .xls, .ppt, .odt, .ods, .odp, .rtf, .pages, .wpd, .cwk, .mwd => "document",
 
         // Archives
-        .zip, .gzip, .bzip2, .xz, .zstd, .br, .hqx, .rar, .cpt, .sevenz, .tar, .warc, .ar => "archive",
+        .zip, .gzip, .bzip2, .xz, .zstd, .br, .hqx, .rar, .cpt, .sevenz, .tar, .warc, .ar, .cab, .sit, .sitx, .blar, .mblar => "archive",
 
         // Disk images
-        .iso, .dmg => "disk_image",
+        .iso, .dmg, .vmdk, .toast => "disk_image",
+
+        // Windows imaging formats
+        .wim, .esd => "disk_image",
 
         // eBooks
         .epub => "ebook",
@@ -190,6 +193,12 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
 
         // PIM (Personal Information Management)
         .icalendar, .vcard => "pim",
+
+        // Windows Installer
+        .msi => "archive",
+
+        // Karaoke
+        .cdg => "other",
 
         // Other
         .unknown, .par2, .beam, .ds_store, .spotlight, .apple_double => "other",

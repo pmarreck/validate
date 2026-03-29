@@ -383,12 +383,15 @@ pub fn validateZlib(compressed: []const u8) ZlibError!void {
     }
     defer _ = c.inflateEnd(&stream);
 
-    // Use fixed stack buffer - decompress and discard
-    var discard_buf: [65536]u8 = undefined;
+    // Use heap buffer - decompress and discard
+    const discard_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+        return ZlibError.OutOfMemory;
+    };
+    defer std.heap.page_allocator.free(discard_buf);
 
     while (true) {
-        stream.next_out = &discard_buf;
-        stream.avail_out = discard_buf.len;
+        stream.next_out = discard_buf.ptr;
+        stream.avail_out = @intCast(discard_buf.len);
 
         const ret = c.inflate(&stream, c.Z_NO_FLUSH);
 

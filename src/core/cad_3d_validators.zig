@@ -1228,8 +1228,11 @@ pub fn validatePly(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.ply, .failed_to_seek, "to start");
 
     // Read header (up to 64KB - headers can be large with many properties)
-    var header_buf: [65536]u8 = undefined;
-    const header_read = file.read(&header_buf) catch return ValidationResult.invalidCode(.ply, .failed_to_read, "header");
+    const header_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+        return ValidationResult.invalidCode(.ply, .out_of_memory, "header buffer");
+    };
+    defer std.heap.page_allocator.free(header_buf);
+    const header_read = file.read(header_buf) catch return ValidationResult.invalidCode(.ply, .failed_to_read, "header");
     if (header_read < 4) {
         return ValidationResult.invalidCode(.ply, .file_too_small, "PLY");
     }

@@ -84,6 +84,10 @@
             .url = "git+https://github.com/pmarreck/progrez#ab325f195b34b8f2aed095fc62af530a9497e74f",
             .hash = "progrez-0.1.0-0YJXrrECAgDFEpz8h967WNEcUdTIk8Si1UR6Q8IlUm90",
         },
+        .blip = .{
+            .url = "git+https://github.com/pmarreck/BLIP#941d6f592dbcd0c68e532f1e76a0a47264e73bb8",
+            .hash = "blip-0.1.0-rcNuGGuXEgC7EvMYW5yezaPDMJMWCQ3aDm976Jh1pWKw",
+        },
     },
     .paths = .{""},
     .fingerprint = 0x421232542dfe208d,

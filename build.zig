@@ -224,6 +224,15 @@ pub fn build(b: *std.Build) void {
     const libraw_lib = libraw_dep.artifact("libraw_clib");
     const libraw_mod = libraw_dep.module("libraw");
 
+    // BLIP container library for .blar/.mblar archive validation
+    // Only import mini_blar (archive reader/verifier), not blip (which pulls in jxl)
+    const blip_dep = b.dependency("blip", .{
+        .target = target,
+        .optimize = deps_optimize,
+        .enable_compression = false,
+    });
+    const mini_blar_mod = blip_dep.module("mini_blar");
+
     // Core module - validation logic
     const core_mod = b.addModule("validate_core", .{
         .root_source_file = b.path("src/core/mod.zig"),
@@ -237,6 +246,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (LGPL-2.1)
             .{ .name = "rarz", .module = rarz_mod }, // RAR clean-room parser/validator
             .{ .name = "progrez", .module = progrez_module }, // Progress bar rendering (pure-Zig)
+            .{ .name = "mini_blar", .module = mini_blar_mod }, // BLIP archive reader/verifier
         },
     });
 

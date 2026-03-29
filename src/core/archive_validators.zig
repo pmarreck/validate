@@ -72,7 +72,10 @@ pub fn validateZipWithOptions(file: *FileSource, format: FileFormat, skip_magic:
         return ValidationResult.invalidCode(format, .failed_to_seek, "for EOCD");
     };
 
-    var buffer: [65557]u8 = undefined;
+    const buffer = std.heap.page_allocator.alloc(u8, 65557) catch {
+        return ValidationResult.invalidCode(format, .failed_to_read, "EOCD area");
+    };
+    defer std.heap.page_allocator.free(buffer);
     const to_read = file_size - search_start;
     // Use readAll to handle potential short reads under concurrent I/O
     const bytes_read = file.readAll(buffer[0..to_read]) catch {
@@ -435,7 +438,8 @@ pub fn validateRar4Headers(file: *FileSource) ValidationResult {
         // Calculate CRC16 of header (excluding the CRC field itself)
         const computed_crc = rarCrc16(header_buf[0..to_read]);
         if (computed_crc != stored_crc) {
-            return ValidationResult.okWithDepthAndMalformation(.rar, .full, .rar_header_crc_mismatch);
+            // unrar itself reports "Corrupt header is found" and exits with error code 3
+            return ValidationResult.invalidCodeWithDepth(.rar, .checksum_mismatch, "RAR4 header CRC mismatch", .full);
         }
 
         headers_validated += 1;
@@ -535,7 +539,10 @@ pub fn validateRar5Headers(file: *FileSource) ValidationResult {
 
         file.seekTo(pos + 4) catch return ValidationResult.invalidCode(.rar, .failed_to_seek, "for CRC calc");
 
-        var header_buf: [65536]u8 = undefined;
+        const header_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+            return ValidationResult.invalidCode(.rar, .failed_to_read, "header");
+        };
+        defer std.heap.page_allocator.free(header_buf);
         const to_read: usize = @intCast(total_header_data);
         const header_read = file.read(header_buf[0..to_read]) catch return ValidationResult.invalidCode(.rar, .failed_to_read, "header");
 
@@ -546,7 +553,7 @@ pub fn validateRar5Headers(file: *FileSource) ValidationResult {
         // Calculate CRC32
         const computed_crc = std.hash.Crc32.hash(header_buf[0..to_read]);
         if (computed_crc != stored_crc) {
-            return ValidationResult.okWithDepthAndMalformation(.rar, .full, .rar_header_crc_mismatch);
+            return ValidationResult.invalidCodeWithDepth(.rar, .checksum_mismatch, "RAR5 header CRC mismatch", .full);
         }
 
         headers_validated += 1;
@@ -2154,7 +2161,10 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
 pub fn validateZipStoredEntry(file: *FileSource, stored_crc: u32, size: u32) ValidationResult {
     var crc = std.hash.Crc32.init();
     var remaining: u32 = size;
-    var read_buffer: [65536]u8 = undefined;
+    const read_buffer = std.heap.page_allocator.alloc(u8, 65536) catch {
+        return ValidationResult.invalidCode(.zip, .failed_to_read, "entry data");
+    };
+    defer std.heap.page_allocator.free(read_buffer);
 
     while (remaining > 0) {
         const to_read = @min(remaining, read_buffer.len);
@@ -2575,11 +2585,14 @@ pub fn validateXzDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // Stream decompression, discarding output but verifying integrity
     // XZ decoder verifies CRC checksums internally
-    var discard_buf: [65536]u8 = undefined;
+    const discard_buf = allocator.alloc(u8, 65536) catch {
+        return ValidationResult.invalidWithDepth(.xz, "Decompression error", .full);
+    };
+    defer allocator.free(discard_buf);
     var total_decompressed: u64 = 0;
 
     while (true) {
-        const bytes_read = decompressor.read(&discard_buf) catch |err| {
+        const bytes_read = decompressor.read(discard_buf) catch |err| {
             // Check for specific error types
             return switch (err) {
                 error.CorruptInput => ValidationResult.invalidWithDepth(.xz, "Corrupt compressed data", .full),
@@ -2830,13 +2843,6 @@ fn validateRarWithRarz(data: []const u8) ValidationResult {
 
     if (!result.is_valid) {
         const message = result.error_message orelse "RAR validation failed";
-        // Header CRC mismatches are tolerated by WinRAR/7z — treat as WARN, not FAIL.
-        // rarz reports these as errors, but the archive is still extractable.
-        if (std.mem.indexOf(u8, message, "header CRC") != null or
-            std.mem.indexOf(u8, message, "Header CRC") != null)
-        {
-            return ValidationResult.okWithDepthAndMalformation(.rar, .full, .rar_header_crc_mismatch);
-        }
         // rarz verified CRC/BLAKE2sp to detect the mismatch → .full depth on failure too
         const depth: ValidationDepth = if (result.file_count > 0) .full else .structural;
         return ValidationResult.invalidWithDepth(.rar, message, depth);
@@ -3607,13 +3613,11 @@ test "validateZstdDeep: too-small file detected" {
     try testing.expectEqual(FileFormat.zstd, result.format);
 }
 
-test "validateRarDeep: header CRC mismatch is WARN not FAIL" {
+test "validateRarDeep: header CRC mismatch is INVALID" {
     const result = validateRarDeep(testing.allocator, "ground_truth_examples/corrupted/rar/sample_corrupt_1.rar");
-    // Header CRC mismatches are tolerated by WinRAR/7z — should be WARN (valid with malformation)
-    try testing.expect(result.is_valid);
+    // unrar reports "Corrupt header is found" and exits with error code 3 — this IS corruption
+    try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.rar, result.format);
-    try testing.expect(result.hasMalformations());
-    try testing.expect(result.malformations.contains(.rar_header_crc_mismatch));
 }
 
 // ---------- Buffer validators on invalid / truncated data ----------

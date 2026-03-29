@@ -187,7 +187,10 @@ pub fn validateJpegWithOptions(file: *FileSource, skip_magic: bool) ValidationRe
             file.seekTo(search_start) catch {
                 return ValidationResult.invalidCode(.jpeg, .failed_to_seek, "for EOI search");
             };
-            var search_buf: [65536]u8 = undefined;
+            const search_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+                return ValidationResult.invalidCode(.jpeg, .out_of_memory, "EOI search buffer");
+            };
+            defer std.heap.page_allocator.free(search_buf);
             const bytes_to_read = @min(file_size - search_start, 65536);
             // Use readAll to ensure we get all requested bytes (handles short reads)
             const bytes_read = file.readAll(search_buf[0..bytes_to_read]) catch {
@@ -1835,8 +1838,11 @@ pub fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Phase 2: Full pixel decode via zigimg (catches LZW decompression errors)
-    var read_buffer: [262144]u8 = undefined;
-    var image = zigimg.Image.fromFilePath(allocator, path, &read_buffer) catch |err| {
+    const read_buffer = allocator.alloc(u8, 262144) catch {
+        return ValidationResult.okWithDepth(.gif, .structural);
+    };
+    defer allocator.free(read_buffer);
+    var image = zigimg.Image.fromFilePath(allocator, path, read_buffer) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.gif, "File not found", .full),
             error.AccessDenied => ValidationResult.invalidWithDepth(.gif, "Access denied", .full),
@@ -2026,10 +2032,13 @@ pub fn validateTiffDeep(allocator: Allocator, path: []const u8, format: FileForm
     }
 
     // Allocate read buffer for zigimg (64K is reasonable for most images)
-    var read_buffer: [65536]u8 = undefined;
+    const read_buffer = allocator.alloc(u8, 65536) catch {
+        return ValidationResult.okWithDepthAndWarning(format, .structural, "out of memory for read buffer");
+    };
+    defer allocator.free(read_buffer);
 
     // Try to load the image - this performs full decompression and validates the data
-    var image = zigimg.Image.fromFilePath(allocator, path, &read_buffer) catch |err| {
+    var image = zigimg.Image.fromFilePath(allocator, path, read_buffer) catch |err| {
         // Debug output for error diagnosis
         if (format_validation.getenvCrossPlatform("TIFF_DEBUG")) |_| {
             std.debug.print("TIFF decode error: {s}\n", .{@errorName(err)});
@@ -2753,7 +2762,6 @@ pub fn validateAvifDeep(allocator: Allocator, path: []const u8) ValidationResult
 /// Note: CRC errors in ancillary (non-critical) chunks are tolerated with a warning.
 /// Per PNG spec, a chunk is ancillary if the first byte has bit 5 set (lowercase letter).
 pub fn validatePngDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    _ = allocator; // May use allocator for detailed error message in future
     var source = FileSource.open(path) catch |err| {
         return switch (err) {
             error.FileNotFound => ValidationResult.invalidWithDepth(.png, "File not found", .full),
@@ -2774,6 +2782,12 @@ pub fn validatePngDeep(allocator: Allocator, path: []const u8) ValidationResult 
     // Track ancillary CRC errors - tolerable but we warn about them
     // REPAIRABLE: png_ancillary_crc_error - can be fixed by recalculating CRCs
     var has_ancillary_crc_error = false;
+
+    // Allocate read buffer once, reused across all chunks
+    const read_buffer = allocator.alloc(u8, 65536) catch {
+        return ValidationResult.invalidCodeWithDepth(.png, .out_of_memory, "chunk read buffer", .full);
+    };
+    defer allocator.free(read_buffer);
 
     while (true) {
         // Read chunk header (4 bytes length + 4 bytes type)
@@ -2803,7 +2817,6 @@ pub fn validatePngDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         // Read and hash chunk data in chunks to avoid huge allocations
         var data_remaining = chunk_length;
-        var read_buffer: [65536]u8 = undefined; // 64K read buffer
 
         while (data_remaining > 0) {
             const to_read = @min(data_remaining, read_buffer.len);

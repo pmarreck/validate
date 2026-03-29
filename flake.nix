@@ -28,7 +28,7 @@
 
 			# Pre-fetched Zig dependencies (fixed-output derivation)
 			# This hash must be updated when build.zig.zon changes
-			zigDepsHash = "sha256-EzaT/Q7Ik+dA3i8R3arY5mc08OSq7eHuFO9pS/fILfs=";
+			zigDepsHash = "sha256-ru39NpTt3JI35oiQNeI5sR8T63Ly2D719mvvxBFVJs4=";
 		in {
 			# Packages for Garnix/Nix builds
 			packages = forBuildSystems (buildSystem:
@@ -93,6 +93,18 @@
 							installPhase = ''
 								mkdir -p $out/bin
 								cp zig-out/bin/${binaryName} $out/bin/
+
+								# Append integrity trailer: "VALIDATE_INTEGRITY" (18 bytes) + SHA-256 (32 bytes raw)
+								# The binary verifies this at startup to detect corruption/tampering.
+								binary="$out/bin/${binaryName}"
+								hash_hex=$(sha256sum "$binary" | cut -d' ' -f1)
+								printf 'VALIDATE_INTEGRITY' >> "$binary"
+								i=0
+								while [ $i -lt 64 ]; do
+									byte=$(echo "$hash_hex" | cut -c$((i+1))-$((i+2)))
+									printf "\\x$byte" >> "$binary"
+									i=$((i+2))
+								done
 							'';
 
 							dontFixup = true;

@@ -2263,7 +2263,8 @@ fn validateHdf5Fletcher32Chunks(file: *FileSource, file_size: u64) OhdrCheckResu
     var scan_offset: u64 = 0;
     var chunks_verified: u32 = 0;
     var fadb_buf: [16384]u8 = undefined; // FADB index entries
-    var chunk_buf: [65536]u8 = undefined; // chunk data for Fletcher-32 verification
+    const chunk_buf = std.heap.page_allocator.alloc(u8, 65536) catch return if (chunks_verified > 0) OhdrCheckResult.verified else OhdrCheckResult.unverifiable; // chunk data for Fletcher-32 verification
+    defer std.heap.page_allocator.free(chunk_buf);
 
     while (scan_offset < file_size) {
         file.seekTo(scan_offset) catch return if (chunks_verified > 0) OhdrCheckResult.verified else OhdrCheckResult.unverifiable;
@@ -2459,7 +2460,8 @@ fn validateHdf5OhdrBlock(
 
     // Read the entire OHDR
     const total_usize: usize = @intCast(total_size);
-    var ohdr_buf: [65536]u8 = undefined;
+    const ohdr_buf = std.heap.page_allocator.alloc(u8, 65536) catch return .unverifiable;
+    defer std.heap.page_allocator.free(ohdr_buf);
     file.seekTo(oh_addr) catch return .unverifiable;
     const ohdr_read = file.read(ohdr_buf[0..total_usize]) catch return .unverifiable;
     if (ohdr_read < total_usize) return .unverifiable;
@@ -2496,7 +2498,8 @@ fn validateHdf5OchkBlockWithLength(
     if (ochk_length > 65536) return; // sanity limit
 
     const len: usize = @intCast(ochk_length);
-    var buf: [65536]u8 = undefined;
+    const buf = std.heap.page_allocator.alloc(u8, 65536) catch return;
+    defer std.heap.page_allocator.free(buf);
     file.seekTo(ochk_addr) catch return;
     const bytes_read = file.read(buf[0..len]) catch return;
     if (bytes_read < len) return;
@@ -2700,7 +2703,8 @@ pub fn validateParquet(file: *FileSource) ValidationResult {
 
     // Read up to 64KB of footer metadata for validation
     const max_footer_read: usize = @min(footer_length, 65536);
-    var footer_meta: [65536]u8 = undefined;
+    const footer_meta = std.heap.page_allocator.alloc(u8, 65536) catch return ValidationResult.invalidCode(.parquet, .failed_to_read, "footer metadata");
+    defer std.heap.page_allocator.free(footer_meta);
     const meta_read = file.read(footer_meta[0..max_footer_read]) catch return ValidationResult.invalidCode(.parquet, .failed_to_read, "footer metadata");
 
     if (meta_read < 8) {
@@ -2868,7 +2872,8 @@ pub fn validateParquetDeep(allocator: Allocator, path: []const u8) ValidationRes
     var pages_with_crc: u32 = 0;
     var crcs_verified: u32 = 0;
     var page_header_buf: [256]u8 = undefined;
-    var read_buf: [65536]u8 = undefined;
+    const read_buf = allocator.alloc(u8, 65536) catch return ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_read, "page buffer", .full);
+    defer allocator.free(read_buf);
 
     while (pages_checked < 10000) {
         const page_start = file.getPos() catch break;
@@ -2983,8 +2988,6 @@ pub fn validateParquetDeep(allocator: Allocator, path: []const u8) ValidationRes
 
         pages_checked += 1;
     }
-
-    _ = allocator;
 
     if (crcs_verified > 0) {
         return ValidationResult.okWithDepth(.parquet, .full);

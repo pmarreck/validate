@@ -257,13 +257,19 @@ pub fn validateOle2(file: *FileSource, format: FileFormat) ValidationResult {
     return ValidationResult.ok(format);
 }
 
-/// Detect specific OLE2 subformat (DOC, XLS, PPT) by examining directory entries.
+/// Validate MSI (Microsoft Installer) as an OLE2/CFBF container.
+pub fn validateMsi(file: *FileSource) ValidationResult {
+    return validateOle2(file, .msi);
+}
+
+/// Detect specific OLE2 subformat (DOC, XLS, PPT, MSI) by examining directory entries.
 /// OLE2 stores stream names as UTF-16LE in directory entry structures.
 pub fn detectOle2Subformat(file: *FileSource) FileFormat {
     // First try reading from the start (works for small files)
-    var buffer: [65536]u8 = undefined;
+    const buffer = std.heap.page_allocator.alloc(u8, 65536) catch return .doc;
+    defer std.heap.page_allocator.free(buffer);
     file.seekTo(0) catch return .doc;
-    const bytes_read = file.read(&buffer) catch return .doc;
+    const bytes_read = file.read(buffer) catch return .doc;
 
     // Stream names in OLE2 are stored as UTF-16LE in 64-byte directory entries
     // Known stream names for each format
@@ -271,47 +277,57 @@ pub fn detectOle2Subformat(file: *FileSource) FileFormat {
     const book_utf16 = [_]u8{ 'B', 0, 'o', 0, 'o', 0, 'k', 0 };
     const ppt_utf16 = [_]u8{ 'P', 0, 'o', 0, 'w', 0, 'e', 0, 'r', 0, 'P', 0, 'o', 0, 'i', 0, 'n', 0, 't', 0 };
     const word_utf16 = [_]u8{ 'W', 0, 'o', 0, 'r', 0, 'd', 0, 'D', 0, 'o', 0, 'c', 0, 'u', 0, 'm', 0, 'e', 0, 'n', 0, 't', 0 };
+    // MSI has characteristic internal streams: _Tables, _StringData, _StringPool
+    // We check for _Tables as it's the most distinctive MSI marker
+    const msi_tables_utf16 = [_]u8{ 0x05, 0, 'T', 0, 'a', 0, 'b', 0, 'l', 0, 'e', 0, 's', 0 };
+    const msi_string_pool_utf16 = [_]u8{ 0x05, 0, 'S', 0, 'u', 0, 'm', 0, 'm', 0, 'a', 0, 'r', 0, 'y', 0 };
+    // Alternative: MSI root CLSID {000C1084-0000-0000-C000-000000000046}
+    const msi_clsid = [_]u8{ 0x84, 0x10, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 };
 
-    // Check initial buffer
-    if (findInBuffer(&buffer, bytes_read, &workbook_utf16) or findInBuffer(&buffer, bytes_read, &book_utf16)) {
-        return .xls;
-    }
-    if (findInBuffer(&buffer, bytes_read, &ppt_utf16)) {
-        return .ppt;
-    }
-    if (findInBuffer(&buffer, bytes_read, &word_utf16)) {
-        return .doc;
-    }
+    const result = detectOle2InBuffer(buffer, bytes_read, &workbook_utf16, &book_utf16, &ppt_utf16, &word_utf16, &msi_tables_utf16, &msi_string_pool_utf16, &msi_clsid);
+    if (result != .unknown) return result;
 
     // For larger files, read the directory sector from the OLE2 header
-    // Header at offset 0x30 contains the first directory sector ID (little-endian u32)
     if (bytes_read >= 0x34) {
         const sector_size: u64 = blk: {
-            // Sector size shift is at offset 0x1E (typically 9 for 512 bytes)
             const shift = @as(u6, @intCast(buffer[0x1E]));
             break :blk @as(u64, 1) << shift;
         };
         const dir_sector_id = std.mem.readInt(u32, buffer[0x30..0x34], .little);
         if (dir_sector_id != 0xFFFFFFFE and dir_sector_id != 0xFFFFFFFF) {
-            // Calculate directory offset: header (512) + sector_id * sector_size
             const dir_offset = 512 + @as(u64, dir_sector_id) * sector_size;
             file.seekTo(dir_offset) catch return .doc;
-            var dir_buffer: [65536]u8 = undefined;
-            const dir_read = file.read(&dir_buffer) catch return .doc;
+            const dir_buffer = std.heap.page_allocator.alloc(u8, 65536) catch return .doc;
+            defer std.heap.page_allocator.free(dir_buffer);
+            const dir_read = file.read(dir_buffer) catch return .doc;
 
-            if (findInBuffer(&dir_buffer, dir_read, &workbook_utf16) or findInBuffer(&dir_buffer, dir_read, &book_utf16)) {
-                return .xls;
-            }
-            if (findInBuffer(&dir_buffer, dir_read, &ppt_utf16)) {
-                return .ppt;
-            }
-            if (findInBuffer(&dir_buffer, dir_read, &word_utf16)) {
-                return .doc;
-            }
+            const dir_result = detectOle2InBuffer(dir_buffer, dir_read, &workbook_utf16, &book_utf16, &ppt_utf16, &word_utf16, &msi_tables_utf16, &msi_string_pool_utf16, &msi_clsid);
+            if (dir_result != .unknown) return dir_result;
         }
     }
 
     return .doc; // Default fallback
+}
+
+/// Helper: search a buffer for known OLE2 subformat stream names.
+fn detectOle2InBuffer(
+    buf: []const u8,
+    len: usize,
+    workbook_utf16: []const u8,
+    book_utf16: []const u8,
+    ppt_utf16: []const u8,
+    word_utf16: []const u8,
+    msi_tables_utf16: []const u8,
+    msi_string_pool_utf16: []const u8,
+    msi_clsid: []const u8,
+) FileFormat {
+    if (findInBuffer(buf, len, workbook_utf16) or findInBuffer(buf, len, book_utf16)) return .xls;
+    if (findInBuffer(buf, len, ppt_utf16)) return .ppt;
+    if (findInBuffer(buf, len, word_utf16)) return .doc;
+    // MSI detection: check for characteristic stream names or CLSID
+    if (findInBuffer(buf, len, msi_tables_utf16) or findInBuffer(buf, len, msi_string_pool_utf16)) return .msi;
+    if (findInBuffer(buf, len, msi_clsid)) return .msi;
+    return .unknown;
 }
 
 // ============ WordPerfect Validator ============
@@ -582,7 +598,10 @@ pub fn validateSqliteWithOptions(file: *FileSource, skip_magic: bool) Validation
 
     // Validate all pages (capped at a reasonable limit for performance)
     const max_pages_to_check: u32 = @min(total_pages, 256);
-    var page_buf: [65536]u8 = undefined;
+    const page_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+        return ValidationResult.invalidCode(.sqlite, .out_of_memory, "SQLite page buffer");
+    };
+    defer std.heap.page_allocator.free(page_buf);
     const page_slice = page_buf[0..@intCast(actual_page_size)];
 
     var page_num: u32 = 1;

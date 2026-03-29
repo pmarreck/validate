@@ -60,33 +60,45 @@ mkdir -p zig-out/bin
 cp -f result/bin/$EXEC_NAME zig-out/bin/$EXEC_NAME
 echo "  -> zig-out/bin/$EXEC_NAME"
 
-# Cross-compile targets via nix build
-# These require x86_64-linux builders (Garnix CI handles this; local cross-compile
-# uses zig directly for targets that don't need Nix sandbox)
+# Cross-compile targets via nix build flake outputs.
+# The flake defines cross-compile packages built from x86_64-linux.
+# Locally on macOS we can only build these if we have a Linux builder
+# (e.g., via remote Nix builder or Docker). Otherwise, CI handles them.
 failed=0
 echo
-echo "=== Cross-compiling via zig (musl targets) ==="
-for target_pair in "x86_64-linux:x86_64-linux-musl" "aarch64-linux:aarch64-linux-musl" "x86_64-windows:x86_64-windows-gnu" "x86_64-macos:x86_64-macos" "aarch64-macos:aarch64-macos"; do
-	dir_name="${target_pair%%:*}"
-	zig_target="${target_pair##*:}"
+
+# Map of dir-name -> flake attribute (packages that exist in flake.nix)
+declare -A CROSS_ATTRS=(
+	["x86_64-windows"]="packages.x86_64-linux.windows-x86_64"
+	["aarch64-macos"]="packages.x86_64-linux.macos-aarch64"
+)
+
+# Also try native builds for other platforms if builders are available
+declare -A NATIVE_ATTRS=(
+	["x86_64-linux"]="packages.x86_64-linux.default"
+	["aarch64-linux"]="packages.aarch64-linux.default"
+)
+
+echo "=== Cross-compiling via nix build ==="
+for dir_name in $(echo "${!CROSS_ATTRS[@]} ${!NATIVE_ATTRS[@]}" | tr ' ' '\n' | sort -u); do
+	attr="${CROSS_ATTRS[$dir_name]:-${NATIVE_ATTRS[$dir_name]:-}}"
+	if [[ -z "$attr" ]]; then continue; fi
+
 	out_dir="zig-out/$dir_name/bin"
 	exec_name="$EXEC_NAME"
 	[[ "$dir_name" == *windows* ]] && exec_name="${EXEC_NAME}.exe"
 
-	echo "=== Cross-compiling: $dir_name ($zig_target) ==="
+	echo "=== Building: $dir_name (nix build .#$attr) ==="
 	mkdir -p "$out_dir"
-	# Use nix develop for cross-compilation (zig handles its own sysroot for non-native targets)
-	if nix develop -c zig build -Doptimize=ReleaseFast -Dtarget="$zig_target" 2>&1; then
-		cp "zig-out/bin/$exec_name" "$out_dir/$exec_name"
+	if nix build ".#$attr" -o "result-$dir_name" 2>&1; then
+		cp "result-$dir_name/bin/$exec_name" "$out_dir/$exec_name"
+		rm -f "result-$dir_name"
 		echo "  -> $out_dir/$exec_name"
 	else
-		echo "  FAILED: $dir_name"
-		((failed++)) || true
+		rm -f "result-$dir_name"
+		echo "  SKIPPED: $dir_name (no builder available — CI will handle this)"
 	fi
 done
-
-# Restore native binary (cross-compiles overwrite zig-out/bin/)
-cp -f result/bin/$EXEC_NAME zig-out/bin/$EXEC_NAME
 
 # Step C: Sign all binaries with integrity trailer
 echo

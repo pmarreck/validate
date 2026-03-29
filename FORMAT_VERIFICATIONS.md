@@ -43,6 +43,53 @@ For clarity, the tables below use more specific labels:
 
 ---
 
+## Why Some Formats Cannot Achieve Full Validation
+
+Every format that caps at **Structure** rather than **Checksum** or **Full Decode** has a specific technical reason. This table documents those reasons so that structural-only depth is never treated as "we just haven't gotten to it yet" — these are fundamental limitations of the formats themselves.
+
+| Format | Max Depth | Why Full Validation Is Impossible |
+|--------|-----------|----------------------------------|
+| **VMDK** | Structure | VMware's format contains **zero checksums or hashes** anywhere in the spec. Integrity relies entirely on structural consistency (magic, version, flag sanity, grain-size power-of-2, overhead bounds). The only corruption sentinel is a 4-byte newline-detection field (bytes 73–76) that catches FTP text-mode transfers — but a random bit flip in grain data is invisible. VMware's own consistency tools work the same way: they verify structural invariants, not data integrity. The optional Redundant Grain Directory (RGD) provides a second copy of the grain directory for crash recovery, but even that is a structural redundancy, not a checksum. |
+| **WIM/ESD** | Structure | WIM has an **optional** integrity table (SHA-1 over ~10MB chunks), but it is absent in the vast majority of WIM files in the wild. When present, verifying it requires reading the entire multi-gigabyte file and computing SHA-1 over each chunk — prohibitively expensive for a file validator that processes hundreds of thousands of files. Our structural validation covers the 208-byte header (magic, version, flags, part numbers, reserved-zero fields, resource header offset bounds), which catches truncation, header corruption, and interrupted writes (`WRITE_IN_PROGRESS` flag). Future: if we add streaming hash verification for large-file mode, WIM could reach Checksum when the integrity table is present. |
+| **Toast** | Structure | Roxio Toast disc images are essentially renamed ISO 9660 images, sometimes with an Apple Partition Map (APM) prefix. **ISO 9660 has no internal checksums.** The only cross-validation possible is comparing the PVD's declared volume space size against the actual file size (catches truncation). The Application Identifier field can confirm Toast provenance but doesn't verify data. Some Toast files are hybrid APM+ISO, but APM partition entries also lack checksums. This is a fundamental limitation inherited from the ISO 9660 and APM specs. |
+| **CDG** | Structure | CD+Graphics is a raw dump of subchannel data from audio CDs — a flat stream of 24-byte packets with **no file header, no magic bytes, no checksums, and no framing**. The parity fields (bytes 2–3 and 20–23 of each packet) are physical CD EDC/ECC from the disc drive hardware; no known software validates them in ripped `.cdg` files, and software-generated CDG files leave them zeroed. Identification relies entirely on extension + size divisibility by 24. Validation checks CDG command presence and tile coordinate bounds, but a bit flip in pixel data or color table entries is undetectable. |
+| **RealMedia** | Structure | RealNetworks' container format uses a simple chunk-based structure with **no CRC, hash, or checksum fields** anywhere in the spec. Not in the file header, not in chunk headers, not in media packets. The only integrity verification possible is structural: chunk sizes must not exceed file bounds, `num_streams` must match MDPR chunk count, `data_offset`/`index_offset` must point to correct chunk types. A corrupted media packet would parse structurally but produce garbage audio/video. Even the embedded RealAudio sub-headers (`.ra\xFD`) contain no checksums. |
+| **MSI** | Structure | MSI files are OLE2/CFBF containers. While OLE2 has internal FAT/DIFAT structure that can be validated, the MSI-specific data inside (installer tables, CAB streams, etc.) uses no additional checksums beyond what the OLE2 container provides. MSI detection itself is the challenge — we identify it by characteristic stream names (`_Tables`, `_SummaryInformation`) or the MSI CLSID, rather than a unique magic byte sequence. The OLE2 FAT structure validation catches sector-level corruption but not payload bit flips. |
+| **QOI** | Structure | Quite OK Image format has a 14-byte header with no checksum. The image data uses a simple streaming codec with no per-row or per-frame checksums. A corrupted byte would cause visual artifacts but not a decoding failure. |
+| **DPX** | Structure | SMPTE 268M defines a header with file size and image dimensions but **no checksum field**. DPX was designed for post-production pipelines where data integrity was assured by the storage/transport layer. |
+| **TGA** | Structure | Truevision TGA has an 18-byte header with no checksum. The optional v2 footer provides a signature but no data integrity verification. |
+
+### Video/Media Containers Without Checksums
+
+| Format | Max Depth | Why Full Validation Is Impossible |
+|--------|-----------|----------------------------------|
+| **FLV** | Structure | Adobe's Flash Video container has a simple tag-based structure with **no checksums**. Tags contain type, size, timestamp, and stream ID — all structural. Payload integrity depends entirely on the codec stream inside. |
+| **ASF/WMV/WMA** | Structure | Microsoft's Advanced Systems Format uses 128-bit GUIDs for object identification and has object size fields, but **no CRC or hash anywhere in the spec**. ASF was designed for streaming where transport-layer integrity (TCP) was assumed. |
+| **DV** | Structure | DV is a fixed-structure format (DIF blocks of 80 bytes in defined sections) with **no checksums**. It relies on physical tape error correction. A corrupted byte in video data is invisible at the container level. |
+| **IVF** | Structure | IVF is a minimal testing container (from the WebM project) with a 32-byte file header and 12-byte frame headers. **No checksums by design** — it's a thin wrapper around raw VP8/VP9/AV1 frames for codec testing. |
+| **MPEG-TS** | Structure | Transport Stream has 188-byte packet sync bytes and 4-bit continuity counters but **no payload checksums**. MPEG-TS was designed for broadcast where FEC (forward error correction) at the physical layer handles corruption. The sync byte (0x47) and continuity counter catch packet-level loss but not bit-level payload corruption. |
+| **MPEG-PS** | Structure | Program Stream has pack headers with SCR timestamps and system headers, but **no CRC or hash** over PES packet payloads. Like TS, it relies on the transport/storage layer for data integrity. |
+
+### Other Structural-Only Formats
+
+| Format | Max Depth | Why Full Validation Is Impossible |
+|--------|-----------|----------------------------------|
+| **PBM/PGM/PPM/PAM** | Structure | Netpbm formats are intentionally minimal ASCII/binary image formats with **no metadata, no checksums, no compression**. The entire spec is a magic number + dimensions + raw pixel data. A corrupted pixel byte is indistinguishable from a legitimate pixel value. |
+| **Adobe InDesign** | Structure | INDD uses a proprietary binary format with a unique magic sequence but **no publicly documented checksums**. The internal page/object structure is documented only in Adobe's SDK, and even that doesn't expose integrity verification primitives. |
+| **Adobe After Effects** | Structure | AEP files use RIFX (big-endian RIFF) containers. RIFF has chunk IDs and sizes but **no per-chunk checksums**. |
+| **Adobe Illustrator** | Structure | Modern AI files are PDF-based (validated as PDF when possible) or PostScript-based. Legacy PS-based AI files have no checksum mechanism. |
+| **RTF** | Structure | RTF is a plain-text markup format. Validation is limited to brace matching (`{`/`}`) and control word syntax. **No checksums exist** — RTF is just tagged text. |
+| **WordPerfect** | Structure | WPD has a header signature and document area offset but **no checksums** in the publicly known spec. The format is proprietary and largely undocumented beyond the header. |
+| **Reaper** | Structure | RPP files are UTF-8 text with bracket-delimited sections. **No checksums** — it's a human-readable text format, like a structured config file. |
+| **Access MDB/ACCDB** | Structure | Jet/ACE database format has page structures but page-level checksums are **not present in MDB** (Jet 3.x/4.0) and only optionally present in ACCDB. Unlike SQLite (which has per-page checksums), Access relied on the filesystem for data integrity. |
+| **STL/DXF/STEP** | Structure | CAD interchange formats (STL, DXF, STEP) are often plain-text or minimal-binary formats designed for cross-tool portability. **None include checksums** — they rely on the file system. STL's binary variant has a triangle count but no data integrity verification. |
+| **MBOX** | Structure | MBOX is a plain-text concatenation of email messages delimited by "From " lines. **No checksums** — it predates modern integrity mechanisms, designed when filesystem reliability was assumed. |
+| **YAML** | Structure | YAML is a text serialization format. We currently only detect structure (not full parse) because the Zig ecosystem lacks a mature YAML parser. This is a **tooling limitation, not a format limitation** — full parse would achieve Integrity. |
+
+**Formats with partial integrity coverage (not listed above):** Some formats like MPEG-TS have sync bytes and continuity counters but no payload checksums — these provide structural validation that catches gross corruption (packet loss, desync) but not bit-level payload corruption. These are documented inline in their respective table rows.
+
+---
+
 ## Images
 
 | Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
@@ -105,6 +152,7 @@ For clarity, the tables below use more specific labels:
 |--------|------------|---------|---------|------------|-------|-----|
 | **FLAC** | .flac | Pure Zig | — | ✅ Full Decode | MD5 audio hash | — |
 | **MP3** | .mp3 | minimp3 | Public Domain | ✅ Full Decode | CRC + decode | — |
+| **MPEG Audio Layer II** | .mp2, .mpa | minimp3 | Public Domain | ✅ Full Decode | Same MPEG audio frame structure as MP3; reuses MP3 validator | — |
 | **AAC** | .m4a, .aac, .mka | Pure Zig | — | ✅ Syntax Validated | AAC-LC bitstream syntax + spectral Huffman validation | — |
 | **Opus** | .opus, .ogg | libopus | BSD-3 | ✅ Full Decode | Full libopus decode + OGG page CRC32 | — |
 | **Vorbis** | .ogg | libvorbis | BSD-3 | ✅ Full Decode | Full libvorbis decode + OGG page CRC32 | — |
@@ -153,6 +201,7 @@ For clarity, the tables below use more specific labels:
 | **ASF/WMV/WMA** | .asf, .wmv, .wma | 16-byte ASF GUID, object size, sub-object count | Header object structure validation | Structure | — |
 | **DV** | .dv, .dif | DIF block structure, section type validation | Block number/sequence validation | Structure | — |
 | **IVF** | .ivf | DKIF signature, version, codec fourcc | Frame count, dimensions validation | Structure | — |
+| **RealMedia** | .rm, .rmvb, .ra | ".RMF" magic (big-endian), file_version, num_headers | Chunk walk (PROP/MDPR/CONT/DATA/INDX), num_streams == MDPR count cross-check, data_offset/index_offset bounds verification | Structure | 1 |
 
 *Video containers reach Integrity level when video frames can be decoded (supported codecs: H.264, H.265, AV1, VP9, ProRes, MPEG-1/2, MJPEG). Falls back to Structure for unsupported codecs or files >100MB.
 
@@ -242,6 +291,10 @@ For clarity, the tables below use more specific labels:
 | **WARC** | .warc | WARC/ version header, record structure | SHA-1 block digest verification | Checksum | — |
 | **BinHex** | .hqx | BinHex 4.0 header, 6-bit encoding | Header/data/resource CRC16 | Checksum | — |
 | **BagIt** | directory | bagit.txt version/encoding, bag-info.txt | SHA-256/SHA-512/MD5 manifest verification (streaming 64KB hash) | Checksum | 1 |
+| **Microsoft Cabinet** | .cab | Magic (MSCF), reserved fields zero, version 1.3, cbCabinet vs file size | CFDATA XOR-fold checksum verification on every data block | Checksum | 1 |
+| **StuffIt** | .sit | SIT!/rLau magic (classic), "StuffIt (c)" text header (v5), installer variants (ST46/50/60/65/in/i2/i3/i4), optional MacBinary prefix | CRC-16/IBM (poly 0xA001) per entry header (classic); CRC-16/CCITT (poly 0x1021) per entry (v5) | Checksum | 1 |
+| **StuffIt X** | .sitx | "StuffIt!" magic (8 bytes) | Element stream walk to type-0 terminator; per-element CRC-32 where present | Checksum | 1 |
+| **Compact Pro** | .cpt | Header magic, archive structure | — | Structure | — |
 
 ## DAW Project Formats
 
@@ -390,6 +443,18 @@ For clarity, the tables below use more specific labels:
 
 *CP437 detection looks for the characteristic box-drawing characters used in demoscene NFO files.*
 
+## Karaoke Formats
+
+| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
+|--------|------------|------------------|-----------------|-----------|-----|
+| **CD+Graphics** | .cdg | File size must be exact multiple of 24 bytes (packet size), CDG command packet presence check | Tile coordinate bounds validation (row ≤ 17, col ≤ 49), CDG-to-null packet ratio analysis | Structure | 1 |
+
+## Windows Installer Formats
+
+| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
+|--------|------------|------------------|-----------------|-----------|-----|
+| **Microsoft Installer** | .msi, .msp, .mst | OLE2/CFBF magic, MSI-specific stream detection (_Tables, _SummaryInformation, CLSID {000C1084-...}) | OLE2 FAT/DIFAT/directory validation | Structure | — |
+
 ## VM/Bytecode Formats
 
 | Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |
@@ -411,6 +476,10 @@ For clarity, the tables below use more specific labels:
 | **DVD ISO** | .iso | VIDEO_TS directory detection | VOB validation via MPEG-PS parser, MPEG-2 DCT decode | Full Decode | — |
 | **Blu-ray ISO** | .iso | BDMV directory structure, index.bdmv | M2TS packet validation (192-byte), sync/PID verification | Structure | — |
 | **Apple DMG** | .dmg | Koly block signature at EOF | Data fork CRC32 checksum verification | Checksum | — |
+| **Roxio Toast** | .toast | APM DDR signature ("ER") and/or ISO 9660 PVD ("CD001" at sector 16), Application Identifier check for Toast provenance | Volume size cross-check (PVD volume space size × block size vs file size) | Structure | 1 |
+| **VMDK** | .vmdk | VMDK4 sparse (magic 0x564D444B), COWD/ESXi (magic 0x44574F43), descriptor-only (text "# Disk DescriptorFile") | Header flags, grainSize power-of-2, overHead bounds vs file size, newline sentinel corruption detection, uncleanShutdown flag | Structure | 1 |
+| **WIM** | .wim | Magic "MSWIM\0\0\0", hdr_size=208, wim_version=0x10D00 | Resource header offset bounds, WRITE_IN_PROGRESS flag, single-compression-type rule, reserved-zero check, integrity table structure (if present) | Structure | 1 |
+| **ESD** | .esd | Same as WIM but wim_version=0x0E00 + LZMS flag | Same as WIM | Structure | 1 |
 
 ## Partition Tables & Filesystems
 
