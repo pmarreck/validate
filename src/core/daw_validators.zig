@@ -539,25 +539,87 @@ pub fn validateReason(file: *FileSource) ValidationResult {
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.reason, .failed_to_stat, "file");
 
-    if (file_size < 128) {
+    if (file_size < 64) {
         return ValidationResult.invalidCode(.reason, .file_too_small, "Reason project");
     }
 
-    var header: [8]u8 = undefined;
+    var header: [64]u8 = undefined;
     const header_read = file.read(&header) catch return ValidationResult.invalidCode(.reason, .failed_to_read, "header");
 
-    if (header_read < 4) {
+    if (header_read < 32) {
         return ValidationResult.invalid(.reason, "File too small to identify");
     }
 
-    if (header[0] == 'P' and header[1] == 'K' and header[2] == 0x03 and header[3] == 0x04) {
-        return ValidationResult.invalid(.reason, "File appears to be ZIP, not Reason project");
+    // Real Reason magic: "Propellerheads Reason Song File\x1A" (32 bytes)
+    // Newer versions may use "Reason Studios" variant
+    const propellerhead_magic = "Propellerheads Reason Song File\x1a";
+    const has_propellerhead = header_read >= propellerhead_magic.len and
+        std.mem.eql(u8, header[0..propellerhead_magic.len], propellerhead_magic);
+
+    if (!has_propellerhead) {
+        // Check for newer "Reason Studios" variant or other known headers
+        if (header_read >= 14 and std.mem.eql(u8, header[0..14], "Reason Studios")) {
+            // Newer format variant — accept but structural only (unknown internal structure)
+            return ValidationResult.okWithDepth(.reason, .structural);
+        }
+        return ValidationResult.invalidCode(.reason, .invalid_signature, "Reason");
     }
 
-    // Reason format is proprietary and undocumented - no structural validation possible
-    return ValidationResult.structuralOnly(.reason);
-}
+    // After the 32-byte magic, look for IFF-like structure (FORM/BODY chunks)
+    // The format appears to use big-endian chunk headers after the magic
+    if (header_read >= 40) {
+        const after_magic = header[propellerhead_magic.len..header_read];
+        // Look for printable ASCII chunk IDs (4 bytes) suggesting IFF structure
+        if (after_magic.len >= 8) {
+            const chunk_id = after_magic[0..4];
+            var printable = true;
+            for (chunk_id) |c| {
+                if (c < 0x20 or c > 0x7E) {
+                    printable = false;
+                    break;
+                }
+            }
+            if (printable) {
+                // Found an IFF-like chunk after magic — walk chunks
+                var pos: u64 = propellerhead_magic.len;
+                var chunks_found: u32 = 0;
+                var chunk_buf: [8]u8 = undefined;
 
+                while (pos + 8 <= file_size and chunks_found < 10000) {
+                    file.seekTo(pos) catch break;
+                    const n = file.read(&chunk_buf) catch break;
+                    if (n < 8) break;
+
+                    // Verify chunk ID is printable ASCII
+                    var id_valid = true;
+                    for (chunk_buf[0..4]) |c| {
+                        if (c < 0x20 or c > 0x7E) {
+                            id_valid = false;
+                            break;
+                        }
+                    }
+                    if (!id_valid) break;
+
+                    const chunk_size = std.mem.readInt(u32, chunk_buf[4..8], .big);
+                    const chunk_end = pos + 8 + @as(u64, chunk_size);
+
+                    if (chunk_end > file_size + 1) break; // Chunk exceeds file
+
+                    chunks_found += 1;
+                    // IFF chunks are padded to word boundary
+                    pos = (chunk_end + 1) & ~@as(u64, 1);
+                }
+
+                if (chunks_found > 0) {
+                    return ValidationResult.okWithDepth(.reason, .full);
+                }
+            }
+        }
+    }
+
+    // Magic matched but no parseable chunk structure — still valid
+    return ValidationResult.okWithDepth(.reason, .structural);
+}
 // ============================================================
 // Tests moved from format_validation.zig
 // ============================================================

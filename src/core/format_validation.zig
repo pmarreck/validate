@@ -261,6 +261,7 @@ pub const BundleType = enum {
     macos_app, // .app bundle - macOS application
     macos_framework, // .framework bundle - macOS framework
     macos_bundle, // .bundle - macOS plugin/bundle
+    garageband, // .band - GarageBand project bundle
     // Future: xcodeproj, xcworkspace
 
     pub fn description(self: BundleType) []const u8 {
@@ -270,6 +271,7 @@ pub const BundleType = enum {
             .macos_app => "macOS Application Bundle",
             .macos_framework => "macOS Framework",
             .macos_bundle => "macOS Bundle",
+            .garageband => "GarageBand Project",
         };
     }
 };
@@ -300,6 +302,10 @@ pub fn detectBundleType(path: []const u8) BundleType {
     // Check for .bundle (macOS plugin/bundle)
     if (std.mem.endsWith(u8, path, ".bundle")) {
         return .macos_bundle;
+    }
+    // Check for .band (GarageBand project bundle)
+    if (std.mem.endsWith(u8, path, ".band")) {
+        return .garageband;
     }
     return .none;
 }
@@ -4760,6 +4766,7 @@ pub const FormatValidator = struct {
                 .macos_app => ValidationResult.okWithDepth(.macos_app, .structural),
                 .macos_framework => ValidationResult.okWithDepth(.macos_framework, .structural),
                 .macos_bundle => ValidationResult.okWithDepth(.macos_bundle, .structural),
+                .garageband => ValidationResult.okWithDepth(.band, .structural),
                 .none => unreachable,
             };
         }
@@ -5502,6 +5509,7 @@ pub const FormatValidator = struct {
             .macos_app => validateMacosAppDeep(allocator, path),
             .macos_framework => validateMacosFrameworkDeep(allocator, path),
             .macos_bundle => validateMacosBundleDeep(allocator, path),
+            .band => validateGarageBandBundle(allocator, path),
             else => initial_result, // No deep validation available
         };
     }
@@ -5636,6 +5644,52 @@ pub const FormatValidator = struct {
         } else |_| {
             return ValidationResult.invalidCodeWithDepth(.macos_bundle, .missing, "Info.plist", .structural);
         }
+    }
+
+    /// Deep validation for GarageBand project bundles (.band).
+    /// GarageBand bundles contain projectData (older) or Alternatives/000/ProjectData (newer),
+    /// with optional mmetadata.plist and Media/ directory.
+    fn validateGarageBandBundle(allocator: Allocator, path: []const u8) ValidationResult {
+        _ = allocator;
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+        // Check for newer structure: Alternatives/ directory (GarageBand 10+)
+        const alternatives_path = std.fmt.bufPrint(&path_buf, "{s}/Alternatives", .{path}) catch {
+            return ValidationResult.invalidWithDepth(.band, "Path too long", .structural);
+        };
+        const has_alternatives = if (std.fs.cwd().access(alternatives_path, .{})) |_| true else |_| false;
+
+        // Check for older structure: projectData file at bundle root
+        const project_data_path = std.fmt.bufPrint(&path_buf, "{s}/projectData", .{path}) catch {
+            return ValidationResult.invalidWithDepth(.band, "Path too long", .structural);
+        };
+        const has_project_data = if (std.fs.cwd().access(project_data_path, .{})) |_| true else |_| false;
+
+        if (!has_alternatives and !has_project_data) {
+            return ValidationResult.invalidCodeWithDepth(.band, .missing, "projectData or Alternatives directory", .structural);
+        }
+
+        // If projectData exists, verify it looks like a plist (binary or XML)
+        if (has_project_data) {
+            const pd_file = std.fs.cwd().openFile(project_data_path, .{}) catch {
+                return ValidationResult.invalidCodeWithDepth(.band, .failed_to_open, "projectData", .structural);
+            };
+            defer pd_file.close();
+
+            var magic: [8]u8 = undefined;
+            const n = pd_file.read(&magic) catch 0;
+            if (n >= 8) {
+                const is_bplist = std.mem.eql(u8, magic[0..8], "bplist00");
+                const is_xml = std.mem.eql(u8, magic[0..5], "<?xml");
+                if (!is_bplist and !is_xml) {
+                    return ValidationResult.invalidWithDepth(.band, "projectData is not a valid plist", .structural);
+                }
+            } else if (n == 0) {
+                return ValidationResult.invalidWithDepth(.band, "projectData is empty", .structural);
+            }
+        }
+
+        return ValidationResult.okWithDepth(.band, .structural);
     }
 
     /// Validate using an already-open file handle.
@@ -7305,6 +7359,17 @@ test "detectBundleType identifies macOS .bundle bundles" {
     // NOT a .bundle
     try std.testing.expectEqual(BundleType.none, detectBundleType("bundle"));
     try std.testing.expectEqual(BundleType.none, detectBundleType("MyPlugin.bundle.disabled"));
+}
+
+test "detectBundleType identifies GarageBand .band bundles" {
+    try std.testing.expectEqual(BundleType.garageband, detectBundleType("MySong.band"));
+    try std.testing.expectEqual(BundleType.garageband, detectBundleType("/Users/test/Music/MySong.band"));
+    try std.testing.expectEqual(BundleType.garageband, detectBundleType("My Song.band"));
+
+    // NOT a .band bundle
+    try std.testing.expectEqual(BundleType.none, detectBundleType("band"));
+    try std.testing.expectEqual(BundleType.none, detectBundleType("MySong.band.bak"));
+    try std.testing.expectEqual(BundleType.none, detectBundleType("wristband"));
 }
 
 test "validateFile returns error for unknown directory type" {

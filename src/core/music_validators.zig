@@ -1885,8 +1885,54 @@ pub fn validateOggFromBuffer(data: []const u8) ValidationResult {
 
 // ============ AMR Validator ============
 
-/// Validate AMR (Adaptive Multi-Rate) audio file structure.
-/// AMR-NB: "#!AMR\n", AMR-WB: "#!AMR-WB\n", multi-channel variants also supported.
+const AmrWalkResult = union(enum) { ok: u32, err: ValidationResult };
+
+/// Walk AMR frames starting at `start_pos` in `file` of `file_size` bytes.
+/// `frame_sizes` maps frame_type (0-15) to payload byte count.
+/// Reserved frame types (reserved_lo..reserved_hi inclusive) cause immediate rejection.
+/// Last-frame truncation is tolerated (AMR is a streaming format).
+/// Returns the number of valid frames walked, or a ValidationResult error.
+fn walkAmrFrames(
+    file: *FileSource,
+    start_pos: u64,
+    file_size: u64,
+    frame_sizes: *const [16]u8,
+    reserved_lo: u8,
+    reserved_hi: u8,
+) AmrWalkResult {
+    var pos: u64 = start_pos;
+    var frame_count: u32 = 0;
+
+    while (pos < file_size) {
+        file.seekTo(pos) catch return .{ .err = ValidationResult.invalidCode(.amr, .failed_to_seek, "frame header") };
+        var fh_buf: [1]u8 = undefined;
+        const fh_read = file.read(&fh_buf) catch return .{ .err = ValidationResult.invalidCode(.amr, .failed_to_read, "frame header") };
+        if (fh_read < 1) break;
+
+        const fh = fh_buf[0];
+        const ft: u8 = (fh >> 3) & 0x0F;
+
+        if (ft >= reserved_lo and ft <= reserved_hi) {
+            return .{ .err = ValidationResult.invalidCode(.amr, .invalid_value, "reserved AMR frame type") };
+        }
+
+        const payload_size: u64 = frame_sizes[ft];
+        pos += 1 + payload_size;
+        frame_count += 1;
+
+        // Last frame may be truncated (streaming format) — always tolerated
+        if (pos > file_size) break;
+    }
+
+    return .{ .ok = frame_count };
+}
+
+/// Validate AMR (Adaptive Multi-Rate) audio file structure by walking the frame chain.
+/// AMR-NB: "#!AMR\n" (6 bytes), AMR-WB: "#!AMR-WB\n" (9 bytes).
+/// Each frame has a 1-byte header: (frame_type<<3)|(quality<<2)|padding.
+/// Frame sizes are fixed per mode; last frame truncation is tolerated (streaming format).
+/// Multi-channel variants (#!AMR_MC1.0\n / #!AMR-WB_MC1.0\n) return structuralOnly
+/// because their frame layout includes additional channel headers not documented here.
 pub fn validateAmr(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.amr, .failed_to_seek, "in AMR file");
 
@@ -1895,31 +1941,39 @@ pub fn validateAmr(file: *FileSource) ValidationResult {
 
     if (bytes_read < 6) return ValidationResult.invalidCode(.amr, .truncated, "header");
 
+    // Multi-channel variants: frame layout undocumented, return structural only
     if (bytes_read >= 15 and std.mem.eql(u8, header[0..15], "#!AMR-WB_MC1.0\n")) {
         return ValidationResult.structuralOnly(.amr);
     }
     if (bytes_read >= 12 and std.mem.eql(u8, header[0..12], "#!AMR_MC1.0\n")) {
         return ValidationResult.structuralOnly(.amr);
     }
+
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.amr, .failed_to_read, "file size");
+
+    // AMR-WB frame payload sizes indexed by frame_type (modes 0-8, SID=9, reserved 10-14, NO_DATA=15)
+    const amr_wb_sizes = [16]u8{ 18, 24, 33, 37, 41, 47, 51, 59, 61, 6, 0, 0, 0, 0, 0, 0 };
+    // AMR-NB frame payload sizes indexed by frame_type (modes 0-7, SID=8, comfort 9-11, reserved 12-14, NO_DATA=15)
+    const amr_nb_sizes = [16]u8{ 13, 14, 16, 18, 20, 21, 27, 32, 6, 6, 6, 6, 0, 0, 0, 0 };
+
     if (bytes_read >= 9 and std.mem.eql(u8, header[0..9], "#!AMR-WB\n")) {
-        if (bytes_read > 9) {
-            const frame_header = header[9];
-            const ft = (frame_header >> 3) & 0x0F;
-            if (ft > 9 and ft != 14 and ft != 15) {
-                return ValidationResult.invalidCode(.amr, .invalid_value, "AMR-WB frame type");
-            }
+        // AMR-WB: reserved types 10-14
+        const walk = walkAmrFrames(file, 9, file_size, &amr_wb_sizes, 10, 14);
+        switch (walk) {
+            .err => |e| return e,
+            .ok => |count| if (count == 0) return ValidationResult.invalidCode(.amr, .truncated, "no AMR-WB frames found"),
         }
-        return ValidationResult.structuralOnly(.amr);
+        return ValidationResult.okWithDepth(.amr, .full);
     }
+
     if (std.mem.eql(u8, header[0..6], "#!AMR\n")) {
-        if (bytes_read > 6) {
-            const frame_header = header[6];
-            const ft = (frame_header >> 3) & 0x0F;
-            if (ft > 8 and ft != 15) {
-                return ValidationResult.invalidCode(.amr, .invalid_value, "AMR-NB frame type");
-            }
+        // AMR-NB: reserved types 12-14
+        const walk = walkAmrFrames(file, 6, file_size, &amr_nb_sizes, 12, 14);
+        switch (walk) {
+            .err => |e| return e,
+            .ok => |count| if (count == 0) return ValidationResult.invalidCode(.amr, .truncated, "no AMR-NB frames found"),
         }
-        return ValidationResult.structuralOnly(.amr);
+        return ValidationResult.okWithDepth(.amr, .full);
     }
 
     return ValidationResult.invalidCode(.amr, .invalid_magic, "AMR");
@@ -1958,6 +2012,7 @@ pub fn validateAu(file: *FileSource) ValidationResult {
         if (expected_min > file_size) {
             return ValidationResult.invalidCodeMsg(.au, .exceeds_bounds, "Data size", "Data size exceeds file size (truncated)");
         }
+        return ValidationResult.okWithDepth(.au, .full);
     }
 
     return ValidationResult.structuralOnly(.au);
@@ -2006,7 +2061,7 @@ pub fn validateTta(file: *FileSource) ValidationResult {
         }
     }
 
-    return ValidationResult.structuralOnly(.tta);
+    return ValidationResult.okWithDepth(.tta, .full);
 }
 
 /// Deep TTA validation: verifies seek table CRC32 and per-frame CRC32s.
@@ -2202,7 +2257,7 @@ pub fn validateCaf(file: *FileSource) ValidationResult {
         chunk_count += 1;
     }
 
-    return ValidationResult.structuralOnly(.caf);
+    return ValidationResult.okWithDepth(.caf, .full);
 }
 
 // ============ AAC ADTS Validator ============
@@ -2450,8 +2505,37 @@ test "validateAmr accepts ground truth AMR" {
     const result = validateAmr(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.amr, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
+test "validateAmr rejects reserved AMR-NB frame type 12" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // "#!AMR\n" + frame header with reserved type 12: (12 << 3) = 0x60
+    const bad_data = "#!AMR\n" ++ [_]u8{0x60} ++ [_]u8{0x00} ** 13;
+    tmp.dir.writeFile(.{ .sub_path = "bad_ft.amr", .data = bad_data }) catch return;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("bad_ft.amr", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateAmr(&source);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateAmr accepts truncated-last-frame AMR-NB (streaming tolerance)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // "#!AMR\n" + frame header mode 7 (0x3c = type 7, 32-byte payload) but only 10 payload bytes
+    const data = "#!AMR\n" ++ [_]u8{0x3c} ++ [_]u8{0xaa} ** 10;
+    tmp.dir.writeFile(.{ .sub_path = "trunc.amr", .data = data }) catch return;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const realpath = tmp.dir.realpath("trunc.amr", &path_buf) catch return;
+    var source = FileSource.open(realpath) catch return;
+    defer source.close();
+    const result = validateAmr(&source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
 test "validateAu accepts ground truth AU" {
     var source = FileSource.open("ground_truth_examples/au/sample.au") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();

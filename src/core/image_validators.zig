@@ -3936,48 +3936,162 @@ pub fn validatePam(file: *FileSource) ValidationResult {
         return ValidationResult.invalid(.pam, "Portable Anymap magic not followed by whitespace");
     }
 
-    // For P7 (PAM), check for ENDHDR keyword
-    if (header[1] == '7') {
+    const pnm_type = header[1];
+
+    // Helper: skip whitespace (including comments) in header buffer, return new pos.
+    // Returns bytes_read if exhausted.
+    const skipWs = struct {
+        fn f(buf: []const u8, start: usize) usize {
+            var p = start;
+            while (p < buf.len) {
+                if (buf[p] == '#') {
+                    while (p < buf.len and buf[p] != '\n') : (p += 1) {}
+                    if (p < buf.len) p += 1;
+                } else if (buf[p] == ' ' or buf[p] == '\t' or buf[p] == '\n' or buf[p] == '\r') {
+                    p += 1;
+                } else {
+                    break;
+                }
+            }
+            return p;
+        }
+    }.f;
+
+    // Helper: parse one decimal number from buf at pos; returns {value, new_pos} or null.
+    const parseNum = struct {
+        fn f(buf: []const u8, start: usize) ?struct { val: u64, end: usize } {
+            var p = start;
+            if (p >= buf.len or buf[p] < '0' or buf[p] > '9') return null;
+            var v: u64 = 0;
+            while (p < buf.len and buf[p] >= '0' and buf[p] <= '9') {
+                v = v *% 10 +% @as(u64, buf[p] - '0');
+                p += 1;
+            }
+            return .{ .val = v, .end = p };
+        }
+    }.f;
+
+    if (pnm_type == '7') {
+        // PAM: keyword-value ASCII header terminated by ENDHDR
         const header_data = header[0..bytes_read];
-        if (std.mem.indexOf(u8, header_data, "ENDHDR") == null) {
-            // Could be a very large header; not necessarily invalid
+        var width: u64 = 0;
+        var height: u64 = 0;
+        var depth: u64 = 1;
+        var maxval: u64 = 255;
+        var got_width = false;
+        var got_height = false;
+        var got_endhdr = false;
+        var header_end: usize = 0;
+
+        // Walk lines looking for keyword tokens
+        var line_start: usize = 3; // skip "P7\n"
+        while (line_start < header_data.len) {
+            // Find end of line
+            var line_end = line_start;
+            while (line_end < header_data.len and header_data[line_end] != '\n') : (line_end += 1) {}
+            const line = header_data[line_start..line_end];
+
+            if (std.mem.startsWith(u8, line, "ENDHDR")) {
+                got_endhdr = true;
+                header_end = line_end + 1; // byte after the '\n'
+                break;
+            } else if (std.mem.startsWith(u8, line, "WIDTH ")) {
+                if (parseNum(line, 6)) |r| { width = r.val; got_width = true; }
+            } else if (std.mem.startsWith(u8, line, "HEIGHT ")) {
+                if (parseNum(line, 7)) |r| { height = r.val; got_height = true; }
+            } else if (std.mem.startsWith(u8, line, "DEPTH ")) {
+                if (parseNum(line, 6)) |r| depth = r.val;
+            } else if (std.mem.startsWith(u8, line, "MAXVAL ")) {
+                if (parseNum(line, 7)) |r| maxval = r.val;
+            }
+            line_start = line_end + 1;
         }
+
+        if (!got_endhdr) {
+            // Header too large for our buffer; fall back to structural
+            return ValidationResult.structuralOnly(.pam);
+        }
+        if (!got_width or !got_height or width == 0 or height == 0 or depth == 0) {
+            return ValidationResult.invalid(.pam, "PAM header missing or zero WIDTH/HEIGHT/DEPTH");
+        }
+
+        const bytes_per_sample: u64 = if (maxval > 255) 2 else 1;
+        const expected_data: u64 = width * height * depth * bytes_per_sample;
+        const actual_size = file.getEndPos() catch return ValidationResult.structuralOnly(.pam);
+
+        if (actual_size < header_end + expected_data) {
+            return ValidationResult.invalidCodeMsg(.pam, .exceeds_bounds, "PAM pixel data", "PAM file truncated: pixel data smaller than expected");
+        }
+        if (actual_size == header_end + expected_data) {
+            return ValidationResult.okWithDepth(.pam, .full);
+        }
+        return ValidationResult.structuralOnly(.pam);
     } else {
-        // P1-P6: Try to parse width/height
-        var pos: usize = 3;
-        var number_count: u32 = 0;
+        // P1-P6: ASCII header — "Pn WS width WS height [WS maxval] WS data"
+        // P1/P4 = bitmap (no maxval field); P2/P5 = grayscale; P3/P6 = color
+        var pos: usize = skipWs(header[0..bytes_read], 3);
 
-        while (pos < bytes_read and number_count < 2) {
-            if (header[pos] == '#') {
-                while (pos < bytes_read and header[pos] != '\n') : (pos += 1) {}
-                if (pos < bytes_read) pos += 1;
-                continue;
+        // Parse width
+        const w_res = parseNum(header[0..bytes_read], pos) orelse
+            return ValidationResult.invalid(.pam, "Portable Anymap: could not parse width");
+        if (w_res.val == 0) return ValidationResult.invalid(.pam, "Portable Anymap width is zero");
+        const width = w_res.val;
+        pos = skipWs(header[0..bytes_read], w_res.end);
+
+        // Parse height
+        const h_res = parseNum(header[0..bytes_read], pos) orelse
+            return ValidationResult.invalid(.pam, "Portable Anymap: could not parse height");
+        if (h_res.val == 0) return ValidationResult.invalid(.pam, "Portable Anymap height is zero");
+        const height = h_res.val;
+        pos = skipWs(header[0..bytes_read], h_res.end);
+
+        // P1/P4 have no maxval field; binary types need it for byte-width calculation
+        const is_binary = (pnm_type == '4' or pnm_type == '5' or pnm_type == '6');
+        const is_bitmap = (pnm_type == '1' or pnm_type == '4');
+
+        var maxval: u64 = 1;
+        if (!is_bitmap) {
+            const mv_res = parseNum(header[0..bytes_read], pos) orelse
+                return ValidationResult.structuralOnly(.pam); // maxval not yet in buffer; structural only
+            if (mv_res.val == 0) return ValidationResult.invalid(.pam, "Portable Anymap maxval is zero");
+            maxval = mv_res.val;
+            pos = mv_res.end;
+            // After maxval there must be exactly one whitespace byte before binary data (spec §7.3)
+            if (is_binary) {
+                if (pos >= bytes_read) return ValidationResult.structuralOnly(.pam);
+                pos += 1; // consume the single mandatory whitespace separator
             }
-            if (header[pos] == ' ' or header[pos] == '\t' or header[pos] == '\n' or header[pos] == '\r') {
-                pos += 1;
-                continue;
-            }
-            if (header[pos] >= '0' and header[pos] <= '9') {
-                var value: u32 = 0;
-                while (pos < bytes_read and header[pos] >= '0' and header[pos] <= '9') {
-                    value = value *% 10 +% @as(u32, header[pos] - '0');
-                    pos += 1;
-                }
-                number_count += 1;
-                if (value == 0) {
-                    if (number_count == 1) {
-                        return ValidationResult.invalid(.pam, "Portable Anymap width is zero");
-                    } else {
-                        return ValidationResult.invalid(.pam, "Portable Anymap height is zero");
-                    }
-                }
-            } else {
-                return ValidationResult.invalidCode(.pam, .invalid_value, "character in Portable Anymap header");
-            }
+        } else if (is_binary) {
+            // P4 bitmap: after height, exactly one whitespace byte before raw bits
+            if (pos >= bytes_read) return ValidationResult.structuralOnly(.pam);
+            pos += 1;
         }
-    }
 
-    return ValidationResult.structuralOnly(.pam);
+        if (!is_binary) {
+            // ASCII formats (P1/P2/P3): can't reliably compute data size; structural only
+            return ValidationResult.structuralOnly(.pam);
+        }
+
+        // Binary data starts at `pos` bytes from file start.
+        const header_size: u64 = @intCast(pos);
+        const channels: u64 = if (pnm_type == '6') 3 else 1;
+        const bytes_per_sample: u64 = if (maxval > 255) 2 else 1;
+        // P4 (bitmap): ceil(width/8) bytes per row
+        const expected_data: u64 = if (pnm_type == '4')
+            ((width + 7) / 8) * height
+        else
+            width * height * channels * bytes_per_sample;
+
+        const actual_size = file.getEndPos() catch return ValidationResult.structuralOnly(.pam);
+
+        if (actual_size < header_size + expected_data) {
+            return ValidationResult.invalidCodeMsg(.pam, .exceeds_bounds, "PNM pixel data", "PNM file truncated: pixel data smaller than expected");
+        }
+        if (actual_size == header_size + expected_data) {
+            return ValidationResult.okWithDepth(.pam, .full);
+        }
+        return ValidationResult.structuralOnly(.pam);
+    }
 }
 
 // ============ DPX Validator ============
@@ -4066,6 +4180,12 @@ pub fn validateDpx(file: *FileSource) ValidationResult {
                 return ValidationResult.invalidCodeMsg(.dpx, .exceeds_bounds, "DPX image data", "Image dimensions exceed available file space");
             }
         }
+    }
+
+    // Integrity check: declared file_size matches actual size proves no truncation/corruption.
+    // 0xFFFFFFFF is the "undefined" sentinel; fall back to structural in that case.
+    if (declared_size != 0xFFFFFFFF and declared_size == actual_size) {
+        return ValidationResult.okWithDepth(.dpx, .full);
     }
 
     return ValidationResult.structuralOnly(.dpx);
@@ -4750,12 +4870,13 @@ test "validateTga v2 rejects out-of-bounds dev_area_offset" {
 
 // ---- PAM ----
 
-test "validatePam accepts valid PPM from ground truth" {
+test "validatePam accepts valid PPM from ground truth with full depth" {
     var source = FileSource.open("ground_truth_examples/pam/sample.ppm") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
     const result = validatePam(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.pam, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 test "validatePam rejects invalid magic" {
@@ -4786,14 +4907,48 @@ test "validatePam rejects out-of-range type" {
     try testing.expect(!result.is_valid);
 }
 
+test "validatePam returns full depth for exact-size P6" {
+    // P6 2x2 RGB 8-bit: header = "P6\n2 2\n255\n" (11 bytes), data = 2*2*3 = 12 bytes, total = 23
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data = [_]u8{0} ** 23;
+    @memcpy(data[0..11], "P6\n2 2\n255\n");
+    // pixel data: 12 bytes of zeros (valid black pixels) already zero-initialized
+    tmp.dir.writeFile(.{ .sub_path = "exact.ppm", .data = &data }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("exact.ppm", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validatePam(&source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validatePam rejects truncated P6" {
+    // P6 2x2 RGB 8-bit: header = "P6\n2 2\n255\n" (11 bytes), data should be 12 bytes but we only write 6
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data = [_]u8{0} ** 17;
+    @memcpy(data[0..11], "P6\n2 2\n255\n");
+    // Only 6 bytes of pixel data instead of 12 — truncated
+    tmp.dir.writeFile(.{ .sub_path = "trunc.ppm", .data = &data }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("trunc.ppm", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validatePam(&source);
+    try testing.expect(!result.is_valid);
+}
+
 // ---- DPX ----
 
-test "validateDpx accepts valid DPX from ground truth" {
+test "validateDpx accepts valid DPX from ground truth with full depth" {
     var source = FileSource.open("ground_truth_examples/dpx/sample.dpx") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
     const result = validateDpx(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.dpx, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 test "validateDpx rejects invalid magic" {
@@ -4877,6 +5032,56 @@ test "validateDpx rejects corrupted element count" {
     var f = FileSource.open(rp_bad_elem_dpx) catch return;
     defer f.close();
     try testing.expect(!validateDpx(&f).is_valid);
+}
+
+test "validateDpx returns full depth when declared size matches actual" {
+    // Build a minimal DPX where declared file_size == actual file size (1100 bytes)
+    var dpx: [1100]u8 = undefined;
+    @memset(&dpx, 0);
+    @memcpy(dpx[0..4], "SDPX");
+    std.mem.writeInt(u32, dpx[4..8], 1024, .big); // image offset
+    dpx[8] = 'V'; dpx[9] = '2'; dpx[10] = '.'; dpx[11] = '0';
+    std.mem.writeInt(u32, dpx[16..20], 1100, .big); // declared size == actual size
+    std.mem.writeInt(u16, dpx[768..770], 0, .big); // orientation = 0
+    std.mem.writeInt(u16, dpx[770..772], 1, .big); // num_elements = 1
+    std.mem.writeInt(u32, dpx[772..776], 4, .big); // pixels_per_line
+    std.mem.writeInt(u32, dpx[776..780], 4, .big); // lines_per_element
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "full.dpx", .data = &dpx }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("full.dpx", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateDpx(&source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateDpx returns structural when declared size mismatches actual" {
+    // Same minimal DPX but declared size is wrong (says 2000, actual is 1100)
+    var dpx: [1100]u8 = undefined;
+    @memset(&dpx, 0);
+    @memcpy(dpx[0..4], "SDPX");
+    std.mem.writeInt(u32, dpx[4..8], 1024, .big);
+    dpx[8] = 'V'; dpx[9] = '2'; dpx[10] = '.'; dpx[11] = '0';
+    std.mem.writeInt(u32, dpx[16..20], 2000, .big); // declared != actual (not truncated — just wrong)
+    std.mem.writeInt(u16, dpx[768..770], 0, .big);
+    std.mem.writeInt(u16, dpx[770..772], 1, .big);
+    std.mem.writeInt(u32, dpx[772..776], 4, .big);
+    std.mem.writeInt(u32, dpx[776..780], 4, .big);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "mismatch.dpx", .data = &dpx }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("mismatch.dpx", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateDpx(&source);
+    // declared > actual means truncated — should be invalid
+    try testing.expect(!result.is_valid);
 }
 
 // ---- JPEG2000 ----
