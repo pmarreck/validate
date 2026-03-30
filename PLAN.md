@@ -113,3 +113,20 @@ These formats return WARN — recognized but NO real corruption detection:
 - [x] MS-DOC deep decode: PCD physical offset verification + PlcBte validation (2026-03-05 EST)
 - [x] MS-XLS deep decode: SST strings, formula tokens, cell records (2026-03-05 EST)
 - [x] Corruption detection experiment: sniper/shotgun framework, full survey of 20+ formats (2026-03-05 EST)
+
+## Future / Roadmap
+
+### Statistical Corruption Detection for Raw Audio/Video Data
+For formats without checksums (AU, AMR, CAF, DPX, etc.), use heuristic analysis to detect likely corruption in raw data sections:
+
+- **Temporal discontinuity detection**: sliding-window variance to flag sudden uncorrelated jumps in sample values (real audio has temporal correlation; corruption doesn't)
+- **Single-sample outlier with bit-flip diagnosis**: compute statistical unlikelihood of sample[n] given a window of preceding samples. If it exceeds a tolerance AND flipping any single bit in that sample's bytes produces a value that IS statistically probable (fits the local trend), report it as a diagnosed single-bit error with the exact bit identified. This is forensic-grade — not just "something's wrong" but "bit 15 at offset 0x4A02 is flipped."
+- **Zero-run analysis**: extended silence in the middle of non-silent audio is suspicious; context-aware detection distinguishing track gaps from corruption
+- **Stuck-value detection**: runs of identical non-zero samples (register latch / bus error patterns)
+- **Spectral anomaly**: FFT windows to detect unnaturally flat spectra (white noise from bit errors) or DC offsets
+- **Sector-aligned weighting**: at known sample rate + bit depth + channels, calculate `corrupted_samples = sector_size / (channels * bytes_per_sample)` for common physical media sector sizes (512B HDD, 2048B DVD, 2352B CD, 4KB/16KB SSD). Statistical anomalies that are approximately sector-width or a multiple (±16 bytes tolerance for header offsets and controller scatter/gather) are weighted as extra-suspect — this is the signature of physical media failure, not encoding artifact.
+- **Synthesized audio caveat**: square waves, FM synthesis, and other digital sources CAN have extreme single-sample transitions intentionally. Outlier detection should be weighted by surrounding context (±10 samples smooth = suspicious spike; surrounding samples also extreme = intentional waveform). Sensitivity should be configurable.
+- Report as WARN (heuristic, not certain) rather than FAIL
+- Applicable to: AU, AMR, CAF, WAV (raw PCM), AIFF, DSD, DPX (raw pixel data), PAM/PBM/PGM/PPM (raw pixel data)
+- This would be a genuinely novel validation tier between structural and full
+- Module: `src/core/statistical_corruption.zig` with configurable sensitivity
