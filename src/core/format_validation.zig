@@ -2051,6 +2051,16 @@ pub fn detectFormat(header: []const u8) FileFormat {
         return .pem;
     }
 
+    // Reason: starts with "Propellerheads Reason Song File\x1A" (32 bytes)
+    if (header.len >= 32 and std.mem.eql(u8, header[0..31], "Propellerheads Reason Song File") and header[31] == 0x1A) {
+        return .reason;
+    }
+
+    // Pro Tools: byte 0 = 0x03, bytes 1-16 = BITCODE "0010111100101011"
+    if (header.len >= 20 and header[0] == 0x03 and std.mem.eql(u8, header[1..17], "0010111100101011")) {
+        return .ptx;
+    }
+
     // X12 EDI: starts with "ISA" + element delimiter at position 3
     if (header.len >= 106 and std.mem.eql(u8, header[0..3], "ISA")) {
         return .x12_edi;
@@ -5464,6 +5474,7 @@ pub const FormatValidator = struct {
             .flp => daw_validators.validateFlpDeep(allocator, path),
             .als => daw_validators.validateAlsDeep(allocator, path),
             .rpp => daw_validators.validateRppDeep(allocator, path),
+            .ptx => daw_validators.validatePtxDeep(allocator, path),
             .fcpxml => creative_validators.validateFcpxmlDeep(allocator, path),
             .svg => image_validators.validateSvgDeep(allocator, path),
             .kml => text_format_validators.validateKmlDeep(allocator, path),

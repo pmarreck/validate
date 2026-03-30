@@ -483,29 +483,189 @@ pub fn validateCubaseFromBuffer(data: []const u8) ValidationResult {
 
 // ============ Pro Tools (PTX) ============
 
+const PTX_MARKER: u8 = 0x03;
+const PTX_BITCODE = "0010111100101011"; // 16 ASCII chars at bytes 0x01-0x10
+const PTX_ZMARK: u8 = 0x5A; // 'Z' — block marker
+const PTX_HEADER_SIZE: usize = 0x14; // first 20 bytes are cleartext
+const PTX_MAX_FILE_SIZE: usize = 256 * 1024 * 1024; // 256 MB cap
+
 /// Pro Tools session files (.ptx) use a proprietary binary format.
+/// Checks the cleartext 20-byte header for magic bytes and BITCODE signature.
 pub fn validateProTools(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.ptx, .failed_to_seek, "to start");
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.ptx, .failed_to_stat, "file");
 
-    if (file_size < 256) {
+    if (file_size < PTX_HEADER_SIZE) {
         return ValidationResult.invalidCode(.ptx, .file_too_small, "Pro Tools session");
     }
 
-    var header: [16]u8 = undefined;
+    var header: [PTX_HEADER_SIZE]u8 = undefined;
     const header_read = file.read(&header) catch return ValidationResult.invalidCode(.ptx, .failed_to_read, "header");
 
-    if (header_read < 8) {
+    if (header_read < PTX_HEADER_SIZE) {
         return ValidationResult.invalid(.ptx, "File too small to identify");
     }
 
-    if (header[0] == 'P' and header[1] == 'K' and header[2] == 0x03 and header[3] == 0x04) {
-        return ValidationResult.invalid(.ptx, "File appears to be ZIP, not Pro Tools session");
+    // Byte 0 must be 0x03
+    if (header[0] != PTX_MARKER) {
+        return ValidationResult.invalid(.ptx, "Missing Pro Tools marker byte");
     }
 
-    // Pro Tools format is proprietary and undocumented - no structural validation possible
+    // Bytes 0x01-0x10: BITCODE signature (16 ASCII chars)
+    if (!std.mem.eql(u8, header[1..17], PTX_BITCODE)) {
+        return ValidationResult.invalid(.ptx, "Missing Pro Tools BITCODE signature");
+    }
+
+    // Byte 0x12: xor_type must be 0x01 or 0x05
+    const xor_type = header[0x12];
+    if (xor_type != 0x01 and xor_type != 0x05) {
+        return ValidationResult.invalid(.ptx, "Unknown Pro Tools encryption type");
+    }
+
     return ValidationResult.structuralOnly(.ptx);
+}
+
+/// Derive XOR delta for key schedule.
+/// Finds i in 0..256 such that (i * mul) & 0xFF == xor_value.
+/// Returns i directly (negative=false) or (256-i)&0xFF (negative=true).
+fn genXorDelta(xor_value: u8, mul: u8, negative: bool) u8 {
+    var i: u16 = 0;
+    while (i < 256) : (i += 1) {
+        if (((i * @as(u16, mul)) & 0xFF) == @as(u16, xor_value)) {
+            const candidate: u8 = @intCast(i & 0xFF);
+            return if (negative) @intCast((256 - @as(u16, candidate)) & 0xFF) else candidate;
+        }
+    }
+    return 0;
+}
+
+/// Build the 256-byte XOR lookup table: xxor[i] = (i * delta) & 0xFF.
+fn buildXorTable(delta: u8) [256]u8 {
+    var table: [256]u8 = undefined;
+    var i: u16 = 0;
+    while (i < 256) : (i += 1) {
+        table[i] = @intCast((@as(u16, i) * @as(u16, delta)) & 0xFF);
+    }
+    return table;
+}
+
+/// Deep validate a Pro Tools session file by XOR-decrypting the body and
+/// walking its ZMARK block structure. Uses the documented key derivation scheme
+/// (xor_type 0x01 = PT 5-9 with mul=53, xor_type 0x05 = PT 10-12 with mul=11/negative).
+pub fn validatePtxDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    var source = FileSource.open(path) catch {
+        return ValidationResult.invalidCode(.ptx, .failed_to_open, "Pro Tools file");
+    };
+    defer source.close();
+    const file = &source;
+
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCode(.ptx, .failed_to_get, "file size");
+    };
+
+    if (file_size < PTX_HEADER_SIZE) {
+        return ValidationResult.invalidCode(.ptx, .file_too_small, "Pro Tools session");
+    }
+
+    // Cap at 256 MB — larger files fall back to structural
+    if (file_size > PTX_MAX_FILE_SIZE) {
+        return ValidationResult.okWithDepth(.ptx, .structural);
+    }
+
+    // Read cleartext header
+    file.seekTo(0) catch return ValidationResult.invalidCode(.ptx, .failed_to_seek, "to start");
+    var header: [PTX_HEADER_SIZE]u8 = undefined;
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.ptx, .failed_to_read, "header");
+    if (header_read < PTX_HEADER_SIZE) {
+        return ValidationResult.invalid(.ptx, "File too small to identify");
+    }
+
+    // Verify marker and BITCODE
+    if (header[0] != PTX_MARKER) {
+        return ValidationResult.invalid(.ptx, "Missing Pro Tools marker byte");
+    }
+    if (!std.mem.eql(u8, header[1..17], PTX_BITCODE)) {
+        return ValidationResult.invalid(.ptx, "Missing Pro Tools BITCODE signature");
+    }
+
+    const is_big_endian = header[0x11] != 0;
+    const xor_type = header[0x12];
+    const xor_value = header[0x13];
+
+    if (xor_type != 0x01 and xor_type != 0x05) {
+        return ValidationResult.invalid(.ptx, "Unknown Pro Tools encryption type");
+    }
+
+    // Derive XOR key schedule
+    const delta: u8 = if (xor_type == 0x01)
+        genXorDelta(xor_value, 53, false)
+    else
+        genXorDelta(xor_value, 11, true);
+
+    const xxor = buildXorTable(delta);
+
+    // Read the entire file
+    const data = allocator.alloc(u8, file_size) catch {
+        return ValidationResult.invalid(.ptx, "Memory allocation failed");
+    };
+    defer allocator.free(data);
+
+    file.seekTo(0) catch return ValidationResult.invalidCode(.ptx, .failed_to_seek, "to start");
+    const bytes_read = file.readAll(data) catch {
+        return ValidationResult.invalidCode(.ptx, .failed_to_read, "file body");
+    };
+    if (bytes_read < file_size) {
+        return ValidationResult.invalidCode(.ptx, .incomplete, "file read");
+    }
+
+    // Decrypt from offset PTX_HEADER_SIZE onward (header stays cleartext)
+    const body_start = PTX_HEADER_SIZE;
+    var pos: usize = body_start;
+    while (pos < file_size) : (pos += 1) {
+        const rel = pos - body_start; // relative offset within encrypted region
+        const xor_byte: u8 = if (xor_type == 0x01)
+            xxor[rel & 0xFF]
+        else
+            xxor[(rel >> 12) & 0xFF];
+        data[pos] ^= xor_byte;
+    }
+
+    // Walk block structure: each block starts with ZMARK (0x5A)
+    // Block layout: [0x5A][block_type u16][block_size u32][content_type u16]
+    // Minimum block header = 1 + 2 + 4 + 2 = 9 bytes
+    const BLOCK_HDR_SIZE: usize = 9;
+    const endian: std.builtin.Endian = if (is_big_endian) .big else .little;
+
+    var walk = body_start;
+    var valid_blocks: usize = 0;
+
+    while (walk + BLOCK_HDR_SIZE <= file_size) {
+        if (data[walk] != PTX_ZMARK) {
+            // Skip one byte to find next ZMARK
+            walk += 1;
+            continue;
+        }
+
+        // Parse block fields
+        const block_size = std.mem.readInt(u32, data[walk + 3 ..][0..4], endian);
+
+        // Sanity: block_size must not overflow the file
+        const block_end = walk + BLOCK_HDR_SIZE + @as(usize, block_size);
+        if (block_end > file_size) {
+            // Truncated block — if we already found some valid blocks, that's OK
+            break;
+        }
+
+        valid_blocks += 1;
+        walk = block_end;
+    }
+
+    if (valid_blocks == 0) {
+        return ValidationResult.invalid(.ptx, "No valid ZMARK blocks found after decryption");
+    }
+
+    return ValidationResult.okWithDepth(.ptx, .full);
 }
 
 // ============ GarageBand ============
