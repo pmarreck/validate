@@ -251,7 +251,7 @@ pub fn validateIndd(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCode(.indd, .invalid_value, "INDD master page sequence number mismatch between primary and duplicate");
     }
 
-    return ValidationResult.okWithDepth(.indd, .full);
+    return ValidationResult.okWithDepth(.indd, .structural);
 }
 
 pub fn validateInddDeep(allocator: Allocator, path: []const u8) ValidationResult {

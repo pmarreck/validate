@@ -1963,7 +1963,7 @@ pub fn validateAmr(file: *FileSource) ValidationResult {
             .err => |e| return e,
             .ok => |count| if (count == 0) return ValidationResult.invalidCode(.amr, .truncated, "no AMR-WB frames found"),
         }
-        return ValidationResult.okWithDepth(.amr, .full);
+        return ValidationResult.okWithDepth(.amr, .structural);
     }
 
     if (std.mem.eql(u8, header[0..6], "#!AMR\n")) {
@@ -1973,7 +1973,7 @@ pub fn validateAmr(file: *FileSource) ValidationResult {
             .err => |e| return e,
             .ok => |count| if (count == 0) return ValidationResult.invalidCode(.amr, .truncated, "no AMR-NB frames found"),
         }
-        return ValidationResult.okWithDepth(.amr, .full);
+        return ValidationResult.okWithDepth(.amr, .structural);
     }
 
     return ValidationResult.invalidCode(.amr, .invalid_magic, "AMR");
@@ -2012,7 +2012,7 @@ pub fn validateAu(file: *FileSource) ValidationResult {
         if (expected_min > file_size) {
             return ValidationResult.invalidCodeMsg(.au, .exceeds_bounds, "Data size", "Data size exceeds file size (truncated)");
         }
-        return ValidationResult.okWithDepth(.au, .full);
+        return ValidationResult.okWithDepth(.au, .structural);
     }
 
     return ValidationResult.structuralOnly(.au);
@@ -2061,10 +2061,11 @@ pub fn validateTta(file: *FileSource) ValidationResult {
         }
     }
 
-    return ValidationResult.okWithDepth(.tta, .full);
+    return ValidationResult.okWithDepth(.tta, .structural);
 }
 
 /// Deep TTA validation: verifies seek table CRC32 and per-frame CRC32s.
+/// This IS full validation — CRC32 covers every byte of compressed audio data.
 pub fn validateTtaDeep(allocator: Allocator, path: []const u8) ValidationResult {
     var source = FileSource.open(path) catch |err| {
         return switch (err) {
@@ -2177,9 +2178,8 @@ pub fn validateTtaDeep(allocator: Allocator, path: []const u8) ValidationResult 
         frame_offset = frame_end;
     }
 
-    return ValidationResult.okWithDepth(.tta, .full);
+    return ValidationResult.okWithDepth(.tta, .full); // Per-frame CRC32 covers all audio bytes
 }
-
 // ============ CAF Validator ============
 
 /// Validate CAF (Core Audio Format) file structure.
@@ -2257,7 +2257,7 @@ pub fn validateCaf(file: *FileSource) ValidationResult {
         chunk_count += 1;
     }
 
-    return ValidationResult.okWithDepth(.caf, .full);
+    return ValidationResult.okWithDepth(.caf, .structural);
 }
 
 // ============ AAC ADTS Validator ============
@@ -2505,8 +2505,7 @@ test "validateAmr accepts ground truth AMR" {
     const result = validateAmr(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.amr, result.format);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
-}
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);}
 
 test "validateAmr rejects reserved AMR-NB frame type 12" {
     var tmp = testing.tmpDir(.{});
@@ -2534,8 +2533,7 @@ test "validateAmr accepts truncated-last-frame AMR-NB (streaming tolerance)" {
     defer source.close();
     const result = validateAmr(&source);
     try testing.expect(result.is_valid);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
-}
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);}
 test "validateAu accepts ground truth AU" {
     var source = FileSource.open("ground_truth_examples/au/sample.au") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();

@@ -430,7 +430,7 @@ pub fn validateCubase(file: *FileSource) ValidationResult {
     }
 
     // RIFF structure fully walked; this IS the integrity check for CPR
-    return ValidationResult.okWithDepth(.cpr, .full);
+    return ValidationResult.okWithDepth(.cpr, .structural);
 }
 
 /// Validate Cubase project from an in-memory buffer.
@@ -478,7 +478,7 @@ pub fn validateCubaseFromBuffer(data: []const u8) ValidationResult {
         return ValidationResult.invalid(.cpr, "Empty RIFF container — no chunks found");
     }
 
-    return ValidationResult.okWithDepth(.cpr, .full);
+    return ValidationResult.okWithDepth(.cpr, .structural);
 }
 
 // ============ Pro Tools (PTX) ============
@@ -665,7 +665,7 @@ pub fn validatePtxDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalid(.ptx, "No valid ZMARK blocks found after decryption");
     }
 
-    return ValidationResult.okWithDepth(.ptx, .full);
+    return ValidationResult.okWithDepth(.ptx, .structural);
 }
 
 // ============ GarageBand ============
@@ -771,7 +771,7 @@ pub fn validateReason(file: *FileSource) ValidationResult {
                 }
 
                 if (chunks_found > 0) {
-                    return ValidationResult.okWithDepth(.reason, .full);
+                    return ValidationResult.okWithDepth(.reason, .structural);
                 }
             }
         }

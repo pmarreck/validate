@@ -3806,7 +3806,7 @@ pub fn validateQoi(file: *FileSource) ValidationResult {
         return ValidationResult.invalid(.qoi, "QOI end marker missing or corrupted");
     }
 
-    return ValidationResult.okWithDepth(.qoi, .full);
+    return ValidationResult.okWithDepth(.qoi, .structural);
 }
 
 // ============ TGA Validator ============
@@ -3902,7 +3902,7 @@ pub fn validateTga(file: *FileSource) ValidationResult {
                 return ValidationResult.invalid(.tga, "TGA v2 dev_area_offset out of bounds");
             }
 
-            return ValidationResult.okWithDepth(.tga, .full);
+            return ValidationResult.okWithDepth(.tga, .structural);
         }
 
     }
@@ -4023,7 +4023,7 @@ pub fn validatePam(file: *FileSource) ValidationResult {
             return ValidationResult.invalidCodeMsg(.pam, .exceeds_bounds, "PAM pixel data", "PAM file truncated: pixel data smaller than expected");
         }
         if (actual_size == header_end + expected_data) {
-            return ValidationResult.okWithDepth(.pam, .full);
+            return ValidationResult.okWithDepth(.pam, .structural);
         }
         return ValidationResult.structuralOnly(.pam);
     } else {
@@ -4088,7 +4088,7 @@ pub fn validatePam(file: *FileSource) ValidationResult {
             return ValidationResult.invalidCodeMsg(.pam, .exceeds_bounds, "PNM pixel data", "PNM file truncated: pixel data smaller than expected");
         }
         if (actual_size == header_size + expected_data) {
-            return ValidationResult.okWithDepth(.pam, .full);
+            return ValidationResult.okWithDepth(.pam, .structural);
         }
         return ValidationResult.structuralOnly(.pam);
     }
@@ -4185,7 +4185,7 @@ pub fn validateDpx(file: *FileSource) ValidationResult {
     // Integrity check: declared file_size matches actual size proves no truncation/corruption.
     // 0xFFFFFFFF is the "undefined" sentinel; fall back to structural in that case.
     if (declared_size != 0xFFFFFFFF and declared_size == actual_size) {
-        return ValidationResult.okWithDepth(.dpx, .full);
+        return ValidationResult.okWithDepth(.dpx, .structural);
     }
 
     return ValidationResult.structuralOnly(.dpx);
@@ -4765,7 +4765,7 @@ test "validateTga rejects invalid image type" {
     try testing.expect(!result.is_valid);
 }
 
-test "validateTga v2 footer returns full depth" {
+test "validateTga v2 footer returns structural depth" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     // Minimal valid TGA v1 header (18 bytes): uncompressed true-color, 1x1, 24bpp
@@ -4793,7 +4793,7 @@ test "validateTga v2 footer returns full depth" {
     defer source.close();
     const result = validateTga(&source);
     try testing.expect(result.is_valid);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validateTga v1 (no footer) returns structural depth" {
@@ -4870,14 +4870,13 @@ test "validateTga v2 rejects out-of-bounds dev_area_offset" {
 
 // ---- PAM ----
 
-test "validatePam accepts valid PPM from ground truth with full depth" {
+test "validatePam accepts valid PPM from ground truth with structural depth" {
     var source = FileSource.open("ground_truth_examples/pam/sample.ppm") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
     const result = validatePam(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.pam, result.format);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
-}
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);}
 
 test "validatePam rejects invalid magic" {
     var tmp = testing.tmpDir(.{});
@@ -4907,7 +4906,7 @@ test "validatePam rejects out-of-range type" {
     try testing.expect(!result.is_valid);
 }
 
-test "validatePam returns full depth for exact-size P6" {
+test "validatePam returns structural depth for exact-size P6" {
     // P6 2x2 RGB 8-bit: header = "P6\n2 2\n255\n" (11 bytes), data = 2*2*3 = 12 bytes, total = 23
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -4921,8 +4920,7 @@ test "validatePam returns full depth for exact-size P6" {
     defer source.close();
     const result = validatePam(&source);
     try testing.expect(result.is_valid);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
-}
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);}
 
 test "validatePam rejects truncated P6" {
     // P6 2x2 RGB 8-bit: header = "P6\n2 2\n255\n" (11 bytes), data should be 12 bytes but we only write 6
@@ -4942,14 +4940,13 @@ test "validatePam rejects truncated P6" {
 
 // ---- DPX ----
 
-test "validateDpx accepts valid DPX from ground truth with full depth" {
+test "validateDpx accepts valid DPX from ground truth with structural depth" {
     var source = FileSource.open("ground_truth_examples/dpx/sample.dpx") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
     const result = validateDpx(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.dpx, result.format);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
-}
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);}
 
 test "validateDpx rejects invalid magic" {
     var tmp = testing.tmpDir(.{});
@@ -5034,10 +5031,9 @@ test "validateDpx rejects corrupted element count" {
     try testing.expect(!validateDpx(&f).is_valid);
 }
 
-test "validateDpx returns full depth when declared size matches actual" {
+test "validateDpx returns structural depth when declared size matches actual" {
     // Build a minimal DPX where declared file_size == actual file size (1100 bytes)
-    var dpx: [1100]u8 = undefined;
-    @memset(&dpx, 0);
+    var dpx: [1100]u8 = undefined;    @memset(&dpx, 0);
     @memcpy(dpx[0..4], "SDPX");
     std.mem.writeInt(u32, dpx[4..8], 1024, .big); // image offset
     dpx[8] = 'V'; dpx[9] = '2'; dpx[10] = '.'; dpx[11] = '0';
@@ -5056,8 +5052,7 @@ test "validateDpx returns full depth when declared size matches actual" {
     defer source.close();
     const result = validateDpx(&source);
     try testing.expect(result.is_valid);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
-}
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);}
 
 test "validateDpx returns structural when declared size mismatches actual" {
     // Same minimal DPX but declared size is wrong (says 2000, actual is 1100)

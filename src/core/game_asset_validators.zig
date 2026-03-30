@@ -478,7 +478,7 @@ fn bspValidateLumps(
         prev_offset = lump.offset;
     }
 
-    return ValidationResult.okWithDepth(format, .full);
+    return ValidationResult.okWithDepth(format, .structural);
 }
 
 // ============ VPK (Valve PAK) Validator ============
@@ -547,7 +547,7 @@ pub fn validateVpk(file: *FileSource) ValidationResult {
 
 	// An empty tree is valid (directory-only VPK with no embedded data)
 	if (tree_size == 0) {
-		return ValidationResult.okWithDepth(.vpk, .full);
+		return ValidationResult.okWithDepth(.vpk, .structural);
 	}
 
 	// Read the entire tree into a heap buffer (may be large)
@@ -640,7 +640,7 @@ pub fn validateVpk(file: *FileSource) ValidationResult {
 		}
 	}
 
-	return ValidationResult.okWithDepth(.vpk, .full);
+	return ValidationResult.okWithDepth(.vpk, .structural);
 }
 
 // ============ IFF/Blorb Validators ============
@@ -959,8 +959,7 @@ test "VPK validation - valid v2 sample (empty tree)" {
 	defer source.close();
 	const result = validateVpk(&source);
 	try testing.expect(result.is_valid);
-	try testing.expectEqual(ValidationDepth.full, result.validation_depth);
-}
+	try testing.expectEqual(ValidationDepth.structural, result.validation_depth);}
 
 test "VPK validation - bad signature rejected" {
 	// Craft a 12-byte buffer with wrong signature
@@ -1179,8 +1178,7 @@ test "BSP validator - ground truth file (Quake 1/2/3 or Source)" {
 		found_any = true;
 		const result = validateBsp(&source);
 		try testing.expect(result.is_valid);
-		try testing.expectEqual(ValidationDepth.full, result.validation_depth);
-	}
+		try testing.expectEqual(ValidationDepth.structural, result.validation_depth);	}
 	if (!found_any) return error.SkipZigTest;
 }
 
@@ -1282,5 +1280,4 @@ test "BSP validator - accepts valid Quake 1 BSP in memory" {
 	defer source.close();
 	const result = validateBsp(&source);
 	try testing.expect(result.is_valid);
-	try testing.expectEqual(ValidationDepth.full, result.validation_depth);
-}
+	try testing.expectEqual(ValidationDepth.structural, result.validation_depth);}
