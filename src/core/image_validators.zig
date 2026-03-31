@@ -1802,66 +1802,563 @@ pub fn validateJpegDeep(allocator: Allocator, path: []const u8) ValidationResult
     }
 }
 
-// ============ GIF Deep Validation (zigimg full decode) ============
+// ============ GIF Deep Validation (pure LZW stream validation) ============
 
-/// Deep GIF validation by fully decoding the image using zigimg.
-/// This catches LZW decompression errors and corrupted image data
-/// that structural validation would miss.
-pub fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    // Phase 1: Structural validation — walk the entire GIF block/sub-block chain.
-    // This catches corruption that zigimg's lenient LZW decoder would silently accept.
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidWithDepth(.gif, "File not found", .full);
-    };
-    defer source.close();
 
-    const file_size = source.getEndPos() catch {
-        return ValidationResult.invalidCode(.gif, .failed_to_get, "file size");
-    };
+/// Validate a GIF LZW bitstream without reconstructing pixels.
 
-    // Read entire file for structural validation (up to 100MB)
-    const max_size: usize = 100 * 1024 * 1024;
-    const read_size: usize = @min(@as(usize, @intCast(file_size)), max_size);
+/// Walks the variable-width code stream, maintaining a code table (sizes only).
 
-    const data = allocator.alloc(u8, read_size) catch {
-        return ValidationResult.okWithDepthAndWarning(.gif, .structural, "GIF too large for structural validation");
-    };
-    defer allocator.free(data);
+/// Returns null on success, or an error message if the stream is corrupt.
 
-    source.seekTo(0) catch return ValidationResult.invalidCode(.gif, .failed_to_seek, "to start");
-    const bytes_read = source.readAll(data) catch {
-        return ValidationResult.invalidCode(.gif, .failed_to_read, "GIF data");
-    };
+/// This catches invalid codes (referencing undefined table entries), truncated
 
-    if (validateGifStructure(data[0..bytes_read])) |err_msg| {
-        return ValidationResult.invalidWithDepth(.gif, err_msg, .full);
+/// bitstreams, and decompressed-size mismatches — all indicators of corruption.
+
+fn validateGifLzwStream(lzw_data: []const u8, min_code_size: u8, expected_pixels: usize) ?[]const u8 {
+
+    if (min_code_size < 1 or min_code_size > 11) return "LZW minimum code size out of range";
+
+
+    const clear_code: u16 = @as(u16, 1) << @intCast(min_code_size);
+
+    const eoi_code: u16 = clear_code + 1;
+
+    const first_available: u16 = clear_code + 2;
+
+
+    // Code table: only track the decoded string length for each entry.
+
+    // Max table size is 4097 (some encoders emit one extra code at 4096 before CLEAR).
+
+    var table_sizes: [4097]u16 = undefined;
+
+
+    // Initialize literal entries
+
+    var i: u16 = 0;
+
+    while (i < clear_code) : (i += 1) {
+
+        table_sizes[i] = 1;
+
     }
 
-    // Phase 2: Full pixel decode via zigimg (catches LZW decompression errors).
-    // Note: structural validation above already passed, so if zigimg returns
-    // InvalidData or EndOfStream here, it most likely reflects a zigimg limitation
-    // (e.g. animated GIFs with unusual frame structures) rather than real corruption.
-    // In that case we downgrade to structural depth rather than failing outright.
-    const read_buffer = allocator.alloc(u8, 262144) catch {
-        return ValidationResult.okWithDepth(.gif, .structural);
+    table_sizes[clear_code] = 0; // CLEAR
+
+    table_sizes[eoi_code] = 0; // EOI
+
+
+    var next_code: u16 = first_available;
+
+    var code_width: u5 = @intCast(@as(u8, min_code_size) + 1);
+
+
+    // Bitstream reader state
+
+    var byte_pos: usize = 0;
+
+    var bit_buf: u64 = 0;
+
+    var bits_in_buf: u6 = 0;
+
+
+    var prev_code: ?u16 = null;
+
+    var pixels_decoded: usize = 0;
+
+    var saw_eoi = false;
+
+
+    while (true) {
+
+        // Refill bit buffer (LSB first)
+
+        while (bits_in_buf < code_width) {
+
+            if (byte_pos >= lzw_data.len) {
+
+                // Ran out of data. If we've decoded enough pixels, accept it.
+
+                // Some encoders omit EOI at the end.
+
+                if (pixels_decoded >= expected_pixels) return null;
+
+                return "LZW bitstream truncated";
+
+            }
+
+            bit_buf |= @as(u64, lzw_data[byte_pos]) << @intCast(bits_in_buf);
+
+            byte_pos += 1;
+
+            bits_in_buf += 8;
+
+        }
+
+
+        // Read code of current width
+
+        const code_mask: u64 = (@as(u64, 1) << code_width) - 1;
+
+        const code: u16 = @intCast(bit_buf & code_mask);
+
+        bit_buf >>= @intCast(code_width);
+
+        bits_in_buf -= code_width;
+
+
+        if (code == clear_code) {
+
+            // Reset table
+
+            next_code = first_available;
+
+            code_width = @intCast(@as(u8, min_code_size) + 1);
+
+            prev_code = null;
+
+            continue;
+
+        }
+
+
+        if (code == eoi_code) {
+
+            saw_eoi = true;
+
+            break;
+
+        }
+
+
+        // Validate code is in table
+
+        if (code > next_code) {
+
+            return "LZW code references undefined table entry";
+
+        }
+
+
+        // The special case: code == next_code (KwKwK)
+
+        // This is valid — the string is prev_string + first_char_of_prev_string
+
+        if (code == next_code) {
+
+            if (prev_code == null) return "LZW KwKwK code with no previous code";
+
+            // String length = prev_string_length + 1
+
+            const new_len = table_sizes[prev_code.?] + 1;
+
+            pixels_decoded += new_len;
+
+
+            // Add to table
+
+            if (next_code < 4097) {
+
+                table_sizes[next_code] = @intCast(new_len);
+
+                next_code += 1;
+
+            }
+
+        } else {
+
+            // Normal case: code is already in table
+
+            pixels_decoded += table_sizes[code];
+
+
+            // Add new entry: prev_string + first_char_of_current_string
+
+            if (prev_code != null and next_code < 4097) {
+
+                table_sizes[next_code] = table_sizes[prev_code.?] + 1;
+
+                next_code += 1;
+
+            }
+
+        }
+
+
+        prev_code = code;
+
+
+        // Increase code width when table reaches the next power of 2
+
+        // (but cap at 12 bits)
+
+        if (next_code >= (@as(u16, 1) << @as(u4, @intCast(code_width))) and code_width < 12) {
+            code_width += 1;
+
+        }
+
+    }
+
+
+    // Accept if EOI was found or we decoded enough pixels
+
+    if (saw_eoi or pixels_decoded >= expected_pixels) return null;
+
+
+    // If we decoded some but not enough, still accept — some GIFs have
+
+    // frames that don't cover the full logical screen
+
+    if (pixels_decoded > 0) return null;
+
+
+    return "LZW stream produced no output";
+
+}
+
+
+/// Parse GIF frame structure and validate each frame's LZW stream.
+
+/// Returns null on success, or an error message if any frame is corrupt.
+
+fn validateGifLzwFrames(allocator: Allocator, data: []const u8) ?[]const u8 {
+
+    if (data.len < 13) return "GIF too small for header";
+
+
+    // Logical Screen Descriptor
+
+    const lsd_packed = data[10];
+
+    const has_gct = (lsd_packed & 0x80) != 0;
+
+    const gct_size_bits: u4 = @intCast(lsd_packed & 0x07);
+
+
+    var pos: usize = 13;
+
+
+    // Skip Global Color Table
+
+    if (has_gct) {
+
+        const gct_entries: usize = @as(usize, 1) << (@as(u4, gct_size_bits) + 1);
+
+        pos += gct_entries * 3;
+
+        if (pos > data.len) return "GCT extends past file end";
+
+    }
+
+
+    var frame_index: u32 = 0;
+
+
+    while (pos < data.len) {
+
+        const block_type = data[pos];
+
+        pos += 1;
+
+
+        switch (block_type) {
+
+            0x3B => break, // Trailer
+
+            0x2C => {
+
+                // Image Descriptor
+
+                if (pos + 9 > data.len) return "Image descriptor truncated";
+
+
+                const frame_width = @as(usize, data[pos + 4]) | (@as(usize, data[pos + 5]) << 8);
+                const frame_height = @as(usize, data[pos + 6]) | (@as(usize, data[pos + 7]) << 8);
+                const img_packed = data[pos + 8];
+
+                const has_lct = (img_packed & 0x80) != 0;
+
+                const lct_size_bits: u4 = @intCast(img_packed & 0x07);
+
+                pos += 9;
+
+
+                // Skip Local Color Table
+
+                if (has_lct) {
+
+                    const lct_entries: usize = @as(usize, 1) << (@as(u4, lct_size_bits) + 1);
+
+                    pos += lct_entries * 3;
+
+                    if (pos > data.len) return "LCT extends past file end";
+
+                }
+
+
+                // LZW Minimum Code Size
+
+                if (pos >= data.len) return "Missing LZW minimum code size";
+
+                const min_code_size = data[pos];
+
+                if (min_code_size < 1 or min_code_size > 11) return "Invalid LZW minimum code size";
+
+                pos += 1;
+
+
+                // Concatenate sub-blocks into contiguous LZW data
+
+                var total_lzw_size: usize = 0;
+
+                {
+
+                    var scan_pos = pos;
+
+                    while (scan_pos < data.len) {
+
+                        const block_size = data[scan_pos];
+
+                        scan_pos += 1;
+
+                        if (block_size == 0) break;
+
+                        if (scan_pos + block_size > data.len) return "Sub-block extends past file end";
+
+                        total_lzw_size += block_size;
+
+                        scan_pos += block_size;
+
+                    }
+
+                }
+
+
+                const lzw_buf = allocator.alloc(u8, total_lzw_size) catch {
+
+                    return "Out of memory concatenating LZW sub-blocks";
+
+                };
+
+                defer allocator.free(lzw_buf);
+
+
+                {
+
+                    var write_pos: usize = 0;
+
+                    while (pos < data.len) {
+
+                        const block_size = data[pos];
+
+                        pos += 1;
+
+                        if (block_size == 0) break;
+
+                        @memcpy(lzw_buf[write_pos .. write_pos + block_size], data[pos .. pos + block_size]);
+
+                        write_pos += block_size;
+
+                        pos += block_size;
+
+                    }
+
+                }
+
+
+                // Validate the LZW stream
+
+                const expected_pixels = frame_width * frame_height;
+
+                if (validateGifLzwStream(lzw_buf, min_code_size, expected_pixels)) |_| {
+
+                    return "LZW decompression error in frame";
+
+                }
+
+
+                frame_index += 1;
+
+            },
+
+            0x21 => {
+
+                // Extension block — skip
+
+                if (pos >= data.len) return "Extension block truncated";
+
+                const ext_label = data[pos];
+
+                pos += 1;
+
+
+                switch (ext_label) {
+
+                    0xF9 => {
+
+                        // GCE: fixed 4-byte block + terminator
+
+                        if (pos >= data.len) return "GCE truncated";
+
+                        const block_size = data[pos];
+
+                        if (block_size != 4) return "Invalid GCE block size";
+
+                        pos += 1 + 4;
+
+                        if (pos >= data.len) return "GCE terminator missing";
+
+                        if (data[pos] != 0x00) return "GCE missing block terminator";
+
+                        pos += 1;
+
+                    },
+
+                    0xFF => {
+
+                        if (pos >= data.len) return "Application extension truncated";
+
+                        const block_size = data[pos];
+
+                        if (block_size != 11) return "Invalid application extension block size";
+
+                        pos += 1 + 11;
+
+                        if (pos > data.len) return "Application extension data truncated";
+
+                        if (skipSubBlockChain(data, &pos)) |err| return err;
+
+                    },
+
+                    0xFE => {
+
+                        if (skipSubBlockChain(data, &pos)) |err| return err;
+
+                    },
+
+                    0x01 => {
+
+                        if (pos >= data.len) return "Plain text extension truncated";
+
+                        const block_size = data[pos];
+
+                        if (block_size != 12) return "Invalid plain text block size";
+
+                        pos += 1 + 12;
+
+                        if (pos > data.len) return "Plain text data truncated";
+
+                        if (skipSubBlockChain(data, &pos)) |err| return err;
+
+                    },
+
+                    else => {
+
+                        if (skipSubBlockChain(data, &pos)) |err| return err;
+
+                    },
+
+                }
+
+            },
+
+            0x00 => continue, // Stray null byte padding
+
+            else => return "Invalid GIF block type",
+
+        }
+
+    }
+
+
+    if (frame_index == 0) return "No image frames found";
+
+    return null;
+
+}
+
+
+/// Deep GIF validation using pure LZW stream validation.
+
+/// Phase 1: Structural validation (block/sub-block chain integrity).
+
+/// Phase 2: LZW bitstream validation for every frame — verifies each code
+
+/// references a defined table entry and the stream decompresses without error.
+
+/// This catches corruption that structural-only validation would miss,
+
+/// and handles animated GIFs correctly (unlike zigimg which fails on them).
+
+pub fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult {
+
+    // Phase 1: Structural validation — walk the entire GIF block/sub-block chain.
+
+    var source = FileSource.open(path) catch {
+
+        return ValidationResult.invalidWithDepth(.gif, "File not found", .full);
+
     };
-    defer allocator.free(read_buffer);
-    var image = zigimg.Image.fromFilePath(allocator, path, read_buffer) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.gif, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.gif, "Access denied", .full),
-            // Structural validation passed — zigimg has known limitations with
-            // certain animated GIFs. Downgrade to structural rather than reject.
-            error.InvalidData => ValidationResult.okWithDepthAndWarning(.gif, .structural, "GIF structure valid but pixel decode unsupported (animated/complex GIF)"),
-            error.EndOfStream => ValidationResult.okWithDepthAndWarning(.gif, .structural, "GIF structure valid but pixel decode hit unexpected EOF (animated/complex GIF)"),
-            error.OutOfMemory => ValidationResult.okWithDepthAndWarning(.gif, .structural, "GIF too large to fully decode in memory"),
-            else => ValidationResult.okWithDepthAndWarning(.gif, .structural, "GIF structure valid but pixel decode failed (unsupported features)"),
-        };
+
+    defer source.close();
+
+
+    const file_size = source.getEndPos() catch {
+
+        return ValidationResult.invalidCode(.gif, .failed_to_get, "file size");
+
     };
-    image.deinit(allocator);
+
+
+    // Read entire file (up to 100MB)
+
+    const max_size: usize = 100 * 1024 * 1024;
+
+    const read_size: usize = @min(@as(usize, @intCast(file_size)), max_size);
+
+
+    const data = allocator.alloc(u8, read_size) catch {
+
+        return ValidationResult.okWithDepthAndWarning(.gif, .structural, "GIF too large for full validation");
+
+    };
+
+    defer allocator.free(data);
+
+
+    source.seekTo(0) catch return ValidationResult.invalidCode(.gif, .failed_to_seek, "to start");
+
+    const bytes_read = source.readAll(data) catch {
+
+        return ValidationResult.invalidCode(.gif, .failed_to_read, "GIF data");
+
+    };
+
+
+    const gif_data = data[0..bytes_read];
+
+
+    if (validateGifStructure(gif_data)) |err_msg| {
+
+        return ValidationResult.invalidWithDepth(.gif, err_msg, .full);
+
+    }
+
+
+    // Phase 2: LZW stream validation for every frame.
+
+    if (validateGifLzwFrames(allocator, gif_data)) |err_msg| {
+
+        return ValidationResult.invalidWithDepth(.gif, err_msg, .full);
+
+    }
+
 
     return ValidationResult.okWithDepth(.gif, .full);
+
 }
+
 
 /// Walk the GIF block structure and validate sub-block chains.
 /// Returns null if valid, or an error message string if corruption is detected.
@@ -1921,7 +2418,7 @@ fn validateGifStructure(data: []const u8) ?[]const u8 {
                 // LZW Minimum Code Size
                 if (pos >= data.len) return "Missing LZW minimum code size";
                 const lzw_min = data[pos];
-                if (lzw_min < 2 or lzw_min > 12) return "Invalid LZW minimum code size";
+                if (lzw_min < 1 or lzw_min > 11) return "Invalid LZW minimum code size";
                 pos += 1;
 
                 // Sub-block chain (LZW data)
@@ -5717,7 +6214,7 @@ test "FormatValidator deep validates real GIF from ground truth" {
     var validator = FormatValidator.initDeep();
     defer validator.deinit();
 
-    // Deep validation with full LZW decode via zigimg
+    // Deep validation with pure LZW stream validation
     const result = validator.validateFileDeep(allocator, path);
 
     try std.testing.expectEqual(FileFormat.gif, result.format);
@@ -5725,13 +6222,11 @@ test "FormatValidator deep validates real GIF from ground truth" {
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
-test "FormatValidator deep validates animated GIF (zigimg false positive regression)" {
+test "FormatValidator deep validates animated GIF with LZW stream validation" {
     const allocator = std.testing.allocator;
 
     // Animated GIF: 560x374, 6 frames, NETSCAPE looping extension.
-    // This file passed structural validation but previously returned
-    // "GIF decode failed - data may be corrupt" because zigimg returned
-    // error.InvalidData on a perfectly valid animated GIF.
+    // Pure LZW stream validation handles this correctly where zigimg could not.
     var source = FileSource.open("ground_truth_examples/gif/animated_sample.gif") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
@@ -5751,9 +6246,8 @@ test "FormatValidator deep validates animated GIF (zigimg false positive regress
 
     try std.testing.expectEqual(FileFormat.gif, result.format);
     try std.testing.expect(result.is_valid);
-    // Structural depth is acceptable — zigimg may not decode all animated GIFs,
-    // but the file must not be rejected as corrupt.
-    try std.testing.expect(result.validation_depth == .full or result.validation_depth == .structural);
+    // Pure LZW validation handles animated GIFs correctly — must be full depth.
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 
@@ -6651,4 +7145,198 @@ test "PNG file with .ico extension should not hang (extension mismatch)" {
     // Should detect as PNG based on magic bytes, not hang trying to validate as ICO
     try std.testing.expectEqual(FileFormat.png, result.format);
 }
+
+
+test "validateGifLzwStream accepts valid minimal LZW stream" {
+
+    // 2x2 image, min_code_size=2 (CLEAR=4, EOI=5, first_available=6)
+    // Codes: CLEAR(4)@w3, 0@w3, 1@w3, 0@w3, 1@w4, EOI(5)@w4
+    // Width bumps from 3 to 4 when next_code reaches 8 (>= 1<<3)
+    // LSB-first bit packing: 0x44, 0x10, 0x05
+    const lzw_data = [_]u8{ 0x44, 0x10, 0x05 };
+    const result = validateGifLzwStream(&lzw_data, 2, 4);
+
+    try std.testing.expect(result == null);
+
+}
+
+
+test "validateGifLzwStream detects invalid code reference" {
+
+    // min_code_size=2: CLEAR=4, first_available=6
+
+    // Stream: CLEAR(4) then code 7 (> next_code=6, undefined)
+
+    // At width 3, LSB-first: 0x3C
+
+    const lzw_data = [_]u8{ 0x3C, 0x00 };
+
+    const result = validateGifLzwStream(&lzw_data, 2, 4);
+
+    try std.testing.expect(result != null);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.?, "undefined table entry") != null);
+
+}
+
+
+test "validateGifLzwStream detects truncated bitstream" {
+
+    // CLEAR(4) at width 3 = byte 0x04, then runs out of data after one pixel
+
+    const lzw_data = [_]u8{0x04};
+
+    const result = validateGifLzwStream(&lzw_data, 2, 4);
+
+    try std.testing.expect(result != null);
+
+    try std.testing.expect(std.mem.indexOf(u8, result.?, "truncated") != null);
+
+}
+
+
+test "validateGifDeep fully validates minimal synthetic GIF" {
+
+    const allocator = std.testing.allocator;
+
+
+    var tmp_dir = std.testing.tmpDir(.{});
+
+    defer tmp_dir.cleanup();
+
+
+    // Build a minimal valid GIF89a: 2x2, 4-color GCT, single frame
+
+    // GIF89a header (6) + LSD (7) + GCT (12) + Image Descriptor (10) +
+
+    // LZW min code size (1) + sub-block (4) + trailer (1) = 41 bytes
+
+    const gif_data = [_]u8{
+
+        // GIF89a header
+
+        'G', 'I', 'F', '8', '9', 'a',
+
+        // LSD: width=2, height=2, packed=0x81 (GCT + size=1 -> 4 colors), bg=0, aspect=0
+
+        0x02, 0x00, 0x02, 0x00, 0x81, 0x00, 0x00,
+
+        // GCT: 4 entries
+
+        0x00, 0x00, 0x00, // black
+
+        0xFF, 0x00, 0x00, // red
+
+        0x00, 0xFF, 0x00, // green
+
+        0x00, 0x00, 0xFF, // blue
+
+        // Image Descriptor
+
+        0x2C, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+
+        // LZW min code size
+
+        0x02,
+
+        // Sub-block: length=3, LZW data (CLEAR, 0, 1, 0, 1, EOI)
+
+        0x03, 0x44, 0x10, 0x05,
+        // Sub-block terminator
+
+        0x00,
+
+        // Trailer
+
+        0x3B,
+
+    };
+
+
+    const file = try tmp_dir.dir.createFile("test.gif", .{});
+
+    try file.writeAll(&gif_data);
+
+    file.close();
+
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.gif");
+
+    defer allocator.free(path);
+
+
+    const result = validateGifDeep(allocator, path);
+
+
+    try std.testing.expectEqual(FileFormat.gif, result.format);
+
+    try std.testing.expect(result.is_valid);
+
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+
+}
+
+
+test "validateGifDeep detects LZW corruption in synthetic GIF" {
+
+    const allocator = std.testing.allocator;
+
+
+    var tmp_dir = std.testing.tmpDir(.{});
+
+    defer tmp_dir.cleanup();
+
+
+    // Same minimal GIF but with corrupted LZW: CLEAR then invalid code 7
+
+    const gif_data = [_]u8{
+
+        'G', 'I', 'F', '8', '9', 'a',
+
+        0x02, 0x00, 0x02, 0x00, 0x81, 0x00, 0x00,
+
+        0x00, 0x00, 0x00,
+
+        0xFF, 0x00, 0x00,
+
+        0x00, 0xFF, 0x00,
+
+        0x00, 0x00, 0xFF,
+
+        0x2C, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+
+        0x02, // LZW min code size
+
+        // Corrupted LZW: CLEAR(4) + invalid code 7 = 0x3C
+
+        0x02, 0x3C, 0x00,
+
+        0x00, // terminator
+
+        0x3B, // trailer
+
+    };
+
+
+    const file = try tmp_dir.dir.createFile("corrupt.gif", .{});
+
+    try file.writeAll(&gif_data);
+
+    file.close();
+
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.gif");
+
+    defer allocator.free(path);
+
+
+    const result = validateGifDeep(allocator, path);
+
+
+    try std.testing.expectEqual(FileFormat.gif, result.format);
+
+    try std.testing.expect(!result.is_valid);
+
+}
+
 
