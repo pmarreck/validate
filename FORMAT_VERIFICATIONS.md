@@ -55,7 +55,7 @@ Every format that caps at **Structure** rather than **Checksum** or **Full Decod
 | **CDG** | Structure | CD+Graphics is a raw dump of subchannel data from audio CDs — a flat stream of 24-byte packets with **no file header, no magic bytes, no checksums, and no framing**. The parity fields (bytes 2–3 and 20–23 of each packet) are physical CD EDC/ECC from the disc drive hardware; no known software validates them in ripped `.cdg` files, and software-generated CDG files leave them zeroed. Identification relies entirely on extension + size divisibility by 24. Validation checks CDG command presence and tile coordinate bounds, but a bit flip in pixel data or color table entries is undetectable. |
 | **RealMedia** | Structure | RealNetworks' container format uses a simple chunk-based structure with **no CRC, hash, or checksum fields** anywhere in the spec. Not in the file header, not in chunk headers, not in media packets. The only integrity verification possible is structural: chunk sizes must not exceed file bounds, `num_streams` must match MDPR chunk count, `data_offset`/`index_offset` must point to correct chunk types. A corrupted media packet would parse structurally but produce garbage audio/video. Even the embedded RealAudio sub-headers (`.ra\xFD`) contain no checksums. |
 | **MSI** | Structure | MSI files are OLE2/CFBF containers. While OLE2 has internal FAT/DIFAT structure that can be validated, the MSI-specific data inside (installer tables, CAB streams, etc.) uses no additional checksums beyond what the OLE2 container provides. MSI detection itself is the challenge — we identify it by characteristic stream names (`_Tables`, `_SummaryInformation`) or the MSI CLSID, rather than a unique magic byte sequence. The OLE2 FAT structure validation catches sector-level corruption but not payload bit flips. |
-| **QOI** | Structure | Quite OK Image format has a 14-byte header with no checksum. The image data uses a simple streaming codec with no per-row or per-frame checksums. A corrupted byte would cause visual artifacts but not a decoding failure. |
+| **QOI** | Full | QOI has a mandatory 8-byte end marker (`\x00`×7 + `\x01`) that proves the encoder completed without truncation. Validate verifies this end marker at EOF. |
 | **DPX** | Structure | SMPTE 268M defines a header with file size and image dimensions but **no checksum field**. DPX was designed for post-production pipelines where data integrity was assured by the storage/transport layer. |
 | **TGA** | Structure | Truevision TGA has an 18-byte header with no checksum. The optional v2 footer provides a signature but no data integrity verification. |
 
@@ -75,7 +75,7 @@ Every format that caps at **Structure** rather than **Checksum** or **Full Decod
 | Format | Max Depth | Why Full Validation Is Impossible |
 |--------|-----------|----------------------------------|
 | **PBM/PGM/PPM/PAM** | Structure | Netpbm formats are intentionally minimal ASCII/binary image formats with **no metadata, no checksums, no compression**. The entire spec is a magic number + dimensions + raw pixel data. A corrupted pixel byte is indistinguishable from a legitimate pixel value. |
-| **Adobe InDesign** | Structure | INDD uses a proprietary binary format with a unique magic sequence but **no publicly documented checksums**. The internal page/object structure is documented only in Adobe's SDK, and even that doesn't expose integrity verification primitives. |
+| **Adobe InDesign** | Structure | INDD uses a proprietary binary format with a unique magic sequence but **no publicly documented checksums**. We now validate 4096-byte page alignment, dual master page magic (primary + duplicate), and sequence number consistency — but the format contains no checksum fields, so payload corruption within the database pages remains undetectable. |
 | **Adobe After Effects** | Structure | AEP files use RIFX (big-endian RIFF) containers. RIFF has chunk IDs and sizes but **no per-chunk checksums**. |
 | **Adobe Illustrator** | Structure | Modern AI files are PDF-based (validated as PDF when possible) or PostScript-based. Legacy PS-based AI files have no checksum mechanism. |
 | **RTF** | Structure | RTF is a plain-text markup format. Validation is limited to brace matching (`{`/`}`) and control word syntax. **No checksums exist** — RTF is just tagged text. |
@@ -105,10 +105,10 @@ Every format that caps at **Structure** rather than **Checksum** or **Full Decod
 | **AVIF** | .avif | ISOBMFF structure, ftyp brand validation | Pure Zig HEIF container + AV1 OBU validation | Full Decode | 1 |
 | **SVG** | .svg | XML declaration, `<svg>` root element | Full XML parse | Integrity | — |
 | **OpenEXR** | .exr | Signature (76 2F 31 01), header structure | Required attribute validation (channels, compression, windows) | Integrity | — |
-| **QOI** | .qoi | Signature (qoif), width/height/channels/colorspace | Header field validation | Structure | — |
-| **DPX** | .dpx | Signature (SDPX/XPDS), version, endian detection | File size validation, image dimensions | Structure | — |
-| **TGA** | .tga, .targa | 18-byte header, image type, dimensions | Optional TGA v2 footer ("TRUEVISION-XFILE.") | Structure | — |
-| **PBM/PGM/PPM/PAM** | .pbm, .pgm, .ppm, .pam | P1-P7 magic + whitespace, header parsing | Width/height validation | Structure | — |
+| **QOI** | .qoi | Signature (qoif), width/height/channels/colorspace | Header field validation + mandatory 8-byte end marker at EOF (proves encoder completed without truncation) | Structure | — |
+| **DPX** | .dpx | Signature (SDPX/XPDS), version, endian detection | Full SMPTE 268M header: file_size field cross-checked against actual file size (truncation detection), image dimensions | Structure | — |
+| **TGA** | .tga, .targa | 18-byte header, image type, dimensions | TGA v2 footer signature detection ('TRUEVISION-XFILE.\0'), extension/developer area offset bounds checking | Structure | — |
+| **PBM/PGM/PPM/PAM** | .pbm, .pgm, .ppm, .pam | P1–P7 magic + whitespace, complete header parser for all variants | Exact data size calculation from dimensions for binary formats (P4/P5/P6/P7), truncation detection | Structure | — |
 
 ## RAW Camera Formats
 
@@ -128,7 +128,7 @@ Every format that caps at **Structure** rather than **Checksum** or **Full Decod
 | **Encapsulated PostScript** | .eps | PostScript magic, BoundingBox detection | Structural validation | Structure | — |
 | **Adobe After Effects** | .aep | RIFX container, magic bytes | RIFF chunk parsing | Structure | — |
 | **Adobe Premiere Pro** | .prproj | Gzip-compressed XML (modern) or plain XML (legacy) | Gzip CRC32 + full XML parse | Full Decode | — |
-| **Adobe InDesign** | .indd | Magic (0606EDF5) + "DOCUMENT" signature | Proprietary binary structure | Structure | — |
+| **Adobe InDesign** | .indd | Magic (0606EDF5 x16) on both primary and duplicate master pages | 4096-byte page alignment, 16-byte magic verified on both master pages, sequence number consistency cross-check | Structure | — |
 | **InDesign Markup** | .idml | ZIP container with XML content | CRC32 per entry | Checksum | — |
 | **AutoCAD DWG** | .dwg | "AC" + version code (e.g., AC1032 = 2018) | Section locator validation, encryption detection | Integrity | — |
 | **Blender** | .blend | "BLENDER" magic + pointer/endian/version | DNA1 block validation (SDNA/NAME sections) | Integrity | — |
@@ -168,10 +168,10 @@ Every format that caps at **Structure** rather than **Checksum** or **Full Decod
 | **WavPack** | .wv | Pure Zig | — | ✅ Checksum | MD5 sub-block detection | 1 |
 | **MIDI** | .mid, .midi | Pure Zig | — | ✅ Full Decode | Track parsing, event validation | 3 |
 | **DSF/DFF (DSD)** | .dsf, .dff | Pure Zig | — | ✅ Structural | Super Audio CD | — |
-| **AMR** | .amr | Pure Zig | — | ✅ Structural | AMR-NB/WB magic, frame type validation | — |
-| **AU/SND** | .au, .snd | Pure Zig | — | ✅ Structural | Sun/NeXT header, encoding/rate/channel validation | — |
-| **TTA** | .tta | Pure Zig | — | ✅ Checksum | TTA1 header CRC32 verification | — |
-| **CAF** | .caf | Pure Zig | — | ✅ Structural | Apple Core Audio, version/desc chunk validation | — |
+| **AMR** | .amr | Pure Zig | — | ✅ Structural | Full frame structure walk: NB (8 modes + SID/comfort noise) and WB (9 modes) frame sizes, reserved frame types rejected (NB: 12–14, WB: 10–14), streaming truncation tolerated | — |
+| **AU/SND** | .au, .snd | Pure Zig | — | ✅ Structural | Sun/NeXT header, encoding/rate/channel validation; data_size field cross-checked against actual file size (truncation detection) | — |
+| **TTA** | .tta | Pure Zig | — | ✅ Checksum | TTA1 header CRC-32 verified; deep path also verifies seek table CRC-32 and per-frame CRC-32 covering all audio bytes | — |
+| **CAF** | .caf | Pure Zig | — | ✅ Structural | Full chunk walk: required desc chunk verified, printable ASCII chunk type enforcement, size bounds checking | — |
 | **DTS** | .dts | Pure Zig | — | ✅ Full Decode | Sync word + frame header + boundary chaining | 1 |
 
 **Legend:** ✅ = Implemented | ⚠️ = Blocked (GPL dependency) | **GT** = Ground Truth examples verified
@@ -295,6 +295,8 @@ Every format that caps at **Structure** rather than **Checksum** or **Full Decod
 | **StuffIt** | .sit | SIT!/rLau magic (classic), "StuffIt (c)" text header (v5), installer variants (ST46/50/60/65/in/i2/i3/i4), optional MacBinary prefix | CRC-16/IBM (poly 0xA001) per entry header (classic); CRC-16/CCITT (poly 0x1021) per entry (v5) | Checksum | 1 |
 | **StuffIt X** | .sitx | "StuffIt!" magic (8 bytes) | Element stream walk to type-0 terminator; per-element CRC-32 where present | Checksum | 1 |
 | **Compact Pro** | .cpt | Header magic, archive structure | — | Structure | — |
+| **BLIP Archive** | .blar | BLAR\x02 magic, outer container checksum | LP envelope parsing, outer BLAKE3-128/xxHash64/CRC-32 container checksum, per-file DATA checksum | Full | — |
+| **BLIP Mini-Archive** | .mblar | BLAR\x02 magic (flat files only), outer container checksum | Same as BLAR: LP envelope parsing, outer + per-file checksums | Full | — |
 
 ## DAW Project Formats
 
@@ -306,14 +308,14 @@ Every format that caps at **Structure** rather than **Checksum** or **Full Decod
 | **FL Studio** | .flp | FLhd/FLdt chunk structure | Full TLV event parsing | Full Decode | — |
 | **Studio One** | .song | ZIP-based, metainfo.xml detection | CRC32 per entry | Checksum | — |
 | **Bitwig** | .bwproject | Size check + ZIP rejection only | — | ⚠️ Stub | — |
-| **Cubase** | .cpr | RIFF magic only (no chunk parsing) | — | ⚠️ Stub | — |
-| **Pro Tools** | .ptx | Size check + ZIP rejection only | — | ⚠️ Stub | — |
-| **GarageBand** | .band | Size check only | — | ⚠️ Stub | — |
-| **Reason** | .reason | Size check + ZIP rejection only | — | ⚠️ Stub | — |
+| **Cubase** | .cpr | RIFF magic (RIFF....NSEQ or RIFF....NRSP), header bounds | Full RIFF chunk tree walk: chunk IDs + sizes bounded to file, LIST sub-containers recursed | Structure | — |
+| **Pro Tools** | .ptx, .ptf | XOR-decrypted header, BITCODE signature (0x97A5B6C8) | ZMARK block structure walk: block IDs + sizes bounded, full session block chain | Structure | — |
+| **GarageBand** | .band | macOS bundle detection (.band directory), projectData presence | Alternatives/ directory detection, plist header verification (bplist00 binary or XML plist) | Structure | — |
+| **Reason** | .reason | 'Propellerheads Reason Song File\x1A' magic (32 bytes) | IFF-like chunk walk after magic: chunk IDs + sizes bounded to file | Structure | — |
 
-> **Note:** Bitwig, Pro Tools, GarageBand, and Reason use proprietary undocumented binary formats.
-> These return WARN (not OK) — format is recognized but corruption detection is unreliable.
-> Deep validation would require reverse-engineering these formats.
+> **Note:** Bitwig uses a proprietary undocumented binary format and remains a stub validator.
+> Pro Tools, GarageBand, and Reason have been reverse-engineered (clean-room) and now have structural validation.
+> Pro Tools uses trivial XOR obfuscation (key derived from 2 cleartext header bytes), not real security.
 
 ## Database
 
@@ -365,8 +367,8 @@ Every format that caps at **Structure** rather than **Checksum** or **Full Decod
 |--------|------------|------------------|-----------------|-----------|-----|
 | **DOOM WAD** | .wad | IWAD/PWAD signature, directory structure | Directory entry bounds validation | Structure | — |
 | **Quake PAK** | .pak | PACK signature, directory offset/size | Directory entry bounds validation | Structure | — |
-| **Quake/Source BSP** | .bsp | Version whitelist only (no lump parsing) | — | ⚠️ Stub | — |
-| **Valve VPK** | .vpk | Signature + version + tree size bounds only | — | ⚠️ Stub | — |
+| **Quake/Source BSP** | .bsp | Version whitelist (Quake 1/2/3 and VBSP/Source variants), lump count validation | Full lump directory parsing: lump offsets + sizes bounded to file size, overlap detection between lumps | Structure | — |
+| **Valve VPK** | .vpk | Signature (0x55AA1234), version (1 or 2), tree size bounds | Full directory tree walk: extension/path/filename parsing, 0xFFFF terminators verified, v2 section sizes cross-validated | Structure | — |
 
 ## Game ROM Formats
 
@@ -696,4 +698,4 @@ Measured via `scripts/corruption-experiment` with 100 trials each, PCG32 seed=42
 ### Formats With No Checksums
 WAV, AIFF, DNG, CR2, NEF, ARW, TIFF, PAM, TGA, DPX, AU, COFF, Blorb, NES, N64, GBA
 
-*Last updated: 2026-03-07*
+*Last updated: 2026-03-29*
