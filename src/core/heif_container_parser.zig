@@ -751,12 +751,11 @@ pub fn parseHeifContainer(data: []const u8) HeifContainerError!HeifContainerInfo
     // Static buffers so returned slices remain valid after function returns.
     // (Stack-local buffers would be dangling pointers in the returned struct.)
     const StaticBufs = struct {
-        var items_buf: [256]ItemInfo = undefined;
-        var locations_buf: [256]ItemLocation = undefined;
-        var extents_buf: [1024]ItemExtent = undefined;
-        var tile_ids_buf: [256]u32 = undefined;
-    };
-    const items = try parseIinf(data, iinf, &StaticBufs.items_buf);
+        var items_buf: [512]ItemInfo = undefined;
+        var locations_buf: [512]ItemLocation = undefined;
+        var extents_buf: [2048]ItemExtent = undefined;
+        var tile_ids_buf: [512]u32 = undefined;
+    };    const items = try parseIinf(data, iinf, &StaticBufs.items_buf);
 
     // 6. Parse iloc (Item Location Box)
     const iloc = findChildBox(data, meta_data_start, meta_data_end, "iloc".*) orelse return error.NoItemLocation;

@@ -1534,7 +1534,11 @@ fn validateStts(file: *FileSource, box_offset: u64, box_size: u64) ?[]const u8 {
     return null;
 }
 
-/// Validate stsc box: first_chunk values must be monotonically increasing, first must be 1.
+/// Validate stsc box: first entry's first_chunk must be 1.
+/// NOTE: We intentionally do NOT enforce strict monotonic ordering of first_chunk values —
+/// Apple's QuickTime writer produces files where this invariant is violated, yet all major
+/// players (Preview.app, ffmpeg, VLC) handle them correctly. Treating it as a hard error
+/// causes false positives on valid Apple Photos exports.
 fn validateStsc(file: *FileSource, box_offset: u64, box_size: u64) ?[]const u8 {
     const data_start = fullBoxDataOffset(file, box_offset);
     const box_end = box_offset + box_size;
@@ -1551,35 +1555,13 @@ fn validateStsc(file: *FileSource, box_offset: u64, box_size: u64) ?[]const u8 {
     const entries_size: u64 = @as(u64, entry_count) * 12;
     if (data_start + 4 + entries_size > box_end) return "stsc entry_count exceeds box size";
 
-    // Validate entries in batches (341 entries ≈ 4KB)
-    const batch_size: usize = 341;
-    var buf: [batch_size * 12]u8 = undefined;
-    var validated: u32 = 0;
-    var prev_first_chunk: u32 = 0;
-    const check_count = @min(entry_count, @as(u32, 100_000));
-
-    while (validated < check_count) {
-        const remaining = check_count - validated;
-        const to_read = @min(remaining, batch_size);
-        const bytes_to_read = @as(usize, to_read) * 12;
-        const n = file.read(buf[0..bytes_to_read]) catch return "stsc read failed";
-        if (n < bytes_to_read) return "stsc entries truncated";
-
-        for (0..to_read) |i| {
-            const first_chunk = std.mem.readInt(u32, buf[i * 12 ..][0..4], .big);
-
-            // First entry must have first_chunk == 1
-            if (validated == 0 and i == 0) {
-                if (first_chunk != 1) return "stsc first entry's first_chunk must be 1";
-            }
-
-            // Must be monotonically increasing
-            if (first_chunk <= prev_first_chunk and (validated > 0 or i > 0)) {
-                return "stsc first_chunk values not monotonically increasing";
-            }
-            prev_first_chunk = first_chunk;
-        }
-        validated += to_read;
+    // Validate that the first entry's first_chunk == 1 (required by spec)
+    if (entry_count > 0) {
+        file.seekTo(data_start + 4) catch return "stsc seek failed";
+        var first_entry_buf: [4]u8 = undefined;
+        if ((file.read(&first_entry_buf) catch return "stsc read failed") < 4) return "stsc entries truncated";
+        const first_chunk = std.mem.readInt(u32, &first_entry_buf, .big);
+        if (first_chunk != 1) return "stsc first entry's first_chunk must be 1";
     }
 
     return null;
