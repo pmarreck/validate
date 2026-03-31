@@ -85,8 +85,8 @@
             .hash = "progrez-0.1.0-0YJXrrECAgDFEpz8h967WNEcUdTIk8Si1UR6Q8IlUm90",
         },
         .blip = .{
-            .url = "git+https://github.com/pmarreck/BLIP#941d6f592dbcd0c68e532f1e76a0a47264e73bb8",
-            .hash = "blip-0.1.0-rcNuGGuXEgC7EvMYW5yezaPDMJMWCQ3aDm976Jh1pWKw",
+            .url = "git+https://github.com/pmarreck/BLIP#b6e986ca9dde1dff869723fceb1a9d3709261e56",
+            .hash = "blip-0.1.0-rcNuGJkqGAA1yVjT8gwgQqg5AfaB01V36TEPhZ9L25Uj",
         },
     },
     .paths = .{""},
