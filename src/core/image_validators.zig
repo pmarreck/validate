@@ -722,18 +722,19 @@ pub fn validateWebp(file: *FileSource) ValidationResult {
         const chunk_type = chunk_hdr[0..4];
         const chunk_size = std.mem.readInt(u32, chunk_hdr[4..8], .little);
 
-        // Validate chunk type is a known WebP chunk
-        var is_valid_type = false;
-        for (valid_chunks) |valid| {
-            if (std.mem.eql(u8, chunk_type, valid)) {
-                is_valid_type = true;
+        // Validate chunk type has printable ASCII FourCC (RIFF convention allows any FourCC)
+        // Rejecting unknown types is too strict — real files contain vendor extensions
+        // like C2PA (content provenance), SMTC, etc.
+        var is_printable_fourcc = true;
+        for (chunk_type) |c| {
+            if (c < 0x20 or c > 0x7E) {
+                is_printable_fourcc = false;
                 break;
             }
         }
-        if (!is_valid_type) {
-            return ValidationResult.invalidCode(.webp, .invalid_value, "WebP chunk type");
+        if (!is_printable_fourcc) {
+            return ValidationResult.invalidCode(.webp, .invalid_value, "WebP chunk type (non-printable FourCC)");
         }
-
         // Track VP8/VP8L/VP8X presence
         if (std.mem.eql(u8, chunk_type, "VP8 ") or std.mem.eql(u8, chunk_type, "VP8L") or std.mem.eql(u8, chunk_type, "VP8X")) {
             found_vp8 = true;
