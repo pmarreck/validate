@@ -86,7 +86,7 @@
         },
         .blip = .{
             .url = "git+https://github.com/pmarreck/BLIP#2e40fc550bcc0422704adafdc4642f45ee1edce2",
-            .hash = "blip-0.1.0-rcNuGJkqGAA1yVjT8gwgQqg5AfaB01V36TEPhZ9L25Uj",
+            .hash = "blip-0.1.0-rcNuGG9UGABHNHBg3eMoSfzGhiGWWYFLiVcgWRAY8ja5",
         },
     },
     .paths = .{""},
