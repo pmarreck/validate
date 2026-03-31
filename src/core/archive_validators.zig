@@ -120,6 +120,7 @@ pub fn validateZipWithOptions(file: *FileSource, format: FileFormat, skip_magic:
                 format_validation.findInBuffer(&content_buffer, content_bytes, "xl/"),
             .pptx => format_validation.findInBuffer(&content_buffer, content_bytes, "[Content_Types].xml") and
                 format_validation.findInBuffer(&content_buffer, content_bytes, "ppt/"),
+            .song => format_validation.findInBuffer(&content_buffer, content_bytes, "metainfo.xml"),
             else => true,
         };
 
@@ -129,11 +130,11 @@ pub fn validateZipWithOptions(file: *FileSource, format: FileFormat, skip_magic:
                 .docx => ValidationResult.invalidCode(format, .missing, "Word document structure"),
                 .xlsx => ValidationResult.invalidCode(format, .missing, "Excel spreadsheet structure"),
                 .pptx => ValidationResult.invalidCode(format, .missing, "PowerPoint structure"),
+                .song => ValidationResult.invalidCode(format, .missing, "Studio One project metainfo.xml"),
                 else => ValidationResult.ok(format),
             };
         }
     }
-
     return ValidationResult.ok(format);
 }
 
@@ -4767,6 +4768,85 @@ test "FormatValidator accepts valid PPTX file" {
     }
     try std.testing.expectEqual(FileFormat.pptx, result.format);
     try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts valid Studio One .song file with metainfo.xml" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Studio One .song requires metainfo.xml at minimum
+    const files = [_]ZipTestFile{
+        .{ .name = "metainfo.xml", .content = "<?xml version=\"1.0\"?><MetaInformation/>" },
+        .{ .name = "Song/song.song", .content = "<?xml version=\"1.0\"?><Song/>" },
+    };
+    const song_data = buildMinimalZip(&files);
+
+    const file = try tmp_dir.dir.createFile("valid.song", .{});
+    var data_len: usize = 512;
+    for (song_data, 0..) |_, i| {
+        if (i >= 4 and song_data[i - 4] == 0x50 and song_data[i - 3] == 0x4B and
+            song_data[i - 2] == 0x05 and song_data[i - 1] == 0x06)
+        {
+            data_len = i + 18;
+            break;
+        }
+    }
+    try file.writeAll(song_data[0..data_len]);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.song");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    if (!result.is_valid) {
+        std.debug.print("\nValid .song failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expectEqual(FileFormat.song, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator rejects Studio One .song file missing metainfo.xml" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // A ZIP with .song extension but no metainfo.xml — not a valid Studio One project
+    const files = [_]ZipTestFile{
+        .{ .name = "some_other_file.xml", .content = "<?xml version=\"1.0\"?><Data/>" },
+    };
+    const zip_data = buildMinimalZip(&files);
+
+    const file = try tmp_dir.dir.createFile("invalid.song", .{});
+    var data_len: usize = 512;
+    for (zip_data, 0..) |_, i| {
+        if (i >= 4 and zip_data[i - 4] == 0x50 and zip_data[i - 3] == 0x4B and
+            zip_data[i - 2] == 0x05 and zip_data[i - 1] == 0x06)
+        {
+            data_len = i + 18;
+            break;
+        }
+    }
+    try file.writeAll(zip_data[0..data_len]);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.song");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Should be detected as .song (by extension) but invalid (missing metainfo.xml)
+    try std.testing.expectEqual(FileFormat.song, result.format);
+    try std.testing.expect(!result.is_valid);
 }
 
 test "FormatValidator rejects truncated ZIP-based files" {

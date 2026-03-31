@@ -5181,10 +5181,26 @@ pub const FormatValidator = struct {
 
         // Special handling for Logic Pro X and Studio One files
         // These are ZIP-based packages, detected as ZIP by magic bytes
-        if ((expected_format == .logicx or expected_format == .song) and result.format == .zip) {
-            result.format = expected_format;
+        if (expected_format == .logicx and result.format == .zip) {
+            result.format = .logicx;
         }
-
+        if (expected_format == .song and result.format == .zip) {
+            // Studio One .song files must contain metainfo.xml — check before promoting
+            const song_file = std.fs.cwd().openFile(path, .{}) catch null;
+            if (song_file) |sf| {
+                defer sf.close();
+                var song_src = FileSource.fromFile(sf);
+                var song_buf: [16384]u8 = undefined;
+                const song_bytes = song_src.read(&song_buf) catch 0;
+                if (findInBuffer(&song_buf, song_bytes, "metainfo.xml")) {
+                    result.format = .song;
+                } else {
+                    result = ValidationResult.invalidCode(.song, .missing, "Studio One project metainfo.xml");
+                }
+            } else {
+                result.format = .song;
+            }
+        }
         // Special handling for Adobe InDesign Markup (IDML) files
         // IDML files are ZIP containers with XML content, detected as ZIP by magic bytes
         // If extension is .idml, use IDML-specific validation
