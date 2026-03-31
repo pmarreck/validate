@@ -41,9 +41,17 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/executable_validators.zig` | ELF, Mach-O, COFF, Wasm, AR |
 | `src/core/pdf_validator.zig` | PDF (structural + deep xref/image/font validation), AI, EPS, AEP, PostScript |
 | `src/core/game_validator.zig` | NES, SNES, N64, GB, GBA, NDS, Genesis, CHD, IFF, Blorb |
-| `src/core/daw_validators.zig` | FLP, ALS, RPP + stub-only formats (bwproject, cpr, ptx, band, reason) |
+| `src/core/daw_validators.zig` | FLP, ALS, RPP, Cubase CPR (RIFF chunk walk), Pro Tools PTX (XOR decrypt + ZMARK blocks), GarageBand .band (bundle), Reason (IFF chunks); Bitwig stub only |
 | `src/core/pe_validator.zig` | Windows PE executables |
-| `src/core/financial_validators.zig` | QBW (QuickBooks Company File, SQL Anywhere + legacy MAUI), QBB (QuickBooks Backup, OLE2), QDF (Quicken Data File, OLE2/ZIP/legacy), OFX (Open Financial Exchange, SGML/XML), QIF (Quicken Interchange Format, text), TXF (Tax Exchange Format, text), NACHA/ACH (fixed 94-char records, entry hash + batch/file integrity), MT940 SWIFT (tagged fields, balance arithmetic), BAI2 (cascading control totals at account/group/file) |
+| `src/core/game_asset_validators.zig` | BSP (lump directory parsing + overlap detection), VPK (tree walk + 0xFFFF terminators), WAD, PAK, Chromium PAK, LSPK |
+| `src/core/cab_validator.zig` | Microsoft Cabinet archive — MSCF header, CFFOLDER/CFFILE structure walk, CFDATA XOR-fold checksum verification |
+| `src/core/wim_validator.zig` | WIM/ESD — 208-byte header, version discrimination, resource header bounds, integrity table validation |
+| `src/core/vmdk_validator.zig` | VMware Virtual Disk — VMDK4/COWD/descriptor-only sub-format detection + header field validation |
+| `src/core/stuffit_validator.zig` | StuffIt — Classic v1-4.5 (SIT! + CRC-16/IBM), v5 (CCITT CRC), StuffIt X element stream |
+| `src/core/realmedia_validator.zig` | RealMedia — .RMF chunk-based walk, PROP/MDPR/CONT/DATA/INDX, num_streams cross-check |
+| `src/core/cdg_validator.zig` | CD+Graphics — packet size divisibility, CDG command analysis, tile coordinate bounds |
+| `src/core/toast_validator.zig` | Roxio Toast — APM DDR detection + ISO 9660 PVD validation |
+| `src/core/blar_validator.zig` | BLIP archive (.blar/.mblar) — uses BLIP library ArchiveReader for LP envelope, magic, outer+per-file checksums (BLAKE3-128/xxHash64/CRC-32) || `src/core/financial_validators.zig` | QBW (QuickBooks Company File, SQL Anywhere + legacy MAUI), QBB (QuickBooks Backup, OLE2), QDF (Quicken Data File, OLE2/ZIP/legacy), OFX (Open Financial Exchange, SGML/XML), QIF (Quicken Interchange Format, text), TXF (Tax Exchange Format, text), NACHA/ACH (fixed 94-char records, entry hash + batch/file integrity), MT940 SWIFT (tagged fields, balance arithmetic), BAI2 (cascading control totals at account/group/file) |
 | `src/core/codec_utils.zig` | Shared codec utilities: `Crc32Normal(init,xorout)` comptime-parameterized MSB-first CRC-32 (instantiated as `Crc32Ogg`/`Crc32Mpeg2`/`Crc32Bzip2`), `crc16Ccitt` (RAR4+BinHex), `removeEmulationPreventionBytes` (H.264/H.265 RBSP), `findAnnexBStartCode`, `readLeb128`, `readLe`/`readBe` endian helpers. Consumed by: ebml_parser, ogg_validator, mpeg_ts_parser, bzip2, archive_validators, format_validation, h264_syntax_validator, h265_validator, av1_obu_validator, video_validator |
 | `src/core/progress.zig` | C FFI wrapper around progrez library — global ProgrezState + TerminalCaps, exports `validate_progress_{init,detect_caps,set_determinate,set_indeterminate,update,render_line}` for cli/main.c |
 | `src/core/i18n/mod.zig` | i18n locale registry/switching, locale detection from env/CLI prefixes, translated string accessors, and cross-locale CLI/env alias maps (30 locales) |
@@ -86,8 +94,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/email_validators.zig` | Email format validation (EML, MBOX) |
 | `src/core/executable_validators.zig` | Binary executable validation (ELF, Mach-O, COFF, Wasm, AR) |
 | `src/core/pe_validator.zig` | Windows PE executable validation (DOS header, COFF, optional header, section table) |
-| `src/core/daw_validators.zig` | DAW project validation (FLP, ALS, RPP) |
-| `src/core/game_validator.zig` | Game ROM validation (NES, SNES, N64 w/ CIC auto-detection, GB, GBA, NDS, Genesis, CHD) |
+| `src/core/daw_validators.zig` | DAW project validation (FLP, ALS, RPP, Cubase CPR RIFF chunk walk, Pro Tools PTX XOR-decrypt+block-walk, GarageBand bundle, Reason IFF-walk) || `src/core/game_validator.zig` | Game ROM validation (NES, SNES, N64 w/ CIC auto-detection, GB, GBA, NDS, Genesis, CHD) |
 | `src/core/financial_validators.zig` | Financial format validation (QBW, QBB, QDF, OFX, QIF, TXF) |
 | `src/core/ole2_validator.zig` | OLE2/CFBF compound document validator — header, FAT, DIFAT, directory; `readNamedStream()` extracts streams by name via FAT/mini-FAT chains |
 | `src/core/word_doc_validator.zig` | MS-DOC (Word 97-2003) deep validator — FIB parsing, 31 fc/lcb Table stream cross-validation pairs (stylesheet, fonts, bookmarks, fields, revision marks, doc properties), CLX/Piece Table with full PCD decode (FcCompressed physical offset verification), PlcBteChpx/PlcBtePapx CP monotonicity + BTE page number bounds; Word 6/95 falls back to structural |

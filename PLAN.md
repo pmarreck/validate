@@ -19,7 +19,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Toast — Roxio Toast disc image; APM DDR detection + ISO 9660 PVD validation + Application Identifier check (2026-03-27 ~15:00 EST)
 - [x] CDG — CD+Graphics karaoke; packet size divisibility, CDG command analysis, tile coordinate bounds checking (2026-03-27 ~15:00 EST)
 - [x] RealMedia (.rm) — Chunk-based container walk; .RMF/PROP/MDPR/CONT/DATA/INDX structure validation, num_streams cross-check (2026-03-27 ~15:00 EST)
-  - [ ] TODO: Generate proper RealMedia ground truth file with ffmpeg (hand-crafted sample has chunk size issues)
+  - [x] Generated proper RealMedia ground truth with ffmpeg; fixed DATA chunk overrun tolerance (2026-03-29 ~22:00 EST)
 
 ### Financial Format Validators
 - [ ] Find QBB ground-truth sample (QuickBooks Backup)
@@ -69,14 +69,14 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 ### High-Priority Validation Gaps (Stub-Only Formats)
 These formats return WARN — recognized but NO real corruption detection:
 - [ ] `bwproject` (Bitwig Studio) — proprietary, undocumented
-- [ ] `cpr` (Cubase) — RIFF header only, needs chunk parsing
-- [ ] `ptx` (Pro Tools) — proprietary, undocumented
-- [ ] `band` (GarageBand) — proprietary, macOS bundle
-- [ ] `reason` (Reason Studios) — proprietary, undocumented
+- [x] `cpr` (Cubase) — RIFF chunk tree walking with bounds checking (2026-03-29 ~23:00 EST)
+- [x] `ptx` (Pro Tools) — XOR decryption (clean-room from ptformat) + ZMARK block structure walk (2026-03-30 ~01:00 EST)
+- [x] `band` (GarageBand) — macOS bundle validation: projectData/Alternatives detection + plist header check (2026-03-30 ~01:00 EST)
+- [x] `reason` (Reason Studios) — real magic "Propellerheads Reason Song File\x1A" + IFF chunk walk (2026-03-30 ~00:30 EST)
 - [ ] `cwk` (ClarisWorks/AppleWorks) — obsolete, magic bytes only
 - [ ] `mwd` (MacWrite) — obsolete, version bytes only
-- [ ] `bsp` (Quake/Source BSP) — version whitelist only, needs lump parsing
-- [ ] `vpk` (Valve PAK) — magic + tree bounds only, needs tree/entry parsing
+- [x] `bsp` (Quake/Source BSP) — full lump directory parsing, bounds + overlap detection (2026-03-29 ~23:00 EST)
+- [x] `vpk` (Valve PAK) — full tree walk, 0xFFFF terminators, v2 section size cross-validation (2026-03-29 ~23:00 EST)
 
 ### Ground-Truth Sample Coverage
 - [ ] `song` (Studio One) — needs Peter to provide sample
