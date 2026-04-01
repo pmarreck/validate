@@ -28,6 +28,8 @@ deps/*_source/
 # Test-generated ffmpeg symlinks
 scripts/ffmpeg-bin/
 result/
+result
+CLAUDE.md
 .serena
 inbox
 .worktrees/

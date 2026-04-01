@@ -4,6 +4,8 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ## Active
 
+- [x] Studio One .song: Add `metainfo.xml` presence check — validates ZIP structure then requires Studio One-specific content (2026-03-29 ~11:30 EST)
+
 ### Real-World Scan Findings (2026-03-27)
 
 #### Extension/Detection Tweaks
@@ -55,13 +57,6 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] PEM/DER — ASN.1 structure, X.509 certificate fields (completed 2026-03-12 EST)
 - [x] Ground truth samples (synthetic, flagged for future real-world replacement) (completed 2026-03-12 EST)
 - [x] Wire up detection, dispatch, FFI, i18n, corruption_opacity (completed 2026-03-12 EST)
-
-### Future: CDC-Segmented Parity for Virtual Manifests
-- [ ] Design: Content-Defined Chunking (CDC) hashes recorded per-file BEFORE par2 parity computation
-- [ ] When a file changes, identify unchanged CDC chunks by hash to reconstruct a "virtual original"
-- [ ] Reduces par2's perceived damage from "entire file changed" to "just the delta chunks differ"
-- [ ] Effectively makes par2 content-aware without modifying par2 itself
-- [ ] Par2 block sizes align to CDC chunk boundaries rather than fixed offsets
 
 ### Depth Honesty Audit
 - [ ] Future: Add `best_effort` tier to distinguish "parsed every byte, no integrity mechanism" from "only checked headers"

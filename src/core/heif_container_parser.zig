@@ -755,8 +755,8 @@ pub fn parseHeifContainer(data: []const u8) HeifContainerError!HeifContainerInfo
         var locations_buf: [512]ItemLocation = undefined;
         var extents_buf: [2048]ItemExtent = undefined;
         var tile_ids_buf: [512]u32 = undefined;
-    };    const items = try parseIinf(data, iinf, &StaticBufs.items_buf);
-
+    };
+    const items = try parseIinf(data, iinf, &StaticBufs.items_buf);
     // 6. Parse iloc (Item Location Box)
     const iloc = findChildBox(data, meta_data_start, meta_data_end, "iloc".*) orelse return error.NoItemLocation;
     const iloc_result = try parseIloc(data, iloc, &StaticBufs.locations_buf, &StaticBufs.extents_buf);
