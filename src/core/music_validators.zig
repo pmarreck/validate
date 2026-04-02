@@ -3311,12 +3311,13 @@ test "FormatValidator accepts valid MP3 without ID3" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    // Minimal valid MP3 starting with frame sync
-    const valid_mp3 = [_]u8{
-        0xFF, 0xFB, // frame sync + MPEG1 Layer3
-        0x90, 0x00, // bitrate, sample rate, etc
-        0x00, 0x00, 0x00, 0x00, // frame data
-    };
+    // Minimal valid MP3 starting with frame sync (padded to 128 bytes — the minimum
+    // plausible MP3 size enforced by detectFormat to suppress Spotlight stub false positives)
+    var valid_mp3 = [_]u8{0} ** 128;
+    valid_mp3[0] = 0xFF;
+    valid_mp3[1] = 0xFB; // frame sync + MPEG1 Layer3
+    valid_mp3[2] = 0x90; // bitrate index 9 (128kbps), sample rate 0 (44100Hz)
+    valid_mp3[3] = 0x00; // padding=0, private=0, channel=stereo
 
     const file = try tmp_dir.dir.createFile("valid_raw.mp3", .{});
     try file.writeAll(&valid_mp3);

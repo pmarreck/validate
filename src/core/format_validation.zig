@@ -1201,6 +1201,10 @@ const MagicSignature = struct {
     bytes: []const u8,
     offset: usize,
     format: FileFormat,
+    /// Minimum header/file size required to trust this signature.
+    /// Used to suppress false positives from tiny files (e.g. Spotlight stubs)
+    /// that coincidentally share a weak magic pattern. Defaults to 0 (no check).
+    min_file_size: usize = 0,
 };
 
 /// Known magic byte signatures.
@@ -1218,7 +1222,7 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "GIF87a", .offset = 0, .format = .gif },
     .{ .bytes = "GIF89a", .offset = 0, .format = .gif },
     // BMP: BM
-    .{ .bytes = "BM", .offset = 0, .format = .bmp },
+    .{ .bytes = "BM", .offset = 0, .format = .bmp, .min_file_size = 58 }, // BMP header (14) + min DIB header (40) + pixel data
     // WebP: RIFF....WEBP (special handling needed)
     .{ .bytes = "RIFF", .offset = 0, .format = .webp }, // Additional check for WEBP at offset 8
     // AVI: RIFF....AVI (special handling - checked after WebP)
@@ -1278,7 +1282,7 @@ const magic_signatures = [_]MagicSignature{
     // MPEG Program Stream: 00 00 01 BA (pack start code)
     .{ .bytes = &[_]u8{ 0x00, 0x00, 0x01, 0xBA }, .offset = 0, .format = .mpeg_ps },
     // MPEG Transport Stream: 47 sync byte (checked with additional validation)
-    .{ .bytes = &[_]u8{0x47}, .offset = 0, .format = .mpeg_ts },
+    .{ .bytes = &[_]u8{0x47}, .offset = 0, .format = .mpeg_ts, .min_file_size = 188 }, // one TS packet
     // IVF container: DKIF signature
     .{ .bytes = "DKIF", .offset = 0, .format = .ivf },
     // FLAC: fLaC
@@ -1286,16 +1290,16 @@ const magic_signatures = [_]MagicSignature{
     // MP3 with ID3v2 tag
     .{ .bytes = "ID3", .offset = 0, .format = .mp3 },
     // MP3 frame sync (various bitrates) - FF FB, FF FA, FF F3, FF F2
-    .{ .bytes = &[_]u8{ 0xFF, 0xFB }, .offset = 0, .format = .mp3 },
-    .{ .bytes = &[_]u8{ 0xFF, 0xFA }, .offset = 0, .format = .mp3 },
-    .{ .bytes = &[_]u8{ 0xFF, 0xF3 }, .offset = 0, .format = .mp3 },
-    .{ .bytes = &[_]u8{ 0xFF, 0xF2 }, .offset = 0, .format = .mp3 },
+    .{ .bytes = &[_]u8{ 0xFF, 0xFB }, .offset = 0, .format = .mp3, .min_file_size = 128 }, // weak sync: need real frame data
+    .{ .bytes = &[_]u8{ 0xFF, 0xFA }, .offset = 0, .format = .mp3, .min_file_size = 128 },
+    .{ .bytes = &[_]u8{ 0xFF, 0xF3 }, .offset = 0, .format = .mp3, .min_file_size = 128 },
+    .{ .bytes = &[_]u8{ 0xFF, 0xF2 }, .offset = 0, .format = .mp3, .min_file_size = 128 },
     // AAC ADTS frame sync - layer=00 distinguishes from MP3 (layer=01/10/11)
     // MPEG-4: FF F1 (no CRC) / FF F0 (CRC), MPEG-2: FF F9 (no CRC) / FF F8 (CRC)
-    .{ .bytes = &[_]u8{ 0xFF, 0xF1 }, .offset = 0, .format = .aac_adts },
-    .{ .bytes = &[_]u8{ 0xFF, 0xF0 }, .offset = 0, .format = .aac_adts },
-    .{ .bytes = &[_]u8{ 0xFF, 0xF9 }, .offset = 0, .format = .aac_adts },
-    .{ .bytes = &[_]u8{ 0xFF, 0xF8 }, .offset = 0, .format = .aac_adts },
+    .{ .bytes = &[_]u8{ 0xFF, 0xF1 }, .offset = 0, .format = .aac_adts, .min_file_size = 128 },
+    .{ .bytes = &[_]u8{ 0xFF, 0xF0 }, .offset = 0, .format = .aac_adts, .min_file_size = 128 },
+    .{ .bytes = &[_]u8{ 0xFF, 0xF9 }, .offset = 0, .format = .aac_adts, .min_file_size = 128 },
+    .{ .bytes = &[_]u8{ 0xFF, 0xF8 }, .offset = 0, .format = .aac_adts, .min_file_size = 128 },
     // AIFF: FORM....AIFF (IFF container)
     .{ .bytes = "FORM", .offset = 0, .format = .aiff }, // Extended check for AIFF at offset 8
     // Ogg: OggS
@@ -1914,6 +1918,7 @@ fn checkSpecialCases(sig: MagicSignature, header: []const u8) ?FileFormat {
     return sig.format;
 }
 
+
 pub fn detectFormat(header: []const u8) FileFormat {
     if (header.len == 0) return .unknown;
 
@@ -1931,7 +1936,14 @@ pub fn detectFormat(header: []const u8) FileFormat {
         if (header.len >= sig.bytes.len) {
             if (std.mem.eql(u8, header[0..sig.bytes.len], sig.bytes)) {
                 if (checkSpecialCases(sig, header)) |format| {
-                    return format;
+                    // Minimum file size sanity check: reject magic-byte matches
+                    // on files too small to be valid instances of the format.
+                    // Threshold is per-signature (sig.min_file_size); defaults to 0.
+                    // This prevents 32-byte Spotlight stubs from being misdetected.
+                    if (header.len >= sig.min_file_size) {
+                        return format;
+                    }
+                    // File too small for this signature — continue checking others
                 }
                 // checkSpecialCases returns null to mean "continue" (skip this sig)
                 // For non-special formats, it returns the format directly
@@ -1978,7 +1990,8 @@ pub fn detectFormat(header: []const u8) FileFormat {
     }
 
     // Check for tar archive (POSIX/GNU ustar magic at offset 257)
-    if (header.len >= 263) {
+    // Tar headers are 512-byte blocks; files smaller than that can't be valid tar
+    if (header.len >= 512) {
         const ustar_magic = "ustar";
         if (std.mem.eql(u8, header[257..262], ustar_magic)) {
             return .tar;
@@ -6625,6 +6638,37 @@ test "ValidationResult constructors" {
 test "detectFormat unknown" {
     const random_data = [_]u8{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
     try std.testing.expectEqual(FileFormat.unknown, detectFormat(&random_data));
+}
+
+test "detectFormat rejects tiny files as MP3" {
+    // 32-byte file starting with 0xFF 0xFB (MP3 sync word) — too small to be valid MP3
+    var tiny_mp3 = [_]u8{0} ** 32;
+    tiny_mp3[0] = 0xFF;
+    tiny_mp3[1] = 0xFB;
+    try std.testing.expectEqual(FileFormat.unknown, detectFormat(&tiny_mp3));
+}
+
+test "detectFormat rejects tiny files as BMP" {
+    // 32-byte file starting with "BM" — too small to be a valid BMP
+    var tiny_bmp = [_]u8{0} ** 32;
+    tiny_bmp[0] = 'B';
+    tiny_bmp[1] = 'M';
+    try std.testing.expectEqual(FileFormat.unknown, detectFormat(&tiny_bmp));
+}
+
+test "detectFormat rejects sub-512-byte tar" {
+    // 378-byte buffer with "ustar" at offset 257 — too small for a valid tar entry
+    var tiny_tar = [_]u8{0} ** 378;
+    @memcpy(tiny_tar[257..262], "ustar");
+    try std.testing.expectEqual(FileFormat.unknown, detectFormat(&tiny_tar));
+}
+
+test "detectFormat accepts valid-size MP3" {
+    // 256-byte buffer with MP3 sync — large enough to be plausible
+    var mp3_buf = [_]u8{0} ** 256;
+    mp3_buf[0] = 0xFF;
+    mp3_buf[1] = 0xFB;
+    try std.testing.expectEqual(FileFormat.mp3, detectFormat(&mp3_buf));
 }
 
 test "parseMaxVideoDeepSize defaults to unlimited and honors MAX_VIDEO_SIZE" {
