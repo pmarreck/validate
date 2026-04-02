@@ -101,6 +101,7 @@ pub const wim_validator = @import("wim_validator.zig");
 pub const vmdk_validator = @import("vmdk_validator.zig");
 pub const stuffit_validator = @import("stuffit_validator.zig");
 pub const realmedia_validator = @import("realmedia_validator.zig");
+pub const network_validators = @import("network_validators.zig");
 pub const cdg_validator = @import("cdg_validator.zig");
 pub const toast_validator = @import("toast_validator.zig");
 pub const blar_validator = @import("blar_validator.zig");
@@ -282,6 +283,8 @@ test {
     _ = @import("cab_validator.zig");
     // VMware Virtual Disk validator
     _ = @import("vmdk_validator.zig");
+    // Network capture format validators (PCAP, PCAPNG)
+    _ = @import("network_validators.zig");
     // CD+Graphics karaoke validator
     _ = @import("cdg_validator.zig");
     // Roxio Toast disc image validator

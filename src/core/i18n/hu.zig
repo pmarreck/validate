@@ -301,6 +301,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .msgpack = "MessagePack Data",
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
+    .pcap = "PCAP Hálózati Rögzítés", .pcapng = "PCAPNG Hálózati Rögzítés",
 });
 
 pub const error_translations = i18n.ErrorMap.initComptime(.{});

@@ -200,6 +200,9 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         // Karaoke
         .cdg => "other",
 
+        // Network captures
+        .pcap, .pcapng => "network",
+
         // Other
         .unknown, .par2, .beam, .ds_store, .spotlight, .apple_double => "other",
     };

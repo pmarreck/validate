@@ -286,6 +286,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .msgpack = "MessagePack Data",
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
+    .pcap = "PCAP नेटवर्क कैप्चर", .pcapng = "PCAPNG नेटवर्क कैप्चर",
 });
 
 // Hindi CLI argument aliases (currently canonical English forms).

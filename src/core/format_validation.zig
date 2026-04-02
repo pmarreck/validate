@@ -211,6 +211,7 @@ const pdf_validator = @import("pdf_validator.zig");
 // New format validators (2026-03-27 scan findings)
 const cab_validator = @import("cab_validator.zig");
 const wim_validator = @import("wim_validator.zig");
+const network_validators = @import("network_validators.zig");
 const vmdk_validator = @import("vmdk_validator.zig");
 const stuffit_validator = @import("stuffit_validator.zig");
 const realmedia_validator = @import("realmedia_validator.zig");
@@ -603,6 +604,9 @@ pub const FileFormat = enum {
     macos_app, // macOS application bundle (.app)
     macos_framework, // macOS framework bundle (.framework)
     macos_bundle, // macOS bundle/plugin (.bundle)
+    // Network capture formats
+    pcap, // PCAP network capture (classic libpcap)
+    pcapng, // PCAPNG next-generation network capture
 
     pub fn description(self: FileFormat) [:0]const u8 {
         return i18n.getFormatDescription(self);
@@ -698,6 +702,8 @@ pub const FileFormat = enum {
             .macos_app => true, // macOS application bundle validation
             .macos_framework => true, // macOS framework validation
             .macos_bundle => true, // macOS bundle validation
+            .pcap => true, // PCAP network capture validation
+            .pcapng => true, // PCAPNG network capture validation
             .unknown => false,
         };
     }
@@ -1521,6 +1527,13 @@ const magic_signatures = [_]MagicSignature{
     // VMDK COWD (ESXi Sparse): magic 0x44574F43 stored as LE = bytes "COWD"
     .{ .bytes = "COWD", .offset = 0, .format = .vmdk },
     // Note: DV, TGA, PAM/PBM/PGM/PPM, HTML, COFF, DMG, CDG, Toast have no reliable magic bytes at offset 0 - detected by extension and/or structure
+    // PCAP: four variants (endianness × timestamp resolution)
+    .{ .bytes = &[_]u8{ 0xA1, 0xB2, 0xC3, 0xD4 }, .offset = 0, .format = .pcap }, // BE, usec
+    .{ .bytes = &[_]u8{ 0xD4, 0xC3, 0xB2, 0xA1 }, .offset = 0, .format = .pcap }, // LE, usec
+    .{ .bytes = &[_]u8{ 0xA1, 0xB2, 0x3C, 0x4D }, .offset = 0, .format = .pcap }, // BE, nsec
+    .{ .bytes = &[_]u8{ 0x4D, 0x3C, 0xB2, 0xA1 }, .offset = 0, .format = .pcap }, // LE, nsec
+    // PCAPNG: Section Header Block
+    .{ .bytes = &[_]u8{ 0x0A, 0x0D, 0x0D, 0x0A }, .offset = 0, .format = .pcapng },
 };
 
 /// Maximum number of magic signatures that can share the same first byte.
@@ -2778,6 +2791,10 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "class", .java_class },
     // Unix ar archive (static libraries)
     .{ "a", .ar },
+    // Network capture formats
+    .{ "pcap", .pcap },
+    .{ "cap", .pcap },
+    .{ "pcapng", .pcapng },
 });
 
 /// Extensions that should NOT be validated as a text format even if content
@@ -6159,6 +6176,9 @@ pub const FormatValidator = struct {
             .macos_app => ValidationResult.invalid(.macos_app, "macOS app bundles must be validated as directories, not files"),
             .macos_framework => ValidationResult.invalid(.macos_framework, "macOS frameworks must be validated as directories, not files"),
             .macos_bundle => ValidationResult.invalid(.macos_bundle, "macOS bundles must be validated as directories, not files"),
+            // Network capture formats
+            .pcap => network_validators.validatePcap(file_src_ptr),
+            .pcapng => network_validators.validatePcapng(file_src_ptr),
             .unknown => validateUnknownWithUtf8Fallback(file),
         };
 
@@ -6301,6 +6321,9 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
         .sitx => stuffit_validator.validateSitxFromBuffer(data),
         .sevenz => archive_validators.validate7zFromBuffer(data),
         .wim, .esd => wim_validator.validateWimFromBuffer(data),
+        // Network capture formats
+        .pcap => network_validators.validatePcapFromBuffer(data),
+        .pcapng => network_validators.validatePcapngFromBuffer(data),
         // For formats without buffer validators yet, just return format detected
         else => ValidationResult.ok(format),
     };

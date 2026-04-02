@@ -286,6 +286,8 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macos_app = "macOS Application Bundle",
     .macos_framework = "macOS Framework",
     .macos_bundle = "macOS Bundle",
+    .pcap = "PCAP Network Capture",
+    .pcapng = "PCAPNG Network Capture",
 });
 
 // English CLI argument aliases (canonical forms, without -- prefix).
