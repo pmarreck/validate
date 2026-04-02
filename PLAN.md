@@ -4,6 +4,39 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ## Active
 
+### False Positive Fixes (from ~/Pictures FAILS.txt scan, 2026-04-01)
+- [x] AAC silence: accept all-tiny-frames (< 8 bytes) as valid silent audio (2026-04-01 ~14:00 EST)
+- [x] Minimum file size: MP3 >= 128, BMP >= 58, ADTS >= 128, MPEG-TS >= 188, Tar >= 512 (2026-04-01 ~14:30 EST)
+- [x] Text formats (plain_text, csv, markdown + variants) added to has_no_magic list (2026-04-01 ~15:00 EST)
+
+### Kaitai Struct-Guided New Format Wave
+Use .ksy specs as reference docs when writing validators for these high-value formats:
+- [x] java_class — Java .class bytecode (2026-04-02 ~01:30 EST)
+- [ ] dex — Android DEX bytecode
+- [ ] rpm — Red Hat/Fedora/SUSE packages
+- [ ] cpio — Inside every rpm and initramfs
+- [ ] windows_lnk_file — Windows shortcuts (.lnk)
+- [ ] regf — Windows registry hives
+- [ ] windows_evt_log — Windows event logs
+- [ ] windows_minidump — Windows crash dumps (.dmp)
+- [ ] pcap — Network packet captures
+- [ ] dbf — dBASE database (Shapefile companion)
+- [ ] xar — macOS .pkg installer archives
+- [ ] dos_mz — DOS MZ executables (PE stub)
+- [ ] openpgp_message — PGP encrypted/signed messages
+- [ ] ssh_public_key — SSH .pub files
+- [ ] wmf — Windows Metafile vector images
+- [ ] python_pyc — Python compiled bytecode
+- [ ] ext2 — Linux ext2/3/4 filesystem images
+- [ ] vfat — FAT12/16/32 filesystem images
+- [ ] luks — Linux encrypted disk headers
+- [ ] vdi — VirtualBox disk images
+- [ ] systemd_journal — systemd journal logs
+- [ ] lzh — LHA archive (still used in Japan)
+- [ ] pcx — Legacy PCX bitmap image
+- [ ] minecraft_nbt — Minecraft Named Binary Tag
+- [ ] nitf — National Imagery Transmission Format
+
 - [x] Studio One .song: Add `metainfo.xml` presence check — validates ZIP structure then requires Studio One-specific content (2026-03-29 ~11:30 EST)
 
 ### Real-World Scan Findings (2026-03-27)

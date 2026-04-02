@@ -37,7 +37,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/creative_validators.zig` | Premiere (PRPROJ), InDesign (INDD/IDML), FCPXML, DaVinci (DRP), Sketch, AI, EPS, AEP, PostScript |
 | `src/core/cad_3d_validators.zig` | DWG, DXF, STEP, STL, OBJ, PLY, glTF/GLB, Blender, 3MF |
 | `src/core/email_validators.zig` | EML, MBOX (with attachment extraction + validation) |
-| `src/core/executable_validators.zig` | ELF, Mach-O, COFF, Wasm, AR |
+| `src/core/executable_validators.zig` | ELF, Mach-O, COFF, Wasm, Java .class, AR |
 | `src/core/pdf_validator.zig` | PDF (structural + deep xref/image/font validation), AI, EPS, AEP, PostScript |
 | `src/core/game_validator.zig` | NES, SNES, N64, GB, GBA, NDS, Genesis, CHD, IFF, Blorb |
 | `src/core/daw_validators.zig` | FLP, ALS, RPP, Cubase CPR (RIFF chunk walk), Pro Tools PTX (XOR decrypt + ZMARK blocks), GarageBand .band (bundle), Reason (IFF chunks); Bitwig stub only |
@@ -91,7 +91,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/cad_3d_validators.zig` | 3D/CAD format validation (DWG, DXF, STEP, STL, OBJ, PLY, glTF/GLB, Blender); PLY binary deep validation with float NaN/Inf + face index range checking |
 | `src/core/creative_validators.zig` | Creative suite validation (Premiere, InDesign, IDML, FCPXML, DaVinci, Sketch, AI, EPS, AEP) |
 | `src/core/email_validators.zig` | Email format validation (EML, MBOX) |
-| `src/core/executable_validators.zig` | Binary executable validation (ELF, Mach-O, COFF, Wasm, AR) |
+| `src/core/executable_validators.zig` | Binary executable validation (ELF, Mach-O, COFF, Wasm, Java .class bytecode, AR) |
 | `src/core/pe_validator.zig` | Windows PE executable validation (DOS header, COFF, optional header, section table) |
 | `src/core/daw_validators.zig` | DAW project validation (FLP, ALS, RPP, Cubase CPR RIFF chunk walk, Pro Tools PTX XOR-decrypt+block-walk, GarageBand bundle, Reason IFF-walk) || `src/core/game_validator.zig` | Game ROM validation (NES, SNES, N64 w/ CIC auto-detection, GB, GBA, NDS, Genesis, CHD) |
 | `src/core/financial_validators.zig` | Financial format validation (QBW, QBB, QDF, OFX, QIF, TXF) |
