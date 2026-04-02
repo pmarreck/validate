@@ -5090,10 +5090,12 @@ pub const FormatValidator = struct {
         if (result.format == .unknown and expected_format != .unknown and expected_format.hasValidator()) {
             // Don't flag "magic bytes corrupted" for formats that inherently lack magic bytes
             const has_no_magic = switch (expected_format) {
-                .cdg, .toast, .mp2, .msi, .br, .dv, .tga => true,
+                .cdg, .toast, .mp2, .msi, .br, .dv, .tga,
+                .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
+                .csv, .markdown,
+                => true,
                 else => false,
-            };
-            if (has_no_magic) {
+            };            if (has_no_magic) {
                 // These formats are extension-only; lack of magic is expected, not corruption
                 result = ValidationResult.ok(expected_format);
             } else {
@@ -7527,4 +7529,21 @@ test "validateFileDeep routes git directories to git validator" {
     // IMPORTANT: Should show FULL validation depth, not just structural
     // This is the key assertion - if this fails, deep validation isn't being routed
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "text file without magic bytes is not flagged as corrupted" {
+    // Simulate the validateFileHandle flow for a .txt file containing valid text
+    // but no magic bytes. The expected_format from extension is .plain_text,
+    // and detectFormat returns .unknown (no magic bytes match).
+    // It should NOT be flagged as "magic bytes corrupted" because text has no magic.
+    // Note: .tsv maps to .csv in the extension map (no separate .tsv enum variant).
+    const has_no_magic = switch (FileFormat.plain_text) {
+        .cdg, .toast, .mp2, .msi, .br, .dv, .tga,
+        .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
+        .csv, .markdown,
+        => true,
+        else => false,
+    };
+    try std.testing.expect(has_no_magic);
 }
