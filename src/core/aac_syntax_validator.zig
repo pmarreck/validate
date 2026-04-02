@@ -839,6 +839,7 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
     var offset: usize = 0;
     var frames: u32 = 0;
     var au_parse_failures: u32 = 0;
+    var small_frames_skipped: u32 = 0;
     for (au_sizes) |size| {
         if (offset + size > data.len) break;
         const au_slice = data[offset..][0..size];
@@ -847,6 +848,7 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
         // frame at the start with skip_samples metadata). They cannot contain
         // valid AAC-LC spectral data and are not meaningful for validation.
         if (size < 8) {
+            small_frames_skipped += 1;
             offset += size;
             continue;
         }
@@ -861,7 +863,9 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
         offset += size;
     }
 
-    if (frames == 0) return AacSyntaxResult.invalid("No AAC frames validated", 0);
+    if (frames == 0 and small_frames_skipped == 0) return AacSyntaxResult.invalid("No AAC frames validated", 0);
+    // All frames tiny (< 8 bytes): silent/near-silent audio track — valid but nothing to validate
+    if (frames == 0 and small_frames_skipped > 0) return AacSyntaxResult.ok(0);
     var result = AacSyntaxResult.ok(frames);
     if (au_parse_failures > 0) {
         result.warning_message = "Some AAC access units could not be parsed";
@@ -1414,6 +1418,18 @@ test "validateAacSyntax rejects empty frames" {
     const data = [_]u8{};
     const result = validateAacSyntax(&data, &sizes, &asc);
     try std.testing.expect(!result.valid);
+}
+
+test "validateAacSyntax accepts all-small-frames as silent audio" {
+    // AAC-LC 44100Hz stereo: AOT=2 (5 bits: 00010), freq_idx=4 (4 bits: 0100), chan=2 (4 bits: 0010), pad
+    // Binary: 00010 0100 0010 0 = 0x1210
+    const asc = [_]u8{ 0x12, 0x10 };
+    // Simulate 6 tiny AU frames (< 8 bytes each) — typical of near-silent 2kbps audio
+    const sizes = [_]u32{ 4, 3, 5, 4, 3, 4 };
+    const data = [_]u8{0} ** 23; // sum of sizes
+    const result = validateAacSyntax(&data, &sizes, &asc);
+    // Should NOT fail — all-tiny-frames means silence, not corruption
+    try std.testing.expect(result.valid);
 }
 
 test "validateAccessUnit rejects END-only frame (no audio element)" {
