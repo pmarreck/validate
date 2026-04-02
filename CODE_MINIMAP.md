@@ -102,6 +102,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/bagit_validator.zig` | BagIt (RFC 8493) archive validation — structural (bagit.txt format) + deep (SHA-256/SHA-512/MD5 manifest verification of payload files) |
 | `src/core/edi_validators.zig` | EDI format validation — X12 (ISA self-describing delimiters, SE/GE/IEA control totals) + EDIFACT (UNA/UNB parsing, UNT/UNZ counts) |
 | `src/core/pim_validators.zig` | PIM format validation — iCalendar (RFC 5545 BEGIN/END nesting, VERSION/PRODID, component validation) + vCard (RFC 6350 envelope, version-specific required properties) |
+| `src/core/network_validators.zig` | Network capture format validation — PCAP (all 4 magic variants: BE/LE × usec/nsec, version check, snaplen bounds, full packet record walk) + PCAPNG (SHB magic + byte-order magic detection) |
 | `src/core/crypto_validators.zig` | Crypto format validation — PEM (header/footer matching, base64, ASN.1 DER inside) + DER (ASN.1 TLV recursive parsing with depth limit) |
 | `src/core/ebml_parser.zig` | EBML/Matroska container parser with CRC-32 verification (uses `std.hash.Crc32` via codec_utils consolidation) |
 

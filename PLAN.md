@@ -19,7 +19,7 @@ Use .ksy specs as reference docs when writing validators for these high-value fo
 - [ ] regf — Windows registry hives
 - [ ] windows_evt_log — Windows event logs
 - [ ] windows_minidump — Windows crash dumps (.dmp)
-- [ ] pcap — Network packet captures
+- [x] pcap — Network packet captures (2026-04-01 ~22:30 EST)
 - [x] dbf — dBASE database (Shapefile companion) (2026-04-01 ~15:00 EST)
 - [ ] xar — macOS .pkg installer archives
 - [ ] dos_mz — DOS MZ executables (PE stub)
