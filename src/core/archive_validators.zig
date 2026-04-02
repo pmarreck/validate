@@ -6201,6 +6201,12 @@ pub fn validateRpmFromBuffer(data: []const u8) ValidationResult {
         .err => |e| return e,
     };
 
+    // Record signature header layout for SHA-1 verification later
+    const sig_num_index = std.mem.readInt(u32, data[rpm_lead_size + 8 ..][0..4], .big);
+    const sig_len_storage = std.mem.readInt(u32, data[rpm_lead_size + 12 ..][0..4], .big);
+    const sig_index_start = rpm_lead_size + 16;
+    const sig_storage_start = sig_index_start + @as(usize, sig_num_index) * 16;
+
     // Padding to 8-byte boundary after signature section
     const remainder = sig_end % 8;
     const padding: usize = if (remainder == 0) 0 else 8 - remainder;
@@ -6208,11 +6214,52 @@ pub fn validateRpmFromBuffer(data: []const u8) ValidationResult {
 
     // Validate main header
     const main_result = validateRpmHeader(data, main_start, .rpm);
-    switch (main_result) {
-        .ok => {},
+    const main_end = switch (main_result) {
+        .ok => |end| end,
         .err => |e| return e,
+    };
+
+    // SHA-1 verification: scan signature index records for tag 269
+    var sha1_verified = false;
+    {
+        var i: usize = 0;
+        while (i < sig_num_index) : (i += 1) {
+            const rec_pos = sig_index_start + i * 16;
+            const tag = std.mem.readInt(u32, data[rec_pos..][0..4], .big);
+            if (tag == RPM_SIG_TAG_SHA1) {
+                const rec_type = std.mem.readInt(u32, data[rec_pos + 4 ..][0..4], .big);
+                const offset = std.mem.readInt(u32, data[rec_pos + 8 ..][0..4], .big);
+                // Must be type 6 (string) and offset within storage
+                if (rec_type == 6 and offset < sig_len_storage) {
+                    const str_start = sig_storage_start + @as(usize, offset);
+                    // Find NUL terminator
+                    const storage_end_pos = sig_storage_start + @as(usize, sig_len_storage);
+                    var str_end = str_start;
+                    while (str_end < storage_end_pos and str_end < data.len and data[str_end] != 0) : (str_end += 1) {}
+                    const expected_hex = data[str_start..str_end];
+                    // SHA-1 hex should be exactly 40 characters
+                    if (expected_hex.len == 40) {
+                        // Compute SHA-1 of main header bytes
+                        const main_bytes = data[main_start..main_end];
+                        var hasher = Sha1.init(.{});
+                        hasher.update(main_bytes);
+                        const digest = hasher.finalResult();
+                        const computed_hex = std.fmt.bytesToHex(digest, .lower);
+                        if (std.mem.eql(u8, &computed_hex, expected_hex)) {
+                            sha1_verified = true;
+                        } else {
+                            return ValidationResult.invalid(.rpm, "RPM header SHA-1 digest mismatch");
+                        }
+                    }
+                }
+                break;
+            }
+        }
     }
 
+    if (sha1_verified) {
+        return ValidationResult.okWithDepth(.rpm, .full);
+    }
     return ValidationResult.okWithDepth(.rpm, .structural);
 }
 
@@ -6445,6 +6492,97 @@ test "RPM: major version 4 accepted" {
     const result = validateRpmFromBuffer(buf);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(FileFormat.rpm, result.format);
+}
+
+/// RPM signature tag constants
+const RPM_SIG_TAG_SHA1: u32 = 269;
+
+/// Build an RPM signature header with a SHA-1 tag (269) pointing to a hex digest string.
+/// The tag uses record_type=6 (string, NUL-terminated).
+fn buildRpmSigHeaderWithSha1(sha1_hex: []const u8) []u8 {
+    // Storage: the SHA-1 hex string + NUL terminator, padded to 4-byte alignment
+    const str_len = sha1_hex.len + 1; // +1 for NUL
+    const padded_storage = (str_len + 3) & ~@as(usize, 3); // align to 4
+    // 2 index records: tag 1000 (dummy SIZE) + tag 269 (SHA1)
+    const num_index: u32 = 2;
+    const total = 16 + @as(usize, num_index) * 16 + padded_storage;
+    var buf = std.testing.allocator.alloc(u8, total) catch unreachable;
+    @memset(buf, 0);
+    // Header record
+    @memcpy(buf[0..4], &rpm_header_magic);
+    std.mem.writeInt(u32, buf[8..12][0..4], num_index, .big);
+    std.mem.writeInt(u32, buf[12..16][0..4], @intCast(padded_storage), .big);
+    // Index record 0: tag=1000 (SIZE), type=4 (uint32), offset=0, count=1
+    std.mem.writeInt(u32, buf[16..][0..4], 1000, .big);
+    std.mem.writeInt(u32, buf[20..][0..4], 4, .big);
+    std.mem.writeInt(u32, buf[24..][0..4], 0, .big);
+    std.mem.writeInt(u32, buf[28..][0..4], 1, .big);
+    // Index record 1: tag=269 (SHA1), type=6 (string), offset=0, count=1
+    std.mem.writeInt(u32, buf[32..][0..4], RPM_SIG_TAG_SHA1, .big);
+    std.mem.writeInt(u32, buf[36..][0..4], 6, .big); // type=string
+    std.mem.writeInt(u32, buf[40..][0..4], 0, .big); // offset into storage
+    std.mem.writeInt(u32, buf[44..][0..4], 1, .big); // count
+    // Storage: SHA-1 hex string + NUL
+    const storage_start = 16 + @as(usize, num_index) * 16;
+    @memcpy(buf[storage_start..][0..sha1_hex.len], sha1_hex);
+    buf[storage_start + sha1_hex.len] = 0; // NUL terminator
+    return buf;
+}
+
+test "RPM: SHA-1 header digest verification passes for valid RPM" {
+    const lead = buildRpmLead(3, 0, 0, 5);
+    const main_storage: [4]u8 = .{ 0xDE, 0xAD, 0xBE, 0xEF };
+    const main_hdr = buildRpmHeaderRecord(1, &main_storage);
+    defer std.testing.allocator.free(main_hdr);
+
+    // Compute SHA-1 of the main header bytes
+    var hasher = Sha1.init(.{});
+    hasher.update(main_hdr);
+    const digest = hasher.finalResult();
+    const hex = std.fmt.bytesToHex(digest, .lower);
+
+    // Build signature header with tag 269 = correct SHA-1
+    const sig_hdr = buildRpmSigHeaderWithSha1(&hex);
+    defer std.testing.allocator.free(sig_hdr);
+
+    const sig_end = rpm_lead_size + sig_hdr.len;
+    const pad = if (sig_end % 8 == 0) @as(usize, 0) else 8 - (sig_end % 8);
+    const total = rpm_lead_size + sig_hdr.len + pad + main_hdr.len;
+    var buf = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..96], &lead);
+    @memcpy(buf[96..][0..sig_hdr.len], sig_hdr);
+    @memcpy(buf[96 + sig_hdr.len + pad ..][0..main_hdr.len], main_hdr);
+
+    const result = validateRpmFromBuffer(buf);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "RPM: SHA-1 header digest mismatch detected" {
+    const lead = buildRpmLead(3, 0, 0, 5);
+    const main_storage: [4]u8 = .{ 0xDE, 0xAD, 0xBE, 0xEF };
+    const main_hdr = buildRpmHeaderRecord(1, &main_storage);
+    defer std.testing.allocator.free(main_hdr);
+
+    // Build signature header with WRONG SHA-1 (all zeros)
+    const wrong_hex = "0000000000000000000000000000000000000000";
+    const sig_hdr = buildRpmSigHeaderWithSha1(wrong_hex);
+    defer std.testing.allocator.free(sig_hdr);
+
+    const sig_end = rpm_lead_size + sig_hdr.len;
+    const pad = if (sig_end % 8 == 0) @as(usize, 0) else 8 - (sig_end % 8);
+    const total = rpm_lead_size + sig_hdr.len + pad + main_hdr.len;
+    var buf = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..96], &lead);
+    @memcpy(buf[96..][0..sig_hdr.len], sig_hdr);
+    @memcpy(buf[96 + sig_hdr.len + pad ..][0..main_hdr.len], main_hdr);
+
+    const result = validateRpmFromBuffer(buf);
+    try std.testing.expect(!result.is_valid);
 }
 
 test "RPM: source package (type=1) accepted" {
