@@ -68,16 +68,33 @@ failed=0
 echo
 
 # Map of dir-name -> flake attribute (packages that exist in flake.nix)
-declare -A CROSS_ATTRS=(
-	["x86_64-windows"]="packages.x86_64-linux.windows-x86_64"
-	["aarch64-macos"]="packages.x86_64-linux.macos-aarch64"
-)
+# Detect host system for choosing the right flake attributes
+host_system=$(nix eval --raw nixpkgs#stdenv.hostPlatform.system 2>/dev/null || echo "unknown")
 
-# Also try native builds for other platforms if builders are available
-declare -A NATIVE_ATTRS=(
-	["x86_64-linux"]="packages.x86_64-linux.default"
-	["aarch64-linux"]="packages.aarch64-linux.default"
-)
+declare -A CROSS_ATTRS=()
+declare -A NATIVE_ATTRS=()
+
+if [[ "$host_system" == "aarch64-darwin" ]]; then
+	# Building from macOS: use cross-compile for Linux (produces static musl binaries)
+	CROSS_ATTRS=(
+		["x86_64-linux"]="packages.aarch64-darwin.linux-x86_64"
+		["x86_64-windows"]="packages.x86_64-linux.windows-x86_64"
+		["aarch64-macos"]="packages.x86_64-linux.macos-aarch64"
+	)
+	NATIVE_ATTRS=(
+		["aarch64-linux"]="packages.aarch64-linux.default"
+	)
+else
+	# Building from Linux: use native builds + cross-compile for other platforms
+	CROSS_ATTRS=(
+		["x86_64-windows"]="packages.x86_64-linux.windows-x86_64"
+		["aarch64-macos"]="packages.x86_64-linux.macos-aarch64"
+	)
+	NATIVE_ATTRS=(
+		["x86_64-linux"]="packages.x86_64-linux.default"
+		["aarch64-linux"]="packages.aarch64-linux.default"
+	)
+fi
 
 echo "=== Cross-compiling via nix build ==="
 for dir_name in $(echo "${!CROSS_ATTRS[@]} ${!NATIVE_ATTRS[@]}" | tr ' ' '\n' | sort -u); do
