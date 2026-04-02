@@ -183,7 +183,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .als, .rpp, .logicx, .flp, .song, .bwproject, .cpr, .ptx, .band, .reason, .prproj, .indd, .idml, .fcpxml, .drp => "project",
 
         // Database
-        .mdb, .accdb => "database",
+        .mdb, .accdb, .dbf => "database",
 
         // Financial
         .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2, .x12_edi, .edifact => "financial",

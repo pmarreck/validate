@@ -850,6 +850,201 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8, format: FileForm
     return ValidationResult.okWithDepth(format, .structural);
 }
 
+// ============ dBASE Database Validators ============
+
+/// Known valid dBASE version bytes.
+/// Low 3 bits encode the dBASE level; upper bits indicate memo/SQL extensions.
+fn isValidDbfVersion(v: u8) bool {
+    return switch (v) {
+        0x02, 0x03, 0x04, 0x05, 0x07, // dBASE II/III/IV/V
+        0x30, 0x31, 0x32, 0x43, 0x63, // Visual FoxPro variants
+        0x7B, // dBASE IV + memo + SQL table
+        0x83, 0x87, 0x8B, 0x8E, // dBASE III+ with memo, dBASE IV with memo
+        0xCB, // dBASE IV with memo + SQL table
+        0xE5, // Clipper SIX with SMT memo
+        0xF5, 0xF4, 0xFB, // FoxPro with memo
+        => true,
+        else => false,
+    };
+}
+
+/// Recognized dBASE field type characters.
+fn isValidDbfFieldType(t: u8) bool {
+    return switch (t) {
+        'C', 'N', 'D', 'L', 'M', 'F', 'B', 'G', 'P', 'Y', 'T', 'I', 'V', 'X', '@', 'O', '+' => true,
+        else => false,
+    };
+}
+
+/// Validate a dBASE .dbf file from a memory buffer.
+/// Checks version byte, header/record cross-validation, field descriptors, and terminator.
+/// Returns structural validity; no checksum exists in the format so corruption is "mixed" opacity.
+pub fn validateDbfFromBuffer(data: []const u8) ValidationResult {
+    // Minimum: 12-byte header1 + 1 terminator = 13 bytes
+    if (data.len < 13) {
+        return ValidationResult.invalidCode(.dbf, .file_too_small, "dBASE format");
+    }
+
+    // Version byte
+    const version = data[0];
+    if (!isValidDbfVersion(version)) {
+        return ValidationResult.invalidCode(.dbf, .invalid_magic, "dBASE version byte");
+    }
+
+    // Date: month 1-12, day 1-31
+    const last_update_m = data[2];
+    const last_update_d = data[3];
+    if (last_update_m == 0 or last_update_m > 12) {
+        return ValidationResult.invalid(.dbf, "Invalid last-update month in dBASE header");
+    }
+    if (last_update_d == 0 or last_update_d > 31) {
+        return ValidationResult.invalid(.dbf, "Invalid last-update day in dBASE header");
+    }
+
+    // Header and record lengths (little-endian u16 at offsets 8 and 10)
+    if (data.len < 12) {
+        return ValidationResult.invalidCode(.dbf, .truncated, "dBASE header");
+    }
+    const len_header = std.mem.readInt(u16, data[8..10], .little);
+    const len_record = std.mem.readInt(u16, data[10..12], .little);
+
+    if (len_header < 33) {
+        return ValidationResult.invalid(.dbf, "dBASE header length too small (< 33)");
+    }
+    if (len_record == 0) {
+        return ValidationResult.invalid(.dbf, "dBASE record length is zero");
+    }
+    if (data.len < len_header) {
+        return ValidationResult.invalidCode(.dbf, .truncated, "dBASE header");
+    }
+
+    // Header terminator at len_header - 1 must be 0x0D
+    if (data[len_header - 1] != 0x0D) {
+        return ValidationResult.invalid(.dbf, "Missing dBASE header terminator (0x0D)");
+    }
+
+    // Determine the prefix size before field descriptors.
+    // dBASE III uses a 32-byte fixed prefix (bytes 0-31).
+    // The remaining bytes up to the terminator are 32-byte field descriptors.
+    const prefix_size: u16 = 32;
+    const fields_area: u16 = len_header - prefix_size - 1; // -1 for terminator byte
+
+    // Must divide evenly into 32-byte descriptors
+    if (fields_area % 32 != 0) {
+        return ValidationResult.invalid(.dbf, "dBASE field descriptor area is not a multiple of 32 bytes");
+    }
+    const num_fields = fields_area / 32;
+
+    // Parse and validate each 32-byte field descriptor
+    var field_length_sum: u32 = 0;
+    var field_offset: usize = prefix_size;
+    var i: u32 = 0;
+    while (i < num_fields) : (i += 1) {
+        if (field_offset + 32 > data.len) {
+            return ValidationResult.invalidCode(.dbf, .truncated, "dBASE field descriptors");
+        }
+        const field = data[field_offset .. field_offset + 32];
+        // Field type at offset 11 within the descriptor
+        const field_type = field[11];
+        if (!isValidDbfFieldType(field_type)) {
+            return ValidationResult.invalid(.dbf, "Invalid dBASE field type character");
+        }
+        // Field length at offset 16 within the descriptor
+        const field_length = field[16];
+        field_length_sum += field_length;
+        field_offset += 32;
+    }
+
+    // Cross-validate: sum of field lengths + 1 (deletion flag) must equal len_record
+    if (field_length_sum + 1 != len_record) {
+        return ValidationResult.invalid(.dbf, "dBASE field length sum does not match record length");
+    }
+
+    // File size cross-validation (allow ±1 for optional 0x1A EOF marker)
+    const num_records = std.mem.readInt(u32, data[4..8], .little);
+    const expected_min: u64 = @as(u64, len_header) + @as(u64, num_records) * @as(u64, len_record);
+    const expected_max: u64 = expected_min + 1; // optional 0x1A EOF byte
+    if (data.len < expected_min or data.len > expected_max) {
+        return ValidationResult.invalid(.dbf, "dBASE file size does not match header + records");
+    }
+
+    // Validate deletion flags on each record (first byte of each record: 0x20=active, 0x2A=deleted)
+    var rec_idx: u32 = 0;
+    while (rec_idx < num_records) : (rec_idx += 1) {
+        const rec_start: usize = len_header + @as(usize, rec_idx) * @as(usize, len_record);
+        if (rec_start >= data.len) break;
+        const deletion_flag = data[rec_start];
+        if (deletion_flag != 0x20 and deletion_flag != 0x2A) {
+            return ValidationResult.invalid(.dbf, "Invalid dBASE record deletion flag (not 0x20 or 0x2A)");
+        }
+    }
+
+    return ValidationResult.ok(.dbf);
+}
+
+/// File-source validator for dBASE .dbf files.
+/// Reads the entire file into a buffer and delegates to validateDbfFromBuffer.
+pub fn validateDbf(file: *FileSource) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalidCode(.dbf, .failed_to_seek, "to start");
+
+    // Read enough for header validation: up to 64KB covers almost any real .dbf
+    var buf: [65536]u8 = undefined;
+    const bytes_read = file.read(&buf) catch {
+        return ValidationResult.invalidCode(.dbf, .failed_to_read, "dBASE file");
+    };
+
+    // For large files we only have a partial buffer — do header-only validation
+    // (skip file-size cross-check for files > 64KB)
+    if (bytes_read == buf.len) {
+        // Large file: validate header structure only, skip record-count size check
+        return validateDbfHeaderOnly(buf[0..bytes_read]);
+    }
+
+    return validateDbfFromBuffer(buf[0..bytes_read]);
+}
+
+/// Header-only validation for dBASE files larger than the read buffer.
+/// Validates everything except the file-size cross-check.
+fn validateDbfHeaderOnly(data: []const u8) ValidationResult {
+    if (data.len < 13) return ValidationResult.invalidCode(.dbf, .file_too_small, "dBASE format");
+
+    const version = data[0];
+    if (!isValidDbfVersion(version)) return ValidationResult.invalidCode(.dbf, .invalid_magic, "dBASE version byte");
+
+    const last_update_m = data[2];
+    const last_update_d = data[3];
+    if (last_update_m == 0 or last_update_m > 12) return ValidationResult.invalid(.dbf, "Invalid last-update month");
+    if (last_update_d == 0 or last_update_d > 31) return ValidationResult.invalid(.dbf, "Invalid last-update day");
+
+    const len_header = std.mem.readInt(u16, data[8..10], .little);
+    const len_record = std.mem.readInt(u16, data[10..12], .little);
+    if (len_header < 33) return ValidationResult.invalid(.dbf, "dBASE header length too small");
+    if (len_record == 0) return ValidationResult.invalid(.dbf, "dBASE record length is zero");
+    if (data.len < len_header) return ValidationResult.invalidCode(.dbf, .truncated, "dBASE header");
+
+    if (data[len_header - 1] != 0x0D) return ValidationResult.invalid(.dbf, "Missing dBASE header terminator");
+
+    const prefix_size: u16 = 32;
+    const fields_area: u16 = len_header - prefix_size - 1;
+    if (fields_area % 32 != 0) return ValidationResult.invalid(.dbf, "dBASE field area not multiple of 32");
+
+    const num_fields = fields_area / 32;
+    var field_length_sum: u32 = 0;
+    var field_offset: usize = prefix_size;
+    var i: u32 = 0;
+    while (i < num_fields) : (i += 1) {
+        if (field_offset + 32 > data.len) return ValidationResult.invalidCode(.dbf, .truncated, "dBASE field descriptors");
+        const field = data[field_offset .. field_offset + 32];
+        if (!isValidDbfFieldType(field[11])) return ValidationResult.invalid(.dbf, "Invalid dBASE field type");
+        field_length_sum += field[16];
+        field_offset += 32;
+    }
+
+    if (field_length_sum + 1 != len_record) return ValidationResult.invalid(.dbf, "dBASE field lengths do not match record length");
+
+    return ValidationResult.okWithDepth(.dbf, .structural);
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -1250,6 +1445,193 @@ test "readVarint: out of bounds returns zero bytes_read" {
     const data = [_]u8{0x05};
     const result = readVarint(&data, 5, 1); // pos > limit
     try testing.expectEqual(@as(u32, 0), result.bytes_read);
+}
+
+// =========================================================
+// dBASE (.dbf) buffer validation tests
+// =========================================================
+
+/// Build a minimal valid dBASE III DBF buffer in memory.
+/// No field descriptors — header is 33 bytes (32-byte prefix + 0x0D terminator).
+/// len_record = 1 (deletion flag only). num_records = 0.
+fn makeMinimalDbf(buf: *[33]u8) void {
+    @memset(buf, 0);
+    buf[0] = 0x03; // version: dBASE III
+    buf[1] = 25; // last_update year (1925)
+    buf[2] = 1; // last_update month
+    buf[3] = 1; // last_update day
+    // num_records = 0 (little-endian u32 at offsets 4-7, already 0)
+    // len_header = 33 (little-endian u16 at offsets 8-9)
+    buf[8] = 33;
+    buf[9] = 0;
+    // len_record = 1 (little-endian u16 at offsets 10-11)
+    buf[10] = 1;
+    buf[11] = 0;
+    // Terminator at len_header - 1 = 32
+    buf[32] = 0x0D;
+}
+
+test "DBF buffer validation: minimal valid file accepted" {
+    var buf: [33]u8 = undefined;
+    makeMinimalDbf(&buf);
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.dbf, result.format);
+}
+
+test "DBF buffer validation: too small rejected" {
+    const buf = [_]u8{0x03} ** 10;
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "DBF buffer validation: invalid version byte rejected" {
+    var buf: [33]u8 = undefined;
+    makeMinimalDbf(&buf);
+    buf[0] = 0xFF; // not a valid dBASE version
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "DBF buffer validation: invalid month rejected" {
+    var buf: [33]u8 = undefined;
+    makeMinimalDbf(&buf);
+    buf[2] = 13; // month > 12
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "DBF buffer validation: invalid day rejected" {
+    var buf: [33]u8 = undefined;
+    makeMinimalDbf(&buf);
+    buf[3] = 0; // day == 0
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "DBF buffer validation: missing header terminator rejected" {
+    var buf: [33]u8 = undefined;
+    makeMinimalDbf(&buf);
+    buf[32] = 0x00; // corrupt terminator
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "DBF buffer validation: zero record length rejected" {
+    var buf: [33]u8 = undefined;
+    makeMinimalDbf(&buf);
+    buf[10] = 0; // len_record = 0
+    buf[11] = 0;
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "DBF buffer validation: with one field — lengths must cross-validate" {
+    // Header: 32-byte prefix + 32-byte field descriptor + 0x0D terminator = 65 bytes
+    // Field: type='C', field_length=10 -> len_record must be 11 (1 flag + 10)
+    // num_records = 1, so file = 65 + 11 = 76 bytes
+    var buf: [76]u8 = undefined;
+    @memset(&buf, 0);
+    buf[0] = 0x03;
+    buf[1] = 25;
+    buf[2] = 3;
+    buf[3] = 15;
+    // num_records = 1
+    buf[4] = 1;
+    // len_header = 65
+    buf[8] = 65;
+    buf[9] = 0;
+    // len_record = 11
+    buf[10] = 11;
+    buf[11] = 0;
+    // Field descriptor at offset 32: name="TEST\0..." type='C' at [11], length=10 at [16]
+    buf[32] = 'T';
+    buf[33] = 'E';
+    buf[34] = 'S';
+    buf[35] = 'T';
+    buf[43] = 'C'; // field type at descriptor offset 11
+    buf[48] = 10; // field length at descriptor offset 16
+    // Header terminator at len_header-1 = 64
+    buf[64] = 0x0D;
+    // Record at offset 65: deletion flag = 0x20 (active), then 10 bytes data
+    buf[65] = 0x20;
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(result.is_valid);
+}
+
+test "DBF buffer validation: field length mismatch rejected" {
+    // Same as above but len_record is wrong (say 15 instead of 11)
+    var buf: [76]u8 = undefined;
+    @memset(&buf, 0);
+    buf[0] = 0x03;
+    buf[1] = 25;
+    buf[2] = 3;
+    buf[3] = 15;
+    buf[4] = 1;
+    buf[8] = 65;
+    buf[9] = 0;
+    buf[10] = 15; // len_record = 15, but field sum = 10 -> should be 11
+    buf[11] = 0;
+    buf[43] = 'C';
+    buf[48] = 10;
+    buf[64] = 0x0D;
+    buf[65] = 0x20;
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "DBF buffer validation: invalid field type rejected" {
+    var buf: [76]u8 = undefined;
+    @memset(&buf, 0);
+    buf[0] = 0x03;
+    buf[1] = 25;
+    buf[2] = 3;
+    buf[3] = 15;
+    buf[4] = 1;
+    buf[8] = 65;
+    buf[9] = 0;
+    buf[10] = 11;
+    buf[11] = 0;
+    buf[43] = 0x01; // invalid field type (non-ASCII)
+    buf[48] = 10;
+    buf[64] = 0x0D;
+    buf[65] = 0x20;
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "DBF buffer validation: invalid deletion flag rejected" {
+    var buf: [76]u8 = undefined;
+    @memset(&buf, 0);
+    buf[0] = 0x03;
+    buf[1] = 25;
+    buf[2] = 3;
+    buf[3] = 15;
+    buf[4] = 1;
+    buf[8] = 65;
+    buf[9] = 0;
+    buf[10] = 11;
+    buf[11] = 0;
+    buf[43] = 'C';
+    buf[48] = 10;
+    buf[64] = 0x0D;
+    buf[65] = 0xFF; // invalid deletion flag (not 0x20 or 0x2A)
+    const result = validateDbfFromBuffer(&buf);
+    try testing.expect(!result.is_valid);
+}
+
+test "DBF structural: ground truth sample.dbf from shapefile" {
+    // sample.dbf lives alongside the shapefile ground truth
+    const path = "ground_truth_examples/shapefile/companions/sample.dbf";
+    var file = std.fs.cwd().openFile(path, .{}) catch |err| {
+        if (err == error.FileNotFound) return error.SkipZigTest;
+        return err;
+    };
+    defer file.close();
+    var src = @import("file_source.zig").FileSource.fromFile(file);
+    const result = validateDbf(&src);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.dbf, result.format);
 }
 
 test "serialTypeContentSize: standard types" {

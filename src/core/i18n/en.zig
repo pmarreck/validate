@@ -170,6 +170,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .drp = "DaVinci Resolve Project",
     .mdb = "Microsoft Access Database (97-2003)",
     .accdb = "Microsoft Access Database",
+    .dbf = "dBASE Database",
     .qbw = "QuickBooks Company File",
     .qbb = "QuickBooks Backup",
     .qdf = "Quicken Data File",

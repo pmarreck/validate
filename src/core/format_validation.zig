@@ -451,6 +451,7 @@ pub const FileFormat = enum {
     // Database formats
     mdb, // Microsoft Access Database (97-2003)
     accdb, // Microsoft Access Database (2007+)
+    dbf, // dBASE Database (.dbf) — dBASE III/IV/V, Visual FoxPro, FoxPro
     // Disk images
     iso, // ISO 9660 CD/DVD image
     dmg, // Apple Disk Image
@@ -634,7 +635,7 @@ pub const FileFormat = enum {
             .dwg => true, // CAD formats
             .blend => true, // 3D modeling formats
             .fcpxml, .drp => true, // Video editing project formats
-            .mdb, .accdb => true, // Database formats
+            .mdb, .accdb, .dbf => true, // Database formats
             .iso, .dmg => true, // Disk images
             .hdf5, .parquet, .netcdf, .fits, .dicom, .fasta, .fastq, .warc => true, // Scientific/institutional data formats
             .wad, .pak, .lspk, .chromium_pak, .bsp, .vpk => true, // Game data formats
@@ -2192,6 +2193,32 @@ pub fn detectFormat(header: []const u8) FileFormat {
         return .vmdk;
     }
 
+    // dBASE .dbf: version byte (low 3 bits 0x03..0x05, 0x07; or 0x30, 0x83, 0x8B, 0xCB, 0xF5)
+    // Combined with structural plausibility: len_header >= 33 and len_record > 0
+    if (header.len >= 12) {
+        const dbf_version = header[0];
+        const is_dbf_version = switch (dbf_version) {
+            0x02, 0x03, 0x04, 0x05, 0x07, // dBASE II/III/IV/V
+            0x30, 0x31, 0x32, 0x43, 0x63, // Visual FoxPro variants
+            0x7B, // dBASE IV + memo + SQL table
+            0x83, 0x87, 0x8B, 0x8E, // dBASE III+ with memo, dBASE IV with memo
+            0xCB, // dBASE IV with memo + SQL table
+            0xE5, // Clipper SIX with SMT memo
+            0xF5, 0xF4, 0xFB, // FoxPro with memo
+            => true,
+            else => false,
+        };
+        if (is_dbf_version) {
+            const len_header = std.mem.readInt(u16, header[8..10], .little);
+            const len_record = std.mem.readInt(u16, header[10..12], .little);
+            // len_header must be at least 33 (32-byte prefix + terminator byte),
+            // and len_record > 0 (at minimum the deletion-flag byte, so >= 1)
+            if (len_header >= 33 and len_record > 0) {
+                return .dbf;
+            }
+        }
+    }
+
     return .unknown;
 }
 
@@ -2447,6 +2474,7 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     // Databases
     .{ "mdb", .mdb },
     .{ "accdb", .accdb },
+    .{ "dbf", .dbf },
     .{ "sqlite", .sqlite },
     .{ "sqlite3", .sqlite },
     // RAW camera formats
@@ -5983,6 +6011,7 @@ pub const FormatValidator = struct {
             .sketch => creative_validators.validateSketch(file_src_ptr),
             .mdb => document_validators.validateMdb(file_src_ptr),
             .accdb => document_validators.validateAccdb(file_src_ptr),
+            .dbf => document_validators.validateDbf(file_src_ptr),
             .iso => filesystem_validators.validateIso(file_src_ptr),
             .dmg => filesystem_validators.validateDmg(file_src_ptr),
             .hdf5 => scientific_validators.validateHdf5(file_src_ptr),
@@ -6248,6 +6277,7 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
         .sketch => creative_validators.validateSketchFromBuffer(data),
         .mdb => document_validators.validateMdbFromBuffer(data),
         .accdb => document_validators.validateAccdbFromBuffer(data),
+        .dbf => document_validators.validateDbfFromBuffer(data),
         .obj => cad_3d_validators.validateObjFromBuffer(data),
         .webp => image_validators.validateWebpFromBuffer(data),
         .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .song => archive_validators.validateZipFromBuffer(data, format),

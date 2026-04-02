@@ -170,6 +170,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .drp = "ڈا ونچی ریزولو پروجیکٹ",
     .mdb = "مائیکروسافٹ رسائی ڈیٹا بیس (97-2003)",
     .accdb = "مائیکروسافٹ ایکسیس ڈیٹا بیس",
+    .dbf = "dBASE ڈیٹابیس",
     .qbw = "QuickBooks Company File",
     .qbb = "QuickBooks Backup",
     .qdf = "Quicken Data File",

@@ -20,7 +20,7 @@ Use .ksy specs as reference docs when writing validators for these high-value fo
 - [ ] windows_evt_log — Windows event logs
 - [ ] windows_minidump — Windows crash dumps (.dmp)
 - [ ] pcap — Network packet captures
-- [ ] dbf — dBASE database (Shapefile companion)
+- [x] dbf — dBASE database (Shapefile companion) (2026-04-01 ~15:00 EST)
 - [ ] xar — macOS .pkg installer archives
 - [ ] dos_mz — DOS MZ executables (PE stub)
 - [ ] openpgp_message — PGP encrypted/signed messages

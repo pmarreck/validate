@@ -170,6 +170,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .drp = "DaVinci Resolve Project",
     .mdb = "மைக்ரோசாஃப்ட் அக்சஸ் டேட்டாபேஸ் (97-2003)",
     .accdb = "மைக்ரோசாஃப்ட் அணுகல் தரவுத்தளம்",
+    .dbf = "dBASE தரவுத்தளம்",
     .qbw = "QuickBooks Company File",
     .qbb = "QuickBooks Backup",
     .qdf = "Quicken Data File",

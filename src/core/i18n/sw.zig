@@ -170,6 +170,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .drp = "Mradi wa Utatuzi wa DaVinci",
     .mdb = "Hifadhidata ya Ufikiaji wa Microsoft (97-2003)",
     .accdb = "Microsoft Access Database",
+    .dbf = "Hifadhidata ya dBASE",
     .qbw = "QuickBooks Company File",
     .qbb = "QuickBooks Backup",
     .qdf = "Quicken Data File",
