@@ -845,3 +845,230 @@ test "validateAr rejects corrupted mode field" {
     const result = validateAr(&source);
     try std.testing.expect(!result.is_valid);
 }
+
+// ============ Java Class File Validator ============
+
+/// Validate Java .class bytecode file.
+/// Checks CAFEBABE magic, major version >= 43 (Java 1.0+), walks the constant
+/// pool validating every tag and consuming the correct payload per tag
+/// (including Long/Double double-slot occupancy), then checks that this_class
+/// references a valid Class entry and that fields/methods attribute_length
+/// values don't overflow remaining data.
+pub fn validateJavaClass(file: *FileSource) ValidationResult {
+    const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.java_class, .failed_to_get, "file size");
+    if (file_size < 10) return ValidationResult.invalidCode(.java_class, .file_too_small, "Java class file");
+
+    file.seekTo(0) catch return ValidationResult.invalid(.java_class, "Failed to seek");
+    // Read the full file into memory for parsing (class files are typically small)
+    // Read the full file into memory for parsing (class files are typically small)
+    const MAX_CLASS_SIZE: usize = 64 * 1024 * 1024; // 64 MB sanity limit
+    if (file_size > MAX_CLASS_SIZE) return ValidationResult.invalidCode(.java_class, .file_too_large, "Java class file");
+    const alloc = std.heap.page_allocator;
+    const size_usize: usize = @intCast(file_size);
+    const data = alloc.alloc(u8, size_usize) catch return ValidationResult.invalid(.java_class, "Out of memory");
+    defer alloc.free(data);
+    const bytes_read = file.readAll(data) catch return ValidationResult.invalidCode(.java_class, .failed_to_read, "Java class file");
+    if (bytes_read != size_usize) return ValidationResult.invalid(.java_class, "Short read");
+    return validateJavaClassFromBuffer(data);
+}
+
+/// Validate Java .class from an in-memory buffer.
+/// Pure structural check: magic, version, constant pool tags, this_class index.
+pub fn validateJavaClassFromBuffer(data: []const u8) ValidationResult {
+    if (data.len < 10) return ValidationResult.invalidCode(.java_class, .file_too_small, "Java class header");
+
+    // Magic: CA FE BA BE
+    if (!std.mem.eql(u8, data[0..4], &[_]u8{ 0xCA, 0xFE, 0xBA, 0xBE }))
+        return ValidationResult.invalidCode(.java_class, .invalid_magic, "Java class magic");
+
+    // minor_version at [4..6], major_version at [6..8] — both big-endian
+    const major = std.mem.readInt(u16, data[6..8], .big);
+    // Java 1.0 = major 45; accept >= 43 per spec (some pre-release bytecode uses 43/44)
+    if (major < 43) return ValidationResult.invalidCode(.java_class, .invalid_value, "Java class major version");
+
+    // constant_pool_count at [8..10]
+    const cp_count = std.mem.readInt(u16, data[8..10], .big);
+    if (cp_count == 0) return ValidationResult.invalid(.java_class, "Java class constant pool count is zero");
+
+    // Walk the constant pool: cp_count - 1 entries, 1-indexed
+    // We track a small tag array indexed by cp slot (1..cp_count-1) to verify this_class
+    const MAX_CP: usize = 65535;
+    var cp_tags: [MAX_CP + 1]u8 = [_]u8{0} ** (MAX_CP + 1);
+
+    var offset: usize = 10;
+    var idx: u16 = 1;
+    while (idx < cp_count) : (idx += 1) {
+        if (offset >= data.len) return ValidationResult.invalid(.java_class, "Truncated constant pool");
+        const tag = data[offset];
+        offset += 1;
+        cp_tags[idx] = tag;
+        switch (tag) {
+            1 => { // Utf8: 2-byte length + N bytes
+                if (offset + 2 > data.len) return ValidationResult.invalid(.java_class, "Truncated Utf8 constant");
+                const utf8_len = std.mem.readInt(u16, data[offset..][0..2], .big);
+                offset += 2;
+                if (offset + utf8_len > data.len) return ValidationResult.invalid(.java_class, "Truncated Utf8 data");
+                offset += utf8_len;
+            },
+            3, 4 => { // Integer, Float: 4 bytes
+                if (offset + 4 > data.len) return ValidationResult.invalid(.java_class, "Truncated Integer/Float constant");
+                offset += 4;
+            },
+            5, 6 => { // Long, Double: 8 bytes, occupies TWO slots
+                if (offset + 8 > data.len) return ValidationResult.invalid(.java_class, "Truncated Long/Double constant");
+                offset += 8;
+                idx += 1; // consume an extra slot
+            },
+            7, 8, 16, 19, 20 => { // Class, String, MethodType, Module, Package: 2 bytes
+                if (offset + 2 > data.len) return ValidationResult.invalid(.java_class, "Truncated 2-byte constant");
+                offset += 2;
+            },
+            9, 10, 11, 12, 17, 18 => { // Fieldref, Methodref, InterfaceMethodref, NameAndType, Dynamic, InvokeDynamic: 4 bytes
+                if (offset + 4 > data.len) return ValidationResult.invalid(.java_class, "Truncated 4-byte constant");
+                offset += 4;
+            },
+            15 => { // MethodHandle: 3 bytes
+                if (offset + 3 > data.len) return ValidationResult.invalid(.java_class, "Truncated MethodHandle constant");
+                offset += 3;
+            },
+            else => return ValidationResult.invalidCode(.java_class, .invalid_value, "unknown constant pool tag"),
+        }
+    }
+
+    // After constant pool: access_flags(2) + this_class(2) + super_class(2) + ...
+    if (offset + 6 > data.len) return ValidationResult.invalid(.java_class, "Truncated after constant pool");
+    // access_flags at offset, this_class at offset+2
+    const this_class = std.mem.readInt(u16, data[offset + 2 ..][0..2], .big);
+
+    // this_class must be a valid Class entry (tag 7)
+    if (this_class == 0 or this_class >= cp_count)
+        return ValidationResult.invalid(.java_class, "this_class index out of range");
+    if (cp_tags[this_class] != 7)
+        return ValidationResult.invalid(.java_class, "this_class does not reference a Class constant");
+
+    // Skip interfaces, fields, methods with basic bounds checking
+    offset += 6; // past access_flags, this_class, super_class
+
+    // interfaces_count
+    if (offset + 2 > data.len) return ValidationResult.invalid(.java_class, "Truncated interfaces count");
+    const iface_count = std.mem.readInt(u16, data[offset..][0..2], .big);
+    offset += 2;
+    if (offset + @as(usize, iface_count) * 2 > data.len) return ValidationResult.invalid(.java_class, "Truncated interfaces array");
+    offset += @as(usize, iface_count) * 2;
+
+    // Walk fields and methods (same structure)
+    for (0..2) |_| {
+        if (offset + 2 > data.len) return ValidationResult.invalid(.java_class, "Truncated member count");
+        const member_count = std.mem.readInt(u16, data[offset..][0..2], .big);
+        offset += 2;
+        for (0..member_count) |_| {
+            // access_flags(2) + name_index(2) + descriptor_index(2) + attributes_count(2)
+            if (offset + 8 > data.len) return ValidationResult.invalid(.java_class, "Truncated member header");
+            const attr_count = std.mem.readInt(u16, data[offset + 6 ..][0..2], .big);
+            offset += 8;
+            for (0..attr_count) |_| {
+                // attribute_name_index(2) + attribute_length(4)
+                if (offset + 6 > data.len) return ValidationResult.invalid(.java_class, "Truncated attribute header");
+                const attr_len = std.mem.readInt(u32, data[offset + 2 ..][0..4], .big);
+                offset += 6;
+                if (offset + attr_len > data.len) return ValidationResult.invalid(.java_class, "Attribute extends beyond file end");
+                offset += attr_len;
+            }
+        }
+    }
+
+    return ValidationResult.okWithDepth(.java_class, .structural);
+}
+
+/// Deep validation for Java .class files — structural only (no checksums in format).
+/// Deep validation for Java .class files — structural only (no checksums in format).
+pub fn validateJavaClassDeep(allocator: std.mem.Allocator, path: []const u8) ValidationResult {
+    _ = allocator;
+    var source = FileSource.open(path) catch {
+        return ValidationResult.invalid(.java_class, "Failed to open file");
+    };
+    defer source.close();
+    return validateJavaClass(&source);
+}
+
+test "validateJavaClass accepts minimal valid class buffer" {
+    // cp_count=3: cp[1]=Class(name_index=2), cp[2]=Utf8(5,"Hello")
+    var buf: std.ArrayListUnmanaged(u8) = .{};
+    defer buf.deinit(std.testing.allocator);
+    const w = buf.writer(std.testing.allocator);
+    // magic
+    try w.writeAll(&[_]u8{ 0xCA, 0xFE, 0xBA, 0xBE });
+    // minor=0, major=52 (Java 8)
+    try w.writeInt(u16, 0, .big);
+    try w.writeInt(u16, 52, .big);
+    // cp_count=3 (entries at index 1 and 2)
+    try w.writeInt(u16, 3, .big);
+    // cp[1]: tag=7 (Class), name_index=2
+    try w.writeByte(7);
+    try w.writeInt(u16, 2, .big);
+    // cp[2]: tag=1 (Utf8), length=5, "Hello"
+    try w.writeByte(1);
+    try w.writeInt(u16, 5, .big);
+    try w.writeAll("Hello");
+    // access_flags=0x0021 (public+super)
+    try w.writeInt(u16, 0x0021, .big);
+    // this_class=1 (cp[1]=Class, valid)
+    try w.writeInt(u16, 1, .big);
+    // super_class=0 (java/lang/Object has no super, index 0 is valid for super)
+    try w.writeInt(u16, 0, .big);
+    // interfaces_count=0
+    try w.writeInt(u16, 0, .big);
+    // fields_count=0
+    try w.writeInt(u16, 0, .big);
+    // methods_count=0
+    try w.writeInt(u16, 0, .big);
+    const result = validateJavaClassFromBuffer(buf.items);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(FileFormat.java_class, result.format);
+}
+
+test "validateJavaClass rejects wrong magic" {
+    var buf: [32]u8 = undefined;
+    buf[0] = 0xDE; buf[1] = 0xAD; buf[2] = 0xBE; buf[3] = 0xEF;
+    buf[4] = 0; buf[5] = 0; buf[6] = 0; buf[7] = 52;
+    buf[8] = 0; buf[9] = 2;
+    const result = validateJavaClassFromBuffer(buf[0..10]);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateJavaClass rejects truncated constant pool" {
+    var buf: std.ArrayListUnmanaged(u8) = .{};
+    defer buf.deinit(std.testing.allocator);
+    const w = buf.writer(std.testing.allocator);
+    try w.writeAll(&[_]u8{ 0xCA, 0xFE, 0xBA, 0xBE });
+    try w.writeInt(u16, 0, .big);   // minor
+    try w.writeInt(u16, 52, .big);  // major
+    try w.writeInt(u16, 5, .big);   // cp_count=5 → 4 entries, but we write none
+    // no CP entries → truncated
+    const result = validateJavaClassFromBuffer(buf.items);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateJavaClass rejects unknown constant pool tag" {
+    var buf: std.ArrayListUnmanaged(u8) = .{};
+    defer buf.deinit(std.testing.allocator);
+    const w = buf.writer(std.testing.allocator);
+    try w.writeAll(&[_]u8{ 0xCA, 0xFE, 0xBA, 0xBE });
+    try w.writeInt(u16, 0, .big);
+    try w.writeInt(u16, 52, .big);
+    try w.writeInt(u16, 2, .big);  // cp_count=2 → 1 entry
+    try w.writeByte(99);           // tag 99 = invalid
+    const result = validateJavaClassFromBuffer(buf.items);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateJavaClass with ground truth file" {
+    var source = FileSource.open("ground_truth_examples/java_class/Hello.class") catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer source.close();
+    const result = validateJavaClass(&source);
+    try std.testing.expect(result.is_valid);
+}
+

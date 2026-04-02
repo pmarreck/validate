@@ -254,6 +254,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macho_fat = "Mach-O ไบนารีสากล",
     .coff = "ไฟล์วัตถุ COFF",
     .wasm = "โมดูลการประกอบเว็บ",
+    .java_class = "Java Class File",
     .ar = "ไฟล์เก็บถาวร Unix ar",
     .html = "เอกสาร HTML",
     .icalendar = "iCalendar",

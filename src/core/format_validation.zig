@@ -549,6 +549,7 @@ pub const FileFormat = enum {
     macho_fat, // Mach-O Universal/Fat binary (multi-architecture)
     coff, // COFF object file (Windows .obj)
     wasm, // WebAssembly binary module (.wasm)
+    java_class, // Java bytecode (.class) - CAFEBABE magic, big-endian
     // Compiler artifact formats
     llvm_pch, // LLVM precompiled header (.pcm, magic "CPCH")
     llvm_diag, // LLVM serialized diagnostics (.dia, magic "DIAG")
@@ -672,6 +673,7 @@ pub const FileFormat = enum {
             .macho_fat => true, // Mach-O universal binary
             .coff => true, // COFF object file
             .wasm => true, // WebAssembly module
+            .java_class => true, // Java bytecode (.class file)
             .llvm_pch => true, // LLVM precompiled header
             .llvm_diag => true, // LLVM serialized diagnostics
             .ar => true, // Unix ar archive
@@ -1853,6 +1855,12 @@ fn checkSpecialCases(sig: MagicSignature, header: []const u8) ?FileFormat {
                 }
             }
         }
+        // Not a fat binary: check if it looks like a Java .class file
+        // Java .class: bytes 6-7 = major version (big-endian u16), must be >= 43
+        if (header.len >= 8) {
+            const major = std.mem.readInt(u16, header[6..8], .big);
+            if (major >= 43) return .java_class;
+        }
         return null;
     }
     // MPEG TS detection (single 0x47 sync byte needs additional sync verification)
@@ -2738,6 +2746,8 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "axf", .elf },
     // WebAssembly
     .{ "wasm", .wasm },
+    // Java bytecode
+    .{ "class", .java_class },
     // Unix ar archive (static libraries)
     .{ "a", .ar },
 });
@@ -3020,6 +3030,8 @@ const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "axf", .elf },
     // WebAssembly
     .{ "wasm", .wasm },
+    // Java bytecode
+    .{ "class", .java_class },
     // Unix ar archive (static libraries)
     .{ "a", .ar },
     // HTML documents
@@ -5552,6 +5564,7 @@ pub const FormatValidator = struct {
             .macos_framework => validateMacosFrameworkDeep(allocator, path),
             .macos_bundle => validateMacosBundleDeep(allocator, path),
             .band => validateGarageBandBundle(allocator, path),
+            .java_class => executable_validators.validateJavaClassDeep(allocator, path),
             else => initial_result, // No deep validation available
         };
     }
@@ -6068,6 +6081,7 @@ pub const FormatValidator = struct {
             .macho_fat => executable_validators.validateMachoFat(file_src_ptr),
             .coff => executable_validators.validateCoff(file_src_ptr),
             .wasm => executable_validators.validateWasm(file_src_ptr),
+            .java_class => executable_validators.validateJavaClass(file_src_ptr),
             // Compiler artifacts
             .llvm_pch => executable_validators.validateLlvmPch(file_src_ptr),
             .llvm_diag => executable_validators.validateLlvmDiag(file_src_ptr),

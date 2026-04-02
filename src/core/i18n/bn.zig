@@ -254,6 +254,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macho_fat = "মাক-ও ইউনিভার্সাল বাইনারি",
     .coff = "COFF অবজেক্ট ফাইল",
     .wasm = "ওয়েব অ্যাসেম্বলি মডিউল",
+    .java_class = "Java Class File",
     .ar = "ইউনিক্স আর আর্কাইভ",
     .html = "এইচটিএমএল ডকুমেন্ট",
     .icalendar = "iCalendar",

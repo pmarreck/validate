@@ -281,6 +281,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macho_fat = "Binario universal Mach-O",
     .coff = "Archivo objeto COFF",
     .wasm = "M\xc3\xb3dulo WebAssembly",
+    .java_class = "Java Class File",
     .ar = "Archivo ar de Unix",
     .html = "Documento HTML",
     .icalendar = "iCalendar",

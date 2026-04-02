@@ -258,6 +258,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macho_fat = "Mach-O Universal Binary",
     .coff = "COFF Object File",
     .wasm = "WebAssembly Module",
+    .java_class = "Java Class File",
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .ar = "Unix ar Archive",

@@ -162,7 +162,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .bagit, .git_repository, .macos_app, .macos_framework, .macos_bundle => "bundle",
 
         // Executables
-        .pe, .elf, .macho, .macho_fat, .coff, .wasm, .llvm_pch, .llvm_diag => "executable",
+        .pe, .elf, .macho, .macho_fat, .coff, .wasm, .java_class, .llvm_pch, .llvm_diag => "executable",
 
         // Web markup
         .html => "document",

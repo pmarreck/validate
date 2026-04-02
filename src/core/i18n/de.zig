@@ -285,6 +285,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macho_fat = "Mach-O-Universalbin\xc3\xa4rdatei",
     .coff = "COFF-Objektdatei",
     .wasm = "WebAssembly-Modul",
+    .java_class = "Java Class File",
     .ar = "Unix-ar-Archiv",
     .html = "HTML-Dokument",
     .x12_edi = "X12-EDI-Dokument",
