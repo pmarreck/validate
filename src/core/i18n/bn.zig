@@ -287,6 +287,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "PCAP নেটওয়ার্ক ক্যাপচার", .pcapng = "PCAPNG নেটওয়ার্ক ক্যাপচার",
+    .rpm = "RPM প্যাকেজ",
 });
 
 // Bengali CLI argument aliases (currently canonical English forms).

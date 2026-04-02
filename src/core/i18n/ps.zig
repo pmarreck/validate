@@ -287,6 +287,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "PCAP د شبکې نیول", .pcapng = "PCAPNG د شبکې نیول",
+    .rpm = "RPM بسته",
 });
 
 // Pashto CLI argument aliases (currently canonical English forms).

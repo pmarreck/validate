@@ -607,6 +607,8 @@ pub const FileFormat = enum {
     // Network capture formats
     pcap, // PCAP network capture (classic libpcap)
     pcapng, // PCAPNG next-generation network capture
+    // Package formats
+    rpm, // RPM Package (.rpm, .srpm)
 
     pub fn description(self: FileFormat) [:0]const u8 {
         return i18n.getFormatDescription(self);
@@ -704,6 +706,7 @@ pub const FileFormat = enum {
             .macos_bundle => true, // macOS bundle validation
             .pcap => true, // PCAP network capture validation
             .pcapng => true, // PCAPNG network capture validation
+            .rpm => true, // RPM package validation
             .unknown => false,
         };
     }
@@ -1534,6 +1537,8 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x4D, 0x3C, 0xB2, 0xA1 }, .offset = 0, .format = .pcap }, // LE, nsec
     // PCAPNG: Section Header Block
     .{ .bytes = &[_]u8{ 0x0A, 0x0D, 0x0D, 0x0A }, .offset = 0, .format = .pcapng },
+    // RPM Package
+    .{ .bytes = &[_]u8{ 0xED, 0xAB, 0xEE, 0xDB }, .offset = 0, .format = .rpm },
 };
 
 /// Maximum number of magic signatures that can share the same first byte.
@@ -2795,6 +2800,9 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "pcap", .pcap },
     .{ "cap", .pcap },
     .{ "pcapng", .pcapng },
+    // Package formats
+    .{ "rpm", .rpm },
+    .{ "srpm", .rpm },
 });
 
 /// Extensions that should NOT be validated as a text format even if content
@@ -6179,6 +6187,8 @@ pub const FormatValidator = struct {
             // Network capture formats
             .pcap => network_validators.validatePcap(file_src_ptr),
             .pcapng => network_validators.validatePcapng(file_src_ptr),
+            // Package formats
+            .rpm => archive_validators.validateRpm(file_src_ptr),
             .unknown => validateUnknownWithUtf8Fallback(file),
         };
 
@@ -6324,6 +6334,8 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
         // Network capture formats
         .pcap => network_validators.validatePcapFromBuffer(data),
         .pcapng => network_validators.validatePcapngFromBuffer(data),
+        // Package formats
+        .rpm => archive_validators.validateRpmFromBuffer(data),
         // For formats without buffer validators yet, just return format detected
         else => ValidationResult.ok(format),
     };

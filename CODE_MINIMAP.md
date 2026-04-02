@@ -63,7 +63,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/pdf_xref_parser.zig` | PDF xref table/stream parser for O(M) object lookup (traditional tables + xref streams + /Prev chain) |
 | `src/core/mp4_box_parser.zig` | Shared MP4/ISOBMFF box parsing utilities (readMp4BoxHeader, findChildBox) |
 | `src/core/video_audio_validator.zig` | MP4/MKV audio+video stream validation (AAC, ALAC, MP3, FLAC, AC-3 in containers) |
-| `src/core/archive_validators.zig` | Archive/compression validation (ZIP/Gzip/Bzip2/XZ/Zstd/RAR/CPT/7z/TAR/PAR2/WARC), including deep ZIP CRC checks, PAR2 packet MD5 verification, `rarz` in-memory RAR validation, `compact_pro` C FFI-backed CPT validation, and WARC deep validation with SHA-1 digest verification (Base32 decode + WARC-Block-Digest) |
+| `src/core/archive_validators.zig` | Archive/compression validation (ZIP/Gzip/Bzip2/XZ/Zstd/RAR/CPT/7z/TAR/PAR2/WARC/RPM), including deep ZIP CRC checks, PAR2 packet MD5 verification, `rarz` in-memory RAR validation, `compact_pro` C FFI-backed CPT validation, WARC deep validation with SHA-1 digest verification (Base32 decode + WARC-Block-Digest), and RPM lead+header+index structure validation |
 | `src/core/rar_validator.zig` | Legacy external-tool RAR deep-validation helper (`unrar`/`7z`/`bsdtar`) retained in tree; primary runtime path now uses `rarz` via `archive_validators.zig` |
 | `src/core/h264_syntax_validator.zig` | Pure Zig H.264 NAL/SPS/PPS/slice header parser with full VUI and extension support |
 | `src/core/h264_cavlc_tables.zig` | H.264 CAVLC entropy decoder (coeff_token, total_zeros, run_before, level VLC) |

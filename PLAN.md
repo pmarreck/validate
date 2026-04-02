@@ -13,7 +13,7 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 Use .ksy specs as reference docs when writing validators for these high-value formats:
 - [x] java_class — Java .class bytecode (2026-04-02 ~01:30 EST)
 - [ ] dex — Android DEX bytecode
-- [ ] rpm — Red Hat/Fedora/SUSE packages
+- [x] rpm — Red Hat/Fedora/SUSE packages (2026-04-01 ~23:30 EST)
 - [ ] cpio — Inside every rpm and initramfs
 - [ ] windows_lnk_file — Windows shortcuts (.lnk)
 - [ ] regf — Windows registry hives

@@ -124,6 +124,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "PCAP Network Capture", .pcapng = "PCAPNG Network Capture",
+    .rpm = "RPM软件包",
 });
 
 pub const error_translations = i18n.ErrorMap.initComptime(.{});

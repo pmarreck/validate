@@ -6091,3 +6091,378 @@ test "FormatValidator validates PAR2 from ground truth" {
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
+
+// ============================================================
+// RPM Package validator
+// ============================================================
+
+/// RPM lead section is always 96 bytes.
+const rpm_lead_size: usize = 96;
+/// RPM header magic: 8E AD E8 01
+const rpm_header_magic = [_]u8{ 0x8E, 0xAD, 0xE8, 0x01 };
+/// RPM lead magic: ED AB EE DB
+const rpm_lead_magic = [_]u8{ 0xED, 0xAB, 0xEE, 0xDB };
+
+/// Validate the static structure of an RPM header record starting at `data[pos]`.
+/// Returns the position after the header's index records + storage section on success,
+/// or an error-tagged ValidationResult on failure.
+/// `format` is used to tag any error results.
+const RpmHeaderResult = union(enum) {
+    ok: usize, // position of first byte after this header's storage section
+    err: ValidationResult,
+};
+
+fn validateRpmHeader(data: []const u8, pos: usize, format: FileFormat) RpmHeaderResult {
+    // Need at least 16 bytes for the header record itself
+    if (pos + 16 > data.len) {
+        return .{ .err = ValidationResult.invalidCode(format, .truncated, "RPM header record") };
+    }
+    // Magic: 8E AD E8 01
+    if (!std.mem.eql(u8, data[pos..][0..4], &rpm_header_magic)) {
+        return .{ .err = ValidationResult.invalid(format, "RPM header magic mismatch") };
+    }
+    // Reserved bytes at offset 4 must be 00 00 00 00
+    if (!std.mem.eql(u8, data[pos + 4 ..][0..4], &[_]u8{ 0, 0, 0, 0 })) {
+        return .{ .err = ValidationResult.invalid(format, "RPM header reserved bytes non-zero") };
+    }
+    const num_index = std.mem.readInt(u32, data[pos + 8 ..][0..4], .big);
+    const len_storage = std.mem.readInt(u32, data[pos + 12 ..][0..4], .big);
+
+    if (num_index < 1) {
+        return .{ .err = ValidationResult.invalid(format, "RPM header: num_index_records must be >= 1") };
+    }
+
+    // Index records start at pos+16, each 16 bytes
+    const index_start = pos + 16;
+    const index_end = index_start + @as(usize, num_index) * 16;
+    if (index_end > data.len) {
+        return .{ .err = ValidationResult.invalidCode(format, .truncated, "RPM index records") };
+    }
+
+    // Walk index records: validate record_type (0–9) and offset < len_storage
+    var i: usize = 0;
+    while (i < num_index) : (i += 1) {
+        const rec_pos = index_start + i * 16;
+        const record_type = std.mem.readInt(u32, data[rec_pos + 4 ..][0..4], .big);
+        const offset = std.mem.readInt(u32, data[rec_pos + 8 ..][0..4], .big);
+        if (record_type > 9) {
+            return .{ .err = ValidationResult.invalid(format, "RPM index record: invalid record_type") };
+        }
+        if (len_storage > 0 and offset >= len_storage) {
+            return .{ .err = ValidationResult.invalid(format, "RPM index record: offset out of bounds") };
+        }
+    }
+
+    // Storage section follows index records
+    const storage_end = index_end + @as(usize, len_storage);
+    if (storage_end > data.len) {
+        return .{ .err = ValidationResult.invalidCode(format, .truncated, "RPM storage section") };
+    }
+
+    return .{ .ok = storage_end };
+}
+
+/// Validate an RPM package from a memory buffer.
+/// Validates lead (96 bytes) + signature header + padding + main header.
+/// Returns .structural depth on success.
+pub fn validateRpmFromBuffer(data: []const u8) ValidationResult {
+    // Minimum: 96-byte lead + 16-byte sig header = 112
+    if (data.len < rpm_lead_size + 16) {
+        return ValidationResult.invalidCode(.rpm, .file_too_small, "RPM format");
+    }
+
+    // Check lead magic
+    if (!std.mem.eql(u8, data[0..4], &rpm_lead_magic)) {
+        return ValidationResult.invalidCode(.rpm, .invalid_magic, "RPM lead magic");
+    }
+
+    // Major version: 3 or 4
+    const major = data[4];
+    if (major != 3 and major != 4) {
+        return ValidationResult.invalid(.rpm, "RPM major version must be 3 or 4");
+    }
+
+    // Type (u16be at offset 6): 0=binary, 1=source
+    const pkg_type = std.mem.readInt(u16, data[6..][0..2], .big);
+    if (pkg_type > 1) {
+        return ValidationResult.invalid(.rpm, "RPM type must be 0 (binary) or 1 (source)");
+    }
+
+    // Signature type (u16be at offset 78): must be 5
+    const sig_type = std.mem.readInt(u16, data[78..][0..2], .big);
+    if (sig_type != 5) {
+        return ValidationResult.invalid(.rpm, "RPM signature type must be 5");
+    }
+
+    // Validate signature header at offset 96
+    const sig_result = validateRpmHeader(data, rpm_lead_size, .rpm);
+    const sig_end = switch (sig_result) {
+        .ok => |end| end,
+        .err => |e| return e,
+    };
+
+    // Padding to 8-byte boundary after signature section
+    const remainder = sig_end % 8;
+    const padding: usize = if (remainder == 0) 0 else 8 - remainder;
+    const main_start = sig_end + padding;
+
+    // Validate main header
+    const main_result = validateRpmHeader(data, main_start, .rpm);
+    switch (main_result) {
+        .ok => {},
+        .err => |e| return e,
+    }
+
+    return ValidationResult.okWithDepth(.rpm, .structural);
+}
+
+/// File-source entry point for RPM — reads header area then delegates.
+pub fn validateRpm(file: *FileSource) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalidCode(.rpm, .failed_to_seek, "to start");
+
+    // RPM files can be large (e.g., kernel packages); read first 16 MiB for header validation
+    var buf: [16 * 1024 * 1024]u8 = undefined;
+    const bytes_read = file.read(&buf) catch {
+        return ValidationResult.invalidCode(.rpm, .failed_to_read, "RPM file");
+    };
+
+    return validateRpmFromBuffer(buf[0..bytes_read]);
+}
+
+// ============================================================
+// RPM Tests
+// ============================================================
+
+/// Build a minimal RPM lead (96 bytes).
+fn buildRpmLead(major: u8, minor: u8, pkg_type: u16, sig_type: u16) [96]u8 {
+    var lead: [96]u8 = [_]u8{0} ** 96;
+    @memcpy(lead[0..4], &rpm_lead_magic);
+    lead[4] = major;
+    lead[5] = minor;
+    std.mem.writeInt(u16, lead[6..8], pkg_type, .big);
+    std.mem.writeInt(u16, lead[8..10], 1, .big); // arch = 1 (i386)
+    // package name at 10..76 — leave as zeroes (NUL-terminated empty string)
+    std.mem.writeInt(u16, lead[76..78], 1, .big); // os = 1 (Linux)
+    std.mem.writeInt(u16, lead[78..80], sig_type, .big); // signature_type
+    return lead;
+}
+
+/// Build a minimal RPM header record with zero index records (not valid, just for bad-magic tests)
+/// or with one NULL index record (the real minimum).
+fn buildRpmHeaderRecord(num_index: u32, storage_bytes: []const u8) []u8 {
+    // Header = 16 bytes + num_index * 16 bytes + len(storage_bytes)
+    const total = 16 + @as(usize, num_index) * 16 + storage_bytes.len;
+    var buf = std.testing.allocator.alloc(u8, total) catch unreachable;
+    @memcpy(buf[0..4], &rpm_header_magic);
+    @memset(buf[4..8], 0); // reserved
+    std.mem.writeInt(u32, buf[8..12][0..4], num_index, .big);
+    std.mem.writeInt(u32, buf[12..16][0..4], @intCast(storage_bytes.len), .big);
+    // Write one index record (tag=1000, type=4/uint32, offset=0, count=1) for each entry
+    var i: u32 = 0;
+    while (i < num_index) : (i += 1) {
+        const rp = 16 + @as(usize, i) * 16;
+        std.mem.writeInt(u32, buf[rp..][0..4][0..4], 1000 + i, .big); // tag
+        std.mem.writeInt(u32, buf[rp + 4 ..][0..4][0..4], 4, .big); // type = INT32
+        std.mem.writeInt(u32, buf[rp + 8 ..][0..4][0..4], 0, .big); // offset
+        std.mem.writeInt(u32, buf[rp + 12 ..][0..4][0..4], 1, .big); // count
+    }
+    @memcpy(buf[16 + @as(usize, num_index) * 16 ..], storage_bytes);
+    return buf;
+}
+
+test "RPM: minimal valid package (lead + sig header + main header)" {
+    const lead = buildRpmLead(3, 0, 0, 5);
+    const storage: [4]u8 = .{ 0, 0, 0, 0 }; // 4 bytes storage (multiple of 4 for alignment)
+    const sig_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(sig_hdr);
+    const main_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(main_hdr);
+
+    // sig_end = 96 + sig_hdr.len, then pad to 8
+    const sig_end = rpm_lead_size + sig_hdr.len;
+    const pad = if (sig_end % 8 == 0) @as(usize, 0) else 8 - (sig_end % 8);
+    const total = rpm_lead_size + sig_hdr.len + pad + main_hdr.len;
+    var buf = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..96], &lead);
+    @memcpy(buf[96 .. 96 + sig_hdr.len], sig_hdr);
+    @memcpy(buf[96 + sig_hdr.len + pad .. 96 + sig_hdr.len + pad + main_hdr.len], main_hdr);
+
+    const result = validateRpmFromBuffer(buf);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(FileFormat.rpm, result.format);
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+}
+
+test "RPM: wrong lead magic rejected" {
+    const lead = buildRpmLead(3, 0, 0, 5);
+    var buf: [200]u8 = [_]u8{0} ** 200;
+    @memcpy(buf[0..96], &lead);
+    buf[0] = 0xAA; // corrupt magic
+    const result = validateRpmFromBuffer(&buf);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "RPM: wrong major version rejected" {
+    const lead = buildRpmLead(2, 0, 0, 5); // major=2 is invalid (only 3 or 4)
+    const storage: [4]u8 = .{ 0, 0, 0, 0 };
+    const sig_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(sig_hdr);
+    const main_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(main_hdr);
+    const sig_end = rpm_lead_size + sig_hdr.len;
+    const pad = if (sig_end % 8 == 0) @as(usize, 0) else 8 - (sig_end % 8);
+    const total = rpm_lead_size + sig_hdr.len + pad + main_hdr.len;
+    var buf = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..96], &lead);
+    @memcpy(buf[96 .. 96 + sig_hdr.len], sig_hdr);
+    @memcpy(buf[96 + sig_hdr.len + pad .. 96 + sig_hdr.len + pad + main_hdr.len], main_hdr);
+    const result = validateRpmFromBuffer(buf);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "RPM: signature_type != 5 rejected" {
+    const lead = buildRpmLead(3, 0, 0, 4); // sig_type=4 is invalid
+    const storage: [4]u8 = .{ 0, 0, 0, 0 };
+    const sig_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(sig_hdr);
+    const main_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(main_hdr);
+    const sig_end = rpm_lead_size + sig_hdr.len;
+    const pad = if (sig_end % 8 == 0) @as(usize, 0) else 8 - (sig_end % 8);
+    const total = rpm_lead_size + sig_hdr.len + pad + main_hdr.len;
+    var buf = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..96], &lead);
+    @memcpy(buf[96 .. 96 + sig_hdr.len], sig_hdr);
+    @memcpy(buf[96 + sig_hdr.len + pad .. 96 + sig_hdr.len + pad + main_hdr.len], main_hdr);
+    const result = validateRpmFromBuffer(buf);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "RPM: wrong sig header magic rejected" {
+    const lead = buildRpmLead(3, 0, 0, 5);
+    const storage: [4]u8 = .{ 0, 0, 0, 0 };
+    const sig_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(sig_hdr);
+    const main_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(main_hdr);
+    const sig_end = rpm_lead_size + sig_hdr.len;
+    const pad = if (sig_end % 8 == 0) @as(usize, 0) else 8 - (sig_end % 8);
+    const total = rpm_lead_size + sig_hdr.len + pad + main_hdr.len;
+    var buf = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..96], &lead);
+    @memcpy(buf[96 .. 96 + sig_hdr.len], sig_hdr);
+    @memcpy(buf[96 + sig_hdr.len + pad .. 96 + sig_hdr.len + pad + main_hdr.len], main_hdr);
+    buf[96] = 0xFF; // corrupt sig header magic
+    const result = validateRpmFromBuffer(buf);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "RPM: truncated (only lead, no headers) rejected" {
+    const lead = buildRpmLead(3, 0, 0, 5);
+    const result = validateRpmFromBuffer(&lead);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "RPM: invalid index record type rejected" {
+    const lead = buildRpmLead(3, 0, 0, 5);
+    const storage: [4]u8 = .{ 0, 0, 0, 0 };
+    const sig_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(sig_hdr);
+    const main_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(main_hdr);
+    const sig_end = rpm_lead_size + sig_hdr.len;
+    const pad = if (sig_end % 8 == 0) @as(usize, 0) else 8 - (sig_end % 8);
+    const total = rpm_lead_size + sig_hdr.len + pad + main_hdr.len;
+    var buf = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..96], &lead);
+    @memcpy(buf[96 .. 96 + sig_hdr.len], sig_hdr);
+    @memcpy(buf[96 + sig_hdr.len + pad .. 96 + sig_hdr.len + pad + main_hdr.len], main_hdr);
+    // Corrupt the record_type field in the first sig header index record
+    // Index record 0 is at offset 96+16=112; record_type is at +4 = offset 116
+    std.mem.writeInt(u32, buf[96 + 16 + 4 ..][0..4], 99, .big); // type 99 is invalid
+    const result = validateRpmFromBuffer(buf);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "RPM: index offset out of bounds rejected" {
+    const lead = buildRpmLead(3, 0, 0, 5);
+    const storage: [4]u8 = .{ 0, 0, 0, 0 };
+    const sig_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(sig_hdr);
+    const main_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(main_hdr);
+    const sig_end = rpm_lead_size + sig_hdr.len;
+    const pad = if (sig_end % 8 == 0) @as(usize, 0) else 8 - (sig_end % 8);
+    const total = rpm_lead_size + sig_hdr.len + pad + main_hdr.len;
+    var buf = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..96], &lead);
+    @memcpy(buf[96 .. 96 + sig_hdr.len], sig_hdr);
+    @memcpy(buf[96 + sig_hdr.len + pad .. 96 + sig_hdr.len + pad + main_hdr.len], main_hdr);
+    // Corrupt the offset field in the first sig header index record to be out of bounds
+    // Index record 0 is at offset 96+16=112; offset field is at +8 = offset 120
+    std.mem.writeInt(u32, buf[96 + 16 + 8 ..][0..4], 9999, .big); // offset 9999 >> storage len 4
+    const result = validateRpmFromBuffer(buf);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "RPM: too small (< 112 bytes) rejected" {
+    var buf: [100]u8 = [_]u8{0} ** 100;
+    @memcpy(buf[0..4], &rpm_lead_magic);
+    buf[4] = 3;
+    std.mem.writeInt(u16, buf[78..80], 5, .big);
+    const result = validateRpmFromBuffer(&buf);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "RPM: major version 4 accepted" {
+    const lead = buildRpmLead(4, 0, 0, 5);
+    const storage: [4]u8 = .{ 0, 0, 0, 0 };
+    const sig_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(sig_hdr);
+    const main_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(main_hdr);
+    const sig_end = rpm_lead_size + sig_hdr.len;
+    const pad = if (sig_end % 8 == 0) @as(usize, 0) else 8 - (sig_end % 8);
+    const total = rpm_lead_size + sig_hdr.len + pad + main_hdr.len;
+    var buf = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..96], &lead);
+    @memcpy(buf[96 .. 96 + sig_hdr.len], sig_hdr);
+    @memcpy(buf[96 + sig_hdr.len + pad .. 96 + sig_hdr.len + pad + main_hdr.len], main_hdr);
+    const result = validateRpmFromBuffer(buf);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(FileFormat.rpm, result.format);
+}
+
+test "RPM: source package (type=1) accepted" {
+    const lead = buildRpmLead(3, 0, 1, 5); // type=1 = source RPM
+    const storage: [4]u8 = .{ 0, 0, 0, 0 };
+    const sig_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(sig_hdr);
+    const main_hdr = buildRpmHeaderRecord(1, &storage);
+    defer std.testing.allocator.free(main_hdr);
+    const sig_end = rpm_lead_size + sig_hdr.len;
+    const pad = if (sig_end % 8 == 0) @as(usize, 0) else 8 - (sig_end % 8);
+    const total = rpm_lead_size + sig_hdr.len + pad + main_hdr.len;
+    var buf = try std.testing.allocator.alloc(u8, total);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..96], &lead);
+    @memcpy(buf[96 .. 96 + sig_hdr.len], sig_hdr);
+    @memcpy(buf[96 + sig_hdr.len + pad .. 96 + sig_hdr.len + pad + main_hdr.len], main_hdr);
+    const result = validateRpmFromBuffer(buf);
+    try std.testing.expect(result.is_valid);
+}
