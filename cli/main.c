@@ -2174,35 +2174,37 @@ int main(int argc, char* argv[]) {
 	/* Use total_counts for summary in stress mode, otherwise use last counts */
 	validation_counts_t* summary_counts = (stress_iterations > 1) ? &total_counts : &counts;
 
-	/* Show summary (partial if interrupted) */
-	const char* rlm = g_rtl_enabled ? RLM : "";
-	if (was_interrupted) {
-		printf("\n%s%s%s%s\n", rlm, COLOR_YELLOW, validate_tr(VALIDATE_STR_SUMMARY_INTERRUPTED), COLOR_RESET);
-	} else {
-		printf("\n%s%s%s%s\n", rlm, COLOR_CYAN, validate_tr(VALIDATE_STR_SUMMARY_TITLE), COLOR_RESET);
-	}
-	if (stress_iterations > 1) {
-		printf("%s  Iterations: %zu\n", rlm, stress_iterations);
-	}
+	/* Show summary only when multiple files were validated (single file needs no summary) */
 	size_t total_processed = summary_counts->valid_count + summary_counts->invalid_count + summary_counts->unknown_count;
-	if (was_interrupted) {
-		printf("%s  %s %zu / %zu files\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_PROCESSED), total_processed, total_file_count);
-	}
-	printf("%s  %-8s %s%zu%s\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_VALID), COLOR_GREEN, summary_counts->valid_count, COLOR_RESET);
-	if (summary_counts->invalid_count > 0) {
-		printf("%s  %-8s %s%zu%s\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_INVALID), COLOR_RED, summary_counts->invalid_count, COLOR_RESET);
-	} else {
-		printf("%s  %-8s %zu\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_INVALID), summary_counts->invalid_count);
-	}
-	printf("%s  %-8s %zu\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_UNKNOWN), summary_counts->unknown_count);
+	if (total_processed > 1 || was_interrupted) {
+		const char* rlm = g_rtl_enabled ? RLM : "";
+		if (was_interrupted) {
+			printf("\n%s%s%s%s\n", rlm, COLOR_YELLOW, validate_tr(VALIDATE_STR_SUMMARY_INTERRUPTED), COLOR_RESET);
+		} else {
+			printf("\n%s%s%s%s\n", rlm, COLOR_CYAN, validate_tr(VALIDATE_STR_SUMMARY_TITLE), COLOR_RESET);
+		}
+		if (stress_iterations > 1) {
+			printf("%s  Iterations: %zu\n", rlm, stress_iterations);
+		}
+		if (was_interrupted) {
+			printf("%s  %s %zu / %zu files\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_PROCESSED), total_processed, total_file_count);
+		}
+		printf("%s  %-8s %s%zu%s\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_VALID), COLOR_GREEN, summary_counts->valid_count, COLOR_RESET);
+		if (summary_counts->invalid_count > 0) {
+			printf("%s  %-8s %s%zu%s\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_INVALID), COLOR_RED, summary_counts->invalid_count, COLOR_RESET);
+		} else {
+			printf("%s  %-8s %zu\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_INVALID), summary_counts->invalid_count);
+		}
+		printf("%s  %-8s %zu\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_UNKNOWN), summary_counts->unknown_count);
 
-	/* Elapsed time and throughput */
-	uint64_t elapsed_ms = get_monotonic_ms() - batch_start_ms;
-	if (elapsed_ms > 0 && total_processed > 0) {
-		double elapsed_s = (double)elapsed_ms / 1000.0;
-		double files_per_sec = (double)total_processed / elapsed_s;
-		double mb_per_sec = ((double)total_byte_count / (1024.0 * 1024.0)) / elapsed_s;
-		printf("%s  %-8s %.1fs (%.1f files/sec, %.1f MB/s)\n", rlm, "Time:", elapsed_s, files_per_sec, mb_per_sec);
+		/* Elapsed time and throughput */
+		uint64_t elapsed_ms = get_monotonic_ms() - batch_start_ms;
+		if (elapsed_ms > 0 && total_processed > 0) {
+			double elapsed_s = (double)elapsed_ms / 1000.0;
+			double files_per_sec = (double)total_processed / elapsed_s;
+			double mb_per_sec = ((double)total_byte_count / (1024.0 * 1024.0)) / elapsed_s;
+			printf("%s  %-8s %.1fs (%.1f files/sec, %.1f MB/s)\n", rlm, "Time:", elapsed_s, files_per_sec, mb_per_sec);
+		}
 	}
 
 	/* Reset interrupt flag for potential future use */
