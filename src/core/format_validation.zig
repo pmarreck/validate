@@ -2229,9 +2229,16 @@ pub fn detectFormat(header: []const u8) FileFormat {
         if (is_dbf_version) {
             const len_header = std.mem.readInt(u16, header[8..10], .little);
             const len_record = std.mem.readInt(u16, header[10..12], .little);
+            // Date fields: byte[1]=year (any), byte[2]=month (1-12), byte[3]=day (1-31)
+            const month = header[2];
+            const day = header[3];
             // len_header must be at least 33 (32-byte prefix + terminator byte),
-            // and len_record > 0 (at minimum the deletion-flag byte, so >= 1)
-            if (len_header >= 33 and len_record > 0) {
+            // len_record > 0 (at minimum the deletion-flag byte, so >= 1),
+            // and date fields must be plausible to avoid misdetecting text files
+            // (e.g. SRT subtitles starting with 0x31 which matches Visual FoxPro version)
+            if (len_header >= 33 and len_record > 0 and
+                month >= 1 and month <= 12 and day >= 1 and day <= 31)
+            {
                 return .dbf;
             }
         }
@@ -6719,6 +6726,31 @@ test "ValidationResult constructors" {
 test "detectFormat unknown" {
     const random_data = [_]u8{ 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF };
     try std.testing.expectEqual(FileFormat.unknown, detectFormat(&random_data));
+}
+
+test "detectFormat does not misdetect SRT subtitle as dBASE" {
+    // SRT files start with "1\n00:00:..." — byte 0 is 0x31 which matches Visual FoxPro version.
+    // Bytes 8-9 as u16le pass len_header >= 33, bytes 10-11 pass len_record > 0.
+    // But byte[2] = 0x30 = month 48 which is invalid for dBASE date field.
+    // Detection must validate date fields to prevent this false positive.
+    var srt = [_]u8{0} ** 1088;
+    // Exact bytes from a real Japanese SRT subtitle file
+    const real_srt = [_]u8{
+        0x31, 0x0a, 0x30, 0x30, 0x3a, 0x30, 0x30, 0x3a, // "1\n00:00:"
+        0x30, 0x36, 0x2c, 0x34, 0x36, 0x34, 0x20, 0x2d, // "06,464 -"
+        0x2d, 0x3e, 0x20, 0x30, 0x30, 0x3a, 0x30, 0x30, // "-> 00:00"
+        0x3a, 0x30, 0x38, 0x2c, 0x37, 0x31, 0x37, 0x0a, // ":08,717\n"
+        0xe2, 0x80, 0x8e, 0x4e, 0x45, 0x54, 0x46, 0x4c, // "...NETFL"
+    };
+    @memcpy(srt[0..real_srt.len], &real_srt);
+    // Fill rest with UTF-8 multibyte chars (like the real file has)
+    var i: usize = real_srt.len;
+    while (i + 2 < srt.len) : (i += 3) {
+        srt[i] = 0xe3;
+        srt[i + 1] = 0x82;
+        srt[i + 2] = 0xa2;
+    }
+    try std.testing.expect(detectFormat(&srt) != .dbf);
 }
 
 test "detectFormat rejects tiny files as MP3" {
