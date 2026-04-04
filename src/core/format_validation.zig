@@ -3587,7 +3587,25 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
     // non-printable characters, or invalid UTF-8 sequences, this is not text
     var null_count: usize = 0;
     var non_printable_count: usize = 0;
-    const check_len = @min(header.len, 512);
+    const raw_check_len = @min(header.len, 512);
+    // Avoid splitting a multibyte UTF-8 sequence at the buffer boundary.
+    // If the last byte is a continuation (0x80-0xBF) or a lead byte whose
+    // sequence extends past the window, back up to the last complete character.
+    const check_len = blk: {
+        var end = raw_check_len;
+        if (end == header.len) break :blk end; // Full file fits — no truncation
+        // Walk backwards past continuation bytes to find the lead byte
+        while (end > 0 and (header[end - 1] & 0xC0) == 0x80) : (end -= 1) {}
+        // Now end-1 is either ASCII or a lead byte. Check if its sequence is complete.
+        if (end > 0 and header[end - 1] >= 0xC0) {
+            const lead = header[end - 1];
+            const seq_len: usize = if (lead < 0xE0) 2 else if (lead < 0xF0) 3 else 4;
+            if (end - 1 + seq_len > raw_check_len) {
+                end -= 1; // Sequence is truncated — exclude the lead byte too
+            }
+        }
+        break :blk end;
+    };
     for (header[0..check_len]) |byte| {
         if (byte == 0) {
             null_count += 1;
@@ -6750,7 +6768,11 @@ test "detectFormat does not misdetect SRT subtitle as dBASE" {
         srt[i + 1] = 0x82;
         srt[i + 2] = 0xa2;
     }
-    try std.testing.expect(detectFormat(&srt) != .dbf);
+    const detected = detectFormat(&srt);
+    // Must be detected as text, not dBASE or unknown
+    try std.testing.expect(detected != .dbf);
+    try std.testing.expect(detected == .plain_text or detected == .plain_text_utf16 or
+        detected == .plain_text_latin1 or detected == .plain_text_cp437);
 }
 
 test "detectFormat rejects tiny files as MP3" {
