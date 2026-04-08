@@ -310,8 +310,7 @@ test "validateInnerChunks rejects non-hfma start" {
 }
 
 test "deep validation of real tvdb file" {
-	// Use a real .tvdb file from the user's TV library
-	const test_path = "/Users/pmarreck/Movies/TV/TV Library.tvlibrary/Application.tvdb";
+	const test_path = "ground_truth_examples/apple_media_db/sample.tvdb";
 	const file = std.fs.cwd().openFile(test_path, .{}) catch {
 		return error.SkipZigTest;
 	};
@@ -323,7 +322,7 @@ test "deep validation of real tvdb file" {
 }
 
 test "deep validation of real musicdb file" {
-	const test_path = "/Users/pmarreck/Music/Music/Music Library.musiclibrary/Library.musicdb";
+	const test_path = "ground_truth_examples/apple_media_db/sample.musicdb";
 	const file = std.fs.cwd().openFile(test_path, .{}) catch {
 		return error.SkipZigTest;
 	};
@@ -333,17 +332,14 @@ test "deep validation of real musicdb file" {
 	try testing.expect(result.is_valid);
 	try testing.expectEqual(format_validation.FileFormat.apple_media_db, result.format);
 }
-
 test "deep validation rejects truncated file" {
 	// Create a minimal header-only file (too small to have valid encrypted data)
 	var header: [160]u8 = undefined;
 	@memset(&header, 0);
 	@memcpy(header[0..4], "hfma");
 	std.mem.writeInt(u32, header[4..8], 0xA0, .little);
-	std.mem.writeInt(u32, header[8..12], 100, .little); // content size
+	std.mem.writeInt(u32, header[8..12], 192, .little); // total file size (160 header + 32 payload)
 	@memcpy(header[16..23], "1.6.5.3");
-	std.mem.writeInt(u32, header[84..88], 32, .little); // encrypted size
-
 	// Write to temp file
 	const tmp_path = "/tmp/test_hfma_truncated.tvdb";
 	const tmp_file = std.fs.cwd().createFile(tmp_path, .{}) catch return error.SkipZigTest;
