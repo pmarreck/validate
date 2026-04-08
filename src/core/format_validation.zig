@@ -201,6 +201,7 @@ const document_validators = @import("document_validators.zig");
 // Filesystem/disk image validators (ISO, DMG)
 const filesystem_validators = @import("filesystem_validators.zig");
 const apple_validators = @import("apple_validators.zig");
+const apple_media_db_validator = @import("apple_media_db_validator.zig");
 const financial_validators = @import("financial_validators.zig");
 const edi_validators = @import("edi_validators.zig");
 const pim_validators = @import("pim_validators.zig");
@@ -544,6 +545,7 @@ pub const FileFormat = enum {
     ds_store, // macOS .DS_Store (Desktop Services Store)
     spotlight, // macOS Spotlight index (proprietary)
     apple_double, // AppleDouble resource fork (._* files) / AppleSingle
+    apple_media_db, // Apple Media Library Database (hfma magic — Music.app, TV.app .musicdb/.tvdb)
     // Executable formats
     pe, // Windows PE (Portable Executable) - .exe, .dll, .sys, .scr
     elf, // ELF (Executable and Linkable Format) - Linux/Unix executables, .so, .o
@@ -674,6 +676,7 @@ pub const FileFormat = enum {
             .ds_store => true, // macOS DS_Store (structural only)
             .spotlight => true, // macOS Spotlight index (structural only)
             .apple_double => true, // AppleDouble resource fork
+            .apple_media_db => true, // Apple Media Library Database
             .pe => true, // Windows PE executable
             .elf => true, // ELF executable
             .macho => true, // Mach-O binary
@@ -1471,6 +1474,8 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x00, 0x05, 0x16, 0x07 }, .offset = 0, .format = .apple_double },
     // AppleSingle: 0x00051600
     .{ .bytes = &[_]u8{ 0x00, 0x05, 0x16, 0x00 }, .offset = 0, .format = .apple_double },
+    // Apple Media Library Database (Music.app, TV.app): "hfma" magic
+    .{ .bytes = "hfma", .offset = 0, .format = .apple_media_db },
     // AMR (Adaptive Multi-Rate): "#!AMR\n" (narrow-band) or "#!AMR-WB\n" (wide-band)
     .{ .bytes = "#!AMR-WB\n", .offset = 0, .format = .amr },
     .{ .bytes = "#!AMR\n", .offset = 0, .format = .amr },
@@ -2652,6 +2657,8 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "blb", .blorb },
     // macOS
     .{ "ds_store", .ds_store },
+    .{ "tvdb", .apple_media_db },
+    .{ "musicdb", .apple_media_db },
     // Disk images
     .{ "iso", .iso },
     .{ "dmg", .dmg },
@@ -2756,6 +2763,8 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "csv", .csv },
     .{ "tsv", .csv },
     .{ "plist", .plist },
+    .{ "tvdb", .apple_media_db },
+    .{ "musicdb", .apple_media_db },
     // Subtitle formats (plain text with timestamps)
     .{ "srt", .plain_text },
     .{ "vtt", .plain_text },
@@ -4797,6 +4806,29 @@ fn validateBrotliDeep(path: []const u8) ValidationResult {
     }
 }
 
+/// Structural validation for Apple Media Library Database (hfma).
+/// Checks magic, header size field, version string, and content size plausibility.
+fn validateAppleMediaDbStructural(data: []const u8, file_size: u64) ValidationResult {
+    if (data.len < 160) return ValidationResult.invalid(.apple_media_db, "File too small for hfma header");
+    if (!std.mem.eql(u8, data[0..4], "hfma")) return ValidationResult.invalid(.apple_media_db, "Invalid magic bytes");
+
+    const declared_header_size = std.mem.readInt(u32, data[4..8], .little);
+    if (declared_header_size != 0xA0) return ValidationResult.invalid(.apple_media_db, "Invalid header size field");
+
+    // Offset 8: total file size (u32 LE)
+    const declared_file_size = std.mem.readInt(u32, data[8..12], .little);
+    if (declared_file_size == 0) return ValidationResult.invalid(.apple_media_db, "Declared file size is zero");
+    if (file_size > 0 and declared_file_size != @as(u32, @truncate(file_size))) {
+        return ValidationResult.invalid(.apple_media_db, "Declared file size does not match actual");
+    }
+
+    // Version string at offset 16
+    if (!apple_media_db_validator.validateVersionStringPub(data[16..48])) {
+        return ValidationResult.invalid(.apple_media_db, "Invalid version string");
+    }
+
+    return ValidationResult.ok(.apple_media_db);
+}
 
 // ============ Main Validator Interface ============
 
@@ -5643,6 +5675,7 @@ pub const FormatValidator = struct {
             .macos_bundle => validateMacosBundleDeep(allocator, path),
             .band => validateGarageBandBundle(allocator, path),
             .java_class => executable_validators.validateJavaClassDeep(allocator, path),
+            .apple_media_db => apple_media_db_validator.validateAppleMediaDbDeep(allocator, path),
             else => initial_result, // No deep validation available
         };
     }
@@ -6139,6 +6172,7 @@ pub const FormatValidator = struct {
             .ds_store => apple_validators.validateDsStore(file_src_ptr),
             .spotlight => apple_validators.validateSpotlight(file_src_ptr),
             .apple_double => apple_validators.validateAppleDouble(file_src_ptr),
+            .apple_media_db => validateAppleMediaDbStructural(header[0..header_bytes], file.getEndPos() catch 0),
             // New audio formats
             .amr => music_validators.validateAmr(file_src_ptr),
             .au => music_validators.validateAu(file_src_ptr),

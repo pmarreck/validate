@@ -264,6 +264,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .ds_store = "macOS DS_Store",
     .spotlight = "macOS Spotlight Index",
     .apple_double = "AppleDouble Resource Fork",
+    .apple_media_db = "Apple Media Library Database",
     .pe = "Windows PE Executable",
     .elf = "ELF Executable",
     .macho = "Mach-O Binary",

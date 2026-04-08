@@ -249,6 +249,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .ds_store = "macOS DS_Store",
     .spotlight = "Kielezo cha Uangalizi wa macOS",
     .apple_double = "AppleDouble Resource Fork",
+    .apple_media_db = "Apple Media Library Database",
     .pe = "Windows PE Inaweza Kutekelezwa",
     .elf = "ELF Inaweza Kutekelezwa",
     .macho = "Mach-O Binary",

@@ -249,6 +249,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .ds_store = "macOS DS_Store",
     .spotlight = "د macOS سپاټ لائټ شاخص",
     .apple_double = "AppleDouble Resource Fork",
+    .apple_media_db = "Apple Media Library Database",
     .pe = "د وینډوز PE د اجرا وړ",
     .elf = "د اجرا وړ ELF",
     .macho = "Mach-O Binary",

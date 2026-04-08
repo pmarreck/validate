@@ -153,8 +153,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .epub => "ebook",
 
         // Code/Data
-        .json, .toml, .ini, .xml, .yaml, .erlang_term, .eex, .csv, .msgpack, .sqlite, .plist => "data",
-
+        .json, .toml, .ini, .xml, .yaml, .erlang_term, .eex, .csv, .msgpack, .sqlite, .plist, .apple_media_db => "data",
         // Fonts
         .ttf, .otf, .woff, .woff2, .type1 => "font",
 

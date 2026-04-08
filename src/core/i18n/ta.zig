@@ -249,6 +249,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .ds_store = "macOS DS_ஸ்டோர்",
     .spotlight = "macOS ஸ்பாட்லைட் இன்டெக்ஸ்",
     .apple_double = "AppleDouble Resource Fork",
+    .apple_media_db = "Apple Media Library Database",
     .pe = "விண்டோஸ் PE இயங்கக்கூடியது",
     .elf = "ELF இயங்கக்கூடியது",
     .macho = "Mach-O பைனரி",

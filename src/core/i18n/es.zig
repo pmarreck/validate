@@ -276,6 +276,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .ds_store = "DS_Store de macOS",
     .spotlight = "\xc3\x8dndice Spotlight de macOS",
     .apple_double = "AppleDouble Resource Fork",
+    .apple_media_db = "Apple Media Library Database",
     .pe = "Ejecutable PE de Windows",
     .elf = "Ejecutable ELF",
     .macho = "Binario Mach-O",

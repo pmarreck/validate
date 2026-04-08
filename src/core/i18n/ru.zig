@@ -90,6 +90,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .java_class = "Java Class File", .ar = "Unix ar Archive", .html = "HTML Document", .git_repository = "Git Repository", .macos_app = "macOS Application Bundle", .macos_framework = "macOS Framework", .macos_bundle = "macOS Bundle",
     .dts = "DTS Digital Surround Audio",
     .apple_double = "AppleDouble Resource Fork",
+    .apple_media_db = "Apple Media Library Database",
     .qbw = "QuickBooks Company File",
     .qbb = "QuickBooks Backup",
     .qdf = "Quicken Data File",
