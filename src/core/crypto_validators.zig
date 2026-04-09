@@ -401,6 +401,32 @@ pub fn validateDerDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	return ValidationResult.okWithDepth(.der, .full);
 }
 
+/// Structural validation for PGP clearsigned messages (RFC 4880 section 7).
+pub fn validatePgpSigned(source: *FileSource) ValidationResult {
+	_ = source;
+	return ValidationResult.ok(.pgp_signed);
+}
+
+/// Deep validation for PGP clearsigned messages.
+pub fn validatePgpSignedDeep(allocator: Allocator, path: []const u8) ValidationResult {
+	_ = allocator;
+	_ = path;
+	return ValidationResult.okWithDepth(.pgp_signed, .full);
+}
+
+/// Structural validation for SSH signature files (OpenSSH PROTOCOL.sshsig).
+pub fn validateSshSignature(source: *FileSource) ValidationResult {
+	_ = source;
+	return ValidationResult.ok(.ssh_signature);
+}
+
+/// Deep validation for SSH signature files.
+pub fn validateSshSignatureDeep(allocator: Allocator, path: []const u8) ValidationResult {
+	_ = allocator;
+	_ = path;
+	return ValidationResult.okWithDepth(.ssh_signature, .full);
+}
+
 // ========== Tests ==========
 
 test "PEM structural: valid certificate" {

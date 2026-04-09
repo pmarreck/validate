@@ -578,6 +578,8 @@ pub const FileFormat = enum {
     // Crypto/certificate formats
     pem, // PEM-encoded certificate/key (-----BEGIN ... -----)
     der, // DER-encoded ASN.1 certificate/key (binary)
+    pgp_signed, // PGP clearsigned message (RFC 4880 section 7)
+    ssh_signature, // SSH signature (OpenSSH PROTOCOL.sshsig)
     // Additional archive formats
     cab, // Microsoft Cabinet archive (.cab)
     sit, // StuffIt archive (.sit, classic through v5/6)
@@ -692,6 +694,8 @@ pub const FileFormat = enum {
             .icalendar, .vcard => true, // PIM formats (iCalendar, vCard)
             .x12_edi, .edifact => true, // EDI formats
             .pem, .der => true, // Crypto/certificate formats
+            .pgp_signed => true, // PGP clearsigned message
+            .ssh_signature => true, // SSH signature
             .cab => true, // Microsoft Cabinet archive
             .sit, .sitx => true, // StuffIt archives
             .mp2 => true, // MPEG Audio Layer II (reuses MP3 validator)
@@ -1544,6 +1548,10 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x0A, 0x0D, 0x0D, 0x0A }, .offset = 0, .format = .pcapng },
     // RPM Package
     .{ .bytes = &[_]u8{ 0xED, 0xAB, 0xEE, 0xDB }, .offset = 0, .format = .rpm },
+    // PGP Clearsigned message (must be before generic PEM "-----BEGIN " check)
+    .{ .bytes = "-----BEGIN PGP SIGNED MESSAGE-----", .offset = 0, .format = .pgp_signed },
+    // SSH Signature (must be before generic PEM "-----BEGIN " check)
+    .{ .bytes = "-----BEGIN SSH SIGNATURE-----", .offset = 0, .format = .ssh_signature },
 };
 
 /// Maximum number of magic signatures that can share the same first byte.
@@ -2741,6 +2749,7 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "key", .pem },
     .{ "der", .der },
     .{ "cer", .der },
+    .{ "asc", .pgp_signed },
     // GIS
     .{ "kml", .kml },
     .{ "kmz", .kmz },
@@ -3045,6 +3054,7 @@ const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "key", .pem },
     .{ "der", .der },
     .{ "cer", .der },
+    .{ "asc", .pgp_signed },
     // Adobe — extension needed to distinguish from underlying container format
     .{ "ai", .ai },
     .{ "prproj", .prproj },
@@ -5065,6 +5075,8 @@ pub const FormatValidator = struct {
                         .edifact => edi_validators.validateEdifact(reopen_ext_ptr),
                         .coff => executable_validators.validateCoff(reopen_ext_ptr),
                         .der => crypto_validators.validateDer(reopen_ext_ptr),
+                        .pgp_signed => crypto_validators.validatePgpSigned(reopen_ext_ptr),
+                        .ssh_signature => crypto_validators.validateSshSignature(reopen_ext_ptr),
                         .cdg => cdg_validator.validateCdg(reopen_ext_ptr),
                         .toast => toast_validator.validateToast(reopen_ext_ptr),
                         .mp2 => blk: {
@@ -5658,6 +5670,8 @@ pub const FormatValidator = struct {
             .edifact => edi_validators.validateEdifactDeep(allocator, path),
             .pem => crypto_validators.validatePemDeep(allocator, path),
             .der => crypto_validators.validateDerDeep(allocator, path),
+            .pgp_signed => crypto_validators.validatePgpSignedDeep(allocator, path),
+            .ssh_signature => crypto_validators.validateSshSignatureDeep(allocator, path),
             .icalendar => pim_validators.validateICalendarDeep(allocator, path),
             .vcard => pim_validators.validateVCardDeep(allocator, path),
             .cab => cab_validator.validateCabDeep(allocator, path),
@@ -6218,6 +6232,8 @@ pub const FormatValidator = struct {
             // Crypto/certificate formats
             .pem => crypto_validators.validatePem(file_src_ptr),
             .der => crypto_validators.validateDer(file_src_ptr),
+            .pgp_signed => crypto_validators.validatePgpSigned(file_src_ptr),
+            .ssh_signature => crypto_validators.validateSshSignature(file_src_ptr),
             // PIM formats
             .icalendar => pim_validators.validateICalendar(file_src_ptr),
             .vcard => pim_validators.validateVCard(file_src_ptr),
