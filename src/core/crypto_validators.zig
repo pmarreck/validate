@@ -401,17 +401,300 @@ pub fn validateDerDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	return ValidationResult.okWithDepth(.der, .full);
 }
 
+/// Compute CRC-24 per RFC 4880 section 6.1.
+/// Polynomial: 0x1864CFB, initial value: 0xB704CE.
+fn computeCrc24(data: []const u8) u24 {
+	var crc: u32 = 0xB704CE;
+	for (data) |byte| {
+		crc ^= @as(u32, byte) << 16;
+		for (0..8) |_| {
+			crc <<= 1;
+			if (crc & 0x1000000 != 0) {
+				crc ^= 0x1864CFB;
+			}
+		}
+	}
+	return @intCast(crc & 0xFFFFFF);
+}
+
+/// Check if a Hash: header algorithm name is valid per RFC 4880.
+fn isValidPgpHashAlgo(name: []const u8) bool {
+	const valid = [_][]const u8{
+		"SHA256", "SHA512", "SHA384", "SHA224", "SHA1",
+		"RIPEMD160", "MD5",
+	};
+	for (valid) |v| {
+		if (std.mem.eql(u8, name, v)) return true;
+	}
+	return false;
+}
+
+/// Parse the Hash: header value, validating algorithm names.
+/// Returns the raw algorithm string on success, null on failure.
+fn parsePgpHashHeader(header_area: []const u8) ?[]const u8 {
+	// Find the line starting with "Hash: "
+	const hash_prefix = "Hash: ";
+	if (!std.mem.startsWith(u8, header_area, hash_prefix)) return null;
+	const after_prefix = header_area[hash_prefix.len..];
+	// Find end of line
+	const eol = std.mem.indexOf(u8, after_prefix, "\n") orelse after_prefix.len;
+	const hash_value = after_prefix[0..eol];
+	if (hash_value.len == 0) return null;
+
+	// Validate each comma-separated algorithm name
+	var rest = hash_value;
+	while (rest.len > 0) {
+		const comma = std.mem.indexOf(u8, rest, ",");
+		const algo = if (comma) |c| rest[0..c] else rest;
+		if (!isValidPgpHashAlgo(algo)) return null;
+		rest = if (comma) |c| rest[c + 1 ..] else &[_]u8{};
+	}
+	return hash_value;
+}
+
 /// Structural validation for PGP clearsigned messages (RFC 4880 section 7).
+/// Checks header, Hash: line, blank separator, signature armor markers,
+/// base64 content, and CRC-24 line presence.
 pub fn validatePgpSigned(source: *FileSource) ValidationResult {
-	_ = source;
-	return ValidationResult.ok(.pgp_signed);
+	var buf: [8192]u8 = undefined;
+	source.seekTo(0) catch {
+		return ValidationResult.invalidCode(.pgp_signed, .failed_to_seek, "PGP clearsigned header");
+	};
+	const bytes_read = source.readAll(&buf) catch {
+		return ValidationResult.invalidCode(.pgp_signed, .failed_to_read, "PGP clearsigned header");
+	};
+	if (bytes_read < 40) {
+		return ValidationResult.invalid(.pgp_signed, "File too small for PGP clearsigned format");
+	}
+	const data = buf[0..bytes_read];
+
+	// 1. Must start with the clearsigned header
+	const begin_marker = "-----BEGIN PGP SIGNED MESSAGE-----\n";
+	if (!std.mem.startsWith(u8, data, begin_marker)) {
+		return ValidationResult.invalid(.pgp_signed, "Missing PGP clearsigned header marker");
+	}
+	const after_header = data[begin_marker.len..];
+
+	// 2. Must have Hash: header with valid algorithm(s)
+	// Find the blank line that separates headers from body
+	const blank_line = std.mem.indexOf(u8, after_header, "\n\n") orelse {
+		return ValidationResult.invalid(.pgp_signed, "Missing blank line separator after Hash header");
+	};
+	const header_area = after_header[0..blank_line];
+	if (parsePgpHashHeader(header_area) == null) {
+		return ValidationResult.invalid(.pgp_signed, "Missing or invalid Hash: header in PGP clearsigned message");
+	}
+
+	// 3. Find signature block markers
+	const sig_begin = "-----BEGIN PGP SIGNATURE-----";
+	const sig_begin_pos = std.mem.indexOf(u8, data, sig_begin) orelse {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: missing BEGIN PGP SIGNATURE marker");
+	};
+
+	const sig_end = "-----END PGP SIGNATURE-----";
+	const after_sig_begin = data[sig_begin_pos + sig_begin.len ..];
+	if (std.mem.indexOf(u8, after_sig_begin, sig_end) == null) {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: missing END PGP SIGNATURE marker");
+	}
+
+	// 4. Validate base64 content and CRC line between signature markers
+	// Skip past the BEGIN line and any armor headers
+	const sig_content_start = sig_begin_pos + sig_begin.len;
+	const sig_end_pos = sig_begin_pos + sig_begin.len + std.mem.indexOf(u8, after_sig_begin, sig_end).?;
+	const sig_content = data[sig_content_start..sig_end_pos];
+
+	// Find CRC line (= followed by exactly 4 base64 chars)
+	var found_crc = false;
+	var found_base64_content = false;
+	var lines_iter = std.mem.splitScalar(u8, sig_content, '\n');
+	while (lines_iter.next()) |line| {
+		// Skip empty lines and armor headers (Version:, Comment:, etc.)
+		if (line.len == 0) continue;
+		if (std.mem.indexOf(u8, line, ": ") != null) continue;
+
+		if (line.len >= 1 and line[0] == '=') {
+			// CRC line: = followed by exactly 4 base64 chars
+			if (line.len == 5) {
+				for (line[1..5]) |b| {
+					if (!isBase64Byte(b) or b == '=' or b == ' ' or b == '\t' or b == '\n' or b == '\r') {
+						return ValidationResult.invalid(.pgp_signed, "PGP signature block: invalid CRC-24 line format");
+					}
+				}
+				found_crc = true;
+			} else {
+				return ValidationResult.invalid(.pgp_signed, "PGP signature block: invalid CRC-24 line format");
+			}
+		} else {
+			// Base64 content line
+			for (line) |b| {
+				if (!isBase64Byte(b)) {
+					return ValidationResult.invalid(.pgp_signed, "PGP signature block: invalid base64 content");
+				}
+			}
+			found_base64_content = true;
+		}
+	}
+
+	if (!found_base64_content) {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: no base64 content found");
+	}
+	if (!found_crc) {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: missing CRC-24 checksum line");
+	}
+
+	return ValidationResult.okWithDepth(.pgp_signed, .structural);
 }
 
 /// Deep validation for PGP clearsigned messages.
+/// Performs all structural checks, then decodes base64, verifies CRC-24,
+/// and checks for valid PGP signature packet tag.
 pub fn validatePgpSignedDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	_ = allocator;
-	_ = path;
-	return ValidationResult.okWithDepth(.pgp_signed, .full);
+	var source = FileSource.open(path) catch {
+		return ValidationResult.invalidCode(.pgp_signed, .failed_to_read, "PGP clearsigned file");
+	};
+	defer source.close();
+
+	const file_sz = source.getEndPos() catch {
+		return ValidationResult.invalidCode(.pgp_signed, .failed_to_read, "PGP clearsigned file stat");
+	};
+	if (file_sz > 10 * 1024 * 1024) {
+		return ValidationResult.invalid(.pgp_signed, "PGP clearsigned file too large (>10MB)");
+	}
+
+	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
+		return ValidationResult.invalidCode(.pgp_signed, .out_of_memory, "PGP clearsigned file");
+	};
+	defer allocator.free(data);
+	const bytes_read = source.readAll(data) catch {
+		return ValidationResult.invalidCode(.pgp_signed, .failed_to_read, "PGP clearsigned file");
+	};
+	const file_data = data[0..bytes_read];
+
+	// 1. Verify clearsigned header
+	const begin_marker = "-----BEGIN PGP SIGNED MESSAGE-----\n";
+	if (!std.mem.startsWith(u8, file_data, begin_marker)) {
+		return ValidationResult.invalid(.pgp_signed, "Missing PGP clearsigned header marker");
+	}
+	const after_header = file_data[begin_marker.len..];
+
+	// 2. Parse and validate Hash: header
+	const blank_line = std.mem.indexOf(u8, after_header, "\n\n") orelse {
+		return ValidationResult.invalid(.pgp_signed, "Missing blank line separator after Hash header");
+	};
+	const header_area = after_header[0..blank_line];
+	const hash_algo = parsePgpHashHeader(header_area) orelse {
+		return ValidationResult.invalid(.pgp_signed, "Missing or invalid Hash: header in PGP clearsigned message");
+	};
+
+	// 3. Find signature block
+	const sig_begin = "-----BEGIN PGP SIGNATURE-----";
+	const sig_begin_pos = std.mem.indexOf(u8, file_data, sig_begin) orelse {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: missing BEGIN PGP SIGNATURE marker");
+	};
+	const sig_end = "-----END PGP SIGNATURE-----";
+	const after_sig_begin = file_data[sig_begin_pos + sig_begin.len ..];
+	const sig_end_offset = std.mem.indexOf(u8, after_sig_begin, sig_end) orelse {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: missing END PGP SIGNATURE marker");
+	};
+	const sig_content = after_sig_begin[0..sig_end_offset];
+
+	// 4. Extract base64 content (excluding armor headers and CRC line)
+	var b64_buf = allocator.alloc(u8, sig_content.len) catch {
+		return ValidationResult.invalidCode(.pgp_signed, .out_of_memory, "PGP base64 buffer");
+	};
+	defer allocator.free(b64_buf);
+	var b64_len: usize = 0;
+	var declared_crc: ?[]const u8 = null;
+
+	var lines_iter = std.mem.splitScalar(u8, sig_content, '\n');
+	while (lines_iter.next()) |line| {
+		if (line.len == 0) continue;
+		// Skip armor headers (contain ": ")
+		if (std.mem.indexOf(u8, line, ": ") != null) continue;
+
+		if (line.len >= 1 and line[0] == '=') {
+			// CRC line
+			if (line.len == 5) {
+				declared_crc = line[1..5];
+			} else {
+				return ValidationResult.invalid(.pgp_signed, "PGP signature block: invalid CRC-24 line format");
+			}
+		} else {
+			// Base64 content - append
+			@memcpy(b64_buf[b64_len..][0..line.len], line);
+			b64_len += line.len;
+		}
+	}
+
+	if (b64_len == 0) {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: no base64 content found");
+	}
+
+	const crc_str = declared_crc orelse {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: missing CRC-24 checksum line");
+	};
+
+	// 5. Decode base64
+	const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(b64_buf[0..b64_len]) catch {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: invalid base64 length");
+	};
+	const decoded = allocator.alloc(u8, decoded_size) catch {
+		return ValidationResult.invalidCode(.pgp_signed, .out_of_memory, "PGP decoded buffer");
+	};
+	defer allocator.free(decoded);
+	std.base64.standard.Decoder.decode(decoded, b64_buf[0..b64_len]) catch {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: invalid base64 encoding");
+	};
+
+	// 6. Compute CRC-24 and compare
+	const computed_crc = computeCrc24(decoded);
+
+	// Decode the declared CRC from base64 (4 base64 chars = 3 bytes = 24 bits)
+	var crc_decoded: [3]u8 = undefined;
+	std.base64.standard.Decoder.decode(&crc_decoded, crc_str) catch {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: invalid CRC-24 base64 encoding");
+	};
+	const declared_crc_value: u24 = @intCast((@as(u32, crc_decoded[0]) << 16) | (@as(u32, crc_decoded[1]) << 8) | @as(u32, crc_decoded[2]));
+
+	if (computed_crc != declared_crc_value) {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: CRC-24 checksum mismatch");
+	}
+
+	// 7. Verify PGP signature packet tag
+	if (decoded.len < 1) {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: decoded data too short");
+	}
+	const tag_byte = decoded[0];
+	// Old format: 0x88 (1-byte length) or 0x89 (2-byte length) for tag 2
+	// New format: 0xC2 (tag 2) or 0xC3 (tag 3 with partial body)
+	const valid_tags = [_]u8{ 0x88, 0x89, 0xC2, 0xC3 };
+	var valid_tag = false;
+	for (valid_tags) |vt| {
+		if (tag_byte == vt) {
+			valid_tag = true;
+			break;
+		}
+	}
+	if (!valid_tag) {
+		return ValidationResult.invalid(.pgp_signed, "PGP signature block: invalid PGP packet tag (expected signature packet)");
+	}
+
+	// Map hash algorithm to a static warning message string.
+	const warning_message = mapHashAlgoToWarning(hash_algo);
+
+	return ValidationResult.okWithDepthAndWarning(.pgp_signed, .full, warning_message);}
+
+/// Map hash algorithm string to a static warning message string.
+fn mapHashAlgoToWarning(algo: []const u8) []const u8 {
+	if (std.mem.eql(u8, algo, "SHA256")) return "PGP clearsigned, SHA256";
+	if (std.mem.eql(u8, algo, "SHA512")) return "PGP clearsigned, SHA512";
+	if (std.mem.eql(u8, algo, "SHA384")) return "PGP clearsigned, SHA384";
+	if (std.mem.eql(u8, algo, "SHA224")) return "PGP clearsigned, SHA224";
+	if (std.mem.eql(u8, algo, "SHA1")) return "PGP clearsigned, SHA1";
+	if (std.mem.eql(u8, algo, "RIPEMD160")) return "PGP clearsigned, RIPEMD160";
+	if (std.mem.eql(u8, algo, "MD5")) return "PGP clearsigned, MD5";
+	// For comma-separated multi-algo, return a generic message
+	return "PGP clearsigned, multiple hash algorithms";
 }
 
 /// Structural validation for SSH signature files (OpenSSH PROTOCOL.sshsig).
@@ -571,4 +854,144 @@ test "ASN.1 TLV parser: long-form length" {
 	try std.testing.expectEqual(@as(usize, 256), tlv.length);
 	try std.testing.expectEqual(@as(usize, 4), tlv.value_offset);
 	try std.testing.expectEqual(@as(usize, 260), tlv.total_len);
+}
+
+// ========== PGP Clearsigned Validator Tests ==========
+
+test "PGP clearsigned: magic detection" {
+	const detectFormat = format_validation.detectFormat;
+	const header = "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n";
+	try std.testing.expectEqual(FileFormat.pgp_signed, detectFormat(header));
+}
+
+test "PGP clearsigned: structural valid" {
+	const pgp_content =
+		"-----BEGIN PGP SIGNED MESSAGE-----\n" ++
+		"Hash: SHA256\n" ++
+		"\n" ++
+		"Hello, world!\n" ++
+		"-----BEGIN PGP SIGNATURE-----\n" ++
+		"\n" ++
+		"iQEzBAABCAAdFiEEaaaa\n" ++
+		"=abcd\n" ++
+		"-----END PGP SIGNATURE-----\n";
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	const tmp_file = tmp_dir.dir.createFile("test.asc", .{}) catch unreachable;
+	tmp_file.writeAll(pgp_content) catch unreachable;
+	tmp_file.close();
+
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("test.asc", &real_path_buf) catch unreachable;
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
+
+	const result = validatePgpSigned(&source);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expectEqual(FileFormat.pgp_signed, result.format);
+	try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
+}
+
+test "PGP clearsigned: missing Hash header fails structural" {
+	const pgp_content =
+		"-----BEGIN PGP SIGNED MESSAGE-----\n" ++
+		"\n" ++
+		"Hello, world!\n" ++
+		"-----BEGIN PGP SIGNATURE-----\n" ++
+		"\n" ++
+		"iQEzBAABCAAdFiEEaaaa\n" ++
+		"=abcd\n" ++
+		"-----END PGP SIGNATURE-----\n";
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	const tmp_file = tmp_dir.dir.createFile("nohash.asc", .{}) catch unreachable;
+	tmp_file.writeAll(pgp_content) catch unreachable;
+	tmp_file.close();
+
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("nohash.asc", &real_path_buf) catch unreachable;
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
+
+	const result = validatePgpSigned(&source);
+	try std.testing.expect(!result.is_valid);
+	try std.testing.expectEqual(FileFormat.pgp_signed, result.format);
+}
+
+test "PGP clearsigned: no signature block fails structural" {
+	const pgp_content =
+		"-----BEGIN PGP SIGNED MESSAGE-----\n" ++
+		"Hash: SHA256\n" ++
+		"\n" ++
+		"Hello, world!\n" ++
+		"This message has no signature block.\n";
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	const tmp_file = tmp_dir.dir.createFile("nosig.asc", .{}) catch unreachable;
+	tmp_file.writeAll(pgp_content) catch unreachable;
+	tmp_file.close();
+
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("nosig.asc", &real_path_buf) catch unreachable;
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
+
+	const result = validatePgpSigned(&source);
+	try std.testing.expect(!result.is_valid);
+	try std.testing.expectEqual(FileFormat.pgp_signed, result.format);
+}
+
+test "PGP clearsigned: ground truth deep validation" {
+	const allocator = std.testing.allocator;
+	// Try to locate the ground truth sample
+	const path = "ground_truth_examples/pgp_signed/sample.asc";
+
+	// Use std.fs.cwd() to get the absolute path
+	var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const abs_path = std.fs.cwd().realpath(path, &abs_buf) catch {
+		return error.SkipZigTest;
+	};
+
+	const result = validatePgpSignedDeep(allocator, abs_path);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expectEqual(FileFormat.pgp_signed, result.format);
+	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+	// Should have a warning_message with hash algorithm
+	try std.testing.expect(result.warning_message != null);
+}
+
+test "PGP clearsigned: bad CRC fails deep validation" {
+	const allocator = std.testing.allocator;
+
+	// Valid structure but the CRC line is deliberately wrong
+	const pgp_content =
+		"-----BEGIN PGP SIGNED MESSAGE-----\n" ++
+		"Hash: SHA256\n" ++
+		"\n" ++
+		"Test body content.\n" ++
+		"-----BEGIN PGP SIGNATURE-----\n" ++
+		"\n" ++
+		"iEYEARECAAYFAlJMgc4ACgkQ\n" ++
+		"=ZZZZ\n" ++
+		"-----END PGP SIGNATURE-----\n";
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	const tmp_file = tmp_dir.dir.createFile("badcrc.asc", .{}) catch unreachable;
+	tmp_file.writeAll(pgp_content) catch unreachable;
+	tmp_file.close();
+
+	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("badcrc.asc", &path_buf) catch unreachable;
+
+	const result = validatePgpSignedDeep(allocator, real_path);
+	try std.testing.expect(!result.is_valid);
+	try std.testing.expectEqual(FileFormat.pgp_signed, result.format);
 }
