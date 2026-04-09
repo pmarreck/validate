@@ -697,17 +697,246 @@ fn mapHashAlgoToWarning(algo: []const u8) []const u8 {
 	return "PGP clearsigned, multiple hash algorithms";
 }
 
-/// Structural validation for SSH signature files (OpenSSH PROTOCOL.sshsig).
-pub fn validateSshSignature(source: *FileSource) ValidationResult {
-	_ = source;
-	return ValidationResult.ok(.ssh_signature);
+/// Read a length-prefixed SSH wire string (u32 BE length + bytes).
+/// Returns the string value and total bytes consumed, or null if data is too short.
+fn readSshString(data: []const u8) ?struct { value: []const u8, consumed: usize } {
+	if (data.len < 4) return null;
+	const len = std.mem.readInt(u32, data[0..4], .big);
+	if (data.len < 4 + len) return null;
+	return .{ .value = data[4..][0..len], .consumed = 4 + len };
 }
 
-/// Deep validation for SSH signature files.
+/// Map SSH key type + hash algorithm + namespace to a static warning string.
+/// For common combinations we return a comptime-known string; for uncommon ones
+/// we use a thread-local buffer so the returned slice has stable lifetime.
+fn mapSshSigWarning(key_type: []const u8, hash_algo: []const u8, namespace: []const u8) []const u8 {
+	// Common key types
+	const is_ed25519 = std.mem.eql(u8, key_type, "ssh-ed25519");
+	const is_rsa = std.mem.eql(u8, key_type, "ssh-rsa");
+	const is_ecdsa256 = std.mem.eql(u8, key_type, "ecdsa-sha2-nistp256");
+	const is_ecdsa384 = std.mem.eql(u8, key_type, "ecdsa-sha2-nistp384");
+
+	// Common namespaces
+	const is_file = std.mem.eql(u8, namespace, "file");
+	const is_git = std.mem.eql(u8, namespace, "git");
+
+	// Common hash algos
+	const is_sha256 = std.mem.eql(u8, hash_algo, "sha256");
+	const is_sha512 = std.mem.eql(u8, hash_algo, "sha512");
+
+	// ed25519 combinations
+	if (is_ed25519 and is_sha512 and is_file) return "SSH sig ssh-ed25519/sha512 ns=file";
+	if (is_ed25519 and is_sha256 and is_file) return "SSH sig ssh-ed25519/sha256 ns=file";
+	if (is_ed25519 and is_sha512 and is_git) return "SSH sig ssh-ed25519/sha512 ns=git";
+	if (is_ed25519 and is_sha256 and is_git) return "SSH sig ssh-ed25519/sha256 ns=git";
+
+	// RSA combinations
+	if (is_rsa and is_sha512 and is_file) return "SSH sig ssh-rsa/sha512 ns=file";
+	if (is_rsa and is_sha256 and is_file) return "SSH sig ssh-rsa/sha256 ns=file";
+	if (is_rsa and is_sha512 and is_git) return "SSH sig ssh-rsa/sha512 ns=git";
+	if (is_rsa and is_sha256 and is_git) return "SSH sig ssh-rsa/sha256 ns=git";
+
+	// ECDSA P-256 combinations
+	if (is_ecdsa256 and is_sha256 and is_file) return "SSH sig ecdsa-sha2-nistp256/sha256 ns=file";
+	if (is_ecdsa256 and is_sha256 and is_git) return "SSH sig ecdsa-sha2-nistp256/sha256 ns=git";
+	if (is_ecdsa256 and is_sha512 and is_file) return "SSH sig ecdsa-sha2-nistp256/sha512 ns=file";
+	if (is_ecdsa256 and is_sha512 and is_git) return "SSH sig ecdsa-sha2-nistp256/sha512 ns=git";
+
+	// ECDSA P-384 combinations
+	if (is_ecdsa384 and is_sha256 and is_file) return "SSH sig ecdsa-sha2-nistp384/sha256 ns=file";
+	if (is_ecdsa384 and is_sha256 and is_git) return "SSH sig ecdsa-sha2-nistp384/sha256 ns=git";
+	if (is_ecdsa384 and is_sha512 and is_file) return "SSH sig ecdsa-sha2-nistp384/sha512 ns=file";
+	if (is_ecdsa384 and is_sha512 and is_git) return "SSH sig ecdsa-sha2-nistp384/sha512 ns=git";
+
+	// Fallback: use a thread-local buffer for the formatted string
+	const S = struct {
+		threadlocal var buf: [256]u8 = undefined;
+	};
+	const result = std.fmt.bufPrint(&S.buf, "SSH sig {s}/{s} ns={s}", .{ key_type, hash_algo, namespace }) catch {
+		return "SSH sig (unknown)";
+	};
+	return result;
+}
+
+/// Structural validation for SSH signature files (OpenSSH PROTOCOL.sshsig).
+/// Checks armor markers (BEGIN/END) and valid base64 content between them.
+pub fn validateSshSignature(source: *FileSource) ValidationResult {
+	var buf: [8192]u8 = undefined;
+	source.seekTo(0) catch {
+		return ValidationResult.invalidCode(.ssh_signature, .failed_to_seek, "SSH signature header");
+	};
+	const bytes_read = source.readAll(&buf) catch {
+		return ValidationResult.invalidCode(.ssh_signature, .failed_to_read, "SSH signature header");
+	};
+	if (bytes_read < 30) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: file too small");
+	}
+	const data = buf[0..bytes_read];
+
+	// 1. Must start with BEGIN marker
+	const begin_marker = "-----BEGIN SSH SIGNATURE-----\n";
+	if (!std.mem.startsWith(u8, data, begin_marker)) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: missing BEGIN marker");
+	}
+
+	// 2. Must have END marker
+	const end_marker = "-----END SSH SIGNATURE-----";
+	const end_pos = std.mem.indexOf(u8, data[begin_marker.len..], end_marker) orelse {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: missing END marker");
+	};
+
+	// 3. Validate base64 content between markers
+	const content = data[begin_marker.len..][0..end_pos];
+	var i: usize = 0;
+	// Skip leading whitespace
+	while (i < content.len and (content[i] == '\n' or content[i] == '\r')) : (i += 1) {}
+	for (content[i..]) |b| {
+		if (!isBase64Byte(b)) {
+			return ValidationResult.invalid(.ssh_signature, "SSH signature: invalid base64 content");
+		}
+	}
+
+	return ValidationResult.okWithDepth(.ssh_signature, .structural);
+}
+
+/// Deep validation for SSH signature files (OpenSSH PROTOCOL.sshsig wire format).
+/// Decodes base64, then parses the SSHSIG binary structure: magic, version,
+/// public key blob, namespace, reserved, hash algorithm, and signature blob.
 pub fn validateSshSignatureDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	_ = allocator;
-	_ = path;
-	return ValidationResult.okWithDepth(.ssh_signature, .full);
+	var source = FileSource.open(path) catch {
+		return ValidationResult.invalidCode(.ssh_signature, .failed_to_read, "SSH signature file");
+	};
+	defer source.close();
+
+	const file_sz = source.getEndPos() catch {
+		return ValidationResult.invalidCode(.ssh_signature, .failed_to_read, "SSH signature file stat");
+	};
+	if (file_sz > 1 * 1024 * 1024) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: file too large (>1MB)");
+	}
+
+	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
+		return ValidationResult.invalidCode(.ssh_signature, .out_of_memory, "SSH signature file");
+	};
+	defer allocator.free(data);
+	const bytes_read = source.readAll(data) catch {
+		return ValidationResult.invalidCode(.ssh_signature, .failed_to_read, "SSH signature file");
+	};
+	const file_data = data[0..bytes_read];
+
+	// 1. Find armor markers
+	const begin_marker = "-----BEGIN SSH SIGNATURE-----\n";
+	if (!std.mem.startsWith(u8, file_data, begin_marker)) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: missing BEGIN marker");
+	}
+	const end_marker = "-----END SSH SIGNATURE-----";
+	const after_begin = file_data[begin_marker.len..];
+	const end_pos = std.mem.indexOf(u8, after_begin, end_marker) orelse {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: missing END marker");
+	};
+
+	// 2. Extract and clean base64 content
+	const b64_data = after_begin[0..end_pos];
+	var clean_b64 = allocator.alloc(u8, b64_data.len) catch {
+		return ValidationResult.invalidCode(.ssh_signature, .out_of_memory, "SSH signature base64 buffer");
+	};
+	defer allocator.free(clean_b64);
+	var clean_len: usize = 0;
+	for (b64_data) |b| {
+		if (b != '\n' and b != '\r' and b != ' ' and b != '\t') {
+			clean_b64[clean_len] = b;
+			clean_len += 1;
+		}
+	}
+
+	if (clean_len == 0) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: empty base64 content");
+	}
+
+	// 3. Decode base64
+	const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(clean_b64[0..clean_len]) catch {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: invalid base64 length");
+	};
+	const decoded = allocator.alloc(u8, decoded_size) catch {
+		return ValidationResult.invalidCode(.ssh_signature, .out_of_memory, "SSH signature decoded buffer");
+	};
+	defer allocator.free(decoded);
+	std.base64.standard.Decoder.decode(decoded, clean_b64[0..clean_len]) catch {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: invalid base64 encoding");
+	};
+
+	// 4. Parse SSHSIG wire format
+	var pos: usize = 0;
+
+	// Magic: "SSHSIG" (6 bytes)
+	if (decoded.len < 6) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: decoded data too short for magic");
+	}
+	if (!std.mem.eql(u8, decoded[0..6], "SSHSIG")) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: invalid magic (expected SSHSIG)");
+	}
+	pos = 6;
+
+	// Version: u32 BE, must be 1
+	if (decoded.len < pos + 4) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: truncated version field");
+	}
+	const version = std.mem.readInt(u32, decoded[pos..][0..4], .big);
+	if (version != 1) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: unsupported version (expected 1)");
+	}
+	pos += 4;
+
+	// Public key blob (length-prefixed string)
+	const pubkey = readSshString(decoded[pos..]) orelse {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: truncated public key blob");
+	};
+	// Extract key type from within the public key blob
+	const key_type_str = readSshString(pubkey.value) orelse {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: truncated key type in public key");
+	};
+	if (key_type_str.value.len == 0) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: empty key type");
+	}
+	pos += pubkey.consumed;
+
+	// Namespace (length-prefixed string, must be non-empty)
+	const namespace = readSshString(decoded[pos..]) orelse {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: truncated namespace");
+	};
+	if (namespace.value.len == 0) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: empty namespace");
+	}
+	pos += namespace.consumed;
+
+	// Reserved (length-prefixed string, any length OK including 0)
+	const reserved = readSshString(decoded[pos..]) orelse {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: truncated reserved field");
+	};
+	pos += reserved.consumed;
+
+	// Hash algorithm (length-prefixed string, must be sha256 or sha512)
+	const hash_algo = readSshString(decoded[pos..]) orelse {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: truncated hash algorithm");
+	};
+	if (!std.mem.eql(u8, hash_algo.value, "sha256") and !std.mem.eql(u8, hash_algo.value, "sha512")) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: unsupported hash algorithm (expected sha256 or sha512)");
+	}
+	pos += hash_algo.consumed;
+
+	// Signature blob (length-prefixed string)
+	const sig_blob = readSshString(decoded[pos..]) orelse {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: truncated signature blob");
+	};
+	// The signature blob should itself contain at least a key type string
+	if (readSshString(sig_blob.value) == null) {
+		return ValidationResult.invalid(.ssh_signature, "SSH signature: malformed signature blob");
+	}
+
+	// Build warning message with key type, hash algo, and namespace
+	const warning_message = mapSshSigWarning(key_type_str.value, hash_algo.value, namespace.value);
+
+	return ValidationResult.okWithDepthAndWarning(.ssh_signature, .full, warning_message);
 }
 
 // ========== Tests ==========
@@ -994,4 +1223,105 @@ test "PGP clearsigned: bad CRC fails deep validation" {
 	const result = validatePgpSignedDeep(allocator, real_path);
 	try std.testing.expect(!result.is_valid);
 	try std.testing.expectEqual(FileFormat.pgp_signed, result.format);
+}
+
+// ========== SSH Signature Validator Tests ==========
+
+test "SSH signature: magic detection" {
+	const detectFormat = format_validation.detectFormat;
+	const header = "-----BEGIN SSH SIGNATURE-----\nU1NIU0lH";
+	try std.testing.expectEqual(FileFormat.ssh_signature, detectFormat(header));
+}
+
+test "SSH signature: structural valid" {
+	// Valid SSH signature file with proper armor markers and base64 content
+	const ssh_sig_content =
+		"-----BEGIN SSH SIGNATURE-----\n" ++
+		"U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgobeUYXifFFQpB2asxySyR4e0/i\n" ++
+		"sUUUPV6EmP9mGeEtIAAAAEZmlsZQAAAAAAAAAGc2hhNTEyAAAAUwAAAAtzc2gtZWQyNTUx\n" ++
+		"OQAAAECxRzTNZZ7FbpNxTV0Irdh6rpsIHdXqmQloH5EqZC/Okup5Bov+Q505GtafadCmJo\n" ++
+		"A2qlIpZW+hTiIjbY3B2FUC\n" ++
+		"-----END SSH SIGNATURE-----\n";
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	const tmp_file = tmp_dir.dir.createFile("test.sig", .{}) catch unreachable;
+	tmp_file.writeAll(ssh_sig_content) catch unreachable;
+	tmp_file.close();
+
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("test.sig", &real_path_buf) catch unreachable;
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
+
+	const result = validateSshSignature(&source);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expectEqual(FileFormat.ssh_signature, result.format);
+	try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
+}
+
+test "SSH signature: no end marker fails structural" {
+	const ssh_sig_content =
+		"-----BEGIN SSH SIGNATURE-----\n" ++
+		"U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTk=\n";
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	const tmp_file = tmp_dir.dir.createFile("noend.sig", .{}) catch unreachable;
+	tmp_file.writeAll(ssh_sig_content) catch unreachable;
+	tmp_file.close();
+
+	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("noend.sig", &real_path_buf) catch unreachable;
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
+
+	const result = validateSshSignature(&source);
+	try std.testing.expect(!result.is_valid);
+	try std.testing.expectEqual(FileFormat.ssh_signature, result.format);
+}
+
+test "SSH signature: ground truth deep validation" {
+	const allocator = std.testing.allocator;
+	const path = "ground_truth_examples/ssh_signature/sample.sig";
+
+	var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const abs_path = std.fs.cwd().realpath(path, &abs_buf) catch {
+		return error.SkipZigTest;
+	};
+
+	const result = validateSshSignatureDeep(allocator, abs_path);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expectEqual(FileFormat.ssh_signature, result.format);
+	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+	// Should have a warning_message with key type, hash algo, and namespace
+	try std.testing.expect(result.warning_message != null);
+	try std.testing.expectEqualStrings("SSH sig ssh-ed25519/sha512 ns=file", result.warning_message.?);
+}
+
+test "SSH signature: bad inner magic fails deep validation" {
+	const allocator = std.testing.allocator;
+
+	// Valid armor wrapping garbage content (not starting with SSHSIG magic)
+	// This is just base64 of "BADSIG\x00\x00\x00\x01..." — wrong magic
+	const bad_content =
+		"-----BEGIN SSH SIGNATURE-----\n" ++
+		"QkFEU0lHAAAAAQAAAAA=\n" ++
+		"-----END SSH SIGNATURE-----\n";
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	const tmp_file = tmp_dir.dir.createFile("badmagic.sig", .{}) catch unreachable;
+	tmp_file.writeAll(bad_content) catch unreachable;
+	tmp_file.close();
+
+	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const real_path = tmp_dir.dir.realpath("badmagic.sig", &path_buf) catch unreachable;
+
+	const result = validateSshSignatureDeep(allocator, real_path);
+	try std.testing.expect(!result.is_valid);
+	try std.testing.expectEqual(FileFormat.ssh_signature, result.format);
 }
