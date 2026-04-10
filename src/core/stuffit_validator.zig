@@ -9,7 +9,9 @@
 //!
 //! CRC-16 algorithms used:
 //!   - Classic: CRC-16/IBM (polynomial 0xA001, reflected, init 0x0000)
-//!   - V5/6:    CRC-16/CCITT (polynomial 0x1021, init 0x0000)
+//!   - V5/6:    CRC-16/IBM (polynomial 0xA001, reflected, init 0x0000)
+//!              Archive header CRC covers bytes 0..firstEntryOffset with CRC field zeroed.
+//!              Entry block header CRC covers headerSize bytes with CRC field zeroed.
 //!
 //! Reference: Reverse-engineered from freely-available format documentation and
 //! open-source implementations (The Unarchiver, libstuff, etc.).
@@ -97,7 +99,7 @@ fn crc16Ibm(data: []const u8) u16 {
 }
 
 /// CRC-16/CCITT: polynomial 0x1021, init 0x0000.
-/// Used by StuffIt 5/6 for header CRCs.
+/// Retained for potential future use (e.g., MacBinary CRC validation).
 fn crc16Ccitt(data: []const u8) u16 {
     var crc: u16 = 0;
     for (data) |byte| {
@@ -212,15 +214,21 @@ fn validateClassicStructure(header: []const u8, file_size: u64, base: usize) Val
 /// Structural validator for StuffIt 5/6.
 /// Verifies the 82-byte ASCII preamble and the binary sub-header at offset 82.
 fn validateV5Structure(header: []const u8) ValidationResult {
-    // Need at least 82 + 18 bytes (preamble + binary header fields)
+    // Need at least 82 + 18 bytes (preamble + binary header fields through CRC)
     const needed = SIT5_BINARY_HEADER_OFFSET + 18;
     if (header.len < needed) {
         return ValidationResult.invalidCode(.sit, .file_too_small, "StuffIt 5 archive");
     }
 
-    // Binary header at offset 82:
-    //   version (u8), flags (u8), archiveSize (u32), entryCount (u32),
-    //   firstEntryOffset (u32), headerCRC16 (u16)  — total 14 bytes before CRC
+    // Binary header at offset 82 (layout from The Unarchiver / XADStuffIt5Parser):
+    //   bh[0]:     version (u8)
+    //   bh[1]:     flags (u8)
+    //   bh[2..6]:  totalSize (u32 big-endian)
+    //   bh[6..10]: unknown (u32 big-endian)
+    //   bh[10..12]:numFiles (u16 big-endian)
+    //   bh[12..16]:firstEntryOffset (u32 big-endian)
+    //   bh[16..18]:headerCRC16 (u16 big-endian)
+    //   if flags & 0x10: 14 additional bytes follow
     const bh = header[SIT5_BINARY_HEADER_OFFSET..];
     const sit5_version = bh[0];
     if (sit5_version != 0x05) {
@@ -419,34 +427,68 @@ fn validateClassicDeep(
     return ValidationResult.okWithDepth(.sit, .full);
 }
 
-/// Deep validation for StuffIt 5/6: verifies the binary sub-header CRC-16/CCITT,
+/// Deep validation for StuffIt 5/6: verifies the archive header CRC-16/IBM,
 /// then checks that the first entry block starts with the 0xA5A5A5A5 magic.
+///
+/// The archive header CRC is CRC-16/IBM computed over the entire header from
+/// file offset 0 to firstEntryOffset, with the 2-byte CRC field (at absolute
+/// offset 98, i.e. bh[16..18]) zeroed during computation.
 fn validateV5Deep(file: *FileSource, header: []const u8) ValidationResult {
     // Re-validate structural constraints
     const struct_result = validateV5Structure(header);
     if (!struct_result.is_valid) return struct_result;
 
     const bh = header[SIT5_BINARY_HEADER_OFFSET..];
-    // Binary header fields:
-    //   bh[0]: version
-    //   bh[1]: flags
-    //   bh[2..6]: archiveSize (u32 big-endian)
-    //   bh[6..10]: entryCount (u32 big-endian)
-    //   bh[10..14]: firstEntryOffset (u32 big-endian)
-    //   bh[14..16]: headerCRC16 (u16 big-endian) over bh[0..14]
-    if (bh.len < 16) {
+    // Binary header layout (from The Unarchiver / XADStuffIt5Parser):
+    //   bh[0]:     version (u8)
+    //   bh[1]:     flags (u8)
+    //   bh[2..6]:  totalSize (u32 big-endian)
+    //   bh[6..10]: unknown (u32 big-endian)
+    //   bh[10..12]:numFiles (u16 big-endian)
+    //   bh[12..16]:firstEntryOffset (u32 big-endian)
+    //   bh[16..18]:headerCRC16 (u16 big-endian)
+    //   if flags & 0x10: 14 additional bytes follow
+    if (bh.len < 18) {
         return ValidationResult.invalidCode(.sit, .file_too_small, "StuffIt 5 binary header");
     }
 
-    const stored_crc = std.mem.readInt(u16, bh[14..16], .big);
-    const computed_crc = crc16Ccitt(bh[0..14]);
-    if (computed_crc != stored_crc) {
-        return ValidationResult.invalid(.sit, "StuffIt 5: binary header CRC mismatch");
+    const first_entry_offset = std.mem.readInt(u32, bh[12..16], .big);
+    if (first_entry_offset < SIT5_BINARY_HEADER_OFFSET + 18) {
+        return ValidationResult.invalid(.sit, "StuffIt 5: firstEntryOffset too small");
     }
 
-    const first_entry_offset = std.mem.readInt(u32, bh[10..14], .big);
-    if (first_entry_offset < SIT5_BINARY_HEADER_OFFSET + 16) {
-        return ValidationResult.invalid(.sit, "StuffIt 5: firstEntryOffset too small");
+    // CRC-16/IBM over the entire header (0..firstEntryOffset) with CRC field zeroed.
+    // The CRC field is at absolute offset 98 (= SIT5_BINARY_HEADER_OFFSET + 16).
+    const crc_abs_offset: usize = SIT5_BINARY_HEADER_OFFSET + 16;
+    if (first_entry_offset > 4096) {
+        // Sanity: don't read excessively large headers
+        return ValidationResult.invalid(.sit, "StuffIt 5: firstEntryOffset unreasonably large");
+    }
+    const hdr_len: usize = @intCast(first_entry_offset);
+
+    // Read the full header from the file
+    var full_hdr_buf: [4096]u8 = undefined;
+    file.seekTo(0) catch {
+        return ValidationResult.invalidCode(.sit, .failed_to_seek, "to start");
+    };
+    const bytes_read = file.readAll(full_hdr_buf[0..hdr_len]) catch {
+        return ValidationResult.invalidCode(.sit, .failed_to_read, "StuffIt 5 full header");
+    };
+    if (bytes_read < hdr_len) {
+        return ValidationResult.invalid(.sit, "StuffIt 5: header truncated");
+    }
+
+    // Zero the CRC field for computation
+    var crc_data = full_hdr_buf[0..hdr_len];
+    if (crc_abs_offset + 2 <= hdr_len) {
+        crc_data[crc_abs_offset] = 0;
+        crc_data[crc_abs_offset + 1] = 0;
+    }
+
+    const stored_crc = std.mem.readInt(u16, bh[16..18], .big);
+    const computed_crc = crc16Ibm(crc_data);
+    if (computed_crc != stored_crc) {
+        return ValidationResult.invalid(.sit, "StuffIt 5: binary header CRC mismatch");
     }
 
     // Check first entry block magic (0xA5A5A5A5)
