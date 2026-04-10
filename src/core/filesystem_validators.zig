@@ -13,6 +13,7 @@ const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const ValidationDepth = format_validation.ValidationDepth;
 
+const apm_parser = @import("apm_parser.zig");
 const dmg_validator = @import("dmg_validator.zig");
 const iso9660_parser = @import("iso9660_parser.zig");
 
@@ -74,30 +75,54 @@ pub fn validateIso(file: *FileSource) ValidationResult {
 // ============ Apple DMG Validator ============
 
 /// Validate Apple Disk Image structure.
+/// Supports both modern UDIF format (koly trailer at EOF) and pre-UDIF format
+/// (Apple Driver Descriptor Map at block 0 with optional Partition Map at block 1).
 pub fn validateDmg(file: *FileSource) ValidationResult {
-    // DMG has "koly" trailer at end of file (last 512 bytes contain the trailer)
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.dmg, .failed_to_get, "file size");
 
     if (file_size < 512) {
         return ValidationResult.invalidCode(.dmg, .file_too_small, "DMG");
     }
 
-    // Seek to last 512 bytes where koly trailer should be
+    // Try UDIF first: "koly" trailer at last 512 bytes
     file.seekTo(file_size - 512) catch return ValidationResult.invalidCode(.dmg, .failed_to_seek, "to trailer");
 
     var trailer: [512]u8 = undefined;
     const trailer_read = file.read(&trailer) catch return ValidationResult.invalidCode(.dmg, .failed_to_read, "DMG trailer");
 
-    if (trailer_read < 512) {
-        return ValidationResult.invalidCode(.dmg, .failed_to_read, "full trailer");
+    if (trailer_read >= 512 and std.mem.eql(u8, trailer[0..4], "koly")) {
+        return ValidationResult.okWithDepth(.dmg, .structural);
     }
 
-    // Look for "koly" signature at start of trailer
-    if (!std.mem.eql(u8, trailer[0..4], "koly")) {
+    // Try pre-UDIF: Apple Driver Descriptor Map (DDM) at block 0
+    file.seekTo(0) catch return ValidationResult.invalidCode(.dmg, .failed_to_seek, "to start");
+
+    var header: [512]u8 = undefined;
+    const header_read = file.read(&header) catch return ValidationResult.invalidCode(.dmg, .failed_to_read, "DMG header");
+
+    if (header_read < 18) {
         return ValidationResult.invalidCode(.dmg, .invalid_signature, "DMG");
     }
 
-    // No CRC/hash — signature check only
+    // Parse DDM — validates 0x4552 signature and block size internally
+    _ = apm_parser.DriverDescriptorMap.parse(&header) catch {
+        return ValidationResult.invalidCode(.dmg, .invalid_signature, "DMG");
+    };
+
+    // DDM valid. Optionally check for Partition Map entry at block 1.
+    if (file_size >= 1024) {
+        file.seekTo(512) catch return ValidationResult.okWithDepth(.dmg, .structural);
+        var pm_buf: [512]u8 = undefined;
+        const pm_read = file.read(&pm_buf) catch return ValidationResult.okWithDepth(.dmg, .structural);
+        if (pm_read >= 2) {
+            const pm_sig = std.mem.readInt(u16, pm_buf[0..2], .big);
+            if (pm_sig == apm_parser.PM_SIGNATURE) {
+                return ValidationResult.okWithDepth(.dmg, .structural);
+            }
+        }
+    }
+
+    // DDM found but no partition map — still accept as structural
     return ValidationResult.okWithDepth(.dmg, .structural);
 }
 
@@ -377,4 +402,59 @@ test "DMG structural: file too small rejected" {
 
     const result = validateDmg(&source);
     try testing.expect(!result.is_valid);
+}
+
+test "DMG structural: valid pre-UDIF DMG with DDM + APM signatures" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Build a minimal pre-UDIF DMG: 512-byte DDM block + 512-byte Partition Map entry
+    var data: [1024]u8 = [_]u8{0} ** 1024;
+
+    // Block 0: Driver Descriptor Map — signature 0x4552 ('ER'), block_size=512
+    std.mem.writeInt(u16, data[0..2], apm_parser.DDM_SIGNATURE, .big);
+    std.mem.writeInt(u16, data[2..4], 512, .big); // block size
+    std.mem.writeInt(u32, data[4..8], 100, .big); // block count
+
+    // Block 1: Partition Map entry — signature 0x504D ('PM')
+    std.mem.writeInt(u16, data[512..514], apm_parser.PM_SIGNATURE, .big);
+    std.mem.writeInt(u32, data[516..520], 1, .big); // map_entries = 1
+
+    try tmp.dir.writeFile(.{ .sub_path = "test_pre_udif.dmg", .data = &data });
+
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test_pre_udif.dmg", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+
+    const result = validateDmg(&source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(format_validation.FileFormat.dmg, result.format);
+    try testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
+}
+
+test "DMG structural: DDM without partition map still accepted" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Build DDM-only (no PM entry at block 1)
+    var data: [1024]u8 = [_]u8{0} ** 1024;
+
+    // Block 0: Driver Descriptor Map — signature 0x4552, block_size=512
+    std.mem.writeInt(u16, data[0..2], apm_parser.DDM_SIGNATURE, .big);
+    std.mem.writeInt(u16, data[2..4], 512, .big);
+    std.mem.writeInt(u32, data[4..8], 100, .big);
+
+    // Block 1: NOT a partition map (all zeros)
+
+    try tmp.dir.writeFile(.{ .sub_path = "test_ddm_only.dmg", .data = &data });
+
+    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real_path = try tmp.dir.realpath("test_ddm_only.dmg", &real_path_buf);
+    var source = try FileSource.open(real_path);
+    defer source.close();
+
+    const result = validateDmg(&source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(format_validation.FileFormat.dmg, result.format);
 }
