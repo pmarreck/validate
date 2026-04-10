@@ -97,9 +97,17 @@ pub fn validateCab(file: *FileSource) ValidationResult {
 		return ValidationResult.invalidWithDepth(.cab, "CAB version must be 1.3", .structural);
 	}
 
-	// cbCabinet: total cabinet size must match actual file size
+	// cbCabinet: total cabinet size vs actual file size.
+	// Signed (Authenticode) CABs have a digital signature appended AFTER the
+	// cabinet proper, so cb_cabinet < file_size is expected when RESERVE_PRESENT
+	// is set.  We read the flags field early (it's already in our header buffer)
+	// to make the distinction.
 	const cb_cabinet = std.mem.readInt(u32, hdr[8..12], .little);
-	if (cb_cabinet != file_size) {
+	const early_flags = std.mem.readInt(u16, hdr[0x1E..0x20], .little);
+	if (cb_cabinet > file_size) {
+		return ValidationResult.invalidWithDepth(.cab, "cbCabinet exceeds actual file size (truncated)", .structural);
+	}
+	if (cb_cabinet < file_size and (early_flags & FLAG_RESERVE_PRESENT == 0)) {
 		return ValidationResult.invalidWithDepth(.cab, "cbCabinet does not match actual file size", .structural);
 	}
 
@@ -464,6 +472,137 @@ test "validateCab: cbCabinet mismatch rejected" {
 	const result = validateCab(&source);
 	try testing.expect(!result.is_valid);
 }
+
+test "validateCab: signed CAB with cbCabinet < file_size accepted when RESERVE_PRESENT" {
+	// Simulate an Authenticode-signed CAB: cbCabinet points to the cabinet proper,
+	// but the file has extra signature bytes appended after. RESERVE_PRESENT is set.
+	var tmp = testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	// Build a minimal valid CAB header (36 bytes) + reserve fields (4 bytes) +
+	// 1 CFFOLDER (8 bytes) + 1 CFFILE (16 bytes + 1 NUL filename) = 65 bytes of cabinet data.
+	// Then append 16 bytes of fake Authenticode signature.
+	const cab_size: u32 = 65; // the cabinet proper size
+	const total_size: usize = 65 + 16; // file on disk includes signature
+	var data = [_]u8{0} ** total_size;
+
+	// Magic "MSCF"
+	data[0] = 'M';
+	data[1] = 'S';
+	data[2] = 'C';
+	data[3] = 'F';
+
+	// reserved1 = 0 (already zero)
+
+	// cbCabinet = 65 (cabinet proper, NOT total file size)
+	data[8] = cab_size;
+	data[9] = 0;
+	data[10] = 0;
+	data[11] = 0;
+
+	// reserved2 at 0x0C = 0 (already zero)
+
+	// coffFiles at 0x10 = 48 (36 hdr + 4 reserve + 8 folder entry)
+	data[0x10] = 48;
+
+	// reserved3 at 0x14 = 0 (already zero)
+
+	// version minor=3, major=1
+	data[0x18] = 0x03;
+	data[0x19] = 0x01;
+
+	// cFolders = 1
+	data[0x1A] = 0x01;
+
+	// cFiles = 1
+	data[0x1C] = 0x01;
+
+	// flags = FLAG_RESERVE_PRESENT (0x0004)
+	data[0x1E] = 0x04;
+
+	// Reserve fields at offset 36: cbCFHeader=0, cbCFFolder=0, cbCFData=0
+	// (4 bytes, all zero — already zero)
+
+	// CFFOLDER at offset 40: coffCabStart points to CFDATA area
+	data[40] = 56; // coffCabStart = 56 (within bounds)
+	data[41] = 0;
+	data[42] = 0;
+	data[43] = 0;
+	// cCFData = 0 (no data blocks)
+	data[44] = 0;
+	data[45] = 0;
+	// typeCompress = 0 (NONE)
+	data[46] = 0;
+	data[47] = 0;
+
+	// CFFILE at offset 48: 16 bytes header + NUL-terminated filename
+	// cbFile (u32) = 0
+	data[48] = 0;
+	// uoffFolderStart (u32) = 0
+	data[52] = 0;
+	// iFolder (u16) = 0
+	data[56] = 0;
+	// date (u16), time (u16), attribs (u16) — leave zero
+	// Filename starts at offset 64, just a NUL byte
+	data[64] = 0;
+
+	// Bytes 65..80 are fake Authenticode signature (non-zero to be realistic)
+	for (65..total_size) |i| {
+		data[i] = 0xAB;
+	}
+
+	var source = try tmpCabFile(&tmp, "signed.cab", &data);
+	defer source.close();
+	const result = validateCab(&source);
+	// Signed CAB with RESERVE_PRESENT and cb_cabinet < file_size should be ACCEPTED
+	try testing.expect(result.is_valid);
+	try testing.expectEqual(FileFormat.cab, result.format);
+}
+
+test "validateCab: cbCabinet > file_size always rejected (truncated)" {
+	// cbCabinet claims more than file size — always invalid regardless of flags
+	var tmp = testing.tmpDir(.{});
+	defer tmp.cleanup();
+	var data = [_]u8{0} ** 64;
+	data[0] = 'M';
+	data[1] = 'S';
+	data[2] = 'C';
+	data[3] = 'F';
+	// cbCabinet = 200, file is only 64 bytes
+	data[8] = 200;
+	data[0x18] = 0x03;
+	data[0x19] = 0x01;
+	// flags = RESERVE_PRESENT (shouldn't help — file is truncated)
+	data[0x1E] = 0x04;
+	var source = try tmpCabFile(&tmp, "trunc_signed.cab", &data);
+	defer source.close();
+	const result = validateCab(&source);
+	try testing.expect(!result.is_valid);
+}
+
+test "validateCab: cbCabinet < file_size WITHOUT RESERVE_PRESENT rejected" {
+	// Extra bytes after cabinet but no RESERVE_PRESENT flag — should be rejected
+	var tmp = testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const cab_size: u32 = 64;
+	const total_size: usize = 80; // 16 extra bytes
+	var data = [_]u8{0} ** total_size;
+	data[0] = 'M';
+	data[1] = 'S';
+	data[2] = 'C';
+	data[3] = 'F';
+	// cbCabinet = 64 but file is 80
+	data[8] = @intCast(cab_size);
+	data[0x18] = 0x03;
+	data[0x19] = 0x01;
+	// flags = 0 (NO RESERVE_PRESENT)
+	data[0x1E] = 0x00;
+	var source = try tmpCabFile(&tmp, "extra_no_flag.cab", &data);
+	defer source.close();
+	const result = validateCab(&source);
+	try testing.expect(!result.is_valid);
+}
+
 
 test "validateCab: zero cFolders rejected" {
 	var tmp = testing.tmpDir(.{});
