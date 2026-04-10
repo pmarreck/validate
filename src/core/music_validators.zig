@@ -64,10 +64,10 @@ pub fn validateMp3(file: *FileSource) ValidationResult {
         return ValidationResult.ok(.mp3);
     }
 
-    // MP3 files often have zero-padding between ID3v2 tag and first audio frame.
-    // Scan forward up to 4KB looking for the first frame sync.
+    // MP3 files may have zero-padding or non-audio metadata (e.g., MusicMatch)
+    // between ID3v2 tag and first audio frame. Scan up to 128KB to find frame sync.
     if (pos > 0) { // Only scan if we skipped an ID3 tag
-        const scan_limit: u64 = pos + 4096;
+        const scan_limit: u64 = pos + 131072;
         var scan_buf: [2]u8 = undefined;
         while (pos < scan_limit) {
             file.seekTo(pos) catch break;
@@ -3301,6 +3301,40 @@ test "FormatValidator accepts valid MP3 with ID3" {
     try std.testing.expectEqual(FileFormat.mp3, result.format);
     if (!result.is_valid) {
         std.debug.print("\nValid MP3 ID3 failed: {s}\n", .{result.error_message orelse "no message"});
+    }
+    try std.testing.expect(result.is_valid);
+}
+
+test "FormatValidator accepts MP3 with large metadata gap after ID3" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Simulate an MP3 audiobook with ~8KB of non-audio metadata (e.g., MusicMatch)
+    // between the ID3v2 tag and the first MPEG frame sync.
+    // This exercises the scan-forward logic that previously only searched 4KB.
+    const file = try tmp_dir.dir.createFile("valid_large_gap.mp3", .{});
+    // ID3v2 header (10 bytes, size=0 meaning no tag frames)
+    try file.writeAll(&[_]u8{ 'I', 'D', '3', 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 });
+    // 8192 bytes of non-sync padding (0x42 avoids false frame sync)
+    const padding: [8192]u8 = .{0x42} ** 8192;
+    try file.writeAll(&padding);
+    // Valid MP3 frame sync
+    try file.writeAll(&[_]u8{ 0xFF, 0xFB, 0x90, 0x00 });
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_large_gap.mp3");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.mp3, result.format);
+    if (!result.is_valid) {
+        std.debug.print("\nMP3 with 8KB metadata gap after ID3 failed: {s}\n", .{result.error_message orelse "no message"});
     }
     try std.testing.expect(result.is_valid);
 }
