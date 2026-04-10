@@ -2487,6 +2487,40 @@ test "validateStl accepts valid binary STL structure" {
     try std.testing.expect(result.is_valid);
 }
 
+test "FormatValidator detects and validates binary STL via extension fallback" {
+    // Binary STL has no magic bytes (80-byte arbitrary header, not starting with "solid ").
+    // This test verifies the full detection pipeline: extension → ext_has_no_magic → dispatch.
+    // Without .stl in ext_has_no_magic, this file would be detected as .unknown or .plain_text.
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Binary STL: 80-byte header + 4-byte triangle count (LE) + N * 50-byte triangles
+    // 1 triangle = 134 bytes total
+    var stl_data: [134]u8 = undefined;
+    @memset(stl_data[0..80], 'X'); // Header: arbitrary bytes, NOT "solid "
+    std.mem.writeInt(u32, stl_data[80..84], 1, .little); // 1 triangle
+    // Triangle: normal (12) + v1 (12) + v2 (12) + v3 (12) + attribute (2) = 50 bytes
+    @memset(stl_data[84..134], 0);
+
+    const file = try tmp_dir.dir.createFile("test_binary.stl", .{});
+    try file.writeAll(&stl_data);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "test_binary.stl");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    // Must be detected as STL (not unknown or plain_text) and valid
+    try std.testing.expectEqual(FileFormat.stl, result.format);
+    try std.testing.expect(result.is_valid);
+}
+
 test "validateDwg accepts valid DWG file structure" {
     const allocator = std.testing.allocator;
 

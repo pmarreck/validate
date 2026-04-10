@@ -5023,7 +5023,7 @@ pub const FormatValidator = struct {
                     .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2,
                     .x12_edi, .edifact,
                     .der, // DER: first byte 0x30 is too generic for magic detection
-                    .obj, .coff, // .obj is ambiguous (Wavefront OBJ vs COFF); .o has no magic
+                    .obj, .coff, .stl, // .obj is ambiguous (Wavefront OBJ vs COFF); .o has no magic; binary STL has no magic
                     .cdg, // CDG has no magic bytes, only extension + size divisibility
                     .toast, // Toast may be ISO internally or APM-prefixed
                     .mp2, // MP2 shares MPEG sync word with MP3, needs extension hint
@@ -5095,6 +5095,7 @@ pub const FormatValidator = struct {
                             reopen_ext_ptr.seekTo(0) catch break :blk ValidationResult.ok(.obj);
                             break :blk cad_3d_validators.validateObj(reopen_ext_ptr);
                         },
+                        .stl => cad_3d_validators.validateStl(reopen_ext_ptr),
                         else => ValidationResult.ok(ext_format),
                     };
                 } else {
@@ -5224,7 +5225,7 @@ pub const FormatValidator = struct {
         if (result.format == .unknown and expected_format != .unknown and expected_format.hasValidator()) {
             // Don't flag "magic bytes corrupted" for formats that inherently lack magic bytes
             const has_no_magic = switch (expected_format) {
-                .cdg, .toast, .mp2, .msi, .br, .dv, .tga,
+                .cdg, .toast, .mp2, .msi, .br, .dv, .tga, .stl,
                 .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
                 .csv, .markdown,
                 => true,
