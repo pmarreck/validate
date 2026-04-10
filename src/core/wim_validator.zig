@@ -137,11 +137,13 @@ pub fn validateWim(file: *FileSource) ValidationResult {
 		return ValidationResult.invalidCode(detected_format, .invalid_value, "WIM boot_idx exceeds image_count");
 	}
 
-	// 8. Reserved bytes at offset 0x94 (60 bytes) must all be zeros
-	const reserved = hdr[0x94..0xD0];
-	for (reserved) |b| {
-		if (b != 0) {
-			return ValidationResult.invalidCode(detected_format, .invalid_value, "WIM reserved region (non-zero bytes)");
+	// 8. Reserved bytes at offset 0x94 (60 bytes) must all be zeros (WIM only; ESD uses this region)
+	if (!is_esd) {
+		const reserved = hdr[0x94..0xD0];
+		for (reserved) |b| {
+			if (b != 0) {
+				return ValidationResult.invalidCode(detected_format, .invalid_value, "WIM reserved region (non-zero bytes)");
+			}
 		}
 	}
 
@@ -290,11 +292,13 @@ pub fn validateWimFromBuffer(data: []const u8) ValidationResult {
 		return ValidationResult.invalidCode(detected_format, .invalid_value, "WIM boot_idx exceeds image_count");
 	}
 
-	// 8. Reserved bytes at 0x94 (60 bytes)
-	const reserved = data[0x94..0xD0];
-	for (reserved) |b| {
-		if (b != 0) {
-			return ValidationResult.invalidCode(detected_format, .invalid_value, "WIM reserved region (non-zero bytes)");
+	// 8. Reserved bytes at 0x94 (60 bytes) must all be zeros (WIM only; ESD uses this region)
+	if (!is_esd) {
+		const reserved = data[0x94..0xD0];
+		for (reserved) |b| {
+			if (b != 0) {
+				return ValidationResult.invalidCode(detected_format, .invalid_value, "WIM reserved region (non-zero bytes)");
+			}
 		}
 	}
 
@@ -456,6 +460,28 @@ test "validateWimFromBuffer: rejects boot_idx > image_count" {
 
 	const result = validateWimFromBuffer(&buf);
 	try testing.expect(!result.is_valid);
+}
+
+test "validateWimFromBuffer: ESD allows non-zero reserved bytes" {
+    // ESD files legitimately use the reserved region at 0x94-0xD0.
+    // This must NOT be rejected as invalid.
+    var buf = [_]u8{0} ** 208;
+    @memcpy(buf[0..8], &WIM_MAGIC);
+    std.mem.writeInt(u32, buf[0x08..0x0C], WIM_HEADER_SIZE, .little);
+    // ESD version
+    std.mem.writeInt(u32, buf[0x0C..0x10], WIM_VERSION_ESD, .little);
+    // flags = COMPRESSION | LZMS (required for ESD detection)
+    std.mem.writeInt(u32, buf[0x10..0x14], FLAG_COMPRESSION | FLAG_LZMS, .little);
+    std.mem.writeInt(u16, buf[0x28..0x2A], 1, .little);
+    std.mem.writeInt(u16, buf[0x2A..0x2C], 1, .little);
+    // Set non-zero bytes in the reserved region
+    buf[0x94] = 0xFF;
+    buf[0xA0] = 0x42;
+    buf[0xCF] = 0x01;
+
+    const result = validateWimFromBuffer(&buf);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.esd, result.format);
 }
 
 test "validateWimFromBuffer: rejects non-zero reserved bytes" {
