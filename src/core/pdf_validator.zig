@@ -549,6 +549,17 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;
 	logPdfSlow(telemetry, path, total_ns, structural_ns, image_ns, font_ns, embed_ns, image_result, font_result, embed_result);
 
+	// Determine validation depth: downgrade to structural if any streams were
+	// skipped due to exceeding decompression size limits (we can't claim full
+	// validation when some streams weren't verified).
+	const total_skipped_size_limit = image_result.skipped_size_limit +
+		font_result.skipped_size_limit +
+		embed_result.skipped_size_limit;
+	const final_depth: format_validation.ValidationDepth = if (total_skipped_size_limit > 0) .structural else .full;
+	if (total_skipped_size_limit > 0 and warning_message == null) {
+		warning_message = "some streams skipped (exceeded decompression size limit); full validation not possible";
+	}
+
 	// All validations passed
 	if (image_result.decryption_succeeded) {
 		malformations_local.insert(.pdf_trivial_encryption);
@@ -558,7 +569,7 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 			.error_message = null,
 			.malformations = malformations_local,
 			.warning_message = warning_message,
-			.validation_depth = .full,
+			.validation_depth = final_depth,
 			.circumvented_trivial_protection = true,
 			.has_encrypted_content = true,
 		};
@@ -570,8 +581,11 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 			.error_message = null,
 			.malformations = malformations_local,
 			.warning_message = warning_message,
-			.validation_depth = .full,
+			.validation_depth = final_depth,
 		};
+	}
+	if (final_depth == .structural) {
+		return ValidationResult.okWithDepthAndWarning(.pdf, .structural, warning_message orelse "some streams skipped (exceeded decompression size limit)");
 	}
 	return ValidationResult.okWithDepth(.pdf, .full);
 }
@@ -692,6 +706,15 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;
 	logPdfSlow(telemetry, "<buffer>", total_ns, structural_ns, image_ns, font_ns, embed_ns, image_result, font_result, embed_result);
 
+	// Determine validation depth (same logic as validatePdfDeep)
+	const total_skipped_size_limit = image_result.skipped_size_limit +
+		font_result.skipped_size_limit +
+		embed_result.skipped_size_limit;
+	const final_depth: format_validation.ValidationDepth = if (total_skipped_size_limit > 0) .structural else .full;
+	if (total_skipped_size_limit > 0 and warning_message == null) {
+		warning_message = "some streams skipped (exceeded decompression size limit); full validation not possible";
+	}
+
 	// Check if we circumvented trivial encryption
 	if (image_result.decryption_succeeded) {
 		malformations_local.insert(.pdf_trivial_encryption);
@@ -701,7 +724,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			.error_message = null,
 			.malformations = malformations_local,
 			.warning_message = warning_message,
-			.validation_depth = .full,
+			.validation_depth = final_depth,
 			.circumvented_trivial_protection = true,
 			.has_encrypted_content = true,
 		};
@@ -714,7 +737,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			.error_message = null,
 			.malformations = malformations_local,
 			.warning_message = warning_message,
-			.validation_depth = .full,
+			.validation_depth = final_depth,
 		};
 	}
 	if (warning_message != null) {
@@ -723,8 +746,11 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			.is_valid = true,
 			.error_message = null,
 			.warning_message = warning_message,
-			.validation_depth = .full,
+			.validation_depth = final_depth,
 		};
+	}
+	if (final_depth == .structural) {
+		return ValidationResult.okWithDepthAndWarning(.pdf, .structural, warning_message orelse "some streams skipped (exceeded decompression size limit)");
 	}
 	return ValidationResult.okWithDepth(.pdf, .full);
 }
