@@ -9,6 +9,16 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Minimum file size: MP3 >= 128, BMP >= 58, ADTS >= 128, MPEG-TS >= 188, Tar >= 512 (2026-04-01 ~14:30 EST)
 - [x] Text formats (plain_text, csv, markdown + variants) added to has_no_magic list (2026-04-01 ~15:00 EST)
 
+### False Positive Fixes (from real-world scan, 2026-04-10)
+- [x] ESD reserved region: skip reserved-region zero-check for ESD (version 0x0E00) — 18 files (2026-04-10 ~21:40 EST)
+- [x] CAB Authenticode: allow cbCabinet < file_size when RESERVE_PRESENT flag set — 10 files (2026-04-10 ~21:45 EST)
+- [x] MP3 post-ID3 scan: increase frame sync scan limit from 4KB to 128KB — 8 audiobooks (2026-04-10 ~21:40 EST)
+- [x] Binary STL detection: add .stl to ext_has_no_magic + has_no_magic + dispatch — 1 file (2026-04-10 ~21:45 EST)
+- [x] Pre-UDIF DMG: detect Apple Driver Map (0x4552) + APM validation — 2 files (2026-04-10 ~21:45 EST)
+
+### Self-Extracting Archive Detection
+- [x] Detect shell script + binary payload pattern in validatePlainText — shebang + >=5 non-blank lines + binary-to-EOF = WARN (2026-04-10 ~22:00 EST)
+
 ### Kaitai Struct-Guided New Format Wave
 Use .ksy specs as reference docs when writing validators for these high-value formats:
 - [x] java_class — Java .class bytecode (2026-04-02 ~01:30 EST)
