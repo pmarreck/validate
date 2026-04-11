@@ -28,6 +28,8 @@ pub const EmbeddedFileValidationSummary = struct {
     validated: u32,
     skipped: u32,
     failed: u32,
+    skipped_size_limit: u32 = 0,
+    skipped_corrupt: u32 = 0,
     valid: bool,
     error_message: ?[]const u8,
 
@@ -186,6 +188,15 @@ fn parseObjectNumber(data: []const u8, start: usize) ?u32 {
     return std.fmt.parseInt(u32, data[num_start..pos], 10) catch null;
 }
 
+/// Result type for FlateDecode decompression with ratio-awareness.
+const DecompressFlateResult = union(enum) {
+    ok: []u8,
+    exceeded_limit,
+    corrupt,
+    data_error,
+    alloc_error,
+};
+
 /// Validate all embedded files in a PDF with recursive format validation.
 pub fn validatePdfEmbeddedFiles(
     allocator: Allocator,
@@ -205,6 +216,7 @@ pub fn validatePdfEmbeddedFiles(
     var validated: u32 = 0;
     var skipped: u32 = 0;
     var failed: u32 = 0;
+    var skipped_size_limit: u32 = 0;
 
     for (files) |file| {
         const stream_data = pdf_data[file.stream_start..file.stream_end];
@@ -213,10 +225,33 @@ pub fn validatePdfEmbeddedFiles(
         var decompressed_data: ?[]u8 = null;
         defer if (decompressed_data) |d| allocator.free(d);
 
-        const file_data = blk: {
+        const file_data: []const u8 = blk: {
             if (file.filter) |filter| {
-                const decoded = switch (filter) {
-                    .flate_decode => decompressFlate(allocator, stream_data),
+                if (filter == .flate_decode) {
+                    // Handle flate_decode separately with ratio-aware decompression
+                    switch (decompressFlate(allocator, stream_data)) {
+                        .ok => |d| {
+                            decompressed_data = d;
+                            break :blk d;
+                        },
+                        .exceeded_limit => {
+                            skipped += 1;
+                            skipped_size_limit += 1;
+                            continue;
+                        },
+                        .corrupt => {
+                            failed += 1;
+                            continue;
+                        },
+                        .data_error, .alloc_error => {
+                            skipped += 1;
+                            continue;
+                        },
+                    }
+                }
+                // Other decoders still return ?[]u8
+                const decoded: ?[]u8 = switch (filter) {
+                    .flate_decode => unreachable,
                     .ascii_hex_decode => ascii_hex_decoder.decode(allocator, stream_data) catch null,
                     .ascii85_decode => ascii85_decoder.decode(allocator, stream_data) catch null,
                     .lzw_decode => lzw_decoder.decode(allocator, stream_data) catch null,
@@ -254,7 +289,9 @@ pub fn validatePdfEmbeddedFiles(
         return EmbeddedFileValidationSummary.invalid(@intCast(files.len), validated, failed, "One or more embedded files failed validation");
     }
 
-    return EmbeddedFileValidationSummary.ok(@intCast(files.len), validated, skipped);
+    var result = EmbeddedFileValidationSummary.ok(@intCast(files.len), validated, skipped);
+    result.skipped_size_limit = skipped_size_limit;
+    return result;
 }
 
 /// Simplified validation without recursive dispatch (just extracts and decompresses).
@@ -270,25 +307,48 @@ pub fn validatePdfEmbeddedFilesBasic(allocator: Allocator, pdf_data: []const u8)
 
     var validated: u32 = 0;
     var skipped: u32 = 0;
+    var skipped_size_limit: u32 = 0;
+    var skipped_corrupt: u32 = 0;
 
     for (files) |file| {
         const stream_data = pdf_data[file.stream_start..file.stream_end];
 
         // Try to decompress if filtered
         if (file.filter) |filter| {
-            const decoded = switch (filter) {
-                .flate_decode => decompressFlate(allocator, stream_data),
-                .ascii_hex_decode => ascii_hex_decoder.decode(allocator, stream_data) catch null,
-                .ascii85_decode => ascii85_decoder.decode(allocator, stream_data) catch null,
-                .lzw_decode => lzw_decoder.decode(allocator, stream_data) catch null,
-                .run_length_decode => run_length_decoder.decode(allocator, stream_data) catch null,
-                else => null,
-            };
-            if (decoded) |d| {
-                allocator.free(d);
-                validated += 1;
+            if (filter == .flate_decode) {
+                // Handle flate_decode separately with ratio-aware decompression
+                switch (decompressFlate(allocator, stream_data)) {
+                    .ok => |d| {
+                        allocator.free(d);
+                        validated += 1;
+                    },
+                    .exceeded_limit => {
+                        skipped += 1;
+                        skipped_size_limit += 1;
+                    },
+                    .corrupt => {
+                        skipped += 1;
+                        skipped_corrupt += 1;
+                    },
+                    .data_error, .alloc_error => {
+                        skipped += 1;
+                    },
+                }
             } else {
-                skipped += 1;
+                // Other decoders still return ?[]u8
+                const decoded: ?[]u8 = switch (filter) {
+                    .ascii_hex_decode => ascii_hex_decoder.decode(allocator, stream_data) catch null,
+                    .ascii85_decode => ascii85_decoder.decode(allocator, stream_data) catch null,
+                    .lzw_decode => lzw_decoder.decode(allocator, stream_data) catch null,
+                    .run_length_decode => run_length_decoder.decode(allocator, stream_data) catch null,
+                    else => null,
+                };
+                if (decoded) |d| {
+                    allocator.free(d);
+                    validated += 1;
+                } else {
+                    skipped += 1;
+                }
             }
         } else {
             // Uncompressed - just count as validated
@@ -296,19 +356,37 @@ pub fn validatePdfEmbeddedFilesBasic(allocator: Allocator, pdf_data: []const u8)
         }
     }
 
-    return EmbeddedFileValidationSummary.ok(@intCast(files.len), validated, skipped);
+    var result = EmbeddedFileValidationSummary.ok(@intCast(files.len), validated, skipped);
+    result.skipped_size_limit = skipped_size_limit;
+    result.skipped_corrupt = skipped_corrupt;
+    return result;
 }
 
-/// Decompress FlateDecode data.
+/// Decompress FlateDecode data with ratio-aware decompression.
 /// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
-fn decompressFlate(allocator: Allocator, compressed: []const u8) ?[]u8 {
+/// Returns a tagged union distinguishing between successful decompression,
+/// size limit exceeded, suspected zip bomb (corrupt), and data/alloc errors.
+fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlateResult {
     const max_output: usize = 256 * 1024 * 1024; // 256MB max for embedded files
 
-    // Try zlib format first, then raw deflate
-    if (zlib.inflateZlibAlloc(allocator, compressed, max_output)) |data| {
-        return data;
-    } else |_| {
-        return zlib.inflateRawAlloc(allocator, compressed, max_output) catch null;
+    switch (zlib.inflateZlibAllocWithRatio(allocator, compressed, max_output)) {
+        .ok => |data| return .{ .ok = data },
+        .exceeded_limit => |info| {
+            if (info.ratio > 100) return .corrupt;
+            return .exceeded_limit;
+        },
+        .data_error => {},
+        .alloc_error => return .alloc_error,
+    }
+
+    switch (zlib.inflateRawAllocWithRatio(allocator, compressed, max_output)) {
+        .ok => |data| return .{ .ok = data },
+        .exceeded_limit => |info| {
+            if (info.ratio > 100) return .corrupt;
+            return .exceeded_limit;
+        },
+        .data_error => return .data_error,
+        .alloc_error => return .alloc_error,
     }
 }
 
@@ -351,4 +429,19 @@ test "extractEmbeddedFiles finds EmbeddedFile objects" {
 
     try std.testing.expectEqual(@as(usize, 1), files.len);
     try std.testing.expectEqual(@as(u32, 5), files[0].object_num);
+}
+
+test "EmbeddedFileValidationSummary tracks skip reasons" {
+    const summary = EmbeddedFileValidationSummary{
+        .total_files = 5,
+        .validated = 3,
+        .skipped = 2,
+        .skipped_size_limit = 1,
+        .skipped_corrupt = 1,
+        .failed = 0,
+        .valid = true,
+        .error_message = null,
+    };
+    try std.testing.expectEqual(@as(u32, 1), summary.skipped_size_limit);
+    try std.testing.expectEqual(@as(u32, 1), summary.skipped_corrupt);
 }
