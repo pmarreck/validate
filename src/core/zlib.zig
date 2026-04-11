@@ -216,6 +216,246 @@ pub fn inflateRawAlloc(allocator: Allocator, compressed: []const u8, max_output_
     }
 }
 
+/// Result type for ratio-aware decompression — distinguishes success, limit exceeded, corrupt data, and alloc failure.
+pub const DecompressResult = union(enum) {
+    ok: []u8,
+    exceeded_limit: struct {
+        bytes_produced: usize,
+        compressed_len: usize,
+        ratio: usize,
+    },
+    data_error,
+    alloc_error,
+};
+
+/// Decompress zlib-format data, returning DecompressResult instead of an error union.
+/// When output would exceed max_output_size, returns .exceeded_limit with compression ratio info.
+/// Caller owns the slice in the .ok case and must free it with the same allocator.
+pub fn inflateZlibAllocWithRatio(allocator: Allocator, compressed: []const u8, max_output_size: usize) DecompressResult {
+    var stream: c.z_stream = .{
+        .next_in = @constCast(compressed.ptr),
+        .avail_in = @intCast(compressed.len),
+        .next_out = undefined,
+        .avail_out = 0,
+        .zalloc = null,
+        .zfree = null,
+        .@"opaque" = null,
+        .total_in = 0,
+        .total_out = 0,
+        .msg = null,
+        .state = null,
+        .data_type = 0,
+        .adler = 0,
+        .reserved = 0,
+    };
+
+    // Initialize for zlib format (default windowBits = 15)
+    const init_ret = c.inflateInit(&stream);
+    if (init_ret != c.Z_OK) {
+        return .data_error;
+    }
+    defer _ = c.inflateEnd(&stream);
+
+    // Start with a reasonable buffer size, grow as needed
+    var output_size: usize = @min(compressed.len * 4, max_output_size);
+    if (output_size < 4096) output_size = 4096;
+
+    var output = allocator.alloc(u8, output_size) catch return .alloc_error;
+
+    stream.next_out = output.ptr;
+    stream.avail_out = @intCast(output.len);
+
+    while (true) {
+        const ret = c.inflate(&stream, c.Z_NO_FLUSH);
+
+        switch (ret) {
+            c.Z_STREAM_END => {
+                // Done - shrink buffer to actual size
+                const final_size = stream.total_out;
+                if (final_size < output.len) {
+                    output = allocator.realloc(output, final_size) catch output;
+                }
+                return .{ .ok = output[0..final_size] };
+            },
+            c.Z_OK, c.Z_BUF_ERROR => {
+                // Need more output space
+                if (stream.avail_out == 0) {
+                    const new_size = output.len * 2;
+                    if (new_size > max_output_size) {
+                        const bytes_produced = stream.total_out;
+                        const ratio = if (compressed.len > 0) bytes_produced / compressed.len else 0;
+                        allocator.free(output);
+                        return .{ .exceeded_limit = .{
+                            .bytes_produced = bytes_produced,
+                            .compressed_len = compressed.len,
+                            .ratio = ratio,
+                        } };
+                    }
+                    output = allocator.realloc(output, new_size) catch {
+                        allocator.free(output);
+                        return .alloc_error;
+                    };
+                    stream.next_out = output.ptr + stream.total_out;
+                    stream.avail_out = @intCast(output.len - stream.total_out);
+                } else if (stream.avail_in == 0) {
+                    // No more input but not at stream end
+                    allocator.free(output);
+                    return .data_error;
+                }
+            },
+            c.Z_DATA_ERROR => {
+                allocator.free(output);
+                return .data_error;
+            },
+            c.Z_MEM_ERROR => {
+                allocator.free(output);
+                return .alloc_error;
+            },
+            else => {
+                allocator.free(output);
+                return .data_error;
+            },
+        }
+    }
+}
+
+/// Decompress raw deflate data (no header), returning DecompressResult instead of an error union.
+/// When output would exceed max_output_size, returns .exceeded_limit with compression ratio info.
+/// Caller owns the slice in the .ok case and must free it with the same allocator.
+pub fn inflateRawAllocWithRatio(allocator: Allocator, compressed: []const u8, max_output_size: usize) DecompressResult {
+    var stream: c.z_stream = .{
+        .next_in = @constCast(compressed.ptr),
+        .avail_in = @intCast(compressed.len),
+        .next_out = undefined,
+        .avail_out = 0,
+        .zalloc = null,
+        .zfree = null,
+        .@"opaque" = null,
+        .total_in = 0,
+        .total_out = 0,
+        .msg = null,
+        .state = null,
+        .data_type = 0,
+        .adler = 0,
+        .reserved = 0,
+    };
+
+    // Initialize for raw deflate
+    const init_ret = c.inflateInit2(&stream, -15);
+    if (init_ret != c.Z_OK) {
+        return .data_error;
+    }
+    defer _ = c.inflateEnd(&stream);
+
+    // Start with a reasonable buffer size, grow as needed
+    var output_size: usize = @min(compressed.len * 4, max_output_size);
+    if (output_size < 4096) output_size = 4096;
+
+    var output = allocator.alloc(u8, output_size) catch return .alloc_error;
+
+    stream.next_out = output.ptr;
+    stream.avail_out = @intCast(output.len);
+
+    while (true) {
+        const ret = c.inflate(&stream, c.Z_NO_FLUSH);
+
+        switch (ret) {
+            c.Z_STREAM_END => {
+                // Done - shrink buffer to actual size
+                const final_size = stream.total_out;
+                if (final_size < output.len) {
+                    output = allocator.realloc(output, final_size) catch output;
+                }
+                return .{ .ok = output[0..final_size] };
+            },
+            c.Z_OK, c.Z_BUF_ERROR => {
+                // Need more output space
+                if (stream.avail_out == 0) {
+                    const new_size = output.len * 2;
+                    if (new_size > max_output_size) {
+                        const bytes_produced = stream.total_out;
+                        const ratio = if (compressed.len > 0) bytes_produced / compressed.len else 0;
+                        allocator.free(output);
+                        return .{ .exceeded_limit = .{
+                            .bytes_produced = bytes_produced,
+                            .compressed_len = compressed.len,
+                            .ratio = ratio,
+                        } };
+                    }
+                    output = allocator.realloc(output, new_size) catch {
+                        allocator.free(output);
+                        return .alloc_error;
+                    };
+                    stream.next_out = output.ptr + stream.total_out;
+                    stream.avail_out = @intCast(output.len - stream.total_out);
+                } else if (stream.avail_in == 0) {
+                    // No more input but not at stream end
+                    allocator.free(output);
+                    return .data_error;
+                }
+            },
+            c.Z_DATA_ERROR => {
+                allocator.free(output);
+                return .data_error;
+            },
+            c.Z_MEM_ERROR => {
+                allocator.free(output);
+                return .alloc_error;
+            },
+            else => {
+                allocator.free(output);
+                return .data_error;
+            },
+        }
+    }
+}
+
+/// Compress data to zlib format. Test helper — not optimized for production use.
+/// Caller owns the returned slice and must free it with the same allocator.
+pub fn deflateZlib(allocator: Allocator, input: []const u8) (Allocator.Error || ZlibError)![]u8 {
+    var stream: c.z_stream = .{
+        .next_in = @constCast(input.ptr),
+        .avail_in = @intCast(input.len),
+        .next_out = undefined,
+        .avail_out = 0,
+        .zalloc = null,
+        .zfree = null,
+        .@"opaque" = null,
+        .total_in = 0,
+        .total_out = 0,
+        .msg = null,
+        .state = null,
+        .data_type = 0,
+        .adler = 0,
+        .reserved = 0,
+    };
+
+    const init_ret = c.deflateInit(&stream, c.Z_DEFAULT_COMPRESSION);
+    if (init_ret != c.Z_OK) {
+        return ZlibError.InitFailed;
+    }
+    defer _ = c.deflateEnd(&stream);
+
+    // Upper bound on compressed size
+    const bound: usize = @intCast(c.deflateBound(&stream, @intCast(input.len)));
+    var output = try allocator.alloc(u8, bound);
+    errdefer allocator.free(output);
+
+    stream.next_out = output.ptr;
+    stream.avail_out = @intCast(output.len);
+
+    const ret = c.deflate(&stream, c.Z_FINISH);
+    if (ret != c.Z_STREAM_END) {
+        return ZlibError.ZlibError;
+    }
+
+    const final_size = stream.total_out;
+    if (final_size < output.len) {
+        output = allocator.realloc(output, final_size) catch output;
+    }
+    return output[0..final_size];
+}
+
 /// Decompress raw deflate data and compute CRC32 simultaneously.
 /// Returns the decompressed size and CRC32 value.
 pub fn inflateRawWithCrc(compressed: []const u8, output: []u8) ZlibError!struct { size: usize, crc32: u32 } {
@@ -456,4 +696,43 @@ test "isAvailable" {
 test "version" {
     const ver = version();
     try std.testing.expect(ver.len > 0);
+}
+
+test "inflateZlibAllocWithRatio: ok case" {
+    // Compress a small string, then decompress with a generous limit
+    const allocator = std.testing.allocator;
+    const input = "hello, world!";
+    const compressed = try deflateZlib(allocator, input);
+    defer allocator.free(compressed);
+
+    const result = inflateZlibAllocWithRatio(allocator, compressed, 1024 * 1024);
+    switch (result) {
+        .ok => |data| {
+            defer allocator.free(data);
+            try std.testing.expectEqualStrings(input, data);
+        },
+        else => {
+            try std.testing.expect(false); // unexpected result
+        },
+    }
+}
+
+test "inflateZlibAllocWithRatio: exceeded_limit case" {
+    // Compress 64KB of zeros (very high compression ratio), then decompress with tiny limit
+    const allocator = std.testing.allocator;
+    const input = [_]u8{0} ** (64 * 1024);
+    const compressed = try deflateZlib(allocator, &input);
+    defer allocator.free(compressed);
+
+    // 256-byte output limit — will be exceeded immediately since input expands ~1000x
+    const result = inflateZlibAllocWithRatio(allocator, compressed, 256);
+    switch (result) {
+        .exceeded_limit => |info| {
+            try std.testing.expect(info.compressed_len > 0);
+            try std.testing.expect(info.ratio > 1); // should be very high ratio
+        },
+        else => {
+            try std.testing.expect(false); // expected exceeded_limit
+        },
+    }
 }
