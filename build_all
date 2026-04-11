@@ -26,7 +26,7 @@ done
 
 # Collect all binary paths for hashing
 all_paths=("zig-out/bin/$EXEC_NAME")
-for dir_name in x86_64-linux aarch64-linux x86_64-windows x86_64-macos aarch64-macos; do
+for dir_name in x86_64-linux aarch64-linux x86_64-windows aarch64-windows x86_64-macos aarch64-macos; do
 	exec_name="$EXEC_NAME"
 	[[ "$dir_name" == *windows* ]] && exec_name="${EXEC_NAME}.exe"
 	all_paths+=("zig-out/$dir_name/bin/$exec_name")
@@ -79,6 +79,7 @@ if [[ "$host_system" == "aarch64-darwin" ]]; then
 	CROSS_ATTRS=(
 		["x86_64-linux"]="packages.aarch64-darwin.linux-x86_64"
 		["x86_64-windows"]="packages.x86_64-linux.windows-x86_64"
+		["aarch64-windows"]="packages.x86_64-linux.windows-aarch64"
 		["aarch64-macos"]="packages.x86_64-linux.macos-aarch64"
 	)
 	NATIVE_ATTRS=(
@@ -88,6 +89,7 @@ else
 	# Building from Linux: use native builds + cross-compile for other platforms
 	CROSS_ATTRS=(
 		["x86_64-windows"]="packages.x86_64-linux.windows-x86_64"
+		["aarch64-windows"]="packages.x86_64-linux.windows-aarch64"
 		["aarch64-macos"]="packages.x86_64-linux.macos-aarch64"
 	)
 	NATIVE_ATTRS=(
