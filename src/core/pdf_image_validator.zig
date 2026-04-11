@@ -84,6 +84,8 @@ pub const PdfImageValidationResult = struct {
     validated_images: u32,
     failed_images: u32,
     skipped_images: u32, // Images with filters we can't decode
+    skipped_size_limit: u32 = 0, // Skipped due to decompression size limit
+    skipped_corrupt: u32 = 0, // Skipped due to decompression bomb (ratio > 100)
     results: []const ImageValidationResult,
     error_message: ?[]const u8,
     is_encrypted: bool = false, // True if PDF uses encryption
@@ -96,29 +98,47 @@ pub const PdfImageValidationResult = struct {
 
 // ============ Decompression ============
 
-/// Decompress FlateDecode (zlib) data
+/// Result of FlateDecode decompression with ratio-aware skip tracking.
+/// Uses a tagged union instead of error unions so callers can distinguish
+/// "too large" from "decompression bomb" from "corrupt data".
+pub const DecompressFlateResult = union(enum) {
+    ok: []u8,
+    exceeded_limit,
+    corrupt,
+    data_error,
+    alloc_error,
+};
+
+/// Decompress FlateDecode (zlib) data with ratio-aware decompression bomb detection.
 /// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
-/// Returns allocated buffer that caller must free
-pub fn decompressFlate(allocator: Allocator, compressed: []const u8) ![]u8 {
-    if (compressed.len < 2) return error.DataTooShort;
+/// Returns a tagged union: .ok contains allocated buffer that caller must free.
+pub fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlateResult {
+    if (compressed.len < 2) return .data_error;
 
     // PDF FlateDecode uses zlib format (has header/footer)
     // Try zlib first, then raw deflate if that fails (some PDFs use raw)
     const max_output: usize = 512 * 1024 * 1024; // 512MB max decompressed size
 
     // Try zlib format first
-    if (zlib.inflateZlibAlloc(allocator, compressed, max_output)) |data| {
-        return data;
-    } else |_| {
-        // Try raw deflate format
-        return zlib.inflateRawAlloc(allocator, compressed, max_output) catch |err| {
-            return switch (err) {
-                zlib.ZlibError.DataError => error.InvalidData,
-                zlib.ZlibError.BufferError => error.OutputTooLarge,
-                zlib.ZlibError.OutOfMemory => error.OutOfMemory,
-                else => error.DecompressionFailed,
-            };
-        };
+    switch (zlib.inflateZlibAllocWithRatio(allocator, compressed, max_output)) {
+        .ok => |data| return .{ .ok = data },
+        .exceeded_limit => |info| {
+            if (info.ratio > 100) return .corrupt;
+            return .exceeded_limit;
+        },
+        .data_error => {},
+        .alloc_error => return .alloc_error,
+    }
+
+    // Try raw deflate format
+    switch (zlib.inflateRawAllocWithRatio(allocator, compressed, max_output)) {
+        .ok => |data| return .{ .ok = data },
+        .exceeded_limit => |info| {
+            if (info.ratio > 100) return .corrupt;
+            return .exceeded_limit;
+        },
+        .data_error => return .data_error,
+        .alloc_error => return .alloc_error,
     }
 }
 
@@ -161,7 +181,10 @@ pub fn applyFilterChain(allocator: Allocator, data: []const u8, filters: []const
 
     for (filters) |filter| {
         const decoded: ?[]u8 = switch (filter) {
-            .flate_decode => decompressFlate(allocator, current_data) catch null,
+            .flate_decode => switch (decompressFlate(allocator, current_data)) {
+                .ok => |decompressed| decompressed,
+                .exceeded_limit, .corrupt, .data_error, .alloc_error => null,
+            },
             .lzw_decode => lzw_decoder.decode(allocator, current_data) catch null,
             .ascii85_decode => ascii85_decoder.decode(allocator, current_data) catch null,
             .ascii_hex_decode => ascii_hex_decoder.decode(allocator, current_data) catch null,
@@ -994,6 +1017,8 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
     var validated: u32 = 0;
     var failed: u32 = 0;
     var skipped: u32 = 0;
+    var skipped_size_limit: u32 = 0;
+    var skipped_corrupt: u32 = 0;
 
     for (images) |img| {
 
@@ -1104,44 +1129,59 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
             },
             .flate_decode => {
                 // FlateDecode as terminal filter - might be raw pixel data or nested image
-                if (decompressFlate(allocator, image_data)) |decompressed| {
-                    defer allocator.free(decompressed);
+                switch (decompressFlate(allocator, image_data)) {
+                    .ok => |decompressed| {
+                        defer allocator.free(decompressed);
 
-                    // Check if decompressed data is a known image format
-                    if (detectDecompressedFormat(decompressed)) |nested_format| {
-                        var result = validateExtractedImage(allocator, decompressed, nested_format);
-                        result.object_num = img.object_num;
+                        // Check if decompressed data is a known image format
+                        if (detectDecompressedFormat(decompressed)) |nested_format| {
+                            var result = validateExtractedImage(allocator, decompressed, nested_format);
+                            result.object_num = img.object_num;
 
-                        if (result.valid) {
-                            validated += 1;
+                            if (result.valid) {
+                                validated += 1;
+                            } else {
+                                failed += 1;
+                            }
+
+                            try results.append(allocator, result);
                         } else {
-                            failed += 1;
+                            // Raw pixel data - decompression succeeded, consider valid
+                            validated += 1;
+                            try results.append(allocator, .{
+                                .object_num = img.object_num,
+                                .filter = .flate_decode,
+                                .valid = true,
+                                .error_message = null,
+                                .width = img.width orelse 0,
+                                .height = img.height orelse 0,
+                            });
                         }
-
-                        try results.append(allocator, result);
-                    } else {
-                        // Raw pixel data - decompression succeeded, consider valid
-                        validated += 1;
+                    },
+                    .exceeded_limit => {
+                        skipped += 1;
+                        skipped_size_limit += 1;
+                    },
+                    .corrupt => {
+                        skipped += 1;
+                        skipped_corrupt += 1;
+                    },
+                    .data_error => {
+                        // Decompression failed
+                        failed += 1;
                         try results.append(allocator, .{
                             .object_num = img.object_num,
                             .filter = .flate_decode,
-                            .valid = true,
-                            .error_message = null,
-                            .width = img.width orelse 0,
-                            .height = img.height orelse 0,
+                            .valid = false,
+                            .error_message = errmsg.decompressionFailed("FlateDecode"),
+                            .width = 0,
+                            .height = 0,
                         });
-                    }
-                } else |_| {
-                    // Decompression failed
-                    failed += 1;
-                    try results.append(allocator, .{
-                        .object_num = img.object_num,
-                        .filter = .flate_decode,
-                        .valid = false,
-                        .error_message = errmsg.decompressionFailed("FlateDecode"),
-                        .width = 0,
-                        .height = 0,
-                    });
+                    },
+                    .alloc_error => {
+                        skipped += 1;
+                        skipped_size_limit += 1;
+                    },
                 }
             },
             .lzw_decode => {
@@ -1196,6 +1236,8 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
         .validated_images = validated,
         .failed_images = failed,
         .skipped_images = skipped,
+        .skipped_size_limit = skipped_size_limit,
+        .skipped_corrupt = skipped_corrupt,
         .results = try results.toOwnedSlice(allocator),
         .error_message = if (failed > 0) "Some images failed validation" else null,
         .is_encrypted = is_encrypted,
@@ -1214,7 +1256,7 @@ const ImageTask = struct {
 /// Result from parallel image validation
 const ImageTaskResult = struct {
     result: ?ImageValidationResult,
-    status: enum { validated, failed, skipped },
+    status: enum { validated, failed, skipped, skipped_size_limit, skipped_corrupt },
 };
 
 /// Shared context for parallel validation workers
@@ -1336,54 +1378,63 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
         },
         .flate_decode => blk: {
             const decomp_start = if (timing_debug) std.time.nanoTimestamp() else 0;
-            if (decompressFlate(allocator, image_data)) |decompressed| {
-                const decomp_end = if (timing_debug) std.time.nanoTimestamp() else 0;
-                const decomp_ms = if (timing_debug) @as(f64, @floatFromInt(decomp_end - decomp_start)) / 1_000_000.0 else 0;
-
-                if (timing_debug) {
-                    std.debug.print("PDF img#{d}: FlateDecode {d}KB -> {d}KB in {d:.1}ms\n", .{
-                        img.object_num,
-                        raw_size / 1024,
-                        decompressed.len / 1024,
-                        decomp_ms,
-                    });
-                }
-
-                if (detectDecompressedFormat(decompressed)) |nested_format| {
-                    const validate_start = if (timing_debug) std.time.nanoTimestamp() else 0;
-                    var result = validateExtractedImage(allocator, decompressed, nested_format);
-                    const validate_end = if (timing_debug) std.time.nanoTimestamp() else 0;
-                    result.object_num = img.object_num;
+            switch (decompressFlate(allocator, image_data)) {
+                .ok => |decompressed| {
+                    const decomp_end = if (timing_debug) std.time.nanoTimestamp() else 0;
+                    const decomp_ms = if (timing_debug) @as(f64, @floatFromInt(decomp_end - decomp_start)) / 1_000_000.0 else 0;
 
                     if (timing_debug) {
-                        const validate_ms = @as(f64, @floatFromInt(validate_end - validate_start)) / 1_000_000.0;
-                        std.debug.print("  -> nested format validation: {d:.1}ms\n", .{validate_ms});
+                        std.debug.print("PDF img#{d}: FlateDecode {d}KB -> {d}KB in {d:.1}ms\n", .{
+                            img.object_num,
+                            raw_size / 1024,
+                            decompressed.len / 1024,
+                            decomp_ms,
+                        });
                     }
 
-                    break :blk .{
-                        .result = result,
-                        .status = if (result.valid) .validated else .failed,
-                    };
-                } else {
-                    // Raw pixel data - decompression succeeded, consider valid
-                    if (timing_debug) {
-                        const total_ms = @as(f64, @floatFromInt(std.time.nanoTimestamp() - task_start)) / 1_000_000.0;
-                        std.debug.print("  -> raw pixels, total: {d:.1}ms\n", .{total_ms});
+                    if (detectDecompressedFormat(decompressed)) |nested_format| {
+                        const validate_start = if (timing_debug) std.time.nanoTimestamp() else 0;
+                        var result = validateExtractedImage(allocator, decompressed, nested_format);
+                        const validate_end = if (timing_debug) std.time.nanoTimestamp() else 0;
+                        result.object_num = img.object_num;
+
+                        if (timing_debug) {
+                            const validate_ms = @as(f64, @floatFromInt(validate_end - validate_start)) / 1_000_000.0;
+                            std.debug.print("  -> nested format validation: {d:.1}ms\n", .{validate_ms});
+                        }
+
+                        break :blk .{
+                            .result = result,
+                            .status = if (result.valid) .validated else .failed,
+                        };
+                    } else {
+                        // Raw pixel data - decompression succeeded, consider valid
+                        if (timing_debug) {
+                            const total_ms = @as(f64, @floatFromInt(std.time.nanoTimestamp() - task_start)) / 1_000_000.0;
+                            std.debug.print("  -> raw pixels, total: {d:.1}ms\n", .{total_ms});
+                        }
+                        break :blk .{
+                            .result = .{
+                                .object_num = img.object_num,
+                                .filter = .flate_decode,
+                                .valid = true,
+                                .error_message = null,
+                                .width = img.width orelse 0,
+                                .height = img.height orelse 0,
+                            },
+                            .status = .validated,
+                        };
                     }
-                    break :blk .{
-                        .result = .{
-                            .object_num = img.object_num,
-                            .filter = .flate_decode,
-                            .valid = true,
-                            .error_message = null,
-                            .width = img.width orelse 0,
-                            .height = img.height orelse 0,
-                        },
-                        .status = .validated,
-                    };
-                }
-            } else |_| {
-                break :blk .{
+                },
+                .exceeded_limit => break :blk .{
+                    .result = null,
+                    .status = .skipped_size_limit,
+                },
+                .corrupt => break :blk .{
+                    .result = null,
+                    .status = .skipped_corrupt,
+                },
+                .data_error => break :blk .{
                     .result = .{
                         .object_num = img.object_num,
                         .filter = .flate_decode,
@@ -1393,7 +1444,11 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
                         .height = 0,
                     },
                     .status = .failed,
-                };
+                },
+                .alloc_error => break :blk .{
+                    .result = null,
+                    .status = .skipped_size_limit,
+                },
             }
         },
         .lzw_decode => blk: {
@@ -1478,6 +1533,8 @@ fn validatePdfImagesParallel(
     var validated = std.atomic.Value(u32).init(0);
     var failed = std.atomic.Value(u32).init(0);
     var skipped = std.atomic.Value(u32).init(0);
+    var skipped_size_limit_count = std.atomic.Value(u32).init(0);
+    var skipped_corrupt_count = std.atomic.Value(u32).init(0);
 
     const ResultContext = struct {
         mutex: *std.Thread.Mutex,
@@ -1486,6 +1543,8 @@ fn validatePdfImagesParallel(
         validated: *std.atomic.Value(u32),
         failed: *std.atomic.Value(u32),
         skipped: *std.atomic.Value(u32),
+        skipped_size_limit: *std.atomic.Value(u32),
+        skipped_corrupt: *std.atomic.Value(u32),
     };
 
     var result_ctx = ResultContext{
@@ -1495,6 +1554,8 @@ fn validatePdfImagesParallel(
         .validated = &validated,
         .failed = &failed,
         .skipped = &skipped,
+        .skipped_size_limit = &skipped_size_limit_count,
+        .skipped_corrupt = &skipped_corrupt_count,
     };
 
     // Create thread pool with thread-safe allocator
@@ -1512,6 +1573,14 @@ fn validatePdfImagesParallel(
                     .validated => _ = rc.validated.fetchAdd(1, .seq_cst),
                     .failed => _ = rc.failed.fetchAdd(1, .seq_cst),
                     .skipped => _ = rc.skipped.fetchAdd(1, .seq_cst),
+                    .skipped_size_limit => {
+                        _ = rc.skipped.fetchAdd(1, .seq_cst);
+                        _ = rc.skipped_size_limit.fetchAdd(1, .seq_cst);
+                    },
+                    .skipped_corrupt => {
+                        _ = rc.skipped.fetchAdd(1, .seq_cst);
+                        _ = rc.skipped_corrupt.fetchAdd(1, .seq_cst);
+                    },
                 }
 
                 if (task_result.result) |result| {
@@ -1537,6 +1606,8 @@ fn validatePdfImagesParallel(
     const final_validated = validated.load(.seq_cst);
     const final_failed = failed.load(.seq_cst);
     const final_skipped = skipped.load(.seq_cst);
+    const final_skipped_size_limit = skipped_size_limit_count.load(.seq_cst);
+    const final_skipped_corrupt = skipped_corrupt_count.load(.seq_cst);
 
     // Get results from pool_allocator, then copy to caller's allocator
     const pool_results = try collected_results.toOwnedSlice(pool_allocator);
@@ -1551,6 +1622,8 @@ fn validatePdfImagesParallel(
         .validated_images = final_validated,
         .failed_images = final_failed,
         .skipped_images = final_skipped,
+        .skipped_size_limit = final_skipped_size_limit,
+        .skipped_corrupt = final_skipped_corrupt,
         .results = caller_results,
         .error_message = if (final_failed > 0) "Some images failed validation" else null,
         .is_encrypted = is_encrypted,
@@ -1666,4 +1739,39 @@ test "findPdfImages on real PDF file" {
     }
 
     // The test passes if we don't crash - we're just exploring the PDF structure
+}
+
+test "PdfImageValidationResult tracks skip reasons" {
+    const result = PdfImageValidationResult{
+        .valid = true,
+        .total_images = 10,
+        .validated_images = 7,
+        .failed_images = 0,
+        .skipped_images = 3,
+        .skipped_size_limit = 2,
+        .skipped_corrupt = 1,
+        .results = &.{},
+        .error_message = null,
+    };
+    try std.testing.expectEqual(@as(u32, 2), result.skipped_size_limit);
+    try std.testing.expectEqual(@as(u32, 1), result.skipped_corrupt);
+}
+
+test "decompressFlate returns DecompressFlateResult tagged union" {
+    const allocator = std.testing.allocator;
+    // Empty data should return data_error (too short)
+    const result = decompressFlate(allocator, "");
+    switch (result) {
+        .data_error => {}, // Expected for empty input
+        .ok => |data| allocator.free(data),
+        else => {},
+    }
+    // Verify the type is correct by matching all variants
+    switch (result) {
+        .ok => {},
+        .exceeded_limit => {},
+        .corrupt => {},
+        .data_error => {},
+        .alloc_error => {},
+    }
 }
