@@ -19,6 +19,13 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 ### Self-Extracting Archive Detection
 - [x] Detect shell script + binary payload pattern in validatePlainText — shebang + >=5 non-blank lines + binary-to-EOF = WARN (2026-04-10 ~22:00 EST)
 
+### Decompression Honesty: Ratio-Based Corruption Detection + Depth Downgrade
+- [x] DecompressResult tagged union in zlib.zig with ratio-aware inflate variants (2026-04-11 ~21:30 EST)
+- [x] PDF font validator: ratio-aware decompression, skip reason tracking (2026-04-11 ~21:40 EST)
+- [x] PDF image validator: ratio-aware decompression, skip reason tracking (2026-04-11 ~21:40 EST)
+- [x] PDF embedded file validator: ratio-aware decompression, skip reason tracking (2026-04-11 ~21:40 EST)
+- [x] PDF deep validation: downgrade depth to structural when streams exceed size limit (2026-04-11 ~22:00 EST)
+
 ### Kaitai Struct-Guided New Format Wave
 Use .ksy specs as reference docs when writing validators for these high-value formats:
 - [x] java_class — Java .class bytecode (2026-04-02 ~01:30 EST)

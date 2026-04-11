@@ -83,6 +83,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/mp3_decode_validator.zig` | MP3 frame decoder (file and buffer-based) with Huffman + IMDCT validation |
 | `src/core/error_messages.zig` | 25 comptime error message template functions (failedToRead, truncated, invalidSignature, etc.) replacing ~2076 string literals |
 | `src/core/text_format_validators.zig` | Text format validation (JSON, CSV, TOML, INI, XML, RTF, HTML, KML, plain text, Unicode); self-extracting archive detection (shebang + >=5 lines + binary payload → WARN) |
+| `src/core/zlib.zig` | Bundled zlib wrapper; `DecompressResult` tagged union with ratio-aware `inflateZlibAllocWithRatio`/`inflateRawAllocWithRatio` — distinguishes ok/exceeded_limit(+ratio)/data_error/alloc_error |
 | `src/core/scientific_validators.zig` | Scientific format validation (FITS, DICOM, NetCDF, FASTA, FASTQ) with honest depth reporting |
 | `src/core/music_validators.zig` | Audio format validation (WAV, FLAC, MP3, OGG, AIFF, WavPack, APE, DSD, AC3, EAC3, MIDI, Tracker); WAV/AIFF float PCM deep validation with IEEE 754 NaN/Inf corruption detection |
 | `src/core/flac_decoder.zig` | FLAC audio decoder with MD5 verification + per-frame CRC-8 (header, poly 0x07) and CRC-16 (frame, poly 0x8005) integrity checks |
