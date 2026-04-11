@@ -1782,6 +1782,108 @@ pub fn validateKmzDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 // ============ Plain Text Validators ============
 
+/// Detect self-extracting archive: shebang on line 1, >= 5 non-blank text lines,
+/// then binary data running to EOF. Returns true if the pattern matches.
+/// "Text byte" = 0x09 (tab), 0x0A (LF), 0x0D (CR), or 0x20..0x7E (printable ASCII).
+fn detectSelfExtractingArchive(file: *FileSource) bool {
+    file.seekTo(0) catch return false;
+
+    // Read enough to cover any reasonable script prefix (64KB)
+    var buf: [64 * 1024]u8 = undefined;
+    const n = file.read(&buf) catch return false;
+    if (n < 4) return false; // Too small for "#!" + newline + anything
+    const data = buf[0..n];
+
+    // 1. First line must be a shebang
+    if (data[0] != '#' or data[1] != '!') return false;
+
+    // Find end of first line
+    const first_nl = std.mem.indexOfScalar(u8, data, '\n') orelse return false;
+
+    // Verify shebang references a shell interpreter
+    const shebang_line = data[0..first_nl];
+    const is_shell = std.mem.indexOf(u8, shebang_line, "/bin/sh") != null or
+        std.mem.indexOf(u8, shebang_line, "/bin/bash") != null or
+        std.mem.indexOf(u8, shebang_line, "/bin/zsh") != null or
+        std.mem.indexOf(u8, shebang_line, "/bin/dash") != null or
+        std.mem.indexOf(u8, shebang_line, "env sh") != null or
+        std.mem.indexOf(u8, shebang_line, "env bash") != null or
+        std.mem.indexOf(u8, shebang_line, "env zsh") != null or
+        std.mem.indexOf(u8, shebang_line, "env dash") != null;
+    if (!is_shell) return false;
+
+    // 2. Scan forward for first non-text byte
+    var first_binary: ?usize = null;
+    for (data, 0..) |b, i| {
+        if (!isTextByte(b)) {
+            first_binary = i;
+            break;
+        }
+    }
+
+    // No binary data found in first 64KB — might still be a self-extractor
+    // with a very long script prefix, but we need binary data to confirm
+    if (first_binary == null) {
+        // Check if the file is larger than what we read (binary beyond 64KB)
+        const file_size = file.getEndPos() catch return false;
+        if (file_size <= n) return false; // Entire file is text — not a self-extractor
+        // Binary data exists beyond our buffer. The script prefix is all text
+        // and >= 64KB. Count lines in what we have.
+        var non_blank_lines: usize = 0;
+        var line_start: usize = 0;
+        for (data, 0..) |b, i| {
+            if (b == '\n') {
+                const line = data[line_start..i];
+                const trimmed = std.mem.trim(u8, line, " \t\r");
+                if (trimmed.len > 0) non_blank_lines += 1;
+                line_start = i + 1;
+            }
+        }
+        return non_blank_lines >= 5;
+    }
+
+    const binary_pos = first_binary.?;
+
+    // 3. Walk backwards to preceding newline — that's the seam
+    var seam: usize = binary_pos;
+    while (seam > 0 and data[seam - 1] != '\n') {
+        seam -= 1;
+    }
+    // seam is now the start of the line containing the first binary byte
+    // The script prefix is data[0..seam]
+
+    if (seam == 0) return false; // Binary on first line — not a script
+
+    // 4. Count non-blank lines in script prefix
+    var non_blank_lines: usize = 0;
+    var line_start: usize = 0;
+    for (data[0..seam], 0..) |b, i| {
+        if (b == '\n') {
+            const line = data[line_start..i];
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len > 0) non_blank_lines += 1;
+            line_start = i + 1;
+        }
+    }
+    // Handle last line without trailing newline
+    if (line_start < seam) {
+        const line = data[line_start..seam];
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len > 0) non_blank_lines += 1;
+    }
+
+    return non_blank_lines >= 5;
+}
+
+/// Returns true for bytes that are valid in a text/shell script context.
+fn isTextByte(b: u8) bool {
+    return switch (b) {
+        0x09, 0x0A, 0x0D => true, // tab, LF, CR
+        0x20...0x7E => true, // printable ASCII
+        else => false,
+    };
+}
+
 /// Validate plain text file as UTF-8 using streaming validation.
 /// Reads file in chunks and validates UTF-8 encoding throughout.
 /// This allows validating arbitrarily large text files without loading them entirely into memory.
@@ -1823,6 +1925,10 @@ pub fn validatePlainText(allocator: ?Allocator, file: *FileSource) ValidationRes
         if (bytes_read == 0) {
             // End of file - check for incomplete sequence
             if (pending_count > 0) {
+                // Check for self-extracting archive before falling back to Latin-1
+                if (detectSelfExtractingArchive(file)) {
+                    return ValidationResult.okWithDepthAndWarning(.plain_text, .structural, "self-extracting archive (shell script with embedded binary payload)");
+                }
                 // Invalid UTF-8, try Latin-1 fallback
                 file.seekTo(0) catch {
                     return ValidationResult.invalidCode(.plain_text, .failed_to_seek, "for Latin-1 check");
@@ -1891,6 +1997,10 @@ pub fn validatePlainText(allocator: ?Allocator, file: *FileSource) ValidationRes
         if (validate_end > data_start) {
             const utf8_result = validateUtf8(buffer[data_start..validate_end]);
             if (!utf8_result.isValid()) {
+                // Check for self-extracting archive before falling back to Latin-1
+                if (detectSelfExtractingArchive(file)) {
+                    return ValidationResult.okWithDepthAndWarning(.plain_text, .structural, "self-extracting archive (shell script with embedded binary payload)");
+                }
                 // Invalid UTF-8, try Latin-1 fallback
                 file.seekTo(0) catch {
                     return ValidationResult.invalidCode(.plain_text, .failed_to_seek, "for Latin-1 check");
@@ -3608,5 +3718,103 @@ test "UTF-16 LE INI detection" {
     const format = format_validation.detectTextFormat(&utf16_ini);
     try std.testing.expect(format != null);
     try std.testing.expectEqual(FileFormat.ini, format.?);
+}
+
+test "validatePlainText: self-extracting shell script returns WARN, not FAIL" {
+    // Synthetic self-extracting archive: shebang + 6 non-blank script lines + binary payload
+    const script_prefix =
+        "#!/bin/bash\n" ++
+        "# Self-extracting installer\n" ++
+        "ARCHIVE_OFFSET=$(awk '/^__ARCHIVE__/{print NR + 1; exit 0;}' \"$0\")\n" ++
+        "TMPDIR=$(mktemp -d)\n" ++
+        "tail -n +$ARCHIVE_OFFSET \"$0\" | tar xz -C \"$TMPDIR\"\n" ++
+        "\"$TMPDIR/install.sh\"\n" ++
+        "exit 0\n" ++
+        "__ARCHIVE__\n";
+    // Binary payload: gzip magic + random binary data (NOT valid UTF-8)
+    const binary_payload = [_]u8{
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // gzip header
+        0x02, 0x03, 0xED, 0x93, 0x4F, 0x6F, 0xD3, 0x40, // binary data
+        0x10, 0xC5, 0xEF, 0x48, 0xFC, 0x87, 0xD1, 0x9E, // more binary
+        0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x80, // high bytes
+        0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, // control chars
+    };
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Write the synthetic self-extractor
+    const file = try tmp.dir.createFile("installer.sh", .{});
+    try file.writeAll(script_prefix);
+    try file.writeAll(&binary_payload);
+    file.close();
+
+    // Open and validate as plain text
+    const opened = try tmp.dir.openFile("installer.sh", .{});
+    defer opened.close();
+    var source = FileSource.fromFile(opened);
+    const result = validatePlainText(std.testing.allocator, &source);
+
+    // Should be valid (is_valid = true) with a warning about self-extracting archive
+    try std.testing.expect(result.is_valid);
+    try std.testing.expect(result.warning_message != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.warning_message.?, "self-extracting") != null);
+}
+
+test "validatePlainText: script with <5 non-blank lines + binary is NOT self-extractor" {
+    // Only 3 non-blank lines before binary — too short to be a real self-extractor
+    const script_prefix =
+        "#!/bin/sh\n" ++
+        "echo hello\n" ++
+        "\n" ++
+        "exit 0\n";
+    const binary_payload = [_]u8{ 0x80, 0x81, 0x82, 0xFF, 0xFE, 0xFD, 0x00, 0x01 };
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("short.sh", .{});
+    try file.writeAll(script_prefix);
+    try file.writeAll(&binary_payload);
+    file.close();
+
+    const opened = try tmp.dir.openFile("short.sh", .{});
+    defer opened.close();
+    var source = FileSource.fromFile(opened);
+    const result = validatePlainText(std.testing.allocator, &source);
+
+    // Should NOT be detected as self-extractor (too few lines)
+    // It will fail as invalid plain text or fall through to Latin-1
+    try std.testing.expect(!result.is_valid or result.warning_message == null or
+        std.mem.indexOf(u8, result.warning_message.?, "self-extracting") == null);
+}
+
+test "validatePlainText: file without shebang + binary is NOT self-extractor" {
+    // No shebang — just text then binary
+    const text_prefix =
+        "This is just a text file\n" ++
+        "with some lines\n" ++
+        "nothing special\n" ++
+        "no shebang here\n" ++
+        "just plain text\n" ++
+        "and more text\n";
+    const binary_payload = [_]u8{ 0x80, 0x81, 0x82, 0xFF, 0xFE, 0xFD, 0x00, 0x01 };
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const file = try tmp.dir.createFile("notscript.txt", .{});
+    try file.writeAll(text_prefix);
+    try file.writeAll(&binary_payload);
+    file.close();
+
+    const opened = try tmp.dir.openFile("notscript.txt", .{});
+    defer opened.close();
+    var source = FileSource.fromFile(opened);
+    const result = validatePlainText(std.testing.allocator, &source);
+
+    // Should NOT be self-extractor (no shebang)
+    try std.testing.expect(!result.is_valid or result.warning_message == null or
+        std.mem.indexOf(u8, result.warning_message.?, "self-extracting") == null);
 }
 
