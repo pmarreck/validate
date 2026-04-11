@@ -37,6 +37,8 @@ pub const FontValidationSummary = struct {
 	total_fonts: u32,
 	validated: u32,
 	skipped: u32,
+	skipped_size_limit: u32 = 0, // Streams exceeding decompression size limit
+	skipped_corrupt: u32 = 0, // Streams with suspicious compression ratio (>100:1)
 	failed: u32,
 	valid: bool,
 	error_message: ?[]const u8,
@@ -409,6 +411,8 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
 
     var validated: u32 = 0;
     var skipped: u32 = 0;
+    var skipped_size_limit: u32 = 0;
+    var skipped_corrupt: u32 = 0;
     var failed: u32 = 0;
     var first_error: ?[]const u8 = null;
 
@@ -421,8 +425,35 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
 
         const font_data = blk: {
             if (fnt.filter) |filter| {
-                const decoded = switch (filter) {
-                    .flate_decode => decompressFlate(allocator, stream_data),
+                // Handle FlateDecode separately (returns DecompressFlateResult)
+                if (filter == .flate_decode) {
+                    switch (decompressFlate(allocator, stream_data)) {
+                        .ok => |d| {
+                            decompressed_data = d;
+                            break :blk d;
+                        },
+                        .exceeded_limit => {
+                            skipped += 1;
+                            skipped_size_limit += 1;
+                            continue;
+                        },
+                        .corrupt => {
+                            failed += 1;
+                            skipped_corrupt += 1;
+                            if (first_error == null) {
+                                first_error = "FlateDecode decompression bomb (ratio >100:1)";
+                            }
+                            continue;
+                        },
+                        .data_error, .alloc_error => {
+                            skipped += 1;
+                            continue;
+                        },
+                    }
+                }
+
+                // Other decoders return ?[]u8
+                const decoded: ?[]u8 = switch (filter) {
                     .ascii_hex_decode => ascii_hex_decoder.decode(allocator, stream_data) catch null,
                     .ascii85_decode => ascii85_decoder.decode(allocator, stream_data) catch null,
                     .lzw_decode => lzw_decoder.decode(allocator, stream_data) catch null,
@@ -467,22 +498,52 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
     // and many legitimate PDFs have fonts that don't pass strict validation.
     // The PDF structure validation is what matters for integrity.
     if (failed > 0) {
-        return FontValidationSummary.withWarnings(@intCast(fonts.len), validated, skipped, failed, first_error);
+        var summary = FontValidationSummary.withWarnings(@intCast(fonts.len), validated, skipped, failed, first_error);
+        summary.skipped_size_limit = skipped_size_limit;
+        summary.skipped_corrupt = skipped_corrupt;
+        return summary;
     }
 
-    return FontValidationSummary.ok(@intCast(fonts.len), validated, skipped);
+    var summary = FontValidationSummary.ok(@intCast(fonts.len), validated, skipped);
+    summary.skipped_size_limit = skipped_size_limit;
+    summary.skipped_corrupt = skipped_corrupt;
+    return summary;
 }
 
-/// Decompress FlateDecode data.
+/// Tagged result for FlateDecode decompression, distinguishing size limits from corruption.
+const DecompressFlateResult = union(enum) {
+    ok: []u8,
+    exceeded_limit,
+    corrupt,
+    data_error,
+    alloc_error,
+};
+
+/// Decompress FlateDecode data with ratio-aware bomb detection.
 /// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
-fn decompressFlate(allocator: Allocator, compressed: []const u8) ?[]u8 {
+fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlateResult {
     const max_output: usize = 64 * 1024 * 1024; // 64MB max for fonts
 
-    // Try zlib format first, then raw deflate
-    if (zlib.inflateZlibAlloc(allocator, compressed, max_output)) |data| {
-        return data;
-    } else |_| {
-        return zlib.inflateRawAlloc(allocator, compressed, max_output) catch null;
+    // Try zlib format first
+    switch (zlib.inflateZlibAllocWithRatio(allocator, compressed, max_output)) {
+        .ok => |data| return .{ .ok = data },
+        .exceeded_limit => |info| {
+            if (info.ratio > 100) return .corrupt;
+            return .exceeded_limit;
+        },
+        .data_error => {}, // Fall through to raw deflate
+        .alloc_error => return .alloc_error,
+    }
+
+    // Try raw deflate
+    switch (zlib.inflateRawAllocWithRatio(allocator, compressed, max_output)) {
+        .ok => |data| return .{ .ok = data },
+        .exceeded_limit => |info| {
+            if (info.ratio > 100) return .corrupt;
+            return .exceeded_limit;
+        },
+        .data_error => return .data_error,
+        .alloc_error => return .alloc_error,
     }
 }
 
@@ -523,4 +584,23 @@ test "empty PDF has no fonts" {
     const result = validatePdfFonts(allocator, "");
     try std.testing.expect(result.valid);
     try std.testing.expectEqual(@as(u32, 0), result.total_fonts);
+}
+
+test "FontValidationSummary tracks skip reasons" {
+    const summary = FontValidationSummary{
+        .total_fonts = 5,
+        .validated = 2,
+        .skipped = 3,
+        .skipped_size_limit = 1,
+        .skipped_corrupt = 1,
+        .failed = 0,
+        .valid = true,
+        .error_message = null,
+    };
+    try std.testing.expectEqual(@as(u32, 1), summary.skipped_size_limit);
+    try std.testing.expectEqual(@as(u32, 1), summary.skipped_corrupt);
+    // Verify defaults are zero when not specified
+    const summary2 = FontValidationSummary.ok(3, 2, 1);
+    try std.testing.expectEqual(@as(u32, 0), summary2.skipped_size_limit);
+    try std.testing.expectEqual(@as(u32, 0), summary2.skipped_corrupt);
 }
