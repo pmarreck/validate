@@ -472,7 +472,10 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 		return ValidationResult.okWithDepth(.pdf, .full);
 	}
 
-	const pdf_data = allocator.alloc(u8, @intCast(file_size)) catch {
+	const safe_size = std.math.cast(usize, file_size) orelse {
+		return ValidationResult.okWithDepth(.pdf, .full);
+	};
+	const pdf_data = allocator.alloc(u8, safe_size) catch {
 		return ValidationResult.okWithDepth(.pdf, .full);
 	};
 	defer allocator.free(pdf_data);
@@ -646,7 +649,9 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	}
 
 	// Check for xref or xref stream at that position
-	var xref_start: usize = @intCast(xref_offset);
+	var xref_start: usize = std.math.cast(usize, xref_offset) orelse {
+		return ValidationResult.invalidCodeWithDepth(.pdf, .invalid_value, "startxref offset out of range", .full);
+	};
 	while (xref_start < pdf_data.len and (pdf_data[xref_start] == '\n' or pdf_data[xref_start] == '\r' or
 		pdf_data[xref_start] == ' ' or pdf_data[xref_start] == '\t'))
 	{

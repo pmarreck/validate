@@ -655,7 +655,7 @@ pub fn parseXrefTable(allocator: Allocator, data: []const u8) ?XrefTable {
 
     while (current_offset) |off| {
         if (off >= data.len) break;
-        const offset: usize = @intCast(off);
+        const offset: usize = std.math.cast(usize, off) orelse break;
 
         // Determine if traditional xref or xref stream
         var check_pos = offset;
@@ -701,7 +701,7 @@ pub fn parseXrefTable(allocator: Allocator, data: []const u8) ?XrefTable {
 /// Extract object body bytes (between "N G obj" and "endobj") given an xref offset.
 pub fn getObjectBody(data: []const u8, offset: u64) ?[]const u8 {
     if (offset >= data.len) return null;
-    var i: usize = @intCast(offset);
+    var i: usize = std.math.cast(usize, offset) orelse return null;
 
     // Parse "N G obj"
     _ = parseUint(data, i) orelse return null;
@@ -738,7 +738,7 @@ pub fn getObjectBody(data: []const u8, offset: u64) ?[]const u8 {
 /// Returns both the object body and the stream data.
 pub fn getObjectStream(data: []const u8, offset: u64) ?struct { body: []const u8, stream: []const u8 } {
     if (offset >= data.len) return null;
-    var i: usize = @intCast(offset);
+    var i: usize = std.math.cast(usize, offset) orelse return null;
 
     // Parse "N G obj"
     _ = parseUint(data, i) orelse return null;
@@ -1227,4 +1227,86 @@ test "xref path finds same images as linear scan" {
             try std.testing.expect(found);
         }
     }
+}
+
+// ===========================================================================
+// Overflow-safety tests: malformed PDFs with out-of-range parsed values
+// must return null/error instead of panicking via @intCast overflow.
+// ===========================================================================
+
+test "parseTrailerDict rejects /Size exceeding u32 max" {
+    // /Size value of 5000000000 exceeds u32 max (4294967295)
+    const data = "<< /Size 5000000000 /Root 1 0 R >>";
+    const info = parseTrailerDict(data, 0);
+    // Should return null because /Size overflows u32
+    try std.testing.expect(info == null);
+}
+
+test "parseXrefTable returns null for startxref pointing beyond data" {
+    // startxref points to offset 999999 which is far beyond the data
+    const data =
+        "%PDF-1.4\n" ++
+        "xref\n" ++
+        "0 1\n" ++
+        "0000000000 65535 f \n" ++
+        "trailer\n" ++
+        "<< /Size 1 >>\n" ++
+        "startxref\n999999\n%%EOF";
+    const table = parseXrefTable(std.testing.allocator, data);
+    // Should return null — the offset is beyond the data
+    try std.testing.expect(table == null);
+}
+
+test "getObjectBody returns null for offset at data boundary" {
+    const data = "1 0 obj\n<< >>\nendobj";
+    // Offset exactly at data.len — should return null, not panic
+    try std.testing.expect(getObjectBody(data, data.len) == null);
+    // Offset beyond data.len — should return null, not panic
+    try std.testing.expect(getObjectBody(data, data.len + 1) == null);
+    // Very large offset — should return null, not panic
+    try std.testing.expect(getObjectBody(data, std.math.maxInt(u64)) == null);
+}
+
+test "getObjectStream returns null for offset at data boundary" {
+    const data = "1 0 obj\n<< /Length 3 >>\nstream\nabc\nendstream\nendobj";
+    // Offset exactly at data.len — should return null, not panic
+    try std.testing.expect(getObjectStream(data, data.len) == null);
+    // Very large offset — should return null, not panic
+    try std.testing.expect(getObjectStream(data, std.math.maxInt(u64)) == null);
+}
+
+test "parseXrefTable handles xref stream with /Size exceeding u32 max" {
+    // Construct a minimal xref stream object with /Size > u32 max
+    // This should be rejected gracefully (return null), not panic
+    const data =
+        "1 0 obj\n" ++
+        "<< /Type /XRef /Size 5000000000 /W [1 2 1] /Root 1 0 R /Length 0 >>\n" ++
+        "stream\n" ++
+        "endstream\n" ++
+        "endobj\n" ++
+        "startxref\n0\n%%EOF";
+    const table = parseXrefTable(std.testing.allocator, data);
+    // Should return null because /Size overflows u32
+    try std.testing.expect(table == null);
+}
+
+test "parseTraditionalXref rejects object number exceeding u32 via large first_obj + count" {
+    // first_obj 4294967295 + obj_idx 1 = 4294967296 which overflows u32
+    const data =
+        "xref\n" ++
+        "4294967295 2\n" ++
+        "0000000000 65535 f \n" ++
+        "0000000017 00000 n \n" ++
+        "trailer\n" ++
+        "<< /Size 2 >>";
+
+    var table = XrefTable{
+        .entries = .{},
+        .trailer = .{ .size = 0, .root_obj = null, .prev_offset = null },
+    };
+    defer table.entries.deinit(std.testing.allocator);
+
+    const result = parseTraditionalXref(data, 0, &table, std.testing.allocator);
+    // The second entry (4294967295 + 1) overflows u32 via std.math.cast, returns null
+    try std.testing.expect(result == null);
 }
