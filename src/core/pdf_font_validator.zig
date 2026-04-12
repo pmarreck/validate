@@ -91,8 +91,12 @@ pub const FontValidationSummary = struct {
 /// Uses O(n) indexing pass + O(1) lookups instead of O(n²) linear scans.
 pub fn extractFontStreams(allocator: Allocator, pdf_data: []const u8) ![]PdfFontInfo {
     // First, collect all font object references (fast linear scan for /FontFile*)
+    // Deduplicate by object number — the same font can be referenced from multiple
+    // pages/descriptors, and we only need to validate it once.
     var font_refs: std.ArrayListUnmanaged(struct { obj_num: u32, font_type: PdfFontType }) = .{};
     defer font_refs.deinit(allocator);
+    var seen_obj_nums: std.AutoHashMapUnmanaged(u32, void) = .{};
+    defer seen_obj_nums.deinit(allocator);
 
     var pos: usize = 0;
     while (pos < pdf_data.len) {
@@ -103,7 +107,10 @@ pub fn extractFontStreams(allocator: Allocator, pdf_data: []const u8) ![]PdfFont
             const obj_ref_start = fontfile_pos + font_type_result.keyword_len;
             if (obj_ref_start < pdf_data.len) {
                 if (parseObjectReference(pdf_data, obj_ref_start)) |obj_num| {
-                    font_refs.append(allocator, .{ .obj_num = obj_num, .font_type = font_type }) catch return error.OutOfMemory;
+                    if (!seen_obj_nums.contains(obj_num)) {
+                        seen_obj_nums.put(allocator, obj_num, {}) catch return error.OutOfMemory;
+                        font_refs.append(allocator, .{ .obj_num = obj_num, .font_type = font_type }) catch return error.OutOfMemory;
+                    }
                 }
             }
         }
@@ -398,7 +405,26 @@ fn findObjectStream(data: []const u8, obj_num: u32) ?StreamInfo {
     };
 }
 
+/// Cached decompression result for a stream byte range, avoiding redundant inflate calls.
+const CachedDecompressResult = enum {
+    ok,
+    exceeded_limit,
+    corrupt,
+    data_error,
+    alloc_error,
+    decode_failed,
+};
+
+/// Key for the decompression cache: identifies a unique stream byte range.
+const StreamRange = struct {
+    start: usize,
+    end: usize,
+};
+
 /// Validate all embedded fonts in a PDF.
+/// Uses a decompression cache to avoid re-inflating the same stream data when
+/// multiple font references resolve to identical byte ranges (e.g., same font
+/// referenced from multiple pages).
 pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidationSummary {
     const fonts = extractFontStreams(allocator, pdf_data) catch {
         return FontValidationSummary.invalid(0, 0, 0, "Failed to extract font streams");
@@ -407,6 +433,21 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
 
     if (fonts.len == 0) {
         return FontValidationSummary.ok(0, 0, 0);
+    }
+
+    // Decompression cache: keyed by (stream_start, stream_end) byte range.
+    // Stores the decompressed data and the result status so we can replay
+    // skip/fail decisions without re-decompressing.
+    var decompress_cache = std.AutoHashMapUnmanaged(StreamRange, struct {
+        data: ?[]u8,
+        status: CachedDecompressResult,
+    }){};
+    defer {
+        var cache_iter = decompress_cache.valueIterator();
+        while (cache_iter.next()) |entry| {
+            if (entry.data) |d| allocator.free(d);
+        }
+        decompress_cache.deinit(allocator);
     }
 
     var validated: u32 = 0;
@@ -418,20 +459,15 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
 
     for (fonts) |fnt| {
         const stream_data = pdf_data[fnt.stream_start..fnt.stream_end];
+        const range_key = StreamRange{ .start = fnt.stream_start, .end = fnt.stream_end };
 
-        // Decompress if needed
-        var decompressed_data: ?[]u8 = null;
-        defer if (decompressed_data) |d| allocator.free(d);
-
+        // Check decompression cache first
         const font_data = blk: {
             if (fnt.filter) |filter| {
-                // Handle FlateDecode separately (returns DecompressFlateResult)
-                if (filter == .flate_decode) {
-                    switch (decompressFlate(allocator, stream_data)) {
-                        .ok => |d| {
-                            decompressed_data = d;
-                            break :blk d;
-                        },
+                // Look up cache for this byte range
+                if (decompress_cache.get(range_key)) |cached| {
+                    switch (cached.status) {
+                        .ok => break :blk cached.data.?,
                         .exceeded_limit => {
                             skipped += 1;
                             skipped_size_limit += 1;
@@ -445,7 +481,42 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
                             }
                             continue;
                         },
-                        .data_error, .alloc_error => {
+                        .data_error, .alloc_error, .decode_failed => {
+                            skipped += 1;
+                            continue;
+                        },
+                    }
+                }
+
+                // Cache miss — decompress and store result
+                if (filter == .flate_decode) {
+                    switch (decompressFlate(allocator, stream_data)) {
+                        .ok => |d| {
+                            decompress_cache.put(allocator, range_key, .{ .data = d, .status = .ok }) catch {};
+                            break :blk d;
+                        },
+                        .exceeded_limit => {
+                            decompress_cache.put(allocator, range_key, .{ .data = null, .status = .exceeded_limit }) catch {};
+                            skipped += 1;
+                            skipped_size_limit += 1;
+                            continue;
+                        },
+                        .corrupt => {
+                            decompress_cache.put(allocator, range_key, .{ .data = null, .status = .corrupt }) catch {};
+                            failed += 1;
+                            skipped_corrupt += 1;
+                            if (first_error == null) {
+                                first_error = "FlateDecode decompression bomb (ratio >100:1)";
+                            }
+                            continue;
+                        },
+                        .data_error => {
+                            decompress_cache.put(allocator, range_key, .{ .data = null, .status = .data_error }) catch {};
+                            skipped += 1;
+                            continue;
+                        },
+                        .alloc_error => {
+                            decompress_cache.put(allocator, range_key, .{ .data = null, .status = .alloc_error }) catch {};
                             skipped += 1;
                             continue;
                         },
@@ -461,9 +532,10 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
                     else => null,
                 };
                 if (decoded) |d| {
-                    decompressed_data = d;
+                    decompress_cache.put(allocator, range_key, .{ .data = d, .status = .ok }) catch {};
                     break :blk d;
                 } else {
+                    decompress_cache.put(allocator, range_key, .{ .data = null, .status = .decode_failed }) catch {};
                     skipped += 1;
                     continue;
                 }
@@ -603,4 +675,54 @@ test "FontValidationSummary tracks skip reasons" {
     const summary2 = FontValidationSummary.ok(3, 2, 1);
     try std.testing.expectEqual(@as(u32, 0), summary2.skipped_size_limit);
     try std.testing.expectEqual(@as(u32, 0), summary2.skipped_corrupt);
+}
+
+test "extractFontStreams deduplicates by object number" {
+    const allocator = std.testing.allocator;
+
+    // PDF-like data with the same font object (42) referenced three times
+    // from different font descriptors
+    const pdf_data =
+        "1 0 obj\n<< /Type /FontDescriptor /FontFile2 42 0 R >>\nendobj\n" ++
+        "2 0 obj\n<< /Type /FontDescriptor /FontFile2 42 0 R >>\nendobj\n" ++
+        "3 0 obj\n<< /Type /FontDescriptor /FontFile2 42 0 R >>\nendobj\n" ++
+        "42 0 obj\n<< /Length 4 >>\nstream\nABCD\nendstream\nendobj\n";
+
+    const fonts = try extractFontStreams(allocator, pdf_data);
+    defer allocator.free(fonts);
+
+    // Should be deduplicated to a single entry, not three
+    try std.testing.expectEqual(@as(usize, 1), fonts.len);
+    try std.testing.expectEqual(@as(u32, 42), fonts[0].object_num);
+}
+
+test "extractFontStreams keeps distinct objects" {
+    const allocator = std.testing.allocator;
+
+    // PDF-like data with two different font objects
+    const pdf_data =
+        "1 0 obj\n<< /Type /FontDescriptor /FontFile2 42 0 R >>\nendobj\n" ++
+        "2 0 obj\n<< /Type /FontDescriptor /FontFile2 43 0 R >>\nendobj\n" ++
+        "42 0 obj\n<< /Length 4 >>\nstream\nABCD\nendstream\nendobj\n" ++
+        "43 0 obj\n<< /Length 4 >>\nstream\nEFGH\nendstream\nendobj\n";
+
+    const fonts = try extractFontStreams(allocator, pdf_data);
+    defer allocator.free(fonts);
+
+    // Both distinct font objects should be present
+    try std.testing.expectEqual(@as(usize, 2), fonts.len);
+}
+
+test "StreamRange cache key equality" {
+    // Verify the cache key type works correctly with AutoHashMap
+    const a = StreamRange{ .start = 100, .end = 200 };
+    const b = StreamRange{ .start = 100, .end = 200 };
+    const c = StreamRange{ .start = 100, .end = 300 };
+
+    // AutoHashMap uses @hasDecl for eql/hash, but for packed structs
+    // it falls back to byte-level comparison which works for our case.
+    const ctx = std.hash_map.AutoContext(StreamRange){};
+    try std.testing.expect(ctx.eql(a, b));
+    try std.testing.expect(!ctx.eql(a, c));
+    try std.testing.expectEqual(ctx.hash(a), ctx.hash(b));
 }
