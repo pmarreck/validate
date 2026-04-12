@@ -108,6 +108,17 @@ Use .ksy specs as reference docs when writing validators for these high-value fo
 - [x] Ground truth samples (synthetic, flagged for future real-world replacement) (completed 2026-03-12 EST)
 - [x] Wire up detection, dispatch, FFI, i18n, corruption_opacity (completed 2026-03-12 EST)
 
+### PDF Deep Validation Improvements (from docscan findings, 2026-04-11)
+- [x] Fix octal escape overflow in pdf_decryptor.zig — widen u8 to u16 (2026-04-11 ~22:50 EST)
+- [x] Replace unchecked @intCast with std.math.cast in pdf_validator/pdf_xref_parser — 5 sites, 6 tests (2026-04-11 ~23:00 EST)
+- [x] Add font stream decompression cache + deduplication — prevent OOM on many-font PDFs (2026-04-11 ~23:00 EST)
+- [x] Audit for use-after-free on dict key pointers in pdf_font_validator — SAFE (all slices point into stable raw buffer) (2026-04-11 ~22:30 EST)
+- [ ] ToUnicode CMap validation — verify valid Unicode codepoints, well-formed hex, range consistency
+- [ ] Font /Encoding consistency check — detect encoding mismatches between declaration and usage
+- [ ] Content stream font reference validation — verify Tf operators resolve to /Resources /Font entries
+- [ ] Cross-reference completeness — detect dangling references and unreachable objects
+- [ ] Report detected text encoding in PDF validation result (e.g., WinAnsi, Identity-H, custom CMap)
+
 ### Depth Honesty Audit
 - [ ] Future: Add `best_effort` tier to distinguish "parsed every byte, no integrity mechanism" from "only checked headers"
 
