@@ -505,8 +505,10 @@ fn parseStringValue(data: []const u8, start: usize) ?ParsedString {
                     ')' => ')',
                     '\\' => '\\',
                     '0'...'7' => blk: {
-                        // Octal escape
-                        var octal: u8 = data[i] - '0';
+                        // Octal escape — use u16 to avoid overflow on malformed
+                        // sequences like \777 (511 decimal, exceeds u8 max 255).
+                        // Truncate to u8 on return, matching real-world PDF behavior.
+                        var octal: u16 = data[i] - '0';
                         if (i + 1 < data.len and data[i + 1] >= '0' and data[i + 1] <= '7') {
                             i += 1;
                             octal = octal * 8 + (data[i] - '0');
@@ -515,7 +517,7 @@ fn parseStringValue(data: []const u8, start: usize) ?ParsedString {
                                 octal = octal * 8 + (data[i] - '0');
                             }
                         }
-                        break :blk octal;
+                        break :blk @as(u8, @truncate(octal));
                     },
                     else => data[i],
                 };
@@ -713,6 +715,35 @@ test "thread-safety: concurrent parseStringValue calls" {
     for (&contexts) |*ctx| {
         try std.testing.expect(ctx.success);
     }
+}
+
+test "octal escape \\777 does not overflow u8 accumulator" {
+    // PDF spec allows \NNN octal escapes up to \377 (255).
+    // Malformed real-world PDFs contain \777 which is 511 in decimal,
+    // overflowing a u8 accumulator. The parser must handle this gracefully
+    // by using a wider accumulator and truncating to u8.
+    const input = "(\\777)";
+    const result = parseStringValue(input, 0);
+    try std.testing.expect(result != null);
+    // 7*64 + 7*8 + 7 = 511, truncated to u8 = 511 & 0xFF = 255
+    try std.testing.expectEqual(@as(u8, 255), result.?.buf[0]);
+    try std.testing.expectEqual(@as(usize, 1), result.?.len);
+}
+
+test "octal escape \\377 parses correctly as 255" {
+    const input = "(\\377)";
+    const result = parseStringValue(input, 0);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u8, 255), result.?.buf[0]);
+    try std.testing.expectEqual(@as(usize, 1), result.?.len);
+}
+
+test "octal escape \\101 parses correctly as 'A'" {
+    const input = "(\\101)";
+    const result = parseStringValue(input, 0);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u8, 'A'), result.?.buf[0]);
+    try std.testing.expectEqual(@as(usize, 1), result.?.len);
 }
 
 test "thread-safety: concurrent computeEncryptionKey calls" {

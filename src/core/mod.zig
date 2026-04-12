@@ -348,6 +348,8 @@ test {
     _ = @import("error_messages.zig");
     // Shared codec utilities (CRC, RBSP, LEB128, etc.)
     _ = @import("codec_utils.zig");
+    // PDF decryptor (RC4/AES decryption, string parsing, octal escapes)
+    _ = @import("pdf_decryptor.zig");
     // i18n (internationalization)
     _ = @import("i18n/mod.zig");
     // Progress bar (progrez wrapper)
