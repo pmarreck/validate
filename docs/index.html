@@ -492,6 +492,17 @@ function cycle() {
 }
 
 setInterval(cycle, 500);
+
+// Forward mousewheel events from the stat card to the tooltip so you can
+// scroll the format list without having to hover precisely over the tooltip.
+const formatStat = document.getElementById('format-stat');
+const formatTooltip = document.getElementById('format-tooltip');
+formatStat.addEventListener('wheel', function(e) {
+	if (formatTooltip.offsetParent !== null) { // tooltip is visible
+		formatTooltip.scrollTop += e.deltaY;
+		e.preventDefault();
+	}
+}, { passive: false });
 </script>
 
 </body>
