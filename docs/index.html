@@ -455,6 +455,12 @@ categoryOrder.forEach(cat => {
 	tooltipHTML += '<div class="tooltip-category">' + cat + '</div>';
 	tooltipHTML += '<div class="tooltip-exts">' + byCategory[cat].map(e => '<span class="tooltip-ext">.' + e + '</span>').join('') + '</div>';
 });
+tooltipHTML += '<div style="margin-top:0.8em;padding-top:0.6em;border-top:1px solid rgba(255,255,255,0.15);font-size:0.6rem;color:rgba(255,255,255,0.5);line-height:1.5">' +
+	'This list shows extensions, not internal formats. Many extensions contain multiple ' +
+	'fully validated codecs \u2014 e.g.\u00a0.mp4/.mkv cover H.264, H.265, VP9, and AV1; ' +
+	'.tiff covers DNG, CR2, NEF, ARW, ORF, and PEF camera RAW; ' +
+	'.ogg covers Vorbis, Opus, and Theora. The actual format count is higher than the extension count.' +
+	'</div>';
 document.getElementById('format-tooltip').innerHTML = tooltipHTML;
 
 // Scroller: two items, scroll up animation
