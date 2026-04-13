@@ -1,45 +1,29 @@
 #!/usr/bin/env bash
-# Build validate using Nix for deterministic, reproducible builds.
-# This uses `nix build` (sandboxed) rather than `nix develop -c zig build`
-# to avoid host OS version detection issues (e.g., macOS 26.x with Zig 0.15.2).
-set -u
+set -uo pipefail
+set -E
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+trap 'echo "ERR at ${BASH_SOURCE[0]}:${LINENO}: $BASH_COMMAND" >&2' ERR
 
-# Parse args
-run_tests=true
-update_deps=false
-for arg in "$@"; do
-	case "$arg" in
-		--no-test|--no-tests) run_tests=false ;;
-		--update-deps) update_deps=true ;;
-	esac
-done
+run() {
+  "$@" || {
+    echo "FAILED: $*" >&2
+    exit 1
+  }
+}
 
-# Update Zig deps hash if requested or if build.zig.zon is newer than flake.nix
-if [[ "$update_deps" == true ]]; then
-	echo "=== Updating Zig dependencies hash ==="
-	"$SCRIPT_DIR/scripts/update-zig-deps-hash.sh"
-elif [[ -f "$SCRIPT_DIR/build.zig.zon" && -f "$SCRIPT_DIR/flake.nix" ]]; then
-	if [[ "$SCRIPT_DIR/build.zig.zon" -nt "$SCRIPT_DIR/flake.nix" ]]; then
-		echo "=== build.zig.zon is newer than flake.nix, checking deps hash ==="
-		"$SCRIPT_DIR/scripts/update-zig-deps-hash.sh"
-		touch "$SCRIPT_DIR/flake.nix"
-	fi
+optimize="ReleaseFast"
+if [[ "${1:-}" == "debug" ]]; then
+  optimize="Debug"
+  shift
 fi
 
-# Run tests first
-if [[ "$run_tests" == true ]]; then
-	echo "=== Running tests ==="
-	"$SCRIPT_DIR/test" || { echo "Tests failed — aborting build."; exit 1; }
+if [[ "$optimize" != "ReleaseFast" ]]; then
+  # Non-release builds use zig directly (local dev, no need for Nix reproducibility)
+  run zig build "-Doptimize=$optimize" "$@"
+elif command -v nix >/dev/null 2>&1; then
+  run nix build "$@"
+  mkdir -p zig-out/bin
+  run install -m755 result/bin/* zig-out/bin/
+else
+  run zig build "-Doptimize=$optimize" "$@"
 fi
-
-# Build via nix (sandboxed, deterministic)
-echo "=== Building (nix build) ==="
-nix build || { echo "Build failed."; exit 1; }
-
-# Copy to zig-out/bin/ for compatibility with scripts that expect it there
-mkdir -p zig-out/bin
-cp -f result/bin/validate zig-out/bin/validate
-echo "  -> zig-out/bin/validate ($(file -b zig-out/bin/validate | head -c 60))"
