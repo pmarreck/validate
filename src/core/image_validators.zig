@@ -22,6 +22,8 @@ const heic_validator = @import("heic_validator.zig");
 const avif_validator = @import("avif_validator.zig");
 const zlib = @import("zlib.zig");
 const libraw_validator = @import("libraw_validator.zig");
+const orf_decoder = @import("orf_decoder.zig");
+const pef_decoder = @import("pef_decoder.zig");
 const zigimg = @import("zigimg");
 const xml = @import("xml");
 const jpeg_lossless_decoder = @import("jpeg_lossless_decoder.zig");
@@ -2641,6 +2643,16 @@ pub fn validateTiffDeep(allocator: Allocator, path: []const u8, format: FileForm
         return ValidationResult.invalidWithDepth(format, "LibRaw decode failed", .full);
     }
 
+    // Olympus ORF: decode Huffman-compressed RAW data (pure Zig, no zigimg)
+    if (format == .orf) {
+        return validateOrfDeepImpl(allocator, path);
+    }
+
+    // Pentax PEF: decode packed/Huffman RAW data (pure Zig, no zigimg)
+    if (format == .pef) {
+        return validatePefDeepImpl(allocator, path);
+    }
+
     // Check if this TIFF contains special tags that need different handling
     const tag_check = checkTiffTagSupport(path);
     if (tag_check.has_dng_tags) {
@@ -4814,6 +4826,254 @@ pub fn validateDpx(file: *FileSource) ValidationResult {
     }
 
     return ValidationResult.structuralOnly(.dpx);
+}
+
+// ============ ORF/PEF Deep Validation (pure Zig, in-memory) ============
+
+/// Parse a TIFF-like IFD to extract strip offset, byte count, width, height, BPS.
+/// Works for both standard TIFF (magic 0x002A) and ORF variant (magic 0x4F52/0x5253).
+const RawIfdInfo = struct {
+    width: u32,
+    height: u32,
+    bits_per_sample: u16,
+    compression: u16,
+    strip_offset: u64,
+    strip_byte_count: u64,
+};
+
+fn parseRawIfd(file: *FileSource, is_orf: bool) ?RawIfdInfo {
+    file.seekTo(0) catch return null;
+
+    var header: [8]u8 = undefined;
+    if ((file.readAll(&header) catch return null) < 8) return null;
+
+    const is_le = std.mem.eql(u8, header[0..2], "II");
+    if (!is_le and !std.mem.eql(u8, header[0..2], "MM")) return null;
+
+    // Verify magic: standard TIFF (0x002A) or ORF (0x4F52, 0x5253)
+    const magic = if (is_le)
+        std.mem.readInt(u16, header[2..4], .little)
+    else
+        std.mem.readInt(u16, header[2..4], .big);
+
+    if (is_orf) {
+        if (magic != 0x4F52 and magic != 0x5253 and magic != 42) return null;
+    } else {
+        if (magic != 42) return null;
+    }
+
+    const endian: std.builtin.Endian = if (is_le) .little else .big;
+    const ifd_offset = std.mem.readInt(u32, header[4..8], endian);
+    file.seekTo(ifd_offset) catch return null;
+
+    var count_buf: [2]u8 = undefined;
+    if ((file.readAll(&count_buf) catch return null) < 2) return null;
+    const entry_count = std.mem.readInt(u16, &count_buf, endian);
+    if (entry_count == 0 or entry_count > 1000) return null;
+
+    var width: u32 = 0;
+    var height: u32 = 0;
+    var bps: u16 = 0;
+    var compression: u16 = 0;
+    var strip_offset: u32 = 0;
+    var strip_byte_count: u32 = 0;
+
+    var i: u16 = 0;
+    while (i < @min(entry_count, 200)) : (i += 1) {
+        var entry: [12]u8 = undefined;
+        if ((file.readAll(&entry) catch return null) < 12) return null;
+
+        const tag = std.mem.readInt(u16, entry[0..2], endian);
+        const typ = std.mem.readInt(u16, entry[2..4], endian);
+        const val_long = std.mem.readInt(u32, entry[8..12], endian);
+        const val_short = std.mem.readInt(u16, entry[8..10], endian);
+
+        switch (tag) {
+            0x0100 => width = if (typ == 3) @as(u32, val_short) else val_long,
+            0x0101 => height = if (typ == 3) @as(u32, val_short) else val_long,
+            0x0102 => bps = if (typ == 3) val_short else @intCast(val_long & 0xFFFF),
+            0x0103 => compression = if (typ == 3) val_short else @intCast(val_long & 0xFFFF),
+            0x0111 => strip_offset = val_long,
+            0x0117 => strip_byte_count = val_long,
+            else => {},
+        }
+    }
+
+    if (width == 0 or height == 0 or strip_offset == 0) return null;
+
+    // Default BPS to 12 for camera RAW if not specified or unusual
+    const effective_bps: u16 = if (bps == 0 or bps > 16) 12 else bps;
+
+    return .{
+        .width = width,
+        .height = height,
+        .bits_per_sample = effective_bps,
+        .compression = compression,
+        .strip_offset = strip_offset,
+        .strip_byte_count = if (strip_byte_count > 0) strip_byte_count else 0,
+    };
+}
+
+/// Deep validation for Olympus ORF files.
+/// Reads strip data into memory, runs pure-Zig Huffman decoder.
+fn validateOrfDeepImpl(allocator: Allocator, path: []const u8) ValidationResult {
+    var file = std.fs.cwd().openFile(path, .{}) catch {
+        return ValidationResult.okWithDepthAndWarning(.orf, .structural, "could not open for deep validation");
+    };
+    defer file.close();
+    var source = FileSource.fromFile(file);
+
+    const info = parseRawIfd(&source, true) orelse {
+        return ValidationResult.okWithDepthAndWarning(.orf, .structural, "could not parse ORF IFD");
+    };
+
+    const file_size = source.getEndPos() catch {
+        return ValidationResult.okWithDepthAndWarning(.orf, .structural, "could not get file size");
+    };
+
+    if (info.strip_offset + info.strip_byte_count > file_size) {
+        return ValidationResult.invalidCodeWithDepth(.orf, .truncated, "strip data beyond EOF", .full);
+    }
+
+    if (info.strip_byte_count == 0 or info.strip_byte_count > 256 * 1024 * 1024) {
+        return ValidationResult.okWithDepthAndWarning(.orf, .structural, "strip size out of range for decode");
+    }
+
+    // Check for compression honesty: compare strip size to expected uncompressed size
+    const total_pixels: u64 = @as(u64, info.width) * @as(u64, info.height);
+    const bytes_per_pixel: u64 = (@as(u64, info.bits_per_sample) + 7) / 8;
+    const expected_uncompressed = total_pixels * bytes_per_pixel;
+    const is_actually_uncompressed = info.strip_byte_count >= expected_uncompressed;
+
+    if (is_actually_uncompressed) {
+        // Truly uncompressed: size check is sufficient for full validation
+        if (info.compression != 1) {
+            // Claims compressed but isn't — unusual but not corrupt
+            return ValidationResult.okWithDepthAndWarning(.orf, .full, "compression tag mismatch (claims compressed but data is uncompressed size)");
+        }
+        return ValidationResult.okWithDepth(.orf, .full);
+    }
+
+    // Data is smaller than uncompressed — it IS compressed (even if IFD says otherwise).
+    // Olympus ORF commonly marks compression=1 but uses proprietary Huffman compression.
+    // Try Huffman decode with common bit depths (12, 10, 14) — the actual sensor depth
+    // may differ from the IFD BPS tag.
+    const skip_bytes: u64 = 7; // dcraw olympus_load_raw() skips 7 bytes
+    const data_offset = info.strip_offset + skip_bytes;
+    const data_len = info.strip_byte_count -| skip_bytes;
+
+    source.seekTo(data_offset) catch {
+        return ValidationResult.invalidCodeWithDepth(.orf, .failed_to_seek, "to strip data", .full);
+    };
+
+    const strip_data = allocator.alloc(u8, @intCast(data_len)) catch {
+        return ValidationResult.okWithDepthAndWarning(.orf, .structural, "out of memory for strip data");
+    };
+    defer allocator.free(strip_data);
+
+    const bytes_read = source.readAll(strip_data) catch {
+        return ValidationResult.invalidCodeWithDepth(.orf, .failed_to_read, "strip data", .full);
+    };
+
+    if (bytes_read < data_len) {
+        return ValidationResult.invalidCodeWithDepth(.orf, .truncated, "strip data", .full);
+    }
+
+    // Try Huffman decode with candidate bit depths (most Olympus sensors are 12-bit,
+    // some are 10 or 14). Try the IFD value first if reasonable, then common depths.
+    const candidate_bps = [_]u16{
+        if (info.bits_per_sample >= 10 and info.bits_per_sample <= 14) info.bits_per_sample else 12,
+        12,
+        14,
+        10,
+    };
+
+    for (candidate_bps) |bps| {
+        if (orf_decoder.validateOrfBitstream(strip_data, info.width, info.height, bps) == null) {
+            // Decode succeeded at this bit depth
+            const warning = if (info.compression == 1)
+                "ORF IFD claims uncompressed but data is Huffman-compressed (known Olympus quirk)"
+            else
+                null;
+            if (warning) |w| {
+                return ValidationResult.okWithDepthAndWarning(.orf, .full, w);
+            }
+            return ValidationResult.okWithDepth(.orf, .full);
+        }
+    }
+
+    // All bit depth candidates failed — could be a different compression variant
+    // or genuine corruption. Report structural with honest warning.
+    if (info.compression == 1) {
+        return ValidationResult.okWithDepthAndWarning(.orf, .structural,
+            "ORF compression tag says uncompressed but data is compressed; Huffman decode failed (may be unsupported compression variant)");
+    }
+    // If explicitly compressed and decode failed, it's likely corruption
+    return ValidationResult.invalidWithDepth(.orf, "ORF Huffman decode failed (data corruption or unsupported variant)", .full);
+}
+
+/// Deep validation for Pentax PEF files.
+/// Reads strip data into memory, runs pure-Zig packed/Huffman decoder.
+fn validatePefDeepImpl(allocator: Allocator, path: []const u8) ValidationResult {
+    var file = std.fs.cwd().openFile(path, .{}) catch {
+        return ValidationResult.okWithDepthAndWarning(.pef, .structural, "could not open for deep validation");
+    };
+    defer file.close();
+    var source = FileSource.fromFile(file);
+
+    const info = parseRawIfd(&source, false) orelse {
+        return ValidationResult.okWithDepthAndWarning(.pef, .structural, "could not parse PEF IFD");
+    };
+
+    const file_size = source.getEndPos() catch {
+        return ValidationResult.okWithDepthAndWarning(.pef, .structural, "could not get file size");
+    };
+
+    if (info.strip_offset + info.strip_byte_count > file_size) {
+        return ValidationResult.invalidCodeWithDepth(.pef, .truncated, "strip data beyond EOF", .full);
+    }
+
+    if (info.strip_byte_count == 0 or info.strip_byte_count > 256 * 1024 * 1024) {
+        return ValidationResult.okWithDepthAndWarning(.pef, .structural, "strip size out of range for decode");
+    }
+
+    // Read strip data into memory
+    source.seekTo(info.strip_offset) catch {
+        return ValidationResult.invalidCodeWithDepth(.pef, .failed_to_seek, "to strip data", .full);
+    };
+
+    const strip_data = allocator.alloc(u8, @intCast(info.strip_byte_count)) catch {
+        return ValidationResult.okWithDepthAndWarning(.pef, .structural, "out of memory for strip data");
+    };
+    defer allocator.free(strip_data);
+
+    const bytes_read = source.readAll(strip_data) catch {
+        return ValidationResult.invalidCodeWithDepth(.pef, .failed_to_read, "strip data", .full);
+    };
+
+    if (bytes_read < info.strip_byte_count) {
+        return ValidationResult.invalidCodeWithDepth(.pef, .truncated, "strip data", .full);
+    }
+
+    // Dispatch based on compression type
+    if (info.compression == 32773) {
+        // Packed 12-bit RAW (K100D etc.)
+        if (pef_decoder.validatePefPacked12(strip_data, info.width, info.height)) |err| {
+            return switch (err) {
+                pef_decoder.PefDecodeError.Truncated => ValidationResult.invalidCodeWithDepth(.pef, .truncated, "packed RAW data", .full),
+                pef_decoder.PefDecodeError.DimensionsTooLarge => ValidationResult.okWithDepthAndWarning(.pef, .structural, "image dimensions exceed decoder limits"),
+                else => ValidationResult.invalidWithDepth(.pef, "PEF decode error", .full),
+            };
+        }
+        return ValidationResult.okWithDepth(.pef, .full);
+    } else if (info.compression == 65535) {
+        // Huffman compressed — would need MakerNote parsing for table.
+        // For now, structural only with honest warning.
+        return ValidationResult.okWithDepthAndWarning(.pef, .structural, "Huffman PEF decode not yet implemented (need MakerNote table)");
+    }
+
+    // Unknown compression — structural only
+    return ValidationResult.okWithDepthAndWarning(.pef, .structural, "unknown PEF compression type");
 }
 
 // ============ Tests ============

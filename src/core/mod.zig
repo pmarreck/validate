@@ -103,6 +103,8 @@ pub const vmdk_validator = @import("vmdk_validator.zig");
 pub const stuffit_validator = @import("stuffit_validator.zig");
 pub const realmedia_validator = @import("realmedia_validator.zig");
 pub const network_validators = @import("network_validators.zig");
+pub const orf_decoder = @import("orf_decoder.zig");
+pub const pef_decoder = @import("pef_decoder.zig");
 pub const cdg_validator = @import("cdg_validator.zig");
 pub const toast_validator = @import("toast_validator.zig");
 pub const blar_validator = @import("blar_validator.zig");
@@ -350,6 +352,9 @@ test {
     _ = @import("codec_utils.zig");
     // PDF decryptor (RC4/AES decryption, string parsing, octal escapes)
     _ = @import("pdf_decryptor.zig");
+    // Camera RAW decoders
+    _ = @import("orf_decoder.zig");
+    _ = @import("pef_decoder.zig");
     // i18n (internationalization)
     _ = @import("i18n/mod.zig");
     // Progress bar (progrez wrapper)
