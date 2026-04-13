@@ -394,11 +394,6 @@ const formats = [
 	{ext: "gltf", cat: "3d/cad"}, {ext: "ply", cat: "3d/cad"}, {ext: "3mf", cat: "3d/cad"},
 	{ext: "blend", cat: "3d/cad"}, {ext: "dwg", cat: "3d/cad"}, {ext: "step", cat: "3d/cad"},
 	{ext: "dxf", cat: "3d/cad"},
-	// Games
-	{ext: "nes", cat: "game"}, {ext: "sfc", cat: "game"}, {ext: "n64", cat: "game"},
-	{ext: "gb", cat: "game"}, {ext: "gba", cat: "game"}, {ext: "nds", cat: "game"},
-	{ext: "gen", cat: "game"}, {ext: "chd", cat: "game"}, {ext: "wad", cat: "game"},
-	{ext: "bsp", cat: "game"}, {ext: "vpk", cat: "game"},
 	// Medical
 	{ext: "dcm", cat: "medical"}, {ext: "dicom", cat: "medical"},
 	{ext: "nii", cat: "medical"},
@@ -427,10 +422,15 @@ const formats = [
 	{ext: "eml", cat: "email"}, {ext: "mbox", cat: "email"},
 	// Text/Data
 	{ext: "json", cat: "text"}, {ext: "xml", cat: "text"}, {ext: "csv", cat: "text"},
-	{ext: "yaml", cat: "text"}, {ext: "toml", cat: "text"}, {ext: "html", cat: "text"},
+	{ext: "toml", cat: "text"}, {ext: "html", cat: "text"},
 	{ext: "md", cat: "text"}, {ext: "kml", cat: "text"},
 	// Network
 	{ext: "pcap", cat: "network"}, {ext: "pcapng", cat: "network"},
+	// Games
+	{ext: "nes", cat: "game"}, {ext: "sfc", cat: "game"}, {ext: "n64", cat: "game"},
+	{ext: "gb", cat: "game"}, {ext: "gba", cat: "game"}, {ext: "nds", cat: "game"},
+	{ext: "gen", cat: "game"}, {ext: "chd", cat: "game"}, {ext: "wad", cat: "game"},
+	{ext: "bsp", cat: "game"}, {ext: "vpk", cat: "game"},
 ];
 
 // Format count (240+ actual formats; this list is deduplicated extensions)
@@ -445,8 +445,8 @@ formats.forEach(f => {
 
 const categoryOrder = [
 	'image', 'video', 'audio', 'archive', 'document', 'creative', 'daw',
-	'3d/cad', 'game', 'medical', 'scientific', 'financial', 'font',
-	'executable', 'crypto', 'email', 'text', 'network'
+	'3d/cad', 'medical', 'scientific', 'financial', 'font',
+	'executable', 'crypto', 'email', 'text', 'network', 'game'
 ];
 
 let tooltipHTML = '';
