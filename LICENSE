@@ -11,7 +11,7 @@ Additional Use Grant: Production use of the Licensed Work is permitted,
 
                       1. The Licensed Work is invoked directly as a
                       command-line process by a human operator or automated
-                      script, and is NOT embedded in, called by, wrapped by,
+                      script, for the operator's own internal use, and is NOT embedded in, called by, wrapped by,
                       or integrated with any application, service, or
                       interface that is offered to third parties. For the
                       avoidance of doubt, this prohibits using the Licensed
