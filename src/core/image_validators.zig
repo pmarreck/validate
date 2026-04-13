@@ -828,6 +828,171 @@ pub fn validateTiff(file: *FileSource, format: FileFormat) ValidationResult {
     return ValidationResult.ok(format);
 }
 
+// ============ Fuji RAF Validator ============
+
+/// Validate Fuji RAF file structure.
+/// RAF has a unique (non-TIFF) format: 16-byte magic "FUJIFILMCCD-RAW ",
+/// followed by offset table pointing to JPEG preview and RAF data sections.
+pub fn validateRaf(file: *FileSource) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalidCode(.raf, .failed_to_seek, "to start");
+
+    var header: [84]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.raf, .failed_to_read, "RAF header");
+    if (bytes_read < 84) {
+        return ValidationResult.invalidCode(.raf, .truncated, "RAF header too short");
+    }
+
+    // Verify magic
+    if (!std.mem.eql(u8, header[0..16], "FUJIFILMCCD-RAW ")) {
+        return ValidationResult.invalidCode(.raf, .invalid_magic_number, "RAF");
+    }
+
+    // Bytes 28..32: JPEG preview offset (big-endian u32)
+    // Bytes 32..36: JPEG preview length (big-endian u32)
+    // Bytes 84..88: RAF data offset (in some versions)
+    const jpeg_offset = std.mem.readInt(u32, header[84 - 56 ..][0..4], .big);
+    const jpeg_length = std.mem.readInt(u32, header[84 - 52 ..][0..4], .big);
+
+    // Get file size to verify offsets are within bounds
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCode(.raf, .failed_to_get, "file size");
+    };
+
+    // JPEG preview offset should be within file (if non-zero)
+    if (jpeg_offset > 0 and jpeg_length > 0) {
+        if (@as(u64, jpeg_offset) + @as(u64, jpeg_length) > file_size) {
+            return ValidationResult.invalid(.raf, "JPEG preview extends beyond file end (truncated)");
+        }
+    }
+
+    return ValidationResult.ok(.raf);
+}
+
+// ============ Panasonic RW2 Validator ============
+
+/// Validate Panasonic RW2 file structure.
+/// RW2 is a TIFF variant with version byte 0x55 instead of standard TIFF's 0x2A.
+/// Structure: II (little-endian) + 0x55 0x00 + IFD offset.
+pub fn validateRw2(file: *FileSource) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalidCode(.rw2, .failed_to_seek, "to start");
+
+    var header: [8]u8 = undefined;
+    _ = file.read(&header) catch return ValidationResult.invalidCode(.rw2, .failed_to_read, "RW2 header");
+
+    // Check byte order (always little-endian for RW2)
+    if (!std.mem.eql(u8, header[0..2], "II")) {
+        return ValidationResult.invalidCode(.rw2, .invalid_value, "RW2 byte order marker");
+    }
+
+    // Check version (0x55 for RW2)
+    const version = std.mem.readInt(u16, header[2..4], .little);
+    if (version != 0x55) {
+        return ValidationResult.invalidCode(.rw2, .invalid_magic_number, "RW2");
+    }
+
+    // Get IFD offset
+    const ifd_offset = std.mem.readInt(u32, header[4..8], .little);
+
+    // Verify IFD offset is within file
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCode(.rw2, .failed_to_get, "file size");
+    };
+
+    if (ifd_offset >= file_size) {
+        return ValidationResult.invalid(.rw2, "IFD offset beyond file end (truncated)");
+    }
+
+    // Seek to IFD and verify it's readable
+    file.seekTo(ifd_offset) catch {
+        return ValidationResult.invalidCode(.rw2, .failed_to_seek, "to IFD");
+    };
+
+    var ifd_header: [2]u8 = undefined;
+    _ = file.read(&ifd_header) catch {
+        return ValidationResult.invalidCode(.rw2, .failed_to_read, "IFD");
+    };
+
+    const entry_count = std.mem.readInt(u16, &ifd_header, .little);
+
+    // Sanity check entry count
+    if (entry_count == 0 or entry_count > 1000) {
+        return ValidationResult.invalidCode(.rw2, .invalid_value, "IFD entry count");
+    }
+
+    return ValidationResult.ok(.rw2);
+}
+
+// ============ Canon CR3 Validator ============
+
+/// Validate Canon CR3 file structure.
+/// CR3 is an ISO BMFF container (like HEIF) with ftyp brand "crx ".
+/// Structural validation: verify ftyp box and check for moov box presence.
+pub fn validateCr3(file: *FileSource) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalidCode(.cr3, .failed_to_seek, "to start");
+
+    var header: [32]u8 = undefined;
+    const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.cr3, .failed_to_read, "CR3 header");
+    if (bytes_read < 12) {
+        return ValidationResult.invalidCode(.cr3, .truncated, "CR3 header too short");
+    }
+
+    // Verify ftyp box
+    var ftyp_offset: usize = 0;
+    if (std.mem.eql(u8, header[4..8], "ftyp")) {
+        ftyp_offset = 8;
+    } else if (std.mem.eql(u8, header[0..4], "ftyp")) {
+        ftyp_offset = 4;
+    } else {
+        return ValidationResult.invalidCode(.cr3, .invalid_magic_number, "CR3 ftyp box");
+    }
+
+    if (bytes_read >= ftyp_offset + 4) {
+        const brand = header[ftyp_offset..][0..4];
+        if (!std.mem.eql(u8, brand, "crx ")) {
+            return ValidationResult.invalidCode(.cr3, .invalid_value, "CR3 brand (expected 'crx ')");
+        }
+    }
+
+    // Get file size to scan for moov box
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidCode(.cr3, .failed_to_get, "file size");
+    };
+
+    // Read the ftyp box size to skip past it
+    const ftyp_box_size = std.mem.readInt(u32, header[0..4], .big);
+    if (ftyp_box_size == 0 or @as(u64, ftyp_box_size) > file_size) {
+        return ValidationResult.ok(.cr3); // Can't scan further but ftyp is valid
+    }
+
+    // Scan for moov box in the first few top-level boxes
+    var offset: u64 = ftyp_box_size;
+    var found_moov = false;
+    var box_count: u32 = 0;
+    while (offset + 8 <= file_size and box_count < 32) : (box_count += 1) {
+        file.seekTo(offset) catch break;
+        var box_header: [8]u8 = undefined;
+        const box_read = file.read(&box_header) catch break;
+        if (box_read < 8) break;
+
+        const box_size = std.mem.readInt(u32, box_header[0..4], .big);
+        const box_type = box_header[4..8];
+
+        if (std.mem.eql(u8, box_type, "moov")) {
+            found_moov = true;
+            break;
+        }
+
+        if (box_size < 8) break; // Invalid box size
+        offset += box_size;
+    }
+
+    if (!found_moov) {
+        return ValidationResult.invalid(.cr3, "Missing moov box in CR3 container");
+    }
+
+    return ValidationResult.ok(.cr3);
+}
+
 // ============ OpenEXR Validator ============
 
 /// Validate OpenEXR file structure.

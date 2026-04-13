@@ -129,7 +129,7 @@ const KvBuilder = struct {
 fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
     return switch (format) {
         // Images
-        .png, .jpeg, .jxl, .gif, .bmp, .webp, .tiff, .heic, .avif, .exr, .svg, .psd, .ai, .eps, .sketch, .aep, .dng, .cr2, .nef, .arw, .jpeg2000, .jbig2, .ico, .icns, .qoi, .pam, .dpx, .tga => "image",
+        .png, .jpeg, .jxl, .gif, .bmp, .webp, .tiff, .heic, .avif, .exr, .svg, .psd, .ai, .eps, .sketch, .aep, .dng, .cr2, .cr3, .nef, .arw, .raf, .orf, .rw2, .pef, .jpeg2000, .jbig2, .ico, .icns, .qoi, .pam, .dpx, .tga => "image",
 
         // Video
         .mp4, .mov, .mkv, .webm, .avi, .swf, .flv, .prores, .av1, .ogv, .mpeg_ps, .mpeg_ts, .mpeg_es, .ivf, .asf, .dv, .rm => "video",

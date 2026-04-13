@@ -341,9 +341,14 @@ pub const FileFormat = enum {
     aep, // Adobe After Effects Project (RIFX-based)
     // RAW camera formats
     dng, // Adobe DNG
-    cr2, // Canon RAW
-    nef, // Nikon RAW
+    cr2, // Canon RAW (TIFF-based)
+    cr3, // Canon RAW (ISO BMFF-based, newer)
+    nef, // Nikon RAW (also covers NRW)
     arw, // Sony RAW
+    raf, // Fuji RAW (unique format, not TIFF-based)
+    orf, // Olympus RAW (TIFF-based)
+    rw2, // Panasonic RAW (TIFF variant, version 0x55)
+    pef, // Pentax RAW (TIFF-based)
     // Archives
     zip,
     gzip, // .gz files
@@ -623,7 +628,7 @@ pub const FileFormat = enum {
         return switch (self) {
             .png, .jpeg, .jxl, .gif, .bmp, .webp, .tiff, .psd, .ai, .eps, .sketch, .aep, .heic, .avif, .exr => true, // Images/Design
             .svg => true, // SVG uses XML validation
-            .dng, .cr2, .nef, .arw => true, // RAW formats (TIFF-based validation)
+            .dng, .cr2, .cr3, .nef, .arw, .raf, .orf, .rw2, .pef => true, // RAW formats
             .zip, .gzip, .bzip2, .xz, .zstd, .br, .hqx, .rar, .cpt, .sevenz, .tar, .epub, .docx, .xlsx, .pptx => true, // Archives
             .odt, .ods, .odp, .pages, .logicx => true, // ZIP-based document/DAW formats
             .doc, .xls, .ppt => true, // OLE2/CFBF binary Office
@@ -739,7 +744,7 @@ pub const FileFormat = enum {
     /// Returns true if this format uses ISO Base Media File Format (MP4-like).
     pub fn isIsobmff(self: FileFormat) bool {
         return switch (self) {
-            .mp4, .mov, .heic, .avif, .m4a => true,
+            .mp4, .mov, .heic, .avif, .m4a, .cr3 => true,
             else => false,
         };
     }
@@ -747,7 +752,7 @@ pub const FileFormat = enum {
     /// Returns true if this format is TIFF-based (including RAW).
     pub fn isTiffBased(self: FileFormat) bool {
         return switch (self) {
-            .tiff, .dng, .cr2, .nef, .arw => true,
+            .tiff, .dng, .cr2, .nef, .arw, .orf, .rw2, .pef => true,
             else => false,
         };
     }
@@ -1246,6 +1251,10 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "RIFF", .offset = 0, .format = .webp }, // Additional check for WEBP at offset 8
     // AVI: RIFF....AVI (special handling - checked after WebP)
     // WAV: RIFF....WAVE (special handling)
+    // Fuji RAF: "FUJIFILMCCD-RAW " (16 bytes, unique format, not TIFF-based)
+    .{ .bytes = "FUJIFILMCCD-RAW ", .offset = 0, .format = .raf },
+    // Panasonic RW2: II + version 0x55 (TIFF variant) - must precede generic TIFF
+    .{ .bytes = &[_]u8{ 0x49, 0x49, 0x55, 0x00 }, .offset = 0, .format = .rw2 },
     // TIFF: II (little-endian) or MM (big-endian) - also basis for RAW formats
     .{ .bytes = &[_]u8{ 0x49, 0x49, 0x2A, 0x00 }, .offset = 0, .format = .tiff },
     .{ .bytes = &[_]u8{ 0x4D, 0x4D, 0x00, 0x2A }, .offset = 0, .format = .tiff },
@@ -1670,6 +1679,10 @@ fn detectExtendedFormat(header: []const u8, file: std.fs.File) FileFormat {
             {
                 return .avif;
             }
+            // Canon CR3 (ISO BMFF-based RAW)
+            if (std.mem.eql(u8, brand, "crx ")) {
+                return .cr3;
+            }
             // M4A audio
             if (std.mem.eql(u8, brand, "M4A ") or std.mem.eql(u8, brand, "M4B ")) {
                 return .m4a;
@@ -1733,6 +1746,16 @@ fn detectTiffSubformat(file: std.fs.File, is_le: bool) FileFormat {
     // Sony ARW: Look for Sony maker note
     if (findInBuffer(&buffer, bytes_read, "SONY")) {
         return .arw;
+    }
+
+    // Olympus ORF: Look for Olympus maker note
+    if (findInBuffer(&buffer, bytes_read, "OLYMP")) {
+        return .orf;
+    }
+
+    // Pentax PEF: Look for Pentax maker note
+    if (findInBuffer(&buffer, bytes_read, "PENTAX") or findInBuffer(&buffer, bytes_read, "AOC")) {
+        return .pef;
     }
 
     return .tiff;
@@ -2016,6 +2039,10 @@ pub fn detectFormat(header: []const u8) FileFormat {
             std.mem.eql(u8, brand, "av01"))
         {
             return .avif;
+        }
+        // Canon CR3 (ISO BMFF-based RAW)
+        if (std.mem.eql(u8, brand, "crx ")) {
+            return .cr3;
         }
         // M4A audio
         if (std.mem.eql(u8, brand, "M4A ") or std.mem.eql(u8, brand, "M4B ")) {
@@ -2518,8 +2545,14 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     // RAW camera formats
     .{ "dng", .dng },
     .{ "cr2", .cr2 },
+    .{ "cr3", .cr3 },
     .{ "nef", .nef },
+    .{ "nrw", .nef }, // NRW is same format as NEF (Nikon)
     .{ "arw", .arw },
+    .{ "raf", .raf },
+    .{ "orf", .orf },
+    .{ "rw2", .rw2 },
+    .{ "pef", .pef },
     // Documents
     .{ "pdf", .pdf },
     .{ "rtf", .rtf },
@@ -3256,8 +3289,8 @@ fn detectFormatBySecondarySignatures(data: []const u8, hinted_format: FileFormat
                 }
             }
         },
-        .mp4, .mov, .m4a, .heic, .avif => {
-            // MP4/MOV: Look for box/atom signatures: ftyp, moov, mdat, free, wide
+        .mp4, .mov, .m4a, .heic, .avif, .cr3 => {
+            // MP4/MOV/ISO BMFF: Look for box/atom signatures: ftyp, moov, mdat, free, wide
             // These appear as 4-byte size followed by 4-byte type
             const box_types = [_][]const u8{ "ftyp", "moov", "mdat", "free", "wide", "uuid", "meta" };
             for (box_types) |box_type| {
@@ -3400,7 +3433,10 @@ fn isFormatCompatibleWithExtension(detected: FileFormat, extension_format: FileF
         extension_format == .epub or extension_format == .pages)) return true;
 
     // TIFF-based RAW formats
-    if (detected == .tiff and (extension_format == .dng or extension_format == .cr2 or extension_format == .nef or extension_format == .arw)) return true;
+    if (detected == .tiff and (extension_format == .dng or extension_format == .cr2 or extension_format == .nef or extension_format == .arw or extension_format == .orf or extension_format == .rw2 or extension_format == .pef)) return true;
+
+    // CR3 is ISO BMFF-based, may be detected as MP4 initially
+    if (detected == .mp4 and extension_format == .cr3) return true;
 
     // Ogg container can have various codecs
     if (extension_format == .ogg and detected == .ogg) return true;
@@ -5584,7 +5620,9 @@ pub const FormatValidator = struct {
             .png => image_validators.validatePngDeep(allocator, path),
             .jpeg => image_validators.validateJpegDeep(allocator, path),
             .gif => image_validators.validateGifDeep(allocator, path),
-            .tiff, .dng, .cr2, .nef, .arw => image_validators.validateTiffDeep(allocator, path, initial_result.format),
+            .tiff, .dng, .cr2, .nef, .arw, .orf, .pef => image_validators.validateTiffDeep(allocator, path, initial_result.format),
+            // RAF, RW2, CR3: structural-only for now (no deep decoder available)
+            .raf, .rw2, .cr3 => initial_result,
             .psd => image_validators.validatePsdDeep(allocator, path),
             .ai => creative_validators.validateAiDeep(allocator, path),
             .eps => creative_validators.validateEpsDeep(allocator, path),
@@ -6043,7 +6081,10 @@ pub const FormatValidator = struct {
             .ai => creative_validators.validateAi(file_src_ptr),
             .eps => creative_validators.validateEps(file_src_ptr),
             .aep => creative_validators.validateAep(file_src_ptr),
-            .tiff, .dng, .cr2, .nef, .arw => image_validators.validateTiff(file_src_ptr, format),
+            .tiff, .dng, .cr2, .nef, .arw, .orf, .pef => image_validators.validateTiff(file_src_ptr, format),
+            .raf => image_validators.validateRaf(file_src_ptr),
+            .rw2 => image_validators.validateRw2(file_src_ptr),
+            .cr3 => image_validators.validateCr3(file_src_ptr),
             .exr => image_validators.validateExr(file_src_ptr),
             .zip, .epub, .docx, .xlsx, .pptx => archive_validators.validateZip(file_src_ptr, format),
             .odt, .ods, .odp, .pages, .logicx, .song => archive_validators.validateZip(file_src_ptr, format), // ZIP-based document/DAW formats
@@ -6762,8 +6803,13 @@ test "FileFormat validators" {
     // RAW formats
     try std.testing.expect(FileFormat.dng.hasValidator());
     try std.testing.expect(FileFormat.cr2.hasValidator());
+    try std.testing.expect(FileFormat.cr3.hasValidator());
     try std.testing.expect(FileFormat.nef.hasValidator());
     try std.testing.expect(FileFormat.arw.hasValidator());
+    try std.testing.expect(FileFormat.raf.hasValidator());
+    try std.testing.expect(FileFormat.orf.hasValidator());
+    try std.testing.expect(FileFormat.rw2.hasValidator());
+    try std.testing.expect(FileFormat.pef.hasValidator());
     // Unknown has no validator
     try std.testing.expect(!FileFormat.unknown.hasValidator());
 }
@@ -7714,6 +7760,63 @@ test "validateFileDeep routes git directories to git validator" {
     // This is the key assertion - if this fails, deep validation isn't being routed
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "detectFormat RAF magic bytes" {
+    var header: [84]u8 = undefined;
+    @memcpy(header[0..16], "FUJIFILMCCD-RAW ");
+    @memset(header[16..], 0);
+    try std.testing.expectEqual(FileFormat.raf, detectFormat(&header));
+}
+
+test "detectFormat RW2 magic bytes" {
+    // Panasonic RW2: II + version 0x55
+    var header: [8]u8 = .{ 0x49, 0x49, 0x55, 0x00, 0x08, 0x00, 0x00, 0x00 };
+    try std.testing.expectEqual(FileFormat.rw2, detectFormat(&header));
+}
+
+test "detectFormat CR3 ftyp brand" {
+    // CR3: ftyp box with brand "crx "
+    // Box: size=20 (0x00000014), type="ftyp", brand="crx "
+    var header: [20]u8 = undefined;
+    header[0..4].* = .{ 0x00, 0x00, 0x00, 0x14 }; // box size = 20
+    @memcpy(header[4..8], "ftyp");
+    @memcpy(header[8..12], "crx ");
+    @memset(header[12..], 0);
+    try std.testing.expectEqual(FileFormat.cr3, detectFormat(&header));
+}
+
+test "extension mapping for new RAW formats" {
+    const ext_map = ext_format_map;
+    try std.testing.expectEqual(FileFormat.raf, ext_map.get("raf").?);
+    try std.testing.expectEqual(FileFormat.orf, ext_map.get("orf").?);
+    try std.testing.expectEqual(FileFormat.rw2, ext_map.get("rw2").?);
+    try std.testing.expectEqual(FileFormat.pef, ext_map.get("pef").?);
+    try std.testing.expectEqual(FileFormat.cr3, ext_map.get("cr3").?);
+    try std.testing.expectEqual(FileFormat.nef, ext_map.get("nrw").?); // NRW maps to NEF
+}
+
+test "new RAW formats TIFF-based classification" {
+    try std.testing.expect(FileFormat.orf.isTiffBased());
+    try std.testing.expect(FileFormat.pef.isTiffBased());
+    try std.testing.expect(FileFormat.rw2.isTiffBased());
+    try std.testing.expect(!FileFormat.raf.isTiffBased()); // RAF is unique, NOT TIFF-based
+    try std.testing.expect(!FileFormat.cr3.isTiffBased()); // CR3 is ISO BMFF-based
+}
+
+test "CR3 is ISO BMFF-based" {
+    try std.testing.expect(FileFormat.cr3.isIsobmff());
+    try std.testing.expect(!FileFormat.raf.isIsobmff());
+    try std.testing.expect(!FileFormat.orf.isIsobmff());
+}
+
+test "TIFF-based RAW extension compatibility" {
+    // TIFF detected + RAW extension should be compatible
+    try std.testing.expect(isFormatCompatibleWithExtension(.tiff, .orf));
+    try std.testing.expect(isFormatCompatibleWithExtension(.tiff, .pef));
+    try std.testing.expect(isFormatCompatibleWithExtension(.tiff, .rw2));
+    // MP4 detected + CR3 extension should be compatible
+    try std.testing.expect(isFormatCompatibleWithExtension(.mp4, .cr3));
 }
 
 test "text file without magic bytes is not flagged as corrupted" {
