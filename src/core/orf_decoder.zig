@@ -39,10 +39,18 @@ fn buildHuffTable() [4096]u16 {
 }
 
 /// Huffman-decode: peek at top 12 bits, look up consumed/value in table.
+/// If fewer than 12 bits remain, left-pads with zeros (matching dcraw behavior
+/// where the bit buffer naturally contains zeros for unfilled positions).
 fn getBitHuff(reader: *BitReader, huff: []const u16) ?u32 {
-	const code = reader.peekBits(12) orelse return null;
+	const remaining = reader.remainingBits();
+	if (remaining == 0) return null;
+	const peek_bits: u6 = @intCast(@min(remaining, 12));
+	const raw_code = reader.peekBits(peek_bits) orelse return null;
+	// Left-align to 12 bits (pad with zeros on the right)
+	const code = if (peek_bits < 12) raw_code << @intCast(12 - peek_bits) else raw_code;
 	const entry = huff[code];
 	const consumed: u8 = @intCast(entry >> 8);
+	if (consumed > remaining) return null;
 	_ = reader.skipBits(consumed);
 	return entry & 0xFF;
 }
@@ -143,6 +151,11 @@ pub fn validateOrfBitstream(
 			const pixel: i32 = pred + ((diff << 2) | low);
 
 			if (pixel < 0 or (pixel >> @intCast(bps)) != 0) {
+				if (@import("builtin").mode == .Debug) {
+					std.debug.print("ORF overflow: row={d} col={d} pixel={d} pred={d} diff={d} low={d} sign={d} high={d} nbits={d} carry=[{d},{d},{d}] bit_pos={d}\n", .{
+						row, col, pixel, pred, diff, low, sign, high, nbits, carry[0], carry[1], carry[2], reader.bit_pos,
+					});
+				}
 				return OrfDecodeError.PixelOverflow;
 			}
 
@@ -192,4 +205,70 @@ test "validateOrfBitstream: first pixel from E-PL1 matches reference" {
 	const result = validateOrfBitstream(&data, 1, 1, 12);
 	// Should succeed for a single pixel
 	try testing.expect(result == null);
+}
+
+test "validateOrfBitstream: E-PL1 ground truth full decode" {
+	const file_source = @import("file_source.zig");
+	const FileSource = file_source.FileSource;
+
+	var source = FileSource.open("ground_truth_examples/orf/PB120976.ORF") catch |err| {
+		if (err == error.FileNotFound) return error.SkipZigTest;
+		return err;
+	};
+	defer source.close();
+
+	// Parse IFD to get strip info
+	source.seekTo(0) catch return error.SkipZigTest;
+	var header: [8]u8 = undefined;
+	_ = source.readAll(&header) catch return error.SkipZigTest;
+	const ifd_offset = std.mem.readInt(u32, header[4..8], .little);
+	source.seekTo(ifd_offset) catch return error.SkipZigTest;
+	var count_buf: [2]u8 = undefined;
+	_ = source.readAll(&count_buf) catch return error.SkipZigTest;
+	const entry_count = std.mem.readInt(u16, &count_buf, .little);
+
+	var width: u32 = 0;
+	var height: u32 = 0;
+	var strip_offset: u32 = 0;
+	var strip_byte_count: u32 = 0;
+	var i: u16 = 0;
+	while (i < entry_count) : (i += 1) {
+		var entry: [12]u8 = undefined;
+		_ = source.readAll(&entry) catch break;
+		const tag = std.mem.readInt(u16, entry[0..2], .little);
+		const typ = std.mem.readInt(u16, entry[2..4], .little);
+		const val_long = std.mem.readInt(u32, entry[8..12], .little);
+		const val_short = std.mem.readInt(u16, entry[8..10], .little);
+		switch (tag) {
+			0x0100 => width = if (typ == 3) @as(u32, val_short) else val_long,
+			0x0101 => height = if (typ == 3) @as(u32, val_short) else val_long,
+			0x0111 => strip_offset = val_long,
+			0x0117 => strip_byte_count = val_long,
+			else => {},
+		}
+	}
+	if (width == 0 or strip_offset == 0) return error.SkipZigTest;
+
+	// Read strip data into memory, skip 7 bytes
+	source.seekTo(strip_offset + 7) catch return error.SkipZigTest;
+	const data_len = strip_byte_count - 7;
+	const strip_data = testing.allocator.alloc(u8, data_len) catch return error.SkipZigTest;
+	defer testing.allocator.free(strip_data);
+	_ = source.readAll(strip_data) catch return error.SkipZigTest;
+
+	// Try progressive row counts to find failure point
+	const test_rows = [_]u32{ 1, 2, 10, 100, 500, 1000, height };
+	for (test_rows) |rows| {
+		if (rows > height) continue;
+		const result = validateOrfBitstream(strip_data, width, rows, 12);
+		if (result) |err| {
+			std.debug.print("ORF decode failed at rows={d} (width={d}): {s}\n", .{ rows, width, @errorName(err) });
+		} else {
+			std.debug.print("ORF decode OK for {d} rows\n", .{rows});
+		}
+	}
+
+	// The full decode should succeed
+	const final = validateOrfBitstream(strip_data, width, height, 12);
+	try testing.expect(final == null);
 }
