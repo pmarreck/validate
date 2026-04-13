@@ -1,24 +1,27 @@
 License text copyright (c) 2020 MariaDB Corporation Ab, All Rights Reserved.
 "Business Source License" is a trademark of MariaDB Corporation Ab.
 
-Parameters
+PARAMETERS
 
 Licensor:             Peter Marreck
+
 Licensed Work:        validate (file integrity validation tool).
                       The Licensed Work is (c) 2026 Peter Marreck.
+
 Additional Use Grant: Production use of the Licensed Work is permitted,
                       provided that ALL of the following conditions are met:
 
                       1. The Licensed Work is invoked directly as a
                       command-line process by a human operator or automated
-                      script, for the operator's own internal use, and is NOT embedded in, called by, wrapped by,
-                      or integrated with any application, service, or
-                      interface that is offered to third parties. For the
-                      avoidance of doubt, this prohibits using the Licensed
-                      Work as a backend component of any web service, API,
-                      desktop application, mobile application, browser
-                      extension, IDE plugin, or any other software that
-                      provides file validation functionality to end users.
+                      script, for the operator's own internal use, and is NOT
+                      embedded in, called by, wrapped by, or integrated with
+                      any application, service, or interface that is offered
+                      to third parties. For the avoidance of doubt, this
+                      prohibits using the Licensed Work as a backend component
+                      of any web service, API, desktop application, mobile
+                      application, browser extension, IDE plugin, or any
+                      other software that provides file validation
+                      functionality to end users.
 
                       2. If the user is an organization (including any
                       for-profit entity, nonprofit, or government agency),
@@ -37,14 +40,15 @@ Additional Use Grant: Production use of the Licensed Work is permitted,
 
                       For commercial licensing inquiries:
                       validate.pics@gmail.com
+
 Change Date:          April 13, 2030
 Change License:       MIT License
 
-Notice
+NOTICE
 
 Business Source License 1.1
 
-Terms
+TERMS
 
 The Licensor hereby grants you the right to copy, modify, create derivative
 works, redistribute, and make non-production use of the Licensed Work. The
