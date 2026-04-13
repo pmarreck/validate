@@ -780,13 +780,14 @@ pub fn validateTiff(file: *FileSource, format: FileFormat) ValidationResult {
         return ValidationResult.invalidCode(format, .invalid_value, "TIFF byte order marker");
     }
 
-    // Check magic number (42)
+    // Check magic number (42 for standard TIFF; ORF uses 0x4F52 "OR" or 0x5253 "RS")
     const magic = if (is_le)
         std.mem.readInt(u16, header[2..4], .little)
     else
         std.mem.readInt(u16, header[2..4], .big);
 
-    if (magic != 42) {
+    const is_orf_magic = (magic == 0x4F52 or magic == 0x5253); // Olympus ORF variant
+    if (magic != 42 and !(format == .orf and is_orf_magic)) {
         return ValidationResult.invalidCode(format, .invalid_magic_number, "TIFF");
     }
 
@@ -836,9 +837,9 @@ pub fn validateTiff(file: *FileSource, format: FileFormat) ValidationResult {
 pub fn validateRaf(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.raf, .failed_to_seek, "to start");
 
-    var header: [84]u8 = undefined;
+    var header: [92]u8 = undefined;
     const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.raf, .failed_to_read, "RAF header");
-    if (bytes_read < 84) {
+    if (bytes_read < 92) {
         return ValidationResult.invalidCode(.raf, .truncated, "RAF header too short");
     }
 
@@ -847,11 +848,14 @@ pub fn validateRaf(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCode(.raf, .invalid_magic_number, "RAF");
     }
 
-    // Bytes 28..32: JPEG preview offset (big-endian u32)
-    // Bytes 32..36: JPEG preview length (big-endian u32)
-    // Bytes 84..88: RAF data offset (in some versions)
-    const jpeg_offset = std.mem.readInt(u32, header[84 - 56 ..][0..4], .big);
-    const jpeg_length = std.mem.readInt(u32, header[84 - 52 ..][0..4], .big);
+    // RAF header layout (big-endian):
+    //   0x00..0x10: magic "FUJIFILMCCD-RAW "
+    //   0x10..0x1C: format version + camera ID
+    //   0x1C..0x3C: camera model string
+    //   0x54..0x58: JPEG preview offset (big-endian u32)
+    //   0x58..0x5C: JPEG preview length (big-endian u32)
+    const jpeg_offset = std.mem.readInt(u32, header[0x54..0x58], .big);
+    const jpeg_length = std.mem.readInt(u32, header[0x58..0x5C], .big);
 
     // Get file size to verify offsets are within bounds
     const file_size = file.getEndPos() catch {
@@ -865,7 +869,7 @@ pub fn validateRaf(file: *FileSource) ValidationResult {
         }
     }
 
-    return ValidationResult.ok(.raf);
+    return ValidationResult.okWithDepth(.raf, .structural);
 }
 
 // ============ Panasonic RW2 Validator ============

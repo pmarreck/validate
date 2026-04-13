@@ -1255,6 +1255,11 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = "FUJIFILMCCD-RAW ", .offset = 0, .format = .raf },
     // Panasonic RW2: II + version 0x55 (TIFF variant) - must precede generic TIFF
     .{ .bytes = &[_]u8{ 0x49, 0x49, 0x55, 0x00 }, .offset = 0, .format = .rw2 },
+    // Olympus ORF: IIRO (LE), IIRS (LE), or MMOR (BE) — TIFF variant with custom magic
+    // Reference: https://libopenraw.freedesktop.org/formats/orf/
+    .{ .bytes = &[_]u8{ 0x49, 0x49, 0x52, 0x4F }, .offset = 0, .format = .orf }, // IIRO (little-endian)
+    .{ .bytes = &[_]u8{ 0x49, 0x49, 0x52, 0x53 }, .offset = 0, .format = .orf }, // IIRS (little-endian)
+    .{ .bytes = &[_]u8{ 0x4D, 0x4D, 0x4F, 0x52 }, .offset = 0, .format = .orf }, // MMOR (big-endian)
     // TIFF: II (little-endian) or MM (big-endian) - also basis for RAW formats
     .{ .bytes = &[_]u8{ 0x49, 0x49, 0x2A, 0x00 }, .offset = 0, .format = .tiff },
     .{ .bytes = &[_]u8{ 0x4D, 0x4D, 0x00, 0x2A }, .offset = 0, .format = .tiff },
