@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Validate — File Integrity You Can Trust</title>
+<meta name="description" content="Deep file validation for 240+ formats. Detect corruption, verify integrity, trust your data.">
+<style>
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+	font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+	min-height: 100vh;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	background: linear-gradient(180deg, #4a9eed 0%, #7ec8f8 40%, #b8e4ff 70%, #e8f4ff 100%);
+	color: #1a2a3a;
+	overflow: hidden;
+	position: relative;
+}
+
+/* Clouds */
+.clouds {
+	position: fixed;
+	top: 0; left: 0; right: 0; bottom: 0;
+	pointer-events: none;
+	overflow: hidden;
+	z-index: 0;
+}
+.cloud {
+	position: absolute;
+	background: rgba(255, 255, 255, 0.8);
+	border-radius: 50%;
+	filter: blur(1px);
+}
+.cloud::before, .cloud::after {
+	content: '';
+	position: absolute;
+	background: inherit;
+	border-radius: 50%;
+}
+.cloud-1 {
+	width: 200px; height: 60px;
+	top: 12%; left: -200px;
+	animation: drift 45s linear infinite;
+}
+.cloud-1::before { width: 100px; height: 80px; top: -40px; left: 30px; }
+.cloud-1::after { width: 120px; height: 70px; top: -30px; left: 80px; }
+
+.cloud-2 {
+	width: 160px; height: 50px;
+	top: 25%; left: -160px;
+	animation: drift 60s linear infinite;
+	animation-delay: -20s;
+	opacity: 0.6;
+}
+.cloud-2::before { width: 80px; height: 60px; top: -30px; left: 20px; }
+.cloud-2::after { width: 90px; height: 50px; top: -25px; left: 60px; }
+
+.cloud-3 {
+	width: 240px; height: 70px;
+	top: 8%; left: -240px;
+	animation: drift 55s linear infinite;
+	animation-delay: -35s;
+	opacity: 0.7;
+}
+.cloud-3::before { width: 130px; height: 90px; top: -50px; left: 40px; }
+.cloud-3::after { width: 140px; height: 80px; top: -35px; left: 100px; }
+
+.cloud-4 {
+	width: 180px; height: 55px;
+	top: 18%; left: -180px;
+	animation: drift 70s linear infinite;
+	animation-delay: -50s;
+	opacity: 0.5;
+}
+.cloud-4::before { width: 90px; height: 70px; top: -35px; left: 25px; }
+.cloud-4::after { width: 100px; height: 60px; top: -28px; left: 70px; }
+
+@keyframes drift {
+	from { transform: translateX(0); }
+	to { transform: translateX(calc(100vw + 300px)); }
+}
+
+/* Main content */
+.content {
+	position: relative;
+	z-index: 1;
+	text-align: center;
+	padding: 2rem;
+}
+
+h1 {
+	font-size: clamp(4rem, 12vw, 10rem);
+	font-weight: 700;
+	letter-spacing: -0.02em;
+	color: #fff;
+	text-shadow: 0 2px 20px rgba(0, 0, 0, 0.15), 0 1px 3px rgba(0, 0, 0, 0.1);
+	margin-bottom: 1.5rem;
+	line-height: 1;
+}
+
+.tagline {
+	font-size: clamp(1.2rem, 3vw, 1.8rem);
+	font-weight: 400;
+	color: rgba(255, 255, 255, 0.95);
+	text-shadow: 0 1px 8px rgba(0, 0, 0, 0.1);
+	margin-bottom: 2.5rem;
+}
+
+/* Scroller */
+.scroller-container {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.5rem;
+	font-size: clamp(1rem, 2.5vw, 1.4rem);
+	color: rgba(255, 255, 255, 0.9);
+	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.scroller-box {
+	display: inline-block;
+	background: rgba(255, 255, 255, 0.25);
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+	border: 1px solid rgba(255, 255, 255, 0.4);
+	border-radius: 8px;
+	padding: 0 0.8em;
+	/* Fixed width: fits ".woff2" (7 chars) comfortably in monospace */
+	width: 8.5ch;
+	height: 2.2em;
+	overflow: hidden;
+	position: relative;
+}
+
+.scroller-track {
+	position: absolute;
+	top: 0;
+	left: 0;
+	width: 100%;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ext-item {
+	font-weight: 600;
+	font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', Consolas, monospace;
+	letter-spacing: 0.05em;
+	height: 2.2em;
+	line-height: 2.2em;
+	text-align: center;
+	flex-shrink: 0;
+}
+
+/* Category badge — no transition, instant swap */
+.category-badge {
+	font-size: 0.7em;
+	font-weight: 500;
+	padding: 0.2em 0.6em;
+	border-radius: 99px;
+	background: rgba(255, 255, 255, 0.2);
+	color: rgba(255, 255, 255, 0.8);
+	margin-left: 0.3rem;
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+}
+
+/* Stats */
+.stats {
+	margin-top: 3rem;
+	display: flex;
+	gap: 2rem;
+	justify-content: center;
+	flex-wrap: wrap;
+}
+
+.stat {
+	background: rgba(255, 255, 255, 0.2);
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+	border: 1px solid rgba(255, 255, 255, 0.3);
+	border-radius: 12px;
+	padding: 1rem 1.5rem;
+	text-align: center;
+	min-width: 120px;
+	position: relative;
+}
+
+.stat-number {
+	font-size: 2rem;
+	font-weight: 700;
+	color: #fff;
+}
+
+.stat-label {
+	font-size: 0.8rem;
+	color: rgba(255, 255, 255, 0.8);
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	margin-top: 0.2rem;
+}
+
+/* Tooltip for format list */
+.stat-tooltip {
+	display: none;
+	position: absolute;
+	top: 100%;
+	left: 50%;
+	transform: translateX(-50%);
+	background: rgba(20, 40, 60, 0.95);
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+	color: #fff;
+	border-radius: 10px;
+	padding: 1rem;
+	font-size: 0.7rem;
+	line-height: 1.6;
+	white-space: normal;
+	width: 360px;
+	max-height: 300px;
+	overflow-y: auto;
+	z-index: 10;
+	text-align: left;
+	box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
+}
+
+.stat-tooltip::after {
+	content: '';
+	position: absolute;
+	bottom: 100%;
+	left: 50%;
+	transform: translateX(-50%);
+	border: 8px solid transparent;
+	border-bottom-color: rgba(20, 40, 60, 0.95);
+}
+
+.stat:hover .stat-tooltip {
+	display: block;
+}
+
+.tooltip-category {
+	font-weight: 700;
+	color: #7ec8f8;
+	margin-top: 0.5em;
+	text-transform: uppercase;
+	font-size: 0.65rem;
+	letter-spacing: 0.1em;
+}
+
+.tooltip-category:first-child {
+	margin-top: 0;
+}
+
+.tooltip-exts {
+	font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+	color: rgba(255, 255, 255, 0.85);
+}
+
+.tooltip-ext {
+	display: inline-block;
+	white-space: nowrap;
+	margin-right: 0.5em;
+	margin-bottom: 0.1em;
+}
+
+/* Footer */
+.footer {
+	position: fixed;
+	bottom: 1.5rem;
+	z-index: 1;
+	display: flex;
+	gap: 1.5rem;
+	align-items: center;
+}
+
+.footer a {
+	color: rgba(255, 255, 255, 0.7);
+	text-decoration: none;
+	font-size: 0.9rem;
+	transition: color 0.2s;
+}
+
+.footer a:hover {
+	color: #fff;
+}
+
+.gh-icon {
+	width: 24px; height: 24px;
+	fill: rgba(255, 255, 255, 0.7);
+	transition: fill 0.2s;
+	vertical-align: middle;
+}
+.footer a:hover .gh-icon { fill: #fff; }
+</style>
+</head>
+<body>
+
+<div class="clouds">
+	<div class="cloud cloud-1"></div>
+	<div class="cloud cloud-2"></div>
+	<div class="cloud cloud-3"></div>
+	<div class="cloud cloud-4"></div>
+</div>
+
+<div class="content">
+	<h1>Validate.</h1>
+	<p class="tagline">Deep file integrity validation you can trust</p>
+
+	<div class="scroller-container">
+		<span>Validates your</span>
+		<div class="scroller-box">
+			<div class="scroller-track" id="scroller-track">
+				<div class="ext-item" id="ext-current"></div>
+				<div class="ext-item" id="ext-next"></div>
+			</div>
+		</div>
+		<span class="category-badge" id="category-badge"></span>
+	</div>
+
+	<div class="stats">
+		<div class="stat" id="format-stat">
+			<div class="stat-number" id="format-count">0</div>
+			<div class="stat-label">Formats</div>
+			<div class="stat-tooltip" id="format-tooltip"></div>
+		</div>
+		<div class="stat">
+			<div class="stat-number">0</div>
+			<div class="stat-label">External Dependencies</div>
+		</div>
+	</div>
+</div>
+
+<div class="footer">
+	<a href="https://github.com/pmarreck/validate" aria-label="GitHub">
+		<svg class="gh-icon" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+	</a>
+	<a href="https://github.com/pmarreck/validate">Source</a>
+</div>
+
+<script>
+const formats = [
+	// Images
+	{ext: "png", cat: "image"}, {ext: "jpg", cat: "image"}, {ext: "gif", cat: "image"},
+	{ext: "bmp", cat: "image"}, {ext: "webp", cat: "image"}, {ext: "tiff", cat: "image"},
+	{ext: "heic", cat: "image"}, {ext: "avif", cat: "image"}, {ext: "exr", cat: "image"},
+	{ext: "jxl", cat: "image"}, {ext: "svg", cat: "image"}, {ext: "apng", cat: "image"},
+	{ext: "qoi", cat: "image"}, {ext: "psd", cat: "image"}, {ext: "dng", cat: "image"},
+	{ext: "ico", cat: "image"}, {ext: "icns", cat: "image"}, {ext: "dpx", cat: "image"},
+	{ext: "tga", cat: "image"}, {ext: "pam", cat: "image"}, {ext: "cr2", cat: "image"},
+	{ext: "nef", cat: "image"}, {ext: "arw", cat: "image"},
+	// Video
+	{ext: "mp4", cat: "video"}, {ext: "mkv", cat: "video"}, {ext: "mov", cat: "video"},
+	{ext: "avi", cat: "video"}, {ext: "webm", cat: "video"}, {ext: "flv", cat: "video"},
+	{ext: "mpg", cat: "video"}, {ext: "m2ts", cat: "video"}, {ext: "ts", cat: "video"},
+	{ext: "3gp", cat: "video"}, {ext: "wmv", cat: "video"}, {ext: "swf", cat: "video"},
+	{ext: "dv", cat: "video"}, {ext: "ivf", cat: "video"}, {ext: "rm", cat: "video"},
+	{ext: "asf", cat: "video"}, {ext: "vob", cat: "video"},
+	// Audio
+	{ext: "mp3", cat: "audio"}, {ext: "flac", cat: "audio"}, {ext: "wav", cat: "audio"},
+	{ext: "m4a", cat: "audio"}, {ext: "aiff", cat: "audio"}, {ext: "ogg", cat: "audio"},
+	{ext: "opus", cat: "audio"}, {ext: "mid", cat: "audio"}, {ext: "ape", cat: "audio"},
+	{ext: "wv", cat: "audio"}, {ext: "aac", cat: "audio"}, {ext: "ac3", cat: "audio"},
+	{ext: "dts", cat: "audio"}, {ext: "dsf", cat: "audio"}, {ext: "mp2", cat: "audio"},
+	{ext: "caf", cat: "audio"}, {ext: "wma", cat: "audio"}, {ext: "amr", cat: "audio"},
+	{ext: "mod", cat: "audio"}, {ext: "xm", cat: "audio"}, {ext: "s3m", cat: "audio"},
+	// Archives
+	{ext: "zip", cat: "archive"}, {ext: "gz", cat: "archive"}, {ext: "bz2", cat: "archive"},
+	{ext: "xz", cat: "archive"}, {ext: "zst", cat: "archive"}, {ext: "7z", cat: "archive"},
+	{ext: "rar", cat: "archive"}, {ext: "tar", cat: "archive"}, {ext: "cab", cat: "archive"},
+	{ext: "iso", cat: "archive"}, {ext: "dmg", cat: "archive"}, {ext: "rpm", cat: "archive"},
+	{ext: "sit", cat: "archive"}, {ext: "wim", cat: "archive"}, {ext: "vmdk", cat: "archive"},
+	{ext: "msi", cat: "archive"}, {ext: "br", cat: "archive"}, {ext: "kmz", cat: "archive"},
+	// Documents
+	{ext: "pdf", cat: "document"}, {ext: "docx", cat: "document"}, {ext: "xlsx", cat: "document"},
+	{ext: "pptx", cat: "document"}, {ext: "doc", cat: "document"}, {ext: "xls", cat: "document"},
+	{ext: "ppt", cat: "document"}, {ext: "odt", cat: "document"}, {ext: "epub", cat: "document"},
+	{ext: "rtf", cat: "document"}, {ext: "pages", cat: "document"}, {ext: "sqlite", cat: "document"},
+	{ext: "mdb", cat: "document"}, {ext: "dbf", cat: "document"},
+	// Creative
+	{ext: "ai", cat: "creative"}, {ext: "eps", cat: "creative"}, {ext: "sketch", cat: "creative"},
+	{ext: "aep", cat: "creative"}, {ext: "prproj", cat: "creative"}, {ext: "indd", cat: "creative"},
+	{ext: "idml", cat: "creative"}, {ext: "fcpxml", cat: "creative"}, {ext: "drp", cat: "creative"},
+	// DAW / Music Production
+	{ext: "flp", cat: "daw"}, {ext: "als", cat: "daw"}, {ext: "rpp", cat: "daw"},
+	{ext: "cpr", cat: "daw"}, {ext: "ptx", cat: "daw"}, {ext: "band", cat: "daw"},
+	{ext: "reason", cat: "daw"}, {ext: "logicx", cat: "daw"}, {ext: "song", cat: "daw"},
+	// 3D / CAD
+	{ext: "stl", cat: "3d/cad"}, {ext: "obj", cat: "3d/cad"}, {ext: "glb", cat: "3d/cad"},
+	{ext: "gltf", cat: "3d/cad"}, {ext: "ply", cat: "3d/cad"}, {ext: "3mf", cat: "3d/cad"},
+	{ext: "blend", cat: "3d/cad"}, {ext: "dwg", cat: "3d/cad"}, {ext: "step", cat: "3d/cad"},
+	{ext: "dxf", cat: "3d/cad"},
+	// Games
+	{ext: "nes", cat: "game"}, {ext: "sfc", cat: "game"}, {ext: "n64", cat: "game"},
+	{ext: "gb", cat: "game"}, {ext: "gba", cat: "game"}, {ext: "nds", cat: "game"},
+	{ext: "gen", cat: "game"}, {ext: "chd", cat: "game"}, {ext: "wad", cat: "game"},
+	{ext: "bsp", cat: "game"}, {ext: "vpk", cat: "game"},
+	// Medical
+	{ext: "dcm", cat: "medical"}, {ext: "dicom", cat: "medical"},
+	{ext: "nii", cat: "medical"},
+	// Scientific
+	{ext: "hdf5", cat: "scientific"}, {ext: "parquet", cat: "scientific"},
+	{ext: "netcdf", cat: "scientific"}, {ext: "fits", cat: "scientific"},
+	{ext: "fasta", cat: "scientific"}, {ext: "fastq", cat: "scientific"},
+	{ext: "shp", cat: "scientific"}, {ext: "pdb", cat: "scientific"},
+	{ext: "cif", cat: "scientific"},
+	// Financial
+	{ext: "qbw", cat: "financial"}, {ext: "qbb", cat: "financial"},
+	{ext: "ofx", cat: "financial"}, {ext: "qif", cat: "financial"},
+	{ext: "nacha", cat: "financial"}, {ext: "mt940", cat: "financial"},
+	{ext: "bai2", cat: "financial"},
+	// Fonts
+	{ext: "ttf", cat: "font"}, {ext: "otf", cat: "font"},
+	{ext: "woff", cat: "font"}, {ext: "woff2", cat: "font"},
+	// Executables
+	{ext: "exe", cat: "executable"}, {ext: "elf", cat: "executable"},
+	{ext: "wasm", cat: "executable"}, {ext: "class", cat: "executable"},
+	{ext: "dll", cat: "executable"}, {ext: "so", cat: "executable"},
+	{ext: "beam", cat: "executable"},
+	// Crypto
+	{ext: "pem", cat: "crypto"}, {ext: "der", cat: "crypto"}, {ext: "crt", cat: "crypto"},
+	// Email
+	{ext: "eml", cat: "email"}, {ext: "mbox", cat: "email"},
+	// Text/Data
+	{ext: "json", cat: "text"}, {ext: "xml", cat: "text"}, {ext: "csv", cat: "text"},
+	{ext: "yaml", cat: "text"}, {ext: "toml", cat: "text"}, {ext: "html", cat: "text"},
+	{ext: "md", cat: "text"}, {ext: "kml", cat: "text"},
+	// Network
+	{ext: "pcap", cat: "network"}, {ext: "pcapng", cat: "network"},
+];
+
+// Format count (240+ actual formats; this list is deduplicated extensions)
+document.getElementById('format-count').textContent = '240+';
+
+// Build tooltip content grouped by category
+const byCategory = {};
+formats.forEach(f => {
+	if (!byCategory[f.cat]) byCategory[f.cat] = [];
+	byCategory[f.cat].push(f.ext);
+});
+
+const categoryOrder = [
+	'image', 'video', 'audio', 'archive', 'document', 'creative', 'daw',
+	'3d/cad', 'game', 'medical', 'scientific', 'financial', 'font',
+	'executable', 'crypto', 'email', 'text', 'network'
+];
+
+let tooltipHTML = '';
+categoryOrder.forEach(cat => {
+	if (!byCategory[cat]) return;
+	tooltipHTML += '<div class="tooltip-category">' + cat + '</div>';
+	tooltipHTML += '<div class="tooltip-exts">' + byCategory[cat].map(e => '<span class="tooltip-ext">.' + e + '</span>').join('') + '</div>';
+});
+document.getElementById('format-tooltip').innerHTML = tooltipHTML;
+
+// Scroller: two items, scroll up animation
+const track = document.getElementById('scroller-track');
+const currentEl = document.getElementById('ext-current');
+const nextEl = document.getElementById('ext-next');
+const catEl = document.getElementById('category-badge');
+let idx = 0;
+
+// Initialize
+currentEl.textContent = '.' + formats[0].ext;
+catEl.textContent = formats[0].cat;
+
+function cycle() {
+	const nextIdx = (idx + 1) % formats.length;
+
+	// Set up next item below current
+	nextEl.textContent = '.' + formats[nextIdx].ext;
+
+	// Instantly update category (no fade)
+	catEl.textContent = formats[nextIdx].cat;
+
+	// Slide track up
+	track.style.transition = 'transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)';
+	track.style.transform = 'translateY(-2.2em)';
+
+	setTimeout(() => {
+		// Reset: move new item to current position instantly
+		track.style.transition = 'none';
+		track.style.transform = 'translateY(0)';
+		currentEl.textContent = '.' + formats[nextIdx].ext;
+		nextEl.textContent = '';
+		idx = nextIdx;
+	}, 250);
+}
+
+setInterval(cycle, 500);
+</script>
+
+</body>
+</html>
