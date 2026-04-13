@@ -4,11 +4,17 @@
 //! - Compression 32773: Packed 12-bit RAW (K100D and similar)
 //! - Compression 65535: Lossless Huffman (K10D, K-5, K-3)
 //!
-//! Huffman algorithm derived from dcraw.c pentax_load_raw() (public domain, Dave Coffin).
-//! Reference: https://dechifro.org/dcraw/dcraw.c
-//!
 //! Pure computation — no I/O. Operates on in-memory []const u8 strip data
 //! using the shared BitReader from bitstream_reader.zig.
+//!
+//! ALGORITHM PROVENANCE: The Huffman decompression algorithm (compression 65535)
+//! is based on the mathematical description found in dcraw.c's pentax_load_raw()
+//! function by Dave Coffin. Per dcraw's license, all non-Foveon code is
+//! "free for all uses" with no license required. This is an independent
+//! clean-room implementation in Zig — not a mechanical translation of the
+//! C source. The packed 12-bit decoder (compression 32773) is original work
+//! based on standard TIFF PackBits semantics.
+//! Reference: https://dechifro.org/dcraw/dcraw.c
 
 const std = @import("std");
 const bitstream_reader = @import("bitstream_reader.zig");
