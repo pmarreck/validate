@@ -462,11 +462,22 @@ pub fn validateAppBundle(allocator: Allocator, path: []const u8) BundleValidatio
 	}
 	result.stray_files = stray_count;
 
+	// 5. Verify CodeResources manifest (if code signature exists)
+	var manifest_missing: u32 = 0;
+	if (result.has_code_signature) {
+		const cr_result = verifyCodeResources(allocator, contents_path);
+		if (cr_result.total_listed > 0) {
+			manifest_missing = cr_result.missing_files;
+		}
+	}
+
 	// Determine overall validity and depth
 	result.valid = true;
 	if (result.has_executable and result.executable_is_valid_macho and result.has_code_signature and result.missing_plist_keys == 0) {
 		result.depth = .full;
-		if (stray_count > 0) {
+		if (manifest_missing > 0) {
+			result.warning = "code signature manifest: files listed but missing from disk (tampering or corruption)";
+		} else if (stray_count > 0) {
 			result.warning = "stray files detected in Contents/ directory";
 		} else if (result.warning == null) {
 			// No warnings at all — fully clean bundle
@@ -558,6 +569,179 @@ pub fn validatePluginBundle(allocator: Allocator, path: []const u8) BundleValida
 	// Plugin bundles follow the same structure as .app but simpler
 	// They need Contents/MacOS/ + Contents/Info.plist at minimum
 	return validateAppBundle(allocator, path);
+}
+
+// ============ CodeResources Manifest Verification ============
+
+pub const CodeResourcesResult = struct {
+	valid: bool,
+	missing_files: u32, // Files listed in manifest but not on disk
+	unlisted_files: u32, // Files on disk but not in manifest
+	total_listed: u32,
+	total_on_disk: u32,
+};
+
+/// Verify the _CodeSignature/CodeResources manifest against actual bundle contents.
+/// `contents_path` should point to the Contents/ directory of the bundle.
+/// Checks that:
+/// 1. Every file in the `files` dict exists on disk
+/// 2. No unlisted files exist in Resources/ or other covered directories
+pub fn verifyCodeResources(allocator: Allocator, contents_path: []const u8) CodeResourcesResult {
+	var result = CodeResourcesResult{
+		.valid = false,
+		.missing_files = 0,
+		.unlisted_files = 0,
+		.total_listed = 0,
+		.total_on_disk = 0,
+	};
+
+	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+	// Read CodeResources
+	const cr_path = std.fmt.bufPrint(&path_buf, "{s}/_CodeSignature/CodeResources", .{contents_path}) catch return result;
+	const cr_data = std.fs.cwd().readFileAlloc(allocator, cr_path, 4 * 1024 * 1024) catch return result;
+	defer allocator.free(cr_data);
+
+	// Extract listed file paths from the `files` dict in the XML plist
+	// We look for <key>files</key><dict>...<key>PATH</key>...</dict>
+	var listed_files = std.StringHashMap(void).init(allocator);
+	defer {
+		var iter = listed_files.keyIterator();
+		while (iter.next()) |k| allocator.free(@constCast(k.*));
+		listed_files.deinit();
+	}
+
+	// Find the <key>files</key> section
+	const files_key = "<key>files</key>";
+	const dict_open = "<dict>";
+	const dict_close = "</dict>";
+	const key_open = "<key>";
+	const key_close = "</key>";
+
+	const files_pos = std.mem.indexOf(u8, cr_data, files_key) orelse return result;
+	const dict_start = std.mem.indexOfPos(u8, cr_data, files_pos + files_key.len, dict_open) orelse return result;
+	const inner_start = dict_start + dict_open.len;
+
+	// Find the matching </dict> at depth 0 (skip nested dicts)
+	var depth: u32 = 0;
+	var search_pos: usize = inner_start;
+	var dict_end: ?usize = null;
+	while (search_pos < cr_data.len) {
+		if (search_pos + dict_open.len <= cr_data.len and std.mem.eql(u8, cr_data[search_pos..][0..dict_open.len], dict_open)) {
+			depth += 1;
+			search_pos += dict_open.len;
+		} else if (search_pos + dict_close.len <= cr_data.len and std.mem.eql(u8, cr_data[search_pos..][0..dict_close.len], dict_close)) {
+			if (depth == 0) {
+				dict_end = search_pos;
+				break;
+			}
+			depth -= 1;
+			search_pos += dict_close.len;
+		} else {
+			search_pos += 1;
+		}
+	}
+	const files_section = cr_data[inner_start..dict_end orelse return result];
+
+	// Extract top-level <key>PATH</key> entries from the files dict.
+	// Only capture keys at depth 0 (skip "hash", "optional" etc. inside nested dicts).
+	var pos: usize = 0;
+	var key_depth: u32 = 0;
+	while (pos < files_section.len) {
+		if (pos + dict_open.len <= files_section.len and std.mem.eql(u8, files_section[pos..][0..dict_open.len], dict_open)) {
+			key_depth += 1;
+			pos += dict_open.len;
+			continue;
+		}
+		if (pos + dict_close.len <= files_section.len and std.mem.eql(u8, files_section[pos..][0..dict_close.len], dict_close)) {
+			if (key_depth > 0) key_depth -= 1;
+			pos += dict_close.len;
+			continue;
+		}
+
+		if (key_depth == 0) {
+			if (std.mem.indexOfPos(u8, files_section, pos, key_open)) |ks| {
+				if (ks == pos) {
+					const kns = ks + key_open.len;
+					const ke = std.mem.indexOfPos(u8, files_section, kns, key_close) orelse break;
+					const file_path = files_section[kns..ke];
+
+					const duped = allocator.dupe(u8, file_path) catch break;
+					listed_files.put(duped, {}) catch {
+						allocator.free(duped);
+						break;
+					};
+					result.total_listed += 1;
+					pos = ke + key_close.len;
+					continue;
+				}
+			}
+		}
+		pos += 1;
+	}
+
+	if (result.total_listed == 0) return result;
+
+	// Now walk the actual Contents/ directory recursively and check each file
+	// against the manifest. Skip _CodeSignature/, MacOS/, and Info.plist (not in files dict).
+	var missing: u32 = 0;
+	var unlisted: u32 = 0;
+	var on_disk: u32 = 0;
+
+	var contents_dir = std.fs.cwd().openDir(contents_path, .{ .iterate = true }) catch return result;
+	defer contents_dir.close();
+
+	// We need to walk recursively. Use a stack-based approach.
+	var walker = contents_dir.walk(allocator) catch return result;
+	defer walker.deinit();
+
+	while (walker.next() catch null) |entry| {
+		if (entry.kind != .file) continue;
+		const rel_path = entry.path;
+
+		// Skip directories/files not covered by the parent's `files` dict:
+		// - _CodeSignature/ (the signature itself)
+		// - MacOS/ executables (covered by cdhash in files2, not files)
+		// - Info.plist and PkgInfo (top-level metadata)
+		// - Frameworks/ and PlugIns/ contents (nested bundles, separately signed)
+		// - CodeResources at Contents level
+		// - _MASReceipt/ (App Store receipt)
+		if (std.mem.startsWith(u8, rel_path, "_CodeSignature")) continue;
+		if (std.mem.startsWith(u8, rel_path, "MacOS/")) continue;
+		if (std.mem.startsWith(u8, rel_path, "Frameworks/")) continue;
+		if (std.mem.startsWith(u8, rel_path, "PlugIns/")) continue;
+		if (std.mem.startsWith(u8, rel_path, "_MASReceipt/")) continue;
+		if (std.mem.startsWith(u8, rel_path, "XPCServices/")) continue;
+		if (std.mem.eql(u8, rel_path, "Info.plist")) continue;
+		if (std.mem.eql(u8, rel_path, "PkgInfo")) continue;
+		if (std.mem.eql(u8, rel_path, "CodeResources")) continue;
+		if (std.mem.eql(u8, rel_path, "embedded.provisionprofile")) continue;
+
+		on_disk += 1;
+		if (!listed_files.contains(rel_path)) {
+			unlisted += 1;
+		}
+	}
+
+	// Check for files in manifest but missing from disk
+	var key_iter = listed_files.keyIterator();
+	while (key_iter.next()) |k| {
+		const file_rel = k.*;
+		if (contents_dir.access(file_rel, .{})) |_| {
+			// exists
+		} else |_| {
+			missing += 1;
+		}
+	}
+
+	result.missing_files = missing;
+	result.unlisted_files = unlisted;
+	result.total_on_disk = on_disk;
+	// Only fail on missing files (listed but not on disk = definite corruption/tampering).
+	// Unlisted files may be covered by files2 regex rules we don't parse yet.
+	result.valid = (missing == 0);
+
+	return result;
 }
 
 // ============ Tests ============
@@ -756,4 +940,75 @@ test "plistKeyExistsAny: works for XML" {
 	;
 	try testing.expect(plistKeyExistsAny(plist, "CFBundleName"));
 	try testing.expect(!plistKeyExistsAny(plist, "Nonexistent"));
+}
+
+test "verifyCodeResources: detects unlisted file in signed bundle" {
+	var tmp = testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	// Create a signed bundle with a CodeResources listing one file
+	tmp.dir.makeDir("Signed.app") catch return error.SkipZigTest;
+	tmp.dir.makeDir("Signed.app/Contents") catch return error.SkipZigTest;
+	tmp.dir.makeDir("Signed.app/Contents/Resources") catch return error.SkipZigTest;
+	tmp.dir.makeDir("Signed.app/Contents/_CodeSignature") catch return error.SkipZigTest;
+
+	// Write a file that IS listed
+	tmp.dir.writeFile(.{ .sub_path = "Signed.app/Contents/Resources/icon.icns", .data = "icon" }) catch return error.SkipZigTest;
+
+	// Write CodeResources listing only icon.icns
+	const code_resources =
+    \\<?xml version="1.0" encoding="UTF-8"?>
+    \\<plist version="1.0">
+    \\<dict>
+    \\  <key>files</key>
+    \\  <dict>
+    \\    <key>Resources/icon.icns</key>
+    \\    <data>dGVzdA==</data>
+    \\  </dict>
+    \\</dict>
+    \\</plist>
+	;
+	tmp.dir.writeFile(.{ .sub_path = "Signed.app/Contents/_CodeSignature/CodeResources", .data = code_resources }) catch return error.SkipZigTest;
+
+	// Add an UNLISTED file (the intruder)
+	tmp.dir.writeFile(.{ .sub_path = "Signed.app/Contents/Resources/injected.dylib", .data = "malware" }) catch return error.SkipZigTest;
+
+	var pb: [std.fs.max_path_bytes]u8 = undefined;
+	const rp = tmp.dir.realpath("Signed.app/Contents", &pb) catch return error.SkipZigTest;
+
+	const manifest_result = verifyCodeResources(testing.allocator, rp);
+	try testing.expect(manifest_result.unlisted_files > 0);
+}
+
+test "verifyCodeResources: clean bundle has no unlisted files" {
+	var tmp = testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	tmp.dir.makeDir("Clean.app") catch return error.SkipZigTest;
+	tmp.dir.makeDir("Clean.app/Contents") catch return error.SkipZigTest;
+	tmp.dir.makeDir("Clean.app/Contents/Resources") catch return error.SkipZigTest;
+	tmp.dir.makeDir("Clean.app/Contents/_CodeSignature") catch return error.SkipZigTest;
+
+	tmp.dir.writeFile(.{ .sub_path = "Clean.app/Contents/Resources/icon.icns", .data = "icon" }) catch return error.SkipZigTest;
+
+	const code_resources =
+    \\<?xml version="1.0" encoding="UTF-8"?>
+    \\<plist version="1.0">
+    \\<dict>
+    \\  <key>files</key>
+    \\  <dict>
+    \\    <key>Resources/icon.icns</key>
+    \\    <data>dGVzdA==</data>
+    \\  </dict>
+    \\</dict>
+    \\</plist>
+	;
+	tmp.dir.writeFile(.{ .sub_path = "Clean.app/Contents/_CodeSignature/CodeResources", .data = code_resources }) catch return error.SkipZigTest;
+
+	var pb: [std.fs.max_path_bytes]u8 = undefined;
+	const rp = tmp.dir.realpath("Clean.app/Contents", &pb) catch return error.SkipZigTest;
+
+	const manifest_result = verifyCodeResources(testing.allocator, rp);
+	try testing.expectEqual(@as(u32, 0), manifest_result.unlisted_files);
+	try testing.expectEqual(@as(u32, 0), manifest_result.missing_files);
 }
