@@ -110,6 +110,99 @@ h1 {
 	margin-bottom: 2.5rem;
 }
 
+.how-many-btn {
+	display: inline-block;
+	background: rgba(255, 255, 255, 0.3);
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+	border: 1px solid rgba(255, 255, 255, 0.5);
+	border-radius: 8px;
+	padding: 0.3em 1em;
+	color: #fff;
+	font-size: inherit;
+	font-family: inherit;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.2s, transform 0.1s;
+	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+}
+.how-many-btn:hover { background: rgba(255, 255, 255, 0.45); }
+.how-many-btn:active { transform: scale(0.97); }
+
+/* "ALL OF THEM!" impact */
+.impact-container {
+	position: relative;
+	display: inline-block;
+	margin-bottom: 2.5rem;
+}
+
+.impact-text {
+	font-family: Helvetica Neue, Helvetica, Arial, sans-serif;
+	font-weight: 900;
+	color: #fff;
+	text-shadow: 0 2px 20px rgba(0,0,0,0.4), 0 0 40px rgba(255,255,255,0.3);
+	animation: impactZoom 1s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+	font-size: clamp(3rem, 10vw, 7rem);
+	white-space: nowrap;
+	position: relative;
+	z-index: 2;
+}
+
+@keyframes impactZoom {
+	0% { transform: scale(16); opacity: 0; }
+	60% { transform: scale(0.95); opacity: 1; }
+	80% { transform: scale(1.03); }
+	100% { transform: scale(1); opacity: 1; }
+}
+
+/* Crack SVG overlay */
+.crack-overlay {
+	position: absolute;
+	top: 0; left: 0;
+	width: 100%; height: 100%;
+	pointer-events: none;
+	overflow: visible;
+}
+
+.crack-svg {
+	position: absolute;
+	top: 0; left: 0;
+	overflow: visible;
+	width: 100%; height: 100%;
+	z-index: -1;
+}
+
+.crack-path {
+	fill: none;
+	stroke: rgba(30, 20, 10, 0.5);
+	stroke-width: 1.8;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+	stroke-dasharray: var(--crack-total-len);
+	stroke-dashoffset: var(--crack-total-len);
+	animation: crackDraw 0.35s ease-out forwards;
+	animation-delay: var(--crack-delay, 0.35s);
+}
+
+@keyframes crackDraw {
+	to { stroke-dashoffset: 0; }
+}
+
+.subtext-fade {
+	opacity: 0;
+	font-size: clamp(1rem, 2.5vw, 1.3rem);
+	color: rgba(255, 255, 255, 0.75);
+	font-style: italic;
+	margin-top: -1rem;
+	animation: fadeInSub 0.8s ease-in forwards;
+	animation-delay: 1.8s;
+}
+
+@keyframes fadeInSub {
+	0% { opacity: 0; }
+	100% { opacity: 1; }
+}
+
 /* Scroller */
 .scroller-container {
 	display: flex;
@@ -309,7 +402,10 @@ h1 {
 
 <div class="content">
 	<h1>Validate.</h1>
-	<p class="tagline">Deep file integrity validation you can trust</p>
+	<div class="tagline" id="tagline-area">
+		<span>Deep file integrity validation for... </span>
+		<button class="how-many-btn" id="how-many-btn">How many files?</button>
+	</div>
 
 	<div class="scroller-container">
 		<span>Validates your</span>
@@ -509,6 +605,128 @@ formatStat.addEventListener('wheel', function(e) {
 		e.preventDefault();
 	}
 }, { passive: false });
+
+// "How many files?" → "ALL OF THEM!" impact animation
+const originalTagline = document.getElementById('tagline-area').innerHTML;
+document.getElementById('tagline-area').addEventListener('click', function(e) {
+	if (!e.target.classList.contains('how-many-btn')) return;
+	const area = document.getElementById('tagline-area');
+
+	// Generate impact sound via Web Audio API — deep bass thud
+	try {
+		const ctx = new (window.AudioContext || window.webkitAudioContext)();
+		const dur = 0.6;
+		const buf = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
+		const d = buf.getChannelData(0);
+		for (let i = 0; i < d.length; i++) {
+			const t = i / ctx.sampleRate;
+			// Sub-bass fundamental (40Hz) + second harmonic (80Hz) + noise transient
+			d[i] = Math.sin(t * 40 * Math.PI * 2) * Math.exp(-t * 8) * 0.7
+				+ Math.sin(t * 80 * Math.PI * 2) * Math.exp(-t * 12) * 0.3
+				+ (Math.random() * 2 - 1) * Math.exp(-t * 30) * 0.3;
+		}
+		const src = ctx.createBufferSource();
+		src.buffer = buf;
+		src.connect(ctx.destination);
+		src.start(ctx.currentTime + 0.55);
+	} catch(e2) {}
+
+	// Replace content
+	area.innerHTML =
+		'<div class="impact-container" id="impact-box">' +
+			'<div class="impact-text">ALL OF THEM!</div>' +
+			'<div class="crack-overlay" id="crack-overlay"></div>' +
+		'</div>' +
+		'<div class="subtext-fade">(Well... That\'s the goal, anyway.)</div>';
+
+	// Generate glass-like impact cracks using radial + concentric pattern
+	// Based on real glass fracture mechanics: radial cracks from impact center
+	// connected by concentric arcs at expanding radii
+	const overlay = document.getElementById('crack-overlay');
+	const box = document.getElementById('impact-box');
+	const w = box.offsetWidth;
+	const h = box.offsetHeight;
+	const cx = w / 2, cy = h / 2;
+
+	const svgNS = 'http://www.w3.org/2000/svg';
+	const svg = document.createElementNS(svgNS, 'svg');
+	svg.setAttribute('class', 'crack-svg');
+	// Expand viewBox so cracks extend well outside the box
+	const pad = 560;
+	svg.setAttribute('viewBox', '0 0 ' + (w + pad*2) + ' ' + (h + pad*2));
+	svg.style.left = -pad + 'px';
+	svg.style.top = -pad + 'px';
+	svg.style.width = (w + pad*2) + 'px';
+	svg.style.height = (h + pad*2) + 'px';
+	overlay.appendChild(svg);
+
+	// Center of the crack pattern in SVG coordinates
+	const scx = cx + pad, scy = cy + pad;
+
+	function addPath(d, totalLen, delay, strokeW, opacity) {
+		const path = document.createElementNS(svgNS, 'path');
+		path.setAttribute('class', 'crack-path');
+		path.setAttribute('d', d);
+		path.style.setProperty('--crack-total-len', Math.ceil(totalLen));
+		path.style.setProperty('--crack-delay', delay + 's');
+		path.style.stroke = 'rgba(60,50,40,' + opacity + ')';
+		path.style.strokeWidth = strokeW;
+		svg.appendChild(path);
+	}
+
+	// Radial cracks: 10-14 lines from center outward with jagged vertices
+	const numRadials = 10 + Math.floor(Math.random() * 5);
+	const radii = [60, 135, 235, 360, 525]; // concentric ring distances
+	const radialPoints = [];
+	for (let r = 0; r < radii.length; r++) radialPoints.push([]);
+
+	for (let i = 0; i < numRadials; i++) {
+		const baseAngle = (i / numRadials) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
+		let px = scx, py = scy;
+		let d = 'M' + px.toFixed(1) + ',' + py.toFixed(1);
+		let pathLen = 0;
+		let angle = baseAngle;
+
+		for (let r = 0; r < radii.length; r++) {
+			const targetR = radii[r] + (Math.random() - 0.5) * 20;
+			angle = baseAngle + (Math.random() - 0.5) * 0.25;
+			const nx = scx + Math.cos(angle) * targetR;
+			const ny = scy + Math.sin(angle) * targetR;
+			d += ' L' + nx.toFixed(1) + ',' + ny.toFixed(1);
+			pathLen += Math.sqrt((nx-px)*(nx-px) + (ny-py)*(ny-py));
+			radialPoints[r].push({ x: nx, y: ny });
+			px = nx; py = ny;
+		}
+
+		const sw = 1.2 + Math.random() * 0.8;
+		addPath(d, pathLen, 0.58 + i * 0.008, sw, 0.25 + Math.random() * 0.1);
+	}
+
+	// Concentric cracks: jagged arcs connecting adjacent radial points at each ring
+	for (let r = 1; r < radii.length; r++) {
+		const pts = radialPoints[r];
+		if (pts.length < 2) continue;
+		pts.sort((a, b) => Math.atan2(a.y - scy, a.x - scx) - Math.atan2(b.y - scy, b.x - scx));
+
+		for (let i = 0; i < pts.length; i++) {
+			if (Math.random() > 0.5) continue;
+			const a = pts[i];
+			const b = pts[(i + 1) % pts.length];
+			const mx = (a.x + b.x) / 2 + (Math.random() - 0.5) * 14;
+			const my = (a.y + b.y) / 2 + (Math.random() - 0.5) * 14;
+			const d = 'M' + a.x.toFixed(1) + ',' + a.y.toFixed(1) +
+				' L' + mx.toFixed(1) + ',' + my.toFixed(1) +
+				' L' + b.x.toFixed(1) + ',' + b.y.toFixed(1);
+			const segLen = Math.sqrt((mx-a.x)**2+(my-a.y)**2) + Math.sqrt((b.x-mx)**2+(b.y-my)**2);
+			addPath(d, segLen, 0.65 + r * 0.04, 1.0, 0.18 + Math.random() * 0.08);
+		}
+	}
+
+	// Reset after 5 seconds
+	setTimeout(() => {
+		area.innerHTML = originalTagline;
+	}, 5000);
+});
 </script>
 
 </body>
