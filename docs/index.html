@@ -141,7 +141,7 @@ h1 {
 	font-weight: 900;
 	color: #fff;
 	text-shadow: 0 2px 20px rgba(0,0,0,0.4), 0 0 40px rgba(255,255,255,0.3);
-	animation: impactZoom 1s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+	animation: impactZoom 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 	font-size: clamp(3rem, 10vw, 7rem);
 	white-space: nowrap;
 	position: relative;
@@ -195,7 +195,7 @@ h1 {
 	font-style: italic;
 	margin-top: -1rem;
 	animation: fadeInSub 0.8s ease-in forwards;
-	animation-delay: 1.8s;
+	animation-delay: 1.4s;
 }
 
 @keyframes fadeInSub {
@@ -372,23 +372,23 @@ h1 {
 }
 
 .footer a {
-	color: rgba(255, 255, 255, 0.7);
+	color: rgba(40, 60, 80, 0.6);
 	text-decoration: none;
 	font-size: 0.9rem;
 	transition: color 0.2s;
 }
 
 .footer a:hover {
-	color: #fff;
+	color: rgba(40, 60, 80, 0.9);
 }
 
 .gh-icon {
 	width: 24px; height: 24px;
-	fill: rgba(255, 255, 255, 0.7);
+	fill: rgba(40, 60, 80, 0.6);
 	transition: fill 0.2s;
 	vertical-align: middle;
 }
-.footer a:hover .gh-icon { fill: #fff; }
+.footer a:hover .gh-icon { fill: rgba(40, 60, 80, 0.9); }
 </style>
 </head>
 <body>
@@ -628,7 +628,7 @@ document.getElementById('tagline-area').addEventListener('click', function(e) {
 		const src = ctx.createBufferSource();
 		src.buffer = buf;
 		src.connect(ctx.destination);
-		src.start(ctx.currentTime + 0.55);
+		src.start(ctx.currentTime + 0.38);
 	} catch(e2) {}
 
 	// Replace content
@@ -699,7 +699,7 @@ document.getElementById('tagline-area').addEventListener('click', function(e) {
 		}
 
 		const sw = 1.2 + Math.random() * 0.8;
-		addPath(d, pathLen, 0.58 + i * 0.008, sw, 0.25 + Math.random() * 0.1);
+		addPath(d, pathLen, 0.40 + i * 0.008, sw, 0.25 + Math.random() * 0.1);
 	}
 
 	// Concentric cracks: jagged arcs connecting adjacent radial points at each ring
@@ -718,14 +718,14 @@ document.getElementById('tagline-area').addEventListener('click', function(e) {
 				' L' + mx.toFixed(1) + ',' + my.toFixed(1) +
 				' L' + b.x.toFixed(1) + ',' + b.y.toFixed(1);
 			const segLen = Math.sqrt((mx-a.x)**2+(my-a.y)**2) + Math.sqrt((b.x-mx)**2+(b.y-my)**2);
-			addPath(d, segLen, 0.65 + r * 0.04, 1.0, 0.18 + Math.random() * 0.08);
+			addPath(d, segLen, 0.45 + r * 0.04, 1.0, 0.18 + Math.random() * 0.08);
 		}
 	}
 
-	// Reset after 5 seconds
+	// Reset after 6 seconds
 	setTimeout(() => {
 		area.innerHTML = originalTagline;
-	}, 5000);
+	}, 6000);
 });
 </script>
 
