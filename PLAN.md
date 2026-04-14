@@ -120,13 +120,27 @@ Use .ksy specs as reference docs when writing validators for these high-value fo
 - [ ] Report detected text encoding in PDF validation result (e.g., WinAnsi, Identity-H, custom CMap)
 
 ### macOS Bundle Deep Validation
-- [ ] Parse Info.plist and validate required keys (CFBundleIdentifier, CFBundleExecutable, CFBundleName, etc.)
-- [ ] Verify declared CFBundleExecutable exists in Contents/MacOS/ and is a valid Mach-O binary
-- [ ] Validate code signature presence and structure (Contents/_CodeSignature/CodeResources)
-- [ ] Manifest completeness check: verify ONLY expected files/dirs are present in the bundle structure (detect stray files that indicate tampering, corruption, or sloppy builds)
+- [x] Parse Info.plist and validate required keys (CFBundleIdentifier, CFBundleExecutable, CFBundleName, etc.) (2026-04-14)
+- [x] Verify declared CFBundleExecutable exists in Contents/MacOS/ and is a valid Mach-O binary (2026-04-14)
+- [x] Validate code signature presence — warns "may not launch on modern macOS" if missing (2026-04-14)
+- [x] Manifest completeness check: detect stray files in Contents/ not in expected allowlist (2026-04-14)
+- [x] Binary plist parser — extract keys from bplist00 format (trailer/offset table/object table) (2026-04-14)
+- [x] WrappedBundle (iOS Catalyst) app detection — structural validation (2026-04-14)
+- [x] Skip extension-mismatch warning for directory-based bundle formats (2026-04-14)
 - [ ] .framework: validate Versions/Current symlink target exists, Headers/ contains valid headers
 - [ ] .bundle: validate plugin structure (Contents/MacOS/ executable + Info.plist)
-- [ ] Upgrade all three bundle types from structural to full depth
+- [ ] CodeResources manifest verification: parse _CodeSignature/CodeResources, verify all listed files exist and no unlisted files present
+- [ ] Additional macOS bundle types to detect and validate:
+  - [ ] .kext (kernel extensions)
+  - [ ] .prefPane (System Preferences/Settings panes)
+  - [ ] .plugin (generic plugins — QuickLook, Spotlight, etc.)
+  - [ ] .appex (app extensions — widgets, share extensions)
+  - [ ] .xpc (XPC services)
+  - [ ] .qlgenerator (QuickLook generators)
+  - [ ] .mdimporter (Spotlight importers)
+  - [ ] .saver (screensavers)
+  - [ ] .component (Audio Units)
+  - [ ] .driver (I/O Kit drivers)
 
 ### Depth Honesty Audit
 - [ ] Future: Add `best_effort` tier to distinguish "parsed every byte, no integrity mechanism" from "only checked headers"
