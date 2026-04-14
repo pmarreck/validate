@@ -705,10 +705,20 @@ static int is_bundle_directory(const char* path) {
 		}
 	}
 
-	/* macOS bundles - directory extensions */
+	/* macOS bundles - directory extensions (all use Contents/ structure) */
 	if (ends_with(path, len, ".app")) return 1;
 	if (ends_with(path, len, ".framework")) return 1;
 	if (ends_with(path, len, ".bundle")) return 1;
+	if (ends_with(path, len, ".kext")) return 1;
+	if (ends_with(path, len, ".prefPane")) return 1;
+	if (ends_with(path, len, ".plugin")) return 1;
+	if (ends_with(path, len, ".appex")) return 1;
+	if (ends_with(path, len, ".xpc")) return 1;
+	if (ends_with(path, len, ".qlgenerator")) return 1;
+	if (ends_with(path, len, ".mdimporter")) return 1;
+	if (ends_with(path, len, ".saver")) return 1;
+	if (ends_with(path, len, ".component")) return 1;
+	if (ends_with(path, len, ".driver")) return 1;
 
 	return 0;
 }

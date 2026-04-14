@@ -302,8 +302,19 @@ pub fn detectBundleType(path: []const u8) BundleType {
     if (std.mem.endsWith(u8, path, ".framework")) {
         return .macos_framework;
     }
-    // Check for .bundle (macOS plugin/bundle)
-    if (std.mem.endsWith(u8, path, ".bundle")) {
+    // Check for .bundle and other macOS bundle types (all use Contents/ structure)
+    if (std.mem.endsWith(u8, path, ".bundle") or
+        std.mem.endsWith(u8, path, ".kext") or
+        std.mem.endsWith(u8, path, ".prefPane") or
+        std.mem.endsWith(u8, path, ".plugin") or
+        std.mem.endsWith(u8, path, ".appex") or
+        std.mem.endsWith(u8, path, ".xpc") or
+        std.mem.endsWith(u8, path, ".qlgenerator") or
+        std.mem.endsWith(u8, path, ".mdimporter") or
+        std.mem.endsWith(u8, path, ".saver") or
+        std.mem.endsWith(u8, path, ".component") or
+        std.mem.endsWith(u8, path, ".driver"))
+    {
         return .macos_bundle;
     }
     // Check for .band (GarageBand project bundle)
