@@ -151,11 +151,6 @@ pub fn validateOrfBitstream(
 			const pixel: i32 = pred + ((diff << 2) | low);
 
 			if (pixel < 0 or (pixel >> @intCast(bps)) != 0) {
-				if (@import("builtin").mode == .Debug) {
-					std.debug.print("ORF overflow: row={d} col={d} pixel={d} pred={d} diff={d} low={d} sign={d} high={d} nbits={d} carry=[{d},{d},{d}] bit_pos={d}\n", .{
-						row, col, pixel, pred, diff, low, sign, high, nbits, carry[0], carry[1], carry[2], reader.bit_pos,
-					});
-				}
 				return OrfDecodeError.PixelOverflow;
 			}
 

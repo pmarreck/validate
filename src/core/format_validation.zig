@@ -202,6 +202,7 @@ const document_validators = @import("document_validators.zig");
 const filesystem_validators = @import("filesystem_validators.zig");
 const apple_validators = @import("apple_validators.zig");
 const apple_media_db_validator = @import("apple_media_db_validator.zig");
+const macos_bundle_validator = @import("macos_bundle_validator.zig");
 const financial_validators = @import("financial_validators.zig");
 const edi_validators = @import("edi_validators.zig");
 const pim_validators = @import("pim_validators.zig");
@@ -5558,9 +5559,15 @@ pub const FormatValidator = struct {
         // when performDeepValidation returns a new result. With EnumSet we can have
         // multiple malformations, so we always add this if detected.
         if (result.is_valid) {
-            const expected_format = getExpectedFormatForExtension(path);
-            if (!isFormatCompatibleWithExtension(result.format, expected_format)) {
-                result.malformations.insert(.extension_mismatch);
+            // Skip extension mismatch for directory-based bundle formats
+            // (.app, .framework, .bundle) — they don't have "content" to mismatch against
+            const is_bundle = result.format == .macos_app or result.format == .macos_framework or
+                result.format == .macos_bundle or result.format == .band or result.format == .logicx;
+            if (!is_bundle) {
+                const expected_format = getExpectedFormatForExtension(path);
+                if (!isFormatCompatibleWithExtension(result.format, expected_format)) {
+                    result.malformations.insert(.extension_mismatch);
+                }
             }
         }
 
@@ -5728,9 +5735,9 @@ pub const FormatValidator = struct {
             .mblar => blar_validator.validateBlarDeepFromPath(allocator, path, .mblar),
             .bagit => bagit_validator.validateBagitDeep(allocator, path),
             .git_repository => validateGitRepositoryDeep(allocator, path),
-            .macos_app => validateMacosAppDeep(allocator, path),
-            .macos_framework => validateMacosFrameworkDeep(allocator, path),
-            .macos_bundle => validateMacosBundleDeep(allocator, path),
+            .macos_app => macos_bundle_validator.validateAppBundle(allocator, path).toValidationResult(.macos_app),
+            .macos_framework => macos_bundle_validator.validateFrameworkBundle(allocator, path).toValidationResult(.macos_framework),
+            .macos_bundle => macos_bundle_validator.validatePluginBundle(allocator, path).toValidationResult(.macos_bundle),
             .band => validateGarageBandBundle(allocator, path),
             .java_class => executable_validators.validateJavaClassDeep(allocator, path),
             .apple_media_db => apple_media_db_validator.validateAppleMediaDbDeep(allocator, path),

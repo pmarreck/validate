@@ -105,6 +105,7 @@ pub const realmedia_validator = @import("realmedia_validator.zig");
 pub const network_validators = @import("network_validators.zig");
 pub const orf_decoder = @import("orf_decoder.zig");
 pub const pef_decoder = @import("pef_decoder.zig");
+pub const macos_bundle_validator = @import("macos_bundle_validator.zig");
 pub const cdg_validator = @import("cdg_validator.zig");
 pub const toast_validator = @import("toast_validator.zig");
 pub const blar_validator = @import("blar_validator.zig");
@@ -355,6 +356,8 @@ test {
     // Camera RAW decoders
     _ = @import("orf_decoder.zig");
     _ = @import("pef_decoder.zig");
+    // macOS bundle validator
+    _ = @import("macos_bundle_validator.zig");
     // i18n (internationalization)
     _ = @import("i18n/mod.zig");
     // Progress bar (progrez wrapper)
