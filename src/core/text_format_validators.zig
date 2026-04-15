@@ -828,6 +828,10 @@ pub fn validateIniLine(line: []const u8) IniLineType {
         return .invalid;
     }
 
+    // Bare '=' with no key (e.g., game config files like Neverwinter Nights).
+    // Quirky but tolerated by most INI parsers — treat as valid key-value.
+    if (first_char == '=') return .key_value;
+
     // Key-value pair: key = value (or key: value)
     // Key must start with a printable non-special character.
     // Real-world INI keys include dots, hyphens, percent signs, spaces, etc.

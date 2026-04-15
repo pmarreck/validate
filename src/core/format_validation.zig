@@ -2809,6 +2809,7 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "mbox", .mbox },
     // Text formats
     .{ "toml", .toml },
+    .{ "tml", .toml },
     .{ "ini", .ini },
     .{ "json", .json },
     .{ "xml", .xml },
@@ -3111,6 +3112,7 @@ const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "idml", .idml },
     // Text formats — extension is the definitive indicator
     .{ "toml", .toml },
+    .{ "tml", .toml },
     .{ "ini", .ini },
     .{ "json", .json },
     .{ "xml", .xml },
