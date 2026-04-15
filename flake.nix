@@ -92,7 +92,19 @@
 							'';
 
 							installPhase = ''
-								mkdir -p $out/bin
+								mkdir -p $out/bin $out/lib $out/include
+
+								# Install static library and header for downstream consumers (e.g. validate_gui)
+								cp zig-out/lib/libvalidate_core.a $out/lib/ 2>/dev/null || true
+								# Header is a source file in ffi/; on macOS the libtool path
+								# bypasses installArtifact so zig-out/include/ may be empty.
+								if [ -f zig-out/include/validate_core.h ]; then
+									cp zig-out/include/validate_core.h $out/include/
+								else
+									cp ffi/validate_core.h $out/include/
+								fi
+
+								# Install CLI binary
 								cp zig-out/bin/${binaryName} $out/bin/
 
 								# Append integrity trailer: "VALIDATE_INTEGRITY" (18 bytes) + SHA-256 (32 bytes raw)
