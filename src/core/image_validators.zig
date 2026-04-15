@@ -4990,15 +4990,18 @@ fn validateOrfDeepImpl(allocator: Allocator, path: []const u8) ValidationResult 
 
     for (candidate_bps) |bps| {
         if (orf_decoder.validateOrfBitstream(strip_data, info.width, info.height, bps) == null) {
-            // Decode succeeded at this bit depth
+            // Huffman bitstream decoded without errors — but note that most single-byte
+            // corruptions in RAW pixel data produce valid-but-wrong pixel values rather
+            // than decode failures. Honest depth: structural (bitstream decodable,
+            // but no checksums to verify pixel data correctness).
             const warning = if (info.compression == 1)
                 "ORF IFD claims uncompressed but data is Huffman-compressed (known Olympus quirk)"
             else
                 null;
             if (warning) |w| {
-                return ValidationResult.okWithDepthAndWarning(.orf, .full, w);
+                return ValidationResult.okWithDepthAndWarning(.orf, .structural, w);
             }
-            return ValidationResult.okWithDepth(.orf, .full);
+            return ValidationResult.okWithDepth(.orf, .structural);
         }
     }
 
@@ -5057,15 +5060,17 @@ fn validatePefDeepImpl(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Dispatch based on compression type
     if (info.compression == 32773) {
-        // Packed 12-bit RAW (K100D etc.)
+        // Packed 12-bit RAW (K100D etc.) — size check only.
+        // Every byte pattern produces valid 12-bit values, so corruption in pixel
+        // data is undetectable without checksums. Honest depth: structural.
         if (pef_decoder.validatePefPacked12(strip_data, info.width, info.height)) |err| {
             return switch (err) {
-                pef_decoder.PefDecodeError.Truncated => ValidationResult.invalidCodeWithDepth(.pef, .truncated, "packed RAW data", .full),
+                pef_decoder.PefDecodeError.Truncated => ValidationResult.invalidCodeWithDepth(.pef, .truncated, "packed RAW data", .structural),
                 pef_decoder.PefDecodeError.DimensionsTooLarge => ValidationResult.okWithDepthAndWarning(.pef, .structural, "image dimensions exceed decoder limits"),
-                else => ValidationResult.invalidWithDepth(.pef, "PEF decode error", .full),
+                else => ValidationResult.invalidWithDepth(.pef, "PEF decode error", .structural),
             };
         }
-        return ValidationResult.okWithDepth(.pef, .full);
+        return ValidationResult.okWithDepth(.pef, .structural);
     } else if (info.compression == 65535) {
         // Huffman compressed — would need MakerNote parsing for table.
         // For now, structural only with honest warning.
