@@ -71,6 +71,9 @@ pub const cli_aliases = cli.CliAliases{
     .simple_progress = "einfacher-fortschritt",
     .no_frontload = "ohne-vorrang",
     .append = "append",
+    .json = "json",
+    .ndjson = "ndjson",
+    .about = "about",
 };
 
 // German environment variable aliases.

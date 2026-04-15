@@ -59,6 +59,9 @@ pub const cli_aliases = cli.CliAliases{
     .simple_progress = "progresso-simples",
     .no_frontload = "sem-prioridade",
     .append = "append",
+    .json = "json",
+    .ndjson = "ndjson",
+    .about = "about",
 };
 
 pub const env_aliases = cli.EnvAliases{

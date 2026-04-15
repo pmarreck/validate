@@ -70,6 +70,9 @@ pub const cli_aliases = cli.CliAliases{
     .simple_progress = "tien-trinh-don-gian",
     .no_frontload = "khong-uu-tien",
     .append = "append",
+    .json = "json",
+    .ndjson = "ndjson",
+    .about = "about",
 };
 
 pub const env_aliases = cli.EnvAliases{

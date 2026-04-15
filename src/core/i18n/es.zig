@@ -70,6 +70,9 @@ pub const cli_aliases = cli.CliAliases{
     .simple_progress = "progreso-simple",
     .no_frontload = "sin-prioridad",
     .append = "append",
+    .json = "json",
+    .ndjson = "ndjson",
+    .about = "about",
 };
 
 pub const env_aliases = cli.EnvAliases{

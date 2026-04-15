@@ -59,6 +59,9 @@ pub const cli_aliases = cli.CliAliases{
     .simple_progress = "prosty-postep",
     .no_frontload = "bez-priorytetu",
     .append = "append",
+    .json = "json",
+    .ndjson = "ndjson",
+    .about = "about",
 };
 
 pub const env_aliases = cli.EnvAliases{

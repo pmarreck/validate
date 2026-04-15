@@ -825,6 +825,11 @@ static const char* COLOR_RESET = "\033[0m";
 
 static int g_colors_enabled = 0;
 
+/* JSON output mode: 0=off, 1=JSON array, 2=NDJSON (one JSON object per line) */
+static int g_json_mode = 0;
+static int g_json_first_result = 1; /* For comma-separation in JSON array mode */
+static int g_wrote_hash_to_stderr_only = 0; /* Deferred stdout hash write */
+
 static void init_colors(void) {
 	/* Respect NO_COLOR environment variable (https://no-color.org/) */
 	if (getenv("NO_COLOR") != NULL) {
@@ -1089,6 +1094,79 @@ static void debug_printf(const char* fmt, ...) {
 	}
 }
 
+/* Escape a string for JSON output (handles \, ", control chars) */
+static void json_escape(FILE* out, const char* s) {
+	for (; *s; s++) {
+		switch (*s) {
+		case '"':  fputs("\\\"", out); break;
+		case '\\': fputs("\\\\", out); break;
+		case '\n': fputs("\\n", out); break;
+		case '\r': fputs("\\r", out); break;
+		case '\t': fputs("\\t", out); break;
+		default:
+			if ((unsigned char)*s < 0x20) {
+				fprintf(out, "\\u%04x", (unsigned char)*s);
+			} else {
+				fputc(*s, out);
+			}
+		}
+	}
+}
+
+/* Emit a single validation result as a JSON object to stdout */
+static void emit_json_result(const char* path, const char* result) {
+	char fmt_desc[256] = "";
+	char fmt_id[64] = "";
+	char fmt_cat[64] = "";
+	char err_msg[1024] = "";
+	char warn_msg[1024] = "";
+	char depth_desc[128] = "";
+	char err_code[64] = "";
+
+	kv_get_str(result, "fmt_desc", fmt_desc, sizeof(fmt_desc));
+	kv_get_str(result, "fmt_id", fmt_id, sizeof(fmt_id));
+	kv_get_str(result, "fmt_cat", fmt_cat, sizeof(fmt_cat));
+	kv_get_str(result, "err", err_msg, sizeof(err_msg));
+	kv_get_str(result, "warn", warn_msg, sizeof(warn_msg));
+	kv_get_str(result, "depth_desc", depth_desc, sizeof(depth_desc));
+	kv_get_str(result, "err_code", err_code, sizeof(err_code));
+
+	int is_valid = kv_get_bool(result, "valid");
+	int depth = (int)kv_get_u64(result, "depth_u8");
+	uint64_t malform_bits = kv_get_u64(result, "malform_u64");
+	int bypass_prot = kv_get_bool(result, "bypass_prot");
+	int via_ffmpeg = kv_get_bool(result, "via_ffmpeg");
+
+	if (g_json_mode == 1) {
+		/* JSON array mode — comma-separate after first */
+		if (!g_json_first_result) {
+			fputs(",\n", stdout);
+		}
+		g_json_first_result = 0;
+	}
+
+	fputs("{", stdout);
+	fputs("\"path\":\"", stdout); json_escape(stdout, path); fputs("\"", stdout);
+	fputs(",\"valid\":", stdout); fputs(is_valid ? "true" : "false", stdout);
+	fputs(",\"format\":\"", stdout); json_escape(stdout, fmt_id); fputs("\"", stdout);
+	fputs(",\"format_description\":\"", stdout); json_escape(stdout, fmt_desc); fputs("\"", stdout);
+	if (fmt_cat[0]) { fputs(",\"category\":\"", stdout); json_escape(stdout, fmt_cat); fputs("\"", stdout); }
+	fputs(",\"depth\":", stdout); fprintf(stdout, "%d", depth);
+	if (depth_desc[0]) { fputs(",\"depth_description\":\"", stdout); json_escape(stdout, depth_desc); fputs("\"", stdout); }
+	if (err_msg[0]) { fputs(",\"error\":\"", stdout); json_escape(stdout, err_msg); fputs("\"", stdout); }
+	if (err_code[0]) { fputs(",\"error_code\":\"", stdout); json_escape(stdout, err_code); fputs("\"", stdout); }
+	if (warn_msg[0]) { fputs(",\"warning\":\"", stdout); json_escape(stdout, warn_msg); fputs("\"", stdout); }
+	if (malform_bits) { fprintf(stdout, ",\"malformations\":%llu", (unsigned long long)malform_bits); }
+	if (bypass_prot) { fputs(",\"bypassed_protection\":true", stdout); }
+	if (via_ffmpeg) { fputs(",\"via_ffmpeg\":true", stdout); }
+	fputs("}", stdout);
+
+	if (g_json_mode == 2) {
+		/* NDJSON mode — newline after each object */
+		fputs("\n", stdout);
+	}
+}
+
 static void print_validation_result(const char* path, const char* result) {
 	char fmt_desc[256];
 	char err_msg[1024];
@@ -1269,17 +1347,23 @@ static void on_validation_result(
 #endif
 	}
 
-	/* Print result line(s) - these go to the scrolling region */
+	/* Update counts */
 	if (is_unknown) {
 		if (counts) counts->unknown_count++;
+	} else if (is_valid) {
+		if (counts) counts->valid_count++;
+	} else {
+		if (counts) counts->invalid_count++;
+	}
+
+	/* Print result line(s) */
+	if (g_json_mode) {
+		emit_json_result(path, result);
+	} else if (is_unknown) {
 		char rest_buf[2048];
 		snprintf(rest_buf, sizeof(rest_buf), " %s: Unknown", path);
 		write_colored_line(&g_unknown_out, COLOR_CYAN, validate_tr(VALIDATE_STR_LABEL_UNKNOWN), rest_buf);
-	} else if (is_valid) {
-		if (counts) counts->valid_count++;
-		print_validation_result(path, result);
 	} else {
-		if (counts) counts->invalid_count++;
 		print_validation_result(path, result);
 	}
 
@@ -1754,6 +1838,9 @@ static void print_usage(const char* program) {
 	printf("    --no-frontload          Don't prioritize large files (default: top 10%% largest first)\n");
 	printf("    --simple-progress       Use simple ASCII progress instead of TUI status bar\n");
 	printf("    --append                Append to output files instead of overwriting\n");
+	printf("    --json                  Output results as a JSON array\n");
+	printf("    --ndjson                Output results as newline-delimited JSON (one object per line)\n");
+	printf("    --about                 Print version and platform info\n");
 	printf("    --lang CODE             Set output language (e.g., en, de)\n");
 #else
 	printf("    --version          Print version\n");
@@ -1883,8 +1970,10 @@ int main(int argc, char* argv[]) {
 		if (same_dest) {
 			write_self_hash(stderr);
 		} else {
-			write_self_hash(stdout);
+			/* Defer stdout hash — might be suppressed in JSON mode.
+			 * Always write to stderr immediately. */
 			write_self_hash(stderr);
+			g_wrote_hash_to_stderr_only = 1;
 		}
 	}
 
@@ -1983,6 +2072,35 @@ int main(int argc, char* argv[]) {
 			case VALIDATE_ARG_APPEND:
 				g_file_open_mode = "a";
 				continue;
+			case VALIDATE_ARG_JSON:
+				g_json_mode = 1;
+				disable_colors();
+				continue;
+			case VALIDATE_ARG_NDJSON:
+				g_json_mode = 2;
+				disable_colors();
+				continue;
+			case VALIDATE_ARG_ABOUT:
+				printf("validate %s %s-%s\n", validate_version(),
+#if defined(__aarch64__) || defined(_M_ARM64)
+					"aarch64",
+#elif defined(__x86_64__) || defined(_M_X64)
+					"x86_64",
+#else
+					"unknown",
+#endif
+#if defined(__APPLE__)
+					"darwin"
+#elif defined(_WIN32)
+					"windows"
+#elif defined(__linux__)
+					"linux"
+#else
+					"unknown"
+#endif
+				);
+				free(paths);
+				return 0;
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);
@@ -2015,6 +2133,14 @@ int main(int argc, char* argv[]) {
 	validate_init();
 
 	init_output_destinations();
+
+	/* In JSON mode, mute begin callback and suppress non-JSON stdout */
+	if (g_json_mode) {
+		g_begin_out.muted = 1;
+	} else if (g_wrote_hash_to_stderr_only) {
+		/* Write deferred hash to stdout (suppressed in JSON mode) */
+		write_self_hash(stdout);
+	}
 
 	/* Register begin callback if BEGIN_OUT is configured */
 	if (!g_begin_out.muted) {
@@ -2088,7 +2214,7 @@ int main(int argc, char* argv[]) {
 		printf(validate_tr(VALIDATE_STR_FOUND_FILES_TO_VALIDATE), file_list.count);
 		printf("%s\n\n", should_shuffle ? " (shuffled)" : "");
 		fflush(stdout);  /* Ensure visible before TUI setup */
-	} else {
+	} else if (!g_json_mode) {
 		printf("%s %s\n", validate_tr(VALIDATE_STR_CHECKING), file_list.paths[0]);
 		fflush(stdout);
 	}
@@ -2133,6 +2259,11 @@ int main(int argc, char* argv[]) {
 			validate_progress_set_determinate((uint64_t)file_list.count, (uint64_t)file_list.total_bytes);
 		}
 
+		/* JSON array opening bracket */
+		if (g_json_mode == 1) {
+			fputs("[\n", stdout);
+		}
+
 		validate_error_t err = validate_batch(
 			(const char* const*)file_list.paths,
 			file_list.ids,
@@ -2141,6 +2272,11 @@ int main(int argc, char* argv[]) {
 			on_validation_result,
 			&counts
 		);
+
+		/* JSON array closing bracket */
+		if (g_json_mode == 1) {
+			fputs("\n]\n", stdout);
+		}
 
 		if (err != VALIDATE_OK) {
 			/* Clean up progress display before error */
@@ -2185,8 +2321,9 @@ int main(int argc, char* argv[]) {
 	validation_counts_t* summary_counts = (stress_iterations > 1) ? &total_counts : &counts;
 
 	/* Show summary only when multiple files were validated (single file needs no summary) */
+	/* Skip summary in JSON mode — output is machine-readable */
 	size_t total_processed = summary_counts->valid_count + summary_counts->invalid_count + summary_counts->unknown_count;
-	if (total_processed > 1 || was_interrupted) {
+	if (!g_json_mode && (total_processed > 1 || was_interrupted)) {
 		const char* rlm = g_rtl_enabled ? RLM : "";
 		if (was_interrupted) {
 			printf("\n%s%s%s%s\n", rlm, COLOR_YELLOW, validate_tr(VALIDATE_STR_SUMMARY_INTERRUPTED), COLOR_RESET);

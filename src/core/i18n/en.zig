@@ -312,6 +312,9 @@ pub const cli_aliases = cli.CliAliases{
     .simple_progress = "simple-progress",
     .no_frontload = "no-frontload",
     .append = "append",
+    .json = "json",
+    .ndjson = "ndjson",
+    .about = "about",
 };
 
 // English environment variable aliases (canonical forms).

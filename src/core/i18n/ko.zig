@@ -70,6 +70,9 @@ pub const cli_aliases = cli.CliAliases{
     .simple_progress = "\xea\xb0\x84\xeb\x8b\xa8-\xec\xa7\x84\xed\x96\x89",
     .no_frontload = "\xec\x9a\xb0\xec\x84\xa0-\xec\x97\x86\xec\x9d\x8c",
     .append = "append",
+    .json = "json",
+    .ndjson = "ndjson",
+    .about = "about",
 };
 
 pub const env_aliases = cli.EnvAliases{
