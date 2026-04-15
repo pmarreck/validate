@@ -7805,6 +7805,42 @@ test "validateFileDeep routes git directories to git validator" {
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
+test "git_repository: real ground truth sample validates at full depth" {
+    const allocator = std.testing.allocator;
+
+    const tar_path = "ground_truth_examples/git_repository/sample.tar.gz";
+    const sample_dir = "ground_truth_examples/git_repository/sample";
+
+    // Check if tarball exists
+    std.fs.cwd().access(tar_path, .{}) catch return error.SkipZigTest;
+
+    // Untar if sample/ doesn't exist yet
+    std.fs.cwd().access(sample_dir, .{}) catch {
+        // Extract using system tar (available on all platforms we target)
+        var child = std.process.Child.init(
+            &.{ "tar", "xzf", tar_path, "-C", "ground_truth_examples/git_repository/" },
+            allocator,
+        );
+        child.spawn() catch return error.SkipZigTest;
+        const term = child.wait() catch return error.SkipZigTest;
+        if (term.Exited != 0) return error.SkipZigTest;
+    };
+
+    // Build path to .git inside the extracted sample
+    const git_path = "ground_truth_examples/git_repository/sample/.git";
+    std.fs.cwd().access(git_path, .{}) catch return error.SkipZigTest;
+
+    const full_path = try std.fs.cwd().realpathAlloc(allocator, git_path);
+    defer allocator.free(full_path);
+
+    var validator = FormatValidator.initDeep();
+    const result = validator.validateFileDeep(allocator, full_path);
+
+    try std.testing.expectEqual(FileFormat.git_repository, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
 test "detectFormat RAF magic bytes" {
     var header: [84]u8 = undefined;
     @memcpy(header[0..16], "FUJIFILMCCD-RAW ");
