@@ -377,6 +377,9 @@ pub fn build(b: *std.Build) void {
             libopenmpt_lib.getEmittedBin(),
             cj5_lib.getEmittedBin(),
             compact_pro_lib.getEmittedBin(),
+            z7z_lib.getEmittedBin(),
+            sqlite3_lib.getEmittedBin(),
+            libraw_lib.getEmittedBin(),
         };
 
         const libtool = LibtoolStep.create(b, .{
