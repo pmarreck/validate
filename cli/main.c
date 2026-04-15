@@ -1983,7 +1983,7 @@ int main(int argc, char* argv[]) {
 		disable_colors();
 	}
 
-	if (argc < 2) {
+	if (argc < 2 && isatty(STDIN_FILENO)) {
 		print_usage(argv[0]);
 		return 2;
 	}
