@@ -1480,63 +1480,61 @@ static size_t find_percentile_size(path_list_t* list, int percentile) {
 	return result;
 }
 
-/* Frontload large files: move files >= P90 size to front with stable partition */
-static void frontload_large_files(path_list_t* list) {
-	if (list->count <= 10) return;  /* Not enough files to matter */
+/* Scatter large files evenly through queue for smoother memory/ETA (replaces frontloading) */
+static void scatter_large_files(path_list_t* list) {
+	if (list->count <= 10) return;
 
 	size_t threshold = find_percentile_size(list, 90);
-	if (threshold == 0) return;  /* All files are empty or error occurred */
+	if (threshold == 0) return;
 
-	if (validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG)) {
-		fprintf(stderr, "[DEBUG] Frontload: P90 threshold=%zu bytes\n", threshold);
-	}
+	/* Separate large and small files */
+	size_t* large_idx = (size_t*)malloc(list->count * sizeof(size_t));
+	size_t* small_idx = (size_t*)malloc(list->count * sizeof(size_t));
+	if (!large_idx || !small_idx) { free(large_idx); free(small_idx); return; }
 
-	/* Stable partition: collect indices of large files, then rearrange */
-	size_t* large_indices = (size_t*)malloc(list->count * sizeof(size_t));
-	size_t* small_indices = (size_t*)malloc(list->count * sizeof(size_t));
-	if (!large_indices || !small_indices) {
-		free(large_indices);
-		free(small_indices);
-		return;
-	}
-
-	size_t large_count = 0;
-	size_t small_count = 0;
-
+	size_t large_count = 0, small_count = 0;
 	for (size_t i = 0; i < list->count; i++) {
-		if (list->sizes[i] >= threshold) {
-			large_indices[large_count++] = i;
-		} else {
-			small_indices[small_count++] = i;
-		}
+		if (list->sizes[i] >= threshold)
+			large_idx[large_count++] = i;
+		else
+			small_idx[small_count++] = i;
 	}
 
-	/* Create temporary arrays for the rearranged data */
+	if (large_count == 0) { free(large_idx); free(small_idx); return; }
+
+	/* Build new order: interleave large files evenly among small files.
+	 * If there are L large files and S small files, place one large file
+	 * every (S / L) small files. This ensures at most ~1 large file is
+	 * being processed per thread at any given time. */
 	char** new_paths = (char**)malloc(list->count * sizeof(char*));
 	uint32_t* new_ids = (uint32_t*)malloc(list->count * sizeof(uint32_t));
 	size_t* new_sizes = (size_t*)malloc(list->count * sizeof(size_t));
 	if (!new_paths || !new_ids || !new_sizes) {
-		free(large_indices);
-		free(small_indices);
-		free(new_paths);
-		free(new_ids);
-		free(new_sizes);
+		free(large_idx); free(small_idx);
+		free(new_paths); free(new_ids); free(new_sizes);
 		return;
 	}
 
-	/* Copy large files first */
-	size_t dest = 0;
-	for (size_t i = 0; i < large_count; i++) {
-		size_t src = large_indices[i];
-		new_paths[dest] = list->paths[src];
-		new_ids[dest] = list->ids[src];
-		new_sizes[dest] = list->sizes[src];
-		dest++;
-	}
+	/* Interleave: place a large file every `interval` positions */
+	double interval = (small_count > 0 && large_count > 0)
+		? (double)(small_count + large_count) / (double)large_count
+		: 1.0;
 
-	/* Then small files */
-	for (size_t i = 0; i < small_count; i++) {
-		size_t src = small_indices[i];
+	size_t dest = 0, si = 0, li = 0;
+	double next_large = interval / 2.0; /* Start halfway through first interval — centered */
+
+	for (size_t pos = 0; pos < list->count; pos++) {
+		size_t src;
+		if (li < large_count && (double)pos >= next_large) {
+			src = large_idx[li++];
+			next_large += interval;
+		} else if (si < small_count) {
+			src = small_idx[si++];
+		} else if (li < large_count) {
+			src = large_idx[li++];
+		} else {
+			break;
+		}
 		new_paths[dest] = list->paths[src];
 		new_ids[dest] = list->ids[src];
 		new_sizes[dest] = list->sizes[src];
@@ -1544,28 +1542,20 @@ static void frontload_large_files(path_list_t* list) {
 	}
 
 	if (validate_getenv(VALIDATE_ENV_VALIDATE_DEBUG)) {
-		/* Calculate total bytes in large vs small files */
 		size_t large_bytes = 0, small_bytes = 0;
-		for (size_t i = 0; i < large_count; i++) {
-			large_bytes += new_sizes[i];
-		}
-		for (size_t i = large_count; i < dest; i++) {
-			small_bytes += new_sizes[i];
-		}
-		fprintf(stderr, "[DEBUG] Frontload: %zu large files (%zu bytes), %zu small files (%zu bytes)\n",
-				large_count, large_bytes, small_count, small_bytes);
+		for (size_t i = 0; i < large_count; i++) large_bytes += list->sizes[large_idx[i]];
+		for (size_t i = 0; i < small_count; i++) small_bytes += list->sizes[small_idx[i]];
+		fprintf(stderr, "[DEBUG] Scatter: %zu large files (%zu bytes) interleaved among %zu small files (%zu bytes), interval=%.1f\n",
+				large_count, large_bytes, small_count, small_bytes, interval);
 	}
 
-	/* Replace original arrays (don't free paths - just move pointers) */
-	free(list->paths);
-	free(list->ids);
-	free(list->sizes);
+	free(list->paths); free(list->ids); free(list->sizes);
 	list->paths = new_paths;
 	list->ids = new_ids;
 	list->sizes = new_sizes;
 
-	free(large_indices);
-	free(small_indices);
+	free(large_idx);
+	free(small_idx);
 }
 
 /* ========== TUI Progress Bar ========== */
@@ -1842,7 +1832,7 @@ static void print_usage(const char* program) {
 	printf("    --color                 Force colored output (even when piping)\n");
 	printf("    --shuffle               Shuffle file order (helps expose race conditions)\n");
 	printf("    --stress N              Repeat validation N times with shuffling\n");
-	printf("    --no-frontload          Don't prioritize large files (default: top 10%% largest first)\n");
+	printf("    --no-frontload          Don't reorder files by size (default: large files scattered evenly)\n");
 	printf("    --simple-progress       Use simple ASCII progress instead of TUI status bar\n");
 	printf("    --append                Append to output files instead of overwriting\n");
 	printf("    --json                  Output results as a JSON array\n");
@@ -1858,7 +1848,7 @@ static void print_usage(const char* program) {
 	printf("    --color            Force colored output (even when piping)\n");
 	printf("    --shuffle          Shuffle file order (helps expose race conditions)\n");
 	printf("    --stress N         Repeat validation N times with shuffling\n");
-	printf("    --no-frontload     Don't prioritize large files (default: top 10%% largest first)\n");
+	printf("    --no-frontload     Don't reorder files by size (default: large files scattered evenly)\n");
 	printf("    --simple-progress  Use simple ASCII progress instead of TUI status bar\n");
 	printf("    --append           Append to output files instead of overwriting\n");
 	printf("    --json             Output results as a JSON array\n");
@@ -1898,7 +1888,7 @@ static void print_usage(const char* program) {
 	printf("\n");
 	printf("By default, the top 10%% largest files are processed first to prevent\n");
 	printf("apparent hangs at the end when only large files remain.\n");
-	printf("Use --no-frontload to disable this behavior.\n");
+	printf("smoother memory usage and more accurate ETA. Use --no-frontload to disable.\n");
 	printf("\n%s\n", validate_tr(VALIDATE_STR_HELP_ENTROPY_SHIELD));
 	printf("Support: support@entropyshield.app\n");
 }
@@ -2238,10 +2228,10 @@ int main(int argc, char* argv[]) {
 		return 0;
 	}
 
-	/* Frontload large files unless disabled or shuffle mode */
+	/* Scatter large files evenly through queue unless disabled or shuffle mode */
 	int should_shuffle = shuffle || (stress_iterations > 1);
 	if (!no_frontload && !should_shuffle) {
-		frontload_large_files(&file_list);
+		scatter_large_files(&file_list);
 	}
 
 	/* Clear screen before starting validation output (TUI will set up scrolling region) */
