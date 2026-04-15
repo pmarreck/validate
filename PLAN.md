@@ -195,6 +195,31 @@ These formats return WARN — recognized but NO real corruption detection:
 
 ## Future / Roadmap
 
+### Infrastructure: Ground Truth Samples Migration
+- [ ] Move test samples to external private location
+- [ ] Symlink or fetch script to make samples available locally
+- [ ] Update .gitignore as needed
+- [ ] Purge binary history from validate repo via git filter-repo
+- [ ] Add ground truth for EVERY format and variant we parse (multiple examples per format)
+- [ ] Track sample provenance (source URL, license, camera model, etc.) in a manifest
+
+### Infrastructure: Built-in Corruption Coverage Testing
+- [ ] `validate --test-coverage <file>` — runs in-memory corruption rounds and reports own detection rate
+- [ ] Multi-threaded: each thread gets own copy, corrupts, validates, frees
+- [ ] In-memory only (no disk writes) — use par2z for repair between rounds if needed
+- [ ] Corruption modes (all in-memory):
+  - sniper: single-bit flip at random offset
+  - shotgun: 4KB random overwrite at random offset
+  - header: corrupt first 512 bytes only
+  - trailer: corrupt last 512 bytes only
+  - boundary: corrupt at container boundaries (format-aware, per-format specialization)
+  - zeroed: zero-fill a 4KB block (dead sector simulation)
+  - xor-pattern: XOR a repeating pattern over 4KB (bus error simulation)
+  - sparse-noise: flip every Nth bit within a 4KB region (degraded media simulation)
+- [ ] Report per-corruption-type detection rate with confidence intervals
+- [ ] Log offset, bit, corruption type, and whether detected for each trial
+- [ ] Format-aware container boundary corruption (PLAN item — per-format specialization)
+
 ### Statistical Corruption Detection for Raw Audio/Video Data
 For formats without checksums (AU, AMR, CAF, DPX, etc.), use heuristic analysis to detect likely corruption in raw data sections:
 
