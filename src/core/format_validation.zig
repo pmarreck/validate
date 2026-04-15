@@ -4269,9 +4269,27 @@ pub fn detectZipSubformat(file: std.fs.File) FileFormat {
     var buffer: [8192]u8 = undefined;
     const bytes_read = file.read(&buffer) catch return .zip;
 
-    // Look for EPUB mimetype file
+    // Look for EPUB mimetype file.
+    // Per EPUB spec, first ZIP entry should be named "mimetype" containing "application/epub+zip".
+    // Check both: (1) uncompressed (adjacent strings) and (2) compressed (just filename at offset 30).
     if (findInBuffer(&buffer, bytes_read, "mimetypeapplication/epub+zip")) {
         return .epub;
+    }
+    // Fallback: first entry named "mimetype" but content is compressed.
+    // OCF 3.0 §3.3 requires mimetype to be stored uncompressed — this is a spec violation
+    // that most readers tolerate but we should warn about.
+    if (bytes_read >= 38) {
+        const fname_len = std.mem.readInt(u16, buffer[26..28], .little);
+        if (fname_len == 8 and std.mem.eql(u8, buffer[30..38], "mimetype")) {
+            // Check compression method at offset 8-9 (0 = stored, 8 = deflate)
+            const comp_method = std.mem.readInt(u16, buffer[8..10], .little);
+            if (comp_method != 0) {
+                // Tag this for a warning downstream — use a global or return
+                // a special value. For now, still return .epub (detection is correct)
+                // and the validator will check compression method separately.
+            }
+            return .epub;
+        }
     }
 
     // Look for OpenDocument mimetypes
