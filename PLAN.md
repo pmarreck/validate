@@ -195,6 +195,13 @@ These formats return WARN — recognized but NO real corruption detection:
 
 ## Future / Roadmap
 
+### Memory Pressure: Parallel Validation of Large Files
+- [ ] Per-worker memory cap: skip full decode and fall back to structural if single file exceeds N MB
+- [ ] Expose recommended-threads-for-memory-budget API (e.g., given 8GB RAM, suggest 4 threads max for RAW photos)
+- [ ] Investigate whether ArenaAllocator backed by page_allocator returns memory to OS promptly on deinit
+- [ ] Consider madvise(MADV_FREE) hint after arena deinit for more aggressive page reclaim
+- [ ] Profile peak memory with 8 threads × 50MB RAW files — is it 8×50MB = 400MB peak, or does arena growth cause more?
+
 ### Infrastructure: Ground Truth Samples Migration
 - [ ] Move test samples to external private location
 - [ ] Symlink or fetch script to make samples available locally
