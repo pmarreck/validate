@@ -1824,7 +1824,14 @@ static void progress_render_new(void) {
 static void print_usage(const char* program) {
 	printf("validate - Deterministic file format validation\n\n");
 	printf("USAGE:\n");
-	printf("    %s <path>\n", program);
+	printf("    %s [options] <path> [path ...]\n", program);
+	printf("    find . -name '*.jpg' | %s --json\n", program);
+	printf("    %s --json - < paths.txt\n", program);
+	printf("\n");
+	printf("INPUT:\n");
+	printf("    Paths can be files or directories (recursed automatically).\n");
+	printf("    Use -, --stdin, or @stdin to read paths from stdin (newline-delimited).\n");
+	printf("    If no paths given and stdin is piped, paths are read automatically.\n");
 	printf("\n");
 	printf("OPTIONS:\n");
 #ifdef _WIN32
@@ -1854,6 +1861,9 @@ static void print_usage(const char* program) {
 	printf("    --no-frontload     Don't prioritize large files (default: top 10%% largest first)\n");
 	printf("    --simple-progress  Use simple ASCII progress instead of TUI status bar\n");
 	printf("    --append           Append to output files instead of overwriting\n");
+	printf("    --json             Output results as a JSON array\n");
+	printf("    --ndjson           Output results as newline-delimited JSON (one object per line)\n");
+	printf("    --about            Print version and platform info\n");
 	printf("    --lang CODE        Set output language (e.g., en, de)\n");
 #endif
 	printf("\n");

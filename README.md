@@ -44,8 +44,38 @@ Runs `./test` first. When `DEBUG` is unset/0, dependencies build in ReleaseFast 
 
 ## CLI
 ```bash
-./zig-out/bin/validate <path> [--jobs N]
+# Validate files or directories
+validate <path> [path ...]
+validate ~/Photos/vacation/
+
+# Read paths from stdin (pipe, -, --stdin, or @stdin)
+find . -name '*.jpg' | validate --json
+validate --ndjson - < paths.txt
+
+# JSON output for scripting
+validate --json file.png          # JSON array
+validate --ndjson file1 file2     # One JSON object per line
+
+# Platform info
+validate --about
 ```
+
+### Options
+| Flag | Description |
+|------|-------------|
+| `--json` | Output results as a JSON array |
+| `--ndjson` | Output one JSON object per line (newline-delimited) |
+| `--jobs N` | Number of parallel workers (0 = auto, default) |
+| `-j N` | Alias for `--jobs` |
+| `--about` | Print version and platform info |
+| `--lang CODE` | Set output language (e.g., en, de, ja) |
+| `--no-color` | Disable colored output |
+| `--color` | Force colored output (even when piping) |
+| `--simple-progress` | Use simple ASCII progress instead of TUI |
+| `--shuffle` | Shuffle file order |
+| `--append` | Append to output files instead of overwriting |
+| `-`, `--stdin`, `@stdin` | Read file paths from stdin (newline-delimited) |
+
 `--jobs 0` (default) uses all available cores (logical CPU count).
 `MAX_FILES` limits the number of files scanned when validating a directory.
 `MAX_VIDEO_SIZE` limits deep video validation to files under N MB (unset = no limit).
