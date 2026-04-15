@@ -5664,6 +5664,7 @@ pub const FormatValidator = struct {
             .jpeg => image_validators.validateJpegDeep(allocator, path),
             .gif => image_validators.validateGifDeep(allocator, path),
             .tiff, .dng, .cr2, .nef, .arw, .orf, .pef => image_validators.validateTiffDeep(allocator, path, initial_result.format),
+            .tga => image_validators.validateTgaDeep(allocator, path),
             // RAF, RW2, CR3: structural-only for now (no deep decoder available)
             .raf, .rw2, .cr3 => initial_result,
             .psd => image_validators.validatePsdDeep(allocator, path),

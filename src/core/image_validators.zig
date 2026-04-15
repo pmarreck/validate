@@ -4547,6 +4547,120 @@ pub fn validateTga(file: *FileSource) ValidationResult {
     return ValidationResult.structuralOnly(.tga);
 }
 
+/// Deep TGA validation: verify pixel data integrity.
+/// For RLE types (9, 10, 11): decode RLE stream and verify exact pixel count.
+/// For uncompressed types (1, 2, 3): verify file size matches expected data size.
+pub fn validateTgaDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    const file = std.fs.cwd().openFile(path, .{}) catch {
+        return ValidationResult.okWithDepthAndWarning(.tga, .structural, "could not open for deep validation");
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.okWithDepthAndWarning(.tga, .structural, "could not get file size");
+    };
+
+    if (file_size < 18) {
+        return ValidationResult.invalidCode(.tga, .file_too_small, "TGA");
+    }
+
+    // Read the full file into memory
+    if (file_size > 256 * 1024 * 1024) {
+        return ValidationResult.okWithDepthAndWarning(.tga, .structural, "TGA file too large for deep validation");
+    }
+
+    const data = allocator.alloc(u8, @intCast(file_size)) catch {
+        return ValidationResult.okWithDepthAndWarning(.tga, .structural, "out of memory for TGA data");
+    };
+    defer allocator.free(data);
+
+    file.seekTo(0) catch return ValidationResult.okWithDepth(.tga, .structural);
+    const bytes_read = file.readAll(data) catch {
+        return ValidationResult.okWithDepth(.tga, .structural);
+    };
+    if (bytes_read < file_size) {
+        return ValidationResult.invalidCodeWithDepth(.tga, .truncated, "TGA file", .structural);
+    }
+
+    const id_length: usize = data[0];
+    const color_map_type = data[1];
+    const image_type = data[2];
+
+    // Color map spec
+    const cm_length: usize = std.mem.readInt(u16, data[5..7], .little);
+    const cm_entry_size: usize = data[7]; // bits per entry
+    const cm_bytes: usize = if (color_map_type == 1) cm_length * ((cm_entry_size + 7) / 8) else 0;
+
+    const width: usize = std.mem.readInt(u16, data[12..14], .little);
+    const height: usize = std.mem.readInt(u16, data[14..16], .little);
+    const pixel_depth: usize = data[16];
+    const bytes_per_pixel = (pixel_depth + 7) / 8;
+    const total_pixels = width * height;
+
+    // Data starts after header(18) + ID(id_length) + color map(cm_bytes)
+    const data_offset = 18 + id_length + cm_bytes;
+    if (data_offset > data.len) {
+        return ValidationResult.invalidCodeWithDepth(.tga, .truncated, "TGA header/colormap", .structural);
+    }
+
+    const pixel_data = data[data_offset..];
+
+    const is_rle = (image_type == 9 or image_type == 10 or image_type == 11);
+    const is_uncompressed = (image_type == 1 or image_type == 2 or image_type == 3);
+
+    if (is_uncompressed) {
+        // Uncompressed: verify exact size
+        const expected = total_pixels * bytes_per_pixel;
+        if (pixel_data.len < expected) {
+            return ValidationResult.invalidCodeWithDepth(.tga, .truncated, "uncompressed TGA pixel data", .full);
+        }
+        return ValidationResult.okWithDepth(.tga, .full);
+    }
+
+    if (is_rle) {
+        // Decode RLE stream: each packet is 1 header byte + pixel data.
+        // Bit 7 of header: 1=run-length, 0=raw
+        // Bits 0-6: count - 1 (so count is 1..128)
+        var pos: usize = 0;
+        var pixels_decoded: usize = 0;
+
+        while (pixels_decoded < total_pixels) {
+            if (pos >= pixel_data.len) {
+                return ValidationResult.invalidCodeWithDepth(.tga, .truncated, "RLE stream ended before all pixels decoded", .full);
+            }
+
+            const packet_header = pixel_data[pos];
+            pos += 1;
+            const count: usize = (packet_header & 0x7F) + 1;
+
+            if (packet_header & 0x80 != 0) {
+                // Run-length packet: 1 pixel repeated `count` times
+                if (pos + bytes_per_pixel > pixel_data.len) {
+                    return ValidationResult.invalidCodeWithDepth(.tga, .truncated, "RLE run pixel", .full);
+                }
+                pos += bytes_per_pixel;
+            } else {
+                // Raw packet: `count` individual pixels
+                if (pos + count * bytes_per_pixel > pixel_data.len) {
+                    return ValidationResult.invalidCodeWithDepth(.tga, .truncated, "RLE raw pixels", .full);
+                }
+                pos += count * bytes_per_pixel;
+            }
+
+            pixels_decoded += count;
+        }
+
+        if (pixels_decoded != total_pixels) {
+            return ValidationResult.invalidWithDepth(.tga, "RLE stream produced wrong pixel count (data corruption)", .full);
+        }
+
+        return ValidationResult.okWithDepth(.tga, .full);
+    }
+
+    // Image type 0 (no image data) or unknown — structural only
+    return ValidationResult.okWithDepth(.tga, .structural);
+}
+
 // ============ PAM/PBM/PGM/PPM Validator ============
 
 /// Validate Portable Anymap (PBM/PGM/PPM/PAM) file structure.
