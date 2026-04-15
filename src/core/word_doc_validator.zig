@@ -546,6 +546,11 @@ fn validatePlcBtePapx(data: []const u8, _: u32, wd_size: usize) ?[]const u8 {
 
 // ============ Tests ============
 
+/// Skip test if a ground truth file doesn't exist (e.g., samples in external repo).
+fn skipIfMissing(comptime path: []const u8) !void {
+    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+}
+
 test "parseFibBase from synthetic data" {
     var data: [0x9A]u8 = [_]u8{0} ** 0x9A;
 
@@ -690,6 +695,7 @@ test "validateClx rejects missing Pcdt marker" {
 
 test "validateDocDeep with sample.doc" {
     const allocator = std.testing.allocator;
+    try skipIfMissing("ground_truth_examples/doc/sample.doc");
     const result = validateDocDeep(allocator, "ground_truth_examples/doc/sample.doc");
     // If sample.doc exists, it should validate successfully with full depth
     if (result.is_valid) {

@@ -18,6 +18,11 @@ const errmsg = @import("error_messages.zig");
 
 const testing = std.testing;
 
+/// Skip test if a ground truth file doesn't exist (e.g., samples in external repo).
+fn skipIfMissing(comptime path: []const u8) !void {
+    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+}
+
 // ============ WAD (DOOM) Validator ============
 
 /// Validate WAD (DOOM) archive format.
@@ -1052,6 +1057,7 @@ test "VPK validation - entry missing 0xFFFF terminator rejected" {
 }
 
 test "IFF deep validation - valid ILBM ByteRun1 sample" {
+	try skipIfMissing("ground_truth_examples/iff/sample.iff");
 	const result = validateIffDeep(testing.allocator, "ground_truth_examples/iff/sample.iff");
 	try testing.expect(result.is_valid);
 	try testing.expectEqual(ValidationDepth.full, result.validation_depth);

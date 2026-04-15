@@ -3066,7 +3066,15 @@ pub fn validate7zFromBuffer(data: []const u8) ValidationResult {
 const testing = std.testing;
 
 fn openGroundTruth(comptime path: []const u8) !FileSource {
-    return FileSource.open(path);
+    return FileSource.open(path) catch |err| {
+        if (err == error.FileNotFound) return error.SkipZigTest;
+        return err;
+    };
+}
+
+/// Skip test if a ground truth file doesn't exist (e.g., samples in external repo).
+fn skipIfMissing(comptime path: []const u8) !void {
+    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
 }
 
 // ---------- Structural validators on valid ground truth files ----------
@@ -3163,12 +3171,14 @@ test "validateCpt: valid CPT ground truth" {
 // ---------- Deep validators on valid ground truth files ----------
 
 test "validateZipDeep: valid ZIP ground truth" {
+    try skipIfMissing("ground_truth_examples/zip/test_archive.zip");
     const result = validateZipDeep(testing.allocator, "ground_truth_examples/zip/test_archive.zip");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.zip, result.format);
 }
 
 test "validateGzipDeep: valid gzip ground truth" {
+    try skipIfMissing("ground_truth_examples/gzip/sample.gz");
     const result = validateGzipDeep(testing.allocator, "ground_truth_examples/gzip/sample.gz");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.gzip, result.format);
@@ -3176,6 +3186,7 @@ test "validateGzipDeep: valid gzip ground truth" {
 }
 
 test "validateBzip2Deep: valid bzip2 ground truth" {
+    try skipIfMissing("ground_truth_examples/bzip2/sample.bz2");
     const result = validateBzip2Deep(testing.allocator, "ground_truth_examples/bzip2/sample.bz2");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.bzip2, result.format);
@@ -3183,6 +3194,7 @@ test "validateBzip2Deep: valid bzip2 ground truth" {
 }
 
 test "validateXzDeep: valid XZ ground truth" {
+    try skipIfMissing("ground_truth_examples/xz/sample.xz");
     const result = validateXzDeep(testing.allocator, "ground_truth_examples/xz/sample.xz");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.xz, result.format);
@@ -3190,6 +3202,7 @@ test "validateXzDeep: valid XZ ground truth" {
 }
 
 test "validateZstdDeep: valid Zstd ground truth" {
+    try skipIfMissing("ground_truth_examples/zstd/sample.zst");
     const result = validateZstdDeep(testing.allocator, "ground_truth_examples/zstd/sample.zst");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.zstd, result.format);
@@ -3199,6 +3212,7 @@ test "validateZstdDeep: valid Zstd ground truth" {
 test "validateZstdDeep: xxHash64 checksum verified on ground truth" {
     // The ground truth sample.zst has Content_Checksum_Flag set (byte 4 bit 2).
     // Verify it passes with full depth (checksum verified).
+    try skipIfMissing("ground_truth_examples/zstd/sample.zst");
     const result = validateZstdDeep(testing.allocator, "ground_truth_examples/zstd/sample.zst");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.zstd, result.format);
@@ -3239,18 +3253,21 @@ test "validateZstdDeep: corrupted checksum detected" {
 }
 
 test "validate7zDeep: valid 7z ground truth" {
+    try skipIfMissing("ground_truth_examples/7z/sample.7z");
     const result = validate7zDeep(testing.allocator, "ground_truth_examples/7z/sample.7z");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.sevenz, result.format);
 }
 
 test "validateRarDeep: valid RAR ground truth" {
+    try skipIfMissing("ground_truth_examples/rar/sample.rar");
     const result = validateRarDeep(testing.allocator, "ground_truth_examples/rar/sample.rar");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.rar, result.format);
 }
 
 test "validateCptDeep: valid CPT ground truth" {
+    try skipIfMissing("ground_truth_examples/cpt/sample.cpt");
     const result = validateCptDeep(testing.allocator, "ground_truth_examples/cpt/sample.cpt");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.cpt, result.format);
@@ -3463,6 +3480,7 @@ test "base32Decode: SHA-1 digest round trip" {
 // ---------- WARC deep validator tests ----------
 
 test "validateWarcDeep: WARC with SHA-1 digests returns full depth" {
+    try skipIfMissing("ground_truth_examples/warc/sample.warc");
     const result = validateWarcDeep(testing.allocator, "ground_truth_examples/warc/sample.warc");
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.warc, result.format);
@@ -3582,18 +3600,21 @@ test "validateCpt: corrupt CPT rejected" {
 // ---------- Deep validators on corrupt files ----------
 
 test "validateGzipDeep: corrupt gzip detected" {
+    try skipIfMissing("ground_truth_examples/corrupted/gzip/sample_corrupt_1.gz");
     const result = validateGzipDeep(testing.allocator, "ground_truth_examples/corrupted/gzip/sample_corrupt_1.gz");
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.gzip, result.format);
 }
 
 test "validateBzip2Deep: corrupt bzip2 detected" {
+    try skipIfMissing("ground_truth_examples/corrupted/bzip2/sample_corrupt_1.bz2");
     const result = validateBzip2Deep(testing.allocator, "ground_truth_examples/corrupted/bzip2/sample_corrupt_1.bz2");
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.bzip2, result.format);
 }
 
 test "validateXzDeep: corrupt XZ detected" {
+    try skipIfMissing("ground_truth_examples/corrupted/xz/sample_corrupt_1.xz");
     const result = validateXzDeep(testing.allocator, "ground_truth_examples/corrupted/xz/sample_corrupt_1.xz");
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.xz, result.format);
@@ -3615,6 +3636,7 @@ test "validateZstdDeep: too-small file detected" {
 }
 
 test "validateRarDeep: header CRC mismatch is INVALID" {
+    try skipIfMissing("ground_truth_examples/corrupted/rar/sample_corrupt_1.rar");
     const result = validateRarDeep(testing.allocator, "ground_truth_examples/corrupted/rar/sample_corrupt_1.rar");
     // unrar reports "Corrupt header is found" and exits with error code 3 — this IS corruption
     try testing.expect(!result.is_valid);
@@ -5843,6 +5865,7 @@ test "validate7zDeep accepts valid 7z with full decompression" {
     var validator = FormatValidator.initDeep();
     defer validator.deinit();
 
+    try skipIfMissing("ground_truth_examples/7z/sample.7z");
     const result = validator.validateFileDeep(allocator, "ground_truth_examples/7z/sample.7z");
 
     try std.testing.expectEqual(FileFormat.sevenz, result.format);

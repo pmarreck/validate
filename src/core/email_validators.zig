@@ -557,6 +557,11 @@ pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult
 
 // ============ Tests ============
 
+/// Skip test if a ground truth file doesn't exist (e.g., samples in external repo).
+fn skipIfMissing(comptime path: []const u8) !void {
+    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+}
+
 test "validateEml with ground truth" {
     var source = FileSource.open("ground_truth_examples/eml/sample.eml") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
@@ -573,6 +578,7 @@ test "validateMbox with ground truth" {
 
 test "validateMboxDeep with ground truth" {
     const allocator = std.testing.allocator;
+    try skipIfMissing("ground_truth_examples/mbox/sample.mbox");
     const result = validateMboxDeep(allocator, "ground_truth_examples/mbox/sample.mbox");
     try std.testing.expect(result.is_valid);
 }

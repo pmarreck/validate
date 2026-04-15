@@ -830,6 +830,11 @@ pub fn validateChd(file: *FileSource) ValidationResult {
 // Tests moved from format_validation.zig
 // ============================================================
 
+/// Skip test if a ground truth file doesn't exist (e.g., samples in external repo).
+fn skipIfMissing(comptime path: []const u8) !void {
+    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+}
+
 test "detectFormat IFF generic" {
     // Generic IFF with unknown form type
     var iff_header: [12]u8 = undefined;
@@ -950,12 +955,14 @@ test "FormatValidator rejects Blorb without RIdx" {
 }
 
 test "validateGenesisDeep: valid ROM has full depth (checksum verified)" {
+    try skipIfMissing("ground_truth_examples/genesis/Afterburner II (J).gen");
     const result = validateGenesisDeep(std.testing.allocator, "ground_truth_examples/genesis/Afterburner II (J).gen");
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 }
 
 test "validateGenesisDeep: second sample also passes checksum" {
+    try skipIfMissing("ground_truth_examples/genesis/Aero Blasters (JU).gen");
     const result = validateGenesisDeep(std.testing.allocator, "ground_truth_examples/genesis/Aero Blasters (JU).gen");
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
@@ -965,6 +972,7 @@ test "validateGenesisDeep: corrupted ROM detected by checksum" {
     const allocator = std.testing.allocator;
 
     // Read a valid ROM and corrupt data in the checksummed region (0x200+)
+    try skipIfMissing("ground_truth_examples/genesis/Afterburner II (J).gen");
     const original = try std.fs.cwd().readFileAlloc(allocator, "ground_truth_examples/genesis/Afterburner II (J).gen", 8 * 1024 * 1024);
     defer allocator.free(original);
 
@@ -991,6 +999,7 @@ test "validateGenesisDeep: corrupted ROM detected by checksum" {
 }
 
 test "validateN64Deep: valid ROM has full depth (CRC verified)" {
+    try skipIfMissing("ground_truth_examples/n64/Super Mario 64.z64");
     const result = validateN64Deep(std.testing.allocator, "ground_truth_examples/n64/Super Mario 64.z64");
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
@@ -999,6 +1008,7 @@ test "validateN64Deep: valid ROM has full depth (CRC verified)" {
 test "validateN64Deep: corrupted ROM detected by CRC" {
     const allocator = std.testing.allocator;
 
+    try skipIfMissing("ground_truth_examples/n64/Mario 64 (J).z64");
     const original = try std.fs.cwd().readFileAlloc(allocator, "ground_truth_examples/n64/Super Mario 64.z64", 64 * 1024 * 1024);
     defer allocator.free(original);
 
