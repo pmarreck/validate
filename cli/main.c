@@ -2007,7 +2007,7 @@ int main(int argc, char* argv[]) {
 		const char* arg = argv[i];
 
 		/* Check if this looks like an option (starts with - or / on Windows) */
-		int is_option = (arg[0] == '-');
+		int is_option = (arg[0] == '-' && arg[1] != '\0'); /* "-" alone is stdin, not an option */
 #ifdef _WIN32
 		if (arg[0] == '/' && arg[1] != '\0' && arg[1] != '/' && arg[1] != '\\')
 			is_option = 1;
@@ -2120,6 +2120,36 @@ int main(int argc, char* argv[]) {
 			path_capacity = new_capacity;
 		}
 		paths[path_count++] = arg;
+	}
+
+	/* Remove "-", "--stdin", or "@stdin" from paths (stdin sentinel markers).
+	 * Their presence (or no args + piped stdin) triggers reading paths from stdin. */
+	for (size_t i = 0; i < path_count; ) {
+		if (strcmp(paths[i], "-") == 0 || strcmp(paths[i], "--stdin") == 0 || strcmp(paths[i], "@stdin") == 0) {
+			for (size_t j = i; j + 1 < path_count; j++) paths[j] = paths[j+1];
+			path_count--;
+		} else {
+			i++;
+		}
+	}
+
+	/* If no paths remain and stdin is piped, read newline-delimited paths from stdin */
+	if (path_count == 0 && !isatty(STDIN_FILENO)) {
+		char line[4096];
+		while (fgets(line, sizeof(line), stdin)) {
+			size_t len = strlen(line);
+			while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r')) line[--len] = '\0';
+			if (len == 0) continue;
+
+			if (path_count >= path_capacity) {
+				size_t new_capacity = path_capacity == 0 ? 64 : path_capacity * 2;
+				const char** new_paths = realloc(paths, new_capacity * sizeof(const char*));
+				if (!new_paths) break;
+				paths = new_paths;
+				path_capacity = new_capacity;
+			}
+			paths[path_count++] = strdup(line);
+		}
 	}
 
 	if (path_count == 0) {
