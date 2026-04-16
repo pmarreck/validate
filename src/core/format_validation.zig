@@ -768,6 +768,130 @@ pub const FileFormat = enum {
             else => false,
         };
     }
+
+    /// The maximum validation depth achievable for this format, regardless of
+    /// our implementation completeness. This is a property of the FORMAT, not
+    /// of our validator. Formats without integrity mechanisms (checksums, entropy
+    /// coding, etc.) can never achieve full depth — raw data corruption is
+    /// indistinguishable from valid data.
+    pub fn maxAchievableDepth(self: FileFormat) ValidationDepth {
+        return switch (self) {
+            // Formats with checksums, CRCs, or entropy coding — full depth achievable
+            .png, .jpeg, .gif, .flac, .zip, .gzip, .bzip2, .xz, .zstd, .rar,
+            .sevenz, .pdf, .sqlite, .par2, .woff, .woff2, .ttf, .otf,
+            .mp4, .mkv, .webm, .avi, .mov, .flv, .mpeg_ts, .mpeg_ps,
+            .swf, .asf, .ogg, .mp3, .wav, .aiff,
+            .webp, .jxl, .bmp, .tiff, .dng, .psd, .ico, .icns,
+            .heic, .avif, .tga, .exr, .docx, .xlsx, .pptx, .odt, .ods, .odp,
+            .epub, .pages, .java_class, .pe, .elf, .macho, .macho_fat, .wasm,
+            .cab, .rpm, .sit, .sitx, .bagit, .warc,
+            .pem, .der, .pgp_signed, .ssh_signature,
+            .nes, .snes, .n64, .gb, .gba, .nds, .genesis, .chd,
+            .cr2, .nef, .arw, // via LibRaw
+            .hdf5, .dicom, .parquet, .netcdf, .fits,
+            .@"3mf", .glb, .gltf,
+            .flp, .als, .cpr, .reason, .logicx, .song, .band,
+            .macos_app, .macos_framework, .macos_bundle,
+            .git_repository,
+            .aac_adts, .alac, .ape, .wavpack, .midi, .mod, .xm, .it, .s3m, // audio with structure
+            .m4a, .ogv, .prores, .av1, .mpeg_es, .jpeg2000, .jbig2, // media codecs
+            .doc, .xls, .ppt, .mdb, .accdb, .dbf, // office/DB with structure
+            .ar, .kmz, .blar, .mblar, .lspk, .chromium_pak, .pak, // archives with structure
+            .type1, // Type 1 font with structure
+            .llvm_diag, .llvm_pch, // LLVM binary formats
+            => .full,
+
+            // Formats where raw data has no integrity signal — structural is the ceiling
+            .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
+            .csv, .json, .xml, .toml, .ini, .yaml, .html, .markdown, .kml, .rtf, .svg,
+            .eex, .erlang_term,
+            .au, .amr, .caf, .dsf, .dff, .tta, // raw audio, no checksums
+            .pam, .dpx, .qoi, // raw pixel data, no checksums
+            .obj, .ply, .stl, .step, .dxf, // text/raw geometry, no checksums
+            .dwg, .blend, // proprietary, structural parse only
+            .fasta, .fastq, .shapefile, .pdb_struct, .cif, .nifti, .matlab,
+            .eml, .mbox,
+            .icalendar, .vcard, .x12_edi, .edifact,
+            .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2,
+            .orf, .pef, .raf, .rw2, .cr3, // camera RAW without checksums
+            .pcap, .pcapng,
+            .wad, .bsp, .vpk, .iff, .blorb,
+            .ac3, .eac3, .dts, .mp2, .cdg,
+            .rm, .dv, .ivf,
+            .prproj, .indd, .idml, .fcpxml, .drp, .sketch, .aep, .ai, .eps,
+            .bwproject, .ptx, .rpp,
+            .cwk, .mwd, .wpd,
+            .iso, .dmg, .toast, .vmdk, .wim, .esd, .msi,
+            .br, .hqx, .cpt, .tar,
+            .ds_store, .plist, .spotlight, .apple_double, .apple_media_db,
+            => .structural,
+
+            // Meta/internal types
+            .unknown, .coff, .beam, .msgpack,
+            => .structural,
+        };
+    }
+
+    /// Human-readable explanation of WHY the format has its depth ceiling.
+    /// Single source of truth — docs and UI derive from this.
+    pub fn depthCeilingReason(self: FileFormat) [:0]const u8 {
+        return switch (self.maxAchievableDepth()) {
+            .full => "checksums, entropy coding, or decode verification available",
+            .structural => switch (self) {
+                // Raw audio — no checksums
+                .au, .amr, .caf, .dsf, .dff, .tta,
+                .ac3, .eac3, .dts, .mp2, .cdg,
+                => "raw audio data — every byte is a valid sample value, no integrity signal",
+
+                // Raw pixel/image data
+                .pam, .dpx, .qoi,
+                => "raw pixel data — every byte is a valid value, no integrity signal",
+
+                // Camera RAW without checksums
+                .orf, .pef, .raf, .rw2, .cr3,
+                => "camera sensor data without checksums — corruption produces valid-but-wrong pixels",
+
+                // Text formats — every byte sequence is "valid"
+                .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
+                .csv, .json, .xml, .toml, .ini, .yaml, .html, .markdown, .kml, .rtf, .svg,
+                .eex, .erlang_term, .eml, .mbox,
+                .fasta, .fastq,
+                => "text format — any byte sequence is syntactically plausible",
+
+                // Geometry/CAD — text or proprietary
+                .obj, .ply, .stl, .step, .dxf, .dwg, .blend,
+                => "geometry/CAD format without data integrity mechanism",
+
+                // Archives without per-entry checksums
+                .tar, .br, .hqx, .cpt, .iso, .dmg, .toast, .vmdk, .wim, .esd, .msi,
+                => "archive/disk image without per-entry checksums",
+
+                // Financial/EDI — structured text
+                .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2,
+                .icalendar, .vcard, .x12_edi, .edifact,
+                => "structured text — no binary integrity mechanism",
+
+                // Game formats without checksums
+                .wad, .bsp, .vpk, .iff, .blorb,
+                => "game data format without checksums",
+
+                // Network captures
+                .pcap, .pcapng,
+                => "packet capture — no per-packet integrity verification",
+
+                // Creative suite — proprietary binary
+                .prproj, .indd, .idml, .fcpxml, .drp, .sketch, .aep, .ai, .eps,
+                .bwproject, .ptx, .rpp,
+                => "proprietary project format — structural parse only",
+
+                // System/metadata files
+                .ds_store, .plist, .spotlight, .apple_double, .apple_media_db,
+                => "system metadata — no data integrity mechanism",
+
+                else => "no integrity mechanism available for this format",
+            },
+        };
+    }
 };
 
 /// Depth of validation performed.

@@ -251,6 +251,11 @@ fn buildValidationResult(
         .full => 1,
     });
     try builder.add("depth_desc", result.validation_depth.description());
+    try builder.addU8("depth_ceiling_u8", switch (result.format.maxAchievableDepth()) {
+        .structural => 0,
+        .full => 1,
+    });
+    try builder.add("depth_ceiling_reason", result.format.depthCeilingReason());
 
     // Malformations as bitset
     var malform_bits: u64 = 0;

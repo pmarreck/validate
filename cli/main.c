@@ -1122,6 +1122,7 @@ static void emit_json_result(const char* path, const char* result) {
 	char warn_msg[1024] = "";
 	char depth_desc[128] = "";
 	char err_code[64] = "";
+	char depth_ceiling_reason[256] = "";
 
 	kv_get_str(result, "fmt_desc", fmt_desc, sizeof(fmt_desc));
 	kv_get_str(result, "fmt_id", fmt_id, sizeof(fmt_id));
@@ -1130,6 +1131,7 @@ static void emit_json_result(const char* path, const char* result) {
 	kv_get_str(result, "warn", warn_msg, sizeof(warn_msg));
 	kv_get_str(result, "depth_desc", depth_desc, sizeof(depth_desc));
 	kv_get_str(result, "err_code", err_code, sizeof(err_code));
+	kv_get_str(result, "depth_ceiling_reason", depth_ceiling_reason, sizeof(depth_ceiling_reason));
 
 	int is_valid = kv_get_bool(result, "valid");
 	int depth = (int)kv_get_u64(result, "depth_u8");
@@ -1153,6 +1155,7 @@ static void emit_json_result(const char* path, const char* result) {
 	if (fmt_cat[0]) { fputs(",\"category\":\"", stdout); json_escape(stdout, fmt_cat); fputs("\"", stdout); }
 	fputs(",\"depth\":", stdout); fprintf(stdout, "%d", depth);
 	if (depth_desc[0]) { fputs(",\"depth_description\":\"", stdout); json_escape(stdout, depth_desc); fputs("\"", stdout); }
+	if (depth_ceiling_reason[0]) { fputs(",\"depth_ceiling_reason\":\"", stdout); json_escape(stdout, depth_ceiling_reason); fputs("\"", stdout); }
 	if (err_msg[0]) { fputs(",\"error\":\"", stdout); json_escape(stdout, err_msg); fputs("\"", stdout); }
 	if (err_code[0]) { fputs(",\"error_code\":\"", stdout); json_escape(stdout, err_code); fputs("\"", stdout); }
 	if (warn_msg[0]) { fputs(",\"warning\":\"", stdout); json_escape(stdout, warn_msg); fputs("\"", stdout); }
