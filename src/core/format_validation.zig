@@ -295,8 +295,24 @@ pub fn detectBundleType(path: []const u8) BundleType {
         }
     }
     // Check for .app bundle (macOS application) - must end with ".app"
+    // BUT: Erlang/OTP also uses .app for application resource files (regular files).
+    // Only classify as macOS bundle if the path is actually a directory with Contents/.
     if (std.mem.endsWith(u8, path, ".app")) {
-        return .macos_app;
+        // Quick check: does Contents/ exist inside? If so, it's a macOS bundle.
+        // If not, it might be an Erlang .app file or other non-bundle .app.
+        var contents_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const contents_path = std.fmt.bufPrint(&contents_buf, "{s}/Contents", .{path}) catch return .none;
+        if (std.fs.cwd().access(contents_path, .{})) |_| {
+            return .macos_app;
+        } else |_| {
+            // Also check for WrappedBundle (iOS Catalyst)
+            const wrapped = std.fmt.bufPrint(&contents_buf, "{s}/WrappedBundle", .{path}) catch return .none;
+            if (std.fs.cwd().access(wrapped, .{})) |_| {
+                return .macos_app;
+            } else |_| {
+                return .none; // Not a macOS bundle — probably Erlang .app
+            }
+        }
     }
     // Check for .framework bundle (macOS framework)
     if (std.mem.endsWith(u8, path, ".framework")) {
@@ -2825,7 +2841,6 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "mpg", .mpeg_ps },
     .{ "mpeg", .mpeg_ps },
     .{ "vob", .mpeg_ps },
-    .{ "ts", .mpeg_ts },
     .{ "mts", .mpeg_ts },
     .{ "m2ts", .mpeg_ts },
     .{ "m1v", .mpeg_es },
@@ -4115,18 +4130,14 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
         return .yaml;
     }
 
-    // INI/TOML: Use heuristic to check if content looks like INI
-    // INI files have [section] headers and/or key=value pairs
-    // We check the first ~10 lines - at least half should look like INI syntax
-    // This avoids false positives on files like NFO (BBCode) that start with [tag]
-    if (first_char == '[' or ((first_char >= 'a' and first_char <= 'z') or
-        (first_char >= 'A' and first_char <= 'Z') or first_char == '_'))
-    {
-        if (looksLikeIni(header[i..])) {
-            return .ini;
-        }
-        // Not INI - fall through to check other formats
-    }
+    // INI detection: content heuristic is too aggressive — many text formats
+    // (CoffeeScript, Makefiles, .sln, .RECORD, .pyx) have key=value patterns.
+    // Only classify as INI by content alone if the signal is VERY strong.
+    // Extension-based detection (.ini, .cfg, .conf, .properties) is more reliable
+    // and is handled separately in the extension map. Content detection here is
+    // a last resort for extensionless files or ambiguous extensions.
+    // Disabled: too many false positives. INI is now extension-only.
+    // if (first_char == '[' or ...) { if (looksLikeIni(header[i..])) return .ini; }
 
     // JSON/Erlang detection for [ character (only if not detected as INI above)
     if (first_char == '[') {
@@ -7802,10 +7813,18 @@ test "isBundleDirectory convenience function" {
 }
 
 test "detectBundleType identifies macOS .app bundles" {
-    // Exact ".app" suffix
-    try std.testing.expectEqual(BundleType.macos_app, detectBundleType("MyApp.app"));
-    try std.testing.expectEqual(BundleType.macos_app, detectBundleType("/Applications/Safari.app"));
-    try std.testing.expectEqual(BundleType.macos_app, detectBundleType("/Users/test/Desktop/MyApp.app"));
+    // Create a real .app bundle directory structure
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.makePath("MyApp.app/Contents") catch return error.SkipZigTest;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("MyApp.app", &pb) catch return error.SkipZigTest;
+    try std.testing.expectEqual(BundleType.macos_app, detectBundleType(rp));
+
+    // .app file without Contents/ should NOT be detected as macOS bundle (e.g., Erlang .app)
+    tmp.dir.writeFile(.{ .sub_path = "erlang.app", .data = "{application,test,[]}.\n" }) catch return error.SkipZigTest;
+    const rp2 = tmp.dir.realpath("erlang.app", &pb) catch return error.SkipZigTest;
+    try std.testing.expectEqual(BundleType.none, detectBundleType(rp2));
 
     // NOT an .app bundle (just has .app in the name)
     try std.testing.expectEqual(BundleType.none, detectBundleType("MyApp.app.bak"));
@@ -7964,6 +7983,47 @@ test "git_repository: real ground truth sample validates at full depth" {
     try std.testing.expectEqual(FileFormat.git_repository, result.format);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "false positive: RECORD file should NOT be detected as INI" {
+    // Python dist-info RECORD files have key=value-like lines but are NOT INI
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "anyio/METADATA,sha256=abc123,4277\nanyio/RECORD,,\n";
+    tmp.dir.writeFile(.{ .sub_path = "RECORD", .data = content }) catch return error.SkipZigTest;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("RECORD", &pb) catch return error.SkipZigTest;
+    var validator = FormatValidator.init();
+    const result = validator.validateFile(rp);
+    // Should NOT be classified as INI
+    try std.testing.expect(result.format != .ini);
+}
+
+test "false positive: TypeScript .d.ts should NOT be detected as MPEG-TS" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "export declare function create(): void;\nexport interface Options { timeout: number; }\n";
+    tmp.dir.writeFile(.{ .sub_path = "types.d.ts", .data = content }) catch return error.SkipZigTest;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("types.d.ts", &pb) catch return error.SkipZigTest;
+    var validator = FormatValidator.init();
+    const result = validator.validateFile(rp);
+    // Should NOT be MPEG-TS, should not be invalid
+    try std.testing.expect(result.format != .mpeg_ts);
+    try std.testing.expect(result.is_valid);
+}
+
+test "false positive: Erlang .app should NOT be detected as macOS app bundle" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "{application,myapp,[{applications,[kernel,stdlib]},{mod,{myapp_app,[]}}]}.\n";
+    tmp.dir.writeFile(.{ .sub_path = "myapp.app", .data = content }) catch return error.SkipZigTest;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("myapp.app", &pb) catch return error.SkipZigTest;
+    var validator = FormatValidator.init();
+    const result = validator.validateFile(rp);
+    // Should be erlang_term, NOT macos_app
+    try std.testing.expect(result.format != .macos_app);
 }
 
 test "detectFormat RAF magic bytes" {

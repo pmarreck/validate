@@ -3720,8 +3720,11 @@ test "UTF-16 LE INI detection" {
     };
 
     const format = format_validation.detectTextFormat(&utf16_ini);
-    try std.testing.expect(format != null);
-    try std.testing.expectEqual(FileFormat.ini, format.?);
+    // INI is no longer detected by content alone (too many false positives).
+    // UTF-16 INI content without .ini extension should detect as plain_text_utf16 or null.
+    if (format) |f| {
+        try std.testing.expect(f != .ini); // Must NOT falsely classify as INI
+    }
 }
 
 test "validatePlainText: self-extracting shell script returns WARN, not FAIL" {
