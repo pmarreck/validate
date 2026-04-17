@@ -95,7 +95,9 @@
 								mkdir -p $out/bin $out/lib $out/include
 
 								# Install static library and header for downstream consumers (e.g. validate_gui)
+								# Zig produces both libvalidate_core.a (GNU) and validate_core.lib (MSVC) for Windows
 								cp zig-out/lib/libvalidate_core.a $out/lib/ 2>/dev/null || true
+								cp zig-out/lib/validate_core.lib $out/lib/ 2>/dev/null || true
 								# Header is a source file in ffi/; on macOS the libtool path
 								# bypasses installArtifact so zig-out/include/ may be empty.
 								if [ -f zig-out/include/validate_core.h ]; then
