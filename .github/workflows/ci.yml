@@ -36,6 +36,11 @@ jobs:
             name: windows-x86_64
             package: windows-x86_64
             binary: validate.exe
+          - runner: ubuntu-latest
+            system: x86_64-linux
+            name: windows-aarch64
+            package: windows-aarch64
+            binary: validate.exe
 
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.name }}
