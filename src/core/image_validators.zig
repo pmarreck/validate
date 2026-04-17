@@ -4819,8 +4819,58 @@ pub fn validatePam(file: *FileSource) ValidationResult {
         }
 
         if (!is_binary) {
-            // ASCII formats (P1/P2/P3): can't reliably compute data size; structural only
-            return ValidationResult.structuralOnly(.pam);
+            // ASCII formats (P1/P2/P3): parse every value and range-check against maxval.
+            // P1 = bitmap (values 0/1), P2 = grayscale, P3 = RGB
+            const channels: u64 = if (pnm_type == '3') 3 else 1;
+            const expected_values = width * height * channels;
+            const max_ascii_size: u64 = 64 * 1024 * 1024; // 64 MiB limit for ASCII parsing
+            const actual_sz = file.getEndPos() catch return ValidationResult.structuralOnly(.pam);
+            if (actual_sz > max_ascii_size) return ValidationResult.okWithDepth(.pam, .structural);
+
+            // Read remaining file content for ASCII parsing
+            file.seekTo(@intCast(pos)) catch return ValidationResult.structuralOnly(.pam);
+            const remaining_sz: usize = @intCast(actual_sz - pos);
+            const ascii_buf = std.heap.page_allocator.alloc(u8, remaining_sz) catch
+                return ValidationResult.structuralOnly(.pam);
+            defer std.heap.page_allocator.free(ascii_buf);
+            const ascii_read = file.readAll(ascii_buf) catch return ValidationResult.structuralOnly(.pam);
+            const ascii_data = ascii_buf[0..ascii_read];
+
+            var values_found: u64 = 0;
+            var i: usize = 0;
+            while (i < ascii_data.len) {
+                // Skip whitespace and comments
+                while (i < ascii_data.len) {
+                    if (ascii_data[i] == '#') {
+                        while (i < ascii_data.len and ascii_data[i] != '\n') : (i += 1) {}
+                        if (i < ascii_data.len) i += 1;
+                    } else if (ascii_data[i] == ' ' or ascii_data[i] == '\t' or ascii_data[i] == '\n' or ascii_data[i] == '\r') {
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if (i >= ascii_data.len) break;
+
+                // Parse a decimal number
+                if (ascii_data[i] < '0' or ascii_data[i] > '9') {
+                    return ValidationResult.invalid(.pam, "PNM ASCII: non-numeric value in pixel data");
+                }
+                var val: u64 = 0;
+                while (i < ascii_data.len and ascii_data[i] >= '0' and ascii_data[i] <= '9') {
+                    val = val *% 10 +% @as(u64, ascii_data[i] - '0');
+                    i += 1;
+                }
+                if (val > maxval) {
+                    return ValidationResult.invalid(.pam, "PNM pixel value exceeds maxval");
+                }
+                values_found += 1;
+            }
+
+            if (values_found < expected_values) {
+                return ValidationResult.invalidCodeMsg(.pam, .exceeds_bounds, "PNM pixel data", "PNM ASCII: fewer values than expected for dimensions");
+            }
+            return ValidationResult.okWithDepth(.pam, .full);
         }
 
         // Binary data starts at `pos` bytes from file start.
@@ -5999,6 +6049,52 @@ test "validatePam detects pixel value exceeding maxval in binary P5" {
     tmp.dir.writeFile(.{ .sub_path = "bad_maxval.pgm", .data = &data }) catch return;
     var pb: [std.fs.max_path_bytes]u8 = undefined;
     const rp = tmp.dir.realpath("bad_maxval.pgm", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validatePam(&source);
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePam fully validates ASCII P3 PPM with maxval check" {
+    // P3 (ASCII RGB), 2x2, maxval=255 — all values valid
+    const data = "P3\n2 2\n255\n0 0 0 255 255 255\n128 64 32 0 0 0\n";
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "ascii.ppm", .data = data }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("ascii.ppm", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validatePam(&source);
+    try testing.expect(result.is_valid);
+    // ASCII PPM should achieve full depth (every value parsed and range-checked)
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // No "Full validation unavailable" warning
+    try testing.expect(result.warning_message == null);
+}
+
+test "validatePam rejects ASCII P3 with value exceeding maxval" {
+    // P3 2x1, maxval=100, but pixel value 200 exceeds it
+    const data = "P3\n2 1\n100\n50 60 70 200 80 90\n";
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "bad_ascii.ppm", .data = data }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("bad_ascii.ppm", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validatePam(&source);
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePam rejects ASCII P3 with wrong pixel count" {
+    // P3 2x2 RGB needs 12 values but only has 6
+    const data = "P3\n2 2\n255\n0 0 0 128 64 32\n";
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "truncated_ascii.ppm", .data = data }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("truncated_ascii.ppm", &pb) catch return;
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
