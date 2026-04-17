@@ -397,9 +397,42 @@ pub fn build(b: *std.Build) void {
         install_bundled.step.dependOn(libtool.step);
         b.getInstallStep().dependOn(&install_bundled.step);
     } else {
-        // On non-macOS platforms, install the unbundled library
-        // (consumers will need to link dependencies separately)
-        b.installArtifact(lib);
+        // Non-macOS: use Zig's LLVM tools to merge all dependency archives
+        // into a single combined library, matching what libtool does on macOS.
+        // Without this, consumers get undefined symbols for opus, openmpt, etc.
+        const is_windows_target = target.result.os.tag == .windows;
+
+        const merged_output = if (is_windows_target) blk: {
+            // zig lib = llvm-lib: merges COFF .lib archives
+            const merge = b.addSystemCommand(&.{ b.graph.zig_exe, "lib" });
+            const output = merge.addPrefixedOutputFileArg("/out:", "validate_core.lib");
+            merge.addArtifactArg(lib);
+            for (all_c_deps) |dep| merge.addArtifactArg(dep);
+            merge.addArtifactArg(sqlite3_lib);
+            break :blk output;
+        } else blk: {
+            // zig ar = llvm-ar: L flag flattens input archives into one .a
+            const merge = b.addSystemCommand(&.{ b.graph.zig_exe, "ar", "qcLS" });
+            const output = merge.addOutputFileArg("libvalidate_core.a");
+            merge.addArtifactArg(lib);
+            for (all_c_deps) |dep| merge.addArtifactArg(dep);
+            merge.addArtifactArg(sqlite3_lib);
+            break :blk output;
+        };
+
+        const lib_name = if (is_windows_target) "validate_core.lib" else "libvalidate_core.a";
+        const install_merged = b.addInstallFileWithDir(merged_output, .lib, lib_name);
+        b.getInstallStep().dependOn(&install_merged.step);
+
+        // Also install as the other naming convention for cross-platform consumers
+        if (is_windows_target) {
+            const install_alias = b.addInstallFileWithDir(merged_output, .lib, "libvalidate_core.a");
+            b.getInstallStep().dependOn(&install_alias.step);
+        }
+
+        // Install header for consumers
+        const install_hdr = b.addInstallFileWithDir(b.path("ffi/validate_core.h"), .header, "validate_core.h");
+        b.getInstallStep().dependOn(&install_hdr.step);
     }
 
     // Shared library (optional)

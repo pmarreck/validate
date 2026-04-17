@@ -94,8 +94,8 @@
 							installPhase = ''
 								mkdir -p $out/bin $out/lib $out/include
 
-								# Install static library and header for downstream consumers (e.g. validate_gui)
-								# Zig produces both libvalidate_core.a (GNU) and validate_core.lib (MSVC) for Windows
+								# Static library — build.zig merges all dependencies into one archive
+								# (libtool on macOS, zig lib on Windows, zig ar on Linux)
 								cp zig-out/lib/libvalidate_core.a $out/lib/ 2>/dev/null || true
 								cp zig-out/lib/validate_core.lib $out/lib/ 2>/dev/null || true
 								# Header is a source file in ffi/; on macOS the libtool path
