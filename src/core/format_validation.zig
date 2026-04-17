@@ -4008,7 +4008,10 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
         return null;
     }
 
-    // PDB (Protein Data Bank): starts with specific record types
+    // PDB (Protein Data Bank): fixed-width 80-column records starting with a record type.
+    // Require: (1) a known PDB record type at column 0, AND (2) the first line is at least
+    // 40 chars (real PDB records are padded to 80 columns; plain text rarely matches this).
+    // This prevents false positives from code files starting with "HEADER", "SOURCE", etc.
     const pdb_starts = [_][]const u8{
         "HEADER", "TITLE ", "COMPND", "SOURCE", "KEYWDS", "EXPDTA",
         "AUTHOR", "REVDAT", "JRNL  ", "REMARK", "DBREF ", "SEQRES",
@@ -4016,7 +4019,11 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
     };
     for (pdb_starts) |prefix| {
         if (header.len - i >= prefix.len and std.mem.eql(u8, header[i..][0..prefix.len], prefix)) {
-            return .pdb_struct;
+            // Check first line length — PDB records are 80 columns, reject short lines
+            const line_end = std.mem.indexOfScalar(u8, header[i..@min(header.len, i + 82)], '\n') orelse (header.len - i);
+            if (line_end >= 40) {
+                return .pdb_struct;
+            }
         }
     }
 
