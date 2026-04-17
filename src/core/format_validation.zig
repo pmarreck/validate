@@ -539,6 +539,7 @@ pub const FileFormat = enum {
     ply, // PLY (Stanford Polygon File Format)
     gltf, // glTF (GL Transmission Format) - JSON
     glb, // GLB (Binary glTF)
+    gcode, // G-code for 3D printers / CNC machines
     // Email formats
     eml, // EML email message
     mbox, // MBOX mail archive
@@ -687,7 +688,7 @@ pub const FileFormat = enum {
             .matlab, .nifti, .pdb_struct, .cif => true, // Scientific formats
             .shapefile, .kml, .kmz => true, // GIS formats
             .dxf, .step, .stl => true, // CAD formats
-            .@"3mf", .obj, .ply, .gltf, .glb => true, // 3D printing/modeling formats
+            .@"3mf", .obj, .ply, .gltf, .glb, .gcode => true, // 3D printing/modeling formats
             .eml, .mbox => true, // Email formats with attachment validation
             .sqlite => true, // Database formats
             .json, .toml, .ini, .xml => true, // Text data formats
@@ -806,6 +807,7 @@ pub const FileFormat = enum {
             .cr2, .nef, .arw, // via LibRaw
             .hdf5, .dicom, .parquet, .netcdf, .fits,
             .@"3mf", .glb, .gltf,
+            .json, .gcode, // fully parsed text formats
             .flp, .als, .cpr, .reason, .logicx, .song, .band,
             .macos_app, .macos_framework, .macos_bundle,
             .git_repository,
@@ -819,7 +821,7 @@ pub const FileFormat = enum {
 
             // Formats where raw data has no integrity signal — structural is the ceiling
             .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
-            .csv, .json, .xml, .toml, .ini, .yaml, .html, .markdown, .kml, .rtf, .svg,
+            .csv, .xml, .toml, .ini, .yaml, .html, .markdown, .kml, .rtf, .svg,
             .eex, .erlang_term,
             .au, .amr, .caf, .dsf, .dff, .tta, // raw audio, no checksums
             .pam, .dpx, .qoi, // raw pixel data, no checksums
@@ -869,7 +871,7 @@ pub const FileFormat = enum {
 
                 // Text formats — every byte sequence is "valid"
                 .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
-                .csv, .json, .xml, .toml, .ini, .yaml, .html, .markdown, .kml, .rtf, .svg,
+                .csv, .xml, .toml, .ini, .yaml, .html, .markdown, .kml, .rtf, .svg,
                 .eex, .erlang_term, .eml, .mbox,
                 .fasta, .fastq,
                 => "text format — any byte sequence is syntactically plausible",
@@ -2806,6 +2808,11 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "gltf", .gltf },
     .{ "glb", .glb },
     .{ "stl", .stl },
+    .{ "gcode", .gcode },
+    .{ "gco", .gcode },
+    .{ "g", .gcode },
+    .{ "nc", .gcode },
+    .{ "ngc", .gcode },
     .{ "step", .step },
     .{ "stp", .step },
     .{ "dxf", .dxf },
@@ -3207,6 +3214,12 @@ const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
     // .obj is ambiguous: Wavefront OBJ (text 3D model) or COFF (compiled object file)
     // The ext_has_no_magic handler tries COFF first, falls back to Wavefront OBJ
     .{ "obj", .obj },
+    // G-code — text-based, no magic bytes
+    .{ "gcode", .gcode },
+    .{ "gco", .gcode },
+    .{ "g", .gcode },
+    .{ "nc", .gcode },
+    .{ "ngc", .gcode },
     // Legacy word processors — no magic bytes
     .{ "cwk", .cwk },
     .{ "mwd", .mwd },
@@ -5207,7 +5220,7 @@ pub const FormatValidator = struct {
         if ((result.format == .unknown or result.format == .plain_text) and ext_format != .unknown) {
             // Check if this is a text format that can be validated
             const ext_is_validatable_text = switch (ext_format) {
-                .json, .toml, .ini, .xml => true,
+                .json, .toml, .ini, .xml, .gcode => true,
                 else => false,
             };
             if (ext_is_validatable_text) {
@@ -5225,6 +5238,7 @@ pub const FormatValidator = struct {
                     .toml => text_format_validators.validateToml(&ext_source),
                     .ini => text_format_validators.validateIni(&ext_source),
                     .xml => text_format_validators.validateXml(&ext_source),
+                    .gcode => text_format_validators.validateGcode(&ext_source),
                     else => ValidationResult.ok(ext_format),
                 };
             } else {
@@ -5238,7 +5252,7 @@ pub const FormatValidator = struct {
                     .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2,
                     .x12_edi, .edifact,
                     .der, // DER: first byte 0x30 is too generic for magic detection
-                    .obj, .coff, .stl, // .obj is ambiguous (Wavefront OBJ vs COFF); .o has no magic; binary STL has no magic
+                    .obj, .coff, .stl, .gcode, // .obj is ambiguous; .stl/.gcode have no magic
                     .cdg, // CDG has no magic bytes, only extension + size divisibility
                     .toast, // Toast may be ISO internally or APM-prefixed
                     .mp2, // MP2 shares MPEG sync word with MP3, needs extension hint
@@ -5311,6 +5325,7 @@ pub const FormatValidator = struct {
                             break :blk cad_3d_validators.validateObj(reopen_ext_ptr);
                         },
                         .stl => cad_3d_validators.validateStl(reopen_ext_ptr),
+                        .gcode => text_format_validators.validateGcode(reopen_ext_ptr),
                         else => ValidationResult.ok(ext_format),
                     };
                 } else {
@@ -5440,7 +5455,7 @@ pub const FormatValidator = struct {
         if (result.format == .unknown and expected_format != .unknown and expected_format.hasValidator()) {
             // Don't flag "magic bytes corrupted" for formats that inherently lack magic bytes
             const has_no_magic = switch (expected_format) {
-                .cdg, .toast, .mp2, .msi, .br, .dv, .tga, .stl,
+                .cdg, .toast, .mp2, .msi, .br, .dv, .tga, .stl, .gcode,
                 .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
                 .csv, .markdown,
                 => true,
@@ -6383,6 +6398,7 @@ pub const FormatValidator = struct {
             .ply => cad_3d_validators.validatePly(file_src_ptr),
             .gltf => cad_3d_validators.validateGltf(file_src_ptr),
             .glb => cad_3d_validators.validateGlb(file_src_ptr),
+            .gcode => text_format_validators.validateGcode(file_src_ptr),
             .eml => email_validators.validateEml(file_src_ptr),
             .mbox => email_validators.validateMbox(file_src_ptr),
             .svg => image_validators.validateSvg(file_src_ptr),

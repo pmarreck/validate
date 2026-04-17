@@ -167,7 +167,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .html => "document",
 
         // 3D/CAD
-        .dwg, .dxf, .step, .stl, .@"3mf", .obj, .ply, .gltf, .glb, .blend => "3d",
+        .dwg, .dxf, .step, .stl, .@"3mf", .obj, .ply, .gltf, .glb, .blend, .gcode => "3d",
 
         // Scientific
         .hdf5, .parquet, .netcdf, .fits, .dicom, .fasta, .fastq, .matlab, .nifti, .pdb_struct, .cif, .shapefile, .kml, .kmz => "scientific",

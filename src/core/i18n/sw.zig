@@ -226,6 +226,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .ply = "Faili ya PLY Polygon",
     .gltf = "Onyesho la 3D la glTF",
     .glb = "GLB Binary glTF",
+    .gcode = "G-code (3D Printer/CNC)",
     .eml = "Barua pepe ya EML",
     .mbox = "Kumbukumbu ya Barua pepe ya MBOX",
     .sqlite = "Hifadhidata ya SQLite",

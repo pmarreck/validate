@@ -244,6 +244,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .ply = "PLY Polygon File",
     .gltf = "glTF 3D Scene",
     .glb = "GLB Binary glTF",
+    .gcode = "G-code (3D Printer/CNC)",
     .eml = "EML Email Message",
     .mbox = "MBOX Mail Archive",
     .sqlite = "SQLite Database",

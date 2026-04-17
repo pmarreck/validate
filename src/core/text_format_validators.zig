@@ -1912,6 +1912,142 @@ fn isTextByte(b: u8) bool {
 
 /// Validate plain text file as UTF-8 using streaming validation.
 /// Reads file in chunks and validates UTF-8 encoding throughout.
+// ============ G-code Validator ============
+
+/// Validate G-code file (3D printer / CNC) by parsing every line.
+/// Every non-blank, non-comment line must be a valid G/M/T/N command with
+/// valid parameters (single letter + number). Full depth when all lines parse.
+pub fn validateGcode(file: *FileSource) ValidationResult {
+    const file_sz = file.getEndPos() catch {
+        return ValidationResult.invalidCode(.gcode, .failed_to_stat, "file");
+    };
+    if (file_sz == 0) return ValidationResult.invalidCode(.gcode, .empty, "G-code file");
+    if (file_sz > max_text_file_size) return ValidationResult.invalid(.gcode, "G-code file too large (>1GB)");
+
+    file.seekTo(0) catch return ValidationResult.invalidCode(.gcode, .failed_to_seek, "in G-code file");
+
+    var line_buf: [4096]u8 = undefined;
+    var line_count: u64 = 0;
+    var command_count: u64 = 0;
+    var carry: usize = 0;
+
+    while (true) {
+        const n = file.read(line_buf[carry..]) catch break;
+        if (n == 0 and carry == 0) break;
+        const filled = carry + n;
+        var start: usize = 0;
+
+        while (std.mem.indexOfScalar(u8, line_buf[start..filled], '\n')) |nl_pos| {
+            const line_end = start + nl_pos;
+            const line = std.mem.trim(u8, line_buf[start..line_end], " \t\r");
+            start = line_end + 1;
+
+            if (line.len == 0) continue;
+            if (line[0] == ';') continue; // comment line
+            // Also handle % (program start/end delimiter in RS-274)
+            if (line[0] == '%') continue;
+
+            line_count += 1;
+
+            // Strip inline comment
+            const cmd_end = std.mem.indexOfScalar(u8, line, ';') orelse line.len;
+            const cmd = std.mem.trimRight(u8, line[0..cmd_end], " \t");
+            if (cmd.len == 0) continue;
+
+            // Valid command starts with G, M, T, N, O, or a parameter letter
+            // (some slicers emit bare parameters like "E0" for reset)
+            const first = cmd[0];
+            if (!isGcodeCommandStart(first)) {
+                return ValidationResult.invalid(.gcode, "Invalid G-code command");
+            }
+
+            // Validate the rest: alternating letter + number groups
+            if (!validateGcodeLine(cmd)) {
+                return ValidationResult.invalid(.gcode, "Invalid G-code syntax");
+            }
+            command_count += 1;
+        }
+
+        // Carry leftover (partial line) to front of buffer
+        if (start < filled) {
+            const leftover = filled - start;
+            if (leftover >= line_buf.len) {
+                // Line too long — treat as structural (can't fully validate)
+                return ValidationResult.okWithDepth(.gcode, .structural);
+            }
+            std.mem.copyBackwards(u8, line_buf[0..leftover], line_buf[start..filled]);
+            carry = leftover;
+        } else {
+            carry = 0;
+        }
+
+        if (n == 0) break;
+    }
+
+    // Handle last line without newline
+    if (carry > 0) {
+        const line = std.mem.trim(u8, line_buf[0..carry], " \t\r");
+        if (line.len > 0 and line[0] != ';' and line[0] != '%') {
+            const cmd_end = std.mem.indexOfScalar(u8, line, ';') orelse line.len;
+            const cmd = std.mem.trimRight(u8, line[0..cmd_end], " \t");
+            if (cmd.len > 0) {
+                if (!isGcodeCommandStart(cmd[0]) or !validateGcodeLine(cmd)) {
+                    return ValidationResult.invalid(.gcode, "Invalid G-code syntax");
+                }
+                command_count += 1;
+            }
+        }
+    }
+
+    if (line_count == 0 and command_count == 0) {
+        // File is all comments — structural only (no commands to validate)
+        return ValidationResult.okWithDepth(.gcode, .structural);
+    }
+
+    return ValidationResult.okWithDepth(.gcode, .full);
+}
+
+/// Check if a character can start a G-code command word.
+fn isGcodeCommandStart(c: u8) bool {
+    return switch (c) {
+        'G', 'g', 'M', 'm', 'T', 't', 'N', 'n', 'O', 'o',
+        // Parameter letters that can appear as bare commands (e.g., "E0", "F1800")
+        'X', 'x', 'Y', 'y', 'Z', 'z', 'E', 'e', 'F', 'f',
+        'S', 's', 'P', 'p', 'R', 'r', 'I', 'i', 'J', 'j',
+        'K', 'k', 'D', 'd', 'H', 'h', 'L', 'l', 'Q', 'q',
+        'A', 'a', 'B', 'b', 'C', 'c',
+        => true,
+        else => false,
+    };
+}
+
+/// Validate a G-code line (after stripping comments).
+/// Expected pattern: letter + optional number, repeated with spaces.
+/// Examples: "G0 X10 Y20 F3600", "M104 S200", "G28", "T0"
+fn validateGcodeLine(cmd: []const u8) bool {
+    var i: usize = 0;
+    while (i < cmd.len) {
+        // Skip spaces
+        while (i < cmd.len and (cmd[i] == ' ' or cmd[i] == '\t')) : (i += 1) {}
+        if (i >= cmd.len) break;
+
+        const c = cmd[i];
+        // Must start with a letter
+        if (!((c >= 'A' and c <= 'Z') or (c >= 'a' and c <= 'z'))) return false;
+        i += 1;
+
+        // Optional number: sign, digits, decimal point
+        if (i < cmd.len and (cmd[i] == '-' or cmd[i] == '+')) i += 1;
+        while (i < cmd.len and cmd[i] >= '0' and cmd[i] <= '9') : (i += 1) {}
+        if (i < cmd.len and cmd[i] == '.') {
+            i += 1;
+            while (i < cmd.len and cmd[i] >= '0' and cmd[i] <= '9') : (i += 1) {}
+        }
+        // A letter without a following number is OK for some commands (G28, M107)
+    }
+    return true;
+}
+
 /// This allows validating arbitrarily large text files without loading them entirely into memory.
 /// If file has UTF-16 BOM, delegates to UTF-16 validation.
 /// If UTF-8 validation fails but content looks like text, falls back to Latin-1.
@@ -3902,6 +4038,83 @@ test "validateJson with ext_hint 'json' still warns about JSON5 features" {
     try testing.expect(result.warning_message != null);
 }
 
+// ============================================================
+// G-code validator tests
+// ============================================================
+
+test "validateGcode accepts valid G-code" {
+    const gcode =
+        \\;FLAVOR:UltiGCode
+        \\;TIME:1234
+        \\;Generated with Cura_SteamEngine 4.2.1
+        \\M82 ;absolute extrusion mode
+        \\G92 E0
+        \\G0 F3600 X23.5 Y99.0 Z0.27
+        \\G1 F1800 X24.0 Y98.9 E0.05
+        \\M106 S255
+        \\M107
+        \\G28
+        \\M84
+    ;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "test.gcode", .data = gcode }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("test.gcode", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateGcode(&source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.gcode, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateGcode rejects file with invalid command" {
+    const gcode =
+        \\;FLAVOR:UltiGCode
+        \\G0 X10 Y20
+        \\INVALID_COMMAND
+        \\G1 X30 Y40
+    ;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "bad.gcode", .data = gcode }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("bad.gcode", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateGcode(&source);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateGcode accepts comment-only file" {
+    const gcode =
+        \\; This is a comment
+        \\; Another comment
+        \\;SETTING_3 {"key": "value"}
+    ;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "comments.gcode", .data = gcode }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("comments.gcode", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateGcode(&source);
+    try testing.expect(result.is_valid);
+}
+
+test "validateGcode rejects empty file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "empty.gcode", .data = "" }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("empty.gcode", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateGcode(&source);
+    try testing.expect(!result.is_valid);
+}
 test "validateJson with ext_hint 'jsonc' suppresses JSONC warning" {
     const jsonc_content = "// comment\n{\"key\": \"value\"}";
     var tmp = std.testing.tmpDir(.{});

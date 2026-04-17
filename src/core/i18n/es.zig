@@ -256,6 +256,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .ply = "Archivo de pol\xc3\xadgonos PLY",
     .gltf = "Escena 3D glTF",
     .glb = "GLB glTF binario",
+    .gcode = "G-code (3D Printer/CNC)",
     .eml = "Mensaje de correo EML",
     .mbox = "Archivo de correo MBOX",
     .sqlite = "Base de datos SQLite",

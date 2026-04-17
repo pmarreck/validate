@@ -226,6 +226,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .ply = "PLY பலகோண கோப்பு",
     .gltf = "glTF 3D காட்சி",
     .glb = "GLB பைனரி glTF",
+    .gcode = "G-code (3D Printer/CNC)",
     .eml = "EML மின்னஞ்சல் செய்தி",
     .mbox = "MBOX அஞ்சல் காப்பகம்",
     .sqlite = "SQLite தரவுத்தளம்",
