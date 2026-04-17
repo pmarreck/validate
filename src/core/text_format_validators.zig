@@ -1623,7 +1623,10 @@ pub fn validateHtml(file: *FileSource) ValidationResult {
             // For XHTML, accept if it has xml declaration
             return ValidationResult.okWithDepth(.html, .structural);
         }
-        return ValidationResult.invalid(.html, "No DOCTYPE or <html> tag found");
+        // Missing DOCTYPE/html tag — could be an HTML fragment, template, or email HTML.
+        // DOCTYPE is technically required by HTML5 spec for standards mode, but many
+        // legitimate HTML files omit it. WARN rather than FAIL.
+        return ValidationResult.okWithDepthAndWarning(.html, .structural, "No DOCTYPE or <html> tag found (may render in quirks mode)");
     }
 
     // Count basic open/close angle brackets to verify it's tag-based content
@@ -2873,7 +2876,7 @@ test "validateHtml accepts valid ground truth HTML file" {
     try testing.expectEqual(FileFormat.html, result.format);
 }
 
-test "validateHtml rejects file without DOCTYPE or html tag" {
+test "validateHtml warns (not fails) for file without DOCTYPE or html tag" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const f = try tmp.dir.createFile("bad.html", .{});
@@ -2884,7 +2887,9 @@ test "validateHtml rejects file without DOCTYPE or html tag" {
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateHtml(&source);
-    try testing.expect(!result.is_valid);
+    // Should be valid with a warning, not invalid
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message != null);
 }
 
 test "validateHtml rejects tiny file" {
