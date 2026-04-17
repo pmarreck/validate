@@ -5,7 +5,11 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 ## Active
 
 ### Dependency Updates
-- [ ] Update z7z to latest (picks up ZSTD codec support for newer 7z archives that use Zstandard compression internally)
+- [x] Update z7z to latest — ZSTD codec support (2026-04-16)
+- [x] Update compact_pro, sqlite3, zlib (2026-04-16)
+
+### Build / Packaging
+- [ ] Windows packages should ship libvalidate_core.a (static lib) + transitive deps in lib/ — currently only ships bin/validate.exe + include/validate_core.h, no lib/
 
 ### False Positive Fixes (from ~/Pictures FAILS.txt scan, 2026-04-01)
 - [x] AAC silence: accept all-tiny-frames (< 8 bytes) as valid silent audio (2026-04-01 ~14:00 EST)
