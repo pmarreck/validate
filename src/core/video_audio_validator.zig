@@ -731,6 +731,17 @@ fn validateMp4AacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) Au
     );
 
     if (!syntax_result.valid) {
+        // Format rich error with failure count and offsets when available
+        if (syntax_result.au_parse_failures > 0) {
+            const total = syntax_result.frames_checked + syntax_result.au_parse_failures;
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "{d} of {d} AAC access units could not be parsed", .{ syntax_result.au_parse_failures, total }) catch
+                return AudioValidationResult.invalid(syntax_result.error_message orelse "AAC syntax error", .aac);
+            // Copy to allocator-backed memory so it outlives the stack frame
+            const msg_copy = allocator.dupe(u8, msg) catch
+                return AudioValidationResult.invalid(syntax_result.error_message orelse "AAC syntax error", .aac);
+            return AudioValidationResult.invalid(msg_copy, .aac);
+        }
         return AudioValidationResult.invalid(syntax_result.error_message orelse "AAC syntax error", .aac);
     }
 
@@ -1350,6 +1361,15 @@ fn validateMkvAacTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track
     // Validate using pure-Zig AAC syntax validator
     const result = aac_syntax_validator.validateAacSyntax(frame_data, au_sizes, codec_private);
     if (!result.valid) {
+        if (result.au_parse_failures > 0) {
+            const total = result.frames_checked + result.au_parse_failures;
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "{d} of {d} AAC access units could not be parsed", .{ result.au_parse_failures, total }) catch
+                return AudioValidationResult.invalid(result.error_message orelse "AAC syntax validation failed", .aac);
+            const msg_copy = allocator.dupe(u8, msg) catch
+                return AudioValidationResult.invalid(result.error_message orelse "AAC syntax validation failed", .aac);
+            return AudioValidationResult.invalid(msg_copy, .aac);
+        }
         return AudioValidationResult.invalid(result.error_message orelse "AAC syntax validation failed", .aac);
     }
 

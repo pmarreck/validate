@@ -4838,7 +4838,28 @@ pub fn validatePam(file: *FileSource) ValidationResult {
         if (actual_size < header_size + expected_data) {
             return ValidationResult.invalidCodeMsg(.pam, .exceeds_bounds, "PNM pixel data", "PNM file truncated: pixel data smaller than expected");
         }
-        if (actual_size == header_size + expected_data) {
+        if (actual_size >= header_size + expected_data) {
+            // For 8-bit binary formats with maxval < 255, validate every pixel
+            // value is within range — this provides true full-depth validation.
+            if (bytes_per_sample == 1 and maxval < 255 and expected_data <= 16 * 1024 * 1024) {
+                file.seekTo(header_size) catch return ValidationResult.okWithDepth(.pam, .structural);
+                var pixel_buf: [4096]u8 = undefined;
+                var remaining: u64 = expected_data;
+                while (remaining > 0) {
+                    const to_read = @min(remaining, pixel_buf.len);
+                    const n = file.read(pixel_buf[0..@intCast(to_read)]) catch return ValidationResult.okWithDepth(.pam, .structural);
+                    if (n == 0) break;
+                    const maxval_u8: u8 = @intCast(maxval);
+                    for (pixel_buf[0..n]) |byte| {
+                        if (byte > maxval_u8) {
+                            return ValidationResult.invalid(.pam, "PNM pixel value exceeds maxval");
+                        }
+                    }
+                    remaining -= n;
+                }
+                return ValidationResult.okWithDepth(.pam, .full);
+            }
+            // maxval=255 or 16-bit: every byte pattern is valid, size check is the ceiling
             return ValidationResult.okWithDepth(.pam, .structural);
         }
         return ValidationResult.structuralOnly(.pam);
@@ -5936,6 +5957,48 @@ test "validatePam rejects truncated P6" {
     tmp.dir.writeFile(.{ .sub_path = "trunc.ppm", .data = &data }) catch return;
     var pb: [std.fs.max_path_bytes]u8 = undefined;
     const rp = tmp.dir.realpath("trunc.ppm", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validatePam(&source);
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePam returns full depth for P5 with maxval < 255 (pixel values validated)" {
+    // P5 (grayscale binary), 2x2, maxval=100 — all values within range
+    // When maxval < 255, we can validate every pixel byte is <= maxval — that's full validation.
+    const header = "P5\n2 2\n100\n";
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data: [header.len + 4]u8 = undefined;
+    @memcpy(data[0..header.len], header);
+    data[header.len] = 50;
+    data[header.len + 1] = 99;
+    data[header.len + 2] = 0;
+    data[header.len + 3] = 100; // exactly maxval — valid
+    tmp.dir.writeFile(.{ .sub_path = "valid_low_maxval.pgm", .data = &data }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("valid_low_maxval.pgm", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validatePam(&source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validatePam detects pixel value exceeding maxval in binary P5" {
+    // P5 (grayscale binary), 2x2, maxval=100 — pixel value 200 exceeds maxval
+    const header = "P5\n2 2\n100\n";
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data: [header.len + 4]u8 = undefined;
+    @memcpy(data[0..header.len], header);
+    data[header.len] = 50; // ok
+    data[header.len + 1] = 200; // EXCEEDS maxval (100)
+    data[header.len + 2] = 30; // ok
+    data[header.len + 3] = 99; // ok
+    tmp.dir.writeFile(.{ .sub_path = "bad_maxval.pgm", .data = &data }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("bad_maxval.pgm", &pb) catch return;
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);

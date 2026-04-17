@@ -23,6 +23,11 @@ pub const AacSyntaxResult = struct {
     error_message: ?[]const u8,
     warning_message: ?[]const u8 = null,
     frames_checked: u32,
+    /// Number of access units that failed to parse (0 = all parsed OK)
+    au_parse_failures: u32 = 0,
+    /// Byte offsets of first N failed AUs for diagnostics
+    fail_offsets: [8]usize = .{0} ** 8,
+    fail_offset_count: u8 = 0,
 
     pub fn ok(frames: u32) AacSyntaxResult {
         return .{
@@ -840,6 +845,9 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
     var frames: u32 = 0;
     var au_parse_failures: u32 = 0;
     var small_frames_skipped: u32 = 0;
+    // Track offsets of failed AUs for diagnostics (up to 8)
+    var fail_offsets: [8]usize = undefined;
+    var fail_count: usize = 0;
     for (au_sizes) |size| {
         if (offset + size > data.len) break;
         const au_slice = data[offset..][0..size];
@@ -853,10 +861,11 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
             continue;
         }
         if (!validateAccessUnit(au_slice, &config)) {
-            // Tolerate individual AU parse failures — some encoders (iTunes,
-            // Nero) produce AUs with edge-case syntax our parser doesn't handle.
-            // Only fail if no AUs could be parsed at all (checked below).
             au_parse_failures += 1;
+            if (fail_count < fail_offsets.len) {
+                fail_offsets[fail_count] = offset;
+                fail_count += 1;
+            }
         } else {
             frames += 1;
         }
@@ -866,13 +875,17 @@ pub fn validateAacSyntax(data: []const u8, au_sizes: []const u32, asc: []const u
     if (frames == 0 and small_frames_skipped == 0) return AacSyntaxResult.invalid("No AAC frames validated", 0);
     // All frames tiny (< 8 bytes): silent/near-silent audio track — valid but nothing to validate
     if (frames == 0 and small_frames_skipped > 0) return AacSyntaxResult.ok(0);
-    var result = AacSyntaxResult.ok(frames);
-    if (au_parse_failures > 0) {
-        result.warning_message = "Some AAC access units could not be parsed";
-    }
-    return result;
-}
 
+    if (au_parse_failures > 0) {
+        // Unparseable access units indicate corruption
+        var result = AacSyntaxResult.invalid("AAC access unit parse failures detected", frames);
+        result.au_parse_failures = au_parse_failures;
+        result.fail_offsets = fail_offsets;
+        result.fail_offset_count = @intCast(fail_count);
+        return result;
+    }
+    return AacSyntaxResult.ok(frames);
+}
 /// ADTS frame header (7 or 9 bytes)
 const AdtsFrameHeader = struct {
     profile: u2, // 0=Main, 1=LC, 2=SSR, 3=LTP (NOTE: ADTS profile = AOT - 1)
@@ -1657,4 +1670,37 @@ test "LATM CRC-8 mismatch detected" {
     const parse_result = parseAudioMuxElement(&mux_data, &config_out);
     // This should fail — either CRC mismatch or parse failure from corrupted ASC
     try std.testing.expect(!parse_result.valid);
+}
+
+test "validateAacSyntax fails when some access units cannot be parsed" {
+    // Create a scenario with 3 AUs: 1 valid, 2 corrupt (unparseable)
+    // This should be a FAIL (valid=false), not a warning — unparseable frames indicate corruption.
+    // The error message should include the count and offsets.
+    const asc = [_]u8{
+        0x12, 0x10, // AOT=2 (AAC-LC), freq_index=4 (44100), chan_config=2 (stereo)
+    };
+
+    // AU 1: valid SCE + fill + END (from the SCE test pattern above)
+    // AU 2: garbage bytes (should fail parse)
+    // AU 3: more garbage (should fail parse)
+    const valid_au = [_]u8{
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xE0, // fill then END
+    };
+    const corrupt_au1 = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }; // garbage
+    const corrupt_au2 = [_]u8{ 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, 0x33, 0x44 }; // garbage
+
+    var data: [valid_au.len + corrupt_au1.len + corrupt_au2.len]u8 = undefined;
+    @memcpy(data[0..valid_au.len], &valid_au);
+    @memcpy(data[valid_au.len..][0..corrupt_au1.len], &corrupt_au1);
+    @memcpy(data[valid_au.len + corrupt_au1.len ..][0..corrupt_au2.len], &corrupt_au2);
+
+    const au_sizes = [_]u32{ valid_au.len, corrupt_au1.len, corrupt_au2.len };
+
+    const result = validateAacSyntax(&data, &au_sizes, &asc);
+
+    // Key assertion: this should be FAIL, not a warning with valid=true
+    try std.testing.expect(!result.valid);
+    // Error message should mention the failure count
+    try std.testing.expect(result.error_message != null);
 }

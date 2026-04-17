@@ -5218,8 +5218,10 @@ pub const FormatValidator = struct {
                 };
                 defer reopen_file.close();
                 var ext_source = file_source.FileSource.fromFile(reopen_file);
+                var ext_buf: [16]u8 = undefined;
+                const ext_lower = lowercaseExtension(path, &ext_buf);
                 result = switch (ext_format) {
-                    .json => text_format_validators.validateJson(&ext_source),
+                    .json => text_format_validators.validateJson(&ext_source, ext_lower),
                     .toml => text_format_validators.validateToml(&ext_source),
                     .ini => text_format_validators.validateIni(&ext_source),
                     .xml => text_format_validators.validateXml(&ext_source),
@@ -5476,8 +5478,10 @@ pub const FormatValidator = struct {
                 const text_src_ptr = &text_src;
 
                 // Run the correct validator for the extension-based format
+                var ext_buf2: [16]u8 = undefined;
+                const ext_lower2 = lowercaseExtension(path, &ext_buf2);
                 result = switch (ext_format) {
-                    .json => text_format_validators.validateJson(text_src_ptr),
+                    .json => text_format_validators.validateJson(text_src_ptr, ext_lower2),
                     .toml => text_format_validators.validateToml(text_src_ptr),
                     .ini => text_format_validators.validateIni(text_src_ptr),
                     .xml => text_format_validators.validateXml(text_src_ptr),
@@ -6382,7 +6386,7 @@ pub const FormatValidator = struct {
             .eml => email_validators.validateEml(file_src_ptr),
             .mbox => email_validators.validateMbox(file_src_ptr),
             .svg => image_validators.validateSvg(file_src_ptr),
-            .json => text_format_validators.validateJson(file_src_ptr),
+            .json => text_format_validators.validateJson(file_src_ptr, null),
             .toml => text_format_validators.validateToml(file_src_ptr),
             .ini => text_format_validators.validateIni(file_src_ptr),
             .xml => text_format_validators.validateXml(file_src_ptr),

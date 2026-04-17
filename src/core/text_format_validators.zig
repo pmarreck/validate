@@ -337,7 +337,9 @@ pub fn containsTemplateMarkers(content: []const u8) bool {
 }
 
 /// Uses std.json to parse and verify syntactic correctness.
-pub fn validateJson(file: *FileSource) ValidationResult {
+/// ext_hint: optional lowercase file extension (e.g. "json5", "jsonc", "ndjson")
+/// to suppress expected-variant warnings when the extension matches the detected format.
+pub fn validateJson(file: *FileSource, ext_hint: ?[]const u8) ValidationResult {
     // Get file size
     const file_sz = file.getEndPos() catch {
         return ValidationResult.invalidCode(.json, .failed_to_stat, "file");
@@ -405,12 +407,18 @@ pub fn validateJson(file: *FileSource) ValidationResult {
     if (stripJsonComments(gpa.allocator(), data)) |stripped| {
         defer stripped.deinit(gpa.allocator());
         if (tryParseJson(gpa.allocator(), stripped.data)) {
+            if (ext_hint) |ext| {
+                if (std.mem.eql(u8, ext, "jsonc")) return ValidationResult.okWithDepth(.json, .structural);
+            }
             return ValidationResult.okWithWarning(.json, "JSONC: contains comments (non-standard JSON extension)");
         }
     }
 
     // Try JSON5 (superset of JSON with unquoted keys, trailing commas, Infinity/NaN, etc.)
     if (tryParseJson5(data)) {
+        if (ext_hint) |ext| {
+            if (std.mem.eql(u8, ext, "json5")) return ValidationResult.okWithDepth(.json, .structural);
+        }
         return ValidationResult.okWithDepthAndWarning(.json, .structural, "JSON5: uses JSON5 extensions (unquoted keys, trailing commas, etc.)");
     }
 
@@ -2641,7 +2649,7 @@ test "isZeroWidth identifies zero-width chars" {
 test "validateJson accepts valid ground truth JSON file" {
     var source = FileSource.open("ground_truth_examples/json/sample.json") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
-    const result = validateJson(&source);
+    const result = validateJson(&source, null);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.json, result.format);
     try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
@@ -2657,7 +2665,7 @@ test "validateJson rejects truncated JSON" {
     const real_path = try tmp.dir.realpath("bad.json", &real_path_buf);
     var source = try FileSource.open(real_path);
     defer source.close();
-    const result = validateJson(&source);
+    const result = validateJson(&source, null);
     try testing.expect(!result.is_valid);
 }
 
@@ -2670,7 +2678,7 @@ test "validateJson rejects empty file" {
     const real_path = try tmp.dir.realpath("empty.json", &real_path_buf);
     var source = try FileSource.open(real_path);
     defer source.close();
-    const result = validateJson(&source);
+    const result = validateJson(&source, null);
     try testing.expect(!result.is_valid);
 }
 
@@ -3028,7 +3036,7 @@ test "validatePlainTextUtf16 rejects odd byte count" {
 test "validateJson accepts JSON5 ground truth file with warning" {
     var source = FileSource.open("ground_truth_examples/json5/sample.json5") catch return;
     defer source.close();
-    const result = validateJson(&source);
+    const result = validateJson(&source, null);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.json, result.format);
 }
@@ -3830,3 +3838,66 @@ test "validatePlainText: file without shebang + binary is NOT self-extractor" {
         std.mem.indexOf(u8, result.warning_message.?, "self-extracting") == null);
 }
 
+// ============================================================
+// JSON variant extension tests (JSON5, JSONC, NDJSON)
+// ============================================================
+
+test "validateJson with ext_hint 'json5' suppresses JSON5 warning" {
+    // JSON5 content that would normally trigger a warning
+    const json5_content = "{unquoted: 'value', trailing: 1,}";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "test.json5", .data = json5_content }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("test.json5", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateJson(&source, "json5");
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.json, result.format);
+    // Key assertion: no warning when extension matches JSON5
+    try testing.expect(result.warning_message == null);
+}
+
+test "validateJson with ext_hint 'json' still warns about JSON5 features" {
+    const json5_content = "{unquoted: 'value', trailing: 1,}";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "test.json", .data = json5_content }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("test.json", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateJson(&source, "json");
+    try testing.expect(result.is_valid);
+    // Key assertion: warning IS present for .json extension with JSON5 content
+    try testing.expect(result.warning_message != null);
+}
+
+test "validateJson with ext_hint 'jsonc' suppresses JSONC warning" {
+    const jsonc_content = "// comment\n{\"key\": \"value\"}";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "test.jsonc", .data = jsonc_content }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("test.jsonc", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateJson(&source, "jsonc");
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message == null);
+}
+
+test "validateJson with null ext_hint still warns about JSON5" {
+    const json5_content = "{unquoted: 'value', trailing: 1,}";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    tmp.dir.writeFile(.{ .sub_path = "test.json", .data = json5_content }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("test.json", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validateJson(&source, null);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message != null);
+}
