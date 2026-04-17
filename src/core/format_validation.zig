@@ -2075,12 +2075,17 @@ fn checkSpecialCases(sig: MagicSignature, header: []const u8) ?FileFormat {
         }
         return null;
     }
-    // MPEG TS detection (single 0x47 sync byte needs additional sync verification)
+    // MPEG TS detection: require THREE consecutive sync bytes at the same packet interval.
+    // A single 0x47 at byte 0 is just 'G' (ASCII) — too common (e.g., BioWare GFF files).
+    // Two consecutive syncs can still coincide. Three virtually eliminates false positives.
     if (sig.format == .mpeg_ts) {
-        if (header.len >= 376) {
-            if (header[188] == 0x47) return .mpeg_ts;
-            if (header[192] == 0x47) return .mpeg_ts;
-            if (header[204] == 0x47) return .mpeg_ts;
+        const packet_sizes = [_]usize{ 188, 192, 204 };
+        for (packet_sizes) |ps| {
+            if (header.len >= ps * 2 + 1 and
+                header[ps] == 0x47 and header[ps * 2] == 0x47)
+            {
+                return .mpeg_ts;
+            }
         }
         return null;
     }
