@@ -6106,7 +6106,9 @@ pub const FormatValidator = struct {
         };
 
         if (header_bytes < 4) {
-            return ValidationResult.invalid(.unknown, "File too small to identify");
+            // Tiny/empty files are unidentifiable, not corrupt.
+            // Empty __init__.py, .fetch markers, .gitkeep, etc. are legitimate.
+            return ValidationResult.okWithDepth(.unknown, .structural);
         }
 
         // Detect format - first try basic detection, then extended for formats that need file access
@@ -8024,6 +8026,28 @@ test "false positive: Erlang .app should NOT be detected as macOS app bundle" {
     const result = validator.validateFile(rp);
     // Should be erlang_term, NOT macos_app
     try std.testing.expect(result.format != .macos_app);
+}
+
+test "tiny/empty files should be UNKNOWN, not INVALID" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // Empty file
+    tmp.dir.writeFile(.{ .sub_path = "empty.dat", .data = "" }) catch return error.SkipZigTest;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("empty.dat", &pb) catch return error.SkipZigTest;
+    var validator = FormatValidator.init();
+    const result = validator.validateFile(rp);
+    // Empty files are unidentifiable, not corrupt
+    try std.testing.expectEqual(FileFormat.unknown, result.format);
+    try std.testing.expect(result.is_valid); // NOT invalid
+
+    // 1-byte file
+    tmp.dir.writeFile(.{ .sub_path = "tiny.dat", .data = "x" }) catch return error.SkipZigTest;
+    const rp2 = tmp.dir.realpath("tiny.dat", &pb) catch return error.SkipZigTest;
+    const result2 = validator.validateFile(rp2);
+    try std.testing.expectEqual(FileFormat.unknown, result2.format);
+    try std.testing.expect(result2.is_valid);
 }
 
 test "detectFormat RAF magic bytes" {
