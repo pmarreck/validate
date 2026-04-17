@@ -40,9 +40,9 @@ pub const UnicodeWarning = struct {
 pub const Utf8Result = struct {
     /// Byte offset of first encoding error, or null if valid UTF-8
     error_offset: ?usize = null,
-    /// Suspicious codepoint warnings (up to 5)
-    warnings: [5]UnicodeWarning = undefined,
-    warning_count: u3 = 0,
+    /// Suspicious codepoint warnings (up to 25)
+    warnings: [25]UnicodeWarning = undefined,
+    warning_count: u8 = 0,
 
     pub fn isValid(self: Utf8Result) bool {
         return self.error_offset == null;
@@ -71,38 +71,46 @@ pub fn isZeroWidth(cp: u21) bool {
 pub fn formatUnicodeWarnings(allocator: Allocator, warnings: []const UnicodeWarning) ?[]const u8 {
     if (warnings.len == 0) return null;
 
-    // Group warnings by kind and collect byte offsets
-    var nonchar_offsets: [5]usize = undefined;
+    // Group warnings by kind and collect byte offsets + total counts
+    var nonchar_offsets: [25]usize = undefined;
     var nonchar_count: usize = 0;
-    var bidi_offsets: [5]usize = undefined;
+    var nonchar_total: usize = 0;
+    var bidi_offsets: [25]usize = undefined;
     var bidi_count: usize = 0;
-    var zw_offsets: [5]usize = undefined;
+    var bidi_total: usize = 0;
+    var zw_offsets: [25]usize = undefined;
     var zw_count: usize = 0;
-    var bom_offsets: [5]usize = undefined;
+    var zw_total: usize = 0;
+    var bom_offsets: [25]usize = undefined;
     var bom_count: usize = 0;
+    var bom_total: usize = 0;
 
     for (warnings) |w| {
         switch (w.kind) {
             .noncharacter => {
-                if (nonchar_count < 5) {
+                nonchar_total += 1;
+                if (nonchar_count < 25) {
                     nonchar_offsets[nonchar_count] = w.byte_offset;
                     nonchar_count += 1;
                 }
             },
             .bidi_override => {
-                if (bidi_count < 5) {
+                bidi_total += 1;
+                if (bidi_count < 25) {
                     bidi_offsets[bidi_count] = w.byte_offset;
                     bidi_count += 1;
                 }
             },
             .zero_width => {
-                if (zw_count < 5) {
+                zw_total += 1;
+                if (zw_count < 25) {
                     zw_offsets[zw_count] = w.byte_offset;
                     zw_count += 1;
                 }
             },
             .misplaced_bom => {
-                if (bom_count < 5) {
+                bom_total += 1;
+                if (bom_count < 25) {
                     bom_offsets[bom_count] = w.byte_offset;
                     bom_count += 1;
                 }
@@ -117,11 +125,11 @@ pub fn formatUnicodeWarnings(allocator: Allocator, warnings: []const UnicodeWarn
     writer.writeAll("[") catch return null;
     var first_group = true;
 
-    const groups = [_]struct { name: []const u8, offsets: []const usize }{
-        .{ .name = "noncharacters", .offsets = nonchar_offsets[0..nonchar_count] },
-        .{ .name = "bidi overrides", .offsets = bidi_offsets[0..bidi_count] },
-        .{ .name = "zero-width chars", .offsets = zw_offsets[0..zw_count] },
-        .{ .name = "misplaced BOM", .offsets = bom_offsets[0..bom_count] },
+    const groups = [_]struct { name: []const u8, offsets: []const usize, total: usize }{
+        .{ .name = "noncharacters", .offsets = nonchar_offsets[0..nonchar_count], .total = nonchar_total },
+        .{ .name = "bidi overrides", .offsets = bidi_offsets[0..bidi_count], .total = bidi_total },
+        .{ .name = "zero-width chars", .offsets = zw_offsets[0..zw_count], .total = zw_total },
+        .{ .name = "misplaced BOM", .offsets = bom_offsets[0..bom_count], .total = bom_total },
     };
 
     for (groups) |group| {
@@ -137,6 +145,9 @@ pub fn formatUnicodeWarnings(allocator: Allocator, warnings: []const UnicodeWarn
                 writer.writeAll(", ") catch return null;
             }
             std.fmt.format(writer, "{d}", .{offset}) catch return null;
+        }
+        if (group.total > group.offsets.len) {
+            std.fmt.format(writer, ", ... ({d} total)", .{group.total}) catch return null;
         }
     }
 
@@ -208,7 +219,7 @@ pub fn validateUtf8(data: []const u8) Utf8Result {
         }
 
         // Check for suspicious but valid codepoints
-        if (result.warning_count < 5) {
+        if (result.warning_count < 25) {
             if (isNoncharacter(codepoint)) {
                 result.warnings[result.warning_count] = .{ .kind = .noncharacter, .byte_offset = i };
                 result.warning_count += 1;
@@ -1927,8 +1938,8 @@ pub fn validatePlainText(allocator: ?Allocator, file: *FileSource) ValidationRes
     var is_first_chunk = true;
 
     // Warning accumulation across chunks
-    var file_warnings: [5]UnicodeWarning = undefined;
-    var file_warning_count: u3 = 0;
+    var file_warnings: [25]UnicodeWarning = undefined;
+    var file_warning_count: u8 = 0;
     var chunk_base_offset: usize = 0;
 
     while (true) {
@@ -2162,8 +2173,8 @@ pub fn validatePlainTextUtf16(allocator: ?Allocator, file: *FileSource) Validati
     var pending_high_surrogate: ?u16 = null;
 
     // Warning accumulation
-    var file_warnings: [5]UnicodeWarning = undefined;
-    var file_warning_count: u3 = 0;
+    var file_warnings: [25]UnicodeWarning = undefined;
+    var file_warning_count: u8 = 0;
     var byte_offset: usize = if (is_little_endian or is_big_endian) @as(usize, 2) else @as(usize, 0);
 
     while (true) {
@@ -2212,7 +2223,7 @@ pub fn validatePlainTextUtf16(allocator: ?Allocator, file: *FileSource) Validati
                     // Valid surrogate pair -- decode full codepoint for warning check
                     const codepoint: u21 = (@as(u21, high - 0xD800) << 10) + @as(u21, code_unit - 0xDC00) + 0x10000;
                     pending_high_surrogate = null;
-                    if (file_warning_count < 5 and isNoncharacter(codepoint)) {
+                    if (file_warning_count < 25 and isNoncharacter(codepoint)) {
                         file_warnings[file_warning_count] = .{ .kind = .noncharacter, .byte_offset = byte_offset - 2 };
                         file_warning_count += 1;
                     }
@@ -2228,7 +2239,7 @@ pub fn validatePlainTextUtf16(allocator: ?Allocator, file: *FileSource) Validati
             } else {
                 // BMP codepoint -- check for suspicious characters
                 const codepoint: u21 = @as(u21, code_unit);
-                if (file_warning_count < 5) {
+                if (file_warning_count < 25) {
                     if (isNoncharacter(codepoint)) {
                         file_warnings[file_warning_count] = .{ .kind = .noncharacter, .byte_offset = byte_offset };
                         file_warning_count += 1;
@@ -2323,7 +2334,7 @@ test "validateUtf8 detects noncharacter warnings" {
     const result = validateUtf8("\xEF\xBF\xBE");
     try testing.expect(result.isValid());
     try testing.expect(result.hasWarnings());
-    try testing.expectEqual(@as(u3, 1), result.warning_count);
+    try testing.expectEqual(@as(u8, 1), result.warning_count);
     try testing.expectEqual(UnicodeWarningKind.noncharacter, result.warnings[0].kind);
 }
 
@@ -2358,12 +2369,29 @@ test "validateUtf8 BOM at position 0 does not warn" {
     try testing.expect(!result.hasWarnings());
 }
 
-test "validateUtf8 caps warnings at 5" {
-    // 6 noncharacters: U+FDD0..U+FDD5
-    const data = "\xEF\xB7\x90" ++ "\xEF\xB7\x91" ++ "\xEF\xB7\x92" ++ "\xEF\xB7\x93" ++ "\xEF\xB7\x94" ++ "\xEF\xB7\x95";
+test "validateUtf8 caps warnings at 25" {
+    // 26 noncharacters: U+FDD0..U+FDE9
+    const data = "\xEF\xB7\x90" ++ "\xEF\xB7\x91" ++ "\xEF\xB7\x92" ++ "\xEF\xB7\x93" ++ "\xEF\xB7\x94" ++
+        "\xEF\xB7\x95" ++ "\xEF\xB7\x96" ++ "\xEF\xB7\x97" ++ "\xEF\xB7\x98" ++ "\xEF\xB7\x99" ++
+        "\xEF\xB7\x9A" ++ "\xEF\xB7\x9B" ++ "\xEF\xB7\x9C" ++ "\xEF\xB7\x9D" ++ "\xEF\xB7\x9E" ++
+        "\xEF\xB7\x9F" ++ "\xEF\xB7\xA0" ++ "\xEF\xB7\xA1" ++ "\xEF\xB7\xA2" ++ "\xEF\xB7\xA3" ++
+        "\xEF\xB7\xA4" ++ "\xEF\xB7\xA5" ++ "\xEF\xB7\xA6" ++ "\xEF\xB7\xA7" ++ "\xEF\xB7\xA8" ++
+        "\xEF\xB7\xA9"; // 26th
     const result = validateUtf8(data);
     try testing.expect(result.isValid());
-    try testing.expectEqual(@as(u3, 5), result.warning_count);
+    try testing.expectEqual(@as(u8, 25), result.warning_count);
+}
+
+test "validateUtf8 reports 16 zero-width chars" {
+    // 16 zero-width spaces (U+200B) — like the jailbreaks.txt pattern
+    const data = "prefix" ++ "\xE2\x80\x8B" ** 16 ++ "suffix";
+    const result = validateUtf8(data);
+    try testing.expect(result.isValid());
+    try testing.expectEqual(@as(u8, 16), result.warning_count);
+    // All should be zero_width kind
+    for (result.warnings[0..16]) |w| {
+        try testing.expectEqual(UnicodeWarningKind.zero_width, w.kind);
+    }
 }
 
 // ---------- UTF-16 validator unit tests ----------
