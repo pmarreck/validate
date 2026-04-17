@@ -54,7 +54,7 @@
         },
         .sqlite3 = .{
             .url = "https://github.com/allyourcodebase/sqlite3/archive/refs/heads/main.tar.gz",
-            .hash = "sqlite3-3.51.0-DMxLWssOAABZ8cAvU_LfBIbp0kZjm824PU8sSLXpEDdr",
+            .hash = "sqlite3-3.51.0-DMxLWuAOAABO27GnPH0iTeI57EkQPpGwqI7LTfiE4Pda",
         },
         .libopenmpt = .{
             .url = "https://github.com/pmarreck/openmpt/archive/refs/heads/master.tar.gz",
@@ -69,15 +69,15 @@
             .hash = "libraw-0.21.4-c166SaOCAABnwCAwPECgFypND-jT9Ws-iidaxsJC_N05",
         },
         .z7z = .{
-            .url = "git+https://github.com/pmarreck/z7z#675d2e0f15c91624b53de296d02b0ade7f386ce3",
-            .hash = "z7z-0.1.0-rkKuF2hCBgBoySmohPLRbhwKnIStQLLRO5O2OgelO0hE",
+            .url = "git+https://github.com/pmarreck/z7z#164784889ae0a24ff6d0c82ee0d4cffbeedd7433",
+            .hash = "z7z-0.1.0-rkKuF7-0BgCtjNol0CEOKI7c21XR2_9C1lojOmiEoScT",
         },
         .rarz = .{
             .url = "https://github.com/pmarreck/rarz/archive/2ccb545b1900e50295646d661ce4167e573835cb.tar.gz",
             .hash = "rarz-0.1.0-BNfrfvnCCQBp8FSdNERf8CDWQZAlnjdPIlX5RinRb-GW",
         },
         .compact_pro = .{
-            .url = "https://github.com/pmarreck/compact_pro/archive/acc3cebcc485bb3bc9a474d548cd4d124ca3a4a0.tar.gz",
+            .url = "https://github.com/pmarreck/compact_pro/archive/af763fa6b32a4131b8329262a9d4ec2ec9c86e17.tar.gz",
             .hash = "compact_pro-0.1.0-G2wo9d_eAgAfR6jeAAGNutPGE9Nientf3mUuzkR8OgOU",
         },
         .progrez = .{
