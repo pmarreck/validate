@@ -2244,12 +2244,12 @@ int main(int argc, char* argv[]) {
 	}
 
 	if (any_directories || file_list.count > 1) {
-		printf(validate_tr(VALIDATE_STR_FOUND_FILES_TO_VALIDATE), file_list.count);
-		printf("%s\n\n", should_shuffle ? " (shuffled)" : "");
-		fflush(stdout);  /* Ensure visible before TUI setup */
+		fprintf(stderr, validate_tr(VALIDATE_STR_FOUND_FILES_TO_VALIDATE), file_list.count);
+		fprintf(stderr, "%s\n\n", should_shuffle ? " (shuffled)" : "");
+		fflush(stderr);
 	} else if (!g_json_mode) {
-		printf("%s %s\n", validate_tr(VALIDATE_STR_CHECKING), file_list.paths[0]);
-		fflush(stdout);
+		fprintf(stderr, "%s %s\n", validate_tr(VALIDATE_STR_CHECKING), file_list.paths[0]);
+		fflush(stderr);
 	}
 
 	/* Initialize progress tracking (backed by progrez library) */
