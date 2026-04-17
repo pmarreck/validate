@@ -253,6 +253,64 @@ pub const MAX_DECOMPRESSED_SIZE: u64 = 10 * 1024 * 1024 * 1024; // 10 GiB
 /// Individual ZIP entries are capped to prevent memory exhaustion.
 pub const MAX_ZIP_ENTRY_SIZE: u64 = 512 * 1024 * 1024; // 512 MiB
 
+/// Formats that have no reliable magic bytes — must be detected by extension.
+/// Single source of truth: used by both ext_has_no_magic dispatch and the
+/// "don't flag corrupted magic" guard. Adding a format here without also
+/// adding it to ext_detect_map will fail at compile time.
+const no_magic_formats = [_]FileFormat{
+    .br,        .hqx,       .cpt,        .dv,        .tga,       .html,
+    .dmg,       .iso,        .bwproject,  .ptx,       .band,      .reason,
+    .cpr,       .logicx,     .song,       .sketch,    .drp,
+    .snes,      .gb,         .gba,        .nds,       .genesis,   .cwk,       .mwd,
+    .qbw,       .qbb,        .qdf,        .ofx,       .qif,       .txf,
+    .nacha,     .mt940,      .bai2,
+    .x12_edi,   .edifact,
+    .der,
+    .obj,       .stl,        .gcode,
+    .cdg,       .toast,      .mp2,        .msi,
+    // Text formats that also appear as no-magic (extension mismatch guard only)
+    .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
+    .csv,       .markdown,
+};
+
+/// Comptime set for O(1) lookup of no-magic formats.
+const no_magic_set = blk: {
+    var set = std.EnumSet(FileFormat).initEmpty();
+    for (no_magic_formats) |f| set.insert(f);
+    break :blk set;
+};
+
+comptime {
+    @setEvalBranchQuota(10000);
+    // Every non-text no-magic format must have at least one extension in ext_detect_map.
+    // This caught the gcode bug where ext_format_map had the entry but ext_detect_map didn't.
+    const text_formats = [_]FileFormat{
+        .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
+        .csv, .markdown,
+    };
+    for (no_magic_formats) |format| {
+        var is_text = false;
+        for (text_formats) |tf| {
+            if (format == tf) {
+                is_text = true;
+                break;
+            }
+        }
+        if (is_text) continue;
+        // Verify this format appears as a VALUE in ext_detect_map
+        var found = false;
+        for (0..ext_detect_map.kvs.len) |idx| {
+            if (ext_detect_map.kvs.values[idx] == format) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            @compileError("no_magic_formats entry missing from ext_detect_map: " ++ @tagName(format));
+        }
+    }
+}
+
 // ============ Bundle Detection ============
 
 /// Types of bundle directories that should be validated as a unit (not recursed into).
@@ -3214,6 +3272,8 @@ const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
     // .obj is ambiguous: Wavefront OBJ (text 3D model) or COFF (compiled object file)
     // The ext_has_no_magic handler tries COFF first, falls back to Wavefront OBJ
     .{ "obj", .obj },
+    // Binary STL has no magic (ASCII STL starts with "solid " but binary doesn't)
+    .{ "stl", .stl },
     // G-code — text-based, no magic bytes
     .{ "gcode", .gcode },
     .{ "gco", .gcode },
@@ -3326,6 +3386,12 @@ const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "html", .html },
     .{ "htm", .html },
     .{ "xhtml", .html },
+    // Ambiguous magic — extension needed to disambiguate
+    .{ "cdg", .cdg },
+    .{ "toast", .toast },
+    .{ "mp2", .mp2 },
+    .{ "mpc", .mp2 },
+    .{ "msi", .msi },
 });
 
 /// Detect format from file extension.
@@ -5242,25 +5308,9 @@ pub const FormatValidator = struct {
                     else => ValidationResult.ok(ext_format),
                 };
             } else {
-                // For extension-only formats (like Brotli, DV, TGA) that lack
-                // magic bytes, trust the extension and validate with the
-                // format-specific validator directly.
-                const ext_has_no_magic = switch (ext_format) {
-                    .br, .hqx, .cpt, .dv, .tga, .html, .dmg, .iso,
-                    .bwproject, .ptx, .band, .reason, .cpr, .logicx, .song, .sketch, .drp,
-                    .snes, .gb, .gba, .nds, .genesis, .cwk, .mwd,
-                    .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2,
-                    .x12_edi, .edifact,
-                    .der, // DER: first byte 0x30 is too generic for magic detection
-                    .obj, .coff, .stl, .gcode, // .obj is ambiguous; .stl/.gcode have no magic
-                    .cdg, // CDG has no magic bytes, only extension + size divisibility
-                    .toast, // Toast may be ISO internally or APM-prefixed
-                    .mp2, // MP2 shares MPEG sync word with MP3, needs extension hint
-                    .msi, // MSI uses OLE2 magic, needs subformat detection
-                    => true,
-                    else => false,
-                };
-                if (ext_has_no_magic and ext_format.hasValidator()) {
+                // For extension-only formats that lack magic bytes, trust the
+                // extension and validate with the format-specific validator.
+                if (no_magic_set.contains(ext_format) and ext_format.hasValidator()) {
                     const reopen_ext = std.fs.cwd().openFile(path, .{}) catch {
                         result = ValidationResult.ok(ext_format);
                         return result;
@@ -5454,13 +5504,7 @@ pub const FormatValidator = struct {
         // signatures are destroyed, but the extension is still informative.
         if (result.format == .unknown and expected_format != .unknown and expected_format.hasValidator()) {
             // Don't flag "magic bytes corrupted" for formats that inherently lack magic bytes
-            const has_no_magic = switch (expected_format) {
-                .cdg, .toast, .mp2, .msi, .br, .dv, .tga, .stl, .gcode,
-                .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
-                .csv, .markdown,
-                => true,
-                else => false,
-            };            if (has_no_magic) {
+            if (no_magic_set.contains(expected_format)) {
                 // These formats are extension-only; lack of magic is expected, not corruption
                 result = ValidationResult.ok(expected_format);
             } else {
