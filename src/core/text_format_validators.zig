@@ -395,7 +395,7 @@ pub fn validateJson(file: *FileSource, ext_hint: ?[]const u8) ValidationResult {
 
     // First try strict JSON parsing
     if (tryParseJson(gpa.allocator(), data)) {
-        return ValidationResult.okWithDepth(.json, .structural);
+        return ValidationResult.okWithDepth(.json, .full);
     }
 
     // Strict parsing failed - check if it contains template markers
@@ -408,7 +408,7 @@ pub fn validateJson(file: *FileSource, ext_hint: ?[]const u8) ValidationResult {
         defer stripped.deinit(gpa.allocator());
         if (tryParseJson(gpa.allocator(), stripped.data)) {
             if (ext_hint) |ext| {
-                if (std.mem.eql(u8, ext, "jsonc")) return ValidationResult.okWithDepth(.json, .structural);
+                if (std.mem.eql(u8, ext, "jsonc")) return ValidationResult.okWithDepth(.json, .full);
             }
             return ValidationResult.okWithWarning(.json, "JSONC: contains comments (non-standard JSON extension)");
         }
@@ -417,9 +417,9 @@ pub fn validateJson(file: *FileSource, ext_hint: ?[]const u8) ValidationResult {
     // Try JSON5 (superset of JSON with unquoted keys, trailing commas, Infinity/NaN, etc.)
     if (tryParseJson5(data)) {
         if (ext_hint) |ext| {
-            if (std.mem.eql(u8, ext, "json5")) return ValidationResult.okWithDepth(.json, .structural);
+            if (std.mem.eql(u8, ext, "json5")) return ValidationResult.okWithDepth(.json, .full);
         }
-        return ValidationResult.okWithDepthAndWarning(.json, .structural, "JSON5: uses JSON5 extensions (unquoted keys, trailing commas, etc.)");
+        return ValidationResult.okWithDepthAndWarning(.json, .full, "JSON5: uses JSON5 extensions (unquoted keys, trailing commas, etc.)");
     }
 
     // Try JSON Lines (NDJSON) format
@@ -567,7 +567,7 @@ pub fn validateJsonLines(allocator: Allocator, content: []const u8) ValidationRe
     }
 
     // JSON Lines validated successfully
-    return ValidationResult.okWithDepth(.json, .structural);
+    return ValidationResult.okWithDepth(.json, .full);
 }
 
 // ============ TOML Validator ============
@@ -2652,7 +2652,7 @@ test "validateJson accepts valid ground truth JSON file" {
     const result = validateJson(&source, null);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.json, result.format);
-    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 test "validateJson rejects truncated JSON" {
@@ -3283,8 +3283,8 @@ test "FormatValidator accepts valid JSON" {
 
     try std.testing.expectEqual(FileFormat.json, result.format);
     try std.testing.expect(result.is_valid);
-    // JSON parsing but no CRC/hash integrity mechanism
-    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+    // Complete JSON parse validates every token — that's full depth
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
 test "FormatValidator rejects invalid JSON" {
