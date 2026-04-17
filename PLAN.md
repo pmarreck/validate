@@ -4,6 +4,9 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 
 ## Active
 
+### Dependency Updates
+- [ ] Update z7z to latest (picks up ZSTD codec support for newer 7z archives that use Zstandard compression internally)
+
 ### False Positive Fixes (from ~/Pictures FAILS.txt scan, 2026-04-01)
 - [x] AAC silence: accept all-tiny-frames (< 8 bytes) as valid silent audio (2026-04-01 ~14:00 EST)
 - [x] Minimum file size: MP3 >= 128, BMP >= 58, ADTS >= 128, MPEG-TS >= 188, Tar >= 512 (2026-04-01 ~14:30 EST)
