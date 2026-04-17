@@ -9,7 +9,8 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Update compact_pro, sqlite3, zlib (2026-04-16)
 
 ### Build / Packaging
-- [ ] Windows packages should ship libvalidate_core.a (static lib) + transitive deps in lib/ — currently only ships bin/validate.exe + include/validate_core.h, no lib/
+- [x] Windows packages ship validate_core.lib with all deps bundled via zig lib (2026-04-17 ~10:00 EST)
+- [x] Add windows-aarch64 to CI matrix (2026-04-17 ~10:20 EST)
 
 ### False Positive Fixes (from ~/Pictures FAILS.txt scan, 2026-04-01)
 - [x] AAC silence: accept all-tiny-frames (< 8 bytes) as valid silent audio (2026-04-01 ~14:00 EST)
@@ -60,7 +61,7 @@ Use .ksy specs as reference docs when writing validators for these high-value fo
 - [ ] pcx — Legacy PCX bitmap image
 - [ ] minecraft_nbt — Minecraft Named Binary Tag
 - [ ] nitf — National Imagery Transmission Format
-
+- [ ] gcode — G-code for 3D printers/CNC (RS-274 + Marlin/RepRap/Klipper flavors); line-based commands, validatable parameters
 - [x] Studio One .song: Add `metainfo.xml` presence check — validates ZIP structure then requires Studio One-specific content (2026-03-29 ~11:30 EST)
 
 ### Real-World Scan Findings (2026-03-27)
