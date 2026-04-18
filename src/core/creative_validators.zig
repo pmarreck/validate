@@ -107,15 +107,15 @@ pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResu
         return ValidationResult.invalid(.prproj, "PRPROJ XML too large");
     }
 
-    const xml_data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.prproj, .failed_to_allocate, "memory for XML");
+    var heap1: ?[]u8 = null;
+    defer if (heap1) |buf| allocator.free(buf);
+    const xml_data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.prproj, .failed_to_allocate, "memory for XML");
+        heap1 = buf;
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.prproj, .failed_to_read, "XML data");
+        break :blk buf[0..n];
     };
-    defer allocator.free(xml_data);
-
-    const xml_read = file.readAll(xml_data) catch {
-        return ValidationResult.invalidCode(.prproj, .failed_to_read, "XML data");
-    };
-
+    const xml_read = xml_data.len;
     if (xml_read != file_size) {
         return ValidationResult.invalidCode(.prproj, .incomplete, "XML read");
     }
@@ -389,15 +389,15 @@ pub fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResu
         return ValidationResult.invalid(.fcpxml, "FCPXML too large");
     }
 
-    const xml_data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.fcpxml, .failed_to_allocate, "memory");
+    var heap2: ?[]u8 = null;
+    defer if (heap2) |buf| allocator.free(buf);
+    const xml_data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.fcpxml, .failed_to_allocate, "memory");
+        heap2 = buf;
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.fcpxml, .failed_to_read, "XML data");
+        break :blk buf[0..n];
     };
-    defer allocator.free(xml_data);
-
-    const xml_read = file.readAll(xml_data) catch {
-        return ValidationResult.invalidCode(.fcpxml, .failed_to_read, "XML data");
-    };
-
+    const xml_read = xml_data.len;
     if (xml_read != file_size) {
         return ValidationResult.invalidCode(.fcpxml, .incomplete, "read");
     }
@@ -505,14 +505,15 @@ pub fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Read the file to find project.xml in the central directory
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.drp, .failed_to_allocate, "memory");
+    var heap3: ?[]u8 = null;
+    defer if (heap3) |buf| allocator.free(buf);
+    const data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.drp, .failed_to_allocate, "memory");
+        heap3 = buf;
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.drp, .failed_to_read, "file");
+        break :blk buf[0..n];
     };
-    defer allocator.free(data);
-
-    const read_len = file.readAll(data) catch {
-        return ValidationResult.invalidCode(.drp, .failed_to_read, "file");
-    };
+    const read_len = data.len;
 
     if (read_len != file_size) {
         return ValidationResult.invalidCode(.drp, .incomplete, "read");
@@ -588,14 +589,15 @@ pub fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResu
     }
 
     // Read the file to find document.json and meta.json in the central directory
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.sketch, .failed_to_allocate, "memory");
+    var heap4: ?[]u8 = null;
+    defer if (heap4) |buf| allocator.free(buf);
+    const data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.sketch, .failed_to_allocate, "memory");
+        heap4 = buf;
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.sketch, .failed_to_read, "file");
+        break :blk buf[0..n];
     };
-    defer allocator.free(data);
-
-    const read_len = file.readAll(data) catch {
-        return ValidationResult.invalidCode(.sketch, .failed_to_read, "file");
-    };
+    const read_len = data.len;
 
     if (read_len != file_size) {
         return ValidationResult.invalidCode(.sketch, .incomplete, "read");
