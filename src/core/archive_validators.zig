@@ -68,19 +68,25 @@ pub fn validateZipWithOptions(file: *FileSource, format: FileFormat, skip_magic:
 
     // Search for EOCD signature (can have comment up to 65535 bytes)
     const search_start = if (file_size > 65557) file_size - 65557 else 0;
-    file.seekTo(search_start) catch {
-        return ValidationResult.invalidCode(format, .failed_to_seek, "for EOCD");
-    };
+    const to_read: u64 = file_size - search_start;
 
-    const buffer = std.heap.page_allocator.alloc(u8, 65557) catch {
-        return ValidationResult.invalidCode(format, .failed_to_read, "EOCD area");
+    // Zero-copy from mmap when available
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+    const buffer: []const u8 = if (file.getMappedRange(search_start, to_read)) |mapped|
+        mapped
+    else blk: {
+        file.seekTo(search_start) catch return ValidationResult.invalidCode(format, .failed_to_seek, "for EOCD");
+        const buf = std.heap.page_allocator.alloc(u8, @intCast(to_read)) catch {
+            return ValidationResult.invalidCode(format, .failed_to_read, "EOCD area");
+        };
+        heap_buf = buf;
+        const n = file.readAll(buf[0..@intCast(to_read)]) catch {
+            return ValidationResult.invalidCode(format, .failed_to_read, "EOCD area");
+        };
+        break :blk buf[0..n];
     };
-    defer std.heap.page_allocator.free(buffer);
-    const to_read = file_size - search_start;
-    // Use readAll to handle potential short reads under concurrent I/O
-    const bytes_read = file.readAll(buffer[0..to_read]) catch {
-        return ValidationResult.invalidCode(format, .failed_to_read, "EOCD area");
-    };
+    const bytes_read = buffer.len;
 
     // Search backwards for EOCD signature
     var found_eocd = false;
@@ -540,14 +546,22 @@ pub fn validateRar5Headers(file: *FileSource) ValidationResult {
 
         file.seekTo(pos + 4) catch return ValidationResult.invalidCode(.rar, .failed_to_seek, "for CRC calc");
 
-        const header_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
-            return ValidationResult.invalidCode(.rar, .failed_to_read, "header");
-        };
-        defer std.heap.page_allocator.free(header_buf);
         const to_read: usize = @intCast(total_header_data);
-        const header_read = file.read(header_buf[0..to_read]) catch return ValidationResult.invalidCode(.rar, .failed_to_read, "header");
+        var hdr_heap: ?[]u8 = null;
+        defer if (hdr_heap) |buf| std.heap.page_allocator.free(buf);
+        const header_buf: []const u8 = if (file.getMappedRange(pos + 4, to_read)) |mapped|
+            mapped
+        else blk: {
+            const buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+                return ValidationResult.invalidCode(.rar, .failed_to_read, "header");
+            };
+            hdr_heap = buf;
+            file.seekTo(pos + 4) catch return ValidationResult.invalidCode(.rar, .failed_to_seek, "for CRC calc");
+            const header_read = file.read(buf[0..to_read]) catch return ValidationResult.invalidCode(.rar, .failed_to_read, "header");
+            break :blk buf[0..header_read];
+        };
 
-        if (header_read < to_read) {
+        if (header_buf.len < to_read) {
             return ValidationResult.invalidCode(.rar, .incomplete, "RAR5 header");
         }
 
