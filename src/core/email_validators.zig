@@ -197,22 +197,26 @@ pub fn validateEml(file: *FileSource) ValidationResult {
         return validateEmlStructure(file);
     }
 
-    // Allocate buffer for file content
+    // Get file content — zero-copy from mmap when available
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const content = allocator.alloc(u8, @intCast(file_sz)) catch {
-        return ValidationResult.invalid(.eml, "Out of memory");
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| allocator.free(buf);
+    const content: []const u8 = if (file.getMappedSlice()) |mapped|
+        mapped
+    else blk: {
+        file.seekTo(0) catch return ValidationResult.invalidCode(.eml, .failed_to_seek, "to start");
+        const buf = allocator.alloc(u8, @intCast(file_sz)) catch {
+            return ValidationResult.invalid(.eml, "Out of memory");
+        };
+        heap_buf = buf;
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.eml, .failed_to_read, "file");
+        break :blk buf[0..n];
     };
-    defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalidCode(.eml, .failed_to_seek, "to start");
-    const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalidCode(.eml, .failed_to_read, "file");
-    };
-
-    return validateEmlContent(allocator, content[0..bytes_read]);
+    return validateEmlContent(allocator, content);
 }
 
 /// Validate EML structural headers only (used for oversized files).
@@ -517,17 +521,18 @@ pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult
         return ValidationResult.okWithDepth(.mbox, .structural);
     }
 
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalid(.mbox, "Memory allocation failed");
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| allocator.free(buf);
+    const data: []const u8 = if (source.getMappedSlice()) |mapped|
+        mapped
+    else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalid(.mbox, "Memory allocation failed");
+        };
+        heap_buf = buf;
+        const n = source.readAll(buf) catch return ValidationResult.invalidCode(.mbox, .failed_to_read, "file");
+        break :blk buf[0..n];
     };
-    defer allocator.free(data);
-
-    const bytes_read = source.readAll(data) catch {
-        return ValidationResult.invalidCode(.mbox, .failed_to_read, "file");
-    };
-    if (bytes_read != file_size) {
-        return ValidationResult.invalidCode(.mbox, .incomplete, "file read");
-    }
 
     // Must start with "From "
     if (data.len < 5 or !std.mem.eql(u8, data[0..5], "From ")) {
