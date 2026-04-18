@@ -4827,14 +4827,20 @@ pub fn validatePam(file: *FileSource) ValidationResult {
             const actual_sz = file.getEndPos() catch return ValidationResult.structuralOnly(.pam);
             if (actual_sz > max_ascii_size) return ValidationResult.okWithDepth(.pam, .structural);
 
-            // Read remaining file content for ASCII parsing
-            file.seekTo(@intCast(pos)) catch return ValidationResult.structuralOnly(.pam);
+            // Get remaining file content — zero-copy from mmap when available
             const remaining_sz: usize = @intCast(actual_sz - pos);
-            const ascii_buf = std.heap.page_allocator.alloc(u8, remaining_sz) catch
-                return ValidationResult.structuralOnly(.pam);
-            defer std.heap.page_allocator.free(ascii_buf);
-            const ascii_read = file.readAll(ascii_buf) catch return ValidationResult.structuralOnly(.pam);
-            const ascii_data = ascii_buf[0..ascii_read];
+            var ascii_heap: ?[]u8 = null;
+            defer if (ascii_heap) |buf| std.heap.page_allocator.free(buf);
+            const ascii_data: []const u8 = if (file.getMappedRange(pos, remaining_sz)) |mapped|
+                mapped
+            else blk: {
+                const buf = std.heap.page_allocator.alloc(u8, remaining_sz) catch
+                    return ValidationResult.structuralOnly(.pam);
+                ascii_heap = buf;
+                file.seekTo(@intCast(pos)) catch return ValidationResult.structuralOnly(.pam);
+                const n = file.readAll(buf) catch return ValidationResult.structuralOnly(.pam);
+                break :blk buf[0..n];
+            };
 
             var values_found: u64 = 0;
             var i: usize = 0;
