@@ -314,29 +314,25 @@ pub fn validateDmgFile(file: *FileSource, allocator: std.mem.Allocator) DmgValid
         const file_size_usize: usize = @intCast(file_size);
         const master_cksum_offset_usize: usize = @intCast(master_cksum_file_offset);
 
-        // Read entire file into buffer
-        const file_buf = allocator.alloc(u8, file_size_usize) catch {
-            // Skip master verification if allocation fails
-            return DmgValidationResult.ok(
-                has_data_ck,
-                has_master_ck,
-                data_verified,
-                false,
-                koly.data_fork_length,
-                koly.getUncompressedSize(),
-                koly.xml_length,
-                koly.segment_count,
-            );
+        // Read entire file — zero-copy from mmap when available
+        var heap_buf: ?[]u8 = null;
+        defer if (heap_buf) |buf| allocator.free(buf);
+        const file_buf: []const u8 = if (file.getMappedSlice()) |mapped|
+            mapped
+        else blk: {
+            const buf = allocator.alloc(u8, file_size_usize) catch {
+                return DmgValidationResult.ok(
+                    has_data_ck, has_master_ck, data_verified, false,
+                    koly.data_fork_length, koly.getUncompressedSize(),
+                    koly.xml_length, koly.segment_count,
+                );
+            };
+            heap_buf = buf;
+            file.seekTo(0) catch return DmgValidationResult.invalid(errmsg.failedToSeek("to start for master checksum"));
+            const n = file.readAll(buf) catch return DmgValidationResult.invalid(errmsg.failedToRead("file for master checksum"));
+            break :blk buf[0..n];
         };
-        defer allocator.free(file_buf);
-
-        file.seekTo(0) catch {
-            return DmgValidationResult.invalid(errmsg.failedToSeek("to start for master checksum"));
-        };
-
-        const master_read = file.readAll(file_buf) catch {
-            return DmgValidationResult.invalid(errmsg.failedToRead("file for master checksum"));
-        };
+        const master_read = file_buf.len;
 
         if (master_read == file_size_usize) {
             // Compute CRC-32 incrementally: before checksum field, zeroed field, after field

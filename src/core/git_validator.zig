@@ -307,7 +307,7 @@ pub fn validateLooseObject(allocator: Allocator, object_path: []const u8, expect
     if (file_size == 0) return false;
     if (file_size > 100 * 1024 * 1024) return error.ObjectTooLarge; // 100MB limit for loose objects
 
-    // Read compressed data
+    // Read compressed data (std.fs.File — not FileSource, can't use mmap)
     const compressed = try allocator.alloc(u8, file_size);
     defer allocator.free(compressed);
     const bytes_read = try file.readAll(compressed);
