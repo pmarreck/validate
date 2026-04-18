@@ -1857,6 +1857,7 @@ static void print_usage(const char* program) {
 	printf("    --json             Output results as a JSON array\n");
 	printf("    --ndjson           Output results as newline-delimited JSON (one object per line)\n");
 	printf("    --about            Print version and platform info\n");
+	printf("    --max-memory SIZE  Memory budget (e.g., 4G, 2048M). Default: half of system RAM\n");
 	printf("    --lang CODE        Set output language (e.g., en, de)\n");
 #endif
 	printf("\n");
@@ -2104,6 +2105,21 @@ int main(int argc, char* argv[]) {
 				);
 				free(paths);
 				return 0;
+			case VALIDATE_ARG_MAX_MEMORY: {
+				if (i + 1 >= argc) {
+					fprintf(stderr, "%sError: --max-memory requires a value (e.g., 4G, 2048M, 1073741824)%s\n", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				const char *val = argv[++i];
+				char *endptr;
+				uint64_t mem = strtoull(val, &endptr, 10);
+				if (*endptr == 'G' || *endptr == 'g') mem *= 1024ULL * 1024 * 1024;
+				else if (*endptr == 'M' || *endptr == 'm') mem *= 1024ULL * 1024;
+				else if (*endptr == 'K' || *endptr == 'k') mem *= 1024ULL;
+				validate_set_max_memory(mem);
+				continue;
+			}
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);

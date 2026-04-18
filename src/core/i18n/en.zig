@@ -316,6 +316,7 @@ pub const cli_aliases = cli.CliAliases{
     .json = "json",
     .ndjson = "ndjson",
     .about = "about",
+    .max_memory = "max-memory",
 };
 
 // English environment variable aliases (canonical forms).

@@ -166,6 +166,30 @@ pub const FileSource = struct {
     pub fn isMapped(self: *const FileSource) bool {
         return self.backing == .mapped;
     }
+
+    /// Get zero-copy access to the entire file content if mmap'd.
+    /// Returns null for file-backed sources (use read() instead).
+    /// The returned slice is valid for the lifetime of the FileSource.
+    pub fn getMappedSlice(self: *const FileSource) ?[]const u8 {
+        return switch (self.backing) {
+            .mapped => |m| m.data,
+            .file => null,
+        };
+    }
+
+    /// Get zero-copy access to a range of the file content if mmap'd.
+    /// Returns null for file-backed sources or if range is out of bounds.
+    pub fn getMappedRange(self: *const FileSource, offset: u64, len: u64) ?[]const u8 {
+        return switch (self.backing) {
+            .mapped => |m| {
+                const start: usize = @intCast(@min(offset, m.data.len));
+                const end: usize = @intCast(@min(offset + len, m.data.len));
+                if (start >= end) return null;
+                return m.data[start..end];
+            },
+            .file => null,
+        };
+    }
 };
 
 // ============ Tests ============
@@ -240,4 +264,33 @@ test "FileSource seek past end returns error" {
     try source.seekTo(1);
     // Seeking past end is error
     try std.testing.expectError(error.Unseekable, source.seekTo(100));
+}
+
+test "getMappedSlice returns full file content for mmap'd file" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "Hello, zero-copy world!";
+    tmp.dir.writeFile(.{ .sub_path = "mapped.bin", .data = content }) catch return;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmp.dir.realpath("mapped.bin", &path_buf) catch return;
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    if (source.getMappedSlice()) |slice| {
+        try std.testing.expectEqualStrings(content, slice);
+    }
+    // On Windows or fallback, getMappedSlice returns null — that's OK
+}
+
+test "getMappedRange returns bounded slice" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "ABCDEFGHIJ";
+    tmp.dir.writeFile(.{ .sub_path = "range.bin", .data = content }) catch return;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmp.dir.realpath("range.bin", &path_buf) catch return;
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    if (source.getMappedRange(3, 4)) |slice| {
+        try std.testing.expectEqualStrings("DEFG", slice);
+    }
 }

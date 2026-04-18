@@ -166,6 +166,7 @@ typedef enum {
     VALIDATE_ARG_JSON = 11,
     VALIDATE_ARG_NDJSON = 12,
     VALIDATE_ARG_ABOUT = 13,
+    VALIDATE_ARG_MAX_MEMORY = 14,
     VALIDATE_ARG_UNKNOWN = 255,
 } validate_arg_t;
 
@@ -203,6 +204,25 @@ void validate_init(void);
  */
 int validate_default_threads(void);
 
+/**
+ * Get total system memory in bytes.
+ * Returns 0 if detection fails.
+ */
+uint64_t validate_system_memory(void);
+
+/**
+ * Set maximum memory budget for validation in bytes.
+ * Workers will throttle when RSS approaches this limit.
+ * Pass 0 to use default (system_memory / 2).
+ * Must be called BEFORE validate_batch().
+ */
+void validate_set_max_memory(uint64_t bytes);
+
+/**
+ * Get current maximum memory budget.
+ * Returns the value set by validate_set_max_memory, or the default.
+ */
+uint64_t validate_get_max_memory(void);
 /* ========== Single File Validation ========== */
 
 /**

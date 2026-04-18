@@ -353,6 +353,48 @@ export fn validate_default_threads() c_int {
     return @intCast(thread_pool.getOuterJobCount());
 }
 
+/// Global memory budget (0 = use default)
+var g_max_memory: u64 = 0;
+
+/// Get total system memory in bytes. Returns 0 if detection fails.
+export fn validate_system_memory() u64 {
+    return getSystemMemory();
+}
+
+/// Set maximum memory budget for validation in bytes.
+/// Pass 0 to reset to default (system_memory / 2).
+export fn validate_set_max_memory(bytes: u64) void {
+    g_max_memory = bytes;
+}
+
+/// Get current maximum memory budget.
+export fn validate_get_max_memory() u64 {
+    if (g_max_memory != 0) return g_max_memory;
+    const sys_mem = getSystemMemory();
+    if (sys_mem == 0) return 2 * 1024 * 1024 * 1024; // 2 GiB fallback
+    return sys_mem / 2;
+}
+
+fn getSystemMemory() u64 {
+    if (comptime @import("builtin").os.tag == .macos) {
+        // macOS: sysctl hw.memsize
+        var mib = [2]c_int{ 6, 24 }; // CTL_HW=6, HW_MEMSIZE=24
+        var mem_size: u64 = 0;
+        var len: usize = @sizeOf(u64);
+        const rc = std.c.sysctl(&mib, 2, @ptrCast(&mem_size), &len, null, 0);
+        if (rc == 0) return mem_size;
+        return 0;
+    } else if (comptime @import("builtin").os.tag == .linux) {
+        // Linux: read from sysinfo
+        var info: std.os.linux.sysinfo = undefined;
+        if (std.os.linux.sysinfo(&info) == 0) {
+            return info.totalram * info.mem_unit;
+        }
+        return 0;
+    } else {
+        return 0; // Windows: TODO GlobalMemoryStatusEx
+    }
+}
 /// Validate a single file.
 export fn validate(path: ?[*:0]const u8) ?[*:0]u8 {
     const p = path orelse {

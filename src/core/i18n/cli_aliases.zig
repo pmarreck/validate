@@ -20,6 +20,7 @@ pub const CliArg = enum(u8) {
     json = 11,
     ndjson = 12,
     about = 13,
+    max_memory = 14,
 };
 
 /// Locale-specific CLI argument aliases (without -- prefix).
@@ -38,6 +39,7 @@ pub const CliAliases = struct {
     json: [:0]const u8,
     ndjson: [:0]const u8,
     about: [:0]const u8,
+    max_memory: [:0]const u8,
 };
 
 /// Environment variable identifiers (matches validate_env_t in C header).

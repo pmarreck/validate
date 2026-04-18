@@ -315,6 +315,7 @@ pub const cli_aliases = cli.CliAliases{
     .json = "json",
     .ndjson = "ndjson",
     .about = "about",
+    .max_memory = "max-memory",
 };
 
 // Tamil environment variable aliases (currently canonical English forms).
