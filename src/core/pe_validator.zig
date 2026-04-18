@@ -164,24 +164,21 @@ pub fn validatePe(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCodeMsg(.pe, .exceeds_bounds, "Section table", "Section table exceeds file size");
     }
 
-    // Read and validate section table
-    file.seekTo(section_table_offset) catch {
-        return ValidationResult.invalidCode(.pe, .failed_to_seek, "to section table");
+    // Read section table — zero-copy from mmap when available
+    var sec_heap: ?[]u8 = null;
+    defer if (sec_heap) |buf| std.heap.page_allocator.free(buf);
+    const section_buffer: []const u8 = if (file.getMappedRange(section_table_offset, section_table_size)) |mapped|
+        mapped
+    else blk: {
+        file.seekTo(section_table_offset) catch return ValidationResult.invalidCode(.pe, .failed_to_seek, "to section table");
+        const buf = std.heap.page_allocator.alloc(u8, @intCast(section_table_size)) catch {
+            return ValidationResult.invalidCode(.pe, .failed_to_allocate, "section buffer");
+        };
+        sec_heap = buf;
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.pe, .failed_to_read, "section table");
+        if (n < section_table_size) return ValidationResult.invalidCode(.pe, .truncated, "section table");
+        break :blk buf[0..n];
     };
-
-    // Allocate buffer for section headers
-    const section_buffer = std.heap.page_allocator.alloc(u8, @intCast(section_table_size)) catch {
-        return ValidationResult.invalidCode(.pe, .failed_to_allocate, "section buffer");
-    };
-    defer std.heap.page_allocator.free(section_buffer);
-
-    const section_bytes = file.readAll(section_buffer) catch {
-        return ValidationResult.invalidCode(.pe, .failed_to_read, "section table");
-    };
-
-    if (section_bytes < section_table_size) {
-        return ValidationResult.invalidCode(.pe, .truncated, "section table");
-    }
 
     // Validate each section header
     var i: u16 = 0;
