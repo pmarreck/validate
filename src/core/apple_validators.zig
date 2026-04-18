@@ -461,26 +461,21 @@ pub fn validateXmlPlist(file: *FileSource, file_size: u64) ValidationResult {
 		return ValidationResult.invalid(.plist, "XML plist too large (>1GB)");
 	}
 
-	// Seek back to start
-	file.seekTo(0) catch {
-		return ValidationResult.invalidCode(.plist, .failed_to_seek, "to start");
+	// Get file content — zero-copy from mmap when available
+	var heap_buf: ?[]u8 = null;
+	defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+	const data: []const u8 = if (file.getMappedSlice()) |mapped|
+		mapped
+	else blk: {
+		file.seekTo(0) catch return ValidationResult.invalidCode(.plist, .failed_to_seek, "to start");
+		const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+			return ValidationResult.invalidCode(.plist, .failed_to_allocate, "memory");
+		};
+		heap_buf = buf;
+		const n = file.readAll(buf) catch return ValidationResult.invalidCode(.plist, .failed_to_read, "file");
+		if (n == 0) return ValidationResult.invalidCode(.plist, .empty, "plist file");
+		break :blk buf[0..n];
 	};
-
-	// Read entire file
-	const content = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
-		return ValidationResult.invalidCode(.plist, .failed_to_allocate, "memory");
-	};
-	defer std.heap.page_allocator.free(content);
-
-	const bytes_read = file.readAll(content) catch {
-		return ValidationResult.invalidCode(.plist, .failed_to_read, "file");
-	};
-
-	if (bytes_read == 0) {
-		return ValidationResult.invalidCode(.plist, .empty, "plist file");
-	}
-
-	const data = content[0..bytes_read];
 
 	// Strip DOCTYPE if present (use same logic as XML validator)
 	const preprocessed = stripDoctypeDeclaration(std.heap.page_allocator, data);
