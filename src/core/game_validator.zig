@@ -416,15 +416,18 @@ pub fn validateN64Deep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.okWithDepth(.n64, .structural);
     }
 
+    // N64 validator needs a mutable copy (normalizeN64ByteOrder modifies in-place)
     const rom = allocator.alloc(u8, @intCast(file_size)) catch {
         return ValidationResult.okWithDepth(.n64, .structural);
     };
     defer allocator.free(rom);
 
-    file.seekTo(0) catch return ValidationResult.invalidCode(.n64, .failed_to_seek, "to start");
-    const bytes_read = file.readAll(rom) catch return ValidationResult.invalidCode(.n64, .failed_to_read, "N64 ROM");
-    if (bytes_read != file_size) {
-        return ValidationResult.invalidCode(.n64, .incomplete, "N64 ROM");
+    if (file.getMappedSlice()) |mapped| {
+        @memcpy(rom, mapped);
+    } else {
+        file.seekTo(0) catch return ValidationResult.invalidCode(.n64, .failed_to_seek, "to start");
+        const n = file.readAll(rom) catch return ValidationResult.invalidCode(.n64, .failed_to_read, "N64 ROM");
+        if (n != file_size) return ValidationResult.invalidCode(.n64, .incomplete, "N64 ROM");
     }
 
     const sig = std.mem.readInt(u32, rom[0..4], .big);
@@ -536,16 +539,20 @@ pub fn validateGbDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidCode(.gb, .file_too_large, "GB ROM");
     }
 
-    const rom = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.gb, .out_of_memory, "GB ROM");
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| allocator.free(buf);
+    const rom: []const u8 = if (file.getMappedSlice()) |mapped|
+        mapped
+    else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCode(.gb, .out_of_memory, "GB ROM");
+        };
+        heap_buf = buf;
+        file.seekTo(0) catch return ValidationResult.invalidCode(.gb, .failed_to_seek, "to start");
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.gb, .failed_to_read, "GB ROM");
+        if (n < file_size) return ValidationResult.invalidCode(.gb, .file_too_small, "GB ROM truncated");
+        break :blk buf[0..n];
     };
-    defer allocator.free(rom);
-
-    file.seekTo(0) catch return ValidationResult.invalidCode(.gb, .failed_to_seek, "to start");
-    const bytes_read = file.readAll(rom) catch return ValidationResult.invalidCode(.gb, .failed_to_read, "GB ROM");
-    if (bytes_read < file_size) {
-        return ValidationResult.invalidCode(.gb, .file_too_small, "GB ROM truncated");
-    }
 
     // Stored global checksum at 0x14E-0x14F (big-endian u16)
     const stored_checksum = std.mem.readInt(u16, rom[0x14E..0x150], .big);
