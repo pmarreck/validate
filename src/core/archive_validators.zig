@@ -3018,14 +3018,20 @@ pub fn validateCpt(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCodeWithDepth(.cpt, .file_too_large, "validation", .structural);
     }
 
-    const data = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_allocate, "CPT read buffer", .structural);
+    var cpt_heap: ?[]u8 = null;
+    defer if (cpt_heap) |buf| std.heap.page_allocator.free(buf);
+    const data: []const u8 = if (file.getMappedSlice()) |mapped|
+        mapped
+    else blk: {
+        const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_allocate, "CPT read buffer", .structural);
+        };
+        cpt_heap = buf;
+        file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_seek, "to start", .structural);
+        const n = file.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_read, "CPT file", .structural);
+        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.cpt, .incomplete, "CPT file", .structural);
+        break :blk buf[0..n];
     };
-    defer std.heap.page_allocator.free(data);
-
-    file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_seek, "to start", .structural);
-    const bytes_read = file.readAll(data) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_read, "CPT file", .structural);
-    if (bytes_read != file_size) return ValidationResult.invalidCodeWithDepth(.cpt, .incomplete, "CPT file", .structural);
 
     return validateCptWithCompactPro(data);
 }
