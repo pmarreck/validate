@@ -23,6 +23,27 @@ const max_text_file_size: usize = 1024 * 1024 * 1024;
 const FormatValidator = format_validation.FormatValidator;
 const detectFormat = format_validation.detectFormat;
 
+/// Helper: get file content zero-copy from mmap when possible, heap fallback otherwise.
+/// Returns the content slice and an optional heap buffer that the caller must free.
+/// Usage:
+///   var heap_buf: ?[]u8 = null;
+///   defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+///   const content = getFileContent(file, max_size, &heap_buf) orelse return error_result;
+fn getFileContent(file: *FileSource, max_size: u64, heap_buf_out: *?[]u8) ?[]const u8 {
+    const file_sz = file.getEndPos() catch return null;
+    if (file_sz == 0 or file_sz > max_size) return null;
+
+    if (file.getMappedSlice()) |mapped| return mapped;
+
+    // Fallback: allocate and read
+    const buf = std.heap.page_allocator.alloc(u8, @intCast(file_sz)) catch return null;
+    heap_buf_out.* = buf;
+    file.seekTo(0) catch return null;
+    const n = file.readAll(buf) catch return null;
+    if (n == 0) return null;
+    return buf[0..n];
+}
+
 // ============ Unicode Warning Types ============
 
 pub const UnicodeWarningKind = enum(u3) {
@@ -351,32 +372,11 @@ pub fn containsTemplateMarkers(content: []const u8) bool {
 /// ext_hint: optional lowercase file extension (e.g. "json5", "jsonc", "ndjson")
 /// to suppress expected-variant warnings when the extension matches the detected format.
 pub fn validateJson(file: *FileSource, ext_hint: ?[]const u8) ValidationResult {
-    // Get file size
-    const file_sz = file.getEndPos() catch {
-        return ValidationResult.invalidCode(.json, .failed_to_stat, "file");
-    };
-
-    if (file_sz == 0) {
-        return ValidationResult.invalidCode(.json, .empty, "JSON file");
-    }
-
-    if (file_sz > max_text_file_size) {
-        return ValidationResult.invalid(.json, "JSON file too large (>1GB)");
-    }
-
-    // Read entire file - use heap allocation to avoid stack overflow with multiple threads
-    const content = std.heap.page_allocator.alloc(u8, @intCast(file_sz)) catch {
-        return ValidationResult.invalidCode(.json, .failed_to_allocate, "memory");
-    };
-    defer std.heap.page_allocator.free(content);
-
-    const bytes_read = file.readAll(content) catch {
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+    const content = getFileContent(file, max_text_file_size, &heap_buf) orelse {
         return ValidationResult.invalidCode(.json, .failed_to_read, "file");
     };
-
-    if (bytes_read == 0) {
-        return ValidationResult.invalidCode(.json, .empty, "JSON file");
-    }
 
     // Handle UTF-16 LE/BE encoding (common on Windows)
     var conv_buf: []u8 = undefined;
@@ -385,17 +385,17 @@ pub fn validateJson(file: *FileSource, ext_hint: ?[]const u8) ValidationResult {
 
     const text_result = blk: {
         // Allocate conversion buffer if needed (UTF-16 -> UTF-8 can be same size or smaller)
-        if (bytes_read >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
+        if (content.len >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
-            conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
+            conv_buf = std.heap.page_allocator.alloc(u8, content.len) catch {
                 return ValidationResult.invalidCode(.json, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
         } else {
             conv_buf = &[_]u8{};
         }
-        break :blk getTextContent(content[0..bytes_read], conv_buf);
+        break :blk getTextContent(content, conv_buf);
     };
 
     const data = text_result.content;
@@ -588,54 +588,32 @@ pub fn validateJsonLines(allocator: Allocator, content: []const u8) ValidationRe
 pub fn validateToml(file: *FileSource) ValidationResult {
     const toml = @import("toml");
 
-    // Get file size
-    const file_sz = file.getEndPos() catch {
-        return ValidationResult.invalidCode(.toml, .failed_to_stat, "file");
-    };
-
-    if (file_sz == 0) {
-        return ValidationResult.invalidCode(.toml, .empty, "TOML file");
-    }
-
-    if (file_sz > max_text_file_size) {
-        return ValidationResult.invalid(.toml, "TOML file too large (>1GB)");
-    }
-
-    // Read entire file - use heap allocation to avoid stack overflow with multiple threads
-    const content = std.heap.page_allocator.alloc(u8, @intCast(file_sz)) catch {
-        return ValidationResult.invalidCode(.toml, .failed_to_allocate, "memory");
-    };
-    defer std.heap.page_allocator.free(content);
-
-    const bytes_read = file.readAll(content) catch {
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+    const content = getFileContent(file, max_text_file_size, &heap_buf) orelse {
         return ValidationResult.invalidCode(.toml, .failed_to_read, "file");
     };
 
-    if (bytes_read == 0) {
-        return ValidationResult.invalidCode(.toml, .empty, "TOML file");
-    }
-
-    // Handle UTF-16 LE/BE encoding (less common for TOML but possible on Windows)
+    // Handle UTF-16 and BOM
     var conv_buf: []u8 = undefined;
     var conv_buf_allocated = false;
     defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
 
     const data = blk: {
-        if (bytes_read >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
+        if (content.len >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
-            conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
+            conv_buf = std.heap.page_allocator.alloc(u8, content.len) catch {
                 return ValidationResult.invalidCode(.toml, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
-            const text_result = getTextContent(content[0..bytes_read], conv_buf);
+            const text_result = getTextContent(content, conv_buf);
             break :blk text_result.content;
         }
-        // Handle UTF-8 BOM
-        if (bytes_read >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
-            break :blk content[3..bytes_read];
+        if (content.len >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
+            break :blk content[3..];
         }
-        break :blk content[0..bytes_read];
+        break :blk content;
     };
 
     // Use the sam701/zig-toml parser to parse as a generic Table
@@ -916,50 +894,29 @@ pub fn looksLikeUtf16LeWithoutBom(data: []const u8) bool {
 pub fn validateXml(file: *FileSource) ValidationResult {
     const xml = @import("xml");
 
-    // Get file size
-    const file_sz = file.getEndPos() catch {
-        return ValidationResult.invalidCode(.xml, .failed_to_stat, "file");
-    };
-
-    if (file_sz == 0) {
-        return ValidationResult.invalidCode(.xml, .empty, "XML file");
-    }
-
-    if (file_sz > max_text_file_size) {
-        return ValidationResult.invalid(.xml, "XML file too large (>1GB)");
-    }
-
-    // Read entire file - use heap allocation to avoid stack overflow with multiple threads
-    const content = std.heap.page_allocator.alloc(u8, @intCast(file_sz)) catch {
-        return ValidationResult.invalidCode(.xml, .failed_to_allocate, "memory");
-    };
-    defer std.heap.page_allocator.free(content);
-
-    const bytes_read = file.readAll(content) catch {
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+    const content = getFileContent(file, max_text_file_size, &heap_buf) orelse {
         return ValidationResult.invalidCode(.xml, .failed_to_read, "file");
     };
 
-    if (bytes_read == 0) {
-        return ValidationResult.invalidCode(.xml, .empty, "XML file");
-    }
-
-    // Handle UTF-16 LE/BE encoding (Windows sometimes uses this for XML)
+    // Handle UTF-16 LE/BE encoding
     var conv_buf: []u8 = undefined;
     var conv_buf_allocated = false;
     defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
 
     const raw_data = blk: {
-        if (bytes_read >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
+        if (content.len >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
-            conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
+            conv_buf = std.heap.page_allocator.alloc(u8, content.len) catch {
                 return ValidationResult.invalidCode(.xml, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
-            const text_result = getTextContent(content[0..bytes_read], conv_buf);
+            const text_result = getTextContent(content, conv_buf);
             break :blk text_result.content;
         }
-        break :blk content[0..bytes_read];
+        break :blk content;
     };
 
     // Normalize ASCII-compatible encodings (us-ascii, iso-8859-1, etc.) to UTF-8
