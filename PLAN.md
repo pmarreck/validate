@@ -12,6 +12,69 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 - [x] Windows packages ship validate_core.lib with all deps bundled via zig lib (2026-04-17 ~10:00 EST)
 - [x] Add windows-aarch64 to CI matrix (2026-04-17 ~10:20 EST)
 
+### Memory Optimization (16GB laptops OOM on large scans)
+
+Root cause: many validators allocate heap copies of mmap'd data, and decompression materializes
+full output. Combined with thread pool concurrency, this causes multi-GB RSS spikes.
+
+#### Phase 0: Infrastructure (do first)
+- [ ] Add `FileSource.getMappedSlice() -> ?[]const u8` — returns mmap'd data directly, null if file-backed
+- [ ] Add `FileSource.getMappedRange(offset, len) -> ?[]const u8` — bounded mmap slice
+- [ ] Add streaming zlib inflate API: `inflateZlibStream(input, chunk_callback)` — validates without materializing full output
+- [ ] Add `--threads N` CLI flag as immediate user workaround
+- [ ] Add memory pressure check in CLI worker loop (macOS: `task_info`, Linux: `/proc/self/statm`) — throttle new work when RSS > budget
+
+#### Phase 1: Double-buffer elimination (highest impact, lowest risk)
+Each item: read file via mmap slice instead of page_allocator.alloc + readAll.
+Must have passing tests BEFORE refactoring each validator.
+
+- [ ] `text_format_validators.zig` — validateJson: alloc(file_sz) + readAll (line ~368)
+- [ ] `text_format_validators.zig` — validateToml: alloc(file_sz) + readAll (line ~605)
+- [ ] `text_format_validators.zig` — validateXml: alloc(file_sz) + readAll (line ~933)
+- [ ] `text_format_validators.zig` — validateIni: alloc(file_sz) + readAll (line ~1065)
+- [ ] `text_format_validators.zig` — validateHtml: alloc(file_sz) + readAll (line ~1239)
+- [ ] `text_format_validators.zig` — validateCsv: alloc(file_sz) + readAll (line ~1510)
+- [ ] `apple_validators.zig` — plist validation: alloc(file_size) (line ~470)
+- [ ] `pe_validator.zig` — section table: alloc(section_table_size) (line ~173)
+- [ ] `archive_validators.zig` — ZIP EOCD search: alloc(65557) (line ~75)
+- [ ] `archive_validators.zig` — ZIP header: alloc(65536) (line ~543)
+- [ ] `document_validators.zig` — OLE2: two 65536 allocs (lines ~269, 300)
+- [ ] `movie_validators.zig` — index scanning: alloc(65536) (line ~319)
+- [ ] `midi_validator.zig` — MIDI data: alloc(65536) (line ~177)
+- [ ] `scientific_validators.zig` — HDF5/Parquet: multiple 65536 allocs (5+ instances)
+- [ ] `bagit_validator.zig` — file scanning: alloc(65536) (line ~182)
+- [ ] `game_asset_validators.zig` — header/tree: alloc(MAX_HEADER) (lines ~325, 559)
+- [ ] `avif_validator.zig` — combined buffer: alloc(max_combined) (line ~261)
+- [ ] `image_validators.zig` — 19 allocations across PNG, TIFF, EXR, PSD, DNG, etc.
+
+#### Phase 2: Streaming decompression (medium risk, high impact on archives/PDFs)
+Replace full-output inflate with streaming chunked validation.
+
+- [ ] `pdf_image_validator.zig` — inflateZlibAllocWithRatio → stream (lines ~123, 134)
+- [ ] `pdf_font_validator.zig` — inflateZlibAllocWithRatio → stream (lines ~600, 611)
+- [ ] `pdf_embedded_file_validator.zig` — inflateZlibAllocWithRatio → stream (lines ~372, 382)
+- [ ] `git_validator.zig` — loose object inflate 100MB → stream (line ~340)
+- [ ] `apple_media_db_validator.zig` — 64MB inflate → stream (line ~80)
+- [ ] `movie_validators.zig` — metadata inflate → stream (line ~482)
+- [ ] `font_validator.zig` — table inflate → stream (line ~439)
+- [ ] `format_validation.zig` — BEAM chunk inflate 64MB → stream (lines ~6821-6858)
+- [ ] `image_validators.zig` — EXR scanline inflate 16MB/block → per-scanline (line ~1264)
+- [ ] `image_validators.zig` — PSD ZIP inflate up to 500MB → stream (lines ~1777-1779)
+
+#### Phase 3: Critical large-allocation fixes
+These can cause OOM on their own with a single large file.
+
+- [ ] `flac_decoder.zig` — TWO full file allocations (lines ~686, 770) → stream frame-by-frame
+- [ ] `image_validators.zig` — 200MB compressed buffer (line ~1758) → streaming decode
+- [ ] `ebml_parser.zig` — 10 frame-collection allocations → streaming frame parser
+- [ ] `jbig2_decoder.zig` — row allocation × height → scanline buffer reuse
+- [ ] `mpeg_ps_parser.zig` — ES buffer allocation → bounded streaming
+
+#### Phase 4: CLI memory management
+- [ ] Auto-detect system RAM, default --max-memory to total_ram/2
+- [ ] Large file semaphore: files > 50MB limited to 2 concurrent slots
+- [ ] Adaptive thread scaling: monitor RSS, reduce active workers under pressure
+
 ### False Positive Fixes (from ~/Pictures FAILS.txt scan, 2026-04-01)
 - [x] AAC silence: accept all-tiny-frames (< 8 bytes) as valid silent audio (2026-04-01 ~14:00 EST)
 - [x] Minimum file size: MP3 >= 128, BMP >= 58, ADTS >= 128, MPEG-TS >= 188, Tar >= 512 (2026-04-01 ~14:30 EST)
