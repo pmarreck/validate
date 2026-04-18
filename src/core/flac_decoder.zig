@@ -675,26 +675,30 @@ pub const FlacDecoder = struct {
 /// Decode a FLAC file and verify its MD5 hash.
 /// Returns true if the MD5 matches, false if it doesn't, or error.
 pub fn verifyFlacMd5(allocator: Allocator, file_path: []const u8) FlacError!bool {
-    const file = std.fs.cwd().openFile(file_path, .{}) catch return FlacError.Truncated;
-    defer file.close();
+    const file_source = @import("file_source.zig");
+    var source = file_source.FileSource.open(file_path) catch return FlacError.Truncated;
+    defer source.close();
 
-    // Read entire file into memory for simplicity
-    // (For very large files, we'd want streaming, but this works for typical FLAC files)
-    const file_size = file.getEndPos() catch return FlacError.Truncated;
-    if (file_size > 1024 * 1024 * 1024) return FlacError.Unsupported; // 1GB limit
+    const file_size = source.getEndPos() catch return FlacError.Truncated;
+    if (file_size > 1024 * 1024 * 1024) return FlacError.Unsupported;
 
-    const data = allocator.alloc(u8, @intCast(file_size)) catch return FlacError.OutOfMemory;
-    defer allocator.free(data);
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| allocator.free(buf);
+    const data: []const u8 = if (source.getMappedSlice()) |mapped|
+        mapped
+    else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch return FlacError.OutOfMemory;
+        heap_buf = buf;
+        const n = source.readAll(buf) catch return FlacError.Truncated;
+        break :blk buf[0..n];
+    };
+    const bytes_read = data.len;
+    if (bytes_read < 42) return FlacError.Truncated;
 
-    const bytes_read = file.readAll(data) catch return FlacError.Truncated;
-    if (bytes_read < 42) return FlacError.Truncated; // Minimum: magic + streaminfo header + streaminfo
-
-    // Verify magic
     if (!std.mem.eql(u8, data[0..4], "fLaC")) return FlacError.InvalidSync;
 
     var decoder = FlacDecoder.init(allocator);
     defer decoder.deinit();
-
     // Parse metadata blocks
     var pos: usize = 4;
     while (pos + 4 <= bytes_read) {
@@ -760,17 +764,24 @@ pub fn verifyFlacMd5(allocator: Allocator, file_path: []const u8) FlacError!bool
 /// This is useful when the FLAC file has no MD5 hash stored (all zeros)
 /// Returns true if all frames decoded successfully, false if corruption detected
 pub fn decodeFlacFull(allocator: Allocator, file_path: []const u8) FlacError!bool {
-    const file = std.fs.cwd().openFile(file_path, .{}) catch return FlacError.Truncated;
-    defer file.close();
+    const file_source = @import("file_source.zig");
+    var source = file_source.FileSource.open(file_path) catch return FlacError.Truncated;
+    defer source.close();
 
-    // Read entire file into memory for simplicity
-    const file_size = file.getEndPos() catch return FlacError.Truncated;
-    if (file_size > 1024 * 1024 * 1024) return FlacError.Unsupported; // 1GB limit
+    const file_size = source.getEndPos() catch return FlacError.Truncated;
+    if (file_size > 1024 * 1024 * 1024) return FlacError.Unsupported;
 
-    const data = allocator.alloc(u8, @intCast(file_size)) catch return FlacError.OutOfMemory;
-    defer allocator.free(data);
-
-    const bytes_read = file.readAll(data) catch return FlacError.Truncated;
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| allocator.free(buf);
+    const data: []const u8 = if (source.getMappedSlice()) |mapped|
+        mapped
+    else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch return FlacError.OutOfMemory;
+        heap_buf = buf;
+        const n = source.readAll(buf) catch return FlacError.Truncated;
+        break :blk buf[0..n];
+    };
+    const bytes_read = data.len;
     if (bytes_read < 42) return FlacError.Truncated;
 
     // Verify magic
