@@ -555,18 +555,21 @@ pub fn validateVpk(file: *FileSource) ValidationResult {
 		return ValidationResult.okWithDepth(.vpk, .structural);
 	}
 
-	// Read the entire tree into a heap buffer (may be large)
-	const tree_buf = std.heap.page_allocator.alloc(u8, tree_size) catch {
-		// Allocation failure: fall back to structural-only rather than crashing
-		return ValidationResult.structuralOnly(.vpk);
+	// Read tree — zero-copy from mmap when available
+	var tree_heap: ?[]u8 = null;
+	defer if (tree_heap) |buf| std.heap.page_allocator.free(buf);
+	const tree_buf: []const u8 = if (file.getMappedRange(header_len, tree_size)) |mapped|
+		mapped
+	else blk: {
+		const buf = std.heap.page_allocator.alloc(u8, tree_size) catch {
+			return ValidationResult.structuralOnly(.vpk);
+		};
+		tree_heap = buf;
+		file.seekTo(header_len) catch return ValidationResult.invalidCode(.vpk, .failed_to_seek, "to tree");
+		const n = file.readAll(buf) catch return ValidationResult.invalidCode(.vpk, .failed_to_read, "VPK tree");
+		if (n != tree_size) return ValidationResult.invalidCode(.vpk, .incomplete, "VPK tree read");
+		break :blk buf[0..n];
 	};
-	defer std.heap.page_allocator.free(tree_buf);
-
-	file.seekTo(header_len) catch return ValidationResult.invalidCode(.vpk, .failed_to_seek, "to tree");
-	const tree_read = file.readAll(tree_buf) catch return ValidationResult.invalidCode(.vpk, .failed_to_read, "VPK tree");
-	if (tree_read != tree_size) {
-		return ValidationResult.invalidCode(.vpk, .incomplete, "VPK tree read");
-	}
 
 	// Walk the directory tree.
 	// Layout: for each ext\0 { for each path\0 { for each filename\0 { Entry(18B) }* \0 }* \0 }* \0
