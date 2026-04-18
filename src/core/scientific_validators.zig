@@ -3250,21 +3250,19 @@ pub fn validateMatlab(file: *FileSource) ValidationResult {
 
         // For compressed elements (type 15), decompress to verify integrity
         if (data_type == 15 and num_bytes > 0) decompress_check: {
-            // Read compressed data
-            const compressed_data = std.heap.page_allocator.alloc(u8, num_bytes) catch {
-                break :decompress_check; // Skip if allocation fails
+            // Read compressed data — zero-copy from mmap when available
+            var comp_heap: ?[]u8 = null;
+            defer if (comp_heap) |buf| std.heap.page_allocator.free(buf);
+            const compressed_data: []const u8 = if (file.getMappedRange(offset + header_size, num_bytes)) |mapped|
+                mapped
+            else blk: {
+                const buf = std.heap.page_allocator.alloc(u8, num_bytes) catch break :decompress_check;
+                comp_heap = buf;
+                file.seekTo(offset + header_size) catch return ValidationResult.invalidCode(.matlab, .failed_to_seek, "to compressed data");
+                const n = file.readAll(buf) catch return ValidationResult.invalidCode(.matlab, .failed_to_read, "compressed data");
+                if (n != num_bytes) return ValidationResult.invalidCode(.matlab, .incomplete, "compressed data read");
+                break :blk buf[0..n];
             };
-            defer std.heap.page_allocator.free(compressed_data);
-
-            file.seekTo(offset + header_size) catch {
-                return ValidationResult.invalidCode(.matlab, .failed_to_seek, "to compressed data");
-            };
-            const compressed_read = file.readAll(compressed_data) catch {
-                return ValidationResult.invalidCode(.matlab, .failed_to_read, "compressed data");
-            };
-            if (compressed_read != num_bytes) {
-                return ValidationResult.invalidCode(.matlab, .incomplete, "compressed data read");
-            }
 
             // Validate zlib decompression using streaming (fixed 64KB buffer, no heap allocation)
             zlib.validateZlib(compressed_data) catch |err| {
