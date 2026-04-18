@@ -1015,44 +1015,36 @@ pub fn validateCsv(file: *FileSource) ValidationResult {
         return ValidationResult.ok(.csv);
     }
 
-    // Don't try to fully parse huge files - just sample
-    const max_sample_size: u64 = 1024 * 1024; // 1MB sample
-    const sample_size: usize = @intCast(@min(file_sz, max_sample_size));
-
-    const content = std.heap.page_allocator.alloc(u8, sample_size) catch {
-        return ValidationResult.invalidCode(.csv, .failed_to_allocate, "memory");
-    };
-    defer std.heap.page_allocator.free(content);
-
-    const bytes_read = file.readAll(content) catch {
+    // Sample first 1MB for validation
+    const max_sample_size: u64 = 1024 * 1024;
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+    const content = getFileContent(file, max_sample_size, &heap_buf) orelse blk: {
+        // File larger than sample — use mmap range or read sample
+        if (file.getMappedRange(0, max_sample_size)) |mapped| break :blk mapped;
         return ValidationResult.invalidCode(.csv, .failed_to_read, "file");
     };
 
-    if (bytes_read == 0) {
-        return ValidationResult.ok(.csv);
-    }
-
-    // Handle UTF-16 LE/BE encoding (Excel sometimes saves CSV as UTF-16)
+    // Handle UTF-16/BOM
     var conv_buf: []u8 = undefined;
     var conv_buf_allocated = false;
     defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
 
     const data = blk: {
-        if (bytes_read >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
+        if (content.len >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
-            conv_buf = std.heap.page_allocator.alloc(u8, bytes_read) catch {
+            conv_buf = std.heap.page_allocator.alloc(u8, content.len) catch {
                 return ValidationResult.invalidCode(.csv, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
-            const text_result = getTextContent(content[0..bytes_read], conv_buf);
+            const text_result = getTextContent(content, conv_buf);
             break :blk text_result.content;
         }
-        // Handle UTF-8 BOM
-        if (bytes_read >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
-            break :blk content[3..bytes_read];
+        if (content.len >= 3 and content[0] == 0xEF and content[1] == 0xBB and content[2] == 0xBF) {
+            break :blk content[3..];
         }
-        break :blk content[0..bytes_read];
+        break :blk content;
     };
 
     // Check for UTF-8 validity
