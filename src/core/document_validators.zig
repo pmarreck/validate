@@ -265,28 +265,31 @@ pub fn validateMsi(file: *FileSource) ValidationResult {
 /// Detect specific OLE2 subformat (DOC, XLS, PPT, MSI) by examining directory entries.
 /// OLE2 stores stream names as UTF-16LE in directory entry structures.
 pub fn detectOle2Subformat(file: *FileSource) FileFormat {
-    // First try reading from the start (works for small files)
-    const buffer = std.heap.page_allocator.alloc(u8, 65536) catch return .doc;
-    defer std.heap.page_allocator.free(buffer);
-    file.seekTo(0) catch return .doc;
-    const bytes_read = file.read(buffer) catch return .doc;
+    // Zero-copy from mmap when available
+    var heap_buf1: ?[]u8 = null;
+    defer if (heap_buf1) |buf| std.heap.page_allocator.free(buf);
+    const buffer: []const u8 = if (file.getMappedRange(0, 65536)) |mapped|
+        mapped
+    else blk: {
+        const buf = std.heap.page_allocator.alloc(u8, 65536) catch return .doc;
+        heap_buf1 = buf;
+        file.seekTo(0) catch return .doc;
+        const n = file.read(buf) catch return .doc;
+        break :blk buf[0..n];
+    };
+    const bytes_read = buffer.len;
 
     // Stream names in OLE2 are stored as UTF-16LE in 64-byte directory entries
-    // Known stream names for each format
     const workbook_utf16 = [_]u8{ 'W', 0, 'o', 0, 'r', 0, 'k', 0, 'b', 0, 'o', 0, 'o', 0, 'k', 0 };
     const book_utf16 = [_]u8{ 'B', 0, 'o', 0, 'o', 0, 'k', 0 };
     const ppt_utf16 = [_]u8{ 'P', 0, 'o', 0, 'w', 0, 'e', 0, 'r', 0, 'P', 0, 'o', 0, 'i', 0, 'n', 0, 't', 0 };
     const word_utf16 = [_]u8{ 'W', 0, 'o', 0, 'r', 0, 'd', 0, 'D', 0, 'o', 0, 'c', 0, 'u', 0, 'm', 0, 'e', 0, 'n', 0, 't', 0 };
-    // MSI has characteristic internal streams: _Tables, _StringData, _StringPool
-    // We check for _Tables as it's the most distinctive MSI marker
     const msi_tables_utf16 = [_]u8{ 0x05, 0, 'T', 0, 'a', 0, 'b', 0, 'l', 0, 'e', 0, 's', 0 };
     const msi_string_pool_utf16 = [_]u8{ 0x05, 0, 'S', 0, 'u', 0, 'm', 0, 'm', 0, 'a', 0, 'r', 0, 'y', 0 };
-    // Alternative: MSI root CLSID {000C1084-0000-0000-C000-000000000046}
     const msi_clsid = [_]u8{ 0x84, 0x10, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 };
 
     const result = detectOle2InBuffer(buffer, bytes_read, &workbook_utf16, &book_utf16, &ppt_utf16, &word_utf16, &msi_tables_utf16, &msi_string_pool_utf16, &msi_clsid);
     if (result != .unknown) return result;
-
     // For larger files, read the directory sector from the OLE2 header
     if (bytes_read >= 0x34) {
         const sector_size: u64 = blk: {
@@ -296,10 +299,18 @@ pub fn detectOle2Subformat(file: *FileSource) FileFormat {
         const dir_sector_id = std.mem.readInt(u32, buffer[0x30..0x34], .little);
         if (dir_sector_id != 0xFFFFFFFE and dir_sector_id != 0xFFFFFFFF) {
             const dir_offset = 512 + @as(u64, dir_sector_id) * sector_size;
-            file.seekTo(dir_offset) catch return .doc;
-            const dir_buffer = std.heap.page_allocator.alloc(u8, 65536) catch return .doc;
-            defer std.heap.page_allocator.free(dir_buffer);
-            const dir_read = file.read(dir_buffer) catch return .doc;
+            var heap_buf2: ?[]u8 = null;
+            defer if (heap_buf2) |buf| std.heap.page_allocator.free(buf);
+            const dir_buffer: []const u8 = if (file.getMappedRange(dir_offset, 65536)) |mapped|
+                mapped
+            else blk: {
+                file.seekTo(dir_offset) catch return .doc;
+                const buf = std.heap.page_allocator.alloc(u8, 65536) catch return .doc;
+                heap_buf2 = buf;
+                const n = file.read(buf) catch return .doc;
+                break :blk buf[0..n];
+            };
+            const dir_read = dir_buffer.len;
 
             const dir_result = detectOle2InBuffer(dir_buffer, dir_read, &workbook_utf16, &book_utf16, &ppt_utf16, &word_utf16, &msi_tables_utf16, &msi_string_pool_utf16, &msi_clsid);
             if (dir_result != .unknown) return dir_result;
