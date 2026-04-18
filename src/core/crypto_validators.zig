@@ -177,14 +177,16 @@ pub fn validatePemDeep(allocator: Allocator, path: []const u8) ValidationResult 
 		return ValidationResult.invalid(.pem, "PEM file too large (>10MB)");
 	}
 
-	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
-		return ValidationResult.invalidCode(.pem, .out_of_memory, "PEM file");
+	var heap_buf1: ?[]u8 = null;
+	defer if (heap_buf1) |buf| allocator.free(buf);
+	const file_data: []const u8 = if (source.getMappedSlice()) |mapped|
+		mapped
+	else blk: {
+		const buf = allocator.alloc(u8, @intCast(file_sz)) catch return ValidationResult.invalidCode(.pem, .out_of_memory, "PEM file");
+		heap_buf1 = buf;
+		const n = source.readAll(buf) catch return ValidationResult.invalidCode(.pem, .failed_to_read, "PEM file");
+		break :blk buf[0..n];
 	};
-	defer allocator.free(data);
-	const bytes_read = source.readAll(data) catch {
-		return ValidationResult.invalidCode(.pem, .failed_to_read, "PEM file");
-	};
-	const file_data = data[0..bytes_read];
 
 	// Parse all PEM blocks
 	var blocks_found: usize = 0;
@@ -366,14 +368,16 @@ pub fn validateDerDeep(allocator: Allocator, path: []const u8) ValidationResult 
 		return ValidationResult.invalid(.der, "File too small for DER format");
 	}
 
-	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
-		return ValidationResult.invalidCode(.der, .out_of_memory, "DER file");
+	var heap_buf2: ?[]u8 = null;
+	defer if (heap_buf2) |buf| allocator.free(buf);
+	const file_data: []const u8 = if (source.getMappedSlice()) |mapped|
+		mapped
+	else blk: {
+		const buf = allocator.alloc(u8, @intCast(file_sz)) catch return ValidationResult.invalidCode(.der, .out_of_memory, "DER file");
+		heap_buf2 = buf;
+		const n = source.readAll(buf) catch return ValidationResult.invalidCode(.der, .failed_to_read, "DER file");
+		break :blk buf[0..n];
 	};
-	defer allocator.free(data);
-	const bytes_read = source.readAll(data) catch {
-		return ValidationResult.invalidCode(.der, .failed_to_read, "DER file");
-	};
-	const file_data = data[0..bytes_read];
 
 	// Must start with 0x30 (SEQUENCE)
 	if (file_data[0] != 0x30) {
@@ -561,14 +565,16 @@ pub fn validatePgpSignedDeep(allocator: Allocator, path: []const u8) ValidationR
 		return ValidationResult.invalid(.pgp_signed, "PGP clearsigned file too large (>10MB)");
 	}
 
-	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
-		return ValidationResult.invalidCode(.pgp_signed, .out_of_memory, "PGP clearsigned file");
+	var heap_buf3: ?[]u8 = null;
+	defer if (heap_buf3) |buf| allocator.free(buf);
+	const file_data: []const u8 = if (source.getMappedSlice()) |mapped|
+		mapped
+	else blk: {
+		const buf = allocator.alloc(u8, @intCast(file_sz)) catch return ValidationResult.invalidCode(.pgp_signed, .out_of_memory, "PGP clearsigned file");
+		heap_buf3 = buf;
+		const n = source.readAll(buf) catch return ValidationResult.invalidCode(.pgp_signed, .failed_to_read, "PGP clearsigned file");
+		break :blk buf[0..n];
 	};
-	defer allocator.free(data);
-	const bytes_read = source.readAll(data) catch {
-		return ValidationResult.invalidCode(.pgp_signed, .failed_to_read, "PGP clearsigned file");
-	};
-	const file_data = data[0..bytes_read];
 
 	// 1. Verify clearsigned header
 	const begin_marker = "-----BEGIN PGP SIGNED MESSAGE-----\n";
@@ -815,14 +821,16 @@ pub fn validateSshSignatureDeep(allocator: Allocator, path: []const u8) Validati
 		return ValidationResult.invalid(.ssh_signature, "SSH signature: file too large (>1MB)");
 	}
 
-	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
-		return ValidationResult.invalidCode(.ssh_signature, .out_of_memory, "SSH signature file");
+	var heap_buf4: ?[]u8 = null;
+	defer if (heap_buf4) |buf| allocator.free(buf);
+	const file_data: []const u8 = if (source.getMappedSlice()) |mapped|
+		mapped
+	else blk: {
+		const buf = allocator.alloc(u8, @intCast(file_sz)) catch return ValidationResult.invalidCode(.ssh_signature, .out_of_memory, "SSH signature file");
+		heap_buf4 = buf;
+		const n = source.readAll(buf) catch return ValidationResult.invalidCode(.ssh_signature, .failed_to_read, "SSH signature file");
+		break :blk buf[0..n];
 	};
-	defer allocator.free(data);
-	const bytes_read = source.readAll(data) catch {
-		return ValidationResult.invalidCode(.ssh_signature, .failed_to_read, "SSH signature file");
-	};
-	const file_data = data[0..bytes_read];
 
 	// 1. Find armor markers
 	const begin_marker = "-----BEGIN SSH SIGNATURE-----\n";
