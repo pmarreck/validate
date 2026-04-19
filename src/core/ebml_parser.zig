@@ -1156,6 +1156,14 @@ pub const MatroskaParser = struct {
         if (size > max_block_bytes) return null;
         if (size > std.math.maxInt(usize)) return null;
 
+        // Always end at data_offset + size so the cluster-child loop advances
+        // correctly, even on the mmap fast path (which otherwise leaves the
+        // file position wherever readElementHeader's speculative 12-byte read
+        // landed, causing subsequent reads to start mid-block and corrupt the
+        // parse). Found by ffmpeg-generated WebM (SimpleBlock 304 bytes → next
+        // child attempted 9 bytes past the header → garbage VINTs).
+        defer _ = self.reader.seekTo(block.data_offset + size);
+
         var e1_heap: ?[]u8 = null;
         defer if (e1_heap) |buf| self.allocator.free(buf);
         const data: []const u8 = if (self.reader.file.getMappedRange(block.data_offset, size)) |mapped|
@@ -1331,10 +1339,12 @@ pub const MatroskaParser = struct {
                     }
                 }
                 if (parsing_error) break;
-                // Move to end of cluster after processing
                 _ = self.reader.seekTo(cluster_end);
             } else {
-                _ = self.reader.skipElement(element);
+                if (!self.reader.skipElement(element)) {
+                    parsing_error = true;
+                    break;
+                }
             }
         }
 

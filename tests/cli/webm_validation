@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Regression: the MKV parser's walkBlockFrames mmap path used to leave the
+# file position at readElementHeader's speculative 12-byte read rather than
+# at data_offset+size, so the next cluster-child was read from mid-block.
+# ffmpeg-generated WebMs with multi-packet SimpleBlocks would FAIL with
+# "MKV parsing error - file may be corrupted" even though every player
+# accepted them. These fixtures are valid and must validate OK.
+set -u
+
+if [[ -x "./zig-out/bin/validate" ]]; then
+	BIN="./zig-out/bin/validate"
+elif [[ -x "./zig-out/bin/validate.exe" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+else
+	echo "FAIL: validate binary not found (tried ./zig-out/bin/validate and .exe)"
+	exit 1
+fi
+
+declare -a FIXTURES=(
+	"ground_truth_examples/opus/test_audio_only.webm"
+	"ground_truth_examples/webm/vp9_opus.webm"
+)
+
+strip_ansi() { sed 's/\x1b\[[0-9;]*m//g'; }
+
+failures=0
+for fixture in "${FIXTURES[@]}"; do
+	if [[ ! -f "$fixture" ]]; then
+		echo "SKIP: missing ground truth sample at $fixture"
+		continue
+	fi
+	out="$("$BIN" "$fixture" 2>&1 | strip_ansi)"
+	line="$(printf '%s\n' "$out" | grep -E '^(OK|FAIL|WARN|UNKNOWN)' | head -1)"
+	if [[ "$line" == OK* ]]; then
+		echo "PASS: $fixture -> $line"
+	else
+		echo "FAIL: $fixture -> $line"
+		failures=$((failures + 1))
+	fi
+done
+
+if (( failures > 0 )); then
+	echo "webm_validation: $failures failure(s)"
+	exit 1
+fi
+echo "webm_validation: all passed"
