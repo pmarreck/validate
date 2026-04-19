@@ -324,6 +324,106 @@ test "multi-stream pbzip2 decompression" {
     try std.testing.expectEqualSlices(u8, expected, decompressed);
 }
 
+// Regression test for SIGSEGV in HuffmanTable.build when fed corrupted bzip2
+// streams (issue surfaced via `validate --test-coverage` on the bzip2 ground
+// truth sample). Replays the same PRNG sequence the test_coverage runner uses
+// so that bytes corrupted at exactly the right offsets exercise the bad
+// code-length / OOB-lookup-table path. Under the testing allocator (which
+// guards allocations), an OOB write into HuffmanTable.lookup[] crashes
+// deterministically.
+test "decompress: fuzz corruption of ground truth bzip2 must not crash" {
+	const allocator = testing.allocator;
+
+	// Embedded copy of validate_gui/ground_truth_examples/bzip2/sample.bz2
+	// (88 bytes). Keeping it inline avoids a runtime path dependency.
+	const original = [_]u8{
+		0x42, 0x5a, 0x68, 0x39, 0x31, 0x41, 0x59, 0x26, 0x53, 0x59, 0xa3, 0xac, 0xfd, 0xf1, 0x00, 0x00,
+		0x06, 0x55, 0x80, 0x00, 0x10, 0x40, 0x05, 0x00, 0x40, 0x2f, 0x67, 0xdd, 0x00, 0x20, 0x00, 0x48,
+		0xa1, 0x89, 0x36, 0x9a, 0x9a, 0x79, 0x3d, 0x24, 0x1a, 0x9e, 0xa0, 0x0c, 0x40, 0x02, 0x02, 0x5b,
+		0x87, 0xa5, 0x40, 0x8b, 0xae, 0xcb, 0x90, 0x98, 0x76, 0x4a, 0xd8, 0xc3, 0x91, 0xce, 0x63, 0x99,
+		0x58, 0xad, 0xe7, 0x14, 0x6a, 0x7c, 0x9d, 0xb1, 0x8b, 0xd8, 0x14, 0x60, 0x4f, 0xc5, 0xdc, 0x91,
+		0x4e, 0x14, 0x24, 0x28, 0xeb, 0x3f, 0x7c, 0x40,
+	};
+
+	// Same modes the test-coverage harness exercises, in the same order.
+	const Mode = enum { sniper, shotgun, header, tail, zeroed, xor };
+	const modes = [_]Mode{ .sniper, .shotgun, .header, .tail, .zeroed, .xor };
+	const shotgun_bytes: u32 = 4096;
+
+	// Seed 1776618111 is the seed that originally crashed
+	// `validate --test-coverage 200` on this sample. The decompressor must
+	// never segfault, regardless of input bytes.
+	const seeds = [_]u64{ 1776618111, 1776618112, 0xC0FFEE, 0xDEADBEEF, 42 };
+	const rounds_per_seed: u32 = 300;
+
+	for (seeds) |seed| {
+		var prng = std.Random.DefaultPrng.init(seed);
+		const rng = prng.random();
+
+		var round: u32 = 0;
+		while (round < rounds_per_seed) : (round += 1) {
+			const work = try allocator.alloc(u8, original.len);
+			defer allocator.free(work);
+			@memcpy(work, &original);
+
+			const chosen_mode = modes[rng.uintLessThan(usize, modes.len)];
+			switch (chosen_mode) {
+				.sniper => {
+					const offset = rng.uintLessThan(u64, work.len);
+					const bit: u3 = @intCast(rng.uintLessThan(u8, 8));
+					work[@intCast(offset)] ^= (@as(u8, 1) << bit);
+				},
+				.shotgun => {
+					const clamped: u32 = @intCast(@min(@as(u64, shotgun_bytes), work.len));
+					const max_offset: u64 = work.len - clamped;
+					const offset = if (max_offset == 0) 0 else rng.uintLessThan(u64, max_offset + 1);
+					var i: usize = 0;
+					while (i < clamped) : (i += 1) work[@intCast(offset + i)] = rng.int(u8);
+				},
+				.header => {
+					const region: u64 = @max(@as(u64, 1), work.len / 10);
+					const clamped: u32 = @intCast(@min(@as(u64, shotgun_bytes), region));
+					const max_offset: u64 = region - clamped;
+					const offset = if (max_offset == 0) 0 else rng.uintLessThan(u64, max_offset + 1);
+					var i: usize = 0;
+					while (i < clamped) : (i += 1) work[@intCast(offset + i)] = rng.int(u8);
+				},
+				.tail => {
+					const region: u64 = @max(@as(u64, 1), work.len / 10);
+					const clamped: u32 = @intCast(@min(@as(u64, shotgun_bytes), region));
+					const tail_start = work.len - region;
+					const max_offset: u64 = region - clamped;
+					const offset_in_tail = if (max_offset == 0) 0 else rng.uintLessThan(u64, max_offset + 1);
+					const offset = tail_start + offset_in_tail;
+					var i: usize = 0;
+					while (i < clamped) : (i += 1) work[@intCast(offset + i)] = rng.int(u8);
+				},
+				.zeroed => {
+					const clamped: u32 = @intCast(@min(@as(u64, shotgun_bytes), work.len));
+					const max_offset: u64 = work.len - clamped;
+					const offset = if (max_offset == 0) 0 else rng.uintLessThan(u64, max_offset + 1);
+					@memset(work[@intCast(offset)..][0..clamped], 0);
+				},
+				.xor => {
+					const clamped: u32 = @intCast(@min(@as(u64, shotgun_bytes), work.len));
+					const max_offset: u64 = work.len - clamped;
+					const offset = if (max_offset == 0) 0 else rng.uintLessThan(u64, max_offset + 1);
+					const pattern = rng.int(u8);
+					var i: usize = 0;
+					while (i < clamped) : (i += 1) work[@intCast(offset + i)] ^= pattern;
+				},
+			}
+
+			// Must return cleanly (success OR an error from bzip2.Error).
+			// Crashing or memory-corrupting on adversarial input is the bug.
+			if (bzip2.decompress(allocator, work)) |out| {
+				allocator.free(out);
+			} else |_| {}
+		}
+	}
+}
+
+
 test "multi-stream pbzip2 - three streams" {
     const allocator = std.testing.allocator;
 

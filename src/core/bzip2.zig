@@ -277,13 +277,31 @@ const HuffmanTable = struct {
         self.min_len = @intCast(min_len);
         self.max_len = @intCast(max_len);
 
-        // Compute base codes and limits for each length
+        // Compute base codes and limits for each length.
+        //
+        // For each length we assign `count[len]` consecutive canonical codes
+        // starting from `code`. Then `code` is shifted left by one to align
+        // with the next length. For a *valid* canonical Huffman code, the
+        // assigned codes for length `len` must all fit in `len` bits — i.e.
+        // `code + count[len] <= (1 << len)`. Adversarial / corrupted inputs
+        // can violate this (e.g. claiming many short codes), in which case the
+        // lookup-table fill loop below would compute `base_idx >= 1024` and
+        // write past `self.lookup`. Reject such tables here.
         var code: u32 = 0;
         var perm_offset: u32 = 0;
         for (1..MAX_CODE_LEN + 1) |len| {
             self.bases[len] = code;
             self.perm_offsets[len] = perm_offset;
             if (count[len] > 0) {
+                // Guard against integer overflow before the canonical-fit check
+                // (count[len] is bounded by num_symbols <= MAX_ALPHA_SIZE = 258
+                // so this addition cannot wrap u32, but be defensive anyway).
+                const end_code = std.math.add(u32, code, count[len]) catch return Error.HuffmanOverflow;
+                // Canonical Huffman invariant: codes of length `len` must fit
+                // in `len` bits. `end_code` is the first code value *after*
+                // this length's range, so it must be <= 2^len.
+                const max_for_len: u64 = @as(u64, 1) << @as(u6, @intCast(len));
+                if (@as(u64, end_code) > max_for_len) return Error.HuffmanOverflow;
                 self.limits[len] = code + count[len] - 1;
             } else {
                 self.limits[len] = 0;
