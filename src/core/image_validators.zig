@@ -3104,17 +3104,17 @@ pub fn validateDngDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.okWithWarning(.dng, "DNG too large for deep validation");
     }
 
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.okWithWarning(.dng, "DNG: out of memory for deep validation");
+    var heap_dng: ?[]u8 = null;
+    defer if (heap_dng) |buf| allocator.free(buf);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.okWithWarning(.dng, "DNG: out of memory for deep validation");
+        };
+        heap_dng = buf;
+        const n = source.readAll(buf) catch return ValidationResult.invalidCode(.dng, .failed_to_read, "DNG file");
+        if (n != file_size) return ValidationResult.invalid(.dng, "DNG file read incomplete");
+        break :blk buf[0..n];
     };
-    defer allocator.free(data);
-
-    const bytes_read = source.readAll(data) catch {
-        return ValidationResult.invalidCode(.dng, .failed_to_read, "DNG file");
-    };
-    if (bytes_read != file_size) {
-        return ValidationResult.invalid(.dng, "DNG file read incomplete");
-    }
 
     // Find and validate embedded JPEGs with proper headers
     // DNG files contain:
@@ -3296,16 +3296,18 @@ pub fn validateJpeg2000Deep(allocator: Allocator, path: []const u8) ValidationRe
         return ValidationResult.invalidWithDepth(.jpeg2000, "File too large", .full);
     }
 
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCodeWithDepth(.jpeg2000, .out_of_memory, "for JPEG 2000", .full);
+    var heap_j2k: ?[]u8 = null;
+    defer if (heap_j2k) |buf| allocator.free(buf);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.jpeg2000, .out_of_memory, "for JPEG 2000", .full);
+        };
+        heap_j2k = buf;
+        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_read, "file", .full);
+        break :blk buf[0..n];
     };
-    defer allocator.free(data);
 
-    const bytes_read = source.readAll(data) catch {
-        return ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_read, "file", .full);
-    };
-
-    const result = jpeg2000_validator.validateJpeg2000(data[0..bytes_read]);
+    const result = jpeg2000_validator.validateJpeg2000(data);
     if (result.valid) {
         return ValidationResult.okWithDepth(.jpeg2000, .full);
     } else {
@@ -3332,16 +3334,18 @@ pub fn validateJbig2Deep(allocator: Allocator, path: []const u8) ValidationResul
         return ValidationResult.invalidWithDepth(.jbig2, "File too large", .full);
     }
 
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCodeWithDepth(.jbig2, .out_of_memory, "for JBIG2", .full);
+    var heap_jbig2: ?[]u8 = null;
+    defer if (heap_jbig2) |buf| allocator.free(buf);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.jbig2, .out_of_memory, "for JBIG2", .full);
+        };
+        heap_jbig2 = buf;
+        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_read, "file", .full);
+        break :blk buf[0..n];
     };
-    defer allocator.free(data);
 
-    const bytes_read = source.readAll(data) catch {
-        return ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_read, "file", .full);
-    };
-
-    const result = jbig2_decoder.validateJbig2(allocator, data[0..bytes_read]);
+    const result = jbig2_decoder.validateJbig2(allocator, data);
     if (result.valid) {
         if (result.warning_message) |warning| {
             // Return valid with warning if decoder reported non-fatal issues
@@ -4551,12 +4555,12 @@ pub fn validateTga(file: *FileSource) ValidationResult {
 /// For RLE types (9, 10, 11): decode RLE stream and verify exact pixel count.
 /// For uncompressed types (1, 2, 3): verify file size matches expected data size.
 pub fn validateTgaDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    var source = FileSource.open(path) catch {
         return ValidationResult.okWithDepthAndWarning(.tga, .structural, "could not open for deep validation");
     };
-    defer file.close();
+    defer source.close();
 
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.okWithDepthAndWarning(.tga, .structural, "could not get file size");
     };
 
@@ -4564,23 +4568,21 @@ pub fn validateTgaDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalidCode(.tga, .file_too_small, "TGA");
     }
 
-    // Read the full file into memory
     if (file_size > 256 * 1024 * 1024) {
         return ValidationResult.okWithDepthAndWarning(.tga, .structural, "TGA file too large for deep validation");
     }
 
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.okWithDepthAndWarning(.tga, .structural, "out of memory for TGA data");
+    var heap_tga: ?[]u8 = null;
+    defer if (heap_tga) |buf| allocator.free(buf);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.okWithDepthAndWarning(.tga, .structural, "out of memory for TGA data");
+        };
+        heap_tga = buf;
+        const n = source.readAll(buf) catch return ValidationResult.okWithDepth(.tga, .structural);
+        if (n < file_size) return ValidationResult.invalidCodeWithDepth(.tga, .truncated, "TGA file", .structural);
+        break :blk buf[0..n];
     };
-    defer allocator.free(data);
-
-    file.seekTo(0) catch return ValidationResult.okWithDepth(.tga, .structural);
-    const bytes_read = file.readAll(data) catch {
-        return ValidationResult.okWithDepth(.tga, .structural);
-    };
-    if (bytes_read < file_size) {
-        return ValidationResult.invalidCodeWithDepth(.tga, .truncated, "TGA file", .structural);
-    }
 
     const id_length: usize = data[0];
     const color_map_type = data[1];
