@@ -28,20 +28,24 @@ pub fn validateBlarStructural(allocator: std.mem.Allocator, source: *FileSource,
     }
 
     // Read entire file into memory for ArchiveReader
-    source.seekTo(0) catch {
-        return ValidationResult.invalidWithDepth(format, "Cannot seek to start", .structural);
+    var heap_blar1: ?[]u8 = null;
+    defer if (heap_blar1) |buf| allocator.free(buf);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidWithDepth(format, "Out of memory", .structural);
+        };
+        heap_blar1 = buf;
+        source.seekTo(0) catch {
+            return ValidationResult.invalidWithDepth(format, "Cannot seek to start", .structural);
+        };
+        const n = source.read(buf) catch {
+            return ValidationResult.invalidWithDepth(format, "Cannot read file", .structural);
+        };
+        if (n != buf.len) {
+            return ValidationResult.invalidWithDepth(format, "Short read", .structural);
+        }
+        break :blk buf[0..n];
     };
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidWithDepth(format, "Out of memory", .structural);
-    };
-    defer allocator.free(data);
-
-    const bytes_read = source.read(data) catch {
-        return ValidationResult.invalidWithDepth(format, "Cannot read file", .structural);
-    };
-    if (bytes_read != data.len) {
-        return ValidationResult.invalidWithDepth(format, "Short read", .structural);
-    }
 
     // Initialize ArchiveReader — validates LP envelope and structure
     const reader = ArchiveReader.init(data) catch {
@@ -69,20 +73,24 @@ pub fn validateBlarDeep(allocator: std.mem.Allocator, source: *FileSource, forma
     }
 
     // Read entire file into memory for ArchiveReader
-    source.seekTo(0) catch {
-        return ValidationResult.invalidWithDepth(format, "Cannot seek to start", .full);
+    var heap_blar2: ?[]u8 = null;
+    defer if (heap_blar2) |buf| allocator.free(buf);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidWithDepth(format, "Out of memory", .full);
+        };
+        heap_blar2 = buf;
+        source.seekTo(0) catch {
+            return ValidationResult.invalidWithDepth(format, "Cannot seek to start", .full);
+        };
+        const n = source.read(buf) catch {
+            return ValidationResult.invalidWithDepth(format, "Cannot read file", .full);
+        };
+        if (n != buf.len) {
+            return ValidationResult.invalidWithDepth(format, "Short read", .full);
+        }
+        break :blk buf[0..n];
     };
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidWithDepth(format, "Out of memory", .full);
-    };
-    defer allocator.free(data);
-
-    const bytes_read = source.read(data) catch {
-        return ValidationResult.invalidWithDepth(format, "Cannot read file", .full);
-    };
-    if (bytes_read != data.len) {
-        return ValidationResult.invalidWithDepth(format, "Short read", .full);
-    }
 
     // Initialize ArchiveReader
     const reader = ArchiveReader.init(data) catch {
