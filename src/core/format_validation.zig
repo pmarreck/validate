@@ -5725,7 +5725,24 @@ pub const FormatValidator = struct {
         return result;
     }
 
+    /// Run deep validation against an in-memory FileSource for a known format.
+    /// Used by test-coverage to validate corrupted buffers without disk I/O.
+    /// Caller provides the format (typically from a prior baseline validation).
+    pub fn validateDeepFromSource(
+        self: *Self,
+        allocator: Allocator,
+        format: FileFormat,
+        source: *FileSource,
+    ) ValidationResult {
+        if (!self.enabled) return ValidationResult.unknown();
+        if (self.allocator == null) self.allocator = allocator;
+        source.seekTo(0) catch {};
+        const initial_result = ValidationResult.okWithDepth(format, .structural);
+        return self.performDeepValidation(allocator, source, "", initial_result);
+    }
+
     /// Validate a file with deep validation support.
+    /// Requires allocator for format-specific deep checks.
     /// Requires allocator for format-specific deep checks.
     pub fn validateFileDeep(self: *Self, allocator: Allocator, path: []const u8) ValidationResult {
         if (!self.enabled) {
