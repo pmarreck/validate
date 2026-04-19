@@ -5887,7 +5887,11 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk image_validators.validateGifDeep(allocator, &src);
             },
-            .tiff, .dng, .cr2, .nef, .arw, .orf, .pef => image_validators.validateTiffDeep(allocator, path, initial_result.format),
+            .tiff, .dng, .cr2, .nef, .arw, .orf, .pef => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(initial_result.format, .failed_to_open, "file", .full);
+                defer src.close();
+                break :blk image_validators.validateTiffDeep(allocator, &src, initial_result.format);
+            },
             .tga => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.tga, .failed_to_open, "file", .full);
                 defer src.close();
@@ -5900,7 +5904,15 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk image_validators.validatePsdDeep(allocator, &src);
             },
-            .ai => creative_validators.validateAiDeep(allocator, path),
+            .ai => blk: {
+                var src = FileSource.open(path) catch |err| break :blk switch (err) {
+                    error.FileNotFound => ValidationResult.invalid(.ai, "File not found"),
+                    error.AccessDenied => ValidationResult.invalid(.ai, "Access denied"),
+                    else => ValidationResult.invalidCode(.ai, .failed_to_open, "file"),
+                };
+                defer src.close();
+                break :blk creative_validators.validateAiDeep(allocator, &src);
+            },
             .eps => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.eps, .failed_to_open, "file");
                 defer src.close();
@@ -5921,7 +5933,11 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk image_validators.validateJxlDeep(allocator, &src);
             },
-            .bmp => image_validators.validateBmpDeep(allocator, path),
+            .bmp => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.bmp, .failed_to_open, "file", .full);
+                defer src.close();
+                break :blk image_validators.validateBmpDeep(allocator, &src);
+            },
             .ico => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.ico, .failed_to_open, "file", .full);
                 defer src.close();
@@ -5972,8 +5988,16 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk archive_validators.validateBzip2Deep(allocator, &src);
             },
-            .xz => archive_validators.validateXzDeep(allocator, path),
-            .zstd => archive_validators.validateZstdDeep(allocator, path),
+            .xz => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.xz, .failed_to_open, "file", .structural);
+                defer src.close();
+                break :blk archive_validators.validateXzDeep(allocator, &src);
+            },
+            .zstd => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_open, "file", .structural);
+                defer src.close();
+                break :blk archive_validators.validateZstdDeep(allocator, &src);
+            },
             .sevenz => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.sevenz, .failed_to_open, "file", .full);
                 defer src.close();
@@ -6024,9 +6048,21 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk music_validators.validateMidiDeep(&src);
             },
-            .mp4, .mov, .m4a => movie_validators.validateMp4Deep(allocator, path),
-            .mkv, .webm => movie_validators.validateMkvDeep(allocator, path),
-            .avi => movie_validators.validateAviDeep(allocator, path),
+            .mp4, .mov, .m4a => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.mp4, .failed_to_open, "file", .structural);
+                defer src.close();
+                break :blk movie_validators.validateMp4Deep(allocator, &src);
+            },
+            .mkv, .webm => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.mkv, .failed_to_open, "file", .structural);
+                defer src.close();
+                break :blk movie_validators.validateMkvDeep(allocator, &src);
+            },
+            .avi => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.avi, .failed_to_open, "file", .structural);
+                defer src.close();
+                break :blk movie_validators.validateAviDeep(allocator, &src);
+            },
             .heic => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.heic, .failed_to_open, "file", .full);
                 defer src.close();
@@ -6047,7 +6083,11 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk cad_3d_validators.validateGlbDeep(allocator, &src);
             },
-            .doc, .xls, .ppt => document_validators.validateOle2Deep(allocator, path, initial_result.format),
+            .doc, .xls, .ppt => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(initial_result.format, .failed_to_open, "file", .structural);
+                defer src.close();
+                break :blk document_validators.validateOle2Deep(allocator, &src, initial_result.format);
+            },
             .br => validateBrotliDeep(path),
             .mod => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidWithDepth(.mod, "Failed to open MOD file", .full);
@@ -6094,7 +6134,11 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk music_validators.validateEac3Deep(&src);
             },
-            .prproj => creative_validators.validatePrprojDeep(allocator, path),
+            .prproj => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.prproj, .failed_to_open, "PRPROJ file");
+                defer src.close();
+                break :blk creative_validators.validatePrprojDeep(allocator, &src);
+            },
             .indd => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.indd, .failed_to_open, "INDD file");
                 defer src.close();
@@ -6120,7 +6164,11 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk daw_validators.validateFlpDeep(allocator, &src);
             },
-            .als => daw_validators.validateAlsDeep(allocator, path),
+            .als => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.als, .failed_to_open, "file", .structural);
+                defer src.close();
+                break :blk daw_validators.validateAlsDeep(allocator, &src);
+            },
             .rpp => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.rpp, .failed_to_open, "RPP file");
                 defer src.close();
@@ -6206,7 +6254,11 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk game_validator.validateGbDeep(allocator, &src);
             },
-            .drp => creative_validators.validateDrpDeep(allocator, path),
+            .drp => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.drp, .failed_to_open, "DRP file");
+                defer src.close();
+                break :blk creative_validators.validateDrpDeep(allocator, &src);
+            },
             .mdb => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.mdb, .failed_to_open, "MDB file");
                 defer src.close();
@@ -6222,14 +6274,26 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk cad_3d_validators.validateObjDeep(allocator, &src);
             },
-            .sketch => creative_validators.validateSketchDeep(allocator, path),
+            .sketch => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.sketch, .failed_to_open, "Sketch file");
+                defer src.close();
+                break :blk creative_validators.validateSketchDeep(allocator, &src);
+            },
             .qbw => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.qbw, .failed_to_open, "QuickBooks company file");
                 defer src.close();
                 break :blk financial_validators.validateQbwDeep(allocator, &src);
             },
-            .qbb => financial_validators.validateQbbDeep(allocator, path),
-            .qdf => financial_validators.validateQdfDeep(allocator, path),
+            .qbb => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.qbb, .failed_to_open, "file", .structural);
+                defer src.close();
+                break :blk financial_validators.validateQbbDeep(allocator, &src);
+            },
+            .qdf => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.qdf, .failed_to_open, "Quicken data file");
+                defer src.close();
+                break :blk financial_validators.validateQdfDeep(allocator, &src);
+            },
             .nacha => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.nacha, .failed_to_open, "NACHA file");
                 defer src.close();
@@ -6240,7 +6304,11 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk financial_validators.validateMt940Deep(allocator, &src);
             },
-            .bai2 => financial_validators.validateBai2Deep(allocator, path),
+            .bai2 => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
+                defer src.close();
+                break :blk financial_validators.validateBai2Deep(allocator, &src);
+            },
             .x12_edi => blk: {
                 var src = FileSource.open(path) catch break :blk ValidationResult.invalid(.x12_edi, "Failed to open file");
                 defer src.close();
@@ -6311,8 +6379,24 @@ pub const FormatValidator = struct {
                 defer src.close();
                 break :blk scientific_validators.validateParquetDeep(allocator, &src);
             },
-            .blar => blar_validator.validateBlarDeepFromPath(allocator, path, .blar),
-            .mblar => blar_validator.validateBlarDeepFromPath(allocator, path, .mblar),
+            .blar => blk: {
+                var src = FileSource.open(path) catch |err| break :blk switch (err) {
+                    error.FileNotFound => ValidationResult.invalidWithDepth(.blar, "File not found", .full),
+                    error.AccessDenied => ValidationResult.invalidWithDepth(.blar, "Access denied", .full),
+                    else => ValidationResult.invalidWithDepth(.blar, "Cannot open file", .full),
+                };
+                defer src.close();
+                break :blk blar_validator.validateBlarDeep(allocator, &src, .blar);
+            },
+            .mblar => blk: {
+                var src = FileSource.open(path) catch |err| break :blk switch (err) {
+                    error.FileNotFound => ValidationResult.invalidWithDepth(.mblar, "File not found", .full),
+                    error.AccessDenied => ValidationResult.invalidWithDepth(.mblar, "Access denied", .full),
+                    else => ValidationResult.invalidWithDepth(.mblar, "Cannot open file", .full),
+                };
+                defer src.close();
+                break :blk blar_validator.validateBlarDeep(allocator, &src, .mblar);
+            },
             .bagit => bagit_validator.validateBagitDeep(allocator, path),
             .git_repository => validateGitRepositoryDeep(allocator, path),
             .macos_app => macos_bundle_validator.validateAppBundle(allocator, path).toValidationResult(.macos_app),

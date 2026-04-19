@@ -636,8 +636,8 @@ fn parseSaMajorVersion(page0: *const [4096]u8) ?u32 {
 
 /// Deep validation of QuickBooks Backup files (.qbb, .qbm) via OLE2 deep validation.
 /// QBB files are OLE2 compound files; we delegate to the existing OLE2 FAT/directory validator.
-pub fn validateQbbDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	return document_validators.validateOle2Deep(allocator, path, .qbb);
+pub fn validateQbbDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+	return document_validators.validateOle2Deep(allocator, source, .qbb);
 }
 
 /// Deep validation of Quicken Data Files (.qdf).
@@ -645,13 +645,9 @@ pub fn validateQbbDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// - OLE2 variant → OLE2 FAT/directory validation
 /// - ZIP variant → ZIP CRC-32 verification for all entries
 /// - Legacy variant → structural only (no known integrity mechanism)
-pub fn validateQdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateQdfDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	// Detect the container type by reading magic bytes
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCode(.qdf, .failed_to_open, "Quicken data file");
-	};
-	defer source.close();
-	const file = &source;
+	const file = source;
 
 	var header: [8]u8 = undefined;
 	const bytes_read = file.readAll(&header) catch {
@@ -660,7 +656,10 @@ pub fn validateQdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 	if (bytes_read >= 8 and std.mem.eql(u8, &header, &[8]u8{ 0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1 })) {
 		// OLE2 container — use OLE2 deep validation (FAT/directory integrity)
-		return document_validators.validateOle2Deep(allocator, path, .qdf);
+		file.seekTo(0) catch {
+			return ValidationResult.invalidCode(.qdf, .failed_to_seek, "Quicken data file");
+		};
+		return document_validators.validateOle2Deep(allocator, source, .qdf);
 	}
 
 	if (bytes_read >= 4 and std.mem.eql(u8, header[0..4], &[4]u8{ 0x50, 0x4B, 0x03, 0x04 })) {
@@ -1442,11 +1441,30 @@ fn parseBai2Amount(field: []const u8) ?i64 {
 /// Deep validation of BAI2 files: verifies cascading control totals at account, group, and file levels.
 /// Account trailer (49) = sum of transaction amounts; Group trailer (98) = sum of account totals;
 /// File trailer (99) = sum of group totals. Record counts verified at all three levels.
-pub fn validateBai2Deep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file_data = std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024 * 1024) catch {
+pub fn validateBai2Deep(allocator: Allocator, source: *FileSource) ValidationResult {
+	const file_size = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
 	};
-	defer allocator.free(file_data);
+
+	if (file_size > 64 * 1024 * 1024) {
+		return ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
+	}
+
+	var heap_bai2: ?[]u8 = null;
+	defer if (heap_bai2) |buf| allocator.free(buf);
+	const file_data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+		const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+			return ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
+		};
+		heap_bai2 = buf;
+		source.seekTo(0) catch {
+			return ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
+		};
+		const n = source.readAll(buf) catch {
+			return ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
+		};
+		break :blk buf[0..n];
+	};
 
 	if (file_data.len < 10) {
 		return ValidationResult.invalidCode(.bai2, .file_too_small, "BAI2 file");
@@ -2298,7 +2316,9 @@ test "ground truth: QDF deep validation via OLE2" {
 		return err;
 	};
 
-	const result = validateQdfDeep(std.testing.allocator, path);
+	var source = FileSource.open(path) catch return error.SkipZigTest;
+	defer source.close();
+	const result = validateQdfDeep(std.testing.allocator, &source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.qdf, result.format);
 }
@@ -2800,7 +2820,9 @@ test "BAI2 deep: valid cascading control totals" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("valid_deep.bai2", &path_buf);
 
-	const result = validateBai2Deep(std.testing.allocator, path);
+	var source = try FileSource.open(path);
+	defer source.close();
+	const result = validateBai2Deep(std.testing.allocator, &source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 }
@@ -2827,7 +2849,9 @@ test "BAI2 deep: account control total mismatch detected" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("corrupt_total.bai2", &path_buf);
 
-	const result = validateBai2Deep(std.testing.allocator, path);
+	var source = try FileSource.open(path);
+	defer source.close();
+	const result = validateBai2Deep(std.testing.allocator, &source);
 	try std.testing.expect(!result.is_valid);
 }
 
@@ -2851,7 +2875,9 @@ test "BAI2 deep: group record count mismatch detected" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("corrupt_count.bai2", &path_buf);
 
-	const result = validateBai2Deep(std.testing.allocator, path);
+	var source = try FileSource.open(path);
+	defer source.close();
+	const result = validateBai2Deep(std.testing.allocator, &source);
 	try std.testing.expect(!result.is_valid);
 }
 
@@ -2874,7 +2900,9 @@ test "BAI2 deep: file group count mismatch detected" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("corrupt_groups.bai2", &path_buf);
 
-	const result = validateBai2Deep(std.testing.allocator, path);
+	var source = try FileSource.open(path);
+	defer source.close();
+	const result = validateBai2Deep(std.testing.allocator, &source);
 	try std.testing.expect(!result.is_valid);
 }
 
@@ -2963,7 +2991,9 @@ test "ground truth: BAI2 sample deep validation" {
 		return err;
 	};
 
-	const result = validateBai2Deep(std.testing.allocator, path);
+	var source = FileSource.open(path) catch return error.SkipZigTest;
+	defer source.close();
+	const result = validateBai2Deep(std.testing.allocator, &source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 	try std.testing.expectEqual(FileFormat.bai2, result.format);

@@ -1589,16 +1589,11 @@ fn validateStsz(file: *FileSource, box_offset: u64, box_size: u64) ?[]const u8 {
 
 /// Deep MP4/ISOBMFF validation - validates all box sizes and structure.
 /// Also validates video stream integrity using pure-Zig codec validators.
-pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.mp4, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.mp4, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.mp4, .failed_to_open, "file", .structural),
-        };
+pub fn validateMp4Deep(allocator: Allocator, source: *FileSource) ValidationResult {
+    source.seekTo(0) catch {
+        return ValidationResult.invalidCodeWithDepth(.mp4, .failed_to_seek, "to file start", .structural);
     };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.mp4, .failed_to_get, "file size", .structural);
@@ -1701,7 +1696,7 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Structural validation passed - now attempt video stream validation
     // This parses the container to find video tracks and validates codec info
-    const video_result = video_validator.validateMp4Video(allocator, path, std.math.maxInt(u32));
+    const video_result = video_validator.validateMp4Video(allocator, source, std.math.maxInt(u32));
 
     // Check if this is an audio-only file (M4A) - no video track is expected
     const is_audio_only = video_result.error_message != null and
@@ -1720,7 +1715,7 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Video validation passed - now validate audio track if present
-    const audio_result = video_audio_validator.validateMp4Audio(allocator, path);
+    const audio_result = video_audio_validator.validateMp4Audio(allocator, source);
 
     // Audio validation failure is a real failure (corruption), not just "unsupported codec"
     if (!audio_result.valid and audio_result.error_message != null) {
@@ -1799,16 +1794,11 @@ pub fn validateMp4Deep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Deep MKV/EBML validation - validates element structure.
 /// Only performs deep validation for files under 100MB.
-pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.mkv, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.mkv, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.mkv, .failed_to_open, "file", .structural),
-        };
+pub fn validateMkvDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    source.seekTo(0) catch {
+        return ValidationResult.invalidCodeWithDepth(.mkv, .failed_to_seek, "to file start", .structural);
     };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.mkv, .failed_to_get, "file size", .structural);
@@ -1902,7 +1892,7 @@ pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Structural validation passed - now do codec validation (video + audio)
-    const media_result = video_audio_validator.validateMkvMedia(allocator, path, std.math.maxInt(u32));
+    const media_result = video_audio_validator.validateMkvMedia(allocator, source, std.math.maxInt(u32));
 
     // Handle video validation results
     if (media_result.has_video_track) {
@@ -1972,16 +1962,11 @@ pub fn validateMkvDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Deep AVI validation - validates video frames by decoding.
 /// Supports MJPEG, H.264, MPEG-1/2 codecs.
 /// Only performs deep validation for files under 100MB.
-pub fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.avi, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.avi, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.avi, .failed_to_open, "file", .structural),
-        };
+pub fn validateAviDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    source.seekTo(0) catch {
+        return ValidationResult.invalidCodeWithDepth(.avi, .failed_to_seek, "to file start", .structural);
     };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.avi, .failed_to_get, "file size", .structural);
@@ -2012,7 +1997,7 @@ pub fn validateAviDeep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // Now do video frame validation
-    const video_result = video_validator.validateAviVideo(allocator, path, std.math.maxInt(u32));
+    const video_result = video_validator.validateAviVideo(allocator, source, std.math.maxInt(u32));
     if (!video_result.valid) {
         if (toleratedVideoDecodeFailure(video_result)) |tolerated| {
 			// When no frames decoded, always use structural depth - we didn't actually decode video

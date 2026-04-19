@@ -246,12 +246,11 @@ fn detectMp4VideoCodec(file: *FileSource, stsd_offset: u64, stsd_size: u64) Vide
 }
 
 /// Deep validate MP4/MOV video file by decoding keyframes.
-pub fn validateMp4Video(allocator: Allocator, path: []const u8, max_frames: u32) VideoValidationResult {
-    var source = FileSource.open(path) catch {
-        return VideoValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
+pub fn validateMp4Video(allocator: Allocator, source: *FileSource, max_frames: u32) VideoValidationResult {
+    source.seekTo(0) catch {
+        return VideoValidationResult.invalid("Seek failed", .unknown);
     };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return VideoValidationResult.invalid(errmsg.failedToGet("file size"), .unknown);
@@ -478,14 +477,13 @@ fn validateMkvFrameBytes(ctx_ptr: ?*anyopaque, data: []const u8) bool {
 }
 
 /// Deep validate MKV/WebM video file by decoding keyframes.
-pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32) VideoValidationResult {
-    var source = FileSource.open(path) catch {
-        return VideoValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
+pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u32) VideoValidationResult {
+    source.seekTo(0) catch {
+        return VideoValidationResult.invalid("Seek failed", .unknown);
     };
-    defer source.close();
 
     // Initialize Matroska parser
-    var parser = ebml.MatroskaParser.init(allocator, &source);
+    var parser = ebml.MatroskaParser.init(allocator, source);
 
     // Parse and validate EBML header
     const doc_info = parser.parseEbmlHeader() orelse {
@@ -876,12 +874,11 @@ pub fn validateMkvVideo(allocator: Allocator, path: []const u8, max_frames: u32)
 /// Deep validate AVI video file by decoding keyframes.
 /// Parses the RIFF/AVI container to extract video codec and frames,
 /// then validates using appropriate decoder.
-pub fn validateAviVideo(allocator: Allocator, path: []const u8, max_frames: u32) VideoValidationResult {
-    var source = FileSource.open(path) catch {
-        return VideoValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
+pub fn validateAviVideo(allocator: Allocator, source: *FileSource, max_frames: u32) VideoValidationResult {
+    source.seekTo(0) catch {
+        return VideoValidationResult.invalid("Seek failed", .unknown);
     };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return VideoValidationResult.invalid(errmsg.failedToGet("file size"), .unknown);

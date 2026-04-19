@@ -47,6 +47,31 @@ pub fn validateRawFile(path: []const u8) LibRawValidationResult {
         };
     }
 
+    return finishValidation(data);
+}
+
+/// Validate a camera RAW image from an in-memory buffer.
+/// Uses libraw_open_buffer so no file I/O is needed — integrates with FileSource mmap.
+pub fn validateRawBuffer(buffer: []const u8) LibRawValidationResult {
+    const data = libraw.libraw_init(0);
+    if (data == null) {
+        return .{ .valid = false, .error_message = "Failed to initialize LibRaw" };
+    }
+    defer libraw.libraw_close(data);
+
+    const open_result = libraw.libraw_open_buffer(data, buffer.ptr, buffer.len);
+    if (open_result != 0) {
+        return .{
+            .valid = false,
+            .error_message = getLibRawError(open_result),
+        };
+    }
+
+    return finishValidation(data);
+}
+
+/// Shared finishing steps: unpack raw, extract dimensions and camera info
+fn finishValidation(data: ?*libraw.libraw_data_t) LibRawValidationResult {
     // Unpack the raw data (decode sensor data)
     const unpack_result = libraw.libraw_unpack(data);
     if (unpack_result != 0) {
@@ -57,12 +82,12 @@ pub fn validateRawFile(path: []const u8) LibRawValidationResult {
     }
 
     // Get image sizes
-    const sizes = &data.*.sizes;
+    const sizes = &data.?.*.sizes;
     const width: u32 = @intCast(sizes.width);
     const height: u32 = @intCast(sizes.height);
 
     // Get camera info
-    const idata = &data.*.idata;
+    const idata = &data.?.*.idata;
     const make_ptr: [*:0]const u8 = @ptrCast(&idata.make);
     const model_ptr: [*:0]const u8 = @ptrCast(&idata.model);
 

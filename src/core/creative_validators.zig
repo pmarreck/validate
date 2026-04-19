@@ -62,13 +62,8 @@ pub fn validatePrproj(file: *FileSource) ValidationResult {
     return ValidationResult.invalidCodeMsg(.prproj, .invalid_signature_not, "PRPROJ", errmsg.invalidSignatureNot("PRPROJ", "gzip or XML"));
 }
 
-pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    // Read file
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.prproj, .failed_to_open, "PRPROJ file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validatePrprojDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     // Read header to determine format
     var header: [10]u8 = undefined;
@@ -473,21 +468,17 @@ pub fn validateDrp(file: *FileSource) ValidationResult {
     return ValidationResult.ok(.drp);
 }
 
-pub fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateDrpDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     // Use ZIP deep validation for the container integrity
-    var zip_src = FileSource.open(path) catch return ValidationResult.invalidCode(.drp, .failed_to_open, "DRP file");
-    defer zip_src.close();
-    const zip_result = archive_validators.validateZipDeep(allocator, &zip_src);
+    source.seekTo(0) catch return ValidationResult.invalidCode(.drp, .failed_to_seek, "to start");
+    const zip_result = archive_validators.validateZipDeep(allocator, source);
     if (!zip_result.is_valid) {
         return ValidationResult.invalid(.drp, zip_result.error_message orelse "Invalid ZIP structure");
     }
 
     // Now check for project.xml in the archive
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.drp, .failed_to_open, "DRP file");
-    };
-    defer source.close();
-    const file = &source;
+    source.seekTo(0) catch return ValidationResult.invalidCode(.drp, .failed_to_seek, "to start");
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.drp, .failed_to_get, "file size");
@@ -559,21 +550,17 @@ pub fn validateSketch(file: *FileSource) ValidationResult {
     return ValidationResult.ok(.sketch);
 }
 
-pub fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateSketchDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     // Use ZIP deep validation for the container integrity
-    var zip_src = FileSource.open(path) catch return ValidationResult.invalidCode(.sketch, .failed_to_open, "Sketch file");
-    defer zip_src.close();
-    const zip_result = archive_validators.validateZipDeep(allocator, &zip_src);
+    source.seekTo(0) catch return ValidationResult.invalidCode(.sketch, .failed_to_seek, "to start");
+    const zip_result = archive_validators.validateZipDeep(allocator, source);
     if (!zip_result.is_valid) {
         return ValidationResult.invalid(.sketch, zip_result.error_message orelse "Invalid ZIP structure");
     }
 
     // Now check for required Sketch files in the archive
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.sketch, .failed_to_open, "Sketch file");
-    };
-    defer source.close();
-    const file = &source;
+    source.seekTo(0) catch return ValidationResult.invalidCode(.sketch, .failed_to_seek, "to start");
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.sketch, .failed_to_get, "file size");
@@ -664,16 +651,8 @@ pub fn validateAi(file: *FileSource) ValidationResult {
     return ValidationResult.invalidCodeMsg(.ai, .invalid_signature_expected, "AI", errmsg.invalidSignatureExpected("AI", "%PDF- or %!PS-Adobe"));
 }
 
-pub fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalid(.ai, "File not found"),
-            error.AccessDenied => ValidationResult.invalid(.ai, "Access denied"),
-            else => ValidationResult.invalidCode(.ai, .failed_to_open, "file"),
-        };
-    };
-    defer source.close();
-    const file = &source;
+pub fn validateAiDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     var header: [16]u8 = undefined;
     const bytes_read = file.read(&header) catch return ValidationResult.invalidCode(.ai, .failed_to_read, "header");
@@ -681,7 +660,7 @@ pub fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // If PDF-based, use deep PDF validation
     if (std.mem.startsWith(u8, header[0..bytes_read], "%PDF-")) {
         source.seekTo(0) catch {};
-        const pdf_result = pdf_validator.validatePdfDeep(allocator, &source);
+        const pdf_result = pdf_validator.validatePdfDeep(allocator, source);
         return ValidationResult{
             .format = .ai,
             .is_valid = pdf_result.is_valid,

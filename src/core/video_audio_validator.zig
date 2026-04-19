@@ -189,12 +189,12 @@ pub const AudioValidationResult = struct {
 };
 
 /// Validate MP4/MOV file including both video and audio tracks
-pub fn validateMp4Media(allocator: Allocator, path: []const u8, max_video_frames: u32) MediaValidationResult {
+pub fn validateMp4Media(allocator: Allocator, source: *FileSource, max_video_frames: u32) MediaValidationResult {
     // First validate video
-    const video_result = video_validator.validateMp4Video(allocator, path, max_video_frames);
+    const video_result = video_validator.validateMp4Video(allocator, source, max_video_frames);
 
     // Then try to validate audio
-    const audio_result = validateMp4Audio(allocator, path);
+    const audio_result = validateMp4Audio(allocator, source);
 
     if (audio_result.codec == .unknown and audio_result.error_message == null) {
         // No audio track found
@@ -207,9 +207,9 @@ pub fn validateMp4Media(allocator: Allocator, path: []const u8, max_video_frames
 /// Validate MKV/WebM file including both video and audio tracks.
 /// Uses checksum-first strategy: if all Clusters have CRC-32, verify those (fast).
 /// Otherwise falls back to decode validation (slow but complete).
-pub fn validateMkvMedia(allocator: Allocator, path: []const u8, max_video_frames: u32) MediaValidationResult {
+pub fn validateMkvMedia(allocator: Allocator, source: *FileSource, max_video_frames: u32) MediaValidationResult {
     // First, try CRC-based validation (fast path)
-    const crc_result = validateMkvCrc(allocator, path);
+    const crc_result = validateMkvCrc(allocator, source);
     if (crc_result.has_full_crc_coverage) {
         if (!crc_result.crc_valid) {
             // CRCs present but invalid - corruption detected
@@ -247,10 +247,10 @@ pub fn validateMkvMedia(allocator: Allocator, path: []const u8, max_video_frames
     }
 
     // Fall back to decode validation (CRCs absent or partial)
-    const video_result = video_validator.validateMkvVideo(allocator, path, max_video_frames);
+    const video_result = video_validator.validateMkvVideo(allocator, source, max_video_frames);
 
     // Then try to validate audio
-    const audio_result = validateMkvAudio(allocator, path);
+    const audio_result = validateMkvAudio(allocator, source);
 
     if (audio_result.codec == .unknown and audio_result.error_message == null) {
         // No audio track found
@@ -273,8 +273,8 @@ const MkvCrcResult = struct {
 };
 
 /// Try to validate MKV using Cluster CRCs.
-fn validateMkvCrc(allocator: Allocator, path: []const u8) MkvCrcResult {
-    var source = FileSource.open(path) catch {
+fn validateMkvCrc(allocator: Allocator, source: *FileSource) MkvCrcResult {
+    source.seekTo(0) catch {
         return .{
             .crc_valid = false,
             .has_full_crc_coverage = false,
@@ -286,9 +286,8 @@ fn validateMkvCrc(allocator: Allocator, path: []const u8) MkvCrcResult {
             .audio_codec = .unknown,
         };
     };
-    defer source.close();
 
-    var parser = ebml.MatroskaParser.init(allocator, &source);
+    var parser = ebml.MatroskaParser.init(allocator, source);
 
     // Parse header to verify it's a valid MKV
     const doc_info = parser.parseEbmlHeader() orelse {
@@ -443,12 +442,11 @@ fn detectMp4aSubtype(file: *FileSource, stsd_offset: u64) AudioCodec {
 }
 
 /// Validate audio track from MP4 file
-pub fn validateMp4Audio(allocator: Allocator, path: []const u8) AudioValidationResult {
-    var source = FileSource.open(path) catch {
-        return AudioValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
+pub fn validateMp4Audio(allocator: Allocator, source: *FileSource) AudioValidationResult {
+    source.seekTo(0) catch {
+        return AudioValidationResult.invalid("Seek failed", .unknown);
     };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return AudioValidationResult.invalid(errmsg.failedToGet("file size"), .unknown);
@@ -1552,14 +1550,13 @@ fn validateMkvDtsTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track
 }
 
 /// Validate audio track from MKV file
-fn validateMkvAudio(allocator: Allocator, path: []const u8) AudioValidationResult {
-    var source = FileSource.open(path) catch {
-        return AudioValidationResult.invalid(errmsg.failedToOpen("file"), .unknown);
+fn validateMkvAudio(allocator: Allocator, source: *FileSource) AudioValidationResult {
+    source.seekTo(0) catch {
+        return AudioValidationResult.invalid("Seek failed", .unknown);
     };
-    defer source.close();
 
     // Use existing Matroska parser
-    var parser = ebml.MatroskaParser.init(allocator, &source);
+    var parser = ebml.MatroskaParser.init(allocator, source);
 
     // Parse EBML header
     const doc_info = parser.parseEbmlHeader() orelse {

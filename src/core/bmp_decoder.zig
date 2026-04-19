@@ -10,6 +10,7 @@
 const std = @import("std");
 const zigimg = @import("zigimg");
 const errmsg = @import("error_messages.zig");
+const FileSource = @import("file_source.zig").FileSource;
 const Allocator = std.mem.Allocator;
 
 /// Compression methods
@@ -57,18 +58,8 @@ pub const BmpValidationResult = struct {
 
 /// Validate a BMP file by fully decoding it.
 /// For V4/V5, delegates to zigimg. For V3, uses native decoder.
-pub fn validateBmp(allocator: Allocator, path: []const u8) BmpValidationResult {
-    // Read entire file into memory
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => BmpValidationResult.invalid("File not found"),
-            error.AccessDenied => BmpValidationResult.invalid("Access denied"),
-            else => BmpValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer file.close();
-
-    const file_size = file.getEndPos() catch {
+pub fn validateBmp(allocator: Allocator, source: *FileSource) BmpValidationResult {
+    const file_size = source.getEndPos() catch {
         return BmpValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
@@ -81,12 +72,22 @@ pub fn validateBmp(allocator: Allocator, path: []const u8) BmpValidationResult {
         return BmpValidationResult.invalid("File too small");
     }
 
+    // If the source is memory-mapped, read directly without copying
+    if (source.getMappedSlice()) |data| {
+        return validateBmpFromBufferInternal(allocator, data);
+    }
+
+    // Fall back to heap read for file-backed sources
     const data = allocator.alloc(u8, file_size) catch {
         return BmpValidationResult.invalid(errmsg.outOfMemory("for BMP"));
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    source.seekTo(0) catch {
+        return BmpValidationResult.invalid(errmsg.failedToSeek("BMP file"));
+    };
+
+    const bytes_read = source.readAll(data) catch {
         return BmpValidationResult.invalid(errmsg.failedToRead("file"));
     };
 
@@ -94,11 +95,11 @@ pub fn validateBmp(allocator: Allocator, path: []const u8) BmpValidationResult {
         return BmpValidationResult.invalid(errmsg.incomplete("read"));
     }
 
-    return validateBmpFromBufferWithPath(allocator, data, path);
+    return validateBmpFromBufferInternal(allocator, data);
 }
 
-/// Validate BMP from memory buffer, with path for V4/V5 delegation
-fn validateBmpFromBufferWithPath(allocator: Allocator, data: []const u8, path: []const u8) BmpValidationResult {
+/// Validate BMP from memory buffer. For V4/V5, zigimg decodes from memory.
+fn validateBmpFromBufferInternal(allocator: Allocator, data: []const u8) BmpValidationResult {
     if (data.len < 18) {
         return BmpValidationResult.invalid("File too small");
     }
@@ -114,7 +115,7 @@ fn validateBmpFromBufferWithPath(allocator: Allocator, data: []const u8, path: [
     // Determine header version and route accordingly
     return switch (header_size) {
         40 => validateBmpV3FromBuffer(allocator, data),
-        108, 124 => validateBmpV4V5(allocator, path),
+        108, 124 => validateBmpV4V5(allocator, data),
         12 => BmpValidationResult.invalid("OS/2 1.x BMP not supported"),
         64 => BmpValidationResult.invalid("OS/2 2.x BMP not supported"),
         else => BmpValidationResult.invalid(errmsg.unknown("BMP header version")),
@@ -123,27 +124,7 @@ fn validateBmpFromBufferWithPath(allocator: Allocator, data: []const u8, path: [
 
 /// Validate BMP from memory buffer (for tests and buffer-based validation)
 pub fn validateBmpFromBuffer(allocator: Allocator, data: []const u8) BmpValidationResult {
-    if (data.len < 18) {
-        return BmpValidationResult.invalid("File too small");
-    }
-
-    // Check signature
-    if (data[0] != 'B' or data[1] != 'M') {
-        return BmpValidationResult.invalid(errmsg.invalidSignature("BMP"));
-    }
-
-    // Read header size to determine version (offset 14)
-    const header_size = std.mem.readInt(u32, data[14..18], .little);
-
-    // For buffer-based validation, we can only handle V3 natively
-    // V4/V5 would need a file path for zigimg
-    return switch (header_size) {
-        40 => validateBmpV3FromBuffer(allocator, data),
-        108, 124 => BmpValidationResult.invalid("V4/V5 BMP requires file path"),
-        12 => BmpValidationResult.invalid("OS/2 1.x BMP not supported"),
-        64 => BmpValidationResult.invalid("OS/2 2.x BMP not supported"),
-        else => BmpValidationResult.invalid(errmsg.unknown("BMP header version")),
-    };
+    return validateBmpFromBufferInternal(allocator, data);
 }
 
 /// Validate V3 BMP (40-byte BITMAPINFOHEADER) from buffer
@@ -332,20 +313,13 @@ fn validateRleFromBuffer(data: []const u8, height: u32, is_rle4: bool) BmpValida
     return BmpValidationResult.ok(0, 0, 0, 3);
 }
 
-/// Validate V4/V5 BMP using zigimg
-fn validateBmpV4V5(allocator: Allocator, path: []const u8) BmpValidationResult {
-    const read_buffer = allocator.alloc(u8, 65536) catch {
-        return BmpValidationResult.invalid(errmsg.outOfMemory("read buffer for BMP"));
-    };
-    defer allocator.free(read_buffer);
-
-    var image = zigimg.Image.fromFilePath(allocator, path, read_buffer) catch |err| {
+/// Validate V4/V5 BMP using zigimg from memory
+fn validateBmpV4V5(allocator: Allocator, data: []const u8) BmpValidationResult {
+    var image = zigimg.Image.fromMemory(allocator, data) catch |err| {
         return switch (err) {
             error.OutOfMemory => BmpValidationResult.invalid(errmsg.outOfMemory("for BMP")),
             error.InvalidData => BmpValidationResult.invalid("Invalid BMP data"),
             error.EndOfStream => BmpValidationResult.invalid(errmsg.truncated("file")),
-            error.FileNotFound => BmpValidationResult.invalid("File not found"),
-            error.AccessDenied => BmpValidationResult.invalid("Access denied"),
             else => BmpValidationResult.invalid("BMP decode failed"),
         };
     };

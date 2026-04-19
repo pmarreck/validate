@@ -2638,11 +2638,39 @@ fn skipSubBlockChain(data: []const u8, pos: *usize) ?[]const u8 {
 /// Deep TIFF validation by fully decoding the image using zigimg.
 /// This catches decompression errors in LZW/Deflate/PackBits/etc and corrupted IFD data
 /// that structural validation would miss.
-pub fn validateTiffDeep(allocator: Allocator, path: []const u8, format: FileFormat) ValidationResult {
-    // For camera RAW formats (ARW, CR2, NEF), try LibRaw first
-    // LibRaw handles proprietary vendor compression that zigimg can't decode
+pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileFormat) ValidationResult {
+    // For camera RAW formats (ARW, CR2, NEF), try LibRaw first.
+    // LibRaw handles proprietary vendor compression that zigimg can't decode.
     if (format == .arw or format == .cr2 or format == .nef) {
-        const libraw_result = libraw_validator.validateRawFile(path);
+        // Feed libraw from the source — use mmap slice directly when available,
+        // otherwise read the full file into a heap buffer.
+        const buffer = source.getMappedSlice() orelse b: {
+            const file_size = source.getEndPos() catch {
+                return ValidationResult.okWithDepthAndWarning(format, .structural, "could not get file size");
+            };
+            if (file_size > 2 * 1024 * 1024 * 1024) {
+                return ValidationResult.okWithDepthAndWarning(format, .structural, "file too large for RAW buffer decode");
+            }
+            const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+                return ValidationResult.okWithDepthAndWarning(format, .structural, "out of memory for RAW buffer");
+            };
+            source.seekTo(0) catch {
+                allocator.free(buf);
+                return ValidationResult.okWithDepthAndWarning(format, .structural, "could not seek for RAW buffer");
+            };
+            const n = source.readAll(buf) catch {
+                allocator.free(buf);
+                return ValidationResult.okWithDepthAndWarning(format, .structural, "could not read for RAW buffer");
+            };
+            if (n < file_size) {
+                allocator.free(buf);
+                return ValidationResult.invalidCodeWithDepth(format, .truncated, "RAW file", .full);
+            }
+            break :b buf;
+        };
+        defer if (source.getMappedSlice() == null) allocator.free(@constCast(buffer));
+
+        const libraw_result = libraw_validator.validateRawBuffer(buffer);
         if (libraw_result.valid) {
             return ValidationResult.okWithDepth(format, .full);
         }
@@ -2655,47 +2683,65 @@ pub fn validateTiffDeep(allocator: Allocator, path: []const u8, format: FileForm
 
     // Olympus ORF: decode Huffman-compressed RAW data (pure Zig, no zigimg)
     if (format == .orf) {
-        return validateOrfDeepImpl(allocator, path);
+        return validateOrfDeepImpl(allocator, source);
     }
 
     // Pentax PEF: decode packed/Huffman RAW data (pure Zig, no zigimg)
     if (format == .pef) {
-        return validatePefDeepImpl(allocator, path);
+        return validatePefDeepImpl(allocator, source);
     }
 
     // Check if this TIFF contains special tags that need different handling
-    const tag_check = checkTiffTagSupport(path);
+    const tag_check = checkTiffTagSupport(source);
     if (tag_check.has_dng_tags) {
         // Actual DNG/RAW files: use DNG validation path which validates
         // embedded JPEGs and doesn't try to decode the raw image data
-        var dng_src = FileSource.open(path) catch return ValidationResult.invalidCode(.dng, .failed_to_open, "DNG file");
-        defer dng_src.close();
-        return validateDngDeep(allocator, &dng_src);
+        return validateDngDeep(allocator, source);
     }
     // Note: has_unsupported_tags no longer forces structural-only validation
     // Our forked zigimg now skips unknown tags gracefully instead of panicking
     if (tag_check.has_1bit_lzw) {
         // 1-bit image with LZW compression - zigimg's LZW decoder can't handle these
         // Use our pure Zig LZW decoder instead
-        return validateTiff1BitLzw(allocator, path);
+        return validateTiff1BitLzw(allocator, source);
     }
 
-    // Allocate read buffer for zigimg (64K is reasonable for most images)
-    const read_buffer = allocator.alloc(u8, 65536) catch {
-        return ValidationResult.okWithDepthAndWarning(format, .structural, "out of memory for read buffer");
+    // Feed zigimg from the source — use mmap slice directly when available,
+    // otherwise read into a heap buffer. zigimg.Image.fromMemory() avoids file I/O.
+    const buffer = source.getMappedSlice() orelse b: {
+        const file_size = source.getEndPos() catch {
+            return ValidationResult.okWithDepthAndWarning(format, .structural, "could not get file size");
+        };
+        if (file_size > 2 * 1024 * 1024 * 1024) {
+            return ValidationResult.okWithDepthAndWarning(format, .structural, "file too large for buffered decode");
+        }
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.okWithDepthAndWarning(format, .structural, "out of memory for read buffer");
+        };
+        source.seekTo(0) catch {
+            allocator.free(buf);
+            return ValidationResult.okWithDepthAndWarning(format, .structural, "could not seek for buffered decode");
+        };
+        const n = source.readAll(buf) catch {
+            allocator.free(buf);
+            return ValidationResult.okWithDepthAndWarning(format, .structural, "could not read for buffered decode");
+        };
+        if (n < file_size) {
+            allocator.free(buf);
+            return ValidationResult.invalidCodeWithDepth(format, .truncated, "file", .full);
+        }
+        break :b buf;
     };
-    defer allocator.free(read_buffer);
+    defer if (source.getMappedSlice() == null) allocator.free(@constCast(buffer));
 
     // Try to load the image - this performs full decompression and validates the data
-    var image = zigimg.Image.fromFilePath(allocator, path, read_buffer) catch |err| {
+    var image = zigimg.Image.fromMemory(allocator, buffer) catch |err| {
         // Debug output for error diagnosis
         if (format_validation.getenvCrossPlatform("TIFF_DEBUG")) |_| {
             std.debug.print("TIFF decode error: {s}\n", .{@errorName(err)});
         }
         return switch (err) {
             // Clear I/O errors - definitely invalid
-            error.FileNotFound => ValidationResult.invalid(format, "File not found"),
-            error.AccessDenied => ValidationResult.invalid(format, "Access denied"),
             error.EndOfStream => ValidationResult.invalidCodeWithDepth(format, .truncated, "file", .full),
             error.OutOfMemory => ValidationResult.invalidCodeWithDepth(format, .out_of_memory, "during decode", .full),
 
@@ -2732,15 +2778,14 @@ pub const TiffTagCheckResult = struct {
 /// - DNG proprietary tags (0xC612-0xC7FF range)
 /// - Deprecated TIFF tags that aren't in zigimg's enum (e.g., 0xFF SubfileType)
 /// - Other non-standard tags
-pub fn checkTiffTagSupport(path: []const u8) TiffTagCheckResult {
+pub fn checkTiffTagSupport(source: *FileSource) TiffTagCheckResult {
     var result = TiffTagCheckResult{ .has_dng_tags = false, .has_unsupported_tags = false, .has_1bit_lzw = false };
 
     // Track compression and bits per sample to detect 1-bit LZW
     var compression: u16 = 0;
     var bits_per_sample: u16 = 0;
 
-    var source = FileSource.open(path) catch return result;
-    defer source.close();
+    source.seekTo(0) catch return result;
 
     // Read TIFF header
     var header: [8]u8 = undefined;
@@ -2875,11 +2920,10 @@ pub fn checkTiffTagSupport(path: []const u8) TiffTagCheckResult {
 
 /// Validate 1-bit TIFF with LZW compression using our pure Zig LZW decoder.
 /// zigimg's LZW decoder can't handle 1-bit images, so we do it ourselves.
-pub fn validateTiff1BitLzw(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.tiff, .failed_to_open, "TIFF file");
+pub fn validateTiff1BitLzw(allocator: Allocator, source: *FileSource) ValidationResult {
+    source.seekTo(0) catch {
+        return ValidationResult.invalidCode(.tiff, .failed_to_seek, "TIFF file");
     };
-    defer source.close();
 
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.tiff, .failed_to_stat, "TIFF file");
@@ -2949,12 +2993,12 @@ pub fn validateTiff1BitLzw(allocator: Allocator, path: []const u8) ValidationRes
             257 => image_length = single_value, // ImageLength
             278 => rows_per_strip = single_value, // RowsPerStrip
             273 => { // StripOffsets
-                strip_offsets = readTiffTagArray(allocator, &source, entry[0..12], field_type, count, endian, file_size) catch {
+                strip_offsets = readTiffTagArray(allocator, source, entry[0..12], field_type, count, endian, file_size) catch {
                     return ValidationResult.invalidCode(.tiff, .failed_to_read, "StripOffsets");
                 };
             },
             279 => { // StripByteCounts
-                strip_byte_counts = readTiffTagArray(allocator, &source, entry[0..12], field_type, count, endian, file_size) catch {
+                strip_byte_counts = readTiffTagArray(allocator, source, entry[0..12], field_type, count, endian, file_size) catch {
                     return ValidationResult.invalidCode(.tiff, .failed_to_read, "StripByteCounts");
                 };
             },
@@ -3240,8 +3284,8 @@ pub fn validateJpegBufferForDng(data: []const u8) bool {
 /// Uses native decoder for V3 (Windows 3.x) and zigimg for V4/V5.
 /// This catches corrupted pixel data and invalid RLE compression
 /// that structural validation would miss.
-pub fn validateBmpDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const result = bmp_decoder.validateBmp(allocator, path);
+pub fn validateBmpDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const result = bmp_decoder.validateBmp(allocator, source);
     if (result.valid) {
         return ValidationResult.okWithDepth(.bmp, .full);
     } else {
@@ -5164,14 +5208,12 @@ fn parseRawIfd(file: *FileSource, is_orf: bool) ?RawIfdInfo {
 
 /// Deep validation for Olympus ORF files.
 /// Reads strip data into memory, runs pure-Zig Huffman decoder.
-fn validateOrfDeepImpl(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.okWithDepthAndWarning(.orf, .structural, "could not open for deep validation");
+fn validateOrfDeepImpl(allocator: Allocator, source: *FileSource) ValidationResult {
+    source.seekTo(0) catch {
+        return ValidationResult.okWithDepthAndWarning(.orf, .structural, "could not seek for deep validation");
     };
-    defer file.close();
-    var source = FileSource.fromFile(file);
 
-    const info = parseRawIfd(&source, true) orelse {
+    const info = parseRawIfd(source, true) orelse {
         return ValidationResult.okWithDepthAndWarning(.orf, .structural, "could not parse ORF IFD");
     };
 
@@ -5265,14 +5307,12 @@ fn validateOrfDeepImpl(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Deep validation for Pentax PEF files.
 /// Reads strip data into memory, runs pure-Zig packed/Huffman decoder.
-fn validatePefDeepImpl(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.okWithDepthAndWarning(.pef, .structural, "could not open for deep validation");
+fn validatePefDeepImpl(allocator: Allocator, source: *FileSource) ValidationResult {
+    source.seekTo(0) catch {
+        return ValidationResult.okWithDepthAndWarning(.pef, .structural, "could not seek for deep validation");
     };
-    defer file.close();
-    var source = FileSource.fromFile(file);
 
-    const info = parseRawIfd(&source, false) orelse {
+    const info = parseRawIfd(source, false) orelse {
         return ValidationResult.okWithDepthAndWarning(.pef, .structural, "could not parse PEF IFD");
     };
 

@@ -199,12 +199,10 @@ pub fn validateAls(file: *FileSource) ValidationResult {
 }
 
 /// Deep validate Ableton Live Set - uses gzip CRC32 verification.
-pub fn validateAlsDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateAlsDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     // Use gzip deep validation for full CRC32 verification
     // This validates every byte through decompression and CRC32 check
-    var gz_src = FileSource.open(path) catch return ValidationResult.invalidCodeWithDepth(.als, .failed_to_open, "file", .structural);
-    defer gz_src.close();
-    const gzip_result = archive_validators.validateGzipDeep(allocator, &gz_src);
+    const gzip_result = archive_validators.validateGzipDeep(allocator, source);
     if (!gzip_result.is_valid) {
         // Remap format to als but preserve error
         var result = gzip_result;

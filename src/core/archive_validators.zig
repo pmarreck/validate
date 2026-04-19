@@ -2527,18 +2527,8 @@ pub fn validateBzip2LargeFile(file: *FileSource) ValidationResult {
 
 /// Deep XZ validation by streaming decompression.
 /// XZ format includes CRC32/CRC64 checksums that are verified during decompression.
-pub fn validateXzDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.xz, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.xz, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.xz, .failed_to_open, "file", .structural),
-        };
-    };
-    defer file.close();
-
-    // Get file size for basic validation
-    const file_size = file.getEndPos() catch {
+pub fn validateXzDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_get, "file size", .structural);
     };
 
@@ -2546,8 +2536,22 @@ pub fn validateXzDeep(allocator: Allocator, path: []const u8) ValidationResult {
         return ValidationResult.invalidWithDepth(.xz, "File too small", .structural);
     }
 
-    // Use deprecatedReader for XZ (it uses old std.io.GenericReader API)
-    const deprecated_reader = file.deprecatedReader();
+    // Get bytes (zero-copy from mmap, or read into heap buffer)
+    var heap: ?[]u8 = null;
+    defer if (heap) |b| allocator.free(b);
+    const bytes: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_allocate, "input buffer", .structural);
+        };
+        heap = buf;
+        source.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_read, "file", .structural);
+        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_read, "file", .structural);
+        break :blk buf[0..n];
+    };
+
+    // Wrap bytes in a fixed buffer stream for the old GenericReader-based XZ API
+    var stream = std.io.fixedBufferStream(bytes);
+    const deprecated_reader = stream.reader();
 
     // Initialize XZ decompressor
     var decompressor = std.compress.xz.decompress(allocator, deprecated_reader) catch |err| {
@@ -2596,18 +2600,8 @@ pub fn validateXzDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
 /// Deep Zstandard validation by streaming decompression.
 /// Zstd has optional xxHash checksum that is verified during decompression.
-pub fn validateZstdDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.zstd, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.zstd, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_open, "file", .structural),
-        };
-    };
-    defer file.close();
-
-    // Get file size for basic validation
-    const file_size = file.getEndPos() catch {
+pub fn validateZstdDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_get, "file size", .structural);
     };
 
@@ -2615,49 +2609,40 @@ pub fn validateZstdDeep(allocator: Allocator, path: []const u8) ValidationResult
         return ValidationResult.invalidWithDepth(.zstd, "File too small", .structural);
     }
 
-    // Read the frame header to check Content_Checksum_Flag
-    // Bytes 0-3: magic (0xFD2FB528 LE), byte 4: Frame_Header_Descriptor
-    var header_buf: [5]u8 = undefined;
-    const header_read = file.readAll(&header_buf) catch {
-        return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "frame header", .structural);
+    // Get bytes (zero-copy from mmap, or read into heap buffer)
+    var heap: ?[]u8 = null;
+    defer if (heap) |b| allocator.free(b);
+    const bytes: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_allocate, "input buffer", .structural);
+        };
+        heap = buf;
+        source.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
+        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
+        break :blk buf[0..n];
     };
-    if (header_read < 5) {
+
+    if (bytes.len < 5) {
         return ValidationResult.invalidWithDepth(.zstd, "File too small for frame header", .structural);
     }
 
-    const has_checksum = (header_buf[4] & 0x04) != 0;
+    // Check Content_Checksum_Flag in the Frame_Header_Descriptor (byte 4)
+    const has_checksum = (bytes[4] & 0x04) != 0;
 
-    // Read expected checksum from end of file if flag is set
     var expected_checksum: u32 = 0;
     if (has_checksum) {
-        if (file_size < 12) { // magic(4) + FHD(1) + at least 1 block + checksum(4)
+        if (bytes.len < 12) {
             return ValidationResult.invalidWithDepth(.zstd, "File too small for checksum", .structural);
         }
-        file.seekTo(file_size - 4) catch {
-            return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "checksum", .structural);
-        };
-        var cksum_buf: [4]u8 = undefined;
-        const cksum_read = file.readAll(&cksum_buf) catch {
-            return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "checksum", .structural);
-        };
-        if (cksum_read < 4) {
-            return ValidationResult.invalidWithDepth(.zstd, "Could not read checksum", .structural);
-        }
-        expected_checksum = std.mem.readInt(u32, &cksum_buf, .little);
+        expected_checksum = std.mem.readInt(u32, bytes[bytes.len - 4 ..][0..4], .little);
     }
 
-    // Seek back to beginning for decompression
-    file.seekTo(0) catch {
-        return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
-    };
-
-    // Create reader from file
-    var file_buf: [8192]u8 = undefined;
-    var file_reader = file.reader(&file_buf);
+    // Create reader from bytes (new Zig 0.15 std.io.Reader interface)
+    var bytes_reader = std.io.Reader.fixed(bytes);
 
     // Initialize Zstd decompressor in direct mode (empty reader buffer).
     // In direct mode, decompressed data flows directly to the Writer buffer.
-    var zstd_stream: std.compress.zstd.Decompress = .init(&file_reader.interface, &.{}, .{});
+    var zstd_stream: std.compress.zstd.Decompress = .init(&bytes_reader, &.{}, .{});
 
     // Initialize xxHash64 hasher for content checksum verification
     var hasher = XxHash64.init(0);
@@ -3170,7 +3155,9 @@ test "validateBzip2Deep: valid bzip2 ground truth" {
 
 test "validateXzDeep: valid XZ ground truth" {
     try skipIfMissing("ground_truth_examples/xz/sample.xz");
-    const result = validateXzDeep(testing.allocator, "ground_truth_examples/xz/sample.xz");
+    var source = FileSource.open("ground_truth_examples/xz/sample.xz") catch return;
+    defer source.close();
+    const result = validateXzDeep(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.xz, result.format);
     try testing.expectEqual(ValidationDepth.full, result.validation_depth);
@@ -3178,7 +3165,9 @@ test "validateXzDeep: valid XZ ground truth" {
 
 test "validateZstdDeep: valid Zstd ground truth" {
     try skipIfMissing("ground_truth_examples/zstd/sample.zst");
-    const result = validateZstdDeep(testing.allocator, "ground_truth_examples/zstd/sample.zst");
+    var source = FileSource.open("ground_truth_examples/zstd/sample.zst") catch return;
+    defer source.close();
+    const result = validateZstdDeep(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.zstd, result.format);
     try testing.expectEqual(ValidationDepth.full, result.validation_depth);
@@ -3188,7 +3177,9 @@ test "validateZstdDeep: xxHash64 checksum verified on ground truth" {
     // The ground truth sample.zst has Content_Checksum_Flag set (byte 4 bit 2).
     // Verify it passes with full depth (checksum verified).
     try skipIfMissing("ground_truth_examples/zstd/sample.zst");
-    const result = validateZstdDeep(testing.allocator, "ground_truth_examples/zstd/sample.zst");
+    var source = FileSource.open("ground_truth_examples/zstd/sample.zst") catch return;
+    defer source.close();
+    const result = validateZstdDeep(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.zstd, result.format);
     try testing.expectEqual(ValidationDepth.full, result.validation_depth);
@@ -3222,7 +3213,9 @@ test "validateZstdDeep: corrupted checksum detected" {
     const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "corrupt_checksum.zst");
     defer testing.allocator.free(path);
 
-    const result = validateZstdDeep(testing.allocator, path);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateZstdDeep(testing.allocator, &source);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.zstd, result.format);
 }
@@ -3612,7 +3605,9 @@ test "validateBzip2Deep: corrupt bzip2 detected" {
 
 test "validateXzDeep: corrupt XZ detected" {
     try skipIfMissing("ground_truth_examples/corrupted/xz/sample_corrupt_1.xz");
-    const result = validateXzDeep(testing.allocator, "ground_truth_examples/corrupted/xz/sample_corrupt_1.xz");
+    var source = FileSource.open("ground_truth_examples/corrupted/xz/sample_corrupt_1.xz") catch return;
+    defer source.close();
+    const result = validateXzDeep(testing.allocator, &source);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.xz, result.format);
 }
@@ -3627,7 +3622,9 @@ test "validateZstdDeep: too-small file detected" {
     file.close();
     const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "tiny.zst");
     defer testing.allocator.free(path);
-    const result = validateZstdDeep(testing.allocator, path);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    const result = validateZstdDeep(testing.allocator, &source);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.zstd, result.format);
 }
@@ -3737,13 +3734,11 @@ test "validateBzip2Deep: file not found returns invalid" {
 }
 
 test "validateXzDeep: file not found returns invalid" {
-    const result = validateXzDeep(testing.allocator, "nonexistent_file.xz");
-    try testing.expect(!result.is_valid);
+    try testing.expectError(error.FileNotFound, FileSource.open("nonexistent_file.xz"));
 }
 
 test "validateZstdDeep: file not found returns invalid" {
-    const result = validateZstdDeep(testing.allocator, "nonexistent_file.zst");
-    try testing.expect(!result.is_valid);
+    try testing.expectError(error.FileNotFound, FileSource.open("nonexistent_file.zst"));
 }
 
 test "validate7zDeep: file not found returns invalid" {

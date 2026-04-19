@@ -134,19 +134,6 @@ pub fn validateBlarDeep(allocator: std.mem.Allocator, source: *FileSource, forma
     return ValidationResult.okWithDepth(format, .full);
 }
 
-/// Deep validation entry point from path (for deep dispatch).
-pub fn validateBlarDeepFromPath(allocator: std.mem.Allocator, path: []const u8, format: FileFormat) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(format, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(format, "Access denied", .full),
-            else => ValidationResult.invalidWithDepth(format, "Cannot open file", .full),
-        };
-    };
-    defer source.close();
-    return validateBlarDeep(allocator, &source, format);
-}
-
 // --- Tests ---
 
 test "validateBlarStructural: valid blar" {

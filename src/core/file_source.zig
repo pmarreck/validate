@@ -219,6 +219,25 @@ pub const FileSource = struct {
         if (start >= end) return null;
         return full[start..end];
     }
+
+    /// Error type for FileSource reader — covers all backing variants.
+    pub const ReaderError = std.fs.File.ReadError || error{Unseekable};
+
+    /// Generic reader adapter — allows FileSource to be passed to APIs expecting
+    /// a std.io.GenericReader (e.g. std.compress.xz.decompress).
+    pub const Reader = std.io.GenericReader(*FileSource, ReaderError, readForReader);
+
+    fn readForReader(self: *FileSource, buf: []u8) ReaderError!usize {
+        return self.read(buf) catch |err| switch (err) {
+            else => error.Unexpected,
+        };
+    }
+
+    /// Wrap this FileSource as a std.io.GenericReader for compat with
+    /// std.compress.xz.decompress and similar APIs.
+    pub fn reader(self: *FileSource) Reader {
+        return .{ .context = self };
+    }
 };
 
 // ============ Tests ============
