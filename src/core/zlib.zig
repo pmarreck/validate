@@ -31,6 +31,8 @@ pub const ZlibError = error{
     OutOfMemory,
     /// Unexpected end of input
     UnexpectedEof,
+    /// Decompressed output exceeds caller's maximum
+    DecompressedTooLarge,
 };
 
 /// Decompress raw deflate data (no zlib/gzip header) into a pre-allocated buffer.
@@ -658,6 +660,64 @@ pub fn validateZlib(compressed: []const u8) ZlibError!void {
     }
 }
 
+/// Streaming inflate: validates compressed data without materializing the full output.
+/// Uses a 64KB scratch buffer on the heap (bounded, not proportional to output size).
+/// Returns the total decompressed size for caller-side size-matching checks.
+/// If total exceeds max_uncompressed, returns DecompressedTooLarge.
+/// Set raw=true for raw deflate (no zlib wrapper), false for zlib-framed.
+pub fn inflateStreamValidate(compressed: []const u8, max_uncompressed: u64, raw: bool) !u64 {
+    var stream: c.z_stream = .{
+        .next_in = @constCast(compressed.ptr),
+        .avail_in = @intCast(compressed.len),
+        .next_out = undefined,
+        .avail_out = 0,
+        .zalloc = null,
+        .zfree = null,
+        .@"opaque" = null,
+        .total_in = 0,
+        .total_out = 0,
+        .msg = null,
+        .state = null,
+        .data_type = 0,
+        .adler = 0,
+        .reserved = 0,
+    };
+
+    // raw deflate uses negative window bits; zlib-framed uses positive
+    const init_ret = if (raw)
+        c.inflateInit2(&stream, -15)
+    else
+        c.inflateInit2(&stream, 15);
+    if (init_ret != c.Z_OK) return ZlibError.InitFailed;
+    defer _ = c.inflateEnd(&stream);
+
+    const discard_buf = std.heap.page_allocator.alloc(u8, 65536) catch return ZlibError.OutOfMemory;
+    defer std.heap.page_allocator.free(discard_buf);
+
+    var total: u64 = 0;
+    while (true) {
+        stream.next_out = discard_buf.ptr;
+        stream.avail_out = @intCast(discard_buf.len);
+        const ret = c.inflate(&stream, c.Z_NO_FLUSH);
+        const produced: u64 = @intCast(discard_buf.len - stream.avail_out);
+        total += produced;
+        if (total > max_uncompressed) return ZlibError.DecompressedTooLarge;
+
+        switch (ret) {
+            c.Z_STREAM_END => return total,
+            c.Z_OK => {
+                if (stream.avail_in == 0 and stream.avail_out > 0) return ZlibError.UnexpectedEof;
+            },
+            c.Z_BUF_ERROR => {
+                if (stream.avail_in == 0) return ZlibError.UnexpectedEof;
+            },
+            c.Z_DATA_ERROR => return ZlibError.DataError,
+            c.Z_MEM_ERROR => return ZlibError.OutOfMemory,
+            else => return ZlibError.ZlibError,
+        }
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -735,4 +795,24 @@ test "inflateZlibAllocWithRatio: exceeded_limit case" {
             try std.testing.expect(false); // expected exceeded_limit
         },
     }
+}
+
+test "inflateStreamValidate zlib format returns size" {
+    // "hello" zlib-compressed
+    const compressed = [_]u8{ 0x78, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x06, 0x2c, 0x02, 0x15 };
+    const size = try inflateStreamValidate(&compressed, 1024, false);
+    try std.testing.expectEqual(@as(u64, 5), size);
+}
+
+test "inflateStreamValidate raw deflate returns size" {
+    // "hello" raw deflate
+    const compressed = [_]u8{ 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00 };
+    const size = try inflateStreamValidate(&compressed, 1024, true);
+    try std.testing.expectEqual(@as(u64, 5), size);
+}
+
+test "inflateStreamValidate enforces max_uncompressed" {
+    // "hello" zlib-compressed (5 bytes output), limit to 3
+    const compressed = [_]u8{ 0x78, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x06, 0x2c, 0x02, 0x15 };
+    try std.testing.expectError(ZlibError.DecompressedTooLarge, inflateStreamValidate(&compressed, 3, false));
 }
