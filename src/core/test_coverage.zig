@@ -155,6 +155,201 @@ pub fn applyXor(buffer: []u8, rng: std.Random, size: u32) CorruptionEvent {
     };
 }
 
+/// Aggregated statistics for a single corruption mode.
+pub const ModeStats = struct {
+    total: u32 = 0,
+    detected: u32 = 0,
+};
+
+/// Result of a full coverage run.
+pub const CoverageResult = struct {
+    file_size: u64,
+    rounds: u32,
+    duration_ns: u64,
+    by_mode: std.EnumArray(CorruptionMode, ModeStats),
+    /// All events (detected AND undetected). Owned by caller.
+    events: []CorruptionEvent,
+    allocator: Allocator,
+
+    pub fn deinit(self: *CoverageResult) void {
+        self.allocator.free(self.events);
+    }
+
+    pub fn totalDetected(self: *const CoverageResult) u32 {
+        var sum: u32 = 0;
+        for (self.by_mode.values) |stats| sum += stats.detected;
+        return sum;
+    }
+
+    pub fn totalRuns(self: *const CoverageResult) u32 {
+        var sum: u32 = 0;
+        for (self.by_mode.values) |stats| sum += stats.total;
+        return sum;
+    }
+};
+
+/// Signature for a validator callback: given corrupted bytes, returns true if
+/// the validator detected it as invalid (caught the corruption), false if not.
+pub const ValidatorFn = *const fn (ctx: *anyopaque, bytes: []const u8) bool;
+
+/// Signature for an optional progress callback: called before each round.
+/// round is 0-indexed; total_rounds is the planned total.
+pub const ProgressFn = *const fn (ctx: *anyopaque, round: u32, total_rounds: u32, detected_so_far: u32) void;
+
+/// Config for a coverage run.
+pub const CoverageConfig = struct {
+    rounds: u32 = 100,
+    /// Byte count for shotgun-style corruptions
+    shotgun_bytes: u32 = 4096,
+    /// Random seed (for reproducibility). Use std.time.milliTimestamp() for
+    /// different runs each invocation.
+    seed: u64 = 0,
+    /// Which modes to include. Default: all enabled.
+    enabled_modes: std.EnumSet(CorruptionMode) = std.EnumSet(CorruptionMode).initFull(),
+    /// Optional progress callback fired before each round.
+    progress: ?ProgressFn = null,
+    progress_ctx: ?*anyopaque = null,
+};
+
+/// Run a corruption coverage test.
+///
+/// Given a known-good byte buffer and a validator callback, performs N rounds
+/// of:
+///   1. Allocate a working copy (memcpy from original)
+///   2. Apply a randomly-chosen corruption mode
+///   3. Invoke the validator on the corrupted bytes
+///   4. Record: was the corruption detected?
+///   5. Free the working copy
+///
+/// Returns aggregate stats + all events (for heatmap rendering).
+/// Caller must call result.deinit() to free the events slice.
+pub fn runCoverage(
+    allocator: Allocator,
+    original: []const u8,
+    config: CoverageConfig,
+    validator_ctx: *anyopaque,
+    validator_fn: ValidatorFn,
+) !CoverageResult {
+    const enabled_count = config.enabled_modes.count();
+    if (enabled_count == 0) return error.NoCorruptionModesEnabled;
+    if (original.len == 0) return error.EmptyInput;
+
+    // Build list of enabled modes for random selection
+    var modes_buf: [6]CorruptionMode = undefined;
+    var modes_len: usize = 0;
+    var mode_iter = config.enabled_modes.iterator();
+    while (mode_iter.next()) |m| {
+        modes_buf[modes_len] = m;
+        modes_len += 1;
+    }
+    const enabled_modes = modes_buf[0..modes_len];
+
+    const events = try allocator.alloc(CorruptionEvent, config.rounds);
+    errdefer allocator.free(events);
+
+    var by_mode = std.EnumArray(CorruptionMode, ModeStats).initFill(.{});
+    var prng = std.Random.DefaultPrng.init(config.seed);
+    const rng = prng.random();
+
+    const start_ns = std.time.nanoTimestamp();
+    var detected_count: u32 = 0;
+
+    var round: u32 = 0;
+    while (round < config.rounds) : (round += 1) {
+        if (config.progress) |cb| cb(config.progress_ctx.?, round, config.rounds, detected_count);
+
+        // Allocate + copy working buffer
+        const work = try allocator.alloc(u8, original.len);
+        defer allocator.free(work);
+        @memcpy(work, original);
+
+        // Pick mode and apply corruption
+        const chosen_mode = enabled_modes[rng.uintLessThan(usize, enabled_modes.len)];
+        var event: CorruptionEvent = switch (chosen_mode) {
+            .sniper => applySniper(work, rng),
+            .shotgun => applyShotgun(work, rng, config.shotgun_bytes),
+            .header => applyHeader(work, rng, config.shotgun_bytes),
+            .tail => applyTail(work, rng, config.shotgun_bytes),
+            .zeroed => applyZeroed(work, rng, config.shotgun_bytes),
+            .xor => applyXor(work, rng, config.shotgun_bytes),
+        };
+
+        // Run validator on corrupted bytes
+        const detected = validator_fn(validator_ctx, work);
+        event.detected = detected;
+        events[round] = event;
+
+        // Update stats
+        var stats = by_mode.get(chosen_mode);
+        stats.total += 1;
+        if (detected) stats.detected += 1;
+        by_mode.set(chosen_mode, stats);
+        if (detected) detected_count += 1;
+    }
+
+    const end_ns = std.time.nanoTimestamp();
+
+    return CoverageResult{
+        .file_size = original.len,
+        .rounds = config.rounds,
+        .duration_ns = @intCast(end_ns - start_ns),
+        .by_mode = by_mode,
+        .events = events,
+        .allocator = allocator,
+    };
+}
+
+/// Render a heatmap string showing undetected-corruption density across
+/// the file, using ANSI 256-color gradient. The bar is `width` cells wide.
+/// Returns an owned string; caller must free.
+pub fn renderHeatmap(
+    allocator: Allocator,
+    result: *const CoverageResult,
+    width: u32,
+) ![]u8 {
+    if (width == 0) return error.InvalidWidth;
+
+    // Count undetected corruption events per bucket
+    const buckets = try allocator.alloc(u32, width);
+    defer allocator.free(buckets);
+    @memset(buckets, 0);
+
+    for (result.events) |event| {
+        if (event.detected) continue;
+        // Map byte offset to bucket index
+        const bucket: usize = @intCast(@min(
+            @as(u64, width - 1),
+            (event.offset * width) / result.file_size,
+        ));
+        buckets[bucket] += 1;
+    }
+
+    // Find max for normalization
+    var max_count: u32 = 0;
+    for (buckets) |c| max_count = @max(max_count, c);
+
+    // Build the output string with ANSI 256-color escapes
+    var out = std.ArrayListUnmanaged(u8){};
+    defer out.deinit(allocator);
+
+    // ANSI 256-color gradient: cooler (blue/cyan) → hot (yellow/red/white)
+    // Picked from the 6x6x6 color cube: black(16) → blue(21) → cyan(51) →
+    //   green(46) → yellow(226) → red(196) → white(231)
+    const gradient = [_]u8{ 16, 17, 18, 19, 20, 21, 27, 33, 39, 45, 51, 87, 123, 159, 195, 226, 220, 214, 208, 202, 196, 231 };
+
+    for (buckets) |count| {
+        const intensity = if (max_count == 0)
+            @as(usize, 0)
+        else
+            (@as(usize, count) * (gradient.len - 1)) / max_count;
+        const color = gradient[intensity];
+        try std.fmt.format(out.writer(allocator), "\x1b[48;5;{d}m ", .{color});
+    }
+    try out.writer(allocator).writeAll("\x1b[0m");
+
+    return out.toOwnedSlice(allocator);
+}
+
 // ============================================================
 // Tests
 // ============================================================
@@ -245,4 +440,94 @@ test "applyXor flips bits according to pattern" {
     // XOR with a random pattern: region may be unchanged if pattern is 0.
     // Just verify the event is well-formed.
     try testing.expectEqual(@as(u32, 5), event.size);
+}
+
+// ---- Runner tests ----
+
+const always_detects_ctx = struct {};
+fn alwaysDetectsValidator(_: *anyopaque, _: []const u8) bool {
+    return true;
+}
+
+const never_detects_ctx = struct {};
+fn neverDetectsValidator(_: *anyopaque, _: []const u8) bool {
+    return false;
+}
+
+test "runCoverage aggregates stats across all enabled modes" {
+    const original = "hello world, this is a test buffer" ** 10; // 340 bytes
+    var ctx: u32 = 0;
+    const Ctx = struct {};
+    _ = Ctx;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{ .rounds = 60, .seed = 42 },
+        @ptrCast(&ctx),
+        alwaysDetectsValidator,
+    );
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u64, original.len), result.file_size);
+    try testing.expectEqual(@as(u32, 60), result.rounds);
+    try testing.expectEqual(@as(u32, 60), result.totalRuns());
+    try testing.expectEqual(@as(u32, 60), result.totalDetected());
+}
+
+test "runCoverage records undetected events for heatmap" {
+    const original = "a" ** 1000;
+    var ctx: u32 = 0;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{ .rounds = 30, .seed = 7 },
+        @ptrCast(&ctx),
+        neverDetectsValidator,
+    );
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u32, 0), result.totalDetected());
+    try testing.expectEqual(@as(u32, 30), result.rounds);
+    for (result.events) |e| try testing.expect(!e.detected);
+}
+
+test "renderHeatmap produces ANSI-colored bar of requested width" {
+    const original = "x" ** 100;
+    var ctx: u32 = 0;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{ .rounds = 20, .seed = 99 },
+        @ptrCast(&ctx),
+        neverDetectsValidator,
+    );
+    defer result.deinit();
+
+    const heat = try renderHeatmap(testing.allocator, &result, 40);
+    defer testing.allocator.free(heat);
+
+    // Should contain ANSI escape sequences
+    try testing.expect(std.mem.indexOf(u8, heat, "\x1b[48;5;") != null);
+    try testing.expect(std.mem.endsWith(u8, heat, "\x1b[0m"));
+}
+
+test "runCoverage respects enabled_modes subset" {
+    const original = "y" ** 500;
+    var ctx: u32 = 0;
+    var only_sniper = std.EnumSet(CorruptionMode).initEmpty();
+    only_sniper.insert(.sniper);
+
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{ .rounds = 40, .seed = 1234, .enabled_modes = only_sniper },
+        @ptrCast(&ctx),
+        neverDetectsValidator,
+    );
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u32, 40), result.by_mode.get(.sniper).total);
+    try testing.expectEqual(@as(u32, 0), result.by_mode.get(.shotgun).total);
+    try testing.expectEqual(@as(u32, 0), result.by_mode.get(.xor).total);
+    for (result.events) |e| try testing.expectEqual(CorruptionMode.sniper, e.mode);
 }
