@@ -82,20 +82,24 @@ pub fn validateX12EdiDeep(allocator: Allocator, path: []const u8) ValidationResu
 		return ValidationResult.invalid(.x12_edi, "File too large for deep validation (>10MB)");
 	}
 
-	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
-		return ValidationResult.invalid(.x12_edi, "Out of memory");
+	var heap_edi1: ?[]u8 = null;
+	defer if (heap_edi1) |buf| allocator.free(buf);
+	const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+		const buf = allocator.alloc(u8, @intCast(file_sz)) catch {
+			return ValidationResult.invalid(.x12_edi, "Out of memory");
+		};
+		heap_edi1 = buf;
+		const n = source.readAll(buf) catch {
+			return ValidationResult.invalid(.x12_edi, "Failed to read file");
+		};
+		break :blk buf[0..n];
 	};
-	defer allocator.free(data);
 
-	const bytes_read = source.readAll(data) catch {
-		return ValidationResult.invalid(.x12_edi, "Failed to read file");
-	};
-
-	if (bytes_read < 106) {
+	if (data.len < 106) {
 		return ValidationResult.invalid(.x12_edi, "Incomplete read");
 	}
 
-	return validateX12EdiDeepFromBuffer(data[0..bytes_read]);
+	return validateX12EdiDeepFromBuffer(data);
 }
 
 /// Deep validation of X12 EDI from a buffer.
@@ -380,16 +384,20 @@ pub fn validateEdifactDeep(allocator: Allocator, path: []const u8) ValidationRes
 		return ValidationResult.invalid(.edifact, "File too large for deep validation (>10MB)");
 	}
 
-	const data = allocator.alloc(u8, @intCast(file_sz)) catch {
-		return ValidationResult.invalid(.edifact, "Out of memory");
+	var heap_edi2: ?[]u8 = null;
+	defer if (heap_edi2) |buf| allocator.free(buf);
+	const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+		const buf = allocator.alloc(u8, @intCast(file_sz)) catch {
+			return ValidationResult.invalid(.edifact, "Out of memory");
+		};
+		heap_edi2 = buf;
+		const n = source.readAll(buf) catch {
+			return ValidationResult.invalid(.edifact, "Failed to read file");
+		};
+		break :blk buf[0..n];
 	};
-	defer allocator.free(data);
 
-	const bytes_read = source.readAll(data) catch {
-		return ValidationResult.invalid(.edifact, "Failed to read file");
-	};
-
-	return validateEdifactDeepFromBuffer(data[0..bytes_read]);
+	return validateEdifactDeepFromBuffer(data);
 }
 
 /// Deep validation of EDIFACT from a buffer.
