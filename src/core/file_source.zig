@@ -16,6 +16,8 @@ pub const FileSource = struct {
     const Backing = union(enum) {
         mapped: MappedData,
         file: std.fs.File,
+        /// Borrowed in-memory buffer (caller owns the data). close() is a no-op.
+        buffer: []const u8,
     };
 
     const MappedData = struct {
@@ -85,6 +87,16 @@ pub const FileSource = struct {
         };
     }
 
+    /// Wrap an existing in-memory buffer as a FileSource. Zero-copy — the caller
+    /// retains ownership of the buffer which must outlive this FileSource.
+    /// close() is a no-op for buffer-backed sources. Enables testing validators
+    /// against in-memory data (e.g. sniper/shotgun corruption testing).
+    pub fn fromBuffer(data: []const u8) FileSource {
+        return .{
+            .backing = .{ .buffer = data },
+            .file_size = data.len,
+        };
+    }
     /// Close the file source and release resources.
     pub fn close(self: *FileSource) void {
         switch (self.backing) {
@@ -95,6 +107,7 @@ pub const FileSource = struct {
                 }
             },
             .file => |f| f.close(),
+            .buffer => {}, // no-op, caller owns the buffer
         }
     }
 
@@ -111,7 +124,7 @@ pub const FileSource = struct {
     /// Seek to an absolute position.
     pub fn seekTo(self: *FileSource, pos: u64) !void {
         switch (self.backing) {
-            .mapped => {
+            .mapped, .buffer => {
                 if (pos > self.file_size) return error.Unseekable;
                 self.pos = @intCast(pos);
             },
@@ -130,6 +143,14 @@ pub const FileSource = struct {
                 self.pos += to_read;
                 return to_read;
             },
+            .buffer => |b| {
+                if (self.pos >= b.len) return 0;
+                const available = b.len - self.pos;
+                const to_read = @min(dest.len, available);
+                @memcpy(dest[0..to_read], b[self.pos..][0..to_read]);
+                self.pos += to_read;
+                return to_read;
+            },
             .file => |f| return f.read(dest),
         }
     }
@@ -145,6 +166,14 @@ pub const FileSource = struct {
                 self.pos += to_read;
                 return to_read;
             },
+            .buffer => |b| {
+                if (self.pos >= b.len) return 0;
+                const available = b.len - self.pos;
+                const to_read = @min(dest.len, available);
+                @memcpy(dest[0..to_read], b[self.pos..][0..to_read]);
+                self.pos += to_read;
+                return to_read;
+            },
             .file => |f| return f.readAll(dest),
         }
     }
@@ -152,7 +181,7 @@ pub const FileSource = struct {
     /// Get current position.
     pub fn getPos(self: *FileSource) !u64 {
         switch (self.backing) {
-            .mapped => return @intCast(self.pos),
+            .mapped, .buffer => return @intCast(self.pos),
             .file => |f| return f.getPos(),
         }
     }
@@ -162,33 +191,33 @@ pub const FileSource = struct {
         return self.file_size;
     }
 
-    /// Check if this source is backed by mmap.
+    /// Check if this source supports zero-copy in-memory access (mmap or buffer).
     pub fn isMapped(self: *const FileSource) bool {
-        return self.backing == .mapped;
+        return switch (self.backing) {
+            .mapped, .buffer => true,
+            .file => false,
+        };
     }
 
-    /// Get zero-copy access to the entire file content if mmap'd.
+    /// Get zero-copy access to the entire file content if in-memory.
     /// Returns null for file-backed sources (use read() instead).
     /// The returned slice is valid for the lifetime of the FileSource.
     pub fn getMappedSlice(self: *const FileSource) ?[]const u8 {
         return switch (self.backing) {
             .mapped => |m| m.data,
+            .buffer => |b| b,
             .file => null,
         };
     }
 
-    /// Get zero-copy access to a range of the file content if mmap'd.
+    /// Get zero-copy access to a range of the file content if in-memory.
     /// Returns null for file-backed sources or if range is out of bounds.
     pub fn getMappedRange(self: *const FileSource, offset: u64, len: u64) ?[]const u8 {
-        return switch (self.backing) {
-            .mapped => |m| {
-                const start: usize = @intCast(@min(offset, m.data.len));
-                const end: usize = @intCast(@min(offset + len, m.data.len));
-                if (start >= end) return null;
-                return m.data[start..end];
-            },
-            .file => null,
-        };
+        const full = self.getMappedSlice() orelse return null;
+        const start: usize = @intCast(@min(offset, full.len));
+        const end: usize = @intCast(@min(offset + len, full.len));
+        if (start >= end) return null;
+        return full[start..end];
     }
 };
 
@@ -293,4 +322,29 @@ test "getMappedRange returns bounded slice" {
     if (source.getMappedRange(3, 4)) |slice| {
         try std.testing.expectEqualStrings("DEFG", slice);
     }
+}
+
+test "fromBuffer wraps in-memory data with zero copy" {
+    const content = "In-memory bytes, no file at all";
+    var source = FileSource.fromBuffer(content);
+    defer source.close(); // no-op for buffer
+
+    try std.testing.expectEqual(@as(u64, content.len), source.file_size);
+    try std.testing.expect(source.isMapped());
+
+    // Zero-copy access returns the same pointer
+    const slice = source.getMappedSlice().?;
+    try std.testing.expectEqual(content.ptr, slice.ptr);
+    try std.testing.expectEqualStrings(content, slice);
+
+    // Read/seek work
+    var buf: [8]u8 = undefined;
+    try source.seekTo(3);
+    const n = try source.read(&buf);
+    try std.testing.expectEqual(@as(usize, 8), n);
+    try std.testing.expectEqualStrings("memory b", &buf);
+
+    // Ranged access
+    const range = source.getMappedRange(3, 6).?;
+    try std.testing.expectEqualStrings("memory", range);
 }
