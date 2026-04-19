@@ -21,6 +21,7 @@ pub const errors = @import("errors.zig");
 pub const compat = @import("compat.zig");
 pub const file_source = @import("file_source.zig");
 pub const format_validation = @import("format_validation.zig");
+pub const test_coverage = @import("test_coverage.zig");
 pub const jpeg_validator = @import("jpeg_validator.zig");
 pub const alac_validator = @import("alac_validator.zig");
 pub const ac3_validator = @import("ac3_validator.zig");
@@ -189,6 +190,7 @@ test "version" {
 // Include integration tests
 test {
     _ = @import("file_source.zig");
+    _ = @import("test_coverage.zig");
     _ = @import("dts_validator.zig");
     _ = @import("bzip2_test.zig");
     // PDF filter decoders
