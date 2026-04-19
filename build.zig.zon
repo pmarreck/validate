@@ -77,8 +77,8 @@
             .hash = "rarz-0.1.0-BNfrfvnCCQBp8FSdNERf8CDWQZAlnjdPIlX5RinRb-GW",
         },
         .compact_pro = .{
-            .url = "https://github.com/pmarreck/compact_pro/archive/af763fa6b32a4131b8329262a9d4ec2ec9c86e17.tar.gz",
-            .hash = "compact_pro-0.1.0-G2wo9d_eAgAfR6jeAAGNutPGE9Nientf3mUuzkR8OgOU",
+            .url = "https://github.com/pmarreck/compact_pro/archive/8999e8d74b00e0ec0394708071eaeb787ea0ae57.tar.gz",
+            .hash = "compact_pro-0.1.0-G2wo9a_hAgDI-5kULhRLEDRGQWyUYpYnfSuMyJEkGzf4",
         },
         .progrez = .{
             .url = "git+https://github.com/pmarreck/progrez#ab325f195b34b8f2aed095fc62af530a9497e74f",
