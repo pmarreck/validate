@@ -787,6 +787,149 @@ export fn validate_clear_error() void {
     errors.clearLastError();
 }
 
+// ========== Test Coverage (sniper/shotgun corruption testing) ==========
+
+const test_coverage = core.test_coverage;
+
+/// Callback fired during coverage run — arg is (round, total, detected_so_far).
+pub const CoverageProgressCallback = ?*const fn (
+    ctx: ?*anyopaque,
+    round: u32,
+    total: u32,
+    detected: u32,
+) callconv(.c) void;
+
+/// Run corruption coverage test on a file.
+/// Returns KV string with results (caller must validate_free).
+/// Returns NULL on error (baseline invalid, file read failed, etc.).
+export fn validate_test_coverage(
+    path: ?[*:0]const u8,
+    rounds: u32,
+    seed: u64,
+    shotgun_bytes: u32,
+    progress_cb: CoverageProgressCallback,
+    progress_ctx: ?*anyopaque,
+) ?[*:0]u8 {
+    const p = path orelse return null;
+    const path_slice = std.mem.span(p);
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Load the whole file into a reference buffer
+    const file = std.fs.cwd().openFile(path_slice, .{}) catch return null;
+    defer file.close();
+    const file_size = file.getEndPos() catch return null;
+    if (file_size == 0 or file_size > 2 * 1024 * 1024 * 1024) return null;
+
+    const original = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch return null;
+    defer std.heap.page_allocator.free(original);
+    const bytes_read = file.readAll(original) catch return null;
+    const orig_slice = original[0..bytes_read];
+
+    // Baseline validation — must be valid to proceed
+    var validator = format_validation.FormatValidator.initDeep();
+    defer validator.deinit();
+    const baseline = validator.validateFileDeep(alloc, path_slice);
+    if (!baseline.is_valid) return null;
+
+    // Orchestration context for the validator callback
+    const RunCtx = struct {
+        validator: *format_validation.FormatValidator,
+        format: format_validation.FileFormat,
+        user_cb: CoverageProgressCallback,
+        user_ctx: ?*anyopaque,
+    };
+    var run_ctx = RunCtx{
+        .validator = &validator,
+        .format = baseline.format,
+        .user_cb = progress_cb,
+        .user_ctx = progress_ctx,
+    };
+
+    const validate_fn = struct {
+        fn cb(cb_ctx: *anyopaque, buffer: []const u8) bool {
+            const rc: *RunCtx = @ptrCast(@alignCast(cb_ctx));
+            var src = core.file_source.FileSource.fromBuffer(buffer);
+            defer src.close();
+            var inner_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer inner_arena.deinit();
+            const r = rc.validator.validateDeepFromSource(inner_arena.allocator(), rc.format, &src);
+            return !r.is_valid;
+        }
+    }.cb;
+
+    const progress_fn_wrapped: ?test_coverage.ProgressFn = if (progress_cb != null) struct {
+        fn cb(cb_ctx: *anyopaque, round: u32, total: u32, detected: u32) void {
+            const rc: *RunCtx = @ptrCast(@alignCast(cb_ctx));
+            if (rc.user_cb) |user_cb| user_cb(rc.user_ctx, round, total, detected);
+        }
+    }.cb else null;
+
+    var result = test_coverage.runCoverage(
+        alloc,
+        orig_slice,
+        .{
+            .rounds = rounds,
+            .shotgun_bytes = shotgun_bytes,
+            .seed = seed,
+            .progress = progress_fn_wrapped,
+            .progress_ctx = @ptrCast(&run_ctx),
+        },
+        @ptrCast(&run_ctx),
+        validate_fn,
+    ) catch return null;
+    defer result.deinit();
+
+    // Build KV result string
+    var builder = KvBuilder.init(std.heap.page_allocator);
+    defer builder.deinit();
+    builder.add("fmt", @tagName(baseline.format)) catch return null;
+    {
+        var buf: [32]u8 = undefined;
+        const s = std.fmt.bufPrintZ(&buf, "{d}", .{result.file_size}) catch return null;
+        builder.add("file_size", s) catch return null;
+    }
+    {
+        var buf: [32]u8 = undefined;
+        const s = std.fmt.bufPrintZ(&buf, "{d}", .{result.rounds}) catch return null;
+        builder.add("rounds", s) catch return null;
+    }
+    {
+        var buf: [32]u8 = undefined;
+        const s = std.fmt.bufPrintZ(&buf, "{d}", .{result.totalDetected()}) catch return null;
+        builder.add("detected", s) catch return null;
+    }
+    {
+        var buf: [32]u8 = undefined;
+        const s = std.fmt.bufPrintZ(&buf, "{d}", .{result.duration_ns}) catch return null;
+        builder.add("duration_ns", s) catch return null;
+    }
+    // Per-mode stats
+    const all_modes = [_]test_coverage.CorruptionMode{ .sniper, .shotgun, .header, .tail, .zeroed, .xor };
+    for (all_modes) |mode| {
+        const stats = result.by_mode.get(mode);
+        var keybuf: [32]u8 = undefined;
+        var valbuf: [16]u8 = undefined;
+        const k_total = std.fmt.bufPrintZ(&keybuf, "mode_{s}_total", .{mode.name()}) catch continue;
+        const v_total = std.fmt.bufPrintZ(&valbuf, "{d}", .{stats.total}) catch continue;
+        builder.add(k_total, v_total) catch continue;
+        var keybuf2: [32]u8 = undefined;
+        var valbuf2: [16]u8 = undefined;
+        const k_det = std.fmt.bufPrintZ(&keybuf2, "mode_{s}_detected", .{mode.name()}) catch continue;
+        const v_det = std.fmt.bufPrintZ(&valbuf2, "{d}", .{stats.detected}) catch continue;
+        builder.add(k_det, v_det) catch continue;
+    }
+    // Heatmap (80 cols)
+    if (test_coverage.renderHeatmap(std.heap.page_allocator, &result, 80)) |heat| {
+        defer std.heap.page_allocator.free(heat);
+        builder.add("heatmap", heat) catch {};
+    } else |_| {}
+
+    return builder.toOwnedZ(std.heap.page_allocator) catch null;
+}
+
 // ========== Tests ==========
 
 test "validate_version" {
