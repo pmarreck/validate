@@ -1156,12 +1156,18 @@ pub const MatroskaParser = struct {
         if (size > max_block_bytes) return null;
         if (size > std.math.maxInt(usize)) return null;
 
-        const data = self.allocator.alloc(u8, @intCast(size)) catch return null;
-        defer self.allocator.free(data);
-
-        _ = self.reader.seekTo(block.data_offset);
-        const bytes_read = self.reader.file.readAll(data) catch return null;
-        if (bytes_read != @as(usize, @intCast(size))) return null;
+        var e1_heap: ?[]u8 = null;
+        defer if (e1_heap) |buf| self.allocator.free(buf);
+        const data: []const u8 = if (self.reader.file.getMappedRange(block.data_offset, size)) |mapped|
+            mapped
+        else blk: {
+            const buf = self.allocator.alloc(u8, @intCast(size)) catch return null;
+            e1_heap = buf;
+            _ = self.reader.seekTo(block.data_offset);
+            const n = self.reader.file.readAll(buf) catch return null;
+            if (n != @as(usize, @intCast(size))) return null;
+            break :blk buf[0..n];
+        };
 
         return parseBlockFramesFromBuffer(data, target_track, cluster_timestamp, combine_laced_frames, ctx, consumer);
     }
@@ -1790,12 +1796,18 @@ pub const MatroskaParser = struct {
 
         if (data_size > 10 * 1024 * 1024) return false; // Limit to 10MB per frame
 
-        const data = self.allocator.alloc(u8, @intCast(data_size)) catch return false;
-        defer self.allocator.free(data);
-
-        _ = self.reader.seekTo(block.data_offset + data_offset);
-        const bytes_read = self.reader.file.readAll(data) catch return false;
-        if (bytes_read != data_size) return false;
+        var e2_heap: ?[]u8 = null;
+        defer if (e2_heap) |buf| self.allocator.free(buf);
+        const data: []const u8 = if (self.reader.file.getMappedRange(block.data_offset + data_offset, data_size)) |mapped|
+            mapped
+        else blk: {
+            const buf = self.allocator.alloc(u8, @intCast(data_size)) catch return false;
+            e2_heap = buf;
+            _ = self.reader.seekTo(block.data_offset + data_offset);
+            const n = self.reader.file.readAll(buf) catch return false;
+            if (n != data_size) return false;
+            break :blk buf[0..n];
+        };
 
         return callback(data, timestamp);
     }
@@ -1949,12 +1961,18 @@ pub const MatroskaParser = struct {
 
         if (data_size > 10 * 1024 * 1024) return false;
 
-        const data = self.allocator.alloc(u8, @intCast(data_size)) catch return false;
-        defer self.allocator.free(data);
-
-        _ = self.reader.seekTo(block.data_offset + data_offset);
-        const bytes_read = self.reader.file.readAll(data) catch return false;
-        if (bytes_read != data_size) return false;
+        var e3_heap: ?[]u8 = null;
+        defer if (e3_heap) |buf| self.allocator.free(buf);
+        const data: []const u8 = if (self.reader.file.getMappedRange(block.data_offset + data_offset, data_size)) |mapped|
+            mapped
+        else blk: {
+            const buf = self.allocator.alloc(u8, @intCast(data_size)) catch return false;
+            e3_heap = buf;
+            _ = self.reader.seekTo(block.data_offset + data_offset);
+            const n = self.reader.file.readAll(buf) catch return false;
+            if (n != data_size) return false;
+            break :blk buf[0..n];
+        };
 
         return callback(data, timestamp);
     }
