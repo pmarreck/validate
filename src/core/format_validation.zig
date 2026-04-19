@@ -6825,10 +6825,10 @@ fn validateBeam(allocator: Allocator, file: std.fs.File) ValidationResult {
                             if (rd == compressed_size) {
                                 // Check for zlib header (0x78xx)
                                 if (buf[0] == 0x78) {
-                                    const decompressed = zlib.inflateZlibAlloc(allocator, buf, 64 * 1024 * 1024) catch {
+                                    // Stream-validate decompression — don't materialize output
+                                    _ = zlib.inflateStreamValidate(buf, 64 * 1024 * 1024, false) catch {
                                         return ValidationResult.invalidCodeMsg(.beam, .decompression_failed, "LitT chunk", "zlib decompression failed (corrupt literal table)");
                                     };
-                                    allocator.free(decompressed);
                                 }
                             }
                         }
@@ -6855,10 +6855,9 @@ fn validateBeam(allocator: Allocator, file: std.fs.File) ValidationResult {
                         const rd = file.readAll(buf) catch 0;
                         if (rd == zlib_size) {
                             if (buf[0] == 0x78) {
-                                const decompressed = zlib.inflateZlibAlloc(allocator, buf, 64 * 1024 * 1024) catch {
+                                _ = zlib.inflateStreamValidate(buf, 64 * 1024 * 1024, false) catch {
                                     return ValidationResult.invalidCodeMsg(.beam, .decompression_failed, "ETF chunk", "zlib decompression failed (corrupt compressed data)");
                                 };
-                                allocator.free(decompressed);
                             }
                         }
                     }
