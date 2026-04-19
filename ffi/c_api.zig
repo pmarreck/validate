@@ -506,6 +506,16 @@ const BeginCallback = ?*const fn (
 var g_begin_callback: BeginCallback = null;
 var g_begin_callback_ctx: ?*anyopaque = null;
 
+/// Files larger than this threshold use the large-file semaphore to limit
+/// concurrent memory usage. 50 MB is ~1/20th of a typical worker's working set.
+const LARGE_FILE_THRESHOLD: u64 = 50 * 1024 * 1024;
+
+/// Semaphore limiting concurrent validation of large files. Small files
+/// (under LARGE_FILE_THRESHOLD) bypass this and run full parallel.
+/// Default 2 concurrent large files; reconfigured by validate_batch based on
+/// thread count and memory budget.
+var g_large_file_sem: std.Thread.Semaphore = .{ .permits = 2 };
+
 /// Set the begin callback (called when validation starts for each file)
 export fn validate_set_begin_callback(callback: BeginCallback, ctx: ?*anyopaque) void {
     g_begin_callback = callback;
@@ -525,6 +535,15 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     const path_ptr = ctx.paths[task.index] orelse return;
     const id = ctx.ids[task.index];
     const path_slice = std.mem.span(path_ptr);
+
+    // Large-file semaphore: files above threshold block until a slot is free,
+    // preventing N workers all simultaneously validating huge files.
+    const is_large = blk: {
+        const stat = std.fs.cwd().statFile(path_slice) catch break :blk false;
+        break :blk stat.size > LARGE_FILE_THRESHOLD;
+    };
+    if (is_large) g_large_file_sem.wait();
+    defer if (is_large) g_large_file_sem.post();
 
     // Call begin callback if set (useful for debugging crashes)
     if (g_begin_callback) |begin_cb| {
@@ -574,6 +593,13 @@ export fn validate_batch(
         thread_pool.getOuterJobCount()
     else
         @intCast(num_threads);
+
+    // Configure large-file semaphore: scale with memory budget.
+    // Reserve 256MB headroom per large file slot (covers typical decompression peaks).
+    const budget = validate_get_max_memory();
+    const slots_from_mem: usize = @intCast(@max(@as(u64, 1), budget / (256 * 1024 * 1024)));
+    const large_file_slots = @min(@max(@as(usize, 2), slots_from_mem), actual_threads);
+    g_large_file_sem = .{ .permits = large_file_slots };
 
     // Pre-init decoder libraries
     core.preInit();
