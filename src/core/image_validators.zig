@@ -1775,27 +1775,30 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
         // Cap decompression buffer at 500MB; add 10% margin for safety
         const max_uncompressed: usize = @min(@as(usize, @intCast(expected_uncompressed + expected_uncompressed / 10)), 500 * 1024 * 1024);
 
-        // Try zlib (with header) first, then raw deflate — PSD ZIP can use either
-        const decompressed = zlib.inflateZlibAlloc(allocator, compressed_data[0..bytes_read], max_uncompressed) catch blk: {
-            // If zlib header parse fails, try raw deflate
-            break :blk zlib.inflateRawAlloc(allocator, compressed_data[0..bytes_read], max_uncompressed) catch |err| {
+        // Streaming validation — no heap allocation for decompressed data.
+        // PSD ZIP can use either zlib-framed or raw deflate; try both.
+        const stream_slice = compressed_data[0..bytes_read];
+        const decomp_size = zlib.inflateStreamValidate(stream_slice, max_uncompressed, false) catch |zerr1| blk: {
+            if (zerr1 == zlib.ZlibError.DecompressedTooLarge) {
+                return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP: decompressed data exceeds limit");
+            }
+            // Try raw deflate as fallback
+            break :blk zlib.inflateStreamValidate(stream_slice, max_uncompressed, true) catch |err| {
                 switch (err) {
                     zlib.ZlibError.DataError => return ValidationResult.invalid(.psd, "ZIP decompression failed: corrupt data"),
-                    zlib.ZlibError.BufferError => return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP: decompressed data exceeds limit"),
+                    zlib.ZlibError.DecompressedTooLarge => return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP: decompressed data exceeds limit"),
                     else => return ValidationResult.invalid(.psd, "ZIP decompression error"),
                 }
             };
         };
-        defer allocator.free(decompressed);
 
-        if (decompressed.len == 0) {
+        if (decomp_size == 0) {
             return ValidationResult.invalid(.psd, "ZIP decompression produced empty output");
         }
 
-        // Verify decompressed size matches expected uncompressed image data size
-        // Only check exact match if we read all compressed data (not truncated by size limit)
+        // Verify decompressed size matches expected
         if (bytes_read == remaining) {
-            if (decompressed.len != @as(usize, @intCast(expected_uncompressed))) {
+            if (decomp_size != expected_uncompressed) {
                 return ValidationResult.invalidCode(.psd, .decompression_failed, "ZIP decompressed size mismatch");
             }
         }
