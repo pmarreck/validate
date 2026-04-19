@@ -2085,18 +2085,21 @@ pub fn validateTtaDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.structuralOnly(.tta);
     }
 
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.structuralOnly(.tta);
+    var heap_tta: ?[]u8 = null;
+    defer if (heap_tta) |hbuf| allocator.free(hbuf);
+    const buf: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const tmp = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.structuralOnly(.tta);
+        };
+        heap_tta = tmp;
+        const n = source.readAll(tmp) catch {
+            return ValidationResult.invalidCodeWithDepth(.tta, .failed_to_read, "file data", .full);
+        };
+        break :blk tmp[0..n];
     };
-    defer allocator.free(data);
-
-    const bytes_read = source.readAll(data) catch {
-        return ValidationResult.invalidCodeWithDepth(.tta, .failed_to_read, "file data", .full);
-    };
-    if (bytes_read < 22) {
+    if (buf.len < 22) {
         return ValidationResult.invalidCodeWithDepth(.tta, .truncated, "header", .full);
     }
-    const buf = data[0..bytes_read];
 
     // Parse header
     if (!std.mem.eql(u8, buf[0..4], "TTA1")) {
