@@ -394,6 +394,51 @@ fn getSystemMemory() u64 {
         return 0; // Windows: TODO GlobalMemoryStatusEx
     }
 }
+
+/// Get current process RSS (resident set size) in bytes.
+/// Returns 0 if the OS API fails or is unavailable.
+fn getCurrentRss() u64 {
+    if (comptime @import("builtin").os.tag == .macos) {
+        // macOS: task_info(TASK_BASIC_INFO)
+        const mach = struct {
+            extern "c" fn mach_task_self() c_uint;
+            extern "c" fn task_info(target: c_uint, flavor: c_uint, info: *anyopaque, count: *u32) c_int;
+        };
+        const TASK_BASIC_INFO_64: c_uint = 5;
+        const TaskBasicInfo64 = extern struct {
+            suspend_count: i32,
+            virtual_size: u64,
+            resident_size: u64,
+            user_time: extern struct { seconds: i32, microseconds: i32 },
+            system_time: extern struct { seconds: i32, microseconds: i32 },
+            policy: i32,
+        };
+        var info: TaskBasicInfo64 = undefined;
+        var count: u32 = @sizeOf(TaskBasicInfo64) / @sizeOf(u32);
+        const rc = mach.task_info(mach.mach_task_self(), TASK_BASIC_INFO_64, @ptrCast(&info), &count);
+        if (rc == 0) return info.resident_size;
+        return 0;
+    } else if (comptime @import("builtin").os.tag == .linux) {
+        // Linux: /proc/self/statm (second field = resident pages)
+        var buf: [256]u8 = undefined;
+        const file = std.fs.openFileAbsolute("/proc/self/statm", .{}) catch return 0;
+        defer file.close();
+        const n = file.read(&buf) catch return 0;
+        const content = buf[0..n];
+        // Skip first field (total pages), read second (resident pages)
+        var i: usize = 0;
+        while (i < content.len and content[i] != ' ') : (i += 1) {}
+        while (i < content.len and content[i] == ' ') : (i += 1) {}
+        var rss_pages: u64 = 0;
+        while (i < content.len and content[i] >= '0' and content[i] <= '9') : (i += 1) {
+            rss_pages = rss_pages * 10 + @as(u64, content[i] - '0');
+        }
+        return rss_pages * std.heap.page_size_min;
+    } else {
+        return 0;
+    }
+}
+
 /// Validate a single file.
 export fn validate(path: ?[*:0]const u8) ?[*:0]u8 {
     const p = path orelse {
@@ -545,6 +590,20 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     if (is_large) g_large_file_sem.wait();
     defer if (is_large) g_large_file_sem.post();
 
+    // Memory pressure throttle: if RSS is approaching budget, yield briefly
+    // so other workers can finish and free memory. Caps at 500ms total wait
+    // to avoid livelock on genuinely tight systems.
+    const budget = validate_get_max_memory();
+    if (budget > 0) {
+        var wait_ms: u64 = 0;
+        while (wait_ms < 500) {
+            const rss = getCurrentRss();
+            if (rss == 0 or rss < budget) break;
+            std.Thread.sleep(50 * std.time.ns_per_ms);
+            wait_ms += 50;
+            if (g_interrupt_flag.load(.seq_cst)) return;
+        }
+    }
     // Call begin callback if set (useful for debugging crashes)
     if (g_begin_callback) |begin_cb| {
         begin_cb(g_begin_callback_ctx, id, path_ptr);
