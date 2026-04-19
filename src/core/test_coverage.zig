@@ -274,6 +274,16 @@ pub fn runCoverage(
             .xor => applyXor(work, rng, config.shotgun_bytes),
         };
 
+        // Optional trace (set VALIDATE_COVERAGE_TRACE=1) so a subsequent crash
+        // points at the exact seed/mode/offset/bit that triggered it. stderr is
+        // flushed per round so the last line printed is the one that crashed.
+        if (std.posix.getenv("VALIDATE_COVERAGE_TRACE")) |_| {
+            std.debug.print(
+                "[coverage trace] seed={d} round={d}/{d} mode={s} offset={d} bit={d} size={d}\n",
+                .{ config.seed, round + 1, config.rounds, event.mode.name(), event.offset, event.bit, event.size },
+            );
+        }
+
         // Run validator on corrupted bytes
         const detected = validator_fn(validator_ctx, work);
         event.detected = detected;

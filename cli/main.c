@@ -2206,8 +2206,15 @@ int main(int argc, char* argv[]) {
 		int overall_exit = 0;
 		const char *modes[] = { "sniper", "shotgun", "header", "tail", "zeroed", "xor" };
 		for (size_t i = 0; i < path_count; i++) {
-			fprintf(stderr, "%sTest coverage: %s (rounds=%u)...%s\n", COLOR_CYAN, paths[i], test_coverage_rounds, COLOR_RESET);
-			char *result = validate_test_coverage(paths[i], test_coverage_rounds, (uint64_t)time(NULL), 4096, NULL, NULL);
+			uint64_t seed = (uint64_t)time(NULL);
+			const char *seed_env = getenv("VALIDATE_SEED");
+			if (seed_env && *seed_env) {
+				char *endp;
+				unsigned long long v = strtoull(seed_env, &endp, 0);
+				if (*endp == '\0') seed = (uint64_t)v;
+			}
+			fprintf(stderr, "%sTest coverage: %s (rounds=%u, seed=%llu)...%s\n", COLOR_CYAN, paths[i], test_coverage_rounds, (unsigned long long)seed, COLOR_RESET);
+			char *result = validate_test_coverage(paths[i], test_coverage_rounds, seed, 4096, NULL, NULL);
 			if (!result) {
 				fprintf(stderr, "%sFAILED%s: could not run coverage on %s (baseline validation failed?)\n", COLOR_RED, COLOR_RESET, paths[i]);
 				overall_exit = 1;
