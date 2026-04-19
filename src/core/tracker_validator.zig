@@ -14,6 +14,8 @@
 
 const std = @import("std");
 const errmsg = @import("error_messages.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 /// Result of deep tracker validation
 pub const TrackerValidationResult = struct {
@@ -41,16 +43,7 @@ pub const TrackerValidationResult = struct {
 
 /// Deep validation for ProTracker MOD files.
 /// Validates sample headers, pattern data, and file structure.
-pub fn validateModDeep(path: []const u8) TrackerValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => TrackerValidationResult.invalid("File not found"),
-            error.AccessDenied => TrackerValidationResult.invalid("Access denied"),
-            else => TrackerValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer file.close();
-
+pub fn validateModDeep(file: *FileSource) TrackerValidationResult {
     const file_size = file.getEndPos() catch {
         return TrackerValidationResult.invalid(errmsg.failedToGet("file size"));
     };
@@ -142,16 +135,7 @@ fn getModChannels(sig: []const u8) ?u16 {
 
 /// Deep validation for FastTracker 2 XM files.
 /// Validates header, patterns, instruments, and samples.
-pub fn validateXmDeep(path: []const u8) TrackerValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => TrackerValidationResult.invalid("File not found"),
-            error.AccessDenied => TrackerValidationResult.invalid("Access denied"),
-            else => TrackerValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer file.close();
-
+pub fn validateXmDeep(file: *FileSource) TrackerValidationResult {
     const file_size = file.getEndPos() catch {
         return TrackerValidationResult.invalid(errmsg.failedToGet("file size"));
     };
@@ -233,16 +217,7 @@ pub fn validateXmDeep(path: []const u8) TrackerValidationResult {
 
 /// Deep validation for Impulse Tracker IT files.
 /// Validates header, instruments, samples, and patterns.
-pub fn validateItDeep(path: []const u8) TrackerValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => TrackerValidationResult.invalid("File not found"),
-            error.AccessDenied => TrackerValidationResult.invalid("Access denied"),
-            else => TrackerValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer file.close();
-
+pub fn validateItDeep(file: *FileSource) TrackerValidationResult {
     const file_size = file.getEndPos() catch {
         return TrackerValidationResult.invalid(errmsg.failedToGet("file size"));
     };
@@ -335,16 +310,7 @@ pub fn validateItDeep(path: []const u8) TrackerValidationResult {
 
 /// Deep validation for Scream Tracker 3 S3M files.
 /// Validates header, instruments, patterns, and sample data.
-pub fn validateS3mDeep(path: []const u8) TrackerValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => TrackerValidationResult.invalid("File not found"),
-            error.AccessDenied => TrackerValidationResult.invalid("Access denied"),
-            else => TrackerValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer file.close();
-
+pub fn validateS3mDeep(file: *FileSource) TrackerValidationResult {
     const file_size = file.getEndPos() catch {
         return TrackerValidationResult.invalid(errmsg.failedToGet("file size"));
     };
@@ -430,27 +396,24 @@ pub fn validateS3mDeep(path: []const u8) TrackerValidationResult {
 // ============ Tests ============
 
 test "MOD validation rejects missing file" {
-    const result = validateModDeep("/nonexistent/file.mod");
-    try std.testing.expect(!result.valid);
-    try std.testing.expect(result.error_message != null);
+    // Caller now opens FileSource — verify open failure is the expected error
+    const result = FileSource.open("/nonexistent/file.mod");
+    try std.testing.expectError(error.FileNotFound, result);
 }
 
 test "XM validation rejects missing file" {
-    const result = validateXmDeep("/nonexistent/file.xm");
-    try std.testing.expect(!result.valid);
-    try std.testing.expect(result.error_message != null);
+    const result = FileSource.open("/nonexistent/file.xm");
+    try std.testing.expectError(error.FileNotFound, result);
 }
 
 test "IT validation rejects missing file" {
-    const result = validateItDeep("/nonexistent/file.it");
-    try std.testing.expect(!result.valid);
-    try std.testing.expect(result.error_message != null);
+    const result = FileSource.open("/nonexistent/file.it");
+    try std.testing.expectError(error.FileNotFound, result);
 }
 
 test "S3M validation rejects missing file" {
-    const result = validateS3mDeep("/nonexistent/file.s3m");
-    try std.testing.expect(!result.valid);
-    try std.testing.expect(result.error_message != null);
+    const result = FileSource.open("/nonexistent/file.s3m");
+    try std.testing.expectError(error.FileNotFound, result);
 }
 
 test "MOD validates minimal synthetic file" {
@@ -480,7 +443,9 @@ test "MOD validates minimal synthetic file" {
     defer file.close();
     file.writeAll(&data) catch return;
 
-    const result = validateModDeep(tmp_path);
+    var src = FileSource.open(tmp_path) catch return;
+    defer src.close();
+    const result = validateModDeep(&src);
     try std.testing.expect(result.valid);
     try std.testing.expect(result.error_message == null);
     try std.testing.expectEqual(@as(u16, 4), result.format_details.channels);
@@ -521,7 +486,9 @@ test "XM validates minimal synthetic file" {
     defer file.close();
     file.writeAll(&data) catch return;
 
-    const result = validateXmDeep(tmp_path);
+    var src = FileSource.open(tmp_path) catch return;
+    defer src.close();
+    const result = validateXmDeep(&src);
     try std.testing.expect(result.valid);
     try std.testing.expect(result.error_message == null);
     try std.testing.expectEqual(@as(u16, 8), result.format_details.channels);
@@ -555,7 +522,9 @@ test "IT validates minimal synthetic file" {
     defer file.close();
     file.writeAll(&data) catch return;
 
-    const result = validateItDeep(tmp_path);
+    var src = FileSource.open(tmp_path) catch return;
+    defer src.close();
+    const result = validateItDeep(&src);
     try std.testing.expect(result.valid);
     try std.testing.expect(result.error_message == null);
     try std.testing.expectEqual(@as(u16, 0), result.format_details.patterns);
@@ -593,7 +562,9 @@ test "S3M validates minimal synthetic file" {
     defer file.close();
     file.writeAll(&data) catch return;
 
-    const result = validateS3mDeep(tmp_path);
+    var src = FileSource.open(tmp_path) catch return;
+    defer src.close();
+    const result = validateS3mDeep(&src);
     try std.testing.expect(result.valid);
     try std.testing.expect(result.error_message == null);
     try std.testing.expectEqual(@as(u16, 0), result.format_details.patterns);

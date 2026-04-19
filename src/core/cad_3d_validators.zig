@@ -96,15 +96,12 @@ pub fn validateDwg(file: *FileSource) ValidationResult {
     return ValidationResult.structuralOnly(.dwg);
 }
 
-pub fn validateDwgDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateDwgDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    var file = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.dwg, .failed_to_open, "DWG file");
-    };
-    defer file.close();
+    const file = source;
 
     // Basic validation first
-    const result = validateDwg(&file);
+    const result = validateDwg(file);
     if (!result.is_valid) return result;
 
     // Get file size for bounds checking
@@ -208,14 +205,11 @@ pub fn validateBlend(file: *FileSource) ValidationResult {
     return ValidationResult.ok(.blend);
 }
 
-pub fn validateBlendDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.blend, .failed_to_open, "Blender file");
-    };
-    defer file.close();
+pub fn validateBlendDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     // First do structural validation
-    const structural_result = validateBlend(&file);
+    const structural_result = validateBlend(file);
     if (!structural_result.is_valid) return structural_result;
 
     // Reset to start
@@ -1162,13 +1156,9 @@ pub fn validateObjChunked(file: *FileSource, file_size: u64) ValidationResult {
     return ValidationResult.okWithDepth(.obj, .structural);
 }
 
-pub fn validateObjDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateObjDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    var file = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.obj, .failed_to_open, "OBJ file");
-    };
-    defer file.close();
-    return validateObj(&file);
+    return validateObj(source);
 }
 
 // ============ PLY Validator ============
@@ -1923,11 +1913,8 @@ pub fn validateGlbChunkReadable(file: *FileSource, offset: u64, length: u32) Val
     return ValidationResult.okWithDepth(.glb, .structural);
 }
 
-pub fn validateGlbDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.glb, .failed_to_open, "GLB file");
-    };
-    defer file.close();
+pub fn validateGlbDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     // Read GLB header
     var header: [12]u8 = undefined;
@@ -2293,8 +2280,8 @@ pub fn validate3mf(file: *FileSource) ValidationResult {
     return ValidationResult.ok(.@"3mf");
 }
 
-pub fn validate3mfDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const zip_result = archive_validators.validateZipDeep(allocator, path);
+pub fn validate3mfDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const zip_result = archive_validators.validateZipDeep(allocator, source);
     var coerced = zip_result;
     coerced.format = .@"3mf";
     return coerced;
@@ -2786,7 +2773,9 @@ test "validateBlendDeep rejects corrupted DNA1 block data" {
     const valid_path = try tmp_dir.dir.realpathAlloc(allocator, "valid.blend");
     defer allocator.free(valid_path);
 
-    const valid_result = validateBlendDeep(allocator, valid_path);
+    var valid_src = try FileSource.open(valid_path);
+    defer valid_src.close();
+    const valid_result = validateBlendDeep(allocator, &valid_src);
     try std.testing.expect(valid_result.is_valid);
 
     // Now corrupt the DNA1 data area (overwrite TYPE/TLEN/STRC sections)
@@ -2805,7 +2794,9 @@ test "validateBlendDeep rejects corrupted DNA1 block data" {
     const corrupt_path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.blend");
     defer allocator.free(corrupt_path);
 
-    const corrupt_result = validateBlendDeep(allocator, corrupt_path);
+    var corrupt_src = try FileSource.open(corrupt_path);
+    defer corrupt_src.close();
+    const corrupt_result = validateBlendDeep(allocator, &corrupt_src);
     // A corrupted DNA1 block should be detected as INVALID, not just a warning
     try std.testing.expect(!corrupt_result.is_valid);
 }

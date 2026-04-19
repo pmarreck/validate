@@ -674,13 +674,11 @@ pub const FlacDecoder = struct {
 
 /// Decode a FLAC file and verify its MD5 hash.
 /// Returns true if the MD5 matches, false if it doesn't, or error.
-pub fn verifyFlacMd5(allocator: Allocator, file_path: []const u8) FlacError!bool {
-    const file_source = @import("file_source.zig");
-    var source = file_source.FileSource.open(file_path) catch return FlacError.Truncated;
-    defer source.close();
-
+pub fn verifyFlacMd5(allocator: Allocator, source: *@import("file_source.zig").FileSource) FlacError!bool {
     const file_size = source.getEndPos() catch return FlacError.Truncated;
     if (file_size > 1024 * 1024 * 1024) return FlacError.Unsupported;
+
+    source.seekTo(0) catch return FlacError.Truncated;
 
     var heap_buf: ?[]u8 = null;
     defer if (heap_buf) |buf| allocator.free(buf);
@@ -763,13 +761,11 @@ pub fn verifyFlacMd5(allocator: Allocator, file_path: []const u8) FlacError!bool
 /// Decode all FLAC frames to verify integrity (without MD5 verification)
 /// This is useful when the FLAC file has no MD5 hash stored (all zeros)
 /// Returns true if all frames decoded successfully, false if corruption detected
-pub fn decodeFlacFull(allocator: Allocator, file_path: []const u8) FlacError!bool {
-    const file_source = @import("file_source.zig");
-    var source = file_source.FileSource.open(file_path) catch return FlacError.Truncated;
-    defer source.close();
-
+pub fn decodeFlacFull(allocator: Allocator, source: *@import("file_source.zig").FileSource) FlacError!bool {
     const file_size = source.getEndPos() catch return FlacError.Truncated;
     if (file_size > 1024 * 1024 * 1024) return FlacError.Unsupported;
+
+    source.seekTo(0) catch return FlacError.Truncated;
 
     var heap_buf: ?[]u8 = null;
     defer if (heap_buf) |buf| allocator.free(buf);

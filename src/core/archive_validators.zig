@@ -1171,18 +1171,10 @@ fn base32Decode(encoded: []const u8, out: []u8) ?usize {
 /// checksums against computed hashes of record bodies. Returns .full depth when
 /// at least one digest is present and all verify; .structural with a warning
 /// when no digests are found; invalid on any mismatch.
-pub fn validateWarcDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateWarcDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
 
-    var file = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.warc, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.warc, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.warc, .failed_to_open, "file", .structural),
-        };
-    };
-    defer file.close();
-
+    const file = source;
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.warc, .failed_to_get, "file size", .structural);
     };
@@ -1903,25 +1895,14 @@ pub fn validateZipDeepWithCentralDirectory(
 /// Deep ZIP validation by verifying CRC-32 checksums for all entries.
 /// ZIP stores a CRC-32 for each file entry, computed over the uncompressed data.
 /// For stored files, we CRC the data directly. For deflated files, we decompress first.
-pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.zip, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.zip, "Access denied", .full),
-            else => ValidationResult.invalidCodeWithDepth(.zip, .failed_to_open, "file", .full),
-        };
-    };
-    defer file.close();
-
-    const format = format_validation.detectZipSubformat(file);
-    file.seekTo(0) catch {
+pub fn validateZipDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const format = format_validation.detectZipSubformat(source);
+    source.seekTo(0) catch {
         return ValidationResult.invalidCodeWithDepth(format, .failed_to_seek, "to start", .full);
     };
 
-    var source = FileSource.fromFile(file);
-
     const telemetry = ZipTelemetry.init();
-    if (validateZipDeepWithCentralDirectory(allocator, &source, format, telemetry)) |result| {
+    if (validateZipDeepWithCentralDirectory(allocator, source, format, telemetry)) |result| {
         return result;
     }
 
@@ -1937,7 +1918,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         // Read local file header signature
         var sig: [4]u8 = undefined;
-        const sig_bytes = file.read(&sig) catch |err| {
+        const sig_bytes = source.read(&sig) catch |err| {
             if (err == error.EndOfStream) break;
             return ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "entry signature", .full);
         };
@@ -1966,7 +1947,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         // Read rest of local file header (26 bytes after signature)
         var header: [26]u8 = undefined;
-        const header_bytes = file.read(&header) catch {
+        const header_bytes = source.read(&header) catch {
             return ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "local file header", .full);
         };
         if (header_bytes < 26) {
@@ -2001,7 +1982,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
             const to_read = @min(filename_len_usize, name_buf.len);
             var truncated = false;
             if (to_read > 0) {
-                const name_read = file.readAll(name_buf[0..to_read]) catch {
+                const name_read = source.readAll(name_buf[0..to_read]) catch {
                     return ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "entry filename", .full);
                 };
                 if (name_read != to_read) {
@@ -2012,7 +1993,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
             if (filename_len_usize > to_read) {
                 truncated = true;
                 const remaining: i64 = @intCast(filename_len_usize - to_read);
-                file.seekBy(remaining) catch {
+                source.seekBy(remaining) catch {
                     return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "entry filename", .full);
                 };
             }
@@ -2024,13 +2005,13 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
         } else {
             // Skip filename
             const filename_len_i64: i64 = @intCast(filename_len_usize);
-            file.seekBy(filename_len_i64) catch {
+            source.seekBy(filename_len_i64) catch {
                 return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "entry filename", .full);
             };
         }
 
         // Skip extra field
-        file.seekBy(@as(i64, extra_len)) catch {
+        source.seekBy(@as(i64, extra_len)) catch {
             return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "filename/extra", .full);
         };
 
@@ -2038,7 +2019,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
             // Entry is encrypted - we cannot validate CRC without decryption key
             // Skip the compressed data and continue with structural validation
             encrypted_entry_count += 1;
-            file.seekBy(@as(i64, compressed_size)) catch {
+            source.seekBy(@as(i64, compressed_size)) catch {
                 return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "encrypted entry", .structural);
             };
             continue;
@@ -2064,7 +2045,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
             var scan_buf: [4]u8 = undefined;
             var found_next = false;
             while (!found_next) {
-                const bytes_read = file.read(&scan_buf) catch break;
+                const bytes_read = source.read(&scan_buf) catch break;
                 entry_telemetry.descriptor_reads += 1;
                 if (bytes_read == 0) break;
                 if (bytes_read < 4) break;
@@ -2073,24 +2054,24 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
                 if (scan_buf[0] == 'P' and scan_buf[1] == 'K') {
                     if (scan_buf[2] == 0x07 and scan_buf[3] == 0x08) {
                         // Data descriptor - skip the 12-byte descriptor (CRC + sizes)
-                        file.seekBy(12) catch break;
+                        source.seekBy(12) catch break;
                         found_next = true;
                         break;
                     } else if (scan_buf[2] == 0x01 and scan_buf[3] == 0x02) {
                         // Central directory header - end of local file headers
-                        file.seekBy(-4) catch break;
+                        source.seekBy(-4) catch break;
                         found_next = true;
                         break;
                     } else if (scan_buf[2] == 0x05 and scan_buf[3] == 0x06) {
                         // End of central directory
-                        file.seekBy(-4) catch break;
+                        source.seekBy(-4) catch break;
                         found_next = true;
                         break;
                     }
                     // PK\x03\x04 could be inside compressed data (nested ZIP), continue scanning
                 }
                 // Continue scanning - seek back 3 bytes to catch overlapping signatures
-                file.seekBy(-3) catch break;
+                source.seekBy(-3) catch break;
             }
             continue;
         }
@@ -2103,7 +2084,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
         // Skip entries with CRC of 0 (shouldn't happen if data descriptor flag isn't set, but be safe)
         if (stored_crc == 0) {
             // Skip the compressed data
-            file.seekBy(@as(i64, compressed_size)) catch {
+            source.seekBy(@as(i64, compressed_size)) catch {
                 return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "entry data", .full);
             };
             continue;
@@ -2112,7 +2093,7 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
         // Safety: don't decompress huge files
         if (uncompressed_size > max_uncompressed_size) {
             // Skip this entry but don't fail
-            file.seekBy(@as(i64, compressed_size)) catch {
+            source.seekBy(@as(i64, compressed_size)) catch {
                 return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "large entry", .full);
             };
             continue;
@@ -2122,21 +2103,21 @@ pub fn validateZipDeep(allocator: Allocator, path: []const u8) ValidationResult 
         switch (@as(ZipCompressionMethod, @enumFromInt(compression_method))) {
             .store => {
                 // Stored (uncompressed) - CRC the data directly
-                const result = validateZipStoredEntry(&source, stored_crc, compressed_size);
+                const result = validateZipStoredEntry(source, stored_crc, compressed_size);
                 if (!result.is_valid) {
                     return ValidationResult.invalidWithDepth(format, result.error_message orelse "CRC mismatch", .full);
                 }
             },
             .deflate => {
                 // Deflated - decompress and verify CRC
-                const result = validateZipDeflatedEntry(allocator, &source, stored_crc, compressed_size, uncompressed_size);
+                const result = validateZipDeflatedEntry(allocator, source, stored_crc, compressed_size, uncompressed_size);
                 if (!result.is_valid) {
                     return ValidationResult.invalidWithDepth(format, result.error_message orelse "Deflate CRC mismatch", .full);
                 }
             },
             _ => {
                 // Unknown compression method - skip
-                file.seekBy(@as(i64, compressed_size)) catch {
+                source.seekBy(@as(i64, compressed_size)) catch {
                     return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "entry", .full);
                 };
             },
@@ -2279,15 +2260,8 @@ pub fn validateZipDeflatedEntry(allocator: Allocator, file: *FileSource, stored_
 /// - Full decompression of deflate stream
 /// - CRC32 of decompressed data matches trailer
 /// - ISIZE (uncompressed size mod 2^32) matches
-pub fn validateGzipDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.gzip, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.gzip, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_open, "file", .structural),
-        };
-    };
-    defer file.close();
+pub fn validateGzipDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     // Get file size
     const file_size = file.getEndPos() catch {
@@ -2455,15 +2429,8 @@ pub const CrcHashingWriter = struct {
 /// Deep Bzip2 validation by attempting decompression with CRC verification.
 /// Bzip2 uses CRC32 for each block and a combined CRC at the end.
 /// Our pure Zig bzip2 decompressor verifies all checksums during decompression.
-pub fn validateBzip2Deep(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.bzip2, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.bzip2, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.bzip2, .failed_to_open, "file", .structural),
-        };
-    };
-    defer file.close();
+pub fn validateBzip2Deep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     // Get file size
     const file_size = file.getEndPos() catch {
@@ -2479,7 +2446,7 @@ pub fn validateBzip2Deep(allocator: Allocator, path: []const u8) ValidationResul
     const max_compressed_size: usize = 1024 * 1024 * 1024;
     if (file_size > max_compressed_size) {
         // For very large files, fall back to structural validation
-        return validateBzip2LargeFile(&file);
+        return validateBzip2LargeFile(file);
     }
 
     var heap_bz2: ?[]u8 = null;
@@ -2825,8 +2792,8 @@ pub fn discardSendFile(w: *std.Io.Writer, file_reader: *std.fs.File.Reader, limi
 
 /// Deep 7-Zip validation using the sevenz_validator module.
 /// This validates header CRCs and uses the system's 7z command for full integrity testing.
-pub fn validate7zDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const result = sevenz_validator.validateSevenZDeep(allocator, path);
+pub fn validate7zDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const result = sevenz_validator.validateSevenZDeep(allocator, source);
 
     if (!result.valid) {
         return ValidationResult.invalidWithDepth(.sevenz, result.error_message orelse "7z validation failed", .full);
@@ -2870,15 +2837,8 @@ fn validateRarWithRarz(data: []const u8) ValidationResult {
 }
 
 /// Deep RAR validation using rarz (in-memory clean-room implementation).
-pub fn validateRarDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.rar, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.rar, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.rar, .failed_to_open, "file", .structural),
-        };
-    };
-    defer file.close();
+pub fn validateRarDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_get, "file size", .structural);
@@ -3028,15 +2988,8 @@ pub fn validateCpt(file: *FileSource) ValidationResult {
     return validateCptWithCompactPro(data);
 }
 
-pub fn validateCptDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var file = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.cpt, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.cpt, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_open, "file", .structural),
-        };
-    };
-    defer file.close();
+pub fn validateCptDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_get, "file size", .structural);
@@ -3188,14 +3141,18 @@ test "validateCpt: valid CPT ground truth" {
 
 test "validateZipDeep: valid ZIP ground truth" {
     try skipIfMissing("ground_truth_examples/zip/test_archive.zip");
-    const result = validateZipDeep(testing.allocator, "ground_truth_examples/zip/test_archive.zip");
+    var src = FileSource.open("ground_truth_examples/zip/test_archive.zip") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer src.close();
+    const result = validateZipDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.zip, result.format);
 }
 
 test "validateGzipDeep: valid gzip ground truth" {
     try skipIfMissing("ground_truth_examples/gzip/sample.gz");
-    const result = validateGzipDeep(testing.allocator, "ground_truth_examples/gzip/sample.gz");
+    var src = FileSource.open("ground_truth_examples/gzip/sample.gz") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer src.close();
+    const result = validateGzipDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.gzip, result.format);
     try testing.expectEqual(ValidationDepth.full, result.validation_depth);
@@ -3203,7 +3160,9 @@ test "validateGzipDeep: valid gzip ground truth" {
 
 test "validateBzip2Deep: valid bzip2 ground truth" {
     try skipIfMissing("ground_truth_examples/bzip2/sample.bz2");
-    const result = validateBzip2Deep(testing.allocator, "ground_truth_examples/bzip2/sample.bz2");
+    var src = FileSource.open("ground_truth_examples/bzip2/sample.bz2") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer src.close();
+    const result = validateBzip2Deep(testing.allocator, &src);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.bzip2, result.format);
     try testing.expectEqual(ValidationDepth.full, result.validation_depth);
@@ -3270,21 +3229,27 @@ test "validateZstdDeep: corrupted checksum detected" {
 
 test "validate7zDeep: valid 7z ground truth" {
     try skipIfMissing("ground_truth_examples/7z/sample.7z");
-    const result = validate7zDeep(testing.allocator, "ground_truth_examples/7z/sample.7z");
+    var src = FileSource.open("ground_truth_examples/7z/sample.7z") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer src.close();
+    const result = validate7zDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.sevenz, result.format);
 }
 
 test "validateRarDeep: valid RAR ground truth" {
     try skipIfMissing("ground_truth_examples/rar/sample.rar");
-    const result = validateRarDeep(testing.allocator, "ground_truth_examples/rar/sample.rar");
+    var src = FileSource.open("ground_truth_examples/rar/sample.rar") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer src.close();
+    const result = validateRarDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.rar, result.format);
 }
 
 test "validateCptDeep: valid CPT ground truth" {
     try skipIfMissing("ground_truth_examples/cpt/sample.cpt");
-    const result = validateCptDeep(testing.allocator, "ground_truth_examples/cpt/sample.cpt");
+    var src = FileSource.open("ground_truth_examples/cpt/sample.cpt") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer src.close();
+    const result = validateCptDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.cpt, result.format);
 }
@@ -3497,7 +3462,9 @@ test "base32Decode: SHA-1 digest round trip" {
 
 test "validateWarcDeep: WARC with SHA-1 digests returns full depth" {
     try skipIfMissing("ground_truth_examples/warc/sample.warc");
-    const result = validateWarcDeep(testing.allocator, "ground_truth_examples/warc/sample.warc");
+    var src = FileSource.open("ground_truth_examples/warc/sample.warc") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer src.close();
+    const result = validateWarcDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.warc, result.format);
     try testing.expectEqual(ValidationDepth.full, result.validation_depth);
@@ -3558,7 +3525,9 @@ test "validateWarcDeep: synthetic WARC with valid SHA-1 digest returns full" {
     const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.warc");
     defer testing.allocator.free(path);
 
-    const result = validateWarcDeep(testing.allocator, path);
+    var src = try FileSource.open(path);
+    defer src.close();
+    const result = validateWarcDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.warc, result.format);
     try testing.expectEqual(ValidationDepth.full, result.validation_depth);
@@ -3594,13 +3563,21 @@ test "validateWarcDeep: synthetic WARC with wrong SHA-1 digest returns invalid" 
     const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test_bad.warc");
     defer testing.allocator.free(path);
 
-    const result = validateWarcDeep(testing.allocator, path);
+    var src = try FileSource.open(path);
+    defer src.close();
+    const result = validateWarcDeep(testing.allocator, &src);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.warc, result.format);
 }
 
 test "validateWarcDeep: file not found returns invalid" {
-    const result = validateWarcDeep(testing.allocator, "nonexistent_file.warc");
+    var src = FileSource.open("nonexistent_file.warc") catch |err| {
+        // Expected: the open fails for nonexistent file; treat as test pass
+        try testing.expect(err == error.FileNotFound);
+        return;
+    };
+    defer src.close();
+    const result = validateWarcDeep(testing.allocator, &src);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.warc, result.format);
 }
@@ -3617,14 +3594,18 @@ test "validateCpt: corrupt CPT rejected" {
 
 test "validateGzipDeep: corrupt gzip detected" {
     try skipIfMissing("ground_truth_examples/corrupted/gzip/sample_corrupt_1.gz");
-    const result = validateGzipDeep(testing.allocator, "ground_truth_examples/corrupted/gzip/sample_corrupt_1.gz");
+    var src = FileSource.open("ground_truth_examples/corrupted/gzip/sample_corrupt_1.gz") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer src.close();
+    const result = validateGzipDeep(testing.allocator, &src);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.gzip, result.format);
 }
 
 test "validateBzip2Deep: corrupt bzip2 detected" {
     try skipIfMissing("ground_truth_examples/corrupted/bzip2/sample_corrupt_1.bz2");
-    const result = validateBzip2Deep(testing.allocator, "ground_truth_examples/corrupted/bzip2/sample_corrupt_1.bz2");
+    var src = FileSource.open("ground_truth_examples/corrupted/bzip2/sample_corrupt_1.bz2") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer src.close();
+    const result = validateBzip2Deep(testing.allocator, &src);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.bzip2, result.format);
 }
@@ -3653,7 +3634,9 @@ test "validateZstdDeep: too-small file detected" {
 
 test "validateRarDeep: header CRC mismatch is INVALID" {
     try skipIfMissing("ground_truth_examples/corrupted/rar/sample_corrupt_1.rar");
-    const result = validateRarDeep(testing.allocator, "ground_truth_examples/corrupted/rar/sample_corrupt_1.rar");
+    var src = FileSource.open("ground_truth_examples/corrupted/rar/sample_corrupt_1.rar") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer src.close();
+    const result = validateRarDeep(testing.allocator, &src);
     // unrar reports "Corrupt header is found" and exits with error code 3 — this IS corruption
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.rar, result.format);
@@ -3742,18 +3725,15 @@ test "validateCptFromBuffer: truncated data rejected" {
 // ---------- Deep validators: file not found ----------
 
 test "validateZipDeep: file not found returns invalid" {
-    const result = validateZipDeep(testing.allocator, "nonexistent_file.zip");
-    try testing.expect(!result.is_valid);
+    try testing.expectError(error.FileNotFound, FileSource.open("nonexistent_file.zip"));
 }
 
 test "validateGzipDeep: file not found returns invalid" {
-    const result = validateGzipDeep(testing.allocator, "nonexistent_file.gz");
-    try testing.expect(!result.is_valid);
+    try testing.expectError(error.FileNotFound, FileSource.open("nonexistent_file.gz"));
 }
 
 test "validateBzip2Deep: file not found returns invalid" {
-    const result = validateBzip2Deep(testing.allocator, "nonexistent_file.bz2");
-    try testing.expect(!result.is_valid);
+    try testing.expectError(error.FileNotFound, FileSource.open("nonexistent_file.bz2"));
 }
 
 test "validateXzDeep: file not found returns invalid" {
@@ -3767,18 +3747,15 @@ test "validateZstdDeep: file not found returns invalid" {
 }
 
 test "validate7zDeep: file not found returns invalid" {
-    const result = validate7zDeep(testing.allocator, "nonexistent_file.7z");
-    try testing.expect(!result.is_valid);
+    try testing.expectError(error.FileNotFound, FileSource.open("nonexistent_file.7z"));
 }
 
 test "validateRarDeep: file not found returns invalid" {
-    const result = validateRarDeep(testing.allocator, "nonexistent_file.rar");
-    try testing.expect(!result.is_valid);
+    try testing.expectError(error.FileNotFound, FileSource.open("nonexistent_file.rar"));
 }
 
 test "validateCptDeep: file not found returns invalid" {
-    const result = validateCptDeep(testing.allocator, "nonexistent_file.cpt");
-    try testing.expect(!result.is_valid);
+    try testing.expectError(error.FileNotFound, FileSource.open("nonexistent_file.cpt"));
 }
 
 // ---------- Structural validators: synthetic empty/too-small input ----------

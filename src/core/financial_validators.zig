@@ -423,14 +423,9 @@ pub fn validateTxf(file: *FileSource) ValidationResult {
 ///   - v12+: CRC on all pages expected → any failure = corruption FAIL
 ///   - v11-: CRC on system pages + footer validation on all pages → structural
 ///   - Unknown: fail-safe, treat as v12+ (CRC failures = corruption)
-pub fn validateQbwDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateQbwDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	_ = allocator;
-
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCode(.qbw, .failed_to_open, "QuickBooks company file");
-	};
-	defer source.close();
-	const file = &source;
+	const file = source;
 
 	const file_size = file.getEndPos() catch {
 		return ValidationResult.invalidCode(.qbw, .failed_to_read, "QuickBooks file size");
@@ -670,7 +665,10 @@ pub fn validateQdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 	if (bytes_read >= 4 and std.mem.eql(u8, header[0..4], &[4]u8{ 0x50, 0x4B, 0x03, 0x04 })) {
 		// ZIP container — use ZIP deep validation (with CRC-32 verification)
-		var result = archive_validators.validateZipDeep(allocator, path);
+		file.seekTo(0) catch {
+			return ValidationResult.invalidCode(.qdf, .failed_to_seek, "Quicken data file");
+		};
+		var result = archive_validators.validateZipDeep(allocator, file);
 		// Override format to QDF (validateZipDeep returns .zip or a zip subformat)
 		result.format = .qdf;
 		return result;
@@ -733,11 +731,26 @@ pub fn validateNacha(file: *FileSource) ValidationResult {
 /// Deep validation of NACHA/ACH files: verifies entry hash, counts, and totals at batch and file level.
 /// Per batch: entry hash = sum of 8-digit routing numbers from type 6 records mod 10^10.
 /// Batch/file entry+addenda counts, debit/credit totals, block count verification.
-pub fn validateNachaDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file_data = std.fs.cwd().readFileAlloc(allocator, path, 256 * 1024 * 1024) catch {
-		return ValidationResult.invalidCode(.nacha, .failed_to_read, "NACHA file");
+pub fn validateNachaDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+	const file_size = source.getEndPos() catch {
+		return ValidationResult.invalidCode(.nacha, .failed_to_get, "NACHA file size");
+	};
+	if (file_size > 256 * 1024 * 1024) {
+		return ValidationResult.invalidCode(.nacha, .invalid_value, "NACHA file too large");
+	}
+	source.seekTo(0) catch {
+		return ValidationResult.invalidCode(.nacha, .failed_to_seek, "NACHA file");
+	};
+	const file_data = allocator.alloc(u8, @intCast(file_size)) catch {
+		return ValidationResult.invalidCode(.nacha, .out_of_memory, "for NACHA data");
 	};
 	defer allocator.free(file_data);
+	const bytes_read = source.readAll(file_data) catch {
+		return ValidationResult.invalidCode(.nacha, .failed_to_read, "NACHA file");
+	};
+	if (bytes_read != file_size) {
+		return ValidationResult.invalidCode(.nacha, .incomplete, "NACHA file");
+	}
 
 	if (file_data.len < 94) {
 		return ValidationResult.invalidCode(.nacha, .file_too_small, "NACHA file");
@@ -1046,11 +1059,26 @@ pub fn validateMt940(file: *FileSource) ValidationResult {
 
 /// Deep validation of MT940: verifies balance arithmetic (opening + transactions = closing)
 /// and currency consistency across balance tags.
-pub fn validateMt940Deep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file_data = std.fs.cwd().readFileAlloc(allocator, path, 64 * 1024 * 1024) catch {
-		return ValidationResult.invalidCode(.mt940, .failed_to_read, "MT940 file");
+pub fn validateMt940Deep(allocator: Allocator, source: *FileSource) ValidationResult {
+	const file_size = source.getEndPos() catch {
+		return ValidationResult.invalidCode(.mt940, .failed_to_get, "MT940 file size");
+	};
+	if (file_size > 64 * 1024 * 1024) {
+		return ValidationResult.invalidCode(.mt940, .invalid_value, "MT940 file too large");
+	}
+	source.seekTo(0) catch {
+		return ValidationResult.invalidCode(.mt940, .failed_to_seek, "MT940 file");
+	};
+	const file_data = allocator.alloc(u8, @intCast(file_size)) catch {
+		return ValidationResult.invalidCode(.mt940, .out_of_memory, "for MT940 data");
 	};
 	defer allocator.free(file_data);
+	const bytes_read = source.readAll(file_data) catch {
+		return ValidationResult.invalidCode(.mt940, .failed_to_read, "MT940 file");
+	};
+	if (bytes_read != file_size) {
+		return ValidationResult.invalidCode(.mt940, .incomplete, "MT940 file");
+	}
 
 	if (file_data.len < 10) {
 		return ValidationResult.invalidCode(.mt940, .file_too_small, "MT940 file");
@@ -2157,7 +2185,9 @@ test "QBW deep: valid CRC-32 pages" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("valid_deep.qbw", &path_buf);
 
-	const result = validateQbwDeep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateQbwDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 }
@@ -2189,7 +2219,9 @@ test "QBW deep: corrupted CRC-32 detected" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("corrupt_deep.qbw", &path_buf);
 
-	const result = validateQbwDeep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateQbwDeep(std.testing.allocator, &src);
 	try std.testing.expect(!result.is_valid);
 }
 
@@ -2200,7 +2232,9 @@ test "ground truth: QBW deep validation passes all page CRCs" {
 		return err;
 	};
 
-	const result = validateQbwDeep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateQbwDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 	try std.testing.expectEqual(FileFormat.qbw, result.format);
@@ -2233,7 +2267,9 @@ test "ground truth: QBW v11 (Sybase) deep validation returns structural" {
 		return err;
 	};
 
-	const result = validateQbwDeep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateQbwDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.qbw, result.format);
 	// v11 should get structural depth (no full CRC coverage)
@@ -2247,7 +2283,9 @@ test "ground truth: QBW v11 password-protected deep validation" {
 		return err;
 	};
 
-	const result = validateQbwDeep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateQbwDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.qbw, result.format);
 	try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
@@ -2395,7 +2433,9 @@ test "NACHA deep: valid file with correct integrity" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("valid_deep.ach", &path_buf);
 
-	const result = validateNachaDeep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateNachaDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 }
@@ -2421,7 +2461,9 @@ test "NACHA deep: corrupted entry hash detected" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("corrupt_hash.ach", &path_buf);
 
-	const result = validateNachaDeep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateNachaDeep(std.testing.allocator, &src);
 	try std.testing.expect(!result.is_valid);
 }
 
@@ -2446,7 +2488,9 @@ test "NACHA deep: corrupted credit total detected" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("corrupt_credit.ach", &path_buf);
 
-	const result = validateNachaDeep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateNachaDeep(std.testing.allocator, &src);
 	try std.testing.expect(!result.is_valid);
 }
 
@@ -2561,7 +2605,9 @@ test "MT940 deep: valid balance arithmetic" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("valid_deep.mt940", &path_buf);
 
-	const result = validateMt940Deep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateMt940Deep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 }
@@ -2588,7 +2634,9 @@ test "MT940 deep: balance arithmetic mismatch detected" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("corrupt_balance.mt940", &path_buf);
 
-	const result = validateMt940Deep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateMt940Deep(std.testing.allocator, &src);
 	try std.testing.expect(!result.is_valid);
 }
 
@@ -2610,7 +2658,9 @@ test "MT940 deep: currency mismatch detected" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("currency_mismatch.mt940", &path_buf);
 
-	const result = validateMt940Deep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateMt940Deep(std.testing.allocator, &src);
 	try std.testing.expect(!result.is_valid);
 }
 
@@ -2637,7 +2687,9 @@ test "MT940 deep: debit opening balance" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const path = try tmp_dir.dir.realpath("debit_opening.mt940", &path_buf);
 
-	const result = validateMt940Deep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateMt940Deep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 }
@@ -2857,7 +2909,9 @@ test "ground truth: NACHA sample deep validation" {
 		return err;
 	};
 
-	const result = validateNachaDeep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateNachaDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 	try std.testing.expectEqual(FileFormat.nacha, result.format);
@@ -2882,7 +2936,9 @@ test "ground truth: MT940 sample deep validation" {
 		return err;
 	};
 
-	const result = validateMt940Deep(std.testing.allocator, path);
+	var src = try FileSource.open(path);
+	defer src.close();
+	const result = validateMt940Deep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 	try std.testing.expectEqual(FileFormat.mt940, result.format);

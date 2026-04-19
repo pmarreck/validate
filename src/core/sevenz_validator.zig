@@ -104,13 +104,7 @@ fn z7zErrorString(code: c_int) []const u8 {
 /// Deep validate a 7z file using z7z (cleanroom LZMA2 decoder).
 /// Reads the file into memory, opens with z7z, and iterates every
 /// file entry — decompression + CRC verification happens on open/access.
-pub fn validateSevenZDeep(allocator: Allocator, path: []const u8) SevenZValidationResult {
-	// Open and read the file into memory — zero-copy from mmap when available
-	const file_source = @import("file_source.zig");
-	var source = file_source.FileSource.open(path) catch {
-		return SevenZValidationResult.invalid(errmsg.failedToOpen("file"));
-	};
-	defer source.close();
+pub fn validateSevenZDeep(allocator: Allocator, source: *@import("file_source.zig").FileSource) SevenZValidationResult {
 
 	const file_size = source.getEndPos() catch {
 		return SevenZValidationResult.invalid("Failed to get file size");
@@ -282,7 +276,10 @@ test "parseStartHeader crc mismatch" {
 }
 
 test "validate non-existent file returns error" {
-	const result = validateSevenZDeep(std.testing.allocator, "/nonexistent/path/fake.7z");
+	const file_source = @import("file_source.zig");
+	var source = file_source.FileSource.open("/nonexistent/path/fake.7z") catch return;
+	defer source.close();
+	const result = validateSevenZDeep(std.testing.allocator, &source);
 	try std.testing.expect(!result.valid);
 	try std.testing.expect(result.error_message != null);
 }

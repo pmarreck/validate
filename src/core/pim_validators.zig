@@ -181,12 +181,7 @@ fn isValidIcalDatetime(value: []const u8) bool {
 /// Deep validation for iCalendar files (RFC 5545).
 /// Verifies balanced BEGIN/END nesting, known component types, datetime formats,
 /// and proper VCALENDAR envelope.
-pub fn validateICalendarDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCode(.icalendar, .failed_to_read, "failed to open file");
-	};
-	defer source.close();
-
+pub fn validateICalendarDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const file_size = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.icalendar, .failed_to_read, "failed to get file size");
 	};
@@ -326,12 +321,7 @@ pub fn validateVCard(file: *FileSource) ValidationResult {
 
 /// Deep validation for vCard files (RFC 6350 / RFC 2426).
 /// Verifies balanced BEGIN/END pairs, required properties per version, and property line format.
-pub fn validateVCardDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCode(.vcard, .failed_to_read, "failed to open file");
-	};
-	defer source.close();
-
+pub fn validateVCardDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const file_size = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.vcard, .failed_to_read, "failed to get file size");
 	};
@@ -504,7 +494,9 @@ test "iCalendar deep: balanced nesting" {
 	const real_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, "test.ics");
 	defer std.testing.allocator.free(real_path);
 
-	const result = validateICalendarDeep(std.testing.allocator, real_path);
+	var src = try FileSource.open(real_path);
+	defer src.close();
+	const result = validateICalendarDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.icalendar, result.format);
 }
@@ -536,7 +528,9 @@ test "vCard deep: required properties present" {
 	const real_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, "test.vcf");
 	defer std.testing.allocator.free(real_path);
 
-	const result = validateVCardDeep(std.testing.allocator, real_path);
+	var src = try FileSource.open(real_path);
+	defer src.close();
+	const result = validateVCardDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.vcard, result.format);
 }
@@ -551,7 +545,9 @@ test "vCard deep: v3 requires N and FN" {
 	const real_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, "test.vcf");
 	defer std.testing.allocator.free(real_path);
 
-	const result = validateVCardDeep(std.testing.allocator, real_path);
+	var src = try FileSource.open(real_path);
+	defer src.close();
+	const result = validateVCardDeep(std.testing.allocator, &src);
 	try std.testing.expect(!result.is_valid);
 }
 
@@ -564,7 +560,9 @@ test "iCalendar deep: invalid datetime rejected" {
 	const real_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, "test.ics");
 	defer std.testing.allocator.free(real_path);
 
-	const result = validateICalendarDeep(std.testing.allocator, real_path);
+	var src = try FileSource.open(real_path);
+	defer src.close();
+	const result = validateICalendarDeep(std.testing.allocator, &src);
 	try std.testing.expect(!result.is_valid);
 }
 

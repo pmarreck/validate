@@ -1749,7 +1749,9 @@ pub fn validateKmz(file: *FileSource) ValidationResult {
 }
 
 pub fn validateKmzDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const zip_result = archive_validators.validateZipDeep(allocator, path);
+    var src = FileSource.open(path) catch return ValidationResult.invalidCodeWithDepth(.kmz, .failed_to_open, "file", .full);
+    defer src.close();
+    const zip_result = archive_validators.validateZipDeep(allocator, &src);
     var coerced = zip_result;
     coerced.format = .kmz;
     return coerced;

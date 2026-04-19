@@ -695,12 +695,8 @@ pub fn validateFlv(file: *FileSource) ValidationResult {
 /// Deep FLV validation — extracts H.264 NALs and AAC frames from tags, dispatches
 /// to codec validators. FLV video tags with codec ID 7 contain AVCC-format H.264;
 /// audio tags with sound format 10 contain raw AAC frames.
-pub fn validateFlvDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.flv, .failed_to_open, "FLV file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validateFlvDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.flv, .failed_to_get, "file size");
@@ -975,12 +971,8 @@ pub fn validateMpegTs(file: *FileSource) ValidationResult {
 }
 
 /// Deep MPEG-TS validation: CRC-32 for PAT/PMT, continuity counters, PES assembly + stream validation
-pub fn validateMpegTsDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.mpeg_ts, .failed_to_open, "file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validateMpegTsDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     file.seekTo(0) catch return ValidationResult.invalid(.mpeg_ts, "Failed to seek");
 
@@ -1117,16 +1109,8 @@ pub fn validateIvf(file: *FileSource) ValidationResult {
 
 /// Deep IVF validation — dispatches to VP9/AV1 codec validators for frame-level integrity.
 /// IVF frames are preceded by 12-byte headers: frame_size(u32 LE) + timestamp(u64 LE).
-pub fn validateIvfDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.ivf, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.ivf, "Access denied", .full),
-            else => ValidationResult.invalidCodeWithDepth(.ivf, .failed_to_open, "file", .full),
-        };
-    };
-    defer source.close();
-    const file = &source;
+pub fn validateIvfDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.ivf, .failed_to_get, "file size", .full);

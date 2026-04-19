@@ -87,7 +87,7 @@ pub fn validatePrprojDeep(allocator: Allocator, path: []const u8) ValidationResu
     if (header[0] == 0x1f and header[1] == 0x8b) {
         // Use gzip deep validation for CRC verification
         // This validates every byte through decompression and CRC32 check
-        const gzip_result = archive_validators.validateGzipDeep(allocator, path);
+        const gzip_result = archive_validators.validateGzipDeep(allocator, file);
         if (!gzip_result.is_valid) {
             // Remap format to prproj but preserve error
             var result = gzip_result;
@@ -254,13 +254,9 @@ pub fn validateIndd(file: *FileSource) ValidationResult {
     return ValidationResult.okWithDepth(.indd, .structural);
 }
 
-pub fn validateInddDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateInddDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.indd, .failed_to_open, "INDD file");
-    };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     // Structural validation is all we can do for proprietary format
     const result = validateIndd(file);
@@ -367,12 +363,8 @@ pub fn validateFcpxml(file: *FileSource) ValidationResult {
     return ValidationResult.ok(.fcpxml);
 }
 
-pub fn validateFcpxmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.fcpxml, .failed_to_open, "FCPXML file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validateFcpxmlDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     // First do structural validation
     const structural_result = validateFcpxml(file);
@@ -483,7 +475,9 @@ pub fn validateDrp(file: *FileSource) ValidationResult {
 
 pub fn validateDrpDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Use ZIP deep validation for the container integrity
-    const zip_result = archive_validators.validateZipDeep(allocator, path);
+    var zip_src = FileSource.open(path) catch return ValidationResult.invalidCode(.drp, .failed_to_open, "DRP file");
+    defer zip_src.close();
+    const zip_result = archive_validators.validateZipDeep(allocator, &zip_src);
     if (!zip_result.is_valid) {
         return ValidationResult.invalid(.drp, zip_result.error_message orelse "Invalid ZIP structure");
     }
@@ -567,7 +561,9 @@ pub fn validateSketch(file: *FileSource) ValidationResult {
 
 pub fn validateSketchDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Use ZIP deep validation for the container integrity
-    const zip_result = archive_validators.validateZipDeep(allocator, path);
+    var zip_src = FileSource.open(path) catch return ValidationResult.invalidCode(.sketch, .failed_to_open, "Sketch file");
+    defer zip_src.close();
+    const zip_result = archive_validators.validateZipDeep(allocator, &zip_src);
     if (!zip_result.is_valid) {
         return ValidationResult.invalid(.sketch, zip_result.error_message orelse "Invalid ZIP structure");
     }
@@ -767,17 +763,9 @@ pub fn validateEps(file: *FileSource) ValidationResult {
     return ValidationResult.invalidCode(.eps, .invalid_signature, "EPS");
 }
 
-pub fn validateEpsDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateEpsDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalid(.eps, "File not found"),
-            error.AccessDenied => ValidationResult.invalid(.eps, "Access denied"),
-            else => ValidationResult.invalidCode(.eps, .failed_to_open, "file"),
-        };
-    };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     // EPS is PostScript-based, structural validation is the best we can do
     const basic_result = validateEps(file);
@@ -957,17 +945,9 @@ pub fn validateAep(file: *FileSource) ValidationResult {
     return ValidationResult.ok(.aep);
 }
 
-pub fn validateAepDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateAepDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalid(.aep, "File not found"),
-            error.AccessDenied => ValidationResult.invalid(.aep, "Access denied"),
-            else => ValidationResult.invalidCode(.aep, .failed_to_open, "file"),
-        };
-    };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     // AEP uses RIFX which doesn't have internal checksums
     // Structural validation is the best we can do

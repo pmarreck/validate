@@ -59,14 +59,9 @@ pub fn validateFlp(file: *FileSource) ValidationResult {
 }
 
 /// Deep validate FL Studio project - parses event structure within FLdt chunk.
-pub fn validateFlpDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateFlpDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.flp, .failed_to_open, "FL Studio file");
-    };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     // Basic validation first
     const basic_result = validateFlp(file);
@@ -207,7 +202,9 @@ pub fn validateAls(file: *FileSource) ValidationResult {
 pub fn validateAlsDeep(allocator: Allocator, path: []const u8) ValidationResult {
     // Use gzip deep validation for full CRC32 verification
     // This validates every byte through decompression and CRC32 check
-    const gzip_result = archive_validators.validateGzipDeep(allocator, path);
+    var gz_src = FileSource.open(path) catch return ValidationResult.invalidCodeWithDepth(.als, .failed_to_open, "file", .structural);
+    defer gz_src.close();
+    const gzip_result = archive_validators.validateGzipDeep(allocator, &gz_src);
     if (!gzip_result.is_valid) {
         // Remap format to als but preserve error
         var result = gzip_result;
@@ -247,12 +244,8 @@ pub fn validateRpp(file: *FileSource) ValidationResult {
 }
 
 /// Deep validate REAPER project - verifies bracket structure and full UTF-8 validity.
-pub fn validateRppDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.rpp, .failed_to_open, "RPP file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validateRppDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.rpp, .failed_to_get, "file size");
@@ -553,12 +546,8 @@ fn buildXorTable(delta: u8) [256]u8 {
 /// Deep validate a Pro Tools session file by XOR-decrypting the body and
 /// walking its ZMARK block structure. Uses the documented key derivation scheme
 /// (xor_type 0x01 = PT 5-9 with mul=53, xor_type 0x05 = PT 10-12 with mul=11/negative).
-pub fn validatePtxDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.ptx, .failed_to_open, "Pro Tools file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validatePtxDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.ptx, .failed_to_get, "file size");

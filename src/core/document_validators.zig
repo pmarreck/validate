@@ -85,12 +85,9 @@ pub fn validateAccdb(file: *FileSource) ValidationResult {
 
 /// Deep validation for MDB files.
 /// MDB is a proprietary binary format - deep validation checks version codes.
-pub fn validateMdbDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateMdbDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalidCode(.mdb, .failed_to_open, "MDB file");
-    };
-    defer file.close();
+    const file = source;
 
     var header: [64]u8 = undefined;
     const bytes_read = file.read(&header) catch {
@@ -124,12 +121,9 @@ pub fn validateMdbDeep(allocator: Allocator, path: []const u8) ValidationResult 
 }
 
 /// Deep validation for ACCDB files.
-pub fn validateAccdbDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateAccdbDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalidCode(.accdb, .failed_to_open, "ACCDB file");
-    };
-    defer file.close();
+    const file = source;
 
     var header: [64]u8 = undefined;
     const bytes_read = file.read(&header) catch {

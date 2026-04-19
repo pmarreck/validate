@@ -160,17 +160,9 @@ pub fn validateWav(file: *FileSource) ValidationResult {
 }
 
 /// Deep WAV validation - verifies fmt chunk, data chunk size, and file consistency.
-pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateWavDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator; // No longer needed - using streaming validation
 
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.wav, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.wav, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.wav, .failed_to_open, "file", .structural),
-        };
-    };
-    defer source.close();
 
     // Get file size for bounds checking
     const file_size = source.getEndPos() catch {
@@ -322,7 +314,7 @@ pub fn validateWavDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // IEEE 754 float PCM (format tag 3): scan every sample for NaN/Inf corruption
     if (fmt_audio_format == 3 and (fmt_bits_per_sample == 32 or fmt_bits_per_sample == 64)) {
-        return validateWavFloatSamples(&source, data_chunk_offset, data_chunk_size, fmt_bits_per_sample);
+        return validateWavFloatSamples(source, data_chunk_offset, data_chunk_size, fmt_bits_per_sample);
     }
 
     // Integer PCM: no corruption signal (any value is valid) — structural only
@@ -374,15 +366,7 @@ fn validateWavFloatSamples(file: *FileSource, data_offset: u64, data_size: u32, 
 
 /// Deep validation for AIFF audio files.
 /// Parses all IFF chunks and validates structure similar to WAV deep validation.
-pub fn validateAiffDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.aiff, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.aiff, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_open, "file", .structural),
-        };
-    };
-    defer source.close();
+pub fn validateAiffDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 
     // Read entire file for validation
     const file_size = source.getEndPos() catch {
@@ -658,18 +642,10 @@ pub fn validateOgg(file: *FileSource) ValidationResult {
 
 /// Deep OGG validation using Vorbis or Opus codec decode.
 /// First verifies OGG page CRCs, then decodes audio packets.
-pub fn validateOggDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.ogg, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.ogg, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.ogg, .failed_to_open, "file", .structural),
-        };
-    };
-    defer source.close();
+pub fn validateOggDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 
     // First, verify OGG page CRCs for container integrity
-    const crc_result = ogg_validator.validateOggCrc(&source);
+    const crc_result = ogg_validator.validateOggCrc(source);
     if (!crc_result.valid) {
         return ValidationResult.invalidWithDepth(.ogg, crc_result.error_message orelse "OGG CRC verification failed", .full);
     }
@@ -680,7 +656,7 @@ pub fn validateOggDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
 
     // Extract packets to determine codec type
-    var packet_result = ogg_validator.extractPackets(allocator, &source) catch |err| {
+    var packet_result = ogg_validator.extractPackets(allocator, source) catch |err| {
         return ValidationResult.invalidWithDepth(.ogg, switch (err) {
             error.TruncatedPageHeader => errmsg.truncated("OGG page header"),
             error.InvalidOggSignature => errmsg.invalidSignature("OGG"),
@@ -706,7 +682,7 @@ pub fn validateOggDeep(allocator: Allocator, path: []const u8) ValidationResult 
             return ValidationResult.invalidCodeWithDepth(.ogg, .failed_to_seek, "for Vorbis validation", .full);
         };
 
-        const vorbis_result = vorbis_validator.validateOggVorbisAlloc(allocator, &source);
+        const vorbis_result = vorbis_validator.validateOggVorbisAlloc(allocator, source);
         if (vorbis_result.valid) {
             return ValidationResult.okWithDepth(.ogg, .full);
         } else {
@@ -721,7 +697,7 @@ pub fn validateOggDeep(allocator: Allocator, path: []const u8) ValidationResult 
             return ValidationResult.invalidCodeWithDepth(.ogg, .failed_to_seek, "for Opus validation", .full);
         };
 
-        const opus_result = opus_validator.validateOggOpus(&source);
+        const opus_result = opus_validator.validateOggOpus(source);
         if (opus_result.valid) {
             return ValidationResult.okWithDepth(.ogg, .full);
         } else {
@@ -1329,12 +1305,8 @@ pub fn validateWavPack(file: *FileSource) ValidationResult {
 /// Deep MIDI validation by parsing all track data.
 /// This validates delta times, event status/data bytes, running status,
 /// and verifies each track ends with End of Track meta event.
-pub fn validateMidiDeep(path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.midi, .failed_to_open, "MIDI file");
-    };
-    defer source.close();
-    const result = midi_validator.validateMidiDeep(&source);
+pub fn validateMidiDeep(source: *FileSource) ValidationResult {
+    const result = midi_validator.validateMidiDeep(source);
     if (result.valid) {
         return ValidationResult.okWithDepth(.midi, .full);
     } else {
@@ -1345,8 +1317,30 @@ pub fn validateMidiDeep(path: []const u8) ValidationResult {
 // ============ AC-3 / E-AC-3 Deep Validation ============
 
 /// Deep AC-3 (Dolby Digital) validation by parsing frame structure and verifying CRCs.
-pub fn validateAc3Deep(path: []const u8) ValidationResult {
-    const result = ac3_validator.validateAc3File(path, std.math.maxInt(u32)); // Validate all frames
+pub fn validateAc3Deep(source: *FileSource) ValidationResult {
+    const file_size = source.getEndPos() catch {
+        return ValidationResult.invalidCodeWithDepth(.ac3, .failed_to_get, "file size", .full);
+    };
+    if (file_size < 7) {
+        return ValidationResult.invalidCodeWithDepth(.ac3, .file_too_small, "AC-3", .full);
+    }
+    if (file_size > 256 * 1024 * 1024) {
+        return ValidationResult.invalidCodeWithDepth(.ac3, .file_too_large, "AC-3 deep validation", .full);
+    }
+
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |b| std.heap.page_allocator.free(b);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.ac3, .out_of_memory, "for AC-3", .full);
+        };
+        heap_buf = buf;
+        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.ac3, .failed_to_read, "AC-3 data", .full);
+        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.ac3, .incomplete, "AC-3 read", .full);
+        break :blk buf[0..n];
+    };
+
+    const result = ac3_validator.validateAc3Stream(data, std.math.maxInt(u32));
     if (result.valid) {
         return ValidationResult.okWithDepth(.ac3, .full);
     } else {
@@ -1355,8 +1349,27 @@ pub fn validateAc3Deep(path: []const u8) ValidationResult {
 }
 
 /// Deep E-AC-3 (Dolby Digital Plus) validation by parsing frame structure and verifying CRCs.
-pub fn validateEac3Deep(path: []const u8) ValidationResult {
-    const result = eac3_validator.validateEac3File(path, std.math.maxInt(u32)); // Validate all frames
+pub fn validateEac3Deep(source: *FileSource) ValidationResult {
+    const file_size = source.getEndPos() catch {
+        return ValidationResult.invalidCodeWithDepth(.eac3, .failed_to_get, "file size", .full);
+    };
+    if (file_size > 256 * 1024 * 1024) {
+        return ValidationResult.invalidCodeWithDepth(.eac3, .file_too_large, "E-AC-3 deep validation", .full);
+    }
+
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |b| std.heap.page_allocator.free(b);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.eac3, .out_of_memory, "for E-AC-3", .full);
+        };
+        heap_buf = buf;
+        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.eac3, .failed_to_read, "E-AC-3 data", .full);
+        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.eac3, .incomplete, "E-AC-3 read", .full);
+        break :blk buf[0..n];
+    };
+
+    const result = eac3_validator.validateEac3Stream(data, std.math.maxInt(u32));
     if (result.valid) {
         return ValidationResult.okWithDepth(.eac3, .full);
     } else {
@@ -1386,16 +1399,25 @@ pub fn validateDts(file: *FileSource) ValidationResult {
 }
 
 /// Deep DTS validation by parsing frame headers and verifying frame boundaries.
-pub fn validateDtsDeep(path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalidCodeWithDepth(.dts, .failed_to_open, "DTS file", .structural);
+pub fn validateDtsDeep(source: *FileSource) ValidationResult {
+    const file_size = source.getEndPos() catch {
+        return ValidationResult.invalidCodeWithDepth(.dts, .failed_to_get, "file size", .structural);
     };
-    defer file.close();
+    if (file_size > 10 * 1024 * 1024) {
+        return ValidationResult.invalidCodeWithDepth(.dts, .file_too_large, "DTS deep validation", .structural);
+    }
 
-    const data = file.readToEndAlloc(std.heap.page_allocator, 10 * 1024 * 1024) catch {
-        return ValidationResult.invalidCodeWithDepth(.dts, .failed_to_read, "DTS data", .structural);
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |b| std.heap.page_allocator.free(b);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.dts, .out_of_memory, "for DTS", .structural);
+        };
+        heap_buf = buf;
+        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.dts, .failed_to_read, "DTS data", .structural);
+        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.dts, .incomplete, "DTS read", .structural);
+        break :blk buf[0..n];
     };
-    defer std.heap.page_allocator.free(data);
 
     const result = dts_validator.validateDtsStream(data, 100);
     if (result.valid) {
@@ -1409,17 +1431,7 @@ pub fn validateDtsDeep(path: []const u8) ValidationResult {
 
 /// Helper to perform full decode validation of tracker file using libopenmpt.
 /// Reads the file and uses libopenmpt to fully decode/render audio.
-pub fn validateTrackerFullDecode(path: []const u8, format: FileFormat) ValidationResult {
-    // Open and read the file
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(format, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(format, "Access denied", .full),
-            else => ValidationResult.invalidCodeWithDepth(format, .failed_to_open, "file", .full),
-        };
-    };
-    defer source.close();
-
+pub fn validateTrackerFullDecode(source: *FileSource, format: FileFormat) ValidationResult {
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(format, .failed_to_get, "file size", .full);
     };
@@ -1436,6 +1448,9 @@ pub fn validateTrackerFullDecode(path: []const u8, format: FileFormat) Validatio
     defer std.c.free(buffer);
 
     const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
+    source.seekTo(0) catch {
+        return ValidationResult.invalidCodeWithDepth(format, .failed_to_seek, "to start", .full);
+    };
     const bytes_read = source.readAll(buf_slice) catch {
         return ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "file", .full);
     };
@@ -1458,46 +1473,58 @@ pub fn validateTrackerFullDecode(path: []const u8, format: FileFormat) Validatio
 
 /// Deep MOD validation - validates sample headers, pattern data, and file structure.
 /// Also performs full decode using libopenmpt.
-pub fn validateModDeep(path: []const u8) ValidationResult {
-    const result = tracker_validator.validateModDeep(path);
+pub fn validateModDeep(source: *FileSource) ValidationResult {
+    const result = tracker_validator.validateModDeep(source);
     if (!result.valid) {
         return ValidationResult.invalidWithDepth(.mod, result.error_message orelse "MOD validation failed", .full);
     }
     // Structural validation passed, now do full decode
-    return validateTrackerFullDecode(path, .mod);
+    source.seekTo(0) catch {
+        return ValidationResult.invalidCodeWithDepth(.mod, .failed_to_seek, "to start", .full);
+    };
+    return validateTrackerFullDecode(source, .mod);
 }
 
 /// Deep XM validation - validates header, patterns, instruments, and samples.
 /// Also performs full decode using libopenmpt.
-pub fn validateXmDeep(path: []const u8) ValidationResult {
-    const result = tracker_validator.validateXmDeep(path);
+pub fn validateXmDeep(source: *FileSource) ValidationResult {
+    const result = tracker_validator.validateXmDeep(source);
     if (!result.valid) {
         return ValidationResult.invalidWithDepth(.xm, result.error_message orelse "XM validation failed", .full);
     }
     // Structural validation passed, now do full decode
-    return validateTrackerFullDecode(path, .xm);
+    source.seekTo(0) catch {
+        return ValidationResult.invalidCodeWithDepth(.xm, .failed_to_seek, "to start", .full);
+    };
+    return validateTrackerFullDecode(source, .xm);
 }
 
 /// Deep IT validation - validates header, instruments, samples, and patterns.
 /// Also performs full decode using libopenmpt.
-pub fn validateItDeep(path: []const u8) ValidationResult {
-    const result = tracker_validator.validateItDeep(path);
+pub fn validateItDeep(source: *FileSource) ValidationResult {
+    const result = tracker_validator.validateItDeep(source);
     if (!result.valid) {
         return ValidationResult.invalidWithDepth(.it, result.error_message orelse "IT validation failed", .full);
     }
     // Structural validation passed, now do full decode
-    return validateTrackerFullDecode(path, .it);
+    source.seekTo(0) catch {
+        return ValidationResult.invalidCodeWithDepth(.it, .failed_to_seek, "to start", .full);
+    };
+    return validateTrackerFullDecode(source, .it);
 }
 
 /// Deep S3M validation - validates header, instruments, patterns, and sample data.
 /// Also performs full decode using libopenmpt.
-pub fn validateS3mDeep(path: []const u8) ValidationResult {
-    const result = tracker_validator.validateS3mDeep(path);
+pub fn validateS3mDeep(source: *FileSource) ValidationResult {
+    const result = tracker_validator.validateS3mDeep(source);
     if (!result.valid) {
         return ValidationResult.invalidWithDepth(.s3m, result.error_message orelse "S3M validation failed", .full);
     }
     // Structural validation passed, now do full decode
-    return validateTrackerFullDecode(path, .s3m);
+    source.seekTo(0) catch {
+        return ValidationResult.invalidCodeWithDepth(.s3m, .failed_to_seek, "to start", .full);
+    };
+    return validateTrackerFullDecode(source, .s3m);
 }
 
 // ============ FLAC Deep Validation (MD5) ============
@@ -1505,17 +1532,7 @@ pub fn validateS3mDeep(path: []const u8) ValidationResult {
 /// Deep FLAC validation by checking MD5 hash presence and attempting full decode.
 /// FLAC stores an MD5 hash of the uncompressed audio in STREAMINFO.
 /// We first check the structure, then attempt full decoding if possible.
-pub fn validateFlacDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    // First, verify basic FLAC structure
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.flac, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.flac, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.flac, .failed_to_open, "file", .structural),
-        };
-    };
-    defer source.close();
-
+pub fn validateFlacDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     // Read FLAC header
     var header: [42]u8 = undefined;
     const header_bytes = source.read(&header) catch {
@@ -1548,7 +1565,7 @@ pub fn validateFlacDeep(allocator: Allocator, path: []const u8) ValidationResult
 
     if (!has_md5) {
         // MD5 hash is missing - do full decode to validate frame CRCs
-        const decode_result = flac_decoder.decodeFlacFull(allocator, path) catch |err| {
+        const decode_result = flac_decoder.decodeFlacFull(allocator, source) catch |err| {
             if (err == flac_decoder.FlacError.Unsupported or err == flac_decoder.FlacError.OutOfMemory) {
                 return ValidationResult.okWithDepth(.flac, .structural);
             }
@@ -1565,7 +1582,7 @@ pub fn validateFlacDeep(allocator: Allocator, path: []const u8) ValidationResult
     }
 
     // Try full MD5 verification using the decoder
-    const result = flac_decoder.verifyFlacMd5(allocator, path) catch |err| {
+    const result = flac_decoder.verifyFlacMd5(allocator, source) catch |err| {
         // Unsupported features (e.g., >1GB) fall back to structural
         if (err == flac_decoder.FlacError.Unsupported or err == flac_decoder.FlacError.OutOfMemory) {
             return ValidationResult.okWithDepth(.flac, .structural);
@@ -1633,17 +1650,9 @@ const SAMPLE_RATE_TABLE = [_][3]u32{
 
 /// Deep MP3 validation by parsing and optionally verifying frame CRCs.
 /// Most MP3 files don't have CRC, so we validate frame structure.
-pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateMp3Deep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
 
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.mp3, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.mp3, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_open, "file", .structural),
-        };
-    };
-    defer source.close();
 
     var header: [10]u8 = undefined;
     _ = source.read(&header) catch {
@@ -1816,7 +1825,8 @@ pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // If CRC frames exist, verify them with the dedicated MP3 CRC validator
     if (frames_with_crc > 0) {
-        const crc_result = mp3_validator.validateMp3CrcPath(path);
+        source.seekTo(0) catch return ValidationResult.structuralOnly(.mp3);
+        const crc_result = mp3_validator.validateMp3Crc(source);
         if (crc_result.valid) {
             // CRCs verified successfully
             return ValidationResult.okWithDepth(.mp3, .full);
@@ -1825,7 +1835,8 @@ pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult 
             return ValidationResult.invalidWithDepth(.mp3, msg, .full);
         } else {
             // Fallback to decode validation if CRC check had issues
-            const decode_result = mp3_decode_validator.validateMp3DecodePath(path);
+            source.seekTo(0) catch return ValidationResult.structuralOnly(.mp3);
+            const decode_result = mp3_decode_validator.validateMp3Decode(source);
             if (decode_result.valid and decode_result.frames_decoded > 0) {
                 return ValidationResult.okWithDepth(.mp3, .full);
             }
@@ -1834,7 +1845,8 @@ pub fn validateMp3Deep(allocator: Allocator, path: []const u8) ValidationResult 
     }
 
     // No CRC present - do full decode validation to catch corruption
-    const decode_result = mp3_decode_validator.validateMp3DecodePath(path);
+    source.seekTo(0) catch return ValidationResult.structuralOnly(.mp3);
+    const decode_result = mp3_decode_validator.validateMp3Decode(source);
     if (decode_result.valid and decode_result.frames_decoded > 0) {
         return ValidationResult.okWithDepth(.mp3, .full);
     }
@@ -2070,15 +2082,7 @@ pub fn validateTta(file: *FileSource) ValidationResult {
 
 /// Deep TTA validation: verifies seek table CRC32 and per-frame CRC32s.
 /// This IS full validation — CRC32 covers every byte of compressed audio data.
-pub fn validateTtaDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.tta, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.tta, "Access denied", .full),
-            else => ValidationResult.invalidCodeWithDepth(.tta, .failed_to_open, "file", .full),
-        };
-    };
-    defer source.close();
+pub fn validateTtaDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.tta, .failed_to_read, "file size", .full);
@@ -2609,8 +2613,8 @@ test "validateS3m accepts ground truth S3M" {
 
 test "validateWavDeep accepts ground truth WAV" {
     var source = FileSource.open("ground_truth_examples/wav/sample.wav") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    source.close();
-    const result = validateWavDeep(testing.allocator, "ground_truth_examples/wav/sample.wav");
+    defer source.close();
+    const result = validateWavDeep(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.wav, result.format);
     // WAV validates chunk structure but no audio decode or checksum
@@ -2619,8 +2623,8 @@ test "validateWavDeep accepts ground truth WAV" {
 
 test "validateAiffDeep accepts ground truth AIFF" {
     var source = FileSource.open("ground_truth_examples/aiff/sample.aiff") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    source.close();
-    const result = validateAiffDeep(testing.allocator, "ground_truth_examples/aiff/sample.aiff");
+    defer source.close();
+    const result = validateAiffDeep(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.aiff, result.format);
     // AIFF validates chunk structure but no audio decode or checksum
@@ -2629,8 +2633,8 @@ test "validateAiffDeep accepts ground truth AIFF" {
 
 test "validateFlacDeep accepts ground truth FLAC" {
     var source = FileSource.open("ground_truth_examples/flac/generated_tone_440hz.flac") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    source.close();
-    const result = validateFlacDeep(testing.allocator, "ground_truth_examples/flac/generated_tone_440hz.flac");
+    defer source.close();
+    const result = validateFlacDeep(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.flac, result.format);
     try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
@@ -2638,8 +2642,8 @@ test "validateFlacDeep accepts ground truth FLAC" {
 
 test "validateOggDeep accepts ground truth OGG" {
     var source = FileSource.open("ground_truth_examples/ogg/generated_tone_440hz.ogg") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    source.close();
-    const result = validateOggDeep(testing.allocator, "ground_truth_examples/ogg/generated_tone_440hz.ogg");
+    defer source.close();
+    const result = validateOggDeep(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.ogg, result.format);
     try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
@@ -2647,8 +2651,8 @@ test "validateOggDeep accepts ground truth OGG" {
 
 test "validateMidiDeep accepts ground truth MIDI" {
     var source = FileSource.open("ground_truth_examples/midi/fur_elise.mid") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    source.close();
-    const result = validateMidiDeep("ground_truth_examples/midi/fur_elise.mid");
+    defer source.close();
+    const result = validateMidiDeep(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.midi, result.format);
     try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
@@ -2656,8 +2660,8 @@ test "validateMidiDeep accepts ground truth MIDI" {
 
 test "validateAc3Deep accepts ground truth AC-3" {
     var source = FileSource.open("ground_truth_examples/ac3/sample.ac3") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    source.close();
-    const result = validateAc3Deep("ground_truth_examples/ac3/sample.ac3");
+    defer source.close();
+    const result = validateAc3Deep(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.ac3, result.format);
     try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
@@ -2665,8 +2669,8 @@ test "validateAc3Deep accepts ground truth AC-3" {
 
 test "validateEac3Deep accepts ground truth E-AC-3" {
     var source = FileSource.open("ground_truth_examples/eac3/sample.eac3") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    source.close();
-    const result = validateEac3Deep("ground_truth_examples/eac3/sample.eac3");
+    defer source.close();
+    const result = validateEac3Deep(&source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.eac3, result.format);
     try testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
@@ -2925,39 +2929,27 @@ test "validateMod rejects file too small for MOD" {
 // ---------- Deep validators with corrupt data ----------
 
 test "validateWavDeep rejects file not found" {
-    const result = validateWavDeep(testing.allocator, "/nonexistent/path/to/file.wav");
-    try testing.expect(!result.is_valid);
-    try testing.expectEqual(FileFormat.wav, result.format);
+    try testing.expectError(error.FileNotFound, FileSource.open("/nonexistent/path/to/file.wav"));
 }
 
 test "validateAiffDeep rejects file not found" {
-    const result = validateAiffDeep(testing.allocator, "/nonexistent/path/to/file.aiff");
-    try testing.expect(!result.is_valid);
-    try testing.expectEqual(FileFormat.aiff, result.format);
+    try testing.expectError(error.FileNotFound, FileSource.open("/nonexistent/path/to/file.aiff"));
 }
 
 test "validateFlacDeep rejects file not found" {
-    const result = validateFlacDeep(testing.allocator, "/nonexistent/path/to/file.flac");
-    try testing.expect(!result.is_valid);
-    try testing.expectEqual(FileFormat.flac, result.format);
+    try testing.expectError(error.FileNotFound, FileSource.open("/nonexistent/path/to/file.flac"));
 }
 
 test "validateMidiDeep rejects file not found" {
-    const result = validateMidiDeep("/nonexistent/path/to/file.mid");
-    try testing.expect(!result.is_valid);
-    try testing.expectEqual(FileFormat.midi, result.format);
+    try testing.expectError(error.FileNotFound, FileSource.open("/nonexistent/path/to/file.mid"));
 }
 
 test "validateAc3Deep rejects file not found" {
-    const result = validateAc3Deep("/nonexistent/path/to/file.ac3");
-    try testing.expect(!result.is_valid);
-    try testing.expectEqual(FileFormat.ac3, result.format);
+    try testing.expectError(error.FileNotFound, FileSource.open("/nonexistent/path/to/file.ac3"));
 }
 
 test "validateEac3Deep rejects file not found" {
-    const result = validateEac3Deep("/nonexistent/path/to/file.eac3");
-    try testing.expect(!result.is_valid);
-    try testing.expectEqual(FileFormat.eac3, result.format);
+    try testing.expectError(error.FileNotFound, FileSource.open("/nonexistent/path/to/file.eac3"));
 }
 
 // ---------- WAV corruption detection tests ----------
@@ -2990,7 +2982,9 @@ test "validateWavDeep rejects corrupted block_align" {
     tmp.dir.writeFile(.{ .sub_path = "good.wav", .data = &wav }) catch return;
     const good_path = tmp.dir.realpathAlloc(testing.allocator, "good.wav") catch return;
     defer testing.allocator.free(good_path);
-    const good_result = validateWavDeep(testing.allocator, good_path);
+    var good_src = FileSource.open(good_path) catch return;
+    defer good_src.close();
+    const good_result = validateWavDeep(testing.allocator, &good_src);
     try testing.expect(good_result.is_valid);
 
     // Corrupt block_align (byte 32-33: change from 4 to 99)
@@ -2999,7 +2993,9 @@ test "validateWavDeep rejects corrupted block_align" {
     tmp.dir.writeFile(.{ .sub_path = "bad_align.wav", .data = &bad_wav }) catch return;
     const bad_path = tmp.dir.realpathAlloc(testing.allocator, "bad_align.wav") catch return;
     defer testing.allocator.free(bad_path);
-    const bad_result = validateWavDeep(testing.allocator, bad_path);
+    var bad_src = FileSource.open(bad_path) catch return;
+    defer bad_src.close();
+    const bad_result = validateWavDeep(testing.allocator, &bad_src);
     try testing.expect(!bad_result.is_valid);
 }
 
@@ -3028,7 +3024,9 @@ test "validateWavDeep rejects corrupted byte_rate" {
     tmp.dir.writeFile(.{ .sub_path = "bad_rate.wav", .data = &bad_wav }) catch return;
     const path = tmp.dir.realpathAlloc(testing.allocator, "bad_rate.wav") catch return;
     defer testing.allocator.free(path);
-    const result = validateWavDeep(testing.allocator, path);
+    var src = FileSource.open(path) catch return;
+    defer src.close();
+    const result = validateWavDeep(testing.allocator, &src);
     try testing.expect(!result.is_valid);
 }
 
@@ -3071,7 +3069,9 @@ test "validateAiffDeep rejects corrupted channel count" {
     tmp.dir.writeFile(.{ .sub_path = "good.aiff", .data = &full }) catch return;
     const good_path = tmp.dir.realpathAlloc(testing.allocator, "good.aiff") catch return;
     defer testing.allocator.free(good_path);
-    const good_result = validateAiffDeep(testing.allocator, good_path);
+    var good_src = FileSource.open(good_path) catch return;
+    defer good_src.close();
+    const good_result = validateAiffDeep(testing.allocator, &good_src);
     try testing.expect(good_result.is_valid);
 
     // Corrupt numChannels to 0
@@ -3080,7 +3080,9 @@ test "validateAiffDeep rejects corrupted channel count" {
     tmp.dir.writeFile(.{ .sub_path = "bad_ch.aiff", .data = &bad }) catch return;
     const bad_path = tmp.dir.realpathAlloc(testing.allocator, "bad_ch.aiff") catch return;
     defer testing.allocator.free(bad_path);
-    const result = validateAiffDeep(testing.allocator, bad_path);
+    var bad_src = FileSource.open(bad_path) catch return;
+    defer bad_src.close();
+    const result = validateAiffDeep(testing.allocator, &bad_src);
     try testing.expect(!result.is_valid);
 }
 

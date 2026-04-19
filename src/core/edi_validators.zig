@@ -63,12 +63,7 @@ fn validateX12EdiFromBuffer(data: []const u8) ValidationResult {
 }
 
 /// Deep validation of X12 EDI: verifies envelope hierarchy and control totals.
-pub fn validateX12EdiDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalid(.x12_edi, "Failed to open file");
-	};
-	defer source.close();
-
+pub fn validateX12EdiDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const file_sz = source.getEndPos() catch {
 		return ValidationResult.invalid(.x12_edi, "Failed to stat file");
 	};
@@ -366,12 +361,7 @@ fn validateEdifactFromBuffer(data: []const u8) ValidationResult {
 }
 
 /// Deep validation of EDIFACT: verifies envelope hierarchy and control totals.
-pub fn validateEdifactDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalid(.edifact, "Failed to open file");
-	};
-	defer source.close();
-
+pub fn validateEdifactDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const file_sz = source.getEndPos() catch {
 		return ValidationResult.invalid(.edifact, "Failed to stat file");
 	};

@@ -130,18 +130,8 @@ pub fn validateDmg(file: *FileSource) ValidationResult {
 
 /// Deep validation for DMG (Apple Disk Image) files.
 /// Validates koly block structure and checksums.
-pub fn validateDmgDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.dmg, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.dmg, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.dmg, .failed_to_open, "file", .structural),
-        };
-    };
-    defer file.close();
-
-    var dmg_source = FileSource.fromFile(file);
-    const result = dmg_validator.validateDmgFile(&dmg_source, allocator);
+pub fn validateDmgDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const result = dmg_validator.validateDmgFile(source, allocator);
 
     if (!result.valid) {
         return ValidationResult.invalidWithDepth(.dmg, result.error_message orelse "DMG validation failed", .full);
@@ -166,16 +156,7 @@ pub fn validateDmgDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
 /// Deep validation for ISO 9660 disk images.
 /// Validates volume descriptors and directory structure.
-pub fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.iso, "File not found", .structural),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.iso, "Access denied", .structural),
-            else => ValidationResult.invalidCodeWithDepth(.iso, .failed_to_open, "file", .structural),
-        };
-    };
-    defer source.close();
-
+pub fn validateIsoDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     // Get file size
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.iso, .failed_to_get, "file size", .structural);
@@ -192,7 +173,7 @@ pub fn validateIsoDeep(allocator: Allocator, path: []const u8) ValidationResult 
     const max_read: usize = @min(@as(usize, @intCast(file_size)), 64 * 1024 * 1024); // Cap at 64MB for memory
     const data = allocator.alloc(u8, max_read) catch {
         // Fall back to signature-only validation
-        return validateIsoSignature(&source);
+        return validateIsoSignature(source);
     };
     defer allocator.free(data);
 
@@ -343,7 +324,9 @@ test "ISO deep: ground truth sample.iso" {
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/iso/sample.iso") catch return;
     defer allocator.free(path);
 
-    const result = validateIsoDeep(allocator, path);
+    var src = try FileSource.open(path);
+    defer src.close();
+    const result = validateIsoDeep(allocator, &src);
     try testing.expect(result.is_valid);
     try testing.expectEqual(format_validation.FileFormat.iso, result.format);
     try testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);

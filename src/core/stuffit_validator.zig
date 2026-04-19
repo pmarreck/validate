@@ -309,16 +309,9 @@ pub fn validateSitx(file: *FileSource) ValidationResult {
 /// Deep validation for StuffIt Classic: walks all file entry headers,
 /// verifying the per-entry headerCRC16 (CRC-16/IBM over bytes 0–109).
 /// Also checks that the sum of entry sizes is consistent with totalLength.
-pub fn validateSitDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateSitDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-
-    const file = std.fs.cwd().openFile(path, .{}) catch {
-        return ValidationResult.invalidCode(.sit, .failed_to_read, "StuffIt archive");
-    };
-    defer file.close();
-
-    var fs = FileSource.fromFile(file);
-    const file_ptr = &fs;
+    const file_ptr = source;
 
     // Read header (256 bytes max)
     var hdr_buf: [256]u8 = undefined;
@@ -563,8 +556,8 @@ pub fn validateStuffit(file: *FileSource) ValidationResult {
 }
 
 /// Deep validation alias used by format_validation.zig's performDeepValidation switch.
-pub fn validateStuffitDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    return validateSitDeep(allocator, path);
+pub fn validateStuffitDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    return validateSitDeep(allocator, source);
 }
 
 // ============================================================================
@@ -830,7 +823,11 @@ test "validateSit ground truth: structural validation" {
 }
 
 test "validateSitDeep ground truth: deep (CRC) validation" {
-    const result = validateSitDeep(testing.allocator, "ground_truth_examples/sit/sample.sit");
+    var src_gt = FileSource.open("ground_truth_examples/sit/sample.sit") catch {
+        return error.SkipZigTest;
+    };
+    defer src_gt.close();
+    const result = validateSitDeep(testing.allocator, &src_gt);
     if (result.format == .sit and !result.is_valid and result.error_message != null) {
         // File may not exist in CI — treat as SkipZigTest
         if (std.mem.indexOf(u8, result.error_message.?, "failed") != null) {
@@ -881,6 +878,8 @@ test "validateSitDeep: bad entry header CRC rejected" {
 
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const abs_path = try tmp_dir.dir.realpath("bad_crc.sit", &path_buf);
-    const result = validateSitDeep(testing.allocator, abs_path);
+    var src = try FileSource.open(abs_path);
+    defer src.close();
+    const result = validateSitDeep(testing.allocator, &src);
     try testing.expect(!result.is_valid);
 }

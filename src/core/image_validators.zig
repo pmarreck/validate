@@ -413,12 +413,7 @@ const DoctypeStrippedResult = format_validation.DoctypeStrippedResult;
 const stripDoctypeDeclaration = format_validation.stripDoctypeDeclaration;
 
 /// Deep validation for SVG files using full XML parsing.
-pub fn validateSvgDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.svg, .failed_to_open, "SVG file");
-    };
-    defer source.close();
-
+pub fn validateSvgDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.svg, .failed_to_get, "file size");
     };
@@ -1045,12 +1040,7 @@ pub fn validateExr(file: *FileSource) ValidationResult {
 /// Deep validation for OpenEXR files - reads and validates header attributes.
 /// Required attributes per OpenEXR spec: channels, compression, dataWindow, displayWindow,
 /// lineOrder, pixelAspectRatio, screenWindowCenter, screenWindowWidth.
-pub fn validateExrDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.exr, .failed_to_open, "EXR file");
-    };
-    defer source.close();
-
+pub fn validateExrDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.exr, .failed_to_get, "file size");
     };
@@ -1444,14 +1434,9 @@ pub fn validatePsd(file: *FileSource) ValidationResult {
 }
 
 /// Deep validation of PSD file - fully parse all sections and decode image data.
-pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.psd, .failed_to_open, "file");
-    };
-    defer source.close();
-
+pub fn validatePsdDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     // First do basic validation
-    const basic = validatePsd(&source);
+    const basic = validatePsd(source);
     if (!basic.is_valid) {
         return basic;
     }
@@ -1965,10 +1950,38 @@ pub fn validateJbig2File(file: *FileSource) ValidationResult {
 /// Deep JPEG validation by fully decompressing the image using libjpeg-turbo.
 /// This catches Huffman errors, invalid DCT coefficients, and corrupted scan data
 /// that structural validation would miss.
-pub fn validateJpegDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateJpegDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    const result = jpeg_validator.validateJpegDeep(path);
+    const file_size = source.getEndPos() catch {
+        return ValidationResult.invalidWithDepth(.jpeg, errmsg.failedToGet("file size"), .full);
+    };
+    if (file_size < 2) {
+        return ValidationResult.invalidWithDepth(.jpeg, "File too small", .full);
+    }
+    // Track large files for warning (but don't reject them)
+    const is_large_file = file_size > 200 * 1024 * 1024;
+
+    const buffer = std.c.malloc(file_size) orelse {
+        return ValidationResult.invalidWithDepth(.jpeg, "Memory allocation failed", .full);
+    };
+    defer std.c.free(buffer);
+
+    const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
+    source.seekTo(0) catch {
+        return ValidationResult.invalidWithDepth(.jpeg, errmsg.failedToSeek("to start"), .full);
+    };
+    const bytes_read = source.readAll(buf_slice) catch {
+        return ValidationResult.invalidWithDepth(.jpeg, errmsg.failedToRead("file"), .full);
+    };
+    if (bytes_read != file_size) {
+        return ValidationResult.invalidWithDepth(.jpeg, errmsg.incomplete("file read"), .full);
+    }
+
+    const result = jpeg_validator.validateJpegDeepFromBuffer(buf_slice);
     if (result.valid) {
+        if (is_large_file) {
+            return ValidationResult.okWithDepthAndWarning(.jpeg, .full, "Large image file (>200MB)");
+        }
         if (result.warning_message) |warning| {
             return ValidationResult.okWithDepthAndWarning(.jpeg, .full, warning);
         }
@@ -2429,17 +2442,9 @@ fn validateGifLzwFrames(allocator: Allocator, data: []const u8) ?[]const u8 {
 
 /// and handles animated GIFs correctly (unlike zigimg which fails on them).
 
-pub fn validateGifDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateGifDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 
     // Phase 1: Structural validation — walk the entire GIF block/sub-block chain.
-
-    var source = FileSource.open(path) catch {
-
-        return ValidationResult.invalidWithDepth(.gif, "File not found", .full);
-
-    };
-
-    defer source.close();
 
     const file_size = source.getEndPos() catch {
 
@@ -2663,7 +2668,9 @@ pub fn validateTiffDeep(allocator: Allocator, path: []const u8, format: FileForm
     if (tag_check.has_dng_tags) {
         // Actual DNG/RAW files: use DNG validation path which validates
         // embedded JPEGs and doesn't try to decode the raw image data
-        return validateDngDeep(allocator, path);
+        var dng_src = FileSource.open(path) catch return ValidationResult.invalidCode(.dng, .failed_to_open, "DNG file");
+        defer dng_src.close();
+        return validateDngDeep(allocator, &dng_src);
     }
     // Note: has_unsupported_tags no longer forces structural-only validation
     // Our forked zigimg now skips unknown tags gracefully instead of panicking
@@ -3092,12 +3099,7 @@ pub fn readTiffTagArray(
 /// 1. Parse IFD structure to find embedded JPEG offsets/sizes
 /// 2. Decode and validate each embedded JPEG preview via libjpeg-turbo
 /// 3. Check for RawImageDigest tag (MD5 of raw data) and verify if present
-pub fn validateDngDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.dng, .failed_to_open, "DNG file");
-    };
-    defer source.close();
-
+pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.dng, .failed_to_stat, "DNG file");
     };
@@ -3252,13 +3254,9 @@ pub fn validateBmpDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// Deep WebP validation by fully decoding the image using libwebp.
 /// This catches VP8/VP8L bitstream errors and corrupted data
 /// that structural validation would miss.
-pub fn validateWebpDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateWebpDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.webp, .failed_to_open, "file");
-    };
-    defer source.close();
-    const result = webp_validator.validateWebpDeep(&source);
+    const result = webp_validator.validateWebpDeep(source);
     if (result.valid) {
         if (result.warning_message) |warning| {
             return ValidationResult.okWithDepthAndWarning(.webp, .full, warning);
@@ -3274,10 +3272,37 @@ pub fn validateWebpDeep(allocator: Allocator, path: []const u8) ValidationResult
 /// Deep JPEG-XL validation by fully decoding the image using libjxl.
 /// This catches ANS entropy coding errors, squeeze transform errors,
 /// and corrupted data that structural validation would miss.
-pub fn validateJxlDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateJxlDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    const result = jxl_validator.validateJxlDeep(path);
+    const file_size = source.getEndPos() catch {
+        return ValidationResult.invalidWithDepth(.jxl, errmsg.failedToGet("file size"), .full);
+    };
+    if (file_size < 2) {
+        return ValidationResult.invalidWithDepth(.jxl, "File too small", .full);
+    }
+    const is_large_file = file_size > 200 * 1024 * 1024;
+
+    const buffer = std.c.malloc(file_size) orelse {
+        return ValidationResult.invalidWithDepth(.jxl, "Memory allocation failed", .full);
+    };
+    defer std.c.free(buffer);
+
+    const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
+    source.seekTo(0) catch {
+        return ValidationResult.invalidWithDepth(.jxl, errmsg.failedToSeek("to start"), .full);
+    };
+    const bytes_read = source.readAll(buf_slice) catch {
+        return ValidationResult.invalidWithDepth(.jxl, errmsg.failedToRead("file"), .full);
+    };
+    if (bytes_read != file_size) {
+        return ValidationResult.invalidWithDepth(.jxl, errmsg.incomplete("file read"), .full);
+    }
+
+    const result = jxl_validator.validateJxlDeepFromBuffer(buf_slice);
     if (result.valid) {
+        if (is_large_file) {
+            return ValidationResult.okWithDepthAndWarning(.jxl, .full, "Large image file (>200MB)");
+        }
         if (result.warning_message) |warning| {
             return ValidationResult.okWithDepthAndWarning(.jxl, .full, warning);
         }
@@ -3290,13 +3315,8 @@ pub fn validateJxlDeep(allocator: Allocator, path: []const u8) ValidationResult 
 // ============ JPEG2000 Deep Validation ============
 
 /// Deep JPEG2000 validation using OpenJPEG to fully decode the image.
-pub fn validateJpeg2000Deep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateJpeg2000Deep(allocator: Allocator, source: *FileSource) ValidationResult {
     // Read the file into memory for OpenJPEG
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_open, "file", .full);
-    };
-    defer source.close();
-
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_get, "file size", .full);
     };
@@ -3328,13 +3348,8 @@ pub fn validateJpeg2000Deep(allocator: Allocator, path: []const u8) ValidationRe
 
 /// Deep JBIG2 validation by fully parsing segment structure and headers.
 /// This validates file header, segment headers, page info, and segment data.
-pub fn validateJbig2Deep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateJbig2Deep(allocator: Allocator, source: *FileSource) ValidationResult {
     // Read the file into memory for JBIG2 decoder
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_open, "file", .full);
-    };
-    defer source.close();
-
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_get, "file size", .full);
     };
@@ -3369,12 +3384,39 @@ pub fn validateJbig2Deep(allocator: Allocator, path: []const u8) ValidationResul
 // ============ HEIC/AVIF Deep Validation (pure Zig) ============
 
 /// Deep HEIC validation using pure-Zig HEIF container parser + H.265 syntax validator.
-pub fn validateHeicDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    _ = allocator;
-    const result = heic_validator.validateHeicDeep(path);
+pub fn validateHeicDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file_size = source.getEndPos() catch {
+        return ValidationResult.invalidWithDepth(.heic, errmsg.failedToGet("file size"), .full);
+    };
+
+    const is_large_file = file_size > 200 * 1024 * 1024;
+
+    if (file_size < 12) {
+        return ValidationResult.invalidWithDepth(.heic, errmsg.fileTooSmallFor("HEIC"), .full);
+    }
+    if (file_size > 512 * 1024 * 1024) {
+        return ValidationResult.invalidWithDepth(.heic, errmsg.fileTooLargeFor("in-memory validation"), .full);
+    }
+
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |b| allocator.free(b);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidWithDepth(.heic, "Memory allocation failed", .full);
+        };
+        heap_buf = buf;
+        const n = source.readAll(buf) catch return ValidationResult.invalidWithDepth(.heic, errmsg.failedToRead("file"), .full);
+        if (n != file_size) return ValidationResult.invalidWithDepth(.heic, errmsg.incomplete("file read"), .full);
+        break :blk buf[0..n];
+    };
+
+    const result = heic_validator.validateHeicDeepFromBuffer(data);
     if (result.valid) {
         if (result.structural_only) {
             return ValidationResult.okWithDepth(.heic, .structural);
+        }
+        if (is_large_file) {
+            return ValidationResult.okWithDepthAndWarning(.heic, .full, "Large image file (>200MB)");
         }
         if (result.warning_message) |warning| {
             return ValidationResult.okWithDepthAndWarning(.heic, .full, warning);
@@ -3387,12 +3429,39 @@ pub fn validateHeicDeep(allocator: Allocator, path: []const u8) ValidationResult
 }
 
 /// Deep AVIF validation using pure-Zig HEIF container parser + AV1 OBU validator.
-pub fn validateAvifDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    _ = allocator;
-    const result = avif_validator.validateAvifDeep(path);
+pub fn validateAvifDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file_size = source.getEndPos() catch {
+        return ValidationResult.invalidWithDepth(.avif, errmsg.failedToGet("file size"), .full);
+    };
+
+    const is_large_file = file_size > 200 * 1024 * 1024;
+
+    if (file_size < 12) {
+        return ValidationResult.invalidWithDepth(.avif, errmsg.fileTooSmallFor("AVIF"), .full);
+    }
+    if (file_size > 512 * 1024 * 1024) {
+        return ValidationResult.invalidWithDepth(.avif, errmsg.fileTooLargeFor("in-memory validation"), .full);
+    }
+
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |b| allocator.free(b);
+    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidWithDepth(.avif, "Memory allocation failed", .full);
+        };
+        heap_buf = buf;
+        const n = source.readAll(buf) catch return ValidationResult.invalidWithDepth(.avif, errmsg.failedToRead("file"), .full);
+        if (n != file_size) return ValidationResult.invalidWithDepth(.avif, errmsg.incomplete("file read"), .full);
+        break :blk buf[0..n];
+    };
+
+    const result = avif_validator.validateAvifDeepFromBuffer(data);
     if (result.valid) {
         if (result.structural_only) {
             return ValidationResult.okWithDepth(.avif, .structural);
+        }
+        if (is_large_file) {
+            return ValidationResult.okWithDepthAndWarning(.avif, .full, "Large image file (>200MB)");
         }
         if (result.warning_message) |warning| {
             return ValidationResult.okWithDepthAndWarning(.avif, .full, warning);
@@ -3411,16 +3480,7 @@ pub fn validateAvifDeep(allocator: Allocator, path: []const u8) ValidationResult
 /// This catches any single-bit error in the image data.
 /// Note: CRC errors in ancillary (non-critical) chunks are tolerated with a warning.
 /// Per PNG spec, a chunk is ancillary if the first byte has bit 5 set (lowercase letter).
-pub fn validatePngDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.png, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.png, "Access denied", .full),
-            else => ValidationResult.invalidCodeWithDepth(.png, .failed_to_open, "file", .full),
-        };
-    };
-    defer source.close();
-
+pub fn validatePngDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     // Skip PNG signature (8 bytes) - already validated in structural check
     source.seekTo(8) catch {
         return ValidationResult.invalidCodeWithDepth(.png, .failed_to_seek, "past signature", .full);
@@ -4042,16 +4102,7 @@ pub fn validateIco(file: *FileSource) ValidationResult {
 
 /// Deep ICO validation — verifies embedded PNG CRC-32 checksums and BMP structure.
 /// Returns .full if all entries are PNG with valid CRCs, .structural if any are BMP/unknown.
-pub fn validateIcoDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.ico, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.ico, "Access denied", .full),
-            else => ValidationResult.invalidCodeWithDepth(.ico, .failed_to_open, "file", .full),
-        };
-    };
-    defer source.close();
-
+pub fn validateIcoDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.ico, .failed_to_stat, "file", .structural);
     };
@@ -4563,12 +4614,7 @@ pub fn validateTga(file: *FileSource) ValidationResult {
 /// Deep TGA validation: verify pixel data integrity.
 /// For RLE types (9, 10, 11): decode RLE stream and verify exact pixel count.
 /// For uncompressed types (1, 2, 3): verify file size matches expected data size.
-pub fn validateTgaDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.okWithDepthAndWarning(.tga, .structural, "could not open for deep validation");
-    };
-    defer source.close();
-
+pub fn validateTgaDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file_size = source.getEndPos() catch {
         return ValidationResult.okWithDepthAndWarning(.tga, .structural, "could not get file size");
     };
@@ -5339,7 +5385,9 @@ test "validatePngDeep accepts valid PNG from ground truth" {
     const allocator = testing.allocator;
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/png/generated_gradient.png") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
-    const result = validatePngDeep(allocator, path);
+    var source = FileSource.open(path) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validatePngDeep(allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.png, result.format);
 }
@@ -5634,7 +5682,9 @@ test "validateSvgDeep accepts valid SVG from ground truth" {
     const allocator = testing.allocator;
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/svg/sample.svg") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
-    const result = validateSvgDeep(allocator, path);
+    var source = FileSource.open(path) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateSvgDeep(allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.svg, result.format);
 }
@@ -5693,7 +5743,9 @@ test "validateExrDeep accepts valid EXR from ground truth" {
     const allocator = testing.allocator;
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/exr/sample.exr") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
-    const result = validateExrDeep(allocator, path);
+    var source = FileSource.open(path) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateExrDeep(allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.exr, result.format);
 }
@@ -6323,7 +6375,9 @@ test "validateHeicDeep accepts valid HEIC from ground truth" {
     const allocator = testing.allocator;
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/heic/sample.heic") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
-    const result = validateHeicDeep(allocator, path);
+    var source = FileSource.open(path) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateHeicDeep(allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.heic, result.format);
 }
@@ -6334,7 +6388,9 @@ test "validateAvifDeep accepts valid AVIF from ground truth" {
     const allocator = testing.allocator;
     const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/avif/fox.avif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
-    const result = validateAvifDeep(allocator, path);
+    var source = FileSource.open(path) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateAvifDeep(allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.avif, result.format);
 }
@@ -7932,7 +7988,10 @@ test "validateGifDeep fully validates minimal synthetic GIF" {
 
     defer allocator.free(path);
 
-    const result = validateGifDeep(allocator, path);
+    var source = try FileSource.open(path);
+    defer source.close();
+
+    const result = validateGifDeep(allocator, &source);
 
     try std.testing.expectEqual(FileFormat.gif, result.format);
 
@@ -7990,7 +8049,10 @@ test "validateGifDeep detects LZW corruption in synthetic GIF" {
 
     defer allocator.free(path);
 
-    const result = validateGifDeep(allocator, path);
+    var source = try FileSource.open(path);
+    defer source.close();
+
+    const result = validateGifDeep(allocator, &source);
 
     try std.testing.expectEqual(FileFormat.gif, result.format);
 
