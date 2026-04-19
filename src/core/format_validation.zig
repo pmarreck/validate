@@ -5106,10 +5106,9 @@ fn validateUnknownWithUtf8Fallback(file: std.fs.File) ValidationResult {
 
 /// Deep Brotli validation by attempting full decompression.
 /// Validates the compressed bitstream integrity by decoding it entirely.
-fn validateBrotliDeep(path: []const u8) ValidationResult {
-    var src = FileSource.open(path) catch return ValidationResult.invalidCodeWithDepth(.br, .failed_to_open, "file", .full);
-    defer src.close();
-    const result = brotli_validator.validateBrotliDeep(&src);
+fn validateBrotliDeep(source: *FileSource) ValidationResult {
+    source.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.br, .failed_to_seek, "file", .full);
+    const result = brotli_validator.validateBrotliDeep(source);
     if (result.valid) {
         return ValidationResult.okWithDepth(.br, .full);
     } else {
@@ -5778,7 +5777,20 @@ pub const FormatValidator = struct {
                 // Preserve malformations and format from structural validation
                 const structural_malformations = result.malformations;
                 const structural_format = result.format;
-                result = self.performDeepValidation(allocator, path, result);
+                // Open a FileSource once and pass to all deep validators.
+                // Some arms (sqlite, bagit, git, macos bundles) use `path` instead of
+                // the source — and those formats may refer to directories where
+                // open() would succeed on the dir handle and then mmap would panic.
+                // Gate opening on whether the path is a regular file.
+                const is_regular_file = if (std.fs.cwd().statFile(path)) |st|
+                    st.kind == .file
+                else |_| false;
+                var source = if (is_regular_file)
+                    FileSource.open(path) catch FileSource.fromBuffer(&.{})
+                else
+                    FileSource.fromBuffer(&.{});
+                defer source.close();
+                result = self.performDeepValidation(allocator, &source, path, result);
                 // If deep validation returned a generic container format (.zip, .gzip)
                 // but structural validation had already identified a more specific format,
                 // preserve the specific format (e.g., .logicx, .als, .drp, .song)
@@ -5868,534 +5880,420 @@ pub const FormatValidator = struct {
     }
 
     /// Perform format-specific deep validation.
-    fn performDeepValidation(self: *Self, allocator: Allocator, path: []const u8, initial_result: ValidationResult) ValidationResult {
+    fn performDeepValidation(self: *Self, allocator: Allocator, source: *FileSource, path: []const u8, initial_result: ValidationResult) ValidationResult {
         _ = self;
         return switch (initial_result.format) {
             .sqlite => document_validators.validateSqliteDeep(allocator, path),
             .png => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.png, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validatePngDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.png, .failed_to_seek, "file", .full);
+                break :blk image_validators.validatePngDeep(allocator, source);
             },
             .jpeg => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.jpeg, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateJpegDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.jpeg, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateJpegDeep(allocator, source);
             },
             .gif => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.gif, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateGifDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.gif, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateGifDeep(allocator, source);
             },
             .tiff, .dng, .cr2, .nef, .arw, .orf, .pef => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(initial_result.format, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateTiffDeep(allocator, &src, initial_result.format);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(initial_result.format, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateTiffDeep(allocator, source, initial_result.format);
             },
             .tga => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.tga, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateTgaDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.tga, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateTgaDeep(allocator, source);
             },
             // RAF, RW2, CR3: structural-only for now (no deep decoder available)
             .raf, .rw2, .cr3 => initial_result,
             .psd => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.psd, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validatePsdDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.psd, .failed_to_seek, "file", .full);
+                break :blk image_validators.validatePsdDeep(allocator, source);
             },
             .ai => blk: {
-                var src = FileSource.open(path) catch |err| break :blk switch (err) {
-                    error.FileNotFound => ValidationResult.invalid(.ai, "File not found"),
-                    error.AccessDenied => ValidationResult.invalid(.ai, "Access denied"),
-                    else => ValidationResult.invalidCode(.ai, .failed_to_open, "file"),
-                };
-                defer src.close();
-                break :blk creative_validators.validateAiDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.ai, .failed_to_seek, "file");
+                break :blk creative_validators.validateAiDeep(allocator, source);
             },
             .eps => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.eps, .failed_to_open, "file");
-                defer src.close();
-                break :blk creative_validators.validateEpsDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.eps, .failed_to_seek, "file");
+                break :blk creative_validators.validateEpsDeep(allocator, source);
             },
             .aep => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.aep, .failed_to_open, "file");
-                defer src.close();
-                break :blk creative_validators.validateAepDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.aep, .failed_to_seek, "file");
+                break :blk creative_validators.validateAepDeep(allocator, source);
             },
             .webp => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.webp, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateWebpDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.webp, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateWebpDeep(allocator, source);
             },
             .jxl => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.jxl, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateJxlDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.jxl, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateJxlDeep(allocator, source);
             },
             .bmp => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.bmp, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateBmpDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.bmp, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateBmpDeep(allocator, source);
             },
             .ico => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.ico, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateIcoDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.ico, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateIcoDeep(allocator, source);
             },
             .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .pages, .logicx, .song => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(initial_result.format, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk archive_validators.validateZipDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(initial_result.format, .failed_to_seek, "file", .full);
+                break :blk archive_validators.validateZipDeep(allocator, source);
             },
             .kmz => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.kmz, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk text_format_validators.validateKmzDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.kmz, .failed_to_seek, "file", .full);
+                break :blk text_format_validators.validateKmzDeep(allocator, source);
             },
             .@"3mf" => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.@"3mf", .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk cad_3d_validators.validate3mfDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.@"3mf", .failed_to_seek, "file", .full);
+                break :blk cad_3d_validators.validate3mfDeep(allocator, source);
             },
             .flac => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.flac, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk music_validators.validateFlacDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.flac, .failed_to_seek, "file", .structural);
+                break :blk music_validators.validateFlacDeep(allocator, source);
             },
             .wav => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.wav, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk music_validators.validateWavDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.wav, .failed_to_seek, "file", .structural);
+                break :blk music_validators.validateWavDeep(allocator, source);
             },
             .aiff => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk music_validators.validateAiffDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.aiff, .failed_to_seek, "file", .structural);
+                break :blk music_validators.validateAiffDeep(allocator, source);
             },
             .pdf => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk pdf_validator.validatePdfDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_seek, "file", .structural);
+                break :blk pdf_validator.validatePdfDeep(allocator, source);
             },
             .gzip => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk archive_validators.validateGzipDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_seek, "file", .structural);
+                break :blk archive_validators.validateGzipDeep(allocator, source);
             },
             .bzip2 => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.bzip2, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk archive_validators.validateBzip2Deep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.bzip2, .failed_to_seek, "file", .structural);
+                break :blk archive_validators.validateBzip2Deep(allocator, source);
             },
             .xz => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.xz, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk archive_validators.validateXzDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.xz, .failed_to_seek, "file", .structural);
+                break :blk archive_validators.validateXzDeep(allocator, source);
             },
             .zstd => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk archive_validators.validateZstdDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_seek, "file", .structural);
+                break :blk archive_validators.validateZstdDeep(allocator, source);
             },
             .sevenz => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.sevenz, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk archive_validators.validate7zDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.sevenz, .failed_to_seek, "file", .full);
+                break :blk archive_validators.validate7zDeep(allocator, source);
             },
             .rar => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.rar, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk archive_validators.validateRarDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.rar, .failed_to_seek, "file", .structural);
+                break :blk archive_validators.validateRarDeep(allocator, source);
             },
             .cpt => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk archive_validators.validateCptDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_seek, "file", .structural);
+                break :blk archive_validators.validateCptDeep(allocator, source);
             },
             .warc => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.warc, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk archive_validators.validateWarcDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.warc, .failed_to_seek, "file", .structural);
+                break :blk archive_validators.validateWarcDeep(allocator, source);
             },
             .dmg => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.dmg, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk filesystem_validators.validateDmgDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.dmg, .failed_to_seek, "file", .structural);
+                break :blk filesystem_validators.validateDmgDeep(allocator, source);
             },
             .iso => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.iso, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk filesystem_validators.validateIsoDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.iso, .failed_to_seek, "file", .structural);
+                break :blk filesystem_validators.validateIsoDeep(allocator, source);
             },
             .mp3 => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk music_validators.validateMp3Deep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_seek, "file", .structural);
+                break :blk music_validators.validateMp3Deep(allocator, source);
             },
             .ogg => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.ogg, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk music_validators.validateOggDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.ogg, .failed_to_seek, "file", .structural);
+                break :blk music_validators.validateOggDeep(allocator, source);
             },
             .tta => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.tta, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk music_validators.validateTtaDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.tta, .failed_to_seek, "file", .full);
+                break :blk music_validators.validateTtaDeep(allocator, source);
             },
             .midi => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.midi, .failed_to_open, "MIDI file");
-                defer src.close();
-                break :blk music_validators.validateMidiDeep(&src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.midi, .failed_to_seek, "MIDI file");
+                break :blk music_validators.validateMidiDeep(source);
             },
             .mp4, .mov, .m4a => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.mp4, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk movie_validators.validateMp4Deep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.mp4, .failed_to_seek, "file", .structural);
+                break :blk movie_validators.validateMp4Deep(allocator, source);
             },
             .mkv, .webm => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.mkv, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk movie_validators.validateMkvDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.mkv, .failed_to_seek, "file", .structural);
+                break :blk movie_validators.validateMkvDeep(allocator, source);
             },
             .avi => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.avi, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk movie_validators.validateAviDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.avi, .failed_to_seek, "file", .structural);
+                break :blk movie_validators.validateAviDeep(allocator, source);
             },
             .heic => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.heic, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateHeicDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.heic, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateHeicDeep(allocator, source);
             },
             .avif => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.avif, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateAvifDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.avif, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateAvifDeep(allocator, source);
             },
             .exr => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.exr, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateExrDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.exr, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateExrDeep(allocator, source);
             },
             .glb => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.glb, .failed_to_open, "GLB file");
-                defer src.close();
-                break :blk cad_3d_validators.validateGlbDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.glb, .failed_to_seek, "GLB file");
+                break :blk cad_3d_validators.validateGlbDeep(allocator, source);
             },
             .doc, .xls, .ppt => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(initial_result.format, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk document_validators.validateOle2Deep(allocator, &src, initial_result.format);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(initial_result.format, .failed_to_seek, "file", .structural);
+                break :blk document_validators.validateOle2Deep(allocator, source, initial_result.format);
             },
-            .br => validateBrotliDeep(path),
+            .br => validateBrotliDeep(source),
             .mod => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidWithDepth(.mod, "Failed to open MOD file", .full);
-                defer src.close();
-                break :blk music_validators.validateModDeep(&src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidWithDepth(.mod, "Failed to seek MOD file", .full);
+                break :blk music_validators.validateModDeep(source);
             },
             .xm => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidWithDepth(.xm, "Failed to open XM file", .full);
-                defer src.close();
-                break :blk music_validators.validateXmDeep(&src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidWithDepth(.xm, "Failed to seek XM file", .full);
+                break :blk music_validators.validateXmDeep(source);
             },
             .it => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidWithDepth(.it, "Failed to open IT file", .full);
-                defer src.close();
-                break :blk music_validators.validateItDeep(&src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidWithDepth(.it, "Failed to seek IT file", .full);
+                break :blk music_validators.validateItDeep(source);
             },
             .s3m => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidWithDepth(.s3m, "Failed to open S3M file", .full);
-                defer src.close();
-                break :blk music_validators.validateS3mDeep(&src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidWithDepth(.s3m, "Failed to seek S3M file", .full);
+                break :blk music_validators.validateS3mDeep(source);
             },
             .jpeg2000 => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateJpeg2000Deep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateJpeg2000Deep(allocator, source);
             },
             .jbig2 => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateJbig2Deep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateJbig2Deep(allocator, source);
             },
             .ac3 => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.ac3, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk music_validators.validateAc3Deep(&src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.ac3, .failed_to_seek, "file", .full);
+                break :blk music_validators.validateAc3Deep(source);
             },
             .dts => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.dts, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk music_validators.validateDtsDeep(&src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.dts, .failed_to_seek, "file", .structural);
+                break :blk music_validators.validateDtsDeep(source);
             },
             .eac3 => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.eac3, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk music_validators.validateEac3Deep(&src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.eac3, .failed_to_seek, "file", .full);
+                break :blk music_validators.validateEac3Deep(source);
             },
             .prproj => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.prproj, .failed_to_open, "PRPROJ file");
-                defer src.close();
-                break :blk creative_validators.validatePrprojDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.prproj, .failed_to_seek, "PRPROJ file");
+                break :blk creative_validators.validatePrprojDeep(allocator, source);
             },
             .indd => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.indd, .failed_to_open, "INDD file");
-                defer src.close();
-                break :blk creative_validators.validateInddDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.indd, .failed_to_seek, "INDD file");
+                break :blk creative_validators.validateInddDeep(allocator, source);
             },
             .idml => blk: { // IDML uses ZIP deep validation
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.idml, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk archive_validators.validateZipDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.idml, .failed_to_seek, "file", .full);
+                break :blk archive_validators.validateZipDeep(allocator, source);
             },
             .dwg => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.dwg, .failed_to_open, "DWG file");
-                defer src.close();
-                break :blk cad_3d_validators.validateDwgDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.dwg, .failed_to_seek, "DWG file");
+                break :blk cad_3d_validators.validateDwgDeep(allocator, source);
             },
             .blend => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.blend, .failed_to_open, "Blender file");
-                defer src.close();
-                break :blk cad_3d_validators.validateBlendDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.blend, .failed_to_seek, "Blender file");
+                break :blk cad_3d_validators.validateBlendDeep(allocator, source);
             },
             .flp => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.flp, .failed_to_open, "FL Studio file");
-                defer src.close();
-                break :blk daw_validators.validateFlpDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.flp, .failed_to_seek, "FL Studio file");
+                break :blk daw_validators.validateFlpDeep(allocator, source);
             },
             .als => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.als, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk daw_validators.validateAlsDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.als, .failed_to_seek, "file", .structural);
+                break :blk daw_validators.validateAlsDeep(allocator, source);
             },
             .rpp => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.rpp, .failed_to_open, "RPP file");
-                defer src.close();
-                break :blk daw_validators.validateRppDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.rpp, .failed_to_seek, "RPP file");
+                break :blk daw_validators.validateRppDeep(allocator, source);
             },
             .ptx => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.ptx, .failed_to_open, "Pro Tools file");
-                defer src.close();
-                break :blk daw_validators.validatePtxDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.ptx, .failed_to_seek, "Pro Tools file");
+                break :blk daw_validators.validatePtxDeep(allocator, source);
             },
             .fcpxml => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.fcpxml, .failed_to_open, "FCPXML file");
-                defer src.close();
-                break :blk creative_validators.validateFcpxmlDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.fcpxml, .failed_to_seek, "FCPXML file");
+                break :blk creative_validators.validateFcpxmlDeep(allocator, source);
             },
             .svg => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.svg, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk image_validators.validateSvgDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.svg, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateSvgDeep(allocator, source);
             },
             .kml => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.kml, .failed_to_open, "KML file");
-                defer src.close();
-                break :blk text_format_validators.validateKmlDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.kml, .failed_to_seek, "KML file");
+                break :blk text_format_validators.validateKmlDeep(allocator, source);
             },
             .rtf => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.rtf, .failed_to_open, "RTF file");
-                defer src.close();
-                break :blk text_format_validators.validateRtfDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.rtf, .failed_to_seek, "RTF file");
+                break :blk text_format_validators.validateRtfDeep(allocator, source);
             },
             .mpeg_ts => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.mpeg_ts, .failed_to_open, "file");
-                defer src.close();
-                break :blk movie_validators.validateMpegTsDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.mpeg_ts, .failed_to_seek, "file");
+                break :blk movie_validators.validateMpegTsDeep(allocator, source);
             },
             .ivf => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.ivf, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk movie_validators.validateIvfDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.ivf, .failed_to_seek, "file", .full);
+                break :blk movie_validators.validateIvfDeep(allocator, source);
             },
             .flv => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.flv, .failed_to_open, "FLV file");
-                defer src.close();
-                break :blk movie_validators.validateFlvDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.flv, .failed_to_seek, "FLV file");
+                break :blk movie_validators.validateFlvDeep(allocator, source);
             },
             .mbox => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.mbox, .failed_to_open, "MBOX file");
-                defer src.close();
-                break :blk email_validators.validateMboxDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.mbox, .failed_to_seek, "MBOX file");
+                break :blk email_validators.validateMboxDeep(allocator, source);
             },
             .wad => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.wad, .failed_to_open, "WAD file");
-                defer src.close();
-                break :blk game_asset_validators.validateWadDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.wad, .failed_to_seek, "WAD file");
+                break :blk game_asset_validators.validateWadDeep(allocator, source);
             },
             .pak => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.pak, .failed_to_open, "PAK file");
-                defer src.close();
-                break :blk game_asset_validators.validatePakDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.pak, .failed_to_seek, "PAK file");
+                break :blk game_asset_validators.validatePakDeep(allocator, source);
             },
             .nes => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.nes, .failed_to_open, "NES file");
-                defer src.close();
-                break :blk game_validator.validateNesDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.nes, .failed_to_seek, "NES file");
+                break :blk game_validator.validateNesDeep(allocator, source);
             },
             .iff => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.iff, .failed_to_open, "IFF file");
-                defer src.close();
-                break :blk game_asset_validators.validateIffDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.iff, .failed_to_seek, "IFF file");
+                break :blk game_asset_validators.validateIffDeep(allocator, source);
             },
             .n64 => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.n64, .failed_to_open, "N64 file");
-                defer src.close();
-                break :blk game_validator.validateN64Deep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.n64, .failed_to_seek, "N64 file");
+                break :blk game_validator.validateN64Deep(allocator, source);
             },
             .genesis => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.genesis, .failed_to_open, "Genesis file");
-                defer src.close();
-                break :blk game_validator.validateGenesisDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.genesis, .failed_to_seek, "Genesis file");
+                break :blk game_validator.validateGenesisDeep(allocator, source);
             },
             .gb => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.gb, .failed_to_open, "GB file");
-                defer src.close();
-                break :blk game_validator.validateGbDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.gb, .failed_to_seek, "GB file");
+                break :blk game_validator.validateGbDeep(allocator, source);
             },
             .drp => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.drp, .failed_to_open, "DRP file");
-                defer src.close();
-                break :blk creative_validators.validateDrpDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.drp, .failed_to_seek, "DRP file");
+                break :blk creative_validators.validateDrpDeep(allocator, source);
             },
             .mdb => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.mdb, .failed_to_open, "MDB file");
-                defer src.close();
-                break :blk document_validators.validateMdbDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.mdb, .failed_to_seek, "MDB file");
+                break :blk document_validators.validateMdbDeep(allocator, source);
             },
             .accdb => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.accdb, .failed_to_open, "ACCDB file");
-                defer src.close();
-                break :blk document_validators.validateAccdbDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.accdb, .failed_to_seek, "ACCDB file");
+                break :blk document_validators.validateAccdbDeep(allocator, source);
             },
             .obj => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.obj, .failed_to_open, "OBJ file");
-                defer src.close();
-                break :blk cad_3d_validators.validateObjDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.obj, .failed_to_seek, "OBJ file");
+                break :blk cad_3d_validators.validateObjDeep(allocator, source);
             },
             .sketch => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.sketch, .failed_to_open, "Sketch file");
-                defer src.close();
-                break :blk creative_validators.validateSketchDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.sketch, .failed_to_seek, "Sketch file");
+                break :blk creative_validators.validateSketchDeep(allocator, source);
             },
             .qbw => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.qbw, .failed_to_open, "QuickBooks company file");
-                defer src.close();
-                break :blk financial_validators.validateQbwDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.qbw, .failed_to_seek, "QuickBooks company file");
+                break :blk financial_validators.validateQbwDeep(allocator, source);
             },
             .qbb => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.qbb, .failed_to_open, "file", .structural);
-                defer src.close();
-                break :blk financial_validators.validateQbbDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.qbb, .failed_to_seek, "file", .structural);
+                break :blk financial_validators.validateQbbDeep(allocator, source);
             },
             .qdf => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.qdf, .failed_to_open, "Quicken data file");
-                defer src.close();
-                break :blk financial_validators.validateQdfDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.qdf, .failed_to_seek, "Quicken data file");
+                break :blk financial_validators.validateQdfDeep(allocator, source);
             },
             .nacha => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.nacha, .failed_to_open, "NACHA file");
-                defer src.close();
-                break :blk financial_validators.validateNachaDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.nacha, .failed_to_seek, "NACHA file");
+                break :blk financial_validators.validateNachaDeep(allocator, source);
             },
             .mt940 => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.mt940, .failed_to_open, "MT940 file");
-                defer src.close();
-                break :blk financial_validators.validateMt940Deep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.mt940, .failed_to_seek, "MT940 file");
+                break :blk financial_validators.validateMt940Deep(allocator, source);
             },
             .bai2 => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
-                defer src.close();
-                break :blk financial_validators.validateBai2Deep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.bai2, .failed_to_seek, "BAI2 file");
+                break :blk financial_validators.validateBai2Deep(allocator, source);
             },
             .x12_edi => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalid(.x12_edi, "Failed to open file");
-                defer src.close();
-                break :blk edi_validators.validateX12EdiDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalid(.x12_edi, "Failed to seek file");
+                break :blk edi_validators.validateX12EdiDeep(allocator, source);
             },
             .edifact => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalid(.edifact, "Failed to open file");
-                defer src.close();
-                break :blk edi_validators.validateEdifactDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalid(.edifact, "Failed to seek file");
+                break :blk edi_validators.validateEdifactDeep(allocator, source);
             },
             .pem => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.pem, .failed_to_read, "PEM file");
-                defer src.close();
-                break :blk crypto_validators.validatePemDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.pem, .failed_to_seek, "PEM file");
+                break :blk crypto_validators.validatePemDeep(allocator, source);
             },
             .der => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.der, .failed_to_read, "DER file");
-                defer src.close();
-                break :blk crypto_validators.validateDerDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.der, .failed_to_seek, "DER file");
+                break :blk crypto_validators.validateDerDeep(allocator, source);
             },
             .pgp_signed => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.pgp_signed, .failed_to_read, "PGP clearsigned file");
-                defer src.close();
-                break :blk crypto_validators.validatePgpSignedDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.pgp_signed, .failed_to_seek, "PGP clearsigned file");
+                break :blk crypto_validators.validatePgpSignedDeep(allocator, source);
             },
             .ssh_signature => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.ssh_signature, .failed_to_read, "SSH signature file");
-                defer src.close();
-                break :blk crypto_validators.validateSshSignatureDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.ssh_signature, .failed_to_seek, "SSH signature file");
+                break :blk crypto_validators.validateSshSignatureDeep(allocator, source);
             },
             .icalendar => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.icalendar, .failed_to_read, "failed to open file");
-                defer src.close();
-                break :blk pim_validators.validateICalendarDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.icalendar, .failed_to_seek, "failed to seek file");
+                break :blk pim_validators.validateICalendarDeep(allocator, source);
             },
             .vcard => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.vcard, .failed_to_read, "failed to open file");
-                defer src.close();
-                break :blk pim_validators.validateVCardDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.vcard, .failed_to_seek, "failed to seek file");
+                break :blk pim_validators.validateVCardDeep(allocator, source);
             },
             .cab => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.cab, .failed_to_open, "CAB file");
-                defer src.close();
-                break :blk cab_validator.validateCabDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.cab, .failed_to_seek, "CAB file");
+                break :blk cab_validator.validateCabDeep(allocator, source);
             },
             .sit, .sitx => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.sit, .failed_to_open, "StuffIt archive");
-                defer src.close();
-                break :blk stuffit_validator.validateStuffitDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.sit, .failed_to_seek, "StuffIt archive");
+                break :blk stuffit_validator.validateStuffitDeep(allocator, source);
             },
             .vmdk => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.vmdk, .failed_to_open, "VMDK file");
-                defer src.close();
-                break :blk vmdk_validator.validateVmdkDeep(allocator, &src).toValidationResult();
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.vmdk, .failed_to_seek, "VMDK file");
+                break :blk vmdk_validator.validateVmdkDeep(allocator, source).toValidationResult();
             },
             .wim, .esd => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.wim, .failed_to_open, "WIM file");
-                defer src.close();
-                break :blk wim_validator.validateWimDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.wim, .failed_to_seek, "WIM file");
+                break :blk wim_validator.validateWimDeep(allocator, source);
             },
             .rm => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.rm, .failed_to_open, "RealMedia file", .structural);
-                defer src.close();
-                break :blk realmedia_validator.validateRealMediaDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.rm, .failed_to_seek, "RealMedia file", .structural);
+                break :blk realmedia_validator.validateRealMediaDeep(allocator, source);
             },
             .parquet => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_open, "file", .full);
-                defer src.close();
-                break :blk scientific_validators.validateParquetDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_seek, "file", .full);
+                break :blk scientific_validators.validateParquetDeep(allocator, source);
             },
             .blar => blk: {
-                var src = FileSource.open(path) catch |err| break :blk switch (err) {
-                    error.FileNotFound => ValidationResult.invalidWithDepth(.blar, "File not found", .full),
-                    error.AccessDenied => ValidationResult.invalidWithDepth(.blar, "Access denied", .full),
-                    else => ValidationResult.invalidWithDepth(.blar, "Cannot open file", .full),
-                };
-                defer src.close();
-                break :blk blar_validator.validateBlarDeep(allocator, &src, .blar);
+                source.seekTo(0) catch break :blk ValidationResult.invalidWithDepth(.blar, "Cannot seek file", .full);
+                break :blk blar_validator.validateBlarDeep(allocator, source, .blar);
             },
             .mblar => blk: {
-                var src = FileSource.open(path) catch |err| break :blk switch (err) {
-                    error.FileNotFound => ValidationResult.invalidWithDepth(.mblar, "File not found", .full),
-                    error.AccessDenied => ValidationResult.invalidWithDepth(.mblar, "Access denied", .full),
-                    else => ValidationResult.invalidWithDepth(.mblar, "Cannot open file", .full),
-                };
-                defer src.close();
-                break :blk blar_validator.validateBlarDeep(allocator, &src, .mblar);
+                source.seekTo(0) catch break :blk ValidationResult.invalidWithDepth(.mblar, "Cannot seek file", .full);
+                break :blk blar_validator.validateBlarDeep(allocator, source, .mblar);
             },
             .bagit => bagit_validator.validateBagitDeep(allocator, path),
             .git_repository => validateGitRepositoryDeep(allocator, path),
@@ -6404,14 +6302,12 @@ pub const FormatValidator = struct {
             .macos_bundle => macos_bundle_validator.validatePluginBundle(allocator, path).toValidationResult(.macos_bundle),
             .band => validateGarageBandBundle(allocator, path),
             .java_class => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalid(.java_class, "Failed to open file");
-                defer src.close();
-                break :blk executable_validators.validateJavaClassDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalid(.java_class, "Failed to seek file");
+                break :blk executable_validators.validateJavaClassDeep(allocator, source);
             },
             .apple_media_db => blk: {
-                var src = FileSource.open(path) catch break :blk ValidationResult.invalidWithDepth(.apple_media_db, "Failed to open file", .structural);
-                defer src.close();
-                break :blk apple_media_db_validator.validateAppleMediaDbDeep(allocator, &src);
+                source.seekTo(0) catch break :blk ValidationResult.invalidWithDepth(.apple_media_db, "Failed to seek file", .structural);
+                break :blk apple_media_db_validator.validateAppleMediaDbDeep(allocator, source);
             },
             else => initial_result, // No deep validation available
         };
