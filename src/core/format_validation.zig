@@ -5735,7 +5735,10 @@ pub const FormatValidator = struct {
         source: *FileSource,
     ) ValidationResult {
         if (!self.enabled) return ValidationResult.unknown();
-        if (self.allocator == null) self.allocator = allocator;
+        // Always update allocator — callers may invoke us with different arenas
+        // (e.g. test-coverage uses a fresh arena per round, so caching would
+        // leave us pointing at a deinit'd arena on subsequent calls)
+        self.allocator = allocator;
         source.seekTo(0) catch {};
         const initial_result = ValidationResult.okWithDepth(format, .structural);
         return self.performDeepValidation(allocator, source, "", initial_result);

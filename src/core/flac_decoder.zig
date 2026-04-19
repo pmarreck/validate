@@ -616,6 +616,13 @@ pub const FlacDecoder = struct {
         const partition_order = try reader.readBits(4);
         const num_partitions: u32 = @as(u32, 1) << @intCast(partition_order);
 
+        // Validate: partition order must produce at least `predictor_order` samples per partition
+        // and total must not exceed block_size. Corruption can set partition_order beyond
+        // what's valid for this block_size, causing buffer overruns.
+        const samples_per_partition = block_size >> @intCast(partition_order);
+        if (samples_per_partition < predictor_order) return FlacError.InvalidRicePartition;
+        if (num_partitions * samples_per_partition != block_size) return FlacError.InvalidRicePartition;
+
         var sample_idx: u32 = predictor_order;
 
         for (0..num_partitions) |partition| {
@@ -635,6 +642,7 @@ pub const FlacDecoder = struct {
                 // Escape code: unencoded samples
                 const escape_bits = try reader.readBits(5);
                 for (0..num_samples) |_| {
+                    if (sample_idx >= self.subframe_buffer.len) return FlacError.InvalidRicePartition;
                     self.subframe_buffer[sample_idx] = try reader.readSignedBits(@intCast(escape_bits));
                     sample_idx += 1;
                 }
@@ -650,6 +658,7 @@ pub const FlacDecoder = struct {
                     else
                         @intCast(unsigned >> 1);
 
+                    if (sample_idx >= self.subframe_buffer.len) return FlacError.InvalidRicePartition;
                     self.subframe_buffer[sample_idx] = value;
                     sample_idx += 1;
                 }
