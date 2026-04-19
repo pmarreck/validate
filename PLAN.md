@@ -17,35 +17,28 @@ Checkbox-only list of specific work items. Keep recent completions with EST time
 Root cause: many validators allocate heap copies of mmap'd data, and decompression materializes
 full output. Combined with thread pool concurrency, this causes multi-GB RSS spikes.
 
-#### Phase 0: Infrastructure (do first)
-- [ ] Add `FileSource.getMappedSlice() -> ?[]const u8` — returns mmap'd data directly, null if file-backed
-- [ ] Add `FileSource.getMappedRange(offset, len) -> ?[]const u8` — bounded mmap slice
-- [ ] Add streaming zlib inflate API: `inflateZlibStream(input, chunk_callback)` — validates without materializing full output
-- [ ] Add `--threads N` CLI flag as immediate user workaround
-- [ ] Add memory pressure check in CLI worker loop (macOS: `task_info`, Linux: `/proc/self/statm`) — throttle new work when RSS > budget
+#### Phase 0: Infrastructure — DONE 2026-04-18
+- [x] FileSource.getMappedSlice() + getMappedRange() (2026-04-18 EST)
+- [x] validate_system_memory() / validate_set_max_memory() FFI (2026-04-18 EST)
+- [x] --max-memory / MAX_MEMORY env var support (2026-04-18 EST)
+- [x] --jobs / -j CLI flag (already existed)
+- [ ] Streaming zlib inflate API (deferred to Phase 2)
+- [ ] Runtime memory pressure throttling (deferred to Phase 4)
 
-#### Phase 1: Double-buffer elimination (highest impact, lowest risk)
-Each item: read file via mmap slice instead of page_allocator.alloc + readAll.
-Must have passing tests BEFORE refactoring each validator.
+#### Phase 1: Double-buffer elimination — DONE 2026-04-18 (26 commits)
+All validators that used FileSource + file-size heap allocation now use mmap
+zero-copy with heap fallback. Saves ~200MB heap per 200MB file per thread.
+Files refactored: text_format_validators, apple_validators, pe_validator,
+archive_validators, document_validators, movie_validators, scientific_validators,
+game_asset_validators, image_validators, email_validators, game_validator,
+crypto_validators, creative_validators, cad_3d_validators, pim_validators,
+edi_validators, blar_validator, sevenz_validator, music_validators,
+flac_decoder, dmg_validator.
 
-- [ ] `text_format_validators.zig` — validateJson: alloc(file_sz) + readAll (line ~368)
-- [ ] `text_format_validators.zig` — validateToml: alloc(file_sz) + readAll (line ~605)
-- [ ] `text_format_validators.zig` — validateXml: alloc(file_sz) + readAll (line ~933)
-- [ ] `text_format_validators.zig` — validateIni: alloc(file_sz) + readAll (line ~1065)
-- [ ] `text_format_validators.zig` — validateHtml: alloc(file_sz) + readAll (line ~1239)
-- [ ] `text_format_validators.zig` — validateCsv: alloc(file_sz) + readAll (line ~1510)
-- [ ] `apple_validators.zig` — plist validation: alloc(file_size) (line ~470)
-- [ ] `pe_validator.zig` — section table: alloc(section_table_size) (line ~173)
-- [ ] `archive_validators.zig` — ZIP EOCD search: alloc(65557) (line ~75)
-- [ ] `archive_validators.zig` — ZIP header: alloc(65536) (line ~543)
-- [ ] `document_validators.zig` — OLE2: two 65536 allocs (lines ~269, 300)
-- [ ] `movie_validators.zig` — index scanning: alloc(65536) (line ~319)
-- [ ] `midi_validator.zig` — MIDI data: alloc(65536) (line ~177)
-- [ ] `scientific_validators.zig` — HDF5/Parquet: multiple 65536 allocs (5+ instances)
-- [ ] `bagit_validator.zig` — file scanning: alloc(65536) (line ~182)
-- [ ] `game_asset_validators.zig` — header/tree: alloc(MAX_HEADER) (lines ~325, 559)
-- [ ] `avif_validator.zig` — combined buffer: alloc(max_combined) (line ~261)
-- [ ] `image_validators.zig` — 19 allocations across PNG, TIFF, EXR, PSD, DNG, etc.
+#### FUTURE: FileSource refactor (130 deep validators)
+Refactor all validate*Deep(path) functions to take *FileSource instead of path.
+Unlocks: zero-copy test-coverage, validate-from-buffer FFI, cleaner architecture.
+When doing Phase 2/3 refactors, prefer changing to *FileSource at the same time.
 
 #### Phase 2: Streaming decompression (medium risk, high impact on archives/PDFs)
 Replace full-output inflate with streaming chunked validation.
