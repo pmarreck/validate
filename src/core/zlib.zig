@@ -718,6 +718,67 @@ pub fn inflateStreamValidate(compressed: []const u8, max_uncompressed: u64, raw:
     }
 }
 
+/// Streaming inflate with per-chunk callback. Same as inflateStreamValidate but calls
+/// the callback for each decompressed chunk — useful for feeding a hasher incrementally.
+/// The callback must NOT retain references to the chunk buffer.
+pub fn inflateStream(
+    compressed: []const u8,
+    max_uncompressed: u64,
+    raw: bool,
+    context: anytype,
+    comptime callback: fn (ctx: @TypeOf(context), chunk: []const u8) void,
+) !u64 {
+    var stream: c.z_stream = .{
+        .next_in = @constCast(compressed.ptr),
+        .avail_in = @intCast(compressed.len),
+        .next_out = undefined,
+        .avail_out = 0,
+        .zalloc = null,
+        .zfree = null,
+        .@"opaque" = null,
+        .total_in = 0,
+        .total_out = 0,
+        .msg = null,
+        .state = null,
+        .data_type = 0,
+        .adler = 0,
+        .reserved = 0,
+    };
+
+    const init_ret = if (raw) c.inflateInit2(&stream, -15) else c.inflateInit2(&stream, 15);
+    if (init_ret != c.Z_OK) return ZlibError.InitFailed;
+    defer _ = c.inflateEnd(&stream);
+
+    const chunk_buf = std.heap.page_allocator.alloc(u8, 65536) catch return ZlibError.OutOfMemory;
+    defer std.heap.page_allocator.free(chunk_buf);
+
+    var total: u64 = 0;
+    while (true) {
+        stream.next_out = chunk_buf.ptr;
+        stream.avail_out = @intCast(chunk_buf.len);
+        const ret = c.inflate(&stream, c.Z_NO_FLUSH);
+        const produced: u64 = @intCast(chunk_buf.len - stream.avail_out);
+        if (produced > 0) {
+            callback(context, chunk_buf[0..@intCast(produced)]);
+            total += produced;
+            if (total > max_uncompressed) return ZlibError.DecompressedTooLarge;
+        }
+
+        switch (ret) {
+            c.Z_STREAM_END => return total,
+            c.Z_OK => {
+                if (stream.avail_in == 0 and stream.avail_out > 0) return ZlibError.UnexpectedEof;
+            },
+            c.Z_BUF_ERROR => {
+                if (stream.avail_in == 0) return ZlibError.UnexpectedEof;
+            },
+            c.Z_DATA_ERROR => return ZlibError.DataError,
+            c.Z_MEM_ERROR => return ZlibError.OutOfMemory,
+            else => return ZlibError.ZlibError,
+        }
+    }
+}
+
 // ============================================================================
 // Tests
 // ============================================================================

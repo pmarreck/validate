@@ -313,13 +313,20 @@ pub fn validateLooseObject(allocator: Allocator, object_path: []const u8, expect
     const bytes_read = try file.readAll(compressed);
     if (bytes_read != file_size) return false;
 
-    // Decompress using zlib
-    const decompressed = try decompressZlib(allocator, compressed);
-    defer allocator.free(decompressed);
+    // Stream-decompress and feed the SHA-1 hasher incrementally
+    // Avoids allocating full decompressed content (can be up to 100MB)
+    const zlib = @import("zlib.zig");
+    var hasher = Sha1.init(.{});
+    const HashCtx = struct { h: *Sha1 };
+    const ctx = HashCtx{ .h = &hasher };
+    _ = zlib.inflateStream(compressed, 100 * 1024 * 1024, false, ctx, struct {
+        fn cb(c: HashCtx, chunk: []const u8) void {
+            c.h.update(chunk);
+        }
+    }.cb) catch return false;
 
-    // Compute SHA-1 of decompressed content
     var hash: [20]u8 = undefined;
-    Sha1.hash(decompressed, &hash, .{});
+    hasher.final(&hash);
 
     // Convert to hex and compare
     var hex: [40]u8 = undefined;
