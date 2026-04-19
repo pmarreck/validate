@@ -2246,7 +2246,7 @@ int main(int argc, char* argv[]) {
 			}
 
 			char heat_buf[4096] = {0};
-			if (kv_get_str(result, "heatmap", heat_buf, sizeof(heat_buf))) {
+			if (kv_get_str(result, "heatmap", heat_buf, sizeof(heat_buf)) == 0 && heat_buf[0] != '\0') {
 				printf("\n  Undetected-corruption heatmap (darker = colder, brighter = hotter):\n  %s\n", heat_buf);
 				printf("  <-- start of file                                                 end of file -->\n");
 			}
