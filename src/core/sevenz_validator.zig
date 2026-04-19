@@ -105,13 +105,14 @@ fn z7zErrorString(code: c_int) []const u8 {
 /// Reads the file into memory, opens with z7z, and iterates every
 /// file entry — decompression + CRC verification happens on open/access.
 pub fn validateSevenZDeep(allocator: Allocator, path: []const u8) SevenZValidationResult {
-	// Open and read the file into memory
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	// Open and read the file into memory — zero-copy from mmap when available
+	const file_source = @import("file_source.zig");
+	var source = file_source.FileSource.open(path) catch {
 		return SevenZValidationResult.invalid(errmsg.failedToOpen("file"));
 	};
-	defer file.close();
+	defer source.close();
 
-	const file_size = file.getEndPos() catch {
+	const file_size = source.getEndPos() catch {
 		return SevenZValidationResult.invalid("Failed to get file size");
 	};
 
@@ -119,23 +120,25 @@ pub fn validateSevenZDeep(allocator: Allocator, path: []const u8) SevenZValidati
 		return SevenZValidationResult.invalid("File too small for 7z header");
 	}
 
-	// Cap at 4GB to prevent OOM on malicious files
 	if (file_size > 4 * 1024 * 1024 * 1024) {
 		return SevenZValidationResult.invalid("File too large for in-memory validation");
 	}
 
-	const data = allocator.alloc(u8, @intCast(file_size)) catch {
-		return SevenZValidationResult.invalid("Out of memory");
+	var heap_7z: ?[]u8 = null;
+	defer if (heap_7z) |buf| allocator.free(buf);
+	const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+		const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+			return SevenZValidationResult.invalid("Out of memory");
+		};
+		heap_7z = buf;
+		const n = source.readAll(buf) catch {
+			return SevenZValidationResult.invalid("Failed to read file");
+		};
+		if (n != buf.len) {
+			return SevenZValidationResult.invalid("Incomplete read");
+		}
+		break :blk buf[0..n];
 	};
-	defer allocator.free(data);
-
-	const bytes_read = file.readAll(data) catch {
-		return SevenZValidationResult.invalid("Failed to read file");
-	};
-
-	if (bytes_read != data.len) {
-		return SevenZValidationResult.invalid("Incomplete read");
-	}
 
 	// Open with z7z — this parses headers, decompresses all folders,
 	// and verifies CRCs internally
