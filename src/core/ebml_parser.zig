@@ -1619,12 +1619,18 @@ pub const MatroskaParser = struct {
                         if (size == 0 or size > 50 * 1024 * 1024) return;
                         if (size > std.math.maxInt(usize)) return;
 
-                        const data = self.allocator.alloc(u8, @intCast(size)) catch return;
-                        defer self.allocator.free(data);
-
-                        _ = self.reader.seekTo(cluster_child.data_offset);
-                        const bytes_read = self.reader.file.readAll(data) catch return;
-                        if (bytes_read != @as(usize, @intCast(size))) return;
+                        var sb_heap: ?[]u8 = null;
+                        defer if (sb_heap) |buf| self.allocator.free(buf);
+                        const data: []const u8 = if (self.reader.file.getMappedRange(cluster_child.data_offset, size)) |mapped|
+                            mapped
+                        else blk: {
+                            const buf = self.allocator.alloc(u8, @intCast(size)) catch return;
+                            sb_heap = buf;
+                            _ = self.reader.seekTo(cluster_child.data_offset);
+                            const n = self.reader.file.readAll(buf) catch return;
+                            if (n != @as(usize, @intCast(size))) return;
+                            break :blk buf[0..n];
+                        };
 
                         var debug_ctx = DebugContext{ .ctx = ctx, .validator = validator };
                         const result = parseBlockFramesFromBuffer(data, video_track_number, current_cluster_timestamp, true, &debug_ctx, DebugConsumer.consume);
@@ -1683,12 +1689,18 @@ pub const MatroskaParser = struct {
                         if (size == 0 or size > 50 * 1024 * 1024) return;
                         if (size > std.math.maxInt(usize)) return;
 
-                        const data = self.allocator.alloc(u8, @intCast(size)) catch return;
-                        defer self.allocator.free(data);
-
-                        _ = self.reader.seekTo(block.data_offset);
-                        const bytes_read = self.reader.file.readAll(data) catch return;
-                        if (bytes_read != @as(usize, @intCast(size))) return;
+                        var bg_heap: ?[]u8 = null;
+                        defer if (bg_heap) |buf| self.allocator.free(buf);
+                        const data: []const u8 = if (self.reader.file.getMappedRange(block.data_offset, size)) |mapped|
+                            mapped
+                        else blk: {
+                            const buf = self.allocator.alloc(u8, @intCast(size)) catch return;
+                            bg_heap = buf;
+                            _ = self.reader.seekTo(block.data_offset);
+                            const n = self.reader.file.readAll(buf) catch return;
+                            if (n != @as(usize, @intCast(size))) return;
+                            break :blk buf[0..n];
+                        };
 
                         var debug_ctx = DebugContext{ .ctx = ctx, .validator = validator };
                         const result = parseBlockFramesFromBuffer(data, video_track_number, current_cluster_timestamp, true, &debug_ctx, DebugConsumer.consume);
