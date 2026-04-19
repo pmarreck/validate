@@ -3254,7 +3254,11 @@ pub fn validateBmpDeep(allocator: Allocator, path: []const u8) ValidationResult 
 /// that structural validation would miss.
 pub fn validateWebpDeep(allocator: Allocator, path: []const u8) ValidationResult {
     _ = allocator;
-    const result = webp_validator.validateWebpDeep(path);
+    var source = FileSource.open(path) catch {
+        return ValidationResult.invalidCode(.webp, .failed_to_open, "file");
+    };
+    defer source.close();
+    const result = webp_validator.validateWebpDeep(&source);
     if (result.valid) {
         if (result.warning_message) |warning| {
             return ValidationResult.okWithDepthAndWarning(.webp, .full, warning);

@@ -169,7 +169,8 @@ pub fn preInit() void {
     _ = jpeg_validator.validateJpegDeep("/nonexistent");
 
     // libwebp - triggers DSP function initialization
-    _ = webp_validator.validateWebpDeep("/nonexistent");
+    var webp_init_src = file_source.FileSource.fromBuffer(&[_]u8{});
+    _ = webp_validator.validateWebpDeep(&webp_init_src);
 
     // libjxl - triggers Highway SIMD dispatch selection
     _ = jxl_validator.validateJxlDeep("/nonexistent");

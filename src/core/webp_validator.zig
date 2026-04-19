@@ -12,6 +12,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const errmsg = @import("error_messages.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 /// Threshold for warning about large image files (200MB)
 const large_image_threshold: u64 = 200 * 1024 * 1024;
@@ -42,19 +44,8 @@ pub const WebpValidationResult = struct {
 
 /// Validate a WebP file by attempting full decompression.
 /// Returns validation result with error details if invalid.
-pub fn validateWebpDeep(file_path: []const u8) WebpValidationResult {
-    // Open file using Zig's stdlib
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => WebpValidationResult.invalid("File not found"),
-            error.AccessDenied => WebpValidationResult.invalid("Access denied"),
-            else => WebpValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer file.close();
-
-    // Get file size
-    const file_size = file.getEndPos() catch {
+pub fn validateWebpDeep(source: *FileSource) WebpValidationResult {
+    const file_size = source.getEndPos() catch {
         return WebpValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
@@ -65,24 +56,27 @@ pub fn validateWebpDeep(file_path: []const u8) WebpValidationResult {
         return WebpValidationResult.invalid("File too small");
     }
 
-    // Allocate buffer
-    const buffer = std.c.malloc(file_size) orelse {
-        return WebpValidationResult.invalid("Memory allocation failed");
+    // Use mmap slice if available, else allocate and read
+    var heap_buf: ?[*]u8 = null;
+    defer if (heap_buf) |b| std.c.free(b);
+    const buf_slice: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+        const buffer = std.c.malloc(file_size) orelse {
+            return WebpValidationResult.invalid("Memory allocation failed");
+        };
+        heap_buf = @ptrCast(buffer);
+        const slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
+        source.seekTo(0) catch return WebpValidationResult.invalid(errmsg.failedToRead("seek"));
+        const bytes_read = source.readAll(slice) catch {
+            return WebpValidationResult.invalid(errmsg.failedToRead("file"));
+        };
+        if (bytes_read != file_size) {
+            return WebpValidationResult.invalid(errmsg.incomplete("file read"));
+        }
+        break :blk slice;
     };
-    defer std.c.free(buffer);
-
-    // Read entire file
-    const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
-    const bytes_read = file.readAll(buf_slice) catch {
-        return WebpValidationResult.invalid(errmsg.failedToRead("file"));
-    };
-    if (bytes_read != file_size) {
-        return WebpValidationResult.invalid(errmsg.incomplete("file read"));
-    }
 
     const result = validateWebpDeepFromBuffer(buf_slice);
 
-    // Add warning for large files if validation passed
     if (result.valid and is_large_file) {
         return WebpValidationResult.okWithWarning("Large image file (>200MB)");
     }
@@ -161,19 +155,16 @@ test "reject too small buffer" {
 }
 
 test "valid WebP from ground truth sample" {
-    const result = validateWebpDeep("ground_truth_examples/webp/sample.webp");
-    // Skip if file doesn't exist (CI may lack ground truth files)
-    if (!result.valid and result.error_message != null) {
-        if (std.mem.eql(u8, result.error_message.?, "File not found")) return;
-    }
+    var source = FileSource.open("ground_truth_examples/webp/sample.webp") catch return;
+    defer source.close();
+    const result = validateWebpDeep(&source);
     try std.testing.expect(result.valid);
     try std.testing.expect(result.error_message == null);
 }
 
 test "valid WebP from ground truth google_gallery_1" {
-    const result = validateWebpDeep("ground_truth_examples/webp/google_gallery_1.webp");
-    if (!result.valid and result.error_message != null) {
-        if (std.mem.eql(u8, result.error_message.?, "File not found")) return;
-    }
+    var source = FileSource.open("ground_truth_examples/webp/google_gallery_1.webp") catch return;
+    defer source.close();
+    const result = validateWebpDeep(&source);
     try std.testing.expect(result.valid);
 }
