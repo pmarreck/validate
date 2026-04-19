@@ -686,6 +686,7 @@ export fn validate_getenv(env_id: u8) ?[*:0]const u8 {
         .max_files => i18n.getEnvLocalized(.max_files),
         .validate_debug => i18n.getEnvLocalized(.validate_debug),
         .no_bidi => i18n.getEnvLocalized(.no_bidi),
+        .max_memory => i18n.getEnvLocalized(.max_memory),
     };
 }
 

@@ -182,6 +182,7 @@ typedef enum {
     VALIDATE_ENV_MAX_FILES = 7,
     VALIDATE_ENV_VALIDATE_DEBUG = 8,
     VALIDATE_ENV_NO_BIDI = 9,
+    VALIDATE_ENV_MAX_MEMORY = 10,
 } validate_env_t;
 
 /* ========== Core Functions ========== */

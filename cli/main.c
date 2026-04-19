@@ -1875,6 +1875,7 @@ static void print_usage(const char* program) {
 	printf("    LANG          Locale for output language (e.g., de_DE.UTF-8)\n");
 	printf("    LC_MESSAGES   Locale for output language (overrides LANG)\n");
 	printf("    NO_BIDI       Disable bidirectional text marks for RTL languages\n");
+	printf("    MAX_MEMORY    Memory budget (e.g., 4G, 2048M). Same as --max-memory\n");
 	printf("\n");
 	printf("OUTPUT REDIRECTION:\n");
 	printf("    All *_OUT variables accept colon-separated destinations.\n");
@@ -2198,6 +2199,19 @@ int main(int argc, char* argv[]) {
 
 	const size_t max_files = get_env_max_files();
 
+	/* Check VALIDATE_MAX_MEMORY / MAX_MEMORY env var (--max-memory override takes precedence) */
+	if (validate_get_max_memory() == validate_system_memory() / 2) {
+		/* No explicit --max-memory was set, check env var */
+		const char* mem_env = validate_getenv(VALIDATE_ENV_MAX_MEMORY);
+		if (mem_env && mem_env[0] != '\0') {
+			char *endptr;
+			uint64_t mem = strtoull(mem_env, &endptr, 10);
+			if (*endptr == 'G' || *endptr == 'g') mem *= 1024ULL * 1024 * 1024;
+			else if (*endptr == 'M' || *endptr == 'm') mem *= 1024ULL * 1024;
+			else if (*endptr == 'K' || *endptr == 'k') mem *= 1024ULL;
+			if (mem > 0) validate_set_max_memory(mem);
+		}
+	}
 	/* Collect ALL files from ALL paths into a single list */
 	path_list_t file_list;
 	if (path_list_init(&file_list, 1024, max_files) != 0) {

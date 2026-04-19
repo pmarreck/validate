@@ -330,6 +330,7 @@ pub const env_aliases = cli.EnvAliases{
     .max_files = "MAX_FILES",
     .validate_debug = "VALIDATE_DEBUG",
     .no_bidi = "NO_BIDI",
+    .max_memory = "MAX_MEMORY",
 };
 
 // Urdu error/warning translations (machine-translated from English keys).

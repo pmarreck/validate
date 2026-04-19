@@ -87,6 +87,7 @@ pub const env_aliases = cli.EnvAliases{
     .max_files = "MAX_ARCHIVOS",
     .validate_debug = "VALIDATE_DEBUG",
     .no_bidi = "NO_BIDI",
+    .max_memory = "MAX_MEMORY",
 };
 
 // Descripciones de formato en espa\xc3\xb1ol

@@ -87,6 +87,7 @@ pub const env_aliases = cli.EnvAliases{
     .max_files = "MAKS_FAILIV",
     .validate_debug = "VALIDATE_DEBUG",
     .no_bidi = "NO_BIDI",
+    .max_memory = "MAX_MEMORY",
 };
 
 pub const format_descriptions = i18n.FormatDescriptions.init(.{
