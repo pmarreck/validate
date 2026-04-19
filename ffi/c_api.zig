@@ -385,10 +385,21 @@ fn getSystemMemory() u64 {
         if (rc == 0) return mem_size;
         return 0;
     } else if (comptime @import("builtin").os.tag == .linux) {
-        // Linux: read from sysinfo
-        var info: std.os.linux.sysinfo = undefined;
-        if (std.os.linux.sysinfo(&info) == 0) {
-            return info.totalram * info.mem_unit;
+        // Linux: parse /proc/meminfo for MemTotal
+        var buf: [256]u8 = undefined;
+        const file = std.fs.openFileAbsolute("/proc/meminfo", .{}) catch return 0;
+        defer file.close();
+        const n = file.read(&buf) catch return 0;
+        const content = buf[0..n];
+        // Find "MemTotal:" line, value is in kB
+        if (std.mem.indexOf(u8, content, "MemTotal:")) |pos| {
+            var i = pos + 9; // skip "MemTotal:"
+            while (i < content.len and (content[i] == ' ' or content[i] == '\t')) : (i += 1) {}
+            var val: u64 = 0;
+            while (i < content.len and content[i] >= '0' and content[i] <= '9') : (i += 1) {
+                val = val * 10 + @as(u64, content[i] - '0');
+            }
+            return val * 1024; // kB to bytes
         }
         return 0;
     } else {
