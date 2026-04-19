@@ -2204,15 +2204,54 @@ int main(int argc, char* argv[]) {
 			return 2;
 		}
 		int overall_exit = 0;
+		const char *modes[] = { "sniper", "shotgun", "header", "tail", "zeroed", "xor" };
 		for (size_t i = 0; i < path_count; i++) {
-			fprintf(stderr, "Test coverage: %s (rounds=%u)...\n", paths[i], test_coverage_rounds);
+			fprintf(stderr, "%sTest coverage: %s (rounds=%u)...%s\n", COLOR_CYAN, paths[i], test_coverage_rounds, COLOR_RESET);
 			char *result = validate_test_coverage(paths[i], test_coverage_rounds, (uint64_t)time(NULL), 4096, NULL, NULL);
 			if (!result) {
 				fprintf(stderr, "%sFAILED%s: could not run coverage on %s (baseline validation failed?)\n", COLOR_RED, COLOR_RESET, paths[i]);
 				overall_exit = 1;
 				continue;
 			}
-			printf("%s\n", result);
+			/* Parse and pretty-print */
+			char fmt_buf[64] = {0};
+			kv_get_str(result, "fmt", fmt_buf, sizeof(fmt_buf));
+			uint64_t file_size = kv_get_u64(result, "file_size");
+			uint64_t rounds = kv_get_u64(result, "rounds");
+			uint64_t detected = kv_get_u64(result, "detected");
+			uint64_t duration_ns = kv_get_u64(result, "duration_ns");
+			double duration_s = (double)duration_ns / 1e9;
+
+			printf("\n%s%s%s  (%llu bytes)\n", COLOR_CYAN, paths[i], COLOR_RESET,
+				(unsigned long long)file_size);
+			printf("  Format: %s%s%s\n", COLOR_CYAN, fmt_buf, COLOR_RESET);
+			double overall_pct = rounds > 0 ? 100.0 * (double)detected / (double)rounds : 0.0;
+			const char *overall_color = overall_pct >= 95.0 ? COLOR_GREEN : (overall_pct >= 70.0 ? COLOR_YELLOW : COLOR_RED);
+			printf("  Overall: %s%llu/%llu (%.1f%%)%s  in %.2fs\n\n",
+				overall_color, (unsigned long long)detected, (unsigned long long)rounds, overall_pct, COLOR_RESET, duration_s);
+
+			printf("  %-10s %8s %8s %8s\n", "Mode", "Detected", "Total", "Rate");
+			printf("  %-10s %8s %8s %8s\n", "----", "--------", "-----", "----");
+			for (size_t m = 0; m < 6; m++) {
+				char key_total[32], key_det[32];
+				snprintf(key_total, sizeof(key_total), "mode_%s_total", modes[m]);
+				snprintf(key_det, sizeof(key_det), "mode_%s_detected", modes[m]);
+				uint64_t mt = kv_get_u64(result, key_total);
+				uint64_t md = kv_get_u64(result, key_det);
+				if (mt == 0) continue;
+				double pct = 100.0 * (double)md / (double)mt;
+				const char *color = pct >= 95.0 ? COLOR_GREEN : (pct >= 70.0 ? COLOR_YELLOW : COLOR_RED);
+				printf("  %-10s %8llu %8llu %s%7.1f%%%s\n", modes[m],
+					(unsigned long long)md, (unsigned long long)mt, color, pct, COLOR_RESET);
+			}
+
+			char heat_buf[4096] = {0};
+			if (kv_get_str(result, "heatmap", heat_buf, sizeof(heat_buf))) {
+				printf("\n  Undetected-corruption heatmap (darker = colder, brighter = hotter):\n  %s\n", heat_buf);
+				printf("  <-- start of file                                                 end of file -->\n");
+			}
+			printf("\n");
+
 			validate_free(result);
 		}
 		free(paths);
