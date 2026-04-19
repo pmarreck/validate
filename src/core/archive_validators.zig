@@ -2482,22 +2482,16 @@ pub fn validateBzip2Deep(allocator: Allocator, path: []const u8) ValidationResul
         return validateBzip2LargeFile(&file);
     }
 
-    const compressed_data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCodeWithDepth(.bzip2, .out_of_memory, "for bzip2", .structural);
+    var heap_bz2: ?[]u8 = null;
+    defer if (heap_bz2) |buf| allocator.free(buf);
+    const compressed_data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.bzip2, .out_of_memory, "for bzip2", .structural);
+        };
+        heap_bz2 = buf;
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.bzip2, .failed_to_read, "file");
+        break :blk buf[0..n];
     };
-    defer allocator.free(compressed_data);
-
-    file.seekTo(0) catch {
-        return ValidationResult.invalidCodeWithDepth(.bzip2, .failed_to_seek, "in bzip2 data", .structural);
-    };
-
-    const bytes_read = file.readAll(compressed_data) catch {
-        return ValidationResult.invalidCodeWithDepth(.bzip2, .failed_to_read, "file", .structural);
-    };
-
-    if (bytes_read != file_size) {
-        return ValidationResult.invalidCodeWithDepth(.bzip2, .incomplete, "read", .structural);
-    }
 
     // Validate header
     if (compressed_data.len < 4) {
@@ -2898,20 +2892,18 @@ pub fn validateRarDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalidCodeWithDepth(.rar, .file_too_large, "validation", .structural);
     }
 
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_allocate, "RAR read buffer", .structural);
+    var heap_rar: ?[]u8 = null;
+    defer if (heap_rar) |buf| allocator.free(buf);
+    const data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_allocate, "RAR read buffer", .structural);
+        };
+        heap_rar = buf;
+        file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_seek, "to start", .structural);
+        const n = file.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_read, "RAR file", .structural);
+        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.rar, .incomplete, "RAR file", .structural);
+        break :blk buf[0..n];
     };
-    defer allocator.free(data);
-
-    file.seekTo(0) catch {
-        return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_seek, "to start", .structural);
-    };
-    const bytes_read = file.readAll(data) catch {
-        return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_read, "RAR file", .structural);
-    };
-    if (bytes_read != file_size) {
-        return ValidationResult.invalidCodeWithDepth(.rar, .incomplete, "RAR file", .structural);
-    }
 
     return validateRarWithRarz(data);
 }
@@ -3056,14 +3048,18 @@ pub fn validateCptDeep(allocator: Allocator, path: []const u8) ValidationResult 
         return ValidationResult.invalidCodeWithDepth(.cpt, .file_too_large, "validation", .structural);
     }
 
-    const data = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_allocate, "CPT read buffer", .structural);
+    var heap_cpt2: ?[]u8 = null;
+    defer if (heap_cpt2) |buf| allocator.free(buf);
+    const data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_allocate, "CPT read buffer", .structural);
+        };
+        heap_cpt2 = buf;
+        file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_seek, "to start", .structural);
+        const n = file.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_read, "CPT file", .structural);
+        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.cpt, .incomplete, "CPT file", .structural);
+        break :blk buf[0..n];
     };
-    defer allocator.free(data);
-
-    file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_seek, "to start", .structural);
-    const bytes_read = file.readAll(data) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_read, "CPT file", .structural);
-    if (bytes_read != file_size) return ValidationResult.invalidCodeWithDepth(.cpt, .incomplete, "CPT file", .structural);
 
     return validateCptWithCompactPro(data);
 }
@@ -4159,20 +4155,20 @@ pub fn validateHqx(file: *FileSource) ValidationResult {
     if (file_size == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
     if (file_size > BINHEX4_MAX_FILE_SIZE) return ValidationResult.invalid(.hqx, "BinHex file too large (>64MB)");
 
-    file.seekTo(0) catch return ValidationResult.invalidCode(.hqx, .failed_to_seek, "to start");
-
-    const allocator = std.heap.page_allocator;
-    const content = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.hqx, .failed_to_allocate, "BinHex input buffer");
+    var heap_hqx: ?[]u8 = null;
+    defer if (heap_hqx) |buf| std.heap.page_allocator.free(buf);
+    const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        file.seekTo(0) catch return ValidationResult.invalidCode(.hqx, .failed_to_seek, "to start");
+        const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+            return ValidationResult.invalidCode(.hqx, .failed_to_allocate, "BinHex input buffer");
+        };
+        heap_hqx = buf;
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.hqx, .failed_to_read, "BinHex file");
+        if (n == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
+        break :blk buf[0..n];
     };
-    defer allocator.free(content);
 
-    const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalidCode(.hqx, .failed_to_read, "BinHex file");
-    };
-    if (bytes_read == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
-
-    return validateHqxBytes(content[0..bytes_read]);
+    return validateHqxBytes(content);
 }
 
 pub fn validateHqxFromBuffer(data: []const u8) ValidationResult {
