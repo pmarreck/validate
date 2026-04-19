@@ -55,16 +55,7 @@ pub const MidiValidationResult = struct {
 };
 
 /// Validate MIDI file deeply by parsing all track data.
-pub fn validateMidiDeep(path: []const u8) MidiValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => MidiValidationResult.invalid("File not found"),
-            error.AccessDenied => MidiValidationResult.invalid("Access denied"),
-            else => MidiValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer source.close();
-
+pub fn validateMidiDeep(source: *FileSource) MidiValidationResult {
     // Get file size
     const file_size = source.getEndPos() catch {
         return MidiValidationResult.invalid(errmsg.failedToGet("file size"));
@@ -151,7 +142,7 @@ pub fn validateMidiDeep(path: []const u8) MidiValidationResult {
         }
 
         // Validate track data
-        const track_result = validateTrackData(&source, pos + 8, track_length);
+        const track_result = validateTrackData(source, pos + 8, track_length);
         if (!track_result.valid) {
             return MidiValidationResult.partialValid(format, num_tracks, tracks_validated, track_result.error_message.?);
         }
@@ -173,7 +164,7 @@ fn validateTrackData(file: *FileSource, start_pos: u64, length: u32) MidiValidat
         return MidiValidationResult.invalid("Track too large");
     }
 
-    // Read track data into buffer
+    // Read track data in 64KB chunks (streaming — already memory-efficient)
     const data_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
         return MidiValidationResult.invalid("Out of memory for track data buffer");
     };

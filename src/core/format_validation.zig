@@ -5940,14 +5940,34 @@ pub const FormatValidator = struct {
             .mpeg_ts => movie_validators.validateMpegTsDeep(allocator, path),
             .ivf => movie_validators.validateIvfDeep(allocator, path),
             .flv => movie_validators.validateFlvDeep(allocator, path),
-            .mbox => email_validators.validateMboxDeep(allocator, path),
+            .mbox => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.mbox, .failed_to_open, "MBOX file");
+                defer src.close();
+                break :blk email_validators.validateMboxDeep(allocator, &src);
+            },
             .wad => game_asset_validators.validateWadDeep(allocator, path),
             .pak => game_asset_validators.validatePakDeep(allocator, path),
-            .nes => game_validator.validateNesDeep(allocator, path),
+            .nes => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.nes, .failed_to_open, "NES file");
+                defer src.close();
+                break :blk game_validator.validateNesDeep(allocator, &src);
+            },
             .iff => game_asset_validators.validateIffDeep(allocator, path),
-            .n64 => game_validator.validateN64Deep(allocator, path),
-            .genesis => game_validator.validateGenesisDeep(allocator, path),
-            .gb => game_validator.validateGbDeep(allocator, path),
+            .n64 => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.n64, .failed_to_open, "N64 file");
+                defer src.close();
+                break :blk game_validator.validateN64Deep(allocator, &src);
+            },
+            .genesis => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.genesis, .failed_to_open, "Genesis file");
+                defer src.close();
+                break :blk game_validator.validateGenesisDeep(allocator, &src);
+            },
+            .gb => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.gb, .failed_to_open, "GB file");
+                defer src.close();
+                break :blk game_validator.validateGbDeep(allocator, &src);
+            },
             .drp => creative_validators.validateDrpDeep(allocator, path),
             .mdb => document_validators.validateMdbDeep(allocator, path),
             .accdb => document_validators.validateAccdbDeep(allocator, path),
@@ -5967,11 +5987,27 @@ pub const FormatValidator = struct {
             .ssh_signature => crypto_validators.validateSshSignatureDeep(allocator, path),
             .icalendar => pim_validators.validateICalendarDeep(allocator, path),
             .vcard => pim_validators.validateVCardDeep(allocator, path),
-            .cab => cab_validator.validateCabDeep(allocator, path),
+            .cab => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.cab, .failed_to_open, "CAB file");
+                defer src.close();
+                break :blk cab_validator.validateCabDeep(allocator, &src);
+            },
             .sit, .sitx => stuffit_validator.validateStuffitDeep(allocator, path),
-            .vmdk => vmdk_validator.validateVmdkDeep(allocator, path).toValidationResult(),
-            .wim, .esd => wim_validator.validateWimDeep(allocator, path),
-            .rm => realmedia_validator.validateRealMediaDeep(allocator, path),
+            .vmdk => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.vmdk, .failed_to_open, "VMDK file");
+                defer src.close();
+                break :blk vmdk_validator.validateVmdkDeep(allocator, &src).toValidationResult();
+            },
+            .wim, .esd => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCode(.wim, .failed_to_open, "WIM file");
+                defer src.close();
+                break :blk wim_validator.validateWimDeep(allocator, &src);
+            },
+            .rm => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidCodeWithDepth(.rm, .failed_to_open, "RealMedia file", .structural);
+                defer src.close();
+                break :blk realmedia_validator.validateRealMediaDeep(allocator, &src);
+            },
             .parquet => scientific_validators.validateParquetDeep(allocator, path),
             .blar => blar_validator.validateBlarDeepFromPath(allocator, path, .blar),
             .mblar => blar_validator.validateBlarDeepFromPath(allocator, path, .mblar),
@@ -5982,7 +6018,11 @@ pub const FormatValidator = struct {
             .macos_bundle => macos_bundle_validator.validatePluginBundle(allocator, path).toValidationResult(.macos_bundle),
             .band => validateGarageBandBundle(allocator, path),
             .java_class => executable_validators.validateJavaClassDeep(allocator, path),
-            .apple_media_db => apple_media_db_validator.validateAppleMediaDbDeep(allocator, path),
+            .apple_media_db => blk: {
+                var src = FileSource.open(path) catch break :blk ValidationResult.invalidWithDepth(.apple_media_db, "Failed to open file", .structural);
+                defer src.close();
+                break :blk apple_media_db_validator.validateAppleMediaDbDeep(allocator, &src);
+            },
             else => initial_result, // No deep validation available
         };
     }

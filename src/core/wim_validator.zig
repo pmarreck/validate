@@ -172,14 +172,9 @@ pub fn validateWim(file: *FileSource) ValidationResult {
 /// Deep validate WIM/ESD: verifies the integrity table structure if present.
 /// If the integrity_table_reshdr is non-null, reads its header (12 bytes) and
 /// checks that the declared entry count matches the data size.
-pub fn validateWimDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateWimDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	_ = allocator;
-
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCode(.wim, .failed_to_open, "WIM file");
-	};
-	defer source.close();
-	const file = &source;
+	const file = source;
 
 	// Run structural validation first
 	const basic = validateWim(file);
@@ -325,8 +320,8 @@ test "validateWimDeep: valid WIM ground truth deep" {
 		if (err == error.FileNotFound) return error.SkipZigTest;
 		return err;
 	};
-	file.close();
-	const result = validateWimDeep(testing.allocator, "ground_truth_examples/wim/sample.wim");
+	defer file.close();
+	const result = validateWimDeep(testing.allocator, &file);
 	try testing.expect(result.is_valid);
 }
 

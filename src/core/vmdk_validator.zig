@@ -399,17 +399,8 @@ pub fn validateVmdk(file: *FileSource) VmdkValidationResult {
 /// Deep-validate a VMDK file by path.
 /// Currently performs the same structural checks as validateVmdk, plus a
 /// GD/RGD offset bounds check for VMDK4 sparse extents when the RGD flag is set.
-pub fn validateVmdkDeep(allocator: std.mem.Allocator, path: []const u8) VmdkValidationResult {
+pub fn validateVmdkDeep(allocator: std.mem.Allocator, source: *FileSource) VmdkValidationResult {
     _ = allocator; // reserved for future GD/RGT traversal
-
-    var source = FileSource.open(path) catch |err| {
-        return VmdkValidationResult.invalid(switch (err) {
-            error.FileNotFound => "VMDK: file not found",
-            error.AccessDenied => "VMDK: access denied",
-            else => "VMDK: failed to open file",
-        });
-    };
-    defer source.close();
 
     const file_size = source.getEndPos() catch 0;
 

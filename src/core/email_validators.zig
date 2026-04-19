@@ -507,12 +507,7 @@ pub fn validateMbox(file: *FileSource) ValidationResult {
 }
 
 /// Deep-validate an MBOX mailbox file by reading all message separators.
-pub fn validateMboxDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.mbox, .failed_to_open, "MBOX file");
-    };
-    defer source.close();
-
+pub fn validateMboxDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.mbox, .failed_to_get, "file size");
     };
@@ -584,7 +579,9 @@ test "validateMbox with ground truth" {
 test "validateMboxDeep with ground truth" {
     const allocator = std.testing.allocator;
     try skipIfMissing("ground_truth_examples/mbox/sample.mbox");
-    const result = validateMboxDeep(allocator, "ground_truth_examples/mbox/sample.mbox");
+    var source = try FileSource.open("ground_truth_examples/mbox/sample.mbox");
+    defer source.close();
+    const result = validateMboxDeep(allocator, &source);
     try std.testing.expect(result.is_valid);
 }
 

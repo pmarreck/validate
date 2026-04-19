@@ -64,13 +64,9 @@ pub fn validateNes(file: *FileSource) ValidationResult {
 }
 
 /// Deep validate NES ROM - checks size consistency with header declarations
-pub fn validateNesDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateNesDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.nes, .failed_to_open, "NES file");
-    };
-    defer source.close();
-    const file = &source;
+    const file = source;
 
     var header: [16]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.nes, .failed_to_read, "header");
@@ -399,12 +395,8 @@ fn normalizeN64ByteOrder(rom: []u8) void {
 
 /// Deep validate N64 ROM - verifies CRC integrity using CIC-auto-detection.
 /// Auto-detects CIC variant from bootcode CRC-32, then validates ROM CRC.
-pub fn validateN64Deep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.n64, .failed_to_open, "N64 file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validateN64Deep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.n64, .failed_to_get, "file size");
     if (file_size < 1024 * 1024 or file_size > 64 * 1024 * 1024) {
@@ -520,12 +512,8 @@ pub fn validateGb(file: *FileSource) ValidationResult {
 }
 
 /// Deep validate Game Boy ROM - reads entire file and verifies the global checksum at 0x14E-0x14F.
-pub fn validateGbDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.gb, .failed_to_open, "GB file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validateGbDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.gb, .failed_to_get, "file size");
 
@@ -721,12 +709,8 @@ pub fn validateGenesis(file: *FileSource) ValidationResult {
 /// Deep validate Genesis ROM - checks game title, ROM address range, and ROM checksum.
 /// The Genesis ROM checksum at offset 0x18E is a 16-bit big-endian sum of all
 /// 16-bit big-endian words from offset 0x200 to end of ROM.
-pub fn validateGenesisDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.genesis, .failed_to_open, "Genesis file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validateGenesisDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     file.seekTo(0x100) catch return ValidationResult.invalid(.genesis, "Failed to seek");
 
@@ -963,14 +947,18 @@ test "FormatValidator rejects Blorb without RIdx" {
 
 test "validateGenesisDeep: valid ROM has full depth (checksum verified)" {
     try skipIfMissing("ground_truth_examples/genesis/Afterburner II (J).gen");
-    const result = validateGenesisDeep(std.testing.allocator, "ground_truth_examples/genesis/Afterburner II (J).gen");
+    var source = try FileSource.open("ground_truth_examples/genesis/Afterburner II (J).gen");
+    defer source.close();
+    const result = validateGenesisDeep(std.testing.allocator, &source);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 }
 
 test "validateGenesisDeep: second sample also passes checksum" {
     try skipIfMissing("ground_truth_examples/genesis/Aero Blasters (JU).gen");
-    const result = validateGenesisDeep(std.testing.allocator, "ground_truth_examples/genesis/Aero Blasters (JU).gen");
+    var source = try FileSource.open("ground_truth_examples/genesis/Aero Blasters (JU).gen");
+    defer source.close();
+    const result = validateGenesisDeep(std.testing.allocator, &source);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 }
@@ -1001,13 +989,17 @@ test "validateGenesisDeep: corrupted ROM detected by checksum" {
     const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.gen");
     defer allocator.free(path);
 
-    const result = validateGenesisDeep(allocator, path);
+    var source = try FileSource.open(path);
+    defer source.close();
+    const result = validateGenesisDeep(allocator, &source);
     try std.testing.expect(!result.is_valid);
 }
 
 test "validateN64Deep: valid ROM has full depth (CRC verified)" {
     try skipIfMissing("ground_truth_examples/n64/Super Mario 64.z64");
-    const result = validateN64Deep(std.testing.allocator, "ground_truth_examples/n64/Super Mario 64.z64");
+    var source = try FileSource.open("ground_truth_examples/n64/Super Mario 64.z64");
+    defer source.close();
+    const result = validateN64Deep(std.testing.allocator, &source);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 }
@@ -1036,7 +1028,9 @@ test "validateN64Deep: corrupted ROM detected by CRC" {
     const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.z64");
     defer allocator.free(path);
 
-    const result = validateN64Deep(allocator, path);
+    var source = try FileSource.open(path);
+    defer source.close();
+    const result = validateN64Deep(allocator, &source);
     try std.testing.expect(!result.is_valid);
 }
 

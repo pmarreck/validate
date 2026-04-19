@@ -175,14 +175,9 @@ pub fn validateRealMedia(file: *FileSource) ValidationResult {
 /// Re-opens the file, runs structural validation, then additionally checks that
 /// PROP.data_offset and PROP.index_offset (when non-zero) point to the correct
 /// chunk types (DATA and INDX respectively).
-pub fn validateRealMediaDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateRealMediaDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	_ = allocator;
-
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCodeWithDepth(.rm, .failed_to_open, "RealMedia file", .structural);
-	};
-	defer source.close();
-	const file = &source;
+	const file = source;
 
 	// Run structural validation first
 	const basic = validateRealMedia(file);
@@ -294,7 +289,9 @@ test "validateRealMedia: deep validation of ground truth sample" {
 	// Skip if not present
 	std.fs.cwd().access(ground_truth, .{}) catch return error.SkipZigTest;
 
-	const result = validateRealMediaDeep(testing.allocator, ground_truth);
+	var source = try FileSource.open(ground_truth);
+	defer source.close();
+	const result = validateRealMediaDeep(testing.allocator, &source);
 	try testing.expectEqual(FileFormat.rm, result.format);
 	// Hand-crafted sample may not pass deep validation — skip gracefully
 	if (!result.is_valid) return error.SkipZigTest;

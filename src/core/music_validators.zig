@@ -1330,7 +1330,11 @@ pub fn validateWavPack(file: *FileSource) ValidationResult {
 /// This validates delta times, event status/data bytes, running status,
 /// and verifies each track ends with End of Track meta event.
 pub fn validateMidiDeep(path: []const u8) ValidationResult {
-    const result = midi_validator.validateMidiDeep(path);
+    var source = FileSource.open(path) catch {
+        return ValidationResult.invalidCode(.midi, .failed_to_open, "MIDI file");
+    };
+    defer source.close();
+    const result = midi_validator.validateMidiDeep(&source);
     if (result.valid) {
         return ValidationResult.okWithDepth(.midi, .full);
     } else {

@@ -225,19 +225,12 @@ pub fn validateCab(file: *FileSource) ValidationResult {
 /// Deep-validate a Microsoft Cabinet (.cab) file: structural checks plus
 /// verification of all CFDATA block checksums (XOR-fold algorithm).
 /// Skips checksum verification for blocks where the stored checksum is 0.
-pub fn validateCabDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateCabDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	_ = allocator;
-	var file = FileSource.open(path) catch |err| {
-		return switch (err) {
-			error.FileNotFound => ValidationResult.invalidWithDepth(.cab, "File not found", .structural),
-			error.AccessDenied => ValidationResult.invalidWithDepth(.cab, "Access denied", .structural),
-			else => ValidationResult.invalidCodeWithDepth(.cab, .failed_to_open, "file", .structural),
-		};
-	};
-	defer file.close();
+	const file = source;
 
 	// Run structural validation first
-	const structural = validateCab(&file);
+	const structural = validateCab(file);
 	if (!structural.is_valid) return structural;
 
 	// Now walk all CFFOLDER entries and verify CFDATA block checksums.
@@ -362,17 +355,16 @@ test "validateCab: valid CAB ground truth" {
 }
 
 test "validateCabDeep: valid CAB ground truth deep" {
-	const result = validateCabDeep(testing.allocator, "ground_truth_examples/cab/sample.cab");
-	if (!result.is_valid and result.error_message != null and
-		std.mem.indexOf(u8, result.error_message.?, "not found") != null)
-	{
-		return error.SkipZigTest;
-	}
+	var source = FileSource.open("ground_truth_examples/cab/sample.cab") catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
+	};
+	defer source.close();
+	const result = validateCabDeep(testing.allocator, &source);
 	try testing.expect(result.is_valid);
 	try testing.expectEqual(FileFormat.cab, result.format);
 	// Depth is checksum (CFDATA checksums verified) or structural if no checksums present
 	try testing.expect(result.validation_depth == .full or result.validation_depth == .structural);
-
 }
 
 /// Helper: write `data` to a temp file and open it as FileSource.
@@ -718,6 +710,8 @@ test "validateCabDeep: corrupt CFDATA checksum rejected" {
 	try testing.expect(struct_result.is_valid);
 
 	// Deep pass should fail on the bad checksum
-	const deep_result = validateCabDeep(testing.allocator, tmp_path);
+	var deep_src = try FileSource.open(tmp_path);
+	defer deep_src.close();
+	const deep_result = validateCabDeep(testing.allocator, &deep_src);
 	try testing.expect(!deep_result.is_valid);
 }

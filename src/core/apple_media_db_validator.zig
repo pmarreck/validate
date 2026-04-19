@@ -1,5 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const zlib = @import("zlib.zig");
@@ -8,13 +10,8 @@ const zlib = @import("zlib.zig");
 /// Validates .musicdb and .tvdb files used by Music.app and TV.app.
 /// Format: 160-byte header + AES-128-ECB encrypted + zlib-compressed payload
 /// containing FourCC-tagged chunks (itma, plma, ltma, etc.).
-pub fn validateAppleMediaDbDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	const file = std.fs.cwd().openFile(path, .{}) catch {
-		return ValidationResult.invalidWithDepth(.apple_media_db, "Failed to open file", .structural);
-	};
-	defer file.close();
-
-	const file_size = file.getEndPos() catch {
+pub fn validateAppleMediaDbDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+	const file_size = source.getEndPos() catch {
 		return ValidationResult.invalidWithDepth(.apple_media_db, "Failed to get file size", .structural);
 	};
 
@@ -23,8 +20,11 @@ pub fn validateAppleMediaDbDeep(allocator: Allocator, path: []const u8) Validati
 		return ValidationResult.invalidWithDepth(.apple_media_db, "File too small for hfma format", .structural);
 	}
 
+	source.seekTo(0) catch {
+		return ValidationResult.invalidWithDepth(.apple_media_db, "Failed to seek to start", .structural);
+	};
 	var header: [header_size]u8 = undefined;
-	const bytes_read = file.readAll(&header) catch {
+	const bytes_read = source.readAll(&header) catch {
 		return ValidationResult.invalidWithDepth(.apple_media_db, "Failed to read header", .structural);
 	};
 	if (bytes_read < header_size) {
@@ -63,10 +63,10 @@ pub fn validateAppleMediaDbDeep(allocator: Allocator, path: []const u8) Validati
 	};
 	defer allocator.free(payload);
 
-	file.seekTo(header_size) catch {
+	source.seekTo(header_size) catch {
 		return ValidationResult.invalidWithDepth(.apple_media_db, "Failed to seek past header", .structural);
 	};
-	const payload_read = file.readAll(payload) catch {
+	const payload_read = source.readAll(payload) catch {
 		return ValidationResult.invalidWithDepth(.apple_media_db, "Failed to read payload", .structural);
 	};
 
@@ -311,24 +311,24 @@ test "validateInnerChunks rejects non-hfma start" {
 
 test "deep validation of real tvdb file" {
 	const test_path = "ground_truth_examples/apple_media_db/sample.tvdb";
-	const file = std.fs.cwd().openFile(test_path, .{}) catch {
+	var source = FileSource.open(test_path) catch {
 		return error.SkipZigTest;
 	};
-	file.close();
+	defer source.close();
 
-	const result = validateAppleMediaDbDeep(testing.allocator, test_path);
+	const result = validateAppleMediaDbDeep(testing.allocator, &source);
 	try testing.expect(result.is_valid);
 	try testing.expectEqual(format_validation.FileFormat.apple_media_db, result.format);
 }
 
 test "deep validation of real musicdb file" {
 	const test_path = "ground_truth_examples/apple_media_db/sample.musicdb";
-	const file = std.fs.cwd().openFile(test_path, .{}) catch {
+	var source = FileSource.open(test_path) catch {
 		return error.SkipZigTest;
 	};
-	file.close();
+	defer source.close();
 
-	const result = validateAppleMediaDbDeep(testing.allocator, test_path);
+	const result = validateAppleMediaDbDeep(testing.allocator, &source);
 	try testing.expect(result.is_valid);
 	try testing.expectEqual(format_validation.FileFormat.apple_media_db, result.format);
 }
@@ -350,6 +350,8 @@ test "deep validation rejects truncated file" {
 	tmp_file.close();
 	defer std.fs.cwd().deleteFile(tmp_path) catch {};
 
-	const result = validateAppleMediaDbDeep(testing.allocator, tmp_path);
+	var source = try FileSource.open(tmp_path);
+	defer source.close();
+	const result = validateAppleMediaDbDeep(testing.allocator, &source);
 	try testing.expect(!result.is_valid);
 }
