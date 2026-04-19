@@ -277,11 +277,16 @@ pub fn runCoverage(
         // Optional trace (set VALIDATE_COVERAGE_TRACE=1) so a subsequent crash
         // points at the exact seed/mode/offset/bit that triggered it. stderr is
         // flushed per round so the last line printed is the one that crashed.
-        if (std.posix.getenv("VALIDATE_COVERAGE_TRACE")) |_| {
-            std.debug.print(
-                "[coverage trace] seed={d} round={d}/{d} mode={s} offset={d} bit={d} size={d}\n",
-                .{ config.seed, round + 1, config.rounds, event.mode.name(), event.offset, event.bit, event.size },
-            );
+        // std.posix.getenv is unavailable on Windows (WTF-16 env strings), so
+        // gate the trace on a comptime non-Windows check. Windows devs who need
+        // the trace can run validate via WSL.
+        if (comptime @import("builtin").os.tag != .windows) {
+            if (std.posix.getenv("VALIDATE_COVERAGE_TRACE")) |_| {
+                std.debug.print(
+                    "[coverage trace] seed={d} round={d}/{d} mode={s} offset={d} bit={d} size={d}\n",
+                    .{ config.seed, round + 1, config.rounds, event.mode.name(), event.offset, event.bit, event.size },
+                );
+            }
         }
 
         // Run validator on corrupted bytes
