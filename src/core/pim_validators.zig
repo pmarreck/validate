@@ -201,15 +201,18 @@ pub fn validateICalendarDeep(allocator: Allocator, path: []const u8) ValidationR
 		return ValidationResult.okWithDepth(.icalendar, .structural);
 	}
 
-	const data = allocator.alloc(u8, @intCast(file_size)) catch {
-		return ValidationResult.okWithDepth(.icalendar, .structural);
+	var heap_pim1: ?[]u8 = null;
+	defer if (heap_pim1) |buf| allocator.free(buf);
+	const content: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+		const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+			return ValidationResult.okWithDepth(.icalendar, .structural);
+		};
+		heap_pim1 = buf;
+		const n = source.readAll(buf) catch {
+			return ValidationResult.invalidCode(.icalendar, .failed_to_read, "failed to read file");
+		};
+		break :blk buf[0..n];
 	};
-	defer allocator.free(data);
-
-	const bytes_read = source.readAll(data) catch {
-		return ValidationResult.invalidCode(.icalendar, .failed_to_read, "failed to read file");
-	};
-	const content = data[0..bytes_read];
 
 	// Skip BOM and whitespace
 	const start = skipBomAndWhitespace(content);
@@ -342,15 +345,18 @@ pub fn validateVCardDeep(allocator: Allocator, path: []const u8) ValidationResul
 		return ValidationResult.okWithDepth(.vcard, .structural);
 	}
 
-	const data = allocator.alloc(u8, @intCast(file_size)) catch {
-		return ValidationResult.okWithDepth(.vcard, .structural);
+	var heap_pim2: ?[]u8 = null;
+	defer if (heap_pim2) |buf| allocator.free(buf);
+	const content: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
+		const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+			return ValidationResult.okWithDepth(.vcard, .structural);
+		};
+		heap_pim2 = buf;
+		const n = source.readAll(buf) catch {
+			return ValidationResult.invalidCode(.vcard, .failed_to_read, "failed to read file");
+		};
+		break :blk buf[0..n];
 	};
-	defer allocator.free(data);
-
-	const bytes_read = source.readAll(data) catch {
-		return ValidationResult.invalidCode(.vcard, .failed_to_read, "failed to read file");
-	};
-	const content = data[0..bytes_read];
 
 	// Skip BOM
 	const start = skipBomAndWhitespace(content);
