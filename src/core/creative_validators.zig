@@ -219,11 +219,16 @@ pub fn validateIndd(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCode(.indd, .invalid_magic, "INDD primary master page");
     }
 
-    // Sequence number (bytes 28-31, u32 LE) for the first master page should be 0
+    // Sequence numbers at bytes 28..32 of each master page (u32 LE) are
+    // InDesign's save-generation counters. Real saved files have arbitrary
+    // non-zero values (the procured sample from mlove4u/InDesignFileVersion
+    // has seq0 = seq1 = 512), and after each save the two counters diverge
+    // while InDesign alternates which page it writes. We don't have the full
+    // vendor spec to decide which divergences are legal, so at structural
+    // depth we only read the counters for forward-compat and trust the
+    // magic-bytes pair as the actual invariant. Tight equality checks here
+    // used to reject every saved .indd file.
     const seq0 = std.mem.readInt(u32, page0[28..32], .little);
-    if (seq0 != 0) {
-        return ValidationResult.invalidCode(.indd, .invalid_value, "INDD primary master page sequence number (expected 0)");
-    }
 
     // ---- Duplicate master page (offset 4096) ----
     file.seekTo(4096) catch return ValidationResult.invalidCode(.indd, .failed_to_seek, "to duplicate master page");
@@ -240,11 +245,9 @@ pub fn validateIndd(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCode(.indd, .invalid_magic, "INDD duplicate master page");
     }
 
-    // Sequence number in the duplicate must match the primary
     const seq1 = std.mem.readInt(u32, page1[28..32], .little);
-    if (seq1 != seq0) {
-        return ValidationResult.invalidCode(.indd, .invalid_value, "INDD master page sequence number mismatch between primary and duplicate");
-    }
+    _ = seq0;
+    _ = seq1;
 
     return ValidationResult.okWithDepth(.indd, .structural);
 }
@@ -1480,6 +1483,31 @@ test "validateIndd accepts valid INDD file structure" {
     }
     try std.testing.expectEqual(FileFormat.indd, result.format);
     try std.testing.expect(result.is_valid);
+}
+
+test "validateIndd accepts saved INDD with non-zero sequence numbers" {
+	// Regression: the validator used to require seq0 == 0 (unsaved state) and
+	// seq0 == seq1, which rejects every real saved .indd file. InDesign
+	// increments the sequence counter on save, and one master page's counter
+	// may lead the other depending on which was most recently written. The
+	// procured sample from mlove4u/InDesignFileVersion has seq0 = seq1 = 512,
+	// a realistic saved-file value that the old validator refused.
+	var indd_data: [8192]u8 = [_]u8{0} ** 8192;
+	const indd_magic = [16]u8{ 0x06, 0x06, 0xED, 0xF5, 0xD8, 0x1D, 0x46, 0xE5, 0xBD, 0x31, 0xEF, 0xE7, 0xFE, 0x74, 0xB7, 0x1D };
+	@memcpy(indd_data[0..16], &indd_magic);
+	@memcpy(indd_data[4096..4112], &indd_magic);
+	// seq at offset 28/4124, u32 LE. Use 512 = real saved-state value.
+	std.mem.writeInt(u32, indd_data[28..32], 512, .little);
+	std.mem.writeInt(u32, indd_data[4124..4128], 512, .little);
+
+	var source = FileSource.fromBuffer(&indd_data);
+	defer source.close();
+	const result = validateIndd(&source);
+	if (!result.is_valid) {
+		std.debug.print("\nINDD non-zero-seq validation failed: {s}\n", .{result.error_message orelse "no message"});
+	}
+	try std.testing.expectEqual(FileFormat.indd, result.format);
+	try std.testing.expect(result.is_valid);
 }
 
 test "validateIndd rejects file with wrong magic bytes" {
