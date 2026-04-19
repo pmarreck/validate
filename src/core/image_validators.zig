@@ -1755,18 +1755,20 @@ pub fn validatePsdDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
         // Read compressed data (limit to 200MB to avoid memory issues)
         const max_compressed_read: u64 = @min(remaining, 200 * 1024 * 1024);
-        const compressed_data = allocator.alloc(u8, @intCast(max_compressed_read)) catch {
-            return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP: out of memory for compressed data");
+        var heap_psd: ?[]u8 = null;
+        defer if (heap_psd) |buf| allocator.free(buf);
+        const compressed_data: []const u8 = if (source.getMappedRange(zip_data_start, max_compressed_read)) |mapped|
+            mapped
+        else blk: {
+            const buf = allocator.alloc(u8, @intCast(max_compressed_read)) catch {
+                return ValidationResult.okWithDepthAndWarning(.psd, .structural, "ZIP: out of memory for compressed data");
+            };
+            heap_psd = buf;
+            const n = source.readAll(buf) catch return ValidationResult.invalidCode(.psd, .failed_to_read, "ZIP compressed data");
+            if (n == 0) return ValidationResult.invalid(.psd, "No ZIP compressed data read");
+            break :blk buf[0..n];
         };
-        defer allocator.free(compressed_data);
-
-        const bytes_read = source.readAll(compressed_data) catch {
-            return ValidationResult.invalidCode(.psd, .failed_to_read, "ZIP compressed data");
-        };
-
-        if (bytes_read == 0) {
-            return ValidationResult.invalid(.psd, "No ZIP compressed data read");
-        }
+        const bytes_read = compressed_data.len;
 
         // Calculate expected uncompressed size
         const expected_uncompressed: u64 = @as(u64, scanline_size) * @as(u64, height) * @as(u64, channels);
