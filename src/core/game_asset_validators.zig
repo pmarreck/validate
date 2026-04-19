@@ -69,12 +69,8 @@ pub fn validateWad(file: *FileSource) ValidationResult {
 }
 
 /// Deep validation for WAD files - validates all directory entries.
-pub fn validateWadDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.wad, .failed_to_open, "WAD file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validateWadDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.wad, .failed_to_get, "file size");
@@ -181,12 +177,8 @@ pub fn validatePak(file: *FileSource) ValidationResult {
 }
 
 /// Deep validation for PAK files - validates all directory entries.
-pub fn validatePakDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.pak, .failed_to_open, "PAK file");
-    };
-    defer source.close();
-    const file = &source;
+pub fn validatePakDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file = source;
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.pak, .failed_to_get, "file size");
@@ -729,12 +721,8 @@ fn isValidChunkId(id: *const [4]u8) bool {
 
 /// Deep validation for IFF files - parses all nested chunks with format-specific cross-validation.
 /// For ILBM containers, cross-validates BMHD dimensions against BODY chunk size.
-pub fn validateIffDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCode(.iff, .failed_to_open, "IFF file");
-	};
-	defer source.close();
-	const file = &source;
+pub fn validateIffDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+	const file = source;
 
 	var header: [12]u8 = undefined;
 	_ = file.read(&header) catch return ValidationResult.invalidCode(.iff, .failed_to_read, "header");
@@ -1061,7 +1049,9 @@ test "VPK validation - entry missing 0xFFFF terminator rejected" {
 
 test "IFF deep validation - valid ILBM ByteRun1 sample" {
 	try skipIfMissing("ground_truth_examples/iff/sample.iff");
-	const result = validateIffDeep(testing.allocator, "ground_truth_examples/iff/sample.iff");
+	var source = FileSource.open("ground_truth_examples/iff/sample.iff") catch return error.SkipZigTest;
+	defer source.close();
+	const result = validateIffDeep(testing.allocator, &source);
 	try testing.expect(result.is_valid);
 	try testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
@@ -1094,7 +1084,9 @@ test "IFF deep validation - corrupted ByteRun1 stream detected" {
 	tmp.close();
 	defer std.fs.cwd().deleteFile(tmp_path) catch {};
 
-	const result = validateIffDeep(testing.allocator, tmp_path);
+	var tmp_src = FileSource.open(tmp_path) catch return;
+	defer tmp_src.close();
+	const result = validateIffDeep(testing.allocator, &tmp_src);
 	try testing.expect(!result.is_valid);
 }
 
@@ -1121,7 +1113,9 @@ test "IFF deep validation - invalid chunk ID detected" {
 	tmp.close();
 	defer std.fs.cwd().deleteFile(tmp_path) catch {};
 
-	const result = validateIffDeep(testing.allocator, tmp_path);
+	var tmp_src2 = FileSource.open(tmp_path) catch return;
+	defer tmp_src2.close();
+	const result = validateIffDeep(testing.allocator, &tmp_src2);
 	try testing.expect(!result.is_valid);
 }
 

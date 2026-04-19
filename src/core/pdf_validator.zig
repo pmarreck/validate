@@ -316,17 +316,9 @@ fn logPdfSlow(
 
 /// Deep PDF validation by parsing and verifying the cross-reference table structure.
 /// Checks startxref pointer, xref table, trailer dictionary, embedded images/fonts/files.
-pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const telemetry = PdfTelemetry.init();
 	const total_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
-	var source = FileSource.open(path) catch |err| {
-		return switch (err) {
-			error.FileNotFound => ValidationResult.invalidWithDepth(.pdf, "File not found", .structural),
-			error.AccessDenied => ValidationResult.invalidWithDepth(.pdf, "Access denied", .structural),
-			else => ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_open, "file", .structural),
-		};
-	};
-	defer source.close();
 
 	const file_size = source.getEndPos() catch {
 		return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_get, "file size", .structural);
@@ -550,7 +542,7 @@ pub fn validatePdfDeep(allocator: Allocator, path: []const u8) ValidationResult 
 	}
 
 	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;
-	logPdfSlow(telemetry, path, total_ns, structural_ns, image_ns, font_ns, embed_ns, image_result, font_result, embed_result);
+	logPdfSlow(telemetry, "<source>", total_ns, structural_ns, image_ns, font_ns, embed_ns, image_result, font_result, embed_result);
 
 	// Determine validation depth: downgrade to structural if any streams were
 	// skipped due to exceeding decompression size limits (we can't claim full

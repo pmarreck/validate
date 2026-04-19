@@ -18,6 +18,8 @@
 
 const std = @import("std");
 const errmsg = @import("error_messages.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 const c = @cImport({
 	@cInclude("brotli/decode.h");
@@ -47,19 +49,9 @@ const INITIAL_OUTPUT_SIZE: usize = 1024 * 1024;
 
 /// Validate a Brotli file by attempting full decompression.
 /// Returns validation result with error details if invalid.
-pub fn validateBrotliDeep(file_path: []const u8) BrotliValidationResult {
-	// Open file using Zig's stdlib
-	const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-		return switch (err) {
-			error.FileNotFound => BrotliValidationResult.invalid("File not found"),
-			error.AccessDenied => BrotliValidationResult.invalid("Access denied"),
-			else => BrotliValidationResult.invalid(errmsg.failedToOpen("file")),
-		};
-	};
-	defer file.close();
-
+pub fn validateBrotliDeep(source: *FileSource) BrotliValidationResult {
 	// Get file size
-	const file_size = file.getEndPos() catch {
+	const file_size = source.getEndPos() catch {
 		return BrotliValidationResult.invalid(errmsg.failedToGet("file size"));
 	};
 
@@ -80,7 +72,7 @@ pub fn validateBrotliDeep(file_path: []const u8) BrotliValidationResult {
 
 	// Read entire file
 	const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
-	const bytes_read = file.readAll(buf_slice) catch {
+	const bytes_read = source.readAll(buf_slice) catch {
 		return BrotliValidationResult.invalid(errmsg.failedToRead("file"));
 	};
 	if (bytes_read != file_size) {

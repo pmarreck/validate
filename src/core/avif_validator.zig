@@ -8,6 +8,8 @@ const std = @import("std");
 const heif = @import("heif_container_parser.zig");
 const av1 = @import("av1_obu_validator.zig");
 const errmsg = @import("error_messages.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 pub const AvifValidationResult = struct {
     valid: bool,
@@ -76,17 +78,8 @@ pub const AvifValidationResult = struct {
 const large_image_threshold: u64 = 200 * 1024 * 1024; // 200 MB
 
 /// Validate an AVIF file from a file path.
-pub fn validateAvifDeep(path: []const u8) AvifValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => AvifValidationResult.invalid("File not found"),
-            error.AccessDenied => AvifValidationResult.invalid("Access denied"),
-            else => AvifValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer file.close();
-
-    const file_size = file.getEndPos() catch {
+pub fn validateAvifDeep(source: *FileSource) AvifValidationResult {
+    const file_size = source.getEndPos() catch {
         return AvifValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
@@ -107,7 +100,7 @@ pub fn validateAvifDeep(path: []const u8) AvifValidationResult {
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return AvifValidationResult.invalid(errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {

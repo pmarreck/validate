@@ -8,6 +8,8 @@ const std = @import("std");
 const heif = @import("heif_container_parser.zig");
 const h265 = @import("h265_validator.zig");
 const errmsg = @import("error_messages.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 pub const HeicValidationResult = struct {
     valid: bool,
@@ -76,17 +78,8 @@ pub const HeicValidationResult = struct {
 const large_image_threshold: u64 = 200 * 1024 * 1024; // 200 MB
 
 /// Validate a HEIC file from a file path.
-pub fn validateHeicDeep(path: []const u8) HeicValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => HeicValidationResult.invalid("File not found"),
-            error.AccessDenied => HeicValidationResult.invalid("Access denied"),
-            else => HeicValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer file.close();
-
-    const file_size = file.getEndPos() catch {
+pub fn validateHeicDeep(source: *FileSource) HeicValidationResult {
+    const file_size = source.getEndPos() catch {
         return HeicValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
@@ -107,7 +100,7 @@ pub fn validateHeicDeep(path: []const u8) HeicValidationResult {
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return HeicValidationResult.invalid(errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {

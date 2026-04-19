@@ -16,6 +16,8 @@ const ValidationDepth = format_validation.ValidationDepth;
 const FileFormat = format_validation.FileFormat;
 
 const ole2_validator = @import("ole2_validator.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 /// FIB magic signature — first two bytes of WordDocument stream (Word 97+)
 const FIB_MAGIC: u16 = 0xA5EC;
@@ -74,9 +76,9 @@ const FibRgLw97 = struct {
 };
 
 /// Validate a .doc file deeply by parsing the FIB and cross-validating Table stream references.
-pub fn validateDocDeep(allocator: Allocator, path: []const u8) ValidationResult {
+pub fn validateDocDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     // Read WordDocument stream
-    const wd_data = ole2_validator.readNamedStream(allocator, path, "WordDocument") orelse {
+    const wd_data = ole2_validator.readNamedStream(allocator, source, "WordDocument") orelse {
         // No WordDocument stream — this OLE2 container is not a Word document.
         // It may be an MSI (Windows Installer), Thumbs.db, or other OLE2/CFBF format.
         // The OLE2 structure itself is valid, so return structural OK with a warning.
@@ -143,7 +145,7 @@ pub fn validateDocDeep(allocator: Allocator, path: []const u8) ValidationResult 
 
     // Read Table stream for cross-validation
     const table_name = fib_base.tableStreamName();
-    const table_data = ole2_validator.readNamedStream(allocator, path, table_name) orelse {
+    const table_data = ole2_validator.readNamedStream(allocator, source, table_name) orelse {
         return ValidationResult.invalidWithDepth(.doc, "Failed to read Table stream from OLE2 container", .structural);
     };
     defer allocator.free(table_data);
@@ -696,7 +698,9 @@ test "validateClx rejects missing Pcdt marker" {
 test "validateDocDeep with sample.doc" {
     const allocator = std.testing.allocator;
     try skipIfMissing("ground_truth_examples/doc/sample.doc");
-    const result = validateDocDeep(allocator, "ground_truth_examples/doc/sample.doc");
+    var source = FileSource.open("ground_truth_examples/doc/sample.doc") catch return error.SkipZigTest;
+    defer source.close();
+    const result = validateDocDeep(allocator, &source);
     // If sample.doc exists, it should validate successfully with full depth
     if (result.is_valid) {
         try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
@@ -807,7 +811,9 @@ test "validateDocDeep rejects corrupted FIB magic" {
     const allocator = std.testing.allocator;
 
     // First verify we can read the sample
-    const wd = ole2_validator.readNamedStream(allocator, "ground_truth_examples/doc/sample.doc", "WordDocument") orelse {
+    var source = FileSource.open("ground_truth_examples/doc/sample.doc") catch return error.SkipZigTest;
+    defer source.close();
+    const wd = ole2_validator.readNamedStream(allocator, &source, "WordDocument") orelse {
         return error.SkipZigTest;
     };
     defer allocator.free(wd);

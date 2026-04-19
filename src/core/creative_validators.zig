@@ -680,7 +680,8 @@ pub fn validateAiDeep(allocator: Allocator, path: []const u8) ValidationResult {
 
     // If PDF-based, use deep PDF validation
     if (std.mem.startsWith(u8, header[0..bytes_read], "%PDF-")) {
-        const pdf_result = pdf_validator.validatePdfDeep(allocator, path);
+        source.seekTo(0) catch {};
+        const pdf_result = pdf_validator.validatePdfDeep(allocator, &source);
         return ValidationResult{
             .format = .ai,
             .is_valid = pdf_result.is_valid,

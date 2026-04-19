@@ -1442,12 +1442,7 @@ pub fn validateRtf(file: *FileSource) ValidationResult {
 
 /// Deep validation for RTF files.
 /// Validates brace matching and control word structure.
-pub fn validateRtfDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.rtf, .failed_to_open, "RTF file");
-    };
-    defer source.close();
-
+pub fn validateRtfDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.rtf, .failed_to_get, "file size");
     };
@@ -1659,13 +1654,8 @@ pub fn validateKml(file: *FileSource) ValidationResult {
 }
 
 /// Deep validation for KML files using full XML parsing.
-pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var kml_source = FileSource.open(path) catch {
-        return ValidationResult.invalidCode(.kml, .failed_to_open, "KML file");
-    };
-    defer kml_source.close();
-
-    const file_size = kml_source.getEndPos() catch {
+pub fn validateKmlDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCode(.kml, .failed_to_get, "file size");
     };
 
@@ -1678,7 +1668,7 @@ pub fn validateKmlDeep(allocator: Allocator, path: []const u8) ValidationResult 
     };
     defer allocator.free(data);
 
-    const bytes_read = kml_source.readAll(data) catch {
+    const bytes_read = source.readAll(data) catch {
         return ValidationResult.invalidCode(.kml, .failed_to_read, "file");
     };
     if (bytes_read != file_size) {
@@ -1748,10 +1738,8 @@ pub fn validateKmz(file: *FileSource) ValidationResult {
     return ValidationResult.okWithDepth(.kmz, .structural);
 }
 
-pub fn validateKmzDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    var src = FileSource.open(path) catch return ValidationResult.invalidCodeWithDepth(.kmz, .failed_to_open, "file", .full);
-    defer src.close();
-    const zip_result = archive_validators.validateZipDeep(allocator, &src);
+pub fn validateKmzDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const zip_result = archive_validators.validateZipDeep(allocator, source);
     var coerced = zip_result;
     coerced.format = .kmz;
     return coerced;
@@ -2956,7 +2944,9 @@ test "validateRtfDeep accepts valid ground truth RTF file" {
         "ground_truth_examples/rtf/sample.rtf",
     ) catch return;
     defer testing.allocator.free(path_buf);
-    const result = validateRtfDeep(testing.allocator, path_buf);
+    var source = FileSource.open(path_buf) catch return;
+    defer source.close();
+    const result = validateRtfDeep(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.rtf, result.format);
 }
@@ -2972,7 +2962,9 @@ test "validateRtfDeep detects unmatched closing brace" {
         "extrabrace.rtf",
     ) catch return;
     defer testing.allocator.free(path_buf);
-    const result = validateRtfDeep(testing.allocator, path_buf);
+    var source = FileSource.open(path_buf) catch return;
+    defer source.close();
+    const result = validateRtfDeep(testing.allocator, &source);
     try testing.expect(!result.is_valid);
 }
 
@@ -2987,7 +2979,9 @@ test "validateRtfDeep detects unclosed brace" {
         "unclosed.rtf",
     ) catch return;
     defer testing.allocator.free(path_buf);
-    const result = validateRtfDeep(testing.allocator, path_buf);
+    var source2 = FileSource.open(path_buf) catch return;
+    defer source2.close();
+    const result = validateRtfDeep(testing.allocator, &source2);
     try testing.expect(!result.is_valid);
 }
 
@@ -3057,7 +3051,9 @@ test "validateKmlDeep accepts valid ground truth KML file" {
         "ground_truth_examples/kml/sample.kml",
     ) catch return;
     defer testing.allocator.free(path_buf);
-    const result = validateKmlDeep(testing.allocator, path_buf);
+    var source = FileSource.open(path_buf) catch return;
+    defer source.close();
+    const result = validateKmlDeep(testing.allocator, &source);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.kml, result.format);
     try testing.expectEqual(ValidationDepth.structural, result.validation_depth);

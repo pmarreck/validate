@@ -22,6 +22,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const errmsg = @import("error_messages.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 /// Threshold for warning about large image files (200MB)
 const large_image_threshold: u64 = 200 * 1024 * 1024;
@@ -53,19 +55,9 @@ pub const JxlValidationResult = struct {
 
 /// Validate a JPEG-XL file by attempting full decompression.
 /// Returns validation result with error details if invalid.
-pub fn validateJxlDeep(file_path: []const u8) JxlValidationResult {
-    // Open file using Zig's stdlib
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => JxlValidationResult.invalid("File not found"),
-            error.AccessDenied => JxlValidationResult.invalid("Access denied"),
-            else => JxlValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer file.close();
-
+pub fn validateJxlDeep(source: *FileSource) JxlValidationResult {
     // Get file size
-    const file_size = file.getEndPos() catch {
+    const file_size = source.getEndPos() catch {
         return JxlValidationResult.invalid(errmsg.failedToGet("file size"));
     };
 
@@ -84,7 +76,7 @@ pub fn validateJxlDeep(file_path: []const u8) JxlValidationResult {
 
     // Read entire file
     const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
-    const bytes_read = file.readAll(buf_slice) catch {
+    const bytes_read = source.readAll(buf_slice) catch {
         return JxlValidationResult.invalid(errmsg.failedToRead("file"));
     };
     if (bytes_read != file_size) {

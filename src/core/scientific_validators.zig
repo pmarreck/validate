@@ -2829,17 +2829,8 @@ pub fn validateParquet(file: *FileSource) ValidationResult {
 /// Deep Parquet validation — reads data pages sequentially, verifies page CRC-32
 /// when present. Parquet pages start at offset 4 (after "PAR1" magic) and consist
 /// of a Thrift-encoded PageHeader followed by compressed_page_size bytes of data.
-pub fn validateParquetDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-        return switch (err) {
-            error.FileNotFound => ValidationResult.invalidWithDepth(.parquet, "File not found", .full),
-            error.AccessDenied => ValidationResult.invalidWithDepth(.parquet, "Access denied", .full),
-            else => ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_open, "file", .full),
-        };
-    };
-    defer file.close();
-
-    const file_size = file.getEndPos() catch {
+pub fn validateParquetDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_get, "file size", .structural);
     };
 
@@ -2848,11 +2839,11 @@ pub fn validateParquetDeep(allocator: Allocator, path: []const u8) ValidationRes
     }
 
     // Read footer length to know where data pages end
-    file.seekTo(file_size - 8) catch {
+    source.seekTo(file_size - 8) catch {
         return ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_seek, "to footer", .structural);
     };
     var footer_buf: [8]u8 = undefined;
-    _ = file.readAll(&footer_buf) catch {
+    _ = source.readAll(&footer_buf) catch {
         return ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_read, "footer", .structural);
     };
 
@@ -2864,7 +2855,7 @@ pub fn validateParquetDeep(allocator: Allocator, path: []const u8) ValidationRes
     const data_end: u64 = file_size - 8 - footer_length;
 
     // Scan data pages from offset 4 to data_end
-    file.seekTo(4) catch {
+    source.seekTo(4) catch {
         return ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_seek, "to data", .structural);
     };
 
@@ -2876,12 +2867,12 @@ pub fn validateParquetDeep(allocator: Allocator, path: []const u8) ValidationRes
     defer allocator.free(read_buf);
 
     while (pages_checked < 10000) {
-        const page_start = file.getPos() catch break;
+        const page_start = source.getPos() catch break;
         if (page_start + 4 >= data_end) break;
 
         // Read enough for the page header (Thrift struct, usually < 100 bytes)
         const to_read = @min(page_header_buf.len, @as(usize, @intCast(data_end - page_start)));
-        const hdr_read = file.read(page_header_buf[0..to_read]) catch break;
+        const hdr_read = source.read(page_header_buf[0..to_read]) catch break;
         if (hdr_read < 3) break;
 
         const hdr = page_header_buf[0..hdr_read];
@@ -2958,7 +2949,7 @@ pub fn validateParquetDeep(allocator: Allocator, path: []const u8) ValidationRes
         }
 
         // Seek past the header to the page data
-        file.seekTo(page_start + pos) catch break;
+        source.seekTo(page_start + pos) catch break;
 
         if (page_crc) |expected_crc| {
             pages_with_crc += 1;
@@ -2968,7 +2959,7 @@ pub fn validateParquetDeep(allocator: Allocator, path: []const u8) ValidationRes
             var remaining: u64 = @intCast(compressed_size);
             while (remaining > 0) {
                 const chunk_read = @min(remaining, read_buf.len);
-                const n = file.read(read_buf[0..@intCast(chunk_read)]) catch break;
+                const n = source.read(read_buf[0..@intCast(chunk_read)]) catch break;
                 if (n == 0) break;
                 crc.update(read_buf[0..n]);
                 remaining -= n;
@@ -2983,7 +2974,7 @@ pub fn validateParquetDeep(allocator: Allocator, path: []const u8) ValidationRes
             crcs_verified += 1;
         } else {
             // No CRC — skip past the page data
-            file.seekTo(page_start + pos + @as(u64, @intCast(compressed_size))) catch break;
+            source.seekTo(page_start + pos + @as(u64, @intCast(compressed_size))) catch break;
         }
 
         pages_checked += 1;

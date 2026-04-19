@@ -116,16 +116,8 @@ const Ole2Header = struct {
 };
 
 /// Validate OLE2/CFBF file structure deeply.
-pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationResult {
-    var source = FileSource.open(path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => Ole2ValidationResult.invalid("File not found"),
-            error.AccessDenied => Ole2ValidationResult.invalid("Access denied"),
-            else => Ole2ValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer source.close();
-
+pub fn validateOle2Deep(allocator: Allocator, source: *FileSource) Ole2ValidationResult {
+    source.pos = 0;
     const file_size = source.getEndPos() catch {
         return Ole2ValidationResult.invalid(errmsg.failedToGet("file size"));
     };
@@ -162,7 +154,7 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
     const total_sectors = @as(u32, @intCast((file_size - header_region_size) / header.sector_size));
 
     // Validate FAT
-    const fat = readFat(allocator, &source, &header, total_sectors) catch |err| {
+    const fat = readFat(allocator, source, &header, total_sectors) catch |err| {
         return switch (err) {
             error.OutOfMemory => Ole2ValidationResult.invalid(errmsg.outOfMemory("reading FAT")),
             error.InvalidDifatChain => Ole2ValidationResult.invalid("Invalid DIFAT chain"),
@@ -180,7 +172,7 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
     }
 
     // Read and validate directory entries
-    const dir_result = validateDirectoryEntries(allocator, &source, &header, fat, total_sectors) catch |err| {
+    const dir_result = validateDirectoryEntries(allocator, source, &header, fat, total_sectors) catch |err| {
         return switch (err) {
             error.OutOfMemory => Ole2ValidationResult.invalid(errmsg.outOfMemory("reading directory")),
             error.InvalidDirectorySector => Ole2ValidationResult.invalid("Invalid directory sector"),
@@ -195,7 +187,7 @@ pub fn validateOle2Deep(allocator: Allocator, path: []const u8) Ole2ValidationRe
 
     // Validate mini-FAT integrity (if present)
     if (header.total_mini_fat_sectors > 0 and header.first_mini_fat_sector != ENDOFCHAIN) {
-        const mini_fat = readMiniFat(allocator, &source, &header, fat) catch {
+        const mini_fat = readMiniFat(allocator, source, &header, fat) catch {
             return Ole2ValidationResult.invalid("Failed to read mini-FAT");
         };
         defer allocator.free(mini_fat);
@@ -632,10 +624,8 @@ const DirEntryInfo = struct {
 /// Read a named stream from an OLE2 file. Returns allocated bytes or null if not found.
 /// stream_name_ascii is an ASCII name (e.g. "WordDocument") which is matched against
 /// UTF-16LE directory entry names.
-pub fn readNamedStream(allocator: Allocator, path: []const u8, stream_name_ascii: []const u8) ?[]u8 {
-    var source = FileSource.open(path) catch return null;
-    defer source.close();
-
+pub fn readNamedStream(allocator: Allocator, source: *FileSource, stream_name_ascii: []const u8) ?[]u8 {
+    source.pos = 0;
     const file_size = source.getEndPos() catch return null;
     if (file_size < 512) return null;
 
@@ -650,11 +640,11 @@ pub fn readNamedStream(allocator: Allocator, path: []const u8, stream_name_ascii
     const total_sectors = @as(u32, @intCast((file_size - header_region_size) / header.sector_size));
 
     // Read FAT
-    const fat = readFat(allocator, &source, &header, total_sectors) catch return null;
+    const fat = readFat(allocator, source, &header, total_sectors) catch return null;
     defer allocator.free(fat);
 
     // Read directory entries and find the named stream
-    const entry_info = findStreamEntry(allocator, &source, &header, fat, total_sectors, stream_name_ascii) catch return null;
+    const entry_info = findStreamEntry(allocator, source, &header, fat, total_sectors, stream_name_ascii) catch return null;
     if (entry_info == null) return null;
 
     const info = entry_info.?;
@@ -669,10 +659,10 @@ pub fn readNamedStream(allocator: Allocator, path: []const u8, stream_name_ascii
     // Read the stream data
     if (info.stream_size < header.mini_stream_cutoff and info.entry_type != .root) {
         // Small stream: use mini-FAT + mini-stream
-        return readMiniStreamData(allocator, &source, &header, fat, total_sectors, info.start_sector, info.stream_size) catch return null;
+        return readMiniStreamData(allocator, source, &header, fat, total_sectors, info.start_sector, info.stream_size) catch return null;
     } else {
         // Large stream: use regular FAT chain
-        return readStreamData(allocator, &source, &header, fat, info.start_sector, info.stream_size) catch return null;
+        return readStreamData(allocator, source, &header, fat, info.start_sector, info.stream_size) catch return null;
     }
 }
 
@@ -890,7 +880,9 @@ fn readMiniFat(
 
 test "readNamedStream returns WordDocument from sample.doc" {
     const allocator = std.testing.allocator;
-    const data = readNamedStream(allocator, "ground_truth_examples/doc/sample.doc", "WordDocument");
+    var source = FileSource.open("ground_truth_examples/doc/sample.doc") catch return error.SkipZigTest;
+    defer source.close();
+    const data = readNamedStream(allocator, &source, "WordDocument");
     if (data) |d| {
         defer allocator.free(d);
         // WordDocument stream should be non-empty
@@ -907,7 +899,9 @@ test "readNamedStream returns WordDocument from sample.doc" {
 
 test "readNamedStream returns null for non-existent stream" {
     const allocator = std.testing.allocator;
-    const data = readNamedStream(allocator, "ground_truth_examples/doc/sample.doc", "NonExistentStream");
+    var source = FileSource.open("ground_truth_examples/doc/sample.doc") catch return error.SkipZigTest;
+    defer source.close();
+    const data = readNamedStream(allocator, &source, "NonExistentStream");
     if (data) |d| {
         defer allocator.free(d);
         // Should not reach here
@@ -917,16 +911,18 @@ test "readNamedStream returns null for non-existent stream" {
 }
 
 test "readNamedStream returns null for non-existent file" {
-    const allocator = std.testing.allocator;
-    const data = readNamedStream(allocator, "/nonexistent/file.doc", "WordDocument");
-    try std.testing.expect(data == null);
+    // Opening a nonexistent file should fail — test that FileSource.open returns an error
+    const result = FileSource.open("/nonexistent/file.doc");
+    try std.testing.expectError(error.FileNotFound, result);
 }
 
 test "readNamedStream can read Table stream" {
     const allocator = std.testing.allocator;
+    var source = FileSource.open("ground_truth_examples/doc/sample.doc") catch return error.SkipZigTest;
+    defer source.close();
     // Try both "0Table" and "1Table" — one should exist
-    const t0 = readNamedStream(allocator, "ground_truth_examples/doc/sample.doc", "0Table");
-    const t1 = readNamedStream(allocator, "ground_truth_examples/doc/sample.doc", "1Table");
+    const t0 = readNamedStream(allocator, &source, "0Table");
+    const t1 = readNamedStream(allocator, &source, "1Table");
     defer {
         if (t0) |d| allocator.free(d);
         if (t1) |d| allocator.free(d);

@@ -127,17 +127,7 @@ fn validateJpegStructurally(data: []const u8) JpegValidationResult {
 /// Validate a JPEG file by attempting full decompression.
 /// Returns validation result with error details if invalid.
 /// Note: On Windows, falls back to a structural marker scan.
-pub fn validateJpegDeep(file_path: []const u8) JpegValidationResult {
-    // Open file using Zig's stdlib
-    var source = FileSource.open(file_path) catch |err| {
-        return switch (err) {
-            error.FileNotFound => JpegValidationResult.invalid("File not found"),
-            error.AccessDenied => JpegValidationResult.invalid("Access denied"),
-            else => JpegValidationResult.invalid(errmsg.failedToOpen("file")),
-        };
-    };
-    defer source.close();
-
+pub fn validateJpegDeep(source: *FileSource) JpegValidationResult {
     // Get file size
     const file_size = source.getEndPos() catch {
         return JpegValidationResult.invalid(errmsg.failedToGet("file size"));

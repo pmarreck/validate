@@ -164,12 +164,7 @@ pub fn validatePem(file: *FileSource) ValidationResult {
 }
 
 /// Deep PEM validation: decode base64, parse inner ASN.1 DER structure.
-pub fn validatePemDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCode(.pem, .failed_to_read, "PEM file");
-	};
-	defer source.close();
-
+pub fn validatePemDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const file_sz = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.pem, .failed_to_read, "PEM file stat");
 	};
@@ -352,12 +347,7 @@ pub fn validateDer(file: *FileSource) ValidationResult {
 }
 
 /// Deep DER validation: recursively verify all ASN.1 TLV structures.
-pub fn validateDerDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCode(.der, .failed_to_read, "DER file");
-	};
-	defer source.close();
-
+pub fn validateDerDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const file_sz = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.der, .failed_to_read, "DER file stat");
 	};
@@ -552,12 +542,7 @@ pub fn validatePgpSigned(source: *FileSource) ValidationResult {
 /// Deep validation for PGP clearsigned messages.
 /// Performs all structural checks, then decodes base64, verifies CRC-24,
 /// and checks for valid PGP signature packet tag.
-pub fn validatePgpSignedDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCode(.pgp_signed, .failed_to_read, "PGP clearsigned file");
-	};
-	defer source.close();
-
+pub fn validatePgpSignedDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const file_sz = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.pgp_signed, .failed_to_read, "PGP clearsigned file stat");
 	};
@@ -808,12 +793,7 @@ pub fn validateSshSignature(source: *FileSource) ValidationResult {
 /// Deep validation for SSH signature files (OpenSSH PROTOCOL.sshsig wire format).
 /// Decodes base64, then parses the SSHSIG binary structure: magic, version,
 /// public key blob, namespace, reserved, hash algorithm, and signature blob.
-pub fn validateSshSignatureDeep(allocator: Allocator, path: []const u8) ValidationResult {
-	var source = FileSource.open(path) catch {
-		return ValidationResult.invalidCode(.ssh_signature, .failed_to_read, "SSH signature file");
-	};
-	defer source.close();
-
+pub fn validateSshSignatureDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const file_sz = source.getEndPos() catch {
 		return ValidationResult.invalidCode(.ssh_signature, .failed_to_read, "SSH signature file stat");
 	};
@@ -988,7 +968,9 @@ test "PEM deep: ASN.1 structure valid" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const real_path = tmp_dir.dir.realpath("test.pem", &path_buf) catch unreachable;
 
-	const result = validatePemDeep(std.testing.allocator, real_path);
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
+	const result = validatePemDeep(std.testing.allocator, &source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.pem, result.format);
 }
@@ -1050,7 +1032,9 @@ test "DER deep: recursive ASN.1 validation" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const real_path = tmp_dir.dir.realpath("nested.der", &path_buf) catch unreachable;
 
-	const result = validateDerDeep(std.testing.allocator, real_path);
+	var source_der = FileSource.open(real_path) catch unreachable;
+	defer source_der.close();
+	const result = validateDerDeep(std.testing.allocator, &source_der);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.der, result.format);
 }
@@ -1195,7 +1179,9 @@ test "PGP clearsigned: ground truth deep validation" {
 		return error.SkipZigTest;
 	};
 
-	const result = validatePgpSignedDeep(allocator, abs_path);
+	var source = FileSource.open(abs_path) catch return error.SkipZigTest;
+	defer source.close();
+	const result = validatePgpSignedDeep(allocator, &source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.pgp_signed, result.format);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
@@ -1228,7 +1214,9 @@ test "PGP clearsigned: bad CRC fails deep validation" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const real_path = tmp_dir.dir.realpath("badcrc.asc", &path_buf) catch unreachable;
 
-	const result = validatePgpSignedDeep(allocator, real_path);
+	var source2 = FileSource.open(real_path) catch unreachable;
+	defer source2.close();
+	const result = validatePgpSignedDeep(allocator, &source2);
 	try std.testing.expect(!result.is_valid);
 	try std.testing.expectEqual(FileFormat.pgp_signed, result.format);
 }
@@ -1300,7 +1288,9 @@ test "SSH signature: ground truth deep validation" {
 		return error.SkipZigTest;
 	};
 
-	const result = validateSshSignatureDeep(allocator, abs_path);
+	var source = FileSource.open(abs_path) catch return error.SkipZigTest;
+	defer source.close();
+	const result = validateSshSignatureDeep(allocator, &source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.ssh_signature, result.format);
 	try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
@@ -1329,7 +1319,9 @@ test "SSH signature: bad inner magic fails deep validation" {
 	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const real_path = tmp_dir.dir.realpath("badmagic.sig", &path_buf) catch unreachable;
 
-	const result = validateSshSignatureDeep(allocator, real_path);
+	var source2 = FileSource.open(real_path) catch unreachable;
+	defer source2.close();
+	const result = validateSshSignatureDeep(allocator, &source2);
 	try std.testing.expect(!result.is_valid);
 	try std.testing.expectEqual(FileFormat.ssh_signature, result.format);
 }

@@ -166,14 +166,16 @@ pub fn getVersion() []const u8 {
 /// in all C libraries, preventing race conditions during parallel validation.
 pub fn preInit() void {
     // libjpeg-turbo - triggers SIMD detection on first jpeg_create_decompress()
-    _ = jpeg_validator.validateJpegDeep("/nonexistent");
+    var jpeg_init_src = file_source.FileSource.fromBuffer(&[_]u8{});
+    _ = jpeg_validator.validateJpegDeep(&jpeg_init_src);
 
     // libwebp - triggers DSP function initialization
     var webp_init_src = file_source.FileSource.fromBuffer(&[_]u8{});
     _ = webp_validator.validateWebpDeep(&webp_init_src);
 
     // libjxl - triggers Highway SIMD dispatch selection
-    _ = jxl_validator.validateJxlDeep("/nonexistent");
+    var jxl_init_src = file_source.FileSource.fromBuffer(&[_]u8{});
+    _ = jxl_validator.validateJxlDeep(&jxl_init_src);
 
     // Note: HEIC/AVIF, H.264, H.265, AV1, VP9 all use pure-Zig validators
     // (no C library init needed). VideoToolbox has been removed.

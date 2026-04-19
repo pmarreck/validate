@@ -836,19 +836,24 @@ pub fn validateSqliteDeep(allocator: Allocator, path: []const u8) ValidationResu
 /// This validates the container structure but NOT the binary format content within streams.
 /// See ole2_validator.zig for details on what is and isn't validated.
 pub fn validateOle2Deep(allocator: Allocator, path: []const u8, format: FileFormat) ValidationResult {
-    const result = ole2_validator.validateOle2Deep(allocator, path);
+    var source = FileSource.open(path) catch {
+        return ValidationResult.invalidCodeWithDepth(format, .failed_to_open, "file", .structural);
+    };
+    defer source.close();
+
+    const result = ole2_validator.validateOle2Deep(allocator, &source);
     if (!result.valid) {
         return ValidationResult.invalidWithDepth(format, result.error_message orelse "OLE2 validation failed", .structural);
     }
 
     // For .doc, go deeper: parse FIB + cross-validate Table stream
     if (format == .doc) {
-        return word_doc_validator.validateDocDeep(allocator, path);
+        return word_doc_validator.validateDocDeep(allocator, &source);
     }
 
     // For .xls, go deeper: parse BIFF8 record chain + BoundSheet8 cross-validation
     if (format == .xls) {
-        return excel_biff8_validator.validateXlsDeep(allocator, path);
+        return excel_biff8_validator.validateXlsDeep(allocator, &source);
     }
 
     // PPT: still structural-only for now

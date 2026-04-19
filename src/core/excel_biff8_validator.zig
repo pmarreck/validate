@@ -17,6 +17,8 @@ const ValidationDepth = format_validation.ValidationDepth;
 const FileFormat = format_validation.FileFormat;
 
 const ole2_validator = @import("ole2_validator.zig");
+const file_source = @import("file_source.zig");
+const FileSource = file_source.FileSource;
 
 // ============ BIFF8 Record Types ============
 
@@ -574,14 +576,14 @@ fn validateSheetRecords(wb_data: []const u8, sheet_offset: usize, sst_unique_cou
 
 /// Validate a .xls file deeply by parsing the BIFF8 record chain in the Workbook stream,
 /// fully decoding SST strings and per-sheet cell records.
-pub fn validateXlsDeep(allocator: Allocator, path: []const u8) ValidationResult {
-    return validateXlsStream(allocator, path);
+pub fn validateXlsDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    return validateXlsStream(allocator, source);
 }
 
-fn validateXlsStream(allocator: Allocator, path: []const u8) ValidationResult {
+fn validateXlsStream(allocator: Allocator, source: *FileSource) ValidationResult {
     // Read Workbook stream (try "Workbook" first, then "Book" for BIFF5 compat)
-    const wb_data = ole2_validator.readNamedStream(allocator, path, "Workbook") orelse
-        ole2_validator.readNamedStream(allocator, path, "Book") orelse {
+    const wb_data = ole2_validator.readNamedStream(allocator, source, "Workbook") orelse
+        ole2_validator.readNamedStream(allocator, source, "Book") orelse {
         return ValidationResult.invalidWithDepth(.xls, "Failed to read Workbook stream from OLE2 container", .structural);
     };
     defer allocator.free(wb_data);
@@ -817,7 +819,9 @@ fn writeEof(buf: []u8, pos: *usize) void {
 
 test "validateXlsDeep with sample.xls" {
     const allocator = std.testing.allocator;
-    const result = validateXlsDeep(allocator, "ground_truth_examples/ole2/sample.xls");
+    var source = FileSource.open("ground_truth_examples/ole2/sample.xls") catch return error.SkipZigTest;
+    defer source.close();
+    const result = validateXlsDeep(allocator, &source);
     if (result.is_valid) {
         try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
     } else {

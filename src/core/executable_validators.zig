@@ -982,13 +982,9 @@ pub fn validateJavaClassFromBuffer(data: []const u8) ValidationResult {
 
 /// Deep validation for Java .class files — structural only (no checksums in format).
 /// Deep validation for Java .class files — structural only (no checksums in format).
-pub fn validateJavaClassDeep(allocator: std.mem.Allocator, path: []const u8) ValidationResult {
+pub fn validateJavaClassDeep(allocator: std.mem.Allocator, source: *FileSource) ValidationResult {
     _ = allocator;
-    var source = FileSource.open(path) catch {
-        return ValidationResult.invalid(.java_class, "Failed to open file");
-    };
-    defer source.close();
-    return validateJavaClass(&source);
+    return validateJavaClass(source);
 }
 
 test "validateJavaClass accepts minimal valid class buffer" {
