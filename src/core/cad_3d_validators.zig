@@ -470,17 +470,17 @@ pub fn validateStep(file: *FileSource) ValidationResult {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const content = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.step, .out_of_memory, "for STEP");
+    var h1: ?[]u8 = null;
+    defer if (h1) |buf| allocator.free(buf);
+    const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.step, .out_of_memory, "for STEP");
+        h1 = buf;
+        file.seekTo(0) catch return ValidationResult.invalidCode(.step, .failed_to_seek, "in STEP file");
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.step, .failed_to_read, "file");
+        break :blk buf[0..n];
     };
-    defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalidCode(.step, .failed_to_seek, "in STEP file");
-    const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalidCode(.step, .failed_to_read, "file");
-    };
-
-    return parseStepContent(content[0..bytes_read]);
+    return parseStepContent(content);
 }
 
 fn parseStepContent(content: []const u8) ValidationResult {
@@ -697,17 +697,17 @@ pub fn validateStlAscii(file: *FileSource) ValidationResult {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const content = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.stl, .out_of_memory, "for STL");
+    var h2: ?[]u8 = null;
+    defer if (h2) |buf| allocator.free(buf);
+    const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.stl, .out_of_memory, "for STL");
+        h2 = buf;
+        file.seekTo(0) catch return ValidationResult.invalidCode(.stl, .failed_to_seek, "in STL file");
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.stl, .failed_to_read, "file");
+        break :blk buf[0..n];
     };
-    defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalidCode(.stl, .failed_to_seek, "in STL file");
-    const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalidCode(.stl, .failed_to_read, "file");
-    };
-
-    return parseStlAsciiContent(content[0..bytes_read]);
+    return parseStlAsciiContent(content);
 }
 
 fn parseStlAsciiContent(content: []const u8) ValidationResult {
@@ -928,17 +928,17 @@ pub fn validateObj(file: *FileSource) ValidationResult {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const content = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.obj, .out_of_memory, "for OBJ");
+    var h3: ?[]u8 = null;
+    defer if (h3) |buf| allocator.free(buf);
+    const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.obj, .out_of_memory, "for OBJ");
+        h3 = buf;
+        file.seekTo(0) catch return ValidationResult.invalidCode(.obj, .failed_to_seek, "in OBJ file");
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.obj, .failed_to_read, "file");
+        break :blk buf[0..n];
     };
-    defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalidCode(.obj, .failed_to_seek, "in OBJ file");
-    const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalidCode(.obj, .failed_to_read, "file");
-    };
-
-    return parseObjContent(content[0..bytes_read]);
+    return parseObjContent(content);
 }
 
 fn parseObjContent(content: []const u8) ValidationResult {
@@ -1605,17 +1605,17 @@ pub fn validateGltf(file: *FileSource) ValidationResult {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const content = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidCode(.gltf, .out_of_memory, "for glTF");
+    var h4: ?[]u8 = null;
+    defer if (h4) |buf| allocator.free(buf);
+    const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
+        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.gltf, .out_of_memory, "for glTF");
+        h4 = buf;
+        file.seekTo(0) catch return ValidationResult.invalidCode(.gltf, .failed_to_seek, "in glTF file");
+        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.gltf, .failed_to_read, "file");
+        break :blk buf[0..n];
     };
-    defer allocator.free(content);
 
-    file.seekTo(0) catch return ValidationResult.invalidCode(.gltf, .failed_to_seek, "in glTF file");
-    const bytes_read = file.readAll(content) catch {
-        return ValidationResult.invalidCode(.gltf, .failed_to_read, "file");
-    };
-
-    return parseGltfJson(content[0..bytes_read]);
+    return parseGltfJson(content);
 }
 
 fn parseGltfJson(content: []const u8) ValidationResult {
