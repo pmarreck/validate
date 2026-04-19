@@ -167,6 +167,7 @@ typedef enum {
     VALIDATE_ARG_NDJSON = 12,
     VALIDATE_ARG_ABOUT = 13,
     VALIDATE_ARG_MAX_MEMORY = 14,
+    VALIDATE_ARG_TEST_COVERAGE = 15,
     VALIDATE_ARG_UNKNOWN = 255,
 } validate_arg_t;
 
@@ -241,6 +242,32 @@ char* validate(const char* path);
  */
 void validate_free(char* result);
 
+/* ========== Test Coverage (corruption detection testing) ========== */
+
+/**
+ * Progress callback for test coverage.
+ * Called before each round with current round, total rounds, and detected count.
+ */
+typedef void (*validate_coverage_progress_t)(void* ctx, uint32_t round, uint32_t total, uint32_t detected);
+
+/**
+ * Run corruption-detection coverage testing on a file.
+ *
+ * Baseline-validates the file first (aborts if invalid), then runs N rounds:
+ *   memcpy bytes -> apply random corruption -> validate -> record hit/miss.
+ * All in-memory; no disk writes.
+ *
+ * @param path          File to test (must be valid for baseline check)
+ * @param rounds        Number of corruption rounds (typical: 100-1000)
+ * @param seed          PRNG seed (0 for deterministic; use time() for random)
+ * @param shotgun_bytes Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096)
+ * @param progress_cb   Optional progress callback (can be NULL)
+ * @param progress_ctx  Optional context pointer passed to progress_cb
+ * @return KV-US-RS result string. Caller MUST validate_free(). NULL on error.
+ */
+char* validate_test_coverage(const char* path, uint32_t rounds, uint64_t seed,
+                             uint32_t shotgun_bytes,
+                             validate_coverage_progress_t progress_cb, void* progress_ctx);
 /* ========== Batch Validation ========== */
 
 /**

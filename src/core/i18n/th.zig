@@ -316,6 +316,7 @@ pub const cli_aliases = cli.CliAliases{
     .ndjson = "ndjson",
     .about = "about",
     .max_memory = "max-memory",
+    .test_coverage = "test-coverage",
 };
 
 // Thai environment variable aliases (currently canonical English forms).

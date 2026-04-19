@@ -1994,6 +1994,8 @@ int main(int argc, char* argv[]) {
 	}
 
 	size_t jobs = 0;
+	int test_coverage_mode = 0;
+	uint32_t test_coverage_rounds = 100;
 	int shuffle = 0;
 	size_t stress_iterations = 0;
 	int no_frontload = 0;
@@ -2121,6 +2123,18 @@ int main(int argc, char* argv[]) {
 				validate_set_max_memory(mem);
 				continue;
 			}
+			case VALIDATE_ARG_TEST_COVERAGE: {
+				test_coverage_mode = 1;
+				/* Optional numeric argument specifies rounds */
+				if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9') {
+					char *endptr;
+					unsigned long n = strtoul(argv[++i], &endptr, 10);
+					if (*endptr == '\0' && n > 0 && n <= 100000) {
+						test_coverage_rounds = (uint32_t)n;
+					}
+				}
+				continue;
+			}
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);
@@ -2181,6 +2195,29 @@ int main(int argc, char* argv[]) {
 	/* Pre-initialize decoder libraries for thread safety.
 	 * This must be called ONCE from main thread BEFORE spawning workers. */
 	validate_init();
+
+	/* Test-coverage mode: run corruption detection on each path */
+	if (test_coverage_mode) {
+		if (path_count == 0) {
+			fprintf(stderr, "%sError: --test-coverage requires a file path%s\n", COLOR_RED, COLOR_RESET);
+			free(paths);
+			return 2;
+		}
+		int overall_exit = 0;
+		for (size_t i = 0; i < path_count; i++) {
+			fprintf(stderr, "Test coverage: %s (rounds=%u)...\n", paths[i], test_coverage_rounds);
+			char *result = validate_test_coverage(paths[i], test_coverage_rounds, (uint64_t)time(NULL), 4096, NULL, NULL);
+			if (!result) {
+				fprintf(stderr, "%sFAILED%s: could not run coverage on %s (baseline validation failed?)\n", COLOR_RED, COLOR_RESET, paths[i]);
+				overall_exit = 1;
+				continue;
+			}
+			printf("%s\n", result);
+			validate_free(result);
+		}
+		free(paths);
+		return overall_exit;
+	}
 
 	init_output_destinations();
 
