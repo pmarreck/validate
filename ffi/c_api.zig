@@ -807,6 +807,7 @@ export fn validate_test_coverage(
     rounds: u32,
     seed: u64,
     shotgun_bytes: u32,
+    modes_bitmask: u32,
     progress_cb: CoverageProgressCallback,
     progress_ctx: ?*anyopaque,
 ) ?[*:0]u8 {
@@ -867,6 +868,25 @@ export fn validate_test_coverage(
         }
     }.cb else null;
 
+    // Translate the C bitmask into Zig's EnumSet. 0 means "all default modes"
+    // (the six already-shipped modes; boundary and sparse_noise stay opt-in).
+    const modes = blk: {
+        const CorruptionMode = test_coverage.CorruptionMode;
+        var set = std.EnumSet(CorruptionMode).initEmpty();
+        const mask = if (modes_bitmask == 0)
+            // VALIDATE_COVERAGE_MODES_DEFAULT_ALL (bits 0..5) matches ffi/validate_core.h.
+            @as(u32, 0b0011_1111)
+        else
+            modes_bitmask;
+        if (mask & (1 << 0) != 0) set.insert(.sniper);
+        if (mask & (1 << 1) != 0) set.insert(.shotgun);
+        if (mask & (1 << 2) != 0) set.insert(.header);
+        if (mask & (1 << 3) != 0) set.insert(.tail);
+        if (mask & (1 << 4) != 0) set.insert(.zeroed);
+        if (mask & (1 << 5) != 0) set.insert(.xor);
+        break :blk set;
+    };
+
     var result = test_coverage.runCoverage(
         alloc,
         orig_slice,
@@ -876,6 +896,7 @@ export fn validate_test_coverage(
             .seed = seed,
             .progress = progress_fn_wrapped,
             .progress_ctx = @ptrCast(&run_ctx),
+            .enabled_modes = modes,
         },
         @ptrCast(&run_ctx),
         validate_fn,

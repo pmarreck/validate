@@ -317,6 +317,8 @@ pub const cli_aliases = cli.CliAliases{
     .about = "about",
     .max_memory = "max-memory",
     .test_coverage = "test-coverage",
+    .modes = "modes",
+    .shotgun_bytes = "shotgun-bytes",
 };
 
 // Swahili environment variable aliases (currently canonical English forms).

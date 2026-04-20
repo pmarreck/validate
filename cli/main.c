@@ -1859,6 +1859,10 @@ static void print_usage(const char* program) {
 	printf("    --about            Print version and platform info\n");
 	printf("    --max-memory SIZE  Memory budget (e.g., 4G, 2048M). Default: half of system RAM\n");
 	printf("    --lang CODE        Set output language (e.g., en, de)\n");
+	printf("    --test-coverage N  Run N corruption rounds against a file, report detection rate\n");
+	printf("    --modes LIST       Corruption modes for --test-coverage (comma-sep; default = all 6)\n");
+	printf("                       Valid: sniper, shotgun, header, tail, zeroed, xor, sparse-noise, boundary\n");
+	printf("    --shotgun-bytes N  Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096; accepts K/M suffix)\n");
 #endif
 	printf("\n");
 	printf("ENVIRONMENT:\n");
@@ -1996,6 +2000,8 @@ int main(int argc, char* argv[]) {
 	size_t jobs = 0;
 	int test_coverage_mode = 0;
 	uint32_t test_coverage_rounds = 100;
+	uint32_t test_coverage_modes_bitmask = 0; /* 0 = all default modes */
+	uint32_t test_coverage_shotgun_bytes = 4096;
 	int shuffle = 0;
 	size_t stress_iterations = 0;
 	int no_frontload = 0;
@@ -2135,6 +2141,80 @@ int main(int argc, char* argv[]) {
 				}
 				continue;
 			}
+			case VALIDATE_ARG_MODES: {
+				/* --modes sniper,shotgun,header,tail,zeroed,xor,sparse-noise,boundary
+				 * (comma-separated; case-insensitive; hyphen or underscore accepted) */
+				if (++i >= argc) {
+					fprintf(stderr, "%sError: --modes requires a comma-separated list%s\n", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				const char *list = argv[i];
+				uint32_t bitmask = 0;
+				const char *start = list;
+				for (;;) {
+					const char *end = start;
+					while (*end && *end != ',') end++;
+					size_t len = (size_t)(end - start);
+					/* Compare case-insensitively, accepting '_' and '-' interchangeably */
+					char buf[32] = {0};
+					if (len == 0 || len >= sizeof(buf)) {
+						fprintf(stderr, "%sError: invalid --modes token (empty or too long)%s\n", COLOR_RED, COLOR_RESET);
+						free(paths);
+						return 2;
+					}
+					for (size_t k = 0; k < len; k++) {
+						char c = start[k];
+						if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+						if (c == '_') c = '-';
+						buf[k] = c;
+					}
+					uint32_t bit = 0;
+					if (strcmp(buf, "sniper") == 0) bit = 1u << 0;
+					else if (strcmp(buf, "shotgun") == 0) bit = 1u << 1;
+					else if (strcmp(buf, "header") == 0) bit = 1u << 2;
+					else if (strcmp(buf, "tail") == 0) bit = 1u << 3;
+					else if (strcmp(buf, "zeroed") == 0) bit = 1u << 4;
+					else if (strcmp(buf, "xor") == 0) bit = 1u << 5;
+					else if (strcmp(buf, "sparse-noise") == 0) bit = 1u << 6;
+					else if (strcmp(buf, "boundary") == 0) bit = 1u << 7;
+					else {
+						fprintf(stderr, "%sError: unknown mode '%s'. Valid: sniper, shotgun, header, tail, zeroed, xor, sparse-noise, boundary%s\n",
+							COLOR_RED, buf, COLOR_RESET);
+						free(paths);
+						return 2;
+					}
+					bitmask |= bit;
+					if (*end == '\0') break;
+					start = end + 1;
+				}
+				test_coverage_modes_bitmask = bitmask;
+				continue;
+			}
+			case VALIDATE_ARG_SHOTGUN_BYTES: {
+				if (++i >= argc) {
+					fprintf(stderr, "%sError: --shotgun-bytes requires a numeric argument%s\n", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				char *endptr;
+				unsigned long n = strtoul(argv[i], &endptr, 10);
+				/* Accept K/M suffix like --max-memory */
+				if (*endptr == 'K' || *endptr == 'k') n *= 1024;
+				else if (*endptr == 'M' || *endptr == 'm') n *= 1024UL * 1024;
+				else if (*endptr != '\0') {
+					fprintf(stderr, "%sError: invalid --shotgun-bytes value '%s'%s\n", COLOR_RED, argv[i], COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				if (n == 0 || n > 1024UL * 1024) {
+					fprintf(stderr, "%sError: --shotgun-bytes must be 1..1M%s\n", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				test_coverage_shotgun_bytes = (uint32_t)n;
+				continue;
+			}
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);
@@ -2213,8 +2293,8 @@ int main(int argc, char* argv[]) {
 				unsigned long long v = strtoull(seed_env, &endp, 0);
 				if (*endp == '\0') seed = (uint64_t)v;
 			}
-			fprintf(stderr, "%sTest coverage: %s (rounds=%u, seed=%llu)...%s\n", COLOR_CYAN, paths[i], test_coverage_rounds, (unsigned long long)seed, COLOR_RESET);
-			char *result = validate_test_coverage(paths[i], test_coverage_rounds, seed, 4096, NULL, NULL);
+			fprintf(stderr, "%sTest coverage: %s (rounds=%u, seed=%llu, modes=0x%x, shotgun=%u)...%s\n", COLOR_CYAN, paths[i], test_coverage_rounds, (unsigned long long)seed, test_coverage_modes_bitmask, test_coverage_shotgun_bytes, COLOR_RESET);
+			char *result = validate_test_coverage(paths[i], test_coverage_rounds, seed, test_coverage_shotgun_bytes, test_coverage_modes_bitmask, NULL, NULL);
 			if (!result) {
 				fprintf(stderr, "%sFAILED%s: could not run coverage on %s (baseline validation failed?)\n", COLOR_RED, COLOR_RESET, paths[i]);
 				overall_exit = 1;

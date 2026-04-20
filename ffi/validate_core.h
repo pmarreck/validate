@@ -168,6 +168,8 @@ typedef enum {
     VALIDATE_ARG_ABOUT = 13,
     VALIDATE_ARG_MAX_MEMORY = 14,
     VALIDATE_ARG_TEST_COVERAGE = 15,
+    VALIDATE_ARG_MODES = 16,
+    VALIDATE_ARG_SHOTGUN_BYTES = 17,
     VALIDATE_ARG_UNKNOWN = 255,
 } validate_arg_t;
 
@@ -251,22 +253,42 @@ void validate_free(char* result);
 typedef void (*validate_coverage_progress_t)(void* ctx, uint32_t round, uint32_t total, uint32_t detected);
 
 /**
+ * Corruption-mode bitmask values for validate_test_coverage.
+ * Each bit enables one mode. Pass 0 to enable all default modes (first 6).
+ * boundary and sparse_noise are opt-in and must be specified explicitly.
+ */
+#define VALIDATE_COVERAGE_MODE_SNIPER       (1u << 0)
+#define VALIDATE_COVERAGE_MODE_SHOTGUN      (1u << 1)
+#define VALIDATE_COVERAGE_MODE_HEADER       (1u << 2)
+#define VALIDATE_COVERAGE_MODE_TAIL         (1u << 3)
+#define VALIDATE_COVERAGE_MODE_ZEROED       (1u << 4)
+#define VALIDATE_COVERAGE_MODE_XOR          (1u << 5)
+#define VALIDATE_COVERAGE_MODE_SPARSE_NOISE (1u << 6)
+#define VALIDATE_COVERAGE_MODE_BOUNDARY     (1u << 7)
+#define VALIDATE_COVERAGE_MODES_DEFAULT_ALL \
+    (VALIDATE_COVERAGE_MODE_SNIPER | VALIDATE_COVERAGE_MODE_SHOTGUN | \
+     VALIDATE_COVERAGE_MODE_HEADER | VALIDATE_COVERAGE_MODE_TAIL | \
+     VALIDATE_COVERAGE_MODE_ZEROED | VALIDATE_COVERAGE_MODE_XOR)
+
+/**
  * Run corruption-detection coverage testing on a file.
  *
  * Baseline-validates the file first (aborts if invalid), then runs N rounds:
  *   memcpy bytes -> apply random corruption -> validate -> record hit/miss.
  * All in-memory; no disk writes.
  *
- * @param path          File to test (must be valid for baseline check)
- * @param rounds        Number of corruption rounds (typical: 100-1000)
- * @param seed          PRNG seed (0 for deterministic; use time() for random)
- * @param shotgun_bytes Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096)
- * @param progress_cb   Optional progress callback (can be NULL)
- * @param progress_ctx  Optional context pointer passed to progress_cb
+ * @param path           File to test (must be valid for baseline check)
+ * @param rounds         Number of corruption rounds (typical: 100-1000)
+ * @param seed           PRNG seed (0 for deterministic; use time() for random)
+ * @param shotgun_bytes  Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096)
+ * @param modes_bitmask  Bitmask of VALIDATE_COVERAGE_MODE_* values. 0 = all six
+ *                       default modes (boundary + sparse_noise stay opt-in).
+ * @param progress_cb    Optional progress callback (can be NULL)
+ * @param progress_ctx   Optional context pointer passed to progress_cb
  * @return KV-US-RS result string. Caller MUST validate_free(). NULL on error.
  */
 char* validate_test_coverage(const char* path, uint32_t rounds, uint64_t seed,
-                             uint32_t shotgun_bytes,
+                             uint32_t shotgun_bytes, uint32_t modes_bitmask,
                              validate_coverage_progress_t progress_cb, void* progress_ctx);
 /* ========== Batch Validation ========== */
 
