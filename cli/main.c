@@ -1864,6 +1864,7 @@ static void print_usage(const char* program) {
 	printf("    --modes LIST       Corruption modes for --test-coverage (comma-sep; default = all 6)\n");
 	printf("                       Valid: sniper, shotgun, header, tail, zeroed, xor, sparse-noise, boundary\n");
 	printf("    --shotgun-bytes N  Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096; accepts K/M suffix)\n");
+	printf("    --no-heatmap       Suppress the undetected-corruption heatmap at the end of --test-coverage\n");
 #endif
 	printf("\n");
 	printf("ENVIRONMENT:\n");
@@ -2003,6 +2004,7 @@ int main(int argc, char* argv[]) {
 	uint32_t test_coverage_rounds = 100;
 	uint32_t test_coverage_modes_bitmask = 0; /* 0 = all default modes */
 	uint32_t test_coverage_shotgun_bytes = 4096;
+	int test_coverage_no_heatmap = 0;
 	int shuffle = 0;
 	size_t stress_iterations = 0;
 	int no_frontload = 0;
@@ -2216,6 +2218,10 @@ int main(int argc, char* argv[]) {
 				test_coverage_shotgun_bytes = (uint32_t)n;
 				continue;
 			}
+			case VALIDATE_ARG_NO_HEATMAP: {
+				test_coverage_no_heatmap = 1;
+				continue;
+			}
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);
@@ -2294,8 +2300,23 @@ int main(int argc, char* argv[]) {
 				unsigned long long v = strtoull(seed_env, &endp, 0);
 				if (*endp == '\0') seed = (uint64_t)v;
 			}
-			fprintf(stderr, "%sTest coverage: %s (rounds=%u, seed=%llu, modes=0x%x, shotgun=%u)...%s\n", COLOR_CYAN, paths[i], test_coverage_rounds, (unsigned long long)seed, test_coverage_modes_bitmask, test_coverage_shotgun_bytes, COLOR_RESET);
-			char *result = validate_test_coverage(paths[i], test_coverage_rounds, seed, test_coverage_shotgun_bytes, test_coverage_modes_bitmask, NULL, NULL);
+			/* Compute heatmap width: 0 = disabled via --no-heatmap or non-TTY,
+			 * otherwise fit to terminal (minus the 2-space indent) and clamp. */
+			uint32_t heatmap_width = 0;
+			if (!test_coverage_no_heatmap) {
+				int tw = 80, th = 24;
+				get_terminal_size(&tw, &th);
+				int usable = tw - 2; /* match the 2-space indent used in output */
+				if (usable < 40) usable = 40;
+				if (usable > 200) usable = 200;
+				heatmap_width = (uint32_t)usable;
+			}
+			fprintf(stderr, "%sTest coverage: %s (rounds=%u, seed=%llu, modes=0x%x, shotgun=%u, heatmap=%u)...%s\n",
+				COLOR_CYAN, paths[i], test_coverage_rounds, (unsigned long long)seed,
+				test_coverage_modes_bitmask, test_coverage_shotgun_bytes, heatmap_width, COLOR_RESET);
+			char *result = validate_test_coverage(paths[i], test_coverage_rounds, seed,
+				test_coverage_shotgun_bytes, test_coverage_modes_bitmask, heatmap_width,
+				NULL, NULL);
 			if (!result) {
 				fprintf(stderr, "%sFAILED%s: could not run coverage on %s (baseline validation failed?)\n", COLOR_RED, COLOR_RESET, paths[i]);
 				overall_exit = 1;
@@ -2348,7 +2369,8 @@ int main(int argc, char* argv[]) {
 					(unsigned long long)md, (unsigned long long)mt, color, pct, COLOR_RESET, ci_buf);
 			}
 
-			char heat_buf[4096] = {0};
+			/* 200 cells × ~14 bytes of ANSI escape each + reset + slack. */
+			char heat_buf[8192] = {0};
 			if (kv_get_str(result, "heatmap", heat_buf, sizeof(heat_buf)) == 0 && heat_buf[0] != '\0') {
 				printf("\n  Undetected-corruption heatmap (darker = colder, brighter = hotter):\n  %s\n", heat_buf);
 				printf("  <-- start of file                                                 end of file -->\n");

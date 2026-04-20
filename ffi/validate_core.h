@@ -170,6 +170,7 @@ typedef enum {
     VALIDATE_ARG_TEST_COVERAGE = 15,
     VALIDATE_ARG_MODES = 16,
     VALIDATE_ARG_SHOTGUN_BYTES = 17,
+    VALIDATE_ARG_NO_HEATMAP = 18,
     VALIDATE_ARG_UNKNOWN = 255,
 } validate_arg_t;
 
@@ -283,12 +284,15 @@ typedef void (*validate_coverage_progress_t)(void* ctx, uint32_t round, uint32_t
  * @param shotgun_bytes  Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096)
  * @param modes_bitmask  Bitmask of VALIDATE_COVERAGE_MODE_* values. 0 = all six
  *                       default modes (boundary + sparse_noise stay opt-in).
+ * @param heatmap_width  Width in cells for the rendered heatmap (clamped to
+ *                       [40, 400]). 0 skips heatmap rendering entirely.
  * @param progress_cb    Optional progress callback (can be NULL)
  * @param progress_ctx   Optional context pointer passed to progress_cb
  * @return KV-US-RS result string. Caller MUST validate_free(). NULL on error.
  */
 char* validate_test_coverage(const char* path, uint32_t rounds, uint64_t seed,
                              uint32_t shotgun_bytes, uint32_t modes_bitmask,
+                             uint32_t heatmap_width,
                              validate_coverage_progress_t progress_cb, void* progress_ctx);
 /* ========== Batch Validation ========== */
 

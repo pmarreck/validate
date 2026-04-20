@@ -290,7 +290,7 @@ These formats return WARN — recognized but NO real corruption detection:
 2. [x] CLI `--shotgun-bytes N` (default 4096; clamped to `[1, 1 MiB]`). Applies to shotgun/header/tail/zeroed/xor; also threaded through FFI. (2026-04-20 EST, commit 0727a74)
 3. [x] Confidence intervals: 95% Wilson interval on `detected/total` per mode. Table gained `95% CI` column. (2026-04-20 EST)
 4. [x] **Memory optimization — restore-only-corrupted-region**: alloc work buffer once, memcpy `original` once. Per round: apply corruption, validate, `@memcpy(work[off..off+size], original[off..off+size])`. Debug-build sentinel-hash (1 KiB outside corrupted range) catches any validator that writes to its read-only input. Full-resync every 64 rounds. (2026-04-20 EST)
-5. [ ] CLI `--no-heatmap` flag + terminal-width-aware heatmap (honor `tput cols`, clamp to `[40, 200]`).
+5. [x] CLI `--no-heatmap` flag + terminal-width-aware heatmap (ioctl TIOCGWINSZ on Unix, GetConsoleScreenBufferInfo on Windows; clamped to [40, 200]; 0 disables). (2026-04-20 EST)
 6. [ ] CLI `--per-mode-heatmap` rendering 6 stacked bars labeled by mode.
 7. [ ] Multi-threaded rounds: CLI `--coverage-jobs N` (0 = single-threaded; default = auto, consistent with existing `--jobs`). Each worker: own working buffer, RNG seeded `seed + worker_id`, independent event buffer. Merge at end; heatmap aggregated across workers. Progress callback serialized via mutex.
 8. [ ] `sparse-noise` mode (opt-in only): flip every Nth bit within a 4 KiB region. Not in default-all; requires `--modes sparse-noise` explicitly.

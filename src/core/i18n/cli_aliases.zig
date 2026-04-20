@@ -24,6 +24,7 @@ pub const CliArg = enum(u8) {
     test_coverage = 15,
     modes = 16,
     shotgun_bytes = 17,
+    no_heatmap = 18,
 };
 
 /// Locale-specific CLI argument aliases (without -- prefix).
@@ -46,6 +47,7 @@ pub const CliAliases = struct {
     test_coverage: [:0]const u8,
     modes: [:0]const u8,
     shotgun_bytes: [:0]const u8,
+    no_heatmap: [:0]const u8,
 };
 
 /// Environment variable identifiers (matches validate_env_t in C header).

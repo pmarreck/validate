@@ -808,6 +808,7 @@ export fn validate_test_coverage(
     seed: u64,
     shotgun_bytes: u32,
     modes_bitmask: u32,
+    heatmap_width: u32,
     progress_cb: CoverageProgressCallback,
     progress_ctx: ?*anyopaque,
 ) ?[*:0]u8 {
@@ -942,11 +943,17 @@ export fn validate_test_coverage(
         const v_det = std.fmt.bufPrintZ(&valbuf2, "{d}", .{stats.detected}) catch continue;
         builder.add(k_det, v_det) catch continue;
     }
-    // Heatmap (80 cols)
-    if (test_coverage.renderHeatmap(std.heap.page_allocator, &result, 80)) |heat| {
-        defer std.heap.page_allocator.free(heat);
-        builder.add("heatmap", heat) catch {};
-    } else |_| {}
+    // Heatmap — caller-chosen width. 0 = skip rendering entirely so the CLI
+    // can honor --no-heatmap without paying the cost, non-tty output can
+    // suppress ANSI noise, and the FFI stays flexible. Clamp to [40, 400] so
+    // a renegade width doesn't blow up the row.
+    if (heatmap_width > 0) {
+        const w = @as(u32, @intCast(@max(@as(u32, 40), @min(@as(u32, 400), heatmap_width))));
+        if (test_coverage.renderHeatmap(std.heap.page_allocator, &result, w)) |heat| {
+            defer std.heap.page_allocator.free(heat);
+            builder.add("heatmap", heat) catch {};
+        } else |_| {}
+    }
 
     return builder.toOwnedZ(std.heap.page_allocator) catch null;
 }

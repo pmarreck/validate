@@ -320,6 +320,7 @@ pub const cli_aliases = cli.CliAliases{
     .test_coverage = "test-coverage",
     .modes = "modes",
     .shotgun_bytes = "shotgun-bytes",
+    .no_heatmap = "no-heatmap",
 };
 
 // English environment variable aliases (canonical forms).
