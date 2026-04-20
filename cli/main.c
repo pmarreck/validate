@@ -2315,7 +2315,8 @@ int main(int argc, char* argv[]) {
 			return 2;
 		}
 		int overall_exit = 0;
-		const char *modes[] = { "sniper", "shotgun", "header", "tail", "zeroed", "xor" };
+		const char *modes[] = { "sniper", "shotgun", "header", "tail", "zeroed", "xor", "sparse_noise" };
+		const size_t modes_count = sizeof(modes) / sizeof(modes[0]);
 		for (size_t i = 0; i < path_count; i++) {
 			uint64_t seed = (uint64_t)time(NULL);
 			const char *seed_env = getenv("VALIDATE_SEED");
@@ -2365,7 +2366,7 @@ int main(int argc, char* argv[]) {
 
 			printf("  %-10s %8s %8s %8s  %-14s\n", "Mode", "Detected", "Total", "Rate", "95% CI");
 			printf("  %-10s %8s %8s %8s  %-14s\n", "----", "--------", "-----", "----", "------");
-			for (size_t m = 0; m < 6; m++) {
+			for (size_t m = 0; m < modes_count; m++) {
 				char key_total[32], key_det[32];
 				snprintf(key_total, sizeof(key_total), "mode_%s_total", modes[m]);
 				snprintf(key_det, sizeof(key_det), "mode_%s_detected", modes[m]);
@@ -2402,7 +2403,7 @@ int main(int argc, char* argv[]) {
 				 * the brightest in 'shotgun' — but trends within each mode are
 				 * directly readable. */
 				int any_printed = 0;
-				for (size_t m = 0; m < 6; m++) {
+				for (size_t m = 0; m < modes_count; m++) {
 					char key[32];
 					snprintf(key, sizeof(key), "heatmap_%s", modes[m]);
 					memset(heat_buf, 0, sizeof(heat_buf));

@@ -293,7 +293,7 @@ These formats return WARN — recognized but NO real corruption detection:
 5. [x] CLI `--no-heatmap` flag + terminal-width-aware heatmap (ioctl TIOCGWINSZ on Unix, GetConsoleScreenBufferInfo on Windows; clamped to [40, 200]; 0 disables). (2026-04-20 EST)
 6. [x] CLI `--per-mode-heatmap` rendering one labeled bar per active mode (normalized independently; FFI emits heatmap_<mode> keys). (2026-04-20 EST)
 7. [x] Multi-threaded rounds: CLI `--coverage-jobs N` (0 = auto = CPU count, capped at 16; 1 = single-threaded). Each worker: own FormatValidator, own working buffer, PRNG seeded `seed + worker_id`, independent event buffer. Results merged into a synthesized CoverageResult. Measured 6.8× speedup on a 10 MB bz2 (31s → 4.5s) at auto-detect on M4 Mac. (2026-04-20 EST)
-8. [ ] `sparse-noise` mode (opt-in only): flip every Nth bit within a 4 KiB region. Not in default-all; requires `--modes sparse-noise` explicitly.
+8. [x] `sparse-noise` mode (opt-in only): flip every Nth bit (N ∈ [1, 31]) across a K-byte region. Default-excluded; requires `--modes sparse-noise`. (2026-04-20 EST)
 9. [ ] `boundary` mode (opt-in only): format-aware container-edge corruption (MKV segment tail, ZIP EOCD, JPEG SOI/EOI, etc.). Requires a per-format "landmark offsets" helper. Likely its own PR — biggest scope.
 
 Sign-off: English-only mode names; boundary + sparse-noise opt-in; Debug-build sentinel-hash guard for restore optimization. (Peter 2026-04-20 EST)

@@ -11,12 +11,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 pub const CorruptionMode = enum {
-    sniper,   // flip one random bit
-    shotgun,  // overwrite K random bytes at random offset
-    header,   // shotgun restricted to first 10% of file
-    tail,     // shotgun restricted to last 10% of file
-    zeroed,   // zero-fill a K-byte region at random offset
-    xor,      // XOR a K-byte region with a random pattern
+    sniper,       // flip one random bit
+    shotgun,      // overwrite K random bytes at random offset
+    header,       // shotgun restricted to first 10% of file
+    tail,         // shotgun restricted to last 10% of file
+    zeroed,       // zero-fill a K-byte region at random offset
+    xor,          // XOR a K-byte region with a random pattern
+    sparse_noise, // flip every Nth bit across a K-byte region (degraded media)
 
     pub fn name(self: CorruptionMode) []const u8 {
         return switch (self) {
@@ -26,6 +27,7 @@ pub const CorruptionMode = enum {
             .tail => "tail",
             .zeroed => "zeroed",
             .xor => "xor",
+            .sparse_noise => "sparse_noise",
         };
     }
 };
@@ -155,6 +157,34 @@ pub fn applyXor(buffer: []u8, rng: std.Random, size: u32) CorruptionEvent {
     };
 }
 
+/// Apply a sparse-noise corruption: within a `size`-byte region at a random
+/// offset, flip every Nth bit (spacing N = 1..=31 picked per call). Models
+/// degraded physical media where a single failing trace or address line
+/// causes a repeating bit-error pattern rather than contiguous damage.
+pub fn applySparseNoise(buffer: []u8, rng: std.Random, size: u32) CorruptionEvent {
+    std.debug.assert(buffer.len > 0);
+    const clamped_size: u32 = @intCast(@min(@as(u64, size), buffer.len));
+    const max_offset: u64 = buffer.len - clamped_size;
+    const offset = if (max_offset == 0) 0 else rng.uintLessThan(u64, max_offset + 1);
+    // Spacing in bits — avoid 0 (undefined) and keep bounded so we flip at
+    // least a handful of bits on small regions.
+    const spacing: u32 = rng.intRangeAtMost(u32, 1, 31);
+    const total_bits: u64 = @as(u64, clamped_size) * 8;
+    var bit: u64 = 0;
+    while (bit < total_bits) : (bit += spacing) {
+        const byte_idx = offset + (bit / 8);
+        const bit_idx: u3 = @intCast(bit % 8);
+        buffer[@intCast(byte_idx)] ^= (@as(u8, 1) << bit_idx);
+    }
+    return .{
+        .mode = .sparse_noise,
+        .offset = offset,
+        .bit = 0,
+        .size = clamped_size,
+        .detected = false,
+    };
+}
+
 /// Aggregated statistics for a single corruption mode.
 pub const ModeStats = struct {
     total: u32 = 0,
@@ -204,8 +234,20 @@ pub const CoverageConfig = struct {
     /// Random seed (for reproducibility). Use std.time.milliTimestamp() for
     /// different runs each invocation.
     seed: u64 = 0,
-    /// Which modes to include. Default: all enabled.
-    enabled_modes: std.EnumSet(CorruptionMode) = std.EnumSet(CorruptionMode).initFull(),
+    /// Which modes to include. Default: the six long-shipped modes
+    /// (sparse_noise and future opt-in modes stay off unless the caller
+    /// asks for them — the FFI layer enforces the same policy for
+    /// modes_bitmask == 0).
+    enabled_modes: std.EnumSet(CorruptionMode) = blk: {
+        var set = std.EnumSet(CorruptionMode).initEmpty();
+        set.insert(.sniper);
+        set.insert(.shotgun);
+        set.insert(.header);
+        set.insert(.tail);
+        set.insert(.zeroed);
+        set.insert(.xor);
+        break :blk set;
+    },
     /// Optional progress callback fired before each round.
     progress: ?ProgressFn = null,
     progress_ctx: ?*anyopaque = null,
@@ -235,7 +277,7 @@ pub fn runCoverage(
     if (original.len == 0) return error.EmptyInput;
 
     // Build list of enabled modes for random selection
-    var modes_buf: [6]CorruptionMode = undefined;
+    var modes_buf: [@typeInfo(CorruptionMode).@"enum".fields.len]CorruptionMode = undefined;
     var modes_len: usize = 0;
     var mode_iter = config.enabled_modes.iterator();
     while (mode_iter.next()) |m| {
@@ -287,6 +329,7 @@ pub fn runCoverage(
             .tail => applyTail(work, rng, config.shotgun_bytes),
             .zeroed => applyZeroed(work, rng, config.shotgun_bytes),
             .xor => applyXor(work, rng, config.shotgun_bytes),
+            .sparse_noise => applySparseNoise(work, rng, config.shotgun_bytes),
         };
 
         if (comptime @import("builtin").os.tag != .windows) {
