@@ -275,21 +275,28 @@ These formats return WARN — recognized but NO real corruption detection:
 - [ ] Track sample provenance (source URL, license, camera model, etc.) in a manifest
 
 ### Infrastructure: Built-in Corruption Coverage Testing
-- [ ] `validate --test-coverage <file>` — runs in-memory corruption rounds and reports own detection rate
-- [ ] Multi-threaded: each thread gets own copy, corrupts, validates, frees
-- [ ] In-memory only (no disk writes) — use par2z for repair between rounds if needed
-- [ ] Corruption modes (all in-memory):
-  - sniper: single-bit flip at random offset
-  - shotgun: 4KB random overwrite at random offset
-  - header: corrupt first 512 bytes only
-  - trailer: corrupt last 512 bytes only
-  - boundary: corrupt at container boundaries (format-aware, per-format specialization)
-  - zeroed: zero-fill a 4KB block (dead sector simulation)
-  - xor-pattern: XOR a repeating pattern over 4KB (bus error simulation)
-  - sparse-noise: flip every Nth bit within a 4KB region (degraded media simulation)
-- [ ] Report per-corruption-type detection rate with confidence intervals
-- [ ] Log offset, bit, corruption type, and whether detected for each trial
-- [ ] Format-aware container boundary corruption (PLAN item — per-format specialization)
+
+**Shipped:**
+- [x] `validate --test-coverage <file>` runs in-memory corruption rounds and reports detection rate (2026-04-18 EST)
+- [x] Corruption modes in-memory: sniper, shotgun, header, tail, zeroed, xor (2026-04-18 EST)
+- [x] Per-mode detection-rate table in CLI output (2026-04-18 EST)
+- [x] ANSI 256-color heatmap of undetected-corruption density across file (2026-04-18 EST)
+- [x] Per-round event log (mode/offset/bit/size/detected) available via `VALIDATE_COVERAGE_TRACE=1` (2026-04-19 EST)
+- [x] Deterministic replay via `VALIDATE_SEED=N` (2026-04-19 EST)
+
+**Remaining — full spec, execute in order:**
+
+1. [ ] CLI `--modes sniper,shotgun` (comma-sep English names, default = all 6 current modes). Plus FFI param `uint32_t modes_bitmask` (bit N = CorruptionMode N; 0 = all).
+2. [ ] CLI `--shotgun-bytes N` (default 4096; clamped to `[1, min(1 MiB, file_size / 2)]`). Applies to shotgun/header/tail/zeroed/xor; also threaded through FFI.
+3. [ ] Confidence intervals: 95% Wilson interval on `detected/total` per mode. Table grows from `Rate` to `Rate [low%, high%]`.
+4. [ ] **Memory optimization — restore-only-corrupted-region**: alloc work buffer once, memcpy `original` once. Per round: apply corruption (records `event.offset/size`), validate, then `@memcpy(work[off..off+size], original[off..off+size])`. Safety net in Debug builds: sentinel-hash a fixed ~1 KiB window outside the corrupted range pre/post `validate`; panic on mismatch (catches OOB writes by validators — already paid off 3× this week). Resync via full memcpy every 64 rounds. Drops memcpy volume from `rounds × file.len` to `file.len + rounds × event.size`.
+5. [ ] CLI `--no-heatmap` flag + terminal-width-aware heatmap (honor `tput cols`, clamp to `[40, 200]`).
+6. [ ] CLI `--per-mode-heatmap` rendering 6 stacked bars labeled by mode.
+7. [ ] Multi-threaded rounds: CLI `--coverage-jobs N` (0 = single-threaded; default = auto, consistent with existing `--jobs`). Each worker: own working buffer, RNG seeded `seed + worker_id`, independent event buffer. Merge at end; heatmap aggregated across workers. Progress callback serialized via mutex.
+8. [ ] `sparse-noise` mode (opt-in only): flip every Nth bit within a 4 KiB region. Not in default-all; requires `--modes sparse-noise` explicitly.
+9. [ ] `boundary` mode (opt-in only): format-aware container-edge corruption (MKV segment tail, ZIP EOCD, JPEG SOI/EOI, etc.). Requires a per-format "landmark offsets" helper. Likely its own PR — biggest scope.
+
+Sign-off: English-only mode names; boundary + sparse-noise opt-in; Debug-build sentinel-hash guard for restore optimization. (Peter 2026-04-20 EST)
 
 ### Statistical Corruption Detection for Raw Audio/Video Data
 For formats without checksums (AU, AMR, CAF, DPX, etc.), use heuristic analysis to detect likely corruption in raw data sections:
