@@ -1865,6 +1865,7 @@ static void print_usage(const char* program) {
 	printf("                       Valid: sniper, shotgun, header, tail, zeroed, xor, sparse-noise, boundary\n");
 	printf("    --shotgun-bytes N  Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096; accepts K/M suffix)\n");
 	printf("    --no-heatmap       Suppress the undetected-corruption heatmap at the end of --test-coverage\n");
+	printf("    --per-mode-heatmap Render one heatmap per corruption mode (stacked) instead of the aggregate\n");
 #endif
 	printf("\n");
 	printf("ENVIRONMENT:\n");
@@ -2005,6 +2006,7 @@ int main(int argc, char* argv[]) {
 	uint32_t test_coverage_modes_bitmask = 0; /* 0 = all default modes */
 	uint32_t test_coverage_shotgun_bytes = 4096;
 	int test_coverage_no_heatmap = 0;
+	int test_coverage_per_mode_heatmap = 0;
 	int shuffle = 0;
 	size_t stress_iterations = 0;
 	int no_frontload = 0;
@@ -2222,6 +2224,10 @@ int main(int argc, char* argv[]) {
 				test_coverage_no_heatmap = 1;
 				continue;
 			}
+			case VALIDATE_ARG_PER_MODE_HEATMAP: {
+				test_coverage_per_mode_heatmap = 1;
+				continue;
+			}
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);
@@ -2371,7 +2377,27 @@ int main(int argc, char* argv[]) {
 
 			/* 200 cells × ~14 bytes of ANSI escape each + reset + slack. */
 			char heat_buf[8192] = {0};
-			if (kv_get_str(result, "heatmap", heat_buf, sizeof(heat_buf)) == 0 && heat_buf[0] != '\0') {
+			if (test_coverage_per_mode_heatmap) {
+				/* Print one heatmap per mode that actually ran. Each mode's bar
+				 * is normalized independently (max density within that mode), so
+				 * the brightest cell in 'sniper' isn't directly comparable to
+				 * the brightest in 'shotgun' — but trends within each mode are
+				 * directly readable. */
+				int any_printed = 0;
+				for (size_t m = 0; m < 6; m++) {
+					char key[32];
+					snprintf(key, sizeof(key), "heatmap_%s", modes[m]);
+					memset(heat_buf, 0, sizeof(heat_buf));
+					if (kv_get_str(result, key, heat_buf, sizeof(heat_buf)) == 0 && heat_buf[0] != '\0') {
+						if (!any_printed) {
+							printf("\n  Per-mode undetected-corruption heatmaps (darker = colder, brighter = hotter):\n");
+							any_printed = 1;
+						}
+						printf("  %-10s %s\n", modes[m], heat_buf);
+					}
+				}
+				if (any_printed) printf("  <-- start of file                                                 end of file -->\n");
+			} else if (kv_get_str(result, "heatmap", heat_buf, sizeof(heat_buf)) == 0 && heat_buf[0] != '\0') {
 				printf("\n  Undetected-corruption heatmap (darker = colder, brighter = hotter):\n  %s\n", heat_buf);
 				printf("  <-- start of file                                                 end of file -->\n");
 			}

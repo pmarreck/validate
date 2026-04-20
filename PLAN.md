@@ -291,7 +291,7 @@ These formats return WARN — recognized but NO real corruption detection:
 3. [x] Confidence intervals: 95% Wilson interval on `detected/total` per mode. Table gained `95% CI` column. (2026-04-20 EST)
 4. [x] **Memory optimization — restore-only-corrupted-region**: alloc work buffer once, memcpy `original` once. Per round: apply corruption, validate, `@memcpy(work[off..off+size], original[off..off+size])`. Debug-build sentinel-hash (1 KiB outside corrupted range) catches any validator that writes to its read-only input. Full-resync every 64 rounds. (2026-04-20 EST)
 5. [x] CLI `--no-heatmap` flag + terminal-width-aware heatmap (ioctl TIOCGWINSZ on Unix, GetConsoleScreenBufferInfo on Windows; clamped to [40, 200]; 0 disables). (2026-04-20 EST)
-6. [ ] CLI `--per-mode-heatmap` rendering 6 stacked bars labeled by mode.
+6. [x] CLI `--per-mode-heatmap` rendering one labeled bar per active mode (normalized independently; FFI emits heatmap_<mode> keys). (2026-04-20 EST)
 7. [ ] Multi-threaded rounds: CLI `--coverage-jobs N` (0 = single-threaded; default = auto, consistent with existing `--jobs`). Each worker: own working buffer, RNG seeded `seed + worker_id`, independent event buffer. Merge at end; heatmap aggregated across workers. Progress callback serialized via mutex.
 8. [ ] `sparse-noise` mode (opt-in only): flip every Nth bit within a 4 KiB region. Not in default-all; requires `--modes sparse-noise` explicitly.
 9. [ ] `boundary` mode (opt-in only): format-aware container-edge corruption (MKV segment tail, ZIP EOCD, JPEG SOI/EOI, etc.). Requires a per-format "landmark offsets" helper. Likely its own PR — biggest scope.

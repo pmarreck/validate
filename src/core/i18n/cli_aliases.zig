@@ -25,6 +25,7 @@ pub const CliArg = enum(u8) {
     modes = 16,
     shotgun_bytes = 17,
     no_heatmap = 18,
+    per_mode_heatmap = 19,
 };
 
 /// Locale-specific CLI argument aliases (without -- prefix).
@@ -48,6 +49,7 @@ pub const CliAliases = struct {
     modes: [:0]const u8,
     shotgun_bytes: [:0]const u8,
     no_heatmap: [:0]const u8,
+    per_mode_heatmap: [:0]const u8,
 };
 
 /// Environment variable identifiers (matches validate_env_t in C header).

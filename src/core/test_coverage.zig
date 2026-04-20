@@ -359,12 +359,23 @@ pub fn runCoverage(
 }
 
 /// Render a heatmap string showing undetected-corruption density across
-/// the file, using ANSI 256-color gradient. The bar is `width` cells wide.
-/// Returns an owned string; caller must free.
+/// the file, using ANSI 256-color gradient. If `mode_filter` is non-null,
+/// only events in that mode contribute (useful for per-mode heatmaps so
+/// each corruption mode gets its own visibility map). The bar is `width`
+/// cells wide. Returns an owned string; caller must free.
 pub fn renderHeatmap(
     allocator: Allocator,
     result: *const CoverageResult,
     width: u32,
+) ![]u8 {
+    return renderHeatmapFiltered(allocator, result, width, null);
+}
+
+pub fn renderHeatmapFiltered(
+    allocator: Allocator,
+    result: *const CoverageResult,
+    width: u32,
+    mode_filter: ?CorruptionMode,
 ) ![]u8 {
     if (width == 0) return error.InvalidWidth;
 
@@ -375,6 +386,7 @@ pub fn renderHeatmap(
 
     for (result.events) |event| {
         if (event.detected) continue;
+        if (mode_filter) |m| if (event.mode != m) continue;
         // Map byte offset to bucket index
         const bucket: usize = @intCast(@min(
             @as(u64, width - 1),

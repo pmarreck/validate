@@ -953,6 +953,26 @@ export fn validate_test_coverage(
             defer std.heap.page_allocator.free(heat);
             builder.add("heatmap", heat) catch {};
         } else |_| {}
+        // Per-mode heatmaps. The CLI only displays these when --per-mode-heatmap
+        // is passed; we still always render so that the FFI's output is
+        // complete regardless of which UI consumes it. Only the six default
+        // modes are emitted here — sparse_noise and boundary render on demand
+        // once those ship (opt-in from PLAN.md step 8/9).
+        const per_mode = [_]struct { tag: test_coverage.CorruptionMode, key: []const u8 }{
+            .{ .tag = .sniper, .key = "heatmap_sniper" },
+            .{ .tag = .shotgun, .key = "heatmap_shotgun" },
+            .{ .tag = .header, .key = "heatmap_header" },
+            .{ .tag = .tail, .key = "heatmap_tail" },
+            .{ .tag = .zeroed, .key = "heatmap_zeroed" },
+            .{ .tag = .xor, .key = "heatmap_xor" },
+        };
+        for (per_mode) |pm| {
+            if (result.by_mode.get(pm.tag).total == 0) continue;
+            if (test_coverage.renderHeatmapFiltered(std.heap.page_allocator, &result, w, pm.tag)) |heat| {
+                defer std.heap.page_allocator.free(heat);
+                builder.add(pm.key, heat) catch {};
+            } else |_| {}
+        }
     }
 
     return builder.toOwnedZ(std.heap.page_allocator) catch null;

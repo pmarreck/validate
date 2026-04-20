@@ -320,6 +320,7 @@ pub const cli_aliases = cli.CliAliases{
     .modes = "modes",
     .shotgun_bytes = "shotgun-bytes",
     .no_heatmap = "no-heatmap",
+    .per_mode_heatmap = "per-mode-heatmap",
 };
 
 // Punjabi environment variable aliases (currently canonical English forms).
