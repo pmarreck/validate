@@ -254,16 +254,31 @@ pub fn runCoverage(
     const start_ns = std.time.nanoTimestamp();
     var detected_count: u32 = 0;
 
+    // Memory optimization: allocate + copy the working buffer ONCE, then each
+    // round only restores the bytes we just corrupted. For a 500 MB file and
+    // 4 KiB shotguns, this drops per-round memcpy volume from 500 MB to 4 KiB
+    // (~125,000×). Every resync_interval rounds we do a full-buffer memcpy
+    // anyway, so any drift from a misbehaving validator (OOB write, stale
+    // cache, etc.) is bounded.
+    const resync_interval: u32 = 64;
+    const work = try allocator.alloc(u8, original.len);
+    defer allocator.free(work);
+    @memcpy(work, original);
+
+    // Debug-build safety net: hash a sentinel window outside the corrupted
+    // range before every validate() and check it after. Any drift means a
+    // validator wrote to what it was handed as read-only input — which has
+    // bitten us three times this week (compact_pro CPT, zigimg TIFF, bzip2).
+    const debug_build = @import("builtin").mode == .Debug;
+    const sentinel_len: usize = @min(@as(usize, 1024), original.len);
+
     var round: u32 = 0;
     while (round < config.rounds) : (round += 1) {
         if (config.progress) |cb| cb(config.progress_ctx.?, round, config.rounds, detected_count);
 
-        // Allocate + copy working buffer
-        const work = try allocator.alloc(u8, original.len);
-        defer allocator.free(work);
-        @memcpy(work, original);
+        // Periodic full resync so any accumulated drift can't hide forever.
+        if (round > 0 and round % resync_interval == 0) @memcpy(work, original);
 
-        // Pick mode and apply corruption
         const chosen_mode = enabled_modes[rng.uintLessThan(usize, enabled_modes.len)];
         var event: CorruptionEvent = switch (chosen_mode) {
             .sniper => applySniper(work, rng),
@@ -274,12 +289,6 @@ pub fn runCoverage(
             .xor => applyXor(work, rng, config.shotgun_bytes),
         };
 
-        // Optional trace (set VALIDATE_COVERAGE_TRACE=1) so a subsequent crash
-        // points at the exact seed/mode/offset/bit that triggered it. stderr is
-        // flushed per round so the last line printed is the one that crashed.
-        // std.posix.getenv is unavailable on Windows (WTF-16 env strings), so
-        // gate the trace on a comptime non-Windows check. Windows devs who need
-        // the trace can run validate via WSL.
         if (comptime @import("builtin").os.tag != .windows) {
             if (std.posix.getenv("VALIDATE_COVERAGE_TRACE")) |_| {
                 std.debug.print(
@@ -289,17 +298,52 @@ pub fn runCoverage(
             }
         }
 
-        // Run validator on corrupted bytes
+        // Pick a sentinel region that does NOT overlap the corrupted range.
+        // Easiest rule: take the first sentinel_len bytes if they're outside
+        // the event, otherwise the last sentinel_len bytes. If the file is too
+        // small or the event spans everything, skip the check for this round.
+        var sentinel_check: ?struct { off: usize, hash_before: u64 } = null;
+        if (debug_build and original.len > sentinel_len) {
+            const ev_end = event.offset + event.size;
+            var s_off: ?usize = null;
+            if (event.offset >= sentinel_len) {
+                s_off = 0;
+            } else if (ev_end <= original.len - sentinel_len) {
+                s_off = original.len - sentinel_len;
+            }
+            if (s_off) |off| {
+                const h = std.hash.Wyhash.hash(0, work[off .. off + sentinel_len]);
+                sentinel_check = .{ .off = off, .hash_before = h };
+            }
+        }
+
         const detected = validator_fn(validator_ctx, work);
+
+        if (sentinel_check) |sc| {
+            const h_after = std.hash.Wyhash.hash(0, work[sc.off .. sc.off + sentinel_len]);
+            if (h_after != sc.hash_before) {
+                std.debug.panic(
+                    "test-coverage sentinel changed at offset {d} (round {d} mode {s}); a validator wrote to its read-only input",
+                    .{ sc.off, round + 1, event.mode.name() },
+                );
+            }
+        }
+
         event.detected = detected;
         events[round] = event;
 
-        // Update stats
         var stats = by_mode.get(chosen_mode);
         stats.total += 1;
         if (detected) stats.detected += 1;
         by_mode.set(chosen_mode, stats);
         if (detected) detected_count += 1;
+
+        // Restore only the corrupted range so the next round starts clean.
+        // Clamp to the buffer in case a future mode writes beyond event.size.
+        const restore_end = @min(event.offset + event.size, original.len);
+        if (event.offset < original.len) {
+            @memcpy(work[event.offset..restore_end], original[event.offset..restore_end]);
+        }
     }
 
     const end_ns = std.time.nanoTimestamp();
