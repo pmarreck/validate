@@ -68,6 +68,7 @@ pub const cli_aliases = cli.CliAliases{
     .shotgun_bytes = "shotgun-bytes",
     .no_heatmap = "no-heatmap",
     .per_mode_heatmap = "per-mode-heatmap",
+    .coverage_jobs = "coverage-jobs",
 };
 
 pub const env_aliases = cli.EnvAliases{

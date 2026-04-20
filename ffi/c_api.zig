@@ -809,6 +809,7 @@ export fn validate_test_coverage(
     shotgun_bytes: u32,
     modes_bitmask: u32,
     heatmap_width: u32,
+    jobs: u32,
     progress_cb: CoverageProgressCallback,
     progress_ctx: ?*anyopaque,
 ) ?[*:0]u8 {
@@ -843,12 +844,6 @@ export fn validate_test_coverage(
         user_cb: CoverageProgressCallback,
         user_ctx: ?*anyopaque,
     };
-    var run_ctx = RunCtx{
-        .validator = &validator,
-        .format = baseline.format,
-        .user_cb = progress_cb,
-        .user_ctx = progress_ctx,
-    };
 
     const validate_fn = struct {
         fn cb(cb_ctx: *anyopaque, buffer: []const u8) bool {
@@ -875,7 +870,6 @@ export fn validate_test_coverage(
         const CorruptionMode = test_coverage.CorruptionMode;
         var set = std.EnumSet(CorruptionMode).initEmpty();
         const mask = if (modes_bitmask == 0)
-            // VALIDATE_COVERAGE_MODES_DEFAULT_ALL (bits 0..5) matches ffi/validate_core.h.
             @as(u32, 0b0011_1111)
         else
             modes_bitmask;
@@ -888,20 +882,182 @@ export fn validate_test_coverage(
         break :blk set;
     };
 
-    var result = test_coverage.runCoverage(
-        alloc,
-        orig_slice,
-        .{
-            .rounds = rounds,
-            .shotgun_bytes = shotgun_bytes,
-            .seed = seed,
-            .progress = progress_fn_wrapped,
-            .progress_ctx = @ptrCast(&run_ctx),
-            .enabled_modes = modes,
-        },
-        @ptrCast(&run_ctx),
-        validate_fn,
-    ) catch return null;
+    // Determine worker count. 0 = auto (detect CPU count, cap at 16 to keep
+    // thread-startup + cache pressure sane on very-wide hosts).
+    const nworkers: u32 = blk: {
+        const requested = if (jobs == 0) @as(u32, @intCast(std.Thread.getCpuCount() catch 1)) else jobs;
+        break :blk @max(1, @min(requested, 16));
+    };
+
+    // Shared state merged-result containers. We build a synthesized
+    // CoverageResult after workers join so the KV/heatmap code below stays
+    // the same whether we ran one thread or many.
+    var merged_by_mode = std.EnumArray(test_coverage.CorruptionMode, test_coverage.ModeStats).initFill(.{});
+    const merged_events = std.heap.page_allocator.alloc(test_coverage.CorruptionEvent, rounds) catch return null;
+    // We'll own/free merged_events via the synthesized result's .deinit at function end.
+    var merged_duration_ns: u64 = 0;
+    var merged_file_size: u64 = 0;
+
+    if (nworkers == 1) {
+        // Single-threaded path — unchanged from step 4.
+        var run_ctx = RunCtx{
+            .validator = &validator,
+            .format = baseline.format,
+            .user_cb = progress_cb,
+            .user_ctx = progress_ctx,
+        };
+        var sub = test_coverage.runCoverage(
+            alloc,
+            orig_slice,
+            .{
+                .rounds = rounds,
+                .shotgun_bytes = shotgun_bytes,
+                .seed = seed,
+                .progress = progress_fn_wrapped,
+                .progress_ctx = @ptrCast(&run_ctx),
+                .enabled_modes = modes,
+            },
+            @ptrCast(&run_ctx),
+            validate_fn,
+        ) catch {
+            std.heap.page_allocator.free(merged_events);
+            return null;
+        };
+        defer sub.deinit();
+        @memcpy(merged_events[0..sub.events.len], sub.events);
+        var mit = sub.by_mode.iterator();
+        while (mit.next()) |entry| merged_by_mode.set(entry.key, entry.value.*);
+        merged_duration_ns = sub.duration_ns;
+        merged_file_size = sub.file_size;
+    } else {
+        // Multi-threaded path: each worker gets its own FormatValidator, its
+        // own RunCtx, its own arena, its own slice of rounds, and a distinct
+        // PRNG seed (base seed + worker id) so two workers don't explore the
+        // same corruption space.
+        const Worker = struct {
+            orig: []const u8,
+            my_rounds: u32,
+            my_seed: u64,
+            shotgun_bytes: u32,
+            enabled: std.EnumSet(test_coverage.CorruptionMode),
+            baseline_format: format_validation.FileFormat,
+            // Output
+            result: ?test_coverage.CoverageResult = null,
+            spawn_error: ?anyerror = null,
+
+            fn run(self: *@This()) void {
+                // Per-thread allocator — ArenaAllocator is fine because we
+                // free at join via the result.deinit() we also emit.
+                var wvalidator = format_validation.FormatValidator.initDeep();
+                defer wvalidator.deinit();
+                var rc = RunCtx{
+                    .validator = &wvalidator,
+                    .format = self.baseline_format,
+                    .user_cb = null,
+                    .user_ctx = null,
+                };
+                // Heap-backed events/work. Using page_allocator avoids
+                // carrying a cross-thread arena.
+                const r = test_coverage.runCoverage(
+                    std.heap.page_allocator,
+                    self.orig,
+                    .{
+                        .rounds = self.my_rounds,
+                        .shotgun_bytes = self.shotgun_bytes,
+                        .seed = self.my_seed,
+                        .enabled_modes = self.enabled,
+                    },
+                    @ptrCast(&rc),
+                    validate_fn,
+                ) catch |e| {
+                    self.spawn_error = e;
+                    return;
+                };
+                self.result = r;
+            }
+        };
+
+        const workers = std.heap.page_allocator.alloc(Worker, nworkers) catch {
+            std.heap.page_allocator.free(merged_events);
+            return null;
+        };
+        defer std.heap.page_allocator.free(workers);
+        const threads = std.heap.page_allocator.alloc(std.Thread, nworkers) catch {
+            std.heap.page_allocator.free(merged_events);
+            return null;
+        };
+        defer std.heap.page_allocator.free(threads);
+
+        // Distribute rounds as evenly as possible (last worker absorbs the
+        // remainder). Each worker runs on the full original buffer.
+        const base = rounds / nworkers;
+        const rem = rounds % nworkers;
+        var spawned: u32 = 0;
+        const t_start = std.time.nanoTimestamp();
+        errdefer {
+            // Join whatever we've already spawned before returning.
+            for (0..spawned) |i| threads[i].join();
+            for (0..spawned) |i| if (workers[i].result) |*r| r.deinit();
+            std.heap.page_allocator.free(merged_events);
+        }
+        for (0..nworkers) |i| {
+            const my_rounds = base + (if (i == nworkers - 1) rem else 0);
+            workers[i] = Worker{
+                .orig = orig_slice,
+                .my_rounds = my_rounds,
+                .my_seed = seed +% @as(u64, i),
+                .shotgun_bytes = shotgun_bytes,
+                .enabled = modes,
+                .baseline_format = baseline.format,
+            };
+            threads[i] = std.Thread.spawn(.{}, Worker.run, .{&workers[i]}) catch {
+                for (0..i) |j| threads[j].join();
+                for (0..i) |j| if (workers[j].result) |*r| r.deinit();
+                std.heap.page_allocator.free(merged_events);
+                return null;
+            };
+            spawned += 1;
+        }
+        for (0..nworkers) |i| threads[i].join();
+        const t_end = std.time.nanoTimestamp();
+
+        // Merge: concat events, sum by_mode, take max duration (wall-clock).
+        var offset: usize = 0;
+        var any_err: bool = false;
+        for (workers) |*w| {
+            if (w.spawn_error != null or w.result == null) {
+                any_err = true;
+                continue;
+            }
+            const r = &w.result.?;
+            merged_file_size = r.file_size;
+            @memcpy(merged_events[offset .. offset + r.events.len], r.events);
+            offset += r.events.len;
+            var mit = r.by_mode.iterator();
+            while (mit.next()) |entry| {
+                const cur = merged_by_mode.get(entry.key);
+                merged_by_mode.set(entry.key, .{
+                    .total = cur.total + entry.value.total,
+                    .detected = cur.detected + entry.value.detected,
+                });
+            }
+            r.deinit();
+        }
+        if (any_err) {
+            std.heap.page_allocator.free(merged_events);
+            return null;
+        }
+        merged_duration_ns = @intCast(t_end - t_start);
+    }
+
+    var result = test_coverage.CoverageResult{
+        .file_size = merged_file_size,
+        .rounds = rounds,
+        .duration_ns = merged_duration_ns,
+        .by_mode = merged_by_mode,
+        .events = merged_events,
+        .allocator = std.heap.page_allocator,
+    };
     defer result.deinit();
 
     // Build KV result string

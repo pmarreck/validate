@@ -1866,6 +1866,7 @@ static void print_usage(const char* program) {
 	printf("    --shotgun-bytes N  Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096; accepts K/M suffix)\n");
 	printf("    --no-heatmap       Suppress the undetected-corruption heatmap at the end of --test-coverage\n");
 	printf("    --per-mode-heatmap Render one heatmap per corruption mode (stacked) instead of the aggregate\n");
+	printf("    --coverage-jobs N  Worker threads for --test-coverage (0 = auto/CPU count; 1 = single-thread)\n");
 #endif
 	printf("\n");
 	printf("ENVIRONMENT:\n");
@@ -2007,6 +2008,7 @@ int main(int argc, char* argv[]) {
 	uint32_t test_coverage_shotgun_bytes = 4096;
 	int test_coverage_no_heatmap = 0;
 	int test_coverage_per_mode_heatmap = 0;
+	uint32_t test_coverage_jobs = 0; /* 0 = auto, 1 = single-thread */
 	int shuffle = 0;
 	size_t stress_iterations = 0;
 	int no_frontload = 0;
@@ -2228,6 +2230,22 @@ int main(int argc, char* argv[]) {
 				test_coverage_per_mode_heatmap = 1;
 				continue;
 			}
+			case VALIDATE_ARG_COVERAGE_JOBS: {
+				if (++i >= argc) {
+					fprintf(stderr, "%sError: --coverage-jobs requires a numeric argument%s\n", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				char *endptr;
+				unsigned long n = strtoul(argv[i], &endptr, 10);
+				if (*endptr != '\0' || n > 64) {
+					fprintf(stderr, "%sError: --coverage-jobs must be 0..64 (0 = auto)%s\n", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				test_coverage_jobs = (uint32_t)n;
+				continue;
+			}
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);
@@ -2317,12 +2335,12 @@ int main(int argc, char* argv[]) {
 				if (usable > 200) usable = 200;
 				heatmap_width = (uint32_t)usable;
 			}
-			fprintf(stderr, "%sTest coverage: %s (rounds=%u, seed=%llu, modes=0x%x, shotgun=%u, heatmap=%u)...%s\n",
+			fprintf(stderr, "%sTest coverage: %s (rounds=%u, seed=%llu, modes=0x%x, shotgun=%u, heatmap=%u, jobs=%u)...%s\n",
 				COLOR_CYAN, paths[i], test_coverage_rounds, (unsigned long long)seed,
-				test_coverage_modes_bitmask, test_coverage_shotgun_bytes, heatmap_width, COLOR_RESET);
+				test_coverage_modes_bitmask, test_coverage_shotgun_bytes, heatmap_width, test_coverage_jobs, COLOR_RESET);
 			char *result = validate_test_coverage(paths[i], test_coverage_rounds, seed,
 				test_coverage_shotgun_bytes, test_coverage_modes_bitmask, heatmap_width,
-				NULL, NULL);
+				test_coverage_jobs, NULL, NULL);
 			if (!result) {
 				fprintf(stderr, "%sFAILED%s: could not run coverage on %s (baseline validation failed?)\n", COLOR_RED, COLOR_RESET, paths[i]);
 				overall_exit = 1;
