@@ -8,6 +8,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <time.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #if defined(_WIN32)
@@ -2317,8 +2318,8 @@ int main(int argc, char* argv[]) {
 			printf("  Overall: %s%llu/%llu (%.1f%%)%s  in %.2fs\n\n",
 				overall_color, (unsigned long long)detected, (unsigned long long)rounds, overall_pct, COLOR_RESET, duration_s);
 
-			printf("  %-10s %8s %8s %8s\n", "Mode", "Detected", "Total", "Rate");
-			printf("  %-10s %8s %8s %8s\n", "----", "--------", "-----", "----");
+			printf("  %-10s %8s %8s %8s  %-14s\n", "Mode", "Detected", "Total", "Rate", "95% CI");
+			printf("  %-10s %8s %8s %8s  %-14s\n", "----", "--------", "-----", "----", "------");
 			for (size_t m = 0; m < 6; m++) {
 				char key_total[32], key_det[32];
 				snprintf(key_total, sizeof(key_total), "mode_%s_total", modes[m]);
@@ -2328,8 +2329,23 @@ int main(int argc, char* argv[]) {
 				if (mt == 0) continue;
 				double pct = 100.0 * (double)md / (double)mt;
 				const char *color = pct >= 95.0 ? COLOR_GREEN : (pct >= 70.0 ? COLOR_YELLOW : COLOR_RED);
-				printf("  %-10s %8llu %8llu %s%7.1f%%%s\n", modes[m],
-					(unsigned long long)md, (unsigned long long)mt, color, pct, COLOR_RESET);
+				/* 95% Wilson score interval — well-behaved at small n and at p near 0/1
+				 * where the naive normal-approximation interval collapses. */
+				const double z = 1.959963984540054; /* 97.5th percentile of N(0,1) */
+				double n = (double)mt;
+				double p = (double)md / n;
+				double z2 = z * z;
+				double denom = 1.0 + z2 / n;
+				double center = (p + z2 / (2.0 * n)) / denom;
+				double radius = (z * sqrt((p * (1.0 - p) + z2 / (4.0 * n)) / n)) / denom;
+				double ci_low = (center - radius) * 100.0;
+				double ci_high = (center + radius) * 100.0;
+				if (ci_low < 0.0) ci_low = 0.0;
+				if (ci_high > 100.0) ci_high = 100.0;
+				char ci_buf[24];
+				snprintf(ci_buf, sizeof(ci_buf), "[%4.1f, %5.1f]", ci_low, ci_high);
+				printf("  %-10s %8llu %8llu %s%7.1f%%%s  %-14s\n", modes[m],
+					(unsigned long long)md, (unsigned long long)mt, color, pct, COLOR_RESET, ci_buf);
 			}
 
 			char heat_buf[4096] = {0};

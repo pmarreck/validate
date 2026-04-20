@@ -286,9 +286,9 @@ These formats return WARN — recognized but NO real corruption detection:
 
 **Remaining — full spec, execute in order:**
 
-1. [ ] CLI `--modes sniper,shotgun` (comma-sep English names, default = all 6 current modes). Plus FFI param `uint32_t modes_bitmask` (bit N = CorruptionMode N; 0 = all).
-2. [ ] CLI `--shotgun-bytes N` (default 4096; clamped to `[1, min(1 MiB, file_size / 2)]`). Applies to shotgun/header/tail/zeroed/xor; also threaded through FFI.
-3. [ ] Confidence intervals: 95% Wilson interval on `detected/total` per mode. Table grows from `Rate` to `Rate [low%, high%]`.
+1. [x] CLI `--modes sniper,shotgun` (comma-sep English names, default = all 6 current modes). Plus FFI param `uint32_t modes_bitmask` (bit N = CorruptionMode N; 0 = all). (2026-04-20 EST, commit 0727a74)
+2. [x] CLI `--shotgun-bytes N` (default 4096; clamped to `[1, 1 MiB]`). Applies to shotgun/header/tail/zeroed/xor; also threaded through FFI. (2026-04-20 EST, commit 0727a74)
+3. [x] Confidence intervals: 95% Wilson interval on `detected/total` per mode. Table gained `95% CI` column. (2026-04-20 EST)
 4. [ ] **Memory optimization — restore-only-corrupted-region**: alloc work buffer once, memcpy `original` once. Per round: apply corruption (records `event.offset/size`), validate, then `@memcpy(work[off..off+size], original[off..off+size])`. Safety net in Debug builds: sentinel-hash a fixed ~1 KiB window outside the corrupted range pre/post `validate`; panic on mismatch (catches OOB writes by validators — already paid off 3× this week). Resync via full memcpy every 64 rounds. Drops memcpy volume from `rounds × file.len` to `file.len + rounds × event.size`.
 5. [ ] CLI `--no-heatmap` flag + terminal-width-aware heatmap (honor `tput cols`, clamp to `[40, 200]`).
 6. [ ] CLI `--per-mode-heatmap` rendering 6 stacked bars labeled by mode.
