@@ -2315,7 +2315,7 @@ int main(int argc, char* argv[]) {
 			return 2;
 		}
 		int overall_exit = 0;
-		const char *modes[] = { "sniper", "shotgun", "header", "tail", "zeroed", "xor", "sparse_noise" };
+		const char *modes[] = { "sniper", "shotgun", "header", "tail", "zeroed", "xor", "sparse_noise", "boundary" };
 		const size_t modes_count = sizeof(modes) / sizeof(modes[0]);
 		for (size_t i = 0; i < path_count; i++) {
 			uint64_t seed = (uint64_t)time(NULL);

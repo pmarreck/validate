@@ -880,6 +880,7 @@ export fn validate_test_coverage(
         if (mask & (1 << 4) != 0) set.insert(.zeroed);
         if (mask & (1 << 5) != 0) set.insert(.xor);
         if (mask & (1 << 6) != 0) set.insert(.sparse_noise);
+        if (mask & (1 << 7) != 0) set.insert(.boundary);
         break :blk set;
     };
 
@@ -1086,7 +1087,7 @@ export fn validate_test_coverage(
         builder.add("duration_ns", s) catch return null;
     }
     // Per-mode stats
-    const all_modes = [_]test_coverage.CorruptionMode{ .sniper, .shotgun, .header, .tail, .zeroed, .xor, .sparse_noise };
+    const all_modes = [_]test_coverage.CorruptionMode{ .sniper, .shotgun, .header, .tail, .zeroed, .xor, .sparse_noise, .boundary };
     for (all_modes) |mode| {
         const stats = result.by_mode.get(mode);
         var keybuf: [32]u8 = undefined;
@@ -1123,6 +1124,7 @@ export fn validate_test_coverage(
             .{ .tag = .zeroed, .key = "heatmap_zeroed" },
             .{ .tag = .xor, .key = "heatmap_xor" },
             .{ .tag = .sparse_noise, .key = "heatmap_sparse_noise" },
+            .{ .tag = .boundary, .key = "heatmap_boundary" },
         };
         for (per_mode) |pm| {
             if (result.by_mode.get(pm.tag).total == 0) continue;

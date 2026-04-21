@@ -18,6 +18,8 @@ pub const CorruptionMode = enum {
     zeroed,       // zero-fill a K-byte region at random offset
     xor,          // XOR a K-byte region with a random pattern
     sparse_noise, // flip every Nth bit across a K-byte region (degraded media)
+    boundary,     // concentrate corruption at a structurally-critical region
+                  // (magic/header, footer, or block boundary)
 
     pub fn name(self: CorruptionMode) []const u8 {
         return switch (self) {
@@ -28,6 +30,7 @@ pub const CorruptionMode = enum {
             .zeroed => "zeroed",
             .xor => "xor",
             .sparse_noise => "sparse_noise",
+            .boundary => "boundary",
         };
     }
 };
@@ -185,6 +188,100 @@ pub fn applySparseNoise(buffer: []u8, rng: std.Random, size: u32) CorruptionEven
     };
 }
 
+/// Apply a boundary corruption: concentrate a shotgun-style overwrite on a
+/// structurally-critical region of the file. Three equally-weighted
+/// strategies are rolled per call:
+///
+///   1. "magic/header" — a K-byte window anchored to the first 64 bytes,
+///      where formats keep their signature + primary header fields.
+///   2. "footer" — a K-byte window anchored to the last 64 bytes, where
+///      containers tend to keep EOF markers, central directories, index
+///      offsets, or CRCs (ZIP EOCD, PNG IEND, etc.).
+///   3. "block boundary" — a K-byte window straddling a 4096-byte-aligned
+///      offset somewhere in the middle of the file, modeling damage to
+///      filesystem-level sector edges that often coincide with chunk /
+///      segment boundaries in container formats.
+///
+/// This is format-agnostic but strictly higher-leverage than plain shotgun:
+/// real formats almost always concentrate structural invariants in these
+/// regions, so undetected corruption here is a more interesting signal.
+/// Future work: format-specific landmark tables (MKV segment tail, ZIP
+/// EOCD, etc.) can replace this heuristic for the handful of formats
+/// where deep layout knowledge pays off.
+pub fn applyBoundary(buffer: []u8, rng: std.Random, size: u32) CorruptionEvent {
+    std.debug.assert(buffer.len > 0);
+    const strategy = rng.uintLessThan(u8, 3);
+
+    // The corruption-region length is capped at min(size, buffer.len, 64) for
+    // the header/footer strategies (so we don't overflow the anchored window),
+    // and at min(size, buffer.len) for the block-boundary strategy.
+    const offset: u64 = switch (strategy) {
+        0 => blk: {
+            // Anchored to first min(64, buffer.len) bytes.
+            const anchor: u64 = @min(@as(u64, 64), buffer.len);
+            const region: u64 = @min(@as(u64, size), anchor);
+            const max_start: u64 = anchor - region;
+            break :blk if (max_start == 0) 0 else rng.uintLessThan(u64, max_start + 1);
+        },
+        1 => blk: {
+            // Anchored to last min(64, buffer.len) bytes.
+            const anchor: u64 = @min(@as(u64, 64), buffer.len);
+            const region: u64 = @min(@as(u64, size), anchor);
+            const start_of_tail: u64 = buffer.len - anchor;
+            const max_start_within: u64 = anchor - region;
+            const within: u64 = if (max_start_within == 0) 0 else rng.uintLessThan(u64, max_start_within + 1);
+            break :blk start_of_tail + within;
+        },
+        2 => blk: {
+            // Straddle a 4096-aligned offset in the middle. Pick a random
+            // 4 KiB-aligned position (at least 4 KiB in from the start so
+            // the region actually straddles) and offset by -region/2.
+            const clamped_size: u64 = @min(@as(u64, size), buffer.len);
+            if (buffer.len < 8192) {
+                // File too small to meaningfully straddle; fall back to a
+                // mid-file shotgun.
+                const max_off: u64 = buffer.len - clamped_size;
+                break :blk if (max_off == 0) 0 else rng.uintLessThan(u64, max_off + 1);
+            }
+            const block = 4096;
+            const num_blocks: u64 = buffer.len / block;
+            // Prefer the interior: skip blocks 0 and last.
+            const picked_block: u64 = 1 + rng.uintLessThan(u64, num_blocks - 1);
+            const boundary_off: u64 = picked_block * block;
+            const half: u64 = clamped_size / 2;
+            break :blk if (boundary_off < half)
+                0
+            else if (boundary_off + (clamped_size - half) > buffer.len)
+                buffer.len - clamped_size
+            else
+                boundary_off - half;
+        },
+        else => unreachable,
+    };
+
+    const region: u64 = switch (strategy) {
+        0, 1 => blk: {
+            const anchor: u64 = @min(@as(u64, 64), buffer.len);
+            break :blk @min(@as(u64, size), anchor);
+        },
+        2 => @min(@as(u64, size), buffer.len),
+        else => unreachable,
+    };
+
+    const clamped_size: u32 = @intCast(region);
+    var i: usize = 0;
+    while (i < clamped_size) : (i += 1) {
+        buffer[@intCast(offset + i)] = rng.int(u8);
+    }
+    return .{
+        .mode = .boundary,
+        .offset = offset,
+        .bit = 0,
+        .size = clamped_size,
+        .detected = false,
+    };
+}
+
 /// Aggregated statistics for a single corruption mode.
 pub const ModeStats = struct {
     total: u32 = 0,
@@ -330,6 +427,7 @@ pub fn runCoverage(
             .zeroed => applyZeroed(work, rng, config.shotgun_bytes),
             .xor => applyXor(work, rng, config.shotgun_bytes),
             .sparse_noise => applySparseNoise(work, rng, config.shotgun_bytes),
+            .boundary => applyBoundary(work, rng, config.shotgun_bytes),
         };
 
         if (comptime @import("builtin").os.tag != .windows) {

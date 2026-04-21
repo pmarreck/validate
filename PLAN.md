@@ -294,7 +294,9 @@ These formats return WARN — recognized but NO real corruption detection:
 6. [x] CLI `--per-mode-heatmap` rendering one labeled bar per active mode (normalized independently; FFI emits heatmap_<mode> keys). (2026-04-20 EST)
 7. [x] Multi-threaded rounds: CLI `--coverage-jobs N` (0 = auto = CPU count, capped at 16; 1 = single-threaded). Each worker: own FormatValidator, own working buffer, PRNG seeded `seed + worker_id`, independent event buffer. Results merged into a synthesized CoverageResult. Measured 6.8× speedup on a 10 MB bz2 (31s → 4.5s) at auto-detect on M4 Mac. (2026-04-20 EST)
 8. [x] `sparse-noise` mode (opt-in only): flip every Nth bit (N ∈ [1, 31]) across a K-byte region. Default-excluded; requires `--modes sparse-noise`. (2026-04-20 EST)
-9. [ ] `boundary` mode (opt-in only): format-aware container-edge corruption (MKV segment tail, ZIP EOCD, JPEG SOI/EOI, etc.). Requires a per-format "landmark offsets" helper. Likely its own PR — biggest scope.
+9. [x] `boundary` mode (opt-in only): concentrates corruption on structurally-critical regions — magic/header (first 64 B), footer (last 64 B), or a 4 KiB-aligned boundary in the interior. Format-agnostic v1; per-format landmark tables (MKV segment tail, ZIP EOCD, JPEG SOI/EOI) are future work. Bit 7 in FFI modes_bitmask. Measured 40% detection vs ~10% for plain shotgun on mpeg4p2 — structural concentration works. (2026-04-20 EST)
+
+10. [ ] *Future*: format-specific boundary landmark tables for high-value formats (ZIP EOCD, PNG IEND, JPEG EOI, MKV segment end). Replace the generic block-boundary heuristic with per-format knowledge where the leverage pays off. Separate PR.
 
 Sign-off: English-only mode names; boundary + sparse-noise opt-in; Debug-build sentinel-hash guard for restore optimization. (Peter 2026-04-20 EST)
 
