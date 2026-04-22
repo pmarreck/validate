@@ -5924,8 +5924,14 @@ pub const FormatValidator = struct {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.tga, .failed_to_seek, "file", .full);
                 break :blk image_validators.validateTgaDeep(allocator, source);
             },
-            // RAF, RW2, CR3: structural-only for now (no deep decoder available)
-            .raf, .rw2, .cr3 => initial_result,
+            // RW2 and CR3: structural-only for now (no embedded-preview
+            // decoder path yet). RAF has a documented JPEG preview slot at
+            // offset 0x54/0x58 so we can deep-validate via libjpeg.
+            .raf => blk: {
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.raf, .failed_to_seek, "file", .full);
+                break :blk image_validators.validateRafDeep(allocator, source);
+            },
+            .rw2, .cr3 => initial_result,
             .psd => blk: {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.psd, .failed_to_seek, "file", .full);
                 break :blk image_validators.validatePsdDeep(allocator, source);

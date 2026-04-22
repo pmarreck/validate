@@ -869,6 +869,60 @@ pub fn validateRaf(file: *FileSource) ValidationResult {
     return ValidationResult.okWithDepth(.raf, .structural);
 }
 
+/// Deep RAF validation — validates the embedded JPEG preview through
+/// libjpeg-turbo. Structural validation already checks the magic and bounds-
+/// checks the preview offset/length; going deep decodes the preview to catch
+/// corruption that would still leave a plausibly-pointing offset table. The
+/// raw sensor data is proprietary-compressed per Fuji sensor and can't be
+/// decoded without vendor knowledge, so we don't promote beyond .full based
+/// on the preview — full for the preview IS the ceiling for RAF.
+pub fn validateRafDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    // Re-read the 92-byte RAF header to pick up the preview offset/length.
+    source.seekTo(0) catch return ValidationResult.invalidCode(.raf, .failed_to_seek, "to start");
+    var header: [92]u8 = undefined;
+    const n = source.read(&header) catch return ValidationResult.invalidCode(.raf, .failed_to_read, "RAF header");
+    if (n < 92) return ValidationResult.invalidCode(.raf, .truncated, "RAF header too short");
+    if (!std.mem.eql(u8, header[0..16], "FUJIFILMCCD-RAW ")) {
+        return ValidationResult.invalidCode(.raf, .invalid_magic_number, "RAF");
+    }
+
+    const jpeg_offset = std.mem.readInt(u32, header[0x54..0x58], .big);
+    const jpeg_length = std.mem.readInt(u32, header[0x58..0x5C], .big);
+    if (jpeg_offset == 0 or jpeg_length == 0) {
+        // Spec allows a RAF without a preview; treat it as a structural-only
+        // pass and warn so the caller knows deep validation didn't apply.
+        return ValidationResult.okWithDepthAndWarning(.raf, .structural, "RAF: no embedded JPEG preview to deep-validate");
+    }
+
+    const file_size = source.getEndPos() catch {
+        return ValidationResult.invalidCode(.raf, .failed_to_get, "file size");
+    };
+    if (@as(u64, jpeg_offset) + @as(u64, jpeg_length) > file_size) {
+        return ValidationResult.invalidWithDepth(.raf, "JPEG preview extends beyond file end (truncated)", .full);
+    }
+
+    // Prefer mmap; fall back to a heap buffer sized only for the preview so
+    // we don't pull a 200 MB GFX100 RAF into RAM just to decode a 2 MB thumb.
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |buf| allocator.free(buf);
+    const jpeg_slice: []const u8 = if (source.getMappedRange(jpeg_offset, jpeg_length)) |m| m else blk: {
+        const buf = allocator.alloc(u8, jpeg_length) catch {
+            return ValidationResult.okWithDepthAndWarning(.raf, .structural, "RAF: out of memory for preview decode");
+        };
+        heap_buf = buf;
+        source.seekTo(jpeg_offset) catch return ValidationResult.invalidCode(.raf, .failed_to_seek, "to JPEG preview");
+        const got = source.readAll(buf) catch return ValidationResult.invalidCode(.raf, .failed_to_read, "RAF preview");
+        if (got != jpeg_length) return ValidationResult.invalidWithDepth(.raf, "RAF preview read incomplete", .full);
+        break :blk buf[0..got];
+    };
+
+    const jpeg_result = jpeg_validator.validateJpegDeepFromBuffer(jpeg_slice);
+    if (jpeg_result.valid) {
+        return ValidationResult.okWithDepth(.raf, .full);
+    }
+    return ValidationResult.invalidWithDepth(.raf, "RAF: embedded JPEG preview decode failed", .full);
+}
+
 // ============ Panasonic RW2 Validator ============
 
 /// Validate Panasonic RW2 file structure.
@@ -3183,11 +3237,26 @@ pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResu
     const debug = format_validation.getenvCrossPlatform("DNG_DEBUG") != null;
 
     while (i + 10 < data.len) {
-        // Look for JPEG SOI marker (0xFFD8) followed by APP0 (JFIF) or APP1 (EXIF)
+        // Look for JPEG SOI (0xFFD8) followed by another FF xx marker where
+        // xx is a plausible first-segment marker. The historically accepted
+        // set (APP0 0xE0 / APP1 0xE1 for JFIF+EXIF) missed camera vendors
+        // that emit "bare" JPEGs — e.g. the Leica M11 DNG starts its preview
+        // directly with DQT (0xDB), no APPn. Widen JUST enough to pick those
+        // up:
+        //   0xDB        DQT — quantization table, first segment of bare JPEGs
+        //   0xE0..0xEF  APPn — all application markers (JFIF/EXIF/ICC/Adobe)
+        // Earlier broader widenings (adding 0xC0..0xCF SOF, 0xDC..0xDF
+        // misc-table, 0xFE COM) produced false positives on BlackMagic
+        // BRAW-flavored DNGs where two 0xFE bytes in the raw sensor stream
+        // happen to sit after a 0xFFD8 pair. Downstream the decoder self-
+        // filters by full-decoding what we find, but it still flips OK files
+        // to FAIL because preview_count becomes > 0 with no valid previews.
         if (data[i] == 0xFF and data[i + 1] == 0xD8 and data[i + 2] == 0xFF) {
             const marker = data[i + 3];
-            // Only consider JPEGs with application markers (JFIF/EXIF)
-            const is_jpeg_with_app = marker == 0xE0 or marker == 0xE1;
+            const is_jpeg_with_app = switch (marker) {
+                0xDB, 0xE0...0xEF => true,
+                else => false,
+            };
 
             if (is_jpeg_with_app) {
                 // This looks like a real JPEG, find its end
