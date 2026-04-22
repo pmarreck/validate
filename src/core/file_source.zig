@@ -24,10 +24,47 @@ pub const FileSource = struct {
         data: []align(std.heap.page_size_min) const u8,
     };
 
+    /// Open a file. On Windows, transparently retries with the `\\?\` long-
+    /// path prefix when the first attempt fails — this bypasses the Win32
+    /// path-parsing layer that rejects characters NTFS itself allows (`|`,
+    /// `<`, `>`, `"`, trailing dots/spaces) and also the legacy MAX_PATH
+    /// limit. Real-world case: files named like
+    /// `AI Is the Bubble to Burst Them All | WIRED.md` on Peter's
+    /// Documents folder get rejected by plain CreateFileW but open fine
+    /// through `\\?\C:\Users\...\AI Is...WIRED.md`.
+    fn openFileTolerant(path: []const u8) !std.fs.File {
+        const first_err = blk: {
+            const f = std.fs.cwd().openFile(path, .{}) catch |err| break :blk err;
+            return f;
+        };
+
+        if (comptime @import("builtin").os.tag != .windows) return first_err;
+
+        // Already prefixed? Don't loop on retry.
+        if (path.len >= 4 and std.mem.eql(u8, path[0..4], "\\\\?\\")) return first_err;
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        // Build an absolute Windows path. \\?\ paths MUST be absolute and
+        // MUST use backslash separators — the prefix disables normalization.
+        const abs_path = if (std.fs.path.isAbsolute(path))
+            alloc.dupe(u8, path) catch return first_err
+        else blk: {
+            const cwd = std.process.getCwdAlloc(alloc) catch return first_err;
+            break :blk std.fs.path.join(alloc, &.{ cwd, path }) catch return first_err;
+        };
+        for (abs_path) |*c| if (c.* == '/') { c.* = '\\'; };
+
+        const prefixed = std.fmt.allocPrint(alloc, "\\\\?\\{s}", .{abs_path}) catch return first_err;
+        return std.fs.cwd().openFile(prefixed, .{}) catch return first_err;
+    }
+
     /// Open a file, preferring mmap on POSIX systems.
     /// Falls back to regular file I/O if mmap fails.
     pub fn open(path: []const u8) !FileSource {
-        const file = try std.fs.cwd().openFile(path, .{});
+        const file = try openFileTolerant(path);
         errdefer file.close();
 
         const file_size = try file.getEndPos();
