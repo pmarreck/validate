@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Split a too-big-for-GitHub ground-truth file into 40 MB chunks that CAN be
+# committed. Produces <file>.split/chunk.NNN plus <file>.split/original.sha256
+# (which reassemble-ground-truth uses to verify the reassembled output matches
+# what we split). Git vouches for per-chunk integrity via its own hashing, so
+# we don't bother writing SHA256SUMS for the chunks themselves.
+#
+# Usage: ./scripts/split-ground-truth <path-to-large-file>
+# Idempotent: re-running on the same file detects no-change via sha256 and skips.
+
+set -u
+
+if [ $# -ne 1 ]; then
+	printf 'usage: %s <path-to-large-file>\n' "$0" >&2
+	exit 2
+fi
+
+file="$1"
+if [ ! -f "$file" ]; then
+	printf 'error: %s is not a regular file\n' "$file" >&2
+	exit 1
+fi
+
+split_dir="${file}.split"
+chunk_size="40m"
+
+# Compute current sha256 of the original
+new_hash=$(shasum -a 256 "$file" | awk '{print $1}')
+if [ -z "$new_hash" ]; then
+	printf 'error: failed to hash %s\n' "$file" >&2
+	exit 1
+fi
+
+# If a prior split already matches this content, nothing to do.
+if [ -d "$split_dir" ] && [ -f "$split_dir/original.sha256" ]; then
+	existing_hash=$(cat "$split_dir/original.sha256")
+	if [ "$existing_hash" = "$new_hash" ]; then
+		printf 'unchanged: %s (sha256 matches existing %s)\n' "$file" "$split_dir"
+		exit 0
+	fi
+	printf 'content changed; re-splitting %s\n' "$file"
+	# shellcheck disable=SC2115
+	rm -rf "$split_dir"
+fi
+
+mkdir -p "$split_dir"
+# -b 40m   chunk size 40 MB
+# -d       numeric suffixes
+# -a 3     3-digit suffix: chunk.000, chunk.001, ...
+split -b "$chunk_size" -d -a 3 "$file" "$split_dir/chunk."
+
+# Save the reassembly hash so reassemble-ground-truth can verify.
+printf '%s\n' "$new_hash" > "$split_dir/original.sha256"
+
+count=$(find "$split_dir" -maxdepth 1 -name 'chunk.*' -type f | wc -l | tr -d ' ')
+size=$(wc -c < "$file" | tr -d ' ')
+printf 'split: %s (%s bytes) -> %s/chunk.{000..%s} (%d chunks)\n' \
+	"$file" "$size" "$split_dir" "$(printf '%03d' $((count - 1)))" "$count"

@@ -9,6 +9,18 @@ cd "$SCRIPT_DIR"
 # Detect system
 system=$(nix eval --raw 'nixpkgs#system' 2>/dev/null || echo "aarch64-darwin")
 
+# Reassemble any split-up large ground-truth fixtures before running tests.
+# Files over GitHub's 100 MB limit are committed as .chunk.NNN pieces; the
+# reassembly script cats them back together and sha256-verifies against a
+# stored original.sha256. Idempotent — no-ops if the target is already present
+# and its hash matches.
+if [ -x scripts/reassemble-ground-truth ]; then
+	if ! scripts/reassemble-ground-truth; then
+		echo "=== Ground-truth reassembly FAILED ==="
+		exit 1
+	fi
+fi
+
 echo "=== Running Zig tests (nix build, sandboxed) ==="
 if ! nix build ".#checks.${system}.test" 2>&1; then
 	echo "=== Zig tests FAILED ==="

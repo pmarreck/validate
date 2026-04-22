@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Walk ground_truth_examples/ for *.split/ directories and reassemble each
+# into the original file next to the .split dir. Idempotent: if the target
+# already exists and its sha256 matches original.sha256, skip.
+#
+# Usage:
+#   ./scripts/reassemble-ground-truth              # reassemble everything
+#   ./scripts/reassemble-ground-truth <split-dir>  # reassemble one
+#
+# Failure modes (all cause non-zero exit):
+#   - A chunk file is missing              → cat produces wrong byte count, sha256 mismatches
+#   - A chunk file is corrupted            → cat produces wrong bytes, sha256 mismatches
+#   - original.sha256 file is missing      → can't verify, refuse to guess
+#   - Disk full / write error              → surfaces via cat exit code
+#
+# Git vouches for the committed chunks via its own content-addressed hashing,
+# so per-chunk SHA256SUMS would be redundant. The one original.sha256 covers
+# missing/wrong-order/write-error on the reassembly step.
+
+set -u
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+cd "$repo_root"
+
+reassemble_one() {
+	local split_dir="$1"
+	local parent_dir
+	parent_dir="$(dirname "$split_dir")"
+	local base_name
+	base_name="$(basename "$split_dir" .split)"
+	local target="$parent_dir/$base_name"
+
+	if [ ! -f "$split_dir/original.sha256" ]; then
+		printf 'skip:    %s (no original.sha256 — cannot verify reassembly)\n' "$split_dir" >&2
+		return 1
+	fi
+	local expected
+	expected="$(cat "$split_dir/original.sha256")"
+
+	# Fast path: target exists and matches — nothing to do.
+	if [ -f "$target" ]; then
+		local have
+		have="$(shasum -a 256 "$target" | awk '{print $1}')"
+		if [ "$have" = "$expected" ]; then
+			printf 'ok:      %s (already reassembled)\n' "$target"
+			return 0
+		fi
+		printf 'stale:   %s (sha256 mismatch, rebuilding)\n' "$target"
+	fi
+
+	# Enumerate chunks explicitly so we fail fast on empty dirs rather than
+	# producing an empty target. Sort guarantees chunk.000 < chunk.001 < ...
+	local -a chunks
+	# shellcheck disable=SC2207
+	chunks=($(find "$split_dir" -maxdepth 1 -name 'chunk.*' -type f | sort))
+	if [ ${#chunks[@]} -eq 0 ]; then
+		printf 'error:   %s (no chunks found)\n' "$split_dir" >&2
+		return 1
+	fi
+
+	cat "${chunks[@]}" > "$target"
+	local got
+	got="$(shasum -a 256 "$target" | awk '{print $1}')"
+	if [ "$got" != "$expected" ]; then
+		printf 'error:   %s reassembly hash mismatch\n         expected %s\n         got      %s\n' \
+			"$target" "$expected" "$got" >&2
+		rm -f "$target"
+		return 1
+	fi
+
+	local size
+	size=$(wc -c < "$target" | tr -d ' ')
+	printf 'built:   %s (%s bytes, from %d chunks)\n' "$target" "$size" "${#chunks[@]}"
+	return 0
+}
+
+if [ $# -eq 1 ]; then
+	# Single-target mode
+	reassemble_one "$1"
+	exit $?
+fi
+
+# Walk every .split directory under ground_truth_examples
+if [ ! -d "ground_truth_examples" ]; then
+	printf 'warning: ground_truth_examples not found; nothing to reassemble\n' >&2
+	exit 0
+fi
+
+failures=0
+while IFS= read -r split_dir; do
+	if ! reassemble_one "$split_dir"; then
+		failures=$((failures + 1))
+	fi
+done < <(find -L ground_truth_examples -type d -name '*.split' | sort)
+
+if [ "$failures" -gt 0 ]; then
+	printf '\nreassemble-ground-truth: %d failure(s)\n' "$failures" >&2
+	exit 1
+fi
