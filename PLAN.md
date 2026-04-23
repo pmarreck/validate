@@ -314,8 +314,8 @@ P1 — sample replacements (validator already strong, sample picks a weak codec 
 - [x] Added `ground_truth_examples/mov/jellyfish_h264.mov` (H.264, 1.0 MB). MOV shotgun 6% → **75%** (2026-04-23). Generated via ffmpeg copy-muxing from jellyfish mp4.
 - [x] Added `ground_truth_examples/webm/jellyfish_vp9_opus.webm` (VP9 + synthesized Opus, 1.8 MB). WebM shotgun 2% → **55%** (2026-04-23). Opus audio CRC drives detection; full VP9 byte-validation needs MKV validator work (see P2 item 12).
 - [x] Added `ground_truth_examples/avi/jellyfish_mjpeg.avi` (MJPEG, 8.5 MB). AVI shotgun 4% → **93%** (2026-04-23). Generated via ffmpeg transcode.
-- [ ] Add RLE-compressed PSD sample alongside the current RAW one so the strong code path is exercised.
-- [ ] Add ZIP/ZIPS compressed EXR sample alongside the NONE-compressed one.
+- [x] Added `ground_truth_examples/psd/rle_plasma.psd` (1.8 MB, RLE-compressed via ImageMagick). PSD shotgun 7% → **50%** (2026-04-23). Exercises the RLE scanline-decode path in `validatePsdDeep`.
+- [x] Added `ground_truth_examples/exr/zip_plasma.exr` (388 KB, ZIP-compressed via ImageMagick). EXR shotgun stays 100% on the larger sample; zlib decompression path now exercised. Sniper 6% → 1% reflects file-size effect (structural bytes are a smaller fraction of the larger file) — honest, not a regression.
 
 P1 — ground-truth sourcing (too small for shotgun sweep today):
 - [ ] DOCX/XLSX/PPTX from Apache Tika `testWORD_various.docx` / `testEXCEL.xlsx` / `testPPT_various.pptx` (Apache 2.0)

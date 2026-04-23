@@ -29,8 +29,8 @@
 | JPEG2K | 6% | **97%** | balloon_eciRGB_icc.jp2 | 1.9 MB | 2026-03-06 | Codestream marker structure |
 | GIF | 2% | **94%** | sample_1.gif | 194 KB | 2026-03-06 | LZW decode (shotgun desyncs state) |
 | JPEG | 0% | **93%** | w3c_exif_420.jpg | 768 KB | 2026-03-06 | libjpeg-turbo full decode |
-| EXR | 6% | **100%** | sample.exr | 26 KB | 2026-04-23 | Offset table + block header validation (sample uses NONE compression; ZIP/ZIPS samples would expose zlib verification path) |
-| PSD | 0% | 7% | sample.psd | 120 KB | 2026-04-23 | RLE/ZIP compression paths fully validate, but this sample uses RAW where ~60 KB of payload is structurally unverifiable; a sample with RLE-compressed layers would score much higher |
+| EXR | 1% | **100%** | zip_plasma.exr | 388 KB | 2026-04-23 | ZIP-compressed EXR — zlib decompress path runs on every scanline block. Shotgun detection perfect; sniper lower than the 26 KB NONE-compressed sample (6%) because structural bytes are a smaller fraction on the larger file. Both paths validated. |
+| PSD | 2% | **50%** | rle_plasma.psd | 1.8 MB | 2026-04-23 | RLE-compressed PSD — `validatePsdDeep` decodes every scanline. The old RAW-compressed `sample.psd` (0%/7%) is retained; sweep picks the larger RLE one. Measures the strong path that the RAW sample couldn't exercise. |
 | HEIC | 0% | 4% | sample.heic | 2.9 MB | 2026-03-06 | H.265 CABAC per tile — **arithmetic coding absorbs single-bit errors by design** |
 | AVIF | 0% | 1% | butterfly.avif | 87 KB | 2026-03-06 | AV1 OBU + CABAC — same limitation |
 | BMP | 0% | 0% | sample.bmp | 921 KB | 2026-04-23 | BMP spec has no data checksums — `bmp_decoder.validateBmp` walks every pixel row proving accessibility but cannot detect bit-flips in pixel bytes. 0/400 at ±0.5% CI. Fundamental format limit. |
@@ -184,8 +184,8 @@ Findings from the 2026-04-23 audit. Priorities set by impact on launch credibili
 5. **✓ MOV sample swap (DONE 2026-04-23).** Added `jellyfish_h264.mov` (1.0 MB, H.264 + MP4 container). Old MPEG-4 Part 2 `sample.mov` retained. Shotgun 6% → **75%**.
 6. **✓ WebM sample swap (DONE 2026-04-23, partial).** Added `jellyfish_vp9_opus.webm` (1.8 MB, VP9 + synthesized Opus). Shotgun 2% → **55%**. Full VP9 byte-validation in MKV is not yet implemented (see P2 item below); current lift comes from Opus audio CRC coverage.
 7. **✓ AVI sample swap (DONE 2026-04-23).** Added `jellyfish_mjpeg.avi` (8.5 MB, MJPEG). Old FMP4 `generated_testsrc.avi` retained. Shotgun 4% → **93%**.
-8. **Add RLE-compressed PSD sample** alongside the current RAW one; the RLE path is fully instrumented but never exercised by the corpus today.
-9. **Add compressed EXR sample** (ZIP/ZIPS). The NONE-compressed sample undersells the validator — it already hits 100% shotgun but sniper would also rise with a compressed sample exposing zlib CRCs.
+8. **✓ RLE PSD sample (DONE 2026-04-23).** Added `rle_plasma.psd` (1.8 MB, RLE-compressed). Shotgun 7% → **50%**. The RLE path in `validatePsdDeep` is now exercised.
+9. **✓ ZIP EXR sample (DONE 2026-04-23).** Added `zip_plasma.exr` (388 KB, ZIP-compressed). Shotgun 100% preserved on the larger sample; zlib decompress path now exercised.
 
 ### P2 — missing deep paths for formats where the codec allows it
 
