@@ -300,6 +300,41 @@ These formats return WARN — recognized but NO real corruption detection:
 
 Sign-off: English-only mode names; boundary + sparse-noise opt-in; Debug-build sentinel-hash guard for restore optimization. (Peter 2026-04-20 EST)
 
+### Pre-Launch Corruption Detection Audit (2026-04-23)
+
+Findings from the 6-agent audit captured in `docs/corruption-detection-report.md`. Priority order.
+
+P0 — validator bugs hiding detection:
+- [ ] PDF: make `toleratedPdfImageFailures` opt-in (`--repair-mode`) or change CLI to exit non-zero on non-empty `malformations`. Current code silently reclassifies every detected JPEG/Flate/CCITT corruption as `is_valid=true`. Expected lift: 0% → ~55-70% sniper on `nasa_satellite_images_1976.pdf`. Code: `src/core/pdf_validator.zig:43-128, :491, :670`.
+- [ ] BMP: 0%/0% despite "fully validated" label — trace why the zigimg BMP decoder either doesn't run or doesn't propagate errors. `src/core/image_validators.zig` (find `validateBmp*`).
+- [ ] NRW: add embedded JPEG preview decode path (mirror the DNG/RAF pattern). Currently labeled fully-validated but behaves like TIFF-structural.
+- [ ] CLI print bug: video samples print `(fully validated)` even when internal result is `validation_depth=.structural`. Audit `src/core/video_validator.zig:800-826` → rendering path.
+
+P1 — sample replacements (validator already strong, sample picks a weak codec path):
+- [ ] Replace `ground_truth_examples/mov/sample.mov` with an H.264 (`avc1`) .mov — current sample is MPEG-4 Part 2 which only has header-level validation. Expected: 6% → ~65-70% shotgun.
+- [ ] Replace `ground_truth_examples/webm/jellyfish_360_10s.webm` with a VP9+Opus file — current is VP8 (header-only). Expected: 2% → ~88% shotgun.
+- [ ] Replace `ground_truth_examples/avi/generated_testsrc.avi` with MJPEG or H.264 AVI. Expected: 4% → 60-90% shotgun.
+- [ ] Add RLE-compressed PSD sample alongside the current RAW one so the strong code path is exercised.
+- [ ] Add ZIP/ZIPS compressed EXR sample alongside the NONE-compressed one.
+
+P1 — ground-truth sourcing (too small for shotgun sweep today):
+- [ ] DOCX/XLSX/PPTX from Apache Tika `testWORD_various.docx` / `testEXCEL.xlsx` / `testPPT_various.pptx` (Apache 2.0)
+- [ ] ODT/ODS/ODP regenerated from Tika files via `libreoffice --headless --convert-to`
+- [ ] RTF from Apache Tika `testRTFVarious.rtf`
+- [ ] EML from Apache Tika `testRFC822_multipart`
+- [ ] MBOX trimmed Enron excerpt or Apache James sample
+- [ ] QOI `dice.qoi` from phoboslab/qoi (MIT)
+- [ ] ICO multi-res favicon from Wikimedia Commons (CC0)
+- [ ] SVG from W3C SVG 1.1 Test Suite
+- [ ] Pages authored locally (no permissive public corpus exists)
+
+P2 — deeper validation where format permits:
+- [ ] WOFF/WOFF2 origChecksum verification after Flate / Brotli decompress
+- [ ] RAF preview-coverage diagnostic: add a smaller Fuji RAF to the sweep alongside the 208 MB one so preview-decode coverage shows up distinctly in the table
+
+P2 — regeneration tooling:
+- [ ] Script that walks `docs/corruption-sweep-results/*.tsv` and emits `docs/corruption-detection-report.md` with per-row git-blame dates. Prevents the drift that produced the two conflicting tables we just reconciled.
+
 ### Statistical Corruption Detection for Raw Audio/Video Data
 For formats without checksums (AU, AMR, CAF, DPX, etc.), use heuristic analysis to detect likely corruption in raw data sections:
 

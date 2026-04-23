@@ -649,53 +649,10 @@ Formats with built-in integrity verification:
 
 ---
 
-## Corruption Detection Rates (sniper/shotgun experiments)
+## Corruption Detection Rates
 
-Measured via `scripts/corruption-experiment` with 100 trials each, PCG32 seed=42.
-**Sniper** = single random bit flip. **Shotgun** = 4KB random overwrite at random offset.
+All per-format sniper (1-bit flip) and shotgun (4KB overwrite) detection rates live in the single canonical source:
 
-### 100%/100% Detection (perfect)
-| Format | Method |
-|--------|--------|
-| TTF/OTF | Per-table checksums (strict mode for standalone fonts) |
-| EAC3 | Full-file CRC (all frames) |
-| FITS | CHECKSUM/DATASUM keywords |
-| WOFF | Zlib decompress + origChecksum per table |
-| Game Boy | Global checksum (sum all ROM bytes vs u16 at 0x14E-0x14F) |
+**→ [`docs/corruption-detection-report.md`](docs/corruption-detection-report.md)**
 
-### High Detection (>50% sniper or shotgun)
-| Format | Sniper | Shotgun | Method |
-|--------|--------|---------|--------|
-| FLAC | 80% | 88% | CRC-8 (header) + CRC-16 (frame) |
-| WebP | 83% | 84% | Full RIFF chunk chain walk |
-| TTA | 97% | N/A | Seek table CRC + per-frame CRC-32 |
-| Tar | 54% | 73% | All entry header checksums |
-| JPEG | 0% | 93% | Huffman entropy coding (fundamental) |
-| GIF | 0% | 94% | LZW entropy coding (fundamental) |
-| JPEG2K | 6% | 97% | Near-perfect on shotgun |
-
-### Moderate Detection
-| Format | Sniper | Shotgun | Method |
-|--------|--------|---------|--------|
-| DICOM (JPEG) | 31% | N/A | VR content validation + JPEG pixel data decode |
-| DOC | 2% | 52% | FIB + 31 fc/lcb pair bounds + CLX piece table |
-| DICOM (raw) | 7-10% | 20% | VR content validation (DA/TM/CS/DS/IS/UI/PN/SH/LO/AE) |
-| HDF5 | 5% | 37% | OHDR/OCHK continuation + Jenkins checksums |
-| ASF | 3% | 22% | Object chain + Data Object GUID/reserved |
-| PDB | 20% | 100% | MASTER record cross-validation (10 types) |
-| EXR | 6% | 100% | Decompress ALL scanline blocks + offsets |
-| DV | 0% | 100% | DIF sequence section type (all 150 blocks) |
-
-### Low/No Detection (fundamentally limited)
-| Format | Sniper | Shotgun | Reason |
-|--------|--------|---------|--------|
-| MOV/MP4 | 0-1% | 6% | Most bytes are entropy-coded video; sample table validation helps structure |
-| HEIC | 0% | 0% | CABAC arithmetic coding absorbs bit flips |
-| AVI | 0% | 4% | Limited structural checks |
-| WAV/AIFF | - | - | No checksums in format |
-| TIFF/DNG/CR2/NEF/ARW | - | - | No checksums in format |
-
-### Formats With No Checksums
-WAV, AIFF, DNG, CR2, NEF, ARW, TIFF, PAM, TGA, DPX, AU, COFF, Blorb, NES, N64, GBA
-
-*Last updated: 2026-03-29*
+That report is regenerated from the raw TSV data in `docs/corruption-sweep-results/` (100 trials per format per mode, PCG32 seed=42) and includes per-row run dates, sample file paths and sizes, integrity mechanism, and pre-launch action items for detected gaps. Referencing it here rather than duplicating keeps both sources in sync.
