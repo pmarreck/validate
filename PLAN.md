@@ -305,10 +305,10 @@ Sign-off: English-only mode names; boundary + sparse-noise opt-in; Debug-build s
 Findings from the 6-agent audit captured in `docs/corruption-detection-report.md`. Priority order.
 
 P0 — validator bugs hiding detection:
-- [ ] PDF: make `toleratedPdfImageFailures` opt-in (`--repair-mode`) or change CLI to exit non-zero on non-empty `malformations`. Current code silently reclassifies every detected JPEG/Flate/CCITT corruption as `is_valid=true`. Expected lift: 0% → ~55-70% sniper on `nasa_satellite_images_1976.pdf`. Code: `src/core/pdf_validator.zig:43-128, :491, :670`.
-- [ ] BMP: 0%/0% despite "fully validated" label — trace why the zigimg BMP decoder either doesn't run or doesn't propagate errors. `src/core/image_validators.zig` (find `validateBmp*`).
-- [ ] NRW: add embedded JPEG preview decode path (mirror the DNG/RAF pattern). Currently labeled fully-validated but behaves like TIFF-structural.
-- [ ] CLI print bug: video samples print `(fully validated)` even when internal result is `validation_depth=.structural`. Audit `src/core/video_validator.zig:800-826` → rendering path.
+- [x] PDF: make `toleratedPdfImageFailures` opt-in via `VALIDATE_PDF_TOLERANT=1`; default strict. Landed 2026-04-23 (commit c304f36). Shotgun on NASA sample 0% → 67%, on Alice PDF 0% → 89%. Sniper stays ~0% (intrinsic PDF limit).
+- [x] BMP 0%/0% — RECLASSIFIED to docs-only. BMP spec has no data checksums; 0/400 at ±0.5% CI confirmed fundamental. `FORMAT_VERIFICATIONS.md` row corrected from "Full Decode" to "Structure" (2026-04-23).
+- [ ] NRW preview decode — partial fix available. Add `libraw_unpack_thumb` to catch corruption inside the embedded preview JPEG (~15-30% of the 16 MB file). Real code work, deferred.
+- [ ] CLI print bug — DEFERRED to post-launch as architectural. Root cause: `ValidationDepth` enum has only `.structural` / `.full`; needs a third `.bounds_verified` variant + audit of every validator's return. Affects BMP, most RAW, video containers with weak codecs. Interim honesty comes from the master report's per-format detection numbers.
 
 P1 — sample replacements (validator already strong, sample picks a weak codec path):
 - [ ] Replace `ground_truth_examples/mov/sample.mov` with an H.264 (`avc1`) .mov — current sample is MPEG-4 Part 2 which only has header-level validation. Expected: 6% → ~65-70% shotgun.

@@ -98,7 +98,7 @@ Every format that caps at **Structure** rather than **Checksum** or **Full Decod
 | **JPEG** | .jpg, .jpeg | SOI/EOI markers, segment structure | Full decode via libjpeg-turbo | Full Decode | — |
 | **JPEG XL** | .jxl | Codestream (FF 0A) or container signature | Full decode via libjxl | Full Decode | 1 |
 | **GIF** | .gif | Header (GIF87a/89a), trailer (0x3B), block structure | Full LZW decode via zigimg | Full Decode | 1 |
-| **BMP** | .bmp | Header, DIB header, pixel data bounds | Full pixel decode via zigimg | Full Decode | 1 |
+| **BMP** | .bmp | Header, DIB header, pixel data bounds | Row-by-row pixel data bounds traversal (proves all rows readable). **BMP spec has no data checksums — pixel-data bit flips are fundamentally undetectable.** | Structure | 1 |
 | **WebP** | .webp | RIFF container, VP8/VP8L/VP8X chunks | Full decode via libwebp | Full Decode | 1 |
 | **TIFF** | .tiff, .tif | Header (II/MM), IFD structure, tag validation | Full decode via zigimg | Full Decode | 1 |
 | **HEIC/HEIF** | .heic, .heif | ISOBMFF structure, ftyp brand validation | Pure Zig HEIF container + H.265 NAL/SPS/PPS + per-tile CABAC arithmetic decode (NAL length/type, tile count). Note: CABAC absorbs corruption — 0%/0% detection (fundamental limitation) | Full Decode | 1 |

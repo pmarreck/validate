@@ -33,7 +33,7 @@
 | PSD | 0% | 7% | sample.psd | 120 KB | 2026-04-23 | RLE/ZIP compression paths fully validate, but this sample uses RAW where ~60 KB of payload is structurally unverifiable; a sample with RLE-compressed layers would score much higher |
 | HEIC | 0% | 4% | sample.heic | 2.9 MB | 2026-03-06 | H.265 CABAC per tile — **arithmetic coding absorbs single-bit errors by design** |
 | AVIF | 0% | 1% | butterfly.avif | 87 KB | 2026-03-06 | AV1 OBU + CABAC — same limitation |
-| BMP | 0% | 0% | sample.bmp | 921 KB | 2026-04-23 | ⚠ **REGRESSION** — `FORMAT_VERIFICATIONS.md` labels this "fully validated via zigimg" but detection is zero. See Action Items. |
+| BMP | 0% | 0% | sample.bmp | 921 KB | 2026-04-23 | BMP spec has no data checksums — `bmp_decoder.validateBmp` walks every pixel row proving accessibility but cannot detect bit-flips in pixel bytes. 0/400 at ±0.5% CI. Fundamental format limit. |
 | DPX | 0% | 0% | sample.dpx | 1.8 MB | 2026-03-06 | Raw pixel; SMPTE 268M spec has no checksum |
 | PAM/PPM | 0% | 0% | sample.ppm | 1.8 MB | 2026-03-06 | Raw pixel; Netpbm spec has no checksum |
 | TGA | 0% | 0% | sample.tga | 11 KB | 2026-03-06 | Raw pixel; TGA spec has no checksum |
@@ -48,7 +48,7 @@
 | NEF | 0% | 0% | nikon_coolscan_iv.nef | 2.2 MB | 2026-03-06 | TIFF-based; deep via zigimg |
 | ARW | 0% | 0% | sony_ilce_7s.arw | 6.2 MB | 2026-03-06 | TIFF-based; deep via zigimg |
 | RAF | 0% | 1% | DSCF0652_fuji_GFX_100.RAF | 208 MB | 2026-04-23 | Fuji; validator decodes the JPEG preview at 0x54/0x58, but preview is ~0.5% of a 208 MB sensor dump — shotgun almost never lands in it. ⚠ See Action Items. |
-| NRW | 0% | 0% | NIKON_COOLPIX_P7100.NRW | 16 MB | 2026-04-23 | ⚠ Nikon; labeled "fully validated" but no JPEG-preview decode path (DNG-style) exists for NRW — deep path is effectively TIFF-structural. See Action Items. |
+| NRW | 0% | 0% | NIKON_COOLPIX_P7100.NRW | 16 MB | 2026-04-23 | Nikon; dispatched through LibRaw which unpacks sensor data but the format has no per-row checksum. `libraw_unpack_thumb` is not currently wired up — adding it would catch corruption inside the embedded preview JPEG and could lift this to ~15-30% shotgun. Follow-up item. |
 | ORF | 0% | 0% | PB120976.ORF | 14 MB | 2026-04-23 | Olympus; validator WARNs on "uncompressed IFD claims but Huffman-compressed data". Structural-only. |
 | PEF | 0% | 0% | IMGP1754.PEF | 11 MB | 2026-04-23 | Pentax; TIFF-wrapped. Structural-only. |
 | RW2 | 0% | 0% | panasonic_16-9.RW2 | 11 MB | 2026-04-23 | Panasonic; TIFF-wrapped. Structural-only. |
@@ -171,13 +171,13 @@ Findings from the 2026-04-23 audit. Priorities set by impact on launch credibili
 
 ### P0 — validator bugs that hide real detection
 
-1. **PDF exit-code swallow.** `src/core/pdf_validator.zig:43-128` (`toleratedPdfImageFailures`), called from `:491` and `:670`, reclassifies every detected `pdf_*_decode_failed` corruption as `is_valid=true`. The CLI exits 0 so the corruption-experiment harness records zero detection. On `nasa_satellite_images_1976.pdf` the deep validator actually catches corruption in ~55–70% of sniper trials — all of it is thrown away. **Fix:** make tolerance opt-in via `--repair-mode` (or treat non-empty `malformations` as non-zero exit in the CLI). Expected lift: 0% → ~55–70% sniper / ~60–80% shotgun.
+1. **✓ PDF exit-code swallow (FIXED 2026-04-23, commit c304f36).** `toleratedPdfImageFailures` was silently reclassifying detected JPEG/Flate/CCITT/JBIG2/LZW corruption as `is_valid=true`. Fix gated the legacy behavior on `VALIDATE_PDF_TOLERANT=1` and made strict detection the default. Measured impact, 100 trials seed=42: `alice_in_wonderland_illustrated.pdf` shotgun 0% → **89%**; `nasa_satellite_images_1976.pdf` shotgun 0% → **67%**. Sniper stays ~0% (DEFLATE bit flips decode to wrong-but-valid tokens — intrinsic, fixable only with a whole-file hash PDF lacks). New TDD test at `tests/cli/pdf_validation`.
 
-2. **BMP "fully validated" produces 0%/0%.** `sample.bmp` is 921 KB, labeled fully-validated via zigimg, but detection is zero on both modes. Either the dispatcher returns OK before the decoder runs or zigimg's BMP path doesn't propagate decode errors. Needs tracing in `src/core/image_validators.zig` (find `validateBmp*`).
+2. **BMP 0%/0% — NOT A BUG (reclassified as docs-only).** Follow-up investigation confirmed BMP spec has no data checksums. The deep validator walks every pixel row proving accessibility, but bit-flips in pixel bytes are indistinguishable from valid pixel values. 0/400 trials at ±0.5% CI confirms fundamental limit. `FORMAT_VERIFICATIONS.md` row updated from "Full Decode" to "Structure" (commit to follow). The misleading "(fully validated)" CLI label is covered by item 4 below.
 
-3. **NRW missing preview-JPEG decode.** Labeled "fully validated" but behaves identically to TIFF-structural (0%/0%). The DNG/RAF path locates and libjpeg-turbo-decodes the embedded preview; NRW does not. Replicate the DNG pattern in NRW dispatch.
+3. **NRW 0%/0% — partial bug.** Dispatched through LibRaw which unpacks sensor data (headers + sensor packing) but does NOT unpack the thumbnail preview. Adding `libraw_unpack_thumb` would catch corruption inside the embedded preview JPEG (~15-30% of the 16 MB file). Real code fix, deferred for a dedicated session.
 
-4. **CLI prints "(fully validated)" for structural-only results.** Flagged while investigating video containers: webm/avi/mov corrupted files print `OK ... (fully validated)` even when the internal result has `validation_depth=.structural`. The render path at `src/core/video_validator.zig:800-826` (or downstream) is dropping the depth distinction.
+4. **CLI prints "(fully validated)" for structurally-bounded results.** BMP, TIFF, DNG, DPX, most RAW formats, and video containers with weak codecs (MOV/mp4v, WebM/VP8, AVI/FMP4) all currently label as `.full` depth while their detection ceiling is fundamentally zero or near-zero. Root cause: `ValidationDepth` has only two levels (`.structural` and `.full`); there's no "bounds-verified" middle ground. The comment at `src/core/format_validation.zig:1004-1008` acknowledges this and planned to iterate. Architectural fix — add a third enum variant + audit every validator's return. Deferred to post-launch; interim honesty comes from the master report having per-format detection numbers.
 
 ### P1 — ground-truth samples that understate validator capability
 
