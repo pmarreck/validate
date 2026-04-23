@@ -26,6 +26,9 @@
 | WebP | **83%** | **84%** | google_gallery_3.webp | 203 KB | 2026-03-06 | libwebp full decode |
 | ICNS | **97%** | **100%** | sample.icns | 240 KB | 2026-04-23 | TLV chunk stream; near-total coverage |
 | SWF | **100%** | **100%** | cws_sample.swf | 24 KB | 2026-04-23 | CWS = zlib wrapper; any flip = zlib CRC fail |
+| SVG | 45% | **99%** | sample.svg | 30 KB | 2026-04-23 | XML parse — almost any corruption breaks the XML grammar. |
+| ICO | **63%** | **70%** | sample.ico (multi-res) | 232 KB | 2026-04-23 | Directory entries + embedded PNG/BMP image validation. Multi-resolution ICO has high structural-byte density. |
+| QOI | 0% | 0% | sample.qoi | 23 KB | 2026-04-23 | QOI spec has no per-opcode checksum — bit flips in pixel data decode to different-but-valid pixels. Only magic (4 B) and end marker (8 B) are checkable. Fundamental format limit. |
 | JPEG2K | 6% | **97%** | balloon_eciRGB_icc.jp2 | 1.9 MB | 2026-03-06 | Codestream marker structure |
 | GIF | 2% | **94%** | sample_1.gif | 194 KB | 2026-03-06 | LZW decode (shotgun desyncs state) |
 | JPEG | 0% | **93%** | w3c_exif_420.jpg | 768 KB | 2026-03-06 | libjpeg-turbo full decode |
@@ -103,7 +106,15 @@
 | PDF | 0% | 0% | nasa_satellite_images_1976.pdf | 22 MB | 2026-03-06 | ⚠ **EXIT-CODE BUG** — validator detects ~60% of sniper corruption but `toleratedPdfImageFailures` silently returns `is_valid=true`. See Action Items (highest priority). |
 | OLE2 (PPT) | 0% | 0% | sample.ppt | 912 KB | 2026-03-06 | FAT/directory structural only |
 | InDesign | 1% | 73% | sample.indd | 4 KB | 2026-03-06 | Page structure. |
-| DOCX | 78% | — | sample.docx | 1.3 KB | 2026-04-23 | Sniper only — **sample too small for shotgun**; needs 50KB+ real-world file. See Sample Sourcing. |
+| DOCX | **87%** | **100%** | sample.docx (Tika `testWORD.docx`) | 13 KB | 2026-04-23 | OOXML = ZIP with per-entry CRC32. Sample replaced 2026-04-23 from Apache 2.0 Tika test corpus. |
+| XLSX | **82%** | **100%** | sample.xlsx (Tika `test-columnar.xlsx`) | 10 KB | 2026-04-23 | OOXML = ZIP with per-entry CRC32. Sample from Apache Tika. |
+| PPTX | **93%** | **100%** | sample.pptx (Tika `testPPT.pptx`) | 36 KB | 2026-04-23 | OOXML = ZIP with per-entry CRC32. Sample from Apache Tika. |
+| ODT | **96%** | **100%** | sample.odt (Tika `testODFwithOOo3.odt`) | 24 KB | 2026-04-23 | ODF = ZIP with per-entry CRC32. Sample from Apache Tika. Note: currently auto-detected as EPUB (also ZIP) — separate detection-priority bug. |
+| ODS | **88%** | **100%** | sample.ods (Tika `LibreOfficeCalc_ods_1.3.ods`) | 8.8 KB | 2026-04-23 | Same as ODT. |
+| ODP | **97%** | **100%** | sample.odp (Tika `LibreOfficeImpress_odp_1.3.odp`) | 24 KB | 2026-04-23 | Same as ODT. |
+| RTF | 0% | **92%** | sample.rtf (Tika `testRTFEmbeddedFiles.rtf`) | 1.2 MB | 2026-04-23 | Structural only — RTF has no checksums. Shotgun high because 4 KB overwrite reliably breaks brace matching or control-word syntax. |
+| EML | 0% | 3% | sample.eml (Tika `testRFC822-big`) | 6.6 KB | 2026-04-23 | Plain-text email with MIME headers. No format-level checksums. |
+| MBOX | 0% | 0% | sample.mbox (synthesized from 4 Tika RFC822 messages) | 17 KB | 2026-04-23 | Concatenated plain-text emails. No format-level integrity. Fundamental limit. |
 
 ### Font
 
@@ -195,21 +206,23 @@ Findings from the 2026-04-23 audit. Priorities set by impact on launch credibili
 
 ### Sample sourcing (all under permissive licenses)
 
-See `/tmp/corruption-audit/06-sample-sourcing.md` for full details. Summary:
+All larger samples landed on 2026-04-23 from the following sources:
 
-| Format | Current | Needed | Source |
-|--------|--------:|-------:|--------|
-| DOCX | 1.3 KB | 50 KB+ | Apache Tika `testWORD_various.docx` (Apache 2.0) |
-| XLSX | 2.4 KB | 50 KB+ | Apache Tika `testEXCEL.xlsx` |
-| PPTX | 2.5 KB | 50 KB+ | Apache Tika `testPPT_various.pptx` |
-| ODT/ODS/ODP | ~1 KB | 50 KB+ | Regenerate via `libreoffice --headless --convert-to ...` from the Tika files (keeps Apache 2.0 provenance) |
-| RTF | 75 B | 10 KB+ | Apache Tika `testRTFVarious.rtf` |
-| EML | 439 B | 10 KB+ | Apache Tika `testRFC822_multipart` |
-| MBOX | 883 B | 20 KB+ | Enron CALO excerpt (public domain) or Apache James |
-| QOI | 38 B | 10 KB+ | phoboslab/qoi `dice.qoi` (MIT) |
-| ICO | 112 B | 10 KB+ | Wikimedia Commons multi-resolution favicon (CC0) |
-| SVG | 480 B | 10 KB+ | W3C SVG 1.1 Test Suite |
-| Pages | 480 B | 50 KB+ | No public corpus; author locally, mark CC0 |
+| Format | Old size | New size | Source |
+|--------|---------:|---------:|--------|
+| DOCX | 1.3 KB | 13 KB | Apache Tika `testWORD.docx` (Apache 2.0) |
+| XLSX | 2.4 KB | 10 KB | Apache Tika `test-columnar.xlsx` (Apache 2.0) |
+| PPTX | 2.5 KB | 36 KB | Apache Tika `testPPT.pptx` (Apache 2.0) |
+| ODT | 1.0 KB | 24 KB | Apache Tika `testODFwithOOo3.odt` (Apache 2.0) |
+| ODS | 1.1 KB | 8.8 KB | Apache Tika `LibreOfficeCalc_ods_1.3.ods` (Apache 2.0) |
+| ODP | 1.1 KB | 24 KB | Apache Tika `LibreOfficeImpress_odp_1.3.odp` (Apache 2.0) |
+| RTF | 75 B | 1.2 MB | Apache Tika `testRTFEmbeddedFiles.rtf` (Apache 2.0) |
+| EML | 439 B | 6.6 KB | Apache Tika `testRFC822-big` (Apache 2.0) |
+| MBOX | 883 B | 17 KB | Synthesized from 4 concatenated Tika RFC822 samples |
+| QOI | 38 B | 23 KB | Generated locally via ImageMagick (plasma gradient) |
+| ICO | 112 B | 232 KB | Generated locally via ImageMagick (multi-resolution plasma) |
+| SVG | 480 B | 30 KB | Hand-written + awk-generated paths (seed=42) |
+| Pages | 480 B | — | Still needs Peter to author locally (no permissive corpus) |
 
 ---
 

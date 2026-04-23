@@ -317,16 +317,20 @@ P1 — sample replacements (validator already strong, sample picks a weak codec 
 - [x] Added `ground_truth_examples/psd/rle_plasma.psd` (1.8 MB, RLE-compressed via ImageMagick). PSD shotgun 7% → **50%** (2026-04-23). Exercises the RLE scanline-decode path in `validatePsdDeep`.
 - [x] Added `ground_truth_examples/exr/zip_plasma.exr` (388 KB, ZIP-compressed via ImageMagick). EXR shotgun stays 100% on the larger sample; zlib decompression path now exercised. Sniper 6% → 1% reflects file-size effect (structural bytes are a smaller fraction of the larger file) — honest, not a regression.
 
-P1 — ground-truth sourcing (too small for shotgun sweep today):
-- [ ] DOCX/XLSX/PPTX from Apache Tika `testWORD_various.docx` / `testEXCEL.xlsx` / `testPPT_various.pptx` (Apache 2.0)
-- [ ] ODT/ODS/ODP regenerated from Tika files via `libreoffice --headless --convert-to`
-- [ ] RTF from Apache Tika `testRTFVarious.rtf`
-- [ ] EML from Apache Tika `testRFC822_multipart`
-- [ ] MBOX trimmed Enron excerpt or Apache James sample
-- [ ] QOI `dice.qoi` from phoboslab/qoi (MIT)
-- [ ] ICO multi-res favicon from Wikimedia Commons (CC0)
-- [ ] SVG from W3C SVG 1.1 Test Suite
-- [ ] Pages authored locally (no permissive public corpus exists)
+P1 — ground-truth sourcing (all landed 2026-04-23):
+- [x] DOCX — Apache Tika `testWORD.docx` (13 KB). Sniper 78% → **87%**, shotgun N/A → **100%**.
+- [x] XLSX — Apache Tika `test-columnar.xlsx` (10 KB). New: sniper **82%** / shotgun **100%**.
+- [x] PPTX — Apache Tika `testPPT.pptx` (36 KB). New: sniper **93%** / shotgun **100%**.
+- [x] ODT — Apache Tika `testODFwithOOo3.odt` (24 KB). New: sniper **96%** / shotgun **100%**.
+- [x] ODS — Apache Tika `LibreOfficeCalc_ods_1.3.ods` (8.8 KB). New: sniper **88%** / shotgun **100%**.
+- [x] ODP — Apache Tika `LibreOfficeImpress_odp_1.3.odp` (24 KB). New: sniper **97%** / shotgun **100%**.
+- [x] RTF — Apache Tika `testRTFEmbeddedFiles.rtf` (1.2 MB). New: sniper 0% / shotgun **92%** (RTF spec has no checksums; shotgun catches brace/control-word breakage).
+- [x] EML — Apache Tika `testRFC822-big` (6.6 KB). New: sniper 0% / shotgun 3% (EML has no format-level checksums).
+- [x] MBOX — synthesized from 4 concatenated Tika RFC822 samples (17 KB). New: sniper 0% / shotgun 0% (plain-text concat, no integrity).
+- [x] QOI — generated locally via ImageMagick plasma (23 KB). New: sniper 0% / shotgun 0% (fundamental: QOI opcodes have no per-opcode checksum).
+- [x] ICO — generated locally via ImageMagick multi-res (232 KB). New: sniper **63%** / shotgun **70%**.
+- [x] SVG — hand-written + awk-procedural paths (30 KB). New: sniper 45% / shotgun **99%**.
+- [ ] Pages — still needs Peter to author locally; no permissive public corpus exists.
 
 P2 — deeper validation where format permits:
 - [ ] WOFF/WOFF2 origChecksum verification after Flate / Brotli decompress
