@@ -23,6 +23,16 @@ fn isTruthy(value: []const u8) bool {
         std.ascii.eqlIgnoreCase(value, "yes") or std.ascii.eqlIgnoreCase(value, "on");
 }
 
+/// Opt into tolerant-mode PDF validation via VALIDATE_PDF_TOLERANT=1.
+/// Tolerant mode keeps the legacy behavior of accepting a PDF even when the
+/// deep validator detected known-recoverable embedded-image corruption —
+/// intended for future auto-repair workflows. Default mode is strict:
+/// detected corruption surfaces as a non-zero exit.
+fn pdfTolerantMode() bool {
+	const value = getenvCrossPlatform("VALIDATE_PDF_TOLERANT") orelse return false;
+	return isTruthy(value);
+}
+
 const pdf_image_validator = @import("pdf_image_validator.zig");
 const pdf_font_validator = @import("pdf_font_validator.zig");
 const pdf_embedded_file_validator = @import("pdf_embedded_file_validator.zig");
@@ -496,6 +506,12 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 			if (warning_message == null) {
 				warning_message = tolerated.warning;
 			}
+			// Strict (default) mode: detected corruption surfaces as FAIL.
+			// Tolerant mode (VALIDATE_PDF_TOLERANT=1) keeps the legacy behavior
+			// of accepting the file so future repair workflows can consume it.
+			if (!pdfTolerantMode()) {
+				return ValidationResult.invalidWithDepth(.pdf, tolerated.warning, .full);
+			}
 		} else {
 			std.debug.print("PDF image validation failed. Total: {d}, Valid: {d}, Failed: {d}, Skipped: {d}\n", .{
 				image_result.total_images,
@@ -674,6 +690,11 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			}
 			if (warning_message == null) {
 				warning_message = tolerated.warning;
+			}
+			// Strict (default) mode: detected corruption surfaces as FAIL.
+			// Tolerant mode (VALIDATE_PDF_TOLERANT=1) keeps the legacy behavior.
+			if (!pdfTolerantMode()) {
+				return ValidationResult.invalidWithDepth(.pdf, tolerated.warning, .full);
 			}
 		} else {
 			return ValidationResult.invalidWithDepth(.pdf, image_result.error_message orelse "Embedded image validation failed", .full);

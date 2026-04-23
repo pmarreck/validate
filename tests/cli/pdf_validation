@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# PDF deep validation tests: ground truth + corruption detection.
+#
+# The original bug: toleratedPdfImageFailures in src/core/pdf_validator.zig:43-128
+# categorizes known embedded-image decode failures (JPEG/Flate/CCITT/JBIG2/LZW)
+# into MalformationType values and returns is_valid=true. The intent was
+# "future auto-repair"; the side-effect was that the CLI exited 0 even when
+# the deep validator had detected genuine corruption.
+#
+# Fix: tolerance is now opt-in via VALIDATE_PDF_TOLERANT=1 (or --pdf-tolerant
+# once plumbed through the CLI). Default mode surfaces detected corruption
+# as a non-zero exit.
+
+set -u
+
+BIN="./zig-out/bin/validate"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+fi
+
+PASS=0
+FAIL=0
+SAMPLE="ground_truth_examples/pdf/alice_in_wonderland_illustrated.pdf"
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAIL=$((FAIL + 1))
+}
+
+pass() {
+	printf '  PASS: %s\n' "$1"
+	PASS=$((PASS + 1))
+}
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_pdf_test.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+if [[ ! -f "$SAMPLE" ]]; then
+	echo "SKIP: ground truth PDF not present at $SAMPLE"
+	exit 0
+fi
+
+# ---- Ground truth tests ----
+
+echo "Test 1: ground-truth PDF validates clean (exit 0)"
+"$BIN" "$SAMPLE" >/dev/null 2>&1
+rc=$?
+if [[ "$rc" == "0" ]]; then
+	pass "clean PDF exits 0"
+else
+	fail "clean PDF unexpectedly failed (exit=$rc)"
+fi
+
+# ---- Corruption detection tests ----
+
+sz=$(stat -f%z "$SAMPLE" 2>/dev/null || stat -c%s "$SAMPLE" 2>/dev/null)
+
+echo "Test 2: corrupted embedded JPEG is detected (non-zero exit)"
+cp "$SAMPLE" "$tmpdir/corrupt_middle.pdf"
+# Flip a byte near the middle of the file — very likely to land in an
+# embedded image stream for this sample (it has inline JPEG images).
+printf '\xFF' | dd of="$tmpdir/corrupt_middle.pdf" bs=1 seek=$((sz / 2)) count=1 conv=notrunc 2>/dev/null
+"$BIN" "$tmpdir/corrupt_middle.pdf" >/dev/null 2>&1
+rc=$?
+if [[ "$rc" != "0" ]]; then
+	pass "mid-file corruption -> non-zero exit (rc=$rc)"
+else
+	fail "mid-file corruption silently tolerated; exit=0 despite detected image corruption"
+fi
+
+echo "Test 3: VALIDATE_PDF_TOLERANT=1 re-enables tolerant mode (exit 0 with warning)"
+out=$(VALIDATE_PDF_TOLERANT=1 "$BIN" "$tmpdir/corrupt_middle.pdf" 2>&1)
+rc=$?
+if [[ "$rc" == "0" ]] && echo "$out" | grep -qi "warn\|tolerated\|image data\|decode"; then
+	pass "tolerant mode: exit 0 with warning"
+else
+	fail "tolerant mode did not produce exit 0 + warning (rc=$rc, out=$out)"
+fi
+
+# ---- Summary ----
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"
