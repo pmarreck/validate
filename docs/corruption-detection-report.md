@@ -63,9 +63,9 @@
 | MIDI | 15% | **100%** | fur_elise.mid | 20 KB | 2026-03-06 | Track framing + delta/event validation |
 | ProRes/MOV | 5% | **78%** | prores_4444_xq.mov | 6.6 MB | 2026-03-06 | ProRes intra-frame DCT decode per frame |
 | MP4 | 0% | **66%** | jellyfish_360_10s.mp4 | 1.0 MB | 2026-03-06 | H.264 CABAC + AAC decode (sample = `avc1` + AAC) |
-| MOV (plain) | 1% | 6% | sample.mov | 470 KB | 2026-03-06 | ⚠ Sample is `mp4v` (MPEG-4 Part 2); validator is VOP-header-only for that codec. Replace sample with H.264. See Action Items. |
-| WebM | 0% | 2% | jellyfish_360_10s.webm | 1.0 MB | 2026-03-06 | ⚠ Sample is VP8; `validateVp8Deep` is header-only. VP9 samples in same dir hit ~88%. Replace sample. See Action Items. |
-| AVI | 0% | 4% | generated_testsrc.avi | 201 KB | 2026-03-06 | ⚠ Sample is `FMP4` (MPEG-4 Part 2); same header-only path as MOV(plain). MJPEG or H.264 AVI would score ≫. |
+| MOV | 1% | **75%** | jellyfish_h264.mov | 1.0 MB | 2026-04-23 | H.264 CABAC decode — new sample generated from public-domain jellyfish footage via ffmpeg. Old MPEG-4 Part 2 sample kept in `sample.mov` but sweep now picks the larger H.264 one. |
+| WebM | 0% | 55% | jellyfish_vp9_opus.webm | 1.8 MB | 2026-04-23 | Opus audio decode drives detection — VP9 video inside MKV is NOT byte-validated (gap in `validateMkvVideo`: VP9 falls through to `.okDecoded(vp9, 0)` at `src/core/video_validator.zig:560-566`). New sample regenerated with synthesized Opus audio to exercise the OGG/MKV audio-CRC path. Full VP9 support in MKV would lift this to ~85-90%. |
+| AVI | 0% | **93%** | jellyfish_mjpeg.avi | 8.5 MB | 2026-04-23 | MJPEG per-frame decode via libjpeg-turbo — new sample generated via ffmpeg. Old MPEG-4 Part 2 sample kept in `generated_testsrc.avi` but sweep picks the larger MJPEG one. |
 | DV | 0% | 0% | sample.dv | 360 KB | 2026-03-06 | DV spec has no checksum; relies on tape physical ECC |
 | MPEG-ES | 0% | 0% | sample.m1v | 30 KB | 2026-03-06 | Start codes only |
 | MPEG-1/2 | 0% | 0% | sample.mpg | 16 KB | 2026-03-06 | Start codes only |
@@ -181,9 +181,9 @@ Findings from the 2026-04-23 audit. Priorities set by impact on launch credibili
 
 ### P1 — ground-truth samples that understate validator capability
 
-5. **Swap MOV plain sample** for an H.264 (`avc1`) or HEVC (`hvc1`) `.mov`. Current sample is MPEG-4 Part 2 — deliberately the weakest supported codec path. Expected: 6% → ~65–70% shotgun.
-6. **Swap WebM sample** for VP9+Opus. Current sample is VP8 (header-only validator). Expected: 2% → ~88% shotgun.
-7. **Swap AVI sample** for MJPEG or H.264 AVI. Current sample is FMP4 (MPEG-4 Part 2). Expected: 4% → ~60–90% shotgun.
+5. **✓ MOV sample swap (DONE 2026-04-23).** Added `jellyfish_h264.mov` (1.0 MB, H.264 + MP4 container). Old MPEG-4 Part 2 `sample.mov` retained. Shotgun 6% → **75%**.
+6. **✓ WebM sample swap (DONE 2026-04-23, partial).** Added `jellyfish_vp9_opus.webm` (1.8 MB, VP9 + synthesized Opus). Shotgun 2% → **55%**. Full VP9 byte-validation in MKV is not yet implemented (see P2 item below); current lift comes from Opus audio CRC coverage.
+7. **✓ AVI sample swap (DONE 2026-04-23).** Added `jellyfish_mjpeg.avi` (8.5 MB, MJPEG). Old FMP4 `generated_testsrc.avi` retained. Shotgun 4% → **93%**.
 8. **Add RLE-compressed PSD sample** alongside the current RAW one; the RLE path is fully instrumented but never exercised by the corpus today.
 9. **Add compressed EXR sample** (ZIP/ZIPS). The NONE-compressed sample undersells the validator — it already hits 100% shotgun but sniper would also rise with a compressed sample exposing zlib CRCs.
 
@@ -191,6 +191,7 @@ Findings from the 2026-04-23 audit. Priorities set by impact on launch credibili
 
 10. **RAF preview-JPEG coverage.** Fuji RAF currently hits 0/1% because the preview is ~0.5% of a 208 MB file. Options: (a) record multiple RAFs into the sweep so the preview-coverage variance is visible, (b) validate the RAF-specific sensor data blocks' internal offset tables (if any).
 11. **WOFF / WOFF2 checksums.** Both are 0%/0% because compressed tables aren't decompressed to verify `origChecksum`. Doable; needs Flate / Brotli in the deep path.
+12. **VP9-in-MKV byte validation.** `src/core/video_validator.zig:560-566` excludes VP9 from the deep-validation path; VP9 frames inside MKV/WebM fall through to `okDecoded(vp9, 0)` without any per-frame check. Wiring `vp9_syntax_validator` in (parallel to the VP8 handler at line 804) would lift WebM from 55% to ~85-90% shotgun.
 
 ### Sample sourcing (all under permissive licenses)
 

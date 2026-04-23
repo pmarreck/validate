@@ -311,9 +311,9 @@ P0 — validator bugs hiding detection:
 - [ ] CLI print bug — DEFERRED to post-launch as architectural. Root cause: `ValidationDepth` enum has only `.structural` / `.full`; needs a third `.bounds_verified` variant + audit of every validator's return. Affects BMP, most RAW, video containers with weak codecs. Interim honesty comes from the master report's per-format detection numbers.
 
 P1 — sample replacements (validator already strong, sample picks a weak codec path):
-- [ ] Replace `ground_truth_examples/mov/sample.mov` with an H.264 (`avc1`) .mov — current sample is MPEG-4 Part 2 which only has header-level validation. Expected: 6% → ~65-70% shotgun.
-- [ ] Replace `ground_truth_examples/webm/jellyfish_360_10s.webm` with a VP9+Opus file — current is VP8 (header-only). Expected: 2% → ~88% shotgun.
-- [ ] Replace `ground_truth_examples/avi/generated_testsrc.avi` with MJPEG or H.264 AVI. Expected: 4% → 60-90% shotgun.
+- [x] Added `ground_truth_examples/mov/jellyfish_h264.mov` (H.264, 1.0 MB). MOV shotgun 6% → **75%** (2026-04-23). Generated via ffmpeg copy-muxing from jellyfish mp4.
+- [x] Added `ground_truth_examples/webm/jellyfish_vp9_opus.webm` (VP9 + synthesized Opus, 1.8 MB). WebM shotgun 2% → **55%** (2026-04-23). Opus audio CRC drives detection; full VP9 byte-validation needs MKV validator work (see P2 item 12).
+- [x] Added `ground_truth_examples/avi/jellyfish_mjpeg.avi` (MJPEG, 8.5 MB). AVI shotgun 4% → **93%** (2026-04-23). Generated via ffmpeg transcode.
 - [ ] Add RLE-compressed PSD sample alongside the current RAW one so the strong code path is exercised.
 - [ ] Add ZIP/ZIPS compressed EXR sample alongside the NONE-compressed one.
 
