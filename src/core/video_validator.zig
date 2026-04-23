@@ -559,7 +559,7 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
     // Check if we support decoding this codec
     if (video_codec != .hevc and video_codec != .av1 and video_codec != .h264 and
         video_codec != .mjpeg and video_codec != .mpeg1 and video_codec != .mpeg2 and
-        video_codec != .theora and video_codec != .vp8)
+        video_codec != .theora and video_codec != .vp8 and video_codec != .vp9)
     {
         // Return success with codec info but note we couldn't decode
         return VideoValidationResult.okDecoded(video_codec, 0);
@@ -820,6 +820,35 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
             .error_message = null,
             .codec = .vp8,
             .frames_decoded = frames_validated,
+            .byte_validated = false, // Header-only validation, no pixel decode
+        };
+    }
+
+    // For VP9, validate via the pure-Zig VP9 frame-header parser. Parallel to
+    // the VP8 handler above: this parses the uncompressed header (including
+    // superframe index) for every frame. It does NOT decode DCT coefficients,
+    // so byte_validated is false — but a bit flip that breaks frame_marker /
+    // sync_code / profile / show_existing / ref-frame indices / width/height /
+    // superframe sizes surfaces as a FAIL, which is the detection surface the
+    // old okDecoded fallback was silently dropping.
+    if (video_codec == .vp9) {
+        // Build a slice-of-slices view over all frame data for validateVp9Stream.
+        const frame_slices = allocator.alloc([]const u8, all_frames.len) catch {
+            return VideoValidationResult.invalid("Memory allocation failed", .vp9);
+        };
+        defer allocator.free(frame_slices);
+        for (all_frames, 0..) |kf, i| frame_slices[i] = kf.data;
+
+        const vp9_result = vp9.validateVp9Stream(frame_slices, max_frames);
+        if (!vp9_result.valid) {
+            const msg = if (vp9_result.error_message) |m| std.mem.span(m) else "VP9 frame header validation failed";
+            return VideoValidationResult.invalid(msg, .vp9);
+        }
+        return .{
+            .valid = true,
+            .error_message = null,
+            .codec = .vp9,
+            .frames_decoded = vp9_result.frames_decoded,
             .byte_validated = false, // Header-only validation, no pixel decode
         };
     }

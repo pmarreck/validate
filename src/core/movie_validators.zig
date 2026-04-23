@@ -1928,7 +1928,13 @@ pub fn validateMkvDeep(allocator: Allocator, source: *FileSource) ValidationResu
     }
 
     // Determine overall validation depth
-    const video_byte_validated = media_result.has_video_track and media_result.video_valid and media_result.video_frames_decoded > 0;
+    // "Byte validated" means every byte of the stream was actually verified
+    // (checksum, decompress, or full decode). A validator that only parsed
+    // headers and returned frames_decoded > 0 does NOT count — those paths
+    // must set byte_validated=false so we label the result honestly as
+    // structural. (Prior bug: this check used `frames_decoded > 0` alone,
+    // which made VP8/VP9/Theora header-only paths masquerade as .full.)
+    const video_byte_validated = media_result.has_video_track and media_result.video_valid and media_result.video_frames_decoded > 0 and media_result.video_byte_validated;
     const audio_byte_validated = media_result.has_audio_track and media_result.audio_valid and media_result.audio_frames_decoded > 0;
     const audio_is_pcm = media_result.has_audio_track and media_result.audio_codec == .pcm;
 

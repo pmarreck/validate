@@ -57,6 +57,10 @@ pub const MediaValidationResult = struct {
     video_codec: video_validator.VideoCodec,
     video_frames_decoded: u32,
     video_valid: bool,
+    // True when every byte of the video stream was verified (checksum or full
+    // decode). False for header-only paths (VP8, VP9, Theora), which the MKV
+    // depth-labeling logic uses to avoid masquerading structural as .full.
+    video_byte_validated: bool,
     video_message: ?[]const u8,
 
     // Audio info
@@ -79,6 +83,7 @@ pub const MediaValidationResult = struct {
             .video_codec = video_result.codec,
             .video_frames_decoded = video_result.frames_decoded,
             .video_valid = video_result.valid,
+            .video_byte_validated = video_result.byte_validated,
             .video_message = video_result.error_message,
             .audio_codec = .unknown,
             .audio_frames_decoded = 0,
@@ -100,6 +105,7 @@ pub const MediaValidationResult = struct {
             .video_codec = video_result.codec,
             .video_frames_decoded = video_result.frames_decoded,
             .video_valid = video_result.valid,
+            .video_byte_validated = video_result.byte_validated,
             .video_message = video_result.error_message,
             .audio_codec = audio_result.codec,
             .audio_frames_decoded = audio_result.frames_decoded,
@@ -219,6 +225,7 @@ pub fn validateMkvMedia(allocator: Allocator, source: *FileSource, max_video_fra
                 .video_codec = .unknown,
                 .video_frames_decoded = 0,
                 .video_valid = false,
+                .video_byte_validated = false,
                 .video_message = "CRC mismatch in cluster data",
                 .audio_codec = .unknown,
                 .audio_frames_decoded = 0,
@@ -235,6 +242,7 @@ pub fn validateMkvMedia(allocator: Allocator, source: *FileSource, max_video_fra
             .video_codec = crc_result.video_codec,
             .video_frames_decoded = 0, // CRC-verified, not decoded
             .video_valid = true,
+            .video_byte_validated = true, // CRC covers all cluster bytes
             .video_message = null,
             .audio_codec = crc_result.audio_codec,
             .audio_frames_decoded = 0,
