@@ -340,10 +340,9 @@ P2 — deeper validation where format permits:
 - [ ] Theora-in-OGG full-decode: also header-only today.
 
 P2 — ground-truth samples uncovered as broken by format_roundtrip (2026-04-23):
-- [ ] AC3: `TomorrowNeverDies-2.1-48khz-192kbit.ac3` starts with bytes `84 4F 59 11` (not AC3 sync `0B 77`). Validator correctly rejects it as "magic bytes corrupted"; the sweep TSV erroneously shows 100%/100% detection because every "corruption" trial inherited the already-failing state. Real AC3 detection is unproven until sample replaced.
-- [ ] .band (GarageBand): ground-truth is a 128-byte stub file, but validator expects a macOS bundle directory. Replace with an actual GarageBand project export.
-- [ ] .reason (Reason): `sample.reason` lacks the "Propellerheads Reason Song File" magic. Replace with a valid export.
-
+- [x] AC3: removed malformed `TomorrowNeverDies-2.1-48khz-192kbit.ac3`. Corruption-sweep now picks `Canyon-5.1-48khz-448kbit.ac3` (2.1 MB) — measured 100%/100% against a genuinely-valid clean file. Old number was a false positive from every trial inheriting the already-failing state.
+- [x] .band (GarageBand): replaced 128-byte stub with a proper macOS bundle directory containing minimal plist `projectData`, matching what `validateGarageBandBundle` requires. `.band` is a directory format, so format_roundtrip auto-skips the corruption assertion.
+- [x] .reason (Reason): replaced with a 96-byte hand-crafted file containing the exact "Propellerheads Reason Song File\x1a" 32-byte magic required by `validateReason`, followed by a minimal IFF FORM chunk.
 P2 — regeneration tooling:
 - [ ] Script that walks `docs/corruption-sweep-results/*.tsv` and emits `docs/corruption-detection-report.md` with per-row git-blame dates. Prevents the drift that produced the two conflicting tables we just reconciled.
 

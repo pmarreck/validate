@@ -79,7 +79,7 @@
 
 | Format | Sniper | Shotgun | Sample | Size | Run | Mechanism |
 |--------|-------:|--------:|--------|-----:|-----|-----------|
-| AC3 | **100%** | **100%** | TomorrowNeverDies-2.1-48khz.ac3 | 3.2 MB | 2026-03-06 | CRC-16 per syncframe |
+| AC3 | **100%** | **100%** | Canyon-5.1-48khz-448kbit.ac3 | 2.1 MB | 2026-04-23 | CRC-16 per syncframe. Previous sample `TomorrowNeverDies-...ac3` was malformed (started with bytes 0x84 4F 59 11, not AC3 sync 0B 77) — validator correctly rejected it, so the old 100%/100% number was a false positive from trial inheritance. Removed 2026-04-23; now measured against a genuinely valid sample. |
 | OGG | **100%** | **100%** | wikipedia_example.ogg | 104 KB | 2026-03-06 | CRC32 per OGG page |
 | E-AC3 (large) | **100%** | **100%** | sample1_5.1_640kbps.eac3 | 4.1 MB | 2026-03-06 | CRC-16 per syncframe (full file, after 2026-03-06 fix) |
 | E-AC3 (small) | 81% | 85% | sample3_5.1_256kbps.eac3 | 1.2 MB | 2026-03-06 | ⚠ Lower coverage on smaller file — reflects frame-size / coverage density, not a bug |

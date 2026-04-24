@@ -130,15 +130,6 @@ FUNDAMENTAL_NO_DETECT[doc]=1          # word95_large sample shows 2%/2% — dete
 FUNDAMENTAL_NO_DETECT[dicom]=1        # 5%/20% per full sweep — below reliable-detection threshold at 10 trials
 FUNDAMENTAL_NO_DETECT[indd]=1         # larger sample has sparser coverage — full sweep shows real detection on small samples
 
-# Formats where the ground-truth sample itself is known-broken (validator
-# correctly rejects it, but sweep data erroneously shows 100%/100% because
-# every "corruption" trial inherited the already-failing state). Listed here
-# so the test suite passes until better samples land; real fix = replace the
-# sample. Tracked in PLAN.md.
-declare -A KNOWN_BROKEN_SAMPLE
-KNOWN_BROKEN_SAMPLE[ac3]=1            # TomorrowNeverDies AC3 starts with 0x84 4F 59 11 — not AC3 sync
-KNOWN_BROKEN_SAMPLE[band]=1           # sample.band is a 128-byte stub, not the expected macOS bundle directory
-KNOWN_BROKEN_SAMPLE[reason]=1         # sample.reason lacks the Propellerheads magic
 
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_roundtrip.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
@@ -190,12 +181,7 @@ for d in $(glob ground_truth_examples/*/); do
 	fi
 	count=$((count + 1))
 
-	# 1. Clean sample must validate — except when the sample is known-broken.
-	if [ "${KNOWN_BROKEN_SAMPLE[$fmt]:-0}" = "1" ]; then
-		# Don't run either check; the sample itself needs replacing.
-		PASS=$((PASS + 1))
-		continue
-	fi
+	# 1. Clean sample must validate.
 	if ! "$BIN" "$sample" >/dev/null 2>&1; then
 		fail "$fmt: clean sample rejected — $sample"
 		continue
