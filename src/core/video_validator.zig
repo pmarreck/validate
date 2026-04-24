@@ -94,6 +94,9 @@ const theora_decode = @import("theora_decode_validator.zig");
 // Import VP8 validator (pure Zig)
 const vp8 = @import("vp8_validator.zig");
 
+// Import VP8/VP9 libvpx-backed deep decode validator
+const vpx_decode = @import("vpx_decode_validator.zig");
+
 
 // libde265 removed — using h265_validator.zig (pure Zig)
 
@@ -842,58 +845,42 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
         };
     }
 
-    // For VP8, use deep validation with boolean decoder parsing
-    // Note: libvpx full decode not available - boolean decoder parses header structure
-    // but does NOT decode DCT coefficients or reconstruct pixels
-    if (video_codec == .vp8) {
-        var frames_validated: u32 = 0;
-        for (all_frames) |kf| {
-            // Use deep validation which parses boolean-coded header
-            const vp8_result = vp8.validateVp8Deep(kf.data);
-            if (!vp8_result.valid) {
-                return VideoValidationResult.invalid(vp8_result.error_message orelse "VP8 decode failed", .vp8);
-            }
-            frames_validated += 1;
-        }
-        if (frames_validated == 0) {
-            return VideoValidationResult.invalid("No VP8 frames validated", .vp8);
-        }
-        // NOT byte_validated: only header parsing, no DCT coefficient decode
-        return .{
-            .valid = true,
-            .error_message = null,
-            .codec = .vp8,
-            .frames_decoded = frames_validated,
-            .byte_validated = false, // Header-only validation, no pixel decode
-        };
-    }
-
-    // For VP9, validate via the pure-Zig VP9 frame-header parser. Parallel to
-    // the VP8 handler above: this parses the uncompressed header (including
-    // superframe index) for every frame. It does NOT decode DCT coefficients,
-    // so byte_validated is false — but a bit flip that breaks frame_marker /
-    // sync_code / profile / show_existing / ref-frame indices / width/height /
-    // superframe sizes surfaces as a FAIL, which is the detection surface the
-    // old okDecoded fallback was silently dropping.
-    if (video_codec == .vp9) {
-        // Build a slice-of-slices view over all frame data for validateVp9Stream.
+    // For VP8/VP9, run every frame through libvpx for full bitstream
+    // validation (entropy decode + IDCT + motion compensation + loop filter).
+    // libvpx surfaces bit flips in DCT coefficient regions as
+    // VPX_CODEC_CORRUPT_FRAME / VPX_CODEC_UNSUP_BITSTREAM, so
+    // byte_validated = true on success.
+    if (video_codec == .vp8 or video_codec == .vp9) {
         const frame_slices = allocator.alloc([]const u8, all_frames.len) catch {
-            return VideoValidationResult.invalid("Memory allocation failed", .vp9);
+            return VideoValidationResult.invalid("Memory allocation failed", video_codec);
         };
         defer allocator.free(frame_slices);
         for (all_frames, 0..) |kf, i| frame_slices[i] = kf.data;
 
-        const vp9_result = vp9.validateVp9Stream(frame_slices, max_frames);
-        if (!vp9_result.valid) {
-            const msg = if (vp9_result.error_message) |m| std.mem.span(m) else "VP9 frame header validation failed";
-            return VideoValidationResult.invalid(msg, .vp9);
+        const vpx_codec: vpx_decode.VpxCodec = switch (video_codec) {
+            .vp8 => .vp8,
+            .vp9 => .vp9,
+            else => unreachable,
+        };
+        const result = vpx_decode.validateFrames(vpx_codec, frame_slices);
+        if (!result.valid) {
+            return VideoValidationResult.invalid(
+                result.error_message orelse "libvpx decode failed",
+                video_codec,
+            );
+        }
+        if (result.frames_decoded == 0) {
+            return VideoValidationResult.invalid(
+                "No VP8/VP9 frames decoded",
+                video_codec,
+            );
         }
         return .{
             .valid = true,
             .error_message = null,
-            .codec = .vp9,
-            .frames_decoded = vp9_result.frames_decoded,
-            .byte_validated = false, // Header-only validation, no pixel decode
+            .codec = video_codec,
+            .frames_decoded = result.frames_decoded,
+            .byte_validated = true, // Every frame fully decoded via libvpx
         };
     }
 

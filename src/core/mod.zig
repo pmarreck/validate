@@ -72,6 +72,7 @@ pub const theora_decoder = @import("theora_decoder.zig");
 pub const theora_decode_validator = @import("theora_decode_validator.zig");
 pub const vp8_validator = @import("vp8_validator.zig");
 pub const vp8_decoder = @import("vp8_decoder.zig");
+pub const vpx_decode_validator = @import("vpx_decode_validator.zig");
 pub const mpeg_ts_parser = @import("mpeg_ts_parser.zig");
 pub const mpeg_ps_parser = @import("mpeg_ps_parser.zig");
 pub const wavpack_decoder = @import("wavpack_decoder.zig");
@@ -236,6 +237,8 @@ test {
     _ = @import("vp8_validator.zig");
     // VP8 decoder
     _ = @import("vp8_decoder.zig");
+    // VP8/VP9 deep-decode validator (libvpx)
+    _ = @import("vpx_decode_validator.zig");
     // MPEG container parsers
     _ = @import("mpeg_ts_parser.zig");
     _ = @import("mpeg_ps_parser.zig");

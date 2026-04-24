@@ -33,7 +33,9 @@
         .minimp3 = .{
             .path = "deps/minimp3",
         },
-        // Removed: libvpx (replaced by pure-Zig VP9 validator)
+        .libvpx = .{
+            .path = "deps/libvpx",
+        },
         .openjpeg = .{
             .path = "deps/openjpeg",
         },

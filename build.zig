@@ -115,7 +115,16 @@ pub fn build(b: *std.Build) void {
     });
     const minimp3_lib = minimp3_dep.artifact("minimp3");
 
-    // Removed: libvpx — replaced by pure-Zig VP9 syntax validator (VP8 was already pure Zig)
+    // libvpx for VP8/VP9 video deep validation (BSD-3, WebM Project)
+    // Decoder-only, generic-gnu target (no asm, no intrinsics) so it
+    // cross-compiles to all 5 OS/arch targets with zero per-arch work.
+    // ReleaseFast for the same reason libvorbis/libtheora are: upstream
+    // code uses tight bitstream math that trips Zig's Debug overflow checks.
+    const libvpx_dep = b.dependency("libvpx", .{
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const libvpx_lib = libvpx_dep.artifact("vpx");
 
     // OpenJPEG for JPEG2000 decode validation (BSD-2, used in PDFs and DCPs)
     const openjpeg_dep = b.dependency("openjpeg", .{
@@ -285,7 +294,8 @@ pub fn build(b: *std.Build) void {
     // Add minimp3 include path (for mp3_decode_validator.zig @cImport)
     core_mod.addIncludePath(minimp3_lib.getEmittedIncludeTree());
 
-    // Removed: libvpx include path (pure-Zig VP9 validator, VP8 is already pure Zig)
+    // Add libvpx include path (for vpx_decode_validator.zig @cImport)
+    core_mod.addIncludePath(libvpx_lib.getEmittedIncludeTree());
 
     // Add OpenJPEG include path (for jpeg2000_validator.zig @cImport)
     core_mod.addIncludePath(openjpeg_lib.getEmittedIncludeTree());
@@ -338,6 +348,7 @@ pub fn build(b: *std.Build) void {
         libogg_lib,    // OGG container support (required by libvorbis)
         libvorbis_lib, // Vorbis audio deep validation
         libtheora_lib, // Theora video deep validation
+        libvpx_lib,    // VP8/VP9 video deep validation (libvpx)
         minimp3_lib,   // MP3 audio deep validation
         openjpeg_lib,  // JPEG2000 decode validation
         libjxl_lib,    // JPEG-XL decode validation
@@ -384,6 +395,7 @@ pub fn build(b: *std.Build) void {
             libogg_lib.getEmittedBin(),
             libvorbis_lib.getEmittedBin(),
             libtheora_lib.getEmittedBin(),
+            libvpx_lib.getEmittedBin(),
             minimp3_lib.getEmittedBin(),
             openjpeg_lib.getEmittedBin(),
             libjxl_lib.getEmittedBin(),

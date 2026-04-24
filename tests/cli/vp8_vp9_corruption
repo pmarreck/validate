@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# VP8/VP9 deep-validation CLI tests.
+#
+# Goal: every VP8/VP9 frame in an MKV/WebM container is fully decoded to
+# pixels via libvpx. Any decode failure (VPX_CODEC_CORRUPT_FRAME,
+# VPX_CODEC_UNSUP_BITSTREAM, VPX_CODEC_INVALID_PARAM) must surface as a
+# non-zero exit from the CLI.
+#
+# Before libvpx integration, the VP9 path was pure-Zig syntax-only (frame
+# header parsing but NOT DCT/residual decoding), and the VP8 path used
+# the vp8 boolean-decoder which only parses the macroblock header. A
+# random bit-flip in the compressed residual region slipped through both
+# paths.
+#
+# Testing strategy: a single-byte flip at an arbitrary offset can land
+# anywhere (opus audio data, ebml-control-byte-but-still-parseable, vp9
+# header with tolerant fallback). We spray a 64-byte burst across multiple
+# offsets and require at least one hit — with libvpx wired the detection
+# rate on VP9 DCT regions is very high, so the combined probability of a
+# full miss is essentially zero on these real fixtures.
+
+set -u
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	if [[ ! -x "$BIN" ]]; then BIN="./zig-out/bin/validate.exe"; fi
+fi
+if [[ ! -x "$BIN" ]]; then
+	echo "FAIL: validate binary not found at $BIN"
+	exit 1
+fi
+
+PASS=0
+FAIL=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAIL=$((FAIL + 1))
+}
+
+pass() {
+	printf '  PASS: %s\n' "$1"
+	PASS=$((PASS + 1))
+}
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_vpx_test.XXXXXX")"
+trap 'mv "$tmpdir" ~/.Trash/ 2>/dev/null || rm -rf "$tmpdir"' EXIT
+
+VP8_FIXTURE="ground_truth_examples/webm/jellyfish_360_10s.webm"
+VP9_FIXTURE="ground_truth_examples/webm/jellyfish_vp9_opus.webm"
+
+if [[ ! -f "$VP8_FIXTURE" ]]; then
+	echo "SKIP: VP8 fixture missing at $VP8_FIXTURE"
+	VP8_FIXTURE=""
+fi
+if [[ ! -f "$VP9_FIXTURE" ]]; then
+	echo "SKIP: VP9 fixture missing at $VP9_FIXTURE"
+	VP9_FIXTURE=""
+fi
+
+if [[ -z "$VP8_FIXTURE" && -z "$VP9_FIXTURE" ]]; then
+	echo "SKIP: no VP8/VP9 fixtures available"
+	exit 0
+fi
+
+try_corrupt_offsets() {
+	local fixture="$1"
+	local label="$2"
+	shift 2
+	local offsets=("$@")
+	local any_caught=0
+	for off in "${offsets[@]}"; do
+		local corrupt="$tmpdir/${label}_${off}.webm"
+		cp "$fixture" "$corrupt"
+		printf '%*s' 64 '' | tr ' ' '\252' | \
+			dd of="$corrupt" bs=1 seek="$off" count=64 conv=notrunc 2>/dev/null
+		if ! "$BIN" "$corrupt" >/dev/null 2>&1; then
+			any_caught=1
+			break
+		fi
+	done
+	return $((1 - any_caught))
+}
+
+if [[ -n "$VP8_FIXTURE" ]]; then
+	if "$BIN" "$VP8_FIXTURE" >/dev/null 2>&1; then
+		pass "clean VP8 WebM validates (exit 0)"
+	else
+		fail "clean VP8 WebM unexpectedly failed"
+	fi
+
+	if try_corrupt_offsets "$VP8_FIXTURE" vp8 100000 300000 500000 700000 900000; then
+		pass "VP8 byte corruption detected by libvpx"
+	else
+		fail "VP8 corruption across 5 offsets all tolerated — libvpx not wired?"
+	fi
+fi
+
+if [[ -n "$VP9_FIXTURE" ]]; then
+	if "$BIN" "$VP9_FIXTURE" >/dev/null 2>&1; then
+		pass "clean VP9 WebM validates (exit 0)"
+	else
+		fail "clean VP9 WebM unexpectedly failed"
+	fi
+
+	if try_corrupt_offsets "$VP9_FIXTURE" vp9 200000 500000 800000 1100000 1400000 1600000; then
+		pass "VP9 byte corruption detected by libvpx"
+	else
+		fail "VP9 corruption across 6 offsets all tolerated — libvpx not wired?"
+	fi
+fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"

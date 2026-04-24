@@ -241,19 +241,23 @@ pub fn validateMkvMedia(allocator: Allocator, source: *FileSource, max_video_fra
             };
         }
         // CRCs present and valid for cluster bytes — but they don't cover
-        // codec_private. For Theora specifically, also run libtheora decode
-        // to validate the 3 setup headers + every video packet.
-        if (crc_result.video_codec == .theora) {
-            const theora_check = video_validator.validateMkvVideo(allocator, source, max_video_frames);
-            if (!theora_check.valid) {
+        // codec_private. For codecs whose deep decoder consumes codec_private
+        // (Theora, VP8, VP9 via libtheora/libvpx), run the decode pass so
+        // corruption in setup headers / DCT-coefficient regions is caught.
+        if (crc_result.video_codec == .theora or
+            crc_result.video_codec == .vp8 or
+            crc_result.video_codec == .vp9)
+        {
+            const decode_check = video_validator.validateMkvVideo(allocator, source, max_video_frames);
+            if (!decode_check.valid) {
                 return MediaValidationResult{
                     .valid = false,
-                    .error_message = theora_check.error_message orelse "Theora decode failed after CRC pass",
-                    .video_codec = .theora,
+                    .error_message = decode_check.error_message orelse "Video decode failed after CRC pass",
+                    .video_codec = crc_result.video_codec,
                     .video_frames_decoded = 0,
                     .video_valid = false,
                     .video_byte_validated = false,
-                    .video_message = theora_check.error_message,
+                    .video_message = decode_check.error_message,
                     .audio_codec = crc_result.audio_codec,
                     .audio_frames_decoded = 0,
                     .audio_valid = false,
@@ -371,7 +375,7 @@ fn validateMkvCrc(allocator: Allocator, source: *FileSource) MkvCrcResult {
                     const codec_id = track.codecId();
                     if (std.mem.startsWith(u8, codec_id, "V_")) { // Video
                         has_video = true;
-                        if (track.isHevc()) video_codec = .hevc else if (track.isAv1()) video_codec = .av1 else if (track.isH264()) video_codec = .h264 else if (track.isVp9()) video_codec = .vp9 else if (track.isTheora()) video_codec = .theora;
+                        if (track.isHevc()) video_codec = .hevc else if (track.isAv1()) video_codec = .av1 else if (track.isH264()) video_codec = .h264 else if (track.isVp9()) video_codec = .vp9 else if (track.isVp8()) video_codec = .vp8 else if (track.isTheora()) video_codec = .theora;
                     } else if (std.mem.startsWith(u8, codec_id, "A_")) { // Audio
                         has_audio = true;
                         audio_codec = detectMkvAudioCodec(codec_id);
