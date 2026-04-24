@@ -67,7 +67,8 @@
 | ProRes/MOV | 5% | **78%** | prores_4444_xq.mov | 6.6 MB | 2026-03-06 | ProRes intra-frame DCT decode per frame |
 | MP4 | 0% | **66%** | jellyfish_360_10s.mp4 | 1.0 MB | 2026-03-06 | H.264 CABAC + AAC decode (sample = `avc1` + AAC) |
 | MOV | 1% | **75%** | jellyfish_h264.mov | 1.0 MB | 2026-04-23 | H.264 CABAC decode — new sample generated from public-domain jellyfish footage via ffmpeg. Old MPEG-4 Part 2 sample kept in `sample.mov` but sweep now picks the larger H.264 one. |
-| WebM | 0% | 55% | jellyfish_vp9_opus.webm | 1.8 MB | 2026-04-23 | Opus audio decode drives detection — VP9 video inside MKV is NOT byte-validated (gap in `validateMkvVideo`: VP9 falls through to `.okDecoded(vp9, 0)` at `src/core/video_validator.zig:560-566`). New sample regenerated with synthesized Opus audio to exercise the OGG/MKV audio-CRC path. Full VP9 support in MKV would lift this to ~85-90%. |
+| WebM (VP9+Opus) | **86%** | **78%** | jellyfish_vp9_opus.webm | 1.8 MB | 2026-04-24 | libvpx 1.14.1 full VP9 decode per frame — every frame entropy + DCT decoded via `vpx_codec_decode`. Opus audio CRC provides additional coverage. |
+| WebM (VP8) | **88%** | **90%** | jellyfish_360_10s.webm | 1.0 MB | 2026-04-24 | libvpx 1.14.1 full VP8 decode. **Critical:** uses `VP8D_GET_FRAME_CORRUPTED` control query after each frame — without it, VP8's built-in error concealment silently patches bit flips. Both sniper and shotgun lift by ~90 points because of this query. |
 | AVI | 0% | **93%** | jellyfish_mjpeg.avi | 8.5 MB | 2026-04-23 | MJPEG per-frame decode via libjpeg-turbo — new sample generated via ffmpeg. Old MPEG-4 Part 2 sample kept in `generated_testsrc.avi` but sweep picks the larger MJPEG one. |
 | DV | 0% | 0% | sample.dv | 360 KB | 2026-03-06 | DV spec has no checksum; relies on tape physical ECC |
 | MPEG-ES | 0% | 0% | sample.m1v | 30 KB | 2026-03-06 | Start codes only |
@@ -202,7 +203,7 @@ Findings from the 2026-04-23 audit. Priorities set by impact on launch credibili
 
 10. **RAF preview-JPEG coverage.** Fuji RAF currently hits 0/1% because the preview is ~0.5% of a 208 MB file. Options: (a) record multiple RAFs into the sweep so the preview-coverage variance is visible, (b) validate the RAF-specific sensor data blocks' internal offset tables (if any).
 11. **✓ WOFF / WOFF2 checksums (already working, report was stale).** Refreshed sweep 2026-04-23: WOFF **100%/100%**, WOFF2 **49%/100%**. The per-table zlib/Brotli decompress + origChecksum verification was implemented in `font_validator.zig:370`+; the 0%/0% numbers were from pre-implementation sweep data.
-12. **VP9-in-MKV byte validation.** `src/core/video_validator.zig:560-566` excludes VP9 from the deep-validation path; VP9 frames inside MKV/WebM fall through to `okDecoded(vp9, 0)` without any per-frame check. Wiring `vp9_syntax_validator` in (parallel to the VP8 handler at line 804) would lift WebM from 55% to ~85-90% shotgun.
+12. **✓ VP8/VP9-in-MKV byte validation (DONE 2026-04-24, commit f8c38ec).** libvpx 1.14.1 integrated, decoder-only, generic-gnu (no asm, cross-compiles to all 5 OS/arch). Replaced the header-only VP8/VP9 handlers at `src/core/video_validator.zig`. WebM VP9+Opus: 0%/55% → **86%/78%**. WebM VP8: 0%/2% → **88%/90%**. Diagnostic find: VP8's decoder ran error concealment silently; required `VP8D_GET_FRAME_CORRUPTED` control query after every `vpx_codec_get_frame` to surface the internal corruption flag.
 
 ### Sample sourcing (all under permissive licenses)
 
