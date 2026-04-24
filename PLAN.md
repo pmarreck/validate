@@ -335,6 +335,14 @@ P1 — ground-truth sourcing (all landed 2026-04-23):
 P2 — deeper validation where format permits:
 - [ ] WOFF/WOFF2 origChecksum verification after Flate / Brotli decompress
 - [ ] RAF preview-coverage diagnostic: add a smaller Fuji RAF to the sweep alongside the 208 MB one so preview-decode coverage shows up distinctly in the table
+- [ ] VP9-in-MKV full-decode: validateMkvVideo currently runs the VP9 uncompressed-header parser (lands in 1391e6d) which is "as much as possible" without a pixel decoder. Real full-decode requires libvpx; would lift WebM-with-VP9 shotgun from ~55% (Opus-driven) to ~90%.
+- [ ] VP8-in-MKV full-decode: same pattern as VP9 above.
+- [ ] Theora-in-OGG full-decode: also header-only today.
+
+P2 — ground-truth samples uncovered as broken by format_roundtrip (2026-04-23):
+- [ ] AC3: `TomorrowNeverDies-2.1-48khz-192kbit.ac3` starts with bytes `84 4F 59 11` (not AC3 sync `0B 77`). Validator correctly rejects it as "magic bytes corrupted"; the sweep TSV erroneously shows 100%/100% detection because every "corruption" trial inherited the already-failing state. Real AC3 detection is unproven until sample replaced.
+- [ ] .band (GarageBand): ground-truth is a 128-byte stub file, but validator expects a macOS bundle directory. Replace with an actual GarageBand project export.
+- [ ] .reason (Reason): `sample.reason` lacks the "Propellerheads Reason Song File" magic. Replace with a valid export.
 
 P2 — regeneration tooling:
 - [ ] Script that walks `docs/corruption-sweep-results/*.tsv` and emits `docs/corruption-detection-report.md` with per-row git-blame dates. Prevents the drift that produced the two conflicting tables we just reconciled.
