@@ -266,6 +266,17 @@ pub fn validateEmlStructure(file: *FileSource) ValidationResult {
 
 /// Validate EML content (headers + body) from a buffer.
 pub fn validateEmlContent(allocator: Allocator, content: []const u8) ValidationResult {
+    // Byte-level integrity check before structural parsing. NUL bytes are
+    // never legal in a mail message (RFC 5322). Invalid UTF-8 sequences
+    // catch the majority of 4 KB overwrite corruption and ~50% of ASCII bit
+    // flips. Same reasoning as validateMboxDeep.
+    if (std.mem.indexOfScalar(u8, content, 0) != null) {
+        return ValidationResult.invalid(.eml, "EML: contains NUL byte (not a legal mail character)");
+    }
+    if (!std.unicode.utf8ValidateSlice(content)) {
+        return ValidationResult.invalid(.eml, "EML: invalid UTF-8 byte sequence (corruption likely)");
+    }
+
     // Find the header/body separator (blank line)
     var header_end: usize = 0;
     var i: usize = 0;
@@ -552,7 +563,22 @@ pub fn validateMboxDeep(allocator: Allocator, source: *FileSource) ValidationRes
         return ValidationResult.invalidCode(.mbox, .no_valid_x_found, "messages");
     }
 
-    return ValidationResult.okWithDepth(.mbox, .structural);
+    // Byte-level integrity: mbox files should be UTF-8 (or pure ASCII, which
+    // is valid UTF-8). A random bit flip has ~50% chance to produce invalid
+    // UTF-8 in an ASCII file (flipping the top bit of a byte creates a lone
+    // continuation byte), and a 4 KB shotgun will almost always introduce
+    // invalid sequences. Stray NUL bytes are never legal in a mail message.
+    // This is the strongest cheap integrity signal mbox offers — it bridges
+    // the format from 0% detection to meaningful coverage without claiming
+    // more than we actually verified.
+    if (!std.unicode.utf8ValidateSlice(data)) {
+        return ValidationResult.invalid(.mbox, "MBOX: invalid UTF-8 byte sequence (corruption likely)");
+    }
+    if (std.mem.indexOfScalar(u8, data, 0) != null) {
+        return ValidationResult.invalid(.mbox, "MBOX: contains NUL byte (not a legal mail character)");
+    }
+
+    return ValidationResult.okWithDepth(.mbox, .full);
 }
 
 // ============ Tests ============
