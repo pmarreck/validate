@@ -2726,16 +2726,18 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
 
         const libraw_result = libraw_validator.validateRawBuffer(buffer);
         if (libraw_result.valid) {
-            // Ideally we'd also scan for embedded preview JPEGs and decode
-            // them via libjpeg-turbo — that's how validateDngDeep catches
-            // bit flips in the DNG preview. Attempted here but reverted
-            // because Nikon NRW (and likely others) have sensor-data byte
-            // sequences that look like JPEG SOI+APPn+…+EOI but aren't real
-            // JPEGs; the decoder rejects them, producing clean-file false
-            // positives. The correct path is to parse the TIFF IFD for the
-            // canonical preview offset/size tag rather than scanning blindly.
-            // Helper `scanAndValidatePreviewJpegs` is retained for that
-            // future IFD-based implementation. Tracked in PLAN.md P2.
+            // LibRaw accepted the file structurally. Now deep-validate the
+            // embedded preview JPEG by parsing the TIFF IFD to find its exact
+            // offset/length, then decoding via libjpeg-turbo. This catches bit
+            // flips inside the preview region (typically 5–30% of the file)
+            // which LibRaw does not detect. Skipping blind SOI-scanning avoids
+            // sensor-data false positives that killed a prior attempt.
+            if (findTiffPreviewLocation(buffer, format)) |loc| {
+                const preview_bytes = buffer[@intCast(loc.offset) .. @intCast(loc.offset + loc.length)];
+                if (!validateJpegBufferForDng(preview_bytes)) {
+                    return ValidationResult.invalidWithDepth(format, "embedded preview JPEG corrupt", .full);
+                }
+            }
             return ValidationResult.okWithDepth(format, .full);
         }
         // LibRaw failed - return its specific error
@@ -3426,6 +3428,177 @@ pub fn scanAndValidatePreviewJpegs(allocator: Allocator, data: []const u8) Previ
 
     return .{ .preview_count = preview_count, .preview_valid = preview_valid };
 }
+
+/// Preview location inside a TIFF-based RAW file, discovered via IFD parsing.
+pub const PreviewLocation = struct {
+    offset: u64,
+    length: u64,
+};
+
+/// Walk the TIFF IFD (and SubIFDs, IFD1+) of a camera RAW file to find the
+/// canonical preview JPEG offset and length. Authoritative replacement for
+/// the blind SOI-scan in scanAndValidatePreviewJpegs — no false positives on
+/// sensor-data byte sequences.
+///
+/// Returns a preview location only when an IFD entry explicitly advertises
+/// compression=6 plus StripOffsets/StripByteCounts, or a JPEGInterchangeFormat
+/// / JPEGInterchangeFormatLength pair, AND the bytes at that offset start
+/// with the JPEG SOI marker (0xFF 0xD8 0xFF). Lossless SOF3 JPEGs (raw
+/// sensor streams in CR2 IFD3) are skipped.
+///
+/// Heuristic: "biggest is best" — full-size previews (hundreds of KB to a
+/// few MB) outrank small thumbnails. Works across NEF/NRW (Nikon SubIFD[0]),
+/// CR2 (Canon IFD0 strips), and ARW (Sony IFD0 JPEGIF).
+pub fn findTiffPreviewLocation(data: []const u8, format: FileFormat) ?PreviewLocation {
+    if (data.len < 8) return null;
+
+    const is_le = std.mem.eql(u8, data[0..2], "II");
+    const is_be = std.mem.eql(u8, data[0..2], "MM");
+    if (!is_le and !is_be) return null;
+    const endian: std.builtin.Endian = if (is_le) .little else .big;
+
+    const magic = std.mem.readInt(u16, data[2..4], endian);
+    if (magic != 42) return null;
+
+    const ifd0_offset = std.mem.readInt(u32, data[4..8], endian);
+    if (ifd0_offset >= data.len) return null;
+
+    var best: ?PreviewLocation = null;
+    var best_score: u64 = 0;
+
+    var ifd_offset: u32 = ifd0_offset;
+    var ifd_depth: u8 = 0;
+    while (ifd_depth < 4 and ifd_offset != 0 and ifd_offset < data.len) : (ifd_depth += 1) {
+        const next_ifd = scanIfdForPreview(data, ifd_offset, endian, &best, &best_score, format, 0);
+        ifd_offset = next_ifd;
+    }
+
+    if (best) |b| {
+        if (b.offset + b.length > data.len) return null;
+        if (b.length < 1024) return null;
+        const p = data[b.offset..][0..b.length];
+        if (p.len < 4) return null;
+        if (p[0] != 0xFF or p[1] != 0xD8 or p[2] != 0xFF) return null;
+        if (jpeg_lossless_decoder.isLosslessJpeg(p)) return null;
+        return b;
+    }
+    return null;
+}
+
+/// Scan one IFD; update `best` on preview-tag matches; recurse SubIFDs;
+/// return the next-IFD pointer (0 if none).
+fn scanIfdForPreview(
+    data: []const u8,
+    ifd_offset: u32,
+    endian: std.builtin.Endian,
+    best: *?PreviewLocation,
+    best_score: *u64,
+    format: FileFormat,
+    depth: u8,
+) u32 {
+    if (depth > 3) return 0;
+    if (@as(usize, ifd_offset) + 2 > data.len) return 0;
+
+    const entry_count_raw = std.mem.readInt(u16, data[ifd_offset..][0..2], endian);
+    const entry_count: u32 = @min(entry_count_raw, 200);
+
+    var compression: u16 = 0;
+    var strip_offset: u64 = 0;
+    var strip_length: u64 = 0;
+    var jpeg_if: u64 = 0;
+    var jpeg_if_len: u64 = 0;
+    var sub_ifds_ptr: u32 = 0;
+    var sub_ifds_cnt: u32 = 0;
+    var sub_ifds_inline: u32 = 0;
+
+    const entries_base: usize = @as(usize, ifd_offset) + 2;
+    var i: u32 = 0;
+    while (i < entry_count) : (i += 1) {
+        const e_off: usize = entries_base + i * 12;
+        if (e_off + 12 > data.len) break;
+        const tag = std.mem.readInt(u16, data[e_off..][0..2], endian);
+        const tag_type = std.mem.readInt(u16, data[e_off + 2 ..][0..2], endian);
+        const tag_count = std.mem.readInt(u32, data[e_off + 4 ..][0..4], endian);
+        const tag_val = std.mem.readInt(u32, data[e_off + 8 ..][0..4], endian);
+
+        switch (tag) {
+            0x0103 => {
+                if ((tag_type == 3 or tag_type == 4) and tag_count == 1) {
+                    compression = if (tag_type == 3)
+                        std.mem.readInt(u16, data[e_off + 8 ..][0..2], endian)
+                    else
+                        @truncate(tag_val);
+                }
+            },
+            0x0111 => {
+                if (tag_count == 1) {
+                    strip_offset = if (tag_type == 3)
+                        @as(u64, std.mem.readInt(u16, data[e_off + 8 ..][0..2], endian))
+                    else
+                        @as(u64, tag_val);
+                }
+            },
+            0x0117 => {
+                if (tag_count == 1) {
+                    strip_length = if (tag_type == 3)
+                        @as(u64, std.mem.readInt(u16, data[e_off + 8 ..][0..2], endian))
+                    else
+                        @as(u64, tag_val);
+                }
+            },
+            0x0201 => {
+                if (tag_count == 1) jpeg_if = @as(u64, tag_val);
+            },
+            0x0202 => {
+                if (tag_count == 1) jpeg_if_len = @as(u64, tag_val);
+            },
+            0x014A => {
+                sub_ifds_cnt = tag_count;
+                if (tag_count == 1) {
+                    sub_ifds_inline = tag_val;
+                } else {
+                    sub_ifds_ptr = tag_val;
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (jpeg_if != 0 and jpeg_if_len > 0 and jpeg_if + jpeg_if_len <= data.len) {
+        if (jpeg_if + 3 <= data.len and data[jpeg_if] == 0xFF and data[jpeg_if + 1] == 0xD8 and data[jpeg_if + 2] == 0xFF) {
+            updateBestPreview(best, best_score, jpeg_if, jpeg_if_len);
+        }
+    }
+    if (compression == 6 and strip_offset != 0 and strip_length > 0 and strip_offset + strip_length <= data.len) {
+        if (strip_offset + 3 <= data.len and data[strip_offset] == 0xFF and data[strip_offset + 1] == 0xD8 and data[strip_offset + 2] == 0xFF) {
+            updateBestPreview(best, best_score, strip_offset, strip_length);
+        }
+    }
+
+    if (sub_ifds_cnt == 1) {
+        _ = scanIfdForPreview(data, sub_ifds_inline, endian, best, best_score, format, depth + 1);
+    } else if (sub_ifds_cnt > 1 and sub_ifds_ptr != 0) {
+        var k: u32 = 0;
+        while (k < sub_ifds_cnt and k < 8) : (k += 1) {
+            const ptr_off: usize = @as(usize, sub_ifds_ptr) + k * 4;
+            if (ptr_off + 4 > data.len) break;
+            const sub_off = std.mem.readInt(u32, data[ptr_off..][0..4], endian);
+            _ = scanIfdForPreview(data, sub_off, endian, best, best_score, format, depth + 1);
+        }
+    }
+
+    const next_ptr_off: usize = entries_base + @as(usize, entry_count_raw) * 12;
+    if (next_ptr_off + 4 > data.len) return 0;
+    return std.mem.readInt(u32, data[next_ptr_off..][0..4], endian);
+}
+
+fn updateBestPreview(best: *?PreviewLocation, best_score: *u64, offset: u64, length: u64) void {
+    if (length > best_score.*) {
+        best_score.* = length;
+        best.* = .{ .offset = offset, .length = length };
+    }
+}
+
 
 // ============ BMP Deep Validation (native V3 + zigimg V4/V5) ============
 
@@ -8249,3 +8422,133 @@ test "validateGifDeep detects LZW corruption in synthetic GIF" {
 
 }
 
+test "findTiffPreviewLocation finds NRW preview via IFD" {
+    const allocator = std.testing.allocator;
+    const file = std.fs.cwd().openFile("ground_truth_examples/nrw/RAW_NIKON_COOLPIX_P7100.NRW", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer file.close();
+    const data = try file.readToEndAlloc(allocator, 32 * 1024 * 1024);
+    defer allocator.free(data);
+
+    const loc = findTiffPreviewLocation(data, FileFormat.nef) orelse {
+        return error.TestExpectedPreviewNotFound;
+    };
+    try std.testing.expect(loc.length > 100_000);
+    try std.testing.expect(loc.offset > 0);
+    try std.testing.expectEqual(@as(u8, 0xFF), data[loc.offset]);
+    try std.testing.expectEqual(@as(u8, 0xD8), data[loc.offset + 1]);
+    try std.testing.expectEqual(@as(u8, 0xFF), data[loc.offset + 2]);
+}
+
+test "findTiffPreviewLocation finds CR2 preview via IFD" {
+    const allocator = std.testing.allocator;
+    const file = std.fs.cwd().openFile("ground_truth_examples/cr2/canon_eos_40d_sraw2.cr2", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer file.close();
+    const data = try file.readToEndAlloc(allocator, 32 * 1024 * 1024);
+    defer allocator.free(data);
+
+    const loc = findTiffPreviewLocation(data, FileFormat.cr2) orelse {
+        return error.TestExpectedPreviewNotFound;
+    };
+    try std.testing.expect(loc.length > 100_000);
+    try std.testing.expectEqual(@as(u8, 0xFF), data[loc.offset]);
+    try std.testing.expectEqual(@as(u8, 0xD8), data[loc.offset + 1]);
+}
+
+test "findTiffPreviewLocation finds ARW preview via IFD" {
+    const allocator = std.testing.allocator;
+    const file = std.fs.cwd().openFile("ground_truth_examples/arw/sony_ilce_7s.arw", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer file.close();
+    const data = try file.readToEndAlloc(allocator, 32 * 1024 * 1024);
+    defer allocator.free(data);
+
+    const loc = findTiffPreviewLocation(data, FileFormat.arw) orelse {
+        return error.TestExpectedPreviewNotFound;
+    };
+    try std.testing.expect(loc.length > 100_000);
+    try std.testing.expectEqual(@as(u8, 0xFF), data[loc.offset]);
+    try std.testing.expectEqual(@as(u8, 0xD8), data[loc.offset + 1]);
+}
+
+test "validateTiffDeep detects corrupted preview JPEG in NRW" {
+    const allocator = std.testing.allocator;
+
+    const src_path = "ground_truth_examples/nrw/RAW_NIKON_COOLPIX_P7100.NRW";
+    const src_file = std.fs.cwd().openFile(src_path, .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    const orig_data = try src_file.readToEndAlloc(allocator, 32 * 1024 * 1024);
+    src_file.close();
+    defer allocator.free(orig_data);
+
+    const loc = findTiffPreviewLocation(orig_data, FileFormat.nef) orelse return error.TestExpectedPreviewNotFound;
+
+    // Corrupt a byte ~20% into the preview's entropy-coded region.
+    const corrupt_off: usize = @intCast(loc.offset + loc.length / 5);
+    const mutated = try allocator.dupe(u8, orig_data);
+    defer allocator.free(mutated);
+    mutated[corrupt_off] ^= 0xFF;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const out = try tmp_dir.dir.createFile("corrupt.nrw", .{});
+    try out.writeAll(mutated);
+    out.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.nrw");
+    defer allocator.free(path);
+
+    var source = try FileSource.open(path);
+    defer source.close();
+
+    const result = validateTiffDeep(allocator, &source, FileFormat.nef);
+    try std.testing.expect(!result.is_valid);
+}
+
+test "validateTiffDeep accepts clean NRW (regression guard)" {
+    const allocator = std.testing.allocator;
+    const path = "ground_truth_examples/nrw/RAW_NIKON_COOLPIX_P7100.NRW";
+    var source = FileSource.open(path) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer source.close();
+
+    const result = validateTiffDeep(allocator, &source, FileFormat.nef);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateTiffDeep accepts clean ARW (regression guard)" {
+    const allocator = std.testing.allocator;
+    const path = "ground_truth_examples/arw/sony_ilce_7s.arw";
+    var source = FileSource.open(path) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer source.close();
+
+    const result = validateTiffDeep(allocator, &source, FileFormat.arw);
+    try std.testing.expect(result.is_valid);
+}
+
+test "validateTiffDeep accepts clean NEF (regression guard)" {
+    const allocator = std.testing.allocator;
+    const path = "ground_truth_examples/nef/nikon_coolscan_iv.nef";
+    var source = FileSource.open(path) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer source.close();
+
+    const result = validateTiffDeep(allocator, &source, FileFormat.nef);
+    try std.testing.expect(result.is_valid);
+}
