@@ -333,7 +333,7 @@ P1 — ground-truth sourcing (all landed 2026-04-23):
 - [ ] Pages — still needs Peter to author locally; no permissive public corpus exists.
 
 P2 — deeper validation where format permits:
-- [ ] WOFF/WOFF2 origChecksum verification after Flate / Brotli decompress
+- [x] WOFF/WOFF2 origChecksum verification after Flate / Brotli decompress. Already implemented in `font_validator.zig:370` (zlib) / `font_validator.zig:510` (Brotli). Stale sweep data 2026-04-23: WOFF 100%/100%, WOFF2 49%/100%. Master report refreshed.
 - [ ] RAF preview-coverage diagnostic: add a smaller Fuji RAF to the sweep alongside the 208 MB one so preview-decode coverage shows up distinctly in the table
 - [ ] VP9-in-MKV full-decode: validateMkvVideo currently runs the VP9 uncompressed-header parser (lands in 1391e6d) which is "as much as possible" without a pixel decoder. Real full-decode requires libvpx; would lift WebM-with-VP9 shotgun from ~55% (Opus-driven) to ~90%.
 - [ ] VP8-in-MKV full-decode: same pattern as VP9 above.

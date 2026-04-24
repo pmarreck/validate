@@ -122,8 +122,8 @@
 |--------|-------:|--------:|--------|-----:|-----|-----------|
 | TTF | **100%** | **100%** | noto_sans_regular.ttf | 622 KB | 2026-03-06 | Per-table checksum + whole-file checkSumAdjustment (strict mode) |
 | OTF | **100%** | **100%** | source_sans_regular.otf | 335 KB | 2026-03-06 | Per-table checksum + whole-file checkSumAdjustment |
-| WOFF | 0% | 0% | roboto_regular.woff | 260 KB | 2026-03-06 | Compressed tables — checksum verification requires decompression (not yet implemented) |
-| WOFF2 | 0% | 0% | roboto_regular.woff2 | 177 KB | 2026-03-06 | Brotli-compressed tables — same limitation |
+| WOFF | **100%** | **100%** | roboto_regular.woff | 260 KB | 2026-04-23 | Per-table zlib-decompress + origChecksum verification (font_validator.zig:370). Prior "0%/0%" was a stale sweep — the code was already doing the right thing. |
+| WOFF2 | **49%** | **100%** | roboto_regular.woff2 | 177 KB | 2026-04-23 | Per-table Brotli-decompress + origChecksum verification. Prior "0%/0%" was a stale sweep. Sniper is lower than WOFF because WOFF2's Brotli framing is more compact (fewer structural bytes), but shotgun still perfect. |
 
 ### Scientific
 
@@ -201,7 +201,7 @@ Findings from the 2026-04-23 audit. Priorities set by impact on launch credibili
 ### P2 — missing deep paths for formats where the codec allows it
 
 10. **RAF preview-JPEG coverage.** Fuji RAF currently hits 0/1% because the preview is ~0.5% of a 208 MB file. Options: (a) record multiple RAFs into the sweep so the preview-coverage variance is visible, (b) validate the RAF-specific sensor data blocks' internal offset tables (if any).
-11. **WOFF / WOFF2 checksums.** Both are 0%/0% because compressed tables aren't decompressed to verify `origChecksum`. Doable; needs Flate / Brotli in the deep path.
+11. **✓ WOFF / WOFF2 checksums (already working, report was stale).** Refreshed sweep 2026-04-23: WOFF **100%/100%**, WOFF2 **49%/100%**. The per-table zlib/Brotli decompress + origChecksum verification was implemented in `font_validator.zig:370`+; the 0%/0% numbers were from pre-implementation sweep data.
 12. **VP9-in-MKV byte validation.** `src/core/video_validator.zig:560-566` excludes VP9 from the deep-validation path; VP9 frames inside MKV/WebM fall through to `okDecoded(vp9, 0)` without any per-frame check. Wiring `vp9_syntax_validator` in (parallel to the VP8 handler at line 804) would lift WebM from 55% to ~85-90% shotgun.
 
 ### Sample sourcing (all under permissive licenses)
