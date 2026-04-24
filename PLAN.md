@@ -307,7 +307,7 @@ Findings from the 6-agent audit captured in `docs/corruption-detection-report.md
 P0 — validator bugs hiding detection:
 - [x] PDF: make `toleratedPdfImageFailures` opt-in via `VALIDATE_PDF_TOLERANT=1`; default strict. Landed 2026-04-23 (commit c304f36). Shotgun on NASA sample 0% → 67%, on Alice PDF 0% → 89%. Sniper stays ~0% (intrinsic PDF limit).
 - [x] BMP 0%/0% — RECLASSIFIED to docs-only. BMP spec has no data checksums; 0/400 at ±0.5% CI confirmed fundamental. `FORMAT_VERIFICATIONS.md` row corrected from "Full Decode" to "Structure" (2026-04-23).
-- [ ] NRW preview decode — partial fix available. Add `libraw_unpack_thumb` to catch corruption inside the embedded preview JPEG (~15-30% of the 16 MB file). Real code work, deferred.
+- [ ] NRW/NEF/CR2/ARW preview-JPEG decode — DNG-style scan-for-SOI path. Tried `libraw_unpack_thumb` (c7ae9ec) but LibRaw only extracts JPEG bytes from the TIFF container without decoding them, so corruption inside the preview doesn't surface. The real fix is to port the SOI-scan + libjpeg-turbo decode pattern from `validateDngDeep` (image_validators.zig:~3197) to run as a second pass on NEF/NRW/CR2/ARW after LibRaw succeeds. Expected lift: 0% → ~15-30% shotgun depending on preview size as a fraction of file.
 - [ ] CLI print bug — DEFERRED to post-launch as architectural. Root cause: `ValidationDepth` enum has only `.structural` / `.full`; needs a third `.bounds_verified` variant + audit of every validator's return. Affects BMP, most RAW, video containers with weak codecs. Interim honesty comes from the master report's per-format detection numbers.
 
 P1 — sample replacements (validator already strong, sample picks a weak codec path):

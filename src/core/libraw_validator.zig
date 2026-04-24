@@ -81,6 +81,13 @@ fn finishValidation(data: ?*libraw.libraw_data_t) LibRawValidationResult {
         };
     }
 
+    // Note: `libraw_unpack_thumb` was tried here but doesn't detect
+    // corruption — LibRaw just extracts the JPEG thumbnail bytes from the
+    // TIFF container without decoding them, so bit flips inside the JPEG
+    // don't surface as errors. The real lift for NEF/NRW/CR2/ARW thumbnail
+    // coverage needs a DNG-style scan-for-SOI-then-validate-JPEG path
+    // (see image_validators.zig:validateDngDeep). Tracked in PLAN.md P2.
+
     // Get image sizes
     const sizes = &data.?.*.sizes;
     const width: u32 = @intCast(sizes.width);
