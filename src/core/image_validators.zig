@@ -2726,6 +2726,16 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
 
         const libraw_result = libraw_validator.validateRawBuffer(buffer);
         if (libraw_result.valid) {
+            // Ideally we'd also scan for embedded preview JPEGs and decode
+            // them via libjpeg-turbo — that's how validateDngDeep catches
+            // bit flips in the DNG preview. Attempted here but reverted
+            // because Nikon NRW (and likely others) have sensor-data byte
+            // sequences that look like JPEG SOI+APPn+…+EOI but aren't real
+            // JPEGs; the decoder rejects them, producing clean-file false
+            // positives. The correct path is to parse the TIFF IFD for the
+            // canonical preview offset/size tag rather than scanning blindly.
+            // Helper `scanAndValidatePreviewJpegs` is retained for that
+            // future IFD-based implementation. Tracked in PLAN.md P2.
             return ValidationResult.okWithDepth(format, .full);
         }
         // LibRaw failed - return its specific error
@@ -3345,6 +3355,76 @@ pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResu
 pub fn validateJpegBufferForDng(data: []const u8) bool {
     const result = jpeg_validator.validateJpegDeepFromBuffer(data);
     return result.valid;
+}
+
+/// Preview-JPEG scan result used by the TIFF-based RAW deep validator.
+pub const PreviewScanResult = struct {
+    preview_count: usize,
+    preview_valid: usize,
+};
+
+/// Scan a TIFF/RAW buffer for embedded preview JPEGs and decode each via
+/// libjpeg-turbo. This mirrors validateDngDeep's SOI-scan approach but
+/// without the DNG-specific semantic-tile handling — meant for NEF/NRW/
+/// CR2/ARW where LibRaw accepts the file structurally but doesn't catch
+/// corruption inside an embedded preview.
+///
+/// The marker whitelist matches DNG: 0xFFD8 followed by 0xFF then
+/// 0xDB (DQT — bare JPEGs without APP0/APP1) or 0xE0..0xEF (APPn —
+/// JFIF/EXIF/ICC/Adobe). Narrower sets miss bare-DQT previews; broader
+/// sets produce false positives on raw sensor noise.
+pub fn scanAndValidatePreviewJpegs(allocator: Allocator, data: []const u8) PreviewScanResult {
+    _ = allocator;
+    // Raised from 1 KB to 16 KB to cut false positives on NEF/NRW/CR2/ARW
+    // sensor noise. Real camera previews are typically 100 KB – 2 MB; sensor
+    // noise rarely produces 16 KB spans that both start with a valid SOI+app
+    // marker AND end with 0xFF 0xD9. DNG-sensitive code paths keep the 1 KB
+    // floor because DNGs include small semantic-map tiles.
+    const min_jpeg_size: usize = 16 * 1024;
+    var preview_count: usize = 0;
+    var preview_valid: usize = 0;
+    var i: usize = 0;
+
+    while (i + 10 < data.len) {
+        if (data[i] == 0xFF and data[i + 1] == 0xD8 and data[i + 2] == 0xFF) {
+            const marker = data[i + 3];
+            const is_jpeg_with_app = switch (marker) {
+                0xDB, 0xE0...0xEF => true,
+                else => false,
+            };
+            if (is_jpeg_with_app) {
+                var j = i + 4;
+                var found_end = false;
+                while (j + 1 < data.len) {
+                    if (data[j] == 0xFF and data[j + 1] == 0xD9) {
+                        const jpeg_data = data[i .. j + 2];
+                        if (jpeg_data.len >= min_jpeg_size) {
+                            // Skip lossless-SOF3 JPEGs (semantic map tiles) — those
+                            // only appear in DNGs; NEF/NRW/CR2/ARW embed
+                            // baseline/progressive previews.
+                            if (!jpeg_lossless_decoder.isLosslessJpeg(jpeg_data)) {
+                                preview_count += 1;
+                                if (validateJpegBufferForDng(jpeg_data)) {
+                                    preview_valid += 1;
+                                }
+                            }
+                        }
+                        i = j + 2;
+                        found_end = true;
+                        break;
+                    }
+                    j += 1;
+                }
+                if (!found_end) i += 4;
+            } else {
+                i += 2;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    return .{ .preview_count = preview_count, .preview_valid = preview_valid };
 }
 
 // ============ BMP Deep Validation (native V3 + zigimg V4/V5) ============
