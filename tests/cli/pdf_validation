@@ -77,6 +77,52 @@ else
 	fail "tolerant mode did not produce exit 0 + warning (rc=$rc, out=$out)"
 fi
 
+# ---- Content-stream (non-image) FlateDecode corruption tests ----
+
+# Offset 658851 lies in the middle of a non-image /FlateDecode stream
+# (approx 1150 bytes long starting at 658276) in alice_in_wonderland_illustrated.pdf.
+# Before commit adding PDF Flate content-stream validation, flipping this byte
+# was silently accepted by the CLI because only image/font/embed Flate streams
+# were being inflated. This test guards that new surface.
+CONTENT_STREAM_OFFSET=658851
+
+echo "Test 4: corrupted non-image FlateDecode content stream is detected (non-zero exit)"
+cp "$SAMPLE" "$tmpdir/corrupt_content.pdf"
+printf '\xFF' | dd of="$tmpdir/corrupt_content.pdf" bs=1 seek="$CONTENT_STREAM_OFFSET" count=1 conv=notrunc 2>/dev/null
+"$BIN" "$tmpdir/corrupt_content.pdf" >/dev/null 2>&1
+rc=$?
+if [[ "$rc" != "0" ]]; then
+	pass "content-stream corruption -> non-zero exit (rc=$rc)"
+else
+	fail "content-stream corruption silently tolerated; exit=0 despite detected Flate failure"
+fi
+
+echo "Test 5: VALIDATE_PDF_TOLERANT=1 tolerates content-stream corruption (exit 0 with warning)"
+out=$(VALIDATE_PDF_TOLERANT=1 "$BIN" "$tmpdir/corrupt_content.pdf" 2>&1)
+rc=$?
+if [[ "$rc" == "0" ]] && echo "$out" | grep -qi "warn\|tolerated\|flate\|decode"; then
+	pass "tolerant mode (content stream): exit 0 with warning"
+else
+	fail "tolerant mode (content stream) did not produce exit 0 + warning (rc=$rc, out=$out)"
+fi
+
+# ---- Clean-PDF sanity suite (guard against false positives) ----
+
+echo "Test 6: all ground-truth PDFs still validate clean (no false Flate positives)"
+clean_fail=0
+for pdf in ground_truth_examples/pdf/*.pdf; do
+	[[ -f "$pdf" ]] || continue
+	"$BIN" "$pdf" >/dev/null 2>&1
+	rc=$?
+	if [[ "$rc" != "0" ]]; then
+		fail "clean PDF '$pdf' now fails (rc=$rc)"
+		clean_fail=$((clean_fail + 1))
+	fi
+done
+if [[ "$clean_fail" == "0" ]]; then
+	pass "all ground-truth PDFs validate clean"
+fi
+
 # ---- Summary ----
 
 echo ""

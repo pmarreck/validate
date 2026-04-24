@@ -36,6 +36,7 @@ fn pdfTolerantMode() bool {
 const pdf_image_validator = @import("pdf_image_validator.zig");
 const pdf_font_validator = @import("pdf_font_validator.zig");
 const pdf_embedded_file_validator = @import("pdf_embedded_file_validator.zig");
+const pdf_stream_validator = @import("pdf_stream_validator.zig");
 const errmsg = @import("error_messages.zig");
 const video_validator = @import("video_validator.zig");
 
@@ -326,6 +327,67 @@ fn logPdfSlow(
 
 /// Deep PDF validation by parsing and verifying the cross-reference table structure.
 /// Checks startxref pointer, xref table, trailer dictionary, embedded images/fonts/files.
+/// Outcome of FlateDecode content-stream validation folded back into the
+/// caller's malformation / warning state. Returned by applyFlateStreamCheck.
+const FlateCheckOutcome = struct {
+	/// Set to non-null if the caller must return an `invalidWithDepth` result
+	/// (strict mode + corruption detected). The caller is responsible for
+	/// producing the ValidationResult.
+	hard_fail_message: ?[]const u8 = null,
+	/// Whether to insert the pdf_flate_decode_failed malformation and (in
+	/// tolerant mode) continue.
+	tolerated_malformation: bool = false,
+	/// Warning suitable for surfacing in tolerant mode.
+	tolerated_warning: ?[]const u8 = null,
+};
+
+/// Run pdf_stream_validator on the already-parsed PDF buffer, folding results
+/// into the caller's malformation set. Honors VALIDATE_PDF_TOLERANT=1: in
+/// strict (default) mode a Flate failure surfaces as a hard fail message; in
+/// tolerant mode we insert pdf_flate_decode_failed and record a warning so
+/// the CLI still exits 0 with diagnostics.
+fn applyFlateStreamCheck(
+	allocator: Allocator,
+	pdf_data: []const u8,
+	image_result: pdf_image_validator.PdfImageValidationResult,
+	font_result: pdf_font_validator.FontValidationSummary,
+	embed_result: pdf_embedded_file_validator.EmbeddedFileValidationSummary,
+) FlateCheckOutcome {
+	_ = font_result;
+	_ = embed_result;
+
+	// Build exclusion set from image object numbers that were already
+	// validated through the image pipeline. Font and embed validators don't
+	// expose object-number lists on their summary structs; their streams are
+	// a small minority of FlateDecode traffic, so we accept a small amount of
+	// double-verification there in exchange for implementation simplicity.
+	var excluded: std.AutoHashMapUnmanaged(u32, void) = .{};
+	defer excluded.deinit(allocator);
+	for (image_result.results) |r| {
+		excluded.put(allocator, r.object_num, {}) catch {};
+	}
+
+	const res = pdf_stream_validator.validatePdfFlateStreams(allocator, pdf_data, &excluded);
+	if (res.valid) return .{};
+
+	// Assemble a short warning string. The `reason` pointer is static-lifetime
+	// (see pdf_stream_validator.zlibErrorReason), so we can reference it
+	// directly without copying.
+	const reason_str: []const u8 = if (res.first_failure) |f|
+		f.reason
+	else
+		"FlateDecode stream inflation failed";
+
+	if (pdfTolerantMode()) {
+		return .{
+			.tolerated_malformation = true,
+			.tolerated_warning = reason_str,
+		};
+	}
+	return .{ .hard_fail_message = reason_str };
+}
+
+
 pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const telemetry = PdfTelemetry.init();
 	const total_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
@@ -557,6 +619,18 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 		return ValidationResult.invalidWithDepth(.pdf, embed_result.error_message orelse "Embedded file validation failed", .full);
 	}
 
+	// Validate all remaining FlateDecode streams' zlib integrity. This
+	// catches corruption inside content / form-XObject / metadata streams
+	// that aren't reached by the image, font, or embedded-file validators.
+	const flate_outcome = applyFlateStreamCheck(allocator, pdf_data, image_result, font_result, embed_result);
+	if (flate_outcome.hard_fail_message) |msg| {
+		return ValidationResult.invalidWithDepth(.pdf, msg, .full);
+	}
+	if (flate_outcome.tolerated_malformation) {
+		malformations_local.insert(.pdf_flate_decode_failed);
+		if (warning_message == null) warning_message = flate_outcome.tolerated_warning;
+	}
+
 	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;
 	logPdfSlow(telemetry, "<source>", total_ns, structural_ns, image_ns, font_ns, embed_ns, image_result, font_result, embed_result);
 
@@ -719,6 +793,17 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	const embed_ns = if (telemetry.enabled) std.time.nanoTimestamp() - embed_start_ns else 0;
 	if (!embed_result.valid) {
 		return ValidationResult.invalidWithDepth(.pdf, embed_result.error_message orelse "Embedded file validation failed", .full);
+	}
+
+	// Validate all remaining FlateDecode streams' zlib integrity. Same logic
+	// as validatePdfDeep — honors VALIDATE_PDF_TOLERANT=1.
+	const flate_outcome = applyFlateStreamCheck(allocator, pdf_data, image_result, font_result, embed_result);
+	if (flate_outcome.hard_fail_message) |msg| {
+		return ValidationResult.invalidWithDepth(.pdf, msg, .full);
+	}
+	if (flate_outcome.tolerated_malformation) {
+		malformations_local.insert(.pdf_flate_decode_failed);
+		if (warning_message == null) warning_message = flate_outcome.tolerated_warning;
 	}
 
 	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;

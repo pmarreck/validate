@@ -59,6 +59,7 @@ pub const excel_biff8_validator = @import("excel_biff8_validator.zig");
 pub const font_validator = @import("font_validator.zig");
 pub const pdf_font_validator = @import("pdf_font_validator.zig");
 pub const pdf_embedded_file_validator = @import("pdf_embedded_file_validator.zig");
+pub const pdf_stream_validator = @import("pdf_stream_validator.zig");
 pub const brotli_validator = @import("brotli_validator.zig");
 pub const tracker_validator = @import("tracker_validator.zig");
 pub const libopenmpt = @import("libopenmpt.zig");
@@ -68,6 +69,7 @@ pub const mpeg4p2_validator = @import("mpeg4p2_validator.zig");
 pub const mpeg4p2_decoder = @import("mpeg4p2_decoder.zig");
 pub const theora_validator = @import("theora_validator.zig");
 pub const theora_decoder = @import("theora_decoder.zig");
+pub const theora_decode_validator = @import("theora_decode_validator.zig");
 pub const vp8_validator = @import("vp8_validator.zig");
 pub const vp8_decoder = @import("vp8_decoder.zig");
 pub const mpeg_ts_parser = @import("mpeg_ts_parser.zig");
@@ -228,6 +230,8 @@ test {
     _ = @import("theora_validator.zig");
     // Theora decoder
     _ = @import("theora_decoder.zig");
+    // Theora deep-decode validator (libtheora)
+    _ = @import("theora_decode_validator.zig");
     // VP8 video validator
     _ = @import("vp8_validator.zig");
     // VP8 decoder
@@ -304,6 +308,8 @@ test {
     _ = @import("blar_validator.zig");
     // PDF format validator (structural + deep with embedded image/font/file validation)
     _ = @import("pdf_validator.zig");
+    // PDF FlateDecode content-stream integrity validator (zlib inflate on every non-image Flate stream)
+    _ = @import("pdf_stream_validator.zig");
     // ProRes decoder
     _ = @import("prores_decoder.zig");
     // GPT parser
