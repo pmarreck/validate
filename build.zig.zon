@@ -27,6 +27,9 @@
         .libvorbis = .{
             .path = "deps/libvorbis",
         },
+        .libtheora = .{
+            .path = "deps/libtheora",
+        },
         .minimp3 = .{
             .path = "deps/minimp3",
         },

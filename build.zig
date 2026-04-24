@@ -99,6 +99,15 @@ pub fn build(b: *std.Build) void {
     });
     const libvorbis_lib = libvorbis_dep.artifact("vorbis");
 
+    // Libtheora for Theora video deep validation (BSD-3, Xiph.org)
+    // Always ReleaseFast to avoid Zig's overflow checks triggering on libtheora's
+    // bit manipulation and integer rounding paths (same rationale as libvorbis).
+    const libtheora_dep = b.dependency("libtheora", .{
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const libtheora_lib = libtheora_dep.artifact("theora");
+
     // minimp3 for MP3 audio deep validation (Public Domain, header-only)
     const minimp3_dep = b.dependency("minimp3", .{
         .target = target,
@@ -270,6 +279,9 @@ pub fn build(b: *std.Build) void {
     // Add libvorbis include path (for vorbis_validator.zig @cImport)
     core_mod.addIncludePath(libvorbis_lib.getEmittedIncludeTree());
 
+    // Add libtheora include path (for theora_decode_validator.zig @cImport)
+    core_mod.addIncludePath(libtheora_lib.getEmittedIncludeTree());
+
     // Add minimp3 include path (for mp3_decode_validator.zig @cImport)
     core_mod.addIncludePath(minimp3_lib.getEmittedIncludeTree());
 
@@ -325,6 +337,7 @@ pub fn build(b: *std.Build) void {
         libopus_lib,   // Opus audio deep validation
         libogg_lib,    // OGG container support (required by libvorbis)
         libvorbis_lib, // Vorbis audio deep validation
+        libtheora_lib, // Theora video deep validation
         minimp3_lib,   // MP3 audio deep validation
         openjpeg_lib,  // JPEG2000 decode validation
         libjxl_lib,    // JPEG-XL decode validation
@@ -370,6 +383,7 @@ pub fn build(b: *std.Build) void {
             libopus_lib.getEmittedBin(),
             libogg_lib.getEmittedBin(),
             libvorbis_lib.getEmittedBin(),
+            libtheora_lib.getEmittedBin(),
             minimp3_lib.getEmittedBin(),
             openjpeg_lib.getEmittedBin(),
             libjxl_lib.getEmittedBin(),

@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# Theora deep-validation CLI tests.
+#
+# Goal: every Theora video packet in an OGG or MKV container is fully
+# decoded to pixels via libtheora. Any decode failure (TH_EBADPACKET,
+# TH_EIMPL, TH_EINVAL) must surface as a non-zero exit from the CLI.
+#
+# The OGG-Theora path has historically relied on OGG page-CRC32 for
+# container byte coverage (~100% random-byte detection via CRC alone).
+# The MKV-Theora path has no per-chunk CRC, so before libtheora
+# integration a random bit-flip in DCT coefficients slipped through
+# unchecked. Baseline sniper detection on MKV-Theora was ~96%.
+# Target after integration: ~100%.
+
+set -u
+
+BIN="./zig-out/bin/validate"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+fi
+
+PASS=0
+FAIL=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAIL=$((FAIL + 1))
+}
+
+pass() {
+	printf '  PASS: %s\n' "$1"
+	PASS=$((PASS + 1))
+}
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_theora_test.XXXXXX")"
+trap 'mv "$tmpdir" ~/.Trash/ 2>/dev/null || rm -rf "$tmpdir"' EXIT
+
+# ffmpeg is needed to generate a non-trivially-small Theora sample.
+if ! command -v ffmpeg >/dev/null 2>&1; then
+	echo "SKIP: ffmpeg not available, cannot generate Theora samples"
+	exit 0
+fi
+
+# Generate Theora OGV + MKV samples (~3 seconds, DCT-rich testsrc input).
+OGV="$tmpdir/theora_sample.ogv"
+MKV="$tmpdir/theora_sample.mkv"
+ffmpeg -loglevel error -f lavfi -i testsrc=duration=3:size=320x240:rate=30 \
+	-c:v libtheora -q:v 5 -y "$OGV" 2>&1 || {
+	echo "SKIP: ffmpeg failed to generate Theora sample"
+	exit 0
+}
+ffmpeg -loglevel error -f lavfi -i testsrc=duration=3:size=320x240:rate=30 \
+	-c:v libtheora -q:v 5 -y "$MKV" 2>&1 || {
+	echo "SKIP: ffmpeg failed to generate MKV-Theora sample"
+	exit 0
+}
+
+# --- Sanity ---
+"$BIN" "$OGV" >/dev/null 2>&1 && pass "clean OGV validates (exit 0)" \
+	|| fail "clean OGV unexpectedly failed"
+"$BIN" "$MKV" >/dev/null 2>&1 && pass "clean MKV-Theora validates (exit 0)" \
+	|| fail "clean MKV-Theora unexpectedly failed"
+
+# --- Single-shot corruption ---
+# Mid-file bit flip. OGG-Theora path catches via CRC; MKV-Theora path needs
+# libtheora decode to catch non-framing corruption.
+ogv_sz=$(stat -f%z "$OGV" 2>/dev/null || stat -c%s "$OGV" 2>/dev/null)
+cp "$OGV" "$tmpdir/ogv_corrupt.ogv"
+printf '\xAA' | dd of="$tmpdir/ogv_corrupt.ogv" bs=1 seek=$((ogv_sz / 2)) count=1 conv=notrunc 2>/dev/null
+"$BIN" "$tmpdir/ogv_corrupt.ogv" >/dev/null 2>&1
+rc=$?
+[[ "$rc" != "0" ]] && pass "mid-file OGV corruption -> non-zero exit" \
+	|| fail "mid-file OGV corruption tolerated"
+
+# --- Directed MKV-Theora codec_private corruption ---
+# Without libtheora integration, the MKV cluster-CRC fast-path returns
+# OK without ever inspecting codec_private bytes. With libtheora wired
+# in, corruption to the Theora setup header magic ("\x82theora" at the
+# start of the third Xiph-laced packet) must be caught.
+#
+# In a freshly-generated ffmpeg-libtheora MKV the setup header magic
+# lives near the start of codec_private. We seek to the second "theora"
+# magic occurrence (first is in the info header magic at packet 0; the
+# second-or-later occurrences are the comment-vendor string and setup
+# header magic).
+#
+# A simpler, more deterministic check: corrupt the byte 8 (offset into
+# the info-header packet that holds the format-version major number).
+# Theora rejects any version != 3.x with TH_EBADHEADER.
+# Locate the Theora info-header magic "\x80theora" in the file.
+# perl -ne is a more portable way to search for binary patterns than grep.
+codec_priv_off_in_file=$(perl -e '
+	open(my $fh, "<", $ARGV[0]) or die;
+	binmode($fh);
+	local $/;
+	my $data = <$fh>;
+	my $i = index($data, "\x80theora");
+	exit 1 if $i < 0;
+	print $i;
+' "$MKV" 2>/dev/null)
+if [[ -n "$codec_priv_off_in_file" ]]; then
+	# Theora info header packet layout:
+	#   [0]      = 0x80 (header type)
+	#   [1..7]   = "theora"
+	#   [7]      = version major
+	version_off=$((codec_priv_off_in_file + 7))
+	cp "$MKV" "$tmpdir/version_corrupt.mkv"
+	# Force version major to 4 (invalid; theora rejects).
+	printf '\x04' | dd of="$tmpdir/version_corrupt.mkv" bs=1 seek="$version_off" count=1 conv=notrunc 2>/dev/null
+	"$BIN" "$tmpdir/version_corrupt.mkv" >/dev/null 2>&1
+	rc=$?
+	if [[ "$rc" != "0" ]]; then
+		pass "MKV-Theora codec_private version-major corruption -> non-zero exit"
+	else
+		fail "MKV-Theora codec_private version-major corruption tolerated; libtheora not running on codec_private"
+	fi
+else
+	echo "SKIP: cannot locate Theora codec_private in test MKV"
+fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"

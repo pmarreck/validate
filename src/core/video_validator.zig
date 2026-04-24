@@ -88,6 +88,9 @@ const mpeg4p2 = @import("mpeg4p2_validator.zig");
 // Import Theora validator (pure Zig)
 const theora = @import("theora_validator.zig");
 
+// Import Theora libtheora-backed deep decode validator
+const theora_decode = @import("theora_decode_validator.zig");
+
 // Import VP8 validator (pure Zig)
 const vp8 = @import("vp8_validator.zig");
 
@@ -476,6 +479,43 @@ fn validateMkvFrameBytes(ctx_ptr: ?*anyopaque, data: []const u8) bool {
 	};
 }
 
+/// Parse Matroska's Xiph-style lacing of 3 Theora setup headers inside
+/// codec_private. Format: byte_0 = 2 (N-1 for N=3 packets), followed by
+/// 2 length fields using 255-additive encoding (sum runs of 255 bytes +
+/// one <255 terminator), then the 3 concatenated packets. The length of
+/// the third packet is codec_private_len - header_bytes - sum(len1, len2).
+///
+/// Returns the 3 packet slices or null on malformed framing.
+fn parseXiphLaced3(codec_private: []const u8) ?[3][]const u8 {
+    if (codec_private.len < 4) return null;
+    if (codec_private[0] != 2) return null;
+
+    var offset: usize = 1;
+    var lengths: [2]usize = .{ 0, 0 };
+    var i: usize = 0;
+    while (i < 2) : (i += 1) {
+        var len: usize = 0;
+        while (offset < codec_private.len) : (offset += 1) {
+            const b = codec_private[offset];
+            len += b;
+            if (b != 255) {
+                offset += 1;
+                break;
+            }
+        }
+        lengths[i] = len;
+    }
+
+    if (offset + lengths[0] + lengths[1] > codec_private.len) return null;
+    const p1_end = offset + lengths[0];
+    const p2_end = p1_end + lengths[1];
+    return [3][]const u8{
+        codec_private[offset..p1_end],
+        codec_private[p1_end..p2_end],
+        codec_private[p2_end..],
+    };
+}
+
 /// Deep validate MKV/WebM video file by decoding keyframes.
 pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u32) VideoValidationResult {
     source.seekTo(0) catch {
@@ -762,40 +802,44 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
     // For Theora, validate packets
     // NOTE: We only do structural validation (header parsing, frame counting).
     // Full Theora bitstream decoding requires libtheora which is not integrated.
+    // For Theora, do full libtheora decode validation.
+    // Matroska stores the 3 Theora setup headers in codec_private using
+    // Xiph-style lacing. Each video frame is already individually demuxed
+    // into all_frames.
     if (video_codec == .theora) {
-        // Theora in MKV has headers in codec_private
-        if (video_track.codec_private) |codec_private| {
-            // Parse info header from codec_private (may be concatenated headers)
-            const info = theora.parseInfoHeader(codec_private) orelse {
-                return VideoValidationResult.invalid("Invalid Theora info header", .theora);
-            };
-
-            // Count frames from collected frames (structural check only - not full decode)
-            var keyframe_count: u32 = 0;
-            var inter_count: u32 = 0;
-            for (all_frames) |kf| {
-                if (theora.isVideoFrame(kf.data)) |is_key| {
-                    if (is_key) {
-                        keyframe_count += 1;
-                    } else {
-                        inter_count += 1;
-                    }
-                }
-            }
-
-            _ = info;
-            // Theora frames were counted but NOT decoded (no libtheora integration)
-            // Return valid but explicitly NOT byte_validated
-            return .{
-                .valid = true,
-                .error_message = null,
-                .codec = .theora,
-                .frames_decoded = keyframe_count + inter_count,
-                .byte_validated = false, // Only structural - no actual decode
-            };
-        } else {
+        const codec_private = video_track.codec_private orelse {
             return VideoValidationResult.invalid("No Theora codec_private", .theora);
+        };
+
+        const headers = parseXiphLaced3(codec_private) orelse {
+            return VideoValidationResult.invalid("Invalid Theora codec_private Xiph lacing", .theora);
+        };
+
+        var packet_list: std.ArrayListUnmanaged([]const u8) = .{};
+        defer packet_list.deinit(allocator);
+        packet_list.ensureTotalCapacity(allocator, 3 + all_frames.len) catch {
+            return VideoValidationResult.invalid("Allocation failure (Theora)", .theora);
+        };
+        packet_list.appendAssumeCapacity(headers[0]);
+        packet_list.appendAssumeCapacity(headers[1]);
+        packet_list.appendAssumeCapacity(headers[2]);
+        for (all_frames) |kf| packet_list.appendAssumeCapacity(kf.data);
+
+        const decode_result = theora_decode.validateTheoraPackets(packet_list.items);
+        if (!decode_result.valid) {
+            return VideoValidationResult.invalid(
+                decode_result.error_message orelse "Theora packet decode failed",
+                .theora,
+            );
         }
+
+        return .{
+            .valid = true,
+            .error_message = null,
+            .codec = .theora,
+            .frames_decoded = decode_result.frames_decoded,
+            .byte_validated = true, // Every packet fully decoded via libtheora
+        };
     }
 
     // For VP8, use deep validation with boolean decoder parsing

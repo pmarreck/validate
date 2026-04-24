@@ -1,0 +1,18 @@
+.{
+    .name = .libtheora,
+    .version = "1.2.0",
+    .fingerprint = 0xdeed328ff2dc69a1,
+    .dependencies = .{
+        .theora_src = .{
+            .url = "https://github.com/xiph/theora/archive/refs/tags/v1.2.0.tar.gz",
+            .hash = "N-V-__8AADZhPQBOO34S42qONfotJCEf8GTcD4ma5ngfFDpu",
+        },
+        .libogg = .{
+            .path = "../libogg",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}

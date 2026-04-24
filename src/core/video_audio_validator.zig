@@ -213,6 +213,11 @@ pub fn validateMp4Media(allocator: Allocator, source: *FileSource, max_video_fra
 /// Validate MKV/WebM file including both video and audio tracks.
 /// Uses checksum-first strategy: if all Clusters have CRC-32, verify those (fast).
 /// Otherwise falls back to decode validation (slow but complete).
+///
+/// Theora exception: MKV cluster CRCs cover only cluster payload bytes,
+/// NOT the EBML header region nor codec_private. For Theora we ALWAYS
+/// run libtheora decode after CRC validation so corruption in the 3
+/// Theora setup headers is caught (closes the ~4% sniper detection gap).
 pub fn validateMkvMedia(allocator: Allocator, source: *FileSource, max_video_frames: u32) MediaValidationResult {
     // First, try CRC-based validation (fast path)
     const crc_result = validateMkvCrc(allocator, source);
@@ -235,7 +240,30 @@ pub fn validateMkvMedia(allocator: Allocator, source: *FileSource, max_video_fra
                 .has_audio_track = crc_result.has_audio,
             };
         }
-        // CRCs present and valid - 100% coverage, no decode needed
+        // CRCs present and valid for cluster bytes — but they don't cover
+        // codec_private. For Theora specifically, also run libtheora decode
+        // to validate the 3 setup headers + every video packet.
+        if (crc_result.video_codec == .theora) {
+            const theora_check = video_validator.validateMkvVideo(allocator, source, max_video_frames);
+            if (!theora_check.valid) {
+                return MediaValidationResult{
+                    .valid = false,
+                    .error_message = theora_check.error_message orelse "Theora decode failed after CRC pass",
+                    .video_codec = .theora,
+                    .video_frames_decoded = 0,
+                    .video_valid = false,
+                    .video_byte_validated = false,
+                    .video_message = theora_check.error_message,
+                    .audio_codec = crc_result.audio_codec,
+                    .audio_frames_decoded = 0,
+                    .audio_valid = false,
+                    .audio_message = null,
+                    .has_video_track = true,
+                    .has_audio_track = crc_result.has_audio,
+                    .crc_validated = true,
+                };
+            }
+        }
         return MediaValidationResult{
             .valid = true,
             .error_message = null,
@@ -343,7 +371,7 @@ fn validateMkvCrc(allocator: Allocator, source: *FileSource) MkvCrcResult {
                     const codec_id = track.codecId();
                     if (std.mem.startsWith(u8, codec_id, "V_")) { // Video
                         has_video = true;
-                        if (track.isHevc()) video_codec = .hevc else if (track.isAv1()) video_codec = .av1 else if (track.isH264()) video_codec = .h264 else if (track.isVp9()) video_codec = .vp9;
+                        if (track.isHevc()) video_codec = .hevc else if (track.isAv1()) video_codec = .av1 else if (track.isH264()) video_codec = .h264 else if (track.isVp9()) video_codec = .vp9 else if (track.isTheora()) video_codec = .theora;
                     } else if (std.mem.startsWith(u8, codec_id, "A_")) { // Audio
                         has_audio = true;
                         audio_codec = detectMkvAudioCodec(codec_id);
