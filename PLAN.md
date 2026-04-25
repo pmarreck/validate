@@ -335,16 +335,22 @@ P1 — ground-truth sourcing (all landed 2026-04-23):
 P2 — deeper validation where format permits:
 - [x] WOFF/WOFF2 origChecksum verification after Flate / Brotli decompress. Already implemented in `font_validator.zig:370` (zlib) / `font_validator.zig:510` (Brotli). Stale sweep data 2026-04-23: WOFF 100%/100%, WOFF2 49%/100%. Master report refreshed.
 - [ ] RAF preview-coverage diagnostic: add a smaller Fuji RAF to the sweep alongside the 208 MB one so preview-decode coverage shows up distinctly in the table
-- [ ] VP9-in-MKV full-decode: validateMkvVideo currently runs the VP9 uncompressed-header parser (lands in 1391e6d) which is "as much as possible" without a pixel decoder. Real full-decode requires libvpx; would lift WebM-with-VP9 shotgun from ~55% (Opus-driven) to ~90%.
-- [ ] VP8-in-MKV full-decode: same pattern as VP9 above.
-- [ ] Theora-in-OGG full-decode: also header-only today.
+- [x] VP9-in-MKV full-decode: libvpx 1.14.1 integrated 2026-04-24 (commit f8c38ec8). WebM VP9+Opus shotgun 55% → 78%, sniper 0% → 86%. Uses `vpx_codec_decode` per frame.
+- [x] VP8-in-MKV full-decode: same libvpx integration (f8c38ec8). WebM VP8 shotgun 2% → 90%, sniper 0% → 88%. Required `VP8D_GET_FRAME_CORRUPTED` control query — VP8 decoder runs error concealment that silently patches bit flips and returns VPX_CODEC_OK without that explicit query.
+- [x] Theora-in-OGG full-decode: libtheora 1.2.0 integrated 2026-04-23 (commit 8614b97e). MKV codec_private corruption now caught (was tolerated). OGG-Theora unchanged at 100%/100% (already CRC-driven).
 
 P2 — ground-truth samples uncovered as broken by format_roundtrip (2026-04-23):
 - [x] AC3: removed malformed `TomorrowNeverDies-2.1-48khz-192kbit.ac3`. Corruption-sweep now picks `Canyon-5.1-48khz-448kbit.ac3` (2.1 MB) — measured 100%/100% against a genuinely-valid clean file. Old number was a false positive from every trial inheriting the already-failing state.
 - [x] .band (GarageBand): replaced 128-byte stub with a proper macOS bundle directory containing minimal plist `projectData`, matching what `validateGarageBandBundle` requires. `.band` is a directory format, so format_roundtrip auto-skips the corruption assertion.
 - [x] .reason (Reason): replaced with a 96-byte hand-crafted file containing the exact "Propellerheads Reason Song File\x1a" 32-byte magic required by `validateReason`, followed by a minimal IFF FORM chunk.
 P2 — regeneration tooling:
-- [ ] Script that walks `docs/corruption-sweep-results/*.tsv` and emits `docs/corruption-detection-report.md` with per-row git-blame dates. Prevents the drift that produced the two conflicting tables we just reconciled.
+- [x] Drift detector landed 2026-04-25 (commits d48128a0 + 68de05cf). `scripts/audit-corruption-report` walks the TSVs and compares against the report's claimed per-format numbers; surfaces any drift > ±2pp. `tests/cli/master_report_drift` wires it into `./test` so any future TSV refresh that doesn't propagate to the prose fails CI. 101/101 formats verified clean. Full regen-from-TSVs script is still future work but the audit detector closes the immediate drift hazard.
+
+P2 — additional fixes from launch-prep audit (2026-04-25):
+- [x] CR2 detection: format detector mis-classified CR2 as plain TIFF because `detectTiffSubformat` lacked a CR2 branch (commit 4db099de).
+- [ ] CR2 corruption-detection still 0%/0% even with format-detection fix and the IFD preview decode landing in agent 3's a2542f5. Investigation: the canon_eos_40d_sraw2.cr2 sample has only 3 FFD8FFXX SOI sequences in its 5.8 MB body, all marker `c4` (DHT). The IFD preview decoder may either reject FFD8FFC4 (validateJpegBufferForDng's marker whitelist is DB + E0..EF) or accept it but the JPEG is Huffman-resilient at the bit-flip level. Needs targeted instrumentation.
+- [x] CLI `--test-coverage` defaults: sniper+shotgun (was all 6), 1000 rounds (was 100). Statistically meaningful at first run; opt back into legacy via `--modes all` or `--modes everything`. Commit b4388f1e.
+- [x] README VP8 error-concealment callout (commit 5b131e27) — concrete launch-copy demonstrating the silent-corruption pattern validate exists for.
 
 ### Statistical Corruption Detection for Raw Audio/Video Data
 For formats without checksums (AU, AMR, CAF, DPX, etc.), use heuristic analysis to detect likely corruption in raw data sections:
