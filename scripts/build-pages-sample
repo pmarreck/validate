@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# build-pages-sample — regenerate ground_truth_examples/pages/sample.pages
+#
+# Hand-authored, structurally-minimal Apple iWork Pages bundle used as
+# corruption-detection ground truth. The .iwa files inside Index.zip carry
+# high-entropy deterministic payloads (openssl AES-CTR keyed off the file
+# name) so that deflate barely compresses the bundle, keeping the final
+# .pages around 50 KB — large enough for the shotgun (4 KB overwrite) probe
+# to be statistically meaningful.
+#
+# Output is byte-for-byte reproducible given a fixed `zip` implementation.
+# License: CC0 1.0 (sample is hand-authored, no Apple software involved).
+
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+OUT_DIR="$ROOT/ground_truth_examples/pages"
+OUT_FILE="$OUT_DIR/sample.pages"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/build-pages-sample.XXXXXX")"
+trap 'rm-safe -rf "$WORK" 2>/dev/null || rm -rf "$WORK"' EXIT
+
+if [ ! -d "$OUT_DIR" ]; then
+	mkdir -p "$OUT_DIR"
+fi
+
+# 1. Generate IWA-shaped files with high-entropy deterministic payloads.
+
+random_blob() {
+	# $1 = file name (used as key seed), $2 = byte count
+	local name="$1"
+	local nbytes="$2"
+	local key
+	key=$(printf '%s' "pages-ground-truth-$name" | shasum -a 256 | awk '{print $1}')
+	head -c "$nbytes" /dev/zero \
+		| openssl enc -aes-256-ctr -K "$key" \
+			-iv 00000000000000000000000000000000 -nopad 2>/dev/null
+}
+
+write_iwa_header() {
+	# IWA framing: byte 0x00 (uncompressed marker) + 24-bit LE length.
+	local len="$1"
+	local b1=$((len & 0xFF))
+	local b2=$(((len >> 8) & 0xFF))
+	local b3=$(((len >> 16) & 0xFF))
+	printf '%b' "$(printf '\\x00\\x%02x\\x%02x\\x%02x' "$b1" "$b2" "$b3")"
+}
+
+mk_iwa() {
+	# $1 = relative file path under Index_staging/, $2 = total byte count
+	local rel="$1"
+	local nbytes="$2"
+	local out="$WORK/Index_staging/$rel"
+	mkdir -p "$(dirname "$out")"
+	{
+		write_iwa_header $((nbytes - 4))
+		random_blob "$rel" $((nbytes - 4))
+	} > "$out"
+}
+
+mkdir -p "$WORK/Index_staging/Tables"
+
+mk_iwa "Document.iwa"                  16384
+mk_iwa "DocumentStylesheet.iwa"         8192
+mk_iwa "Metadata.iwa"                   4096
+mk_iwa "CalculationEngine.iwa"          4096
+mk_iwa "AnnotationAuthorStorage.iwa"    2048
+mk_iwa "ViewState.iwa"                  4096
+mk_iwa "Tables/DataList.iwa"            8192
+mk_iwa "Tables/Tile-0.iwa"              8192
+
+# Force a fixed mtime on every file so ZIP local headers carry deterministic
+# DOS date/time fields. Date chosen: 2026-01-01 00:00:00 UTC.
+FIXED_MTIME="202601010000.00"
+find "$WORK/Index_staging" -exec touch -t "$FIXED_MTIME" {} \;
+
+# 2. Build the inner Index.zip (stored = no extra deflate, since payloads
+#    are high-entropy already).
+
+(cd "$WORK/Index_staging" && \
+	zip -X -0 -r "$WORK/Index.zip" \
+		Document.iwa \
+		DocumentStylesheet.iwa \
+		Metadata.iwa \
+		CalculationEngine.iwa \
+		AnnotationAuthorStorage.iwa \
+		ViewState.iwa \
+		Tables \
+	>/dev/null)
+
+# 3. Author the metadata plists.
+
+mkdir -p "$WORK/bundle/Metadata"
+cp "$WORK/Index.zip" "$WORK/bundle/Index.zip"
+
+cat > "$WORK/bundle/buildVersionHistory.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.iWork.Pages</key>
+	<string>14.2</string>
+</dict>
+</plist>
+EOF
+
+cat > "$WORK/bundle/Metadata/Properties.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>versionUUID</key>
+	<string>00000000-0000-0000-0000-000000000000</string>
+	<key>fileFormatVersion</key>
+	<string>14.2</string>
+	<key>revision</key>
+	<integer>1</integer>
+	<key>documentUUID</key>
+	<string>11111111-2222-3333-4444-555555555555</string>
+	<key>buildVersionHistory</key>
+	<array>
+		<string>M14.2-7041.0.110-3</string>
+	</array>
+</dict>
+</plist>
+EOF
+
+cat > "$WORK/bundle/Metadata/BuildVersionHistory.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+	<string>M14.2-7041.0.110-3</string>
+</array>
+</plist>
+EOF
+
+printf '11111111-2222-3333-4444-555555555555\n' > "$WORK/bundle/Metadata/DocumentIdentifier"
+
+# Fix mtimes on outer-bundle files for ZIP-deterministic timestamps.
+find "$WORK/bundle" -exec touch -t "$FIXED_MTIME" {} \;
+
+# 4. Zip the outer .pages bundle. Index.zip stored uncompressed (already
+#    incompressible); plists deflated. Index.zip first so its filename
+#    appears in the first ~16 KB where validate's detector scans.
+
+if [ -f "$OUT_FILE" ]; then
+	# Remove old; zip otherwise updates in place which leaks old entries.
+	rm -f "$OUT_FILE"
+fi
+
+(cd "$WORK/bundle" && \
+	zip -X -0 "$OUT_FILE" Index.zip >/dev/null && \
+	zip -X -9 "$OUT_FILE" \
+		buildVersionHistory.plist \
+		Metadata/Properties.plist \
+		Metadata/BuildVersionHistory.plist \
+		Metadata/DocumentIdentifier >/dev/null)
+
+# 5. Verify with validate, if a built binary is available.
+
+BIN="$ROOT/zig-out/bin/validate"
+if [ -x "$BIN" ]; then
+	if ! "$BIN" "$OUT_FILE" >/dev/null 2>&1; then
+		echo "FAIL: $OUT_FILE did not validate" >&2
+		exit 1
+	fi
+	echo "OK: $OUT_FILE ($(stat -f%z "$OUT_FILE" 2>/dev/null || stat -c%s "$OUT_FILE") bytes) validates"
+else
+	echo "OK: $OUT_FILE built ($(stat -f%z "$OUT_FILE" 2>/dev/null || stat -c%s "$OUT_FILE") bytes); skipped validate-binary check (run ./build first)"
+fi
