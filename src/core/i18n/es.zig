@@ -80,6 +80,8 @@ pub const cli_aliases = cli.CliAliases{
     .no_heatmap = "no-heatmap",
     .per_mode_heatmap = "per-mode-heatmap",
     .coverage_jobs = "coverage-jobs",
+    .early_stop_radius = "early-stop-radius",
+    .no_early_stop = "no-early-stop",
 };
 
 pub const env_aliases = cli.EnvAliases{

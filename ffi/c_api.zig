@@ -810,6 +810,7 @@ export fn validate_test_coverage(
     modes_bitmask: u32,
     heatmap_width: u32,
     jobs: u32,
+    early_stop_radius: f64,
     progress_cb: CoverageProgressCallback,
     progress_ctx: ?*anyopaque,
 ) ?[*:0]u8 {
@@ -888,6 +889,20 @@ export fn validate_test_coverage(
         break :blk set;
     };
 
+    // Resolve early-stop policy. The C ABI uses a single f64 to encode three
+    // states so the C CLI can pass through `--early-stop-radius`,
+    // `--no-early-stop`, and the implicit "use default" behavior without a
+    // second flag. The mapping is:
+    //   - 0.0      → use default radius (0.025 = ±2.5%, well-suited to extreme
+    //                bimodal cases like PNG=100% / BMP=0%)
+    //   - negative → explicitly disabled (run all `rounds`)
+    //   - positive → use as the threshold directly
+    const early_stop_radius_resolved: f64 = blk: {
+        if (early_stop_radius == 0.0) break :blk @as(f64, 0.025);
+        if (early_stop_radius < 0.0) break :blk @as(f64, 0.0); // disabled
+        break :blk early_stop_radius;
+    };
+
     // Determine worker count. 0 = auto (detect CPU count, cap at 16 to keep
     // thread-startup + cache pressure sane on very-wide hosts).
     const nworkers: u32 = blk: {
@@ -903,6 +918,11 @@ export fn validate_test_coverage(
     // We'll own/free merged_events via the synthesized result's .deinit at function end.
     var merged_duration_ns: u64 = 0;
     var merged_file_size: u64 = 0;
+    // Actual round count after the (potentially adaptive) early-stop. In the
+    // single-threaded path this is `sub.rounds`; in the multi-threaded path
+    // it's the sum across workers, since each worker may early-stop on its
+    // own slice of the round budget.
+    var merged_actual_rounds: u32 = 0;
 
     if (nworkers == 1) {
         // Single-threaded path — unchanged from step 4.
@@ -922,6 +942,7 @@ export fn validate_test_coverage(
                 .progress = progress_fn_wrapped,
                 .progress_ctx = @ptrCast(&run_ctx),
                 .enabled_modes = modes,
+                .early_stop_radius = early_stop_radius_resolved,
             },
             @ptrCast(&run_ctx),
             validate_fn,
@@ -935,6 +956,7 @@ export fn validate_test_coverage(
         while (mit.next()) |entry| merged_by_mode.set(entry.key, entry.value.*);
         merged_duration_ns = sub.duration_ns;
         merged_file_size = sub.file_size;
+        merged_actual_rounds = sub.rounds;
     } else {
         // Multi-threaded path: each worker gets its own FormatValidator, its
         // own RunCtx, its own arena, its own slice of rounds, and a distinct
@@ -946,6 +968,7 @@ export fn validate_test_coverage(
             my_seed: u64,
             shotgun_bytes: u32,
             enabled: std.EnumSet(test_coverage.CorruptionMode),
+            early_stop_radius: f64,
             baseline_format: format_validation.FileFormat,
             // Output
             result: ?test_coverage.CoverageResult = null,
@@ -972,6 +995,7 @@ export fn validate_test_coverage(
                         .shotgun_bytes = self.shotgun_bytes,
                         .seed = self.my_seed,
                         .enabled_modes = self.enabled,
+                        .early_stop_radius = self.early_stop_radius,
                     },
                     @ptrCast(&rc),
                     validate_fn,
@@ -1014,6 +1038,7 @@ export fn validate_test_coverage(
                 .my_seed = seed +% @as(u64, i),
                 .shotgun_bytes = shotgun_bytes,
                 .enabled = modes,
+                .early_stop_radius = early_stop_radius_resolved,
                 .baseline_format = baseline.format,
             };
             threads[i] = std.Thread.spawn(.{}, Worker.run, .{&workers[i]}) catch {
@@ -1039,6 +1064,7 @@ export fn validate_test_coverage(
             merged_file_size = r.file_size;
             @memcpy(merged_events[offset .. offset + r.events.len], r.events);
             offset += r.events.len;
+            merged_actual_rounds += r.rounds;
             var mit = r.by_mode.iterator();
             while (mit.next()) |entry| {
                 const cur = merged_by_mode.get(entry.key);
@@ -1056,12 +1082,32 @@ export fn validate_test_coverage(
         merged_duration_ns = @intCast(t_end - t_start);
     }
 
+    // Shrink merged_events to its actual size so the synthesized result's
+    // events slice length matches the allocation length (required by
+    // page_allocator.free in result.deinit()). If the realloc fails — which
+    // shouldn't happen when shrinking — fall back to copying into a fresh
+    // buffer.
+    var final_events: []test_coverage.CorruptionEvent = merged_events;
+    if (merged_actual_rounds < rounds) {
+        if (std.heap.page_allocator.realloc(merged_events, merged_actual_rounds)) |shrunk| {
+            final_events = shrunk;
+        } else |_| {
+            const fresh = std.heap.page_allocator.alloc(test_coverage.CorruptionEvent, merged_actual_rounds) catch {
+                std.heap.page_allocator.free(merged_events);
+                return null;
+            };
+            @memcpy(fresh, merged_events[0..merged_actual_rounds]);
+            std.heap.page_allocator.free(merged_events);
+            final_events = fresh;
+        }
+    }
+
     var result = test_coverage.CoverageResult{
         .file_size = merged_file_size,
-        .rounds = rounds,
+        .rounds = merged_actual_rounds,
         .duration_ns = merged_duration_ns,
         .by_mode = merged_by_mode,
-        .events = merged_events,
+        .events = final_events,
         .allocator = std.heap.page_allocator,
     };
     defer result.deinit();
@@ -1079,6 +1125,26 @@ export fn validate_test_coverage(
         var buf: [32]u8 = undefined;
         const s = std.fmt.bufPrintZ(&buf, "{d}", .{result.rounds}) catch return null;
         builder.add("rounds", s) catch return null;
+    }
+    {
+        // Surface the originally-requested round cap separately so callers
+        // can tell at a glance when early-stop kicked in (rounds < requested).
+        var buf: [32]u8 = undefined;
+        const s = std.fmt.bufPrintZ(&buf, "{d}", .{rounds}) catch return null;
+        builder.add("requested_rounds", s) catch return null;
+    }
+    {
+        // Effective early-stop threshold (0.0 = disabled). Lets the CLI tell
+        // users which radius was used so the printed "Early stop" message
+        // names a real number.
+        var buf: [32]u8 = undefined;
+        const s = std.fmt.bufPrintZ(&buf, "{d:.4}", .{early_stop_radius_resolved}) catch return null;
+        builder.add("early_stop_radius", s) catch return null;
+    }
+    {
+        var buf: [32]u8 = undefined;
+        const s = std.fmt.bufPrintZ(&buf, "{s}", .{if (merged_actual_rounds < rounds) "1" else "0"}) catch return null;
+        builder.add("early_stopped", s) catch return null;
     }
     {
         var buf: [32]u8 = undefined;

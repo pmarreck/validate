@@ -1860,13 +1860,16 @@ static void print_usage(const char* program) {
 	printf("    --about            Print version and platform info\n");
 	printf("    --max-memory SIZE  Memory budget (e.g., 4G, 2048M). Default: half of system RAM\n");
 	printf("    --lang CODE        Set output language (e.g., en, de)\n");
-	printf("    --test-coverage N  Run N corruption rounds against a file, report detection rate (default 1000)\n");
+	printf("    --test-coverage N  Run up to N corruption rounds against a file, report detection rate (default 1000)\n");
 	printf("    --modes LIST       Corruption modes for --test-coverage (comma-sep; default = sniper,shotgun)\n");
 	printf("                       Valid: sniper, shotgun, header, tail, zeroed, xor, sparse-noise, boundary\n");
 	printf("    --shotgun-bytes N  Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096; accepts K/M suffix)\n");
 	printf("    --no-heatmap       Suppress the undetected-corruption heatmap at the end of --test-coverage\n");
 	printf("    --per-mode-heatmap Render one heatmap per corruption mode (stacked) instead of the aggregate\n");
 	printf("    --coverage-jobs N  Worker threads for --test-coverage (0 = auto/CPU count; 1 = single-thread)\n");
+	printf("    --early-stop-radius F  Adaptive early-stop threshold (95%% Wilson CI half-width; default 0.025 = +/-2.5%%)\n");
+	printf("                       Lower = tighter CI = more rounds; e.g., 0.001 ~ +/-0.1%%. Range: (0, 0.5].\n");
+	printf("    --no-early-stop    Disable adaptive early-stop; run all N rounds requested\n");
 #endif
 	printf("\n");
 	printf("ENVIRONMENT:\n");
@@ -2009,6 +2012,8 @@ int main(int argc, char* argv[]) {
 	int test_coverage_no_heatmap = 0;
 	int test_coverage_per_mode_heatmap = 0;
 	uint32_t test_coverage_jobs = 0; /* 0 = auto, 1 = single-thread */
+	double test_coverage_early_stop_radius = 0.0; /* 0.0 = use library default (0.025) */
+	int test_coverage_no_early_stop = 0;
 	int shuffle = 0;
 	size_t stress_iterations = 0;
 	int no_frontload = 0;
@@ -2248,6 +2253,27 @@ int main(int argc, char* argv[]) {
 				test_coverage_jobs = (uint32_t)n;
 				continue;
 			}
+			case VALIDATE_ARG_EARLY_STOP_RADIUS: {
+				if (++i >= argc) {
+					fprintf(stderr, "%sError: --early-stop-radius requires a numeric argument (e.g., 0.025)%s\n", COLOR_RED, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				char *endptr;
+				double v = strtod(argv[i], &endptr);
+				if (*endptr != '\0' || v <= 0.0 || v > 0.5) {
+					fprintf(stderr, "%sError: --early-stop-radius must be a positive float in (0, 0.5] (got '%s')%s\n", COLOR_RED, argv[i], COLOR_RESET);
+					free(paths);
+					return 2;
+				}
+				test_coverage_early_stop_radius = v;
+				test_coverage_no_early_stop = 0; /* explicit radius re-enables */
+				continue;
+			}
+			case VALIDATE_ARG_NO_EARLY_STOP: {
+				test_coverage_no_early_stop = 1;
+				continue;
+			}
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);
@@ -2338,12 +2364,21 @@ int main(int argc, char* argv[]) {
 				if (usable > 200) usable = 200;
 				heatmap_width = (uint32_t)usable;
 			}
-			fprintf(stderr, "%sTest coverage: %s (rounds=%u, seed=%llu, modes=0x%x, shotgun=%u, heatmap=%u, jobs=%u)...%s\n",
+			/* Resolve effective early-stop radius. --no-early-stop is a hard
+			 * disable (negative => disabled in the FFI). Otherwise, 0.0 lets
+			 * the FFI pick its default (0.025), and any explicit
+			 * --early-stop-radius value is passed through verbatim. */
+			double effective_radius = test_coverage_no_early_stop
+				? -1.0
+				: test_coverage_early_stop_radius;
+			fprintf(stderr, "%sTest coverage: %s (rounds=%u, seed=%llu, modes=0x%x, shotgun=%u, heatmap=%u, jobs=%u, early_stop=%s)...%s\n",
 				COLOR_CYAN, paths[i], test_coverage_rounds, (unsigned long long)seed,
-				test_coverage_modes_bitmask, test_coverage_shotgun_bytes, heatmap_width, test_coverage_jobs, COLOR_RESET);
+				test_coverage_modes_bitmask, test_coverage_shotgun_bytes, heatmap_width, test_coverage_jobs,
+				test_coverage_no_early_stop ? "off" : (test_coverage_early_stop_radius > 0.0 ? "custom" : "default(0.025)"),
+				COLOR_RESET);
 			char *result = validate_test_coverage(paths[i], test_coverage_rounds, seed,
 				test_coverage_shotgun_bytes, test_coverage_modes_bitmask, heatmap_width,
-				test_coverage_jobs, NULL, NULL);
+				test_coverage_jobs, effective_radius, NULL, NULL);
 			if (!result) {
 				fprintf(stderr, "%sFAILED%s: could not run coverage on %s (baseline validation failed?)\n", COLOR_RED, COLOR_RESET, paths[i]);
 				overall_exit = 1;
@@ -2354,17 +2389,27 @@ int main(int argc, char* argv[]) {
 			kv_get_str(result, "fmt", fmt_buf, sizeof(fmt_buf));
 			uint64_t file_size = kv_get_u64(result, "file_size");
 			uint64_t rounds = kv_get_u64(result, "rounds");
+			uint64_t requested_rounds = kv_get_u64(result, "requested_rounds");
+			uint64_t early_stopped = kv_get_u64(result, "early_stopped");
 			uint64_t detected = kv_get_u64(result, "detected");
 			uint64_t duration_ns = kv_get_u64(result, "duration_ns");
 			double duration_s = (double)duration_ns / 1e9;
+			char early_radius_buf[16] = {0};
+			kv_get_str(result, "early_stop_radius", early_radius_buf, sizeof(early_radius_buf));
 
 			printf("\n%s%s%s  (%llu bytes)\n", COLOR_CYAN, paths[i], COLOR_RESET,
 				(unsigned long long)file_size);
 			printf("  Format: %s%s%s\n", COLOR_CYAN, fmt_buf, COLOR_RESET);
 			double overall_pct = rounds > 0 ? 100.0 * (double)detected / (double)rounds : 0.0;
 			const char *overall_color = overall_pct >= 95.0 ? COLOR_GREEN : (overall_pct >= 70.0 ? COLOR_YELLOW : COLOR_RED);
-			printf("  Overall: %s%llu/%llu (%.1f%%)%s  in %.2fs\n\n",
+			printf("  Overall: %s%llu/%llu (%.1f%%)%s  in %.2fs\n",
 				overall_color, (unsigned long long)detected, (unsigned long long)rounds, overall_pct, COLOR_RESET, duration_s);
+			if (early_stopped) {
+				printf("  %sEarly stop at round %llu: CI radius <= %s (cap was %llu)%s\n",
+					COLOR_YELLOW, (unsigned long long)rounds, early_radius_buf,
+					(unsigned long long)requested_rounds, COLOR_RESET);
+			}
+			printf("\n");
 
 			printf("  %-10s %8s %8s %8s  %-14s\n", "Mode", "Detected", "Total", "Rate", "95% CI");
 			printf("  %-10s %8s %8s %8s  %-14s\n", "----", "--------", "-----", "----", "------");

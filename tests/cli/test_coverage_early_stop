@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Verify --test-coverage adaptive early stopping. We need a known-good file
+# in a format with a transparent (high-detection-rate) validator. PNG fits —
+# our deep validator catches ~100% of single-byte and 4 KiB corruption, so
+# Wilson radius drops below 0.025 well before the round cap.
+#
+# Notes:
+#   - We don't ship ground-truth PNGs in the worktree; the test looks in a few
+#     known locations and skips with exit 0 if it can't find one. Skipping
+#     keeps `./test` green when ground truth is unavailable while still
+#     gating real runs (CI, host main repo) on the early-stop behavior.
+#   - The cap (1000) is intentionally well above the expected stop point so
+#     the test fails loudly if early stopping silently stopped working.
+
+set -u
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+
+# Locate a PNG ground-truth sample. Prefer the worktree, fall back to the
+# main repo for hosts where ground truth lives one directory up.
+PNG=""
+for candidate in \
+	"ground_truth_examples/png/generated_plasma.png" \
+	"../../../ground_truth_examples/png/generated_plasma.png" \
+	"/Users/pmarreck/Documents-CloudManaged/validate/ground_truth_examples/png/generated_plasma.png" \
+; do
+	if [ -f "$candidate" ]; then
+		PNG="$candidate"
+		break
+	fi
+done
+
+if [ -z "$PNG" ]; then
+	printf 'SKIP: no PNG ground-truth file available\n'
+	exit 0
+fi
+
+# 1) Default radius (0.025) — should early-stop on PNG well before 1000 rounds.
+out=$("$BIN" --test-coverage 1000 --coverage-jobs 1 "$PNG" 2>&1) || true
+if ! echo "$out" | grep -q "Early stop at round"; then
+	printf 'FAIL: --test-coverage 1000 on PNG did not early-stop at default radius\n' >&2
+	printf '%s\n' "$out" >&2
+	exit 1
+fi
+
+# Parse the actual rounds from the "Overall:" line. Format:
+# "Overall: 700/700 (100.0%) ..."
+overall_rounds=$(echo "$out" | awk '/Overall:/ { sub("/", " "); print $3; exit }')
+if [ -z "$overall_rounds" ]; then
+	printf 'FAIL: could not parse round count from output\n' >&2
+	exit 1
+fi
+if [ "$overall_rounds" -ge 1000 ]; then
+	printf 'FAIL: expected early-stop before round 1000, got %s\n' "$overall_rounds" >&2
+	exit 1
+fi
+
+# 2) --no-early-stop should run all 1000 rounds.
+out=$("$BIN" --test-coverage 1000 --no-early-stop --coverage-jobs 1 "$PNG" 2>&1) || true
+if echo "$out" | grep -q "Early stop at round"; then
+	printf 'FAIL: --no-early-stop still triggered the early-stop message\n' >&2
+	exit 1
+fi
+overall_rounds=$(echo "$out" | awk '/Overall:/ { sub("/", " "); print $3; exit }')
+if [ "$overall_rounds" -ne 1000 ]; then
+	printf 'FAIL: --no-early-stop should run 1000 rounds, got %s\n' "$overall_rounds" >&2
+	exit 1
+fi
+
+# 3) Tighter radius (0.001) should require strictly more samples than default.
+out=$("$BIN" --test-coverage 5000 --early-stop-radius 0.001 --coverage-jobs 1 "$PNG" 2>&1) || true
+tight_rounds=$(echo "$out" | awk '/Overall:/ { sub("/", " "); print $3; exit }')
+out_default=$("$BIN" --test-coverage 5000 --coverage-jobs 1 "$PNG" 2>&1) || true
+default_rounds=$(echo "$out_default" | awk '/Overall:/ { sub("/", " "); print $3; exit }')
+if [ "$tight_rounds" -le "$default_rounds" ]; then
+	printf 'FAIL: --early-stop-radius 0.001 (%s rounds) should need more than default (%s rounds)\n' "$tight_rounds" "$default_rounds" >&2
+	exit 1
+fi
+
+# 4) Invalid radius is rejected.
+if "$BIN" --test-coverage 100 --early-stop-radius 0 --coverage-jobs 1 "$PNG" 2>/dev/null; then
+	printf 'FAIL: --early-stop-radius 0 should be rejected\n' >&2
+	exit 1
+fi
+if "$BIN" --test-coverage 100 --early-stop-radius 1.5 --coverage-jobs 1 "$PNG" 2>/dev/null; then
+	printf 'FAIL: --early-stop-radius 1.5 should be rejected (out of range)\n' >&2
+	exit 1
+fi
+
+printf 'PASS: --test-coverage early-stop behavior matches spec\n'

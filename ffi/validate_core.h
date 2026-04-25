@@ -173,6 +173,8 @@ typedef enum {
     VALIDATE_ARG_NO_HEATMAP = 18,
     VALIDATE_ARG_PER_MODE_HEATMAP = 19,
     VALIDATE_ARG_COVERAGE_JOBS = 20,
+    VALIDATE_ARG_EARLY_STOP_RADIUS = 21,
+    VALIDATE_ARG_NO_EARLY_STOP = 22,
     VALIDATE_ARG_UNKNOWN = 255,
 } validate_arg_t;
 
@@ -301,13 +303,27 @@ typedef void (*validate_coverage_progress_t)(void* ctx, uint32_t round, uint32_t
  *                       (capped at 16). 1 = single-threaded. Each worker
  *                       gets its own FormatValidator and a PRNG seed of
  *                       base_seed + worker_id.
+ * @param early_stop_radius Adaptive early-stop threshold expressed as the
+ *                       half-width of the 95% Wilson CI over the per-mode
+ *                       detection rate. After every 100 rounds, every enabled
+ *                       mode is checked; if all are at or under this radius,
+ *                       the run stops short. Saves time on extreme bimodal
+ *                       formats (PNG=100%, BMP=0%) without hurting precision
+ *                       on near-50% rates. Mapping:
+ *                         - 0.0 → use library default (0.025 = ±2.5%)
+ *                         - <0  → disabled (run all `rounds`)
+ *                         - >0  → use as the threshold directly
  * @param progress_cb    Optional progress callback (ignored when jobs > 1)
  * @param progress_ctx   Optional context pointer passed to progress_cb
  * @return KV-US-RS result string. Caller MUST validate_free(). NULL on error.
+ *         Result includes keys `rounds` (actual completed),
+ *         `requested_rounds` (cap), `early_stop_radius` (effective threshold),
+ *         and `early_stopped` (1 if rounds < requested_rounds).
  */
 char* validate_test_coverage(const char* path, uint32_t rounds, uint64_t seed,
                              uint32_t shotgun_bytes, uint32_t modes_bitmask,
                              uint32_t heatmap_width, uint32_t jobs,
+                             double early_stop_radius,
                              validate_coverage_progress_t progress_cb, void* progress_ctx);
 /* ========== Batch Validation ========== */
 

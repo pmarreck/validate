@@ -49,6 +49,28 @@ pub const CorruptionEvent = struct {
 
 /// Apply a sniper corruption: flip one random bit in the buffer.
 /// Returns the event so the caller can record offset+bit for the heatmap.
+/// Half-width of the 95% Wilson score confidence interval for a binomial
+/// proportion p̂ = k/n. The Wilson interval is well-behaved at small n and at
+/// p̂ near 0/1 (where the naive normal-approximation interval collapses or
+/// strays outside [0,1]) — exactly the regimes we need for adaptive early
+/// stopping on bimodal corruption rates.
+///
+/// Returns 1.0 (the maximum possible radius) when n == 0, so it never
+/// satisfies any positive threshold.
+///
+/// Constants match `wilson_ci` in `scripts/corruption-experiment` (z = 1.96).
+pub fn wilsonRadius(k: u32, n: u32) f64 {
+    if (n == 0) return 1.0;
+    const z: f64 = 1.959963984540054; // 97.5th percentile of N(0,1)
+    const nf: f64 = @floatFromInt(n);
+    const p_hat: f64 = @as(f64, @floatFromInt(k)) / nf;
+    const z2: f64 = z * z;
+    const den: f64 = 1.0 + z2 / nf;
+    const radius: f64 = (z * @sqrt(p_hat * (1.0 - p_hat) / nf + z2 / (4.0 * nf * nf))) / den;
+    return radius;
+}
+
+
 pub fn applySniper(buffer: []u8, rng: std.Random) CorruptionEvent {
     std.debug.assert(buffer.len > 0);
     const offset = rng.uintLessThan(u64, buffer.len);
@@ -345,6 +367,23 @@ pub const CoverageConfig = struct {
         set.insert(.xor);
         break :blk set;
     },
+    /// Adaptive early-stop threshold expressed as the half-width of the
+    /// 95% Wilson confidence interval over the per-mode detection rate.
+    ///
+    ///   - `0.0` — disabled at this layer (caller chooses the policy).
+    ///     `runCoverage` will run all `rounds` requested.
+    ///   - negative — explicitly disabled. Same behavior as 0.0; the negative
+    ///     sentinel exists so the FFI layer can pass through a CLI
+    ///     `--no-early-stop` flag distinctly from "use default".
+    ///   - positive — every `early_stop_check_interval` rounds, compute the
+    ///     Wilson radius for each enabled mode that has run ≥ the interval.
+    ///     If ALL such modes are at or under this threshold (and every mode
+    ///     has produced at least `early_stop_check_interval` samples),
+    ///     break out of the round loop. Mirrors `scripts/corruption-experiment`.
+    early_stop_radius: f64 = 0.0,
+    /// Round interval between Wilson-radius checks. The corruption-experiment
+    /// script uses 100; we keep the same default so behavior is consistent.
+    early_stop_check_interval: u32 = 100,
     /// Optional progress callback fired before each round.
     progress: ?ProgressFn = null,
     progress_ctx: ?*anyopaque = null,
@@ -411,7 +450,18 @@ pub fn runCoverage(
     const debug_build = @import("builtin").mode == .Debug;
     const sentinel_len: usize = @min(@as(usize, 1024), original.len);
 
+    // Adaptive early-stop bookkeeping. We trip out of the loop as soon as
+    // every enabled mode has produced at least `early_stop_check_interval`
+    // samples AND the Wilson 95% CI radius for each mode has dropped to or
+    // below `early_stop_radius`. This mirrors the per-mode `radius<=thresh`
+    // gate in `scripts/corruption-experiment` but generalizes from one mode
+    // to the full enabled set.
+    const early_stop_enabled = config.early_stop_radius > 0.0 and config.early_stop_check_interval > 0;
+    const early_stop_threshold = config.early_stop_radius;
+    const early_stop_interval = config.early_stop_check_interval;
+
     var round: u32 = 0;
+    var actual_rounds: u32 = config.rounds;
     while (round < config.rounds) : (round += 1) {
         if (config.progress) |cb| cb(config.progress_ctx.?, round, config.rounds, detected_count);
 
@@ -485,16 +535,61 @@ pub fn runCoverage(
         if (event.offset < original.len) {
             @memcpy(work[event.offset..restore_end], original[event.offset..restore_end]);
         }
+
+        // Adaptive early-stop check. We only fire on interval boundaries to
+        // amortize the cost of iterating per-mode stats; on extreme bimodal
+        // detection rates the radius collapses fast, so a 100-round granularity
+        // is plenty.
+        if (early_stop_enabled and (round + 1) % early_stop_interval == 0) {
+            var all_tight = true;
+            for (enabled_modes) |m| {
+                const s = by_mode.get(m);
+                if (s.total < early_stop_interval) {
+                    all_tight = false;
+                    break;
+                }
+                const r = wilsonRadius(s.detected, s.total);
+                if (r > early_stop_threshold) {
+                    all_tight = false;
+                    break;
+                }
+            }
+            if (all_tight) {
+                actual_rounds = round + 1;
+                break;
+            }
+        }
     }
+    // If we exited via the loop condition (no early stop), `actual_rounds`
+    // still holds its initial cap value, which equals `round` here.
+    if (actual_rounds == config.rounds) actual_rounds = round;
 
     const end_ns = std.time.nanoTimestamp();
 
+    // Trim the events buffer down to what we actually filled. The caller's
+    // `deinit` will `free(events)` and that requires the slice length to
+    // match the allocation length exactly — so we either keep the original
+    // sized slice or reallocate to the smaller exact size.
+    var final_events: []CorruptionEvent = events;
+    if (actual_rounds < config.rounds) {
+        if (allocator.realloc(events, actual_rounds)) |shrunk| {
+            final_events = shrunk;
+        } else |_| {
+            // Realloc shouldn't fail when shrinking, but if it somehow does,
+            // copy into a fresh buffer and free the old one.
+            const fresh = try allocator.alloc(CorruptionEvent, actual_rounds);
+            @memcpy(fresh, events[0..actual_rounds]);
+            allocator.free(events);
+            final_events = fresh;
+        }
+    }
+
     return CoverageResult{
         .file_size = original.len,
-        .rounds = config.rounds,
+        .rounds = actual_rounds,
         .duration_ns = @intCast(end_ns - start_ns),
         .by_mode = by_mode,
-        .events = events,
+        .events = final_events,
         .allocator = allocator,
     };
 }
@@ -742,4 +837,125 @@ test "runCoverage respects enabled_modes subset" {
     try testing.expectEqual(@as(u32, 0), result.by_mode.get(.shotgun).total);
     try testing.expectEqual(@as(u32, 0), result.by_mode.get(.xor).total);
     for (result.events) |e| try testing.expectEqual(CorruptionMode.sniper, e.mode);
+}
+
+test "wilsonRadius matches reference values" {
+    // Hand-checked against the LuaJIT corruption-experiment script at p=0.5,
+    // n=100 (worst case for symmetric Wilson interval — 95% CI radius ≈ 0.094).
+    const r1 = wilsonRadius(50, 100);
+    try testing.expect(r1 > 0.09 and r1 < 0.10);
+    // At p=1.0, n=200 the radius pulls in tightly.
+    const r2 = wilsonRadius(200, 200);
+    try testing.expect(r2 < 0.025);
+    // At p=0.0, n=200 — symmetric tail, also tight.
+    const r3 = wilsonRadius(0, 200);
+    try testing.expect(r3 < 0.025);
+    // n=0 is undefined; we return 1.0 (max possible) so it never trips early stop.
+    try testing.expectEqual(@as(f64, 1.0), wilsonRadius(0, 0));
+}
+
+test "runCoverage early-stops at extreme detection rate" {
+    // alwaysDetects: every round adds to the detected tally (p̂=1). The Wilson
+    // upper bound clamps at 1, so the radius shrinks rapidly. With cap=10000
+    // and the default check interval (100), we should stop well before round 1000.
+    const original = "z" ** 4096;
+    var ctx: u32 = 0;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{
+            .rounds = 10000,
+            .seed = 1,
+            .early_stop_radius = 0.025,
+        },
+        @ptrCast(&ctx),
+        alwaysDetectsValidator,
+    );
+    defer result.deinit();
+    try testing.expect(result.rounds < 1000);
+    try testing.expect(result.rounds >= 100); // first feasible check
+    // events slice should be sized to the actual run, not the cap
+    try testing.expectEqual(@as(usize, result.rounds), result.events.len);
+}
+
+test "runCoverage early-stops at zero detection rate (symmetric tail)" {
+    // neverDetects: p̂=0. The interval also shrinks fast; should stop early.
+    const original = "z" ** 4096;
+    var ctx: u32 = 0;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{
+            .rounds = 10000,
+            .seed = 2,
+            .early_stop_radius = 0.025,
+        },
+        @ptrCast(&ctx),
+        neverDetectsValidator,
+    );
+    defer result.deinit();
+    try testing.expect(result.rounds < 1000);
+}
+
+test "runCoverage with early_stop disabled runs all rounds" {
+    // Negative radius = disabled; should run exactly the cap.
+    const original = "z" ** 4096;
+    var ctx: u32 = 0;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{
+            .rounds = 250,
+            .seed = 3,
+            .early_stop_radius = -1.0,
+        },
+        @ptrCast(&ctx),
+        alwaysDetectsValidator,
+    );
+    defer result.deinit();
+    try testing.expectEqual(@as(u32, 250), result.rounds);
+    try testing.expectEqual(@as(usize, 250), result.events.len);
+}
+
+test "runCoverage with early_stop_radius=0 means disabled (default)" {
+    // 0.0 = disabled at the core layer (caller picks the default elsewhere).
+    const original = "z" ** 4096;
+    var ctx: u32 = 0;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{
+            .rounds = 220,
+            .seed = 4,
+            .early_stop_radius = 0.0,
+        },
+        @ptrCast(&ctx),
+        alwaysDetectsValidator,
+    );
+    defer result.deinit();
+    try testing.expectEqual(@as(u32, 220), result.rounds);
+}
+
+test "runCoverage tighter early_stop_radius needs more rounds before stopping" {
+    // With a much tighter threshold (0.001 = ±0.1%), early stop requires
+    // many more samples than at 0.025.
+    const original = "z" ** 4096;
+    var ctx: u32 = 0;
+    var loose = try runCoverage(
+        testing.allocator,
+        original,
+        .{ .rounds = 100000, .seed = 7, .early_stop_radius = 0.025 },
+        @ptrCast(&ctx),
+        alwaysDetectsValidator,
+    );
+    defer loose.deinit();
+    var tight = try runCoverage(
+        testing.allocator,
+        original,
+        .{ .rounds = 100000, .seed = 7, .early_stop_radius = 0.001 },
+        @ptrCast(&ctx),
+        alwaysDetectsValidator,
+    );
+    defer tight.deinit();
+    try testing.expect(tight.rounds > loose.rounds);
 }

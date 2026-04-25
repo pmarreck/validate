@@ -27,6 +27,8 @@ pub const CliArg = enum(u8) {
     no_heatmap = 18,
     per_mode_heatmap = 19,
     coverage_jobs = 20,
+    early_stop_radius = 21,
+    no_early_stop = 22,
 };
 
 /// Locale-specific CLI argument aliases (without -- prefix).
@@ -52,6 +54,8 @@ pub const CliAliases = struct {
     no_heatmap: [:0]const u8,
     per_mode_heatmap: [:0]const u8,
     coverage_jobs: [:0]const u8,
+    early_stop_radius: [:0]const u8,
+    no_early_stop: [:0]const u8,
 };
 
 /// Environment variable identifiers (matches validate_env_t in C header).
