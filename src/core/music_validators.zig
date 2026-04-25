@@ -19,6 +19,7 @@ const flac_decoder = @import("flac_decoder.zig");
 const mp3_decode_validator = @import("mp3_decode_validator.zig");
 const mp3_validator = @import("mp3_validator.zig");
 const aac_syntax_validator = @import("aac_syntax_validator.zig");
+const statistical_corruption = @import("statistical_corruption.zig");
 const errmsg = @import("error_messages.zig");
 
 const FormatValidator = format_validation.FormatValidator;
@@ -317,7 +318,12 @@ pub fn validateWavDeep(allocator: Allocator, source: *FileSource) ValidationResu
         return validateWavFloatSamples(source, data_chunk_offset, data_chunk_size, fmt_bits_per_sample);
     }
 
-    // Integer PCM: no corruption signal (any value is valid) — structural only
+    // Integer PCM: no inherent corruption signal (any value is valid).
+    // Run the statistical heuristic on mono s16 — Phase 1 of the WARN-tier
+    // scanner. See src/core/statistical_corruption.zig.
+    if (fmt_audio_format == 1 and fmt_channels == 1 and fmt_bits_per_sample == 16) {
+        return scanWavMonoS16Heuristic(source, data_chunk_offset, data_chunk_size, fmt_sample_rate);
+    }
     return ValidationResult.okWithDepth(.wav, .structural);
 }
 
@@ -362,6 +368,119 @@ fn validateWavFloatSamples(file: *FileSource, data_offset: u64, data_size: u32, 
     }
 
     return ValidationResult.okWithDepth(.wav, .full);
+}
+
+/// Run the statistical-corruption WARN heuristic on mono signed-16-bit PCM
+/// inside a WAV file. Returns ValidationResult.okWithDepthAndWarning when the
+/// heuristic score crosses the SUSPICIOUS threshold (>= 25/100). The
+/// underlying scoring panel is documented in src/core/statistical_corruption.zig.
+///
+/// Cap on inspected payload: 32 MiB (~3 minutes of 44.1 kHz mono s16). Files
+/// larger than that are scanned only over the first 32 MiB; the warning notes
+/// that explicitly. This bounds the heuristic's wall-clock cost and avoids
+/// pathological allocations on multi-GB raw recordings.
+fn scanWavMonoS16Heuristic(file: *FileSource, data_offset: u64, data_size: u32, sample_rate: u32) ValidationResult {
+    const MAX_SCAN_BYTES: u32 = 32 * 1024 * 1024; // 32 MiB
+    const scan_bytes: u32 = @min(data_size, MAX_SCAN_BYTES);
+    // Need at least a few hundred samples for the residual stats to be sane.
+    if (scan_bytes < 256) {
+        return ValidationResult.okWithDepth(.wav, .structural);
+    }
+
+    file.seekTo(data_offset) catch {
+        return ValidationResult.okWithDepth(.wav, .structural);
+    };
+
+    const sample_count: usize = scan_bytes / 2;
+    const samples = std.heap.page_allocator.alloc(i16, sample_count) catch {
+        // OOM on heuristic — just skip; structural is still valid.
+        return ValidationResult.okWithDepth(.wav, .structural);
+    };
+    defer std.heap.page_allocator.free(samples);
+
+    // Read raw bytes into a temporary buffer, then decode little-endian s16.
+    const raw = std.heap.page_allocator.alloc(u8, scan_bytes) catch {
+        return ValidationResult.okWithDepth(.wav, .structural);
+    };
+    defer std.heap.page_allocator.free(raw);
+
+    const bytes_read = file.read(raw) catch {
+        return ValidationResult.okWithDepth(.wav, .structural);
+    };
+    if (bytes_read < 256) {
+        return ValidationResult.okWithDepth(.wav, .structural);
+    }
+    const real_sample_count: usize = bytes_read / 2;
+    var i: usize = 0;
+    while (i < real_sample_count) : (i += 1) {
+        samples[i] = std.mem.readInt(i16, raw[i * 2 ..][0..2], .little);
+    }
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    const result = statistical_corruption.analyzePcmS16(
+        arena_alloc,
+        samples[0..real_sample_count],
+        sample_rate,
+        1,
+        data_offset,
+    ) catch {
+        return ValidationResult.okWithDepth(.wav, .structural);
+    };
+
+    const scan = switch (result) {
+        .scanned => |s| s,
+        .skipped => return ValidationResult.okWithDepth(.wav, .structural),
+    };
+
+    if (scan.score < 25) {
+        return ValidationResult.okWithDepth(.wav, .structural);
+    }
+
+    // Format a concise WARN message into a thread-local buffer (see
+    // crypto_validators.zig for the precedent — ValidationResult borrows
+    // string slices, so dynamic warnings live in static thread-local storage).
+    const S = struct {
+        threadlocal var buf: [512]u8 = undefined;
+    };
+    const severity_label: []const u8 = switch (scan.severity) {
+        .clean => "clean",
+        .suspicious => "possible PCM corruption",
+        .likely_corrupt => "likely PCM corruption",
+    };
+
+    var stream = std.io.fixedBufferStream(&S.buf);
+    const w = stream.writer();
+    w.print("statistical-corruption heuristic: {s} (score={d}/100", .{ severity_label, scan.score }) catch {};
+    if (scan.synth_flat) {
+        w.print(", synth-flat", .{}) catch {};
+    }
+    w.print(")", .{}) catch {};
+    var emitted: usize = 0;
+    for (scan.findings) |f| {
+        if (emitted >= 3) break;
+        switch (f) {
+            .constant_run => |cr| {
+                w.print("; constant_run sample={d} len={d} val={d}", .{ cr.sample_offset, cr.length, cr.value }) catch {};
+                emitted += 1;
+            },
+            .diagnosed_bit_flip => |bf| {
+                w.print("; bit_flip byte=0x{X} bit={d} z={d:.1}->{d:.1}", .{ bf.byte_offset, bf.bit_index, bf.z_before, bf.z_after }) catch {};
+                emitted += 1;
+            },
+            .sector_aligned_cluster => |sc| {
+                w.print("; sector_cluster byte=0x{X} span={d} sector={d}", .{ sc.first_byte, sc.span, sc.sector_size }) catch {};
+                emitted += 1;
+            },
+        }
+    }
+    if (data_size > MAX_SCAN_BYTES) {
+        w.print("; scanned first {d}MiB", .{MAX_SCAN_BYTES / (1024 * 1024)}) catch {};
+    }
+    const written = stream.getWritten();
+    return ValidationResult.okWithDepthAndWarning(.wav, .structural, written);
 }
 
 /// Deep validation for AIFF audio files.
@@ -4325,5 +4444,158 @@ test "FormatValidator rejects DSF with invalid sample rate" {
 
     try std.testing.expectEqual(FileFormat.dsf, result.format);
     try std.testing.expect(!result.is_valid);
+}
+
+// ---------- Statistical-corruption WARN integration (Phase 1: mono s16 WAV) ----------
+
+/// Construct a minimal mono signed-16-bit WAV in memory from a slice of i16
+/// samples. Used by the integration tests below.
+fn buildMonoS16Wav(allocator: Allocator, samples: []const i16, sample_rate: u32) ![]u8 {
+    const data_size: u32 = @intCast(samples.len * 2);
+    const fmt_size: u32 = 16;
+    const file_size: u32 = 4 + (8 + fmt_size) + (8 + data_size);
+    var buf = try allocator.alloc(u8, 8 + file_size);
+
+    // RIFF header
+    @memcpy(buf[0..4], "RIFF");
+    std.mem.writeInt(u32, buf[4..8], file_size, .little);
+    @memcpy(buf[8..12], "WAVE");
+
+    // fmt  chunk
+    @memcpy(buf[12..16], "fmt ");
+    std.mem.writeInt(u32, buf[16..20], fmt_size, .little);
+    std.mem.writeInt(u16, buf[20..22], 1, .little); // PCM
+    std.mem.writeInt(u16, buf[22..24], 1, .little); // 1 channel
+    std.mem.writeInt(u32, buf[24..28], sample_rate, .little);
+    const byte_rate: u32 = sample_rate * 1 * 2;
+    std.mem.writeInt(u32, buf[28..32], byte_rate, .little);
+    std.mem.writeInt(u16, buf[32..34], 2, .little); // block_align = ch * bytes_per_sample
+    std.mem.writeInt(u16, buf[34..36], 16, .little); // bits_per_sample
+
+    // data chunk
+    @memcpy(buf[36..40], "data");
+    std.mem.writeInt(u32, buf[40..44], data_size, .little);
+    var i: usize = 0;
+    while (i < samples.len) : (i += 1) {
+        std.mem.writeInt(i16, buf[44 + i * 2 ..][0..2], samples[i], .little);
+    }
+    return buf;
+}
+
+test "validateWavDeep: clean mono s16 sine wave returns OK without warning" {
+    const allocator = testing.allocator;
+    const samples = try allocator.alloc(i16, 4096);
+    defer allocator.free(samples);
+    const sr: f64 = 44100.0;
+    const freq: f64 = 440.0;
+    for (samples, 0..) |*s, i| {
+        const t = @as(f64, @floatFromInt(i)) / sr;
+        const v: f64 = @sin(2.0 * std.math.pi * freq * t) * 16000.0;
+        s.* = @intFromFloat(v);
+    }
+    const wav = try buildMonoS16Wav(allocator, samples, 44100);
+    defer allocator.free(wav);
+    var source = FileSource.fromBuffer(wav);
+    defer source.close();
+    const result = validateWavDeep(allocator, &source);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message == null);
+}
+
+test "validateWavDeep: NUL run injection in mono s16 emits WARN" {
+    const allocator = testing.allocator;
+    const samples = try allocator.alloc(i16, 4096);
+    defer allocator.free(samples);
+    const sr: f64 = 44100.0;
+    const freq: f64 = 440.0;
+    for (samples, 0..) |*s, i| {
+        const t = @as(f64, @floatFromInt(i)) / sr;
+        const v: f64 = @sin(2.0 * std.math.pi * freq * t) * 16000.0;
+        s.* = @intFromFloat(v);
+    }
+    // Inject a 200-sample NUL run
+    for (1500..1700) |i| samples[i] = 0;
+    const wav = try buildMonoS16Wav(allocator, samples, 44100);
+    defer allocator.free(wav);
+    var source = FileSource.fromBuffer(wav);
+    defer source.close();
+    const result = validateWavDeep(allocator, &source);
+    try testing.expect(result.is_valid); // WARN, not FAIL
+    try testing.expect(result.warning_message != null);
+    if (result.warning_message) |w| {
+        try testing.expect(std.mem.indexOf(u8, w, "statistical-corruption") != null);
+    }
+}
+
+test "validateWavDeep: stereo s16 is not scanned (heuristic skipped)" {
+    const allocator = testing.allocator;
+    const sample_count: usize = 4096;
+    const data_size: u32 = @intCast(sample_count * 2 * 2);
+    const fmt_size: u32 = 16;
+    const file_size: u32 = 4 + (8 + fmt_size) + (8 + data_size);
+    var buf = try allocator.alloc(u8, 8 + file_size);
+    defer allocator.free(buf);
+    @memcpy(buf[0..4], "RIFF");
+    std.mem.writeInt(u32, buf[4..8], file_size, .little);
+    @memcpy(buf[8..12], "WAVE");
+    @memcpy(buf[12..16], "fmt ");
+    std.mem.writeInt(u32, buf[16..20], fmt_size, .little);
+    std.mem.writeInt(u16, buf[20..22], 1, .little);
+    std.mem.writeInt(u16, buf[22..24], 2, .little);
+    std.mem.writeInt(u32, buf[24..28], 44100, .little);
+    std.mem.writeInt(u32, buf[28..32], 44100 * 2 * 2, .little);
+    std.mem.writeInt(u16, buf[32..34], 4, .little);
+    std.mem.writeInt(u16, buf[34..36], 16, .little);
+    @memcpy(buf[36..40], "data");
+    std.mem.writeInt(u32, buf[40..44], data_size, .little);
+    @memset(buf[44..], 0);
+    var source = FileSource.fromBuffer(buf);
+    defer source.close();
+    const result = validateWavDeep(allocator, &source);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message == null);
+}
+
+test "validateWavDeep: clean white noise mono s16 stays clean" {
+    const allocator = testing.allocator;
+    var prng = std.Random.DefaultPrng.init(0xC0FFEE);
+    const rng = prng.random();
+    const samples = try allocator.alloc(i16, 4096);
+    defer allocator.free(samples);
+    for (samples) |*s| s.* = rng.intRangeAtMost(i16, -3000, 3000);
+    const wav = try buildMonoS16Wav(allocator, samples, 44100);
+    defer allocator.free(wav);
+    var source = FileSource.fromBuffer(wav);
+    defer source.close();
+    const result = validateWavDeep(allocator, &source);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message == null);
+}
+
+test "validateWavDeep: square wave mono s16 (synth-flat) stays clean" {
+    const allocator = testing.allocator;
+    const samples = try allocator.alloc(i16, 4096);
+    defer allocator.free(samples);
+    for (samples, 0..) |*s, i| {
+        s.* = if ((i / 100) & 1 == 0) 16000 else -16000;
+    }
+    const wav = try buildMonoS16Wav(allocator, samples, 44100);
+    defer allocator.free(wav);
+    var source = FileSource.fromBuffer(wav);
+    defer source.close();
+    const result = validateWavDeep(allocator, &source);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message == null);
+}
+
+test "validateWavDeep: ground truth WAV stays clean (no statistical warning)" {
+    var source = FileSource.open("ground_truth_examples/wav/sample.wav") catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer source.close();
+    const result = validateWavDeep(testing.allocator, &source);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message == null);
 }
 

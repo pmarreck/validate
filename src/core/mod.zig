@@ -144,6 +144,7 @@ pub const creative_validators = @import("creative_validators.zig");
 pub const email_validators = @import("email_validators.zig");
 pub const error_messages = @import("error_messages.zig");
 pub const codec_utils = @import("codec_utils.zig");
+pub const statistical_corruption = @import("statistical_corruption.zig");
 pub const i18n = @import("i18n/mod.zig");
 pub const progress = @import("progress.zig");
 // VideoToolbox removed — all video codecs use pure-Zig syntax validators
@@ -365,6 +366,8 @@ test {
     _ = @import("error_messages.zig");
     // Shared codec utilities (CRC, RBSP, LEB128, etc.)
     _ = @import("codec_utils.zig");
+    // Statistical corruption heuristics for raw PCM audio (mono s16 in Phase 1)
+    _ = @import("statistical_corruption.zig");
     // PDF decryptor (RC4/AES decryption, string parsing, octal escapes)
     _ = @import("pdf_decryptor.zig");
     // Camera RAW decoders
