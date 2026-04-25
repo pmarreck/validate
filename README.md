@@ -28,6 +28,18 @@ HEIC is arguably the worst case here because it is the **default photo format on
 
 `validate` reports these realities honestly: formats are classified as "fully validated" only when every byte is covered by a checksum, decompression, or decode that would fail on corruption. Formats where corruption can hide in opaque payload data are reported as "structural" validation depth, regardless of how much parsing we perform. See [FORMAT_VERIFICATIONS.md](FORMAT_VERIFICATIONS.md#corruption-detection-rates-snipershotgun-experiments) for measured detection rates per format.
 
+### When the decoder lies — VP8 error concealment
+
+Some decoders go further than just "decode any bit pattern": they *actively hide* corruption from the caller. libvpx's VP8 decoder is a textbook case. Feed it a frame with mangled coefficients and it returns `VPX_CODEC_OK`, transparently patching up the damage via built-in **error concealment**. The caller — your video player, your transcoder, your backup-checker — is told everything is fine.
+
+The damage is detectable, but only if you ask. libvpx exposes a runtime control, `VP8D_GET_FRAME_CORRUPTED`, that surfaces the internal flag the decoder set when it had to conceal something. Without that explicit query, every concealed frame validates as clean.
+
+Without that query, validate's VP8 sniper detection sat at **0%**. With it, the same sample hits **88%** sniper / **90%** shotgun. The bytes were always damaged; the decoder just declined to mention it.
+
+> **Your codec has error concealment. Your validator should not.**
+
+This is exactly the silent-corruption pattern validate exists to catch — the reader said OK, but the bytes were not OK.
+
 ## Components
 - Zig library (core validation)
 - C FFI (stable-enough for integration, but not yet 1.0)
