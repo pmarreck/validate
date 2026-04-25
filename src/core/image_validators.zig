@@ -3566,12 +3566,25 @@ fn scanIfdForPreview(
 
     if (jpeg_if != 0 and jpeg_if_len > 0 and jpeg_if + jpeg_if_len <= data.len) {
         if (jpeg_if + 3 <= data.len and data[jpeg_if] == 0xFF and data[jpeg_if + 1] == 0xD8 and data[jpeg_if + 2] == 0xFF) {
-            updateBestPreview(best, best_score, jpeg_if, jpeg_if_len);
+            // Skip lossless-SOF JPEGs (raw sensor streams stored as JPEG-lossless,
+            // e.g. CR2 IFD3 sRAW) — these aren't viewable previews.
+            const cand = data[@intCast(jpeg_if)..@intCast(jpeg_if + jpeg_if_len)];
+            if (!jpeg_lossless_decoder.isLosslessJpeg(cand)) {
+                updateBestPreview(best, best_score, jpeg_if, jpeg_if_len);
+            }
         }
     }
     if (compression == 6 and strip_offset != 0 and strip_length > 0 and strip_offset + strip_length <= data.len) {
         if (strip_offset + 3 <= data.len and data[strip_offset] == 0xFF and data[strip_offset + 1] == 0xD8 and data[strip_offset + 2] == 0xFF) {
-            updateBestPreview(best, best_score, strip_offset, strip_length);
+            // Skip lossless-SOF JPEGs (raw sensor streams stored as JPEG-lossless,
+            // e.g. CR2 IFD3 sRAW) — these aren't viewable previews. Without this
+            // filter the "biggest is best" heuristic latches onto the multi-MB
+            // sensor strip, then the post-walk lossless check at the top-level
+            // returns null and we lose the legitimate small IFD0 preview.
+            const cand = data[@intCast(strip_offset)..@intCast(strip_offset + strip_length)];
+            if (!jpeg_lossless_decoder.isLosslessJpeg(cand)) {
+                updateBestPreview(best, best_score, strip_offset, strip_length);
+            }
         }
     }
 

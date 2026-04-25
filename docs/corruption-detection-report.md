@@ -47,7 +47,7 @@
 | Format | Sniper | Shotgun | Sample | Size | Run | Mechanism |
 |--------|-------:|--------:|--------|-----:|-----|-----------|
 | DNG | 0% | 0% | blackmagic_micro_cinema.dng | 1.2 MB | 2026-03-06 | TIFF-based; preview JPEG decode via libjpeg-turbo (BlackMagic sample lacks a preview) |
-| CR2 | 0% | 0% | canon_eos_40d_sraw2.cr2 | 5.8 MB | 2026-03-06 | TIFF-based; deep via zigimg |
+| CR2 | 1% | 6% | canon_eos_40d_sraw2.cr2 | 5.8 MB | 2026-04-25 | TIFF-based; IFD-walked preview JPEG decoded via libjpeg-turbo (sRAW2 lossless strip filtered out so heuristic keeps the real preview) |
 | NEF | 0% | 0% | nikon_coolscan_iv.nef | 2.2 MB | 2026-03-06 | TIFF-based; deep via zigimg |
 | ARW | 0% | 0% | sony_ilce_7s.arw | 6.2 MB | 2026-03-06 | TIFF-based; deep via zigimg |
 | RAF | 0% | 1% | DSCF0652_fuji_GFX_100.RAF | 208 MB | 2026-04-23 | Fuji; validator decodes the JPEG preview at 0x54/0x58, but preview is ~0.5% of a 208 MB sensor dump — shotgun almost never lands in it. ⚠ See Action Items. |

@@ -91,7 +91,7 @@ trial	mode	filesize	off	bit	span	detected
 88	sniper	5805950	1959600	0	1	false
 89	sniper	5805950	2257462	5	1	false
 90	sniper	5805950	5692598	6	1	false
-91	sniper	5805950	231377	4	1	false
+91	sniper	5805950	231377	4	1	true
 92	sniper	5805950	230649	2	1	false
 93	sniper	5805950	1946131	3	1	false
 94	sniper	5805950	333323	4	1	false
