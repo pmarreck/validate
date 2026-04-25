@@ -106,7 +106,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .odp = "د پرانیستې سند پریزنټیشن",
     .pdf = "د PDF سند",
     .rtf = "د بډایه متن بڼه",
-    .pages = "د ایپل پاڼې",
+    .pages = "د ایپل پاڼې", .keynote = "Apple Keynote", .numbers = "Apple Numbers",
     .wpd = "د WordPerfect سند",
     .cwk = "ClarisWorks/AppleWorks",
     .mwd = "د MacWrite سند",

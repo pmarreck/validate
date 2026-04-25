@@ -134,7 +134,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .odp = "OpenDocument\xe3\x83\x97\xe3\x83\xac\xe3\x82\xbc\xe3\x83\xb3\xe3\x83\x86\xe3\x83\xbc\xe3\x82\xb7\xe3\x83\xa7\xe3\x83\xb3",
     .pdf = "PDF\xe6\x96\x87\xe6\x9b\xb8",
     .rtf = "Rich Text Format",
-    .pages = "Apple Pages",
+    .pages = "Apple Pages", .keynote = "Apple Keynote", .numbers = "Apple Numbers",
     .wpd = "WordPerfect\xe6\x96\x87\xe6\x9b\xb8",
     .cwk = "ClarisWorks/AppleWorks",
     .mwd = "MacWrite\xe6\x96\x87\xe6\x9b\xb8",

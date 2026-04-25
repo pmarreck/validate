@@ -464,6 +464,8 @@ pub const FileFormat = enum {
     pdf,
     rtf, // Rich Text Format
     pages, // Apple Pages (ZIP-based)
+    keynote, // Apple Keynote (ZIP-based, .key)
+    numbers, // Apple Numbers (ZIP-based, .numbers)
     // Legacy/Classic word processors
     wpd, // WordPerfect Document
     cwk, // ClarisWorks/AppleWorks
@@ -717,7 +719,7 @@ pub const FileFormat = enum {
             .svg => true, // SVG uses XML validation
             .dng, .cr2, .cr3, .nef, .arw, .raf, .orf, .rw2, .pef => true, // RAW formats
             .zip, .gzip, .bzip2, .xz, .zstd, .br, .hqx, .rar, .cpt, .sevenz, .tar, .epub, .docx, .xlsx, .pptx => true, // Archives
-            .odt, .ods, .odp, .pages, .logicx => true, // ZIP-based document/DAW formats
+            .odt, .ods, .odp, .pages, .keynote, .numbers, .logicx => true, // ZIP-based document/DAW formats
             .doc, .xls, .ppt => true, // OLE2/CFBF binary Office
             .pdf, .rtf => true, // Document formats
             .wpd, .cwk, .mwd => true, // Legacy word processors
@@ -814,7 +816,7 @@ pub const FileFormat = enum {
     pub fn isZipBased(self: FileFormat) bool {
         return switch (self) {
             .zip, .epub, .docx, .xlsx, .pptx => true,
-            .odt, .ods, .odp, .pages, .logicx, .song => true,
+            .odt, .ods, .odp, .pages, .keynote, .numbers, .logicx, .song => true,
             .@"3mf" => true, // 3MF is ZIP-based with XML content
             else => false,
         };
@@ -858,7 +860,7 @@ pub const FileFormat = enum {
             .swf, .asf, .ogg, .mp3, .wav, .aiff,
             .webp, .jxl, .bmp, .tiff, .dng, .psd, .ico, .icns,
             .heic, .avif, .tga, .exr, .docx, .xlsx, .pptx, .odt, .ods, .odp,
-            .epub, .pages, .java_class, .pe, .elf, .macho, .macho_fat, .wasm,
+            .epub, .pages, .keynote, .numbers, .java_class, .pe, .elf, .macho, .macho_fat, .wasm,
             .cab, .rpm, .sit, .sitx, .bagit, .warc,
             .pem, .der, .pgp_signed, .ssh_signature,
             .nes, .snes, .n64, .gb, .gba, .nds, .genesis, .chd,
@@ -2812,6 +2814,9 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "odp", .odp },
     .{ "epub", .epub },
     .{ "pages", .pages },
+    .{ "numbers", .numbers },
+    // .{ "key", .keynote } NOT added here — .key collides with PEM private-key files.
+    // Resolved in detectFormatFromExtension via 4-byte magic peek.
     // Video
     .{ "mp4", .mp4 },
     .{ "m4v", .mp4 },
@@ -3680,7 +3685,8 @@ fn isFormatCompatibleWithExtension(detected: FileFormat, extension_format: FileF
     // ZIP-based formats can be detected as zip initially
     if (detected == .zip and (extension_format == .docx or extension_format == .xlsx or extension_format == .pptx or
         extension_format == .odt or extension_format == .ods or extension_format == .odp or
-        extension_format == .epub or extension_format == .pages)) return true;
+        extension_format == .epub or extension_format == .pages or
+        extension_format == .keynote or extension_format == .numbers)) return true;
 
     // TIFF-based RAW formats
     if (detected == .tiff and (extension_format == .dng or extension_format == .cr2 or extension_format == .nef or extension_format == .arw or extension_format == .orf or extension_format == .rw2 or extension_format == .pef)) return true;
@@ -3718,6 +3724,12 @@ fn isFormatCompatibleWithExtension(detected: FileFormat, extension_format: FileF
 
     // WebM is a subset of Matroska (MKV) — same EBML container
     if ((extension_format == .webm and detected == .mkv) or (extension_format == .mkv and detected == .webm)) return true;
+
+    // .key extension is ambiguous: PEM private key (text) OR Apple Keynote bundle
+    // (ZIP). The ext map points to .pem (the historical default). When the actual
+    // file is a Keynote ZIP, magic-byte detection produces .keynote; that is
+    // still a legitimate match for the .key extension.
+    if (extension_format == .pem and detected == .keynote) return true;
 
     // Plain text encoding variants are all compatible (UTF-8, UTF-16, Latin-1, CP437)
     const ext_is_plaintext = switch (extension_format) {
@@ -4553,11 +4565,20 @@ pub fn detectZipSubformat(source: *FileSource) FileFormat {
         }
     }
 
-    // Apple Pages: Look for Index.zip or index.xml
-    if (findInBuffer(&buffer, bytes_read, "Index.zip") or
+    // Apple iWork bundles (Pages, Keynote, Numbers) all share the same layout:
+    // outer ZIP containing Index.zip, buildVersionHistory.plist, Metadata/...
+    // The differentiating marker is com.apple.iWork.<App> in the build-version
+    // plist. When that marker isn't visible in the first 8 KB, fall back to
+    // .pages (the historical default) so existing callers keep working.
+    const has_iwork_layout = findInBuffer(&buffer, bytes_read, "Index.zip") or
         findInBuffer(&buffer, bytes_read, "index.xml") or
-        findInBuffer(&buffer, bytes_read, "buildVersionHistory.plist"))
-    {
+        findInBuffer(&buffer, bytes_read, "buildVersionHistory.plist");
+    if (has_iwork_layout) {
+        if (findInBuffer(&buffer, bytes_read, "com.apple.iWork.Keynote")) return .keynote;
+        if (findInBuffer(&buffer, bytes_read, "com.apple.iWork.Numbers")) return .numbers;
+        // Pages is the default for any iWork-shaped bundle without an explicit
+        // app marker (matches the historical behavior before Keynote/Numbers
+        // were broken out).
         return .pages;
     }
 
@@ -5972,7 +5993,7 @@ pub const FormatValidator = struct {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.ico, .failed_to_seek, "file", .full);
                 break :blk image_validators.validateIcoDeep(allocator, source);
             },
-            .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .pages, .logicx, .song => blk: {
+            .zip, .epub, .docx, .xlsx, .pptx, .odt, .ods, .odp, .pages, .keynote, .numbers, .logicx, .song => blk: {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(initial_result.format, .failed_to_seek, "file", .full);
                 break :blk archive_validators.validateZipDeep(allocator, source);
             },
@@ -6704,7 +6725,7 @@ pub const FormatValidator = struct {
             .cr3 => image_validators.validateCr3(file_src_ptr),
             .exr => image_validators.validateExr(file_src_ptr),
             .zip, .epub, .docx, .xlsx, .pptx => archive_validators.validateZip(file_src_ptr, format),
-            .odt, .ods, .odp, .pages, .logicx, .song => archive_validators.validateZip(file_src_ptr, format), // ZIP-based document/DAW formats
+            .odt, .ods, .odp, .pages, .keynote, .numbers, .logicx, .song => archive_validators.validateZip(file_src_ptr, format), // ZIP-based document/DAW formats
             .gzip => archive_validators.validateGzip(file_src_ptr),
             .bzip2 => archive_validators.validateBzip2(file_src_ptr),
             .xz => archive_validators.validateXz(file_src_ptr),

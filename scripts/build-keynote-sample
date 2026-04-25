@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+# build-keynote-sample — regenerate ground_truth_examples/keynote/sample.key
+#
+# Hand-authored, structurally-minimal Apple iWork Keynote bundle used as
+# corruption-detection ground truth. Mirrors scripts/build-pages-sample
+# (same IWA framing + AES-CTR high-entropy payloads + plist metadata),
+# differing only in IWA file names (slide-shaped) and the bundle marker
+# `com.apple.iWork.Keynote` that the format detector keys on.
+#
+# License: CC0 1.0 (sample is hand-authored, no Apple software involved).
+
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+OUT_DIR="$ROOT/ground_truth_examples/keynote"
+OUT_FILE="$OUT_DIR/sample.key"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/build-keynote-sample.XXXXXX")"
+trap 'rm-safe -rf "$WORK" 2>/dev/null || rm -rf "$WORK"' EXIT
+
+if [ ! -d "$OUT_DIR" ]; then
+	mkdir -p "$OUT_DIR"
+fi
+
+# 1. Generate IWA-shaped files with high-entropy deterministic payloads.
+
+random_blob() {
+	local name="$1"
+	local nbytes="$2"
+	local key
+	key=$(printf '%s' "keynote-ground-truth-$name" | shasum -a 256 | awk '{print $1}')
+	head -c "$nbytes" /dev/zero \
+		| openssl enc -aes-256-ctr -K "$key" \
+			-iv 00000000000000000000000000000000 -nopad 2>/dev/null
+}
+
+write_iwa_header() {
+	# IWA framing: byte 0x00 (uncompressed marker) + 24-bit LE length.
+	local len="$1"
+	local b1=$((len & 0xFF))
+	local b2=$(((len >> 8) & 0xFF))
+	local b3=$(((len >> 16) & 0xFF))
+	printf '%b' "$(printf '\\x00\\x%02x\\x%02x\\x%02x' "$b1" "$b2" "$b3")"
+}
+
+mk_iwa() {
+	local rel="$1"
+	local nbytes="$2"
+	local out="$WORK/Index_staging/$rel"
+	mkdir -p "$(dirname "$out")"
+	{
+		write_iwa_header $((nbytes - 4))
+		random_blob "$rel" $((nbytes - 4))
+	} > "$out"
+}
+
+mkdir -p "$WORK/Index_staging/Slides"
+
+mk_iwa "Document.iwa"                  16384
+mk_iwa "DocumentStylesheet.iwa"         8192
+mk_iwa "MasterSlide.iwa"                8192
+mk_iwa "Metadata.iwa"                   4096
+mk_iwa "CalculationEngine.iwa"          4096
+mk_iwa "AnnotationAuthorStorage.iwa"    2048
+mk_iwa "ViewState.iwa"                  4096
+mk_iwa "Slides/Slide-0.iwa"             8192
+mk_iwa "Slides/Slide-1.iwa"             8192
+
+FIXED_MTIME="202601010000.00"
+find "$WORK/Index_staging" -exec touch -t "$FIXED_MTIME" {} \;
+
+# 2. Build the inner Index.zip (stored = no extra deflate).
+
+(cd "$WORK/Index_staging" && \
+	zip -X -0 -r "$WORK/Index.zip" \
+		Document.iwa \
+		DocumentStylesheet.iwa \
+		MasterSlide.iwa \
+		Metadata.iwa \
+		CalculationEngine.iwa \
+		AnnotationAuthorStorage.iwa \
+		ViewState.iwa \
+		Slides \
+	>/dev/null)
+
+# 3. Author the metadata plists. The com.apple.iWork.Keynote marker in
+#    buildVersionHistory.plist is what validate's detectZipSubformat keys on
+#    to distinguish Keynote from generic Pages-shaped iWork bundles.
+
+mkdir -p "$WORK/bundle/Metadata"
+cp "$WORK/Index.zip" "$WORK/bundle/Index.zip"
+
+cat > "$WORK/bundle/buildVersionHistory.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.iWork.Keynote</key>
+	<string>14.2</string>
+</dict>
+</plist>
+EOF
+
+cat > "$WORK/bundle/Metadata/Properties.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>versionUUID</key>
+	<string>00000000-0000-0000-0000-000000000000</string>
+	<key>fileFormatVersion</key>
+	<string>14.2</string>
+	<key>revision</key>
+	<integer>1</integer>
+	<key>documentUUID</key>
+	<string>22222222-3333-4444-5555-666666666666</string>
+	<key>buildVersionHistory</key>
+	<array>
+		<string>M14.2-7041.0.110-3</string>
+	</array>
+</dict>
+</plist>
+EOF
+
+cat > "$WORK/bundle/Metadata/BuildVersionHistory.plist" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+	<string>M14.2-7041.0.110-3</string>
+</array>
+</plist>
+EOF
+
+printf '22222222-3333-4444-5555-666666666666\n' > "$WORK/bundle/Metadata/DocumentIdentifier"
+
+find "$WORK/bundle" -exec touch -t "$FIXED_MTIME" {} \;
+
+# 4. Zip the outer .key bundle. The plists are added FIRST so the
+#    `com.apple.iWork.Keynote` marker lands within validate's 8 KB
+#    detection scan window. Index.zip is appended last (stored
+#    uncompressed since its IWA payloads are already high-entropy).
+
+if [ -f "$OUT_FILE" ]; then
+	rm -f "$OUT_FILE"
+fi
+
+# buildVersionHistory.plist is stored uncompressed so the
+# `com.apple.iWork.Keynote` marker is visible to validate's first-8KB
+# detection scan. The other plists deflate fine.
+(cd "$WORK/bundle" && \
+	zip -X -0 "$OUT_FILE" buildVersionHistory.plist >/dev/null && \
+	zip -X -9 "$OUT_FILE" \
+		Metadata/Properties.plist \
+		Metadata/BuildVersionHistory.plist \
+		Metadata/DocumentIdentifier >/dev/null && \
+	zip -X -0 "$OUT_FILE" Index.zip >/dev/null)
+
+# 5. Verify with validate, if a built binary is available.
+
+BIN="$ROOT/zig-out/bin/validate"
+if [ -x "$BIN" ]; then
+	if ! "$BIN" "$OUT_FILE" >/dev/null 2>&1; then
+		echo "FAIL: $OUT_FILE did not validate" >&2
+		exit 1
+	fi
+	echo "OK: $OUT_FILE ($(stat -f%z "$OUT_FILE" 2>/dev/null || stat -c%s "$OUT_FILE") bytes) validates"
+else
+	echo "OK: $OUT_FILE built ($(stat -f%z "$OUT_FILE" 2>/dev/null || stat -c%s "$OUT_FILE") bytes); skipped validate-binary check (run ./build first)"
+fi

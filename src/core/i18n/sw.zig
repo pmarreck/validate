@@ -106,7 +106,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .odp = "Uwasilishaji wa OpenDocument",
     .pdf = "Hati ya PDF",
     .rtf = "Muundo wa maandishi tajiri",
-    .pages = "Kurasa za Apple",
+    .pages = "Kurasa za Apple", .keynote = "Apple Keynote", .numbers = "Apple Numbers",
     .wpd = "Hati ya WordPerfect",
     .cwk = "ClarisWorks/AppleWorks",
     .mwd = "Hati ya MacWrite",

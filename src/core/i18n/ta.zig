@@ -106,7 +106,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .odp = "OpenDocument விளக்கக்காட்சி",
     .pdf = "PDF ஆவணம்",
     .rtf = "பணக்கார உரை வடிவம்",
-    .pages = "ஆப்பிள் பக்கங்கள்",
+    .pages = "ஆப்பிள் பக்கங்கள்", .keynote = "Apple Keynote", .numbers = "Apple Numbers",
     .wpd = "WordPerfect ஆவணம்",
     .cwk = "கிளாரிஸ்வொர்க்ஸ்/ஆப்பிள்வொர்க்ஸ்",
     .mwd = "மேக்ரைட் ஆவணம்",

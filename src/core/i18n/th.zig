@@ -106,7 +106,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .odp = "การนำเสนอเอกสาร OpenDocument",
     .pdf = "เอกสาร PDF",
     .rtf = "รูปแบบข้อความที่หลากหลาย",
-    .pages = "แอปเปิลเพจ",
+    .pages = "แอปเปิลเพจ", .keynote = "Apple Keynote", .numbers = "Apple Numbers",
     .wpd = "เอกสารเวิร์ดเพอร์เฟค",
     .cwk = "ClarisWorks/AppleWorks",
     .mwd = "เอกสารแมคไรท์",

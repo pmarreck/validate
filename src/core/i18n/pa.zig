@@ -106,7 +106,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .odp = "ਓਪਨ ਡੌਕੂਮੈਂਟ ਪ੍ਰਸਤੁਤੀ",
     .pdf = "PDF ਦਸਤਾਵੇਜ਼",
     .rtf = "ਰਿਚ ਟੈਕਸਟ ਫਾਰਮੈਟ",
-    .pages = "ਐਪਲ ਪੰਨੇ",
+    .pages = "ਐਪਲ ਪੰਨੇ", .keynote = "Apple Keynote", .numbers = "Apple Numbers",
     .wpd = "WordPerfect ਦਸਤਾਵੇਜ਼",
     .cwk = "ਕਲਾਰਿਸ ਵਰਕਸ/ਐਪਲ ਵਰਕਸ",
     .mwd = "MacWrite ਦਸਤਾਵੇਜ਼",

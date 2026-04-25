@@ -138,7 +138,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .mp3, .flac, .wav, .m4a, .alac, .aiff, .ogg, .ape, .wavpack, .midi, .dsf, .dff, .ac3, .dts, .eac3, .amr, .au, .tta, .caf, .aac_adts, .mod, .xm, .it, .s3m, .mp2 => "audio",
 
         // Documents
-        .pdf, .docx, .xlsx, .pptx, .doc, .xls, .ppt, .odt, .ods, .odp, .rtf, .pages, .wpd, .cwk, .mwd => "document",
+        .pdf, .docx, .xlsx, .pptx, .doc, .xls, .ppt, .odt, .ods, .odp, .rtf, .pages, .keynote, .numbers, .wpd, .cwk, .mwd => "document",
 
         // Archives
         .zip, .gzip, .bzip2, .xz, .zstd, .br, .hqx, .rar, .cpt, .sevenz, .tar, .warc, .ar, .cab, .sit, .sitx, .blar, .mblar => "archive",

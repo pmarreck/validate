@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# CLI test for Apple iWork formats: Keynote (.key) and Numbers (.numbers).
+#
+# Pages already has its own coverage; this script only exercises the two new
+# variants and the .key/PEM extension collision.
+#
+# Tests:
+#   1. Clean Keynote bundle validates as "Apple Keynote".
+#   2. Clean Numbers bundle validates as "Apple Numbers".
+#   3. PEM-style .key file (text starting with "-----BEGIN ") still validates
+#      as PEM — guards the .key/.pem extension collision-resolution.
+#   4. Bit-flipped Keynote sample fails validation (ZIP-CRC32 catches it).
+#   5. Bit-flipped Numbers sample fails validation.
+
+set -u
+
+if [[ -x "./zig-out/bin/validate" ]]; then
+	BIN="./zig-out/bin/validate"
+elif [[ -x "./zig-out/bin/validate.exe" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+else
+	echo "FAIL: validate binary not found"
+	exit 1
+fi
+
+KEYNOTE_SAMPLE="ground_truth_examples/keynote/sample.key"
+NUMBERS_SAMPLE="ground_truth_examples/numbers/sample.numbers"
+
+if [[ ! -f "$KEYNOTE_SAMPLE" ]]; then
+	echo "FAIL: missing ground truth sample at $KEYNOTE_SAMPLE"
+	exit 1
+fi
+if [[ ! -f "$NUMBERS_SAMPLE" ]]; then
+	echo "FAIL: missing ground truth sample at $NUMBERS_SAMPLE"
+	exit 1
+fi
+
+strip_ansi() {
+	sed 's/\x1b\[[0-9;]*m//g'
+}
+
+failures=0
+
+echo "Test 1: clean Keynote sample must validate as 'Apple Keynote'"
+out=$("$BIN" --no-color "$KEYNOTE_SAMPLE" 2>&1 | strip_ansi) || true
+if echo "$out" | grep -qE '^OK.*Apple Keynote'; then
+	echo "  PASS: Keynote accepted"
+else
+	echo "  FAIL: Keynote not accepted as 'Apple Keynote'"
+	echo "  Output: $out"
+	((failures++)) || true
+fi
+
+echo "Test 2: clean Numbers sample must validate as 'Apple Numbers'"
+out=$("$BIN" --no-color "$NUMBERS_SAMPLE" 2>&1 | strip_ansi) || true
+if echo "$out" | grep -qE '^OK.*Apple Numbers'; then
+	echo "  PASS: Numbers accepted"
+else
+	echo "  FAIL: Numbers not accepted as 'Apple Numbers'"
+	echo "  Output: $out"
+	((failures++)) || true
+fi
+
+echo "Test 3: PEM-style .key file still validates as PEM"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/iwork_test.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+pem_path="$tmpdir/private.key"
+# Synthesize a minimally valid PEM private-key file. Content of the base64
+# block doesn't have to decrypt — validate's PEM validator only checks the
+# PEM envelope structure (BEGIN/END markers + base64 line shape).
+cat > "$pem_path" <<'EOF'
+-----BEGIN RSA PRIVATE KEY-----
+MIIEpAIBAAKCAQEAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+-----END RSA PRIVATE KEY-----
+EOF
+out=$("$BIN" --no-color "$pem_path" 2>&1 | strip_ansi) || true
+if echo "$out" | grep -qE 'PEM'; then
+	echo "  PASS: PEM .key accepted as PEM"
+else
+	echo "  FAIL: PEM .key not classified as PEM"
+	echo "  Output: $out"
+	((failures++)) || true
+fi
+
+echo "Test 4: corrupted Keynote sample must fail"
+corrupt_keynote="$tmpdir/corrupt.key"
+cp "$KEYNOTE_SAMPLE" "$corrupt_keynote"
+size=$(stat -f%z "$corrupt_keynote" 2>/dev/null || stat -c%s "$corrupt_keynote")
+if [[ "$size" -lt 100 ]]; then
+	echo "  FAIL: keynote sample too small ($size bytes) for corruption test"
+	((failures++)) || true
+else
+	# Overwrite 4 KB at the file midpoint — same shotgun pattern as
+	# format_roundtrip uses. A ZIP-CRC32 validator must catch this.
+	mid=$((size / 2))
+	dd if=/dev/urandom of="$corrupt_keynote" bs=1 count=4096 seek="$mid" \
+		conv=notrunc 2>/dev/null
+	if "$BIN" --no-color "$corrupt_keynote" >/dev/null 2>&1; then
+		echo "  FAIL: corrupted Keynote was accepted"
+		((failures++)) || true
+	else
+		echo "  PASS: corrupted Keynote rejected"
+	fi
+fi
+
+echo "Test 5: corrupted Numbers sample must fail"
+corrupt_numbers="$tmpdir/corrupt.numbers"
+cp "$NUMBERS_SAMPLE" "$corrupt_numbers"
+size=$(stat -f%z "$corrupt_numbers" 2>/dev/null || stat -c%s "$corrupt_numbers")
+if [[ "$size" -lt 100 ]]; then
+	echo "  FAIL: numbers sample too small ($size bytes) for corruption test"
+	((failures++)) || true
+else
+	mid=$((size / 2))
+	dd if=/dev/urandom of="$corrupt_numbers" bs=1 count=4096 seek="$mid" \
+		conv=notrunc 2>/dev/null
+	if "$BIN" --no-color "$corrupt_numbers" >/dev/null 2>&1; then
+		echo "  FAIL: corrupted Numbers was accepted"
+		((failures++)) || true
+	else
+		echo "  PASS: corrupted Numbers rejected"
+	fi
+fi
+
+if [[ "$failures" -ne 0 ]]; then
+	echo "iWork validation tests failed: $failures"
+	exit "$failures"
+fi
+
+echo "iWork validation tests passed"

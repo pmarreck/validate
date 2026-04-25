@@ -146,7 +146,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .odp = "Presentaci\xc3\xb3n OpenDocument",
     .pdf = "Documento PDF",
     .rtf = "Formato de texto enriquecido",
-    .pages = "Apple Pages",
+    .pages = "Apple Pages", .keynote = "Apple Keynote", .numbers = "Apple Numbers",
     .wpd = "Documento WordPerfect",
     .cwk = "ClarisWorks/AppleWorks",
     .mwd = "Documento MacWrite",
