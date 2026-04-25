@@ -370,6 +370,26 @@ fn validateWavFloatSamples(file: *FileSource, data_offset: u64, data_size: u32, 
     return ValidationResult.okWithDepth(.wav, .full);
 }
 
+/// Render a sample index as wall-clock time `time=HH:MM:SS.mmm` for use in
+/// statistical-corruption diagnostic warnings. Always written; if sample_rate
+/// is zero (broken WAV header) the literal `time=?` is emitted so the caller
+/// still gets the byte offset and the user knows time is undetermined.
+/// Concise format chosen so multiple findings fit in the 512-byte warning buffer.
+fn writeTimeOffset(w: anytype, sample_index: u64, sample_rate: u32) !void {
+    if (sample_rate == 0) {
+        try w.print("time=?", .{});
+        return;
+    }
+    const total_ms: u64 = (sample_index * 1000) / sample_rate;
+    const ms: u32 = @intCast(total_ms % 1000);
+    const total_seconds: u64 = total_ms / 1000;
+    const seconds: u32 = @intCast(total_seconds % 60);
+    const total_minutes: u64 = total_seconds / 60;
+    const minutes: u32 = @intCast(total_minutes % 60);
+    const hours: u32 = @intCast(total_minutes / 60);
+    try w.print("time={d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}", .{ hours, minutes, seconds, ms });
+}
+
 /// Run the statistical-corruption WARN heuristic on mono signed-16-bit PCM
 /// inside a WAV file. Returns ValidationResult.okWithDepthAndWarning when the
 /// heuristic score crosses the SUSPICIOUS threshold (>= 25/100). The
@@ -463,15 +483,27 @@ fn scanWavMonoS16Heuristic(file: *FileSource, data_offset: u64, data_size: u32, 
         if (emitted >= 3) break;
         switch (f) {
             .constant_run => |cr| {
-                w.print("; constant_run sample={d} len={d} val={d}", .{ cr.sample_offset, cr.length, cr.value }) catch {};
+                const byte_offset = data_offset + cr.sample_offset * 2;
+                w.print("; constant_run byte=0x{X} ", .{byte_offset}) catch {};
+                writeTimeOffset(w, cr.sample_offset, sample_rate) catch {};
+                w.print(" len={d} val={d}", .{ cr.length, cr.value }) catch {};
                 emitted += 1;
             },
             .diagnosed_bit_flip => |bf| {
-                w.print("; bit_flip byte=0x{X} bit={d} z={d:.1}->{d:.1}", .{ bf.byte_offset, bf.bit_index, bf.z_before, bf.z_after }) catch {};
+                w.print("; bit_flip byte=0x{X} ", .{bf.byte_offset}) catch {};
+                writeTimeOffset(w, bf.sample_offset, sample_rate) catch {};
+                w.print(" bit={d} z={d:.1}->{d:.1}", .{ bf.bit_index, bf.z_before, bf.z_after }) catch {};
                 emitted += 1;
             },
             .sector_aligned_cluster => |sc| {
-                w.print("; sector_cluster byte=0x{X} span={d} sector={d}", .{ sc.first_byte, sc.span, sc.sector_size }) catch {};
+                // Convert byte offset back to a sample index for time display.
+                const sample_idx = if (sc.first_byte > data_offset)
+                    (sc.first_byte - data_offset) / 2
+                else
+                    0;
+                w.print("; sector_cluster byte=0x{X} ", .{sc.first_byte}) catch {};
+                writeTimeOffset(w, sample_idx, sample_rate) catch {};
+                w.print(" span={d} sector={d}", .{ sc.span, sc.sector_size }) catch {};
                 emitted += 1;
             },
         }
