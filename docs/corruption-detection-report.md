@@ -116,6 +116,7 @@
 | RTF | 0% | **92%** | sample.rtf (Tika `testRTFEmbeddedFiles.rtf`) | 1.2 MB | 2026-04-23 | Structural only — RTF has no checksums. Shotgun high because 4 KB overwrite reliably breaks brace matching or control-word syntax. |
 | EML | **12%** | **84%** | sample.eml (Tika `testRFC822-big`) | 6.6 KB | 2026-04-25 | UTF-8 + NUL-byte integrity check on the raw file before structural parsing. NUL is never legal in a mail message; flipping the high bit of an ASCII byte produces a lone UTF-8 continuation byte. Caught ~50% of single-bit ASCII flips and ~80% of 4 KB shotgun overwrites. |
 | MBOX | **13%** | **100%** | sample.mbox (synthesized from 4 Tika RFC822 messages) | 17 KB | 2026-04-25 | Same UTF-8 + NUL-byte check as EML, applied to the whole concatenated file. Shotgun catches every 4 KB random overwrite (random bytes almost always include NUL or invalid UTF-8 sequences). Sniper catches roughly half the random bit flips. |
+| Pages | **100%** | **100%** | sample.pages (hand-authored CC0) | 56 KB | 2026-04-25 | iWork bundle = ZIP with per-entry CRC32. Hand-authored from scratch (no Apple software, no permissive corpus exists); `scripts/build-pages-sample` regenerates a deterministic 8-IWA inner `Index.zip` with high-entropy openssl-AES-CTR payloads plus real plist metadata. CRC32 per entry catches every bit flip and every 4 KB shotgun overwrite. |
 
 ### Font
 
@@ -223,7 +224,7 @@ All larger samples landed on 2026-04-23 from the following sources:
 | QOI | 38 B | 23 KB | Generated locally via ImageMagick (plasma gradient) |
 | ICO | 112 B | 232 KB | Generated locally via ImageMagick (multi-resolution plasma) |
 | SVG | 480 B | 30 KB | Hand-written + awk-generated paths (seed=42) |
-| Pages | 480 B | — | Still needs Peter to author locally (no permissive corpus) |
+| Pages | 480 B | 56 KB | Hand-authored from scratch (CC0). `scripts/build-pages-sample` regenerates deterministically. No permissive `.pages` corpus exists in the wild. |
 
 ---
 
