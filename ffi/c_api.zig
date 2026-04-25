@@ -864,13 +864,17 @@ export fn validate_test_coverage(
         }
     }.cb else null;
 
-    // Translate the C bitmask into Zig's EnumSet. 0 means "all default modes"
-    // (the six already-shipped modes; boundary and sparse_noise stay opt-in).
+    // Translate the C bitmask into Zig's EnumSet. 0 means "the default modes":
+    // sniper + shotgun. These are the two modes that give statistically
+    // meaningful per-byte and per-region coverage; the other four (header,
+    // tail, zeroed, xor) test specific structural regions and stay opt-in.
+    // boundary and sparse_noise also stay opt-in. Pass an explicit bitmask
+    // to override.
     const modes = blk: {
         const CorruptionMode = test_coverage.CorruptionMode;
         var set = std.EnumSet(CorruptionMode).initEmpty();
         const mask = if (modes_bitmask == 0)
-            @as(u32, 0b0011_1111)
+            @as(u32, 0b0000_0011) // sniper + shotgun
         else
             modes_bitmask;
         if (mask & (1 << 0) != 0) set.insert(.sniper);

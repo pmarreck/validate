@@ -268,10 +268,19 @@ typedef void (*validate_coverage_progress_t)(void* ctx, uint32_t round, uint32_t
 #define VALIDATE_COVERAGE_MODE_XOR          (1u << 5)
 #define VALIDATE_COVERAGE_MODE_SPARSE_NOISE (1u << 6)
 #define VALIDATE_COVERAGE_MODE_BOUNDARY     (1u << 7)
-#define VALIDATE_COVERAGE_MODES_DEFAULT_ALL \
+/* Default modes — sniper + shotgun. These two together cover per-byte
+ * (sniper) and per-region (shotgun) detection; passing 0 to validate_test_coverage's
+ * modes_bitmask resolves to this. */
+#define VALIDATE_COVERAGE_MODES_DEFAULT \
+    (VALIDATE_COVERAGE_MODE_SNIPER | VALIDATE_COVERAGE_MODE_SHOTGUN)
+/* All six historically-shipped modes (sniper, shotgun, header, tail, zeroed, xor).
+ * Use --modes all in the CLI to opt back in. */
+#define VALIDATE_COVERAGE_MODES_ALL \
     (VALIDATE_COVERAGE_MODE_SNIPER | VALIDATE_COVERAGE_MODE_SHOTGUN | \
      VALIDATE_COVERAGE_MODE_HEADER | VALIDATE_COVERAGE_MODE_TAIL | \
      VALIDATE_COVERAGE_MODE_ZEROED | VALIDATE_COVERAGE_MODE_XOR)
+/* Backwards-compatible alias for the old name. Prefer MODES_ALL. */
+#define VALIDATE_COVERAGE_MODES_DEFAULT_ALL VALIDATE_COVERAGE_MODES_ALL
 
 /**
  * Run corruption-detection coverage testing on a file.

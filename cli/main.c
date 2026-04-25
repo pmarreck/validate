@@ -1860,8 +1860,8 @@ static void print_usage(const char* program) {
 	printf("    --about            Print version and platform info\n");
 	printf("    --max-memory SIZE  Memory budget (e.g., 4G, 2048M). Default: half of system RAM\n");
 	printf("    --lang CODE        Set output language (e.g., en, de)\n");
-	printf("    --test-coverage N  Run N corruption rounds against a file, report detection rate\n");
-	printf("    --modes LIST       Corruption modes for --test-coverage (comma-sep; default = all 6)\n");
+	printf("    --test-coverage N  Run N corruption rounds against a file, report detection rate (default 1000)\n");
+	printf("    --modes LIST       Corruption modes for --test-coverage (comma-sep; default = sniper,shotgun)\n");
 	printf("                       Valid: sniper, shotgun, header, tail, zeroed, xor, sparse-noise, boundary\n");
 	printf("    --shotgun-bytes N  Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096; accepts K/M suffix)\n");
 	printf("    --no-heatmap       Suppress the undetected-corruption heatmap at the end of --test-coverage\n");
@@ -2003,8 +2003,8 @@ int main(int argc, char* argv[]) {
 
 	size_t jobs = 0;
 	int test_coverage_mode = 0;
-	uint32_t test_coverage_rounds = 100;
-	uint32_t test_coverage_modes_bitmask = 0; /* 0 = all default modes */
+	uint32_t test_coverage_rounds = 1000;
+	uint32_t test_coverage_modes_bitmask = 0; /* 0 = sniper + shotgun (statistically meaningful default) */
 	uint32_t test_coverage_shotgun_bytes = 4096;
 	int test_coverage_no_heatmap = 0;
 	int test_coverage_per_mode_heatmap = 0;
@@ -2176,21 +2176,23 @@ int main(int argc, char* argv[]) {
 						if (c == '_') c = '-';
 						buf[k] = c;
 					}
-					uint32_t bit = 0;
-					if (strcmp(buf, "sniper") == 0) bit = 1u << 0;
-					else if (strcmp(buf, "shotgun") == 0) bit = 1u << 1;
-					else if (strcmp(buf, "header") == 0) bit = 1u << 2;
-					else if (strcmp(buf, "tail") == 0) bit = 1u << 3;
-					else if (strcmp(buf, "zeroed") == 0) bit = 1u << 4;
-					else if (strcmp(buf, "xor") == 0) bit = 1u << 5;
-					else if (strcmp(buf, "sparse-noise") == 0) bit = 1u << 6;
-					else if (strcmp(buf, "boundary") == 0) bit = 1u << 7;
-					else {
-						fprintf(stderr, "%sError: unknown mode '%s'. Valid: sniper, shotgun, header, tail, zeroed, xor, sparse-noise, boundary%s\n",
-							COLOR_RED, buf, COLOR_RESET);
-						free(paths);
-						return 2;
-					}
+				uint32_t bit = 0;
+				if (strcmp(buf, "sniper") == 0) bit = 1u << 0;
+				else if (strcmp(buf, "shotgun") == 0) bit = 1u << 1;
+				else if (strcmp(buf, "header") == 0) bit = 1u << 2;
+				else if (strcmp(buf, "tail") == 0) bit = 1u << 3;
+				else if (strcmp(buf, "zeroed") == 0) bit = 1u << 4;
+				else if (strcmp(buf, "xor") == 0) bit = 1u << 5;
+				else if (strcmp(buf, "sparse-noise") == 0) bit = 1u << 6;
+				else if (strcmp(buf, "boundary") == 0) bit = 1u << 7;
+				else if (strcmp(buf, "all") == 0) bit = 0x3Fu; /* sniper..xor */
+				else if (strcmp(buf, "everything") == 0) bit = 0xFFu; /* including opt-in modes */
+				else {
+					fprintf(stderr, "%sError: unknown mode '%s'. Valid: sniper, shotgun, header, tail, zeroed, xor, sparse-noise, boundary, all, everything%s\n",
+						COLOR_RED, buf, COLOR_RESET);
+					free(paths);
+					return 2;
+				}
 					bitmask |= bit;
 					if (*end == '\0') break;
 					start = end + 1;
