@@ -1975,6 +1975,14 @@ fn detectTiffSubformat(file: std.fs.File, is_le: bool) FileFormat {
         return .pef;
     }
 
+    // Canon CR2: bytes 8-9 are "CR" (0x43 0x52). The CR2 magic is the 4-byte
+    // TIFF magic followed by IFD offset (4 bytes), then "CR" + version (2 bytes)
+    // at offset 8. Without this branch the upper-level magic-byte detector
+    // matches the 4-byte TIFF prefix and we never escape to CR2 dispatch.
+    if (bytes_read >= 10 and buffer[8] == 'C' and buffer[9] == 'R') {
+        return .cr2;
+    }
+
     return .tiff;
 }
 
