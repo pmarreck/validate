@@ -15,9 +15,12 @@
 # but skip the corrupted-→-FAIL assertion because their spec has no integrity
 # mechanism to exercise. These formats are tracked in FUNDAMENTAL_NO_DETECT.
 #
-# Samples smaller than 8 KB also skip the corrupted assertion — shotgun on a
+# Samples smaller than 12 KB also skip the corrupted assertion — shotgun on a
 # small file overwrites most of it, which is a truncation-level probe rather
-# than a corruption probe.
+# than a corruption probe. The 12 KB floor leaves enough surrounding context
+# (~33% of the file) for the "is the validator actually checking that region?"
+# question to be meaningful; below that the answer is dominated by truncation
+# detection rather than per-region byte verification.
 
 set -u
 
@@ -202,10 +205,10 @@ for d in $(glob ground_truth_examples/*/); do
 		continue
 	fi
 
-	# 3. Skip corruption assertion for small samples (<8 KB) — shotgun on a
+	# 3. Skip corruption assertion for small samples (<12 KB) — shotgun on a
 	#    small file is effectively truncation, a different probe.
 	sz=$(stat -f%z "$sample" 2>/dev/null || stat -c%s "$sample" 2>/dev/null)
-	if [ "$sz" -lt 8192 ]; then
+	if [ "$sz" -lt 12288 ]; then
 		SKIP_SMALL=$((SKIP_SMALL + 1))
 		PASS=$((PASS + 1))
 		continue
