@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Regression guard: docs/corruption-detection-report.md must not drift
+# from the raw sweep data in docs/corruption-sweep-results/. Catches the
+# class of bug where validator improvements land in TSVs but the report
+# prose isn't refreshed.
+#
+# This is a thin pass-through to scripts/audit-corruption-report which
+# does the actual work; it's wired into tests/cli/ so ./test fails if
+# any new TSV row diverges from its corresponding report row by more
+# than ±2pp.
+
+set -u
+exec "$(cd "$(dirname "$0")/../.." && pwd)/scripts/audit-corruption-report"
