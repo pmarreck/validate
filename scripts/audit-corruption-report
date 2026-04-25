@@ -192,6 +192,22 @@ slug_to_label() {
 		wpd)         echo "WordPerfect" ;;
 		x12_edi)     echo "X12 EDI" ;;
 		zstd)        echo "Zstd" ;;
+		# Wave 2026-04-25b: coverage gap closure
+		br)          echo "Brotli" ;;
+		dbf)         echo "dBASE (.dbf)" ;;
+		esd)         echo "Windows ESD (.esd)" ;;
+		gcode)       echo "G-code" ;;
+		ivf)         echo "VP8 (raw IVF)" ;;
+		llvm_diag)   echo "LLVM Serialized Diagnostics (.dia)" ;;
+		llvm_pch)    echo "LLVM Precompiled Header (.pch)" ;;
+		msgpack)     echo "MessagePack (.msgpack)" ;;
+		msi)         echo "Microsoft Installer (.msi)" ;;
+		qbb)         echo "QuickBooks Backup (.qbb)" ;;
+		rpm)         echo "RPM Package (.rpm)" ;;
+		sevenz)      echo "7z" ;;
+		sitx)        echo "StuffIt X (.sitx)" ;;
+		song)        echo "Studio One Project (.song)" ;;
+		theora)      echo "Theora (.ogv)" ;;
 		*)           echo "$1" ;;
 	esac
 }

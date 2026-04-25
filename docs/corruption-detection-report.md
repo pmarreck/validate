@@ -79,8 +79,8 @@
 | RM | 0% | 2% | sample.rm | 14 KB | 2026-04-23 | RealMedia spec has no checksums; structural chunk walk only |
 | FLV | 40% | — | sample.flv | 33 B | 2026-04-25 | Flash Video tag walk; no per-tag CRC. Tiny 33 B sample — sniper hits magic + header bytes. Shotgun N/A (sample < 4 KB). |
 | MPEG-PS | 0% | — | sample.mpg | 2.0 KB | 2026-04-25 | MPEG Program Stream; PES header walk; no CRC. Shotgun N/A (sample < 4 KB). |
-| Theora | **100%** | — | sample.ogv | 3.4 KB | 2026-04-25 | Theora-in-Ogg; Ogg page CRC32 catches every probed bit flip. Shotgun N/A (sample < 4 KB). |
-| VP8 (raw IVF) | 1% | — | sample.ivf | 263 B | 2026-04-25 | Raw VP8 in IVF container; structural-only without compressed-frame decode. Shotgun N/A (sample < 4 KB). |
+| Theora (.ogv) | **100%** | **100%** | sample.ogv | 50 KB | 2026-04-25 | Theora-in-Ogg; libtheora-encoded testsrc (CC0). Ogg page CRC32 catches every probed bit flip in both modes. |
+| VP8 (raw IVF) | 0% | 0% | sample.ivf | 9 KB | 2026-04-25 | IVF container with VP8 frames; structural-only without libvpx wired into the IVF dispatch path. Hand-authored CC0 sample. Detection is fundamentally low until VP8-in-IVF gets the same `VP8D_GET_FRAME_CORRUPTED` query as VP8-in-WebM. |
 
 ### Audio
 
@@ -103,13 +103,13 @@
 | Tracker (MOD) | 0% | 0% | otm.mod | 308 KB | 2026-03-06 | No integrity mechanism in format |
 | CPT | **100%** | **100%** | sample.cpt | 20 KB | 2026-03-06 | CRC per resource fork entry (Compact Pro archive, not audio) |
 | AMR | 14% | — | sample.amr | 38 B | 2026-04-25 | Adaptive Multi-Rate audio; frame-table based, no per-frame CRC. Sniper at 14% reflects sync-byte coverage on a 38 B sample. Shotgun N/A. |
-| APE (Monkey's Audio) | 6% | — | sample.ape | 52 B | 2026-04-25 | MAC header + descriptor MD5 (file-level); validator does NOT currently verify the MD5 (would require full decoder). Sample is 52 B (header only). See Action Items #13. |
+| APE (Monkey's Audio) | 0% | 0% | corpus_xorshift.ape | 16 KB | 2026-04-25 | MAC header + descriptor MD5 (file-level); **validator does NOT verify the MD5 yet** (full decoder = entropy + predictor needed). Bigger sample enables shotgun mode but rate stays 0% — structural-only is the honest measurement until the decoder lands. See Action Items #13. |
 | CD+G (Karaoke) | 0% | 2% | sample.cdg | 14.1 KB | 2026-04-25 | 24-byte fixed-size sectors; structural only — no checksum. 0%/2% confirms fundamental format limit. |
 | DFF (DSDIFF) | 52% | — | sample.dff | 32 B | 2026-04-25 | DSD audio container; chunk walk only. Tiny 32 B header-only sample. Shotgun N/A. |
 | DSF (DSD) | 60% | — | sample.dsf | 88 B | 2026-04-25 | Sony DSD; structural walk. Shotgun N/A. |
 | DTS (Digital Surround) | 0% | 51% | sample.dts | 369 KB | 2026-04-25 | Frame sync + size walk; no per-frame CRC. Shotgun lift from 4 KB overwrite desyncing the frame stream. |
 | TTA (True Audio) | **97%** | — | sample.tta | 3.1 KB | 2026-04-25 | Per-frame CRC32 catches almost every probed bit flip. Shotgun N/A (sample < 4 KB). |
-| WavPack | 2% | — | sample.wv | 2.1 KB | 2026-04-25 | MD5 in optional sub-block + per-block CRC over decoded samples; **validator does NOT verify either** (requires full decoder). See Action Items #13. |
+| WavPack | 0% | 0% | corpus_xorshift.wv | 118 KB | 2026-04-25 | MD5 in optional sub-block + per-block CRC over decoded samples; **validator does NOT verify either yet** (decorrelator + range decoder + IDWT needed). Bigger real-encoded sample (3 s 440 Hz tone) enables shotgun; rate stays 0% until decoder lands. See Action Items #13. |
 
 ### Document & Office
 
@@ -203,21 +203,21 @@
 | Format | Sniper | Shotgun | Sample | Size | Run | Mechanism |
 |--------|-------:|--------:|--------|-----:|-----|-----------|
 | TAR | 15% | 73% | sample.tar | 4 KB | 2026-03-06 | Header checksum per 512-byte block |
-| 7z | 66% | — | sample.7z | 204 B | 2026-04-25 | 7z next-header CRC32 + per-stream CRC32. Sample is tiny (204 B); structure dominates so sniper picks up signature/header bytes. Shotgun N/A. |
+| 7z | **99%** | **100%** | corpus_xorshift.7z | 17 KB | 2026-04-25 | 7z next-header CRC32 + per-stream CRC32. Hand-authored xorshift corpus (CC0). Both sniper and shotgun catch nearly every flip. |
 | AR (Unix archive) | 38% | — | minimal.a | 88 B | 2026-04-25 | `!<arch>\n` magic + 60-byte member headers; no per-entry checksum. Shotgun N/A. |
 | BLAR (Blake3 Archive) | **100%** | — | sample.blar | 1.0 KB | 2026-04-25 | Peter's archive format with Blake3 per-entry hashing. Every probed bit flip detected. Shotgun N/A. |
-| Brotli | 42% | — | hello.br | 9 B | 2026-04-25 | Raw Brotli stream; decompress validates structure. Tiny 9 B sample. Shotgun N/A. |
-| Bzip2 | **98%** | — | sample.bz2 | 88 B | 2026-04-25 | CRC32 per block + combined CRC; 98% sniper at 88 B reflects per-block CRC dominance. Shotgun N/A. |
-| CAB (Microsoft) | 71% | — | sample.cab | 93 B | 2026-04-25 | Per-folder + per-file CSUM (Adler-like) cross-validated. Shotgun N/A. |
-| Gzip | **84%** | — | sample.gz | 94 B | 2026-04-25 | CRC32 + ISIZE in trailer; sniper 84% reflects header+CRC byte coverage on 94 B sample. Shotgun N/A. |
-| BinHex (.hqx) | **96%** | — | sample.hqx | 118 B | 2026-04-25 | Per-line CRC; sniper 96% — line-by-line CRC catches almost any flip. Shotgun N/A. |
+| Brotli | 0% | 0% | corpus_xorshift.br | 16 KB | 2026-04-25 | Raw Brotli stream; full streaming decompression via libbrotli. **RFC 7932 has no checksum** — bit flips inside compressed data decode to wrong-but-valid bytes. Heavy corruption near offset 0 (window-bits header) is caught; mid-stream flips are absorbed by the entropy coder. Fundamental format limit. |
+| Bzip2 | **100%** | **100%** | corpus_xorshift.bz2 | 17 KB | 2026-04-25 | CRC32 per block + combined CRC. Hand-authored xorshift corpus (CC0). |
+| CAB (Microsoft) | **100%** | **100%** | corpus_xorshift.cab | 27 KB | 2026-04-25 | Per-folder + per-file CSUM (Adler-like) cross-validated. CC0 sample built via gcab. |
+| Gzip | **100%** | **100%** | corpus_xorshift.gz | 16 KB | 2026-04-25 | CRC32 + ISIZE in trailer. Hand-authored xorshift corpus (CC0). |
+| BinHex (.hqx) | **100%** | **100%** | corpus_xorshift.hqx | 13 KB | 2026-04-25 | BinHex 4.0 header + per-fork CRC16. Hand-authored CC0 sample (encoder reverse-engineered from validator). |
 | MBLAR (Multi-Blake3) | **100%** | — | sample.mblar | 393 B | 2026-04-25 | Peter's manifest-bundle archive; Blake3 per file. Shotgun N/A. |
-| PAR2 | **98%** | — | sample.par2 | 572 B | 2026-04-25 | MD5 of every packet + recovery slice integrity. Sniper 98% reflects per-packet MD5. Shotgun N/A. |
-| RAR | **100%** | — | sample.rar | 766 B | 2026-04-25 | Per-entry CRC32 + RAR5 BLAKE2sp option. Shotgun N/A. |
+| PAR2 | **100%** | **100%** | corpus_xorshift.par2 | 34 KB | 2026-04-25 | MD5 of every packet + recovery slice integrity. Built via par2cmdline (BSD-licensed). |
+| RAR | **100%** | **100%** | corpus_xorshift.rar | 16 KB | 2026-04-25 | Per-entry CRC32 + RAR5 BLAKE2sp option. CC0 corpus (rar -m5). |
 | StuffIt | **94%** | — | sample.sit | 140 B | 2026-04-25 | Header + entry walk; sniper 94% on 140 B from header dominance. Shotgun N/A. |
-| XZ | **100%** | — | sample.xz | 128 B | 2026-04-25 | CRC32/CRC64/SHA-256 per stream + index integrity. Shotgun N/A. |
-| ZIP | 56% | — | test_archive.zip | 203 B | 2026-04-25 | Per-entry CRC32 + EOCD record. Tiny sample (203 B). Shotgun N/A. |
-| Zstd | **92%** | — | sample.zst | 75 B | 2026-04-25 | Frame-level XXH64 + frame footer. Shotgun N/A. |
+| XZ | **100%** | **100%** | corpus_xorshift.xz | 16 KB | 2026-04-25 | CRC32/CRC64/SHA-256 per stream + index integrity. Hand-authored xorshift corpus (CC0). |
+| ZIP | **100%** | **100%** | corpus_xorshift.zip | 16 KB | 2026-04-25 | Per-entry CRC32 + EOCD record. Hand-authored xorshift corpus (CC0). |
+| Zstd | **100%** | **100%** | corpus_xorshift.zst | 16 KB | 2026-04-25 | Frame-level XXH64 + frame footer. Hand-authored xorshift corpus (CC0). |
 
 ### Game ROM
 
@@ -380,3 +380,26 @@ Future work: a generator script (Bash or Lua) that walks the TSVs, git-blames ea
 ---
 
 *Report generated from TSV sweep data on 2026-04-23. Raw data and per-trial offsets live in `docs/corruption-sweep-results/`.*
+
+
+### Wave 2026-04-25b: coverage gap closure (extra-tiny + missing dirs)
+
+Formats sourced/upgraded 2026-04-25 to close the two remaining gap categories
+from the prior chew-through: (A) sniper-only rows whose samples were < 4 KB so
+shotgun couldn't run; (B) enum entries with no ground-truth dir at all.
+
+| Format | Sniper | Shotgun | Sample | Size | Run | Mechanism |
+|--------|-------:|--------:|--------|-----:|-----|-----------|
+| Studio One Project (.song) | **100%** | **100%** | sample.song | 41 KB | 2026-04-25 | ZIP-based; per-entry CRC32 + metainfo.xml integrity. Hand-authored CC0 sample. |
+| StuffIt X (.sitx) | 0% | 0% | sample.sitx | 16 KB | 2026-04-25 | Magic + structural header walk only; no per-entry checksums in current validator. Hand-authored. |
+| Microsoft Installer (.msi) | 0% | 43% | sample.msi | 9 KB | 2026-04-25 | OLE2 compound file (no integrity beyond CFBF FAT structure). Built via wixl. Shotgun catches FAT/dir mismatch. |
+| Windows ESD (.esd) | 1% | 0% | sample.esd | 16 KB | 2026-04-25 | WIM variant with LZMS compression; structural header walk (208-byte WIM header). Hand-authored. |
+| LLVM Precompiled Header (.pch) | 0% | 0% | sample.pch | 16 KB | 2026-04-25 | Magic ("CPCH") + LLVM bitcode signature only. Bitcode contents are version-specific; structural only. |
+| LLVM Serialized Diagnostics (.dia) | 0% | 0% | sample.dia | 16 KB | 2026-04-25 | Magic ("DIAG") + LLVM bitcode signature only. Same limit as .pch. |
+| QuickBooks Backup (.qbb) | 8% | 24% | sample.qbb | 19 KB | 2026-04-25 | OLE2-based; dispatches through document_validators (no per-stream checksum). Sample shared with ole2/sample.doc. |
+| PCAP | 4% | **100%** | sample.pcap | 13 KB | 2026-04-25 | Hand-authored (no sudo for tcpdump in nix sandbox). Walks every packet record's incl_len/orig_len; shotgun lands in valid trailer bytes that fail length checks. Fixed 64 MiB-stack-overflow bug in `validatePcap` while landing the sample. |
+| PCAPNG | 0% | 0% | sample.pcapng | 9 KB | 2026-04-25 | Section Header Block + IDB + EPBs structural walk; pcapng-validator checks magic and BOM only (no block-level CRC verification yet — pcapng has optional CRC32 per block). |
+| dBASE (.dbf) | 0% | **100%** | sample.dbf | 21 KB | 2026-04-25 | Header version + date + record-length cross-validation; hand-authored CC0 dBASE III. Sniper rate fundamental (no per-record checksum); shotgun lands in tail records past header-declared range. |
+| G-code | 27% | 98% | sample.gcode | 20 KB | 2026-04-25 | Text format; line-grammar walk catches 27% sniper (most flips break a coordinate or G/M code prefix). Shotgun 98% — large overwrite breaks too many lines to ignore. Hand-authored CC0. |
+| MessagePack (.msgpack) | 0% | 0% | sample.msgpack | 19 KB | 2026-04-25 | Type-tagged binary; validator walks tag stream but spec has no checksum. Most flips land in payload bytes that decode to different-but-valid values. Fundamental limit per RFC. Hand-authored CC0. |
+| RPM Package (.rpm) | 3% | 30% | sample.rpm | 22 KB | 2026-04-25 | RPM v3 lead + signature header + main header. Validator computes SHA-1 over main header (when sig tag 269 present). Shotgun 30% reflects header dominance vs payload mass. Built via rpmbuild (CC0 spec). Fixed 16 MiB-stack-overflow bug in `validateRpm` while landing the sample. |

@@ -139,13 +139,18 @@ pub fn validatePcapngFromBuffer(data: []const u8) ValidationResult {
 }
 
 /// File-source entry point for PCAP — reads up to the first 64 MiB then delegates.
+/// Uses heap allocation: a 64 MiB stack frame overflows on every platform.
 pub fn validatePcap(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.pcap, .failed_to_seek, "to start");
 
-    // PCAP files are typically small (packet captures); 64 MiB covers most cases.
-    // For very large captures we do a streaming walk below.
-    var buf: [64 * 1024 * 1024]u8 = undefined;
-    const bytes_read = file.read(&buf) catch {
+    const max_pcap_buf: usize = 64 * 1024 * 1024;
+    const allocator = std.heap.page_allocator;
+    const buf = allocator.alloc(u8, max_pcap_buf) catch {
+        return ValidationResult.invalidCode(.pcap, .failed_to_allocate, "PCAP buffer");
+    };
+    defer allocator.free(buf);
+
+    const bytes_read = file.read(buf) catch {
         return ValidationResult.invalidCode(.pcap, .failed_to_read, "PCAP file");
     };
 

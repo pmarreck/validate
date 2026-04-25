@@ -6278,9 +6278,16 @@ pub fn validateRpmFromBuffer(data: []const u8) ValidationResult {
 pub fn validateRpm(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.rpm, .failed_to_seek, "to start");
 
-    // RPM files can be large (e.g., kernel packages); read first 16 MiB for header validation
-    var buf: [16 * 1024 * 1024]u8 = undefined;
-    const bytes_read = file.read(&buf) catch {
+    // RPM files can be large (e.g., kernel packages); read first 16 MiB for header validation.
+    // Use heap allocation: a 16 MiB stack frame overflows on every platform.
+    const max_rpm_buf: usize = 16 * 1024 * 1024;
+    const allocator = std.heap.page_allocator;
+    const buf = allocator.alloc(u8, max_rpm_buf) catch {
+        return ValidationResult.invalidCode(.rpm, .failed_to_allocate, "RPM buffer");
+    };
+    defer allocator.free(buf);
+
+    const bytes_read = file.read(buf) catch {
         return ValidationResult.invalidCode(.rpm, .failed_to_read, "RPM file");
     };
 
