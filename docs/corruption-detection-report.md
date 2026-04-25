@@ -114,8 +114,8 @@
 | ODS | **88%** | **100%** | sample.ods (Tika `LibreOfficeCalc_ods_1.3.ods`) | 8.8 KB | 2026-04-23 | Same as ODT. |
 | ODP | **97%** | **100%** | sample.odp (Tika `LibreOfficeImpress_odp_1.3.odp`) | 24 KB | 2026-04-23 | Same as ODT. |
 | RTF | 0% | **92%** | sample.rtf (Tika `testRTFEmbeddedFiles.rtf`) | 1.2 MB | 2026-04-23 | Structural only — RTF has no checksums. Shotgun high because 4 KB overwrite reliably breaks brace matching or control-word syntax. |
-| EML | 0% | 3% | sample.eml (Tika `testRFC822-big`) | 6.6 KB | 2026-04-23 | Plain-text email with MIME headers. No format-level checksums. |
-| MBOX | 0% | 0% | sample.mbox (synthesized from 4 Tika RFC822 messages) | 17 KB | 2026-04-23 | Concatenated plain-text emails. No format-level integrity. Fundamental limit. |
+| EML | **12%** | **84%** | sample.eml (Tika `testRFC822-big`) | 6.6 KB | 2026-04-25 | UTF-8 + NUL-byte integrity check on the raw file before structural parsing. NUL is never legal in a mail message; flipping the high bit of an ASCII byte produces a lone UTF-8 continuation byte. Caught ~50% of single-bit ASCII flips and ~80% of 4 KB shotgun overwrites. |
+| MBOX | **13%** | **100%** | sample.mbox (synthesized from 4 Tika RFC822 messages) | 17 KB | 2026-04-25 | Same UTF-8 + NUL-byte check as EML, applied to the whole concatenated file. Shotgun catches every 4 KB random overwrite (random bytes almost always include NUL or invalid UTF-8 sequences). Sniper catches roughly half the random bit flips. |
 
 ### Font
 

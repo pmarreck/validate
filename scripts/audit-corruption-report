@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# Audit docs/corruption-detection-report.md against the raw sweep TSVs.
+# Catches the drift class of bug we hit several times during launch prep:
+# the report claims X%/Y%, the TSV file at the same path actually shows
+# different numbers — usually because validators improved or sample files
+# changed without the prose getting refreshed.
+#
+# For every <fmt>_sniper.tsv / <fmt>_shotgun.tsv pair, compute the actual
+# detection rate from the TSV. Then look up the format's row in the
+# report's tables and parse its claimed sniper/shotgun percentages. Any
+# mismatch beyond a small rounding tolerance is reported as drift.
+#
+# Exit code: 0 if no drift, 1 if any drift detected.
+#
+# Usage:
+#   ./scripts/audit-corruption-report                    # default thresholds
+#   ./scripts/audit-corruption-report --tolerance 5      # allow ±5pp drift
+#   ./scripts/audit-corruption-report --strict           # zero tolerance
+
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TSV_DIR="$ROOT/docs/corruption-sweep-results"
+REPORT="$ROOT/docs/corruption-detection-report.md"
+TOLERANCE_PP=2 # acceptable percentage-point drift; below this we don't warn
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--tolerance) TOLERANCE_PP="$2"; shift 2 ;;
+		--strict)    TOLERANCE_PP=0; shift ;;
+		*)           echo "unknown arg: $1" >&2; exit 2 ;;
+	esac
+done
+
+if [ ! -f "$REPORT" ]; then
+	echo "FATAL: missing $REPORT" >&2
+	exit 2
+fi
+if [ ! -d "$TSV_DIR" ]; then
+	echo "FATAL: missing $TSV_DIR" >&2
+	exit 2
+fi
+
+# Compute per-mode detection rate from a TSV file. Stdin: TSV. Stdout: integer percent (0-100).
+tsv_rate() {
+	local tsv="$1"
+	awk -F'\t' '
+		/^trial/  { next }     # column-header line
+		/^#/      { next }     # comment block
+		NF >= 7 {
+			total++
+			if ($7 == "true") hits++
+		}
+		END {
+			if (total == 0) { print "NA"; exit }
+			printf "%d\n", (hits * 100 + total/2) / total
+		}
+	' "$tsv"
+}
+
+# Pull the sample filename out of the TSV header line `# … file=NAME …`.
+tsv_sample() {
+	local tsv="$1"
+	head -1 "$tsv" | awk '
+		{
+			for (i = 1; i <= NF; i++) {
+				if ($i ~ /^file=/) {
+					sub(/^file=/, "", $i)
+					print $i
+					exit
+				}
+			}
+		}
+	'
+}
+
+# slug → human-readable format name in the report's first column. Markdown
+# tables share sample filenames across formats (sample.m4a is used by both
+# aac and alac; "sample" by macho_fat and elf and others), so naive substring
+# match collides. Where a slug's name doesn't trivially uppercase to its row
+# label, override here.
+slug_to_label() {
+	case "$1" in
+		aac)         echo "AAC (M4A)" ;;
+		aac_adts)    echo "AAC (ADTS)" ;;
+		alac)        echo "ALAC" ;;
+		ac3)         echo "AC3" ;;
+		eac3)        echo "E-AC3 (small)" ;;
+		eac3_large)  echo "E-AC3 (large)" ;;
+		fits)        echo "FITS (no CHECKSUM)" ;;
+		fits_checksum) echo "FITS (with CHECKSUM)" ;;
+		jpeg2k)      echo "JPEG2K" ;;
+		macho_fat)   echo "Mach-O Fat" ;;
+		mpeg_es)     echo "MPEG-ES" ;;
+		mpeg_ts)     echo "MPEG-TS" ;;
+		mpeg12)      echo "MPEG-1/2" ;;
+		mpeg4p2)     echo "MPEG-4 Part 2" ;;
+		ole2)        echo "OLE2 (PPT)" ;;
+		pam)         echo "PAM/PPM" ;;
+		pdb_struct)  echo "PDB (Protein)" ;;
+		webm)        echo "WebM (VP9+Opus)" ;;
+		ds_store)    echo "DS_Store" ;;
+		doc)         echo "DOC (large)" ;;
+		indd)        echo "InDesign" ;;
+		prores)      echo "ProRes/MOV" ;;
+		tracker)     echo "Tracker (MOD)" ;;
+		*)           echo "$1" ;;
+	esac
+}
+
+# Find the report row whose first markdown column matches the given label
+# (case-sensitive, exact after trim). Prints sniper%/shotgun% from cols 2/3;
+# "MISSING MISSING" if no matching row found.
+report_claimed_rates() {
+	local label="$1"
+	awk -F'|' -v label="$label" '
+		BEGIN { found = 0 }
+		/^\| / {
+			name = $2
+			gsub(/^[* ]+|[* ]+$/, "", name)
+			if (toupper(name) != toupper(label)) next
+			sn = $3; gsub(/[* ]/, "", sn); sub(/%/, "", sn)
+			sh = $4; gsub(/[* ]/, "", sh); sub(/%/, "", sh)
+			if (sn ~ /^[0-9]+$/ && sh ~ /^[0-9]+$/) {
+				printf "%d %d\n", sn, sh
+				found = 1
+				exit
+			}
+		}
+		END { if (!found) print "MISSING MISSING" }
+	' "$REPORT"
+}
+
+drift_count=0
+missing_count=0
+ok_count=0
+total_count=0
+
+# Iterate every <fmt>_sniper.tsv and pair with its shotgun counterpart.
+for sniper_tsv in $(find "$TSV_DIR" -name '*_sniper.tsv' | sort); do
+	fmt=$(basename "$sniper_tsv" _sniper.tsv)
+	shotgun_tsv="$TSV_DIR/${fmt}_shotgun.tsv"
+
+	# Need both modes for a meaningful comparison.
+	if [ ! -f "$shotgun_tsv" ]; then
+		printf 'WARN  %-22s no shotgun TSV (only sniper) — skipped\n' "$fmt" >&2
+		continue
+	fi
+
+	total_count=$((total_count + 1))
+
+	actual_sn=$(tsv_rate "$sniper_tsv")
+	actual_sh=$(tsv_rate "$shotgun_tsv")
+	sample=$(tsv_sample "$sniper_tsv")
+
+	if [ -z "$sample" ]; then
+		printf 'WARN  %-22s could not read sample from TSV header — skipped\n' "$fmt" >&2
+		continue
+	fi
+
+	label=$(slug_to_label "$fmt")
+	read -r claimed_sn claimed_sh < <(report_claimed_rates "$label")
+
+	if [ "$claimed_sn" = "MISSING" ]; then
+		printf 'MISS  %-22s sample=%s — no row in report (TSV says %s%%/%s%%)\n' \
+			"$fmt" "$sample" "$actual_sn" "$actual_sh"
+		missing_count=$((missing_count + 1))
+		continue
+	fi
+
+	# Compute drift in percentage points
+	sn_diff=$((actual_sn - claimed_sn)); sn_diff=${sn_diff#-}
+	sh_diff=$((actual_sh - claimed_sh)); sh_diff=${sh_diff#-}
+	max_diff=$sn_diff
+	[ "$sh_diff" -gt "$max_diff" ] && max_diff=$sh_diff
+
+	if [ "$max_diff" -gt "$TOLERANCE_PP" ]; then
+		printf 'DRIFT %-22s sample=%s  report=%s%%/%s%%  TSV=%s%%/%s%%  Δ=%+dpp/%+dpp\n' \
+			"$fmt" "$sample" "$claimed_sn" "$claimed_sh" \
+			"$actual_sn" "$actual_sh" \
+			$((actual_sn - claimed_sn)) $((actual_sh - claimed_sh))
+		drift_count=$((drift_count + 1))
+	else
+		ok_count=$((ok_count + 1))
+	fi
+done
+
+echo ""
+printf 'audit-corruption-report: %d formats checked  ok=%d  drift=%d  missing-row=%d  tolerance=±%dpp\n' \
+	"$total_count" "$ok_count" "$drift_count" "$missing_count" "$TOLERANCE_PP"
+
+if [ "$drift_count" -gt 0 ] || [ "$missing_count" -gt 0 ]; then
+	exit 1
+fi
+exit 0
