@@ -1,3 +1,25 @@
+### Format Coverage Chew-Through (2026-04-25, completed 21:50 EST)
+
+Per Peter's dispatch: measure corruption detection for the 125 formats that validate claimed to support but had no sweep data. Reconcile against `FORMAT_VERIFICATIONS.md` (242 enum entries). Verify checksum mechanisms are wired up.
+
+- [x] Mapped 227 ground-truth dirs vs 104 swept formats → 125-format gap.
+- [x] Categorized samples by size: 7 ≥ 4 KB (full sweep), 19 in 1-4 KB range (sniper-only), 98 < 1 KB (sniper-only on tiny structural samples). Most are honest 0%/0% structural-only formats.
+- [x] Built `/tmp/run-sweep.sh` parallel harness; ran 117 sniper sweeps + 6 shotgun sweeps (where sample ≥ 4 KB) → 123 new TSVs in `docs/corruption-sweep-results/`.
+- [x] Generated 117 new master-report rows distributed across 9 sections; appended in-place. Total now ~250 format rows. Hand-curated mechanism descriptions per row (no LLM-only generation).
+- [x] Updated `scripts/audit-corruption-report` `slug_to_label` map with 79 new aliases. Audit clean: 110 formats, 0 drift, 0 missing-row.
+- [x] Added Action Item #13: APE / WavPack MD5 not verified — partial validation gap. Both formats embed audio-MD5 but validators only see the metadata. Per Peter's instruction, recorded as a deferred multi-session implementation task because full APE entropy decoder + WavPack decorrelator + MD5 over reconstructed PCM is several days each. Tiny existing ground-truth samples (52 B APE, 2 KB WavPack) are also a sample-sourcing dependency.
+- [x] Fixed sample mis-pick for KMZ (sweep had selected `sample.3mf` because it was the largest file in the kmz dir — re-swept against the real `sample.kmz`, 95% sniper).
+- [x] Fixed sample mis-pick for VP8 (sweep had selected `sample.webm` which validates as Matroska, not raw VP8 — re-swept against `sample.ivf`, 1% sniper).
+- [x] format_roundtrip CLI test still green (219/219 pass).
+- [x] master_report_drift CLI test still green.
+- [x] Updated preamble to note 117-format wave; many new rows are sniper-only because their ground-truth samples are < 4 KB (the shotgun overwrite size).
+
+Deferred (out-of-scope per dispatch brief):
+- [ ] Source larger ground-truth samples for APE, WavPack, 7z, ZIP, Gzip, Bzip2, XZ, Zstd, RAR, CAB so shotgun mode can run (current samples all < 4 KB).
+- [ ] Implement full APE / WavPack MD5 verification (Action Item #13). Requires APE entropy decoder + WavPack decorrelator/range decoder.
+- [ ] Directory-format sweep harness for bagit, git_repository, macos_app/bundle/framework, spotlight, band, logicx (single-file `corruption-experiment` can't probe these).
+- [ ] Source samples for: ivf, ogv, song, sevenz, sitx, qbb, msi, ppt, dbf, pcap, pcapng, gcode, esd, llvm_diag, llvm_pch, msgpack, br, rpm — 18 enum formats with neither ground truth nor sweep.
+
 ### Pre-Launch Corruption Detection Audit (2026-04-23)
 
 Findings from the 6-agent audit captured in `docs/corruption-detection-report.md`. Priority order.

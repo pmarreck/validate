@@ -11,7 +11,7 @@
 - Wilson 95% CI at n=100 is ±1.8% at the extremes (0% or 100%) and up to ±10% near 50%.
 - Harness: `scripts/corruption-experiment` (single-format) and `scripts/corruption-sweep` (batch). Re-run with `--count 38416` for ±0.5% precision.
 
-**Most data below was sweep-generated on 2026-03-06; nine rows (bmp, icns, nrw, orf, pef, raf, rm, rw2, swf) were added on 2026-04-23. The "Run" column gives the date for each row.**
+**Most data below was sweep-generated on 2026-03-06; nine rows (bmp, icns, nrw, orf, pef, raf, rm, rw2, swf) were added on 2026-04-23. On 2026-04-25, 117 additional formats were swept in a coverage chew-through, bringing total format rows past 200. Many new rows are sniper-only because their ground-truth samples are < 4 KB (the shotgun overwrite size); that is the honest measurement, not a methodology gap. The "Run" column gives the date for each row.**
 
 ---
 
@@ -41,6 +41,7 @@
 | PAM/PPM | 0% | 0% | sample.ppm | 1.8 MB | 2026-03-06 | Raw pixel; Netpbm spec has no checksum |
 | TGA | 0% | 0% | sample.tga | 11 KB | 2026-03-06 | Raw pixel; TGA spec has no checksum |
 | TIFF | 0% | 0% | pc260001.tif | 937 KB | 2026-03-06 | IFD structural only — no per-strip checksum |
+| JBIG2 | 0% | — | annex-h-truncated.jbig2 | 860 B | 2026-04-25 | Bi-level image stream walk; sniper 0% on truncated sample. Shotgun N/A (sample < 4 KB). |
 
 ### RAW Camera
 
@@ -55,6 +56,7 @@
 | ORF | 0% | 0% | PB120976.ORF | 14 MB | 2026-04-23 | Olympus; validator WARNs on "uncompressed IFD claims but Huffman-compressed data". Structural-only. |
 | PEF | 0% | 0% | IMGP1754.PEF | 11 MB | 2026-04-23 | Pentax; TIFF-wrapped. Structural-only. |
 | RW2 | 0% | 0% | panasonic_16-9.RW2 | 11 MB | 2026-04-23 | Panasonic; TIFF-wrapped. Structural-only. |
+| CR3 (Canon) | 0% | 0% | sample.CR3 | 15.0 MB | 2026-04-25 | ISOBMFF-based Canon RAW 3; structural box walk. 15 MB sample at 0%/0% confirms no integrity mechanism beyond structure. |
 
 ### Video
 
@@ -75,6 +77,10 @@
 | MPEG-1/2 | 0% | 0% | sample.mpg | 16 KB | 2026-03-06 | Start codes only |
 | MPEG-4 Part 2 | 0% | 0% | ubAVIxvid10.avi | 1.2 MB | 2026-03-06 | VOP header parsing tolerates VOP failures |
 | RM | 0% | 2% | sample.rm | 14 KB | 2026-04-23 | RealMedia spec has no checksums; structural chunk walk only |
+| FLV | 40% | — | sample.flv | 33 B | 2026-04-25 | Flash Video tag walk; no per-tag CRC. Tiny 33 B sample — sniper hits magic + header bytes. Shotgun N/A (sample < 4 KB). |
+| MPEG-PS | 0% | — | sample.mpg | 2.0 KB | 2026-04-25 | MPEG Program Stream; PES header walk; no CRC. Shotgun N/A (sample < 4 KB). |
+| Theora | **100%** | — | sample.ogv | 3.4 KB | 2026-04-25 | Theora-in-Ogg; Ogg page CRC32 catches every probed bit flip. Shotgun N/A (sample < 4 KB). |
+| VP8 (raw IVF) | 1% | — | sample.ivf | 263 B | 2026-04-25 | Raw VP8 in IVF container; structural-only without compressed-frame decode. Shotgun N/A (sample < 4 KB). |
 
 ### Audio
 
@@ -96,6 +102,14 @@
 | AU | 0% | 0% | sample.au | 9 KB | 2026-03-06 | Header + raw PCM |
 | Tracker (MOD) | 0% | 0% | otm.mod | 308 KB | 2026-03-06 | No integrity mechanism in format |
 | CPT | **100%** | **100%** | sample.cpt | 20 KB | 2026-03-06 | CRC per resource fork entry (Compact Pro archive, not audio) |
+| AMR | 14% | — | sample.amr | 38 B | 2026-04-25 | Adaptive Multi-Rate audio; frame-table based, no per-frame CRC. Sniper at 14% reflects sync-byte coverage on a 38 B sample. Shotgun N/A. |
+| APE (Monkey's Audio) | 6% | — | sample.ape | 52 B | 2026-04-25 | MAC header + descriptor MD5 (file-level); validator does NOT currently verify the MD5 (would require full decoder). Sample is 52 B (header only). See Action Items #13. |
+| CD+G (Karaoke) | 0% | 2% | sample.cdg | 14.1 KB | 2026-04-25 | 24-byte fixed-size sectors; structural only — no checksum. 0%/2% confirms fundamental format limit. |
+| DFF (DSDIFF) | 52% | — | sample.dff | 32 B | 2026-04-25 | DSD audio container; chunk walk only. Tiny 32 B header-only sample. Shotgun N/A. |
+| DSF (DSD) | 60% | — | sample.dsf | 88 B | 2026-04-25 | Sony DSD; structural walk. Shotgun N/A. |
+| DTS (Digital Surround) | 0% | 51% | sample.dts | 369 KB | 2026-04-25 | Frame sync + size walk; no per-frame CRC. Shotgun lift from 4 KB overwrite desyncing the frame stream. |
+| TTA (True Audio) | **97%** | — | sample.tta | 3.1 KB | 2026-04-25 | Per-frame CRC32 catches almost every probed bit flip. Shotgun N/A (sample < 4 KB). |
+| WavPack | 2% | — | sample.wv | 2.1 KB | 2026-04-25 | MD5 in optional sub-block + per-block CRC over decoded samples; **validator does NOT verify either** (requires full decoder). See Action Items #13. |
 
 ### Document & Office
 
@@ -119,6 +133,34 @@
 | Pages | **100%** | **100%** | sample.pages (hand-authored CC0) | 56 KB | 2026-04-25 | iWork bundle = ZIP with per-entry CRC32. Hand-authored from scratch (no Apple software, no permissive corpus exists); `scripts/build-pages-sample` regenerates a deterministic 8-IWA inner `Index.zip` with high-entropy openssl-AES-CTR payloads plus real plist metadata. CRC32 per entry catches every bit flip and every 4 KB shotgun overwrite. |
 | Keynote | **99%** | **100%** | sample.key (hand-authored CC0) | 64 KB | 2026-04-25 | iWork bundle = ZIP with per-entry CRC32. Hand-authored mirroring the Pages sample; `scripts/build-keynote-sample` regenerates a 9-IWA inner `Index.zip` plus an uncompressed `buildVersionHistory.plist` carrying `com.apple.iWork.Keynote` so the format detector keys on it. CRC32 per entry catches every 4 KB shotgun overwrite and ~99% of single-bit flips. |
 | Numbers | **100%** | **100%** | sample.numbers (hand-authored CC0) | 64 KB | 2026-04-25 | Same iWork-bundle template as Keynote with a Tables/-shaped IWA layout. The `com.apple.iWork.Numbers` marker is stored uncompressed at the head of the outer ZIP. CRC32 per entry catches every probed bit flip and every 4 KB shotgun overwrite. |
+| AI (Adobe Illustrator) | 6% | — | sample.ai | 372 B | 2026-04-25 | PostScript-derived header + PDF body. Tiny 372 B sample is mostly PDF magic; later bytes are uncovered text. Shotgun N/A. |
+| BAI2 (Bank Admin Inst.) | 20% | — | sample.bai2 | 362 B | 2026-04-25 | Fixed-format banking text; structural validation of record-type prefixes. No checksum. Shotgun N/A. |
+| CSV | 0% | — | sample.csv | 70 B | 2026-04-25 | Plain text; structural validator only checks UTF-8 + delimiter consistency. 0% as expected. Shotgun N/A. |
+| ClarisWorks | 6% | — | sample.cwk | 64 B | 2026-04-25 | Legacy AppleWorks. Structural walk. Shotgun N/A. |
+| EDIFACT | 37% | — | sample.edifact | 152 B | 2026-04-25 | Fixed-format trade messages; validator cross-checks UNH/UNT counts. Shotgun N/A. |
+| EPS | 4% | — | sample.eps | 430 B | 2026-04-25 | PostScript header + structural walk. Shotgun N/A. |
+| EPUB | 69% | — | sample.epub | 2.0 KB | 2026-04-25 | ZIP container with mimetype check; per-entry CRC32. Shotgun N/A. |
+| HTML | 2% | — | simple.html | 196 B | 2026-04-25 | Tag-tree validator; structural only. Shotgun N/A. |
+| iCalendar (RFC 5545) | 21% | — | sample.ics | 650 B | 2026-04-25 | Structural; BEGIN/END pairing + property syntax. Shotgun N/A. |
+| IDML (InDesign) | 55% | — | sample.idml | 884 B | 2026-04-25 | ZIP+XML markup; per-entry CRC32. Shotgun N/A. |
+| INI | 17% | — | sample.ini | 60 B | 2026-04-25 | Plain-text key-value; structural only. Shotgun N/A. |
+| JSON | 47% | — | sample.json | 94 B | 2026-04-25 | JSON parser; structural only. Tiny sample's curly/brace density yields 47%. Shotgun N/A. |
+| JSON5 | 30% | — | sample.json5 | 329 B | 2026-04-25 | JSON5 parser; structural only. Shotgun N/A. |
+| MT940 (SWIFT) | 11% | — | sample.mt940 | 347 B | 2026-04-25 | Banking text; structural only. Shotgun N/A. |
+| MacWrite Document | 0% | — | sample.mwd | 64 B | 2026-04-25 | Legacy word processor; structural only. Tiny sample. Shotgun N/A. |
+| NACHA (ACH) | 15% | — | sample.ach | 950 B | 2026-04-25 | Banking fixed-format text; record-type validation. Shotgun N/A. |
+| OFX (Open Financial) | 2% | — | sample.ofx | 850 B | 2026-04-25 | Banking SGML/XML; structural only. Shotgun N/A. |
+| Plain Text | 0% | — | sample.txt | 254 B | 2026-04-25 | UTF-8 + control-char check. 0% as expected. Shotgun N/A. |
+| PTX (Pro Tools) | 0% | 0% | sample.ptx | 39.8 KB | 2026-04-25 | Avid session structural walk. 0%/0% on 40 KB confirms structural-only. |
+| QIF (Quicken Interchange) | 3% | — | sample.qif | 218 B | 2026-04-25 | Plain-text; structural only. Shotgun N/A. |
+| TOML | 37% | — | sample.toml | 72 B | 2026-04-25 | Plain-text; structural only. Shotgun N/A. |
+| TXF (Tax Exchange) | 3% | — | sample.txf | 140 B | 2026-04-25 | Plain-text; structural only. Shotgun N/A. |
+| vCard (RFC 6350) | 32% | — | sample.vcf | 198 B | 2026-04-25 | Structural BEGIN/END pairing + property syntax. Shotgun N/A. |
+| WordPerfect | 2% | — | sample.wpd | 512 B | 2026-04-25 | Header walk; structural only. Shotgun N/A. |
+| X12 EDI | 21% | — | sample.edi | 262 B | 2026-04-25 | Fixed-format trade messages; ISA/IEA + GS/GE counts cross-validated. Shotgun N/A. |
+| XML | 64% | — | sample.xml | 110 B | 2026-04-25 | XML parse; structural only. 64% sniper from tag/quote density on tiny sample. Shotgun N/A. |
+| YAML | 0% | — | sample.yaml | 68 B | 2026-04-25 | Plain-text; structural only. Shotgun N/A. |
+| Markdown | 0% | — | sample.md | 525 B | 2026-04-25 | Plain-text; structural only. Shotgun N/A. |
 
 ### Font
 
@@ -138,6 +180,14 @@
 | DICOM | 5% | 20% | CT_small.dcm | 39 KB | 2026-03-06 | Tag structure + value validation |
 | HDF5 | 4% | 13% | sample_v2.h5 | 6 KB | 2026-03-06 | Jenkins lookup3 checksum (small file) |
 | PDB (Protein) | 16% | 39% | 1CRN.pdb | 49 KB | 2026-03-06 | ATOM/HETATM record cross-validation |
+| CIF (Crystallographic Info) | 0% | — | sample.cif | 145 B | 2026-04-25 | Plain-text scientific format; structural only. Shotgun N/A. |
+| FASTA | 22% | — | sample.fasta | 479 B | 2026-04-25 | Plain-text bioinformatics; structural only. Shotgun N/A. |
+| FASTQ | 28% | — | sample.fastq | 447 B | 2026-04-25 | Plain-text bioinformatics; per-record sequence/quality length cross-check. Shotgun N/A. |
+| MAT-File | **94%** | — | sample.mat | 1.3 KB | 2026-04-25 | Element header + flag walk; magic + endian + tag length validation. Shotgun N/A. |
+| NetCDF | 39% | — | sample.nc | 84 B | 2026-04-25 | NetCDF classic header walk; HDF5-derived NetCDF-4 reuses HDF5's lookup3 checksums. Tiny sample. Shotgun N/A. |
+| NIfTI-1 | 1% | — | sample.nii | 416 B | 2026-04-25 | Header magic + dims; no checksum. Shotgun N/A. |
+| Parquet | 2% | — | sample.parquet | 484 B | 2026-04-25 | Footer + page CRC32 (not currently verified by validator beyond header). Shotgun N/A. |
+| Shapefile | **89%** | — | sample.shp | 128 B | 2026-04-25 | GIS .shp; record-by-record header check + magic. Shotgun N/A. |
 
 ### Database
 
@@ -153,6 +203,21 @@
 | Format | Sniper | Shotgun | Sample | Size | Run | Mechanism |
 |--------|-------:|--------:|--------|-----:|-----|-----------|
 | TAR | 15% | 73% | sample.tar | 4 KB | 2026-03-06 | Header checksum per 512-byte block |
+| 7z | 66% | — | sample.7z | 204 B | 2026-04-25 | 7z next-header CRC32 + per-stream CRC32. Sample is tiny (204 B); structure dominates so sniper picks up signature/header bytes. Shotgun N/A. |
+| AR (Unix archive) | 38% | — | minimal.a | 88 B | 2026-04-25 | `!<arch>\n` magic + 60-byte member headers; no per-entry checksum. Shotgun N/A. |
+| BLAR (Blake3 Archive) | **100%** | — | sample.blar | 1.0 KB | 2026-04-25 | Peter's archive format with Blake3 per-entry hashing. Every probed bit flip detected. Shotgun N/A. |
+| Brotli | 42% | — | hello.br | 9 B | 2026-04-25 | Raw Brotli stream; decompress validates structure. Tiny 9 B sample. Shotgun N/A. |
+| Bzip2 | **98%** | — | sample.bz2 | 88 B | 2026-04-25 | CRC32 per block + combined CRC; 98% sniper at 88 B reflects per-block CRC dominance. Shotgun N/A. |
+| CAB (Microsoft) | 71% | — | sample.cab | 93 B | 2026-04-25 | Per-folder + per-file CSUM (Adler-like) cross-validated. Shotgun N/A. |
+| Gzip | **84%** | — | sample.gz | 94 B | 2026-04-25 | CRC32 + ISIZE in trailer; sniper 84% reflects header+CRC byte coverage on 94 B sample. Shotgun N/A. |
+| BinHex (.hqx) | **96%** | — | sample.hqx | 118 B | 2026-04-25 | Per-line CRC; sniper 96% — line-by-line CRC catches almost any flip. Shotgun N/A. |
+| MBLAR (Multi-Blake3) | **100%** | — | sample.mblar | 393 B | 2026-04-25 | Peter's manifest-bundle archive; Blake3 per file. Shotgun N/A. |
+| PAR2 | **98%** | — | sample.par2 | 572 B | 2026-04-25 | MD5 of every packet + recovery slice integrity. Sniper 98% reflects per-packet MD5. Shotgun N/A. |
+| RAR | **100%** | — | sample.rar | 766 B | 2026-04-25 | Per-entry CRC32 + RAR5 BLAKE2sp option. Shotgun N/A. |
+| StuffIt | **94%** | — | sample.sit | 140 B | 2026-04-25 | Header + entry walk; sniper 94% on 140 B from header dominance. Shotgun N/A. |
+| XZ | **100%** | — | sample.xz | 128 B | 2026-04-25 | CRC32/CRC64/SHA-256 per stream + index integrity. Shotgun N/A. |
+| ZIP | 56% | — | test_archive.zip | 203 B | 2026-04-25 | Per-entry CRC32 + EOCD record. Tiny sample (203 B). Shotgun N/A. |
+| Zstd | **92%** | — | sample.zst | 75 B | 2026-04-25 | Frame-level XXH64 + frame footer. Shotgun N/A. |
 
 ### Game ROM
 
@@ -164,6 +229,9 @@
 | Genesis | 0% | 1% | Aero | 524 KB | 2026-03-06 | Header checksum only |
 | NES | 0% | 0% | 1943 | 131 KB | 2026-03-06 | iNES header only |
 | N64 | 0% | 0% | Super | 8.4 MB | 2026-03-06 | No integrity mechanism |
+| CHD (MAME) | 10% | — | synthetic_chd.chd | 124 B | 2026-04-25 | MAME's compressed disc; SHA-1 per hunk + global SHA-1. Tiny synthetic 124 B sample. Shotgun N/A. |
+| NDS (Nintendo DS) | 41% | — | synthetic_nds_rom.nds | 1.0 KB | 2026-04-25 | Header CRC16 (logo + secure area). 41% sniper on 1 KB. Shotgun N/A. |
+| WAD (Doom/Wii) | **100%** | — | sample.wad | 12 B | 2026-04-25 | Lump table; structural only. Tiny synthetic sample — header IS most of file. Shotgun N/A. |
 
 ### Disk Image / Filesystem / Executable / Other
 
@@ -177,6 +245,56 @@
 | DS_Store | 0% | 25% | sample.ds_store | 10 KB | 2026-03-06 | BTree page structure |
 | ASF | 1% | 0% | sample.asf | 7 KB | 2026-03-06 | GUID/object structural |
 | QDF | 1% | 0% | LONDON_2018.QDF | 5.1 MB | 2026-03-06 | OLE2/ZIP structural |
+| 3MF (3D Manufacturing) | 75% | — | sample.3mf | 1.5 KB | 2026-04-25 | ZIP-based; per-entry CRC32 + XML manifest. Shotgun N/A (sample < 4 KB). |
+| AEP (After Effects Project) | 27% | — | sample.aep | 44 B | 2026-04-25 | RIFX container; structural-only walk. Tiny sample (44 B). Shotgun N/A. |
+| ALS (Ableton Live Set) | **90%** | — | sample.als | 82 B | 2026-04-25 | gzip-wrapped XML. Tiny sample — gzip CRC32 + zlib structure catches most bit flips. Shotgun N/A. |
+| Apple Media DB | 46% | — | sample.tvdb | 253 B | 2026-04-25 | tvdb/photo SQLite-derived store. Structural walk. Shotgun N/A. |
+| GarageBand (.band) | 0% | — | projectData (inside .band bundle) | 512 B | 2026-04-25 | Bundle (directory) format — `projectData` inside is a plist routed to plist validator. Sweep-only on the plist file. Shotgun N/A. |
+| BEAM (Erlang) | 36% | — | sample.beam | 736 B | 2026-04-25 | FOR1/IFF chunk container; chunk lengths cross-validated. No CRC. Shotgun N/A. |
+| Blender (.blend) | 47% | — | sample.blend | 104 B | 2026-04-25 | DNA-block-based binary. Structural walk; no checksum. Tiny header-only sample. Shotgun N/A. |
+| BSP (Quake) | 39% | — | sample.bsp | 1.0 KB | 2026-04-25 | Lump-table walk; no CRC. Structural only. Shotgun N/A. |
+| Bitwig Project | 0% | — | sample.bwproject | 128 B | 2026-04-25 | ZIP-derived but tiny sample (128 B). Sniper 0% — sample is below ZIP minimum. Shotgun N/A. |
+| Chromium PAK | 0% | — | sample.pak | 30 B | 2026-04-25 | Resource bundle; index walk only. Tiny synthetic sample. Shotgun N/A. |
+| Cubase Project | 49% | — | sample.cpr | 76 B | 2026-04-25 | Steinberg binary. Structural only. Shotgun N/A. |
+| DER (ASN.1) | 7% | — | sample.der | 688 B | 2026-04-25 | TLV-walked. Structural; no checksum. Shotgun N/A. |
+| DRP (DR Painter) | 60% | — | sample.drp | 263 B | 2026-04-25 | Generic binary — high sniper from header dominance. Shotgun N/A. |
+| DWG (AutoCAD) | 1% | — | sample.dwg | 1.0 KB | 2026-04-25 | Section structure walk. Tiny sample. Shotgun N/A. |
+| DXF (AutoCAD) | 5% | — | sample.dxf | 388 B | 2026-04-25 | Plain-text CAD; structural only. Shotgun N/A. |
+| Erlang Mix .eex | 0% | — | sample.eex | 378 B | 2026-04-25 | Plain-text template; structural only. Shotgun N/A. |
+| ELF | 20% | — | minimal.elf | 64 B | 2026-04-25 | Section header walk; no whole-file checksum. Tiny synthetic 64 B sample. Shotgun N/A. |
+| Erlang BERT | 0% | — | sample.app | 281 B | 2026-04-25 | External Term Format walk. Shotgun N/A. |
+| FCPXML (Final Cut) | 58% | — | sample.fcpxml | 134 B | 2026-04-25 | XML-based; structural walk. Shotgun N/A. |
+| FL Studio | 6% | — | sample.flp | 122 B | 2026-04-25 | Project file structural walk. Tiny sample. Shotgun N/A. |
+| GLB (glTF binary) | 32% | — | box.glb | 1.6 KB | 2026-04-25 | Chunk-based; structural walk. JSON chunk + BIN chunk lengths cross-validated. Shotgun N/A. |
+| glTF (JSON) | 20% | — | box.gltf | 2.8 KB | 2026-04-25 | JSON manifest; structural only. Shotgun N/A. |
+| IFF (EA) | 46% | — | sample.iff | 232 B | 2026-04-25 | Chunk walk; no CRC. Shotgun N/A. |
+| Java .class | 21% | — | Hello.class | 397 B | 2026-04-25 | ClassFile constant pool walk; magic + version check. Shotgun N/A. |
+| KML | 58% | — | sample.kml | 1.0 KB | 2026-04-25 | GIS XML; structural only. Shotgun N/A. |
+| KMZ | **95%** | — | sample.kmz | 538 B | 2026-04-25 | KMZ = zipped KML; per-entry CRC32 catches almost any bit flip on the small sample. Shotgun N/A. |
+| Logic Pro X | 71% | — | sample.logicx (ProjectData) | 249 B | 2026-04-25 | Bundle format — sample is `ProjectData` plist alone. Shotgun N/A. |
+| LSPK (Larian Studios) | 3% | — | sample.lspk | 256 B | 2026-04-25 | Pak file; structural only. Shotgun N/A. |
+| Mach-O | 0% | — | sample.o | 536 B | 2026-04-25 | Single-arch sample; load command walk; no checksum. Shotgun N/A. |
+| OBJ (Wavefront) | 44% | — | sample.obj | 652 B | 2026-04-25 | Plain-text 3D; vertex/face syntax check. Shotgun N/A. |
+| PAK (Quake) | 60% | — | sample.pak | 12 B | 2026-04-25 | Header offset/length cross-check. Tiny synthetic sample (12 B). Shotgun N/A. |
+| PE (Windows) | 3% | — | sample.exe | 1.0 KB | 2026-04-25 | MZ + PE headers; optional checksum (rarely populated). Tiny sample. Shotgun N/A. |
+| PEM (RFC 7468) | 51% | — | sample.pem | 989 B | 2026-04-25 | Base64 envelope; structural only. Shotgun N/A. |
+| PGP Signed Message | **81%** | — | sample.asc | 370 B | 2026-04-25 | Header/footer detect + Base64 walk. Shotgun N/A. |
+| Plist | 52% | — | sample.plist | 830 B | 2026-04-25 | Both XML and binary plist; structural only. Shotgun N/A. |
+| PLY (3D) | 51% | — | sample.ply | 447 B | 2026-04-25 | Header + element count; no per-element checksum. Shotgun N/A. |
+| Premiere Project | 55% | — | sample.prproj | 112 B | 2026-04-25 | Gzip-wrapped XML. Tiny sample. Shotgun N/A. |
+| Reason (Propellerhead) | 33% | — | sample.reason | 96 B | 2026-04-25 | Bundle binary; structural walk. Shotgun N/A. |
+| RPP (Reaper) | 50% | — | sample.rpp | 44 B | 2026-04-25 | Plain-text project; structural only. Shotgun N/A. |
+| Sketch (.sketch) | 56% | — | sample.sketch | 631 B | 2026-04-25 | ZIP-based; per-entry CRC32. Shotgun N/A. |
+| SSH Signature | 64% | — | sample.sig | 294 B | 2026-04-25 | RFC 4880-like wire-format walk. Shotgun N/A. |
+| STEP (.step) | 23% | — | sample.stp | 711 B | 2026-04-25 | ISO 10303-21 plain-text CAD. Shotgun N/A. |
+| STL (3D) | 73% | — | sample.stl | 518 B | 2026-04-25 | Both ASCII and binary stl; sniper 73% on small ASCII sample. Shotgun N/A. |
+| Toast (Roxio) | 0% | 10% | sample.toast | 36.0 KB | 2026-04-25 | Apple Toast disc image; structural walk. |
+| Type 1 Font | 0% | — | sample.pfa | 174 B | 2026-04-25 | PostScript-derived font; eexec encrypted body walk. Shotgun N/A. |
+| VMDK | 0% | 0% | sample.vmdk | 64.0 KB | 2026-04-25 | VMware disk descriptor + extent walk. 65 KB sample at 0%/0% — structural-only. |
+| VPK (Valve Pak) | **100%** | — | sample.vpk | 28 B | 2026-04-25 | Tiny synthetic 28 B sample; structural walk catches every flip (header IS the file). Shotgun N/A. |
+| WARC (Web Archive) | 48% | — | sample.warc | 1.1 KB | 2026-04-25 | Record header + content-length walk. Shotgun N/A. |
+| WebAssembly | 35% | — | minimal.wasm | 24 B | 2026-04-25 | Section LEB128 length walk; magic + version. Tiny sample. Shotgun N/A. |
+| WIM (Windows Imaging) | 8% | — | sample.wim | 1.2 KB | 2026-04-25 | XPRESS/LZX section walk; partial integrity. Shotgun N/A. |
 
 ---
 
@@ -207,6 +325,8 @@ Findings from the 2026-04-23 audit. Priorities set by impact on launch credibili
 10. **RAF preview-JPEG coverage.** Fuji RAF currently hits 0/1% because the preview is ~0.5% of a 208 MB file. Options: (a) record multiple RAFs into the sweep so the preview-coverage variance is visible, (b) validate the RAF-specific sensor data blocks' internal offset tables (if any).
 11. **✓ WOFF / WOFF2 checksums (already working, report was stale).** Refreshed sweep 2026-04-23: WOFF **100%/100%**, WOFF2 **49%/100%**. The per-table zlib/Brotli decompress + origChecksum verification was implemented in `font_validator.zig:370`+; the 0%/0% numbers were from pre-implementation sweep data.
 12. **✓ VP8/VP9-in-MKV byte validation (DONE 2026-04-24, commit f8c38ec).** libvpx 1.14.1 integrated, decoder-only, generic-gnu (no asm, cross-compiles to all 5 OS/arch). Replaced the header-only VP8/VP9 handlers at `src/core/video_validator.zig`. WebM VP9+Opus: 0%/55% → **86%/78%**. WebM VP8: 0%/2% → **88%/90%**. Diagnostic find: VP8's decoder ran error concealment silently; required `VP8D_GET_FRAME_CORRUPTED` control query after every `vpx_codec_get_frame` to surface the internal corruption flag.
+
+13. **APE / WavPack MD5 not verified — partial validation gap.** Both formats embed MD5 of the decoded audio (APE descriptor field; WavPack optional `md5_checksum` 0x26 sub-block). Validators recognize the metadata but neither decodes the audio to recompute the hash because that would require a full APE entropy decoder / WavPack decoder. Per Peter (2026-04-25): "we should always use any existing checksum mechanisms such as md5 for APE and WavPack." **Code paths:** `validateApe` in `src/core/music_validators.zig:1380` (no MD5 read; only structural). `wavpack_decoder.zig:344` reads `stored_md5` and sets `has_md5=true` but explicitly leaves `md5_verified=false`. **Action:** implement minimal APE entropy decoder (predictor + range coder) and WavPack decorrelator + range decoder + IDWT, recompute MD5 over reconstructed PCM, compare to stored. ~3-5 dedicated sessions per format. Until then, sniper rates of 6% (APE) and 2% (WavPack) are honest reflections of structural-only coverage on the existing tiny samples; even with the existing samples, larger ground-truth files would let shotgun mode reveal more. **First sub-step:** source larger ground-truth APE/WavPack samples (Wikimedia Commons CC-BY classical recordings) so shotgun mode can run.
 
 ### Sample sourcing (all under permissive licenses)
 
