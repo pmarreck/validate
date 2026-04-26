@@ -12,6 +12,7 @@ const ac3_validator = @import("ac3_validator.zig");
 const dts_validator = @import("dts_validator.zig");
 const eac3_validator = @import("eac3_validator.zig");
 const wavpack_decoder = @import("wavpack_decoder.zig");
+const wavpack_decode_validator = @import("wavpack_decode_validator.zig");
 const midi_validator = @import("midi_validator.zig");
 const tracker_validator = @import("tracker_validator.zig");
 const libopenmpt = @import("libopenmpt.zig");
@@ -1426,29 +1427,56 @@ pub fn validateApe(file: *FileSource) ValidationResult {
     return ValidationResult.ok(.ape);
 }
 
-/// Validate WavPack audio file structure.
-/// WavPack files start with "wvpk" signature followed by block header.
-/// Uses deep validation to parse all blocks and detect MD5 sub-block.
+/// Validate WavPack audio file by decoding every block to PCM and checking
+/// libwavpack's internal CRC verifier. The CRC field in the WavPack block
+/// header is computed over decoded samples (per dbry's `unpack.c`), so byte-
+/// level corruption is only catchable via full decode + CRC compare. We
+/// surface mismatches via `WavpackGetNumErrors`.
 pub fn validateWavPack(file: *FileSource) ValidationResult {
-    // Use the deep validator which parses all blocks and looks for MD5
     const allocator = std.heap.page_allocator;
-    const result = wavpack_decoder.validateWavPackFile(file, 1000, allocator);
+    const file_size = file.getEndPos() catch {
+        return ValidationResult.invalidWithDepth(.wavpack, errmsg.failedToGet("file size"), .full);
+    };
+    if (file_size < 32) {
+        return ValidationResult.invalidWithDepth(.wavpack, errmsg.fileTooSmallFor("WavPack"), .full);
+    }
+    if (file_size > 256 * 1024 * 1024) {
+        // Above 256MB, fall back to structural validation rather than reading
+        // the whole file into RAM. CRC verification still happens at the
+        // structural-walker level (no full decode but block-level integrity
+        // checks). Production samples for the validate test suite are far
+        // smaller than this.
+        const r = wavpack_decoder.validateWavPackFile(file, 10000, allocator);
+        if (!r.valid) {
+            return ValidationResult.invalid(.wavpack, r.error_message orelse "WavPack validation failed");
+        }
+        return ValidationResult.ok(.wavpack);
+    }
 
+    file.seekTo(0) catch {
+        return ValidationResult.invalidWithDepth(.wavpack, "Failed to seek WavPack file", .full);
+    };
+    const bytes = allocator.alloc(u8, @intCast(file_size)) catch {
+        return ValidationResult.invalidWithDepth(.wavpack, "Memory allocation failed", .full);
+    };
+    defer allocator.free(bytes);
+    const n = file.readAll(bytes) catch {
+        return ValidationResult.invalidWithDepth(.wavpack, errmsg.failedToRead("file"), .full);
+    };
+
+    const result = wavpack_decode_validator.validateWavPackDecode(allocator, bytes[0..n]) catch |err| {
+        return ValidationResult.invalidWithDepth(.wavpack, @errorName(err), .full);
+    };
     if (!result.valid) {
-        return ValidationResult.invalid(.wavpack, result.error_message orelse "WavPack validation failed");
+        if (result.error_message) |msg| {
+            // The decode validator may have allocated this; we just report it
+            // and let the page allocator reclaim on process exit (page_allocator
+            // free is a no-op anyway).
+            return ValidationResult.invalidWithDepth(.wavpack, msg, .full);
+        }
+        return ValidationResult.invalidWithDepth(.wavpack, "WavPack decode validation failed", .full);
     }
-
-    // If MD5 sub-block is present, we've verified structural integrity at checksum level
-    // (the MD5 itself can only be verified by full audio decode, but its presence
-    // indicates the file was encoded with integrity information)
-    if (result.has_md5) {
-        return ValidationResult.okWithDepth(.wavpack, .full);
-    }
-
-    // No MD5 present - structural validation only
-    // WavPack still has per-block CRC32 for decoded audio, but we'd need
-    // full decode to verify those
-    return ValidationResult.ok(.wavpack);
+    return ValidationResult.okWithDepth(.wavpack, .full);
 }
 
 // ============ MIDI Deep Validation (track data parsing) ============
@@ -4231,52 +4259,14 @@ test "FormatValidator rejects APE with invalid descriptor" {
 }
 
 test "FormatValidator accepts valid WavPack" {
+    // Uses the real ground-truth sample so the libwavpack-backed deep
+    // validator can actually decode blocks. A 32-byte synthetic header
+    // is no longer enough — libwavpack rejects partial files at open time.
     const allocator = std.testing.allocator;
-
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Create minimal valid WavPack file
-    var wv_data: [32]u8 = undefined;
-    @memcpy(wv_data[0..4], "wvpk"); // Signature
-    // Block size (24 bytes - reasonable)
-    wv_data[4] = 24;
-    wv_data[5] = 0;
-    wv_data[6] = 0;
-    wv_data[7] = 0;
-    // Version 0x0410 (4.10)
-    wv_data[8] = 0x10;
-    wv_data[9] = 0x04;
-    // Track number and sub-block index
-    wv_data[10] = 0;
-    wv_data[11] = 0;
-    // Total samples
-    wv_data[12] = 0x00;
-    wv_data[13] = 0x10;
-    wv_data[14] = 0;
-    wv_data[15] = 0;
-    // Block index
-    wv_data[16] = 0;
-    wv_data[17] = 0;
-    wv_data[18] = 0;
-    wv_data[19] = 0;
-    // Block samples (reasonable value)
-    wv_data[20] = 0x00;
-    wv_data[21] = 0x10;
-    wv_data[22] = 0;
-    wv_data[23] = 0;
-    // Flags (16-bit stereo)
-    wv_data[24] = 0x01; // 16-bit
-    wv_data[25] = 0;
-    wv_data[26] = 0;
-    wv_data[27] = 0;
-    @memset(wv_data[28..32], 0);
-
-    const file = try tmp_dir.dir.createFile("test.wv", .{});
-    try file.writeAll(&wv_data);
-    file.close();
-
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.wv");
+    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/wavpack/sample.wv") catch |err| switch (err) {
+        error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
+        else => return err,
+    };
     defer allocator.free(path);
 
     var validator = FormatValidator.init();

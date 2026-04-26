@@ -126,6 +126,15 @@ pub fn build(b: *std.Build) void {
     });
     const libvpx_lib = libvpx_dep.artifact("vpx");
 
+    // libwavpack for WavPack lossless audio deep validation (BSD-3, dbry).
+    // Decode-only build (no encoder, no DSD, no legacy v3, no asm). The
+    // CRC of decoded samples is verified internally by the library; we
+    // surface mismatches via WavpackGetNumErrors().
+    const libwavpack_dep = b.dependency("libwavpack", .{
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const libwavpack_lib = libwavpack_dep.artifact("wavpack");
     // OpenJPEG for JPEG2000 decode validation (BSD-2, used in PDFs and DCPs)
     const openjpeg_dep = b.dependency("openjpeg", .{
         .target = target,
@@ -297,6 +306,8 @@ pub fn build(b: *std.Build) void {
     // Add libvpx include path (for vpx_decode_validator.zig @cImport)
     core_mod.addIncludePath(libvpx_lib.getEmittedIncludeTree());
 
+    // Add libwavpack include path (for wavpack_decode_validator.zig @cImport)
+    core_mod.addIncludePath(libwavpack_lib.getEmittedIncludeTree());
     // Add OpenJPEG include path (for jpeg2000_validator.zig @cImport)
     core_mod.addIncludePath(openjpeg_lib.getEmittedIncludeTree());
 
@@ -349,6 +360,7 @@ pub fn build(b: *std.Build) void {
         libvorbis_lib, // Vorbis audio deep validation
         libtheora_lib, // Theora video deep validation
         libvpx_lib,    // VP8/VP9 video deep validation (libvpx)
+        libwavpack_lib, // WavPack lossless audio deep validation
         minimp3_lib,   // MP3 audio deep validation
         openjpeg_lib,  // JPEG2000 decode validation
         libjxl_lib,    // JPEG-XL decode validation
@@ -396,6 +408,7 @@ pub fn build(b: *std.Build) void {
             libvorbis_lib.getEmittedBin(),
             libtheora_lib.getEmittedBin(),
             libvpx_lib.getEmittedBin(),
+            libwavpack_lib.getEmittedBin(),
             minimp3_lib.getEmittedBin(),
             openjpeg_lib.getEmittedBin(),
             libjxl_lib.getEmittedBin(),

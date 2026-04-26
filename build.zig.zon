@@ -36,6 +36,9 @@
         .libvpx = .{
             .path = "deps/libvpx",
         },
+        .libwavpack = .{
+            .path = "deps/libwavpack",
+        },
         .openjpeg = .{
             .path = "deps/openjpeg",
         },
@@ -92,6 +95,10 @@
         .blip = .{
             .url = "git+https://github.com/pmarreck/BLIP#b739ad6e44679f0510124503b8597c10e6619d0d",
             .hash = "blip-0.1.0-rcNuGObhFgBwXCjHX9fe0p_Ge5NcbH4awkJkk0XAzT7t",
+        },
+        .wavpack_src = .{
+            .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",
+            .hash = "N-V-__8AAAZvRACqqks-KAMLJ7bhK0Ei0r-c4ox4dym2esGj",
         },
     },
     .paths = .{""},
