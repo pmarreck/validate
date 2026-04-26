@@ -135,6 +135,20 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
     const libwavpack_lib = libwavpack_dep.artifact("wavpack");
+
+    // libape for Monkey's Audio (APE) deep decode validation (BSD-3, upstream
+    // Monkey's Audio SDK 12.73). Decompress-only subset built with the
+    // backwards-compatibility flag to cover legacy v3800-3970 files. The
+    // shim exposes a single `validate_ape_decode_check` C entry point that
+    // decodes every frame and returns nonzero on per-frame CRC mismatch.
+    // The per-frame CRC32 is computed over decoded PCM (per
+    // APEDecompressCore.cpp::EndFrame), so structural validation cannot
+    // catch payload corruption — only a real decoder can.
+    const libape_dep = b.dependency("libape", .{
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const libape_lib = libape_dep.artifact("ape");
     // OpenJPEG for JPEG2000 decode validation (BSD-2, used in PDFs and DCPs)
     const openjpeg_dep = b.dependency("openjpeg", .{
         .target = target,
@@ -308,6 +322,9 @@ pub fn build(b: *std.Build) void {
 
     // Add libwavpack include path (for wavpack_decode_validator.zig @cImport)
     core_mod.addIncludePath(libwavpack_lib.getEmittedIncludeTree());
+
+    // Add libape include path (for ape_decode_validator.zig @cImport)
+    core_mod.addIncludePath(libape_lib.getEmittedIncludeTree());
     // Add OpenJPEG include path (for jpeg2000_validator.zig @cImport)
     core_mod.addIncludePath(openjpeg_lib.getEmittedIncludeTree());
 
@@ -361,6 +378,7 @@ pub fn build(b: *std.Build) void {
         libtheora_lib, // Theora video deep validation
         libvpx_lib,    // VP8/VP9 video deep validation (libvpx)
         libwavpack_lib, // WavPack lossless audio deep validation
+        libape_lib,     // Monkey's Audio (APE) deep decode validation
         minimp3_lib,   // MP3 audio deep validation
         openjpeg_lib,  // JPEG2000 decode validation
         libjxl_lib,    // JPEG-XL decode validation
@@ -409,6 +427,7 @@ pub fn build(b: *std.Build) void {
             libtheora_lib.getEmittedBin(),
             libvpx_lib.getEmittedBin(),
             libwavpack_lib.getEmittedBin(),
+            libape_lib.getEmittedBin(),
             minimp3_lib.getEmittedBin(),
             openjpeg_lib.getEmittedBin(),
             libjxl_lib.getEmittedBin(),
