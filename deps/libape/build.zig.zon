@@ -1,0 +1,17 @@
+.{
+	.name = .libape,
+	.version = "12.73.0",
+	.fingerprint = 0x900b0900cfc24acc,
+	.dependencies = .{
+		.mac_sdk = .{
+			.url = "https://monkeysaudio.com/files/MAC_1273_SDK.zip",
+			.hash = "N-V-__8AACp7UgDfQ40ycIueba0O_UliBesYAn0HBgnBnFBZ",
+		},
+	},
+	.paths = .{
+		"build.zig",
+		"build.zig.zon",
+		"shim.cpp",
+		"shim.h",
+	},
+}

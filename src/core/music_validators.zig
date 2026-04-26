@@ -13,6 +13,7 @@ const dts_validator = @import("dts_validator.zig");
 const eac3_validator = @import("eac3_validator.zig");
 const wavpack_decoder = @import("wavpack_decoder.zig");
 const wavpack_decode_validator = @import("wavpack_decode_validator.zig");
+const ape_decode_validator = @import("ape_decode_validator.zig");
 const midi_validator = @import("midi_validator.zig");
 const tracker_validator = @import("tracker_validator.zig");
 const libopenmpt = @import("libopenmpt.zig");
@@ -1702,10 +1703,35 @@ pub fn validateApe(file: *FileSource) ValidationResult {
 		prev_off = entry;
 	}
 
-	// MD5-over-decoded-PCM and per-frame CRC32-over-decoded-PCM verification require a
-	// full Monkey's Audio decoder (range coder + predictor + entropy + IIR filters).
-	// That's a multi-session task tracked separately. For now, structural rigor is the bar.
-	return ValidationResult.okWithDepth(.ape, .structural);
+	// Structural rigor passed. Now run the full Monkey's Audio decoder over
+	// the bitstream so per-frame CRC32 (computed over decoded PCM) catches
+	// any payload corruption that survived the structural walker. Files
+	// above 256 MiB stay structural-only to avoid pinning that much RAM.
+	if (file_size > 256 * 1024 * 1024) {
+		return ValidationResult.okWithDepth(.ape, .structural);
+	}
+
+	const allocator = std.heap.page_allocator;
+	file.seekTo(0) catch {
+		return ValidationResult.invalidCodeWithDepth(.ape, .invalid_value, "APE rewind for decode", .full);
+	};
+	const buf = allocator.alloc(u8, @intCast(file_size)) catch {
+		return ValidationResult.okWithDepth(.ape, .structural);
+	};
+	defer allocator.free(buf);
+	const n = file.readAll(buf) catch {
+		return ValidationResult.invalidCodeWithDepth(.ape, .failed_to_read, "APE for decode", .full);
+	};
+
+	const dr = ape_decode_validator.validateApeDecode(buf[0..n]);
+	if (!dr.valid) {
+		return ValidationResult.invalidWithDepth(
+			.ape,
+			dr.error_message orelse "APE decode validation failed",
+			.full,
+		);
+	}
+	return ValidationResult.okWithDepth(.ape, .full);
 }
 
 /// Validate WavPack audio file by decoding every block to PCM and checking
@@ -4433,96 +4459,40 @@ test "detectFormat WavPack" {
     try std.testing.expectEqual(FileFormat.wavpack, result);
 }
 
-test "FormatValidator accepts valid APE (modern v3990, structural-rigor)" {
+test "FormatValidator accepts valid APE (modern v3990, full deep decode)" {
+    // Now that validateApe runs the full Monkey's Audio decoder, only a
+    // real APE file (one that actually decodes cleanly) can pass. Use
+    // the in-tree ground-truth corpus, which is a real SDK-encoded APE.
     const allocator = std.testing.allocator;
 
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Construct a structurally-sound minimal modern (v3990) APE file:
-    //   descriptor (52) + header (24) + seek_table (4) + dummy frame data (16) = 96 bytes
-    // Field values must satisfy the structural-rigor checks:
-    //   compression = 2000 (normal), channels = 2, sample_rate = 44100, bps = 16,
-    //   total_frames = 1, final_frame_blocks = 1024, seek_table_length = 4 (one entry)
-    var ape_data: [96]u8 = undefined;
-    @memset(&ape_data, 0);
-    @memcpy(ape_data[0..4], "MAC ");
-    std.mem.writeInt(u16, ape_data[4..6], 3990, .little); // version
-    // Descriptor:
-    std.mem.writeInt(u32, ape_data[8..12], 52, .little); // descriptor_length
-    std.mem.writeInt(u32, ape_data[12..16], 24, .little); // header_length
-    std.mem.writeInt(u32, ape_data[16..20], 4, .little); // seek_table_length (1 entry)
-    std.mem.writeInt(u32, ape_data[20..24], 0, .little); // wav_header_length
-    std.mem.writeInt(u32, ape_data[24..28], 0, .little); // audio_data_length (unknown)
-    std.mem.writeInt(u32, ape_data[28..32], 0, .little); // audio_data_length_high
-    std.mem.writeInt(u32, ape_data[32..36], 0, .little); // wav_tail_length
-    // descriptor[36..52] = MD5 (zeros for this synthetic test)
-    // Header (offset 52..76):
-    std.mem.writeInt(u16, ape_data[52..54], 2000, .little); // compression_type
-    std.mem.writeInt(u16, ape_data[54..56], 0, .little); // format_flags
-    std.mem.writeInt(u32, ape_data[56..60], 73728 * 4, .little); // blocks_per_frame
-    std.mem.writeInt(u32, ape_data[60..64], 1024, .little); // final_frame_blocks
-    std.mem.writeInt(u32, ape_data[64..68], 1, .little); // total_frames
-    std.mem.writeInt(u16, ape_data[68..70], 16, .little); // bps
-    std.mem.writeInt(u16, ape_data[70..72], 2, .little); // channels
-    std.mem.writeInt(u32, ape_data[72..76], 44100, .little); // sample_rate
-    // Seek table (single entry pointing right at first_frame_offset = 80).
-    std.mem.writeInt(u32, ape_data[76..80], 80, .little);
-    // ape_data[80..96] = dummy "frame data" — required so audio region is non-empty.
-
-    const file = try tmp_dir.dir.createFile("test.ape", .{});
-    try file.writeAll(&ape_data);
-    file.close();
-
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ape");
-    defer allocator.free(path);
+    const path = "ground_truth_examples/ape/corpus_synthetic.ape";
+    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+    const path_dup = try allocator.dupe(u8, path);
+    defer allocator.free(path_dup);
 
     var validator = FormatValidator.init();
     defer validator.deinit();
 
-    const result = validator.validateFile(path);
+    const result = validator.validateFile(path_dup);
 
     try std.testing.expectEqual(FileFormat.ape, result.format);
     try std.testing.expect(result.is_valid);
 }
 
-test "FormatValidator accepts legacy APE (v3900, structural-rigor)" {
+test "FormatValidator accepts large real APE (sample.ape, full deep decode)" {
+    // Exercise the deep decoder on the larger luckynight.ape sample
+    // (~6.5 MB v3990) when present.
     const allocator = std.testing.allocator;
 
-    var tmp_dir = std.testing.tmpDir(.{});
-    defer tmp_dir.cleanup();
-
-    // Construct a structurally-sound legacy (v3900) APE file:
-    //   header (32) + seek_table (4) + dummy frame data (16) = 52 bytes
-    // No peak level (flag 0x04 unset), no seek_elements (flag 0x10 unset),
-    // wav_header_length = 0, wav_tail_length = 0.
-    var ape_data: [52]u8 = undefined;
-    @memset(&ape_data, 0);
-    @memcpy(ape_data[0..4], "MAC ");
-    std.mem.writeInt(u16, ape_data[4..6], 3900, .little); // version
-    std.mem.writeInt(u16, ape_data[6..8], 2000, .little); // compression_type
-    std.mem.writeInt(u16, ape_data[8..10], 0, .little); // format_flags
-    std.mem.writeInt(u16, ape_data[10..12], 2, .little); // channels
-    std.mem.writeInt(u32, ape_data[12..16], 44100, .little); // sample_rate
-    std.mem.writeInt(u32, ape_data[16..20], 0, .little); // wav_header_length
-    std.mem.writeInt(u32, ape_data[20..24], 0, .little); // wav_tail_length
-    std.mem.writeInt(u32, ape_data[24..28], 1, .little); // total_frames
-    std.mem.writeInt(u32, ape_data[28..32], 1024, .little); // final_frame_blocks
-    // Seek table at offset 32 (one entry pointing at first frame offset = 36).
-    std.mem.writeInt(u32, ape_data[32..36], 36, .little);
-    // ape_data[36..52] = dummy "frame data" — required so audio region is non-empty.
-
-    const file = try tmp_dir.dir.createFile("test.ape", .{});
-    try file.writeAll(&ape_data);
-    file.close();
-
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ape");
-    defer allocator.free(path);
+    const path = "ground_truth_examples/ape/sample.ape";
+    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+    const path_dup = try allocator.dupe(u8, path);
+    defer allocator.free(path_dup);
 
     var validator = FormatValidator.init();
     defer validator.deinit();
 
-    const result = validator.validateFile(path);
+    const result = validator.validateFile(path_dup);
 
     try std.testing.expectEqual(FileFormat.ape, result.format);
     try std.testing.expect(result.is_valid);

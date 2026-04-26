@@ -39,6 +39,9 @@
         .libwavpack = .{
             .path = "deps/libwavpack",
         },
+        .libape = .{
+            .path = "deps/libape",
+        },
         .openjpeg = .{
             .path = "deps/openjpeg",
         },
@@ -99,6 +102,10 @@
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",
             .hash = "N-V-__8AAAZvRACqqks-KAMLJ7bhK0Ei0r-c4ox4dym2esGj",
+        },
+        .mac_sdk = .{
+            .url = "https://monkeysaudio.com/files/MAC_1273_SDK.zip",
+            .hash = "N-V-__8AACp7UgDfQ40ycIueba0O_UliBesYAn0HBgnBnFBZ",
         },
     },
     .paths = .{""},

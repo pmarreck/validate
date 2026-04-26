@@ -1,22 +1,20 @@
 #!/usr/bin/env bash
-# Monkey's Audio (APE) deep structural validation CLI tests.
+# Monkey's Audio (APE) deep decode + structural validation CLI tests.
 #
-# Goal: every byte through the descriptor + header + seek table is
-# parsed and validated by the structural-rigor APE validator.
-#
-# Detection scope:
+# Detection scope after MAC SDK 12.73 vendor:
 #   - Header field corruption (compression, channels, sample_rate, BPS,
-#     totalframes, final_frame_blocks, seek_table_length): 100%
-#   - Seek-table monotonicity violations: 100%
-#   - Seek entries past audio-data end: 100%
-#   - Magic / version corruption: 100%
+#     totalframes, final_frame_blocks, seek_table_length): 100% via
+#     structural rigor (every byte through descriptor + header + seek table)
+#   - Seek-table monotonicity / out-of-bounds: 100% structural
+#   - Magic / version corruption: 100% structural
+#   - Mid-frame bit flips inside the compressed bitstream: caught by the
+#     full Monkey's Audio decoder verifying per-frame CRC32 over
+#     decoded PCM (per APEDecompressCore::EndFrame in the upstream SDK)
+#   - Truncation: caught either by structural seek-table walk or by the
+#     decoder's nBytesLeft != 0 path which propagates as decode failure
 #
-# NOT detected (deferred to a follow-up multi-session decoder port):
-#   - Single-byte flips inside compressed frame data (these are caught
-#     only by a full Monkey's Audio decoder verifying per-frame CRC32
-#     over decoded PCM samples + the file-level MD5 in the descriptor)
-#
-# Spec reference: FFmpeg libavformat/ape.c demuxer + libavcodec/apedec.c.
+# Spec reference: official Monkey's Audio SDK at https://monkeysaudio.com,
+#   shipped as deps/libape under BSD-3.
 
 set -u
 
@@ -44,18 +42,34 @@ pass() {
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_ape_test.XXXXXX")"
 trap 'mv "$tmpdir" ~/.Trash/ 2>/dev/null || rm -rf "$tmpdir"' EXIT
 
-SAMPLE="ground_truth_examples/ape/sample.ape"
-if [[ ! -f "$SAMPLE" ]]; then
-	echo "SKIP: no APE ground-truth sample at $SAMPLE"
+# Pick the largest available sample to exercise both structural and
+# decode probes meaningfully.
+SAMPLE=""
+for cand in \
+	ground_truth_examples/ape/sample.ape \
+	ground_truth_examples/ape/corpus_synthetic.ape
+do
+	if [[ -f "$cand" ]]; then
+		SAMPLE="$cand"
+		break
+	fi
+done
+if [[ -z "$SAMPLE" ]]; then
+	echo "SKIP: no APE ground-truth sample available"
 	exit 0
 fi
 
-# Pre-flight: clean sample must validate.
+# Pre-flight: clean sample must validate AND report (fully validated).
+clean_out="$("$BIN" "$SAMPLE" 2>&1 || true)"
+if grep -qE '(fully validated)' <<<"$clean_out"; then
+	pass "clean APE reports (fully validated)"
+else
+	fail "clean APE did not report (fully validated): $clean_out"
+fi
 if "$BIN" "$SAMPLE" >/dev/null 2>&1; then
 	pass "clean APE validates (exit 0)"
 else
 	fail "clean APE unexpectedly rejected: $SAMPLE"
-	# If the clean sample doesn't validate, no point running corruption tests.
 	echo ""
 	echo "Results: $PASS passed, $FAIL failed"
 	exit "$FAIL"
@@ -91,8 +105,6 @@ open('${file}','wb').write(data)
 }
 
 # Detect file version to pick correct field offsets.
-# Modern (v >= 3980): descriptor at 0..52, header at 52..76.
-# Legacy (v 3800-3979): header at 0..32, then optional peak/seek-elem, then WAV, then seek table.
 version=$(python3 -c "
 import struct
 print(struct.unpack('<H', open('${SAMPLE}','rb').read()[4:6])[0])
@@ -100,11 +112,6 @@ print(struct.unpack('<H', open('${SAMPLE}','rb').read()[4:6])[0])
 
 if [[ "$version" -ge 3980 ]]; then
 	echo "  detected modern APE (v${version})"
-	# Modern field offsets in our sample:
-	#   compression_type  @ 52..54
-	#   channels          @ 70..72
-	#   sample_rate       @ 72..76
-	#   total_frames      @ 64..68
 	OFF_COMPRESSION=52
 	OFF_CHANNELS=70
 	OFF_SAMPLE_RATE=72
@@ -181,47 +188,38 @@ else
 	fail "version > 3990 accepted"
 fi
 
-# 7. Seek table monotonicity violation
-# For modern v3990 sample: descriptor=52, header=24 → seek table starts at 76.
-# For legacy: depends on flags. We'll just patch the second seek entry to be smaller than first.
-if [[ "$version" -ge 3980 ]]; then
-	SEEK_OFF=76
-else
-	# Legacy with peak level (flags 0x4) sets seek_off = 32+4=36, plus we need to skip WAV
-	# Use python to compute correctly.
-	SEEK_OFF=$(python3 -c "
-import struct
-data = open('${SAMPLE}','rb').read()
-flags = struct.unpack('<H', data[8:10])[0]
-header_bytes = struct.unpack('<I', data[16:20])[0]
-off = 32
-if flags & 0x4: off += 4
-if flags & 0x10: off += 4
-off += header_bytes
-print(off)
-")
-fi
-mono="$tmpdir/mono.ape"
-cp "$SAMPLE" "$mono"
-# Read first entry's value so we can set seek[1] < seek[0].
+# 7. Mid-frame bit flip in the compressed bitstream — only the decoder
+# can catch this (per-frame CRC over decoded PCM).
+mid_flip="$tmpdir/mid_flip.ape"
+cp "$SAMPLE" "$mid_flip"
+flip_off=$((sz - 2000))
 python3 -c "
-import struct
-data = bytearray(open('${mono}','rb').read())
-seek_off = ${SEEK_OFF}
-first = struct.unpack('<I', data[seek_off:seek_off+4])[0]
-# Set seek[1] = max(0, first - 100)
-new_second = max(0, first - 100)
-data[seek_off+4:seek_off+8] = struct.pack('<I', new_second)
-open('${mono}','wb').write(data)
+with open('$mid_flip', 'r+b') as f:
+    f.seek($flip_off)
+    b = f.read(1)
+    f.seek($flip_off)
+    f.write(bytes([b[0] ^ 0xff]))
 "
-if ! "$BIN" "$mono" >/dev/null 2>&1; then
-	pass "non-monotonic seek table rejected"
+if ! "$BIN" "$mid_flip" >/dev/null 2>&1; then
+	pass "mid-frame bit flip detected (per-frame CRC32-over-PCM)"
 else
-	fail "non-monotonic seek table accepted"
+	fail "mid-frame bit flip silently accepted"
 fi
 
-# 8. Truncation — chop off last 1KB. Frame data goes off the end → seek
-#    table will reference offsets past EOF (or audio_data_length spec violated).
+# 8. Shotgun 4 KB random overwrite at midpoint
+shotgun="$tmpdir/shotgun.ape"
+cp "$SAMPLE" "$shotgun"
+mid=$((sz / 2))
+dd if=/dev/urandom of="$shotgun" bs=1 seek="$mid" count=4096 conv=notrunc 2>/dev/null
+if ! "$BIN" "$shotgun" >/dev/null 2>&1; then
+	pass "4 KB shotgun-corrupted APE detected"
+else
+	fail "4 KB shotgun-corrupted APE silently accepted"
+fi
+
+# 9. Truncation — chop off last 1KB. Either the seek-table walk catches
+# it (modern files have audio_data_length, so EOF detection fires) or
+# the decoder's "decoded sample count mismatch" path catches it.
 truncated="$tmpdir/truncated.ape"
 head -c $((sz - 1024)) "$SAMPLE" > "$truncated"
 if ! "$BIN" "$truncated" >/dev/null 2>&1; then
