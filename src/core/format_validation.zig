@@ -6073,6 +6073,14 @@ pub const FormatValidator = struct {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.tta, .failed_to_seek, "file", .full);
                 break :blk music_validators.validateTtaDeep(allocator, source);
             },
+            .ape => blk: {
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.ape, .failed_to_seek, "file", .structural);
+                break :blk music_validators.validateApe(source);
+            },
+            .wavpack => blk: {
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.wavpack, .failed_to_seek, "file", .structural);
+                break :blk music_validators.validateWavPack(source);
+            },
             .midi => blk: {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCode(.midi, .failed_to_seek, "MIDI file");
                 break :blk music_validators.validateMidiDeep(source);

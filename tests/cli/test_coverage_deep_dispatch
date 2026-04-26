@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Regression test: `--test-coverage` must dispatch to the same deep
+# validators that single-file `validate <path>` uses.
+#
+# Why this exists: validateDeepFromSource → performDeepValidation has its
+# own switch that mirrors validateFile's switch. If a format gets full
+# byte-deep validation wired into validateFile but the matching arm in
+# performDeepValidation is forgotten, then `validate <file>` reports
+# "(fully validated)" while `--test-coverage` silently falls through to
+# the structural-only result. APE/WavPack landed in that exact state in
+# 2026-04-26 (commits d1f515d4 and prior) — single-file mode caught
+# every flip, but `--test-coverage` reported 0% detection on the same
+# corpus. The fix added .ape and .wavpack arms in performDeepValidation.
+#
+# This test asserts ≥80% detection on each — a tight enough lower bound
+# that any future drop back to structural-only (≤5%) would fail loudly.
+
+set -u
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	if [[ ! -x "$BIN" ]]; then BIN="./zig-out/bin/validate.exe"; fi
+fi
+if [[ ! -x "$BIN" ]]; then
+	echo "FAIL: validate binary not found at $BIN" >&2
+	exit 1
+fi
+
+# Both samples must be present for this regression to bite.
+APE=""
+WV=""
+for candidate in \
+	"ground_truth_examples/ape/sample.ape" \
+	"../../../ground_truth_examples/ape/sample.ape" \
+; do
+	if [ -f "$candidate" ]; then APE="$candidate"; break; fi
+done
+for candidate in \
+	"ground_truth_examples/wavpack/corpus_xorshift.wv" \
+	"../../../ground_truth_examples/wavpack/corpus_xorshift.wv" \
+; do
+	if [ -f "$candidate" ]; then WV="$candidate"; break; fi
+done
+
+if [ -z "$APE" ] || [ -z "$WV" ]; then
+	printf 'SKIP: ground-truth APE or WavPack sample not found\n' >&2
+	exit 0
+fi
+
+assert_deep() {
+	local label="$1"
+	local sample="$2"
+	local out rate
+	out=$("$BIN" --test-coverage 50 --no-heatmap --coverage-jobs 1 "$sample" 2>&1) || true
+	# Parse "Overall: N/50 (PCT.P%)"
+	rate=$(echo "$out" | awk '/Overall:/ { gsub("[(%)]", "", $3); print $3; exit }')
+	if [ -z "$rate" ]; then
+		printf 'FAIL: %s — could not parse Overall rate from output:\n%s\n' "$label" "$out" >&2
+		exit 1
+	fi
+	# bash arith doesn't do floats — multiply by 10 then compare as int.
+	# 80.0% → 800; threshold = 800.
+	local rate_x10
+	rate_x10=$(awk -v r="$rate" 'BEGIN { printf "%d", r * 10 }')
+	if [ "$rate_x10" -lt 800 ]; then
+		printf 'FAIL: %s — --test-coverage detection rate %s%% < 80%% (deep dispatch may have regressed)\n' "$label" "$rate" >&2
+		printf '%s\n' "$out" >&2
+		exit 1
+	fi
+	printf '  PASS: %s — %s%% detection (≥80%% threshold)\n' "$label" "$rate"
+}
+
+assert_deep "APE deep dispatch" "$APE"
+assert_deep "WavPack deep dispatch" "$WV"
+
+printf 'PASS: --test-coverage exercises deep validators for APE & WavPack\n'
