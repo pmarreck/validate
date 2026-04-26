@@ -145,6 +145,16 @@ pub fn build(b: *std.Build) void {
 		"-std=c++11",
 	};
 
+	// MAC SDK Source/Shared/All.h:81 does #include <Windows.h> (capital W).
+	// Zig's bundled mingw provides windows.h (lowercase) only. macOS APFS and
+	// Windows NTFS are case-insensitive by default so the include resolves
+	// there; case-sensitive filesystems (Linux ext4, Garnix builders) reject
+	// it. Add a Windows.h shim that forwards to lowercase windows.h, on the
+	// include path BEFORE the system includes for Windows targets.
+	if (t.os.tag == .windows) {
+		lib.addIncludePath(b.path("winshim"));
+	}
+
 	lib.addIncludePath(mac.path("Source/Shared"));
 	lib.addIncludePath(mac.path("Source/MACLib"));
 	lib.addIncludePath(mac.path("Shared"));
