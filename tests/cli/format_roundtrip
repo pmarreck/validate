@@ -132,7 +132,9 @@ FUNDAMENTAL_NO_DETECT[dicom]=1        # 5%/20% per full sweep — below reliable
 FUNDAMENTAL_NO_DETECT[indd]=1         # larger sample has sparser coverage — full sweep shows real detection on small samples
 
 # Wave 2026-04-25b: coverage-gap-closure additions
-FUNDAMENTAL_NO_DETECT[br]=1           # Brotli RFC 7932 has no checksum
+# (br removed 2026-04-26 — libbrotli decompress now catches ~100% of 4 KB shotgun
+#  overwrites on the realistic English-text corpus; sniper rate is ~47%, well above
+#  the 10-trial detection floor.)
 FUNDAMENTAL_NO_DETECT[esd]=1          # WIM/ESD structural-only header walk
 FUNDAMENTAL_NO_DETECT[ivf]=1          # raw VP8 in IVF: structural until libvpx wired in
 FUNDAMENTAL_NO_DETECT[llvm_diag]=1    # LLVM serialized diagnostics: magic + bitcode signature only

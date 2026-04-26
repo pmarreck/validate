@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Brotli deep-validation CLI tests.
+#
+# Goal: every byte in a .br stream is fed through libbrotli's
+# BrotliDecoderDecompressStream. Any decode error (RESULT_ERROR or
+# truncation via NEEDS_MORE_INPUT past EOF) must surface as a non-zero
+# exit from the CLI.
+#
+# Detection rate on real text corpora is empirically:
+#   - sniper (single-bit flip): ~50% — entropy coder absorbs many flips
+#     into wrong-but-valid bytes; the rest cascade into invalid prefix
+#     codes, distance overflows, hyperparameter errors.
+#   - shotgun (4 KB overwrite): ~99-100% — a 4 KB region of arbitrary
+#     bytes essentially always contains at least one structurally
+#     invalid sequence.
+#
+# Testing strategy: do not assert single-bit detection (false-negative
+# prone). Instead spray a multi-byte burst across several offsets and
+# require at least one hit, plus assert that truncation is detected.
+
+set -u
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	if [[ ! -x "$BIN" ]]; then BIN="./zig-out/bin/validate.exe"; fi
+fi
+if [[ ! -x "$BIN" ]]; then
+	echo "FAIL: validate binary not found at $BIN"
+	exit 1
+fi
+
+PASS=0
+FAIL=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAIL=$((FAIL + 1))
+}
+
+pass() {
+	printf '  PASS: %s\n' "$1"
+	PASS=$((PASS + 1))
+}
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_brotli_test.XXXXXX")"
+trap 'mv "$tmpdir" ~/.Trash/ 2>/dev/null || rm -rf "$tmpdir"' EXIT
+
+# Pick the largest .br sample available. Prefer a realistic English-text
+# corpus (≥ 12 KB) over the small hello.br, since random-noise corpora
+# (xorshift-style) are pathological for entropy-coded formats.
+SAMPLE=""
+for cand in \
+	ground_truth_examples/br/realistic_corpus.br \
+	ground_truth_examples/brotli/realistic_corpus.br \
+	ground_truth_examples/br/corpus_xorshift.br \
+	ground_truth_examples/brotli/hello.br
+do
+	if [[ -f "$cand" ]]; then
+		sz=$(stat -f%z "$cand" 2>/dev/null || stat -c%s "$cand" 2>/dev/null)
+		if [[ "${sz:-0}" -ge 12288 ]]; then
+			SAMPLE="$cand"
+			break
+		fi
+		# remember a small fallback for the clean-path test only
+		[[ -z "$SAMPLE" ]] && SAMPLE="$cand"
+	fi
+done
+
+if [[ -z "$SAMPLE" ]]; then
+	echo "SKIP: no Brotli ground-truth sample"
+	exit 0
+fi
+
+# 1. Clean sample must validate.
+if "$BIN" "$SAMPLE" >/dev/null 2>&1; then
+	pass "clean Brotli stream validates (exit 0)"
+else
+	fail "clean Brotli stream unexpectedly rejected: $SAMPLE"
+fi
+
+sz=$(stat -f%z "$SAMPLE" 2>/dev/null || stat -c%s "$SAMPLE" 2>/dev/null)
+if [[ "${sz:-0}" -lt 12288 ]]; then
+	echo "  NOTE: sample is ${sz}B (< 12 KB) — skipping corruption probes"
+	echo ""
+	echo "Results: $PASS passed, $FAIL failed"
+	exit "$FAIL"
+fi
+
+# 2. Mid-stream burst corruption: overwrite 64 bytes at several offsets.
+#    libbrotli must reject at least one — this is the gating assertion
+#    for "is the decompressor actually being called?".
+try_burst_offsets() {
+	local fixture="$1"
+	local burst_len="$2"
+	shift 2
+	local offsets=("$@")
+	local any_caught=0
+	for off in "${offsets[@]}"; do
+		local corrupt="$tmpdir/burst_${off}_${burst_len}.br"
+		cp "$fixture" "$corrupt"
+		printf '%*s' "$burst_len" '' | tr ' ' '\252' | \
+			dd of="$corrupt" bs=1 seek="$off" count="$burst_len" conv=notrunc 2>/dev/null
+		if ! "$BIN" "$corrupt" >/dev/null 2>&1; then
+			any_caught=1
+		fi
+	done
+	[ "$any_caught" -eq 1 ]
+}
+
+# Compute offsets that span the file (avoid first 4 bytes — header trivia)
+mid=$((sz / 2))
+q1=$((sz / 4))
+q3=$((3 * sz / 4))
+late=$((sz - 256))
+
+if try_burst_offsets "$SAMPLE" 64 "$q1" "$mid" "$q3" "$late"; then
+	pass "Brotli burst corruption detected by libbrotli at ≥1 of 4 offsets"
+else
+	fail "Brotli burst corruption (4 × 64-byte) all tolerated — decoder not wired?"
+fi
+
+# 3. Shotgun: 4 KB random-byte overwrite at midpoint must be caught.
+shotgun="$tmpdir/shotgun.br"
+cp "$SAMPLE" "$shotgun"
+dd if=/dev/urandom of="$shotgun" bs=1 seek="$mid" count=4096 conv=notrunc 2>/dev/null
+if ! "$BIN" "$shotgun" >/dev/null 2>&1; then
+	pass "4 KB shotgun-corrupted Brotli detected"
+else
+	fail "4 KB shotgun-corrupted Brotli silently accepted"
+fi
+
+# 4. Truncation: chop off the last byte. NEEDS_MORE_INPUT past EOF must
+#    surface as failure (RFC 7932 streams are self-delimiting).
+truncated="$tmpdir/truncated.br"
+head -c $((sz - 1)) "$SAMPLE" > "$truncated"
+if ! "$BIN" "$truncated" >/dev/null 2>&1; then
+	pass "truncated Brotli stream detected"
+else
+	fail "truncated Brotli stream silently accepted"
+fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"
