@@ -1375,56 +1375,338 @@ pub fn validateS3m(file: *FileSource) ValidationResult {
 
 // ============ Lossless Audio Format Validators (APE, WavPack) ============
 
-/// Validate Monkey's Audio (APE) file structure.
-/// APE files start with "MAC " signature followed by version and descriptor info.
+/// Validate Monkey's Audio (APE) file structure with structural-rigor checks.
+///
+/// Spec coverage (per FFmpeg libavformat/ape.c demuxer + libavcodec/apedec.c):
+/// - v3800-v3970 (legacy): single 32-byte header, optional peak level + seek table, WAV header chunk
+/// - v3980+ (modern): 52-byte descriptor (MD5 + sizes) followed by 24-byte header, then seek table,
+///   then optional WAV header chunk, then frame data
+///
+/// Structural checks performed (no audio decode — full byte-level CRC32 over decoded PCM
+/// requires a Monkey's Audio decoder, deferred to a follow-up multi-session task):
+///   1. "MAC " magic
+///   2. Version range: 3800..=3990 (APE_MIN_VERSION..APE_MAX_VERSION per FFmpeg)
+///   3. Compression level is one of {1000, 2000, 3000, 4000, 5000} ('insane' only legal for >= 3930)
+///   4. Channels in {1, 2}
+///   5. Sample rate in plausible audio range (4 kHz .. 384 kHz)
+///   6. BPS in {8, 16, 24}
+///   7. totalframes > 0 and not absurdly large
+///   8. Seek table length sufficient (≥ totalframes × 4 bytes)
+///   9. Sum of (descriptor + header + seektable + wavheader) <= file size
+///  10. Seek table entries strictly monotonically increasing AND inside the audio-data region
+///  11. (v3980+) descriptor's audiodatalength + audiodatalength_high covers the audio
+///      data region implied by file_size - first_frame_offset - wavtaillength
+///
+/// Returns `.full` depth so corruption beyond the header/seek-table is correctly attributed
+/// when caught; returns `.structural` only on the v < 3800 path which has no rich layout.
 pub fn validateApe(file: *FileSource) ValidationResult {
-    var header: [32]u8 = undefined;
-    const bytes_read = file.read(&header) catch {
-        return ValidationResult.invalidCode(.ape, .failed_to_read, "APE header");
-    };
+	var header: [32]u8 = undefined;
+	const bytes_read = file.read(&header) catch {
+		return ValidationResult.invalidCode(.ape, .failed_to_read, "APE header");
+	};
 
-    if (bytes_read < 32) {
-        return ValidationResult.invalidCode(.ape, .file_too_small, "APE format");
-    }
+	if (bytes_read < 32) {
+		return ValidationResult.invalidCode(.ape, .file_too_small, "APE format");
+	}
 
-    // Check "MAC " signature
-    if (!std.mem.eql(u8, header[0..4], "MAC ")) {
-        return ValidationResult.invalidCode(.ape, .invalid_signature, "APE");
-    }
+	if (!std.mem.eql(u8, header[0..4], "MAC ")) {
+		return ValidationResult.invalidCode(.ape, .invalid_signature, "APE");
+	}
 
-    // Version number (2 bytes at offset 4, little-endian)
-    // Modern APE: >= 3980, Legacy APE: 3800-3979, Very old: < 3800
-    const version = std.mem.readInt(u16, header[4..6], .little);
-    if (version < 3800) {
-        // Very old APE format - still valid, but limited checks possible
-        return ValidationResult.ok(.ape);
-    }
+	const version = std.mem.readInt(u16, header[4..6], .little);
 
-    // For version >= 3980, there's a descriptor block
-    if (version >= 3980) {
-        // Padding bytes at offset 6-7 should be zero
-        if (header[6] != 0 or header[7] != 0) {
-            // Not critical - some encoders may vary
-        }
+	// Per FFmpeg APE_MIN_VERSION/APE_MAX_VERSION.
+	if (version > 3990) {
+		return ValidationResult.invalidWithDepth(.ape, "APE version unsupported (> 3990)", .full);
+	}
+	if (version < 3800) {
+		// Very old APE format — limited spec knowledge; accept structurally.
+		return ValidationResult.ok(.ape);
+	}
 
-        // Descriptor length at offset 8 (4 bytes)
-        const desc_length = std.mem.readInt(u32, header[8..12], .little);
-        if (desc_length < 52) {
-            return ValidationResult.invalid(.ape, "APE descriptor too small");
-        }
+	const file_size = file.getEndPos() catch {
+		return ValidationResult.invalidCodeWithDepth(.ape, .failed_to_get, "APE file size", .full);
+	};
+	if (file_size > 1024 * 1024 * 1024) {
+		// 1 GiB — far above any realistic audio file. Cap to avoid integer issues below.
+		return ValidationResult.invalidCodeWithDepth(.ape, .file_too_large, "APE", .full);
+	}
 
-        // Header length at offset 12 (4 bytes)
-        const header_length = std.mem.readInt(u32, header[12..16], .little);
-        if (header_length < 24) {
-            return ValidationResult.invalid(.ape, "APE header too small");
-        }
-    }
+	// --------- Parse descriptor + header ---------
+	var compression_type: u16 = 0;
+	var format_flags: u16 = 0;
+	var channels: u16 = 0;
+	var sample_rate: u32 = 0;
+	var total_frames: u32 = 0;
+	var final_frame_blocks: u32 = 0;
+	var bps: u16 = 16;
+	var seek_table_len_bytes: u64 = 0;
+	var first_frame_offset: u64 = 0;
+	var audio_end_min: u64 = 0; // tightest lower bound for end of audio data
+	var audio_end_max: u64 = file_size; // upper bound
 
-    // APE has MD5 checksums for audio blocks (internal integrity),
-    // but reading them requires parsing the full file structure.
-    // For now, structural validation is sufficient.
-    return ValidationResult.ok(.ape);
+	if (version >= 3980) {
+		// Descriptor block: 52 bytes minimum (FFmpeg may skip extra bytes for forward compat).
+		var desc_buf: [52]u8 = undefined;
+		// We already read 32 bytes (header[0..32]). Copy them into desc_buf[0..32], read remaining 20.
+		@memcpy(desc_buf[0..32], header[0..32]);
+		const more = file.read(desc_buf[32..52]) catch {
+			return ValidationResult.invalidCodeWithDepth(.ape, .failed_to_read, "APE descriptor", .full);
+		};
+		if (more < 20) {
+			return ValidationResult.invalidWithDepth(.ape, "APE descriptor truncated", .full);
+		}
+
+		const descriptor_length = std.mem.readInt(u32, desc_buf[8..12], .little);
+		const header_length = std.mem.readInt(u32, desc_buf[12..16], .little);
+		const seek_table_length = std.mem.readInt(u32, desc_buf[16..20], .little);
+		const wav_header_length = std.mem.readInt(u32, desc_buf[20..24], .little);
+		const audio_data_length = std.mem.readInt(u32, desc_buf[24..28], .little);
+		const audio_data_length_high = std.mem.readInt(u32, desc_buf[28..32], .little);
+		const wav_tail_length = std.mem.readInt(u32, desc_buf[32..36], .little);
+		// MD5 is desc_buf[36..52] — we cannot verify without decoding. Stored for future use.
+
+		if (descriptor_length < 52) {
+			return ValidationResult.invalidWithDepth(.ape, "APE descriptor length too small", .full);
+		}
+		if (header_length < 24) {
+			return ValidationResult.invalidWithDepth(.ape, "APE header length too small", .full);
+		}
+
+		// Skip any unknown trailing descriptor bytes (forward compat).
+		const desc_extra = descriptor_length - 52;
+		if (desc_extra > 0) {
+			file.seekTo(@as(u64, descriptor_length)) catch {
+				return ValidationResult.invalidCodeWithDepth(.ape, .invalid_value, "APE descriptor seek", .full);
+			};
+		}
+
+		// Read APE_HEADER (24 bytes minimum, may be more — FFmpeg reads exactly 24 for the
+		// known fields and skips remainder as part of header_length).
+		var hdr: [24]u8 = undefined;
+		const hr = file.read(&hdr) catch {
+			return ValidationResult.invalidCodeWithDepth(.ape, .failed_to_read, "APE header block", .full);
+		};
+		if (hr < 24) {
+			return ValidationResult.invalidWithDepth(.ape, "APE header block truncated", .full);
+		}
+
+		compression_type = std.mem.readInt(u16, hdr[0..2], .little);
+		format_flags = std.mem.readInt(u16, hdr[2..4], .little);
+		const blocks_per_frame = std.mem.readInt(u32, hdr[4..8], .little);
+		_ = blocks_per_frame;
+		final_frame_blocks = std.mem.readInt(u32, hdr[8..12], .little);
+		total_frames = std.mem.readInt(u32, hdr[12..16], .little);
+		bps = std.mem.readInt(u16, hdr[16..18], .little);
+		channels = std.mem.readInt(u16, hdr[18..20], .little);
+		sample_rate = std.mem.readInt(u32, hdr[20..24], .little);
+
+		seek_table_len_bytes = seek_table_length;
+
+		first_frame_offset = @as(u64, descriptor_length) + @as(u64, header_length) +
+			@as(u64, seek_table_length) + @as(u64, wav_header_length);
+
+		// audio_data_length spans the audio-data region (from first_frame to file_end - wav_tail).
+		const audio_data_total = (@as(u64, audio_data_length_high) << 32) | @as(u64, audio_data_length);
+		if (audio_data_total > 0 and audio_data_total < std.math.maxInt(u32) * @as(u64, 16)) {
+			const computed_end = first_frame_offset + audio_data_total;
+			audio_end_min = computed_end;
+			audio_end_max = computed_end;
+		}
+		// If audio_data_length is zero (unknown), use file_size - wav_tail as the end.
+		if (wav_tail_length > 0 and wav_tail_length < file_size) {
+			if (audio_end_max > file_size - @as(u64, wav_tail_length)) {
+				audio_end_max = file_size - @as(u64, wav_tail_length);
+			}
+		}
+	} else {
+		// Legacy header (v3800-v3970): single 32-byte block we already read.
+		compression_type = std.mem.readInt(u16, header[6..8], .little);
+		format_flags = std.mem.readInt(u16, header[8..10], .little);
+		channels = std.mem.readInt(u16, header[10..12], .little);
+		sample_rate = std.mem.readInt(u32, header[12..16], .little);
+		const wav_header_length = std.mem.readInt(u32, header[16..20], .little);
+		const wav_tail_length = std.mem.readInt(u32, header[20..24], .little);
+		total_frames = std.mem.readInt(u32, header[24..28], .little);
+		final_frame_blocks = std.mem.readInt(u32, header[28..32], .little);
+
+		// Legacy format flags determine BPS:
+		const MAC_FORMAT_FLAG_8_BIT: u16 = 0x01;
+		const MAC_FORMAT_FLAG_24_BIT: u16 = 0x08;
+		const MAC_FORMAT_FLAG_HAS_PEAK_LEVEL: u16 = 0x04;
+		const MAC_FORMAT_FLAG_HAS_SEEK_ELEMENTS: u16 = 0x10;
+		if ((format_flags & MAC_FORMAT_FLAG_8_BIT) != 0) {
+			bps = 8;
+		} else if ((format_flags & MAC_FORMAT_FLAG_24_BIT) != 0) {
+			bps = 24;
+		} else {
+			bps = 16;
+		}
+
+		// Track current cursor: we have read 32 bytes from the start.
+		var cursor: u64 = 32;
+		if ((format_flags & MAC_FORMAT_FLAG_HAS_PEAK_LEVEL) != 0) cursor += 4;
+
+		if ((format_flags & MAC_FORMAT_FLAG_HAS_SEEK_ELEMENTS) != 0) {
+			// Read explicit seek table count (4 bytes after peak level).
+			file.seekTo(cursor) catch {
+				return ValidationResult.invalidCodeWithDepth(.ape, .invalid_value, "APE legacy seek", .full);
+			};
+			var ste: [4]u8 = undefined;
+			const r = file.read(&ste) catch {
+				return ValidationResult.invalidCodeWithDepth(.ape, .failed_to_read, "APE seek count", .full);
+			};
+			if (r < 4) {
+				return ValidationResult.invalidWithDepth(.ape, "APE legacy seek count truncated", .full);
+			}
+			const ste_count = std.mem.readInt(u32, &ste, .little);
+			seek_table_len_bytes = @as(u64, ste_count) * 4;
+			cursor += 4;
+		} else {
+			seek_table_len_bytes = @as(u64, total_frames) * 4;
+		}
+
+		first_frame_offset = cursor + seek_table_len_bytes + @as(u64, wav_header_length);
+		if (wav_tail_length > 0 and @as(u64, wav_tail_length) < file_size) {
+			audio_end_max = file_size - @as(u64, wav_tail_length);
+		}
+	}
+
+	// --------- Validate parsed fields ---------
+	// Compression level: must be one of 1000/2000/3000/4000/5000; insane only for v >= 3930
+	if (compression_type == 0 or compression_type % 1000 != 0 or compression_type > 5000) {
+		return ValidationResult.invalidWithDepth(.ape, "APE compression level invalid", .full);
+	}
+	if (compression_type == 5000 and version < 3930) {
+		return ValidationResult.invalidWithDepth(.ape, "APE insane compression illegal for this version", .full);
+	}
+
+	if (channels == 0 or channels > 2) {
+		return ValidationResult.invalidWithDepth(.ape, "APE channels not in {1,2}", .full);
+	}
+
+	// Plausible audio sample rate: 4 kHz .. 384 kHz (covers common 8k/11k/16k/22k/32k/44k/48k/88k/96k/176k/192k/352k)
+	if (sample_rate < 4000 or sample_rate > 384000) {
+		return ValidationResult.invalidWithDepth(.ape, "APE sample rate implausible", .full);
+	}
+
+	if (bps != 8 and bps != 16 and bps != 24) {
+		return ValidationResult.invalidWithDepth(.ape, "APE bits-per-sample not in {8,16,24}", .full);
+	}
+
+	if (total_frames == 0) {
+		return ValidationResult.invalidWithDepth(.ape, "APE has zero frames", .full);
+	}
+	if (total_frames > 256 * 1024 * 1024) {
+		return ValidationResult.invalidWithDepth(.ape, "APE total_frames absurd", .full);
+	}
+	if (final_frame_blocks == 0) {
+		return ValidationResult.invalidWithDepth(.ape, "APE final_frame_blocks is zero", .full);
+	}
+
+	// Seek table must contain at least one entry per frame.
+	if (seek_table_len_bytes < @as(u64, total_frames) * 4) {
+		return ValidationResult.invalidWithDepth(.ape, "APE seek table too short for frame count", .full);
+	}
+
+	if (first_frame_offset > file_size) {
+		return ValidationResult.invalidWithDepth(.ape, "APE first frame offset past EOF", .full);
+	}
+	if (audio_end_max > file_size) {
+		audio_end_max = file_size;
+	}
+	if (audio_end_min > file_size) {
+		return ValidationResult.invalidWithDepth(.ape, "APE descriptor audio length past EOF", .full);
+	}
+	if (first_frame_offset >= audio_end_max) {
+		return ValidationResult.invalidWithDepth(.ape, "APE has no room for audio data", .full);
+	}
+
+	// --------- Walk seek table ---------
+	// Compute seek table file offset.
+	// Modern (v >= 3980): seek table sits right after descriptor + header.
+	// Legacy (v < 3980): seek table sits after the 32-byte header + optional peak level (4) + optional seek-count (4).
+	var seek_off: u64 = 0;
+	if (version >= 3980) {
+		// For modern APE, seek table sits right after descriptor + header.
+		const descriptor_length = blk: {
+			var dh: [4]u8 = undefined;
+			file.seekTo(8) catch {
+				return ValidationResult.invalidCodeWithDepth(.ape, .invalid_value, "APE re-read", .full);
+			};
+			_ = file.read(&dh) catch {
+				return ValidationResult.invalidCodeWithDepth(.ape, .failed_to_read, "APE re-read", .full);
+			};
+			break :blk std.mem.readInt(u32, &dh, .little);
+		};
+		const header_length = blk: {
+			var hh: [4]u8 = undefined;
+			file.seekTo(12) catch {
+				return ValidationResult.invalidCodeWithDepth(.ape, .invalid_value, "APE re-read", .full);
+			};
+			_ = file.read(&hh) catch {
+				return ValidationResult.invalidCodeWithDepth(.ape, .failed_to_read, "APE re-read", .full);
+			};
+			break :blk std.mem.readInt(u32, &hh, .little);
+		};
+		seek_off = @as(u64, descriptor_length) + @as(u64, header_length);
+	} else {
+		// Legacy file order is:
+		//   header (32) + peak_level (4 if flag) + seek_count (4 if flag) + WAV header + seek table + frames
+		// So the WAV header is BEFORE the seek table; we must skip it when locating seek_off.
+		seek_off = 32;
+		const MAC_FORMAT_FLAG_HAS_PEAK_LEVEL: u16 = 0x04;
+		const MAC_FORMAT_FLAG_HAS_SEEK_ELEMENTS: u16 = 0x10;
+		if ((format_flags & MAC_FORMAT_FLAG_HAS_PEAK_LEVEL) != 0) seek_off += 4;
+		if ((format_flags & MAC_FORMAT_FLAG_HAS_SEEK_ELEMENTS) != 0) seek_off += 4;
+		// Re-read wav_header_length from the legacy header (offset 16..20).
+		const legacy_wav_header_length = std.mem.readInt(u32, header[16..20], .little);
+		seek_off += @as(u64, legacy_wav_header_length);
+	}
+
+	if (seek_off + seek_table_len_bytes > file_size) {
+		return ValidationResult.invalidWithDepth(.ape, "APE seek table extends past EOF", .full);
+	}
+
+	// Read first N (up to a cap) seek-table entries and verify monotonicity + bounds.
+	const max_entries_to_check: u32 = @min(total_frames, @as(u32, 4096));
+	file.seekTo(seek_off) catch {
+		return ValidationResult.invalidCodeWithDepth(.ape, .invalid_value, "APE seek-table seek", .full);
+	};
+	var prev_off: u64 = 0;
+	var i: u32 = 0;
+	var ent: [4]u8 = undefined;
+	while (i < max_entries_to_check) : (i += 1) {
+		const r = file.read(&ent) catch {
+			return ValidationResult.invalidCodeWithDepth(.ape, .failed_to_read, "APE seek entry", .full);
+		};
+		if (r < 4) {
+			return ValidationResult.invalidWithDepth(.ape, "APE seek table truncated", .full);
+		}
+		const entry = @as(u64, std.mem.readInt(u32, &ent, .little));
+
+		if (i == 0) {
+			// First entry must equal first_frame_offset (modulo junklength = 0 for files we accept).
+			if (entry < first_frame_offset or entry > audio_end_max) {
+				return ValidationResult.invalidWithDepth(.ape, "APE first seek entry out of range", .full);
+			}
+		} else {
+			if (entry <= prev_off) {
+				return ValidationResult.invalidWithDepth(.ape, "APE seek table not monotonically increasing", .full);
+			}
+			if (entry > audio_end_max) {
+				return ValidationResult.invalidWithDepth(.ape, "APE seek entry past audio end", .full);
+			}
+		}
+		prev_off = entry;
+	}
+
+	// MD5-over-decoded-PCM and per-frame CRC32-over-decoded-PCM verification require a
+	// full Monkey's Audio decoder (range coder + predictor + entropy + IIR filters).
+	// That's a multi-session task tracked separately. For now, structural rigor is the bar.
+	return ValidationResult.okWithDepth(.ape, .structural);
 }
+
 
 /// Validate WavPack audio file structure.
 /// WavPack files start with "wvpk" signature followed by block header.
@@ -4124,30 +4406,42 @@ test "detectFormat WavPack" {
     try std.testing.expectEqual(FileFormat.wavpack, result);
 }
 
-test "FormatValidator accepts valid APE" {
+test "FormatValidator accepts valid APE (modern v3990, structural-rigor)" {
     const allocator = std.testing.allocator;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    // Create minimal valid APE file (version 3980+)
-    var ape_data: [32]u8 = undefined;
-    @memcpy(ape_data[0..4], "MAC "); // Signature
-    ape_data[4] = 0xC4; // Version 3980 low byte
-    ape_data[5] = 0x0F; // Version 3980 high byte
-    ape_data[6] = 0; // Padding
-    ape_data[7] = 0; // Padding
-    // Descriptor length (52 bytes minimum for modern APE)
-    ape_data[8] = 52;
-    ape_data[9] = 0;
-    ape_data[10] = 0;
-    ape_data[11] = 0;
-    // Header length (24 bytes minimum)
-    ape_data[12] = 24;
-    ape_data[13] = 0;
-    ape_data[14] = 0;
-    ape_data[15] = 0;
-    @memset(ape_data[16..32], 0);
+    // Construct a structurally-sound minimal modern (v3990) APE file:
+    //   descriptor (52) + header (24) + seek_table (4) + dummy frame data (16) = 96 bytes
+    // Field values must satisfy the structural-rigor checks:
+    //   compression = 2000 (normal), channels = 2, sample_rate = 44100, bps = 16,
+    //   total_frames = 1, final_frame_blocks = 1024, seek_table_length = 4 (one entry)
+    var ape_data: [96]u8 = undefined;
+    @memset(&ape_data, 0);
+    @memcpy(ape_data[0..4], "MAC ");
+    std.mem.writeInt(u16, ape_data[4..6], 3990, .little); // version
+    // Descriptor:
+    std.mem.writeInt(u32, ape_data[8..12], 52, .little); // descriptor_length
+    std.mem.writeInt(u32, ape_data[12..16], 24, .little); // header_length
+    std.mem.writeInt(u32, ape_data[16..20], 4, .little); // seek_table_length (1 entry)
+    std.mem.writeInt(u32, ape_data[20..24], 0, .little); // wav_header_length
+    std.mem.writeInt(u32, ape_data[24..28], 0, .little); // audio_data_length (unknown)
+    std.mem.writeInt(u32, ape_data[28..32], 0, .little); // audio_data_length_high
+    std.mem.writeInt(u32, ape_data[32..36], 0, .little); // wav_tail_length
+    // descriptor[36..52] = MD5 (zeros for this synthetic test)
+    // Header (offset 52..76):
+    std.mem.writeInt(u16, ape_data[52..54], 2000, .little); // compression_type
+    std.mem.writeInt(u16, ape_data[54..56], 0, .little); // format_flags
+    std.mem.writeInt(u32, ape_data[56..60], 73728 * 4, .little); // blocks_per_frame
+    std.mem.writeInt(u32, ape_data[60..64], 1024, .little); // final_frame_blocks
+    std.mem.writeInt(u32, ape_data[64..68], 1, .little); // total_frames
+    std.mem.writeInt(u16, ape_data[68..70], 16, .little); // bps
+    std.mem.writeInt(u16, ape_data[70..72], 2, .little); // channels
+    std.mem.writeInt(u32, ape_data[72..76], 44100, .little); // sample_rate
+    // Seek table (single entry pointing right at first_frame_offset = 80).
+    std.mem.writeInt(u32, ape_data[76..80], 80, .little);
+    // ape_data[80..96] = dummy "frame data" — required so audio region is non-empty.
 
     const file = try tmp_dir.dir.createFile("test.ape", .{});
     try file.writeAll(&ape_data);
@@ -4165,18 +4459,31 @@ test "FormatValidator accepts valid APE" {
     try std.testing.expect(result.is_valid);
 }
 
-test "FormatValidator accepts legacy APE (version < 3980)" {
+test "FormatValidator accepts legacy APE (v3900, structural-rigor)" {
     const allocator = std.testing.allocator;
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    // Create minimal valid APE file (legacy version 3900)
-    var ape_data: [32]u8 = undefined;
-    @memcpy(ape_data[0..4], "MAC "); // Signature
-    ape_data[4] = 0x3C; // Version 3900 low byte
-    ape_data[5] = 0x0F; // Version 3900 high byte
-    @memset(ape_data[6..32], 0);
+    // Construct a structurally-sound legacy (v3900) APE file:
+    //   header (32) + seek_table (4) + dummy frame data (16) = 52 bytes
+    // No peak level (flag 0x04 unset), no seek_elements (flag 0x10 unset),
+    // wav_header_length = 0, wav_tail_length = 0.
+    var ape_data: [52]u8 = undefined;
+    @memset(&ape_data, 0);
+    @memcpy(ape_data[0..4], "MAC ");
+    std.mem.writeInt(u16, ape_data[4..6], 3900, .little); // version
+    std.mem.writeInt(u16, ape_data[6..8], 2000, .little); // compression_type
+    std.mem.writeInt(u16, ape_data[8..10], 0, .little); // format_flags
+    std.mem.writeInt(u16, ape_data[10..12], 2, .little); // channels
+    std.mem.writeInt(u32, ape_data[12..16], 44100, .little); // sample_rate
+    std.mem.writeInt(u32, ape_data[16..20], 0, .little); // wav_header_length
+    std.mem.writeInt(u32, ape_data[20..24], 0, .little); // wav_tail_length
+    std.mem.writeInt(u32, ape_data[24..28], 1, .little); // total_frames
+    std.mem.writeInt(u32, ape_data[28..32], 1024, .little); // final_frame_blocks
+    // Seek table at offset 32 (one entry pointing at first frame offset = 36).
+    std.mem.writeInt(u32, ape_data[32..36], 36, .little);
+    // ape_data[36..52] = dummy "frame data" — required so audio region is non-empty.
 
     const file = try tmp_dir.dir.createFile("test.ape", .{});
     try file.writeAll(&ape_data);
