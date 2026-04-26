@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# fuzz_smoke: pathological-input smoke test.
+#
+# Catches the entire class of "stack-allocated MB-sized buffer / unchecked-
+# pointer / overflow-on-pathological-input" bugs at low cost. Independent of
+# ground-truth samples — fires garbage of various shapes/sizes at the binary
+# and only fails if it crashes (segv/abort/bus/oom) or hangs.
+#
+# Why this exists: pcap and rpm validators each had MB-sized stack buffers
+# (`var buf: [64*1024*1024]u8 = undefined`) that segfaulted on every input.
+# They went undetected because format_roundtrip only checks formats with
+# ground-truth samples in ground_truth_examples/. This smoke test does NOT
+# care about correctness of validation output — only about not crashing.
+#
+# Pass criteria for each input:
+#   exit 139 (SIGSEGV+128)  -> FAIL
+#   exit 134 (SIGABRT+128)  -> FAIL
+#   exit 138 (SIGBUS+128)   -> FAIL
+#   exit 137 (SIGKILL+128)  -> FAIL  (out-of-memory)
+#   exit 124 (timeout)      -> FAIL  (infinite loop)
+#   anything else (0/1/2/3) -> PASS  (validator produced *some* answer)
+#
+# Determinism: random bytes are produced by a seeded linear-congruential
+# generator inside awk, NOT /dev/urandom. Same seed on every run, every host.
+
+set -u
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	BIN="${VALIDATE_BIN:-./zig-out/bin/validate.exe}"
+fi
+
+if [[ ! -x "$BIN" ]]; then
+	echo "FAIL: validate binary not found at $BIN"
+	exit 1
+fi
+
+# Pick a timeout binary. macOS Homebrew/Nix ships gtimeout; some bare boxes
+# might lack `timeout` entirely. Without one we still run, just without the
+# infinite-loop guard (and we'll loudly note that).
+TIMEOUT_BIN=""
+if command -v timeout >/dev/null 2>&1; then
+	TIMEOUT_BIN="timeout"
+elif command -v gtimeout >/dev/null 2>&1; then
+	TIMEOUT_BIN="gtimeout"
+fi
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_fuzz.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# Deterministic-bytes generator. LCG with constants from Numerical Recipes
+# (mod 2^32). Output is raw 8-bit bytes, count = $2, seed = $1.
+gen_random() {
+	local seed="$1" size="$2" out="$3"
+	awk -v seed="$seed" -v size="$size" 'BEGIN {
+		s = seed + 0
+		# Numerical Recipes LCG: a=1664525, c=1013904223, m=2^32
+		for (i = 0; i < size; i++) {
+			s = (1664525 * s + 1013904223) % 4294967296
+			printf "%c", int(s / 16777216) % 256
+		}
+	}' > "$out"
+}
+
+gen_constant() {
+	local byte_val="$1" size="$2" out="$3"
+	# `head -c` from /dev/zero, then if we need 0xFF, transform via tr.
+	if [ "$byte_val" = "0" ]; then
+		head -c "$size" /dev/zero > "$out"
+	else
+		# Build a fill from a single byte. Use printf '\xFF' once then dd.
+		# Simpler: head -c size /dev/zero | tr '\0' "\xFF"
+		head -c "$size" /dev/zero | LC_ALL=C tr '\0' "$(printf '\\x%02x' "$byte_val")" > "$out"
+	fi
+}
+
+passed=0
+failed=0
+failures=()
+
+# Run validate on a single input file. $1 = file, $2 = description.
+# Returns 0 on pass (no crash/hang), 1 on fail.
+check_one() {
+	local file="$1" desc="$2" rc=0
+	if [ -n "$TIMEOUT_BIN" ]; then
+		"$TIMEOUT_BIN" 30s "$BIN" "$file" >/dev/null 2>&1 || rc=$?
+	else
+		"$BIN" "$file" >/dev/null 2>&1 || rc=$?
+	fi
+	case "$rc" in
+		124)
+			failed=$((failed + 1))
+			failures+=("$desc (rc=124, hung past 30s timeout)")
+			return 1
+			;;
+		134)
+			failed=$((failed + 1))
+			failures+=("$desc (rc=134, SIGABRT)")
+			return 1
+			;;
+		137)
+			failed=$((failed + 1))
+			failures+=("$desc (rc=137, SIGKILL/OOM)")
+			return 1
+			;;
+		138)
+			failed=$((failed + 1))
+			failures+=("$desc (rc=138, SIGBUS)")
+			return 1
+			;;
+		139)
+			failed=$((failed + 1))
+			failures+=("$desc (rc=139, SIGSEGV)")
+			return 1
+			;;
+		*)
+			passed=$((passed + 1))
+			return 0
+			;;
+	esac
+}
+
+# --- Build the input battery -------------------------------------------------
+
+# Tiny / boundary sizes. Empty + 1 + 8 + 64 bytes.
+: > "$tmpdir/empty.bin"
+check_one "$tmpdir/empty.bin" "empty (0 bytes)"
+
+head -c 1 /dev/zero > "$tmpdir/onebyte.bin"
+check_one "$tmpdir/onebyte.bin" "1-byte (NUL)"
+
+gen_random 42 8 "$tmpdir/rand_8.bin"
+check_one "$tmpdir/rand_8.bin" "random 8B (seed 42)"
+
+gen_random 42 64 "$tmpdir/rand_64.bin"
+check_one "$tmpdir/rand_64.bin" "random 64B (seed 42)"
+
+gen_random 42 4096 "$tmpdir/rand_4k.bin"
+check_one "$tmpdir/rand_4k.bin" "random 4KB (seed 42)"
+
+# Just-under-min-size thresholds.
+gen_random 7 4095 "$tmpdir/rand_4kminus1.bin"
+check_one "$tmpdir/rand_4kminus1.bin" "random 4KB-1 (seed 7)"
+
+gen_random 7 8191 "$tmpdir/rand_8kminus1.bin"
+check_one "$tmpdir/rand_8kminus1.bin" "random 8KB-1 (seed 7)"
+
+gen_random 7 16383 "$tmpdir/rand_16kminus1.bin"
+check_one "$tmpdir/rand_16kminus1.bin" "random 16KB-1 (seed 7)"
+
+# Medium sizes.
+gen_random 13 $((1 * 1024 * 1024)) "$tmpdir/rand_1m.bin"
+check_one "$tmpdir/rand_1m.bin" "random 1MB (seed 13)"
+
+# 16 MB — exercises the "16 MiB internal-buffer" category (RPM was here).
+gen_random 17 $((16 * 1024 * 1024)) "$tmpdir/rand_16m.bin"
+check_one "$tmpdir/rand_16m.bin" "random 16MB (seed 17)"
+
+# 64 MB — exercises the "64 MiB internal-buffer" category (PCAP was here).
+# This is the headline size that catches stack-frame overflow; awk LCG is fine
+# at this scale (~10s on a modern CPU; well under the 30s timeout per probe).
+gen_random 19 $((64 * 1024 * 1024)) "$tmpdir/rand_64m.bin"
+check_one "$tmpdir/rand_64m.bin" "random 64MB (seed 19)"
+
+# All-NUL files at three sizes. Pathological for validators that loop on
+# zero-length records or trust unchecked length fields.
+gen_constant 0 1024 "$tmpdir/nul_1k.bin"
+check_one "$tmpdir/nul_1k.bin" "all-NUL 1KB"
+
+gen_constant 0 65536 "$tmpdir/nul_64k.bin"
+check_one "$tmpdir/nul_64k.bin" "all-NUL 64KB"
+
+gen_constant 0 1048576 "$tmpdir/nul_1m.bin"
+check_one "$tmpdir/nul_1m.bin" "all-NUL 1MB"
+
+# All-0xFF files. Maximum-value path: triggers anything that reads a length
+# field and trusts it.
+gen_constant 255 1024 "$tmpdir/ff_1k.bin"
+check_one "$tmpdir/ff_1k.bin" "all-0xFF 1KB"
+
+gen_constant 255 65536 "$tmpdir/ff_64k.bin"
+check_one "$tmpdir/ff_64k.bin" "all-0xFF 64KB"
+
+gen_constant 255 1048576 "$tmpdir/ff_1m.bin"
+check_one "$tmpdir/ff_1m.bin" "all-0xFF 1MB"
+
+# Bogus-extension dispatch. Forces detectFormatFromExtension to route random
+# bytes into specific format validators (the path that flushed out the
+# pcap/rpm bugs). Use a single 1 MB random body for all.
+gen_random 23 $((1024 * 1024)) "$tmpdir/body_1m.bin"
+for ext in exe pdf mp4 png zip 7z pcap rpm dwg cab dmg iso wim; do
+	cp "$tmpdir/body_1m.bin" "$tmpdir/extbogus.$ext"
+	check_one "$tmpdir/extbogus.$ext" "1MB random with .$ext extension"
+done
+
+# Magic-prefixed large probes. These are the exact shape that catches the
+# pcap/rpm-class bug: a valid magic header passes the dispatcher's pre-check
+# and routes the file into the format-specific validator with a huge body.
+# Without the magic prefix, dispatch short-circuits at the magic-mismatch
+# branch and never enters validateFoo().
+#
+# PCAP global header (24 bytes): magic=little-endian usec (D4 C3 B2 A1),
+# version 2.4, thiszone=0, sigfigs=0, snaplen=65535, network=1 (Ethernet).
+# Body is large enough to force the 64 MiB internal-buffer path.
+{
+	printf '\xd4\xc3\xb2\xa1\x02\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\xff\xff\x00\x00\x01\x00\x00\x00'
+	# Reuse the 64MB random body sans the 24-byte header to keep total ~64 MiB.
+	head -c $((64 * 1024 * 1024 - 24)) "$tmpdir/rand_64m.bin"
+} > "$tmpdir/magic_big.pcap"
+check_one "$tmpdir/magic_big.pcap" "64MB pcap (valid magic header + random body)"
+
+# RPM lead (96 bytes total): magic ED AB EE DB, major 03, minor 00, type 0000
+# (binary), archnum 0001, name padded to 66 bytes, osnum 0001, signature_type
+# 0005, reserved 16 bytes. Then immediately a header section with header magic
+# 8E AD E8 01. We keep it minimal-but-plausible so dispatch reaches the
+# 16 MiB read.
+#
+# Two body fillers — random AND all-zero — because the stack-frame fault
+# pattern depends on which pages get touched first; some host configurations
+# reproduce only with one or the other.
+build_rpm_envelope() {
+	local body_src="$1"
+	# Lead (96 bytes)
+	printf '\xed\xab\xee\xdb\x03\x00\x00\x00\x00\x01'    # magic + major/minor/type/archnum
+	printf 'fuzz-smoke\x00'                                # name (start)
+	head -c 55 /dev/zero                                   # name (pad to 66 bytes total)
+	printf '\x00\x01\x00\x05'                              # osnum + signature_type
+	head -c 16 /dev/zero                                   # reserved
+	# Header section magic + version + reserved + nindex=0 + hsize=0
+	printf '\x8e\xad\xe8\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+	head -c $((16 * 1024 * 1024 - 96 - 20)) "$body_src"
+}
+
+build_rpm_envelope "$tmpdir/rand_16m.bin" > "$tmpdir/magic_big_rand.rpm"
+check_one "$tmpdir/magic_big_rand.rpm" "16MB rpm (valid magic + random body)"
+
+build_rpm_envelope "$tmpdir/nul_1m.bin" > "$tmpdir/magic_big_nul.rpm.partial"
+# nul_1m.bin is only 1 MB — append /dev/zero to fill to 16 MiB.
+{
+	cat "$tmpdir/magic_big_nul.rpm.partial"
+	head -c $((16 * 1024 * 1024 - $(wc -c < "$tmpdir/magic_big_nul.rpm.partial") )) /dev/zero
+} > "$tmpdir/magic_big_nul.rpm"
+check_one "$tmpdir/magic_big_nul.rpm" "16MB rpm (valid magic + all-zero body)"
+
+# --- Report ------------------------------------------------------------------
+
+if [ "$failed" -gt 0 ]; then
+	echo "fuzz_smoke: $passed passed, $failed failed"
+	for f in "${failures[@]}"; do
+		echo "  FAIL: $f"
+	done
+	exit 1
+fi
+
+echo "fuzz_smoke: $passed passed, 0 failed"
+exit 0
