@@ -32,6 +32,11 @@ pub fn build(b: *std.Build) void {
 		"-Wno-unused-but-set-variable",
 		"-Wno-implicit-function-declaration",
 		"-Wno-sign-compare",
+		// Zig uses clang which always supports __builtin_clz; this makes
+		// wavpack_local.h's count_bits() take the GCC-builtin path instead
+		// of falling back to MSVC's _BitScanReverse on _WIN64 (mingw-gnu
+		// targets define _WIN64 but lack the MSVC intrinsic).
+		"-DHAVE___BUILTIN_CLZ=1",
 	};
 
 	// Decode-only subset (lossless). Mirrors Makefile.am's
