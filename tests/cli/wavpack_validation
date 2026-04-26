@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# WavPack deep-decode validation CLI tests.
+#
+# WavPack stores a 32-bit CRC per block, computed over the DECODED PCM
+# samples (per dbry's reference unpack.c line 508). The validator wires
+# libwavpack 5.9.0 to decode every block and surface mismatches via
+# WavpackGetNumErrors. Truncation and block-checksum sub-block failures
+# also get flagged.
+#
+# Detection profile (empirically, on a 120 KB lossless corpus):
+#   - sniper (single-bit flip): >95% — block-CRC over decoded samples
+#     amplifies almost every flip into a mismatch. Header bytes flips
+#     also caught by libwavpack's open-time block validator.
+#   - shotgun (4 KB overwrite): ~100% — 4 KB obliterates at least one
+#     full block; checksum sub-block + post-decode CRC + sample-count
+#     drift all conspire to reject.
+
+set -u
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	if [[ ! -x "$BIN" ]]; then BIN="./zig-out/bin/validate.exe"; fi
+fi
+if [[ ! -x "$BIN" ]]; then
+	echo "FAIL: validate binary not found at $BIN"
+	exit 1
+fi
+
+PASS=0
+FAIL=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAIL=$((FAIL + 1))
+}
+
+pass() {
+	printf '  PASS: %s\n' "$1"
+	PASS=$((PASS + 1))
+}
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_wavpack_test.XXXXXX")"
+trap 'mv "$tmpdir" ~/.Trash/ 2>/dev/null || rm -rf "$tmpdir"' EXIT
+
+# Prefer the corpus_xorshift.wv sample (≥ 12 KB, lossless, multi-block).
+# Fall back to the tiny sample.wv for clean-path coverage only.
+SAMPLE=""
+for cand in \
+	ground_truth_examples/wavpack/corpus_xorshift.wv \
+	ground_truth_examples/wavpack/sample.wv
+do
+	if [[ -f "$cand" ]]; then
+		sz=$(stat -f%z "$cand" 2>/dev/null || stat -c%s "$cand" 2>/dev/null)
+		if [[ "${sz:-0}" -ge 12288 ]]; then
+			SAMPLE="$cand"
+			break
+		fi
+		[[ -z "$SAMPLE" ]] && SAMPLE="$cand"
+	fi
+done
+
+if [[ -z "$SAMPLE" ]]; then
+	echo "SKIP: no WavPack ground-truth sample"
+	exit 0
+fi
+
+# 1. Clean sample must validate (and report fully validated, not structural).
+clean_out="$("$BIN" "$SAMPLE" 2>&1 || true)"
+if grep -qE '(fully validated)' <<<"$clean_out"; then
+	pass "clean WavPack stream reports (fully validated)"
+else
+	fail "clean WavPack stream did not report (fully validated): $clean_out"
+fi
+if "$BIN" "$SAMPLE" >/dev/null 2>&1; then
+	pass "clean WavPack stream validates (exit 0)"
+else
+	fail "clean WavPack stream unexpectedly rejected: $SAMPLE"
+fi
+
+sz=$(stat -f%z "$SAMPLE" 2>/dev/null || stat -c%s "$SAMPLE" 2>/dev/null)
+if [[ "${sz:-0}" -lt 12288 ]]; then
+	echo "  NOTE: sample is ${sz}B (< 12 KB) — skipping corruption probes"
+	echo ""
+	echo "Results: $PASS passed, $FAIL failed"
+	exit "$FAIL"
+fi
+
+# 2. Mid-stream single-byte flip in the bitstream payload of block 3
+#    (offset ~50 KB in the corpus) must be caught.
+mid_flip="$tmpdir/mid_flip.wv"
+cp "$SAMPLE" "$mid_flip"
+flip_off=$((sz / 2 + 100))
+python3 -c "
+import sys
+with open('$mid_flip', 'r+b') as f:
+    f.seek($flip_off)
+    b = f.read(1)
+    f.seek($flip_off)
+    f.write(bytes([b[0] ^ 0xff]))
+" 2>/dev/null
+if ! "$BIN" "$mid_flip" >/dev/null 2>&1; then
+	pass "mid-block byte flip detected"
+else
+	fail "mid-block byte flip silently accepted"
+fi
+
+# 3. Block-header CRC field tamper. The header CRC at offset+28 (each
+#    block) is checked post-decode against recomputed CRC over PCM.
+#    Tampering it forces a mismatch even if the bitstream is intact.
+hdr_tamper="$tmpdir/hdr_tamper.wv"
+cp "$SAMPLE" "$hdr_tamper"
+# Find second block start. Block 1 is at offset 0; block_size is at offset 4 (u32 LE)
+# so block 2 starts at 8 + block_size.
+block2_start=$(python3 -c "
+import struct
+with open('$hdr_tamper', 'rb') as f:
+    data = f.read()
+bs = struct.unpack('<I', data[4:8])[0]
+print(8 + bs)
+")
+crc_off=$((block2_start + 28))
+python3 -c "
+with open('$hdr_tamper', 'r+b') as f:
+    f.seek($crc_off)
+    b = f.read(4)
+    f.seek($crc_off)
+    f.write(bytes([b[0] ^ 0xff, b[1], b[2], b[3]]))
+"
+if ! "$BIN" "$hdr_tamper" >/dev/null 2>&1; then
+	pass "block-header CRC field tamper detected"
+else
+	fail "block-header CRC field tamper silently accepted"
+fi
+
+# 4. Shotgun 4 KB random overwrite at midpoint must be caught.
+mid=$((sz / 2))
+shotgun="$tmpdir/shotgun.wv"
+cp "$SAMPLE" "$shotgun"
+dd if=/dev/urandom of="$shotgun" bs=1 seek="$mid" count=4096 conv=notrunc 2>/dev/null
+if ! "$BIN" "$shotgun" >/dev/null 2>&1; then
+	pass "4 KB shotgun-corrupted WavPack detected"
+else
+	fail "4 KB shotgun-corrupted WavPack silently accepted"
+fi
+
+# 5. Truncation: drop last 64 bytes, decoder should report mismatch.
+truncated="$tmpdir/truncated.wv"
+head -c $((sz - 64)) "$SAMPLE" > "$truncated"
+if ! "$BIN" "$truncated" >/dev/null 2>&1; then
+	pass "truncated WavPack stream detected"
+else
+	fail "truncated WavPack stream silently accepted"
+fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"

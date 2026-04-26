@@ -76,6 +76,7 @@ pub const vpx_decode_validator = @import("vpx_decode_validator.zig");
 pub const mpeg_ts_parser = @import("mpeg_ts_parser.zig");
 pub const mpeg_ps_parser = @import("mpeg_ps_parser.zig");
 pub const wavpack_decoder = @import("wavpack_decoder.zig");
+pub const wavpack_decode_validator = @import("wavpack_decode_validator.zig");
 pub const dmg_validator = @import("dmg_validator.zig");
 pub const iso9660_parser = @import("iso9660_parser.zig");
 pub const udf_parser = @import("udf_parser.zig");
@@ -243,8 +244,10 @@ test {
     // MPEG container parsers
     _ = @import("mpeg_ts_parser.zig");
     _ = @import("mpeg_ps_parser.zig");
-    // WavPack decoder
+    // WavPack structural decoder
     _ = @import("wavpack_decoder.zig");
+    // WavPack deep-decode validator (libwavpack)
+    _ = @import("wavpack_decode_validator.zig");
     // DMG validator
     _ = @import("dmg_validator.zig");
     // ISO 9660 parser

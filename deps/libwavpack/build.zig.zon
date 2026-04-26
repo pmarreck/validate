@@ -1,0 +1,15 @@
+.{
+    .name = .libwavpack,
+    .version = "5.9.0",
+    .fingerprint = 0x6030babb4921364b,
+    .dependencies = .{
+        .wavpack_src = .{
+            .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",
+            .hash = "N-V-__8AAAZvRACqqks-KAMLJ7bhK0Ei0r-c4ox4dym2esGj",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+    },
+}
