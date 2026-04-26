@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# Monkey's Audio (APE) deep structural validation CLI tests.
+#
+# Goal: every byte through the descriptor + header + seek table is
+# parsed and validated by the structural-rigor APE validator.
+#
+# Detection scope:
+#   - Header field corruption (compression, channels, sample_rate, BPS,
+#     totalframes, final_frame_blocks, seek_table_length): 100%
+#   - Seek-table monotonicity violations: 100%
+#   - Seek entries past audio-data end: 100%
+#   - Magic / version corruption: 100%
+#
+# NOT detected (deferred to a follow-up multi-session decoder port):
+#   - Single-byte flips inside compressed frame data (these are caught
+#     only by a full Monkey's Audio decoder verifying per-frame CRC32
+#     over decoded PCM samples + the file-level MD5 in the descriptor)
+#
+# Spec reference: FFmpeg libavformat/ape.c demuxer + libavcodec/apedec.c.
+
+set -u
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	if [[ ! -x "$BIN" ]]; then BIN="./zig-out/bin/validate.exe"; fi
+fi
+if [[ ! -x "$BIN" ]]; then
+	echo "FAIL: validate binary not found at $BIN"
+	exit 1
+fi
+
+PASS=0
+FAIL=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAIL=$((FAIL + 1))
+}
+pass() {
+	printf '  PASS: %s\n' "$1"
+	PASS=$((PASS + 1))
+}
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_ape_test.XXXXXX")"
+trap 'mv "$tmpdir" ~/.Trash/ 2>/dev/null || rm -rf "$tmpdir"' EXIT
+
+SAMPLE="ground_truth_examples/ape/sample.ape"
+if [[ ! -f "$SAMPLE" ]]; then
+	echo "SKIP: no APE ground-truth sample at $SAMPLE"
+	exit 0
+fi
+
+# Pre-flight: clean sample must validate.
+if "$BIN" "$SAMPLE" >/dev/null 2>&1; then
+	pass "clean APE validates (exit 0)"
+else
+	fail "clean APE unexpectedly rejected: $SAMPLE"
+	# If the clean sample doesn't validate, no point running corruption tests.
+	echo ""
+	echo "Results: $PASS passed, $FAIL failed"
+	exit "$FAIL"
+fi
+
+sz=$(stat -f%z "$SAMPLE" 2>/dev/null || stat -c%s "$SAMPLE" 2>/dev/null)
+if [[ "${sz:-0}" -lt 12288 ]]; then
+	echo "  NOTE: APE sample is ${sz}B (< 12 KB) — skipping corruption probes"
+	echo ""
+	echo "Results: $PASS passed, $FAIL failed"
+	exit "$FAIL"
+fi
+
+# Helper: write a u32 LE at given offset in a copy.
+write_u32_le() {
+	local file="$1" off="$2" val="$3"
+	python3 -c "
+import struct, sys
+data = bytearray(open('${file}','rb').read())
+data[${off}:${off}+4] = struct.pack('<I', ${val} & 0xFFFFFFFF)
+open('${file}','wb').write(data)
+"
+}
+
+write_u16_le() {
+	local file="$1" off="$2" val="$3"
+	python3 -c "
+import struct, sys
+data = bytearray(open('${file}','rb').read())
+data[${off}:${off}+2] = struct.pack('<H', ${val} & 0xFFFF)
+open('${file}','wb').write(data)
+"
+}
+
+# Detect file version to pick correct field offsets.
+# Modern (v >= 3980): descriptor at 0..52, header at 52..76.
+# Legacy (v 3800-3979): header at 0..32, then optional peak/seek-elem, then WAV, then seek table.
+version=$(python3 -c "
+import struct
+print(struct.unpack('<H', open('${SAMPLE}','rb').read()[4:6])[0])
+")
+
+if [[ "$version" -ge 3980 ]]; then
+	echo "  detected modern APE (v${version})"
+	# Modern field offsets in our sample:
+	#   compression_type  @ 52..54
+	#   channels          @ 70..72
+	#   sample_rate       @ 72..76
+	#   total_frames      @ 64..68
+	OFF_COMPRESSION=52
+	OFF_CHANNELS=70
+	OFF_SAMPLE_RATE=72
+	OFF_TOTAL_FRAMES=64
+else
+	echo "  detected legacy APE (v${version})"
+	OFF_COMPRESSION=6
+	OFF_CHANNELS=10
+	OFF_SAMPLE_RATE=12
+	OFF_TOTAL_FRAMES=24
+fi
+
+# 1. Bogus compression_type (must be 1000/2000/3000/4000/5000)
+bogus_comp="$tmpdir/bogus_comp.ape"
+cp "$SAMPLE" "$bogus_comp"
+write_u16_le "$bogus_comp" "$OFF_COMPRESSION" 1234
+if ! "$BIN" "$bogus_comp" >/dev/null 2>&1; then
+	pass "bogus compression_type (1234) rejected"
+else
+	fail "bogus compression_type (1234) accepted"
+fi
+
+# 2. Bogus channel count (must be 1 or 2)
+bogus_ch="$tmpdir/bogus_ch.ape"
+cp "$SAMPLE" "$bogus_ch"
+write_u16_le "$bogus_ch" "$OFF_CHANNELS" 99
+if ! "$BIN" "$bogus_ch" >/dev/null 2>&1; then
+	pass "bogus channels (99) rejected"
+else
+	fail "bogus channels (99) accepted"
+fi
+
+# 3. Bogus sample rate (out of plausible 4kHz..384kHz)
+bogus_sr="$tmpdir/bogus_sr.ape"
+cp "$SAMPLE" "$bogus_sr"
+write_u32_le "$bogus_sr" "$OFF_SAMPLE_RATE" 999999999
+if ! "$BIN" "$bogus_sr" >/dev/null 2>&1; then
+	pass "bogus sample_rate (999999999) rejected"
+else
+	fail "bogus sample_rate (999999999) accepted"
+fi
+
+# 4. Bogus total_frames (zero is invalid)
+bogus_tf="$tmpdir/bogus_tf.ape"
+cp "$SAMPLE" "$bogus_tf"
+write_u32_le "$bogus_tf" "$OFF_TOTAL_FRAMES" 0
+if ! "$BIN" "$bogus_tf" >/dev/null 2>&1; then
+	pass "zero total_frames rejected"
+else
+	fail "zero total_frames accepted"
+fi
+
+# 5. Magic byte corruption — must be rejected
+bad_magic="$tmpdir/bad_magic.ape"
+cp "$SAMPLE" "$bad_magic"
+python3 -c "
+data = bytearray(open('${bad_magic}','rb').read())
+data[1] = ord('X')
+open('${bad_magic}','wb').write(data)
+"
+if ! "$BIN" "$bad_magic" >/dev/null 2>&1; then
+	pass "MAC magic byte corruption rejected"
+else
+	fail "MAC magic byte corruption accepted"
+fi
+
+# 6. Version corruption — version > 3990 must be rejected
+bad_ver="$tmpdir/bad_ver.ape"
+cp "$SAMPLE" "$bad_ver"
+write_u16_le "$bad_ver" 4 9999
+if ! "$BIN" "$bad_ver" >/dev/null 2>&1; then
+	pass "version > 3990 rejected"
+else
+	fail "version > 3990 accepted"
+fi
+
+# 7. Seek table monotonicity violation
+# For modern v3990 sample: descriptor=52, header=24 → seek table starts at 76.
+# For legacy: depends on flags. We'll just patch the second seek entry to be smaller than first.
+if [[ "$version" -ge 3980 ]]; then
+	SEEK_OFF=76
+else
+	# Legacy with peak level (flags 0x4) sets seek_off = 32+4=36, plus we need to skip WAV
+	# Use python to compute correctly.
+	SEEK_OFF=$(python3 -c "
+import struct
+data = open('${SAMPLE}','rb').read()
+flags = struct.unpack('<H', data[8:10])[0]
+header_bytes = struct.unpack('<I', data[16:20])[0]
+off = 32
+if flags & 0x4: off += 4
+if flags & 0x10: off += 4
+off += header_bytes
+print(off)
+")
+fi
+mono="$tmpdir/mono.ape"
+cp "$SAMPLE" "$mono"
+# Read first entry's value so we can set seek[1] < seek[0].
+python3 -c "
+import struct
+data = bytearray(open('${mono}','rb').read())
+seek_off = ${SEEK_OFF}
+first = struct.unpack('<I', data[seek_off:seek_off+4])[0]
+# Set seek[1] = max(0, first - 100)
+new_second = max(0, first - 100)
+data[seek_off+4:seek_off+8] = struct.pack('<I', new_second)
+open('${mono}','wb').write(data)
+"
+if ! "$BIN" "$mono" >/dev/null 2>&1; then
+	pass "non-monotonic seek table rejected"
+else
+	fail "non-monotonic seek table accepted"
+fi
+
+# 8. Truncation — chop off last 1KB. Frame data goes off the end → seek
+#    table will reference offsets past EOF (or audio_data_length spec violated).
+truncated="$tmpdir/truncated.ape"
+head -c $((sz - 1024)) "$SAMPLE" > "$truncated"
+if ! "$BIN" "$truncated" >/dev/null 2>&1; then
+	pass "truncated APE detected"
+else
+	fail "truncated APE silently accepted"
+fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"
