@@ -73,6 +73,12 @@ P2 — additional fixes from launch-prep audit (2026-04-25):
 - [x] CLI `--test-coverage` defaults: sniper+shotgun (was all 6), 1000 rounds (was 100). Statistically meaningful at first run; opt back into legacy via `--modes all` or `--modes everything`. Commit b4388f1e.
 - [x] README VP8 error-concealment callout (commit 5b131e27) — concrete launch-copy demonstrating the silent-corruption pattern validate exists for.
 - [x] Adaptive early-stop on `--test-coverage`: every 100 rounds, compute 95% Wilson CI; if all enabled modes at or under `--early-stop-radius` (default 0.025), break. PNG/BMP early-stop ~700-800 rounds; `--no-early-stop` runs full cap. New CLI flags + FFI param + KV result keys (requested_rounds, early_stopped, early_stop_radius). 2026-04-25, commit (pending).
+- [ ] `--test-coverage` UX & visualization upgrades (raised by Peter 2026-04-27 after the 14 MB PDF run took 3h41m and the heatmap was unreadable):
+  - [ ] Per-file progress indicator (default-on, suppressible via `--no-progress`): stderr live counter "Round X/Y on <basename>" with % and ETA based on rounds-elapsed/wall-time. Already exists for the FFI progress callback — wire to a CLI default.
+  - [ ] Heatmap palette: replace the current ANSI 16/21/51/226/231 (black/blue/cyan/yellow/white) mix with a perceptually-ordered black→darkred→red→orange→yellow→white gradient (matplotlib `hot` or `inferno`, 16 steps). Current mapping is alphanumeric, not heat.
+  - [ ] Sparkline visualization mode as alt: `--heatmap-style {grid|sparkline|none}` — sparkline is one row of unicode block-elements per file, more compact than the grid for terminals with limited vertical space.
+  - [ ] PDF perf investigation (separate, not visualization): 1000 rounds * 14 MB = 3h41m wall-time. Profile per-round cost; suspect repeated full xref+stream resolution per round. May want a "warm" cache of the structural parse that's invalidated only if corruption hits structure, not a stream.
+  - [ ] PDF coverage investigation: 0.6%/4.2% on a 14 MB picture-book PDF. Working hypothesis: the bulk of the file is JPEG-compressed page images and JPEG silently tolerates most bit-flips. Confirm by (a) running test-coverage on a same-size text-heavy PDF and seeing if rates rise to expected ~80%+, and (b) once heatmap palette is fixed, overlaying the cold zones against the PDF's xref map.
 
 ### Statistical Corruption Detection for Raw Audio/Video Data
 For formats without checksums (AU, AMR, CAF, DPX, etc.), use heuristic analysis to detect likely corruption in raw data sections:

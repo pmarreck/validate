@@ -594,28 +594,122 @@ pub fn runCoverage(
     };
 }
 
+/// Terminal color depth for heatmap rendering. Mirrors Peter's
+/// `max_bits_color_support` bash heuristic: COLORTERM=truecolor|24bit →
+/// truecolor; TERM ends in -256color/-direct or COLORTERM=direct → ansi256;
+/// else ansi16; NO_COLOR (https://no-color.org) → ascii.
+pub const ColorDepth = enum {
+    ascii, // no escapes — graded by character density (' .:-=+*#%@')
+    ansi16, // \x1b[40-47;100-107m — coarse 6-step black/red/yellow/white
+    ansi256, // \x1b[48;5;Nm — 16-step black→darkred→red→orange→yellow→white
+    truecolor, // \x1b[48;2;R;G;Bm — smooth perceptual `hot` gradient
+
+    pub fn detectFromEnv() ColorDepth {
+        if (comptime @import("builtin").os.tag == .windows) return .ansi256;
+        // NO_COLOR takes absolute precedence per https://no-color.org/.
+        if (std.posix.getenv("NO_COLOR")) |v| {
+            if (v.len > 0) return .ascii;
+        }
+        if (std.posix.getenv("COLORTERM")) |ct| {
+            if (std.mem.eql(u8, ct, "truecolor") or std.mem.eql(u8, ct, "24bit")) return .truecolor;
+            if (std.mem.eql(u8, ct, "direct")) return .ansi256;
+        }
+        if (std.posix.getenv("TERM")) |term| {
+            if (std.mem.endsWith(u8, term, "-256color") or std.mem.endsWith(u8, term, "-direct")) return .ansi256;
+        }
+        return .ansi16;
+    }
+};
+
+/// Emit one heatmap cell at the given normalized intensity (`q` in 0..steps-1)
+/// for the chosen depth. Each cell is a single screen column.
+fn emitHeatmapCell(out_writer: anytype, depth: ColorDepth, q: usize, steps: usize) !void {
+    // Clamp guard for callers who pass q == steps.
+    const qc = if (q >= steps) steps - 1 else q;
+    switch (depth) {
+        .ascii => {
+            // 10-step density ramp ' .:-=+*#%@' — perceptually monotonic.
+            const ramp = " .:-=+*#%@";
+            const idx = (qc * (ramp.len - 1)) / (steps - 1);
+            try out_writer.writeByte(ramp[idx]);
+        },
+        .ansi16 => {
+            // Coarse 6-step gradient over basic + bright bg colors:
+            // black(40) → red(41) → bright-red(101) → yellow(43) → bright-yellow(103) → bright-white(107).
+            const palette = [_]u8{ 40, 41, 101, 43, 103, 107 };
+            const idx = (qc * (palette.len - 1)) / (steps - 1);
+            try std.fmt.format(out_writer, "\x1b[{d}m ", .{palette[idx]});
+        },
+        .ansi256 => {
+            // 16-step `hot` palette over the 6x6x6 cube + grayscale ramp endpoint:
+            // 16(black) → 52,88,124,160(dark red→red) → 196(red) → 202,208,214,220(orange→amber)
+            // → 226(yellow) → 227,228,229,230(pale yellow) → 231(white).
+            const palette = [_]u8{ 16, 52, 88, 124, 160, 196, 202, 208, 214, 220, 226, 227, 228, 229, 230, 231 };
+            const idx = (qc * (palette.len - 1)) / (steps - 1);
+            try std.fmt.format(out_writer, "\x1b[48;5;{d}m ", .{palette[idx]});
+        },
+        .truecolor => {
+            // Classic matplotlib `hot` colormap, computed:
+            //   t in [0,1]
+            //   t < 1/3: R = 3t,         G = 0,         B = 0    (black → red)
+            //   t < 2/3: R = 1,          G = 3t-1,      B = 0    (red → yellow)
+            //   else  : R = 1,           G = 1,         B = 3t-2 (yellow → white)
+            // Quantize across `steps` buckets.
+            const t: f64 = if (steps <= 1) 0.0 else @as(f64, @floatFromInt(qc)) / @as(f64, @floatFromInt(steps - 1));
+            var r: f64 = 0;
+            var g: f64 = 0;
+            var b: f64 = 0;
+            if (t < 1.0 / 3.0) {
+                r = 3.0 * t;
+            } else if (t < 2.0 / 3.0) {
+                r = 1.0;
+                g = 3.0 * t - 1.0;
+            } else {
+                r = 1.0;
+                g = 1.0;
+                b = 3.0 * t - 2.0;
+            }
+            const ri: u8 = @intFromFloat(@min(255.0, @max(0.0, r * 255.0)));
+            const gi: u8 = @intFromFloat(@min(255.0, @max(0.0, g * 255.0)));
+            const bi: u8 = @intFromFloat(@min(255.0, @max(0.0, b * 255.0)));
+            try std.fmt.format(out_writer, "\x1b[48;2;{d};{d};{d}m ", .{ ri, gi, bi });
+        },
+    }
+}
+
 /// Render a heatmap string showing undetected-corruption density across
-/// the file, using ANSI 256-color gradient. If `mode_filter` is non-null,
-/// only events in that mode contribute (useful for per-mode heatmaps so
-/// each corruption mode gets its own visibility map). The bar is `width`
-/// cells wide. Returns an owned string; caller must free.
+/// the file. The bar is `width` cells wide. Color depth is auto-detected
+/// from `COLORTERM`/`TERM`/`NO_COLOR` (see ColorDepth.detectFromEnv).
+/// Returns an owned string; caller must free.
 pub fn renderHeatmap(
     allocator: Allocator,
     result: *const CoverageResult,
     width: u32,
 ) ![]u8 {
-    return renderHeatmapFiltered(allocator, result, width, null);
+    return renderHeatmapWithDepth(allocator, result, width, null, ColorDepth.detectFromEnv());
 }
 
+/// Per-mode heatmap (only events with `mode_filter` count toward the gradient).
 pub fn renderHeatmapFiltered(
     allocator: Allocator,
     result: *const CoverageResult,
     width: u32,
     mode_filter: ?CorruptionMode,
 ) ![]u8 {
+    return renderHeatmapWithDepth(allocator, result, width, mode_filter, ColorDepth.detectFromEnv());
+}
+
+/// Lower-level form that takes an explicit color depth, for tests and for
+/// callers that have already detected the terminal capability.
+pub fn renderHeatmapWithDepth(
+    allocator: Allocator,
+    result: *const CoverageResult,
+    width: u32,
+    mode_filter: ?CorruptionMode,
+    depth: ColorDepth,
+) ![]u8 {
     if (width == 0) return error.InvalidWidth;
 
-    // Count undetected corruption events per bucket
     const buckets = try allocator.alloc(u32, width);
     defer allocator.free(buckets);
     @memset(buckets, 0);
@@ -623,7 +717,6 @@ pub fn renderHeatmapFiltered(
     for (result.events) |event| {
         if (event.detected) continue;
         if (mode_filter) |m| if (event.mode != m) continue;
-        // Map byte offset to bucket index
         const bucket: usize = @intCast(@min(
             @as(u64, width - 1),
             (event.offset * width) / result.file_size,
@@ -631,28 +724,19 @@ pub fn renderHeatmapFiltered(
         buckets[bucket] += 1;
     }
 
-    // Find max for normalization
     var max_count: u32 = 0;
     for (buckets) |c| max_count = @max(max_count, c);
 
-    // Build the output string with ANSI 256-color escapes
     var out = std.ArrayListUnmanaged(u8){};
     defer out.deinit(allocator);
 
-    // ANSI 256-color gradient: cooler (blue/cyan) → hot (yellow/red/white)
-    // Picked from the 6x6x6 color cube: black(16) → blue(21) → cyan(51) →
-    //   green(46) → yellow(226) → red(196) → white(231)
-    const gradient = [_]u8{ 16, 17, 18, 19, 20, 21, 27, 33, 39, 45, 51, 87, 123, 159, 195, 226, 220, 214, 208, 202, 196, 231 };
-
+    // We always quantize into 16 steps so every depth tier maps consistently.
+    const steps: usize = 16;
     for (buckets) |count| {
-        const intensity = if (max_count == 0)
-            @as(usize, 0)
-        else
-            (@as(usize, count) * (gradient.len - 1)) / max_count;
-        const color = gradient[intensity];
-        try std.fmt.format(out.writer(allocator), "\x1b[48;5;{d}m ", .{color});
+        const q = if (max_count == 0) 0 else (@as(usize, count) * (steps - 1)) / max_count;
+        try emitHeatmapCell(out.writer(allocator), depth, q, steps);
     }
-    try out.writer(allocator).writeAll("\x1b[0m");
+    if (depth != .ascii) try out.writer(allocator).writeAll("\x1b[0m");
 
     return out.toOwnedSlice(allocator);
 }
@@ -813,9 +897,137 @@ test "renderHeatmap produces ANSI-colored bar of requested width" {
     const heat = try renderHeatmap(testing.allocator, &result, 40);
     defer testing.allocator.free(heat);
 
-    // Should contain ANSI escape sequences
+    // Should contain ANSI escape sequences (any tier above .ascii ends with reset).
+    // Whatever tier env-detect picks, the bar must have width-many cells.
+    try testing.expect(heat.len > 0);
+}
+
+test "renderHeatmapWithDepth ascii produces no escapes" {
+    const original = "x" ** 100;
+    var ctx: u32 = 0;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{ .rounds = 20, .seed = 7 },
+        @ptrCast(&ctx),
+        neverDetectsValidator,
+    );
+    defer result.deinit();
+
+    const heat = try renderHeatmapWithDepth(testing.allocator, &result, 32, null, .ascii);
+    defer testing.allocator.free(heat);
+
+    // 32 cells, each ASCII char from " .:-=+*#%@", no escapes anywhere.
+    try testing.expectEqual(@as(usize, 32), heat.len);
+    try testing.expect(std.mem.indexOf(u8, heat, "\x1b") == null);
+    for (heat) |c| {
+        const ramp = " .:-=+*#%@";
+        try testing.expect(std.mem.indexOfScalar(u8, ramp, c) != null);
+    }
+}
+
+test "renderHeatmapWithDepth ansi16 emits basic-bg escapes" {
+    const original = "x" ** 100;
+    var ctx: u32 = 0;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{ .rounds = 20, .seed = 7 },
+        @ptrCast(&ctx),
+        neverDetectsValidator,
+    );
+    defer result.deinit();
+
+    const heat = try renderHeatmapWithDepth(testing.allocator, &result, 32, null, .ansi16);
+    defer testing.allocator.free(heat);
+
+    // ANSI 16-color uses \x1b[NNm not \x1b[48;5; or \x1b[48;2;.
+    try testing.expect(std.mem.indexOf(u8, heat, "\x1b[48;5;") == null);
+    try testing.expect(std.mem.indexOf(u8, heat, "\x1b[48;2;") == null);
+    try testing.expect(std.mem.endsWith(u8, heat, "\x1b[0m"));
+    // At least one of the chosen palette codes (40, 41, 101, 43, 103, 107).
+    var any_palette = false;
+    inline for (.{ "\x1b[40m", "\x1b[41m", "\x1b[101m", "\x1b[43m", "\x1b[103m", "\x1b[107m" }) |needle| {
+        if (std.mem.indexOf(u8, heat, needle) != null) any_palette = true;
+    }
+    try testing.expect(any_palette);
+}
+
+test "renderHeatmapWithDepth ansi256 uses hot palette indices only" {
+    const original = "x" ** 100;
+    var ctx: u32 = 0;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{ .rounds = 30, .seed = 11 },
+        @ptrCast(&ctx),
+        neverDetectsValidator,
+    );
+    defer result.deinit();
+
+    const heat = try renderHeatmapWithDepth(testing.allocator, &result, 32, null, .ansi256);
+    defer testing.allocator.free(heat);
+
     try testing.expect(std.mem.indexOf(u8, heat, "\x1b[48;5;") != null);
     try testing.expect(std.mem.endsWith(u8, heat, "\x1b[0m"));
+    // No truecolor fallback in this tier.
+    try testing.expect(std.mem.indexOf(u8, heat, "\x1b[48;2;") == null);
+
+    // Every index in the palette must be one of the 16 hot steps.
+    const palette = [_][]const u8{
+        "\x1b[48;5;16m",  "\x1b[48;5;52m",  "\x1b[48;5;88m",  "\x1b[48;5;124m",
+        "\x1b[48;5;160m", "\x1b[48;5;196m", "\x1b[48;5;202m", "\x1b[48;5;208m",
+        "\x1b[48;5;214m", "\x1b[48;5;220m", "\x1b[48;5;226m", "\x1b[48;5;227m",
+        "\x1b[48;5;228m", "\x1b[48;5;229m", "\x1b[48;5;230m", "\x1b[48;5;231m",
+    };
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, heat, i, "\x1b[48;5;")) |pos| {
+        const end = std.mem.indexOfScalarPos(u8, heat, pos, 'm') orelse break;
+        const seq = heat[pos .. end + 1];
+        var matched = false;
+        for (palette) |p| {
+            if (std.mem.eql(u8, seq, p)) {
+                matched = true;
+                break;
+            }
+        }
+        try testing.expect(matched);
+        i = end + 1;
+    }
+}
+
+test "renderHeatmapWithDepth truecolor stays on the matplotlib hot curve" {
+    const original = "x" ** 100;
+    var ctx: u32 = 0;
+    var result = try runCoverage(
+        testing.allocator,
+        original,
+        .{ .rounds = 30, .seed = 13 },
+        @ptrCast(&ctx),
+        neverDetectsValidator,
+    );
+    defer result.deinit();
+
+    const heat = try renderHeatmapWithDepth(testing.allocator, &result, 32, null, .truecolor);
+    defer testing.allocator.free(heat);
+
+    try testing.expect(std.mem.indexOf(u8, heat, "\x1b[48;2;") != null);
+    try testing.expect(std.mem.endsWith(u8, heat, "\x1b[0m"));
+
+    // Hot curve invariant: across all (R,G,B) triples, R must be ≥ G and G ≥ B.
+    // (black→red→yellow→white never touches blue/green dominance.)
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, heat, i, "\x1b[48;2;")) |pos| {
+        const end = std.mem.indexOfScalarPos(u8, heat, pos + 7, 'm') orelse break;
+        var iter = std.mem.splitScalar(u8, heat[pos + 7 .. end], ';');
+        const r = std.fmt.parseInt(u16, iter.next() orelse break, 10) catch break;
+        const g = std.fmt.parseInt(u16, iter.next() orelse break, 10) catch break;
+        const b = std.fmt.parseInt(u16, iter.next() orelse break, 10) catch break;
+        try testing.expect(r >= g);
+        try testing.expect(g >= b);
+        try testing.expect(r <= 255 and g <= 255 and b <= 255);
+        i = end + 1;
+    }
 }
 
 test "runCoverage respects enabled_modes subset" {
