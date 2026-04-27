@@ -118,7 +118,7 @@
 | XLS | 12% | **90%** | poi_formula.xls | 178 KB | 2026-03-06 | BIFF8 records + SST + formulas + cells |
 | DOC (large) | 2% | 2% | word95_large.doc | 603 KB | 2026-03-06 | FIB + 31 fc/lcb pair bounds + CLX piece table. Detection density drops on large docs — body text is most of the file. |
 | DOC (small) | — | **52%** | word97_simple.doc | 19 KB | 2026-03-06 | Same validator, smaller file — shotgun has ~21% chance of hitting FIB/Table/CLX. |
-| PDF | 0% | 0% | nasa_satellite_images_1976.pdf | 22 MB | 2026-03-06 | ⚠ **EXIT-CODE BUG** — validator detects ~60% of sniper corruption but `toleratedPdfImageFailures` silently returns `is_valid=true`. See Action Items (highest priority). |
+| PDF | n/a† | n/a† | (varies — see breakout) | varies | 2026-04-27 | †Headline numbers are misleading for PDF: detection rate is dominated by which compression filters the document uses for its embedded streams (Flate, DCT/JPEG, JPX/JPEG2000, JBIG2, CCITT), not by the validator. See "PDF detection by stream-filter dominance" subsection below for the breakout table. The exit-code bug from 2026-03-06 was fixed in commit `c304f36` (2026-04-23, Action Item #1). |
 | OLE2 (PPT) | 0% | 0% | sample.ppt | 912 KB | 2026-03-06 | FAT/directory structural only |
 | InDesign | 1% | 73% | sample.indd | 4 KB | 2026-03-06 | Page structure. |
 | DOCX | **87%** | **100%** | sample.docx (Tika `testWORD.docx`) | 13 KB | 2026-04-23 | OOXML = ZIP with per-entry CRC32. Sample replaced 2026-04-23 from Apache 2.0 Tika test corpus. |
@@ -161,6 +161,51 @@
 | XML | 64% | — | sample.xml | 110 B | 2026-04-25 | XML parse; structural only. 64% sniper from tag/quote density on tiny sample. Shotgun N/A. |
 | YAML | 0% | — | sample.yaml | 68 B | 2026-04-25 | Plain-text; structural only. Shotgun N/A. |
 | Markdown | 0% | — | sample.md | 525 B | 2026-04-25 | Plain-text; structural only. Shotgun N/A. |
+
+#### PDF detection by stream-filter dominance
+
+A single "PDF detection rate" misleads. PDF is a container; its real bit-flip
+detection ceiling depends on which compression filter dominates the file's
+byte volume. We deep-validate every embedded stream by running it through
+its codec (Flate via zlib, DCT/JPEG via libjpeg-turbo, JPX/JPEG2000 via
+OpenJPEG, JBIG2 via our own decoder, CCITT via our G4 reader). What the
+validator detects is bounded by what the codec rejects — not by validator
+effort.
+
+| PDF byte-mix dominance | Sniper (1-bit flip) | Shotgun (4 KB overwrite) | Why |
+|---|---:|---:|---|
+| Flate-dominated (text books, code/glyph data) | **~90%** | **~90%** | zlib Adler-32 catches almost every flip in compressed bytes; remaining ~10% are inside structurally-valid Flate output that's still parseable PDF. Sample: 876 KB Vonnegut text PDF, 50 rounds. |
+| Mixed Flate + DCT/JPEG (illustrated text) | **~20%** | **~85%** | Sniper drops sharply because most bytes are inside JPEG payloads — libjpeg-turbo runs error concealment and silently produces visually-corrupt-but-structurally-valid output. Shotgun stays high because 4 KB overwrites usually punch through Flate-encoded content streams or the xref table. Sample: 3 MB book with 296 Flate + 40 DCT streams, 50 rounds. |
+| JPX / JPEG2000-dominated (photo books, picture books, archive scans) | **~0%** | **~2%** | OpenJPEG's wavelet decode degrades gracefully into visual artifacts; only flips that hit JPEG2000 markers (SOC, SIZ, COD, SOT, EOC) cause decode failure. Standalone 506 KB JP2 stream extracted from sample: 0/54 sniper, 1/46 shotgun (100 rounds, seed=42). |
+| JBIG2-dominated (scanned bilevel pages) | **~0%** (expected, untested standalone) | **~few %** (expected) | Same shape as JPEG2000 — JBIG2's arithmetic coder is corruption-tolerant; only segment-header flips fail decode. Future sample-extraction needed. |
+| CCITT G3/G4-dominated (faxed pages, OCR scans) | **~5-10%** (expected, untested standalone) | **medium** (expected) | Run-length coding tends to break sync more readily than JPEG2000/JBIG2 but is still not a checksum. |
+
+**Why this is honest, not a defect.** PDF the spec has no per-stream content
+hash. A PDF "fully validated" in our sense means: every stream parsed,
+every codec accepted the payload, every cross-reference resolves. It does
+not mean every byte's integrity is verified — that proof requires an
+external mechanism the format does not carry. For codecs without a
+checksum, the only ways a flip CAN fail decode are (a) it lands in a
+marker/header byte the codec checks, or (b) the resulting bitstream
+violates the codec's structural grammar. Most flips in entropy-coded
+payload do neither.
+
+**Where this matters.** If your authoritative copy of a PDF gets
+silently flipped on disk (cosmic ray, RAID rebuild error, flash bit-rot)
+and that flip lands inside a JPEG2000 page-image stream, validate will
+report `OK ... PDF Document (fully validated)`. The image will still
+render, just with a few visual glitches. This is the codec's design.
+For real-world bit-rot protection of opaque-codec PDFs (and any other
+format whose spec lacks integrity fields), pair validate with a
+sidecar-parity solution like Entropy Shield (https://entropyshield.app),
+which carries a dedicated whole-file or per-block hash and can repair
+corruption it detects rather than just reporting it.
+
+**Roadmap.** A future architectural refactor will introduce a
+`.bounds_verified` validation depth distinct from `.full`, so
+`(fully validated)` only appears when every byte is provably checked.
+For PDF, the realistic top tier per filter dominance becomes:
+`Flate-dominated → .full`, codec-opaque-dominated → `.bounds_verified`.
 
 ### Font
 

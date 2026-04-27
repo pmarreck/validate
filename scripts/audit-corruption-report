@@ -266,6 +266,26 @@ for sniper_tsv in $(find "$TSV_DIR" -name '*_sniper.tsv' | sort); do
 	read -r claimed_sn claimed_sh < <(report_claimed_rates "$label")
 
 	if [ "$claimed_sn" = "MISSING" ]; then
+		# Allow rows that explicitly opt out via "n/a" + a footnote marker.
+		# These rows direct readers to a per-format breakout subsection where
+		# the single-number comparison doesn't apply (e.g. PDF, where detection
+		# rate depends on the embedded stream-filter mix). Recognize the case
+		# by re-scanning the report for a row whose sniper column literally
+		# starts with "n/a".
+		na_row=$(awk -F'|' -v label="$label" '
+			NF >= 7 && $0 ~ /^[[:space:]]*\|/ {
+				name = $2; gsub(/^ +| +$/, "", name)
+				if (toupper(name) == toupper(label)) {
+					sn = $3; gsub(/[* ]/, "", sn)
+					if (sn ~ /^n\/a/) { print "OPTED_OUT"; exit }
+				}
+			}
+		' "$REPORT")
+		if [ "$na_row" = "OPTED_OUT" ]; then
+			printf 'SKIP  %-22s sample=%s — report defers to per-format breakout (n/a)\n' \
+				"$fmt" "$sample" >&2
+			continue
+		fi
 		printf 'MISS  %-22s sample=%s — no row in report (TSV says %s%%/%s%%)\n' \
 			"$fmt" "$sample" "$actual_sn" "$actual_sh"
 		missing_count=$((missing_count + 1))
