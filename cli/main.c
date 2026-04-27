@@ -1870,6 +1870,7 @@ static void print_usage(const char* program) {
 	printf("    --early-stop-radius F  Adaptive early-stop threshold (95%% Wilson CI half-width; default 0.025 = +/-2.5%%)\n");
 	printf("                       Lower = tighter CI = more rounds; e.g., 0.001 ~ +/-0.1%%. Range: (0, 0.5].\n");
 	printf("    --no-early-stop    Disable adaptive early-stop; run all N rounds requested\n");
+	printf("    --no-progress      Suppress live --test-coverage progress (auto-off when stderr is not a TTY)\n");
 #endif
 	printf("\n");
 	printf("ENVIRONMENT:\n");
@@ -1916,10 +1917,80 @@ static void print_usage(const char* program) {
  * are hardcoded here. Long forms (--anything) are resolved through the
  * i18n alias system via validate_match_arg().
  */
+/* --test-coverage live progress callback context.
+ * Stays empty (no progress rendered) for multi-thread runs since the FFI
+ * docs say the callback is ignored when jobs > 1 — we set it to NULL there. */
+typedef struct {
+	const char* basename;     /* short label for the running file */
+	long long start_ns;       /* monotonic ns when the run started */
+	long long last_update_ns; /* monotonic ns of the last stderr write */
+	uint32_t terminal_width;  /* used to clear the line on completion */
+} coverage_progress_ctx_t;
+
+static long long now_monotonic_ns(void) {
+#ifdef _WIN32
+	LARGE_INTEGER freq, ctr;
+	if (!QueryPerformanceFrequency(&freq) || !QueryPerformanceCounter(&ctr)) return 0;
+	return (long long)((ctr.QuadPart * 1000000000LL) / freq.QuadPart);
+#else
+	struct timespec ts;
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+	return (long long)ts.tv_sec * 1000000000LL + (long long)ts.tv_nsec;
+#endif
+}
+
+static void coverage_progress_cb(void* ctx, uint32_t round, uint32_t total, uint32_t detected) {
+	if (!ctx) return;
+	coverage_progress_ctx_t* c = (coverage_progress_ctx_t*)ctx;
+	const long long now = now_monotonic_ns();
+	/* Throttle to ~10 Hz so the terminal isn't flooded on fast formats. */
+	if (round != total && (now - c->last_update_ns) < 100000000LL) return;
+	c->last_update_ns = now;
+	const double elapsed_s = (double)(now - c->start_ns) / 1e9;
+	const double pct = total > 0 ? 100.0 * (double)round / (double)total : 0.0;
+	const double det_pct = round > 0 ? 100.0 * (double)detected / (double)round : 0.0;
+	double eta_s = 0.0;
+	if (round > 0 && round < total) {
+		eta_s = elapsed_s * ((double)(total - round) / (double)round);
+	}
+	/* Single overwriting line; cap basename length so wider terminals don't
+	 * smear stale text on the right when the line shortens. */
+	int twidth = (int)c->terminal_width;
+	if (twidth < 60) twidth = 60;
+	if (twidth > 400) twidth = 400;
+	/* Reserve ~55 chars for the fixed text parts: "  Round NNNN/NNNN (NNN%) on  | NNN detected (NNN%) | NNN.Ns ETA NNN.Ns" — empirically ~52, give a small buffer. */
+	int max_name = twidth - 55;
+	if (max_name < 16) max_name = 16;
+	fprintf(stderr, "\r\x1b[2K  Round %u/%u (%.0f%%) on %.*s | %u detected (%.0f%%) | %.1fs%s%s",
+		round, total, pct,
+		max_name, c->basename ? c->basename : "",
+		detected, det_pct,
+		elapsed_s,
+		eta_s > 0.0 ? " ETA " : "",
+		"");
+	if (eta_s > 0.0) fprintf(stderr, "%.1fs", eta_s);
+	fflush(stderr);
+}
+
+/* Strip directory components for nicer progress output. Caller does not own. */
+static const char* basename_view(const char* path) {
+	if (!path) return "";
+	const char* slash = strrchr(path, '/');
+#ifdef _WIN32
+	const char* bksl = strrchr(path, '\\');
+	if (bksl && (!slash || bksl > slash)) slash = bksl;
+#endif
+	return slash ? slash + 1 : path;
+}
+
 static uint8_t parse_cli_arg(const char* arg) {
 	/* Short forms (hardcoded, not localized) */
 	if (strcmp(arg, "-h") == 0) return VALIDATE_ARG_HELP;
 	if (strcmp(arg, "-j") == 0) return VALIDATE_ARG_JOBS;
+	/* --no-progress is intentionally not localized (yet) — handled here
+	 * before falling through to validate_match_arg so the i18n alias table
+	 * doesn't need a row in every locale for this UX-only flag. */
+	if (strcmp(arg, "--no-progress") == 0) return VALIDATE_ARG_NO_PROGRESS;
 
 #ifdef _WIN32
 	/* Windows prefix forms */
@@ -2014,6 +2085,7 @@ int main(int argc, char* argv[]) {
 	uint32_t test_coverage_jobs = 0; /* 0 = auto, 1 = single-thread */
 	double test_coverage_early_stop_radius = 0.0; /* 0.0 = use library default (0.025) */
 	int test_coverage_no_early_stop = 0;
+	int test_coverage_no_progress = 0; /* --no-progress: suppress live coverage progress */
 	int shuffle = 0;
 	size_t stress_iterations = 0;
 	int no_frontload = 0;
@@ -2274,6 +2346,10 @@ int main(int argc, char* argv[]) {
 				test_coverage_no_early_stop = 1;
 				continue;
 			}
+			case VALIDATE_ARG_NO_PROGRESS: {
+				test_coverage_no_progress = 1;
+				continue;
+			}
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);
@@ -2371,14 +2447,48 @@ int main(int argc, char* argv[]) {
 			double effective_radius = test_coverage_no_early_stop
 				? -1.0
 				: test_coverage_early_stop_radius;
+			/* Multi-file header: [i/N] basename — keeps the per-file label
+			 * visible across a long batch run. Single-file mode skips this
+			 * since the next line already names the path. */
+			if (path_count > 1) {
+				fprintf(stderr, "%s[%zu/%zu]%s %s\n",
+					COLOR_CYAN, i + 1, path_count, COLOR_RESET, paths[i]);
+			}
 			fprintf(stderr, "%sTest coverage: %s (rounds=%u, seed=%llu, modes=0x%x, shotgun=%u, heatmap=%u, jobs=%u, early_stop=%s)...%s\n",
 				COLOR_CYAN, paths[i], test_coverage_rounds, (unsigned long long)seed,
 				test_coverage_modes_bitmask, test_coverage_shotgun_bytes, heatmap_width, test_coverage_jobs,
 				test_coverage_no_early_stop ? "off" : (test_coverage_early_stop_radius > 0.0 ? "custom" : "default(0.025)"),
 				COLOR_RESET);
+
+			/* Wire the live per-round progress callback only when:
+			 *   - --no-progress was NOT passed
+			 *   - stderr is a TTY (avoids \r noise in pipes/CI logs)
+			 *   - exactly one input path (per Peter: many-file runs do per-file
+			 *     headers only, not per-round)
+			 *   - jobs == 1 (the FFI docs say the callback is ignored under
+			 *     multi-thread; surfacing nothing is honest). */
+			int progress_eligible = !test_coverage_no_progress
+				&& isatty(STDERR_FILENO)
+				&& path_count == 1
+				&& test_coverage_jobs == 1;
+			coverage_progress_ctx_t prog_ctx = {0};
+			void* prog_ctx_ptr = NULL;
+			validate_coverage_progress_t prog_cb_ptr = NULL;
+			if (progress_eligible) {
+				int tw = 80, th = 24;
+				get_terminal_size(&tw, &th);
+				prog_ctx.basename = basename_view(paths[i]);
+				prog_ctx.start_ns = now_monotonic_ns();
+				prog_ctx.last_update_ns = 0;
+				prog_ctx.terminal_width = (uint32_t)tw;
+				prog_ctx_ptr = &prog_ctx;
+				prog_cb_ptr = coverage_progress_cb;
+			}
 			char *result = validate_test_coverage(paths[i], test_coverage_rounds, seed,
 				test_coverage_shotgun_bytes, test_coverage_modes_bitmask, heatmap_width,
-				test_coverage_jobs, effective_radius, NULL, NULL);
+				test_coverage_jobs, effective_radius, prog_cb_ptr, prog_ctx_ptr);
+			/* Clear the in-place progress line so the result block starts fresh. */
+			if (progress_eligible) fprintf(stderr, "\r\x1b[2K");
 			if (!result) {
 				fprintf(stderr, "%sFAILED%s: could not run coverage on %s (baseline validation failed?)\n", COLOR_RED, COLOR_RESET, paths[i]);
 				overall_exit = 1;
