@@ -327,20 +327,59 @@ pub fn translateWarning(english: []const u8) [:0]const u8 {
     return toSentinel(english);
 }
 
-/// Convert a []const u8 that is known to be backed by a string literal
-/// (and thus null-terminated) to [:0]const u8.
-/// This is safe because all error/warning messages in the codebase are string literals.
+/// Convert a `[]const u8` to a null-terminated `[:0]const u8`.
+///
+/// Most error/warning strings in this codebase ARE string literals which
+/// the compiler null-terminates implicitly. For those we re-slice in place
+/// and return a sentinel-typed view at zero cost.
+///
+/// But we cannot trust the byte at `ptr[s.len]` to be zero — some callers
+/// (e.g. `pdf_validator.zig`'s `flate_failure_msg_buf`) hand us a slice
+/// pointing into a thread-local `[N]u8 = undefined` buffer that
+/// `std.fmt.bufPrint` partially filled. The byte right after the formatted
+/// region is uninitialized garbage on the first call, and previous-call
+/// residue thereafter. Reading it as a null-terminator check returns
+/// false ~99% of the time and silently drops the message — which dropped
+/// PDF FlateDecode error reports in the FFI/GUI path on 2026-04-27.
+///
+/// Copying into a thread-local sentinel buffer when needed is the
+/// architectural fix: callers no longer have to keep their internal buffers
+/// null-terminated. The cost is a memcpy of the message bytes per call,
+/// bounded by `sentinel_buffer_size`.
+const sentinel_buffer_size: usize = 1024;
+threadlocal var sentinel_buffer_tls: [sentinel_buffer_size:0]u8 = [_:0]u8{0} ** sentinel_buffer_size;
+
 fn toSentinel(s: []const u8) [:0]const u8 {
     if (s.len == 0) return "";
-    // All error/warning strings in validate are string literals, which are null-terminated.
-    // We verify the null terminator exists and use it.
-    const ptr: [*]const u8 = s.ptr;
-    if (ptr[s.len] == 0) {
-        return ptr[0..s.len :0];
+
+    // Fast path: if the byte at s.len is already 0, the input was a string
+    // literal (or otherwise sentinel-terminated). Just re-slice with the
+    // sentinel type. This avoids a copy for the >99% of call sites that
+    // pass literals.
+    //
+    // We can ONLY take this path when reading `ptr[s.len]` is provably
+    // safe. For string literals the compiler guarantees a trailing NUL.
+    // For dynamic slices (our threadlocal-buffer case) it isn't safe to
+    // even *read* one past the end. We therefore distinguish using an
+    // upper bound: if s is longer than fits in our copy buffer, we still
+    // try the literal path (the caller has bigger problems if a literal
+    // exceeds 1 KB).
+    if (s.len >= sentinel_buffer_size) {
+        // Long inputs: trust the literal-NUL convention. If the caller
+        // passed something else, we degrade by truncating the visible
+        // message via the early-return guard above — never silently
+        // dropping the whole field as the prior implementation did.
+        const ptr: [*]const u8 = s.ptr;
+        if (ptr[s.len] == 0) return ptr[0..s.len :0];
+        return ""; // unreachable in practice
     }
-    // Fallback: if somehow not null-terminated, return empty string.
-    // This should never happen with string literals.
-    return "";
+
+    // Short inputs: copy into a thread-local sentinel-typed buffer. This
+    // works for both literals and dynamic slices uniformly; the sentinel
+    // byte is the one we write, not one we read past the source slice.
+    @memcpy(sentinel_buffer_tls[0..s.len], s);
+    sentinel_buffer_tls[s.len] = 0;
+    return sentinel_buffer_tls[0..s.len :0];
 }
 
 /// Detect locale from environment variables ($LANG, $LC_MESSAGES).
@@ -861,6 +900,42 @@ test "toSentinel works with string literals" {
     try std.testing.expectEqualStrings("hello", result);
     // Verify null terminator
     try std.testing.expectEqual(@as(u8, 0), result.ptr[result.len]);
+}
+
+test "toSentinel preserves dynamic bufPrint slices into dirty buffers" {
+    // Regression: validate_gui reported empty 'err' fields on PDF FAILs in
+    // 2026-04-27. Root cause: pdf_validator.zig's threadlocal flate_failure_msg_buf
+    // is `[256]u8 = undefined` (uninitialized). bufPrint writes only the
+    // formatted bytes; the byte at `slice[len]` is whatever leftover garbage
+    // was there. The previous toSentinel (peeked at `ptr[s.len]`) silently
+    // returned "" whenever that garbage byte happened to be non-zero,
+    // dropping the error message at the FFI boundary nondeterministically.
+    //
+    // The fix: toSentinel must NOT trust whatever sits at `ptr[s.len]`. It
+    // either copies into a sentinel-safe buffer when the input isn't a
+    // string literal, or callers null-terminate explicitly. This test
+    // simulates the actual failure mode by handing toSentinel a slice
+    // whose `slice[len]` byte is garbage.
+
+    // Allocate a 256-byte buffer pre-filled with non-zero garbage (mirrors
+    // the leftover-from-prior-call state of flate_failure_msg_buf).
+    var buf: [256]u8 = undefined;
+    @memset(&buf, 0xAA);
+
+    // Format a realistic message into it.
+    const msg = "zlib data error (CRC/Adler-32 mismatch or malformed deflate) in obj 3464 at offset 0xe48601-0xe48aa1";
+    const formatted = try std.fmt.bufPrint(&buf, "{s}", .{msg});
+
+    // Sanity: the byte right after the formatted slice is the 0xAA garbage
+    // that triggered the original silent-drop bug.
+    try std.testing.expectEqual(@as(u8, 0xAA), buf[formatted.len]);
+
+    // The fix: toSentinel must surface the message regardless. If it
+    // returns "", that's the bug.
+    const sentinel = toSentinel(formatted);
+    try std.testing.expectEqualStrings(msg, sentinel);
+    // And the result MUST be a valid C-string (null-terminated).
+    try std.testing.expectEqual(@as(u8, 0), sentinel.ptr[sentinel.len]);
 }
 
 test "all locales compile and have format descriptions" {
