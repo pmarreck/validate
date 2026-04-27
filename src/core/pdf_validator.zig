@@ -42,6 +42,14 @@ const video_validator = @import("video_validator.zig");
 
 const testing = std.testing;
 
+/// Thread-local buffer for formatting the FlateDecode-failure error message
+/// so it can carry runtime data (object number, byte offsets) past the
+/// validator boundary without an allocation that would need ownership rules.
+/// 256 bytes is well above the worst-case "<reason> in obj NNN at offset
+/// 0xHHHHHHHH-0xHHHHHHHH" string. Each thread gets its own copy; one validator
+/// call writes then the caller reads, so single-thread reuse is safe.
+threadlocal var flate_failure_msg_buf: [256]u8 = undefined;
+
 // ============ PDF Image Tolerance ============
 
 pub const PdfImageTolerance = struct {
@@ -370,13 +378,21 @@ fn applyFlateStreamCheck(
 	const res = pdf_stream_validator.validatePdfFlateStreams(allocator, pdf_data, &excluded);
 	if (res.valid) return .{};
 
-	// Assemble a short warning string. The `reason` pointer is static-lifetime
-	// (see pdf_stream_validator.zlibErrorReason), so we can reference it
-	// directly without copying.
-	const reason_str: []const u8 = if (res.first_failure) |f|
-		f.reason
-	else
-		"FlateDecode stream inflation failed";
+	// Format a richer message that includes object number and byte-offset
+	// range when we have it. Static reason text ("zlib data error...") on its
+	// own forces users to re-extract the failing stream by hand to debug —
+	// peter spot-checks a library and wants the info inline. The buffer is
+	// thread-local so concurrent validations don't trample each other; each
+	// call writes-then-the-caller-reads before the next call fires on the
+	// same thread.
+	const reason_str: []const u8 = if (res.first_failure) |f| blk: {
+		const formatted = std.fmt.bufPrint(
+			&flate_failure_msg_buf,
+			"{s} in obj {d} at offset 0x{x}-0x{x}",
+			.{ f.reason, f.object_num, f.stream_start, f.stream_end },
+		) catch f.reason; // fall back to static string on bufPrint failure
+		break :blk formatted;
+	} else "FlateDecode stream inflation failed";
 
 	if (pdfTolerantMode()) {
 		return .{
