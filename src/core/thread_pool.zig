@@ -360,8 +360,21 @@ pub fn getOuterJobCount() usize {
 }
 
 /// Get the recommended job count for inner/nested parallelism.
-/// Uses 1/3 of CPUs (half of outer), designed so outer + inner ≈ total CPUs.
+///
+/// Resolution order:
+///   1. `VALIDATE_INNER_JOBS` env var (when set to a positive integer) wins —
+///      lets a top-level CLI flag (e.g. `--coverage-jobs 1`) cap the budget
+///      that nested decoders (PDF image fan-out, libwebp, etc.) consume so
+///      `outer × inner` doesn't explode past total CPU count.
+///   2. Otherwise: 1/3 of CPUs (min 2), designed so outer + inner ≈ total CPUs.
 pub fn getInnerJobCount() usize {
+    if (comptime @import("builtin").os.tag != .windows) {
+        if (std.posix.getenv("VALIDATE_INNER_JOBS")) |s| {
+            if (std.fmt.parseInt(usize, s, 10)) |n| {
+                if (n > 0) return n;
+            } else |_| {}
+        }
+    }
     const cpus = getCpuCount();
     // 1/3 of CPUs, minimum 2
     return @max(2, cpus / 3);

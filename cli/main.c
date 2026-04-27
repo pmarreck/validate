@@ -2421,6 +2421,36 @@ int main(int argc, char* argv[]) {
 		int overall_exit = 0;
 		const char *modes[] = { "sniper", "shotgun", "header", "tail", "zeroed", "xor", "sparse_noise", "boundary" };
 		const size_t modes_count = sizeof(modes) / sizeof(modes[0]);
+		/* Carry the outer thread budget down into nested validators (PDF image
+		 * fan-out, libwebp, etc.) so total parallelism stays close to CPU
+		 * count. The default inner sizing is cpus/3 — fine for a single-file
+		 * validate, pathological under coverage where the OUTER also runs a
+		 * pool of `jobs` workers (so total = jobs × cpus/3, often >> cpus).
+		 *
+		 * Model: total ≈ jobs × inner ≤ cpus, so inner = max(1, cpus / jobs).
+		 *
+		 * --coverage-jobs 1 (explicit) means "actually single-threaded" per
+		 * Peter's request — predictable but slower wall on image-heavy files.
+		 * --coverage-jobs 0 (auto, the FFI default) leaves the inner default
+		 * intact, so a single outer worker keeps fast inner parallelism.
+		 *
+		 * Future improvement: when jobs == 0, the FFI itself could pass the
+		 * resolved auto-count back so we'd compute inner here too. */
+		if (test_coverage_jobs == 1) {
+			setenv("VALIDATE_INNER_JOBS", "1", 1);
+		} else if (test_coverage_jobs > 1) {
+#if defined(_SC_NPROCESSORS_ONLN)
+			long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
+#else
+			long ncpu = 0;
+#endif
+			if (ncpu < 1) ncpu = (long)test_coverage_jobs * 2; /* fallback */
+			uint32_t inner = (uint32_t)((unsigned long)ncpu / test_coverage_jobs);
+			if (inner < 1) inner = 1;
+			char inner_buf[16];
+			snprintf(inner_buf, sizeof(inner_buf), "%u", inner);
+			setenv("VALIDATE_INNER_JOBS", inner_buf, 1);
+		}
 		for (size_t i = 0; i < path_count; i++) {
 			uint64_t seed = (uint64_t)time(NULL);
 			const char *seed_env = getenv("VALIDATE_SEED");
