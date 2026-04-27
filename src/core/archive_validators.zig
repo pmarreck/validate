@@ -370,8 +370,25 @@ pub const RAR4_HEAD_ENDARC: u8 = 0x7B; // End of archive
 /// RAR4 header flags
 pub const RAR4_LONG_BLOCK: u16 = 0x8000; // Block has ADD_SIZE field
 
-/// RAR CRC16 for RAR4 header validation (CCITT variant)
-pub const rarCrc16 = codec_utils.crc16Ccitt;
+/// RAR4 HEAD_CRC: lower 16 bits of CRC-32 (ISO-HDLC, same poly as
+/// zlib/PNG/Ethernet) computed over (HEAD_TYPE..end-of-header).
+///
+/// Confirmed against three real-world RAR4 archives (two .cbr comic books
+/// plus a .rar download), all of which stored HEAD_CRC=0x90CF for the same
+/// 11-byte empty-no-flags main header `73 00 00 0D 00 00 00 00 00 00 00`.
+/// CRC-32(those bytes) = 0x974290CF → low-16 = 0x90CF (match). The previous
+/// implementation used CRC-16/CCITT (poly 0x1021, MSB-first) which produced
+/// a different value and falsely rejected every legitimate RAR4 archive
+/// whose main header had that shape — discovered 2026-04-27.
+///
+/// rarz's `integrity.crc16` uses CRC-16/ARC, which also doesn't match —
+/// so that helper is wrong for RAR4 headers despite its docstring. We use
+/// `std.hash.crc.Crc32IsoHdlc` directly here so the validator's polynomial
+/// choice is locally auditable.
+pub fn rarCrc16(data: []const u8) u16 {
+	const full = std.hash.crc.Crc32IsoHdlc.hash(data);
+	return @truncate(full);
+}
 
 /// Validate RAR file structure with header CRC verification.
 pub fn validateRar(file: *FileSource) ValidationResult {
@@ -3077,6 +3094,38 @@ test "validateRar: valid RAR ground truth" {
     var file = try openGroundTruth("ground_truth_examples/rar/sample.rar");
     defer file.close();
     const result = validateRar(&file);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.rar, result.format);
+}
+
+test "validateRar4Headers: empty no-flags main header has valid HEAD_CRC" {
+    // Regression: Peter spot-checked his ~/Documents/Books library and found
+    // multiple legitimate .cbr (RAR4) archives reporting 'RAR4 header CRC
+    // mismatch'. All of them share the same first 20 bytes:
+    //
+    //   52 61 72 21 1A 07 00              <- 7-byte RAR4 marker block
+    //   CF 90 73 00 00 0D 00 00 00 00 00 00 00  <- 13-byte main archive hdr
+    //
+    // Real-world RAR producers and the unrar reference compute HEAD_CRC as
+    // the lower 16 bits of CRC-32 (ISO-HDLC poly, same as zlib/PNG/Ethernet)
+    // over (HEAD_TYPE..end-of-header) = 11 bytes. The validator was using
+    // CRC-16/CCITT (poly 0x1021, MSB-first), which produces a different
+    // value than the stored 0x90CF — every empty-no-flags-13-byte main
+    // archive header was a false positive. This test fixes the bytes inline
+    // so the polynomial choice is the only variable; must pass on a
+    // corrected validator, fail on the buggy one.
+    const bytes = [_]u8{
+        // Marker block (RAR4 signature)
+        0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x00,
+        // Main archive header: HEAD_CRC=0x90CF (lower-16 of CRC32 of the
+        // 11 bytes that follow), TYPE=0x73 (main), FLAGS=0x0000,
+        // SIZE=0x000D (13), RESERVED1=0x0000, RESERVED2=0x00000000.
+        0xCF, 0x90, 0x73, 0x00, 0x00, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+
+    var src = file_source.FileSource.fromBuffer(&bytes);
+    defer src.close();
+    const result = validateRar(&src);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.rar, result.format);
 }
