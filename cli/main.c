@@ -77,7 +77,9 @@ static void compute_self_hash(const char* argv0) {
 	uint32_t size = sizeof(exe_path);
 	if (_NSGetExecutablePath(exe_path, &size) != 0) strncpy(exe_path, argv0, sizeof(exe_path)-1);
 #elif defined(_WIN32)
-	GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
+	if (GetModuleFileNameA(NULL, exe_path, sizeof(exe_path)) == 0) {
+		strncpy(exe_path, argv0, sizeof(exe_path)-1);
+	}
 #else
 	strncpy(exe_path, argv0, sizeof(exe_path)-1);
 #endif
@@ -201,7 +203,9 @@ static void verify_self_integrity(const char* argv0) {
 	uint32_t size = sizeof(exe_path);
 	if (_NSGetExecutablePath(exe_path, &size) != 0) strncpy(exe_path, argv0, sizeof(exe_path)-1);
 #elif defined(_WIN32)
-	GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
+	if (GetModuleFileNameA(NULL, exe_path, sizeof(exe_path)) == 0) {
+		strncpy(exe_path, argv0, sizeof(exe_path)-1);
+	}
 #else
 	strncpy(exe_path, argv0, sizeof(exe_path)-1);
 #endif
@@ -1917,6 +1921,17 @@ static void print_usage(const char* program) {
  * are hardcoded here. Long forms (--anything) are resolved through the
  * i18n alias system via validate_match_arg().
  */
+/* Cross-platform setenv: POSIX has setenv(name, value, overwrite); Windows
+ * mingw has _putenv_s(name, value) which is always overwrite-true. We don't
+ * need overwrite=0 anywhere in this CLI, so the wrapper drops that arg. */
+static int xsetenv(const char* name, const char* value) {
+#ifdef _WIN32
+	return _putenv_s(name, value);
+#else
+	return setenv(name, value, 1);
+#endif
+}
+
 /* --test-coverage live progress callback context.
  * Stays empty (no progress rendered) for multi-thread runs since the FFI
  * docs say the callback is ignored when jobs > 1 — we set it to NULL there. */
@@ -2437,7 +2452,7 @@ int main(int argc, char* argv[]) {
 		 * Future improvement: when jobs == 0, the FFI itself could pass the
 		 * resolved auto-count back so we'd compute inner here too. */
 		if (test_coverage_jobs == 1) {
-			setenv("VALIDATE_INNER_JOBS", "1", 1);
+			xsetenv("VALIDATE_INNER_JOBS", "1");
 		} else if (test_coverage_jobs > 1) {
 #if defined(_SC_NPROCESSORS_ONLN)
 			long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
@@ -2449,7 +2464,7 @@ int main(int argc, char* argv[]) {
 			if (inner < 1) inner = 1;
 			char inner_buf[16];
 			snprintf(inner_buf, sizeof(inner_buf), "%u", inner);
-			setenv("VALIDATE_INNER_JOBS", inner_buf, 1);
+			xsetenv("VALIDATE_INNER_JOBS", inner_buf);
 		}
 		for (size_t i = 0; i < path_count; i++) {
 			uint64_t seed = (uint64_t)time(NULL);
