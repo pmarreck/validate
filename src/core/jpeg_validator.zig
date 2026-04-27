@@ -72,6 +72,20 @@ fn zigOutputMessage(_: c.j_common_ptr) callconv(std.builtin.CallingConvention.c)
     // Suppress output - we capture errors via error_exit
 }
 
+/// Escalate libjpeg warnings (msg_level < 0) to fatal so corruption gets
+/// reported. Default libjpeg behavior is to print warnings via output_message
+/// and bump cinfo.err.num_warnings, then keep decoding — so things like
+/// "Premature end of data segment", "Corrupt JPEG data: bad Huffman code",
+/// or "Extraneous bytes before marker" silently produce visually-broken-but-
+/// "successful" decodes. Calling error_exit triggers our setjmp longjmp out.
+/// Trace messages (msg_level >= 0) are dropped without forwarding to
+/// output_message — we don't want libjpeg's stdio prints either way.
+fn zigEmitMessage(cinfo: c.j_common_ptr, msg_level: c_int) callconv(std.builtin.CallingConvention.c) void {
+    if (msg_level < 0) {
+        if (cinfo.*.err.*.error_exit) |fatal| fatal(cinfo);
+    }
+}
+
 fn validateJpegStructurally(data: []const u8) JpegValidationResult {
     if (data.len < 4) {
         return JpegValidationResult.invalid("File too small");
@@ -231,6 +245,7 @@ pub fn validateJpegDeepFromBuffer(data: []const u8) JpegValidationResult {
     cinfo.err = c.jpeg_std_error(&err_mgr.pub_fields);
     err_mgr.pub_fields.error_exit = zigErrorExit;
     err_mgr.pub_fields.output_message = zigOutputMessage;
+    err_mgr.pub_fields.emit_message = zigEmitMessage;
     @memset(&err_mgr.error_message, 0);
 
     // Set up setjmp for error handling - libjpeg's error_exit will longjmp here
