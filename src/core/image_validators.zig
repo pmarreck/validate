@@ -5320,14 +5320,36 @@ pub fn validatePam(file: *FileSource) ValidationResult {
         const channels: u64 = if (pnm_type == '6') 3 else 1;
         const bytes_per_sample: u64 = if (maxval > 255) 2 else 1;
         // P4 (bitmap): ceil(width/8) bytes per row
-        const expected_data: u64 = if (pnm_type == '4')
-            ((width + 7) / 8) * height
+        const bytes_per_row: u64 = if (pnm_type == '4')
+            (width + 7) / 8
         else
-            width * height * channels * bytes_per_sample;
+            width * channels * bytes_per_sample;
+        const expected_data: u64 = bytes_per_row * height;
 
         const actual_size = file.getEndPos() catch return ValidationResult.structuralOnly(.pam);
 
         if (actual_size < header_size + expected_data) {
+            // Tolerate a TINY tail discrepancy that lives wholly inside the
+            // last row — typically encoder boundary slips (forgot to flush
+            // the final byte, dropped a trailing newline, off-by-one byte
+            // on the bit-padding boundary). Real readers (Preview.app,
+            // qlimage, ImageMagick) tolerate this and render the image
+            // minus the missing tail.
+            //
+            // Two AND-ed conditions to be a WARN candidate:
+            //   1. `missing ≤ 7 bytes` — bigger gaps are real data loss,
+            //      not encoder rounding. 7 bytes is the maximum a single
+            //      PBM byte's bit-pad-or-not edge case could differ.
+            //   2. `missing < bytes_per_row` — keeps narrow images strict.
+            //      An 8-pixel-wide PBM (bytes_per_row=1) with 1 byte
+            //      missing is a full row of data lost, not a boundary
+            //      slip; that's corruption.
+            const missing = (header_size + expected_data) - actual_size;
+            if (missing <= 7 and missing < bytes_per_row) {
+                var w_result = ValidationResult.okWithDepth(.pam, .structural);
+                w_result.warning_message = "PNM trailing bytes short of spec (likely encoder boundary slip; image still renders)";
+                return w_result;
+            }
             return ValidationResult.invalidCodeMsg(.pam, .exceeds_bounds, "PNM pixel data", "PNM file truncated: pixel data smaller than expected");
         }
         if (actual_size >= header_size + expected_data) {
@@ -6451,6 +6473,77 @@ test "validatePam rejects truncated P6" {
     tmp.dir.writeFile(.{ .sub_path = "trunc.ppm", .data = &data }) catch return;
     var pb: [std.fs.max_path_bytes]u8 = undefined;
     const rp = tmp.dir.realpath("trunc.ppm", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validatePam(&source);
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePam: P4 off-by-one in last row is WARN, not hard FAIL" {
+    // Regression: Peter's mandelbrot.pbm (P4, 5000x5000) was off by exactly
+    // 1 byte of pixel data at end-of-file (header_size + ceil(5000/8)*5000 -
+    // 1 == file_size). The image opens fine in Preview/quicklook because
+    // those readers tolerate end-of-file rounding errors from buggy
+    // encoders. The previous validator returned a hard FAIL with no signal
+    // that the rest of the bitmap was intact.
+    //
+    // Rule (refined per Peter 2026-04-27): WARN only when BOTH
+    //   missing ≤ 7 bytes  AND  missing < bytes_per_row
+    // The 7-byte cap keeps narrow encoder slips tolerated without
+    // tolerating "few rows of pixels just gone". The bytes_per_row cap
+    // keeps narrow images strict (a 1-byte-wide row missing 1 byte is a
+    // full row lost, that's corruption, not encoder slip).
+    //
+    // P4 50x8: bytes_per_row = ceil(50/8) = 7, expected = 56 bytes pixel
+    // data. We write only 55 bytes (missing 1, ≤ 7 ✓ AND < 7 ✓) → WARN.
+    const header = "P4\n50 8\n";
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data: [header.len + 55]u8 = undefined;
+    @memcpy(data[0..header.len], header);
+    @memset(data[header.len..], 0);
+    tmp.dir.writeFile(.{ .sub_path = "off-by-one.pbm", .data = &data }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("off-by-one.pbm", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validatePam(&source);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message != null);
+}
+
+test "validatePam: P4 narrow row missing 1 byte still FAILs (full row of data lost)" {
+    // The bytes_per_row guard. P4 8x8: bytes_per_row = 1, expected = 8.
+    // 1 byte missing = 1 full row's worth of data missing — that's real
+    // data loss even though the absolute count is small. Must NOT WARN.
+    const header = "P4\n8 8\n";
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data: [header.len + 7]u8 = undefined;
+    @memcpy(data[0..header.len], header);
+    @memset(data[header.len..], 0);
+    tmp.dir.writeFile(.{ .sub_path = "narrow-trunc.pbm", .data = &data }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("narrow-trunc.pbm", &pb) catch return;
+    var source = FileSource.open(rp) catch return;
+    defer source.close();
+    const result = validatePam(&source);
+    try testing.expect(!result.is_valid);
+}
+
+test "validatePam: P4 wide row missing 8 bytes still FAILs (>7 bytes lost)" {
+    // The 7-byte absolute cap. P4 80x8: bytes_per_row = 10, expected = 80.
+    // We write 72 bytes (missing 8). 8 < bytes_per_row (10) but 8 > 7 →
+    // not encoder slip; real data loss. Must FAIL.
+    const header = "P4\n80 8\n";
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data: [header.len + 72]u8 = undefined;
+    @memcpy(data[0..header.len], header);
+    @memset(data[header.len..], 0);
+    tmp.dir.writeFile(.{ .sub_path = "wide-trunc.pbm", .data = &data }) catch return;
+    var pb: [std.fs.max_path_bytes]u8 = undefined;
+    const rp = tmp.dir.realpath("wide-trunc.pbm", &pb) catch return;
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
