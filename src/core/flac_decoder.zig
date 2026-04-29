@@ -681,164 +681,333 @@ pub const FlacDecoder = struct {
     }
 };
 
+/// Decode mode for the shared FLAC streaming driver.
+/// - `verify_md5`: full PCM decode + STREAMINFO MD5 check (returns true on match)
+/// - `full_decode`: full PCM decode only — verifies per-frame CRC8/CRC16 but
+///   does NOT compare an MD5 (used when STREAMINFO MD5 is all-zero)
+const FlacDecodeMode = enum { verify_md5, full_decode };
+
+/// Sliding-window buffer size for streamed (non-mmap) FLAC decode.
+/// Sized to comfortably hold a single FLAC frame: max_frame_size in
+/// STREAMINFO is a u24, but real-world frames are <= 64 KB even for
+/// 24-bit/96 kHz. We start small and grow on demand. Capped at 1 MB to
+/// guard against pathological max_frame_size values from corrupt/forged
+/// STREAMINFO.
+const FLAC_STREAM_WINDOW_INITIAL: usize = 64 * 1024;
+const FLAC_STREAM_WINDOW_CAP: usize = 1024 * 1024;
+
 /// Decode a FLAC file and verify its MD5 hash.
 /// Returns true if the MD5 matches, false if it doesn't, or error.
 pub fn verifyFlacMd5(allocator: Allocator, source: *@import("file_source.zig").FileSource) FlacError!bool {
-    const file_size = source.getEndPos() catch return FlacError.Truncated;
-    if (file_size > 1024 * 1024 * 1024) return FlacError.Unsupported;
-
-    source.seekTo(0) catch return FlacError.Truncated;
-
-    var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |buf| allocator.free(buf);
-    const data: []const u8 = if (source.getMappedSlice()) |mapped|
-        mapped
-    else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch return FlacError.OutOfMemory;
-        heap_buf = buf;
-        const n = source.readAll(buf) catch return FlacError.Truncated;
-        break :blk buf[0..n];
-    };
-    const bytes_read = data.len;
-    if (bytes_read < 42) return FlacError.Truncated;
-
-    if (!std.mem.eql(u8, data[0..4], "fLaC")) return FlacError.InvalidSync;
-
-    var decoder = FlacDecoder.init(allocator);
-    defer decoder.deinit();
-    // Parse metadata blocks
-    var pos: usize = 4;
-    while (pos + 4 <= bytes_read) {
-        const is_last = (data[pos] & 0x80) != 0;
-        const block_type = data[pos] & 0x7F;
-        const block_size = (@as(u32, data[pos + 1]) << 16) |
-            (@as(u32, data[pos + 2]) << 8) | data[pos + 3];
-        pos += 4;
-
-        if (pos + block_size > bytes_read) return FlacError.Truncated;
-
-        if (block_type == 0) {
-            // STREAMINFO
-            try decoder.parseStreamInfo(data[pos..][0..block_size]);
-        }
-        // Skip other metadata blocks
-
-        pos += block_size;
-        if (is_last) break;
-    }
-
-    // Check if MD5 is all zeros (indicates no MD5 was stored)
-    if (decoder.stream_info) |info| {
-        var all_zeros = true;
-        for (info.md5) |b| {
-            if (b != 0) {
-                all_zeros = false;
-                break;
-            }
-        }
-        if (all_zeros) {
-            // No MD5 to verify
-            return true; // Consider it valid (can't verify)
-        }
-    } else {
-        return FlacError.Truncated;
-    }
-
-    // Decode all frames
-    while (pos + 2 <= bytes_read) {
-        // Look for frame sync
-        if (data[pos] == 0xFF and (data[pos + 1] & 0xFC) == 0xF8) {
-            // Found frame sync, try to decode
-            const frame_data = data[pos..bytes_read];
-            const consumed = decoder.decodeFrame(frame_data) catch |err| {
-                // If we hit end of file, that's OK
-                if (err == FlacError.Truncated and decoder.samples_decoded > 0) {
-                    break;
-                }
-                return err;
-            };
-            pos += consumed;
-        } else {
-            pos += 1;
-        }
-    }
-
-    return decoder.verifyMd5();
+	return runFlacStream(allocator, source, .verify_md5);
 }
-
 
 /// Decode all FLAC frames to verify integrity (without MD5 verification)
 /// This is useful when the FLAC file has no MD5 hash stored (all zeros)
 /// Returns true if all frames decoded successfully, false if corruption detected
 pub fn decodeFlacFull(allocator: Allocator, source: *@import("file_source.zig").FileSource) FlacError!bool {
-    const file_size = source.getEndPos() catch return FlacError.Truncated;
-    if (file_size > 1024 * 1024 * 1024) return FlacError.Unsupported;
+	return runFlacStream(allocator, source, .full_decode);
+}
 
-    source.seekTo(0) catch return FlacError.Truncated;
+/// Shared FLAC decoder driver. Picks the zero-copy fast path when the
+/// source is mmap'd or buffer-backed; otherwise streams the file through
+/// a small sliding-window buffer so peak memory is O(window + decoder
+/// scratch) rather than O(file_size).
+fn runFlacStream(
+	allocator: Allocator,
+	source: *@import("file_source.zig").FileSource,
+	comptime mode: FlacDecodeMode,
+) FlacError!bool {
+	const file_size = source.getEndPos() catch return FlacError.Truncated;
+	if (file_size > 1024 * 1024 * 1024) return FlacError.Unsupported;
+	if (file_size < 42) return FlacError.Truncated;
 
-    var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |buf| allocator.free(buf);
-    const data: []const u8 = if (source.getMappedSlice()) |mapped|
-        mapped
-    else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch return FlacError.OutOfMemory;
-        heap_buf = buf;
-        const n = source.readAll(buf) catch return FlacError.Truncated;
-        break :blk buf[0..n];
-    };
-    const bytes_read = data.len;
-    if (bytes_read < 42) return FlacError.Truncated;
+	source.seekTo(0) catch return FlacError.Truncated;
 
-    // Verify magic
-    if (!std.mem.eql(u8, data[0..4], "fLaC")) return FlacError.InvalidSync;
+	if (source.getMappedSlice()) |mapped| {
+		return runFlacOverSlice(allocator, mapped, mode);
+	}
 
-    var decoder = FlacDecoder.init(allocator);
-    defer decoder.deinit();
+	return runFlacStreaming(allocator, source, mode);
+}
 
-    // Parse metadata blocks
-    var pos: usize = 4;
-    while (pos + 4 <= bytes_read) {
-        const is_last = (data[pos] & 0x80) != 0;
-        const block_type = data[pos] & 0x7F;
-        const block_size = (@as(u32, data[pos + 1]) << 16) |
-            (@as(u32, data[pos + 2]) << 8) | data[pos + 3];
-        pos += 4;
+/// Zero-copy decode driver. Operates over a fully-resident slice (mmap or
+/// in-memory buffer). This is the original path; preserved for performance
+/// when no extra copy is required.
+fn runFlacOverSlice(
+	allocator: Allocator,
+	data: []const u8,
+	comptime mode: FlacDecodeMode,
+) FlacError!bool {
+	const bytes_read = data.len;
+	if (bytes_read < 42) return FlacError.Truncated;
+	if (!std.mem.eql(u8, data[0..4], "fLaC")) return FlacError.InvalidSync;
 
-        if (pos + block_size > bytes_read) return FlacError.Truncated;
+	var decoder = FlacDecoder.init(allocator);
+	defer decoder.deinit();
 
-        if (block_type == 0) {
-            // STREAMINFO
-            try decoder.parseStreamInfo(data[pos..][0..block_size]);
-        }
-        // Skip other metadata blocks
+	// Parse metadata blocks
+	var pos: usize = 4;
+	while (pos + 4 <= bytes_read) {
+		const is_last = (data[pos] & 0x80) != 0;
+		const block_type = data[pos] & 0x7F;
+		const block_size = (@as(u32, data[pos + 1]) << 16) |
+			(@as(u32, data[pos + 2]) << 8) | data[pos + 3];
+		pos += 4;
 
-        pos += block_size;
-        if (is_last) break;
-    }
+		if (pos + block_size > bytes_read) return FlacError.Truncated;
 
-    // Decode all frames (frame CRCs validated during decode)
-    var frames_decoded: usize = 0;
-    while (pos + 2 <= bytes_read) {
-        // Look for frame sync
-        if (data[pos] == 0xFF and (data[pos + 1] & 0xFC) == 0xF8) {
-            // Found frame sync, try to decode
-            const frame_data = data[pos..bytes_read];
-            const consumed = decoder.decodeFrame(frame_data) catch |err| {
-                // If we hit end of file after decoding some frames, that's OK
-                if (err == FlacError.Truncated and frames_decoded > 0) {
-                    break;
-                }
-                return err;
-            };
-            frames_decoded += 1;
-            pos += consumed;
-        } else {
-            pos += 1;
-        }
-    }
+		if (block_type == 0) {
+			try decoder.parseStreamInfo(data[pos..][0..block_size]);
+		}
 
-    // If we decoded at least one frame, consider it valid
-    return frames_decoded > 0;
+		pos += block_size;
+		if (is_last) break;
+	}
+
+	if (mode == .verify_md5) {
+		// Check if MD5 is all zeros (indicates no MD5 was stored)
+		if (decoder.stream_info) |info| {
+			var all_zeros = true;
+			for (info.md5) |b| {
+				if (b != 0) {
+					all_zeros = false;
+					break;
+				}
+			}
+			if (all_zeros) {
+				return true; // Consider it valid (can't verify)
+			}
+		} else {
+			return FlacError.Truncated;
+		}
+	}
+
+	// Decode all frames
+	var frames_decoded: usize = 0;
+	while (pos + 2 <= bytes_read) {
+		if (data[pos] == 0xFF and (data[pos + 1] & 0xFC) == 0xF8) {
+			const frame_data = data[pos..bytes_read];
+			const consumed = decoder.decodeFrame(frame_data) catch |err| {
+				if (err == FlacError.Truncated and frames_decoded > 0) {
+					break;
+				}
+				return err;
+			};
+			pos += consumed;
+			frames_decoded += 1;
+		} else {
+			pos += 1;
+		}
+	}
+
+	return switch (mode) {
+		.verify_md5 => decoder.verifyMd5(),
+		.full_decode => frames_decoded > 0,
+	};
+}
+
+/// Streaming decode driver. Maintains a sliding-window buffer over the
+/// source, refilling on demand. Peak heap usage = window + decoder scratch
+/// (subframe_buffer + output_buffer, both proportional to block_size, not
+/// file size).
+fn runFlacStreaming(
+	allocator: Allocator,
+	source: *@import("file_source.zig").FileSource,
+	comptime mode: FlacDecodeMode,
+) FlacError!bool {
+	// Sliding window: initial size, grown after STREAMINFO is parsed if
+	// max_frame_size demands it.
+	var window = allocator.alloc(u8, FLAC_STREAM_WINDOW_INITIAL) catch return FlacError.OutOfMemory;
+	defer allocator.free(window);
+
+	// Bytes currently valid in window (filled from source)
+	var valid: usize = 0;
+	// Stream byte offset of window[0] (used for absolute seek requests)
+	var stream_pos: u64 = 0;
+
+	// Initial fill
+	valid = source.readAll(window) catch return FlacError.Truncated;
+	if (valid < 42) return FlacError.Truncated;
+
+	if (!std.mem.eql(u8, window[0..4], "fLaC")) return FlacError.InvalidSync;
+
+	var decoder = FlacDecoder.init(allocator);
+	defer decoder.deinit();
+
+	// === Metadata phase ===
+	// Parse 4-byte block header, then either parse the body (STREAMINFO)
+	// or skip it (everything else). Refill from source as needed.
+	var pos: usize = 4;
+	var found_streaminfo = false;
+	while (true) {
+		// Ensure 4 bytes header are in window
+		if (valid - pos < 4) {
+			valid = try slideAndRefill(source, window, &pos, &stream_pos, valid);
+			if (valid - pos < 4) return FlacError.Truncated;
+		}
+
+		const is_last = (window[pos] & 0x80) != 0;
+		const block_type = window[pos] & 0x7F;
+		const block_size = (@as(u32, window[pos + 1]) << 16) |
+			(@as(u32, window[pos + 2]) << 8) | window[pos + 3];
+		pos += 4;
+
+		if (block_type == 0) {
+			// STREAMINFO body — must be 34 bytes; ensure it's all in window
+			if (block_size > window.len) {
+				// STREAMINFO is fixed at 34 bytes; reject anything wildly larger
+				return FlacError.Truncated;
+			}
+			if (valid - pos < block_size) {
+				valid = try slideAndRefill(source, window, &pos, &stream_pos, valid);
+				if (valid - pos < block_size) return FlacError.Truncated;
+			}
+			try decoder.parseStreamInfo(window[pos..][0..block_size]);
+			pos += block_size;
+			found_streaminfo = true;
+		} else {
+			// Skip this metadata block — seek over it
+			const remaining_in_window = valid - pos;
+			if (block_size <= remaining_in_window) {
+				pos += block_size;
+			} else {
+				// Skip what's in the window, then seek past the rest
+				const to_skip_in_source = block_size - remaining_in_window;
+				stream_pos += @as(u64, valid);
+				source.seekTo(stream_pos + to_skip_in_source) catch return FlacError.Truncated;
+				stream_pos += to_skip_in_source;
+				// Window invalidated — refill
+				pos = 0;
+				valid = source.readAll(window) catch return FlacError.Truncated;
+			}
+		}
+
+		if (is_last) break;
+	}
+
+	if (!found_streaminfo) return FlacError.Truncated;
+
+	// MD5-mode early-exit when STREAMINFO MD5 is all-zero
+	if (mode == .verify_md5) {
+		if (decoder.stream_info) |info| {
+			var all_zeros = true;
+			for (info.md5) |b| {
+				if (b != 0) {
+					all_zeros = false;
+					break;
+				}
+			}
+			if (all_zeros) return true;
+		} else {
+			return FlacError.Truncated;
+		}
+	}
+
+	// Grow window if STREAMINFO advertises larger max_frame_size.
+	// Cap at FLAC_STREAM_WINDOW_CAP to limit pathological allocations.
+	if (decoder.stream_info) |info| {
+		const want: usize = @as(usize, info.max_frame_size) + 64;
+		if (want > window.len and want <= FLAC_STREAM_WINDOW_CAP) {
+			// Slide unread bytes left to position 0 before resize
+			if (pos > 0) {
+				std.mem.copyForwards(u8, window[0..(valid - pos)], window[pos..valid]);
+				valid -= pos;
+				stream_pos += @as(u64, pos);
+				pos = 0;
+			}
+			const new_buf = allocator.realloc(window, want) catch return FlacError.OutOfMemory;
+			window = new_buf;
+		}
+	}
+
+	// === Frame decode phase ===
+	// Strategy: ensure the window contains at least one full max-sized frame
+	// (or end-of-stream) before each decodeFrame call. This avoids retrying
+	// decodeFrame on a partial slice — which would double-update the MD5
+	// hash because decodeFrame mutates self.md5 BEFORE verifying CRC-16.
+	var frames_decoded: usize = 0;
+	var eof_seen: bool = false;
+	const max_frame_size: usize = if (decoder.stream_info) |info|
+		(@as(usize, info.max_frame_size) + 64)
+	else
+		FLAC_STREAM_WINDOW_INITIAL;
+
+	while (true) {
+		// Ensure either: (a) at least max_frame_size bytes available, or
+		// (b) we've seen EOF (so the rest of the file is in the window).
+		const available = valid - pos;
+		if (!eof_seen and available < @max(max_frame_size, @as(usize, 64))) {
+			// Slide unconsumed bytes left, then refill. May grow window
+			// if the available headroom is below max_frame_size.
+			const remaining = available;
+			if (pos > 0 and remaining > 0) {
+				std.mem.copyForwards(u8, window[0..remaining], window[pos..valid]);
+			}
+			stream_pos += @as(u64, pos);
+			pos = 0;
+			valid = remaining;
+
+			// Grow window if necessary so we can fit a full frame
+			const desired: usize = @max(max_frame_size + remaining, FLAC_STREAM_WINDOW_INITIAL);
+			const target: usize = @min(desired, FLAC_STREAM_WINDOW_CAP);
+			if (window.len < target) {
+				const new_buf = allocator.realloc(window, target) catch return FlacError.OutOfMemory;
+				window = new_buf;
+			}
+
+			// Fill remainder
+			while (valid < window.len) {
+				const n = source.read(window[valid..]) catch return FlacError.Truncated;
+				if (n == 0) {
+					eof_seen = true;
+					break;
+				}
+				valid += n;
+			}
+		}
+
+		if (valid - pos < 2) break; // No more data
+
+		if (window[pos] == 0xFF and (window[pos + 1] & 0xFC) == 0xF8) {
+			const consumed = decoder.decodeFrame(window[pos..valid]) catch |err| {
+				// Trailing-truncation grace: if we've decoded at least one
+				// frame and the remainder is short, accept and stop.
+				if (err == FlacError.Truncated and frames_decoded > 0) break;
+				return err;
+			};
+			pos += consumed;
+			frames_decoded += 1;
+		} else {
+			pos += 1;
+		}
+	}
+
+	return switch (mode) {
+		.verify_md5 => decoder.verifyMd5(),
+		.full_decode => frames_decoded > 0,
+	};
+}
+
+/// Slide unconsumed window bytes to the start, then read more from source
+/// to fill the rest. Updates `pos`, `stream_pos`, and returns new `valid`.
+fn slideAndRefill(
+	source: *@import("file_source.zig").FileSource,
+	window: []u8,
+	pos: *usize,
+	stream_pos: *u64,
+	valid: usize,
+) FlacError!usize {
+	const remaining = valid - pos.*;
+	if (pos.* > 0 and remaining > 0) {
+		std.mem.copyForwards(u8, window[0..remaining], window[pos.*..valid]);
+	}
+	stream_pos.* += @as(u64, pos.*);
+	pos.* = 0;
+	const space = window.len - remaining;
+	if (space == 0) return remaining; // window already full
+	const n = source.read(window[remaining..]) catch return FlacError.Truncated;
+	return remaining + n;
 }
 
 // Tests
@@ -875,4 +1044,126 @@ test "BitReader UTF-8 multi byte" {
     const data = [_]u8{ 0xC2, 0xA9 };
     var reader = BitReader.init(&data);
     try std.testing.expectEqual(@as(u64, 0xA9), try reader.readUtf8());
+}
+
+/// Allocator wrapper that tracks the high-water-mark of currently-live bytes.
+/// Used by streaming tests to assert peak memory usage stays bounded — proves
+/// the validator does not slurp the whole input file into RAM.
+const PeakTrackingAllocator = struct {
+	backing: std.mem.Allocator,
+	live: usize = 0,
+	peak: usize = 0,
+
+	fn allocator(self: *PeakTrackingAllocator) std.mem.Allocator {
+		return .{
+			.ptr = self,
+			.vtable = &.{
+				.alloc = alloc,
+				.resize = resize,
+				.remap = remap,
+				.free = free,
+			},
+		};
+	}
+
+	fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+		const self: *PeakTrackingAllocator = @ptrCast(@alignCast(ctx));
+		const ptr = self.backing.rawAlloc(len, alignment, ret_addr) orelse return null;
+		self.live += len;
+		if (self.live > self.peak) self.peak = self.live;
+		return ptr;
+	}
+
+	fn resize(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+		const self: *PeakTrackingAllocator = @ptrCast(@alignCast(ctx));
+		const old_len = buf.len;
+		const ok = self.backing.rawResize(buf, alignment, new_len, ret_addr);
+		if (ok) {
+			if (new_len >= old_len) {
+				self.live += new_len - old_len;
+			} else {
+				self.live -= old_len - new_len;
+			}
+			if (self.live > self.peak) self.peak = self.live;
+		}
+		return ok;
+	}
+
+	fn remap(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+		const self: *PeakTrackingAllocator = @ptrCast(@alignCast(ctx));
+		const old_len = buf.len;
+		const ptr = self.backing.rawRemap(buf, alignment, new_len, ret_addr) orelse return null;
+		if (new_len >= old_len) {
+			self.live += new_len - old_len;
+		} else {
+			self.live -= old_len - new_len;
+		}
+		if (self.live > self.peak) self.peak = self.live;
+		return ptr;
+	}
+
+	fn free(ctx: *anyopaque, buf: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+		const self: *PeakTrackingAllocator = @ptrCast(@alignCast(ctx));
+		self.backing.rawFree(buf, alignment, ret_addr);
+		self.live -= buf.len;
+	}
+};
+
+test "verifyFlacMd5 streams instead of slurping (peak alloc < file size)" {
+	const FileSource = @import("file_source.zig").FileSource;
+
+	// Use the largest available ground-truth FLAC. file-backed (not mmap'd)
+	// forces verifyFlacMd5 down the read-from-source path — which is the path
+	// we expect to stream rather than slurp.
+	const path = "ground_truth_examples/flac/generated_pinknoise.flac";
+	const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
+	};
+	defer file.close();
+	const file_size = try file.getEndPos();
+	if (file_size < 64 * 1024) return error.SkipZigTest;
+
+	var source = FileSource.fromFile(file);
+
+	var tracker = PeakTrackingAllocator{ .backing = std.testing.allocator };
+	const ok = try verifyFlacMd5(tracker.allocator(), &source);
+	try std.testing.expect(ok);
+
+	// Streaming bound: peak resident must be a small fraction of file size.
+	// For ground-truth pinknoise (~405 KB) the slurp path allocates the full
+	// file plus decoder scratch (~32 KB). The streaming path needs only a
+	// per-frame window (max_frame_size, typically <= 32 KB) plus scratch.
+	// 256 KB is well below the 405 KB slurp size but well above the
+	// streaming working set.
+	const ceiling: usize = 256 * 1024;
+	if (tracker.peak >= ceiling) {
+		std.debug.print("\nFLAC verifyFlacMd5 peak alloc {d} bytes (file size {d}); ceiling {d}\n", .{ tracker.peak, file_size, ceiling });
+	}
+	try std.testing.expect(tracker.peak < ceiling);
+}
+
+test "decodeFlacFull streams instead of slurping (peak alloc < file size)" {
+	const FileSource = @import("file_source.zig").FileSource;
+
+	const path = "ground_truth_examples/flac/generated_pinknoise.flac";
+	const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
+	};
+	defer file.close();
+	const file_size = try file.getEndPos();
+	if (file_size < 64 * 1024) return error.SkipZigTest;
+
+	var source = FileSource.fromFile(file);
+
+	var tracker = PeakTrackingAllocator{ .backing = std.testing.allocator };
+	const ok = try decodeFlacFull(tracker.allocator(), &source);
+	try std.testing.expect(ok);
+
+	const ceiling: usize = 256 * 1024;
+	if (tracker.peak >= ceiling) {
+		std.debug.print("\nFLAC decodeFlacFull peak alloc {d} bytes (file size {d}); ceiling {d}\n", .{ tracker.peak, file_size, ceiling });
+	}
+	try std.testing.expect(tracker.peak < ceiling);
 }
