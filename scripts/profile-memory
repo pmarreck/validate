@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# profile-memory: sample RSS of validate processes over time + record peak.
+#
+# Usage:
+#   scripts/profile-memory [-o OUT.tsv] [-i INTERVAL_MS] [-c N] [-l LABEL] -- DIR1 [DIR2 ...]
+#
+# Spawns up to N concurrent `validate` processes (default 1, one per DIR),
+# samples RSS via `/bin/ps -o rss=,vsz=` every INTERVAL_MS, and at end-of-run
+# also captures peak RSS via `/usr/bin/time -l` for cross-checking.
+#
+# IMPORTANT: must use `/bin/ps`, not the GNU `ps` from nix — macOS 15+ revoked
+# unprivileged RSS/VSZ access for non-system-entitled binaries, but the
+# Apple-shipped `/bin/ps` still has the entitlement.
+#
+# Outputs:
+#   - timeline TSV (default): timestamp_ms, pid, rss_kb, vsz_kb, dir, label
+#   - summary appended to OUT_FILE.summary.tsv: ts_iso, label, pid, peak_rss_kb,
+#     wall_s, dir
+#
+# This script invokes the prebuilt binary at zig-out/bin/validate. Run
+# `./build` first if you've changed the code.
+
+set -u
+
+INTERVAL_MS=100
+OUT_FILE=""
+CONCURRENT=1
+LABEL=""
+EXTRA_ARGS=()
+
+PS=/bin/ps
+TIME=/usr/bin/time
+
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		-o) OUT_FILE="$2"; shift 2 ;;
+		-i) INTERVAL_MS="$2"; shift 2 ;;
+		-c) CONCURRENT="$2"; shift 2 ;;
+		-l) LABEL="$2"; shift 2 ;;
+		--) shift; break ;;
+		*) EXTRA_ARGS+=("$1"); shift ;;
+	esac
+done
+
+DIRS=("$@")
+if [[ ${#DIRS[@]} -eq 0 ]]; then
+	echo "Usage: $0 [-o OUT.tsv] [-i INTERVAL_MS] [-c N] [-l LABEL] -- DIR [DIR ...]" >&2
+	exit 2
+fi
+
+VALIDATE_BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+if [[ ! -x "$VALIDATE_BIN" ]]; then
+	echo "validate binary not found at $VALIDATE_BIN — run ./build first" >&2
+	exit 2
+fi
+
+if [[ -z "$OUT_FILE" ]]; then
+	OUT_FILE="${TMPDIR:-/tmp}/validate-mem-$(date +%s).tsv"
+fi
+SUMMARY_FILE="${OUT_FILE}.summary.tsv"
+
+INTERVAL_S=$(awk -v ms="$INTERVAL_MS" 'BEGIN{ printf "%.3f", ms/1000 }')
+
+# Per-run timing log (for peak via time -l cross-check)
+TLOG_DIR=$(mktemp -d "${TMPDIR:-/tmp}/validate-mem-XXXXXX")
+
+if [[ ! -e "$OUT_FILE" ]]; then
+	printf 'timestamp_ms\tpid\trss_kb\tvsz_kb\tdir\tlabel\n' > "$OUT_FILE"
+fi
+if [[ ! -e "$SUMMARY_FILE" ]]; then
+	printf 'ts_iso\tlabel\tpid\tpeak_rss_kb\twall_s\tdir\n' > "$SUMMARY_FILE"
+fi
+
+# Spawn one validate per directory, up to $CONCURRENT, wrapped in /usr/bin/time -l
+declare -a PIDS=()
+declare -A PID_DIR=()
+declare -A PID_TLOG=()
+for ((i=0; i<CONCURRENT && i<${#DIRS[@]}; i++)); do
+	dir="${DIRS[$i]}"
+	tlog="$TLOG_DIR/run-$i.txt"
+	"$TIME" -l "$VALIDATE_BIN" "${EXTRA_ARGS[@]}" "$dir" >/dev/null 2>"$tlog" &
+	pid=$!
+	PIDS+=("$pid")
+	PID_DIR[$pid]="$dir"
+	PID_TLOG[$pid]="$tlog"
+	echo "spawned pid $pid for $dir" >&2
+done
+
+start_ms=$(($(date +%s%N)/1000000))
+
+# Sampling loop — uses /bin/ps to dodge nix-shell GNU ps shadow.
+# /bin/ps is entitled on macOS, GNU ps is not.
+while true; do
+	any_alive=0
+	now_ms=$(($(date +%s%N)/1000000))
+	rel_ms=$((now_ms - start_ms))
+	# /bin/ps wants the validate child PID, not the time -l wrapper PID.
+	# Easier: poll all our wrapper PIDs and walk children. But the wrapper
+	# itself shares RSS roughly = sum of children's working set, so we can
+	# just sample the wrapper PID and get a close-enough number. For exact,
+	# we'd descend the process tree — adding complexity. Skip for now.
+	for pid in "${PIDS[@]}"; do
+		if kill -0 "$pid" 2>/dev/null; then
+			any_alive=1
+			# Find children of $pid (the validate process under time -l)
+			children=$("$PS" -A -o pid,ppid 2>/dev/null | awk -v p="$pid" '$2==p{print $1}')
+			# Sample wrapper + each child; sum gives total wrapper-tree RSS.
+			tree_pids="$pid $children"
+			line=$("$PS" -o rss=,vsz= -p $tree_pids 2>/dev/null || true)
+			if [[ -n "$line" ]]; then
+				rss_total=0
+				vsz_total=0
+				while read -r rss vsz; do
+					rss_total=$((rss_total + rss))
+					vsz_total=$((vsz_total + vsz))
+				done <<<"$line"
+				printf '%d\t%d\t%d\t%d\t%s\t%s\n' \
+					"$rel_ms" "$pid" "$rss_total" "$vsz_total" "${PID_DIR[$pid]}" "$LABEL" >> "$OUT_FILE"
+			fi
+		fi
+	done
+	[[ $any_alive -eq 0 ]] && break
+	sleep "$INTERVAL_S"
+done
+
+# Wait for any still-alive (race window)
+for pid in "${PIDS[@]}"; do
+	wait "$pid" 2>/dev/null || true
+done
+
+# Parse each tlog for /usr/bin/time -l peak (cross-check + final summary)
+ts_iso=$(date +%Y-%m-%dT%H:%M:%S)
+declare -a SUMMARY_LINES=()
+for pid in "${PIDS[@]}"; do
+	tlog="${PID_TLOG[$pid]}"
+	dir="${PID_DIR[$pid]}"
+	wall=$(awk '/real/{ printf "%s", $1 }' "$tlog" | tr -d ' ')
+	rss=$(awk '/maximum resident set size/{ print $1 }' "$tlog")
+	# macOS reports bytes; convert to KB (>= 100000 → bytes heuristic)
+	if [[ -n "$rss" && "$rss" -ge 100000 ]]; then
+		rss=$((rss / 1024))
+	fi
+	rss="${rss:-0}"
+	wall="${wall:-?}"
+	printf '%s\t%s\t%d\t%d\t%s\t%s\n' "$ts_iso" "$LABEL" "$pid" "$rss" "$wall" "$dir" >> "$SUMMARY_FILE"
+	SUMMARY_LINES+=("pid=$pid peak_rss=$(awk -v k="$rss" 'BEGIN{ printf (k>=1048576?"%.2f GB":"%.1f MB"), (k>=1048576?k/1048576:k/1024) }') wall=${wall}s dir=$dir")
+done
+
+rm -rf "$TLOG_DIR"
+
+# Per-pid sampling-based peak summary (cross-check vs time -l)
+echo "" >&2
+echo "=== Run results (label='$LABEL') ===" >&2
+for line in "${SUMMARY_LINES[@]}"; do
+	echo "  time-l: $line" >&2
+done
+awk -F'\t' -v lbl="$LABEL" '
+$6 == lbl && NR > 1 {
+	pid = $2
+	rss = $3 + 0
+	if (rss > peak[pid]) peak[pid] = rss
+	count[pid]++
+	sum[pid] += rss
+	dir[pid] = $5
+}
+END {
+	for (pid in peak) {
+		avg = sum[pid] / count[pid]
+		printf "  poll:   pid=%s peak_rss=%s avg_rss=%s samples=%d\n",
+			pid,
+			(peak[pid] >= 1048576 ? sprintf("%.2f GB", peak[pid]/1048576) : sprintf("%.1f MB", peak[pid]/1024)),
+			(avg >= 1048576 ? sprintf("%.2f GB", avg/1048576) : sprintf("%.1f MB", avg/1024)),
+			count[pid]
+	}
+}' "$OUT_FILE" >&2
+
+echo "" >&2
+echo "timeline: $OUT_FILE" >&2
+echo "summary:  $SUMMARY_FILE" >&2

@@ -335,10 +335,11 @@ fn validateWavFloatSamples(file: *FileSource, data_offset: u64, data_size: u32, 
         return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_seek, "to audio data", .full);
     };
 
-    const buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+    const heap_alloc = @import("heap.zig").validateAllocator();
+    const buf = heap_alloc.alloc(u8, 65536) catch {
         return ValidationResult.invalidCodeWithDepth(.wav, .out_of_memory, "audio scan buffer", .full);
     };
-    defer std.heap.page_allocator.free(buf);
+    defer heap_alloc.free(buf);
     var remaining: u64 = data_size;
     const sample_bytes: usize = if (bits_per_sample == 64) 8 else 4;
 

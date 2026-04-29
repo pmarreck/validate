@@ -189,10 +189,11 @@ pub fn validateJpegWithOptions(file: *FileSource, skip_magic: bool) ValidationRe
             file.seekTo(search_start) catch {
                 return ValidationResult.invalidCode(.jpeg, .failed_to_seek, "for EOI search");
             };
-            const search_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+            const heap_alloc = @import("heap.zig").validateAllocator();
+            const search_buf = heap_alloc.alloc(u8, 65536) catch {
                 return ValidationResult.invalidCode(.jpeg, .out_of_memory, "EOI search buffer");
             };
-            defer std.heap.page_allocator.free(search_buf);
+            defer heap_alloc.free(search_buf);
             const bytes_to_read = @min(file_size - search_start, 65536);
             // Use readAll to ensure we get all requested bytes (handles short reads)
             const bytes_read = file.readAll(search_buf[0..bytes_to_read]) catch {

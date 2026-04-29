@@ -55,6 +55,7 @@
 //! - Text formats at top level (UTF-8, XML, JSON) can set COMPLETE if parse succeeds
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 const errmsg = @import("error_messages.zig");
@@ -5454,10 +5455,10 @@ pub const FormatValidator = struct {
                 };
 
                 // Read up to 64KB from start for signature detection
-                const buffer = (self.allocator orelse std.heap.page_allocator).alloc(u8, 65536) catch {
+                const buffer = (self.allocator orelse heap.validateAllocator()).alloc(u8, 65536) catch {
                     return result;
                 };
-                defer (self.allocator orelse std.heap.page_allocator).free(buffer);
+                defer (self.allocator orelse heap.validateAllocator()).free(buffer);
                 const bytes_read = reopen_file.read(buffer) catch {
                     return result;
                 };
@@ -6647,13 +6648,13 @@ pub const FormatValidator = struct {
                 };
 
                 // Read embedded content into heap buffer if small enough
-                const embedded_buffer = (self.allocator orelse std.heap.page_allocator).alloc(u8, 65536) catch {
+                const embedded_buffer = (self.allocator orelse heap.validateAllocator()).alloc(u8, 65536) catch {
                     var result = ValidationResult.ok(format);
                     result.malformations.insert(.mime_wrapped_content);
                     result.validation_depth = .structural;
                     return result;
                 };
-                defer (self.allocator orelse std.heap.page_allocator).free(embedded_buffer);
+                defer (self.allocator orelse heap.validateAllocator()).free(embedded_buffer);
                 if (embedded_size <= embedded_buffer.len) {
                     const read_bytes = file.read(embedded_buffer[0..@intCast(embedded_size)]) catch {
                         return ValidationResult.invalidCode(format, .failed_to_read, "embedded content");
@@ -6856,14 +6857,14 @@ pub const FormatValidator = struct {
             .plain_text_latin1 => ValidationResult.okWithDepth(.plain_text_latin1, .structural), // Latin-1 always valid (no integrity mechanism)
             .plain_text_cp437 => ValidationResult.okWithDepth(.plain_text_cp437, .structural), // CP437 always valid (no integrity mechanism)
             // Font formats
-            .ttf => validateTtf(self.allocator orelse std.heap.page_allocator, file),
-            .otf => validateOtf(self.allocator orelse std.heap.page_allocator, file),
-            .woff => validateWoff(self.allocator orelse std.heap.page_allocator, file),
-            .woff2 => validateWoff2(self.allocator orelse std.heap.page_allocator, file),
-            .type1 => validateType1Font(self.allocator orelse std.heap.page_allocator, file),
+            .ttf => validateTtf(self.allocator orelse heap.validateAllocator(), file),
+            .otf => validateOtf(self.allocator orelse heap.validateAllocator(), file),
+            .woff => validateWoff(self.allocator orelse heap.validateAllocator(), file),
+            .woff2 => validateWoff2(self.allocator orelse heap.validateAllocator(), file),
+            .type1 => validateType1Font(self.allocator orelse heap.validateAllocator(), file),
             .par2 => archive_validators.validatePar2(file_src_ptr),
             // VM/Bytecode formats
-            .beam => validateBeam(self.allocator orelse std.heap.page_allocator, file),
+            .beam => validateBeam(self.allocator orelse heap.validateAllocator(), file),
             // Icon formats
             .ico => image_validators.validateIco(file_src_ptr),
             .icns => image_validators.validateIcns(file_src_ptr),
@@ -6940,7 +6941,7 @@ pub const FormatValidator = struct {
             .vmdk => vmdk_validator.validateVmdk(file_src_ptr).toValidationResult(),
             .wim, .esd => wim_validator.validateWim(file_src_ptr),
             .msi => document_validators.validateMsi(file_src_ptr),
-            .blar, .mblar => |fmt| blar_validator.validateBlarStructural(self.allocator orelse std.heap.page_allocator, file_src_ptr, fmt),
+            .blar, .mblar => |fmt| blar_validator.validateBlarStructural(self.allocator orelse heap.validateAllocator(), file_src_ptr, fmt),
             // Bundle formats (directories) - should be handled before reaching this switch
             // If we get here, it means something went wrong - return invalid to make it obvious
             .bagit => bagit_validator.validateBagit(file_src_ptr),
