@@ -5,6 +5,7 @@
 //! Replaces libheif for AVIF validation.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const heif = @import("heif_container_parser.zig");
 const av1 = @import("av1_obu_validator.zig");
 const errmsg = @import("error_messages.zig");
@@ -94,7 +95,7 @@ pub fn validateAvifDeep(source: *FileSource) AvifValidationResult {
         return AvifValidationResult.invalid(errmsg.fileTooLargeFor("in-memory validation"));
     }
 
-    const allocator = std.heap.page_allocator;
+    const allocator = heap.validateAllocator();
     const data = allocator.alloc(u8, file_size) catch {
         return AvifValidationResult.invalid("Memory allocation failed");
     };
@@ -251,10 +252,10 @@ fn validateAvifGridTiles(data: []const u8, container: heif.HeifContainerInfo) Av
 /// validates the combined stream.
 fn validateAv1Data(image_data: []const u8, decoder_config: ?[]const u8) AvifValidationResult {
     const max_combined = 2 * 1024 * 1024;
-    const combined_buf = std.heap.page_allocator.alloc(u8, max_combined) catch {
+    const combined_buf = heap.validateAllocator().alloc(u8, max_combined) catch {
         return AvifValidationResult.structural();
     };
-    defer std.heap.page_allocator.free(combined_buf);
+    defer heap.validateAllocator().free(combined_buf);
     var combined_len: usize = 0;
 
     // Prepend av1C sequence header OBU if available

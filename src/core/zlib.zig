@@ -11,6 +11,7 @@
 //! (no zlib/gzip headers) suitable for ZIP file entry decompression.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 
 const c = @cImport({
@@ -626,10 +627,10 @@ pub fn validateZlib(compressed: []const u8) ZlibError!void {
     defer _ = c.inflateEnd(&stream);
 
     // Use heap buffer - decompress and discard
-    const discard_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+    const discard_buf = heap.validateAllocator().alloc(u8, 65536) catch {
         return ZlibError.OutOfMemory;
     };
-    defer std.heap.page_allocator.free(discard_buf);
+    defer heap.validateAllocator().free(discard_buf);
 
     while (true) {
         stream.next_out = discard_buf.ptr;
@@ -691,8 +692,8 @@ pub fn inflateStreamValidate(compressed: []const u8, max_uncompressed: u64, raw:
     if (init_ret != c.Z_OK) return ZlibError.InitFailed;
     defer _ = c.inflateEnd(&stream);
 
-    const discard_buf = std.heap.page_allocator.alloc(u8, 65536) catch return ZlibError.OutOfMemory;
-    defer std.heap.page_allocator.free(discard_buf);
+    const discard_buf = heap.validateAllocator().alloc(u8, 65536) catch return ZlibError.OutOfMemory;
+    defer heap.validateAllocator().free(discard_buf);
 
     var total: u64 = 0;
     while (true) {
@@ -749,8 +750,8 @@ pub fn inflateStream(
     if (init_ret != c.Z_OK) return ZlibError.InitFailed;
     defer _ = c.inflateEnd(&stream);
 
-    const chunk_buf = std.heap.page_allocator.alloc(u8, 65536) catch return ZlibError.OutOfMemory;
-    defer std.heap.page_allocator.free(chunk_buf);
+    const chunk_buf = heap.validateAllocator().alloc(u8, 65536) catch return ZlibError.OutOfMemory;
+    defer heap.validateAllocator().free(chunk_buf);
 
     var total: u64 = 0;
     while (true) {

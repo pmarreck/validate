@@ -3,6 +3,7 @@
 //! JBIG2, HEIC, AVIF, ICO, QOI, TGA, and DNG.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -189,7 +190,7 @@ pub fn validateJpegWithOptions(file: *FileSource, skip_magic: bool) ValidationRe
             file.seekTo(search_start) catch {
                 return ValidationResult.invalidCode(.jpeg, .failed_to_seek, "for EOI search");
             };
-            const heap_alloc = @import("heap.zig").validateAllocator();
+            const heap_alloc = heap.validateAllocator();
             const search_buf = heap_alloc.alloc(u8, 65536) catch {
                 return ValidationResult.invalidCode(.jpeg, .out_of_memory, "EOI search buffer");
             };
@@ -5267,11 +5268,11 @@ pub fn validatePam(file: *FileSource) ValidationResult {
             // Get remaining file content — zero-copy from mmap when available
             const remaining_sz: usize = @intCast(actual_sz - pos);
             var ascii_heap: ?[]u8 = null;
-            defer if (ascii_heap) |buf| std.heap.page_allocator.free(buf);
+            defer if (ascii_heap) |buf| heap.validateAllocator().free(buf);
             const ascii_data: []const u8 = if (file.getMappedRange(pos, remaining_sz)) |mapped|
                 mapped
             else blk: {
-                const buf = std.heap.page_allocator.alloc(u8, remaining_sz) catch
+                const buf = heap.validateAllocator().alloc(u8, remaining_sz) catch
                     return ValidationResult.structuralOnly(.pam);
                 ascii_heap = buf;
                 file.seekTo(@intCast(pos)) catch return ValidationResult.structuralOnly(.pam);

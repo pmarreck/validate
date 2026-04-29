@@ -4,6 +4,7 @@
 //! DOS header (MZ), PE signature, COFF header, optional header, and section table.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
@@ -166,12 +167,12 @@ pub fn validatePe(file: *FileSource) ValidationResult {
 
     // Read section table — zero-copy from mmap when available
     var sec_heap: ?[]u8 = null;
-    defer if (sec_heap) |buf| std.heap.page_allocator.free(buf);
+    defer if (sec_heap) |buf| heap.validateAllocator().free(buf);
     const section_buffer: []const u8 = if (file.getMappedRange(section_table_offset, section_table_size)) |mapped|
         mapped
     else blk: {
         file.seekTo(section_table_offset) catch return ValidationResult.invalidCode(.pe, .failed_to_seek, "to section table");
-        const buf = std.heap.page_allocator.alloc(u8, @intCast(section_table_size)) catch {
+        const buf = heap.validateAllocator().alloc(u8, @intCast(section_table_size)) catch {
             return ValidationResult.invalidCode(.pe, .failed_to_allocate, "section buffer");
         };
         sec_heap = buf;

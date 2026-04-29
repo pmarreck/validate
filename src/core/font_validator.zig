@@ -9,6 +9,7 @@
 //! Reference: Apple TrueType Reference Manual, OpenType spec
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const errmsg = @import("error_messages.zig");
 const zlib = @import("zlib.zig");
 const Allocator = std.mem.Allocator;
@@ -363,7 +364,7 @@ fn parseTableRecord(data: *const [16]u8) TableRecord {
 /// WOFF wraps TTF/OTF data with zlib-compressed tables, each carrying an origChecksum.
 /// Deep validation decompresses each table and verifies its checksum.
 pub fn validateWoff(data: []const u8) FontValidationResult {
-	return validateWoffWithAllocator(data, std.heap.page_allocator);
+	return validateWoffWithAllocator(data, heap.validateAllocator());
 }
 
 /// Validate WOFF with explicit allocator (for testing/embedding).
@@ -501,7 +502,7 @@ fn readUIntBase128(data: []const u8, pos: *usize) ?u32 {
 /// Validate a WOFF2 font.
 /// WOFF2 uses Brotli compression and a different table format.
 pub fn validateWoff2(data: []const u8) FontValidationResult {
-	return validateWoff2WithAllocator(data, std.heap.page_allocator);
+	return validateWoff2WithAllocator(data, heap.validateAllocator());
 }
 
 /// Validate WOFF2 with explicit allocator (for testing/embedding).

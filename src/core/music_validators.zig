@@ -1,4 +1,5 @@
 const std = @import("std");
+const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -335,7 +336,7 @@ fn validateWavFloatSamples(file: *FileSource, data_offset: u64, data_size: u32, 
         return ValidationResult.invalidCodeWithDepth(.wav, .failed_to_seek, "to audio data", .full);
     };
 
-    const heap_alloc = @import("heap.zig").validateAllocator();
+    const heap_alloc = heap.validateAllocator();
     const buf = heap_alloc.alloc(u8, 65536) catch {
         return ValidationResult.invalidCodeWithDepth(.wav, .out_of_memory, "audio scan buffer", .full);
     };
@@ -415,17 +416,17 @@ fn scanWavMonoS16Heuristic(file: *FileSource, data_offset: u64, data_size: u32, 
     };
 
     const sample_count: usize = scan_bytes / 2;
-    const samples = std.heap.page_allocator.alloc(i16, sample_count) catch {
+    const samples = heap.validateAllocator().alloc(i16, sample_count) catch {
         // OOM on heuristic — just skip; structural is still valid.
         return ValidationResult.okWithDepth(.wav, .structural);
     };
-    defer std.heap.page_allocator.free(samples);
+    defer heap.validateAllocator().free(samples);
 
     // Read raw bytes into a temporary buffer, then decode little-endian s16.
-    const raw = std.heap.page_allocator.alloc(u8, scan_bytes) catch {
+    const raw = heap.validateAllocator().alloc(u8, scan_bytes) catch {
         return ValidationResult.okWithDepth(.wav, .structural);
     };
-    defer std.heap.page_allocator.free(raw);
+    defer heap.validateAllocator().free(raw);
 
     const bytes_read = file.read(raw) catch {
         return ValidationResult.okWithDepth(.wav, .structural);
@@ -439,7 +440,7 @@ fn scanWavMonoS16Heuristic(file: *FileSource, data_offset: u64, data_size: u32, 
         samples[i] = std.mem.readInt(i16, raw[i * 2 ..][0..2], .little);
     }
 
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(heap.validateAllocator());
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
@@ -1712,7 +1713,7 @@ pub fn validateApe(file: *FileSource) ValidationResult {
 		return ValidationResult.okWithDepth(.ape, .structural);
 	}
 
-	const allocator = std.heap.page_allocator;
+	const allocator = heap.validateAllocator();
 	file.seekTo(0) catch {
 		return ValidationResult.invalidCodeWithDepth(.ape, .invalid_value, "APE rewind for decode", .full);
 	};
@@ -1741,7 +1742,7 @@ pub fn validateApe(file: *FileSource) ValidationResult {
 /// level corruption is only catchable via full decode + CRC compare. We
 /// surface mismatches via `WavpackGetNumErrors`.
 pub fn validateWavPack(file: *FileSource) ValidationResult {
-    const allocator = std.heap.page_allocator;
+    const allocator = heap.validateAllocator();
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidWithDepth(.wavpack, errmsg.failedToGet("file size"), .full);
     };
@@ -1816,9 +1817,9 @@ pub fn validateAc3Deep(source: *FileSource) ValidationResult {
     }
 
     var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |b| std.heap.page_allocator.free(b);
+    defer if (heap_buf) |b| heap.validateAllocator().free(b);
     const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+        const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
             return ValidationResult.invalidCodeWithDepth(.ac3, .out_of_memory, "for AC-3", .full);
         };
         heap_buf = buf;
@@ -1845,9 +1846,9 @@ pub fn validateEac3Deep(source: *FileSource) ValidationResult {
     }
 
     var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |b| std.heap.page_allocator.free(b);
+    defer if (heap_buf) |b| heap.validateAllocator().free(b);
     const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+        const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
             return ValidationResult.invalidCodeWithDepth(.eac3, .out_of_memory, "for E-AC-3", .full);
         };
         heap_buf = buf;
@@ -1895,9 +1896,9 @@ pub fn validateDtsDeep(source: *FileSource) ValidationResult {
     }
 
     var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |b| std.heap.page_allocator.free(b);
+    defer if (heap_buf) |b| heap.validateAllocator().free(b);
     const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+        const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
             return ValidationResult.invalidCodeWithDepth(.dts, .out_of_memory, "for DTS", .structural);
         };
         heap_buf = buf;

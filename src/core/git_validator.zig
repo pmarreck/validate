@@ -20,6 +20,7 @@
 //! but cannot verify ref consistency or object graph integrity.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const Sha1 = std.crypto.hash.Sha1;
@@ -146,15 +147,15 @@ fn isGitAvailable() bool {
 
     // Try to run git --version
     const result = std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
+        .allocator = heap.validateAllocator(),
         .argv = &[_][]const u8{ git_cmd, "--version" },
         .max_output_bytes = 1024,
     }) catch {
         git_available = false;
         return false;
     };
-    defer std.heap.page_allocator.free(result.stdout);
-    defer std.heap.page_allocator.free(result.stderr);
+    defer heap.validateAllocator().free(result.stdout);
+    defer heap.validateAllocator().free(result.stderr);
 
     // Check exit code
     const exit_ok = switch (result.term) {

@@ -5,6 +5,7 @@
 //!   - PCAPNG (next-generation pcap, Section Header Block detection only)
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const testing = std.testing;
 const ValidationResult = @import("format_validation.zig").ValidationResult;
 const ValidationDepth = @import("format_validation.zig").ValidationDepth;
@@ -144,7 +145,7 @@ pub fn validatePcap(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.pcap, .failed_to_seek, "to start");
 
     const max_pcap_buf: usize = 64 * 1024 * 1024;
-    const allocator = std.heap.page_allocator;
+    const allocator = heap.validateAllocator();
     const buf = allocator.alloc(u8, max_pcap_buf) catch {
         return ValidationResult.invalidCode(.pcap, .failed_to_allocate, "PCAP buffer");
     };

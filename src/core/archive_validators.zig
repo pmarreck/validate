@@ -5,6 +5,7 @@
 //! Tar, PAR2, and WARC.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 
 const file_source = @import("file_source.zig");
@@ -72,12 +73,12 @@ pub fn validateZipWithOptions(file: *FileSource, format: FileFormat, skip_magic:
 
     // Zero-copy from mmap when available
     var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+    defer if (heap_buf) |buf| heap.validateAllocator().free(buf);
     const buffer: []const u8 = if (file.getMappedRange(search_start, to_read)) |mapped|
         mapped
     else blk: {
         file.seekTo(search_start) catch return ValidationResult.invalidCode(format, .failed_to_seek, "for EOCD");
-        const buf = std.heap.page_allocator.alloc(u8, @intCast(to_read)) catch {
+        const buf = heap.validateAllocator().alloc(u8, @intCast(to_read)) catch {
             return ValidationResult.invalidCode(format, .failed_to_read, "EOCD area");
         };
         heap_buf = buf;
@@ -565,11 +566,11 @@ pub fn validateRar5Headers(file: *FileSource) ValidationResult {
 
         const to_read: usize = @intCast(total_header_data);
         var hdr_heap: ?[]u8 = null;
-        defer if (hdr_heap) |buf| std.heap.page_allocator.free(buf);
+        defer if (hdr_heap) |buf| heap.validateAllocator().free(buf);
         const header_buf: []const u8 = if (file.getMappedRange(pos + 4, to_read)) |mapped|
             mapped
         else blk: {
-            const buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+            const buf = heap.validateAllocator().alloc(u8, 65536) catch {
                 return ValidationResult.invalidCode(.rar, .failed_to_read, "header");
             };
             hdr_heap = buf;
@@ -2174,10 +2175,10 @@ pub fn validateZipDeep(allocator: Allocator, source: *FileSource) ValidationResu
 pub fn validateZipStoredEntry(file: *FileSource, stored_crc: u32, size: u32) ValidationResult {
     var crc = std.hash.Crc32.init();
     var remaining: u32 = size;
-    const read_buffer = std.heap.page_allocator.alloc(u8, 65536) catch {
+    const read_buffer = heap.validateAllocator().alloc(u8, 65536) catch {
         return ValidationResult.invalidCode(.zip, .failed_to_read, "entry data");
     };
-    defer std.heap.page_allocator.free(read_buffer);
+    defer heap.validateAllocator().free(read_buffer);
 
     while (remaining > 0) {
         const to_read = @min(remaining, read_buffer.len);
@@ -2554,13 +2555,13 @@ pub fn validateXzDeep(allocator: Allocator, source: *FileSource) ValidationResul
     }
 
     // Get bytes (zero-copy from mmap, or read into heap buffer)
-    var heap: ?[]u8 = null;
-    defer if (heap) |b| allocator.free(b);
+    var heap_xz: ?[]u8 = null;
+    defer if (heap_xz) |b| allocator.free(b);
     const bytes: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
         const buf = allocator.alloc(u8, @intCast(file_size)) catch {
             return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_allocate, "input buffer", .structural);
         };
-        heap = buf;
+        heap_xz = buf;
         source.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_read, "file", .structural);
         const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_read, "file", .structural);
         break :blk buf[0..n];
@@ -2627,13 +2628,13 @@ pub fn validateZstdDeep(allocator: Allocator, source: *FileSource) ValidationRes
     }
 
     // Get bytes (zero-copy from mmap, or read into heap buffer)
-    var heap: ?[]u8 = null;
-    defer if (heap) |b| allocator.free(b);
+    var heap_zstd: ?[]u8 = null;
+    defer if (heap_zstd) |b| allocator.free(b);
     const bytes: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
         const buf = allocator.alloc(u8, @intCast(file_size)) catch {
             return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_allocate, "input buffer", .structural);
         };
-        heap = buf;
+        heap_zstd = buf;
         source.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
         const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
         break :blk buf[0..n];
@@ -2973,11 +2974,11 @@ pub fn validateCpt(file: *FileSource) ValidationResult {
     }
 
     var cpt_heap: ?[]u8 = null;
-    defer if (cpt_heap) |buf| std.heap.page_allocator.free(buf);
+    defer if (cpt_heap) |buf| heap.validateAllocator().free(buf);
     const data: []const u8 = if (file.getMappedSlice()) |mapped|
         mapped
     else blk: {
-        const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+        const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
             return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_allocate, "CPT read buffer", .structural);
         };
         cpt_heap = buf;
@@ -4135,7 +4136,7 @@ pub fn validateHqxBytes(file_data: []const u8) ValidationResult {
         return ValidationResult.invalidCode(.hqx, .missing, "BinHex 4.0 banner");
     }
 
-    const allocator = std.heap.page_allocator;
+    const allocator = heap.validateAllocator();
     const packed_data = decodeBinhex4Payload(allocator, file_data) catch |err| {
         return switch (err) {
             error.InvalidEnvelope => ValidationResult.invalid(.hqx, "Missing BinHex data delimiters"),
@@ -4177,10 +4178,10 @@ pub fn validateHqx(file: *FileSource) ValidationResult {
     if (file_size > BINHEX4_MAX_FILE_SIZE) return ValidationResult.invalid(.hqx, "BinHex file too large (>64MB)");
 
     var heap_hqx: ?[]u8 = null;
-    defer if (heap_hqx) |buf| std.heap.page_allocator.free(buf);
+    defer if (heap_hqx) |buf| heap.validateAllocator().free(buf);
     const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
         file.seekTo(0) catch return ValidationResult.invalidCode(.hqx, .failed_to_seek, "to start");
-        const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+        const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
             return ValidationResult.invalidCode(.hqx, .failed_to_allocate, "BinHex input buffer");
         };
         heap_hqx = buf;
@@ -6330,7 +6331,7 @@ pub fn validateRpm(file: *FileSource) ValidationResult {
     // RPM files can be large (e.g., kernel packages); read first 16 MiB for header validation.
     // Use heap allocation: a 16 MiB stack frame overflows on every platform.
     const max_rpm_buf: usize = 16 * 1024 * 1024;
-    const allocator = std.heap.page_allocator;
+    const allocator = heap.validateAllocator();
     const buf = allocator.alloc(u8, max_rpm_buf) catch {
         return ValidationResult.invalidCode(.rpm, .failed_to_allocate, "RPM buffer");
     };

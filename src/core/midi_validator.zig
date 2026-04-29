@@ -12,6 +12,7 @@
 //! - Running status is used correctly
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
@@ -165,10 +166,10 @@ fn validateTrackData(file: *FileSource, start_pos: u64, length: u32) MidiValidat
     }
 
     // Read track data in 64KB chunks (streaming — already memory-efficient)
-    const data_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+    const data_buf = heap.validateAllocator().alloc(u8, 65536) catch {
         return MidiValidationResult.invalid("Out of memory for track data buffer");
     };
-    defer std.heap.page_allocator.free(data_buf);
+    defer heap.validateAllocator().free(data_buf);
     var pos: u32 = 0;
     var running_status: u8 = 0;
     var found_end_of_track = false;

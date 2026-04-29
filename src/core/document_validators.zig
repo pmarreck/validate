@@ -4,6 +4,7 @@
 //! for document formats: SQLite, OLE2 (DOC/XLS/PPT), WordPerfect, MDB, ACCDB.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 
 const format_validation = @import("format_validation.zig");
@@ -261,11 +262,11 @@ pub fn validateMsi(file: *FileSource) ValidationResult {
 pub fn detectOle2Subformat(file: *FileSource) FileFormat {
     // Zero-copy from mmap when available
     var heap_buf1: ?[]u8 = null;
-    defer if (heap_buf1) |buf| std.heap.page_allocator.free(buf);
+    defer if (heap_buf1) |buf| heap.validateAllocator().free(buf);
     const buffer: []const u8 = if (file.getMappedRange(0, 65536)) |mapped|
         mapped
     else blk: {
-        const buf = std.heap.page_allocator.alloc(u8, 65536) catch return .doc;
+        const buf = heap.validateAllocator().alloc(u8, 65536) catch return .doc;
         heap_buf1 = buf;
         file.seekTo(0) catch return .doc;
         const n = file.read(buf) catch return .doc;
@@ -294,12 +295,12 @@ pub fn detectOle2Subformat(file: *FileSource) FileFormat {
         if (dir_sector_id != 0xFFFFFFFE and dir_sector_id != 0xFFFFFFFF) {
             const dir_offset = 512 + @as(u64, dir_sector_id) * sector_size;
             var heap_buf2: ?[]u8 = null;
-            defer if (heap_buf2) |buf| std.heap.page_allocator.free(buf);
+            defer if (heap_buf2) |buf| heap.validateAllocator().free(buf);
             const dir_buffer: []const u8 = if (file.getMappedRange(dir_offset, 65536)) |mapped|
                 mapped
             else blk: {
                 file.seekTo(dir_offset) catch return .doc;
-                const buf = std.heap.page_allocator.alloc(u8, 65536) catch return .doc;
+                const buf = heap.validateAllocator().alloc(u8, 65536) catch return .doc;
                 heap_buf2 = buf;
                 const n = file.read(buf) catch return .doc;
                 break :blk buf[0..n];
@@ -603,10 +604,10 @@ pub fn validateSqliteWithOptions(file: *FileSource, skip_magic: bool) Validation
 
     // Validate all pages (capped at a reasonable limit for performance)
     const max_pages_to_check: u32 = @min(total_pages, 256);
-    const page_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+    const page_buf = heap.validateAllocator().alloc(u8, 65536) catch {
         return ValidationResult.invalidCode(.sqlite, .out_of_memory, "SQLite page buffer");
     };
-    defer std.heap.page_allocator.free(page_buf);
+    defer heap.validateAllocator().free(page_buf);
     const page_slice = page_buf[0..@intCast(actual_page_size)];
 
     var page_num: u32 = 1;

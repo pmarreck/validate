@@ -2,6 +2,7 @@
 //! Covers MP4/MOV, MKV/WebM, AVI, SWF, FLV, MPEG-PS/TS/ES, and IVF.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -317,11 +318,11 @@ pub fn validateAvi(file: *FileSource) ValidationResult {
                 const idx_data_size = @min(chunk_size, @as(u32, 64 * 1024)); // Cap at 64KB of index
                 if (idx_data_size >= 16) {
                     var idx_heap: ?[]u8 = null;
-                    defer if (idx_heap) |buf| std.heap.page_allocator.free(buf);
+                    defer if (idx_heap) |buf| heap.validateAllocator().free(buf);
                     const idx_buf: []const u8 = if (file.getMappedRange(pos + 8, idx_data_size)) |mapped|
                         mapped
                     else blk: {
-                        const buf = std.heap.page_allocator.alloc(u8, 65536) catch break;
+                        const buf = heap.validateAllocator().alloc(u8, 65536) catch break;
                         idx_heap = buf;
                         file.seekTo(pos + 8) catch break;
                         const idx_n = file.read(buf[0..idx_data_size]) catch break;
@@ -469,7 +470,7 @@ pub fn validateSwfZlib(file: *FileSource, declared_size: u32) ValidationResult {
     }
 
     // Allocate buffer for compressed data
-    var gpa = std.heap.page_allocator;
+    var gpa = heap.validateAllocator();
     const compressed_data = gpa.alloc(u8, @intCast(compressed_size)) catch {
         return ValidationResult.ok(.swf); // Fall back to structural
     };

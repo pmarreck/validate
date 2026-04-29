@@ -2,6 +2,7 @@
 //! Covers ELF, Mach-O (single-arch and fat/universal), COFF (.obj), WebAssembly, and ar archives.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
@@ -863,7 +864,7 @@ pub fn validateJavaClass(file: *FileSource) ValidationResult {
     // Read the full file into memory for parsing (class files are typically small)
     const MAX_CLASS_SIZE: usize = 64 * 1024 * 1024; // 64 MB sanity limit
     if (file_size > MAX_CLASS_SIZE) return ValidationResult.invalidCode(.java_class, .file_too_large, "Java class file");
-    const alloc = std.heap.page_allocator;
+    const alloc = heap.validateAllocator();
     const size_usize: usize = @intCast(file_size);
     const data = alloc.alloc(u8, size_usize) catch return ValidationResult.invalid(.java_class, "Out of memory");
     defer alloc.free(data);

@@ -5,6 +5,7 @@
 //! resource forks, and legacy word processors (ClarisWorks, MacWrite).
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
@@ -463,12 +464,12 @@ pub fn validateXmlPlist(file: *FileSource, file_size: u64) ValidationResult {
 
 	// Get file content — zero-copy from mmap when available
 	var heap_buf: ?[]u8 = null;
-	defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+	defer if (heap_buf) |buf| heap.validateAllocator().free(buf);
 	const data: []const u8 = if (file.getMappedSlice()) |mapped|
 		mapped
 	else blk: {
 		file.seekTo(0) catch return ValidationResult.invalidCode(.plist, .failed_to_seek, "to start");
-		const buf = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch {
+		const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
 			return ValidationResult.invalidCode(.plist, .failed_to_allocate, "memory");
 		};
 		heap_buf = buf;
@@ -478,11 +479,11 @@ pub fn validateXmlPlist(file: *FileSource, file_size: u64) ValidationResult {
 	};
 
 	// Strip DOCTYPE if present (use same logic as XML validator)
-	const preprocessed = stripDoctypeDeclaration(std.heap.page_allocator, data);
-	defer if (preprocessed.allocated) std.heap.page_allocator.free(preprocessed.data);
+	const preprocessed = stripDoctypeDeclaration(heap.validateAllocator(), data);
+	defer if (preprocessed.allocated) heap.validateAllocator().free(preprocessed.data);
 
 	// Parse with zig-xml
-	var static_reader: xml.Reader.Static = .init(std.heap.page_allocator, preprocessed.data, .{});
+	var static_reader: xml.Reader.Static = .init(heap.validateAllocator(), preprocessed.data, .{});
 	defer static_reader.deinit();
 	const reader = &static_reader.interface;
 

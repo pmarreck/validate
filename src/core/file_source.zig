@@ -4,6 +4,7 @@
 /// to regular file I/O. This dramatically improves performance on network
 /// mounts (NAS/SMB/NFS) where each seekTo+read is a network round-trip.
 const std = @import("std");
+const heap = @import("heap.zig");
 
 pub const FileSource = struct {
     /// The backing storage — either mmap'd memory or a file handle
@@ -43,7 +44,7 @@ pub const FileSource = struct {
         // Already prefixed? Don't loop on retry.
         if (path.len >= 4 and std.mem.eql(u8, path[0..4], "\\\\?\\")) return first_err;
 
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var arena = std.heap.ArenaAllocator.init(heap.validateAllocator());
         defer arena.deinit();
         const alloc = arena.allocator();
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const heap = @import("heap.zig");
 const format_validation = @import("format_validation.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -179,8 +180,8 @@ pub fn validateBagitDeep(allocator: Allocator, path: []const u8) ValidationResul
 /// against the expected hex string.
 fn verifyFileHash(comptime Hash: type, file: *FileSource, expected_hex: []const u8) !bool {
 	var hasher = Hash.init(.{});
-	const buf = std.heap.page_allocator.alloc(u8, 65536) catch return error.OutOfMemory;
-	defer std.heap.page_allocator.free(buf);
+	const buf = heap.validateAllocator().alloc(u8, 65536) catch return error.OutOfMemory;
+	defer heap.validateAllocator().free(buf);
 	while (true) {
 		const n = try file.read(buf);
 		if (n == 0) break;

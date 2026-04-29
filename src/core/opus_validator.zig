@@ -14,6 +14,7 @@
 //! for the Opus bitstream itself.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const ogg_validator = @import("ogg_validator.zig");
@@ -188,7 +189,7 @@ pub fn validateOpusPackets(
 /// Parse OGG Opus stream and validate all packets.
 /// This is the high-level API for validating OGG Opus files.
 pub fn validateOggOpus(file: *FileSource) OpusValidationResult {
-    return validateOggOpusAlloc(std.heap.page_allocator, file);
+    return validateOggOpusAlloc(heap.validateAllocator(), file);
 }
 
 /// Validate OGG Opus file with custom allocator.

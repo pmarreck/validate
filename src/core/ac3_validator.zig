@@ -12,6 +12,7 @@
 //! Reference: ATSC A/52 (Digital Audio Compression Standard)
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const errmsg = @import("error_messages.zig");
 
 /// AC-3 frame sample rate table
@@ -295,13 +296,13 @@ pub fn validateAc3File(path: []const u8, max_frames: u32) Ac3ValidationResult {
 
     // Memory-map the entire file for CRC validation of all frames
     const data = std.fs.cwd().readFileAlloc(
-        std.heap.page_allocator,
+        heap.validateAllocator(),
         path,
         256 * 1024 * 1024, // 256MB max
     ) catch {
         return Ac3ValidationResult.invalid(errmsg.failedToRead("file"), 0);
     };
-    defer std.heap.page_allocator.free(data);
+    defer heap.validateAllocator().free(data);
 
     return validateAc3Stream(data, max_frames);
 }

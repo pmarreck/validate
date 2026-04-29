@@ -14,6 +14,7 @@
 //! for the Vorbis bitstream itself.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const ogg_validator = @import("ogg_validator.zig");
@@ -141,7 +142,7 @@ pub const VorbisDecoder = struct {
 /// Validate OGG Vorbis file using libvorbis decode.
 /// This validates both container (via OGG CRCs) and codec (via decode).
 pub fn validateOggVorbis(file: *FileSource) VorbisValidationResult {
-    return validateOggVorbisAlloc(std.heap.page_allocator, file);
+    return validateOggVorbisAlloc(heap.validateAllocator(), file);
 }
 
 /// Validate OGG Vorbis file with custom allocator.

@@ -5,6 +5,7 @@
 //! Replaces libheif for HEIC validation.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const heif = @import("heif_container_parser.zig");
 const h265 = @import("h265_validator.zig");
 const errmsg = @import("error_messages.zig");
@@ -94,7 +95,7 @@ pub fn validateHeicDeep(source: *FileSource) HeicValidationResult {
         return HeicValidationResult.invalid(errmsg.fileTooLargeFor("in-memory validation"));
     }
 
-    const allocator = std.heap.page_allocator;
+    const allocator = heap.validateAllocator();
     const data = allocator.alloc(u8, file_size) catch {
         return HeicValidationResult.invalid("Memory allocation failed");
     };
@@ -267,7 +268,7 @@ fn validateGridTiles(data: []const u8, container: heif.HeifContainerInfo) HeicVa
 /// config parameter sets (VPS/SPS/PPS from hvcC), and runs H.265 validation.
 /// Heap-allocated buffer for thread safety (validation runs in parallel).
 fn validateHevcData(image_data: []const u8, decoder_config: ?[]const u8) HeicValidationResult {
-    const allocator = std.heap.page_allocator;
+    const allocator = heap.validateAllocator();
     const annex_b_buf = allocator.alloc(u8, 1024 * 1024) catch {
         return HeicValidationResult.structural();
     };

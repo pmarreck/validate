@@ -1,4 +1,5 @@
 const std = @import("std");
+const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const format_validation = @import("format_validation.zig");
 const file_source = @import("file_source.zig");
@@ -27,7 +28,7 @@ const detectFormat = format_validation.detectFormat;
 /// Returns the content slice and an optional heap buffer that the caller must free.
 /// Usage:
 ///   var heap_buf: ?[]u8 = null;
-///   defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+///   defer if (heap_buf) |buf| heap.validateAllocator().free(buf);
 ///   const content = getFileContent(file, max_size, &heap_buf) orelse return error_result;
 fn getFileContent(file: *FileSource, max_size: u64, heap_buf_out: *?[]u8) ?[]const u8 {
     const file_sz = file.getEndPos() catch return null;
@@ -36,7 +37,7 @@ fn getFileContent(file: *FileSource, max_size: u64, heap_buf_out: *?[]u8) ?[]con
     if (file.getMappedSlice()) |mapped| return mapped;
 
     // Fallback: allocate and read
-    const buf = std.heap.page_allocator.alloc(u8, @intCast(file_sz)) catch return null;
+    const buf = heap.validateAllocator().alloc(u8, @intCast(file_sz)) catch return null;
     heap_buf_out.* = buf;
     file.seekTo(0) catch return null;
     const n = file.readAll(buf) catch return null;
@@ -373,7 +374,7 @@ pub fn containsTemplateMarkers(content: []const u8) bool {
 /// to suppress expected-variant warnings when the extension matches the detected format.
 pub fn validateJson(file: *FileSource, ext_hint: ?[]const u8) ValidationResult {
     var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+    defer if (heap_buf) |buf| heap.validateAllocator().free(buf);
     const content = getFileContent(file, max_text_file_size, &heap_buf) orelse {
         return ValidationResult.invalidCode(.json, .failed_to_read, "file");
     };
@@ -381,14 +382,14 @@ pub fn validateJson(file: *FileSource, ext_hint: ?[]const u8) ValidationResult {
     // Handle UTF-16 LE/BE encoding (common on Windows)
     var conv_buf: []u8 = undefined;
     var conv_buf_allocated = false;
-    defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
+    defer if (conv_buf_allocated) heap.validateAllocator().free(conv_buf);
 
     const text_result = blk: {
         // Allocate conversion buffer if needed (UTF-16 -> UTF-8 can be same size or smaller)
         if (content.len >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
-            conv_buf = std.heap.page_allocator.alloc(u8, content.len) catch {
+            conv_buf = heap.validateAllocator().alloc(u8, content.len) catch {
                 return ValidationResult.invalidCode(.json, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
@@ -589,7 +590,7 @@ pub fn validateToml(file: *FileSource) ValidationResult {
     const toml = @import("toml");
 
     var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+    defer if (heap_buf) |buf| heap.validateAllocator().free(buf);
     const content = getFileContent(file, max_text_file_size, &heap_buf) orelse {
         return ValidationResult.invalidCode(.toml, .failed_to_read, "file");
     };
@@ -597,13 +598,13 @@ pub fn validateToml(file: *FileSource) ValidationResult {
     // Handle UTF-16 and BOM
     var conv_buf: []u8 = undefined;
     var conv_buf_allocated = false;
-    defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
+    defer if (conv_buf_allocated) heap.validateAllocator().free(conv_buf);
 
     const data = blk: {
         if (content.len >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
-            conv_buf = std.heap.page_allocator.alloc(u8, content.len) catch {
+            conv_buf = heap.validateAllocator().alloc(u8, content.len) catch {
                 return ValidationResult.invalidCode(.toml, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
@@ -895,7 +896,7 @@ pub fn validateXml(file: *FileSource) ValidationResult {
     const xml = @import("xml");
 
     var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+    defer if (heap_buf) |buf| heap.validateAllocator().free(buf);
     const content = getFileContent(file, max_text_file_size, &heap_buf) orelse {
         return ValidationResult.invalidCode(.xml, .failed_to_read, "file");
     };
@@ -903,13 +904,13 @@ pub fn validateXml(file: *FileSource) ValidationResult {
     // Handle UTF-16 LE/BE encoding
     var conv_buf: []u8 = undefined;
     var conv_buf_allocated = false;
-    defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
+    defer if (conv_buf_allocated) heap.validateAllocator().free(conv_buf);
 
     const raw_data = blk: {
         if (content.len >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
-            conv_buf = std.heap.page_allocator.alloc(u8, content.len) catch {
+            conv_buf = heap.validateAllocator().alloc(u8, content.len) catch {
                 return ValidationResult.invalidCode(.xml, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
@@ -921,16 +922,16 @@ pub fn validateXml(file: *FileSource) ValidationResult {
 
     // Normalize ASCII-compatible encodings (us-ascii, iso-8859-1, etc.) to UTF-8
     // These are byte-compatible for ASCII range which is what most XML files use
-    const encoding_normalized = normalizeXmlEncoding(std.heap.page_allocator, raw_data);
-    defer if (encoding_normalized.allocated) std.heap.page_allocator.free(@constCast(encoding_normalized.data));
+    const encoding_normalized = normalizeXmlEncoding(heap.validateAllocator(), raw_data);
+    defer if (encoding_normalized.allocated) heap.validateAllocator().free(@constCast(encoding_normalized.data));
 
     // Strip DOCTYPE declaration if present (zig-xml doesn't support DTD validation)
     // We only validate XML structure, not DTD conformance
-    const preprocessed = stripDoctypeDeclaration(std.heap.page_allocator, encoding_normalized.data);
-    defer if (preprocessed.allocated) std.heap.page_allocator.free(preprocessed.data);
+    const preprocessed = stripDoctypeDeclaration(heap.validateAllocator(), encoding_normalized.data);
+    defer if (preprocessed.allocated) heap.validateAllocator().free(preprocessed.data);
 
     // Use zig-xml's spec-compliant parser for well-formedness check
-    var static_reader: xml.Reader.Static = .init(std.heap.page_allocator, preprocessed.data, .{});
+    var static_reader: xml.Reader.Static = .init(heap.validateAllocator(), preprocessed.data, .{});
     defer static_reader.deinit();
     const reader = &static_reader.interface;
 
@@ -1018,7 +1019,7 @@ pub fn validateCsv(file: *FileSource) ValidationResult {
     // Sample first 1MB for validation
     const max_sample_size: u64 = 1024 * 1024;
     var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |buf| std.heap.page_allocator.free(buf);
+    defer if (heap_buf) |buf| heap.validateAllocator().free(buf);
     const content = getFileContent(file, max_sample_size, &heap_buf) orelse blk: {
         // File larger than sample — use mmap range or read sample
         if (file.getMappedRange(0, max_sample_size)) |mapped| break :blk mapped;
@@ -1028,13 +1029,13 @@ pub fn validateCsv(file: *FileSource) ValidationResult {
     // Handle UTF-16/BOM
     var conv_buf: []u8 = undefined;
     var conv_buf_allocated = false;
-    defer if (conv_buf_allocated) std.heap.page_allocator.free(conv_buf);
+    defer if (conv_buf_allocated) heap.validateAllocator().free(conv_buf);
 
     const data = blk: {
         if (content.len >= 2 and ((content[0] == 0xFF and content[1] == 0xFE) or
             (content[0] == 0xFE and content[1] == 0xFF)))
         {
-            conv_buf = std.heap.page_allocator.alloc(u8, content.len) catch {
+            conv_buf = heap.validateAllocator().alloc(u8, content.len) catch {
                 return ValidationResult.invalidCode(.csv, .failed_to_allocate, "conversion buffer");
             };
             conv_buf_allocated = true;
@@ -1185,10 +1186,10 @@ pub fn validateMsgpack(file: *FileSource) ValidationResult {
 
     // Read up to 64KB for structural validation
     const read_size: usize = @min(file_size, 65536);
-    const buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+    const buf = heap.validateAllocator().alloc(u8, 65536) catch {
         return ValidationResult.invalidCode(.msgpack, .out_of_memory, "MessagePack read buffer");
     };
-    defer std.heap.page_allocator.free(buf);
+    defer heap.validateAllocator().free(buf);
     const bytes_read = file.readAll(buf[0..read_size]) catch
         return ValidationResult.invalidCode(.msgpack, .failed_to_read, "MessagePack data");
     if (bytes_read == 0) return ValidationResult.invalidCode(.msgpack, .empty, "MessagePack file");

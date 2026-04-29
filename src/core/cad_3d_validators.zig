@@ -2,6 +2,7 @@
 //! Covers DWG, DXF, Blender, STEP, STL, OBJ, PLY, glTF, and GLB.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -1218,10 +1219,10 @@ pub fn validatePly(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.ply, .failed_to_seek, "to start");
 
     // Read header (up to 64KB - headers can be large with many properties)
-    const header_buf = std.heap.page_allocator.alloc(u8, 65536) catch {
+    const header_buf = heap.validateAllocator().alloc(u8, 65536) catch {
         return ValidationResult.invalidCode(.ply, .out_of_memory, "header buffer");
     };
-    defer std.heap.page_allocator.free(header_buf);
+    defer heap.validateAllocator().free(header_buf);
     const header_read = file.read(header_buf) catch return ValidationResult.invalidCode(.ply, .failed_to_read, "header");
     if (header_read < 4) {
         return ValidationResult.invalidCode(.ply, .file_too_small, "PLY");

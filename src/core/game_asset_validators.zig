@@ -5,6 +5,7 @@
 //! Chromium PAK, BSP (Quake/Source maps), VPK (Valve PAK), IFF, and Blorb.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -314,9 +315,9 @@ pub fn validateBsp(file: *FileSource) ValidationResult {
 
     // Read enough for the largest possible header: VBSP = 4+4 + 64*16 = 1032 bytes
     const MAX_HEADER: usize = 1032;
-    const header_buf = std.heap.page_allocator.alloc(u8, MAX_HEADER) catch
+    const header_buf = heap.validateAllocator().alloc(u8, MAX_HEADER) catch
         return ValidationResult.invalidCode(.bsp, .failed_to_read, "BSP header (alloc)");
-    defer std.heap.page_allocator.free(header_buf);
+    defer heap.validateAllocator().free(header_buf);
 
     const header_read = file.read(header_buf) catch return ValidationResult.invalidCode(.bsp, .failed_to_read, "BSP header");
     if (header_read < 8) return ValidationResult.invalidCode(.bsp, .file_too_small, "BSP");
@@ -549,11 +550,11 @@ pub fn validateVpk(file: *FileSource) ValidationResult {
 
 	// Read tree — zero-copy from mmap when available
 	var tree_heap: ?[]u8 = null;
-	defer if (tree_heap) |buf| std.heap.page_allocator.free(buf);
+	defer if (tree_heap) |buf| heap.validateAllocator().free(buf);
 	const tree_buf: []const u8 = if (file.getMappedRange(header_len, tree_size)) |mapped|
 		mapped
 	else blk: {
-		const buf = std.heap.page_allocator.alloc(u8, tree_size) catch {
+		const buf = heap.validateAllocator().alloc(u8, tree_size) catch {
 			return ValidationResult.structuralOnly(.vpk);
 		};
 		tree_heap = buf;

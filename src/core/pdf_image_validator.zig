@@ -12,6 +12,7 @@
 //! validates their embedded image data.
 
 const std = @import("std");
+const heap = @import("heap.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const jpeg_validator = @import("jpeg_validator.zig");
@@ -1291,7 +1292,7 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
     const img = ctx.images[task.image_index];
 
     // Use page_allocator for temporary work
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var arena = std.heap.ArenaAllocator.init(heap.validateAllocator());
     defer arena.deinit();
     const allocator = arena.allocator();
 
@@ -1523,7 +1524,7 @@ fn validatePdfImagesParallel(
     // 1. The passed-in allocator may be an arena allocator (not thread-safe)
     // 2. Thread pool's work queue and result queue are accessed from multiple threads
     // 3. page_allocator is thread-safe
-    const pool_allocator = std.heap.page_allocator;
+    const pool_allocator = heap.validateAllocator();
 
     // Collect results thread-safely
     var results_mutex: std.Thread.Mutex = .{};
