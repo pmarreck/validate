@@ -416,25 +416,19 @@ const stripDoctypeDeclaration = format_validation.stripDoctypeDeclaration;
 
 /// Deep validation for SVG files using full XML parsing.
 pub fn validateSvgDeep(allocator: Allocator, source: *FileSource) ValidationResult {
-    const file_size = source.getEndPos() catch {
-        return ValidationResult.invalidCode(.svg, .failed_to_get, "file size");
-    };
-
-    if (file_size > 50 * 1024 * 1024) { // 50MB limit for SVG
-        return ValidationResult.okWithDepth(.svg, .structural);
-    }
-
-    const data = allocator.alloc(u8, file_size) catch {
-        return ValidationResult.invalid(.svg, "Memory allocation failed");
-    };
-    defer allocator.free(data);
-
-    const bytes_read = source.readAll(data) catch {
+    // SVG is XML; the parser needs the full document. mmap zero-copy when
+    // available, else bounded heap slurp (16 MB cap — SVG files larger than
+    // that are typically vector files with embedded base64 raster blobs and
+    // structural-only is acceptable on non-mmap paths).
+    const slurp = source.getMappedOrSlurp(allocator, 16 << 20) catch
         return ValidationResult.invalidCode(.svg, .failed_to_read, "file");
+    var heap_svg: ?[]u8 = null;
+    defer if (heap_svg) |b| allocator.free(b);
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_svg = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepth(.svg, .structural),
     };
-    if (bytes_read != file_size) {
-        return ValidationResult.invalidCode(.svg, .incomplete, "file read");
-    }
 
     // Strip DOCTYPE declarations to avoid DTD validation issues
     const preprocessed = stripDoctypeDeclaration(allocator, data);
@@ -2698,33 +2692,18 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
     // For camera RAW formats (ARW, CR2, NEF), try LibRaw first.
     // LibRaw handles proprietary vendor compression that zigimg can't decode.
     if (format == .arw or format == .cr2 or format == .nef) {
-        // Feed libraw from the source — use mmap slice directly when available,
-        // otherwise read the full file into a heap buffer.
-        const buffer = source.getMappedSlice() orelse b: {
-            const file_size = source.getEndPos() catch {
-                return ValidationResult.okWithDepthAndWarning(format, .structural, "could not get file size");
-            };
-            if (file_size > 2 * 1024 * 1024 * 1024) {
-                return ValidationResult.okWithDepthAndWarning(format, .structural, "file too large for RAW buffer decode");
-            }
-            const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-                return ValidationResult.okWithDepthAndWarning(format, .structural, "out of memory for RAW buffer");
-            };
-            source.seekTo(0) catch {
-                allocator.free(buf);
-                return ValidationResult.okWithDepthAndWarning(format, .structural, "could not seek for RAW buffer");
-            };
-            const n = source.readAll(buf) catch {
-                allocator.free(buf);
-                return ValidationResult.okWithDepthAndWarning(format, .structural, "could not read for RAW buffer");
-            };
-            if (n < file_size) {
-                allocator.free(buf);
-                return ValidationResult.invalidCodeWithDepth(format, .truncated, "RAW file", .full);
-            }
-            break :b buf;
+        // Feed libraw from the source. mmap zero-copy when available, else
+        // bounded heap slurp (64 MB cap). Larger files on non-mmap paths fall
+        // back to structural-only with a warning.
+        const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
+            return ValidationResult.okWithDepthAndWarning(format, .structural, "I/O error reading RAW buffer");
+        var heap_ref: ?[]u8 = null;
+        defer if (heap_ref) |b| allocator.free(b);
+        const buffer: []const u8 = switch (slurp) {
+            .mapped => |m| m,
+            .heap => |b| blk: { heap_ref = b; break :blk b; },
+            .too_large => return ValidationResult.okWithDepthAndWarning(format, .structural, "RAW file too large for non-mmap deep decode"),
         };
-        defer if (source.getMappedSlice() == null) allocator.free(@constCast(buffer));
 
         const libraw_result = libraw_validator.validateRawBuffer(buffer);
         if (libraw_result.valid) {
@@ -2774,33 +2753,17 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
         return validateTiff1BitLzw(allocator, source);
     }
 
-    // Feed zigimg from the source — use mmap slice directly when available,
-    // otherwise read into a heap buffer. zigimg.Image.fromMemory() avoids file I/O.
-    const buffer = source.getMappedSlice() orelse b: {
-        const file_size = source.getEndPos() catch {
-            return ValidationResult.okWithDepthAndWarning(format, .structural, "could not get file size");
-        };
-        if (file_size > 2 * 1024 * 1024 * 1024) {
-            return ValidationResult.okWithDepthAndWarning(format, .structural, "file too large for buffered decode");
-        }
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.okWithDepthAndWarning(format, .structural, "out of memory for read buffer");
-        };
-        source.seekTo(0) catch {
-            allocator.free(buf);
-            return ValidationResult.okWithDepthAndWarning(format, .structural, "could not seek for buffered decode");
-        };
-        const n = source.readAll(buf) catch {
-            allocator.free(buf);
-            return ValidationResult.okWithDepthAndWarning(format, .structural, "could not read for buffered decode");
-        };
-        if (n < file_size) {
-            allocator.free(buf);
-            return ValidationResult.invalidCodeWithDepth(format, .truncated, "file", .full);
-        }
-        break :b buf;
+    // Feed zigimg from the source. mmap zero-copy when available, else bounded
+    // heap slurp (64 MB cap). zigimg.Image.fromMemory() needs a flat buffer.
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.okWithDepthAndWarning(format, .structural, "I/O error reading image");
+    var heap_ref: ?[]u8 = null;
+    defer if (heap_ref) |b| allocator.free(b);
+    const buffer: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_ref = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(format, .structural, "image too large for non-mmap deep decode"),
     };
-    defer if (source.getMappedSlice() == null) allocator.free(@constCast(buffer));
 
     // Try to load the image - this performs full decompression and validates the data
     var image = zigimg.Image.fromMemory(allocator, buffer) catch |err| {
@@ -3223,16 +3186,14 @@ pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResu
         return ValidationResult.okWithWarning(.dng, "DNG too large for deep validation");
     }
 
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.okWithWarning(.dng, "DNG: I/O error during deep validation");
     var heap_dng: ?[]u8 = null;
     defer if (heap_dng) |buf| allocator.free(buf);
-    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.okWithWarning(.dng, "DNG: out of memory for deep validation");
-        };
-        heap_dng = buf;
-        const n = source.readAll(buf) catch return ValidationResult.invalidCode(.dng, .failed_to_read, "DNG file");
-        if (n != file_size) return ValidationResult.invalid(.dng, "DNG file read incomplete");
-        break :blk buf[0..n];
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_dng = b; break :blk b; },
+        .too_large => return ValidationResult.okWithWarning(.dng, "DNG too large for non-mmap deep validation"),
     };
 
     // Find and validate embedded JPEGs with proper headers
@@ -3706,15 +3667,14 @@ pub fn validateJpeg2000Deep(allocator: Allocator, source: *FileSource) Validatio
         return ValidationResult.invalidWithDepth(.jpeg2000, "File too large", .full);
     }
 
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_read, "file", .full);
     var heap_j2k: ?[]u8 = null;
     defer if (heap_j2k) |buf| allocator.free(buf);
-    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.jpeg2000, .out_of_memory, "for JPEG 2000", .full);
-        };
-        heap_j2k = buf;
-        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.jpeg2000, .failed_to_read, "file", .full);
-        break :blk buf[0..n];
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_j2k = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.jpeg2000, .structural, "JPEG2000 too large for non-mmap deep decode"),
     };
 
     const result = jpeg2000_validator.validateJpeg2000(data);
@@ -3739,15 +3699,14 @@ pub fn validateJbig2Deep(allocator: Allocator, source: *FileSource) ValidationRe
         return ValidationResult.invalidWithDepth(.jbig2, "File too large", .full);
     }
 
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_read, "file", .full);
     var heap_jbig2: ?[]u8 = null;
     defer if (heap_jbig2) |buf| allocator.free(buf);
-    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.jbig2, .out_of_memory, "for JBIG2", .full);
-        };
-        heap_jbig2 = buf;
-        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.jbig2, .failed_to_read, "file", .full);
-        break :blk buf[0..n];
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_jbig2 = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.jbig2, .structural, "JBIG2 too large for non-mmap deep decode"),
     };
 
     const result = jbig2_decoder.validateJbig2(allocator, data);
@@ -3779,16 +3738,14 @@ pub fn validateHeicDeep(allocator: Allocator, source: *FileSource) ValidationRes
         return ValidationResult.invalidWithDepth(.heic, errmsg.fileTooLargeFor("in-memory validation"), .full);
     }
 
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.invalidWithDepth(.heic, errmsg.failedToRead("file"), .full);
     var heap_buf: ?[]u8 = null;
     defer if (heap_buf) |b| allocator.free(b);
-    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidWithDepth(.heic, "Memory allocation failed", .full);
-        };
-        heap_buf = buf;
-        const n = source.readAll(buf) catch return ValidationResult.invalidWithDepth(.heic, errmsg.failedToRead("file"), .full);
-        if (n != file_size) return ValidationResult.invalidWithDepth(.heic, errmsg.incomplete("file read"), .full);
-        break :blk buf[0..n];
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_buf = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.heic, .structural, "HEIC too large for non-mmap deep decode"),
     };
 
     const result = heic_validator.validateHeicDeepFromBuffer(data);
@@ -3824,16 +3781,14 @@ pub fn validateAvifDeep(allocator: Allocator, source: *FileSource) ValidationRes
         return ValidationResult.invalidWithDepth(.avif, errmsg.fileTooLargeFor("in-memory validation"), .full);
     }
 
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.invalidWithDepth(.avif, errmsg.failedToRead("file"), .full);
     var heap_buf: ?[]u8 = null;
     defer if (heap_buf) |b| allocator.free(b);
-    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidWithDepth(.avif, "Memory allocation failed", .full);
-        };
-        heap_buf = buf;
-        const n = source.readAll(buf) catch return ValidationResult.invalidWithDepth(.avif, errmsg.failedToRead("file"), .full);
-        if (n != file_size) return ValidationResult.invalidWithDepth(.avif, errmsg.incomplete("file read"), .full);
-        break :blk buf[0..n];
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_buf = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.avif, .structural, "AVIF too large for non-mmap deep decode"),
     };
 
     const result = avif_validator.validateAvifDeepFromBuffer(data);
@@ -5008,16 +4963,14 @@ pub fn validateTgaDeep(allocator: Allocator, source: *FileSource) ValidationResu
         return ValidationResult.okWithDepthAndWarning(.tga, .structural, "TGA file too large for deep validation");
     }
 
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.okWithDepthAndWarning(.tga, .structural, "TGA: I/O error during deep validation");
     var heap_tga: ?[]u8 = null;
     defer if (heap_tga) |buf| allocator.free(buf);
-    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.okWithDepthAndWarning(.tga, .structural, "out of memory for TGA data");
-        };
-        heap_tga = buf;
-        const n = source.readAll(buf) catch return ValidationResult.okWithDepth(.tga, .structural);
-        if (n < file_size) return ValidationResult.invalidCodeWithDepth(.tga, .truncated, "TGA file", .structural);
-        break :blk buf[0..n];
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_tga = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.tga, .structural, "TGA too large for non-mmap deep decode"),
     };
 
     const id_length: usize = data[0];

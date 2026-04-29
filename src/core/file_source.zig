@@ -258,6 +258,42 @@ pub const FileSource = struct {
         return full[start..end];
     }
 
+    /// Result type for `getMappedOrSlurp`.
+    pub const SlurpResult = union(enum) {
+        /// Zero-copy mmap'd slice; do NOT free.
+        mapped: []const u8,
+        /// Heap buffer allocated for this call; caller MUST free with `allocator.free(.heap)`.
+        heap: []u8,
+        /// File too large for the bounded fallback; caller should downgrade to structural-only.
+        too_large: u64,
+    };
+
+    /// Get the file content as a flat byte slice, preferring zero-copy mmap.
+    ///
+    /// Resolution order:
+    ///   1. If the source is mmap'd or in-memory → return `.mapped` (zero-copy).
+    ///   2. If file size <= `max_slurp_bytes` → allocate, read fully → return `.heap`.
+    ///   3. Otherwise → return `.too_large` so the caller can downgrade gracefully
+    ///      (typically: structural-only result with a "too large for non-mmap" note).
+    ///
+    /// This codifies the mmap-or-bounded-slurp pattern that was previously open-coded
+    /// across ~10 validators. The `max_slurp_bytes` parameter is the hard ceiling on
+    /// heap usage when we can't mmap (Windows, network mounts, very large files where
+    /// mmap range is exhausted). Use a *small* value (e.g. 64 MB); the goal is to
+    /// bound non-mmap RSS, not to handle the rare large-file-without-mmap case
+    /// efficiently.
+    pub fn getMappedOrSlurp(self: *FileSource, allocator: std.mem.Allocator, max_slurp_bytes: u64) !SlurpResult {
+        if (self.getMappedSlice()) |m| return .{ .mapped = m };
+        const file_size = try self.getEndPos();
+        if (file_size > max_slurp_bytes) return .{ .too_large = file_size };
+        const buf = try allocator.alloc(u8, @intCast(file_size));
+        errdefer allocator.free(buf);
+        try self.seekTo(0);
+        const n = try self.readAll(buf);
+        return .{ .heap = buf[0..n] };
+    }
+
+
     /// Error type for FileSource reader — covers all backing variants.
     pub const ReaderError = std.fs.File.ReadError || error{Unseekable};
 
@@ -404,4 +440,56 @@ test "fromBuffer wraps in-memory data with zero copy" {
     // Ranged access
     const range = source.getMappedRange(3, 6).?;
     try std.testing.expectEqualStrings("memory", range);
+}
+
+test "getMappedOrSlurp returns mapped for in-memory source" {
+    const content = "abcdef";
+    var source = FileSource.fromBuffer(content);
+    defer source.close();
+    const result = try source.getMappedOrSlurp(std.testing.allocator, 1024);
+    try std.testing.expect(result == .mapped);
+    try std.testing.expectEqualStrings(content, result.mapped);
+}
+
+test "getMappedOrSlurp returns too_large when ceiling exceeded" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "0123456789" ** 200; // 2000 bytes
+    tmp.dir.writeFile(.{ .sub_path = "big.bin", .data = content }) catch return;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmp.dir.realpath("big.bin", &path_buf) catch return;
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    if (source.isMapped()) return error.SkipZigTest; // mmap path doesn't exercise the slurp branch
+
+    const result = try source.getMappedOrSlurp(std.testing.allocator, 1024); // ceiling < file size
+    switch (result) {
+        .too_large => |sz| try std.testing.expectEqual(@as(u64, content.len), sz),
+        .heap => |buf| {
+            std.testing.allocator.free(buf);
+            try std.testing.expect(false); // we expected too_large
+        },
+        .mapped => try std.testing.expect(false),
+    }
+}
+
+test "getMappedOrSlurp returns heap when below ceiling and not mapped" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "small file content";
+    tmp.dir.writeFile(.{ .sub_path = "small.bin", .data = content }) catch return;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = tmp.dir.realpath("small.bin", &path_buf) catch return;
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+    // mmap path is the common case here, but it's still a valid result.
+    const result = try source.getMappedOrSlurp(std.testing.allocator, 1024);
+    switch (result) {
+        .mapped => |m| try std.testing.expectEqualStrings(content, m),
+        .heap => |buf| {
+            defer std.testing.allocator.free(buf);
+            try std.testing.expectEqualStrings(content, buf);
+        },
+        .too_large => try std.testing.expect(false),
+    }
 }
