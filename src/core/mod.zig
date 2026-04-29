@@ -20,6 +20,7 @@ pub const types = @import("types.zig");
 pub const errors = @import("errors.zig");
 pub const compat = @import("compat.zig");
 pub const heap = @import("heap.zig");
+pub const memory_budget = @import("memory_budget.zig");
 pub const file_source = @import("file_source.zig");
 pub const format_validation = @import("format_validation.zig");
 pub const test_coverage = @import("test_coverage.zig");
@@ -197,6 +198,7 @@ test "version" {
 // Include integration tests
 test {
     _ = @import("heap.zig");
+    _ = @import("memory_budget.zig");
     _ = @import("file_source.zig");
     _ = @import("test_coverage.zig");
     _ = @import("dts_validator.zig");

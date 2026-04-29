@@ -38,6 +38,11 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         /// Result callback signature - called for each completed task (only when ResultData != void)
         pub const ResultCallback = if (has_results) *const fn (ResultData, ?*anyopaque) void else void;
 
+        /// Optional estimator: returns expected memory cost for this task in bytes.
+        /// Used by the budget gate (if set) to admit/defer tasks. nullable —
+        /// when null, the queue ignores memory budgeting entirely.
+        pub const EstimateFn = *const fn (TaskData, ?*anyopaque) usize;
+
         // Internal queues
         work_queue: WorkQueue,
         result_queue: if (has_results) ResultQueue else void,
@@ -52,6 +57,11 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         // Task execution
         task_fn: TaskFn,
         task_context: ?*anyopaque,
+
+        // Optional memory budget gate. When `budget` and `estimate_fn` are
+        // both set, workers acquire bytes before task_fn and release after.
+        budget: ?*@import("memory_budget.zig").MemoryBudget,
+        estimate_fn: ?EstimateFn,
 
         // Result handling (only when has_results)
         result_callback: if (has_results) ?ResultCallback else void,
@@ -204,6 +214,23 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
             result_callback: if (has_results) ?ResultCallback else void,
             result_context: if (has_results) ?*anyopaque else void,
         ) !*Self {
+            return createWithBudget(allocator, job_count, task_fn, task_context, result_callback, result_context, null, null);
+        }
+
+        /// Same as `create`, plus an optional memory-budget gate. When both
+        /// `budget` and `estimate_fn` are set, workers acquire `estimate_fn(task)`
+        /// bytes from `budget` before task_fn and release after. When either is
+        /// null, no gating happens.
+        pub fn createWithBudget(
+            allocator: Allocator,
+            job_count: usize,
+            task_fn: TaskFn,
+            task_context: ?*anyopaque,
+            result_callback: if (has_results) ?ResultCallback else void,
+            result_context: if (has_results) ?*anyopaque else void,
+            budget: ?*@import("memory_budget.zig").MemoryBudget,
+            estimate_fn: ?EstimateFn,
+        ) !*Self {
             const actual_jobs = @max(@as(usize, 1), job_count);
 
             // Allocate pool on heap
@@ -218,6 +245,8 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                 .shutdown_flag = std.atomic.Value(bool).init(false),
                 .task_fn = task_fn,
                 .task_context = task_context,
+                .budget = budget,
+                .estimate_fn = estimate_fn,
                 .result_callback = if (has_results) result_callback else {},
                 .result_context = if (has_results) result_context else {},
                 .result_thread = if (has_results) null else {},
@@ -304,6 +333,19 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         fn workerMain(self: *Self) void {
             while (true) {
                 const task = self.work_queue.pop() orelse break;
+
+                // Optional budget gate: estimate, then acquire before task_fn.
+                // Released after task_fn returns regardless of how it exited.
+                const reserved: usize = if (self.budget != null and self.estimate_fn != null)
+                    self.estimate_fn.?(task, self.task_context)
+                else
+                    0;
+                if (self.budget) |b| {
+                    if (reserved > 0) b.acquire(reserved);
+                }
+                defer if (self.budget) |b| {
+                    if (reserved > 0) b.release(reserved);
+                };
 
                 // Execute task
                 if (has_results) {

@@ -368,11 +368,30 @@ export fn validate_set_max_memory(bytes: u64) void {
 }
 
 /// Get current maximum memory budget.
+/// Resolution order:
+///   1. Explicit `validate_set_max_memory(bytes)` from FFI consumer (e.g. GUI)
+///   2. `VALIDATE_MEMORY_BUDGET` env var (e.g. set by CLI flag handling)
+///   3. Default: clamp(system_memory / 3, 1 GB, 8 GB)
+/// Floor protects very-low-RAM systems; ceiling prevents pathological
+/// over-allocation on memory-rich machines (a CLI tool shouldn't quietly
+/// eat 32+ GB just because the box has it).
 export fn validate_get_max_memory() u64 {
     if (g_max_memory != 0) return g_max_memory;
+    if (cross_platform_getenv("VALIDATE_MEMORY_BUDGET")) |env_val| {
+        if (core.memory_budget.parseSize(env_val)) |parsed| {
+            return @intCast(parsed);
+        } else |_| {}
+    }
     const sys_mem = getSystemMemory();
     if (sys_mem == 0) return 2 * 1024 * 1024 * 1024; // 2 GiB fallback
-    return sys_mem / 2;
+    return @intCast(core.memory_budget.defaultBudget(@intCast(sys_mem)));
+}
+
+/// Cross-platform getenv that returns null on Windows where std.posix.getenv
+/// is unavailable.
+fn cross_platform_getenv(name: [:0]const u8) ?[]const u8 {
+    if (@import("builtin").os.tag == .windows) return null;
+    return std.posix.getenv(name);
 }
 
 fn getSystemMemory() u64 {
@@ -568,6 +587,21 @@ export fn validate_set_begin_callback(callback: BeginCallback, ctx: ?*anyopaque)
 }
 
 /// Execute a single validation task
+/// Estimate per-task memory footprint for the budget gate.
+/// Uses stat.size as a baseline (caller's working-set proxy). Files we
+/// can't stat get a conservative 1 MB estimate so they don't escape the
+/// gate. The estimate is intentionally simple — it caps *intent*, not
+/// *fact*. Real usage may be smaller (mmap'd zero-copy paths) or larger
+/// (PDF stream blowup, libavif internal threading); the existing
+/// large-file semaphore + RSS pressure throttle remain as belt-and-
+/// suspenders against the upside.
+fn estimateBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) usize {
+    const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return 1024 * 1024));
+    const path_ptr = ctx.paths[task.index] orelse return 1024 * 1024;
+    const path_slice = std.mem.span(path_ptr);
+    const stat = std.fs.cwd().statFile(path_slice) catch return 1024 * 1024;
+    return @intCast(stat.size);
+}
 fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     // Check interrupt flag before starting
     if (g_interrupt_flag.load(.seq_cst)) {
@@ -674,15 +708,22 @@ export fn validate_batch(
         .ids = ids orelse &[_]u32{}, // Use empty array if null, tasks will use index
     };
 
+    // Memory budget: gates worker dequeue. estimate_fn returns stat.size,
+    // budget admits up to total bytes worth of work concurrently. Single
+    // file > total budget gets admitted alone (starvation rule).
+    var mem_budget = core.memory_budget.MemoryBudget.init(@intCast(validate_get_max_memory()));
+
     // Use ThreadPool for parallel execution
     const Pool = thread_pool.ThreadPool(BatchTask, void);
-    const pool = Pool.create(
+    const pool = Pool.createWithBudget(
         allocator,
         actual_threads,
         executeBatchTask,
         @ptrCast(&batch_ctx),
         {},
         {},
+        &mem_budget,
+        estimateBatchTask,
     ) catch {
         errors.setLastError(.internal_out_of_memory, "Failed to create thread pool", .{});
         return 3; // VALIDATE_ERR_OUT_OF_MEMORY
