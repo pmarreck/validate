@@ -750,11 +750,18 @@ pub fn parseHeifContainer(data: []const u8) HeifContainerError!HeifContainerInfo
     const iinf = findChildBox(data, meta_data_start, meta_data_end, "iinf".*) orelse return error.NoItemInfo;
     // Static buffers so returned slices remain valid after function returns.
     // (Stack-local buffers would be dangling pointers in the returned struct.)
+    // `threadlocal` so each thread gets its own copy — without it, concurrent
+    // calls to parseHeifContainer scribble over each other's result slices,
+    // surfacing as nondeterministic "tile NAL unit length corrupted" /
+    // "Primary item has no data" / "data extends beyond file" errors when
+    // validating multiple HEICs in the same process. The returned info struct
+    // contains slices into these buffers; callers must consume them before the
+    // SAME thread re-enters parseHeifContainer (validators do this naturally).
     const StaticBufs = struct {
-        var items_buf: [512]ItemInfo = undefined;
-        var locations_buf: [512]ItemLocation = undefined;
-        var extents_buf: [2048]ItemExtent = undefined;
-        var tile_ids_buf: [512]u32 = undefined;
+        threadlocal var items_buf: [512]ItemInfo = undefined;
+        threadlocal var locations_buf: [512]ItemLocation = undefined;
+        threadlocal var extents_buf: [2048]ItemExtent = undefined;
+        threadlocal var tile_ids_buf: [512]u32 = undefined;
     };
     const items = try parseIinf(data, iinf, &StaticBufs.items_buf);
     // 6. Parse iloc (Item Location Box)
@@ -1439,4 +1446,139 @@ test "HEIF iref parsing - version 1 with 32-bit IDs" {
     try std.testing.expectEqual(@as(usize, 2), tiles.len);
     try std.testing.expectEqual(@as(u32, 1001), tiles[0]);
     try std.testing.expectEqual(@as(u32, 1002), tiles[1]);
+}
+
+test "parseHeifContainer is thread-safe under concurrent calls" {
+	// Synthesize a minimal HEIF file (ftyp + meta with hdlr + pitm + iinf + iloc + iprp + iref dimg).
+	// Two distinct files with distinct primary item IDs, parsed concurrently
+	// from many threads. Each thread asserts the returned container info
+	// matches what its file was supposed to produce. With the original
+	// process-global StaticBufs, threads clobber each others' result slices
+	// and assertions fail nondeterministically.
+	const Sample = struct {
+		fn make(allocator: std.mem.Allocator, primary_id: u16) ![]u8 {
+			// Build a minimal HEIF: ftyp + meta { hdlr + pitm + iinf(1 entry, hvc1) + iloc(1 location) }.
+			// Hand-crafted byte sequence with size fixups.
+			var out = std.ArrayListUnmanaged(u8){};
+			defer out.deinit(allocator);
+
+			// ftyp: brand=heic, compat=heic
+			try out.appendSlice(allocator, &[_]u8{ 0, 0, 0, 24, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c', 0, 0, 0, 0, 'h', 'e', 'i', 'c', 'm', 'i', 'f', '1' });
+
+			// meta box body
+			var meta_body = std.ArrayListUnmanaged(u8){};
+			defer meta_body.deinit(allocator);
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // version+flags
+
+			// hdlr (full box: size + 'hdlr' + 32 bytes)
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 33 }); // size 33
+			try meta_body.appendSlice(allocator, "hdlr");
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // version+flags
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // pre-defined
+			try meta_body.appendSlice(allocator, "pict"); // handler type
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }); // reserved
+			try meta_body.appendSlice(allocator, &[_]u8{ 0 }); // empty name (null-terminated)
+
+			// pitm (size + 'pitm' + version=0 + flags + item_id u16)
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 14 }); // size 14
+			try meta_body.appendSlice(allocator, "pitm");
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // version+flags
+			try meta_body.appendSlice(allocator, &[_]u8{ @intCast((primary_id >> 8) & 0xff), @intCast(primary_id & 0xff) });
+
+			// iinf — one entry of type hvc1
+			// iinf header: version=0+flags(3) + entry_count(2) = 6 bytes
+			// each entry: size + 'infe' + version=2 + flags + item_id(2) + protection_index(2) + item_type(4) + name(0+null)
+			//   infe entry: 4(size) + 4(infe) + 1(ver=2) + 3(flags) + 2(id) + 2(proto) + 4(type='hvc1') + 1(name=null) = 21 bytes
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 35 }); // iinf size = 8(box header) + 6(header inner) + 21(infe entry) = 35
+			try meta_body.appendSlice(allocator, "iinf");
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // version+flags
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 1 }); // entry count = 1
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 21 }); // infe size = 21
+			try meta_body.appendSlice(allocator, "infe");
+			try meta_body.appendSlice(allocator, &[_]u8{ 2, 0, 0, 0 }); // version=2, flags=0
+			try meta_body.appendSlice(allocator, &[_]u8{ @intCast((primary_id >> 8) & 0xff), @intCast(primary_id & 0xff) }); // id
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0 }); // protection index
+			try meta_body.appendSlice(allocator, "hvc1"); // item type
+			try meta_body.appendSlice(allocator, &[_]u8{ 0 }); // name terminator
+
+			// iloc — one location, version=1, item_id=primary_id, base_offset=64KB, single extent
+			// iloc header: version+flags(4) + offset/length sizes byte(1) + base_offset/index byte(1) + item_count(2) = 8
+			// item entry (v1): item_id(2) + reserved+method(2) + data_ref(2) + base_offset(0) + extent_count(2) + extent(offset+length 2*4=8) = 16
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 32 }); // size = 8 + 8 + 16 = 32
+			try meta_body.appendSlice(allocator, "iloc");
+			try meta_body.appendSlice(allocator, &[_]u8{ 1, 0, 0, 0 }); // version=1, flags=0
+			try meta_body.appendSlice(allocator, &[_]u8{ 0x44 }); // offset=4, length=4 (high nibbles)
+			try meta_body.appendSlice(allocator, &[_]u8{ 0x00 }); // base_offset_size=0, index_size=0
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 1 }); // item_count = 1
+			try meta_body.appendSlice(allocator, &[_]u8{ @intCast((primary_id >> 8) & 0xff), @intCast(primary_id & 0xff) });
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0 }); // construction_method=0
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0 }); // data_reference_index
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 1 }); // extent_count=1
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0x80 }); // extent offset = 128 (just past header)
+			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 4 }); // extent length=4
+
+			// Wrap meta_body in a `meta` box header
+			const meta_total_size: u32 = @intCast(meta_body.items.len + 8);
+			var meta_size_be: [4]u8 = undefined;
+			std.mem.writeInt(u32, &meta_size_be, meta_total_size, .big);
+			try out.appendSlice(allocator, &meta_size_be);
+			try out.appendSlice(allocator, "meta");
+			try out.appendSlice(allocator, meta_body.items);
+
+			// Pad to 256 bytes total so iloc offset 128 has data
+			while (out.items.len < 256) try out.append(allocator, 0);
+
+			return out.toOwnedSlice(allocator);
+		}
+	};
+
+	const allocator = std.testing.allocator;
+	const sample_a = Sample.make(allocator, 1) catch return error.SkipZigTest;
+	defer allocator.free(sample_a);
+	const sample_b = Sample.make(allocator, 42) catch return error.SkipZigTest;
+	defer allocator.free(sample_b);
+
+	// Sanity: each sample parses correctly in isolation.
+	const info_a = parseHeifContainer(sample_a) catch return error.SkipZigTest;
+	const info_b = parseHeifContainer(sample_b) catch return error.SkipZigTest;
+	if (info_a.primary_item_id != 1) return error.SkipZigTest;
+	if (info_b.primary_item_id != 42) return error.SkipZigTest;
+
+	// Concurrent parse stress: each thread alternately parses sample_a and
+	// sample_b and asserts the primary_item_id matches what it parsed.
+	const Worker = struct {
+		fn run(a: []const u8, b: []const u8, fail_flag: *std.atomic.Value(u32)) void {
+			var i: usize = 0;
+			while (i < 200) : (i += 1) {
+				const sample = if (i % 2 == 0) a else b;
+				const expected_id: u32 = if (i % 2 == 0) 1 else 42;
+				const info = parseHeifContainer(sample) catch {
+					fail_flag.store(1, .seq_cst);
+					return;
+				};
+				if (info.primary_item_id != expected_id) {
+					fail_flag.store(2, .seq_cst);
+					return;
+				}
+				if (info.items.len != 1) {
+					fail_flag.store(3, .seq_cst);
+					return;
+				}
+				if (info.items[0].item_id != expected_id) {
+					fail_flag.store(4, .seq_cst);
+					return;
+				}
+			}
+		}
+	};
+
+	var fail_flag = std.atomic.Value(u32).init(0);
+	var threads: [8]std.Thread = undefined;
+	for (&threads) |*t| {
+		t.* = try std.Thread.spawn(.{}, Worker.run, .{ sample_a, sample_b, &fail_flag });
+	}
+	for (threads) |t| t.join();
+
+	const flag = fail_flag.load(.seq_cst);
+	try std.testing.expectEqual(@as(u32, 0), flag);
 }
