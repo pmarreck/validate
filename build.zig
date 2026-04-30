@@ -243,6 +243,13 @@ pub fn build(b: *std.Build) void {
         });
     }
 
+    // bzip2z for in-memory bzip2 validation (clean-room Zig implementation)
+    const bzip2z_dep = b.dependency("bzip2z", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const bzip2z_mod = bzip2z_dep.module("bzip2z");
+
     // compact_pro for in-memory Compact Pro (.cpt) archive validation (C FFI)
     const compact_pro_dep = b.dependency("compact_pro", .{
         .target = target,
@@ -286,6 +293,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "cj5", .module = cj5_mod }, // JSON5 validation (MIT, septag/cj5 fork)
             .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (LGPL-2.1)
             .{ .name = "rarz", .module = rarz_mod }, // RAR clean-room parser/validator
+            .{ .name = "bzip2z", .module = bzip2z_mod }, // bzip2 clean-room decoder/encoder
             .{ .name = "progrez", .module = progrez_module }, // Progress bar rendering (pure-Zig)
             .{ .name = "mini_blar", .module = mini_blar_mod }, // BLIP archive reader/verifier
         },
