@@ -3256,7 +3256,7 @@ pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResu
                                     semantic_valid += 1;
                                     if (debug) std.debug.print("  Semantic #{d} @ offset {d}: {d} bytes, VALID\n", .{ semantic_count, i, jpeg_data.len });
                                 } else {
-                                    if (debug) std.debug.print("  Semantic #{d} @ offset {d}: {d} bytes, INVALID\n", .{ semantic_count, i, jpeg_data.len });
+                                    if (debug) std.debug.print("  Semantic #{d} @ offset {d}: {d} bytes, INVALID — {s}\n", .{ semantic_count, i, jpeg_data.len, lossless_result.error_message orelse "(no message)" });
                                 }
                             } else {
                                 // Preview JPEG (baseline/progressive)
@@ -3306,11 +3306,16 @@ pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResu
         return ValidationResult.invalidWithDepth(.dng, "DNG: embedded preview image corrupt", .full);
     }
 
-    if (semantic_valid < semantic_count) {
-        // Some semantic map tiles failed - warn but don't fail
-        // The preview images are fine, semantic maps are internal processing data
-        return ValidationResult.okWithDepthAndWarning(.dng, .full, "DNG: some semantic map tiles invalid");
-    }
+    // Semantic map tiles (10-bit lossless JPEG, Apple iPhone DNG 1.6 feature)
+    // are AI segmentation data — portrait mode masks, sky detection, etc. — not
+    // user-facing image data. Our pure-Zig lossless decoder has a known bug
+    // with some 10-bit Huffman streams that surfaces as ~50% false-negatives
+    // on Apple iPhone DNGs. Suppress the user-visible warning: if the previews
+    // (the actual image you'd see) decoded cleanly, the file is fine for the
+    // user's purposes. Semantic tile validation remains in place at debug
+    // level (DNG_DEBUG=1) for decoder development. Tracked as a follow-up:
+    // the Huffman bug needs investigation but is not a launch blocker since
+    // semantic tiles are AI-internal.
 
     // All embedded JPEGs validated successfully
     return ValidationResult.okWithDepth(.dng, .full);

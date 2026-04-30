@@ -201,6 +201,7 @@ test {
     _ = @import("heap.zig");
     _ = @import("memory_budget.zig");
     _ = @import("racetrack.zig");
+    _ = @import("concurrent_smoke.zig");
     _ = @import("file_source.zig");
     _ = @import("test_coverage.zig");
     _ = @import("dts_validator.zig");
