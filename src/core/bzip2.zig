@@ -2428,6 +2428,44 @@ pub fn decompress(allocator: Allocator, input: []const u8) ![]u8 {
     return decompressInternal(allocator, input, true);
 }
 
+/// Validate bzip2 data without materializing decompressed output.
+///
+/// Same per-block + stream CRC verification as `decompress`, but emitted
+/// bytes are discarded as they're produced rather than accumulated. Memory
+/// is bounded by the per-block working buffer (`MAX_EXPANDED_BLOCK_SIZE`)
+/// regardless of the decompressed file size — useful for validating large
+/// bzip2 streams (multi-GB tarballs, etc.) without OOM risk.
+///
+/// Returns the same error codes as `decompress`. Use this in validation
+/// contexts where you only care about "did it decode cleanly?" not the
+/// bytes themselves.
+pub fn validateStream(allocator: Allocator, input: []const u8) Error!void {
+    var decompressor = try Decompressor.init(allocator);
+    defer decompressor.deinit();
+
+    var input_stream = std.io.fixedBufferStream(input);
+    var discard = DiscardWriter{};
+    try decompressor.decompressInternal(input_stream.reader(), discard.writer(), true);
+}
+
+/// Writer adapter that discards all bytes written to it. Used by
+/// `validateStream` for memory-bounded bzip2 validation.
+const DiscardWriter = struct {
+    bytes_written: u64 = 0,
+
+    pub const WriteError = error{};
+    pub const Writer = std.io.GenericWriter(*DiscardWriter, WriteError, write);
+
+    fn write(self: *DiscardWriter, bytes: []const u8) WriteError!usize {
+        self.bytes_written += bytes.len;
+        return bytes.len;
+    }
+
+    pub fn writer(self: *DiscardWriter) Writer {
+        return .{ .context = self };
+    }
+};
+
 /// Decompress without CRC verification (for diagnostics).
 pub fn decompressNoCrc(allocator: Allocator, input: []const u8) ![]u8 {
     return decompressInternal(allocator, input, false);

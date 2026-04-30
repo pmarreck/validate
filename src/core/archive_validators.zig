@@ -2492,9 +2492,11 @@ pub fn validateBzip2Deep(allocator: Allocator, source: *FileSource) ValidationRe
         return ValidationResult.invalidCodeWithDepth(.bzip2, .invalid_value, "block size", .structural);
     }
 
-    // Attempt full decompression with CRC verification
-    // Our bzip2 decompressor checks both block CRCs and stream CRC
-    const decompressed = bzip2.decompress(allocator, compressed_data) catch |err| {
+    // Streaming validation: pumps blocks through the decoder with the
+    // decompressed bytes discarded as they're emitted. Verifies per-block
+    // and stream CRCs without materializing the full decompressed output —
+    // memory bounded by MAX_EXPANDED_BLOCK_SIZE regardless of file size.
+    bzip2.validateStream(allocator, compressed_data) catch |err| {
         if (std.process.hasEnvVarConstant("BZIP2_DEBUG")) {
             std.debug.print("bzip2 decompress error: {s}\n", .{@errorName(err)});
         }
@@ -2504,6 +2506,7 @@ pub fn validateBzip2Deep(allocator: Allocator, source: *FileSource) ValidationRe
             error.InvalidMagic => ValidationResult.invalidCodeWithDepth(.bzip2, .invalid_value, "magic number", .structural),
             error.InvalidBlockSize => ValidationResult.invalidCodeWithDepth(.bzip2, .invalid_value, "block size", .structural),
             error.InvalidBlockHeader => ValidationResult.invalidCodeWithDepth(.bzip2, .invalid_value, "block header", .structural),
+            error.InvalidFooter => ValidationResult.invalidCodeWithDepth(.bzip2, .invalid_value, "footer", .structural),
             error.CorruptData => ValidationResult.invalidWithDepth(.bzip2, "Corrupt compressed data", .structural),
             error.HuffmanOverflow => ValidationResult.invalidWithDepth(.bzip2, "Huffman table overflow", .structural),
             error.InvalidSelector => ValidationResult.invalidCodeWithDepth(.bzip2, .invalid_value, "selector", .structural),
@@ -2511,24 +2514,17 @@ pub fn validateBzip2Deep(allocator: Allocator, source: *FileSource) ValidationRe
             error.InvalidBwtIndex => ValidationResult.invalidCodeWithDepth(.bzip2, .invalid_value, "BWT index", .structural),
             error.OutOfMemory => ValidationResult.invalidCodeWithDepth(.bzip2, .out_of_memory, "during decompression", .structural),
             // OutputOverflow indicates our pure-Zig decoder hit a per-block
-            // safety cap. Most commonly seen on bzip2-wrapped DMGs and other
-            // composite formats where the bzip2 stream is followed by
-            // unrelated data; can also surface on legit bzip2 streams that
-            // hit a known decoder bug (RUNA/RUNB desync on level-1 streams).
-            // The file's bzip2 magic is valid and at least some blocks
-            // decoded — surface as structural-only with a warning rather
-            // than a hard fail. Real corruption still fires above.
+            // safety cap. See bzip2z/inbox/level1-runa-runb-desync-2026-04-30.md
+            // for the root-cause investigation. Real corruption fires above.
             error.OutputOverflow => blk: {
                 var w = ValidationResult.okWithDepth(.bzip2, .structural);
                 w.warning_message = "Bzip2 decoder hit per-block safety cap mid-stream (file may still be usable; consider bzip2-wrapped DMG or pbzip2 multi-stream)";
                 break :blk w;
             },
-            else => ValidationResult.invalidWithDepth(.bzip2, "Decompression failed", .structural),
         };
     };
-    defer allocator.free(decompressed);
 
-    // Decompression succeeded with CRC verification
+    // Streaming validation succeeded with CRC verification — no buffer to free.
     return ValidationResult.okWithDepth(.bzip2, .full);
 }
 
