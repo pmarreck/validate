@@ -67,9 +67,15 @@ pub const FOOTER_MAGIC: u48 = 0x177245385090;
 /// Maximum block size (900KB for level 9)
 pub const MAX_BLOCK_SIZE: usize = 900_000;
 
-/// Maximum expanded block size (to account for RLE expansion of ~1.25x)
-/// 4 bytes can expand to 5 bytes (4 chars + count 0)
-pub const MAX_EXPANDED_BLOCK_SIZE: usize = 1_200_000;
+/// Maximum expanded block size. Bzip2 spec caps block size at level*100K
+/// (900K for level=9, the highest), but in practice some real-world
+/// encoders produce streams whose intermediate (post-BWT, pre-RLE-decode)
+/// state exceeds the nominal level*100K bound. Raised from the original
+/// 1.2 MB to 4 MB to accept these streams while still capping pathological
+/// "decompression bomb" scenarios. This matches roughly 4× the nominal
+/// max bzip2 block. If a single block's decoded data exceeds 4 MB, that
+/// is genuinely anomalous and `error.OutputOverflow` is appropriate.
+pub const MAX_EXPANDED_BLOCK_SIZE: usize = 4 * 1024 * 1024;
 
 /// Maximum number of Huffman groups
 pub const MAX_GROUPS: usize = 6;
