@@ -250,6 +250,14 @@ pub fn build(b: *std.Build) void {
     });
     const bzip2z_mod = bzip2z_dep.module("bzip2z");
 
+    // zstdz: Zig-enabled fork of Facebook's BSD zstd C library (Peter-controlled,
+    // patches/CVE fixes flow here). Replaces std.compress.zstd usage in validators.
+    const zstdz_dep = b.dependency("zstdz", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const zstdz_mod = zstdz_dep.module("zstd");
+
     // compact_pro for in-memory Compact Pro (.cpt) archive validation (C FFI)
     const compact_pro_dep = b.dependency("compact_pro", .{
         .target = target,
@@ -294,6 +302,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (LGPL-2.1)
             .{ .name = "rarz", .module = rarz_mod }, // RAR clean-room parser/validator
             .{ .name = "bzip2z", .module = bzip2z_mod }, // bzip2 clean-room decoder/encoder
+            .{ .name = "zstd", .module = zstdz_mod }, // zstd via zstdz (Peter-controlled fork of Facebook BSD zstd)
             .{ .name = "progrez", .module = progrez_module }, // Progress bar rendering (pure-Zig)
             .{ .name = "mini_blar", .module = mini_blar_mod }, // BLIP archive reader/verifier
         },

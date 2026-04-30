@@ -22,7 +22,7 @@ const zlib = @import("zlib.zig");
 const bzip2 = @import("bzip2.zig");
 const sevenz_validator = @import("sevenz_validator.zig");
 const errmsg = @import("error_messages.zig");
-const XxHash64 = std.hash.XxHash64;
+const zstdz = @import("zstd");
 const rarz = @import("rarz");
 const c_compact_pro = @cImport({
     @cInclude("compact_pro.h");
@@ -2628,18 +2628,24 @@ pub fn validateXzDeep(allocator: Allocator, source: *FileSource) ValidationResul
 
 // ============ Zstd Deep Validation ============
 
-/// Deep Zstandard validation by streaming decompression.
-/// Zstd has optional xxHash checksum that is verified during decompression.
+/// Deep Zstandard validation using the zstdz dep (Peter-controlled fork of
+/// Facebook's reference BSD-licensed zstd C library).
+///
+/// Streaming decompression with output discarded as it's emitted — memory
+/// bounded by ZSTD_DStream{In,Out}Size() (~128 KB each, regardless of file
+/// size). The library performs xxHash64 content-checksum verification
+/// internally when Content_Checksum_Flag is set in the frame header; on
+/// mismatch, ZSTD_decompressStream returns a checksum error.
 pub fn validateZstdDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_get, "file size", .structural);
     };
 
-    if (file_size < 8) { // Minimum Zstd frame
+    if (file_size < 8) {
         return ValidationResult.invalidWithDepth(.zstd, "File too small", .structural);
     }
 
-    // Get bytes (zero-copy from mmap, or read into heap buffer)
+    // Get bytes (zero-copy from mmap, or read into heap buffer).
     var heap_zstd: ?[]u8 = null;
     defer if (heap_zstd) |b| allocator.free(b);
     const bytes: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
@@ -2656,151 +2662,57 @@ pub fn validateZstdDeep(allocator: Allocator, source: *FileSource) ValidationRes
         return ValidationResult.invalidWithDepth(.zstd, "File too small for frame header", .structural);
     }
 
-    // Check Content_Checksum_Flag in the Frame_Header_Descriptor (byte 4)
-    const has_checksum = (bytes[4] & 0x04) != 0;
-
-    var expected_checksum: u32 = 0;
-    if (has_checksum) {
-        if (bytes.len < 12) {
-            return ValidationResult.invalidWithDepth(.zstd, "File too small for checksum", .structural);
-        }
-        expected_checksum = std.mem.readInt(u32, bytes[bytes.len - 4 ..][0..4], .little);
+    const dctx = zstdz.c.ZSTD_createDCtx();
+    if (dctx == null) {
+        return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_allocate, "zstd context", .structural);
     }
+    defer _ = zstdz.c.ZSTD_freeDCtx(dctx);
 
-    // Create reader from bytes (new Zig 0.15 std.io.Reader interface)
-    var bytes_reader = std.io.Reader.fixed(bytes);
-
-    // Initialize Zstd decompressor in direct mode (empty reader buffer).
-    // In direct mode, decompressed data flows directly to the Writer buffer.
-    var zstd_stream: std.compress.zstd.Decompress = .init(&bytes_reader, &.{}, .{});
-
-    // Initialize xxHash64 hasher for content checksum verification
-    var hasher = XxHash64.init(0);
-
-    // Allocate writer buffer: must be >= window_len + block_size_max for direct mode.
-    const writer_buf_size = std.compress.zstd.default_window_len + (1 << 17); // 8MB + 128KB
-    const writer_buf = allocator.alloc(u8, writer_buf_size) catch {
-        return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_allocate, "decompression buffer", .structural);
+    const out_size: usize = zstdz.c.ZSTD_DStreamOutSize();
+    const out_buf = allocator.alloc(u8, out_size) catch {
+        return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_allocate, "output buffer", .structural);
     };
-    defer allocator.free(writer_buf);
+    defer allocator.free(out_buf);
 
-    // Create a hashing writer that feeds decompressed data to xxHash64
-    var hashing_state = HashingWriter{
-        .hasher = &hasher,
-        .has_checksum = has_checksum,
-        .total_decompressed = 0,
-        .writer = undefined,
-    };
-    hashing_state.writer = .{
-        .vtable = &.{
-            .drain = HashingWriter.drain,
-            .sendFile = discardSendFile,
-        },
-        .buffer = writer_buf,
+    var input = zstdz.c.ZSTD_inBuffer{
+        .src = bytes.ptr,
+        .size = bytes.len,
+        .pos = 0,
     };
 
-    // Decompress using streamRemaining pattern: loop until EndOfStream.
-    // In direct mode, stream() writes decompressed blocks to the Writer.
     var total_decompressed: u64 = 0;
-    while (true) {
-        const bytes_written = zstd_stream.reader.stream(&hashing_state.writer, .unlimited) catch |err| switch (err) {
-            error.EndOfStream => break,
-            error.ReadFailed => return ValidationResult.invalidWithDepth(.zstd, "Decompression failed - corrupt data", .full),
-            error.WriteFailed => return ValidationResult.invalidWithDepth(.zstd, "Write failed during validation", .structural),
+    var last_ret: usize = 0;
+    while (input.pos < input.size) {
+        var output = zstdz.c.ZSTD_outBuffer{
+            .dst = out_buf.ptr,
+            .size = out_size,
+            .pos = 0,
         };
-        total_decompressed += bytes_written;
 
-        // Zip bomb protection
+        const ret = zstdz.c.ZSTD_decompressStream(dctx, &output, &input);
+        if (zstdz.c.ZSTD_isError(ret) != 0) {
+            // The library returns a unique error code for checksum mismatches;
+            // we map all decompression errors to a generic FAIL since the
+            // file's content is corrupt regardless of the specific reason.
+            return ValidationResult.invalidWithDepth(.zstd, "Decompression failed - corrupt data", .full);
+        }
+        last_ret = ret;
+        total_decompressed += output.pos;
+
+        // Zip-bomb protection
         if (total_decompressed > format_validation.MAX_DECOMPRESSED_SIZE) {
             return ValidationResult.invalidCodeMsgWithDepth(.zstd, .exceeds_bounds, "Decompressed size", "Decompressed size exceeds limit", .structural);
         }
     }
 
-    // Hash any remaining data in the writer buffer that wasn't drained
-    if (has_checksum and hashing_state.writer.end > 0) {
-        hasher.update(hashing_state.writer.buffer[0..hashing_state.writer.end]);
+    // last_ret == 0 means a complete frame was decoded; non-zero means
+    // partial. If we consumed all input without reaching zero, the stream
+    // is truncated.
+    if (last_ret != 0) {
+        return ValidationResult.invalidWithDepth(.zstd, "Truncated zstd frame", .structural);
     }
 
-    // Verify checksum if present
-    if (has_checksum) {
-        const computed = hasher.final();
-        const computed_lower32: u32 = @truncate(computed);
-        if (computed_lower32 != expected_checksum) {
-            return ValidationResult.invalidCodeWithDepth(.zstd, .checksum_mismatch, "xxHash64 content checksum mismatch", .full);
-        }
-    }
-
-    // Successfully decompressed and verified
     return ValidationResult.okWithDepth(.zstd, .full);
-}
-
-/// Writer context that hashes decompressed data with xxHash64 while discarding it.
-/// Uses @fieldParentPtr to recover the context from the embedded Writer.
-const HashingWriter = struct {
-    hasher: *XxHash64,
-    has_checksum: bool,
-    total_decompressed: u64,
-    writer: std.Io.Writer,
-
-    fn drain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
-        const self: *HashingWriter = @alignCast(@fieldParentPtr("writer", w));
-
-        // Hash buffer contents first (buffer[0..end] is consumed before data)
-        if (self.has_checksum and w.end > 0) {
-            self.hasher.update(w.buffer[0..w.end]);
-        }
-        self.total_decompressed += w.end;
-
-        var total: usize = 0;
-
-        // Hash and count each data slice
-        for (data[0 .. data.len - 1]) |slice| {
-            if (self.has_checksum) {
-                self.hasher.update(slice);
-            }
-            total += slice.len;
-        }
-
-        // Handle splatted last element
-        const last = data[data.len - 1];
-        if (self.has_checksum and splat > 0) {
-            for (0..splat) |_| {
-                self.hasher.update(last);
-            }
-        }
-        total += last.len * splat;
-
-        self.total_decompressed += total;
-
-        // Clear the buffer since we're discarding
-        w.end = 0;
-
-        return total;
-    }
-};
-
-/// Discard drain function for validation (accepts data and throws it away)
-pub fn discardDrain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
-    // Just count the bytes without actually storing them
-    var total: usize = 0;
-    for (data[0 .. data.len - 1]) |slice| {
-        total += slice.len;
-    }
-    // Add the splatted pattern
-    total += data[data.len - 1].len * splat;
-
-    // Clear the buffer since we're discarding
-    w.end = 0;
-
-    return total;
-}
-
-/// Discard sendFile function (not supported for discarding writer)
-pub fn discardSendFile(w: *std.Io.Writer, file_reader: *std.fs.File.Reader, limit: std.Io.Limit) std.Io.Writer.FileError!usize {
-    _ = w;
-    _ = file_reader;
-    _ = limit;
-    return error.Unimplemented;
 }
 
 // ============ 7-Zip Deep Validation ============

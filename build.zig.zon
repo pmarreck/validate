@@ -91,6 +91,10 @@
             .url = "https://github.com/pmarreck/bzip2z/archive/12a325198d3c13b8da31819702401645c18c2209.tar.gz",
             .hash = "bzip2z-0.1.0-m5NdloQFCABL96oBStCyxJImEiUKlyVXTG4nIY9PvoHo",
         },
+        .zstdz = .{
+            .url = "https://github.com/pmarreck/zstdz/archive/c79c202b8d6512a72a5b0b65ad771adfda66d301.tar.gz",
+            .hash = "zstdz-1.6.0-yDWjzshaNABOkMCYfrjAhKjPt46sKjdR9cLB-XgzeTt4",
+        },
         .compact_pro = .{
             .url = "https://github.com/pmarreck/compact_pro/archive/8999e8d74b00e0ec0394708071eaeb787ea0ae57.tar.gz",
             .hash = "compact_pro-0.1.0-G2wo9a_hAgDI-5kULhRLEDRGQWyUYpYnfSuMyJEkGzf4",
