@@ -258,6 +258,14 @@ pub fn build(b: *std.Build) void {
     });
     const zstdz_mod = zstdz_dep.module("zstd");
 
+    // par2z: PAR2 packet structural verification (Peter-controlled cleanroom Zig).
+    // We use only the `core` module for packet header + MD5 verification.
+    const par2z_dep = b.dependency("par2z", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const par2z_core_mod = par2z_dep.module("core");
+
     // compact_pro for in-memory Compact Pro (.cpt) archive validation (C FFI)
     const compact_pro_dep = b.dependency("compact_pro", .{
         .target = target,
@@ -303,6 +311,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "rarz", .module = rarz_mod }, // RAR clean-room parser/validator
             .{ .name = "bzip2z", .module = bzip2z_mod }, // bzip2 clean-room decoder/encoder
             .{ .name = "zstd", .module = zstdz_mod }, // zstd via zstdz (Peter-controlled fork of Facebook BSD zstd)
+            .{ .name = "par2_core", .module = par2z_core_mod }, // PAR2 packet parser via par2z
             .{ .name = "progrez", .module = progrez_module }, // Progress bar rendering (pure-Zig)
             .{ .name = "mini_blar", .module = mini_blar_mod }, // BLIP archive reader/verifier
         },

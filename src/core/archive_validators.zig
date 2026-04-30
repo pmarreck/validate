@@ -24,6 +24,7 @@ const sevenz_validator = @import("sevenz_validator.zig");
 const errmsg = @import("error_messages.zig");
 const zstdz = @import("zstd");
 const rarz = @import("rarz");
+const par2_core = @import("par2_core");
 const c_compact_pro = @cImport({
     @cInclude("compact_pro.h");
 });
@@ -897,106 +898,78 @@ pub fn validateTar(file: *FileSource) ValidationResult {
 
 // ============ PAR2 Validator ============
 
-/// Validate PAR2 parity archive structure.
+/// Validate PAR2 parity archive structure using par2z's packet parser.
+///
 /// PAR2 files contain packets with 64-byte headers followed by packet data.
-/// Each packet header includes: magic (8 bytes), length (8 bytes), MD5 (16 bytes),
-/// recovery set ID (16 bytes), and packet type (16 bytes).
-pub fn validatePar2(file: *FileSource) ValidationResult {
-    // Reset to start
+/// par2z's `core.packet.verifyPacketHash` parses the header and verifies the
+/// packet's MD5 digest in one shot. We loop through up to 100 packets,
+/// reading each into a heap buffer (since verifyPacketHash takes []const u8)
+/// and verifying via par2z. This delegates packet structure + spec compliance
+/// to the cleanroom Zig PAR2 implementation rather than duplicating it here.
+pub fn validatePar2(allocator: Allocator, file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.par2, .failed_to_seek, "to start");
 
     const file_size = file.getEndPos() catch {
         return ValidationResult.invalidCode(.par2, .failed_to_get, "file size");
     };
 
-    // Minimum PAR2 file is at least one packet header (64 bytes)
     if (file_size < 64) {
         return ValidationResult.invalidCode(.par2, .file_too_small, "PAR2 packet");
     }
 
-    // PAR2 packet header is 64 bytes:
-    // 0-7:   Magic "PAR2\x00PKT"
-    // 8-15:  Packet length (little-endian, includes the 64-byte header)
-    // 16-31: MD5 hash of packet body (from offset 32 to end of packet)
-    // 32-47: Recovery Set ID (identifies which files belong together)
-    // 48-63: Packet type (e.g., "PAR 2.0\x00Main\x00\x00\x00\x00")
-
-    const par2_magic = "PAR2\x00PKT";
     var packets_validated: u32 = 0;
     var offset: u64 = 0;
 
-    // Validate up to 100 packets or until EOF
     while (packets_validated < 100 and offset + 64 <= file_size) {
+        // Read header to learn packet length, then read full packet for hash verification.
+        var header: [64]u8 = undefined;
         file.seekTo(offset) catch {
             return ValidationResult.invalidCode(.par2, .failed_to_seek, "to packet");
         };
-
-        var header: [64]u8 = undefined;
-        const bytes_read = file.read(&header) catch {
+        const head_n = file.read(&header) catch {
             return ValidationResult.invalidCode(.par2, .failed_to_read, "packet header");
         };
-
-        if (bytes_read < 64) {
-            // Partial read at end - might be truncated
-            if (packets_validated > 0) {
-                return ValidationResult.invalidCode(.par2, .truncated, "packet header");
-            }
+        if (head_n < 64) {
+            if (packets_validated > 0) return ValidationResult.invalidCode(.par2, .truncated, "packet header");
             return ValidationResult.invalidCode(.par2, .file_too_small, "packet header");
         }
 
-        // Check magic
-        if (!std.mem.eql(u8, header[0..8], par2_magic)) {
+        // Pre-flight: ensure header parses (correct magic, reasonable length)
+        // before reading the full packet. par2z's parseHeader does these checks.
+        const hdr = par2_core.packet.parseHeader(&header) catch |err| {
+            // If first packet's header is bad, the file isn't PAR2.
             if (packets_validated == 0) {
-                return ValidationResult.invalidCode(.par2, .invalid_value, "PAR2 magic");
+                return switch (err) {
+                    error.InvalidInput => ValidationResult.invalidCode(.par2, .invalid_value, "PAR2 magic or length"),
+                    error.OutOfBounds => ValidationResult.invalidCode(.par2, .truncated, "packet header"),
+                    error.CryptoUnavailable => ValidationResult.invalidCode(.par2, .failed_to_read, "MD5 unavailable"),
+                };
             }
-            // Might be padding or end of file
+            // Past first valid packet: trailing bytes are likely padding.
             break;
-        }
+        };
 
-        // Read packet length (little-endian u64)
-        const packet_len = std.mem.readInt(u64, header[8..16], .little);
-
-        // Sanity check: packet length must be at least 64 (header size)
-        if (packet_len < 64) {
-            return ValidationResult.invalidCode(.par2, .invalid_value, "packet length (too small)");
-        }
-
-        // Sanity check: packet length shouldn't exceed remaining file size
-        if (offset + packet_len > file_size) {
+        if (offset + hdr.length > file_size) {
             return ValidationResult.invalidCodeMsg(.par2, .exceeds_bounds, "Packet length", "Packet length exceeds file size");
         }
 
-        // Verify packet MD5 digest (stored in bytes 16..31).
-        // Digest is computed over packet bytes from offset 32 to packet end.
-        var md5 = std.crypto.hash.Md5.init(.{});
-        var remaining = packet_len - 32;
-        var body_buf: [4096]u8 = undefined;
+        // Read full packet for MD5 verification.
+        const pkt_len: usize = @intCast(hdr.length);
+        const pkt_buf = allocator.alloc(u8, pkt_len) catch {
+            return ValidationResult.invalidCode(.par2, .failed_to_allocate, "packet buffer");
+        };
+        defer allocator.free(pkt_buf);
+        file.seekTo(offset) catch return ValidationResult.invalidCode(.par2, .failed_to_seek, "to packet body");
+        const got = file.readAll(pkt_buf) catch return ValidationResult.invalidCode(.par2, .failed_to_read, "packet body");
+        if (got != pkt_len) return ValidationResult.invalidCode(.par2, .truncated, "packet body");
 
-        file.seekTo(offset + 32) catch {
-            return ValidationResult.invalidCode(.par2, .failed_to_seek, "to packet body");
+        par2_core.packet.verifyPacketHash(pkt_buf) catch |err| return switch (err) {
+            error.InvalidInput => ValidationResult.invalidCodeMsg(.par2, .checksum_mismatch, "Packet MD5", "Packet MD5 digest mismatch"),
+            error.OutOfBounds => ValidationResult.invalidCode(.par2, .truncated, "packet body"),
+            error.CryptoUnavailable => ValidationResult.invalidCode(.par2, .failed_to_read, "MD5 unavailable"),
         };
 
-        while (remaining > 0) {
-            const chunk_len_u64 = @min(remaining, @as(u64, body_buf.len));
-            const chunk_len: usize = @intCast(chunk_len_u64);
-            const got = file.readAll(body_buf[0..chunk_len]) catch {
-                return ValidationResult.invalidCode(.par2, .failed_to_read, "packet body");
-            };
-            if (got != chunk_len) {
-                return ValidationResult.invalidCode(.par2, .truncated, "packet body");
-            }
-            md5.update(body_buf[0..got]);
-            remaining -= chunk_len_u64;
-        }
-
-        var digest: [16]u8 = undefined;
-        md5.final(&digest);
-        if (!std.mem.eql(u8, &digest, header[16..32])) {
-            return ValidationResult.invalidCodeMsg(.par2, .checksum_mismatch, "Packet MD5", "Packet MD5 digest mismatch");
-        }
-
-        // Move to next packet
-        offset += packet_len;
+        offset += hdr.length;
         packets_validated += 1;
     }
 
@@ -1004,7 +977,6 @@ pub fn validatePar2(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCode(.par2, .no_valid_x_found, "PAR2 packets");
     }
 
-    // Successfully validated packet structure and packet digests
     return ValidationResult.okWithDepth(.par2, .full);
 }
 
@@ -3074,7 +3046,7 @@ test "validateTar: valid tar ground truth" {
 test "validatePar2: valid PAR2 ground truth" {
     var file = try openGroundTruth("ground_truth_examples/par2/sample.par2");
     defer file.close();
-    const result = validatePar2(&file);
+    const result = validatePar2(std.testing.allocator, &file);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.par2, result.format);
     try testing.expectEqual(ValidationDepth.full, result.validation_depth);
@@ -3355,7 +3327,7 @@ test "validateTar: corrupt tar rejected" {
 test "validatePar2: corrupt PAR2 rejected" {
     var file = try openGroundTruth("ground_truth_examples/corrupted/par2/sample_corrupt_1.par2");
     defer file.close();
-    const result = validatePar2(&file);
+    const result = validatePar2(std.testing.allocator, &file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.par2, result.format);
 }
@@ -3844,7 +3816,7 @@ test "validatePar2: too-small input rejected" {
     const path = try tmp_dir.dir.realpath("tiny.par2", &path_buf);
     var file = try FileSource.open(path);
     defer file.close();
-    const result = validatePar2(&file);
+    const result = validatePar2(std.testing.allocator, &file);
     try testing.expect(!result.is_valid);
     try testing.expectEqual(FileFormat.par2, result.format);
 }

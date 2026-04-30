@@ -6862,7 +6862,7 @@ pub const FormatValidator = struct {
             .woff => validateWoff(self.allocator orelse heap.validateAllocator(), file),
             .woff2 => validateWoff2(self.allocator orelse heap.validateAllocator(), file),
             .type1 => validateType1Font(self.allocator orelse heap.validateAllocator(), file),
-            .par2 => archive_validators.validatePar2(file_src_ptr),
+            .par2 => archive_validators.validatePar2(self.allocator orelse heap.validateAllocator(), file_src_ptr),
             // VM/Bytecode formats
             .beam => validateBeam(self.allocator orelse heap.validateAllocator(), file),
             // Icon formats
