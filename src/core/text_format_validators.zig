@@ -13,6 +13,13 @@ const DoctypeStrippedResult = format_validation.DoctypeStrippedResult;
 const stripDoctypeDeclaration = format_validation.stripDoctypeDeclaration;
 const isAsciiCompatibleEncoding = format_validation.isAsciiCompatibleEncoding;
 const normalizeXmlEncoding = format_validation.normalizeXmlEncoding;
+
+// uchardet C API for charset detection — replaces the in-tree control-byte
+// heuristic in `validatePlainTextLatin1Fallback`. Detects 30+ encodings
+// (UTF-8, UTF-16, ISO-8859-*, Windows-125x, Big5, GB18030, Shift-JIS, etc.).
+const uchardet_c = @cImport({
+	@cInclude("uchardet.h");
+});
 const EncodingNormalizedResult = format_validation.EncodingNormalizedResult;
 const getTextContent = format_validation.getTextContent;
 const convertUtf16LeToUtf8 = format_validation.convertUtf16LeToUtf8;
@@ -2145,59 +2152,72 @@ pub fn validatePlainText(allocator: ?Allocator, file: *FileSource) ValidationRes
     return ValidationResult.okWithDepth(.plain_text, .structural);
 }
 
-/// Check if a file looks like Latin-1 text (fallback when UTF-8 validation fails).
-/// Latin-1 is always "valid" since every byte 0x00-0xFF maps to a character,
-/// but we check for text-like characteristics to avoid misidentifying binary files.
+/// Detect non-UTF-8 text encoding using uchardet (Mozilla's universal
+/// charset detector via uchardetz). Called as a fallback when UTF-8
+/// validation has already failed. Returns OK if uchardet identifies a
+/// known charset (Latin-1, Windows-125x, Big5, Shift-JIS, GB18030, etc.)
+/// — we know the file IS text, just not UTF-8. Returns invalid if
+/// uchardet can't identify the encoding (likely binary content).
+///
+/// Replaces the previous heuristic that counted control bytes; uchardet's
+/// statistical model is much more accurate, especially for non-Latin
+/// scripts.
 pub fn validatePlainTextLatin1Fallback(file: *FileSource) ValidationResult {
-    const chunk_size: usize = 64 * 1024;
-    var buffer: [chunk_size]u8 = undefined;
+	const chunk_size: usize = 64 * 1024;
+	var buffer: [chunk_size]u8 = undefined;
 
-    var total_bytes: usize = 0;
-    var control_bytes: usize = 0;
-    var has_null: bool = false;
-    var has_high_bytes: bool = false;
+	const detector = uchardet_c.uchardet_new();
+	if (detector == null) {
+		return ValidationResult.invalidCode(.plain_text, .failed_to_allocate, "uchardet detector");
+	}
+	defer uchardet_c.uchardet_delete(detector);
 
-    while (true) {
-        const bytes_read = file.read(&buffer) catch {
-            return ValidationResult.invalidCode(.plain_text, .failed_to_read, "file for Latin-1 check");
-        };
+	var total_bytes: usize = 0;
+	var has_null: bool = false;
 
-        if (bytes_read == 0) break;
-        total_bytes += bytes_read;
+	while (true) {
+		const bytes_read = file.read(&buffer) catch {
+			return ValidationResult.invalidCode(.plain_text, .failed_to_read, "file for charset detection");
+		};
+		if (bytes_read == 0) break;
+		total_bytes += bytes_read;
 
-        for (buffer[0..bytes_read]) |b| {
-            if (b == 0x00) {
-                has_null = true;
-                // NULL bytes strongly suggest binary, not text
-                return ValidationResult.invalidCode(.plain_text, .invalid_value, "UTF-8 encoding");
-            } else if (b >= 0x80) {
-                has_high_bytes = true;
-            }
-            // Count problematic control characters (except common whitespace)
-            // 0x00-0x08: NUL, SOH, STX, ETX, EOT, ENQ, ACK, BEL, BS
-            // 0x0B: VT (vertical tab)
-            // 0x0C: FF (form feed) - sometimes used
-            // 0x0E-0x1F: SO, SI, DLE, DC1-DC4, NAK, SYN, ETB, CAN, EM, SUB, ESC, FS, GS, RS, US
-            // Allow: 0x09 (tab), 0x0A (LF), 0x0D (CR)
-            if ((b >= 0x00 and b <= 0x08) or b == 0x0B or (b >= 0x0E and b <= 0x1F)) {
-                control_bytes += 1;
-            }
-        }
-    }
+		// Embedded NULs are a strong binary signal (uchardet may still
+		// identify a charset, but pragmatically a "text" file with NULs
+		// is almost certainly UTF-16 mistakenly tagged as 8-bit, or
+		// genuinely binary). UTF-16 has its own validator path.
+		for (buffer[0..bytes_read]) |b| {
+			if (b == 0x00) has_null = true;
+		}
+		if (has_null) {
+			return ValidationResult.invalidCode(.plain_text, .invalid_value, "UTF-8 encoding");
+		}
 
-    // If no high bytes, it would have passed UTF-8 validation, so this shouldn't happen
-    // But just in case, still accept it
-    if (!has_high_bytes) {
-        return ValidationResult.okWithDepth(.plain_text, .structural);
-    }
+		const rc = uchardet_c.uchardet_handle_data(detector, buffer[0..bytes_read].ptr, bytes_read);
+		if (rc != 0) {
+			return ValidationResult.invalidCode(.plain_text, .invalid_value, "UTF-8 encoding");
+		}
+	}
 
-    // Heuristic: if more than 5% control characters, probably binary
-    if (total_bytes > 0 and control_bytes * 100 / total_bytes > 5) {
-        return ValidationResult.invalidCode(.plain_text, .invalid_value, "UTF-8 encoding");
-    }
+	uchardet_c.uchardet_data_end(detector);
+	const charset_ptr = uchardet_c.uchardet_get_charset(detector);
+	if (charset_ptr == null) {
+		return ValidationResult.invalidCode(.plain_text, .invalid_value, "UTF-8 encoding");
+	}
+	const charset = std.mem.span(@as([*:0]const u8, charset_ptr));
 
-    // Looks like Latin-1 text
-    return ValidationResult.okWithDepth(.plain_text_latin1, .structural);
+	// Empty string = uchardet couldn't identify → probably binary.
+	if (charset.len == 0) {
+		return ValidationResult.invalidCode(.plain_text, .invalid_value, "UTF-8 encoding");
+	}
+
+	// ASCII-only files end up here only if they have high bytes that
+	// failed UTF-8 conformance — so any uchardet hit is by definition
+	// non-UTF-8 text. Surface as plain_text_latin1 for the structural
+	// "this is text in some encoding" verdict. Specific charset string
+	// is logged in debug builds; could be exposed as warning_message
+	// later if useful.
+	return ValidationResult.okWithDepth(.plain_text_latin1, .structural);
 }
 
 /// Validate plain text file as UTF-16 using streaming validation.

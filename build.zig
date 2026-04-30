@@ -266,6 +266,14 @@ pub fn build(b: *std.Build) void {
     });
     const par2z_core_mod = par2z_dep.module("core");
 
+    // uchardetz: Mozilla's uchardet charset detection library, Zig-buildable fork.
+    // Used by text validators to identify non-UTF-8 encodings.
+    const uchardetz_dep = b.dependency("uchardetz", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const uchardetz_lib = uchardetz_dep.artifact("uchardet-static");
+
     // compact_pro for in-memory Compact Pro (.cpt) archive validation (C FFI)
     const compact_pro_dep = b.dependency("compact_pro", .{
         .target = target,
@@ -378,6 +386,12 @@ pub fn build(b: *std.Build) void {
     // Add compact_pro C FFI headers
     core_mod.addIncludePath(compact_pro_dep.path("include"));
 
+    // uchardetz: header is `src/uchardet.h`. Add the dep's `src/` so
+    // `@cInclude("uchardet.h")` finds it; we don't use the installed
+    // `<prefix>/include/uchardet/uchardet.h` path since getEmittedIncludeTree
+    // doesn't surface installFile-emitted headers.
+    core_mod.addIncludePath(uchardetz_dep.path("src"));
+
     // Add src/core include path for any remaining C headers
     core_mod.addIncludePath(b.path("src/core"));
 
@@ -414,6 +428,7 @@ pub fn build(b: *std.Build) void {
         libraw_lib,    // camera RAW format validation (LGPL-2.1)
         z7z_lib,       // 7-Zip archive deep validation (z7z cleanroom)
         compact_pro_lib, // Compact Pro archive validation
+        uchardetz_lib,   // Mozilla uchardet — charset detection for plain-text validators
     };
 
     // Static library for FFI

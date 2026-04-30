@@ -99,6 +99,10 @@
             .url = "https://github.com/pmarreck/par2z/archive/be03a60d227ed0f54e2f1682a08bf6f95c357572.tar.gz",
             .hash = "par2z-0.1.0-KhX3fZoVBgAK2C68IacJ7O0aOu-aZYRGbaULfm-v_c6m",
         },
+        .uchardetz = .{
+            .url = "https://github.com/pmarreck/uchardetz/archive/5c9b66079e4e54fbdd5d51fc67fb7bba64f2b062.tar.gz",
+            .hash = "uchardetz-0.0.6-koAyw7pFCwBwXTRkF9-_N0qZMmHv22yma5OpWbXv_kL4",
+        },
         .compact_pro = .{
             .url = "https://github.com/pmarreck/compact_pro/archive/8999e8d74b00e0ec0394708071eaeb787ea0ae57.tar.gz",
             .hash = "compact_pro-0.1.0-G2wo9a_hAgDI-5kULhRLEDRGQWyUYpYnfSuMyJEkGzf4",
