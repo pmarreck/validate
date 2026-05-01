@@ -92,6 +92,36 @@ P2 — additional fixes from launch-prep audit (2026-04-25):
   - [x] **Inbox note to validate_gui** — `../validate_gui/inbox/memory-budget-setting-2026-04-29.md` requesting Settings UI with tooltip; awaiting response on whether they want global pref or per-job + real-time RSS meter.
 - [ ] Statistical "improbable-looking output" WARN tier for codecs without integrity guarantees (deferred follow-up, raised 2026-04-27): Pattern already proven for raw audio in `src/core/statistical_corruption.zig` (synth-flat pre-classifier + AR(2) residual + bit-flip rescue + sector-alignment bonus) for WAV s16 PCM. Extend the same shape to **decoded image pixels** so JPEG2000/JBIG2/JPEG-tolerated corruption surfaces as a heuristic WARN rather than silently passing. Inputs: post-decode pixel statistics (adjacent-pixel-difference distribution outliers, sub-band coefficient magnitude spikes, color-channel cross-correlation breaks), block-boundary discontinuities (DCT 8x8 vs JPEG2000 codeblock), and physical-media error signatures (sector-aligned ~512B/2KB/4KB anomaly clusters). WARN not FAIL — it's heuristic. Opt-out behind `VALIDATE_NO_HEURISTIC=1` for zero-false-positive runs.
 
+- [ ] **Upstream bug: Zig stdlib `std.compress.zstd` rejects a valid zstd stream** (raised 2026-05-01 during cleanroom-deps perf audit). Reproducer is fully deterministic and minimal:
+  ```bash
+  # Build a ~135 MB base64 stream and zstd-compress it (~102 MB output)
+  head -c $((100 * 1024 * 1024)) /dev/urandom | base64 > /tmp/medium.txt
+  zstd /tmp/medium.txt -o /tmp/medium.txt.zst
+  # Reference decoder (Facebook zstd C library) decompresses cleanly:
+  zstd -t /tmp/medium.txt.zst        # exit 0
+  # std.compress.zstd in Zig 0.15.2 fails:
+  #   error.ReadFailed → "Decompression failed - corrupt data"
+  ```
+  When validate's bzip2-handler-of-this-shape was investigated, the zstd
+  decoder turned out to have the same family of bug. Switching validate
+  to zstdz (Peter's Zig-enabled fork of Facebook's reference C library)
+  both fixed correctness AND went **6.86× faster** on a 500 MB → 47 KB
+  decompressed-large input (787 ms → 115 ms).
+
+  **Filing constraint:** the Zig BDFL has stated publicly that
+  LLM-generated bug reports / PRs are unwelcome. Need to think about
+  how to file this — options: (a) file under Peter's name as a hand-
+  written report with Peter as the responsible human (the *bug* is real
+  regardless of how the reproducer was found); (b) reduce the
+  reproducer to a single Zig test-mode unit-test and submit that as a
+  failing test PR (cleaner shape than a prose bug report); (c) leave it
+  alone; we've already routed around it via zstdz, downstream Zig users
+  will hit it themselves eventually. Open question — Peter to decide.
+
+  Workaround already in place: `archive_validators.validateZstdDeep`
+  uses zstdz's C library binding via `@import("zstd")`. No regression
+  risk to validate from leaving the upstream bug unfiled.
+
 ### Statistical Corruption Detection for Raw Audio/Video Data
 For formats without checksums (AU, AMR, CAF, DPX, etc.), use heuristic analysis to detect likely corruption in raw data sections:
 
