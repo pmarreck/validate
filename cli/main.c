@@ -2027,6 +2027,17 @@ static uint8_t parse_cli_arg(const char* arg) {
 }
 
 int main(int argc, char* argv[]) {
+	/* Cap C-codec internal thread pools so they don't bypass our work queue's
+	 * memory budget. Several decoders (libheif/libavif via libdav1d, OpenJPEG,
+	 * libpng's optional pthread mode, OpenMP-using libs) spawn their own
+	 * worker threads and allocate from system malloc, invisible to our
+	 * managed-allocator surface. Forcing single-threaded mode means each
+	 * validate worker only consumes the budget it reserved at task admit time.
+	 * Don't override if the user has already set these — respect their choice. */
+	if (getenv("OMP_NUM_THREADS") == NULL) xsetenv("OMP_NUM_THREADS", "1");
+	if (getenv("OPJ_NUM_THREADS") == NULL) xsetenv("OPJ_NUM_THREADS", "1");
+	if (getenv("DAV1D_NUM_THREADS") == NULL) xsetenv("DAV1D_NUM_THREADS", "1");
+	if (getenv("AV1_NUM_THREADS") == NULL) xsetenv("AV1_NUM_THREADS", "1");
 	/* Compute SHA-256 of the running binary for provenance tracking */
 	compute_self_hash(argv[0]);
 	/* Verify binary integrity (if build appended integrity trailer) */
