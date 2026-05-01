@@ -2001,7 +2001,6 @@ pub fn validateJbig2File(file: *FileSource) ValidationResult {
 /// This catches Huffman errors, invalid DCT coefficients, and corrupted scan data
 /// that structural validation would miss.
 pub fn validateJpegDeep(allocator: Allocator, source: *FileSource) ValidationResult {
-    _ = allocator;
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidWithDepth(.jpeg, errmsg.failedToGet("file size"), .full);
     };
@@ -2011,21 +2010,20 @@ pub fn validateJpegDeep(allocator: Allocator, source: *FileSource) ValidationRes
     // Track large files for warning (but don't reject them)
     const is_large_file = file_size > 200 * 1024 * 1024;
 
-    const buffer = std.c.malloc(file_size) orelse {
-        return ValidationResult.invalidWithDepth(.jpeg, "Memory allocation failed", .full);
-    };
-    defer std.c.free(buffer);
-
-    const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
-    source.seekTo(0) catch {
-        return ValidationResult.invalidWithDepth(.jpeg, errmsg.failedToSeek("to start"), .full);
-    };
-    const bytes_read = source.readAll(buf_slice) catch {
+    // mmap zero-copy when available; bounded heap fallback otherwise.
+    // libjpeg-turbo's jpeg_mem_src needs a contiguous buffer; we feed it
+    // either the mmap'd slice (no copy) or a slurped buffer (capped at
+    // 256 MB for non-mmap paths). Larger files on Windows / network
+    // mounts fall back to structural-only.
+    const slurp = source.getMappedOrSlurp(allocator, 256 << 20) catch
         return ValidationResult.invalidWithDepth(.jpeg, errmsg.failedToRead("file"), .full);
+    var heap_jpeg: ?[]u8 = null;
+    defer if (heap_jpeg) |b| allocator.free(b);
+    const buf_slice: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_jpeg = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.jpeg, .structural, "JPEG too large for non-mmap deep decode"),
     };
-    if (bytes_read != file_size) {
-        return ValidationResult.invalidWithDepth(.jpeg, errmsg.incomplete("file read"), .full);
-    }
 
     const result = jpeg_validator.validateJpegDeepFromBuffer(buf_slice);
     if (result.valid) {
