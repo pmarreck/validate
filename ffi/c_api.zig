@@ -683,20 +683,23 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
         begin_cb(g_begin_callback_ctx, id, path_ptr);
     }
 
-    // Per-task arena: every allocation under this task — including those
-    // from `heap.validateAllocator()` call sites — flows through this
-    // arena via the thread-local override. `arena.deinit()` reclaims
-    // everything wholesale on task end. Also contains FFI-C-library leaks
-    // since their malloc-backed allocations bypass this anyway, but any
-    // ZIG-side per-task state is bounded.
+    // Per-task arena: every Zig-side allocation under this task flows
+    // through this arena (small allocs) or directly to page_allocator/mmap
+    // (large allocs >= 16 MB) via the diverting wrapper. `arena.deinit()`
+    // reclaims small allocs wholesale on task end; large diverted allocs
+    // are returned to the OS the moment their owner frees them, so a task
+    // that briefly slurps a large file no longer holds that memory until
+    // task exit.
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
-    core.heap.setThreadArena(arena.allocator());
+    var diverter = core.heap.DivertingAllocator.init(arena.allocator(), 16 * 1024 * 1024);
+    const task_alloc = diverter.allocator();
+    core.heap.setThreadArena(task_alloc);
     defer core.heap.clearThreadArena();
 
     const start_ns = std.time.nanoTimestamp();
     var validator = format_validation.FormatValidator.initDeep();
-    const result = validator.validateFileDeep(arena.allocator(), path_slice);
+    const result = validator.validateFileDeep(task_alloc, path_slice);
     const elapsed_ns: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
 
     // Build result string
