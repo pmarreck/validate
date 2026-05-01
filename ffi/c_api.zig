@@ -356,6 +356,46 @@ export fn validate_default_threads() c_int {
 /// Global memory budget (0 = use default)
 var g_max_memory: u64 = 0;
 
+/// Pointer to the active MemoryBudget instance, set while `validate_batch` is
+/// running and cleared on exit. Used by `validate_get_memory_usage` to expose
+/// snapshot data to FFI consumers (typically a GUI memory meter polling at
+/// ~500ms intervals). Atomic for thread-safe read; writes are guarded by
+/// validate_batch's lifecycle and only the batch thread touches them.
+var g_active_budget: std.atomic.Value(?*core.memory_budget.MemoryBudget) = .init(null);
+
+/// Snapshot of memory budget state. Mirrored to a C struct in
+/// validate_core.h. All fields are bytes / counts. `current_rss` is
+/// best-effort and may be 0 on platforms where we can't query process RSS.
+pub const MemoryUsage = extern struct {
+    total_bytes: u64,
+    available_bytes: u64,
+    active_tasks: u64,
+    current_rss: u64,
+};
+
+/// Get a snapshot of the current memory budget state.
+///
+/// Returns 0 (VALIDATE_OK) if a batch is running and `out` was populated;
+/// returns non-zero (with `out` zero-cleared) if no batch is active or
+/// `out` is null. Cheap (single mutex acquire on the budget + 3 atomic
+/// reads + RSS syscall). Safe to call from any thread.
+export fn validate_get_memory_usage(out: ?*MemoryUsage) c_int {
+    const dst = out orelse return 1;
+    dst.* = MemoryUsage{
+        .total_bytes = 0,
+        .available_bytes = 0,
+        .active_tasks = 0,
+        .current_rss = 0,
+    };
+    const budget_ptr = g_active_budget.load(.seq_cst) orelse return 2;
+    const snap = budget_ptr.snapshot();
+    dst.total_bytes = snap.total;
+    dst.available_bytes = snap.available;
+    dst.active_tasks = snap.active;
+    dst.current_rss = getCurrentRss();
+    return 0;
+}
+
 /// Get total system memory in bytes. Returns 0 if detection fails.
 export fn validate_system_memory() u64 {
     return getSystemMemory();
@@ -712,6 +752,8 @@ export fn validate_batch(
     // budget admits up to total bytes worth of work concurrently. Single
     // file > total budget gets admitted alone (starvation rule).
     var mem_budget = core.memory_budget.MemoryBudget.init(@intCast(validate_get_max_memory()));
+    g_active_budget.store(&mem_budget, .seq_cst);
+    defer g_active_budget.store(null, .seq_cst);
 
     // Use ThreadPool for parallel execution
     const Pool = thread_pool.ThreadPool(BatchTask, void);

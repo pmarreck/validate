@@ -233,6 +233,34 @@ void validate_set_max_memory(uint64_t bytes);
  * Returns the value set by validate_set_max_memory, or the default.
  */
 uint64_t validate_get_max_memory(void);
+
+/**
+ * Snapshot of the active memory-budget state. Populated by
+ * validate_get_memory_usage() while a batch is running. All sizes are
+ * in bytes; counts are unsigned. `current_rss` is best-effort and may
+ * be 0 on platforms where we can't query process RSS (e.g. Windows
+ * pre-implementation).
+ */
+typedef struct {
+    uint64_t total_bytes;       /* configured budget cap */
+    uint64_t available_bytes;   /* bytes currently unreserved */
+    uint64_t active_tasks;      /* tasks holding reservations right now */
+    uint64_t current_rss;       /* process RSS, 0 if unavailable */
+} validate_memory_usage_t;
+
+/**
+ * Get a snapshot of memory budget state.
+ *
+ * Cheap to call (single mutex acquire on the budget + 3 atomic reads +
+ * RSS syscall). Intended for GUI memory meters polling at ~500ms
+ * intervals. Safe to call from any thread, including while
+ * validate_batch is running.
+ *
+ * @param out  output struct; zero-cleared on failure.
+ * @return     0 (VALIDATE_OK) on success; 1 if `out` is NULL; 2 if no
+ *             batch is currently running.
+ */
+int validate_get_memory_usage(validate_memory_usage_t* out);
 /* ========== Single File Validation ========== */
 
 /**
