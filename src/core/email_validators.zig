@@ -527,17 +527,14 @@ pub fn validateMboxDeep(allocator: Allocator, source: *FileSource) ValidationRes
         return ValidationResult.okWithDepth(.mbox, .structural);
     }
 
+    const slurp = source.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCode(.mbox, .failed_to_read, "file");
     var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |buf| allocator.free(buf);
-    const data: []const u8 = if (source.getMappedSlice()) |mapped|
-        mapped
-    else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalid(.mbox, "Memory allocation failed");
-        };
-        heap_buf = buf;
-        const n = source.readAll(buf) catch return ValidationResult.invalidCode(.mbox, .failed_to_read, "file");
-        break :blk buf[0..n];
+    defer if (heap_buf) |b| allocator.free(b);
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_buf = b; break :blk b; },
+        .too_large => return ValidationResult.invalid(.mbox, "MBOX too large for non-mmap deep validation"),
     };
 
     // Must start with "From "

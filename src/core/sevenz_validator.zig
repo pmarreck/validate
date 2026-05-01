@@ -118,20 +118,14 @@ pub fn validateSevenZDeep(allocator: Allocator, source: *@import("file_source.zi
 		return SevenZValidationResult.invalid("File too large for in-memory validation");
 	}
 
+	const slurp_7z = source.getMappedOrSlurp(allocator, 256 << 20) catch
+		return SevenZValidationResult.invalid("Failed to read file");
 	var heap_7z: ?[]u8 = null;
-	defer if (heap_7z) |buf| allocator.free(buf);
-	const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-		const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-			return SevenZValidationResult.invalid("Out of memory");
-		};
-		heap_7z = buf;
-		const n = source.readAll(buf) catch {
-			return SevenZValidationResult.invalid("Failed to read file");
-		};
-		if (n != buf.len) {
-			return SevenZValidationResult.invalid("Incomplete read");
-		}
-		break :blk buf[0..n];
+	defer if (heap_7z) |b| allocator.free(b);
+	const data: []const u8 = switch (slurp_7z) {
+		.mapped => |m| m,
+		.heap => |b| blk: { heap_7z = b; break :blk b; },
+		.too_large => return SevenZValidationResult.invalid("7-Zip too large for non-mmap deep validation"),
 	};
 
 	// Open with z7z — this parses headers, decompresses all folders,

@@ -196,17 +196,14 @@ pub fn validateICalendarDeep(allocator: Allocator, source: *FileSource) Validati
 		return ValidationResult.okWithDepth(.icalendar, .structural);
 	}
 
+	const slurp_ical = source.getMappedOrSlurp(allocator, 64 << 20) catch
+		return ValidationResult.invalidCode(.icalendar, .failed_to_read, "failed to read file");
 	var heap_pim1: ?[]u8 = null;
-	defer if (heap_pim1) |buf| allocator.free(buf);
-	const content: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-		const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-			return ValidationResult.okWithDepth(.icalendar, .structural);
-		};
-		heap_pim1 = buf;
-		const n = source.readAll(buf) catch {
-			return ValidationResult.invalidCode(.icalendar, .failed_to_read, "failed to read file");
-		};
-		break :blk buf[0..n];
+	defer if (heap_pim1) |b| allocator.free(b);
+	const content: []const u8 = switch (slurp_ical) {
+		.mapped => |m| m,
+		.heap => |b| blk: { heap_pim1 = b; break :blk b; },
+		.too_large => return ValidationResult.okWithDepth(.icalendar, .structural),
 	};
 
 	// Skip BOM and whitespace
@@ -335,17 +332,14 @@ pub fn validateVCardDeep(allocator: Allocator, source: *FileSource) ValidationRe
 		return ValidationResult.okWithDepth(.vcard, .structural);
 	}
 
+	const slurp_vcard = source.getMappedOrSlurp(allocator, 64 << 20) catch
+		return ValidationResult.invalidCode(.vcard, .failed_to_read, "failed to read file");
 	var heap_pim2: ?[]u8 = null;
-	defer if (heap_pim2) |buf| allocator.free(buf);
-	const content: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-		const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-			return ValidationResult.okWithDepth(.vcard, .structural);
-		};
-		heap_pim2 = buf;
-		const n = source.readAll(buf) catch {
-			return ValidationResult.invalidCode(.vcard, .failed_to_read, "failed to read file");
-		};
-		break :blk buf[0..n];
+	defer if (heap_pim2) |b| allocator.free(b);
+	const content: []const u8 = switch (slurp_vcard) {
+		.mapped => |m| m,
+		.heap => |b| blk: { heap_pim2 = b; break :blk b; },
+		.too_large => return ValidationResult.okWithDepth(.vcard, .structural),
 	};
 
 	// Skip BOM

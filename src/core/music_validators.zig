@@ -1713,18 +1713,18 @@ pub fn validateApe(file: *FileSource) ValidationResult {
 		return ValidationResult.okWithDepth(.ape, .structural);
 	}
 
-	const allocator = heap.validateAllocator();
-	file.seekTo(0) catch {
-		return ValidationResult.invalidCodeWithDepth(.ape, .invalid_value, "APE rewind for decode", .full);
-	};
-	const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-		return ValidationResult.okWithDepth(.ape, .structural);
-	};
-	defer allocator.free(buf);
-	const n = file.readAll(buf) catch {
+	const ape_alloc = heap.validateAllocator();
+	const slurp_ape = file.getMappedOrSlurp(ape_alloc, 256 << 20) catch
 		return ValidationResult.invalidCodeWithDepth(.ape, .failed_to_read, "APE for decode", .full);
+	var heap_ape: ?[]u8 = null;
+	defer if (heap_ape) |b| ape_alloc.free(b);
+	const data: []const u8 = switch (slurp_ape) {
+		.mapped => |m| m,
+		.heap => |b| blk: { heap_ape = b; break :blk b; },
+		.too_large => return ValidationResult.okWithDepthAndWarning(.ape, .structural, "APE too large for non-mmap deep decode"),
 	};
-
+	const n = data.len;
+	const buf = data;
 	const dr = ape_decode_validator.validateApeDecode(buf[0..n]);
 	if (!dr.valid) {
 		return ValidationResult.invalidWithDepth(
@@ -1762,16 +1762,16 @@ pub fn validateWavPack(file: *FileSource) ValidationResult {
         return ValidationResult.ok(.wavpack);
     }
 
-    file.seekTo(0) catch {
-        return ValidationResult.invalidWithDepth(.wavpack, "Failed to seek WavPack file", .full);
-    };
-    const bytes = allocator.alloc(u8, @intCast(file_size)) catch {
-        return ValidationResult.invalidWithDepth(.wavpack, "Memory allocation failed", .full);
-    };
-    defer allocator.free(bytes);
-    const n = file.readAll(bytes) catch {
+    const slurp_wv = file.getMappedOrSlurp(allocator, 256 << 20) catch
         return ValidationResult.invalidWithDepth(.wavpack, errmsg.failedToRead("file"), .full);
+    var heap_wv: ?[]u8 = null;
+    defer if (heap_wv) |b| allocator.free(b);
+    const bytes: []const u8 = switch (slurp_wv) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_wv = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.wavpack, .structural, "WavPack too large for non-mmap deep decode"),
     };
+    const n = bytes.len;
 
     const result = wavpack_decode_validator.validateWavPackDecode(allocator, bytes[0..n]) catch |err| {
         return ValidationResult.invalidWithDepth(.wavpack, @errorName(err), .full);
@@ -1816,16 +1816,14 @@ pub fn validateAc3Deep(source: *FileSource) ValidationResult {
         return ValidationResult.invalidCodeWithDepth(.ac3, .file_too_large, "AC-3 deep validation", .full);
     }
 
+    const slurp_ac3 = source.getMappedOrSlurp(heap.validateAllocator(), 256 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.ac3, .failed_to_read, "AC-3 data", .full);
     var heap_buf: ?[]u8 = null;
     defer if (heap_buf) |b| heap.validateAllocator().free(b);
-    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.ac3, .out_of_memory, "for AC-3", .full);
-        };
-        heap_buf = buf;
-        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.ac3, .failed_to_read, "AC-3 data", .full);
-        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.ac3, .incomplete, "AC-3 read", .full);
-        break :blk buf[0..n];
+    const data: []const u8 = switch (slurp_ac3) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_buf = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.ac3, .structural, "AC-3 too large for non-mmap deep validation"),
     };
 
     const result = ac3_validator.validateAc3Stream(data, std.math.maxInt(u32));
@@ -1845,16 +1843,14 @@ pub fn validateEac3Deep(source: *FileSource) ValidationResult {
         return ValidationResult.invalidCodeWithDepth(.eac3, .file_too_large, "E-AC-3 deep validation", .full);
     }
 
+    const slurp_eac3 = source.getMappedOrSlurp(heap.validateAllocator(), 256 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.eac3, .failed_to_read, "E-AC-3 data", .full);
     var heap_buf: ?[]u8 = null;
     defer if (heap_buf) |b| heap.validateAllocator().free(b);
-    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.eac3, .out_of_memory, "for E-AC-3", .full);
-        };
-        heap_buf = buf;
-        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.eac3, .failed_to_read, "E-AC-3 data", .full);
-        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.eac3, .incomplete, "E-AC-3 read", .full);
-        break :blk buf[0..n];
+    const data: []const u8 = switch (slurp_eac3) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_buf = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.eac3, .structural, "E-AC-3 too large for non-mmap deep validation"),
     };
 
     const result = eac3_validator.validateEac3Stream(data, std.math.maxInt(u32));
@@ -1895,16 +1891,14 @@ pub fn validateDtsDeep(source: *FileSource) ValidationResult {
         return ValidationResult.invalidCodeWithDepth(.dts, .file_too_large, "DTS deep validation", .structural);
     }
 
+    const slurp_dts = source.getMappedOrSlurp(heap.validateAllocator(), 256 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.dts, .failed_to_read, "DTS data", .structural);
     var heap_buf: ?[]u8 = null;
     defer if (heap_buf) |b| heap.validateAllocator().free(b);
-    const data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.dts, .out_of_memory, "for DTS", .structural);
-        };
-        heap_buf = buf;
-        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.dts, .failed_to_read, "DTS data", .structural);
-        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.dts, .incomplete, "DTS read", .structural);
-        break :blk buf[0..n];
+    const data: []const u8 = switch (slurp_dts) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_buf = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.dts, .structural, "DTS too large for non-mmap deep validation"),
     };
 
     const result = dts_validator.validateDtsStream(data, 100);
@@ -2581,17 +2575,14 @@ pub fn validateTtaDeep(allocator: Allocator, source: *FileSource) ValidationResu
         return ValidationResult.structuralOnly(.tta);
     }
 
+    const slurp_tta = source.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.tta, .failed_to_read, "file data", .full);
     var heap_tta: ?[]u8 = null;
-    defer if (heap_tta) |hbuf| allocator.free(hbuf);
-    const buf: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const tmp = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.structuralOnly(.tta);
-        };
-        heap_tta = tmp;
-        const n = source.readAll(tmp) catch {
-            return ValidationResult.invalidCodeWithDepth(.tta, .failed_to_read, "file data", .full);
-        };
-        break :blk tmp[0..n];
+    defer if (heap_tta) |b| allocator.free(b);
+    const buf: []const u8 = switch (slurp_tta) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_tta = b; break :blk b; },
+        .too_large => return ValidationResult.structuralOnly(.tta),
     };
     if (buf.len < 22) {
         return ValidationResult.invalidCodeWithDepth(.tta, .truncated, "header", .full);

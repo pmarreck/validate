@@ -2439,15 +2439,14 @@ pub fn validateBzip2Deep(allocator: Allocator, source: *FileSource) ValidationRe
         return validateBzip2LargeFile(file);
     }
 
+    const slurp = file.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.bzip2, .failed_to_read, "file", .structural);
     var heap_bz2: ?[]u8 = null;
-    defer if (heap_bz2) |buf| allocator.free(buf);
-    const compressed_data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.bzip2, .out_of_memory, "for bzip2", .structural);
-        };
-        heap_bz2 = buf;
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.bzip2, .failed_to_read, "file");
-        break :blk buf[0..n];
+    defer if (heap_bz2) |b| allocator.free(b);
+    const compressed_data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_bz2 = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.bzip2, .structural, "Bzip2 too large for non-mmap deep validation"),
     };
 
     // Validate header
@@ -2538,17 +2537,14 @@ pub fn validateXzDeep(allocator: Allocator, source: *FileSource) ValidationResul
         return ValidationResult.invalidWithDepth(.xz, "File too small", .structural);
     }
 
-    // Get bytes (zero-copy from mmap, or read into heap buffer)
+    const slurp_xz = source.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_read, "file", .structural);
     var heap_xz: ?[]u8 = null;
     defer if (heap_xz) |b| allocator.free(b);
-    const bytes: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_allocate, "input buffer", .structural);
-        };
-        heap_xz = buf;
-        source.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_read, "file", .structural);
-        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.xz, .failed_to_read, "file", .structural);
-        break :blk buf[0..n];
+    const bytes: []const u8 = switch (slurp_xz) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_xz = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.xz, .structural, "XZ too large for non-mmap deep validation"),
     };
 
     // Wrap bytes in a fixed buffer stream for the old GenericReader-based XZ API
@@ -2617,17 +2613,14 @@ pub fn validateZstdDeep(allocator: Allocator, source: *FileSource) ValidationRes
         return ValidationResult.invalidWithDepth(.zstd, "File too small", .structural);
     }
 
-    // Get bytes (zero-copy from mmap, or read into heap buffer).
+    const slurp_zstd = source.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
     var heap_zstd: ?[]u8 = null;
     defer if (heap_zstd) |b| allocator.free(b);
-    const bytes: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_allocate, "input buffer", .structural);
-        };
-        heap_zstd = buf;
-        source.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
-        const n = source.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
-        break :blk buf[0..n];
+    const bytes: []const u8 = switch (slurp_zstd) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_zstd = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.zstd, .structural, "Zstd too large for non-mmap deep validation"),
     };
 
     if (bytes.len < 5) {
@@ -2751,17 +2744,14 @@ pub fn validateRarDeep(allocator: Allocator, source: *FileSource) ValidationResu
         return ValidationResult.invalidCodeWithDepth(.rar, .file_too_large, "validation", .structural);
     }
 
+    const slurp_rar = file.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_read, "RAR file", .structural);
     var heap_rar: ?[]u8 = null;
-    defer if (heap_rar) |buf| allocator.free(buf);
-    const data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_allocate, "RAR read buffer", .structural);
-        };
-        heap_rar = buf;
-        file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_seek, "to start", .structural);
-        const n = file.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_read, "RAR file", .structural);
-        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.rar, .incomplete, "RAR file", .structural);
-        break :blk buf[0..n];
+    defer if (heap_rar) |b| allocator.free(b);
+    const data: []const u8 = switch (slurp_rar) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_rar = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.rar, .structural, "RAR too large for non-mmap deep validation"),
     };
 
     return validateRarWithRarz(data);
@@ -2869,19 +2859,14 @@ pub fn validateCpt(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCodeWithDepth(.cpt, .file_too_large, "validation", .structural);
     }
 
+    const slurp_cpt1 = file.getMappedOrSlurp(heap.validateAllocator(), 256 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_read, "CPT file", .structural);
     var cpt_heap: ?[]u8 = null;
-    defer if (cpt_heap) |buf| heap.validateAllocator().free(buf);
-    const data: []const u8 = if (file.getMappedSlice()) |mapped|
-        mapped
-    else blk: {
-        const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_allocate, "CPT read buffer", .structural);
-        };
-        cpt_heap = buf;
-        file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_seek, "to start", .structural);
-        const n = file.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_read, "CPT file", .structural);
-        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.cpt, .incomplete, "CPT file", .structural);
-        break :blk buf[0..n];
+    defer if (cpt_heap) |b| heap.validateAllocator().free(b);
+    const data: []const u8 = switch (slurp_cpt1) {
+        .mapped => |m| m,
+        .heap => |b| blk: { cpt_heap = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.cpt, .structural, "CPT too large for non-mmap deep validation"),
     };
 
     return validateCptWithCompactPro(data);
@@ -2900,17 +2885,14 @@ pub fn validateCptDeep(allocator: Allocator, source: *FileSource) ValidationResu
         return ValidationResult.invalidCodeWithDepth(.cpt, .file_too_large, "validation", .structural);
     }
 
+    const slurp_cpt2 = file.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_read, "CPT file", .structural);
     var heap_cpt2: ?[]u8 = null;
-    defer if (heap_cpt2) |buf| allocator.free(buf);
-    const data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_allocate, "CPT read buffer", .structural);
-        };
-        heap_cpt2 = buf;
-        file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_seek, "to start", .structural);
-        const n = file.readAll(buf) catch return ValidationResult.invalidCodeWithDepth(.cpt, .failed_to_read, "CPT file", .structural);
-        if (n != file_size) return ValidationResult.invalidCodeWithDepth(.cpt, .incomplete, "CPT file", .structural);
-        break :blk buf[0..n];
+    defer if (heap_cpt2) |b| allocator.free(b);
+    const data: []const u8 = switch (slurp_cpt2) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_cpt2 = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.cpt, .structural, "CPT too large for non-mmap deep validation"),
     };
 
     return validateCptWithCompactPro(data);
@@ -4073,18 +4055,16 @@ pub fn validateHqx(file: *FileSource) ValidationResult {
     if (file_size == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
     if (file_size > BINHEX4_MAX_FILE_SIZE) return ValidationResult.invalid(.hqx, "BinHex file too large (>64MB)");
 
+    const slurp_hqx = file.getMappedOrSlurp(heap.validateAllocator(), 256 << 20) catch
+        return ValidationResult.invalidCode(.hqx, .failed_to_read, "BinHex file");
     var heap_hqx: ?[]u8 = null;
-    defer if (heap_hqx) |buf| heap.validateAllocator().free(buf);
-    const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        file.seekTo(0) catch return ValidationResult.invalidCode(.hqx, .failed_to_seek, "to start");
-        const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCode(.hqx, .failed_to_allocate, "BinHex input buffer");
-        };
-        heap_hqx = buf;
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.hqx, .failed_to_read, "BinHex file");
-        if (n == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
-        break :blk buf[0..n];
+    defer if (heap_hqx) |b| heap.validateAllocator().free(b);
+    const content: []const u8 = switch (slurp_hqx) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_hqx = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.hqx, .structural, "BinHex too large for non-mmap deep validation"),
     };
+    if (content.len == 0) return ValidationResult.invalidCode(.hqx, .empty, "BinHex file");
 
     return validateHqxBytes(content);
 }

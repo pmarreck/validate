@@ -408,7 +408,13 @@ pub fn validateN64Deep(allocator: Allocator, source: *FileSource) ValidationResu
         return ValidationResult.okWithDepth(.n64, .structural);
     }
 
-    // N64 validator needs a mutable copy (normalizeN64ByteOrder modifies in-place)
+    // N64 validator needs a MUTABLE copy (normalizeN64ByteOrder modifies in-place);
+    // can't use the mmap zero-copy slice. Cap allocation at 256 MB to bound RSS;
+    // typical N64 ROMs are 8-64 MB so this is generous. Larger files are rare and
+    // structural-only on the slurp fallback is acceptable.
+    if (file_size > 256 * 1024 * 1024) {
+        return ValidationResult.okWithDepthAndWarning(.n64, .structural, "N64 ROM too large for in-memory deep validation");
+    }
     const rom = allocator.alloc(u8, @intCast(file_size)) catch {
         return ValidationResult.okWithDepth(.n64, .structural);
     };
@@ -527,19 +533,14 @@ pub fn validateGbDeep(allocator: Allocator, source: *FileSource) ValidationResul
         return ValidationResult.invalidCode(.gb, .file_too_large, "GB ROM");
     }
 
+    const slurp = file.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.invalidCode(.gb, .failed_to_read, "GB ROM");
     var heap_buf: ?[]u8 = null;
-    defer if (heap_buf) |buf| allocator.free(buf);
-    const rom: []const u8 = if (file.getMappedSlice()) |mapped|
-        mapped
-    else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-            return ValidationResult.invalidCode(.gb, .out_of_memory, "GB ROM");
-        };
-        heap_buf = buf;
-        file.seekTo(0) catch return ValidationResult.invalidCode(.gb, .failed_to_seek, "to start");
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.gb, .failed_to_read, "GB ROM");
-        if (n < file_size) return ValidationResult.invalidCode(.gb, .file_too_small, "GB ROM truncated");
-        break :blk buf[0..n];
+    defer if (heap_buf) |b| allocator.free(b);
+    const rom: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_buf = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.gb, .structural, "GB ROM too large for non-mmap deep validation"),
     };
 
     // Stored global checksum at 0x14E-0x14F (big-endian u16)

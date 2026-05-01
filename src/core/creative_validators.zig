@@ -102,18 +102,15 @@ pub fn validatePrprojDeep(allocator: Allocator, source: *FileSource) ValidationR
         return ValidationResult.invalid(.prproj, "PRPROJ XML too large");
     }
 
+    const slurp = file.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.invalidCode(.prproj, .failed_to_read, "XML data");
     var heap1: ?[]u8 = null;
-    defer if (heap1) |buf| allocator.free(buf);
-    const xml_data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.prproj, .failed_to_allocate, "memory for XML");
-        heap1 = buf;
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.prproj, .failed_to_read, "XML data");
-        break :blk buf[0..n];
+    defer if (heap1) |b| allocator.free(b);
+    const xml_data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap1 = b; break :blk b; },
+        .too_large => return ValidationResult.invalid(.prproj, "PRPROJ XML too large for non-mmap deep validation"),
     };
-    const xml_read = xml_data.len;
-    if (xml_read != file_size) {
-        return ValidationResult.invalidCode(.prproj, .incomplete, "XML read");
-    }
 
     // Validate XML structure using the xml module
     // Strip DOCTYPE declarations to avoid DTD validation issues
@@ -379,18 +376,15 @@ pub fn validateFcpxmlDeep(allocator: Allocator, source: *FileSource) ValidationR
         return ValidationResult.invalid(.fcpxml, "FCPXML too large");
     }
 
+    const slurp_fcp = file.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.invalidCode(.fcpxml, .failed_to_read, "XML data");
     var heap2: ?[]u8 = null;
-    defer if (heap2) |buf| allocator.free(buf);
-    const xml_data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.fcpxml, .failed_to_allocate, "memory");
-        heap2 = buf;
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.fcpxml, .failed_to_read, "XML data");
-        break :blk buf[0..n];
+    defer if (heap2) |b| allocator.free(b);
+    const xml_data: []const u8 = switch (slurp_fcp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap2 = b; break :blk b; },
+        .too_large => return ValidationResult.invalid(.fcpxml, "FCPXML too large for non-mmap deep validation"),
     };
-    const xml_read = xml_data.len;
-    if (xml_read != file_size) {
-        return ValidationResult.invalidCode(.fcpxml, .incomplete, "read");
-    }
 
     // Use XML parser to validate structure
     const preprocessed = stripDoctypeDeclaration(allocator, xml_data);
@@ -493,19 +487,15 @@ pub fn validateDrpDeep(allocator: Allocator, source: *FileSource) ValidationResu
     }
 
     // Read the file to find project.xml in the central directory
+    const slurp_drp = file.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCode(.drp, .failed_to_read, "file");
     var heap3: ?[]u8 = null;
-    defer if (heap3) |buf| allocator.free(buf);
-    const data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.drp, .failed_to_allocate, "memory");
-        heap3 = buf;
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.drp, .failed_to_read, "file");
-        break :blk buf[0..n];
+    defer if (heap3) |b| allocator.free(b);
+    const data: []const u8 = switch (slurp_drp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap3 = b; break :blk b; },
+        .too_large => return ValidationResult.invalid(.drp, "DRP too large for non-mmap deep validation"),
     };
-    const read_len = data.len;
-
-    if (read_len != file_size) {
-        return ValidationResult.invalidCode(.drp, .incomplete, "read");
-    }
 
     // Look for project.xml in the file names
     // Simple check: search for "project.xml" in the data (ZIP structure + expected file presence)
@@ -575,19 +565,15 @@ pub fn validateSketchDeep(allocator: Allocator, source: *FileSource) ValidationR
     }
 
     // Read the file to find document.json and meta.json in the central directory
+    const slurp_sketch = file.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCode(.sketch, .failed_to_read, "file");
     var heap4: ?[]u8 = null;
-    defer if (heap4) |buf| allocator.free(buf);
-    const data: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.sketch, .failed_to_allocate, "memory");
-        heap4 = buf;
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.sketch, .failed_to_read, "file");
-        break :blk buf[0..n];
+    defer if (heap4) |b| allocator.free(b);
+    const data: []const u8 = switch (slurp_sketch) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap4 = b; break :blk b; },
+        .too_large => return ValidationResult.invalid(.sketch, "Sketch too large for non-mmap deep validation"),
     };
-    const read_len = data.len;
-
-    if (read_len != file_size) {
-        return ValidationResult.invalidCode(.sketch, .incomplete, "read");
-    }
 
     // Look for required Sketch files
     const has_document = std.mem.indexOf(u8, data, "document.json") != null;

@@ -465,14 +465,14 @@ pub fn validateStep(file: *FileSource) ValidationResult {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    const slurp_step = file.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.invalidCode(.step, .failed_to_read, "file");
     var h1: ?[]u8 = null;
-    defer if (h1) |buf| allocator.free(buf);
-    const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.step, .out_of_memory, "for STEP");
-        h1 = buf;
-        file.seekTo(0) catch return ValidationResult.invalidCode(.step, .failed_to_seek, "in STEP file");
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.step, .failed_to_read, "file");
-        break :blk buf[0..n];
+    defer if (h1) |b| allocator.free(b);
+    const content: []const u8 = switch (slurp_step) {
+        .mapped => |m| m,
+        .heap => |b| blk: { h1 = b; break :blk b; },
+        .too_large => return ValidationResult.invalid(.step, "STEP too large for non-mmap deep validation"),
     };
 
     return parseStepContent(content);
@@ -692,14 +692,14 @@ pub fn validateStlAscii(file: *FileSource) ValidationResult {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    const slurp_stl = file.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCode(.stl, .failed_to_read, "file");
     var h2: ?[]u8 = null;
-    defer if (h2) |buf| allocator.free(buf);
-    const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.stl, .out_of_memory, "for STL");
-        h2 = buf;
-        file.seekTo(0) catch return ValidationResult.invalidCode(.stl, .failed_to_seek, "in STL file");
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.stl, .failed_to_read, "file");
-        break :blk buf[0..n];
+    defer if (h2) |b| allocator.free(b);
+    const content: []const u8 = switch (slurp_stl) {
+        .mapped => |m| m,
+        .heap => |b| blk: { h2 = b; break :blk b; },
+        .too_large => return ValidationResult.invalid(.stl, "STL too large for non-mmap deep validation"),
     };
 
     return parseStlAsciiContent(content);
@@ -923,14 +923,14 @@ pub fn validateObj(file: *FileSource) ValidationResult {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    const slurp_obj = file.getMappedOrSlurp(allocator, 256 << 20) catch
+        return ValidationResult.invalidCode(.obj, .failed_to_read, "file");
     var h3: ?[]u8 = null;
-    defer if (h3) |buf| allocator.free(buf);
-    const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.obj, .out_of_memory, "for OBJ");
-        h3 = buf;
-        file.seekTo(0) catch return ValidationResult.invalidCode(.obj, .failed_to_seek, "in OBJ file");
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.obj, .failed_to_read, "file");
-        break :blk buf[0..n];
+    defer if (h3) |b| allocator.free(b);
+    const content: []const u8 = switch (slurp_obj) {
+        .mapped => |m| m,
+        .heap => |b| blk: { h3 = b; break :blk b; },
+        .too_large => return ValidationResult.invalid(.obj, "OBJ too large for non-mmap deep validation"),
     };
 
     return parseObjContent(content);
@@ -1596,14 +1596,14 @@ pub fn validateGltf(file: *FileSource) ValidationResult {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    const slurp_gltf = file.getMappedOrSlurp(allocator, 64 << 20) catch
+        return ValidationResult.invalidCode(.gltf, .failed_to_read, "file");
     var h4: ?[]u8 = null;
-    defer if (h4) |buf| allocator.free(buf);
-    const content: []const u8 = if (file.getMappedSlice()) |m| m else blk: {
-        const buf = allocator.alloc(u8, @intCast(file_size)) catch return ValidationResult.invalidCode(.gltf, .out_of_memory, "for glTF");
-        h4 = buf;
-        file.seekTo(0) catch return ValidationResult.invalidCode(.gltf, .failed_to_seek, "in glTF file");
-        const n = file.readAll(buf) catch return ValidationResult.invalidCode(.gltf, .failed_to_read, "file");
-        break :blk buf[0..n];
+    defer if (h4) |b| allocator.free(b);
+    const content: []const u8 = switch (slurp_gltf) {
+        .mapped => |m| m,
+        .heap => |b| blk: { h4 = b; break :blk b; },
+        .too_large => return ValidationResult.invalid(.gltf, "glTF too large for non-mmap deep validation"),
     };
 
     return parseGltfJson(content);

@@ -737,19 +737,15 @@ pub fn validateNachaDeep(allocator: Allocator, source: *FileSource) ValidationRe
 	if (file_size > 256 * 1024 * 1024) {
 		return ValidationResult.invalidCode(.nacha, .invalid_value, "NACHA file too large");
 	}
-	source.seekTo(0) catch {
-		return ValidationResult.invalidCode(.nacha, .failed_to_seek, "NACHA file");
-	};
-	const file_data = allocator.alloc(u8, @intCast(file_size)) catch {
-		return ValidationResult.invalidCode(.nacha, .out_of_memory, "for NACHA data");
-	};
-	defer allocator.free(file_data);
-	const bytes_read = source.readAll(file_data) catch {
+	const slurp_nacha = source.getMappedOrSlurp(allocator, 64 << 20) catch
 		return ValidationResult.invalidCode(.nacha, .failed_to_read, "NACHA file");
+	var heap_nacha: ?[]u8 = null;
+	defer if (heap_nacha) |b| allocator.free(b);
+	const file_data: []const u8 = switch (slurp_nacha) {
+		.mapped => |m| m,
+		.heap => |b| blk: { heap_nacha = b; break :blk b; },
+		.too_large => return ValidationResult.invalidCode(.nacha, .file_too_large, "NACHA file"),
 	};
-	if (bytes_read != file_size) {
-		return ValidationResult.invalidCode(.nacha, .incomplete, "NACHA file");
-	}
 
 	if (file_data.len < 94) {
 		return ValidationResult.invalidCode(.nacha, .file_too_small, "NACHA file");
@@ -1065,19 +1061,15 @@ pub fn validateMt940Deep(allocator: Allocator, source: *FileSource) ValidationRe
 	if (file_size > 64 * 1024 * 1024) {
 		return ValidationResult.invalidCode(.mt940, .invalid_value, "MT940 file too large");
 	}
-	source.seekTo(0) catch {
-		return ValidationResult.invalidCode(.mt940, .failed_to_seek, "MT940 file");
-	};
-	const file_data = allocator.alloc(u8, @intCast(file_size)) catch {
-		return ValidationResult.invalidCode(.mt940, .out_of_memory, "for MT940 data");
-	};
-	defer allocator.free(file_data);
-	const bytes_read = source.readAll(file_data) catch {
+	const slurp_mt940 = source.getMappedOrSlurp(allocator, 64 << 20) catch
 		return ValidationResult.invalidCode(.mt940, .failed_to_read, "MT940 file");
+	var heap_mt940: ?[]u8 = null;
+	defer if (heap_mt940) |b| allocator.free(b);
+	const file_data: []const u8 = switch (slurp_mt940) {
+		.mapped => |m| m,
+		.heap => |b| blk: { heap_mt940 = b; break :blk b; },
+		.too_large => return ValidationResult.invalidCode(.mt940, .file_too_large, "MT940 file"),
 	};
-	if (bytes_read != file_size) {
-		return ValidationResult.invalidCode(.mt940, .incomplete, "MT940 file");
-	}
 
 	if (file_data.len < 10) {
 		return ValidationResult.invalidCode(.mt940, .file_too_small, "MT940 file");
@@ -1450,20 +1442,14 @@ pub fn validateBai2Deep(allocator: Allocator, source: *FileSource) ValidationRes
 		return ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
 	}
 
+	const slurp_bai2 = source.getMappedOrSlurp(allocator, 64 << 20) catch
+		return ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
 	var heap_bai2: ?[]u8 = null;
-	defer if (heap_bai2) |buf| allocator.free(buf);
-	const file_data: []const u8 = if (source.getMappedSlice()) |m| m else blk: {
-		const buf = allocator.alloc(u8, @intCast(file_size)) catch {
-			return ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
-		};
-		heap_bai2 = buf;
-		source.seekTo(0) catch {
-			return ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
-		};
-		const n = source.readAll(buf) catch {
-			return ValidationResult.invalidCode(.bai2, .failed_to_read, "BAI2 file");
-		};
-		break :blk buf[0..n];
+	defer if (heap_bai2) |b| allocator.free(b);
+	const file_data: []const u8 = switch (slurp_bai2) {
+		.mapped => |m| m,
+		.heap => |b| blk: { heap_bai2 = b; break :blk b; },
+		.too_large => return ValidationResult.invalidCode(.bai2, .file_too_large, "BAI2 file"),
 	};
 
 	if (file_data.len < 10) {

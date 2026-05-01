@@ -463,20 +463,16 @@ pub fn validateXmlPlist(file: *FileSource, file_size: u64) ValidationResult {
 	}
 
 	// Get file content — zero-copy from mmap when available
+	const slurp = file.getMappedOrSlurp(heap.validateAllocator(), 256 << 20) catch
+		return ValidationResult.invalidCode(.plist, .failed_to_read, "file");
 	var heap_buf: ?[]u8 = null;
-	defer if (heap_buf) |buf| heap.validateAllocator().free(buf);
-	const data: []const u8 = if (file.getMappedSlice()) |mapped|
-		mapped
-	else blk: {
-		file.seekTo(0) catch return ValidationResult.invalidCode(.plist, .failed_to_seek, "to start");
-		const buf = heap.validateAllocator().alloc(u8, @intCast(file_size)) catch {
-			return ValidationResult.invalidCode(.plist, .failed_to_allocate, "memory");
-		};
-		heap_buf = buf;
-		const n = file.readAll(buf) catch return ValidationResult.invalidCode(.plist, .failed_to_read, "file");
-		if (n == 0) return ValidationResult.invalidCode(.plist, .empty, "plist file");
-		break :blk buf[0..n];
+	defer if (heap_buf) |b| heap.validateAllocator().free(b);
+	const data: []const u8 = switch (slurp) {
+		.mapped => |m| m,
+		.heap => |b| blk: { heap_buf = b; break :blk b; },
+		.too_large => return ValidationResult.okWithDepthAndWarning(.plist, .structural, "Plist too large for non-mmap deep validation"),
 	};
+	if (data.len == 0) return ValidationResult.invalidCode(.plist, .empty, "plist file");
 
 	// Strip DOCTYPE if present (use same logic as XML validator)
 	const preprocessed = stripDoctypeDeclaration(heap.validateAllocator(), data);
