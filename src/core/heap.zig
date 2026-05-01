@@ -19,14 +19,42 @@
 
 const std = @import("std");
 
+/// Per-thread arena override. When set (typically by the FFI batch task
+/// dispatcher at the start of each file's validation, cleared on exit),
+/// `validateAllocator()` returns this instead of the shared smp allocator.
+/// Allows every scratch allocation under a task — including those from
+/// `validateAllocator()` call sites — to share the per-task arena and
+/// be reclaimed wholesale on `arena.deinit()`. Also contains C-library
+/// leaks if any FFI'd library forgets to free.
+///
+/// nullable: when no batch is running (e.g. CLI tools, tests), falls
+/// back to smp_allocator which is what we shipped with originally.
+pub threadlocal var thread_arena: ?std.mem.Allocator = null;
+
 /// Returns the thread-safe scratch allocator used by validators that
 /// don't already have an allocator in scope.
 ///
+/// Resolution: per-thread arena (if set) → smp_allocator. The arena
+/// override is set by FFI's executeBatchTask via `setThreadArena` so
+/// every scratch alloc under a task shares the same arena, freed
+/// wholesale on task end.
+///
 /// Do NOT use this in tight per-byte allocation loops — those should use
-/// the per-task arena passed by the caller. This is for fixed-size
-/// scratch buffers (header search windows, format probes, etc.).
+/// the per-task arena passed explicitly by the caller. This is for
+/// fixed-size scratch buffers (header search windows, format probes,
+/// etc.).
 pub fn validateAllocator() std.mem.Allocator {
-    return std.heap.smp_allocator;
+    return thread_arena orelse std.heap.smp_allocator;
+}
+
+/// Set the per-thread arena override. Call from a task entry, paired
+/// with `clearThreadArena()` on exit (typically via `defer`).
+pub fn setThreadArena(allocator: std.mem.Allocator) void {
+    thread_arena = allocator;
+}
+
+pub fn clearThreadArena() void {
+    thread_arena = null;
 }
 
 test "validateAllocator round-trips a 64KB allocation" {

@@ -683,9 +683,16 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
         begin_cb(g_begin_callback_ctx, id, path_ptr);
     }
 
-    // Validate
+    // Per-task arena: every allocation under this task — including those
+    // from `heap.validateAllocator()` call sites — flows through this
+    // arena via the thread-local override. `arena.deinit()` reclaims
+    // everything wholesale on task end. Also contains FFI-C-library leaks
+    // since their malloc-backed allocations bypass this anyway, but any
+    // ZIG-side per-task state is bounded.
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
+    core.heap.setThreadArena(arena.allocator());
+    defer core.heap.clearThreadArena();
 
     const start_ns = std.time.nanoTimestamp();
     var validator = format_validation.FormatValidator.initDeep();
