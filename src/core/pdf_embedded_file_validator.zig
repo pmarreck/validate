@@ -364,12 +364,14 @@ pub fn validatePdfEmbeddedFilesBasic(allocator: Allocator, pdf_data: []const u8)
 
 /// Decompress FlateDecode data with ratio-aware decompression.
 /// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
-/// Returns a tagged union distinguishing between successful decompression,
-/// size limit exceeded, suspected zip bomb (corrupt), and data/alloc errors.
+/// Tolerates Adobe-InDesign-style truncated-Adler-32 streams via the lenient
+/// decoder (see zlib.inflateZlibLenientAllocWithRatio). Returns a tagged
+/// union distinguishing successful decompression, size limit exceeded,
+/// suspected zip bomb (corrupt), and data/alloc errors.
 fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlateResult {
     const max_output: usize = 256 * 1024 * 1024; // 256MB max for embedded files
 
-    switch (zlib.inflateZlibAllocWithRatio(allocator, compressed, max_output)) {
+    switch (zlib.inflateZlibLenientAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },
         .exceeded_limit => |info| {
             if (info.ratio > 100) return .corrupt;

@@ -122,8 +122,16 @@ pub fn validatePdfFlateStreams(
 		// alone, because encrypted PDFs store FlateDecode streams that are
 		// re-encrypted (no zlib header). Only actual inflate-time errors (CRC
 		// / data / truncation) are treated as corruption.
+		//
+		// Use the lenient validator: many PDF producers (notably Adobe
+		// InDesign) emit FlateDecode streams whose deflate body is intact
+		// but whose zlib wrapper is missing the trailing Adler-32 checksum.
+		// All major PDF readers tolerate this. The lenient path validates
+		// the header, then retries as raw deflate on the body — genuine
+		// corruption still fails because the deflate body itself must
+		// terminate cleanly.
 		const raw: bool = false;
-		const result = zlib.inflateStreamValidate(compressed, MAX_DECOMPRESSED_BYTES, raw);
+		const result = zlib.inflateStreamValidateLenient(compressed, MAX_DECOMPRESSED_BYTES, raw);
 		if (result) |produced| {
 			validated += 1;
 			bytes_verified += produced;
@@ -517,6 +525,12 @@ test "validatePdfFlateStreams: corrupted Flate stream fails" {
 
 	const compressed = try allocator.dupe(u8, compressed_orig);
 	defer allocator.free(compressed);
+	// Flip a byte mid-stream. The lenient validator (which we now use)
+	// accepts the Adobe-InDesign missing-Adler-32 quirk, but it requires
+	// <4 trailing bytes after Z_STREAM_END for that recovery path to
+	// engage. Mid-body corruption with the original full Adler-32 trailer
+	// in place looks to the lenient path like a stream that should have
+	// been self-checking — so it correctly returns data_error here.
 	if (compressed.len > 4) compressed[compressed.len / 2] ^= 0xFF;
 
 	var pdf: std.ArrayListUnmanaged(u8) = .{};

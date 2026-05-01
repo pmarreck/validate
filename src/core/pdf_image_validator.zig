@@ -112,16 +112,19 @@ pub const DecompressFlateResult = union(enum) {
 
 /// Decompress FlateDecode (zlib) data with ratio-aware decompression bomb detection.
 /// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
-/// Returns a tagged union: .ok contains allocated buffer that caller must free.
+/// Tolerates the Adobe-InDesign-style truncated-Adler-32 quirk via lenient
+/// decoder (see zlib.inflateZlibLenientAllocWithRatio). Returns a tagged
+/// union: .ok contains allocated buffer that caller must free.
 pub fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlateResult {
     if (compressed.len < 2) return .data_error;
 
-    // PDF FlateDecode uses zlib format (has header/footer)
-    // Try zlib first, then raw deflate if that fails (some PDFs use raw)
+    // PDF FlateDecode uses zlib format (with header/footer). The lenient
+    // decoder transparently recovers from missing-Adler-32 streams emitted
+    // by some Adobe producers — these are accepted by every major PDF
+    // reader and represent producer convention rather than corruption.
     const max_output: usize = 512 * 1024 * 1024; // 512MB max decompressed size
 
-    // Try zlib format first
-    switch (zlib.inflateZlibAllocWithRatio(allocator, compressed, max_output)) {
+    switch (zlib.inflateZlibLenientAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },
         .exceeded_limit => |info| {
             if (info.ratio > 100) return .corrupt;
@@ -131,7 +134,9 @@ pub fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressF
         .alloc_error => return .alloc_error,
     }
 
-    // Try raw deflate format
+    // Final fallback: some PDFs use raw deflate without any zlib wrapper at
+    // all (rare, but seen in legacy producers). Try that on the unmodified
+    // input as a last resort.
     switch (zlib.inflateRawAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },
         .exceeded_limit => |info| {
@@ -1774,5 +1779,49 @@ test "decompressFlate returns DecompressFlateResult tagged union" {
         .corrupt => {},
         .data_error => {},
         .alloc_error => {},
+    }
+}
+
+test "decompressFlate recovers from missing zlib trailer (Adobe InDesign quirk)" {
+    // PDF producers (notably Adobe InDesign in some versions) emit FlateDecode
+    // streams whose deflate payload is intact and properly terminated, but
+    // whose zlib wrapper is missing the trailing Adler-32 checksum. Strict
+    // zlib decoders (zlib.h's inflate with Z_NO_FLUSH expecting Z_STREAM_END)
+    // report -5 / Z_BUF_ERROR on these, but every PDF reader (qpdf, Preview,
+    // Acrobat, browsers) accepts them by falling back to raw deflate on the
+    // body after the 2-byte zlib header.
+    //
+    // Bytes below are object 6012 from the real-world PDF
+    // IT-Salary-Guide-2024-Job-Trends.pdf (declared /Length 168). zlib header
+    // 0x484B is valid (CM=8, FCHECK=0). The deflate body terminates cleanly
+    // (BFINAL block + sync marker) — only the Adler-32 trailer is absent.
+    const compressed = [_]u8{
+        0x48, 0x4b, 0xec, 0xcf, 0xc9, 0x0d, 0x82, 0x40, 0x00, 0x00, 0x40, 0x04,
+        0x84, 0x05, 0x2f, 0xf0, 0xbe, 0xe8, 0xbf, 0x4d, 0xc3, 0x66, 0x89, 0x1a,
+        0xf9, 0xf9, 0x9d, 0xe9, 0x60, 0x86, 0x61, 0xc6, 0x33, 0x79, 0xfc, 0xb8,
+        0x27, 0xb7, 0xe8, 0xfa, 0x76, 0x99, 0x9c, 0x93, 0xd3, 0x87, 0x63, 0x72,
+        0x98, 0xec, 0x93, 0xbe, 0xef, 0xbb, 0xae, 0xdb, 0x7d, 0xd9, 0x46, 0x9b,
+        0x68, 0x3d, 0x5a, 0x45, 0x6d, 0xdb, 0x36, 0x4d, 0x13, 0x42, 0xa8, 0xeb,
+        0x3a, 0x24, 0x55, 0x55, 0x2d, 0xa3, 0xa2, 0x28, 0xca, 0x32, 0xcf, 0xf3,
+        0x2c, 0xcb, 0x16, 0xd1, 0xdc, 0x4a, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b,
+        0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b,
+        0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b,
+        0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b,
+        0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b,
+        0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0xeb, 0xff, 0xd6, 0x0b, 0x00, 0x00,
+        0xff, 0xff, 0x00, 0x00, 0x00, 0xff, 0xff, 0x03, 0x00, 0xc4,
+    };
+    const allocator = std.testing.allocator;
+    const result = decompressFlate(allocator, &compressed);
+    switch (result) {
+        .ok => |data| {
+            defer allocator.free(data);
+            // qpdf decompresses this stream to exactly 16555 bytes. We accept
+            // any output >= 1KB as evidence the recovery path produced
+            // meaningful data; the exact length is what major PDF readers see.
+            try std.testing.expect(data.len >= 16000 and data.len <= 17000);
+        },
+        .data_error, .corrupt => return error.TestExpectedRecoveryButGotError,
+        .exceeded_limit, .alloc_error => return error.TestEnvironmentIssue,
     }
 }

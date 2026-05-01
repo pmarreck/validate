@@ -593,11 +593,12 @@ const DecompressFlateResult = union(enum) {
 
 /// Decompress FlateDecode data with ratio-aware bomb detection.
 /// Uses bundled zlib instead of Zig's buggy std.compress.flate (ziglang/zig#24963).
+/// Tolerates Adobe-InDesign-style truncated-Adler-32 streams via the lenient
+/// decoder (see zlib.inflateZlibLenientAllocWithRatio).
 fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlateResult {
     const max_output: usize = 64 * 1024 * 1024; // 64MB max for fonts
 
-    // Try zlib format first
-    switch (zlib.inflateZlibAllocWithRatio(allocator, compressed, max_output)) {
+    switch (zlib.inflateZlibLenientAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },
         .exceeded_limit => |info| {
             if (info.ratio > 100) return .corrupt;
@@ -607,7 +608,7 @@ fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlate
         .alloc_error => return .alloc_error,
     }
 
-    // Try raw deflate
+    // Final fallback: raw deflate without zlib wrapper
     switch (zlib.inflateRawAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },
         .exceeded_limit => |info| {
