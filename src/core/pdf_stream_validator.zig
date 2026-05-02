@@ -62,6 +62,30 @@ const MAX_DECOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
 // Public entry point
 // ---------------------------------------------------------------------------
 
+/// Returns true if `pdf_data` declares an /Encrypt indirect reference (the
+/// signature pattern of a password/permission-protected PDF). Cheaper and
+/// looser than `pdf_decryptor.parseEncryptionParams` — we only need a yes/no
+/// signal to decide whether the residual FlateDecode sweep can trust the
+/// on-disk bytes as inflatable. Looks for `/Encrypt` followed by an indirect
+/// reference (`N G R`) so we don't false-positive on the literal substring
+/// appearing inside a content stream.
+fn pdfHasEncryptEntry(pdf_data: []const u8) bool {
+	var search_start: usize = 0;
+	while (std.mem.indexOfPos(u8, pdf_data, search_start, "/Encrypt")) |idx| {
+		var i = idx + 8;
+		// Must be followed by whitespace (not e.g. "/EncryptMetadata").
+		if (i >= pdf_data.len or (pdf_data[i] != ' ' and pdf_data[i] != '\n' and pdf_data[i] != '\r' and pdf_data[i] != '\t')) {
+			search_start = idx + 8;
+			continue;
+		}
+		// Skip whitespace, expect a digit (object number).
+		while (i < pdf_data.len and (pdf_data[i] == ' ' or pdf_data[i] == '\n' or pdf_data[i] == '\r' or pdf_data[i] == '\t')) i += 1;
+		if (i < pdf_data.len and pdf_data[i] >= '0' and pdf_data[i] <= '9') return true;
+		search_start = idx + 8;
+	}
+	return false;
+}
+
 /// Walk all indirect objects in `pdf_data` and validate every /FlateDecode
 /// stream's zlib integrity. `excluded_object_nums` is the set of object
 /// numbers already verified by image/font/embed validators; those streams
@@ -98,11 +122,29 @@ pub fn validatePdfFlateStreams(
 	};
 	defer allocator.free(streams);
 
+	// Encrypted PDFs (e.g. /Encrypt with /Filter /Standard) re-encrypt their
+	// FlateDecode stream contents *after* the deflate compression. The bytes
+	// stored on disk are NOT a valid zlib stream — feeding them to inflate()
+	// produces a data error and falsely flags an otherwise-healthy file as
+	// corrupt. The image / font / embedded-file validators already handle
+	// decryption explicitly via pdf_decryptor and validate the streams they
+	// own; the residual sweep here has no decryption path, so we skip its
+	// non-excluded streams in encrypted PDFs rather than guarantee a false
+	// positive. (Reproducer: S2000_C.pdf, an encrypted Yamaha service manual
+	// that opens fine in Preview/QuickLook.)
+	const is_encrypted = pdfHasEncryptEntry(pdf_data);
+
 	for (streams) |s| {
 		total += 1;
 
 		// Skip streams already validated by image / font / embedded-file paths.
 		if (excluded_object_nums.contains(s.object_num)) {
+			skipped += 1;
+			continue;
+		}
+
+		if (is_encrypted) {
+			// Bytes are post-encryption; can't be inflated without the key.
 			skipped += 1;
 			continue;
 		}
@@ -589,4 +631,48 @@ test "validatePdfFlateStreams: excluded object numbers are skipped" {
 	try testing.expectEqual(@as(u32, 1), result.total_flate_streams);
 	try testing.expectEqual(@as(u32, 0), result.validated);
 	try testing.expectEqual(@as(u32, 1), result.skipped_already_validated);
+}
+
+test "validatePdfFlateStreams: encrypted PDF skips non-excluded FlateDecode streams" {
+	// Encrypted PDFs (e.g. /Encrypt with /Filter /Standard) re-encrypt their
+	// FlateDecode stream contents *after* the deflate compression. The bytes
+	// stored on disk are NOT a valid zlib stream — feeding them to inflate()
+	// produces a data error. Image / font / embedded-file validators handle
+	// decryption explicitly through pdf_decryptor; the residual sweep here
+	// has no decryption path, so it must skip the streams it can't read
+	// rather than reporting them as corruption. Real-world reproducer:
+	// S2000_C.pdf in Peter's Downloads (encrypted Yamaha service manual)
+	// opens cleanly in Preview/QuickLook but used to FAIL in validate.
+	const allocator = testing.allocator;
+
+	// Garbage bytes — definitely not a valid zlib stream.
+	const garbage = [_]u8{ 0x21, 0x14, 0xf7, 0x89, 0xe0, 0x65, 0x88, 0xf4, 0x98, 0x9b, 0xfc, 0x33 };
+
+	var pdf: std.ArrayListUnmanaged(u8) = .{};
+	defer pdf.deinit(allocator);
+	try pdf.appendSlice(allocator, "%PDF-1.4\n");
+	// Object 1: minimal /Encrypt dictionary (just enough for parseEncryptionParams).
+	try pdf.appendSlice(allocator,
+		"1 0 obj\n<< /Filter /Standard /V 1 /R 2 /Length 40" ++
+		" /O <0000000000000000000000000000000000000000000000000000000000000000>" ++
+		" /U <0000000000000000000000000000000000000000000000000000000000000000>" ++
+		" /P -4 >>\nendobj\n",
+	);
+	// Object 2: a garbage FlateDecode stream (post-encryption bytes).
+	try pdf.writer(allocator).print(
+		"2 0 obj\n<< /Length {d} /Filter /FlateDecode >>\nstream\n",
+		.{garbage.len},
+	);
+	try pdf.appendSlice(allocator, &garbage);
+	try pdf.appendSlice(allocator, "\nendstream\nendobj\n");
+	// Trailer references /Encrypt 1 0 R — what parseEncryptionParams looks for.
+	try pdf.appendSlice(allocator, "trailer\n<< /Encrypt 1 0 R /ID [<00><00>] >>\n%%EOF\n");
+
+	var empty: std.AutoHashMapUnmanaged(u32, void) = .{};
+	defer empty.deinit(allocator);
+
+	const result = validatePdfFlateStreams(allocator, pdf.items, &empty);
+	try testing.expect(result.valid);
+	try testing.expectEqual(@as(u32, 0), result.failed);
+	try testing.expect(result.first_failure == null);
 }
