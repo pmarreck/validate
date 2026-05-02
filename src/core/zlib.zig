@@ -222,6 +222,12 @@ pub fn inflateRawAlloc(allocator: Allocator, compressed: []const u8, max_output_
 /// Result type for ratio-aware decompression — distinguishes success, limit exceeded, corrupt data, and alloc failure.
 pub const DecompressResult = union(enum) {
     ok: []u8,
+    /// Decompression succeeded only via the Adobe-InDesign-style lenient
+    /// path (zlib trailer was missing/truncated by <4 bytes; the deflate
+    /// body itself terminated cleanly). Caller should emit a WARN-tier
+    /// verdict — the file works in every reader but deviates from the
+    /// zlib spec. Payload is identical shape to `.ok`.
+    ok_lenient: []u8,
     exceeded_limit: struct {
         bytes_produced: usize,
         compressed_len: usize,
@@ -446,8 +452,10 @@ pub fn inflateZlibLenientAllocWithRatio(
     max_output_size: usize,
 ) DecompressResult {
     // Fast path: strict zlib succeeds for well-formed streams.
+    // Fast path: strict zlib succeeds for well-formed streams.
     switch (inflateZlibAllocWithRatio(allocator, compressed, max_output_size)) {
         .ok => |data| return .{ .ok = data },
+        .ok_lenient => |data| return .{ .ok_lenient = data }, // strict shouldn't return this, but cover for completeness
         .exceeded_limit => |info| return .{ .exceeded_limit = info },
         .alloc_error => return .alloc_error,
         .data_error => {}, // Fall through to recovery
@@ -523,7 +531,11 @@ fn inflateRawWithLeftoverCheck(allocator: Allocator, compressed: []const u8, max
                 if (final_size < output.len) {
                     output = allocator.realloc(output, final_size) catch output;
                 }
-                return .{ .ok = output[0..final_size] };
+                // The lenient recovery path successfully completed — return
+                // ok_lenient so the caller can emit WARN. We only get here
+                // after strict zlib failed; this is the Adobe-InDesign-style
+                // recovery, not a regular success.
+                return .{ .ok_lenient = output[0..final_size] };
             },
             c.Z_OK, c.Z_BUF_ERROR => {
                 if (stream.avail_out == 0) {
@@ -889,7 +901,17 @@ pub fn inflateStreamValidate(compressed: []const u8, max_uncompressed: u64, raw:
 ///
 /// Only applies to zlib-framed input (raw=false). raw=true delegates
 /// directly to inflateStreamValidate since there is no header to strip.
-pub fn inflateStreamValidateLenient(compressed: []const u8, max_uncompressed: u64, raw: bool) !u64 {
+pub fn inflateStreamValidateLenient(
+    compressed: []const u8,
+    max_uncompressed: u64,
+    raw: bool,
+    /// Optional out-param: set to true if the lenient recovery path was
+    /// taken (zlib trailer was missing/truncated by <4 bytes; deflate body
+    /// itself terminated cleanly). Caller should emit a WARN verdict in
+    /// that case. Pass null to ignore.
+    lenient_recovery: ?*bool,
+) !u64 {
+    if (lenient_recovery) |p| p.* = false;
     if (raw) return inflateStreamValidate(compressed, max_uncompressed, raw);
 
     if (inflateStreamValidate(compressed, max_uncompressed, false)) |total| {
@@ -906,7 +928,9 @@ pub fn inflateStreamValidateLenient(compressed: []const u8, max_uncompressed: u6
             if (cmf_flg % 31 != 0) return err;
             if ((flg & 0x20) != 0) return err; // FDICT — can't supply preset
             // Retry as raw deflate, requiring <4 leftover bytes.
-            return rawStreamValidateWithLeftoverCheck(compressed[2..], max_uncompressed, err);
+            const recovered = try rawStreamValidateWithLeftoverCheck(compressed[2..], max_uncompressed, err);
+            if (lenient_recovery) |p| p.* = true;
+            return recovered;
         },
         else => return err,
     }
@@ -1182,7 +1206,7 @@ test "inflateZlibLenientAllocWithRatio: recovers from missing Adler-32 trailer" 
     const allocator = std.testing.allocator;
     const result = inflateZlibLenientAllocWithRatio(allocator, &compressed, 16 * 1024 * 1024);
     switch (result) {
-        .ok => |data| {
+        .ok_lenient => |data| {
             defer allocator.free(data);
             try std.testing.expect(data.len > 1024); // qpdf gets exactly 16555
         },
@@ -1207,14 +1231,14 @@ test "inflateStreamValidateLenient: recovers from missing Adler-32 trailer" {
         0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0x4b, 0xeb, 0xff, 0xd6, 0x0b, 0x00, 0x00,
         0xff, 0xff, 0x00, 0x00, 0x00, 0xff, 0xff, 0x03, 0x00, 0xc4,
     };
-    const size = try inflateStreamValidateLenient(&compressed, 16 * 1024 * 1024, false);
+    const size = try inflateStreamValidateLenient(&compressed, 16 * 1024 * 1024, false, null);
     try std.testing.expect(size > 1024);
 }
 
 test "inflateStreamValidateLenient: well-formed stream returns same size as strict" {
     // "hello" zlib-compressed (full Adler-32)
     const compressed = [_]u8{ 0x78, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00, 0x06, 0x2c, 0x02, 0x15 };
-    const size = try inflateStreamValidateLenient(&compressed, 1024, false);
+    const size = try inflateStreamValidateLenient(&compressed, 1024, false, null);
     try std.testing.expectEqual(@as(u64, 5), size);
 }
 
@@ -1232,7 +1256,7 @@ test "inflateStreamValidateLenient: rejects mid-body corruption with full Adler-
     defer allocator.free(corrupted);
     // Flip a byte well inside the body so the full Adler-32 trailer survives.
     corrupted[corrupted.len / 2] ^= 0xff;
-    try std.testing.expectError(ZlibError.DataError, inflateStreamValidateLenient(corrupted, 16 * 1024 * 1024, false));
+    try std.testing.expectError(ZlibError.DataError, inflateStreamValidateLenient(corrupted, 16 * 1024 * 1024, false, null));
 }
 
 test "inflateZlibLenientAllocWithRatio: rejects mid-body corruption with full Adler-32" {

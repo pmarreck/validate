@@ -57,6 +57,41 @@
 ---
 
 ## C FFI API Design
+## Verdict Tiers: OK / WARN / FAIL
+
+Every validation produces exactly one of three terminal verdicts. The
+distinction is load-bearing — clients (CLI, GUI, future bindings) depend
+on the boundary between WARN and OK.
+
+| Verdict | Semantics |
+|---|---|
+| **OK**   | Canonically valid, spec-compliant. Every byte covered by an integrity check passed; the file matches every applicable specification. |
+| **WARN** | "Acceptable deviation": opens/decodes/validates fine in every major real-world tool, but deviates from the applicable specification in some tolerated way. |
+| **FAIL** | Actual data corruption: checksum mismatch, truncated structure, content no tool can decode. |
+
+WARN exists because real-world file libraries are full of files that
+every consumer tolerates (Adobe InDesign PDFs missing zlib Adler-32
+trailers, bzip2-wrapped DMGs, PNM with a single-byte tail truncation,
+etc.). If validate emitted plain OK on those, users would lose the
+signal that a strict re-export would produce a cleaner file. If
+validate FAILed them, users would chase phantom corruption. WARN is
+the load-bearing middle.
+
+In code, this boundary is enforced by the `ValidationResult` API:
+
+```zig
+ValidationResult.okWithDepth(format, .full)              // → OK
+ValidationResult.okWithDepthAndWarning(format, .full, "...") // → WARN
+ValidationResult.invalidWithDepth(format, "...", .full)  // → FAIL
+```
+
+Any new validator MUST pick one of these explicitly for every code path
+returning a verdict. Tolerated deviations route through the
+`okWithDepthAndWarning` path with a human-readable warning_message.
+
+See `RULES.md` for the verdict-tier rule and `PROJECT_OVERVIEW.md` for
+the user-facing framing.
+
 
 ### Core Types
 

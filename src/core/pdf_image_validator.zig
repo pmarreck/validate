@@ -99,11 +99,23 @@ pub const PdfImageValidationResult = struct {
 
 // ============ Decompression ============
 
+/// Per-thread flag set whenever any FlateDecode stream in this validation
+/// pass required the Adobe-InDesign-style lenient recovery path
+/// (deflate body intact but zlib Adler-32 trailer truncated/missing).
+/// The top-level PDF deep validator clears this at start, reads it at
+/// end, and emits a WARN verdict if true. Single boolean, no contention.
+pub threadlocal var lenient_recovery_seen: bool = false;
+
 /// Result of FlateDecode decompression with ratio-aware skip tracking.
 /// Uses a tagged union instead of error unions so callers can distinguish
 /// "too large" from "decompression bomb" from "corrupt data".
 pub const DecompressFlateResult = union(enum) {
     ok: []u8,
+    /// Decompression succeeded only via the Adobe-InDesign-style lenient
+    /// path (zlib trailer was missing/truncated). Caller should treat as
+    /// usable but emit a WARN verdict — the file works in every PDF
+    /// reader but deviates from the zlib spec.
+    ok_lenient: []u8,
     exceeded_limit,
     corrupt,
     data_error,
@@ -126,6 +138,10 @@ pub fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressF
 
     switch (zlib.inflateZlibLenientAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },
+        .ok_lenient => |data| {
+            lenient_recovery_seen = true;
+            return .{ .ok_lenient = data };
+        },
         .exceeded_limit => |info| {
             if (info.ratio > 100) return .corrupt;
             return .exceeded_limit;
@@ -139,6 +155,7 @@ pub fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressF
     // input as a last resort.
     switch (zlib.inflateRawAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },
+        .ok_lenient => |data| return .{ .ok = data }, // raw deflate has no zlib trailer; not lenient
         .exceeded_limit => |info| {
             if (info.ratio > 100) return .corrupt;
             return .exceeded_limit;
@@ -189,6 +206,7 @@ pub fn applyFilterChain(allocator: Allocator, data: []const u8, filters: []const
         const decoded: ?[]u8 = switch (filter) {
             .flate_decode => switch (decompressFlate(allocator, current_data)) {
                 .ok => |decompressed| decompressed,
+                .ok_lenient => |decompressed| decompressed,
                 .exceeded_limit, .corrupt, .data_error, .alloc_error => null,
             },
             .lzw_decode => lzw_decoder.decode(allocator, current_data) catch null,
@@ -1136,7 +1154,7 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
             .flate_decode => {
                 // FlateDecode as terminal filter - might be raw pixel data or nested image
                 switch (decompressFlate(allocator, image_data)) {
-                    .ok => |decompressed| {
+                    .ok, .ok_lenient => |decompressed| {
                         defer allocator.free(decompressed);
 
                         // Check if decompressed data is a known image format
@@ -1385,7 +1403,7 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
         .flate_decode => blk: {
             const decomp_start = if (timing_debug) std.time.nanoTimestamp() else 0;
             switch (decompressFlate(allocator, image_data)) {
-                .ok => |decompressed| {
+                .ok, .ok_lenient => |decompressed| {
                     const decomp_end = if (timing_debug) std.time.nanoTimestamp() else 0;
                     const decomp_ms = if (timing_debug) @as(f64, @floatFromInt(decomp_end - decomp_start)) / 1_000_000.0 else 0;
 
@@ -1775,6 +1793,7 @@ test "decompressFlate returns DecompressFlateResult tagged union" {
     // Verify the type is correct by matching all variants
     switch (result) {
         .ok => {},
+        .ok_lenient => {},
         .exceeded_limit => {},
         .corrupt => {},
         .data_error => {},
@@ -1814,13 +1833,14 @@ test "decompressFlate recovers from missing zlib trailer (Adobe InDesign quirk)"
     const allocator = std.testing.allocator;
     const result = decompressFlate(allocator, &compressed);
     switch (result) {
-        .ok => |data| {
+        .ok_lenient => |data| {
             defer allocator.free(data);
             // qpdf decompresses this stream to exactly 16555 bytes. We accept
             // any output >= 1KB as evidence the recovery path produced
             // meaningful data; the exact length is what major PDF readers see.
             try std.testing.expect(data.len >= 16000 and data.len <= 17000);
         },
+        .ok => return error.TestExpectedLenientRecoveryGotStrictOk,
         .data_error, .corrupt => return error.TestExpectedRecoveryButGotError,
         .exceeded_limit, .alloc_error => return error.TestEnvironmentIssue,
     }

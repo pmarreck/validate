@@ -33,6 +33,10 @@ pub const FlateStreamFailure = struct {
 pub const PdfStreamValidationResult = struct {
 	total_flate_streams: u32,
 	validated: u32,
+	/// Streams that decoded only via the lenient (Adobe-InDesign style)
+	/// recovery path — deflate body intact but zlib trailer truncated.
+	/// Caller emits a WARN verdict if this is non-zero.
+	validated_lenient: u32,
 	failed: u32,
 	skipped_already_validated: u32,
 	skipped_size_limit: u32,
@@ -69,6 +73,7 @@ pub fn validatePdfFlateStreams(
 ) PdfStreamValidationResult {
 	var total: u32 = 0;
 	var validated: u32 = 0;
+	var validated_lenient: u32 = 0;
 	var failed: u32 = 0;
 	var skipped: u32 = 0;
 	var size_skipped: u32 = 0;
@@ -82,6 +87,7 @@ pub fn validatePdfFlateStreams(
 		return .{
 			.total_flate_streams = 0,
 			.validated = 0,
+			.validated_lenient = 0,
 			.failed = 0,
 			.skipped_already_validated = 0,
 			.skipped_size_limit = 0,
@@ -131,9 +137,11 @@ pub fn validatePdfFlateStreams(
 		// corruption still fails because the deflate body itself must
 		// terminate cleanly.
 		const raw: bool = false;
-		const result = zlib.inflateStreamValidateLenient(compressed, MAX_DECOMPRESSED_BYTES, raw);
+		var lenient_used: bool = false;
+		const result = zlib.inflateStreamValidateLenient(compressed, MAX_DECOMPRESSED_BYTES, raw, &lenient_used);
 		if (result) |produced| {
 			validated += 1;
+			if (lenient_used) validated_lenient += 1;
 			bytes_verified += produced;
 		} else |err| switch (err) {
 			zlib.ZlibError.DecompressedTooLarge => {
@@ -162,6 +170,7 @@ pub fn validatePdfFlateStreams(
 	return .{
 		.total_flate_streams = total,
 		.validated = validated,
+		.validated_lenient = validated_lenient,
 		.failed = failed,
 		.skipped_already_validated = skipped,
 		.skipped_size_limit = size_skipped,

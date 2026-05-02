@@ -373,6 +373,13 @@ fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlate
 
     switch (zlib.inflateZlibLenientAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },
+        .ok_lenient => |data| {
+            // Adobe-InDesign-style truncated-Adler-32 quirk; surface as WARN
+            // by setting the shared per-thread flag read by the top-level
+            // PDF deep validator.
+            @import("pdf_image_validator.zig").lenient_recovery_seen = true;
+            return .{ .ok = data };
+        },
         .exceeded_limit => |info| {
             if (info.ratio > 100) return .corrupt;
             return .exceeded_limit;
@@ -382,7 +389,7 @@ fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlate
     }
 
     switch (zlib.inflateRawAllocWithRatio(allocator, compressed, max_output)) {
-        .ok => |data| return .{ .ok = data },
+        .ok, .ok_lenient => |data| return .{ .ok = data },
         .exceeded_limit => |info| {
             if (info.ratio > 100) return .corrupt;
             return .exceeded_limit;

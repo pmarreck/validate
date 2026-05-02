@@ -376,7 +376,16 @@ fn applyFlateStreamCheck(
 	}
 
 	const res = pdf_stream_validator.validatePdfFlateStreams(allocator, pdf_data, &excluded);
-	if (res.valid) return .{};
+	if (res.valid) {
+		// Surface lenient-recovery as WARN if any stream needed it.
+		if (res.validated_lenient > 0) {
+			return .{
+				.tolerated_malformation = true,
+				.tolerated_warning = "PDF contains FlateDecode streams with truncated/missing zlib Adler-32 trailers (Adobe InDesign style; tolerated by all readers)",
+			};
+		}
+		return .{};
+	}
 
 	// Format a richer message that includes object number and byte-offset
 	// range when we have it. Static reason text ("zlib data error...") on its
@@ -694,6 +703,11 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 /// Deep PDF validation from a memory buffer (used for MIME-wrapped content).
 pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) ValidationResult {
 	const telemetry = PdfTelemetry.init();
+	// Clear the per-thread lenient-recovery flag at the start of each
+	// PDF validation. Set by `decompressFlate` in the image / font /
+	// embedded-file paths whenever the Adobe-InDesign-style truncated-
+	// Adler-32 quirk fires; read at end to surface a WARN verdict.
+	pdf_image_validator.lenient_recovery_seen = false;
 	const total_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
 	if (pdf_data.len < 50) {
 		return ValidationResult.invalidWithDepth(.pdf, "PDF too small for deep validation", .structural);
@@ -820,6 +834,16 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	if (flate_outcome.tolerated_malformation) {
 		malformations_local.insert(.pdf_flate_decode_failed);
 		if (warning_message == null) warning_message = flate_outcome.tolerated_warning;
+	}
+
+	// Surface the Adobe-InDesign-style truncated-Adler-32 quirk as a WARN.
+	// `lenient_recovery_seen` is set by decompressFlate in the image / font /
+	// embedded-file paths whenever a stream's deflate body was intact but
+	// the zlib trailer was missing. The pdf_stream_validator equivalent is
+	// `validated_lenient` which we read at the bottom of applyFlateStreamCheck;
+	// here we cover the per-component validators. Either path triggers WARN.
+	if (pdf_image_validator.lenient_recovery_seen and warning_message == null) {
+		warning_message = "PDF contains FlateDecode streams with truncated/missing zlib Adler-32 trailers (Adobe InDesign style; tolerated by all readers)";
 	}
 
 	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;

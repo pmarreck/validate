@@ -23,6 +23,35 @@ If validation is slow, the solutions are:
 **DO NOT** propose "validating a sample" or "limiting frames" - this defeats
 the entire purpose of the tool.
 
+
+## Verdict Tiers: OK / WARN / FAIL
+
+Every file gets exactly one of three terminal verdicts, and the
+distinction is meaningful:
+
+- **OK** — file is canonically valid and spec-compliant. Re-encoding
+  with a strict tool would produce a byte-identical (or equivalently
+  clean) result.
+- **WARN** — file is an *acceptable deviation*: every major real-world
+  tool opens / decodes / validates it fine, but it deviates from the
+  applicable specification in some tolerated way. A strict re-export
+  would produce a cleaner file. Common WARN cases include Adobe
+  InDesign PDFs (zlib streams missing the Adler-32 trailer), bzip2-
+  wrapped DMGs, and PNM files with a single-byte tail truncation.
+- **FAIL** — actual data corruption: a checksum mismatch, a truncated
+  structure, content no tool can decode. Real damage that re-encoding
+  cannot losslessly recover from.
+
+WARN is the load-bearing middle tier. If validate emitted plain OK on
+deviations, users would lose the signal that a strict re-export would
+produce a cleaner file. If validate FAILed them, users would chase
+phantom corruption when their files actually work everywhere.
+
+If you're building a downstream tool: treat WARN as "usable but
+non-canonical." If your workflow needs strict spec compliance (e.g.,
+distributing files to other strict validators), re-encode any WARN
+file before shipping.
+
 ## Goals
 - Provide deterministic, byte-level validation across a wide range of file formats (at least 100 thus far).
 - Maximize auditability and reproducibility (same bytes => same result).
