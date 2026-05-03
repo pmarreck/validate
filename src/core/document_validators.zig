@@ -257,6 +257,12 @@ pub fn validateMsi(file: *FileSource) ValidationResult {
     return validateOle2(file, .msi);
 }
 
+/// Validate a Windows Thumbs.db (image-thumbnail cache) as an OLE2/CFBF container.
+/// Format detection has already confirmed the Catalog stream is present.
+pub fn validateThumbsDb(file: *FileSource) ValidationResult {
+    return validateOle2(file, .thumbs_db);
+}
+
 /// Detect specific OLE2 subformat (DOC, XLS, PPT, MSI) by examining directory entries.
 /// OLE2 stores stream names as UTF-16LE in directory entry structures.
 pub fn detectOle2Subformat(file: *FileSource) FileFormat {
@@ -282,8 +288,10 @@ pub fn detectOle2Subformat(file: *FileSource) FileFormat {
     const msi_tables_utf16 = [_]u8{ 0x05, 0, 'T', 0, 'a', 0, 'b', 0, 'l', 0, 'e', 0, 's', 0 };
     const msi_string_pool_utf16 = [_]u8{ 0x05, 0, 'S', 0, 'u', 0, 'm', 0, 'm', 0, 'a', 0, 'r', 0, 'y', 0 };
     const msi_clsid = [_]u8{ 0x84, 0x10, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46 };
+    // Thumbs.db (Windows thumbnail cache) signature: "Catalog" stream at root
+    const catalog_utf16 = [_]u8{ 'C', 0, 'a', 0, 't', 0, 'a', 0, 'l', 0, 'o', 0, 'g', 0 };
 
-    const result = detectOle2InBuffer(buffer, bytes_read, &workbook_utf16, &book_utf16, &ppt_utf16, &word_utf16, &msi_tables_utf16, &msi_string_pool_utf16, &msi_clsid);
+    const result = detectOle2InBuffer(buffer, bytes_read, &workbook_utf16, &book_utf16, &ppt_utf16, &word_utf16, &msi_tables_utf16, &msi_string_pool_utf16, &msi_clsid, &catalog_utf16);
     if (result != .unknown) return result;
     // For larger files, read the directory sector from the OLE2 header
     if (bytes_read >= 0x34) {
@@ -307,7 +315,7 @@ pub fn detectOle2Subformat(file: *FileSource) FileFormat {
             };
             const dir_read = dir_buffer.len;
 
-            const dir_result = detectOle2InBuffer(dir_buffer, dir_read, &workbook_utf16, &book_utf16, &ppt_utf16, &word_utf16, &msi_tables_utf16, &msi_string_pool_utf16, &msi_clsid);
+            const dir_result = detectOle2InBuffer(dir_buffer, dir_read, &workbook_utf16, &book_utf16, &ppt_utf16, &word_utf16, &msi_tables_utf16, &msi_string_pool_utf16, &msi_clsid, &catalog_utf16);
             if (dir_result != .unknown) return dir_result;
         }
     }
@@ -326,7 +334,11 @@ fn detectOle2InBuffer(
     msi_tables_utf16: []const u8,
     msi_string_pool_utf16: []const u8,
     msi_clsid: []const u8,
+    catalog_utf16: []const u8,
 ) FileFormat {
+    // Thumbs.db has the unambiguous "Catalog" stream — check first so we do not
+    // misclassify Thumbs.db as Word Document via fallback.
+    if (findInBuffer(buf, len, catalog_utf16)) return .thumbs_db;
     if (findInBuffer(buf, len, workbook_utf16) or findInBuffer(buf, len, book_utf16)) return .xls;
     if (findInBuffer(buf, len, ppt_utf16)) return .ppt;
     if (findInBuffer(buf, len, word_utf16)) return .doc;

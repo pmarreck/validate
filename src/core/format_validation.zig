@@ -695,6 +695,8 @@ pub const FileFormat = enum {
     esd, // Windows Electronic Software Distribution (.esd, WIM variant)
     // Windows installer formats
     msi, // Microsoft Installer (.msi, OLE2/CFBF container)
+    // Windows thumbnail cache
+    thumbs_db, // Windows Thumbs.db image-thumbnail cache (OLE2/CFBF with Catalog stream)
     // BLIP archive formats
     blar, // BLIP archive (.blar, with directory support)
     mblar, // BLIP mini-archive (.mblar, flat files only)
@@ -813,6 +815,7 @@ pub const FileFormat = enum {
             .pcapng => true, // PCAPNG network capture validation
             .rpm => true, // RPM package validation
             .gpt_disk_image => true, // GPT-partitioned disk image (header CRC + entries CRC)
+            .thumbs_db => true, // Windows Thumbnail cache (CFBF with Catalog stream)
             .unknown => false,
         };
     }
@@ -830,7 +833,7 @@ pub const FileFormat = enum {
     /// Returns true if this format uses OLE2/CFBF (Compound File Binary Format).
     pub fn isOle2(self: FileFormat) bool {
         return switch (self) {
-            .doc, .xls, .ppt, .qbb, .msi => true,
+            .doc, .xls, .ppt, .qbb, .msi, .thumbs_db => true,
             else => false,
         };
     }
@@ -904,7 +907,7 @@ pub const FileFormat = enum {
             .prproj, .indd, .idml, .fcpxml, .drp, .sketch, .aep, .ai, .eps,
             .bwproject, .ptx, .rpp,
             .cwk, .mwd, .wpd,
-            .iso, .dmg, .toast, .vmdk, .wim, .esd, .msi,
+            .iso, .dmg, .toast, .vmdk, .wim, .esd, .msi, .thumbs_db,
             .br, .hqx, .cpt, .tar,
             .ds_store, .plist, .spotlight, .apple_double, .apple_media_db,
             => .structural,
@@ -968,7 +971,7 @@ pub const FileFormat = enum {
                 => "proprietary project format — structural parse only",
 
                 // System/metadata files
-                .ds_store, .plist, .spotlight, .apple_double, .apple_media_db,
+                .ds_store, .plist, .spotlight, .apple_double, .apple_media_db, .thumbs_db,
                 => "system metadata — no data integrity mechanism",
 
                 else => "no integrity mechanism available for this format",
@@ -6179,7 +6182,7 @@ pub const FormatValidator = struct {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCode(.glb, .failed_to_seek, "GLB file");
                 break :blk cad_3d_validators.validateGlbDeep(allocator, source);
             },
-            .doc, .xls, .ppt => blk: {
+            .doc, .xls, .ppt, .thumbs_db => blk: {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(initial_result.format, .failed_to_seek, "file", .structural);
                 break :blk document_validators.validateOle2Deep(allocator, source, initial_result.format);
             },
@@ -6812,7 +6815,7 @@ pub const FormatValidator = struct {
             .tar => archive_validators.validateTar(file_src_ptr),
             .pdf => pdf_validator.validatePdf(file_src_ptr),
             .rtf => text_format_validators.validateRtf(file_src_ptr),
-            .doc, .xls, .ppt => document_validators.validateOle2(file_src_ptr, format), // OLE2/CFBF binary Office
+            .doc, .xls, .ppt, .thumbs_db => document_validators.validateOle2(file_src_ptr, format), // OLE2/CFBF binary Office
             .wpd => document_validators.validateWordPerfect(file_src_ptr),
             .cwk => apple_validators.validateClarisWorks(file_src_ptr),
             .mwd => apple_validators.validateMacWrite(file_src_ptr),
@@ -7816,6 +7819,36 @@ test "FormatValidator rejects invalid OLE2" {
 
     try std.testing.expect(result.format.isOle2());
     try std.testing.expect(!result.is_valid);
+}
+
+test "FormatValidator detects Windows Thumbs.db as thumbs_db not doc" {
+    // Real Thumbs.db sample (Windows thumbnail cache) embedded so this
+    // test is reproducible without external files. The CFBF root storage
+    // contains a `Catalog` stream — the unambiguous Thumbs.db marker.
+    const fixture = @embedFile("fixtures/thumbs_db_sample.db");
+
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("Thumbs.db", .{});
+    try file.writeAll(fixture);
+    file.close();
+
+    const path = try tmp_dir.dir.realpathAlloc(allocator, "Thumbs.db");
+    defer allocator.free(path);
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+
+    const result = validator.validateFile(path);
+
+    try std.testing.expectEqual(FileFormat.thumbs_db, result.format);
+    try std.testing.expect(result.is_valid);
+    // Must not surface the "no WordDocument stream" warning.
+    if (result.warning_message) |w| {
+        try std.testing.expect(std.mem.indexOf(u8, w, "WordDocument") == null);
+    }
 }
 
 test "detectFormat SQLite" {

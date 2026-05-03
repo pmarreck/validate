@@ -325,7 +325,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "PCAP Hálózati Rögzítés", .pcapng = "PCAPNG Hálózati Rögzítés",
-    .rpm = "RPM csomag", .gpt_disk_image = "GPT-partitioned disk image",
+    .rpm = "RPM csomag", .gpt_disk_image = "GPT-partitioned disk image", .thumbs_db = "Windows Thumbnail Cache",
 });
 
 pub const error_translations = i18n.ErrorMap.initComptime(.{});
