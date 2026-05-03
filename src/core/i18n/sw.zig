@@ -297,7 +297,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "Unasaji wa Mtandao PCAP", .pcapng = "Unasaji wa Mtandao PCAPNG",
-    .rpm = "Kifurushi cha RPM", .gpt_disk_image = "GPT-partitioned disk image",
+    .rpm = "Kifurushi cha RPM", .gpt_disk_image = "GPT-partitioned disk image", .thumbs_db = "Windows Thumbnail Cache",
 });
 
 // Swahili CLI argument aliases (currently canonical English forms).

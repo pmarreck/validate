@@ -297,7 +297,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "PCAP நெட்வொர்க் கேப்சர்", .pcapng = "PCAPNG நெட்வொர்க் கேப்சர்",
-    .rpm = "RPM தொகுப்பு", .gpt_disk_image = "GPT-partitioned disk image",
+    .rpm = "RPM தொகுப்பு", .gpt_disk_image = "GPT-partitioned disk image", .thumbs_db = "Windows Thumbnail Cache",
 });
 
 // Tamil CLI argument aliases (currently canonical English forms).

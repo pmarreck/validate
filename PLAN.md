@@ -1,3 +1,7 @@
+### Windows Thumbs.db detection (2026-05-02 EST)
+
+- [x] Added `thumbs_db` FileFormat variant. Detection driven by `Catalog` UTF-16LE stream in CFBF root, checked first in `detectOle2InBuffer` so Thumbs.db stops misclassifying as Word Document (97-2003) with the spurious "OLE2 container has no WordDocument stream" warning. Real reproducer (Peter's fileserver) now reports `OK ... Windows Thumbnail Cache (Thumbs.db) (structural)`. Fixture: `src/core/fixtures/thumbs_db_sample.db` (13312 bytes), `@embedFile`-loaded by a regression test.
+
 ### FLAC false-positive fix (lalalai-split FLAC, 2026-05-02 EST)
 
 - [x] Fixed `BitReader.readUnary` artificial cap of 32 — FLAC spec imposes no upper bound on Rice unary coding length, real-world 16-bit FLACs from lalalai's stem-splitter legitimately need unary counts > 32 (e.g. honest_trailers_ex_machina_no_voice_split_by_lalalai.flac frame 175 needs count = 33). Cap raised to 2^24 as a sanity-only guard against pathological all-zero buffers; reader returns Truncated when bits exhaust naturally. Added unit tests for unary counts 33 and 64 plus a real-frame regression fixture (src/core/fixtures/lalalai_frame_175.flac, 7 KB extracted from the original failing frame). Reproducer now reports OK (fully validated). libflac confirms the original file is sound.

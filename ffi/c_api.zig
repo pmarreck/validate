@@ -206,7 +206,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .rpm => "archive",
 
         // Other
-        .unknown, .par2, .beam, .ds_store, .spotlight, .apple_double => "other",
+        .unknown, .par2, .beam, .ds_store, .spotlight, .apple_double, .thumbs_db => "other",
     };
 }
 
@@ -277,7 +277,6 @@ fn buildValidationResult(
     // Flags as individual booleans
     try builder.addBool("bypass_prot", result.circumvented_trivial_protection);
     try builder.addBool("via_ffmpeg", result.validated_via_ffmpeg);
-
 
     // Timing
     try builder.addI64("elapsed_ns_u64", elapsed_ns);
