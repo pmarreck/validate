@@ -11,8 +11,8 @@
             .hash = "xml-0.2.0-ZTbP3wE6AgCsnyZut_plzxi6WB2tzzh3kFRBOp3AL7n9",
         },
         .zigimg = .{
-            .url = "git+https://github.com/pmarreck/zigimg#79cc26e34f952a326d3e89b32f28ac85794c65c8",
-            .hash = "zigimg-0.1.0-8_eo2l2KFwD50BdUoLSetaRfLluA-8qr6fHf7BgeAvaR",
+            .url = "git+https://github.com/pmarreck/zigimg#29e4b94ce186f6f2eaf92f1e4c498846f2eab7c6",
+            .hash = "zigimg-0.1.0-8_eo2lfYFwD5vFakxU60FRwc2fBli9L0PiGskPvb6Edc",
         },
         .libwebp = .{
             .path = "deps/libwebp",
