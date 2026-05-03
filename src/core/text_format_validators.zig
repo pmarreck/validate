@@ -955,14 +955,12 @@ pub fn validateXml(file: *FileSource) ValidationResult {
         const outcome = parseXmlWellFormed(preprocessed.had_doctype, rewrite.data);
         switch (outcome) {
             .ok => |has_doctype_warn| {
-                if (has_doctype_warn) {
-                    return ValidationResult.okWithDepthAndWarning(.xml, .structural, "DOCTYPE declaration skipped (DTD not validated)");
-                }
+                _ = has_doctype_warn;
                 return ValidationResult.okWithDepth(.xml, .structural);
             },
             .undefined_entity_under_doctype => {
                 var tolerated = ValidationResult.okWithDepthAndMalformation(.xml, .structural, .xml_undefined_entity);
-                tolerated.warning_message = "DOCTYPE declaration skipped (DTD not validated); undefined entity reference tolerated";
+                tolerated.warning_message = "undefined entity reference tolerated";
                 return tolerated;
             },
             .err => |msg| return ValidationResult.invalid(.xml, msg),
@@ -974,14 +972,12 @@ pub fn validateXml(file: *FileSource) ValidationResult {
     const first_outcome = parseXmlWellFormed(preprocessed.had_doctype, preprocessed.data);
     switch (first_outcome) {
         .ok => |has_doctype_warn| {
-            if (has_doctype_warn) {
-                return ValidationResult.okWithDepthAndWarning(.xml, .structural, "DOCTYPE declaration skipped (DTD not validated)");
-            }
+            _ = has_doctype_warn;
             return ValidationResult.okWithDepth(.xml, .structural);
         },
         .undefined_entity_under_doctype => {
             var tolerated = ValidationResult.okWithDepthAndMalformation(.xml, .structural, .xml_undefined_entity);
-            tolerated.warning_message = "DOCTYPE declaration skipped (DTD not validated); undefined entity reference tolerated";
+            tolerated.warning_message = "undefined entity reference tolerated";
             return tolerated;
         },
         .err => |msg| {

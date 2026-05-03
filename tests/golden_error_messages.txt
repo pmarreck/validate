@@ -1943,7 +1943,6 @@ DNG too large for deep validation
 DNG: no embedded previews to validate
 DNG: out of memory for deep validation
 DNG: some semantic map tiles invalid
-DOCTYPE declaration skipped (DTD not validated)
 Embedded pixel data validation failed
 Empty STL (no facets)
 Encrypted DWG - limited validation
