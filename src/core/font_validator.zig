@@ -188,11 +188,20 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 
 	// Parse sfnt version
 	const sfnt_version = data[0..4];
+	// sfnt version magic per Apple TrueType reference and OpenType spec:
+	//   0x00010000 — TrueType v1.0 (most common)
+	//   "OTTO"     — OpenType with CFF outlines
+	//   "true"     — Apple legacy TrueType (Mac-era PDFs, e.g. SparkCharts)
+	//   "typ1"     — PostScript-flavored TrueType in sfnt wrapper
 	const font_type: FontType = blk: {
 		if (std.mem.eql(u8, sfnt_version, &[_]u8{ 0x00, 0x01, 0x00, 0x00 })) {
 			break :blk .truetype;
 		} else if (std.mem.eql(u8, sfnt_version, "OTTO")) {
 			break :blk .opentype_cff;
+		} else if (std.mem.eql(u8, sfnt_version, "true")) {
+			break :blk .truetype;
+		} else if (std.mem.eql(u8, sfnt_version, "typ1")) {
+			break :blk .truetype;
 		} else {
 			return FontValidationResult.invalid("Invalid sfnt version");
 		}
@@ -1520,4 +1529,61 @@ test "validateWoff2 detects corruption in ground truth sample" {
 
 	const result = validateWoff2WithAllocator(data[0..bytes_read], std.testing.allocator);
 	try std.testing.expect(!result.valid);
+}
+
+
+// Apple legacy TrueType uses 'true' (0x74727565) as the sfnt version magic,
+// per the original Apple TrueType reference. PDF-embedded fonts (especially
+// from older Mac-era publishing pipelines, e.g. SparkCharts) carry this
+// signature. Reproducer: extracted directly from "World History.pdf"
+// /FontFile2 stream — fonttools (TTX) confirms it is a valid sfnt with
+// sfntVersion="true".
+test "validateTtfOtf accepts Apple legacy 'true' sfnt magic" {
+	const path = "tests/fixtures/fonts/sfnt_true_magic.ttf";
+	const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+		return err;
+	};
+	defer file.close();
+	const stat = try file.stat();
+	const data = try std.testing.allocator.alloc(u8, @intCast(stat.size));
+	defer std.testing.allocator.free(data);
+	const n = try file.readAll(data);
+	const result = validateTtfOtfWithOptions(data[0..n], .{
+		.skip_checksums = false,
+		.lenient_checksums = true,
+	});
+	try std.testing.expect(result.valid);
+}
+
+// 'typ1' (0x74797031) is the sfnt magic for PostScript-flavored TrueType
+// inside an sfnt wrapper (Apple TrueType reference, "Type 1" sfnt). Less
+// common than 'true', but appears in older Mac-published PDFs. Synthetic
+// minimum-viable sfnt with one 'head' table; structural parse only.
+test "validateTtfOtf accepts 'typ1' sfnt magic" {
+	var data: [256]u8 = undefined;
+	@memset(&data, 0);
+	data[0] = 't';
+	data[1] = 'y';
+	data[2] = 'p';
+	data[3] = '1';
+	// numTables = 1
+	data[4] = 0;
+	data[5] = 1;
+	// Table record for 'head' starting at offset 12
+	data[12] = 'h';
+	data[13] = 'e';
+	data[14] = 'a';
+	data[15] = 'd';
+	// offset = 28
+	data[23] = 28;
+	// length = 54
+	data[27] = 54;
+	// head magicNumber (offset 28+12)
+	data[40] = 0x5F;
+	data[41] = 0x0F;
+	data[42] = 0x3C;
+	data[43] = 0xF5;
+	const result = validateTtfOtfWithOptions(&data, .{ .skip_checksums = true });
+	try std.testing.expect(result.valid);
 }
