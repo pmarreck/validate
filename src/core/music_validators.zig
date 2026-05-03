@@ -4793,9 +4793,16 @@ test "validateWavDeep: clean mono s16 sine wave returns OK without warning" {
     try testing.expect(result.warning_message == null);
 }
 
-test "validateWavDeep: NUL run injection in mono s16 emits WARN" {
+test "validateWavDeep: sustained non-zero constant run in mono s16 emits WARN" {
+    // Updated 2026-05-02 (Peter): under the noise-not-silence rework, NUL
+    // runs are silence (no longer corruption). Real drive corruption shows
+    // up as a sustained non-zero DC value (decoder confusion / freed-sector
+    // contents) -- a constant non-zero sample run >= 0.1 s of audio.
     const allocator = testing.allocator;
-    const samples = try allocator.alloc(i16, 4096);
+    // 2.0 seconds at 44.1 kHz mono = 88200 samples -- well past the 1 s
+    // strong threshold so the heuristic flags it as likely_corrupt.
+    const sample_count: usize = 88_200;
+    const samples = try allocator.alloc(i16, sample_count);
     defer allocator.free(samples);
     const sr: f64 = 44100.0;
     const freq: f64 = 440.0;
@@ -4804,8 +4811,8 @@ test "validateWavDeep: NUL run injection in mono s16 emits WARN" {
         const v: f64 = @sin(2.0 * std.math.pi * freq * t) * 16000.0;
         s.* = @intFromFloat(v);
     }
-    // Inject a 200-sample NUL run
-    for (1500..1700) |i| samples[i] = 0;
+    // Inject a 60000-sample (~1.4 s) constant non-zero run -- DC stuck.
+    for (15_000..75_000) |i| samples[i] = -13108;
     const wav = try buildMonoS16Wav(allocator, samples, 44100);
     defer allocator.free(wav);
     var source = FileSource.fromBuffer(wav);
