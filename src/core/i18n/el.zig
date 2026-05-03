@@ -324,7 +324,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "PCAP Δικτυακή Καταγραφή", .pcapng = "PCAPNG Δικτυακή Καταγραφή",
-    .rpm = "Πακέτο RPM",
+    .rpm = "Πακέτο RPM", .gpt_disk_image = "GPT-partitioned disk image",
 });
 
 pub const error_translations = i18n.ErrorMap.initComptime(.{});

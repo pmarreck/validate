@@ -16,6 +16,7 @@ const ValidationDepth = format_validation.ValidationDepth;
 const apm_parser = @import("apm_parser.zig");
 const dmg_validator = @import("dmg_validator.zig");
 const iso9660_parser = @import("iso9660_parser.zig");
+const gpt_validator = @import("gpt_validator.zig");
 
 const testing = std.testing;
 
@@ -68,6 +69,20 @@ pub fn validateIso(file: *FileSource) ValidationResult {
     if (udf_read >= 5 and (std.mem.eql(u8, &udf_desc, "NSR02") or std.mem.eql(u8, &udf_desc, "NSR03"))) {
         return ValidationResult.okWithDepth(.iso, .structural);
     }
+
+    // Last resort before failing: check if this is actually a GPT-partitioned
+    // disk image (`.iso` is widely abused — Apple installers, hybrid images,
+    // direct-from-device dumps). Surfacing the real format keeps users from
+    // chasing a "corrupted ISO" red herring.
+    file.seekTo(0) catch return ValidationResult.invalidCode(.iso, .invalid_signature, "ISO 9660");
+    var gpt_probe: [4104]u8 = undefined; // 4096 + 8 — covers 512 and 4096 block sizes
+    if (file.readAll(&gpt_probe)) |n| {
+        if (gpt_validator.detectGptBlockSize(gpt_probe[0..n]) != null) {
+            // Detected as GPT; defer full validation to the deep path. Structurally
+            // valid here means: protective MBR + GPT signature present.
+            return ValidationResult.okWithDepth(.gpt_disk_image, .structural);
+        }
+    } else |_| {}
 
     return ValidationResult.invalidCode(.iso, .invalid_signature, "ISO 9660");
 }
@@ -200,6 +215,28 @@ pub fn validateIsoDeep(allocator: Allocator, source: *FileSource) ValidationResu
         var apple_result = ValidationResult.okWithDepth(.iso, .structural);
         apple_result.warning_message = "Apple Disk Image (HFS/HFS+) detected, not ISO 9660; recommended extension: .img or .dmg";
         return apple_result;
+    }
+
+    // GPT-partitioned disk image check. Many `.iso`-named files are actually
+    // GPT disk images (Apple installers, hybrid disks). Detect those before
+    // running the ISO 9660 parser so we can hand off to the GPT validator and
+    // avoid a misleading "Invalid ISO 9660 signature" failure.
+    if (gpt_validator.detectGptBlockSize(data[0..bytes_read]) != null) {
+        const gpt_outcome = gpt_validator.validateGptFromBuffer(data[0..bytes_read]);
+        return switch (gpt_outcome.level) {
+            .structural => ValidationResult.invalidWithDepth(
+                .gpt_disk_image,
+                gpt_outcome.error_message orelse "GPT validation failed",
+                .structural,
+            ),
+            .header_crc_ok => blk: {
+                if (gpt_outcome.error_message) |msg| {
+                    break :blk ValidationResult.okWithDepthAndWarning(.gpt_disk_image, .structural, msg);
+                }
+                break :blk ValidationResult.okWithDepth(.gpt_disk_image, .structural);
+            },
+            .full => ValidationResult.okWithDepth(.gpt_disk_image, .full),
+        };
     }
 
     // Use iso9660_parser for validation

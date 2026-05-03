@@ -199,8 +199,9 @@ const game_asset_validators = @import("game_asset_validators.zig");
 // Document validators (SQLite, OLE2, WordPerfect, MDB, ACCDB)
 const document_validators = @import("document_validators.zig");
 
-// Filesystem/disk image validators (ISO, DMG)
+// Filesystem/disk image validators (ISO, DMG, GPT)
 const filesystem_validators = @import("filesystem_validators.zig");
+const gpt_validator = @import("gpt_validator.zig");
 const apple_validators = @import("apple_validators.zig");
 const apple_media_db_validator = @import("apple_media_db_validator.zig");
 const macos_bundle_validator = @import("macos_bundle_validator.zig");
@@ -708,6 +709,8 @@ pub const FileFormat = enum {
     pcapng, // PCAPNG next-generation network capture
     // Package formats
     rpm, // RPM Package (.rpm, .srpm)
+    // Disk images (additional)
+    gpt_disk_image, // GPT-partitioned disk image (UEFI 2.x §5.3.2). Often misnamed .iso (Apple installers, hybrid disks)
 
     pub fn description(self: FileFormat) [:0]const u8 {
         return i18n.getFormatDescription(self);
@@ -809,6 +812,7 @@ pub const FileFormat = enum {
             .pcap => true, // PCAP network capture validation
             .pcapng => true, // PCAPNG network capture validation
             .rpm => true, // RPM package validation
+            .gpt_disk_image => true, // GPT-partitioned disk image (header CRC + entries CRC)
             .unknown => false,
         };
     }
@@ -862,7 +866,7 @@ pub const FileFormat = enum {
             .webp, .jxl, .bmp, .tiff, .dng, .psd, .ico, .icns,
             .heic, .avif, .tga, .exr, .docx, .xlsx, .pptx, .odt, .ods, .odp,
             .epub, .pages, .keynote, .numbers, .java_class, .pe, .elf, .macho, .macho_fat, .wasm,
-            .cab, .rpm, .sit, .sitx, .bagit, .warc,
+            .cab, .rpm, .sit, .sitx, .bagit, .warc, .gpt_disk_image,
             .pem, .der, .pgp_signed, .ssh_signature,
             .nes, .snes, .n64, .gb, .gba, .nds, .genesis, .chd,
             .cr2, .nef, .arw, // via LibRaw
@@ -1747,6 +1751,10 @@ const magic_signatures = [_]MagicSignature{
     .{ .bytes = &[_]u8{ 0x00, 0x00, 0x01, 0xB3 }, .offset = 0, .format = .mpeg_es },
     // ISO 9660: "CD001" at primary volume descriptor offset 0x8001
     .{ .bytes = "CD001", .offset = 0x8001, .format = .iso },
+    // GPT (UEFI 2.x §5.3.2): "EFI PART" at LBA 1 of a 512-byte-block disk image.
+    // Many .iso-named files (Apple Mojave installer, modern hybrid disks) are
+    // actually GPT-partitioned — detecting them avoids false-positive ISO 9660 fails.
+    .{ .bytes = "EFI PART", .offset = 512, .format = .gpt_disk_image },
     // Sega Genesis / Mega Drive: "SEGA" at offset 0x100 (console name field)
     .{ .bytes = "SEGA", .offset = 0x100, .format = .genesis },
     // iCalendar: BEGIN:VCALENDAR
@@ -5318,10 +5326,12 @@ pub const FormatValidator = struct {
         const ext_format = detectFormatFromExtension(path);
         const expected_format = getExpectedFormatForExtension(path);
 
-        // If magic-based detection failed (or only detected plain text), try extension-based detection
-        // This handles formats like Brotli (.br) that have no magic bytes, and JSONC files that
-        // start with comments (detected as plain_text but should be validated as JSON)
-        if ((result.format == .unknown or result.format == .plain_text) and ext_format != .unknown) {
+        // If magic-based detection failed (or only detected plain text), try extension-based detection.
+        // This handles formats like Brotli (.br) that have no magic bytes, JSONC files that start
+        // with comments (detected as plain_text but should be JSON), and CDG karaoke files whose
+        // bytes happen to fall entirely in the high-byte range and so sniff as plain_text_cp437
+        // — they have no magic header and only the .cdg extension distinguishes them.
+        if (isPlainTextOrUnknown(result.format) and ext_format != .unknown) {
             // Check if this is a text format that can be validated
             const ext_is_validatable_text = switch (ext_format) {
                 .json, .toml, .ini, .xml, .gcode => true,
@@ -5872,6 +5882,13 @@ pub const FormatValidator = struct {
                 const expected_format = getExpectedFormatForExtension(path);
                 if (!isFormatCompatibleWithExtension(result.format, expected_format)) {
                     result.malformations.insert(.extension_mismatch);
+                    // Special case: .iso extension but content is a GPT-partitioned
+                    // disk image. Apple installer .iso files (Mojave.iso etc.) and
+                    // many hybrid disks fall here — make the message specific so
+                    // users understand the file isn't corrupt, just mis-extensioned.
+                    if (expected_format == .iso and result.format == .gpt_disk_image and result.warning_message == null) {
+                        result.warning_message = "extension says ISO 9660 but content is a GPT-partitioned disk image";
+                    }
                 }
             }
         }
@@ -6061,6 +6078,10 @@ pub const FormatValidator = struct {
             .iso => blk: {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.iso, .failed_to_seek, "file", .structural);
                 break :blk filesystem_validators.validateIsoDeep(allocator, source);
+            },
+            .gpt_disk_image => blk: {
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.gpt_disk_image, .failed_to_seek, "file", .structural);
+                break :blk gpt_validator.validateGptDeepFromSource(allocator, source);
             },
             .mp3 => blk: {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.mp3, .failed_to_seek, "file", .structural);
@@ -6800,6 +6821,7 @@ pub const FormatValidator = struct {
             .dbf => document_validators.validateDbf(file_src_ptr),
             .iso => filesystem_validators.validateIso(file_src_ptr),
             .dmg => filesystem_validators.validateDmg(file_src_ptr),
+            .gpt_disk_image => gpt_validator.validateGptStructural(file_src_ptr),
             .hdf5 => scientific_validators.validateHdf5(file_src_ptr),
             .parquet => scientific_validators.validateParquet(file_src_ptr),
             .netcdf => scientific_validators.validateNetcdf(file_src_ptr),
@@ -8587,4 +8609,29 @@ test "text file without magic bytes is not flagged as corrupted" {
         else => false,
     };
     try std.testing.expect(has_no_magic);
+}
+
+test "isPlainTextOrUnknown covers all plain_text variants" {
+	// CDG karaoke regression guard. CDG files are 24-byte-aligned binary
+	// packets whose bytes all sit in 0x80-0xFF, so the codepage detector
+	// classifies them as plain_text_cp437. The dispatch must still fall
+	// through to extension-based detection (.cdg has no magic header) so
+	// the existing CDG validator sees them. Before this change the check
+	// only matched bare .plain_text — utf16/latin1/cp437 short-circuited
+	// to a "extension doesn't match content" WARN.
+	try std.testing.expect(isPlainTextOrUnknown(.unknown));
+	try std.testing.expect(isPlainTextOrUnknown(.plain_text));
+	try std.testing.expect(isPlainTextOrUnknown(.plain_text_utf16));
+	try std.testing.expect(isPlainTextOrUnknown(.plain_text_latin1));
+	try std.testing.expect(isPlainTextOrUnknown(.plain_text_cp437));
+	try std.testing.expect(!isPlainTextOrUnknown(.json));
+	try std.testing.expect(!isPlainTextOrUnknown(.cdg));
+	try std.testing.expect(!isPlainTextOrUnknown(.zip));
+}
+
+fn isPlainTextOrUnknown(format: FileFormat) bool {
+	return switch (format) {
+		.unknown, .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437 => true,
+		else => false,
+	};
 }

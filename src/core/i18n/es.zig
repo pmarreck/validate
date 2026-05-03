@@ -336,7 +336,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "Captura de Red PCAP", .pcapng = "Captura de Red PCAPNG",
-    .rpm = "Paquete RPM",
+    .rpm = "Paquete RPM", .gpt_disk_image = "GPT-partitioned disk image",
 });
 
 // Traducciones de mensajes de error al espa\xc3\xb1ol.

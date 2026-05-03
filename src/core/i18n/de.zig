@@ -339,7 +339,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "PCAP-Netzwerkaufzeichnung",
     .pcapng = "PCAPNG-Netzwerkaufzeichnung",
-    .rpm = "RPM-Paket",
+    .rpm = "RPM-Paket", .gpt_disk_image = "GPT-partitioned disk image",
 });
 
 // German error message translations.

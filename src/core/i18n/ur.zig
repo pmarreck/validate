@@ -296,7 +296,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "PCAP نیٹ ورک کیپچر", .pcapng = "PCAPNG نیٹ ورک کیپچر",
-    .rpm = "RPM پیکیج",
+    .rpm = "RPM پیکیج", .gpt_disk_image = "GPT-partitioned disk image",
 });
 
 // Urdu CLI argument aliases (currently canonical English forms).

@@ -144,7 +144,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .zip, .gzip, .bzip2, .xz, .zstd, .br, .hqx, .rar, .cpt, .sevenz, .tar, .warc, .ar, .cab, .sit, .sitx, .blar, .mblar => "archive",
 
         // Disk images
-        .iso, .dmg, .vmdk, .toast => "disk_image",
+        .iso, .dmg, .vmdk, .toast, .gpt_disk_image => "disk_image",
 
         // Windows imaging formats
         .wim, .esd => "disk_image",

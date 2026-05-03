@@ -296,7 +296,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .llvm_pch = "LLVM Precompiled Header",
     .llvm_diag = "LLVM Serialized Diagnostics",
     .pcap = "การจับภาพเครือข่าย PCAP", .pcapng = "การจับภาพเครือข่าย PCAPNG",
-    .rpm = "แพ็กเกจ RPM",
+    .rpm = "แพ็กเกจ RPM", .gpt_disk_image = "GPT-partitioned disk image",
 });
 
 // Thai CLI argument aliases (currently canonical English forms).

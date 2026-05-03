@@ -297,7 +297,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .macos_bundle = "macOS Bundle",
     .pcap = "PCAP Network Capture",
     .pcapng = "PCAPNG Network Capture",
-    .rpm = "RPM Package",
+    .rpm = "RPM Package", .gpt_disk_image = "GPT-partitioned disk image",
 });
 
 // English CLI argument aliases (canonical forms, without -- prefix).
