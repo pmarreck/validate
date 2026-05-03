@@ -435,6 +435,18 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
         return FontValidationSummary.ok(0, 0, 0);
     }
 
+    // Encrypted PDFs: font streams are still RC4/AES-encrypted at this layer.
+    // The image validator handles its own per-stream empty-password decryption;
+    // the font validator does not (yet). Without decryption, every font check
+    // would compare against ciphertext and false-positive ("Invalid CFF
+    // version", "Invalid Type1 signature", "File too small", etc.). Treat
+    // detected fonts as skipped and emit no warning. The PDF's structural
+    // integrity and image content are still validated separately.
+    if (std.mem.indexOf(u8, pdf_data, "/Encrypt") != null) {
+        const total: u32 = @intCast(fonts.len);
+        return FontValidationSummary.ok(total, 0, total);
+    }
+
     // Decompression cache: keyed by (stream_start, stream_end) byte range.
     // Stores the decompressed data and the result status so we can replay
     // skip/fail decisions without re-decompressing.
@@ -733,4 +745,33 @@ test "StreamRange cache key equality" {
     try std.testing.expect(ctx.eql(a, b));
     try std.testing.expect(!ctx.eql(a, c));
     try std.testing.expectEqual(ctx.hash(a), ctx.hash(b));
+}
+
+// Encrypted PDFs need stream-level decryption before font validation can
+// inspect actual font bytes. Without decryption, validating against the
+// raw post-FlateDecode (still encrypted) bytes produces false-positive
+// "Invalid CFF version" / "Invalid Type1 signature" / "File too small"
+// errors. Until the font validator implements per-stream decryption
+// matching the image validator, skip font validation on encrypted PDFs
+// rather than emit garbage warnings.
+test "validatePdfFonts skips fonts entirely when PDF is encrypted" {
+    const allocator = std.testing.allocator;
+
+    // Synthetic PDF: declare /Encrypt in the trailer plus a /FontFile2
+    // stream containing nonsense (would otherwise WARN "Invalid sfnt").
+    const pdf_data =
+        "%PDF-1.4\n" ++
+        "1 0 obj\n<< /Type /FontDescriptor /FontFile2 2 0 R >>\nendobj\n" ++
+        "2 0 obj\n<< /Length 8 >>\nstream\nGARBAGE!\nendstream\nendobj\n" ++
+        "trailer\n<< /Size 3 /Encrypt 99 0 R /Root 1 0 R >>\n" ++
+        "startxref\n0\n%%EOF\n";
+
+    const result = validatePdfFonts(allocator, pdf_data);
+    try std.testing.expect(result.valid);
+    // No font-level failure should be reported for encrypted PDFs
+    try std.testing.expectEqual(@as(u32, 0), result.failed);
+    try std.testing.expectEqual(@as(?[]const u8, null), result.first_error_message);
+    // The font is detected but skipped (validation deferred to deep image path)
+    try std.testing.expect(result.total_fonts >= 1);
+    try std.testing.expectEqual(result.total_fonts, result.skipped);
 }
