@@ -899,9 +899,12 @@ pub fn looksLikeUtf16LeWithoutBom(data: []const u8) bool {
 /// Validate XML file structure using zig-xml library (0BSD, ianprime0509/zig-xml).
 /// Performs full XML 1.0 Fifth Edition well-formedness check.
 /// DOCTYPE declarations are stripped before parsing (DTD validation is not performed).
+/// Adds an XML 1.1 fallback path: control-character numeric refs in 0x01..0x1F
+/// (excluding 0x09/0x0A/0x0D, which are legal in 1.0) are permitted under 1.1
+/// (§2.2 Restricted Characters). Apple .keylayout files declare version="1.1"
+/// and rely on this. We accept them by rewriting offending refs to U+0020 SPACE
+/// before handing the data to zig-xml (which is a strict 1.0 parser).
 pub fn validateXml(file: *FileSource) ValidationResult {
-    const xml = @import("xml");
-
     var heap_buf: ?[]u8 = null;
     defer if (heap_buf) |buf| heap.validateAllocator().free(buf);
     const content = getFileContent(file, max_text_file_size, &heap_buf) orelse {
@@ -937,17 +940,99 @@ pub fn validateXml(file: *FileSource) ValidationResult {
     const preprocessed = stripDoctypeDeclaration(heap.validateAllocator(), encoding_normalized.data);
     defer if (preprocessed.allocated) heap.validateAllocator().free(preprocessed.data);
 
-    // Use zig-xml's spec-compliant parser for well-formedness check
-    var static_reader: xml.Reader.Static = .init(heap.validateAllocator(), preprocessed.data, .{});
+    // XML 1.1 dispatch:
+    //   * If <?xml version="1.1"?> is declared, preprocess control-char refs up front.
+    //   * Otherwise, attempt 1.0 parse first; on character_reference_malformed,
+    //     scan for 1.1-only refs (0x01..0x1F minus 9/A/D) and retry preprocessed.
+    //     If 1.1 accepts it, return WARN: technically non-conformant per declaration.
+    const declares_xml11 = isXml11Declared(preprocessed.data);
+
+    if (declares_xml11) {
+        const rewrite = rewriteXml11ControlRefs(heap.validateAllocator(), preprocessed.data) orelse {
+            return ValidationResult.invalidCode(.xml, .failed_to_allocate, "1.1 rewrite buffer");
+        };
+        defer if (rewrite.allocated) heap.validateAllocator().free(rewrite.data);
+        const outcome = parseXmlWellFormed(preprocessed.had_doctype, rewrite.data);
+        switch (outcome) {
+            .ok => |has_doctype_warn| {
+                if (has_doctype_warn) {
+                    return ValidationResult.okWithDepthAndWarning(.xml, .structural, "DOCTYPE declaration skipped (DTD not validated)");
+                }
+                return ValidationResult.okWithDepth(.xml, .structural);
+            },
+            .undefined_entity_under_doctype => {
+                var tolerated = ValidationResult.okWithDepthAndMalformation(.xml, .structural, .xml_undefined_entity);
+                tolerated.warning_message = "DOCTYPE declaration skipped (DTD not validated); undefined entity reference tolerated";
+                return tolerated;
+            },
+            .err => |msg| return ValidationResult.invalid(.xml, msg),
+            .out_of_memory => return ValidationResult.invalidCode(.xml, .out_of_memory, "during parsing"),
+            .read_failed => return ValidationResult.invalid(.xml, "Read failed during parsing"),
+        }
+    }
+
+    const first_outcome = parseXmlWellFormed(preprocessed.had_doctype, preprocessed.data);
+    switch (first_outcome) {
+        .ok => |has_doctype_warn| {
+            if (has_doctype_warn) {
+                return ValidationResult.okWithDepthAndWarning(.xml, .structural, "DOCTYPE declaration skipped (DTD not validated)");
+            }
+            return ValidationResult.okWithDepth(.xml, .structural);
+        },
+        .undefined_entity_under_doctype => {
+            var tolerated = ValidationResult.okWithDepthAndMalformation(.xml, .structural, .xml_undefined_entity);
+            tolerated.warning_message = "DOCTYPE declaration skipped (DTD not validated); undefined entity reference tolerated";
+            return tolerated;
+        },
+        .err => |msg| {
+            // Only retry under XML 1.1 rules if the failure is a malformed character reference
+            // and the content contains an offending 1.1-only control-char ref (0x01..0x1F minus 9/A/D).
+            if (std.mem.eql(u8, msg, "malformed character reference") and hasXml11ControlCharRef(preprocessed.data)) {
+                const rewrite = rewriteXml11ControlRefs(heap.validateAllocator(), preprocessed.data) orelse {
+                    return ValidationResult.invalidCode(.xml, .failed_to_allocate, "1.1 rewrite buffer");
+                };
+                defer if (rewrite.allocated) heap.validateAllocator().free(rewrite.data);
+                const retry = parseXmlWellFormed(preprocessed.had_doctype, rewrite.data);
+                switch (retry) {
+                    .ok => return ValidationResult.okWithDepthAndWarning(.xml, .structural, "uses XML 1.1 control-character refs without declaring version 1.1"),
+                    .undefined_entity_under_doctype => {
+                        var tolerated = ValidationResult.okWithDepthAndMalformation(.xml, .structural, .xml_undefined_entity);
+                        tolerated.warning_message = "uses XML 1.1 control-character refs without declaring version 1.1; DOCTYPE skipped";
+                        return tolerated;
+                    },
+                    else => {},
+                }
+            }
+            return ValidationResult.invalid(.xml, msg);
+        },
+        .out_of_memory => return ValidationResult.invalidCode(.xml, .out_of_memory, "during parsing"),
+        .read_failed => return ValidationResult.invalid(.xml, "Read failed during parsing"),
+    }
+}
+
+const XmlParseOutcome = union(enum) {
+    /// Parsed successfully. Bool is true when DOCTYPE was stripped (warning).
+    ok: bool,
+    /// Parsed all the way through, but encountered an undefined entity reference
+    /// inside a document that had its DOCTYPE stripped — we treat this as a
+    /// tolerated structural malformation (the entity may have been declared in
+    /// the DTD we discarded).
+    undefined_entity_under_doctype: void,
+    err: []const u8,
+    out_of_memory: void,
+    read_failed: void,
+};
+
+fn parseXmlWellFormed(had_doctype: bool, data: []const u8) XmlParseOutcome {
+    const xml = @import("xml");
+    var static_reader: xml.Reader.Static = .init(heap.validateAllocator(), data, .{});
     defer static_reader.deinit();
     const reader = &static_reader.interface;
 
-    // Read through entire document - any malformed XML will return error.MalformedXml
     while (true) {
         const node = reader.read() catch |err| {
             switch (err) {
                 error.MalformedXml => {
-                    // Get error code for diagnostics
                     const error_code = reader.errorCode();
                     const error_msg = switch (error_code) {
                         .xml_declaration_attribute_unsupported => "XML declaration attribute unsupported",
@@ -986,27 +1071,113 @@ pub fn validateXml(file: *FileSource) ValidationResult {
                         .invalid_encoding => "invalid encoding",
                         .illegal_character => "illegal character",
                     };
-                    if (error_code == .entity_reference_undefined and preprocessed.had_doctype) {
-                        var tolerated = ValidationResult.okWithDepthAndMalformation(.xml, .structural, .xml_undefined_entity);
-                        tolerated.warning_message = "DOCTYPE declaration skipped (DTD not validated); undefined entity reference tolerated";
-                        return tolerated;
+                    if (error_code == .entity_reference_undefined and had_doctype) {
+                        return .{ .undefined_entity_under_doctype = {} };
                     }
-                    return ValidationResult.invalid(.xml, error_msg);
+                    return .{ .err = error_msg };
                 },
-                error.OutOfMemory => return ValidationResult.invalidCode(.xml, .out_of_memory, "during parsing"),
-                error.ReadFailed => return ValidationResult.invalid(.xml, "Read failed during parsing"),
+                error.OutOfMemory => return .{ .out_of_memory = {} },
+                error.ReadFailed => return .{ .read_failed = {} },
             }
         };
-
         if (node == .eof) break;
     }
+    return .{ .ok = had_doctype };
+}
 
-    // XML validated with spec-compliant parser
-    // Return with warning if DOCTYPE was stripped
-    if (preprocessed.had_doctype) {
-        return ValidationResult.okWithDepthAndWarning(.xml, .structural, "DOCTYPE declaration skipped (DTD not validated)");
+/// Detect an XML 1.1 declaration: `<?xml ... version="1.1" ... ?>` (single or double quote).
+/// Tolerant: only the leading bytes of the document are inspected.
+fn isXml11Declared(data: []const u8) bool {
+    const head_len = @min(data.len, 256);
+    const head = data[0..head_len];
+    if (!std.mem.startsWith(u8, std.mem.trimLeft(u8, head, &[_]u8{ ' ', '\t', '\r', '\n', 0xEF, 0xBB, 0xBF }), "<?xml")) return false;
+    const decl_end = std.mem.indexOf(u8, head, "?>") orelse return false;
+    const decl = head[0..decl_end];
+    // Look for version="1.1" or version='1.1' allowing surrounding whitespace.
+    return std.mem.indexOf(u8, decl, "version=\"1.1\"") != null or
+        std.mem.indexOf(u8, decl, "version='1.1'") != null;
+}
+
+/// Scan for an XML-1.1-only numeric character reference: 0x01..0x1F except 0x09/0x0A/0x0D.
+/// Recognizes both `&#xHH;` (hex) and `&#DD;` (decimal) forms.
+fn hasXml11ControlCharRef(data: []const u8) bool {
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, data, i, "&#")) |hash| {
+        i = hash + 2;
+        if (i >= data.len) return false;
+        const code = parseCharRefCodePoint(data, i) orelse continue;
+        if (isXml11OnlyControl(code.value)) return true;
+        i = code.end_excl;
     }
-    return ValidationResult.okWithDepth(.xml, .structural);
+    return false;
+}
+
+const CharRefSpan = struct { value: u32, end_excl: usize };
+
+fn parseCharRefCodePoint(data: []const u8, start: usize) ?CharRefSpan {
+    var idx = start;
+    var hex = false;
+    if (idx < data.len and (data[idx] == 'x' or data[idx] == 'X')) {
+        hex = true;
+        idx += 1;
+    }
+    const num_start = idx;
+    while (idx < data.len) : (idx += 1) {
+        const c = data[idx];
+        if (c == ';') break;
+        if (hex) {
+            if (!((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F'))) return null;
+        } else {
+            if (!(c >= '0' and c <= '9')) return null;
+        }
+    }
+    if (idx >= data.len or data[idx] != ';' or num_start == idx) return null;
+    const slice = data[num_start..idx];
+    const value = std.fmt.parseInt(u32, slice, if (hex) 16 else 10) catch return null;
+    return .{ .value = value, .end_excl = idx + 1 };
+}
+
+fn isXml11OnlyControl(c: u32) bool {
+    return switch (c) {
+        0x01...0x08, 0x0B, 0x0C, 0x0E...0x1F => true,
+        else => false,
+    };
+}
+
+/// Rewrite XML 1.1-only control-character numeric refs to a 1.0-legal `&#x20;`
+/// (SPACE). This is a structural well-formedness aid — we don't preserve the
+/// semantic value of the control character because our caller only validates
+/// well-formedness, not content. NUL refs (0x00) are left alone so the parser
+/// rejects them (NUL is forbidden in both 1.0 and 1.1).
+const RewriteResult = struct { data: []const u8, allocated: bool };
+fn rewriteXml11ControlRefs(allocator: Allocator, data: []const u8) ?RewriteResult {
+    if (!hasXml11ControlCharRef(data)) return RewriteResult{ .data = data, .allocated = false };
+    var out = std.ArrayListUnmanaged(u8){};
+    out.ensureTotalCapacity(allocator, data.len) catch {
+        out.deinit(allocator);
+        return null;
+    };
+    var i: usize = 0;
+    while (i < data.len) {
+        if (i + 1 < data.len and data[i] == '&' and data[i + 1] == '#') {
+            if (parseCharRefCodePoint(data, i + 2)) |span| {
+                if (isXml11OnlyControl(span.value)) {
+                    out.appendSlice(allocator, "&#x20;") catch {
+                        out.deinit(allocator);
+                        return null;
+                    };
+                    i = span.end_excl;
+                    continue;
+                }
+            }
+        }
+        out.append(allocator, data[i]) catch {
+            out.deinit(allocator);
+            return null;
+        };
+        i += 1;
+    }
+    return RewriteResult{ .data = out.toOwnedSlice(allocator) catch return null, .allocated = true };
 }
 
 // ============ CSV Validator ============
@@ -2898,6 +3069,51 @@ test "validateXml rejects empty file" {
     defer source.close();
     const result = validateXml(&source);
     try testing.expect(!result.is_valid);
+}
+
+// XML 1.1 path: real-input regression for Apple .keylayout files
+// Apples keyboard layout XML uses numeric refs &#x0001;..&#x001F; to map
+// keystrokes to control-character outputs (Ctrl-A..Ctrl-_). XML 1.0 §2.2
+// forbids these refs; XML 1.1 §2.2 allows them.
+test "validateXml accepts XML 1.1 .keylayout with control-char refs" {
+    var source = FileSource.open("tests/fixtures/sample.keylayout") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer source.close();
+    const result = validateXml(&source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.xml, result.format);
+}
+
+test "validateXml accepts XML 1.1 declaration with control-char refs" {
+    const xml_content = "<?xml version=\"1.1\" encoding=\"UTF-8\"?><r>&#x0001;&#x001F;</r>";
+    var source = FileSource.fromBuffer(xml_content);
+    defer source.close();
+    const result = validateXml(&source);
+    try testing.expect(result.is_valid);
+}
+
+test "validateXml accepts undeclared 1.0 doc with control-char refs (with WARN)" {
+    const xml_content = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><r>&#x0001;</r>";
+    var source = FileSource.fromBuffer(xml_content);
+    defer source.close();
+    const result = validateXml(&source);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message != null);
+}
+
+test "validateXml rejects NUL character reference even under 1.1" {
+    const xml_content = "<?xml version=\"1.1\"?><r>&#x0000;</r>";
+    var source = FileSource.fromBuffer(xml_content);
+    defer source.close();
+    const result = validateXml(&source);
+    try testing.expect(!result.is_valid);
+}
+
+test "validateXml accepts &#x007F; under 1.1 declaration" {
+    const xml_content = "<?xml version=\"1.1\"?><r>&#x007F;</r>";
+    var source = FileSource.fromBuffer(xml_content);
+    defer source.close();
+    const result = validateXml(&source);
+    try testing.expect(result.is_valid);
 }
 
 test "validateCsv accepts valid ground truth CSV file" {
