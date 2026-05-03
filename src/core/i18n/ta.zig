@@ -7,6 +7,7 @@ pub const strings = Strings{
     .label_ok = "OK",
     .label_warn = "எச்சரிக்கை",
     .label_fail = "தோல்வி",
+    .label_info = "INFO",
     .label_notice = "அறிவிப்பு",
     .label_unknown = "தெரியாது",
     .label_slow = "மெது",

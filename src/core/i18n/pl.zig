@@ -6,6 +6,7 @@ pub const strings = Strings{
     .label_ok = "OK",
     .label_warn = "OSTRZE\xc5\xbbENIE",
     .label_fail = "B\xc5\x81\xc4\x84D",
+    .label_info = "INFO",
     .label_notice = "UWAGA",
     .label_unknown = "NIEZNANY",
     .label_slow = "WOLNO",

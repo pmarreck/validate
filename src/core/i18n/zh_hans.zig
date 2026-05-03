@@ -7,6 +7,7 @@ pub const strings = Strings{
     .label_ok = "OK",
     .label_warn = "\xe8\xad\xa6\xe5\x91\x8a",
     .label_fail = "\xe5\xa4\xb1\xe8\xb4\xa5",
+    .label_info = "INFO",
     .label_notice = "\xe9\x80\x9a\xe7\x9f\xa5",
     .label_unknown = "\xe6\x9c\xaa\xe7\x9f\xa5",
     .label_slow = "\xe7\xbc\x93\xe6\x85\xa2",

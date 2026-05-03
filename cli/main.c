@@ -1179,14 +1179,17 @@ static void print_validation_result(const char* path, const char* result) {
 	char fmt_desc[256];
 	char err_msg[1024];
 	char warn_msg[1024];
+	char info_msg[1024];
 
 	kv_get_str(result, "fmt_desc", fmt_desc, sizeof(fmt_desc));
 	kv_get_str(result, "err", err_msg, sizeof(err_msg));
 	kv_get_str(result, "warn", warn_msg, sizeof(warn_msg));
+	kv_get_str(result, "info", info_msg, sizeof(info_msg));
 
 	int is_valid = kv_get_bool(result, "valid");
 	int depth = (int)kv_get_u64(result, "depth_u8");
 	uint64_t malform_bits = kv_get_u64(result, "malform_u64");
+	uint64_t info_malform_bits = kv_get_u64(result, "info_malform_u64");
 	int bypass_prot = kv_get_bool(result, "bypass_prot");
 	int via_ffmpeg = kv_get_bool(result, "via_ffmpeg");
 
@@ -1207,7 +1210,10 @@ static void print_validation_result(const char* path, const char* result) {
 	}
 
 	int has_malformations = (malform_bits != 0);
+	int has_info_malformations = (info_malform_bits != 0);
 	int has_warning = (warn_msg[0] != '\0');
+	int has_info_msg = (info_msg[0] != '\0');
+	int has_info = (has_info_malformations || has_info_msg);
 
 	char rest_buf[2048];
 
@@ -1233,8 +1239,53 @@ static void print_validation_result(const char* path, const char* result) {
 				warn_pos += snprintf(warn_details + warn_pos, sizeof(warn_details) - warn_pos,
 					"%s%s", first_warn ? "" : "; ", warn_msg);
 			}
+			/* INFO notes (malformation bits + free-form text) tag onto WARN row
+			 * when both present — deviation outranks observation. */
+			if (has_info_malformations) {
+				for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
+					if (info_malform_bits & (1ULL << i)) {
+						const char* desc = validate_malform_desc(i);
+						if (desc) {
+							warn_pos += snprintf(warn_details + warn_pos, sizeof(warn_details) - warn_pos,
+								"; %s", desc);
+						}
+					}
+				}
+			}
+			if (has_info_msg) {
+				snprintf(warn_details + warn_pos, sizeof(warn_details) - warn_pos,
+					"; %s", info_msg);
+			}
 			snprintf(rest_buf, sizeof(rest_buf), " %s: %s (%s) [%s]", path, fmt_desc, depth_desc, warn_details);
 			write_colored_line(&g_warn_out, COLOR_YELLOW, validate_tr(VALIDATE_STR_LABEL_WARN), rest_buf);
+		} else if (has_info) {
+			/* INFO is a valid file with a noteworthy property — softer than WARN.
+			 * Routed to g_ok_out (still a "passing" verdict, exit code 0); colored
+			 * cyan to distinguish from OK's green and WARN's yellow.
+			 *
+			 * Combine info-tier malformation bits + free-form info_msg into one
+			 * note string. Same composite form as WARN. */
+			char info_details[1024] = "";
+			int info_pos = 0;
+			int first_info = 1;
+			if (has_info_malformations) {
+				for (int i = 0; i < VALIDATE_MALFORM_COUNT; i++) {
+					if (info_malform_bits & (1ULL << i)) {
+						const char* desc = validate_malform_desc(i);
+						if (desc) {
+							info_pos += snprintf(info_details + info_pos, sizeof(info_details) - info_pos,
+								"%s%s", first_info ? "" : "; ", desc);
+							first_info = 0;
+						}
+					}
+				}
+			}
+			if (has_info_msg) {
+				info_pos += snprintf(info_details + info_pos, sizeof(info_details) - info_pos,
+					"%s%s", first_info ? "" : "; ", info_msg);
+			}
+			snprintf(rest_buf, sizeof(rest_buf), " %s: %s (%s) [%s]", path, fmt_desc, depth_desc, info_details);
+			write_colored_line(&g_ok_out, COLOR_CYAN, validate_tr(VALIDATE_STR_LABEL_INFO), rest_buf);
 		} else if (bypass_prot) {
 			/* NOTICE is a special OK case, goes to g_ok_out */
 			snprintf(rest_buf, sizeof(rest_buf), " %s: %s (%s) - trivial protection circumvented",

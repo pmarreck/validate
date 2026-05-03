@@ -7,6 +7,7 @@ pub const strings = Strings{
     .label_ok = "OK",
     .label_warn = "คำเตือน",
     .label_fail = "ล้มเหลว",
+    .label_info = "INFO",
     .label_notice = "ประกาศ",
     .label_unknown = "ไม่ทราบ",
     .label_slow = "ช้า",

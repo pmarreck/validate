@@ -1124,6 +1124,21 @@ pub const MalformationType = enum {
             .pdf_jbig2_decode_failed => s.malform_pdf_jbig2_decode_failed,
         };
     }
+
+    /// Classify whether this malformation belongs in the INFO tier ("noteworthy
+    /// property of a valid file") rather than the WARN tier ("acceptable
+    /// deviation, every reader handles it"). INFO-tier malformations are
+    /// observations about valid files that don't represent any deviation —
+    /// they're surfaced as cyan INFO rows instead of yellow WARN rows so the
+    /// WARN tier doesn't desensitize. Examples: declared-encryption-with-
+    /// empty-password (a marker, not actual protection), trailing bytes after
+    /// the format's terminal marker (the spec explicitly tolerates this).
+    pub fn isInfoTier(self: MalformationType) bool {
+        return switch (self) {
+            .pdf_trivial_encryption, .pdf_garbage_after_eof => true,
+            else => false,
+        };
+    }
 };
 
 /// Symbolic error code for structured error reporting (i18n, FFI).
@@ -1229,6 +1244,14 @@ pub const ValidationResult = struct {
     /// Informational warning message (not a repairable malformation, just a note).
     /// Examples: "DTD not validated", "contains comments", "large file - partial validation".
     warning_message: ?[]const u8 = null,
+    /// Informational annotation about a noteworthy property of a VALID file
+    /// (not a deviation, not a malformation — an observation worth surfacing).
+    /// When set on an otherwise-OK result, the verdict is INFO. Examples:
+    /// "PDF encrypted with empty password (trivial protection)", "non-PDF data
+    /// appended after %%EOF", future signals like "embedded JavaScript",
+    /// "EXIF GPS coordinates present", "PDF/A conformance flag".
+    /// Distinct from `warning_message` which signals a tool-tolerated deviation.
+    info_message: ?[]const u8 = null,
     /// Depth of validation performed.
     validation_depth: ValidationDepth = .structural,
     /// Whether file has a resource fork (macOS).
@@ -1302,6 +1325,21 @@ pub const ValidationResult = struct {
             .is_valid = true,
             .error_message = null,
             .warning_message = warning,
+            .validation_depth = depth,
+        };
+    }
+
+    /// Return valid with depth and an INFO-tier annotation. INFO is "this
+    /// file is valid; here's a noteworthy property worth surfacing" — a
+    /// softer tier than WARN (which signals tool-tolerated deviation).
+    /// If the caller also passes a warning, that takes precedence in the
+    /// rendered verdict (WARN beats INFO; deviation outranks observation).
+    pub fn okWithDepthAndInfo(format: FileFormat, depth: ValidationDepth, info: []const u8) ValidationResult {
+        return .{
+            .format = format,
+            .is_valid = true,
+            .error_message = null,
+            .info_message = info,
             .validation_depth = depth,
         };
     }

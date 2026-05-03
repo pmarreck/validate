@@ -6,6 +6,7 @@ pub const strings = Strings{
     .label_ok = "OK",
     .label_warn = "FIGYELMEZTET\xc3\x89S",
     .label_fail = "HIBA",
+    .label_info = "INFO",
     .label_notice = "\xc3\x89RTES\xc3\x8dT\xc3\x89S",
     .label_unknown = "ISMERETLEN",
     .label_slow = "LASS\xc3\x9a",

@@ -148,6 +148,7 @@ typedef enum {
     VALIDATE_STR_FOUND_FILES_TO_VALIDATE = 17,
     VALIDATE_STR_CHECKING = 18,
     VALIDATE_STR_HELP_ENTROPY_SHIELD = 41,
+    VALIDATE_STR_LABEL_INFO = 42,
 } validate_string_id_t;
 
 /* CLI argument IDs (returned by validate_match_arg) */

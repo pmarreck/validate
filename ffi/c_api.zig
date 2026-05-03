@@ -236,6 +236,7 @@ fn buildValidationResult(
     // Messages (translated for current locale)
     try builder.add("err", i18n.translateError(result.error_message orelse ""));
     try builder.add("warn", i18n.translateWarning(result.warning_message orelse ""));
+    try builder.add("info", i18n.translateWarning(result.info_message orelse ""));
 
     // Symbolic error code and detail (for downstream consumers like Entropy Shield)
     if (result.error_code) |code| {
@@ -257,13 +258,21 @@ fn buildValidationResult(
     });
     try builder.add("depth_ceiling_reason", result.format.depthCeilingReason());
 
-    // Malformations as bitset
+    // Malformations split into WARN-tier (deviations) and INFO-tier
+    // (noteworthy properties of valid files). See MalformationType.isInfoTier.
     var malform_bits: u64 = 0;
+    var info_malform_bits: u64 = 0;
     var iter = result.malformations.iterator();
     while (iter.next()) |m| {
-        malform_bits |= (@as(u64, 1) << @as(u6, @intCast(@intFromEnum(m))));
+        const bit = @as(u64, 1) << @as(u6, @intCast(@intFromEnum(m)));
+        if (m.isInfoTier()) {
+            info_malform_bits |= bit;
+        } else {
+            malform_bits |= bit;
+        }
     }
     try builder.addU64("malform_u64", malform_bits);
+    try builder.addU64("info_malform_u64", info_malform_bits);
 
     // Flags as individual booleans
     try builder.addBool("bypass_prot", result.circumvented_trivial_protection);
@@ -296,6 +305,7 @@ fn buildGitResult(
     // Error message
     try builder.add("err", result.error_message orelse "");
     try builder.add("warn", result.warning_message orelse "");
+    try builder.add("info", "");
 
     // Symbolic error code and detail (for downstream consumers like Entropy Shield)
     if (result.error_message != null) {
@@ -318,6 +328,7 @@ fn buildGitResult(
 
     // No malformations for git
     try builder.addU64("malform_u64", 0);
+    try builder.addU64("info_malform_u64", 0);
 
     // Flags (git repos don't bypass protection or use ffmpeg)
     try builder.addBool("bypass_prot", false);

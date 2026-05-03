@@ -8,6 +8,7 @@ pub const Strings = struct {
     label_ok: [:0]const u8,
     label_warn: [:0]const u8,
     label_fail: [:0]const u8,
+    label_info: [:0]const u8,
     label_notice: [:0]const u8,
     label_unknown: [:0]const u8,
     label_slow: [:0]const u8,
