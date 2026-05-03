@@ -127,3 +127,85 @@ test "validateCdg: reject file with no CDG commands" {
 	try testing.expect(!result.is_valid);
 }
 
+// Builds a CDG-structured byte sequence whose bytes are dominated by high
+// values (0x80–0xFF). Real CDG files often retain the original CD subchannel
+// P/Q parity bits in the high two bits, which makes the raw bytes look like
+// CP437/Latin-1 box-drawing characters. The content sniffer will classify
+// such a file as plain_text_cp437 unless the dispatcher consults the
+// extension. This is the bit-for-bit shape we need to defend against.
+fn buildHighBitCdg(out: []u8) void {
+	std.debug.assert(out.len % 24 == 0);
+	const total = out.len / 24;
+	var i: usize = 0;
+	while (i < total) : (i += 1) {
+		const pkt = out[i * 24 ..][0..24];
+		// Every 6th packet is a real CDG command (cmd 0x09, instr 6 = TILE_BLOCK)
+		if (i % 6 == 0) {
+			pkt[0] = 0x89; // 0x80 | 0x09  (subcode P set, command low6 = 0x09)
+			pkt[1] = 0x86; // 0x80 | 0x06  (subcode P set, instruction = 6)
+			// Tile coords inside legal range
+			pkt[4] = 0x80 | 0x05; // row = 5
+			pkt[5] = 0x80 | 0x10; // col = 16
+			// Remaining data + parity bytes — high-bit-rich filler
+			var j: usize = 2;
+			while (j < 24) : (j += 1) {
+				if (j == 4 or j == 5) continue;
+				pkt[j] = 0xB8;
+			}
+		} else {
+			// Non-CDG slot: command low6 != 0 and != 9 (mimics the Casinos
+			// pattern where bytes 0x38/0x39/etc dominate). High-bit set so
+			// the file looks textual (CP437) to the content sniffer.
+			pkt[0] = 0xB8;
+			pkt[1] = 0xB8;
+			var j: usize = 2;
+			while (j < 24) : (j += 1) pkt[j] = 0xB8;
+		}
+	}
+}
+
+test "validateCdg: accepts high-bit (CP437-looking) packet stream" {
+	// Many real-world CDG rips keep the CD subchannel parity bits in the high
+	// two bits, so every byte is >= 0x80. With the low 6 bits stripped the
+	// stream still parses as valid CDG. The validator must accept this.
+	var buf: [24 * 600]u8 = undefined;
+	buildHighBitCdg(&buf);
+	var tmp = testing.tmpDir(.{});
+	defer tmp.cleanup();
+	var source = try tmpCdgFile(&tmp, "highbit.cdg", &buf);
+	defer source.close();
+	const result = validateCdg(&source);
+	try testing.expect(result.is_valid);
+	try testing.expectEqual(FileFormat.cdg, result.format);
+}
+
+test "FormatValidator: high-bit CDG file is classified as cdg, not plain_text_cp437" {
+	// Regression test for the dispatch bug that produced 50 false-positive
+	// WARNs of the form "WARN foo.cdg: Plain Text (CP437/DOS) [extension
+	// doesn't match content]". When magic-byte sniffing classifies a CDG
+	// file as plain_text_cp437/latin1/utf16, the dispatcher must still
+	// consult the .cdg extension and run validateCdg.
+	const FormatValidator = fv.FormatValidator;
+	const MalformationType = fv.MalformationType;
+
+	var buf: [24 * 600]u8 = undefined;
+	buildHighBitCdg(&buf);
+
+	var tmp = testing.tmpDir(.{});
+	defer tmp.cleanup();
+	{
+		const wf = try tmp.dir.createFile("highbit.cdg", .{});
+		defer wf.close();
+		try wf.writeAll(&buf);
+	}
+	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+	const path = try tmp.dir.realpath("highbit.cdg", &path_buf);
+
+	var validator = FormatValidator.init();
+	defer validator.deinit();
+	const result = validator.validateFile(path);
+
+	try testing.expectEqual(FileFormat.cdg, result.format);
+	try testing.expect(result.is_valid);
+	try testing.expect(!result.malformations.contains(MalformationType.extension_mismatch));
+}
