@@ -16,6 +16,7 @@ const ascii85_decoder = @import("ascii85_decoder.zig");
 const run_length_decoder = @import("run_length_decoder.zig");
 const lzw_decoder = @import("lzw_decoder.zig");
 const zlib = @import("zlib.zig");
+const pdf_decryptor = @import("pdf_decryptor.zig");
 
 pub const PdfFontType = enum {
     type1, // /FontFile - Type1 PFB/PFA
@@ -27,6 +28,7 @@ pub const PdfFontType = enum {
 
 pub const PdfFontInfo = struct {
     object_num: u32,
+    gen_num: u32 = 0,
     font_type: PdfFontType,
     stream_start: usize,
     stream_end: usize,
@@ -134,6 +136,7 @@ pub fn extractFontStreams(allocator: Allocator, pdf_data: []const u8) ![]PdfFont
         if (findObjectStreamIndexed(pdf_data, ref.obj_num, &index)) |stream_info| {
             fonts.append(allocator, .{
                 .object_num = ref.obj_num,
+                .gen_num = stream_info.gen_num,
                 .font_type = ref.font_type,
                 .stream_start = stream_info.start,
                 .stream_end = stream_info.end,
@@ -219,6 +222,7 @@ const StreamInfo = struct {
     start: usize,
     end: usize,
     filter: ?pdf_image_validator.ImageFilter,
+    gen_num: u32 = 0,
 };
 
 /// Object index for O(1) lookups instead of O(n) linear scans.
@@ -318,6 +322,22 @@ fn findObjectStreamIndexed(data: []const u8, obj_num: u32, index: *const ObjectI
 
 /// Find stream info starting at a known object offset.
 fn findObjectStreamAtOffset(data: []const u8, obj_pos: usize) ?StreamInfo {
+    // Parse generation number from "N G obj" header at obj_pos. Needed for
+    // per-object key derivation in encrypted PDFs (see pdf_decryptor.decryptStream).
+    const gen_num: u32 = blk: {
+        var p = obj_pos;
+        while (p < data.len and (data[p] == ' ' or data[p] == '\t')) p += 1;
+        // skip N
+        while (p < data.len and data[p] >= '0' and data[p] <= '9') p += 1;
+        while (p < data.len and (data[p] == ' ' or data[p] == '\t')) p += 1;
+        const g_start = p;
+        while (p < data.len and data[p] >= '0' and data[p] <= '9') p += 1;
+        if (p > g_start) {
+            break :blk std.fmt.parseInt(u32, data[g_start..p], 10) catch 0;
+        }
+        break :blk 0;
+    };
+
     // Find the stream within this object
     const obj_end_search_limit = @min(obj_pos + 65536, data.len);
     const stream_start_marker = std.mem.indexOfPos(u8, data[0..obj_end_search_limit], obj_pos, "stream") orelse return null;
@@ -354,6 +374,7 @@ fn findObjectStreamAtOffset(data: []const u8, obj_pos: usize) ?StreamInfo {
         .start = stream_data_start,
         .end = endstream_pos,
         .filter = filter,
+        .gen_num = gen_num,
     };
 }
 
@@ -435,14 +456,39 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
         return FontValidationSummary.ok(0, 0, 0);
     }
 
-    // Encrypted PDFs: font streams are still RC4/AES-encrypted at this layer.
-    // The image validator handles its own per-stream empty-password decryption;
-    // the font validator does not (yet). Without decryption, every font check
-    // would compare against ciphertext and false-positive ("Invalid CFF
-    // version", "Invalid Type1 signature", "File too small", etc.). Treat
-    // detected fonts as skipped and emit no warning. The PDF's structural
-    // integrity and image content are still validated separately.
-    if (std.mem.indexOf(u8, pdf_data, "/Encrypt") != null) {
+    // Encrypted PDFs: each font stream is RC4/AES-encrypted at the byte
+    // level (PDF crypto applies BEFORE FlateDecode). Mirror the
+    // pdf_image_validator pattern: parse the /Encrypt dictionary, attempt
+    // empty-password decryption, and if that succeeds, decrypt every stream
+    // with its per-object key before running deep validation. If the
+    // encryption variant is unsupported (V5+/AES-256) or the user password
+    // is non-empty, fall back to skipping all fonts (no WARN — encryption
+    // is documented at PDF-level via the "trivial protection" INFO note,
+    // and DRM-locked PDFs are not validation failures).
+    var decryption_succeeded: bool = false;
+    var encryption_key: ?[16]u8 = null;
+    var key_length: u8 = 0;
+    var use_aes: bool = false;
+    var encryption_present: bool = false;
+
+    if (pdf_decryptor.parseEncryptionParams(pdf_data)) |enc_params| {
+        encryption_present = true;
+        const decrypt_result = pdf_decryptor.tryEmptyPassword(enc_params);
+        if (decrypt_result.success) {
+            decryption_succeeded = true;
+            encryption_key = decrypt_result.encryption_key;
+            key_length = decrypt_result.key_length;
+            use_aes = decrypt_result.use_aes;
+        }
+    } else if (std.mem.indexOf(u8, pdf_data, "/Encrypt") != null) {
+        // /Encrypt is declared but the encryption dictionary couldn't be
+        // parsed (broken reference, unsupported variant). Treat as encrypted
+        // and skip — better silent skip than feeding ciphertext to deep checks.
+        encryption_present = true;
+    }
+
+    // If encrypted and we couldn't derive a key, skip all fonts cleanly.
+    if (encryption_present and !decryption_succeeded) {
         const total: u32 = @intCast(fonts.len);
         return FontValidationSummary.ok(total, 0, total);
     }
@@ -470,7 +516,30 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
     var first_error: ?[]const u8 = null;
 
     for (fonts) |fnt| {
-        const stream_data = pdf_data[fnt.stream_start..fnt.stream_end];
+        const raw_stream = pdf_data[fnt.stream_start..fnt.stream_end];
+        // Decrypt the raw stream bytes if the PDF is encrypted. PDF crypto
+        // applies BEFORE filters (FlateDecode etc.), so this must precede the
+        // decompression cache. We allocate a fresh buffer for the decrypted
+        // bytes; if decryption fails for this object, we skip rather than fail.
+        var decrypted_data: ?[]u8 = null;
+        defer if (decrypted_data) |d| allocator.free(d);
+        const stream_data: []const u8 = if (decryption_succeeded) blk_dec: {
+            const key = encryption_key.?;
+            const dec = pdf_decryptor.decryptStream(
+                allocator,
+                raw_stream,
+                key[0..key_length],
+                fnt.object_num,
+                fnt.gen_num,
+                use_aes,
+            ) catch null;
+            if (dec) |d| {
+                decrypted_data = d;
+                break :blk_dec d;
+            }
+            skipped += 1;
+            continue;
+        } else raw_stream;
         const range_key = StreamRange{ .start = fnt.stream_start, .end = fnt.stream_end };
 
         // Check decompression cache first
@@ -747,18 +816,40 @@ test "StreamRange cache key equality" {
     try std.testing.expectEqual(ctx.hash(a), ctx.hash(b));
 }
 
-// Encrypted PDFs need stream-level decryption before font validation can
-// inspect actual font bytes. Without decryption, validating against the
-// raw post-FlateDecode (still encrypted) bytes produces false-positive
-// "Invalid CFF version" / "Invalid Type1 signature" / "File too small"
-// errors. Until the font validator implements per-stream decryption
-// matching the image validator, skip font validation on encrypted PDFs
-// rather than emit garbage warnings.
-test "validatePdfFonts skips fonts entirely when PDF is encrypted" {
+// Encrypted PDFs with empty user password (the common "trivial protection"
+// case used by tools like Ghostscript and many commercial PDF generators)
+// must have their font streams RC4/AES-decrypted before validation. Without
+// per-stream decryption, every CFF / Type1 / sfnt header check would compare
+// against ciphertext and produce false-positive WARNs. This test pins the
+// behavior contract: when empty-password decryption succeeds, the validator
+// runs deep checks on the decrypted bytes (validated >= 1, no failures).
+// Mirrors the per-stream decryption pattern in pdf_image_validator.
+test "validatePdfFonts deep-validates fonts in empty-password encrypted PDFs" {
     const allocator = std.testing.allocator;
 
-    // Synthetic PDF: declare /Encrypt in the trailer plus a /FontFile2
-    // stream containing nonsense (would otherwise WARN "Invalid sfnt").
+    // Real Ghostscript-produced PDF, encrypted via qpdf with empty user
+    // password and 40-bit RC4 (V=1 R=2). Contains one /FontFile3 (CFF)
+    // stream that decrypts to a valid CFF blob.
+    const pdf_data = @embedFile("fixtures/encrypted_v1r2_with_font.pdf");
+
+    const result = validatePdfFonts(allocator, pdf_data);
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.total_fonts >= 1);
+    // Deep validation must run: at least one font validated, none failed.
+    try std.testing.expect(result.validated >= 1);
+    try std.testing.expectEqual(@as(u32, 0), result.failed);
+    try std.testing.expectEqual(@as(?[]const u8, null), result.first_error_message);
+}
+
+// When a PDF declares /Encrypt but the encryption object cannot be parsed
+// (broken reference, malformed dictionary, etc.), the font validator must
+// gracefully skip rather than feed undecrypted bytes to the deep checks
+// (which would WARN noisily about "Invalid sfnt version" et al.).
+test "validatePdfFonts skips fonts when /Encrypt is present but unparseable" {
+    const allocator = std.testing.allocator;
+
+    // /Encrypt 99 0 R points to a non-existent object — parseEncryptionParams
+    // returns null. Font stream contains nonsense (would WARN on raw bytes).
     const pdf_data =
         "%PDF-1.4\n" ++
         "1 0 obj\n<< /Type /FontDescriptor /FontFile2 2 0 R >>\nendobj\n" ++
@@ -768,10 +859,8 @@ test "validatePdfFonts skips fonts entirely when PDF is encrypted" {
 
     const result = validatePdfFonts(allocator, pdf_data);
     try std.testing.expect(result.valid);
-    // No font-level failure should be reported for encrypted PDFs
     try std.testing.expectEqual(@as(u32, 0), result.failed);
     try std.testing.expectEqual(@as(?[]const u8, null), result.first_error_message);
-    // The font is detected but skipped (validation deferred to deep image path)
     try std.testing.expect(result.total_fonts >= 1);
     try std.testing.expectEqual(result.total_fonts, result.skipped);
 }

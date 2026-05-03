@@ -58,7 +58,7 @@ Purpose: quick map of project structure and file purposes. This file should only
 | `src/core/git_validator.zig` | Git repository validation using SHA-1 checksums for loose objects, pack files, and index files |
 | `src/core/video_validator.zig` | Video container parsing + codec decode validation (MP4/MKV/AVI), MKV byte-coverage with mixed NAL-length handling and debug envs (`MKV_BYTE_DEBUG`, `MKV_BYTE_DEBUG_OUT`, `MKV_BYTE_DEBUG_FRAME_OUT`) |
 | `src/core/font_validator.zig` | Standalone font validation (TTF/OTF/CFF/Type1/WOFF/WOFF2) with per-table checksums, whole-file checkSumAdjustment, WOFF zlib decompression + origChecksum verification, and checksum fallback to structural parsing for clearer errors |
-| `src/core/pdf_font_validator.zig` | Extracts/validates embedded PDF fonts using strict checksums while reporting warnings instead of failing PDFs |
+| `src/core/pdf_font_validator.zig` | Extracts/validates embedded PDF fonts (lenient: warnings instead of fails). On encrypted PDFs with empty user password, decrypts each stream via pdf_decryptor before deep validation; falls back to silent skip on non-empty/unsupported encryption. |
 | `src/core/pdf_image_validator.zig` | PDF embedded image extraction and validation (JPEG, JBIG2, JPEG2000, CCITT) |
 | `src/core/pdf_xref_parser.zig` | PDF xref table/stream parser for O(M) object lookup (traditional tables + xref streams + /Prev chain) |
 | `src/core/mp4_box_parser.zig` | Shared MP4/ISOBMFF box parsing utilities (readMp4BoxHeader, findChildBox) |

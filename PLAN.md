@@ -1,3 +1,7 @@
+### PDF font validator: per-stream empty-password decryption (2026-05-03 EST)
+
+- [x] Restored deep font validation on encrypted PDFs by mirroring `pdf_image_validator`'s decrypt-then-validate pattern. Replaces the wholesale skip from afeea3d8 with `pdf_decryptor.parseEncryptionParams` + `tryEmptyPassword` + per-stream `decryptStream` (per-object key derived from object_num + gen_num). Fonts in the common Ghostscript-style "trivial protection" PDFs (empty user password) now run full CFF/Type1/sfnt header validation again. On non-empty passwords or unsupported encryption variants (V5+/AES-256) the validator falls back to silent skip (no WARN/FAIL — DRM-locked PDFs are not validation failures). Added `src/core/fixtures/encrypted_v1r2_with_font.pdf` (5.7 KB, qpdf-encrypted V=1 R=2 RC4-40 with empty user password) plus regression tests for both the deep-validation success path and the unparseable-/Encrypt skip path. PdfFontInfo now carries `gen_num` (parsed in `findObjectStreamAtOffset`).
+
 ### Windows Thumbs.db detection (2026-05-02 EST)
 
 - [x] Added `thumbs_db` FileFormat variant. Detection driven by `Catalog` UTF-16LE stream in CFBF root, checked first in `detectOle2InBuffer` so Thumbs.db stops misclassifying as Word Document (97-2003) with the spurious "OLE2 container has no WordDocument stream" warning. Real reproducer (Peter's fileserver) now reports `OK ... Windows Thumbnail Cache (Thumbs.db) (structural)`. Fixture: `src/core/fixtures/thumbs_db_sample.db` (13312 bytes), `@embedFile`-loaded by a regression test.
