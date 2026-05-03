@@ -189,12 +189,30 @@ pub const BitReader = struct {
     /// Read unary coded value (count of 1s before a 0)
     /// Read unary-coded value (FLAC format: count 0-bits until 1-bit)
     pub fn readUnary(self: *BitReader) FlacError!u32 {
+        // FLAC's unary coding has no upper bound on count in the spec; the
+        // length of a Rice quotient depends on the residual sample magnitude
+        // and the chosen rice parameter. Real-world 16-bit FLACs (e.g.
+        // lalalai-split outputs) routinely produce unary counts > 32 when
+        // the encoder picks a small rice param for a partition containing
+        // a relatively large residual. The previous hard cap at 32 caused
+        // false-positive "audio data corrupted" rejections of valid files.
+        //
+        // Termination on truncated/malformed input is provided by readBits
+        // returning FlacError.Truncated when the buffer is exhausted.
+        // We still keep a sanity cap to guard against pathological inputs
+        // (e.g. buffers padded with all-zero bytes that would otherwise
+        // count up to billions before truncation). Cap is set high enough
+        // to never trip on a valid stream: a 65535-sample block (max per
+        // the FLAC spec) at 32 bps with worst-case zig-zag and rice_param=0
+        // can't produce a unary count above ~2^33, but practical encoders
+        // pick rice params that keep counts well under 2^20.
+        const SANITY_CAP: u32 = 1 << 24;
         var count: u32 = 0;
         while (true) {
             const bit = try self.readBits(1);
             if (bit == 1) return count; // Stop on 1-bit
             count += 1;
-            if (count > 32) return FlacError.InvalidRicePartition;
+            if (count > SANITY_CAP) return FlacError.InvalidRicePartition;
         }
     }
 
@@ -1033,6 +1051,24 @@ test "BitReader unary" {
     try std.testing.expectEqual(@as(u32, 0), try reader2.readUnary());
 }
 
+test "BitReader unary handles counts > 32 (FLAC spec has no upper bound)" {
+    // FLAC's unary coding for Rice-coded residuals has no spec-defined upper
+    // limit on the count of leading zero bits. Real-world 16-bit FLAC files
+    // (e.g. lalalai-split outputs) can produce unary counts of 33 or higher
+    // when a residual sample's quotient is large relative to its rice param.
+    //
+    // Reproducer: 4 zero bytes (= 32 zero bits) followed by a byte whose
+    // top bit is 0 then a 1 -> count of 33.
+    const data = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0b01000000 };
+    var reader = BitReader.init(&data);
+    try std.testing.expectEqual(@as(u32, 33), try reader.readUnary());
+
+    // Even higher: 8 zero bytes (= 64 zero bits) then 1-bit -> count of 64.
+    const data2 = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0b10000000 };
+    var reader2 = BitReader.init(&data2);
+    try std.testing.expectEqual(@as(u32, 64), try reader2.readUnary());
+}
+
 test "BitReader UTF-8 single byte" {
     const data = [_]u8{0x7F};
     var reader = BitReader.init(&data);
@@ -1166,4 +1202,28 @@ test "decodeFlacFull streams instead of slurping (peak alloc < file size)" {
 		std.debug.print("\nFLAC decodeFlacFull peak alloc {d} bytes (file size {d}); ceiling {d}\n", .{ tracker.peak, file_size, ceiling });
 	}
 	try std.testing.expect(tracker.peak < ceiling);
+}
+
+test "decodeFlacFull handles real-world lalalai-split FLAC frame (regression)" {
+    // Regression for false-positive "FLAC decode failed: audio data corrupted"
+    // on FLACs produced by lalalai's stem-splitter. Root cause was an
+    // artificial cap of 32 in BitReader.readUnary that is not in the FLAC
+    // spec; frame 175 of the original reproducer file legitimately needs
+    // unary count of 33. libflac's own decoder accepts the original file
+    // without complaint.
+    //
+    // The fixture is the STREAMINFO block + just the failing frame
+    // (~7 KB) extracted from
+    //   ~/Downloads/2024-04-10_0341_split_by_lalalai/
+    //     honest_trailers_ex_machina_no_voice_split_by_lalalai.flac
+    // so this regression is reproducible without requiring Peter's full
+    // 14 MB original.
+    const FileSource = @import("file_source.zig").FileSource;
+
+    const fixture = @embedFile("fixtures/lalalai_frame_175.flac");
+    var source = FileSource.fromBuffer(fixture);
+    // Use decodeFlacFull (CRC-only) since fixture has only 1 frame and
+    // STREAMINFO's MD5 won't match a single-frame stream.
+    const ok = try decodeFlacFull(std.testing.allocator, &source);
+    try std.testing.expect(ok);
 }

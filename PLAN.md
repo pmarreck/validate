@@ -1,3 +1,7 @@
+### FLAC false-positive fix (lalalai-split FLAC, 2026-05-02 EST)
+
+- [x] Fixed `BitReader.readUnary` artificial cap of 32 — FLAC spec imposes no upper bound on Rice unary coding length, real-world 16-bit FLACs from lalalai's stem-splitter legitimately need unary counts > 32 (e.g. honest_trailers_ex_machina_no_voice_split_by_lalalai.flac frame 175 needs count = 33). Cap raised to 2^24 as a sanity-only guard against pathological all-zero buffers; reader returns Truncated when bits exhaust naturally. Added unit tests for unary counts 33 and 64 plus a real-frame regression fixture (src/core/fixtures/lalalai_frame_175.flac, 7 KB extracted from the original failing frame). Reproducer now reports OK (fully validated). libflac confirms the original file is sound.
+
 ### Format Coverage Chew-Through (2026-04-25, completed 21:50 EST)
 
 Per Peter's dispatch: measure corruption detection for the 125 formats that validate claimed to support but had no sweep data. Reconcile against `FORMAT_VERIFICATIONS.md` (242 enum entries). Verify checksum mechanisms are wired up.
