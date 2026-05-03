@@ -2780,12 +2780,9 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
                 return ValidationResult.okWithDepthAndWarning(format, .structural, "zigimg decode failed, structural only");
             },
 
-            // Unsupported — zigimg doesn't handle this TIFF variant (e.g.,
-            // CCITT G4 compression, 16-bit-per-sample, certain predictor modes).
-            // Structural validation passed; the file isn't deviating from spec,
-            // we just don't have a deep decoder for this variant. INFO tier.
+            // Unsupported - zigimg doesn't handle this format variant (e.g., 16-bit TIFF)
             error.Unsupported => {
-                return ValidationResult.okWithDepthAndInfo(format, .structural, "TIFF deep validation not supported for this variant");
+                return ValidationResult.okWithDepthAndWarning(format, .structural, "unsupported format variant");
             },
 
             // Other errors - structural validation only
