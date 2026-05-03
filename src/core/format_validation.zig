@@ -3682,6 +3682,12 @@ fn isFormatCompatibleWithExtension(detected: FileFormat, extension_format: FileF
     // Exact match
     if (detected == extension_format) return true;
 
+    // AppleDouble sidecars (`._*` prefix) carry resource forks / xattrs for a
+    // sibling file of arbitrary type — their leading "._" is followed by the
+    // host file's full name including extension. Treating any host extension
+    // as compatible avoids a noisy WARN on every macOS-touched directory.
+    if (detected == .apple_double) return true;
+
     // Some formats are related and acceptable
     // MP4 container can hold various content types
     if (extension_format == .mp4 and (detected == .mp4 or detected == .mov or detected == .m4a or detected == .heic or detected == .avif)) return true;
@@ -8634,4 +8640,20 @@ fn isPlainTextOrUnknown(format: FileFormat) bool {
 		.unknown, .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437 => true,
 		else => false,
 	};
+}
+
+test "AppleDouble sidecar inherits any host extension — never extension-mismatched" {
+	// macOS AppleDouble files (._* prefix) carry the resource fork / xattrs
+	// for a sibling file of any type. Their detected format is .apple_double
+	// regardless of what extension follows the leading "._" (which mirrors
+	// the host file). Reporting "extension doesn't match content" on these
+	// is noise — the apple_double format is universally compatible with
+	// every host extension by design.
+	try std.testing.expect(isFormatCompatibleWithExtension(.apple_double, .plain_text));
+	try std.testing.expect(isFormatCompatibleWithExtension(.apple_double, .jpeg));
+	try std.testing.expect(isFormatCompatibleWithExtension(.apple_double, .pdf));
+	try std.testing.expect(isFormatCompatibleWithExtension(.apple_double, .zip));
+	try std.testing.expect(isFormatCompatibleWithExtension(.apple_double, .unknown));
+	// Sanity: an unrelated mismatch still surfaces.
+	try std.testing.expect(!isFormatCompatibleWithExtension(.jpeg, .pdf));
 }
