@@ -2307,7 +2307,7 @@ pub fn validateMp3Deep(allocator: Allocator, source: *FileSource) ValidationResu
 
     // If CRC frames exist, verify them with the dedicated MP3 CRC validator
     if (frames_with_crc > 0) {
-        source.seekTo(0) catch return ValidationResult.structuralOnly(.mp3);
+        source.seekTo(0) catch return ValidationResult.okWithDepthAndWarning(.mp3, .structural, "MP3 deep validation skipped — could not seek to start of file before CRC verification");
         const crc_result = mp3_validator.validateMp3Crc(source);
         if (crc_result.valid) {
             // CRCs verified successfully
@@ -2317,25 +2317,25 @@ pub fn validateMp3Deep(allocator: Allocator, source: *FileSource) ValidationResu
             return ValidationResult.invalidWithDepth(.mp3, msg, .full);
         } else {
             // Fallback to decode validation if CRC check had issues
-            source.seekTo(0) catch return ValidationResult.structuralOnly(.mp3);
+            source.seekTo(0) catch return ValidationResult.okWithDepthAndWarning(.mp3, .structural, "MP3 deep validation skipped — could not seek to start of file for decode-fallback after CRC produced no verdict");
             const decode_result = mp3_decode_validator.validateMp3Decode(source);
             if (decode_result.valid and decode_result.frames_decoded > 0) {
                 return ValidationResult.okWithDepth(.mp3, .full);
             }
-            return ValidationResult.structuralOnly(.mp3);
+            return ValidationResult.okWithDepthAndWarning(.mp3, .structural, "MP3 deep validation incomplete — CRC produced no verdict and decode fallback returned 0 frames");
         }
     }
 
     // No CRC present - do full decode validation to catch corruption
-    source.seekTo(0) catch return ValidationResult.structuralOnly(.mp3);
+    source.seekTo(0) catch return ValidationResult.okWithDepthAndWarning(.mp3, .structural, "MP3 deep validation skipped — could not seek to start of file for decode validation");
     const decode_result = mp3_decode_validator.validateMp3Decode(source);
     if (decode_result.valid and decode_result.frames_decoded > 0) {
         return ValidationResult.okWithDepth(.mp3, .full);
     }
 
-    // Decode failed or no frames - structural validation only
-    // This could indicate corruption or just an unusual encoding
-    return ValidationResult.structuralOnly(.mp3);
+    // Decode failed or no frames — structural validation only.
+    // This could indicate corruption or just an unusual encoding.
+    return ValidationResult.okWithDepthAndWarning(.mp3, .structural, "MP3 deep validation incomplete — decode produced 0 frames; structure-only verdict");
 }
 
 // ============ Buffer Validators ============
