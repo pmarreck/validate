@@ -40,6 +40,13 @@ pub const PdfStreamValidationResult = struct {
 	failed: u32,
 	skipped_already_validated: u32,
 	skipped_size_limit: u32,
+	/// Streams in encrypted PDFs that the residual sweep cannot inflate
+	/// because their bytes are post-encryption (re-encrypted *after* deflate).
+	/// Surfacing this as INFO is required by the project's "no silent skip"
+	/// invariant (RULES.md): the user must know that N residual content
+	/// streams were not byte-validated, regardless of how reasonable the
+	/// reason is.
+	skipped_encrypted: u32 = 0,
 	total_bytes_verified: u64,
 	first_failure: ?FlateStreamFailure,
 	valid: bool,
@@ -101,6 +108,7 @@ pub fn validatePdfFlateStreams(
 	var failed: u32 = 0;
 	var skipped: u32 = 0;
 	var size_skipped: u32 = 0;
+	var skipped_encrypted_count: u32 = 0;
 	var bytes_verified: u64 = 0;
 	var first_failure: ?FlateStreamFailure = null;
 
@@ -115,6 +123,7 @@ pub fn validatePdfFlateStreams(
 			.failed = 0,
 			.skipped_already_validated = 0,
 			.skipped_size_limit = 0,
+			.skipped_encrypted = 0,
 			.total_bytes_verified = 0,
 			.first_failure = null,
 			.valid = true,
@@ -145,7 +154,10 @@ pub fn validatePdfFlateStreams(
 
 		if (is_encrypted) {
 			// Bytes are post-encryption; can't be inflated without the key.
-			skipped += 1;
+			// Tracked separately from skipped_already_validated so the caller
+			// can surface a specific INFO ("N residual streams skipped —
+			// encrypted PDF") rather than silently rolling them in.
+			skipped_encrypted_count += 1;
 			continue;
 		}
 
@@ -216,6 +228,7 @@ pub fn validatePdfFlateStreams(
 		.failed = failed,
 		.skipped_already_validated = skipped,
 		.skipped_size_limit = size_skipped,
+		.skipped_encrypted = skipped_encrypted_count,
 		.total_bytes_verified = bytes_verified,
 		.first_failure = first_failure,
 		.valid = failed == 0,
@@ -675,4 +688,8 @@ test "validatePdfFlateStreams: encrypted PDF skips non-excluded FlateDecode stre
 	try testing.expect(result.valid);
 	try testing.expectEqual(@as(u32, 0), result.failed);
 	try testing.expect(result.first_failure == null);
+	// Project invariant: skipping a deep check must surface a reason.
+	// Encrypted PDF residual streams MUST be reported via skipped_encrypted
+	// (not silently lumped into skipped_already_validated).
+	try testing.expectEqual(@as(u32, 1), result.skipped_encrypted);
 }
