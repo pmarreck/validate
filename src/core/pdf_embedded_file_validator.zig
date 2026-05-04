@@ -32,6 +32,13 @@ pub const EmbeddedFileValidationSummary = struct {
     skipped_corrupt: u32 = 0,
     valid: bool,
     error_message: ?[]const u8,
+    /// When deep embedded-file validation is bypassed wholesale (e.g.
+    /// encrypted PDF where stream bytes are post-encryption and we have
+    /// no per-stream decryption path here), this carries the user-visible
+    /// reason. Required by the project "no silent skip" invariant
+    /// (RULES.md): the verdict surface MUST tell the user that we did not
+    /// validate N embedded streams.
+    skip_reason: ?[]const u8 = null,
 
     pub fn ok(total: u32, validated: u32, skipped: u32) EmbeddedFileValidationSummary {
         return .{
@@ -41,6 +48,22 @@ pub const EmbeddedFileValidationSummary = struct {
             .failed = 0,
             .valid = true,
             .error_message = null,
+        };
+    }
+
+    /// Like `ok` but carries a reason describing why deep embedded-file
+    /// validation was skipped wholesale. Use whenever a code path decides
+    /// "I can't validate any embedded files here" — never silently fall
+    /// through to plain `ok`.
+    pub fn okSkipped(total: u32, reason: []const u8) EmbeddedFileValidationSummary {
+        return .{
+            .total_files = total,
+            .validated = 0,
+            .skipped = total,
+            .failed = 0,
+            .valid = true,
+            .error_message = null,
+            .skip_reason = reason,
         };
     }
 
@@ -305,6 +328,20 @@ pub fn validatePdfEmbeddedFilesBasic(allocator: Allocator, pdf_data: []const u8)
         return EmbeddedFileValidationSummary.ok(0, 0, 0);
     }
 
+    // Encrypted PDFs: stream bytes are re-encrypted after deflate, so the
+    // straight-line zlib inflate below will fail with .data_error / .corrupt
+    // and would silently roll all files into the `skipped` count. Per the
+    // project "no silent skip" invariant, short-circuit and surface a
+    // specific reason via skip_reason. The image / font / embedded-file
+    // validators that actually decrypt live elsewhere; this `Basic` path
+    // does not have a decryption hook today.
+    if (std.mem.indexOf(u8, pdf_data, "/Encrypt") != null) {
+        return EmbeddedFileValidationSummary.okSkipped(
+            @intCast(files.len),
+            "embedded file deep validation skipped — encrypted PDF, no per-stream decryption available in basic embed sweep",
+        );
+    }
+
     var validated: u32 = 0;
     var skipped: u32 = 0;
     var skipped_size_limit: u32 = 0;
@@ -453,4 +490,33 @@ test "EmbeddedFileValidationSummary tracks skip reasons" {
     };
     try std.testing.expectEqual(@as(u32, 1), summary.skipped_size_limit);
     try std.testing.expectEqual(@as(u32, 1), summary.skipped_corrupt);
+}
+
+test "validatePdfEmbeddedFilesBasic surfaces skip_reason on encrypted PDF" {
+    // Project invariant (RULES.md): an encrypted PDF with embedded file
+    // streams must NOT silently roll into `skipped` — it must report
+    // skip_reason so the consumer can route an INFO to the verdict.
+    const allocator = std.testing.allocator;
+
+    var pdf: std.ArrayListUnmanaged(u8) = .{};
+    defer pdf.deinit(allocator);
+    try pdf.appendSlice(allocator, "%PDF-1.4\n");
+    // EmbeddedFile object 1 (FlateDecode-filtered, garbage payload that
+    // looks like post-encryption ciphertext).
+    try pdf.appendSlice(allocator,
+        "1 0 obj\n<< /Type /EmbeddedFile /Filter /FlateDecode /Length 4 >>\nstream\n");
+    try pdf.appendSlice(allocator, &[_]u8{ 0x21, 0x14, 0xf7, 0x89 });
+    try pdf.appendSlice(allocator, "\nendstream\nendobj\n");
+    // Encryption dict + trailer
+    try pdf.appendSlice(allocator,
+        "2 0 obj\n<< /Filter /Standard /V 1 /R 2 /Length 40 /P -4 >>\nendobj\n");
+    try pdf.appendSlice(allocator, "trailer\n<< /Encrypt 2 0 R >>\n%%EOF\n");
+
+    const summary = validatePdfEmbeddedFilesBasic(allocator, pdf.items);
+    try std.testing.expect(summary.valid);
+    try std.testing.expect(summary.skip_reason != null);
+    try std.testing.expect(std.mem.indexOf(u8, summary.skip_reason.?, "encrypted") != null);
+    // total_files should match what we counted; nothing was deeply validated.
+    try std.testing.expectEqual(@as(u32, 1), summary.total_files);
+    try std.testing.expectEqual(@as(u32, 0), summary.validated);
 }
