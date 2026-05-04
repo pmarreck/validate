@@ -347,6 +347,11 @@ const FlateCheckOutcome = struct {
 	tolerated_malformation: bool = false,
 	/// Warning suitable for surfacing in tolerant mode.
 	tolerated_warning: ?[]const u8 = null,
+	/// Informational note suitable for INFO surfacing — set when the residual
+	/// FlateDecode sweep skipped streams it could not validate (e.g. encrypted
+	/// PDF where bytes are post-encryption). Honors the project "no silent
+	/// skip" invariant: the user is told that N streams were not deep-checked.
+	skip_info_message: ?[]const u8 = null,
 };
 
 /// Run pdf_stream_validator on the already-parsed PDF buffer, folding results
@@ -382,6 +387,15 @@ fn applyFlateStreamCheck(
 			return .{
 				.tolerated_malformation = true,
 				.tolerated_warning = "PDF contains FlateDecode streams with truncated/missing zlib Adler-32 trailers (Adobe InDesign style; tolerated by all readers)",
+				.skip_info_message = if (res.skipped_encrypted > 0)
+					"residual FlateDecode content streams skipped — encrypted PDF, no per-stream decryption available in residual sweep"
+				else
+					null,
+			};
+		}
+		if (res.skipped_encrypted > 0) {
+			return .{
+				.skip_info_message = "residual FlateDecode content streams skipped — encrypted PDF, no per-stream decryption available in residual sweep",
 			};
 		}
 		return .{};
@@ -650,6 +664,9 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	if (!embed_result.valid) {
 		return ValidationResult.invalidWithDepth(.pdf, embed_result.error_message orelse "Embedded file validation failed", .full);
 	}
+	if (embed_result.skip_reason) |reason| {
+		if (info_message == null) info_message = reason;
+	}
 
 	// Validate all remaining FlateDecode streams' zlib integrity. This
 	// catches corruption inside content / form-XObject / metadata streams
@@ -661,6 +678,9 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	if (flate_outcome.tolerated_malformation) {
 		malformations_local.insert(.pdf_flate_decode_failed);
 		if (warning_message == null) warning_message = flate_outcome.tolerated_warning;
+	}
+	if (flate_outcome.skip_info_message) |info| {
+		if (info_message == null) info_message = info;
 	}
 
 	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;
@@ -840,6 +860,9 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	if (!embed_result.valid) {
 		return ValidationResult.invalidWithDepth(.pdf, embed_result.error_message orelse "Embedded file validation failed", .full);
 	}
+	if (embed_result.skip_reason) |reason| {
+		if (info_message == null) info_message = reason;
+	}
 
 	// Validate all remaining FlateDecode streams' zlib integrity. Same logic
 	// as validatePdfDeep — honors VALIDATE_PDF_TOLERANT=1.
@@ -850,6 +873,9 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	if (flate_outcome.tolerated_malformation) {
 		malformations_local.insert(.pdf_flate_decode_failed);
 		if (warning_message == null) warning_message = flate_outcome.tolerated_warning;
+	}
+	if (flate_outcome.skip_info_message) |info| {
+		if (info_message == null) info_message = info;
 	}
 
 	// Surface the Adobe-InDesign-style truncated-Adler-32 quirk as a WARN.
