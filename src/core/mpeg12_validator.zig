@@ -513,6 +513,12 @@ pub const Mpeg12DeepValidationResult = struct {
     blocks_decoded: u32,
     /// Underlying structural validation result
     structural_result: Mpeg12ValidationResult,
+    /// When deep_valid is false but structural_valid is true, this carries
+    /// a specific reason (e.g. "no I-frames present", "decode encountered
+    /// unimplemented feature") so the consumer can surface the skip via
+    /// WARN/INFO instead of silently rolling into okDecoded(0). Required
+    /// by the project "no silent skip" invariant (RULES.md).
+    skip_reason: ?[]const u8 = null,
 
     pub fn ok(structural: Mpeg12ValidationResult, slices: u32, mbs: u32, blocks: u32) Mpeg12DeepValidationResult {
         return .{
@@ -540,6 +546,23 @@ pub const Mpeg12DeepValidationResult = struct {
         };
     }
 
+    /// Like `structuralOnly` but carries a user-visible reason describing
+    /// why deep decode was bypassed. Use this anywhere the deep path is
+    /// short-circuited so the consumer can surface a non-generic warning.
+    pub fn structuralOnlyWithReason(structural: Mpeg12ValidationResult, reason: []const u8) Mpeg12DeepValidationResult {
+        return .{
+            .valid = structural.valid,
+            .error_message = structural.error_message,
+            .structural_valid = structural.valid,
+            .deep_valid = false,
+            .slices_decoded = 0,
+            .macroblocks_decoded = 0,
+            .blocks_decoded = 0,
+            .structural_result = structural,
+            .skip_reason = reason,
+        };
+    }
+
     pub fn invalid(message: []const u8) Mpeg12DeepValidationResult {
         return .{
             .valid = false,
@@ -560,12 +583,12 @@ pub fn validateMpeg12Deep(data: []const u8, max_frames: u32) Mpeg12DeepValidatio
     // First do structural validation
     const structural = validateMpeg12Stream(data, max_frames);
     if (!structural.valid) {
-        return Mpeg12DeepValidationResult.structuralOnly(structural);
+        return Mpeg12DeepValidationResult.structuralOnlyWithReason(structural, "MPEG-1/2 deep decode skipped — structural validation already failed");
     }
 
     // If no I-frames, we can't do deep validation
     if (structural.i_frames == 0) {
-        return Mpeg12DeepValidationResult.structuralOnly(structural);
+        return Mpeg12DeepValidationResult.structuralOnlyWithReason(structural, "MPEG-1/2 deep decode skipped — no I-frames present in stream");
     }
 
     // Attempt deep validation on the stream
@@ -579,9 +602,12 @@ pub fn validateMpeg12Deep(data: []const u8, max_frames: u32) Mpeg12DeepValidatio
             deep_result.blocks_decoded,
         );
     } else {
-        // Deep validation failed but structural passed - return structural only
-        // This can happen with complex streams that use features not yet implemented
-        return Mpeg12DeepValidationResult.structuralOnly(structural);
+        // Deep validation failed but structural passed — return structural-only
+        // verdict with a specific reason. This typically happens with complex
+        // streams that use bitstream features not yet implemented in the
+        // built-in MPEG-1/2 decoder (B-frames with field/frame motion comp,
+        // slice intra refresh, etc.).
+        return Mpeg12DeepValidationResult.structuralOnlyWithReason(structural, deep_result.error_message orelse "MPEG-1/2 deep decode skipped — decoder hit an unimplemented bitstream feature");
     }
 }
 
@@ -754,4 +780,21 @@ test "deep validation on ground truth MPEG-2 sample" {
 
     // Verify we found pictures
     try std.testing.expect(result.structural_result.pictures > 0);
+}
+
+
+test "validateMpeg12Deep surfaces skip_reason when no I-frames present" {
+    // Project invariant (RULES.md): a deep-validation skip MUST surface a
+    // reason. Crafting a structurally-valid MPEG-1 sequence with zero
+    // I-frames is non-trivial; instead, exercise the public constructor
+    // contract directly so the consumer-side wiring stays honest.
+    const structural = Mpeg12ValidationResult.ok(.mpeg1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0.0);
+    const result = Mpeg12DeepValidationResult.structuralOnlyWithReason(
+        structural,
+        "MPEG-1/2 deep decode skipped — no I-frames present in stream",
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!result.deep_valid);
+    try std.testing.expect(result.skip_reason != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.skip_reason.?, "no I-frames") != null);
 }

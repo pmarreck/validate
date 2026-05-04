@@ -139,6 +139,15 @@ pub const VideoValidationResult = struct {
 		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = frames > 0, .mixed_nal_prefix = false };
 	}
 
+	/// Like okDecoded but carries an explanatory warning describing why
+	/// deep decode could not byte-validate the stream (e.g. structural-only
+	/// fallback). Use anywhere a deep validator returned valid-but-not-deep
+	/// so the consumer / verdict surface can show a specific reason instead
+	/// of silently claiming OK with byte_validated=false.
+	pub fn okDecodedWithWarning(codec: VideoCodec, frames: u32, warning: []const u8) VideoValidationResult {
+		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = frames > 0, .mixed_nal_prefix = false, .warning_message = warning };
+	}
+
 	pub fn okByteValidated(codec: VideoCodec, frames: u32) VideoValidationResult {
 		return .{ .valid = true, .error_message = null, .codec = codec, .frames_decoded = frames, .byte_validated = true, .mixed_nal_prefix = false };
 	}
@@ -799,6 +808,9 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
         if (mpeg_result.deep_valid) {
             return VideoValidationResult.okByteValidated(detected_codec, mpeg_result.structural_result.pictures);
         }
+        if (mpeg_result.skip_reason) |reason| {
+            return VideoValidationResult.okDecodedWithWarning(detected_codec, 0, reason);
+        }
         return VideoValidationResult.okDecoded(detected_codec, 0);
     }
 
@@ -1342,6 +1354,9 @@ fn validateMpeg12FromAvi(allocator: Allocator, file: *FileSource, avi_info: AviS
     if (result.valid) {
         if (result.deep_valid) {
             return VideoValidationResult.okByteValidated(codec, result.structural_result.pictures);
+        }
+        if (result.skip_reason) |reason| {
+            return VideoValidationResult.okDecodedWithWarning(codec, 0, reason);
         }
         return VideoValidationResult.okDecoded(codec, 0);
     } else {
@@ -2927,6 +2942,9 @@ fn validateMpeg12FromMp4(allocator: Allocator, file: *FileSource, stbl: Mp4Box, 
 
     if (result.deep_valid) {
         return VideoValidationResult.okByteValidated(detected_codec, result.structural_result.pictures);
+    }
+    if (result.skip_reason) |reason| {
+        return VideoValidationResult.okDecodedWithWarning(detected_codec, 0, reason);
     }
     return VideoValidationResult.okDecoded(detected_codec, 0);
 }
