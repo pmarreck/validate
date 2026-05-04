@@ -431,6 +431,7 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	const eof_marker = "%%EOF";
 	var malformations_local: std.EnumSet(MalformationType) = .{};
 	var warning_message: ?[]const u8 = null;
+	var info_message: ?[]const u8 = null;
 	var buffer: [8192]u8 = undefined;
 	var bytes_read: usize = 0;
 	var search_start: u64 = 0;
@@ -635,6 +636,12 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 		warning_message = font_result.first_error_message orelse
 			"Embedded fonts failed strict validation; accepted with warning";
 	}
+	// "No silent skip" invariant (RULES.md): if deep font validation was
+	// bypassed wholesale (encrypted PDF, key derivation failed, etc.),
+	// surface the reason via INFO. Never silent.
+	if (font_result.skip_reason) |reason| {
+		if (info_message == null) info_message = reason;
+	}
 
 	// Validate embedded files (attachments)
 	const embed_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
@@ -679,6 +686,7 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 			.error_message = null,
 			.malformations = malformations_local,
 			.warning_message = warning_message,
+			.info_message = info_message,
 			.validation_depth = final_depth,
 			.circumvented_trivial_protection = true,
 			.has_encrypted_content = true,
@@ -691,11 +699,15 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 			.error_message = null,
 			.malformations = malformations_local,
 			.warning_message = warning_message,
+			.info_message = info_message,
 			.validation_depth = final_depth,
 		};
 	}
 	if (final_depth == .structural) {
 		return ValidationResult.okWithDepthAndWarning(.pdf, .structural, warning_message orelse "some streams skipped (exceeded decompression size limit)");
+	}
+	if (info_message) |info| {
+		return ValidationResult.okWithDepthAndInfo(.pdf, .full, info);
 	}
 	return ValidationResult.okWithDepth(.pdf, .full);
 }
@@ -720,6 +732,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 
 	var malformations_local: std.EnumSet(MalformationType) = .{};
 	var warning_message: ?[]const u8 = null;
+	var info_message: ?[]const u8 = null;
 
 	const structural_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
 
@@ -816,6 +829,9 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 		warning_message = font_result.first_error_message orelse
 			"Embedded fonts failed strict validation; accepted with warning";
 	}
+	if (font_result.skip_reason) |reason| {
+		if (info_message == null) info_message = reason;
+	}
 
 	// Validate embedded files (attachments)
 	const embed_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
@@ -867,6 +883,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			.error_message = null,
 			.malformations = malformations_local,
 			.warning_message = warning_message,
+			.info_message = info_message,
 			.validation_depth = final_depth,
 			.circumvented_trivial_protection = true,
 			.has_encrypted_content = true,
@@ -880,6 +897,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			.error_message = null,
 			.malformations = malformations_local,
 			.warning_message = warning_message,
+			.info_message = info_message,
 			.validation_depth = final_depth,
 		};
 	}
@@ -889,11 +907,15 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			.is_valid = true,
 			.error_message = null,
 			.warning_message = warning_message,
+			.info_message = info_message,
 			.validation_depth = final_depth,
 		};
 	}
 	if (final_depth == .structural) {
 		return ValidationResult.okWithDepthAndWarning(.pdf, .structural, warning_message orelse "some streams skipped (exceeded decompression size limit)");
+	}
+	if (info_message) |info| {
+		return ValidationResult.okWithDepthAndInfo(.pdf, .full, info);
 	}
 	return ValidationResult.okWithDepth(.pdf, .full);
 }

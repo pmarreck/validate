@@ -45,6 +45,14 @@ pub const FontValidationSummary = struct {
 	valid: bool,
 	error_message: ?[]const u8,
 	first_error_message: ?[]const u8 = null,
+	/// When deep font validation is skipped wholesale (not per-stream-skipped
+	/// for size or corruption, but completely bypassed because we can't run
+	/// the check at all — e.g. encrypted PDF with non-empty password,
+	/// unsupported encryption variant), this carries the user-visible
+	/// reason. Required to honor the project's "no silent skip" invariant
+	/// (RULES.md): every skipped deep check must surface to the verdict
+	/// surface, INFO at minimum.
+	skip_reason: ?[]const u8 = null,
 
 	pub fn ok(total: u32, validated: u32, skipped: u32) FontValidationSummary {
 		return .{
@@ -55,6 +63,24 @@ pub const FontValidationSummary = struct {
 			.valid = true,
 			.error_message = null,
 			.first_error_message = null,
+		};
+	}
+
+	/// Like `ok` but carries a reason describing why deep validation was
+	/// skipped wholesale. The consumer is responsible for surfacing the
+	/// reason to the verdict (typically as an INFO-tier annotation).
+	/// Use this whenever a code path decides "I can't run deep font
+	/// validation here" — never silently fall through to plain `ok`.
+	pub fn okSkipped(total: u32, reason: []const u8) FontValidationSummary {
+		return .{
+			.total_fonts = total,
+			.validated = 0,
+			.skipped = total,
+			.failed = 0,
+			.valid = true,
+			.error_message = null,
+			.first_error_message = null,
+			.skip_reason = reason,
 		};
 	}
 
@@ -460,16 +486,20 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
     // level (PDF crypto applies BEFORE FlateDecode). Mirror the
     // pdf_image_validator pattern: parse the /Encrypt dictionary, attempt
     // empty-password decryption, and if that succeeds, decrypt every stream
-    // with its per-object key before running deep validation. If the
-    // encryption variant is unsupported (V5+/AES-256) or the user password
-    // is non-empty, fall back to skipping all fonts (no WARN — encryption
-    // is documented at PDF-level via the "trivial protection" INFO note,
-    // and DRM-locked PDFs are not validation failures).
+    // with its per-object key before running deep validation.
+    //
+    // If the encryption variant is unsupported (V5+/AES-256) or the user
+    // password is non-empty, we cannot deeply validate the fonts. Per the
+    // project's "no silent skip" invariant (RULES.md), every such skip
+    // MUST surface a reason — INFO-tier annotation at minimum. The caller
+    // (pdf_validator.zig) consumes FontValidationSummary.skip_reason and
+    // routes it to the verdict.
     var decryption_succeeded: bool = false;
     var encryption_key: ?[16]u8 = null;
     var key_length: u8 = 0;
     var use_aes: bool = false;
     var encryption_present: bool = false;
+    var skip_reason: ?[]const u8 = null;
 
     if (pdf_decryptor.parseEncryptionParams(pdf_data)) |enc_params| {
         encryption_present = true;
@@ -479,18 +509,19 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
             encryption_key = decrypt_result.encryption_key;
             key_length = decrypt_result.key_length;
             use_aes = decrypt_result.use_aes;
+        } else {
+            skip_reason = "embedded font deep validation skipped — PDF encryption uses a non-empty password or unsupported variant; per-stream decryption unavailable";
         }
     } else if (std.mem.indexOf(u8, pdf_data, "/Encrypt") != null) {
         // /Encrypt is declared but the encryption dictionary couldn't be
-        // parsed (broken reference, unsupported variant). Treat as encrypted
-        // and skip — better silent skip than feeding ciphertext to deep checks.
+        // parsed (broken reference, missing /O / /U / /ID, etc.).
         encryption_present = true;
+        skip_reason = "embedded font deep validation skipped — PDF /Encrypt declared but encryption dictionary could not be parsed";
     }
 
-    // If encrypted and we couldn't derive a key, skip all fonts cleanly.
     if (encryption_present and !decryption_succeeded) {
         const total: u32 = @intCast(fonts.len);
-        return FontValidationSummary.ok(total, 0, total);
+        return FontValidationSummary.okSkipped(total, skip_reason orelse "embedded font deep validation skipped — encrypted PDF, key derivation failed");
     }
 
     // Decompression cache: keyed by (stream_start, stream_end) byte range.
