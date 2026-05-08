@@ -1,4 +1,4 @@
-//! Memory-budget gate for the work-stealing queue.
+//! Memory-budget gate for the worker thread pool's task queue.
 //!
 //! Workers call `acquire(bytes)` before starting a task and `release(bytes)`
 //! after finishing. `acquire` blocks (on a condvar) until enough bytes are
