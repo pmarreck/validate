@@ -775,12 +775,11 @@ pub fn validateIffDeep(allocator: Allocator, source: *FileSource) ValidationResu
 			if (std.mem.eql(u8, chunk_header[0..4], "BMHD")) {
 				if (chunk_sz >= 20) {
 					var bmhd_data: [20]u8 = undefined;
-					const bmhd_read = file.read(&bmhd_data) catch 0;
-					if (bmhd_read >= 20) {
-						bmhd = parseIlbmBmhd(&bmhd_data);
-						if (bmhd == null) {
-							return ValidationResult.invalid(.iff, "ILBM BMHD has invalid field values");
-						}
+					const bmhd_read = file.readAll(&bmhd_data) catch return ValidationResult.invalidCode(.iff, .failed_to_read, "BMHD chunk");
+					if (bmhd_read != 20) return ValidationResult.invalidCode(.iff, .truncated, "BMHD chunk");
+					bmhd = parseIlbmBmhd(&bmhd_data);
+					if (bmhd == null) {
+						return ValidationResult.invalid(.iff, "ILBM BMHD has invalid field values");
 					}
 				}
 			} else if (std.mem.eql(u8, chunk_header[0..4], "BODY")) {
@@ -802,50 +801,48 @@ pub fn validateIffDeep(allocator: Allocator, source: *FileSource) ValidationResu
 
 				// Read BODY data for compression stream validation
 				if (chunk_sz > 0 and chunk_sz <= 1024 * 1024) { // Cap at 1MB for memory
-					const body_data = allocator.alloc(u8, chunk_sz) catch null;
-					if (body_data) |data| {
-						defer allocator.free(data);
-						const body_read = file.read(data) catch 0;
-						if (body_read < chunk_sz) {
-							return ValidationResult.invalid(.iff, "BODY chunk data truncated");
-						}
-						// For ILBM with BMHD: validate compression stream
-						if (bmhd) |bm| {
-							if (bm.compression == 0) {
-								// Uncompressed: size check already done above
-							} else if (bm.compression == 1) {
-								// ByteRun1 compressed: validate compression stream
-								var src_pos: u32 = 0;
-								var decompressed_bytes: u64 = 0;
-								const total_planes: u32 = @as(u32, bm.num_planes) + @as(u32, if (bm.masking == 1) 1 else 0);
-								const row_bytes: u32 = ((@as(u32, bm.width) + 15) / 16) * 2;
-								const expected_decompressed: u64 = @as(u64, bm.height) * total_planes * row_bytes;
+					const data = allocator.alloc(u8, chunk_sz) catch return ValidationResult.invalidCode(.iff, .out_of_memory, "BODY chunk buffer");
+					defer allocator.free(data);
+					const body_read = file.readAll(data) catch return ValidationResult.invalidCode(.iff, .failed_to_read, "BODY chunk");
+					if (body_read != chunk_sz) {
+						return ValidationResult.invalid(.iff, "BODY chunk data truncated");
+					}
+					// For ILBM with BMHD: validate compression stream
+					if (bmhd) |bm| {
+						if (bm.compression == 0) {
+							// Uncompressed: size check already done above
+						} else if (bm.compression == 1) {
+							// ByteRun1 compressed: validate compression stream
+							var src_pos: u32 = 0;
+							var decompressed_bytes: u64 = 0;
+							const total_planes: u32 = @as(u32, bm.num_planes) + @as(u32, if (bm.masking == 1) 1 else 0);
+							const row_bytes: u32 = ((@as(u32, bm.width) + 15) / 16) * 2;
+							const expected_decompressed: u64 = @as(u64, bm.height) * total_planes * row_bytes;
 
-								while (src_pos < body_read) {
-									const control = @as(i8, @bitCast(data[src_pos]));
-									src_pos += 1;
-									if (control >= 0) {
-										// Copy n+1 bytes literally
-										const n: u32 = @as(u32, @intCast(control)) + 1;
-										if (src_pos + n > body_read) {
-											return ValidationResult.invalid(.iff, "ILBM ByteRun1 literal run exceeds data");
-										}
-										src_pos += n;
-										decompressed_bytes += n;
-									} else if (control != -128) {
-										// Repeat next byte (1-n) times
-										const n: u32 = @as(u32, @intCast(-@as(i32, control))) + 1;
-										if (src_pos >= body_read) {
-											return ValidationResult.invalid(.iff, "ILBM ByteRun1 repeat missing data byte");
-										}
-										src_pos += 1;
-										decompressed_bytes += n;
+							while (src_pos < body_read) {
+								const control = @as(i8, @bitCast(data[src_pos]));
+								src_pos += 1;
+								if (control >= 0) {
+									// Copy n+1 bytes literally
+									const n: u32 = @as(u32, @intCast(control)) + 1;
+									if (src_pos + n > body_read) {
+										return ValidationResult.invalid(.iff, "ILBM ByteRun1 literal run exceeds data");
 									}
-									// control == -128: NOP
+									src_pos += n;
+									decompressed_bytes += n;
+								} else if (control != -128) {
+									// Repeat next byte (1-n) times
+									const n: u32 = @as(u32, @intCast(-@as(i32, control))) + 1;
+									if (src_pos >= body_read) {
+										return ValidationResult.invalid(.iff, "ILBM ByteRun1 repeat missing data byte");
+									}
+									src_pos += 1;
+									decompressed_bytes += n;
 								}
-								if (expected_decompressed > 0 and decompressed_bytes != expected_decompressed) {
-									return ValidationResult.invalid(.iff, "ILBM ByteRun1 decompressed size doesn't match BMHD dimensions");
-								}
+								// control == -128: NOP
+							}
+							if (expected_decompressed > 0 and decompressed_bytes != expected_decompressed) {
+								return ValidationResult.invalid(.iff, "ILBM ByteRun1 decompressed size doesn't match BMHD dimensions");
 							}
 						}
 					}

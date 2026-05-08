@@ -877,14 +877,13 @@ pub fn validateTar(file: *FileSource) ValidationResult {
             if (remainder != 0) {
                 const padding_start = pos + 512 + entry_size;
                 const padding_len = 512 - remainder;
-                file.seekTo(padding_start) catch {};
+                file.seekTo(padding_start) catch return ValidationResult.invalidCode(.tar, .failed_to_seek, "to data block padding");
                 var pad_buf: [512]u8 = undefined;
-                const pad_read = file.readAll(pad_buf[0..padding_len]) catch 0;
-                if (pad_read == padding_len) {
-                    for (pad_buf[0..padding_len]) |b| {
-                        if (b != 0) {
-                            return ValidationResult.invalidCode(.tar, .invalid_value, "Non-zero data block padding");
-                        }
+                const pad_read = file.readAll(pad_buf[0..padding_len]) catch return ValidationResult.invalidCode(.tar, .failed_to_read, "data block padding");
+                if (pad_read != padding_len) return ValidationResult.invalidCode(.tar, .truncated, "data block padding");
+                for (pad_buf[0..padding_len]) |b| {
+                    if (b != 0) {
+                        return ValidationResult.invalidCode(.tar, .invalid_value, "Non-zero data block padding");
                     }
                 }
             }

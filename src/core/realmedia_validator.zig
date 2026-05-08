@@ -126,16 +126,15 @@ pub fn validateRealMedia(file: *FileSource) ValidationResult {
 			const PROP_MIN_SIZE = CHUNK_HEADER_SIZE + 40;
 			if (chunk_size >= PROP_MIN_SIZE) {
 				var prop_buf: [40]u8 = undefined;
-				file.seekTo(pos + CHUNK_HEADER_SIZE) catch {};
-				const prop_read = file.read(&prop_buf) catch 0;
-				if (prop_read >= 40) {
-					// index_offset at data offset 28 (bytes 28-31)
-					prop_index_offset = std.mem.readInt(u32, prop_buf[28..32], .big);
-					// data_offset at data offset 32 (bytes 32-35)
-					prop_data_offset = std.mem.readInt(u32, prop_buf[32..36], .big);
-					// num_streams at data offset 36 (bytes 36-37)
-					prop_num_streams = std.mem.readInt(u16, prop_buf[36..38], .big);
-				}
+				file.seekTo(pos + CHUNK_HEADER_SIZE) catch return ValidationResult.invalidWithDepth(.rm, "Failed to seek to PROP body", .structural);
+				const prop_read = file.readAll(&prop_buf) catch return ValidationResult.invalidWithDepth(.rm, "Failed to read PROP body", .structural);
+				if (prop_read != 40) return ValidationResult.invalidWithDepth(.rm, "PROP body truncated", .structural);
+				// index_offset at data offset 28 (bytes 28-31)
+				prop_index_offset = std.mem.readInt(u32, prop_buf[28..32], .big);
+				// data_offset at data offset 32 (bytes 32-35)
+				prop_data_offset = std.mem.readInt(u32, prop_buf[32..36], .big);
+				// num_streams at data offset 36 (bytes 36-37)
+				prop_num_streams = std.mem.readInt(u16, prop_buf[36..38], .big);
 			}
 		} else if (std.mem.eql(u8, fourcc, "MDPR")) {
 			mdpr_count += 1;

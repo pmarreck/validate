@@ -538,11 +538,13 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 		return ValidationResult.invalidCodeWithDepth(.pdf, .invalid_value, "xref structure at startxref position", .full);
 	}
 
-	// Check if this is a linearized PDF by reading start of file
+	// Check if this is a linearized PDF by reading start of file.
+	// Read returns up to 4096 bytes — short reads on small PDFs are legitimate
+	// (smallest valid PDF is ~100 bytes), so we don't gate on full-buffer here.
 	var is_linearized = false;
-	source.seekTo(0) catch {};
-	var header_buf: [4096]u8 = undefined; // Larger buffer to catch encryption in linearized PDFs
-	const header_read = source.read(&header_buf) catch 0;
+	source.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_seek, "to PDF header sample", .full);
+	var header_buf: [4096]u8 = undefined;
+	const header_read = source.read(&header_buf) catch return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_read, "PDF header sample", .full);
 	if (header_read > 0) {
 		is_linearized = std.mem.indexOf(u8, header_buf[0..header_read], "/Linearized") != null;
 	}
