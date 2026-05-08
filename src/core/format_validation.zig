@@ -7234,15 +7234,14 @@ fn validateBeam(allocator: Allocator, file: std.fs.File) ValidationResult {
         if (std.mem.eql(u8, chunk_name, "ImpT") or std.mem.eql(u8, chunk_name, "ExpT") or std.mem.eql(u8, chunk_name, "LocT")) {
             if (chunk_size >= 4) {
                 var count_buf: [4]u8 = undefined;
-                const count_read = file.readAll(&count_buf) catch 0;
-                if (count_read == 4) {
-                    const entry_count_val = std.mem.readInt(u32, &count_buf, .big);
-                    // ImpT entries are 3 u32s (12 bytes), ExpT/LocT entries are 3 u32s (12 bytes)
-                    const entry_size: u32 = 12;
-                    const expected_size = 4 + entry_count_val * entry_size;
-                    if (expected_size != chunk_size) {
-                        return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "table chunk", "Entry count × entry size does not match chunk size");
-                    }
+                const count_read = file.readAll(&count_buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "ImpT/ExpT/LocT count");
+                if (count_read != 4) return ValidationResult.invalidCode(.beam, .truncated, "ImpT/ExpT/LocT count");
+                const entry_count_val = std.mem.readInt(u32, &count_buf, .big);
+                // ImpT entries are 3 u32s (12 bytes), ExpT/LocT entries are 3 u32s (12 bytes)
+                const entry_size: u32 = 12;
+                const expected_size = 4 + entry_count_val * entry_size;
+                if (expected_size != chunk_size) {
+                    return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "table chunk", "Entry count × entry size does not match chunk size");
                 }
             }
         }
@@ -7250,19 +7249,18 @@ fn validateBeam(allocator: Allocator, file: std.fs.File) ValidationResult {
         // For Code chunk: validate header fields
         if (std.mem.eql(u8, chunk_name, "Code") and chunk_size >= 16) {
             var code_hdr: [16]u8 = undefined;
-            file.seekTo(offset + 8) catch {};
-            const code_read = file.readAll(&code_hdr) catch 0;
-            if (code_read == 16) {
-                const sub_size = std.mem.readInt(u32, code_hdr[0..4], .big);
-                const instruction_set = std.mem.readInt(u32, code_hdr[4..8], .big);
-                // sub_size should be reasonable (16 is common header size)
-                if (sub_size > chunk_size) {
-                    return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "Code chunk", "Code sub-header size exceeds chunk");
-                }
-                // OTP instruction set version is typically 0
-                if (instruction_set > 1) {
-                    return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "Code chunk", "Unknown instruction set version");
-                }
+            file.seekTo(offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_seek, "to Code chunk body");
+            const code_read = file.readAll(&code_hdr) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "Code chunk header");
+            if (code_read != 16) return ValidationResult.invalidCode(.beam, .truncated, "Code chunk header");
+            const sub_size = std.mem.readInt(u32, code_hdr[0..4], .big);
+            const instruction_set = std.mem.readInt(u32, code_hdr[4..8], .big);
+            // sub_size should be reasonable (16 is common header size)
+            if (sub_size > chunk_size) {
+                return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "Code chunk", "Code sub-header size exceeds chunk");
+            }
+            // OTP instruction set version is typically 0
+            if (instruction_set > 1) {
+                return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "Code chunk", "Unknown instruction set version");
             }
         }
 
@@ -7271,27 +7269,23 @@ fn validateBeam(allocator: Allocator, file: std.fs.File) ValidationResult {
             const compressed_size = chunk_size - 4; // first 4 bytes = uncompressed size
             if (compressed_size > 0) {
                 // Read uncompressed size to validate it
-                file.seekTo(offset + 8) catch {};
+                file.seekTo(offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_seek, "to LitT chunk body");
                 var uncomp_size_buf: [4]u8 = undefined;
-                const us_read = file.readAll(&uncomp_size_buf) catch 0;
-                if (us_read == 4) {
-                    const uncomp_size = std.mem.readInt(u32, &uncomp_size_buf, .big);
-                    // If uncompressed size > 0, data should be zlib-compressed
-                    if (uncomp_size > 0 and compressed_size >= 2) {
-                        const compressed_data = allocator.alloc(u8, compressed_size) catch null;
-                        if (compressed_data) |buf| {
-                            defer allocator.free(buf);
-                            const rd = file.readAll(buf) catch 0;
-                            if (rd == compressed_size) {
-                                // Check for zlib header (0x78xx)
-                                if (buf[0] == 0x78) {
-                                    // Stream-validate decompression — don't materialize output
-                                    _ = zlib.inflateStreamValidate(buf, 64 * 1024 * 1024, false) catch {
-                                        return ValidationResult.invalidCodeMsg(.beam, .decompression_failed, "LitT chunk", "zlib decompression failed (corrupt literal table)");
-                                    };
-                                }
-                            }
-                        }
+                const us_read = file.readAll(&uncomp_size_buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "LitT uncompressed-size header");
+                if (us_read != 4) return ValidationResult.invalidCode(.beam, .truncated, "LitT uncompressed-size header");
+                const uncomp_size = std.mem.readInt(u32, &uncomp_size_buf, .big);
+                // If uncompressed size > 0, data should be zlib-compressed
+                if (uncomp_size > 0 and compressed_size >= 2) {
+                    const buf = allocator.alloc(u8, compressed_size) catch return ValidationResult.invalidCode(.beam, .out_of_memory, "LitT compressed buffer");
+                    defer allocator.free(buf);
+                    const rd = file.readAll(buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "LitT compressed payload");
+                    if (rd != compressed_size) return ValidationResult.invalidCode(.beam, .truncated, "LitT compressed payload");
+                    // Check for zlib header (0x78xx)
+                    if (buf[0] == 0x78) {
+                        // Stream-validate decompression — don't materialize output
+                        _ = zlib.inflateStreamValidate(buf, 64 * 1024 * 1024, false) catch {
+                            return ValidationResult.invalidCodeMsg(.beam, .decompression_failed, "LitT chunk", "zlib decompression failed (corrupt literal table)");
+                        };
                     }
                 }
             }
@@ -7302,24 +7296,23 @@ fn validateBeam(allocator: Allocator, file: std.fs.File) ValidationResult {
         if ((std.mem.eql(u8, chunk_name, "Dbgi") or std.mem.eql(u8, chunk_name, "Docs") or
             std.mem.eql(u8, chunk_name, "Attr") or std.mem.eql(u8, chunk_name, "CInf")) and chunk_size > 6)
         {
-            file.seekTo(offset + 8) catch {};
+            file.seekTo(offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_seek, "to ETF chunk body");
             var etf_hdr: [6]u8 = undefined;
-            const etf_read = file.readAll(&etf_hdr) catch 0;
-            if (etf_read == 6 and etf_hdr[0] == 0x83 and etf_hdr[1] == 0x50) {
+            const etf_read = file.readAll(&etf_hdr) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "ETF chunk header");
+            if (etf_read != 6) return ValidationResult.invalidCode(.beam, .truncated, "ETF chunk header");
+            // 0x83 0x50 == ETF compressed marker; absence is a valid (uncompressed-ETF) branch, not a skip.
+            if (etf_hdr[0] == 0x83 and etf_hdr[1] == 0x50) {
                 // ETF compressed: version=0x83, tag=0x50, 4 bytes uncompressed size, then zlib
                 const zlib_size = chunk_size - 6;
                 if (zlib_size >= 2) {
-                    const compressed_data = allocator.alloc(u8, zlib_size) catch null;
-                    if (compressed_data) |buf| {
-                        defer allocator.free(buf);
-                        const rd = file.readAll(buf) catch 0;
-                        if (rd == zlib_size) {
-                            if (buf[0] == 0x78) {
-                                _ = zlib.inflateStreamValidate(buf, 64 * 1024 * 1024, false) catch {
-                                    return ValidationResult.invalidCodeMsg(.beam, .decompression_failed, "ETF chunk", "zlib decompression failed (corrupt compressed data)");
-                                };
-                            }
-                        }
+                    const buf = allocator.alloc(u8, zlib_size) catch return ValidationResult.invalidCode(.beam, .out_of_memory, "ETF compressed buffer");
+                    defer allocator.free(buf);
+                    const rd = file.readAll(buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "ETF compressed payload");
+                    if (rd != zlib_size) return ValidationResult.invalidCode(.beam, .truncated, "ETF compressed payload");
+                    if (buf[0] == 0x78) {
+                        _ = zlib.inflateStreamValidate(buf, 64 * 1024 * 1024, false) catch {
+                            return ValidationResult.invalidCodeMsg(.beam, .decompression_failed, "ETF chunk", "zlib decompression failed (corrupt compressed data)");
+                        };
                     }
                 }
             }
@@ -7327,15 +7320,14 @@ fn validateBeam(allocator: Allocator, file: std.fs.File) ValidationResult {
 
         // For FunT chunk: validate entry count × entry size (each entry is 6 u32s = 24 bytes)
         if (std.mem.eql(u8, chunk_name, "FunT") and chunk_size >= 4) {
-            file.seekTo(offset + 8) catch {};
+            file.seekTo(offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_seek, "to FunT chunk body");
             var funt_count_buf: [4]u8 = undefined;
-            const funt_read = file.readAll(&funt_count_buf) catch 0;
-            if (funt_read == 4) {
-                const fun_count = std.mem.readInt(u32, &funt_count_buf, .big);
-                const expected_size = 4 + fun_count * 24;
-                if (expected_size != chunk_size) {
-                    return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "FunT chunk", "Entry count × entry size does not match chunk size");
-                }
+            const funt_read = file.readAll(&funt_count_buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "FunT count");
+            if (funt_read != 4) return ValidationResult.invalidCode(.beam, .truncated, "FunT count");
+            const fun_count = std.mem.readInt(u32, &funt_count_buf, .big);
+            const expected_size = 4 + fun_count * 24;
+            if (expected_size != chunk_size) {
+                return ValidationResult.invalidCodeMsg(.beam, .invalid_value, "FunT chunk", "Entry count × entry size does not match chunk size");
             }
         }
 
