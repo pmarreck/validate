@@ -1650,16 +1650,15 @@ pub fn validateDicom(file: *FileSource) ValidationResult {
             // Read transfer syntax to determine if dataset is explicit or implicit VR
             if (value_length > 0 and value_length < 64) {
                 var ts_buf: [64]u8 = undefined;
-                file.seekTo(offset + header_size) catch {};
-                const ts_read = file.read(ts_buf[0..value_length]) catch 0;
-                if (ts_read > 0) {
-                    const ts = ts_buf[0..ts_read];
-                    // Implicit VR Little Endian: 1.2.840.10008.1.2
-                    if (std.mem.indexOf(u8, ts, "1.2.840.10008.1.2") != null and
-                        std.mem.indexOf(u8, ts, "1.2.840.10008.1.2.") == null)
-                    {
-                        is_explicit_vr = false;
-                    }
+                file.seekTo(offset + header_size) catch return ValidationResult.invalidCode(.dicom, .failed_to_seek, "to transfer-syntax UID");
+                const ts_read = file.readAll(ts_buf[0..value_length]) catch return ValidationResult.invalidCode(.dicom, .failed_to_read, "transfer-syntax UID");
+                if (ts_read != value_length) return ValidationResult.invalidCode(.dicom, .truncated, "transfer-syntax UID");
+                const ts = ts_buf[0..ts_read];
+                // Implicit VR Little Endian: 1.2.840.10008.1.2
+                if (std.mem.indexOf(u8, ts, "1.2.840.10008.1.2") != null and
+                    std.mem.indexOf(u8, ts, "1.2.840.10008.1.2.") == null)
+                {
+                    is_explicit_vr = false;
                 }
             }
         }
@@ -4032,7 +4031,8 @@ pub fn validateShapefile(file: *FileSource) ValidationResult {
 		// Read record content (up to reasonable limit for geometry validation)
 		const max_content_read: u64 = @min(content_length, 256);
 		var content_buf: [256]u8 = undefined;
-		const content_read = file.read(content_buf[0..max_content_read]) catch 0;
+		const content_read = file.readAll(content_buf[0..max_content_read]) catch return ValidationResult.invalidCode(.shapefile, .failed_to_read, "shapefile record content");
+		if (content_read != max_content_read) return ValidationResult.invalidCode(.shapefile, .truncated, "shapefile record content");
 
 		if (content_read >= 4) {
 			const rec_shape_type = std.mem.readInt(i32, content_buf[0..4], .little);

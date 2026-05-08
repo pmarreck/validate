@@ -278,10 +278,11 @@ pub fn validateAvi(file: *FileSource) ValidationResult {
                     // Parse avih (main AVI header) - first sub-chunk of hdrl
                     const avih_pos = pos + 12; // After LIST + size + "hdrl"
                     if (avih_pos + 64 <= riff_end) {
-                        file.seekTo(avih_pos) catch {};
+                        file.seekTo(avih_pos) catch return ValidationResult.invalidCode(.avi, .failed_to_seek, "to avih sub-chunk");
                         var avih_hdr: [64]u8 = undefined;
-                        const avih_read = file.read(&avih_hdr) catch 0;
-                        if (avih_read >= 64 and std.mem.eql(u8, avih_hdr[0..4], "avih")) {
+                        const avih_read = file.readAll(&avih_hdr) catch return ValidationResult.invalidCode(.avi, .failed_to_read, "avih sub-chunk");
+                        if (avih_read != 64) return ValidationResult.invalidCode(.avi, .truncated, "avih sub-chunk");
+                        if (std.mem.eql(u8, avih_hdr[0..4], "avih")) {
                             const avih_size = std.mem.readInt(u32, avih_hdr[4..8], .little);
                             if (avih_size >= 56) {
                                 // avih fields: microSecPerFrame(4) + maxBytesPerSec(4) + padding(4) +
