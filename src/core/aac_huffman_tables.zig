@@ -103,7 +103,13 @@ fn readEscapeSequence(reader: *BitReader) ?u16 {
 }
 
 /// Get the dimension (number of spectral values per codeword) for a codebook.
+/// AAC codebook is a 4-bit field in the bitstream (`u4` range 0-15) but only
+/// indices 0-11 are defined; 12-15 are reserved. Callers can forward raw
+/// section_data values straight from an attacker-controlled stream, so a
+/// reserved index must NOT index the 12-element table or we get a panic in
+/// safe builds / UB in ReleaseFast.
 pub fn cbDimension(codebook: u4) u3 {
+    if (codebook > 11) return 0;
     return cb_dimension[codebook];
 }
 
@@ -727,4 +733,14 @@ test "cbDimension correct" {
     try std.testing.expectEqual(@as(u3, 4), cbDimension(2));
     try std.testing.expectEqual(@as(u3, 2), cbDimension(5));
     try std.testing.expectEqual(@as(u3, 2), cbDimension(11));
+}
+
+test "cbDimension rejects reserved indices 12-15" {
+    // AAC spec leaves codebook 12-15 reserved. Raw bitstream u4 fields can
+    // forward them straight to cbDimension; the guard must keep the lookup
+    // from reading past the 12-element table.
+    try std.testing.expectEqual(@as(u3, 0), cbDimension(12));
+    try std.testing.expectEqual(@as(u3, 0), cbDimension(13));
+    try std.testing.expectEqual(@as(u3, 0), cbDimension(14));
+    try std.testing.expectEqual(@as(u3, 0), cbDimension(15));
 }

@@ -330,15 +330,19 @@ fn parseSectionData(reader: *BitReader, ics: *const IcsInfo) ?SectionInfo {
             // sect_cb (4 bits)
             const sect_cb = reader.readBits(4) orelse return null;
 
-            // sect_len_incr: read repeated values, accumulate length
+            // sect_len_incr: read repeated values, accumulate length.
+            // An attacker can stream the escape sentinel (2^sect_bits - 1) for
+            // ~2114 iterations to drive `sect_len` past u16 max; overflow-checked
+            // add rejects that. spec-compliant max_sfb is ≤63, so any legitimate
+            // section length is comfortably within u16.
             var sect_len: u16 = 0;
             while (true) {
                 const incr = reader.readBits(sect_bits) orelse return null;
-                sect_len += @intCast(incr);
+                sect_len = std.math.add(u16, sect_len, @intCast(incr)) catch return null;
                 if (incr != sect_esc_val) break;
             }
 
-            const sect_end = k + sect_len;
+            const sect_end = std.math.add(u16, k, sect_len) catch return null;
             // Per FAAD2 reference decoder, the section_end boundary check is
             // not enforced (it's #if 0'd out). The last section in a group
             // is allowed to overshoot max_sfb to any value; the while loop

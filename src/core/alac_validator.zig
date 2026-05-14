@@ -73,10 +73,17 @@ pub const AlacConfig = struct {
         // pb (1), mb (1), kb (1), numChannels (1), maxRun (2),
         // maxFrameBytes (4), avgBitRate (4), sampleRate (4)
 
+        const bps = data[5];
+        // ALAC spec: bit depth is exactly one of {16, 20, 24, 32}. Reject anything
+        // else up front so downstream shift/multiply paths can't be driven into
+        // signed-integer overflow by an out-of-spec config (e.g. bps=32 plus a
+        // crafted residual could drive `signed_val << extra_bits` past INT_MAX).
+        if (bps != 16 and bps != 20 and bps != 24 and bps != 32) return null;
+
         return AlacConfig{
             .frame_length = std.mem.readInt(u32, data[0..4], .big),
             .compatible_version = data[4],
-            .bits_per_sample = data[5],
+            .bits_per_sample = bps,
             .pb = data[6],
             .mb = data[7],
             .kb = data[8],
@@ -100,7 +107,12 @@ pub const AlacDecoder = struct {
 
     pub fn init(allocator: Allocator, config: AlacConfig) ?AlacDecoder {
         const frame_len = config.frame_length;
-        if (frame_len == 0 or frame_len > 65536) return null;
+        // Reject tiny frame_length too: ALAC's prediction order is a u5 (up to 31
+        // samples), so any frame with fewer than 32 samples lets a crafted
+        // pred_order=31 prediction write past the predictor/mix buffers. Real
+        // ALAC streams use 4096 by convention; 32 is well below any legitimate
+        // value but tight enough to keep the spec-edge cases working.
+        if (frame_len < 32 or frame_len > 65536) return null;
 
         const mix_l = allocator.alloc(i32, frame_len) catch return null;
         errdefer allocator.free(mix_l);
@@ -244,8 +256,13 @@ pub const AlacDecoder = struct {
             // No prediction - decode residuals directly
             return self.decodeRiceResiduals(reader, samples, rice_hist_mult, extra_bits, output);
         } else if (pred_type == 1) {
-            // FIR prediction
-            if (pred_order > 31) return false;
+            // FIR prediction. `pred_order` is a u5 so it's bounded to ≤31 by the
+            // type system — the real concern is that applyPrediction will copy
+            // `order` samples from the predictor buffer into `output`, both sized
+            // `frame_length`, so an `order` larger than the per-frame `samples`
+            // count would write past the live region. Init enforces
+            // `frame_length ≥ 32` for the same reason.
+            if (pred_order > samples) return false;
 
             // Read prediction coefficients
             var coefs: [32]i16 = undefined;
@@ -291,10 +308,18 @@ pub const AlacDecoder = struct {
             // Convert unsigned to signed: (x >> 1) ^ -(x & 1)
             const signed_val: i32 = @as(i32, @intCast(x >> 1)) ^ -@as(i32, @intCast(x & 1));
 
-            // Apply extra bits shift if present
+            // Apply extra bits shift if present.
+            // Wrap via bitcast-to-unsigned: with bits_per_sample=32 plus a Rice-
+            // escape payload of 0xFFFFFFFF, `signed_val` can land near INT_MIN,
+            // and a plain `<<` on a signed type would be UB on overflow. We treat
+            // the shift purely as a bit-level rebuild of the sample value, so
+            // wrap-around is the correct semantics. AlacConfig.parse already
+            // bounds bps to {16,20,24,32} so legitimate streams never trigger it.
             if (extra_bits > 0) {
                 const extra = reader.readBits(extra_bits) orelse return false;
-                output[i] = (signed_val << extra_bits) | @as(i32, @intCast(extra));
+                const shift: u5 = @intCast(extra_bits);
+                const shifted: i32 = @bitCast(@as(u32, @bitCast(signed_val)) << shift);
+                output[i] = shifted | @as(i32, @intCast(extra));
             } else {
                 output[i] = signed_val;
             }
@@ -413,12 +438,17 @@ pub const AlacDecoder = struct {
                 pcm_out[i * 2 + 1] = r;
             } else {
                 // Mid-side to left-right
-                // L = M + S, R = M - S (simplified)
+                // L = M + S, R = M - S (simplified).
+                // Promote to i64 for the multiply: `s` can be near INT_MIN after
+                // a crafted residual stream lands there, and `mix_res` (4 bits)
+                // is up to 15, so an i32 product would overflow on the worst
+                // case. The result post-shift is bounded to fit in i32 again.
                 const m = l;
                 const s = r;
-                const shift: u5 = @intCast(mix_bits);
-                pcm_out[i * 2] = m + ((s * @as(i32, mix_res)) >> shift);
-                pcm_out[i * 2 + 1] = m - ((s * @as(i32, mix_res)) >> shift);
+                const shift: u6 = @intCast(mix_bits);
+                const mixed = @as(i32, @truncate((@as(i64, s) * @as(i64, mix_res)) >> shift));
+                pcm_out[i * 2] = m +% mixed;
+                pcm_out[i * 2 + 1] = m -% mixed;
             }
         }
     }
@@ -564,6 +594,51 @@ test "ALAC config parsing" {
 test "ALAC config parsing rejects short data" {
     const short_data = [_]u8{ 0x00, 0x00, 0x10, 0x00 };
     try std.testing.expect(AlacConfig.parse(&short_data) == null);
+}
+
+test "ALAC config parsing rejects out-of-spec bits_per_sample" {
+    // ALAC spec mandates 16/20/24/32 only. A crafted magic cookie with
+    // bps=32 then drives signed shift overflow in decodeRiceResiduals;
+    // bps=17 (or anything off-spec) is meaningless. Reject up front.
+    var data = [_]u8{0} ** 24;
+    std.mem.writeInt(u32, data[0..4], 4096, .big); // frame_length
+    data[6] = 40; // pb
+    data[7] = 10; // mb
+    data[8] = 14; // kb
+    data[9] = 2; // num_channels
+    inline for (.{ 0, 1, 8, 15, 17, 31, 33, 64, 100, 255 }) |bad_bps| {
+        data[5] = bad_bps;
+        try std.testing.expect(AlacConfig.parse(&data) == null);
+    }
+    inline for (.{ 16, 20, 24, 32 }) |good_bps| {
+        data[5] = good_bps;
+        try std.testing.expect(AlacConfig.parse(&data) != null);
+    }
+}
+
+test "AlacDecoder.init rejects tiny frame_length" {
+    // frame_length < 32 lets a crafted pred_order=31 (u5 max) write past
+    // the predictor/mix buffers in applyPrediction. Real ALAC streams use
+    // 4096; legitimate values are well above the 32-sample floor.
+    var config = AlacConfig{
+        .frame_length = 1,
+        .compatible_version = 0,
+        .bits_per_sample = 16,
+        .pb = 40,
+        .mb = 10,
+        .kb = 14,
+        .num_channels = 1,
+        .max_run = 255,
+        .max_frame_bytes = 100,
+        .avg_bit_rate = 0,
+        .sample_rate = 44100,
+    };
+    try std.testing.expect(AlacDecoder.init(std.testing.allocator, config) == null);
+    config.frame_length = 31;
+    try std.testing.expect(AlacDecoder.init(std.testing.allocator, config) == null);
+    config.frame_length = 32;
+    var dec = AlacDecoder.init(std.testing.allocator, config).?;
+    dec.deinit();
 }
 
 test "BitReader basic operations" {
