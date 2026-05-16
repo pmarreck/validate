@@ -116,21 +116,21 @@ pub fn build(b: *std.Build) void {
         "src/lib/openjp2/sparse_array.c",
     };
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = openjpeg_src.path(""),
         .files = openjp2_sources,
         .flags = cflags,
     });
 
     // Include paths
-    lib.addIncludePath(openjpeg_src.path("src/lib/openjp2"));
-    lib.addIncludePath(opj_config_h.getDirectory());
+    lib.root_module.addIncludePath(openjpeg_src.path("src/lib/openjp2"));
+    lib.root_module.addIncludePath(opj_config_h.getDirectory());
 
     // Install headers for consumers
     lib.installHeader(openjpeg_src.path("src/lib/openjp2/openjpeg.h"), "openjpeg.h");
 
     // Also install the generated config header
-    lib.addIncludePath(opj_config_h.getDirectory());
+    lib.root_module.addIncludePath(opj_config_h.getDirectory());
     lib.installHeadersDirectory(opj_config_h.getDirectory(), "", .{
         .include_extensions = &.{".h"},
     });

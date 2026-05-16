@@ -1,6 +1,6 @@
 .{
     .name = .validate,
-    .version = "0.15.2",
+    .version = "0.16.0",
     .dependencies = .{
         .toml = .{
             .url = "git+https://github.com/sam701/zig-toml?ref=HEAD#cf50bd59c6276fb2b6d34b8d71d35486eecc719c",
@@ -11,8 +11,8 @@
             .hash = "xml-0.2.0-ZTbP3wE6AgCsnyZut_plzxi6WB2tzzh3kFRBOp3AL7n9",
         },
         .zigimg = .{
-            .url = "git+https://github.com/pmarreck/zigimg#29e4b94ce186f6f2eaf92f1e4c498846f2eab7c6",
-            .hash = "zigimg-0.1.0-8_eo2lfYFwD5vFakxU60FRwc2fBli9L0PiGskPvb6Edc",
+            .url = "git+https://github.com/pmarreck/zigimg#12e5dc934b92b2d0ef5481c1f67f1346f3a365e0",
+            .hash = "zigimg-0.1.0-8_eo2lO2FwC3lfMxQB9Y2FPr9vA9Y7Vunf5LjdoZ2NQB",
         },
         .libwebp = .{
             .path = "deps/libwebp",
@@ -52,8 +52,8 @@
             .path = "deps/brotli",
         },
         .pcre2 = .{
-            .url = "https://github.com/pmarreck/pcre2/archive/refs/tags/zig-0.15.2.tar.gz",
-            .hash = "pcre2-10.47.0-S7QTbjnVMgAEncX1a_JtH4G6BgDWzC1tCMvL-KOMrM8b",
+            .url = "https://github.com/pmarreck/pcre2/archive/refs/tags/zig-0.16.0.tar.gz",
+            .hash = "pcre2-10.47.0-S7QTbvnVMgDsA1ipkKNj5kVoEda9wcIuZYUpdrTuDaCh",
         },
         .libjpeg_turbo = .{
             .url = "https://github.com/chearon/libjpeg-turbo/archive/refs/heads/main.tar.gz",
@@ -69,7 +69,7 @@
         },
         .libopenmpt = .{
             .url = "https://github.com/pmarreck/openmpt/archive/refs/heads/master.tar.gz",
-            .hash = "libopenmpt-0.8.0-5ozQWF9EGQts1u9ku3WqarDOuSyUw9TsSTwGFssLkyS6",
+            .hash = "libopenmpt-0.8.0-5ozQWMtEGQtgeboPzSxcC8bin2KmYCnF3KMOs2BT_w6f",
         },
         .cj5 = .{
             .url = "git+https://github.com/pmarreck/cj5#532ca7b19f23a4d6f50c042b6eb109d2d03b634a",
@@ -80,40 +80,40 @@
             .hash = "libraw-0.21.4-c166SaOCAABnwCAwPECgFypND-jT9Ws-iidaxsJC_N05",
         },
         .z7z = .{
-            .url = "git+https://github.com/pmarreck/z7z#164784889ae0a24ff6d0c82ee0d4cffbeedd7433",
-            .hash = "z7z-0.1.0-rkKuF7-0BgCtjNol0CEOKI7c21XR2_9C1lojOmiEoScT",
+            .url = "git+https://github.com/pmarreck/z7z#91fa1d3ddeede630decf33d16b3602dacde04674",
+            .hash = "z7z-0.1.0-rkKuF6vKBgBABoiu3SBYBwKgjVARX7AK9OId3azwZAle",
         },
         .rarz = .{
-            .url = "https://github.com/pmarreck/rarz/archive/80728342dc00594c365e7179f7e548cb2c1790d1.tar.gz",
-            .hash = "rarz-0.1.0-BNfrfu_XCQDb3jZoVYYadKmCTVeQdQZ_8YTYpGzwLBsy",
+            .url = "https://github.com/pmarreck/rarz/archive/faa593135484e535dca6dfe59c7e55979b30121c.tar.gz",
+            .hash = "rarz-0.1.0-BNfrfh_YCQDSasbU9I6wrjsAxilPHDvkdU7HRQdl6mfP",
         },
         .bzip2z = .{
-            .url = "https://github.com/pmarreck/bzip2z/archive/12a325198d3c13b8da31819702401645c18c2209.tar.gz",
-            .hash = "bzip2z-0.1.0-m5NdloQFCABL96oBStCyxJImEiUKlyVXTG4nIY9PvoHo",
+            .url = "https://github.com/pmarreck/bzip2z/archive/9b9e28dafb8dc3d34a88d43b7359b6ca9efd78f1.tar.gz",
+            .hash = "bzip2z-0.1.0-m5NdlsYYCACrnvOCZyqsVmJYY84BRf1XPFi08RfbnWPW",
         },
         .zstdz = .{
-            .url = "https://github.com/pmarreck/zstdz/archive/c79c202b8d6512a72a5b0b65ad771adfda66d301.tar.gz",
-            .hash = "zstdz-1.6.0-yDWjzshaNABOkMCYfrjAhKjPt46sKjdR9cLB-XgzeTt4",
+            .url = "https://github.com/pmarreck/zstdz/archive/f5a61699f1958c7bc152a417ff86336a6efa4689.tar.gz",
+            .hash = "zstdz-1.6.0-yDWjziFdNAAbdfO9bwVKQyiOTmFFNnuIVlFD00msI-t3",
         },
         .par2z = .{
-            .url = "https://github.com/pmarreck/par2z/archive/be03a60d227ed0f54e2f1682a08bf6f95c357572.tar.gz",
-            .hash = "par2z-0.1.0-KhX3fZoVBgAK2C68IacJ7O0aOu-aZYRGbaULfm-v_c6m",
+            .url = "https://github.com/pmarreck/par2z/archive/6c97a8e7d60067f81001afe7634836c2cb2c10ab.tar.gz",
+            .hash = "par2z-0.1.0-KhX3fThrBgCWLRmns254lM9DMuqkaJwurDz84iqeU3fb",
         },
         .uchardetz = .{
-            .url = "https://github.com/pmarreck/uchardetz/archive/5c9b66079e4e54fbdd5d51fc67fb7bba64f2b062.tar.gz",
-            .hash = "uchardetz-0.0.6-koAyw7pFCwBwXTRkF9-_N0qZMmHv22yma5OpWbXv_kL4",
+            .url = "https://github.com/pmarreck/uchardetz/archive/10cb89fae7882b46fdfecfd4aa2751989d1e9aab.tar.gz",
+            .hash = "uchardetz-0.0.6-koAyw7pFCwAzXYaKhsirPcnwf7wfPYm8B8UCRkNc2WbD",
         },
         .compact_pro = .{
-            .url = "https://github.com/pmarreck/compact_pro/archive/8999e8d74b00e0ec0394708071eaeb787ea0ae57.tar.gz",
-            .hash = "compact_pro-0.1.0-G2wo9a_hAgDI-5kULhRLEDRGQWyUYpYnfSuMyJEkGzf4",
+            .url = "https://github.com/pmarreck/compact_pro/archive/813ef896c4b1b145e7c0b461a4f87301b0a2c6db.tar.gz",
+            .hash = "compact_pro-0.1.0-G2wo9UzmAgD8tLdmff1PI_Vj6N0pip0SWSi9oAfGeOMa",
         },
         .progrez = .{
-            .url = "git+https://github.com/pmarreck/progrez#ab325f195b34b8f2aed095fc62af530a9497e74f",
-            .hash = "progrez-0.1.0-0YJXrrECAgDFEpz8h967WNEcUdTIk8Si1UR6Q8IlUm90",
+            .url = "git+https://github.com/pmarreck/progrez#7d70ce836108b761ffbeb6f2d4908a5fb9506ca6",
+            .hash = "progrez-0.1.0-0YJXrpMFAgARHkoD6RpFfS8kNgQEiYNu2ZbswsuBm2hf",
         },
         .blip = .{
-            .url = "git+https://github.com/pmarreck/BLIP#b739ad6e44679f0510124503b8597c10e6619d0d",
-            .hash = "blip-0.1.0-rcNuGObhFgBwXCjHX9fe0p_Ge5NcbH4awkJkk0XAzT7t",
+            .url = "git+https://github.com/pmarreck/BLIP#2855eb88743b505bd3c90df8e0b7857cc305cb42",
+            .hash = "blip-0.1.0-rcNuGAOaBwC6_peTLnpRQWj7CBmiSqsMuItS6C4at5ED",
         },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",

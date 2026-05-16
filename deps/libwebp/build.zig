@@ -92,19 +92,19 @@ pub fn build(b: *std.Build) void {
     };
 
     // Add all sources
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = libwebp_src.path(""),
         .files = dec_sources,
         .flags = cflags,
     });
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = libwebp_src.path(""),
         .files = dsp_sources,
         .flags = cflags,
     });
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = libwebp_src.path(""),
         .files = utils_sources,
         .flags = cflags,
@@ -113,13 +113,13 @@ pub fn build(b: *std.Build) void {
     // Add SIMD sources based on target architecture
     const cpu_arch = target.result.cpu.arch;
     if (cpu_arch == .x86_64 or cpu_arch == .x86) {
-        lib.addCSourceFiles(.{
+        lib.root_module.addCSourceFiles(.{
             .root = libwebp_src.path(""),
             .files = dsp_simd_sources,
             .flags = cflags,
         });
     } else if (cpu_arch == .aarch64 or cpu_arch == .arm) {
-        lib.addCSourceFiles(.{
+        lib.root_module.addCSourceFiles(.{
             .root = libwebp_src.path(""),
             .files = dsp_neon_sources,
             .flags = cflags,
@@ -127,8 +127,8 @@ pub fn build(b: *std.Build) void {
     }
 
     // Add include paths
-    lib.addIncludePath(libwebp_src.path(""));
-    lib.addIncludePath(libwebp_src.path("src"));
+    lib.root_module.addIncludePath(libwebp_src.path(""));
+    lib.root_module.addIncludePath(libwebp_src.path("src"));
 
     // Install headers
     lib.installHeader(libwebp_src.path("src/webp/decode.h"), "webp/decode.h");

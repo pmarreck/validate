@@ -53,19 +53,19 @@ pub fn build(b: *std.Build) void {
     };
 
     // Add include paths
-    lib.addIncludePath(vorbis_src.path("include"));
-    lib.addIncludePath(vorbis_src.path("lib"));
-    lib.addIncludePath(libogg_lib.getEmittedIncludeTree());
+    lib.root_module.addIncludePath(vorbis_src.path("include"));
+    lib.root_module.addIncludePath(vorbis_src.path("lib"));
+    lib.root_module.addIncludePath(libogg_lib.getEmittedIncludeTree());
 
     // Add sources
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = vorbis_src.path(""),
         .files = vorbis_sources,
         .flags = cflags,
     });
 
     // Link libogg
-    lib.linkLibrary(libogg_lib);
+    lib.root_module.linkLibrary(libogg_lib);
 
     // Install headers
     lib.installHeader(vorbis_src.path("include/vorbis/codec.h"), "vorbis/codec.h");

@@ -2,8 +2,9 @@ const std = @import("std");
 const LibtoolStep = @import("src/build/LibtoolStep.zig");
 
 fn debugEnvEnabled(b: *std.Build) bool {
-    const raw = std.process.getEnvVarOwned(b.allocator, "DEBUG") catch return false;
-    defer b.allocator.free(raw);
+    // 0.16: std.process.getEnvVarOwned is gone in build.zig; use the build
+    // graph's environ_map (borrowed slice, no free needed).
+    const raw = b.graph.environ_map.get("DEBUG") orelse return false;
 
     const trimmed = std.mem.trim(u8, raw, " \t\r\n");
     if (trimmed.len == 0) return false;
@@ -437,12 +438,15 @@ pub fn build(b: *std.Build) void {
         .root_module = ffi_mod,
         .linkage = .static,
     });
-    for (all_c_deps) |dep| lib.linkLibrary(dep);
-    lib.linkLibC();
-    lib.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
+    // 0.16: per-module configuration (link libs, link libc, system libs) lives
+    // on *Build.Module now. The "1:1 rewrite" pattern is to route through
+    // compile.root_module.X(...) instead of compile.X(...).
+    for (all_c_deps) |dep| lib.root_module.linkLibrary(dep);
+    lib.root_module.link_libc = true;
+    lib.root_module.link_libcpp = true; // Required for libjxl, libopenmpt (C++ libraries)
     // On Windows, LibRaw uses ntohs/htons/htonl/ntohl from ws2_32
     if (target.result.os.tag == .windows) {
-        lib.linkSystemLibrary("ws2_32");
+        lib.root_module.linkSystemLibrary("ws2_32", .{});
     }
 
     lib.installHeadersDirectory(b.path("ffi"), "", .{
@@ -540,9 +544,10 @@ pub fn build(b: *std.Build) void {
         .root_module = ffi_mod,
         .linkage = .dynamic,
     });
-    for (all_c_deps) |dep| lib_shared.linkLibrary(dep);
-    lib_shared.linkLibC();
-    lib_shared.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
+    // 0.16: route through root_module (mirrors the static lib above).
+    for (all_c_deps) |dep| lib_shared.root_module.linkLibrary(dep);
+    lib_shared.root_module.link_libc = true;
+    lib_shared.root_module.link_libcpp = true; // Required for libjxl, libopenmpt (C++ libraries)
 
     lib_shared.installHeadersDirectory(b.path("ffi"), "", .{
         .include_extensions = &.{".h"},

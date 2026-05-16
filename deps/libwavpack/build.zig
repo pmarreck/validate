@@ -60,10 +60,10 @@ pub fn build(b: *std.Build) void {
 		"src/unpack_utils.c",
 	};
 
-	lib.addIncludePath(wavpack_src.path("include"));
-	lib.addIncludePath(wavpack_src.path("src"));
+	lib.root_module.addIncludePath(wavpack_src.path("include"));
+	lib.root_module.addIncludePath(wavpack_src.path("src"));
 
-	lib.addCSourceFiles(.{
+	lib.root_module.addCSourceFiles(.{
 		.root = wavpack_src.path(""),
 		.files = sources,
 		.flags = cflags,

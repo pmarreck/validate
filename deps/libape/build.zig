@@ -152,32 +152,32 @@ pub fn build(b: *std.Build) void {
 	// it. Add a Windows.h shim that forwards to lowercase windows.h, on the
 	// include path BEFORE the system includes for Windows targets.
 	if (t.os.tag == .windows) {
-		lib.addIncludePath(b.path("winshim"));
+		lib.root_module.addIncludePath(b.path("winshim"));
 	}
 
-	lib.addIncludePath(mac.path("Source/Shared"));
-	lib.addIncludePath(mac.path("Source/MACLib"));
-	lib.addIncludePath(mac.path("Shared"));
+	lib.root_module.addIncludePath(mac.path("Source/Shared"));
+	lib.root_module.addIncludePath(mac.path("Source/MACLib"));
+	lib.root_module.addIncludePath(mac.path("Shared"));
 
-	lib.addCSourceFiles(.{
+	lib.root_module.addCSourceFiles(.{
 		.root = mac.path(""),
 		.files = shared_sources,
 		.flags = cflags,
 	});
 	if (t.os.tag == .windows) {
-		lib.addCSourceFiles(.{
+		lib.root_module.addCSourceFiles(.{
 			.root = mac.path(""),
 			.files = shared_windows,
 			.flags = cflags,
 		});
 	} else {
-		lib.addCSourceFiles(.{
+		lib.root_module.addCSourceFiles(.{
 			.root = mac.path(""),
 			.files = shared_unix,
 			.flags = cflags,
 		});
 	}
-	lib.addCSourceFiles(.{
+	lib.root_module.addCSourceFiles(.{
 		.root = mac.path(""),
 		.files = maclib_sources,
 		.flags = cflags,
@@ -191,7 +191,7 @@ pub fn build(b: *std.Build) void {
 	// NNFilter.cpp.
 	const arch = t.cpu.arch;
 	if (arch == .arm or arch == .aarch64 or arch == .aarch64_be or arch == .thumb) {
-		lib.addCSourceFiles(.{
+		lib.root_module.addCSourceFiles(.{
 			.root = mac.path(""),
 			.files = arm_sources,
 			.flags = cflags,
@@ -210,18 +210,18 @@ pub fn build(b: *std.Build) void {
 		const sse41_flags = make_flags.f(b, cflags, &.{"-msse4.1"});
 		const avx2_flags = make_flags.f(b, cflags, &.{"-mavx2"});
 		const avx512_flags = make_flags.f(b, cflags, &.{ "-mavx512dq", "-mavx512bw" });
-		lib.addCSourceFile(.{ .file = mac.path("Source/MACLib/NNFilterSSE2.cpp"), .flags = sse2_flags });
-		lib.addCSourceFile(.{ .file = mac.path("Source/MACLib/NNFilterSSE4.1.cpp"), .flags = sse41_flags });
-		lib.addCSourceFile(.{ .file = mac.path("Source/MACLib/NNFilterAVX2.cpp"), .flags = avx2_flags });
-		lib.addCSourceFile(.{ .file = mac.path("Source/MACLib/NNFilterAVX512.cpp"), .flags = avx512_flags });
+		lib.root_module.addCSourceFile(.{ .file = mac.path("Source/MACLib/NNFilterSSE2.cpp"), .flags = sse2_flags });
+		lib.root_module.addCSourceFile(.{ .file = mac.path("Source/MACLib/NNFilterSSE4.1.cpp"), .flags = sse41_flags });
+		lib.root_module.addCSourceFile(.{ .file = mac.path("Source/MACLib/NNFilterAVX2.cpp"), .flags = avx2_flags });
+		lib.root_module.addCSourceFile(.{ .file = mac.path("Source/MACLib/NNFilterAVX512.cpp"), .flags = avx512_flags });
 	} else if (arch == .powerpc or arch == .powerpc64 or arch == .powerpc64le) {
-		lib.addCSourceFiles(.{
+		lib.root_module.addCSourceFiles(.{
 			.root = mac.path(""),
 			.files = ppc_sources,
 			.flags = cflags,
 		});
 	} else if (arch == .riscv32 or arch == .riscv64) {
-		lib.addCSourceFiles(.{
+		lib.root_module.addCSourceFiles(.{
 			.root = mac.path(""),
 			.files = rv_sources,
 			.flags = cflags,
@@ -229,7 +229,7 @@ pub fn build(b: *std.Build) void {
 	}
 
 	// Our shim — relative to deps/libape, not to the upstream tree.
-	lib.addCSourceFile(.{
+	lib.root_module.addCSourceFile(.{
 		.file = b.path("shim.cpp"),
 		.flags = cflags,
 	});

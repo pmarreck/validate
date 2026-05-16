@@ -31,13 +31,13 @@ pub fn build(b: *std.Build) void {
     // Generate config_types.h
     const config_h = b.addWriteFiles();
     const config_types_path = config_h.add("ogg/config_types.h", config_types_h);
-    lib.addIncludePath(config_h.getDirectory());
+    lib.root_module.addIncludePath(config_h.getDirectory());
 
     // Add include paths
-    lib.addIncludePath(ogg_src.path("include"));
+    lib.root_module.addIncludePath(ogg_src.path("include"));
 
     // Add sources
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = ogg_src.path(""),
         .files = ogg_sources,
         .flags = cflags,

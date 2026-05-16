@@ -64,26 +64,26 @@ pub fn build(b: *std.Build) void {
         "c/enc/utf8_util.c",
     };
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = brotli_src.path(""),
         .files = common_sources,
         .flags = cflags,
     });
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = brotli_src.path(""),
         .files = dec_sources,
         .flags = cflags,
     });
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = brotli_src.path(""),
         .files = enc_sources,
         .flags = cflags,
     });
 
     // Add include paths
-    lib.addIncludePath(brotli_src.path("c/include"));
+    lib.root_module.addIncludePath(brotli_src.path("c/include"));
 
     // Install headers
     lib.installHeader(brotli_src.path("c/include/brotli/decode.h"), "brotli/decode.h");

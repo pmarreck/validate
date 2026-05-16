@@ -179,35 +179,35 @@ pub fn build(b: *std.Build) void {
     // Generate config.h
     const config_h = b.addWriteFiles();
     _ = config_h.add("config.h", config_h_content);
-    lib.addIncludePath(config_h.getDirectory());
+    lib.root_module.addIncludePath(config_h.getDirectory());
 
     // Add include paths
-    lib.addIncludePath(opus_src.path(""));
-    lib.addIncludePath(opus_src.path("include"));
-    lib.addIncludePath(opus_src.path("celt"));
-    lib.addIncludePath(opus_src.path("silk"));
-    lib.addIncludePath(opus_src.path("silk/float"));
+    lib.root_module.addIncludePath(opus_src.path(""));
+    lib.root_module.addIncludePath(opus_src.path("include"));
+    lib.root_module.addIncludePath(opus_src.path("celt"));
+    lib.root_module.addIncludePath(opus_src.path("silk"));
+    lib.root_module.addIncludePath(opus_src.path("silk/float"));
 
     // Add sources
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = opus_src.path(""),
         .files = celt_sources,
         .flags = cflags,
     });
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = opus_src.path(""),
         .files = silk_sources,
         .flags = cflags,
     });
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = opus_src.path(""),
         .files = silk_float_sources,
         .flags = cflags,
     });
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = opus_src.path(""),
         .files = opus_sources,
         .flags = cflags,

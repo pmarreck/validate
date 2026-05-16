@@ -33,3 +33,8 @@ CLAUDE.md
 .serena
 inbox
 .worktrees/
+
+# Side-effect of `zig build --fetch=all` (~380MB).
+zig-pkg/
+# Pre-upgrade lock backups.
+flake.lock.bak_*

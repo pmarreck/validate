@@ -183,37 +183,37 @@ pub fn build(b: *std.Build) void {
         \\#endif
         \\#endif
     );
-    lib.addIncludePath(version_h.getDirectory());
+    lib.root_module.addIncludePath(version_h.getDirectory());
 
     // Install generated headers so they're available to consumers
     lib.installHeadersDirectory(version_h.getDirectory(), "", .{});
 
     // Add include paths - sources use "lib/jxl/..." paths so we need root
-    lib.addIncludePath(libjxl_src.path(""));
-    lib.addIncludePath(libjxl_src.path("lib"));
-    lib.addIncludePath(libjxl_src.path("lib/include"));
+    lib.root_module.addIncludePath(libjxl_src.path(""));
+    lib.root_module.addIncludePath(libjxl_src.path("lib"));
+    lib.root_module.addIncludePath(libjxl_src.path("lib/include"));
 
     // Add dependency include paths and link
     const brotli_lib = brotli_dep.artifact("brotli");
     const highway_lib = highway_dep.artifact("hwy");
-    lib.addIncludePath(brotli_lib.getEmittedIncludeTree());
-    lib.addIncludePath(highway_lib.getEmittedIncludeTree());
-    lib.linkLibrary(brotli_lib);
-    lib.linkLibrary(highway_lib);
+    lib.root_module.addIncludePath(brotli_lib.getEmittedIncludeTree());
+    lib.root_module.addIncludePath(highway_lib.getEmittedIncludeTree());
+    lib.root_module.linkLibrary(brotli_lib);
+    lib.root_module.linkLibrary(highway_lib);
 
     // Add source files - all paths are relative to lib/ directory
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = libjxl_src.path("lib"),
         .files = dec_sources,
         .flags = cxxflags,
     });
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = libjxl_src.path("lib"),
         .files = jpeg_sources,
         .flags = cxxflags,
     });
     // CMS sources omitted - using internal sRGB fallback
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = libjxl_src.path("lib"),
         .files = thread_sources,
         .flags = cxxflags,

@@ -135,15 +135,15 @@ pub fn build(b: *std.Build) void {
 	// They must be on the include path BEFORE the upstream tree so the
 	// #include "vpx_config.h" etc. resolve to the vendored ones rather
 	// than being missing.
-	lib.addIncludePath(b.path("config"));
+	lib.root_module.addIncludePath(b.path("config"));
 
 	// Upstream source roots. libvpx's includes are consistently relative
 	// to the package root (e.g. #include "vp8/common/blockd.h",
 	// #include "vpx/vpx_codec.h", etc.).
-	lib.addIncludePath(vpx_src.path(""));
-	lib.addIncludePath(vpx_src.path("vpx"));
+	lib.root_module.addIncludePath(vpx_src.path(""));
+	lib.root_module.addIncludePath(vpx_src.path("vpx"));
 
-	lib.addCSourceFiles(.{
+	lib.root_module.addCSourceFiles(.{
 		.root = vpx_src.path(""),
 		.files = sources,
 		.flags = cflags,
@@ -151,7 +151,7 @@ pub fn build(b: *std.Build) void {
 
 	// Also compile the vendored vpx_config.c which exposes the runtime
 	// vpx_codec_build_config() string used by vpx_codec_iface_name().
-	lib.addCSourceFiles(.{
+	lib.root_module.addCSourceFiles(.{
 		.root = b.path("config"),
 		.files = &.{"vpx_config.c"},
 		.flags = cflags,

@@ -29,13 +29,13 @@ pub fn build(b: *std.Build) void {
     };
 
     // Add implementation source
-    lib.addCSourceFile(.{
+    lib.root_module.addCSourceFile(.{
         .file = impl_file.getDirectory().path(b, "minimp3_impl.c"),
         .flags = cflags,
     });
 
     // Add include path to minimp3 header
-    lib.addIncludePath(minimp3_src.path(""));
+    lib.root_module.addIncludePath(minimp3_src.path(""));
 
     // Install header
     lib.installHeader(minimp3_src.path("minimp3.h"), "minimp3.h");

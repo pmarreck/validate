@@ -41,20 +41,20 @@ pub fn build(b: *std.Build) void {
         "hwy/contrib/sort/vqsort.cc",
     };
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = highway_src.path(""),
         .files = hwy_sources,
         .flags = cxxflags,
     });
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = highway_src.path(""),
         .files = contrib_sources,
         .flags = cxxflags,
     });
 
     // Add include paths
-    lib.addIncludePath(highway_src.path(""));
+    lib.root_module.addIncludePath(highway_src.path(""));
 
     // Install headers (highway is largely header-only)
     lib.installHeadersDirectory(highway_src.path("hwy"), "hwy", .{});

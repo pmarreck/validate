@@ -56,17 +56,17 @@ pub fn build(b: *std.Build) void {
         "lib/encoder_disabled.c",
     };
 
-    lib.addIncludePath(theora_src.path("include"));
-    lib.addIncludePath(theora_src.path("lib"));
-    lib.addIncludePath(libogg_lib.getEmittedIncludeTree());
+    lib.root_module.addIncludePath(theora_src.path("include"));
+    lib.root_module.addIncludePath(theora_src.path("lib"));
+    lib.root_module.addIncludePath(libogg_lib.getEmittedIncludeTree());
 
-    lib.addCSourceFiles(.{
+    lib.root_module.addCSourceFiles(.{
         .root = theora_src.path(""),
         .files = theora_sources,
         .flags = cflags,
     });
 
-    lib.linkLibrary(libogg_lib);
+    lib.root_module.linkLibrary(libogg_lib);
 
     // Install headers (public API only)
     lib.installHeader(theora_src.path("include/theora/codec.h"), "theora/codec.h");
