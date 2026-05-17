@@ -8565,8 +8565,28 @@ test "validateTiffDeep detects corrupted preview JPEG in NRW" {
 
     const loc = findTiffPreviewLocation(orig_data, FileFormat.nef) orelse return error.TestExpectedPreviewNotFound;
 
-    // Corrupt a byte ~20% into the preview's entropy-coded region.
-    const corrupt_off: usize = @intCast(loc.offset + loc.length / 5);
+    // Corrupt the JPEG SOF (Start of Frame) segment which holds image
+    // dimensions/precision/components. Any bit flip here causes libjpeg
+    // to either reject the file outright (jpeg_read_header fails) or
+    // emit a fatal warning during decode. Previous strategy (single bit
+    // flip in entropy-coded scan data at offset+length/5) was unreliable
+    // — libjpeg-turbo's Huffman decoder silently recovers from many
+    // scan-data corruptions, producing visually-broken-but-no-warnings
+    // decodes. SOF corruption is deterministic-fail.
+    var sof_offset: ?usize = null;
+    {
+        var i: usize = @intCast(loc.offset + 2); // skip SOI
+        const preview_end: usize = @intCast(loc.offset + loc.length);
+        while (i + 4 < preview_end) {
+            if (orig_data[i] == 0xFF and (orig_data[i + 1] == 0xC0 or orig_data[i + 1] == 0xC1 or orig_data[i + 1] == 0xC2)) {
+                sof_offset = i + 5; // 2 marker + 2 length + 1 precision; corrupt the height MSB
+                break;
+            }
+            i += 1;
+        }
+    }
+    if (sof_offset == null) return error.TestExpectedPreviewNotFound;
+    const corrupt_off: usize = sof_offset.?;
     const mutated = try allocator.dupe(u8, orig_data);
     defer allocator.free(mutated);
     mutated[corrupt_off] ^= 0xFF;
