@@ -388,13 +388,6 @@ fn patternCallChains(
         "{s}.{s}{s}",
         .{ opts.runtime_ident, method_name, args_slice },
     );
-    const pattern_name = try std.fmt.allocPrint(
-        gpa,
-        "std.fs.cwd().{s}(...) → runtime.{s}(...)",
-        .{ method_name, method_name },
-    );
-    // Pattern_name is leaked per file but it's tiny; acceptable for a one-shot tool.
-    _ = pattern_name;
 
     try edits.append(gpa, .{
         .start = span.start,
