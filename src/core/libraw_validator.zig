@@ -22,8 +22,8 @@ pub const LibRawValidationResult = struct {
 
 /// Validate a camera RAW file by decoding it with LibRaw
 pub fn validateRawFile(path: []const u8) LibRawValidationResult {
+    var path_buf: [std.fs.max_path_bytes:0]u8 = undefined;
     // Create null-terminated path
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     if (path.len >= path_buf.len) {
         return .{ .valid = false, .error_message = "Path too long" };
     }

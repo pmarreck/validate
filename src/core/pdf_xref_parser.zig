@@ -4,6 +4,7 @@
 /// Provides O(M) object lookup where M = number of objects, vs O(N) linear scan.
 /// Supports incremental updates via /Prev chain.
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 const zlib = @import("zlib.zig");
 
@@ -537,7 +538,7 @@ fn parseXrefStream(allocator: Allocator, data: []const u8, offset: usize, table:
     if (entry_size == 0) return null;
 
     // Parse /Index array or default to [0 Size]
-    var subsections = std.ArrayListUnmanaged(struct { first: u32, count: u32 }){};
+    var subsections = std.ArrayListUnmanaged(struct { first: u32, count: u32 }).empty;
     defer subsections.deinit(allocator);
 
     if (index_array) |idx_data| {
@@ -1140,8 +1141,8 @@ test "ground truth PDFs parse xref successfully" {
     };
 
     for (test_files) |path| {
-        const file = std.fs.cwd().openFile(path, .{}) catch continue; // skip if not present
-        defer file.close();
+        const file = runtime.openFile(path, .{}) catch continue; // skip if not present
+        defer file.close(runtime.io());
 
         const file_size = file.getEndPos() catch continue;
         if (file_size > 100 * 1024 * 1024) continue; // skip very large files
@@ -1179,8 +1180,8 @@ test "xref path finds same images as linear scan" {
     };
 
     for (test_files) |path| {
-        const file = std.fs.cwd().openFile(path, .{}) catch continue;
-        defer file.close();
+        const file = runtime.openFile(path, .{}) catch continue;
+        defer file.close(runtime.io());
 
         const file_size = file.getEndPos() catch continue;
         if (file_size > 50 * 1024 * 1024) continue;

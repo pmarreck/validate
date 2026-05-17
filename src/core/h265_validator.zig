@@ -143,7 +143,7 @@ pub const NalHeader = struct {
         const nuh_layer_id: u6 = @intCast((@as(u9, header_bytes[0] & 1) << 5) | ((header_bytes[1] >> 3) & 0x1F));
         const nuh_temporal_id_plus1: u3 = @intCast(header_bytes[1] & 0x07);
 
-        const nal_unit_type = std.meta.intToEnum(NalUnitType, nal_type_val) catch return null;
+        const nal_unit_type = std.enums.fromInt(NalUnitType, nal_type_val) orelse return null;
 
         return .{
             .forbidden_zero_bit = forbidden_zero_bit,

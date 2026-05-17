@@ -86,7 +86,7 @@ const BitReader = struct {
 /// Decode LZW-compressed data.
 /// Returns allocated buffer that caller must free.
 pub fn decode(allocator: Allocator, input: []const u8) LzwDecodeError![]u8 {
-	var result: std.ArrayListUnmanaged(u8) = .{};
+	var result: std.ArrayListUnmanaged(u8) = .empty;
 	errdefer result.deinit(allocator);
 
 	// Initialize dictionary with single-byte entries (0-255)

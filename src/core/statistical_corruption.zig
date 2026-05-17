@@ -212,7 +212,7 @@ pub fn analyzePcmS16(
     const run_stats = scanConstantRuns(samples, sample_rate, min_run, &findings);
 
     // ---- B: AR(2) residual + bit-flip rescue (skip if synth-flat) ----
-    var outlier_sample_indices = std.ArrayListUnmanaged(u64){};
+    var outlier_sample_indices = std.ArrayListUnmanaged(u64).empty;
     defer outlier_sample_indices.deinit(arena);
     var diagnosed_count: u32 = 0;
     var generic_outlier_count: u32 = 0;

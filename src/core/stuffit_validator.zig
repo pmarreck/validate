@@ -17,6 +17,7 @@
 //! open-source implementations (The Unarchiver, libstuff, etc.).
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
@@ -811,11 +812,11 @@ test "entry headerCRC16: verify CRC computation on sample entry header" {
 
 test "validateSit ground truth: structural validation" {
     // Skip if ground truth file doesn't exist (CI without test fixtures)
-    const file = std.fs.cwd().openFile("ground_truth_examples/sit/sample.sit", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/sit/sample.sit", .{}) catch |err| {
         if (err == error.FileNotFound) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer file.close(runtime.io());
     var fs = FileSource.fromFile(file);
     const result = validateSit(&fs);
     try testing.expect(result.is_valid);
@@ -849,11 +850,11 @@ test "validateSit: corrupt magic rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const f = try tmp_dir.dir.createFile("bad.sit", .{});
-    defer f.close();
+    const f = try tmp_dir.dir.createFile(runtime.io(), "bad.sit", .{});
+    defer f.close(runtime.io());
     var bad = sample_sit_classic;
     bad[0] = 0xAA; // corrupt magic
-    try f.writeAll(&bad);
+    try f.writePositionalAll(runtime.io(), &bad, 0);
     try f.seekTo(0);
     var fs = FileSource.fromFile(f);
     const result = validateSit(&fs);
@@ -864,20 +865,20 @@ test "validateSitDeep: bad entry header CRC rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const f = try tmp_dir.dir.createFile("bad_crc.sit", .{});
-    defer f.close();
+    const f = try tmp_dir.dir.createFile(runtime.io(), "bad_crc.sit", .{});
+    defer f.close(runtime.io());
     var bad = sample_sit_classic;
     // Corrupt the headerCRC16 at offset 22+110 = 132
     bad[132] ^= 0xFF;
     bad[133] ^= 0xFF;
-    try f.writeAll(&bad);
+    try f.writePositionalAll(runtime.io(), &bad, 0);
 
     // We need to reopen as read-only for FileSource.fromFile
-    const rf = try tmp_dir.dir.openFile("bad_crc.sit", .{});
+    const rf = try tmp_dir.dir.openFile(runtime.io(), "bad_crc.sit", .{});
     defer rf.close();
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const abs_path = try tmp_dir.dir.realpath("bad_crc.sit", &path_buf);
+    const abs_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "bad_crc.sit");
+    defer std.testing.allocator.free(abs_path);
     var src = try FileSource.open(abs_path);
     defer src.close();
     const result = validateSitDeep(testing.allocator, &src);

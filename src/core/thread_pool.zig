@@ -22,6 +22,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
+const runtime = @import("runtime.zig");
 
 /// Generic thread pool for parallel task execution.
 /// TaskData: The input type for each task
@@ -76,8 +77,8 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         /// Ring-buffer FIFO queue. O(1) push and pop (amortised O(1) with
         /// grow), preserving submission order for frontloading strategy.
         const WorkQueue = struct {
-            mutex: std.Thread.Mutex = .{},
-            cond: std.Thread.Condition = .{},
+            mutex: std.Io.Mutex = .init,
+            cond: std.Io.Condition = .init,
             buf: []TaskData = &.{},
             head: usize = 0, // index of next item to dequeue
             len: usize = 0, // number of items currently in the queue
@@ -95,22 +96,22 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
             }
 
             pub fn push(self: *WorkQueue, item: TaskData) !void {
-                self.mutex.lock();
-                defer self.mutex.unlock();
+                self.mutex.lockUncancelable(runtime.io());
+                defer self.mutex.unlock(runtime.io());
                 if (self.len == self.buf.len) {
                     try self.growLocked();
                 }
                 const tail = (self.head + self.len) % self.buf.len;
                 self.buf[tail] = item;
                 self.len += 1;
-                self.cond.signal();
+                self.cond.signal(runtime.io());
             }
 
             pub fn pop(self: *WorkQueue) ?TaskData {
-                self.mutex.lock();
-                defer self.mutex.unlock();
+                self.mutex.lockUncancelable(runtime.io());
+                defer self.mutex.unlock(runtime.io());
                 while (self.len == 0 and !self.closed) {
-                    self.cond.wait(&self.mutex);
+                    self.cond.waitUncancelable(runtime.io(), &self.mutex);
                 }
                 if (self.len == 0) {
                     return null;
@@ -122,10 +123,10 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
             }
 
             pub fn close(self: *WorkQueue) void {
-                self.mutex.lock();
+                self.mutex.lockUncancelable(runtime.io());
                 self.closed = true;
-                self.mutex.unlock();
-                self.cond.broadcast();
+                self.mutex.unlock(runtime.io());
+                self.cond.broadcast(runtime.io());
             }
 
             /// Double buffer capacity (or allocate initial 16 slots).
@@ -157,9 +158,9 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         // ============ Result Queue (only when ResultData != void) ============
 
         const ResultQueue = if (has_results) struct {
-            mutex: std.Thread.Mutex = .{},
-            cond: std.Thread.Condition = .{},
-            items: std.ArrayListUnmanaged(ResultData) = .{},
+            mutex: std.Io.Mutex = .init,
+            cond: std.Io.Condition = .init,
+            items: std.ArrayListUnmanaged(ResultData) = .empty,
             closed: bool = false,
             alloc: Allocator,
 
@@ -172,17 +173,17 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
             }
 
             pub fn push(self: *@This(), item: ResultData) !void {
-                self.mutex.lock();
-                defer self.mutex.unlock();
+                self.mutex.lockUncancelable(runtime.io());
+                defer self.mutex.unlock(runtime.io());
                 try self.items.append(self.alloc, item);
-                self.cond.signal();
+                self.cond.signal(runtime.io());
             }
 
             pub fn pop(self: *@This()) ?ResultData {
-                self.mutex.lock();
-                defer self.mutex.unlock();
+                self.mutex.lockUncancelable(runtime.io());
+                defer self.mutex.unlock(runtime.io());
                 while (self.items.items.len == 0 and !self.closed) {
-                    self.cond.wait(&self.mutex);
+                    self.cond.waitUncancelable(runtime.io(), &self.mutex);
                 }
                 if (self.items.items.len == 0) {
                     return null;
@@ -191,10 +192,10 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
             }
 
             pub fn close(self: *@This()) void {
-                self.mutex.lock();
+                self.mutex.lockUncancelable(runtime.io());
                 self.closed = true;
-                self.mutex.unlock();
-                self.cond.broadcast();
+                self.mutex.unlock(runtime.io());
+                self.cond.broadcast(runtime.io());
             }
         } else void;
 
@@ -411,8 +412,9 @@ pub fn getOuterJobCount() usize {
 ///   2. Otherwise: 1/3 of CPUs (min 2), designed so outer + inner ≈ total CPUs.
 pub fn getInnerJobCount() usize {
     if (comptime @import("builtin").os.tag != .windows) {
-        if (std.posix.getenv("VALIDATE_INNER_JOBS")) |s| {
-            if (std.fmt.parseInt(usize, s, 10)) |n| {
+        if (std.c.getenv("VALIDATE_INNER_JOBS")) |s| {
+            const slice = std.mem.span(s);
+            if (std.fmt.parseInt(usize, slice, 10)) |n| {
                 if (n > 0) return n;
             } else |_| {}
         }
@@ -431,7 +433,7 @@ test "ThreadPool basic functionality" {
     const Pool = ThreadPool(Task, Result);
 
     var results_collected: usize = 0;
-    var results_mutex: std.Thread.Mutex = .{};
+    var results_mutex: std.Io.Mutex = .init;
 
     const Context = struct {
         results: *usize,
@@ -455,8 +457,8 @@ test "ThreadPool basic functionality" {
         struct {
             fn callback(_: Result, context: ?*anyopaque) void {
                 const c: *Context = @ptrCast(@alignCast(context));
-                c.mutex.lock();
-                defer c.mutex.unlock();
+                c.mutex.lockUncancelable(runtime.io());
+                defer c.mutex.unlock(runtime.io());
                 c.results.* += 1;
             }
         }.callback,

@@ -3,6 +3,7 @@
 //! multipart parsing and base64 attachment validation.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 const format_validation = @import("format_validation.zig");
 const errmsg = @import("error_messages.zig");
@@ -198,7 +199,7 @@ pub fn validateEml(file: *FileSource) ValidationResult {
     }
 
     // Get file content — zero-copy from mmap when available
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -582,7 +583,7 @@ pub fn validateMboxDeep(allocator: Allocator, source: *FileSource) ValidationRes
 
 /// Skip test if a ground truth file doesn't exist (e.g., samples in external repo).
 fn skipIfMissing(comptime path: []const u8) !void {
-    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+    runtime.access(path, .{}) catch return error.SkipZigTest;
 }
 
 test "validateEml with ground truth" {
@@ -609,15 +610,15 @@ test "validateMboxDeep with ground truth" {
 }
 
 test "validateEml with minimal valid email" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_minimal.eml", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
-        wf.writeAll("From: a@b.c\r\nTo: d@e.f\r\nSubject: test\r\n\r\nbody") catch return;
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
+        wf.writePositionalAll(runtime.io(), "From: a@b.c\r\nTo: d@e.f\r\nSubject: test\r\n\r\nbody", 0) catch return;
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var source = FileSource.open(path) catch return;
     defer source.close();
     const result = validateEml(&source);
@@ -625,15 +626,15 @@ test "validateEml with minimal valid email" {
 }
 
 test "validateMbox with minimal valid mbox" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_minimal.mbox", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
-        wf.writeAll("From sender@example.com Mon Jan  1 00:00:00 2024\r\nFrom: a@b.c\r\nTo: d@e.f\r\nSubject: test\r\n\r\nbody\r\n") catch return;
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
+        wf.writePositionalAll(runtime.io(), "From sender@example.com Mon Jan  1 00:00:00 2024\r\nFrom: a@b.c\r\nTo: d@e.f\r\nSubject: test\r\n\r\nbody\r\n", 0) catch return;
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var source = FileSource.open(path) catch return;
     defer source.close();
     const result = validateMbox(&source);
@@ -641,15 +642,15 @@ test "validateMbox with minimal valid mbox" {
 }
 
 test "validateEml with empty file" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_empty.eml", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
         // Write nothing — empty file
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var source = FileSource.open(path) catch return;
     defer source.close();
     const result = validateEml(&source);
@@ -657,15 +658,15 @@ test "validateEml with empty file" {
 }
 
 test "validateMbox with empty file" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_empty.mbox", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
         // Write nothing — empty file
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var source = FileSource.open(path) catch return;
     defer source.close();
     const result = validateMbox(&source);
@@ -711,12 +712,12 @@ test "FormatValidator accepts valid EML" {
         \\This is a test email body.
     ;
 
-    const file = try tmp_dir.dir.createFile("test.eml", .{});
-    try file.writeAll(eml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.eml", .{});
+    try file.writePositionalAll(runtime.io(), eml_content, 0);
+    file.close(runtime.io());
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp_dir.dir.realpath("test.eml", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.eml");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -752,12 +753,12 @@ test "FormatValidator accepts EML with valid PNG attachment" {
         png_base64 ++ "\r\n" ++
         "------=_Part_0--\r\n";
 
-    const file = try tmp_dir.dir.createFile("test_attachment.eml", .{});
-    try file.writeAll(eml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test_attachment.eml", .{});
+    try file.writePositionalAll(runtime.io(), eml_content, 0);
+    file.close(runtime.io());
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp_dir.dir.realpath("test_attachment.eml", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_attachment.eml");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -793,12 +794,12 @@ test "FormatValidator rejects EML with corrupted attachment" {
         corrupted_png_base64 ++ "\r\n" ++
         "------=_Part_0--\r\n";
 
-    const file = try tmp_dir.dir.createFile("test_corrupt.eml", .{});
-    try file.writeAll(eml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test_corrupt.eml", .{});
+    try file.writePositionalAll(runtime.io(), eml_content, 0);
+    file.close(runtime.io());
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp_dir.dir.realpath("test_corrupt.eml", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_corrupt.eml");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -829,12 +830,12 @@ test "FormatValidator accepts valid MBOX" {
         \\Second message body.
     ;
 
-    const file = try tmp_dir.dir.createFile("test.mbox", .{});
-    try file.writeAll(mbox_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.mbox", .{});
+    try file.writePositionalAll(runtime.io(), mbox_content, 0);
+    file.close(runtime.io());
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp_dir.dir.realpath("test.mbox", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.mbox");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 

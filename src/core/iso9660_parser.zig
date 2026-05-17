@@ -482,7 +482,7 @@ pub fn listDirectory(
     extent_size: u32,
     allocator: std.mem.Allocator,
 ) !DirectoryListing {
-    var files: std.ArrayListUnmanaged(FileEntry) = .{};
+    var files: std.ArrayListUnmanaged(FileEntry) = .empty;
     errdefer files.deinit(allocator);
 
     const dir_offset: usize = @as(usize, extent_location) * SECTOR_SIZE;

@@ -427,7 +427,7 @@ fn validateDirectoryEntries(
     const entries_per_sector = header.sector_size / 128; // Each directory entry is 128 bytes
 
     // Follow directory chain and collect sectors
-    var dir_sectors = std.ArrayListUnmanaged(u32){};
+    var dir_sectors = std.ArrayListUnmanaged(u32).empty;
     defer dir_sectors.deinit(allocator);
 
     var current = header.first_directory_sector;
@@ -678,7 +678,7 @@ fn findStreamEntry(
     const entries_per_sector = header.sector_size / 128;
 
     // Collect directory sectors
-    var dir_sectors = std.ArrayListUnmanaged(u32){};
+    var dir_sectors = std.ArrayListUnmanaged(u32).empty;
     defer dir_sectors.deinit(allocator);
 
     var current = header.first_directory_sector;
@@ -843,7 +843,7 @@ fn readMiniFat(
     }
 
     const entries_per_sector = header.sector_size / 4;
-    var mini_fat = std.ArrayListUnmanaged(u32){};
+    var mini_fat = std.ArrayListUnmanaged(u32).empty;
     defer mini_fat.deinit(allocator); // only on error path; we transfer ownership below
 
     var sector_buf = try allocator.alloc(u8, header.sector_size);

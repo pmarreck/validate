@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const format_validation = @import("format_validation.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -937,12 +938,12 @@ test "PEM structural: valid certificate" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("test.pem", .{}) catch unreachable;
-	tmp_file.writeAll(pem_content) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "test.pem", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), pem_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("test.pem", &real_path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.pem") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 	var source = FileSource.open(real_path) catch unreachable;
 	defer source.close();
 
@@ -960,13 +961,13 @@ test "PEM deep: ASN.1 structure valid" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("test.pem", .{}) catch unreachable;
-	tmp_file.writeAll(pem_content) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "test.pem", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), pem_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
 	// Get the real path for deep validation
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("test.pem", &path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.pem") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 
 	var source = FileSource.open(real_path) catch unreachable;
 	defer source.close();
@@ -982,12 +983,12 @@ test "DER structural: valid ASN.1 sequence" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("test.der", .{}) catch unreachable;
-	tmp_file.writeAll(&der_data) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "test.der", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), &der_data, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("test.der", &real_path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.der") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 	var source = FileSource.open(real_path) catch unreachable;
 	defer source.close();
 
@@ -1002,12 +1003,12 @@ test "PEM structural: invalid base64 rejected" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("bad.pem", .{}) catch unreachable;
-	tmp_file.writeAll(pem_content) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "bad.pem", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), pem_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("bad.pem", &real_path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "bad.pem") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 	var source = FileSource.open(real_path) catch unreachable;
 	defer source.close();
 
@@ -1025,12 +1026,12 @@ test "DER deep: recursive ASN.1 validation" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("nested.der", .{}) catch unreachable;
-	tmp_file.writeAll(&der_data) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "nested.der", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), &der_data, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("nested.der", &path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "nested.der") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 
 	var source_der = FileSource.open(real_path) catch unreachable;
 	defer source_der.close();
@@ -1046,12 +1047,12 @@ test "DER structural: rejects non-SEQUENCE" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("bad.der", .{}) catch unreachable;
-	tmp_file.writeAll(&der_data) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "bad.der", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), &der_data, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("bad.der", &real_path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "bad.der") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 	var source = FileSource.open(real_path) catch unreachable;
 	defer source.close();
 
@@ -1100,12 +1101,12 @@ test "PGP clearsigned: structural valid" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("test.asc", .{}) catch unreachable;
-	tmp_file.writeAll(pgp_content) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "test.asc", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), pgp_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("test.asc", &real_path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.asc") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 	var source = FileSource.open(real_path) catch unreachable;
 	defer source.close();
 
@@ -1129,12 +1130,12 @@ test "PGP clearsigned: missing Hash header fails structural" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("nohash.asc", .{}) catch unreachable;
-	tmp_file.writeAll(pgp_content) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "nohash.asc", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), pgp_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("nohash.asc", &real_path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "nohash.asc") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 	var source = FileSource.open(real_path) catch unreachable;
 	defer source.close();
 
@@ -1154,12 +1155,12 @@ test "PGP clearsigned: no signature block fails structural" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("nosig.asc", .{}) catch unreachable;
-	tmp_file.writeAll(pgp_content) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "nosig.asc", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), pgp_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("nosig.asc", &real_path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "nosig.asc") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 	var source = FileSource.open(real_path) catch unreachable;
 	defer source.close();
 
@@ -1174,10 +1175,7 @@ test "PGP clearsigned: ground truth deep validation" {
 	const path = "ground_truth_examples/pgp_signed/sample.asc";
 
 	// Use std.fs.cwd() to get the absolute path
-	var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const abs_path = std.fs.cwd().realpath(path, &abs_buf) catch {
-		return error.SkipZigTest;
-	};
+	const abs_path = path;
 
 	var source = FileSource.open(abs_path) catch return error.SkipZigTest;
 	defer source.close();
@@ -1207,12 +1205,12 @@ test "PGP clearsigned: bad CRC fails deep validation" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("badcrc.asc", .{}) catch unreachable;
-	tmp_file.writeAll(pgp_content) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "badcrc.asc", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), pgp_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("badcrc.asc", &path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "badcrc.asc") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 
 	var source2 = FileSource.open(real_path) catch unreachable;
 	defer source2.close();
@@ -1242,12 +1240,12 @@ test "SSH signature: structural valid" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("test.sig", .{}) catch unreachable;
-	tmp_file.writeAll(ssh_sig_content) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "test.sig", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), ssh_sig_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("test.sig", &real_path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.sig") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 	var source = FileSource.open(real_path) catch unreachable;
 	defer source.close();
 
@@ -1265,12 +1263,12 @@ test "SSH signature: no end marker fails structural" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("noend.sig", .{}) catch unreachable;
-	tmp_file.writeAll(ssh_sig_content) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "noend.sig", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), ssh_sig_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("noend.sig", &real_path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "noend.sig") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 	var source = FileSource.open(real_path) catch unreachable;
 	defer source.close();
 
@@ -1283,10 +1281,7 @@ test "SSH signature: ground truth deep validation" {
 	const allocator = std.testing.allocator;
 	const path = "ground_truth_examples/ssh_signature/sample.sig";
 
-	var abs_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const abs_path = std.fs.cwd().realpath(path, &abs_buf) catch {
-		return error.SkipZigTest;
-	};
+	const abs_path = path;
 
 	var source = FileSource.open(abs_path) catch return error.SkipZigTest;
 	defer source.close();
@@ -1312,12 +1307,12 @@ test "SSH signature: bad inner magic fails deep validation" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const tmp_file = tmp_dir.dir.createFile("badmagic.sig", .{}) catch unreachable;
-	tmp_file.writeAll(bad_content) catch unreachable;
-	tmp_file.close();
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "badmagic.sig", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), bad_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = tmp_dir.dir.realpath("badmagic.sig", &path_buf) catch unreachable;
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "badmagic.sig") catch unreachable;
+	defer std.testing.allocator.free(real_path);
 
 	var source2 = FileSource.open(real_path) catch unreachable;
 	defer source2.close();

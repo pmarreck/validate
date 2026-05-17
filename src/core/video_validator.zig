@@ -25,6 +25,7 @@
 //! Thread safety: Pure-Zig validators are thread-safe with no global state.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const errmsg = @import("error_messages.zig");
 const file_source = @import("file_source.zig");
@@ -50,12 +51,13 @@ pub fn isFfprobeAvailable() bool {
     return false;
 }
 
-/// Cross-platform getenv that returns null on Windows (where std.posix.getenv is unavailable).
-fn getenvCrossPlatform(comptime name: []const u8) ?[:0]const u8 {
+/// Cross-platform getenv that returns null on Windows (where std.c.getenv is unavailable).
+fn getenvCrossPlatform(comptime name: [:0]const u8) ?[:0]const u8 {
     if (comptime builtin.os.tag == .windows) {
         return null;
     }
-    return std.posix.getenv(name);
+    const result = std.c.getenv(name.ptr) orelse return null;
+    return std.mem.span(result);
 }
 
 // Import EBML/Matroska parser
@@ -415,7 +417,7 @@ pub fn validateMp4Video(allocator: Allocator, source: *FileSource, max_frames: u
     }
 
     // Build combined bitstream: codec private + keyframe samples
-    var bitstream: std.ArrayListUnmanaged(u8) = .{};
+    var bitstream: std.ArrayListUnmanaged(u8) = .empty;
     defer bitstream.deinit(allocator);
 
     const max_bitstream_bytes: usize = 256 * 1024 * 1024; // 256MB safety cap
@@ -618,7 +620,7 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
     }
 
     // Build combined bitstream: codec private + keyframe samples
-    var bitstream: std.ArrayListUnmanaged(u8) = .{};
+    var bitstream: std.ArrayListUnmanaged(u8) = .empty;
     defer bitstream.deinit(allocator);
 
     // Extract codec_private and convert to Annex B format
@@ -665,29 +667,21 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
                 if (getenvCrossPlatform("MKV_BYTE_DEBUG")) |env| {
                     if (isTruthy(env)) {
                         const codec_private_len: usize = if (video_track.codec_private) |codec_private| codec_private.len else 0;
-                        var frame_dump: ?std.fs.File = null;
+                        var frame_dump: ?std.Io.File = null;
                         if (getenvCrossPlatform("MKV_BYTE_DEBUG_FRAME_OUT")) |dump_path| {
                             if (dump_path.len > 0) {
-                                if (std.fs.path.isAbsolute(dump_path)) {
-                                    if (std.fs.createFileAbsolute(dump_path, .{})) |dump_file| {
-                                        frame_dump = dump_file;
-                                    } else |_| {}
-                                } else {
-                                    if (std.fs.cwd().createFile(dump_path, .{})) |dump_file| {
-                                        frame_dump = dump_file;
-                                    } else |_| {}
-                                }
+                                // 0.16: Io.Dir.cwd().createFile handles both absolute and relative paths.
+                                if (runtime.createFile(dump_path, .{})) |dump_file| {
+                                    frame_dump = dump_file;
+                                } else |_| {}
                             }
                         }
-                        defer if (frame_dump) |dump_file| dump_file.close();
+                        defer if (frame_dump) |dump_file| dump_file.close(runtime.io());
                         if (getenvCrossPlatform("MKV_BYTE_DEBUG_OUT")) |out_path| {
                             if (out_path.len > 0) {
-                                const out_file_result = if (std.fs.path.isAbsolute(out_path))
-                                    std.fs.createFileAbsolute(out_path, .{})
-                                else
-                                    std.fs.cwd().createFile(out_path, .{});
+                                const out_file_result = runtime.createFile(out_path, .{});
                                 if (out_file_result) |out_file| {
-                                    defer out_file.close();
+                                    defer out_file.close(runtime.io());
                                     writeMkvDebugHeader(out_file, video_codec, nal_length_size, codec_private_len);
                                     parser.debugFirstInvalidFrame(
                                         video_track.track_number,
@@ -698,35 +692,35 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
                                         frame_dump,
                                     );
                                 } else |_| {
-                                    writeMkvDebugHeader(std.fs.File.stderr(), video_codec, nal_length_size, codec_private_len);
+                                    writeMkvDebugHeader(std.Io.File.stderr(), video_codec, nal_length_size, codec_private_len);
                                     parser.debugFirstInvalidFrame(
                                         video_track.track_number,
                                         @intCast(max_frames),
                                         @ptrCast(&ctx),
                                         validateMkvFrameBytes,
-                                        std.fs.File.stderr(),
+                                        std.Io.File.stderr(),
                                         frame_dump,
                                     );
                                 }
                             } else {
-                                writeMkvDebugHeader(std.fs.File.stderr(), video_codec, nal_length_size, codec_private_len);
+                                writeMkvDebugHeader(std.Io.File.stderr(), video_codec, nal_length_size, codec_private_len);
                                 parser.debugFirstInvalidFrame(
                                     video_track.track_number,
                                     @intCast(max_frames),
                                     @ptrCast(&ctx),
                                     validateMkvFrameBytes,
-                                    std.fs.File.stderr(),
+                                    std.Io.File.stderr(),
                                     frame_dump,
                                 );
                             }
                         } else {
-                            writeMkvDebugHeader(std.fs.File.stderr(), video_codec, nal_length_size, codec_private_len);
+                            writeMkvDebugHeader(std.Io.File.stderr(), video_codec, nal_length_size, codec_private_len);
                             parser.debugFirstInvalidFrame(
                                 video_track.track_number,
                                 @intCast(max_frames),
                                 @ptrCast(&ctx),
                                 validateMkvFrameBytes,
-                                std.fs.File.stderr(),
+                                std.Io.File.stderr(),
                                 frame_dump,
                             );
                         }
@@ -781,7 +775,7 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
     // For MPEG-1/2, collect keyframes and validate the stream
     if (video_codec == .mpeg1 or video_codec == .mpeg2) {
         // MPEG-1/2 in MKV already has start codes
-        var mpeg_stream: std.ArrayListUnmanaged(u8) = .{};
+        var mpeg_stream: std.ArrayListUnmanaged(u8) = .empty;
         defer mpeg_stream.deinit(allocator);
 
         for (all_frames) |f| {
@@ -830,7 +824,7 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
             return VideoValidationResult.invalid("Invalid Theora codec_private Xiph lacing", .theora);
         };
 
-        var packet_list: std.ArrayListUnmanaged([]const u8) = .{};
+        var packet_list: std.ArrayListUnmanaged([]const u8) = .empty;
         defer packet_list.deinit(allocator);
         packet_list.ensureTotalCapacity(allocator, 3 + all_frames.len) catch {
             return VideoValidationResult.invalid("Allocation failure (Theora)", .theora);
@@ -1309,7 +1303,7 @@ fn validateMpeg12FromAvi(allocator: Allocator, file: *FileSource, avi_info: AviS
     const movi_end = avi_info.movi_offset + avi_info.movi_size;
 
     // Collect video data into a buffer for MPEG stream validation
-    var video_data: std.ArrayListUnmanaged(u8) = .{};
+    var video_data: std.ArrayListUnmanaged(u8) = .empty;
     defer video_data.deinit(allocator);
 
     var frames_collected: u32 = 0;
@@ -1383,7 +1377,7 @@ fn validateH264FromAvi(allocator: Allocator, file: *FileSource, avi_info: AviStr
     const movi_end = avi_info.movi_offset + avi_info.movi_size;
 
     // Collect video data - H.264 in AVI is usually already Annex B format
-    var video_data: std.ArrayListUnmanaged(u8) = .{};
+    var video_data: std.ArrayListUnmanaged(u8) = .empty;
     defer video_data.deinit(allocator);
 
     var frames_collected: u32 = 0;
@@ -1470,7 +1464,7 @@ fn validateMpeg4P2FromAvi(allocator: Allocator, file: *FileSource, avi_info: Avi
     const movi_end = avi_info.movi_offset + avi_info.movi_size;
 
     // Collect video data - MPEG-4 Part 2 uses start codes like MPEG-1/2
-    var video_data: std.ArrayListUnmanaged(u8) = .{};
+    var video_data: std.ArrayListUnmanaged(u8) = .empty;
     defer video_data.deinit(allocator);
 
     var frames_collected: u32 = 0;
@@ -1837,14 +1831,14 @@ fn isTruthy(value: []const u8) bool {
 		std.ascii.eqlIgnoreCase(value, "yes") or std.ascii.eqlIgnoreCase(value, "on");
 }
 
-fn writeMkvDebugHeader(writer: std.fs.File, codec: VideoCodec, nal_length_size: u8, codec_private_len: usize) void {
+fn writeMkvDebugHeader(writer: std.Io.File, codec: VideoCodec, nal_length_size: u8, codec_private_len: usize) void {
 	var buf: [256]u8 = undefined;
 	const msg = std.fmt.bufPrint(
 		&buf,
 		"MKV debug context: codec={s} nal_length_size={} codec_private_len={}\n",
 		.{ @tagName(codec), nal_length_size, codec_private_len },
 	) catch return;
-	_ = writer.writeAll(msg) catch {};
+	writer.writePositionalAll(runtime.io(), msg, 0) catch {};
 }
 
 fn validateLengthPrefixedNals(sample_data: []const u8, nal_length_size: u8) bool {
@@ -2317,7 +2311,7 @@ pub fn convertToAnnexB(allocator: Allocator, sample_data: []const u8, nal_length
     if (sample_data.len == 0) return null;
 
     // Estimate output size (start codes are 4 bytes vs length prefix)
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output: std.ArrayListUnmanaged(u8) = .empty;
     errdefer output.deinit(allocator);
 
     var pos: usize = 0;
@@ -2473,7 +2467,7 @@ fn parseAvcC(allocator: Allocator, file: *FileSource, box_offset: u64, box_size:
     const nal_length_size: u8 = (header[4] & 0x03) + 1;
     const num_sps = header[5] & 0x1F;
 
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output: std.ArrayListUnmanaged(u8) = .empty;
     errdefer output.deinit(allocator);
 
     // Read SPS units
@@ -2549,7 +2543,7 @@ fn parseHvcC(allocator: Allocator, file: *FileSource, box_offset: u64, box_size:
     const nal_length_size: u8 = (header[21] & 0x03) + 1;
     const num_arrays = header[22];
 
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output: std.ArrayListUnmanaged(u8) = .empty;
     errdefer output.deinit(allocator);
 
     for (0..num_arrays) |_| {
@@ -2616,7 +2610,7 @@ fn parseMkvAvcC(allocator: Allocator, data: []const u8) ?CodecPrivateData {
     const nal_length_size: u8 = (data[4] & 0x03) + 1;
     const num_sps = data[5] & 0x1F;
 
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output: std.ArrayListUnmanaged(u8) = .empty;
     errdefer output.deinit(allocator);
 
     var pos: usize = 6;
@@ -2666,7 +2660,7 @@ fn parseMkvHvcC(allocator: Allocator, data: []const u8) ?CodecPrivateData {
     const nal_length_size: u8 = (data[21] & 0x03) + 1;
     const num_arrays = data[22];
 
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output: std.ArrayListUnmanaged(u8) = .empty;
     errdefer output.deinit(allocator);
 
     var pos: usize = 23;
@@ -2901,7 +2895,7 @@ fn validateMpeg12FromMp4(allocator: Allocator, file: *FileSource, stbl: Mp4Box, 
     defer allocator.free(frame_buffer);
 
     // Collect all sync samples (keyframes) into a buffer for validation
-    var bitstream: std.ArrayListUnmanaged(u8) = .{};
+    var bitstream: std.ArrayListUnmanaged(u8) = .empty;
     defer bitstream.deinit(allocator);
 
     var keyframes_extracted: u32 = 0;
@@ -2983,7 +2977,7 @@ fn validateMpeg4P2FromMp4(allocator: Allocator, file: *FileSource, stbl: Mp4Box,
     defer allocator.free(frame_buffer);
 
     // Collect samples into a buffer for validation
-    var bitstream: std.ArrayListUnmanaged(u8) = .{};
+    var bitstream: std.ArrayListUnmanaged(u8) = .empty;
     defer bitstream.deinit(allocator);
 
     // Try to extract decoder config from esds box (contains VOL header)
@@ -3562,7 +3556,7 @@ test "getSampleLocation: performance with movie-sized sample table" {
     };
 
     // Time lookups for all samples (or a representative subset)
-    const start = std.time.nanoTimestamp();
+    const start = runtime.nanoTimestamp();
 
     // Look up every 100th sample to keep test fast but representative
     var lookups: u32 = 0;
@@ -3573,7 +3567,7 @@ test "getSampleLocation: performance with movie-sized sample table" {
         lookups += 1;
     }
 
-    const elapsed = std.time.nanoTimestamp() - start;
+    const elapsed = runtime.nanoTimestamp() - start;
     const elapsed_ms = @as(f64, @floatFromInt(elapsed)) / 1_000_000.0;
 
     // With optimized O(stsc_entries), this should complete in <100ms

@@ -580,7 +580,7 @@ pub fn listUdfDirectory(
     dir_lbn: u32,
     allocator: std.mem.Allocator,
 ) !UdfDirectoryListing {
-    var files: std.ArrayListUnmanaged(UdfFileEntry) = .{};
+    var files: std.ArrayListUnmanaged(UdfFileEntry) = .empty;
     errdefer files.deinit(allocator);
 
     // Calculate absolute offset

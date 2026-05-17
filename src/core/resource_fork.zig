@@ -5,6 +5,7 @@
 //! On other platforms, AppleDouble files (._filename) are used.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const fs = std.fs;
@@ -105,7 +106,7 @@ pub fn hasNativeResourceFork(path: []const u8) bool {
         fs.openFileAbsolute(rsrc_path, .{}) catch return false
     else
         fs.cwd().openFile(rsrc_path, .{}) catch return false;
-    defer file.close();
+    defer file.close(runtime.io());
 
     const stat = file.stat() catch return false;
     return stat.size > 0;
@@ -120,7 +121,7 @@ pub fn hasAppleDoubleFile(path: []const u8) bool {
         fs.openFileAbsolute(ad_path, .{}) catch return false
     else
         fs.cwd().openFile(ad_path, .{}) catch return false;
-    defer file.close();
+    defer file.close(runtime.io());
 
     // Verify it's actually an AppleDouble file
     var magic_buf: [4]u8 = undefined;
@@ -193,7 +194,7 @@ pub fn getResourceForkInfo(path: []const u8) ?ResourceForkInfo {
         fs.openFileAbsolute(ad_path, .{}) catch return null
     else
         fs.cwd().openFile(ad_path, .{}) catch return null;
-    defer file.close();
+    defer file.close(runtime.io());
 
     // Read header (26 bytes)
     var header: [26]u8 = undefined;
@@ -241,7 +242,7 @@ fn getAppleDoubleResourceForkSize(ad_path: []const u8) !u64 {
         try fs.openFileAbsolute(ad_path, .{})
     else
         try fs.cwd().openFile(ad_path, .{});
-    defer file.close();
+    defer file.close(runtime.io());
 
     // Read header
     var header: [26]u8 = undefined;
@@ -290,7 +291,7 @@ fn readNativeResourceFork(allocator: Allocator, path: []const u8) !?ResourceFork
         fs.openFileAbsolute(rsrc_path, .{}) catch return null
     else
         fs.cwd().openFile(rsrc_path, .{}) catch return null;
-    defer file.close();
+    defer file.close(runtime.io());
 
     const stat = file.stat() catch return null;
     if (stat.size == 0) return null;
@@ -321,7 +322,7 @@ pub fn readAppleDoubleResourceFork(allocator: Allocator, path: []const u8) !?Res
         fs.openFileAbsolute(ad_path, .{}) catch return null
     else
         fs.cwd().openFile(ad_path, .{}) catch return null;
-    defer file.close();
+    defer file.close(runtime.io());
 
     const stat = file.stat() catch return null;
 
@@ -412,9 +413,9 @@ fn writeNativeResourceFork(path: []const u8, data: []const u8) !void {
         try fs.createFileAbsolute(rsrc_path, .{})
     else
         try fs.cwd().createFile(rsrc_path, .{});
-    defer file.close();
+    defer file.close(runtime.io());
 
-    try file.writeAll(data);
+    try file.writePositionalAll(runtime.io(), data, 0);
 }
 
 /// Create an AppleDouble file with resource fork data
@@ -455,9 +456,9 @@ pub fn writeAppleDoubleFile(allocator: Allocator, path: []const u8, resource_for
         try fs.createFileAbsolute(ad_path, .{})
     else
         try fs.cwd().createFile(ad_path, .{});
-    defer file.close();
+    defer file.close(runtime.io());
 
-    try file.writeAll(buffer.items);
+    try file.writePositionalAll(runtime.io(), buffer.items, 0);
 }
 
 /// Write resource fork data to the appropriate location based on source
@@ -526,11 +527,11 @@ test "writeAppleDoubleFile and readAppleDoubleResourceFork roundtrip" {
     defer tmp.cleanup();
 
     // Create a test file
-    const test_file = try tmp.dir.createFile("testfile.txt", .{});
-    test_file.close();
+    const test_file = try tmp.dir.createFile(runtime.io(), "testfile.txt", .{});
+    test_file.close(runtime.io());
 
     // Get absolute path
-    const abs_path = try tmp.dir.realpathAlloc(allocator, "testfile.txt");
+    const abs_path = try runtime.tmpRealpathAlloc(&tmp, allocator, "testfile.txt");
     defer allocator.free(abs_path);
 
     // Write resource fork data via AppleDouble
@@ -558,11 +559,11 @@ test "getResourceForkInfo detects AppleDouble resource fork" {
     defer tmp.cleanup();
 
     // Create a test file
-    const test_file = try tmp.dir.createFile("testfile.txt", .{});
-    test_file.close();
+    const test_file = try tmp.dir.createFile(runtime.io(), "testfile.txt", .{});
+    test_file.close(runtime.io());
 
     // Get absolute path
-    const abs_path = try tmp.dir.realpathAlloc(allocator, "testfile.txt");
+    const abs_path = try runtime.tmpRealpathAlloc(&tmp, allocator, "testfile.txt");
     defer allocator.free(abs_path);
 
     // Initially no resource fork

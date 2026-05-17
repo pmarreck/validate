@@ -2,6 +2,7 @@
 //! Covers MP4/MOV, MKV/WebM, AVI, SWF, FLV, MPEG-PS/TS/ES, and IVF.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
@@ -728,17 +729,17 @@ pub fn validateFlvDeep(allocator: Allocator, source: *FileSource) ValidationResu
     var offset: u64 = data_offset;
 
     // H.264 collection
-    var h264_annexb: std.ArrayListUnmanaged(u8) = .{};
+    var h264_annexb: std.ArrayListUnmanaged(u8) = .empty;
     defer h264_annexb.deinit(allocator);
     var nal_length_size: u8 = 4;
     var has_h264 = false;
 
     // AAC collection
-    var aac_data: std.ArrayListUnmanaged(u8) = .{};
+    var aac_data: std.ArrayListUnmanaged(u8) = .empty;
     defer aac_data.deinit(allocator);
-    var aac_sizes: std.ArrayListUnmanaged(u32) = .{};
+    var aac_sizes: std.ArrayListUnmanaged(u32) = .empty;
     defer aac_sizes.deinit(allocator);
-    var aac_config: std.ArrayListUnmanaged(u8) = .{};
+    var aac_config: std.ArrayListUnmanaged(u8) = .empty;
     defer aac_config.deinit(allocator);
     var has_aac = false;
 
@@ -2325,11 +2326,11 @@ test "FormatValidator accepts valid MP4" {
         'm',  'o',  'o',  'v',
     };
 
-    const file = try tmp_dir.dir.createFile("valid.mp4", .{});
-    try file.writeAll(&valid_mp4);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.mp4", .{});
+    try file.writePositionalAll(runtime.io(), &valid_mp4, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.mp4");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.mp4");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2363,11 +2364,11 @@ test "FormatValidator accepts valid HEIC" {
         'm',  'e',  't',  'a',
     };
 
-    const file = try tmp_dir.dir.createFile("valid.heic", .{});
-    try file.writeAll(&valid_heic);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.heic", .{});
+    try file.writePositionalAll(runtime.io(), &valid_heic, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.heic");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.heic");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2386,13 +2387,13 @@ test "FormatValidator deep validates real HEIC from ground truth" {
     // the large image has many grid tiles that cause stack overflow on systems
     // with restricted stack limits (e.g., Garnix CI with ~8 MB stack limit).
     // The smaller image still exercises the full decode path but with fewer tiles.
-    const file = std.fs.cwd().openFile("ground_truth_examples/heic/autumn_1440x960.heic", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/heic/autumn_1440x960.heic", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    file.close(runtime.io());
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/heic/autumn_1440x960.heic") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/heic/autumn_1440x960.heic") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -2412,13 +2413,13 @@ test "FormatValidator deep validates real AVIF from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth AVIF file (from link-u/avif-sample-images, CC-BY-SA 4.0)
-    const file = std.fs.cwd().openFile("ground_truth_examples/avif/fox.avif", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/avif/fox.avif", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    file.close(runtime.io());
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/avif/fox.avif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/avif/fox.avif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -2446,11 +2447,11 @@ test "FormatValidator rejects truncated MP4" {
         // Truncated
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.mp4", .{});
-    try file.writeAll(&truncated_mp4);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.mp4", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_mp4, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.mp4");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.mp4");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2482,11 +2483,11 @@ test "FormatValidator accepts valid MKV" {
         0x81, 0x02, // size, value
     };
 
-    const file = try tmp_dir.dir.createFile("valid.mkv", .{});
-    try file.writeAll(&valid_mkv);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.mkv", .{});
+    try file.writePositionalAll(runtime.io(), &valid_mkv, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.mkv");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.mkv");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2517,11 +2518,11 @@ test "FormatValidator accepts valid WebM" {
         0x42, 0x87, 0x81, 0x02, // DocTypeVersion
     };
 
-    const file = try tmp_dir.dir.createFile("valid.webm", .{});
-    try file.writeAll(&valid_webm);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.webm", .{});
+    try file.writePositionalAll(runtime.io(), &valid_webm, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.webm");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.webm");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2554,11 +2555,11 @@ test "FormatValidator accepts valid AVI" {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // avih data
     };
 
-    const file = try tmp_dir.dir.createFile("valid.avi", .{});
-    try file.writeAll(&valid_avi);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.avi", .{});
+    try file.writePositionalAll(runtime.io(), &valid_avi, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.avi");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.avi");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2588,11 +2589,11 @@ test "FormatValidator rejects truncated AVI" {
         // Truncated
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.avi", .{});
-    try file.writeAll(&truncated_avi);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.avi", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_avi, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.avi");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.avi");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2636,8 +2637,8 @@ test "validateAvi rejects corrupted avih dimensions" {
     defer tmp.cleanup();
 
     // Valid first
-    tmp.dir.writeFile(.{ .sub_path = "good.avi", .data = &avi }) catch return;
-    const good_path = tmp.dir.realpathAlloc(std.testing.allocator, "good.avi") catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "good.avi", .data = &avi }) catch return;
+    const good_path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "good.avi") catch return;
     defer std.testing.allocator.free(good_path);
     var good_src = FileSource.open(good_path) catch return;
     defer good_src.close();
@@ -2647,8 +2648,8 @@ test "validateAvi rejects corrupted avih dimensions" {
     // Corrupt width to 0
     var bad = avi;
     std.mem.writeInt(u32, bad[64..68], 0, .little);
-    tmp.dir.writeFile(.{ .sub_path = "bad_w.avi", .data = &bad }) catch return;
-    const bad_path = tmp.dir.realpathAlloc(std.testing.allocator, "bad_w.avi") catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_w.avi", .data = &bad }) catch return;
+    const bad_path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_w.avi") catch return;
     defer std.testing.allocator.free(bad_path);
     var bad_src = FileSource.open(bad_path) catch return;
     defer bad_src.close();
@@ -2673,11 +2674,11 @@ test "FormatValidator accepts valid uncompressed SWF (FWS)" {
         0x01, 0x00, // Frame count (1 frame)
     };
 
-    const file = try tmp_dir.dir.createFile("valid.swf", .{});
-    try file.writeAll(&valid_swf);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.swf", .{});
+    try file.writePositionalAll(runtime.io(), &valid_swf, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.swf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.swf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2709,11 +2710,11 @@ test "FormatValidator detects compressed SWF (CWS)" {
         0x00, 0x00, // Some compressed data
     };
 
-    const file = try tmp_dir.dir.createFile("compressed.swf", .{});
-    try file.writeAll(&cws_swf);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "compressed.swf", .{});
+    try file.writePositionalAll(runtime.io(), &cws_swf, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "compressed.swf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "compressed.swf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2739,11 +2740,11 @@ test "FormatValidator rejects invalid SWF signature" {
         0x00, 0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("invalid.swf", .{});
-    try file.writeAll(&invalid_swf);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.swf", .{});
+    try file.writePositionalAll(runtime.io(), &invalid_swf, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.swf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.swf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2783,11 +2784,11 @@ test "FormatValidator accepts valid FLV" {
         0x00, 0x00, 0x00, 0x00, // First previous tag size is always 0
     };
 
-    const file = try tmp_dir.dir.createFile("valid.flv", .{});
-    try file.writeAll(&valid_flv);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.flv", .{});
+    try file.writePositionalAll(runtime.io(), &valid_flv, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.flv");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.flv");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2818,11 +2819,11 @@ test "FormatValidator rejects FLV with invalid flags" {
         0x09,
     };
 
-    const file = try tmp_dir.dir.createFile("invalid_flags.flv", .{});
-    try file.writeAll(&invalid_flv);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid_flags.flv", .{});
+    try file.writePositionalAll(runtime.io(), &invalid_flv, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid_flags.flv");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid_flags.flv");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2858,13 +2859,13 @@ test "FormatValidator deep validates ProRes Proxy MOV from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth ProRes 422 Proxy (apco) file
-    const file = std.fs.cwd().openFile("ground_truth_examples/prores/sample.mov", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/prores/sample.mov", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    file.close(runtime.io());
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/prores/sample.mov") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/prores/sample.mov") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -2880,13 +2881,13 @@ test "FormatValidator deep validates ProRes HQ MOV from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth ProRes 422 HQ (apch) file
-    const file = std.fs.cwd().openFile("ground_truth_examples/prores/sample_hq.mov", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/prores/sample_hq.mov", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    file.close(runtime.io());
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/prores/sample_hq.mov") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/prores/sample_hq.mov") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();

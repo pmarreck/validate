@@ -61,13 +61,14 @@ const builtin = @import("builtin");
 const errmsg = @import("error_messages.zig");
 const codec_utils = @import("codec_utils.zig");
 
-/// Cross-platform getenv that returns null on Windows (where std.posix.getenv is unavailable).
+/// Cross-platform getenv that returns null on Windows (where std.c.getenv is unavailable).
 /// On POSIX systems, returns the environment variable value or null if not set.
-pub fn getenvCrossPlatform(comptime name: []const u8) ?[:0]const u8 {
+pub fn getenvCrossPlatform(comptime name: [:0]const u8) ?[:0]const u8 {
     if (comptime builtin.os.tag == .windows) {
         return null;
     }
-    return std.posix.getenv(name);
+    const result = std.c.getenv(name.ptr) orelse return null;
+    return std.mem.span(result);
 }
 
 // Import SQLite3 for deep database validation
@@ -1999,9 +2000,8 @@ fn detectExtendedFormat(header: []const u8, file: std.Io.File) FileFormat {
 /// Detect TIFF subformat (DNG, NEF, ARW, or plain TIFF).
 fn detectTiffSubformat(file: std.Io.File, is_le: bool) FileFormat {
     // Read more of the file to check for RAW markers
-    file.seekTo(0) catch return .tiff;
     var buffer: [1024]u8 = undefined;
-    const bytes_read = file.read(&buffer) catch return .tiff;
+    const bytes_read = file.readPositional(runtime.io(), &.{&buffer}, 0) catch return .tiff;
 
     // DNG: Look for DNGVersion tag (0xC612)
     if (findTiffTag(&buffer, bytes_read, 0xC612, is_le)) {
@@ -2070,9 +2070,8 @@ fn findTiffTag(buffer: []const u8, len: usize, tag_id: u16, is_le: bool) bool {
 
 /// Detect Matroska subformat (MKV vs WebM).
 fn detectMatroskaSubformat(file: std.Io.File) FileFormat {
-    file.seekTo(0) catch return .mkv;
     var buffer: [4096]u8 = undefined;
-    const bytes_read = file.read(&buffer) catch return .mkv;
+    const bytes_read = file.readPositional(runtime.io(), &.{&buffer}, 0) catch return .mkv;
 
     // Look for WebM DocType
     if (findInBuffer(&buffer, bytes_read, "webm")) {
@@ -2670,10 +2669,8 @@ fn findMimeContentEnd(file: std.Io.File, content_start: usize, file_size: u64) !
     const search_size: u64 = 4096;
     const search_start = if (file_size > search_size) file_size - search_size else 0;
 
-    try file.seekTo(search_start);
-
     var buffer: [4096]u8 = undefined;
-    const read_bytes = try file.read(&buffer);
+    const read_bytes = try file.readPositional(runtime.io(), &.{&buffer}, search_start);
 
     // Look for MIME boundary end marker (boundary followed by --)
     // The content ends just before the \r\n preceding the closing boundary
@@ -4677,11 +4674,11 @@ fn debugLog(comptime fmt: []const u8, args: anytype) void {
     const file = runtime.createFile(log_path, .{
         .truncate = false,
     }) catch return;
-    defer file.close();
-    file.seekFromEnd(0) catch return;
+    defer file.close(runtime.io());
+    const end = file.length(runtime.io()) catch return;
     var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    _ = file.write(msg) catch return;
+    file.writePositionalAll(runtime.io(), msg, end) catch return;
 }
 
 
@@ -4986,7 +4983,7 @@ fn validateWoff2(allocator: Allocator, file: std.Io.File) ValidationResult {
 /// Validate Type1 (PFB/PFA) font.
 fn validateType1Font(allocator: Allocator, file: std.Io.File) ValidationResult {
     // Get file size
-    const stat = file.stat() catch {
+    const stat = file.stat(runtime.io()) catch {
         return ValidationResult.invalidCode(.type1, .failed_to_stat, "font file");
     };
 
@@ -5001,16 +4998,12 @@ fn validateType1Font(allocator: Allocator, file: std.Io.File) ValidationResult {
     }
 
     // Read entire file for validation - use heap allocation to avoid stack overflow
-    file.seekTo(0) catch {
-        return ValidationResult.invalidCode(.type1, .failed_to_seek, "to start");
-    };
-
     const data = allocator.alloc(u8, @intCast(stat.size)) catch {
         return ValidationResult.invalidCode(.type1, .failed_to_allocate, "memory");
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = file.readPositionalAll(runtime.io(), data, 0) catch {
         return ValidationResult.invalidCode(.type1, .failed_to_read, "font file");
     };
 
@@ -5030,7 +5023,7 @@ fn validateType1Font(allocator: Allocator, file: std.Io.File) ValidationResult {
 /// Common font validation implementation.
 fn validateFontFile(allocator: Allocator, file: std.Io.File, format: FileFormat) ValidationResult {
     // Get file size
-    const stat = file.stat() catch {
+    const stat = file.stat(runtime.io()) catch {
         return ValidationResult.invalidCode(format, .failed_to_stat, "font file");
     };
 
@@ -5045,16 +5038,12 @@ fn validateFontFile(allocator: Allocator, file: std.Io.File, format: FileFormat)
     }
 
     // Read entire file for validation - use heap allocation to avoid stack overflow
-    file.seekTo(0) catch {
-        return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
-    };
-
     const data = allocator.alloc(u8, @intCast(stat.size)) catch {
         return ValidationResult.invalidCode(format, .failed_to_allocate, "memory");
     };
     defer allocator.free(data);
 
-    const bytes_read = file.readAll(data) catch {
+    const bytes_read = file.readPositionalAll(runtime.io(), data, 0) catch {
         return ValidationResult.invalidCode(format, .failed_to_read, "font file");
     };
 
@@ -5092,11 +5081,7 @@ fn validateUnknownWithUtf8Fallback(file: std.Io.File) ValidationResult {
     const sample_size: usize = 8192;
     var buffer: [sample_size]u8 = undefined;
 
-    file.seekTo(0) catch {
-        return ValidationResult.ok(.unknown);
-    };
-
-    const bytes_read = file.read(&buffer) catch {
+    const bytes_read = file.readPositional(runtime.io(), &.{&buffer}, 0) catch {
         return ValidationResult.ok(.unknown);
     };
 
@@ -5341,7 +5326,7 @@ pub const FormatValidator = struct {
         const file = runtime.openFile(path, .{}) catch {
             return ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
         };
-        defer file.close();
+        defer file.close(runtime.io());
 
         var result = self.validateFileHandle(file);
 
@@ -5391,7 +5376,7 @@ pub const FormatValidator = struct {
                     result = ValidationResult.ok(ext_format);
                     return result;
                 };
-                defer reopen_file.close();
+                defer reopen_file.close(runtime.io());
                 var ext_source = file_source.FileSource.fromFile(reopen_file);
                 var ext_buf: [16]u8 = undefined;
                 const ext_lower = lowercaseExtension(path, &ext_buf);
@@ -5411,7 +5396,7 @@ pub const FormatValidator = struct {
                         result = ValidationResult.ok(ext_format);
                         return result;
                     };
-                    defer reopen_ext.close();
+                    defer reopen_ext.close(runtime.io());
                     var reopen_ext_src = FileSource.fromFile(reopen_ext);
                     const reopen_ext_ptr = &reopen_ext_src;
                     result = switch (ext_format) {
@@ -5505,10 +5490,10 @@ pub const FormatValidator = struct {
                 const reopen_file = runtime.openFile(path, .{}) catch {
                     return result;
                 };
-                defer reopen_file.close();
+                defer reopen_file.close(runtime.io());
 
                 // Get file size to read tail for formats with end signatures (PDF, JPEG, GIF)
-                const file_size = reopen_file.getEndPos() catch {
+                const file_size = reopen_file.length(runtime.io()) catch {
                     return result;
                 };
 
@@ -5517,7 +5502,7 @@ pub const FormatValidator = struct {
                     return result;
                 };
                 defer (self.allocator orelse heap.validateAllocator()).free(buffer);
-                const bytes_read = reopen_file.read(buffer) catch {
+                const bytes_read = reopen_file.readPositional(runtime.io(), &.{buffer}, 0) catch {
                     return result;
                 };
 
@@ -5539,10 +5524,7 @@ pub const FormatValidator = struct {
                         // Read last 4KB from end of file
                         var tail_buffer: [4096]u8 = undefined;
                         const tail_offset = file_size - @min(file_size, 4096);
-                        reopen_file.seekTo(tail_offset) catch {
-                            return result;
-                        };
-                        const tail_read = reopen_file.read(&tail_buffer) catch {
+                        const tail_read = reopen_file.readPositional(runtime.io(), &.{&tail_buffer}, tail_offset) catch {
                             return result;
                         };
 
@@ -5556,10 +5538,7 @@ pub const FormatValidator = struct {
                 if (secondary_format != .unknown) {
                     // Secondary signatures confirm the format despite corrupted magic bytes.
                     // Now run structural validation with skip_magic=true to check the rest.
-                    reopen_file.seekTo(0) catch {
-                        return result;
-                    };
-
+                    // (0.16: positional reads in FileSource don't depend on a cursor; no seekTo needed.)
                     var reopen_file_src = file_source.FileSource.fromFile(reopen_file);
                     const reopen_file_ptr = &reopen_file_src;
                     const skip_magic_result: ?ValidationResult = switch (secondary_format) {
@@ -5628,7 +5607,7 @@ pub const FormatValidator = struct {
                     result.format = ext_format;
                     return result;
                 };
-                defer reopen_file.close();
+                defer reopen_file.close(runtime.io());
                 var text_src = file_source.FileSource.fromFile(reopen_file);
                 const text_src_ptr = &text_src;
 
@@ -5710,7 +5689,7 @@ pub const FormatValidator = struct {
             // Studio One .song files must contain metainfo.xml — check before promoting
             const song_file = runtime.openFile(path, .{}) catch null;
             if (song_file) |sf| {
-                defer sf.close();
+                defer sf.close(runtime.io());
                 var song_src = FileSource.fromFile(sf);
                 var song_buf: [16384]u8 = undefined;
                 const song_bytes = song_src.read(&song_buf) catch 0;
@@ -5949,13 +5928,13 @@ pub const FormatValidator = struct {
     fn validateMimeWrappedDeep(allocator: Allocator, path: []const u8, format: FileFormat) ?ValidationResult {
         // Open the original file
         const file = runtime.openFile(path, .{}) catch return null;
-        defer file.close();
+        defer file.close(runtime.io());
 
-        const file_size = file.getEndPos() catch return null;
+        const file_size = file.length(runtime.io()) catch return null;
 
         // Read header to find content offset
         var header: [1088]u8 = undefined;
-        const header_bytes = file.read(&header) catch return null;
+        const header_bytes = file.readPositional(runtime.io(), &.{&header}, 0) catch return null;
         if (header_bytes < 50) return null;
 
         const mime_result = detectMimeWrapper(header[0..header_bytes]);
@@ -5975,9 +5954,8 @@ pub const FormatValidator = struct {
         const content = allocator.alloc(u8, @intCast(content_size)) catch return null;
         defer allocator.free(content);
 
-        // Read the embedded content
-        file.seekTo(content_start) catch return null;
-        const read_bytes = file.readAll(content) catch return null;
+        // Read the embedded content via positional read (no internal cursor in 0.16)
+        const read_bytes = file.readPositionalAll(runtime.io(), content, content_start) catch return null;
         if (read_bytes != content_size) return null;
 
         // Run buffer-based deep validation directly in memory
@@ -6480,8 +6458,8 @@ pub const FormatValidator = struct {
     /// Deep validation for macOS application bundles (.app).
     /// Validates bundle structure: Contents/Info.plist (modern) or Info.plist at root (legacy flat bundle).
     fn validateMacosAppDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         _ = allocator;
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
         // Check for modern structure: Contents/Info.plist + Contents/MacOS/
         const info_plist_path = std.fmt.bufPrint(&path_buf, "{s}/Contents/Info.plist", .{path}) catch {
@@ -6516,8 +6494,8 @@ pub const FormatValidator = struct {
     /// Deep validation for macOS framework bundles (.framework).
     /// Validates bundle structure: must have Headers or Versions directory.
     fn validateMacosFrameworkDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         _ = allocator;
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
         // Frameworks can have either flat structure (Headers/ directly) or versioned (Versions/Current/)
         // Check for Versions directory first (more common)
@@ -6554,8 +6532,8 @@ pub const FormatValidator = struct {
     /// Deep validation for macOS bundles (.bundle).
     /// Validates bundle structure: Contents/Info.plist should exist.
     fn validateMacosBundleDeep(allocator: Allocator, path: []const u8) ValidationResult {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         _ = allocator;
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
         // Check for Contents/Info.plist (standard bundle structure)
         const info_plist_path = std.fmt.bufPrint(&path_buf, "{s}/Contents/Info.plist", .{path}) catch {
@@ -6582,8 +6560,8 @@ pub const FormatValidator = struct {
     /// GarageBand bundles contain projectData (older) or Alternatives/000/ProjectData (newer),
     /// with optional mmetadata.plist and Media/ directory.
     fn validateGarageBandBundle(allocator: Allocator, path: []const u8) ValidationResult {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         _ = allocator;
-        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
         // Check for newer structure: Alternatives/ directory (GarageBand 10+)
         const alternatives_path = std.fmt.bufPrint(&path_buf, "{s}/Alternatives", .{path}) catch {
@@ -6606,10 +6584,10 @@ pub const FormatValidator = struct {
             const pd_file = runtime.openFile(project_data_path, .{}) catch {
                 return ValidationResult.invalidCodeWithDepth(.band, .failed_to_open, "projectData", .structural);
             };
-            defer pd_file.close();
+            defer pd_file.close(runtime.io());
 
             var magic: [8]u8 = undefined;
-            const n = pd_file.read(&magic) catch 0;
+            const n = pd_file.readPositional(runtime.io(), &.{&magic}, 0) catch 0;
             if (n >= 8) {
                 const is_bplist = std.mem.eql(u8, magic[0..8], "bplist00");
                 const is_xml = std.mem.eql(u8, magic[0..5], "<?xml");
@@ -6635,7 +6613,7 @@ pub const FormatValidator = struct {
         // - tar archives (ustar magic at offset 257)
         // - MOD files (signature at offset 1080)
         var header: [1088]u8 = undefined;
-        const header_bytes = file.read(&header) catch {
+        const header_bytes = file.readPositional(runtime.io(), &.{&header}, 0) catch {
             return ValidationResult.invalidCode(.unknown, .failed_to_read, "file header");
         };
 
@@ -6677,7 +6655,7 @@ pub const FormatValidator = struct {
                 // For MIME-wrapped files, we need to extract and validate the embedded content
                 // because file-based validators use absolute seeks which won't work with the offset.
                 // Read the file into memory and use buffer-based validation.
-                const file_size = file.getEndPos() catch {
+                const file_size = file.length(runtime.io()) catch {
                     return ValidationResult.invalidCode(format, .failed_to_get, "file size");
                 };
 
@@ -6692,9 +6670,7 @@ pub const FormatValidator = struct {
 
                 // Find the end of embedded content (before closing MIME boundary)
                 // Read enough to find the closing boundary
-                file.seekTo(0) catch {
-                    return ValidationResult.invalidCode(format, .failed_to_seek, "to start of file");
-                };
+                // 0.16: positional reads make seekTo(0) unnecessary; the read below passes an explicit offset.
 
                 // Use stack buffer for small files, otherwise skip deep validation
                 const content_end = findMimeContentEnd(file, mime_content_offset, file_size) catch file_size;
@@ -6712,11 +6688,7 @@ pub const FormatValidator = struct {
                 }
 
                 // For structural validation, use the buffer-based validator
-                file.seekTo(mime_content_offset) catch {
-                    return ValidationResult.invalidCode(format, .failed_to_seek, "to embedded content");
-                };
-
-                // Read embedded content into heap buffer if small enough
+                // Read embedded content into heap buffer if small enough (positional read uses explicit offset)
                 const embedded_buffer = (self.allocator orelse heap.validateAllocator()).alloc(u8, 65536) catch {
                     var result = ValidationResult.ok(format);
                     result.malformations.insert(.mime_wrapped_content);
@@ -6725,7 +6697,7 @@ pub const FormatValidator = struct {
                 };
                 defer (self.allocator orelse heap.validateAllocator()).free(embedded_buffer);
                 if (embedded_size <= embedded_buffer.len) {
-                    const read_bytes = file.read(embedded_buffer[0..@intCast(embedded_size)]) catch {
+                    const read_bytes = file.readPositional(runtime.io(), &.{embedded_buffer[0..@intCast(embedded_size)]}, mime_content_offset) catch {
                         return ValidationResult.invalidCode(format, .failed_to_read, "embedded content");
                     };
                     const buffer_result = validateDataBufferFormat(embedded_buffer[0..read_bytes], format);
@@ -6742,35 +6714,23 @@ pub const FormatValidator = struct {
             }
         }
 
-        // Reset file position
-        file.seekTo(0) catch {
-            return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
-        };
+        // 0.16: positional reads everywhere — no seekTo(0) needed before format detection helpers below.
 
         // For ZIP files, try to detect subformat
         if (format == .zip) {
             var zip_source = FileSource.fromFile(file);
             format = detectZipSubformat(&zip_source);
-            file.seekTo(0) catch {
-                return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
-            };
         }
 
         // For Matroska, detect MKV vs WebM
         if (format == .mkv) {
             format = detectMatroskaSubformat(file);
-            file.seekTo(0) catch {
-                return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
-            };
         }
 
         // For OLE2, try to detect DOC vs XLS vs PPT
         if (format == .doc) {
             var ole2_source = file_source.FileSource.fromFile(file);
             format = document_validators.detectOle2Subformat(&ole2_source);
-            file.seekTo(0) catch {
-                return ValidationResult.invalidCode(format, .failed_to_seek, "to start");
-            };
         }
 
         // If format has no validator, return as valid
@@ -6946,7 +6906,7 @@ pub const FormatValidator = struct {
             .ds_store => apple_validators.validateDsStore(file_src_ptr),
             .spotlight => apple_validators.validateSpotlight(file_src_ptr),
             .apple_double => apple_validators.validateAppleDouble(file_src_ptr),
-            .apple_media_db => validateAppleMediaDbStructural(header[0..header_bytes], file.getEndPos() catch 0),
+            .apple_media_db => validateAppleMediaDbStructural(header[0..header_bytes], file.length(runtime.io()) catch 0),
             // New audio formats
             .amr => music_validators.validateAmr(file_src_ptr),
             .au => music_validators.validateAu(file_src_ptr),
@@ -7181,13 +7141,13 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
 /// Validate Erlang/Elixir BEAM bytecode files.
 /// Deep-validates compressed chunks (LitT zlib, Dbgi ETF-compressed) to catch bitrot.
 fn validateBeam(allocator: Allocator, file: std.Io.File) ValidationResult {
-    const stat = file.stat() catch {
+    const stat = file.stat(runtime.io()) catch {
         return ValidationResult.invalidCode(.beam, .failed_to_stat, "file");
     };
     if (stat.size < 12) return ValidationResult.invalidCode(.beam, .file_too_small, "BEAM format");
 
     var header: [12]u8 = undefined;
-    const bytes_read = file.readAll(&header) catch {
+    const bytes_read = file.readPositional(runtime.io(), &.{&header}, 0) catch {
         return ValidationResult.invalidCode(.beam, .failed_to_read, "header");
     };
     if (bytes_read < 12) return ValidationResult.invalidCode(.beam, .truncated, "header");
@@ -7209,8 +7169,7 @@ fn validateBeam(allocator: Allocator, file: std.Io.File) ValidationResult {
 
     while (offset + 8 <= chunk_area_end) {
         var chunk_header_buf: [8]u8 = undefined;
-        file.seekTo(offset) catch return ValidationResult.invalidCode(.beam, .failed_to_seek, "to chunk");
-        const chunk_bytes = file.readAll(&chunk_header_buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "chunk header");
+        const chunk_bytes = file.readPositional(runtime.io(), &.{&chunk_header_buf}, offset) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "chunk header");
         if (chunk_bytes < 8) break;
 
         const chunk_name = chunk_header_buf[0..4];
@@ -7235,7 +7194,7 @@ fn validateBeam(allocator: Allocator, file: std.Io.File) ValidationResult {
         if (std.mem.eql(u8, chunk_name, "ImpT") or std.mem.eql(u8, chunk_name, "ExpT") or std.mem.eql(u8, chunk_name, "LocT")) {
             if (chunk_size >= 4) {
                 var count_buf: [4]u8 = undefined;
-                const count_read = file.readAll(&count_buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "ImpT/ExpT/LocT count");
+                const count_read = file.readPositional(runtime.io(), &.{&count_buf}, offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "ImpT/ExpT/LocT count");
                 if (count_read != 4) return ValidationResult.invalidCode(.beam, .truncated, "ImpT/ExpT/LocT count");
                 const entry_count_val = std.mem.readInt(u32, &count_buf, .big);
                 // ImpT entries are 3 u32s (12 bytes), ExpT/LocT entries are 3 u32s (12 bytes)
@@ -7250,8 +7209,7 @@ fn validateBeam(allocator: Allocator, file: std.Io.File) ValidationResult {
         // For Code chunk: validate header fields
         if (std.mem.eql(u8, chunk_name, "Code") and chunk_size >= 16) {
             var code_hdr: [16]u8 = undefined;
-            file.seekTo(offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_seek, "to Code chunk body");
-            const code_read = file.readAll(&code_hdr) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "Code chunk header");
+            const code_read = file.readPositional(runtime.io(), &.{&code_hdr}, offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "Code chunk header");
             if (code_read != 16) return ValidationResult.invalidCode(.beam, .truncated, "Code chunk header");
             const sub_size = std.mem.readInt(u32, code_hdr[0..4], .big);
             const instruction_set = std.mem.readInt(u32, code_hdr[4..8], .big);
@@ -7270,16 +7228,15 @@ fn validateBeam(allocator: Allocator, file: std.Io.File) ValidationResult {
             const compressed_size = chunk_size - 4; // first 4 bytes = uncompressed size
             if (compressed_size > 0) {
                 // Read uncompressed size to validate it
-                file.seekTo(offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_seek, "to LitT chunk body");
                 var uncomp_size_buf: [4]u8 = undefined;
-                const us_read = file.readAll(&uncomp_size_buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "LitT uncompressed-size header");
+                const us_read = file.readPositional(runtime.io(), &.{&uncomp_size_buf}, offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "LitT uncompressed-size header");
                 if (us_read != 4) return ValidationResult.invalidCode(.beam, .truncated, "LitT uncompressed-size header");
                 const uncomp_size = std.mem.readInt(u32, &uncomp_size_buf, .big);
                 // If uncompressed size > 0, data should be zlib-compressed
                 if (uncomp_size > 0 and compressed_size >= 2) {
                     const buf = allocator.alloc(u8, compressed_size) catch return ValidationResult.invalidCode(.beam, .out_of_memory, "LitT compressed buffer");
                     defer allocator.free(buf);
-                    const rd = file.readAll(buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "LitT compressed payload");
+                    const rd = file.readPositional(runtime.io(), &.{buf}, offset + 8 + 4) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "LitT compressed payload");
                     if (rd != compressed_size) return ValidationResult.invalidCode(.beam, .truncated, "LitT compressed payload");
                     // Check for zlib header (0x78xx)
                     if (buf[0] == 0x78) {
@@ -7297,9 +7254,8 @@ fn validateBeam(allocator: Allocator, file: std.Io.File) ValidationResult {
         if ((std.mem.eql(u8, chunk_name, "Dbgi") or std.mem.eql(u8, chunk_name, "Docs") or
             std.mem.eql(u8, chunk_name, "Attr") or std.mem.eql(u8, chunk_name, "CInf")) and chunk_size > 6)
         {
-            file.seekTo(offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_seek, "to ETF chunk body");
             var etf_hdr: [6]u8 = undefined;
-            const etf_read = file.readAll(&etf_hdr) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "ETF chunk header");
+            const etf_read = file.readPositional(runtime.io(), &.{&etf_hdr}, offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "ETF chunk header");
             if (etf_read != 6) return ValidationResult.invalidCode(.beam, .truncated, "ETF chunk header");
             // 0x83 0x50 == ETF compressed marker; absence is a valid (uncompressed-ETF) branch, not a skip.
             if (etf_hdr[0] == 0x83 and etf_hdr[1] == 0x50) {
@@ -7308,7 +7264,7 @@ fn validateBeam(allocator: Allocator, file: std.Io.File) ValidationResult {
                 if (zlib_size >= 2) {
                     const buf = allocator.alloc(u8, zlib_size) catch return ValidationResult.invalidCode(.beam, .out_of_memory, "ETF compressed buffer");
                     defer allocator.free(buf);
-                    const rd = file.readAll(buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "ETF compressed payload");
+                    const rd = file.readPositional(runtime.io(), &.{buf}, offset + 8 + 6) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "ETF compressed payload");
                     if (rd != zlib_size) return ValidationResult.invalidCode(.beam, .truncated, "ETF compressed payload");
                     if (buf[0] == 0x78) {
                         _ = zlib.inflateStreamValidate(buf, 64 * 1024 * 1024, false) catch {
@@ -7321,9 +7277,8 @@ fn validateBeam(allocator: Allocator, file: std.Io.File) ValidationResult {
 
         // For FunT chunk: validate entry count × entry size (each entry is 6 u32s = 24 bytes)
         if (std.mem.eql(u8, chunk_name, "FunT") and chunk_size >= 4) {
-            file.seekTo(offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_seek, "to FunT chunk body");
             var funt_count_buf: [4]u8 = undefined;
-            const funt_read = file.readAll(&funt_count_buf) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "FunT count");
+            const funt_read = file.readPositional(runtime.io(), &.{&funt_count_buf}, offset + 8) catch return ValidationResult.invalidCode(.beam, .failed_to_read, "FunT count");
             if (funt_read != 4) return ValidationResult.invalidCode(.beam, .truncated, "FunT count");
             const fun_count = std.mem.readInt(u32, &funt_count_buf, .big);
             const expected_size = 4 + fun_count * 24;
@@ -7648,9 +7603,9 @@ test "FormatValidator deep validates real OLE2 XLS from ground truth" {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    file.close(runtime.io());
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/ole2/sample.xls") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/ole2/sample.xls") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7672,9 +7627,9 @@ test "FormatValidator deep validates real OLE2 PPT from ground truth" {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    file.close(runtime.io());
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/ole2/sample.ppt") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/ole2/sample.ppt") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7700,11 +7655,11 @@ test "FormatValidator rejects invalid EBML" {
         0x8B, 0x42, 0x82,
     };
 
-    const file = try tmp_dir.dir.createFile("invalid.mkv", .{});
-    try file.writeAll(&invalid_mkv);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.mkv", .{});
+    try file.writePositionalAll(runtime.io(), &invalid_mkv, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.mkv");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.mkv");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7757,11 +7712,11 @@ test "FormatValidator accepts valid OLE2 DOC" {
     ole2_header[0x20] = 0x06;
     ole2_header[0x21] = 0x00;
 
-    const file = try tmp_dir.dir.createFile("valid.doc", .{});
-    try file.writeAll(&ole2_header);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.doc", .{});
+    try file.writePositionalAll(runtime.io(), &ole2_header, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.doc");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.doc");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7798,11 +7753,11 @@ test "FormatValidator rejects invalid OLE2" {
     bad_ole2[0x1A] = 0x00;
     bad_ole2[0x1B] = 0x00;
 
-    const file = try tmp_dir.dir.createFile("invalid.doc", .{});
-    try file.writeAll(&bad_ole2);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.doc", .{});
+    try file.writePositionalAll(runtime.io(), &bad_ole2, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.doc");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.doc");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7824,11 +7779,11 @@ test "FormatValidator detects Windows Thumbs.db as thumbs_db not doc" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("Thumbs.db", .{});
-    try file.writeAll(fixture);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "Thumbs.db", .{});
+    try file.writePositionalAll(runtime.io(), fixture, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "Thumbs.db");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "Thumbs.db");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7882,11 +7837,11 @@ test "FormatValidator accepts valid SQLite" {
     // Leaf payload fraction (32)
     sqlite_header[23] = 32;
 
-    const file = try tmp_dir.dir.createFile("valid.sqlite", .{});
-    try file.writeAll(&sqlite_header);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.sqlite", .{});
+    try file.writePositionalAll(runtime.io(), &sqlite_header, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.sqlite");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.sqlite");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7922,11 +7877,11 @@ test "FormatValidator rejects invalid SQLite page size" {
     bad_sqlite[22] = 32;
     bad_sqlite[23] = 32;
 
-    const file = try tmp_dir.dir.createFile("invalid.sqlite", .{});
-    try file.writeAll(&bad_sqlite);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.sqlite", .{});
+    try file.writePositionalAll(runtime.io(), &bad_sqlite, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.sqlite");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.sqlite");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7971,11 +7926,11 @@ test "FormatValidator accepts valid WordPerfect" {
     // File type (0x0A = WPD document)
     wpd_header[9] = 0x0A;
 
-    const file = try tmp_dir.dir.createFile("valid.wpd", .{});
-    try file.writeAll(&wpd_header);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.wpd", .{});
+    try file.writePositionalAll(runtime.io(), &wpd_header, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.wpd");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.wpd");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -8007,11 +7962,11 @@ test "FormatValidator rejects invalid WordPerfect" {
     bad_wpd[8] = 0x00; // product type 0 (invalid)
     bad_wpd[9] = 0x0A; // file type
 
-    const file = try tmp_dir.dir.createFile("invalid.wpd", .{});
-    try file.writeAll(&bad_wpd);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.wpd", .{});
+    try file.writePositionalAll(runtime.io(), &bad_wpd, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.wpd");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.wpd");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -8031,7 +7986,7 @@ test "FormatValidator deep validation detects SQLite integrity" {
 
     // Create a valid SQLite database using the sqlite3 library
     const db_name = "test_deep.sqlite";
-    const file = try tmp_dir.dir.createFile(db_name, .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), db_name, .{});
 
     // Write minimal valid SQLite header
     var header: [100]u8 = undefined;
@@ -8046,10 +8001,10 @@ test "FormatValidator deep validation detects SQLite integrity" {
     header[22] = 32; // Min payload fraction
     header[23] = 32; // Leaf payload fraction
 
-    try file.writeAll(&header);
-    file.close();
+    try file.writePositionalAll(runtime.io(), &header, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, db_name);
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, db_name);
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -8160,11 +8115,11 @@ test "FormatValidator accepts valid STEP" {
         \\END-ISO-10303-21;
     ;
 
-    const file = try tmp_dir.dir.createFile("test.stp", .{});
-    try file.writeAll(step_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.stp", .{});
+    try file.writePositionalAll(runtime.io(), step_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.stp");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.stp");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -8267,12 +8222,12 @@ test "validatePngFromBuffer matches validatePng file result" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("test.png", .{});
-    try file.writeAll(&valid_png);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.png", .{});
+    try file.writePositionalAll(runtime.io(), &valid_png, 0);
+    file.close(runtime.io());
 
     // Validate via file
-    const reopen = try tmp_dir.dir.openFile("test.png", .{});
+    const reopen = try tmp_dir.dir.openFile(runtime.io(), "test.png", .{});
     defer reopen.close();
     var test_src = file_source.FileSource.fromFile(reopen);
     const file_result = image_validators.validatePng(&test_src);
@@ -8309,12 +8264,12 @@ test "FormatValidator with allocator uses buffer-based validation" {
         0xAE, 0x42, 0x60, 0x82, // IEND CRC
     };
 
-    var file = try tmp_dir.dir.createFile("test.png", .{});
-    try file.writeAll(&valid_png);
-    file.close();
+    var file = try tmp_dir.dir.createFile(runtime.io(), "test.png", .{});
+    try file.writePositionalAll(runtime.io(), &valid_png, 0);
+    file.close(runtime.io());
 
     // Validate via file handle - should use buffer-based validation internally
-    const reopen = try tmp_dir.dir.openFile("test.png", .{});
+    const reopen = try tmp_dir.dir.openFile(runtime.io(), "test.png", .{});
     defer reopen.close();
     const result = validator.validateFileHandle(reopen);
 
@@ -8376,14 +8331,15 @@ test "detectBundleType identifies macOS .app bundles" {
     // Create a real .app bundle directory structure
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.makePath("MyApp.app/Contents") catch return error.SkipZigTest;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("MyApp.app", &pb) catch return error.SkipZigTest;
+    tmp.dir.createDirPath(runtime.io(), "MyApp.app/Contents") catch return error.SkipZigTest;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "MyApp.app") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(rp);
     try std.testing.expectEqual(BundleType.macos_app, detectBundleType(rp));
 
     // .app file without Contents/ should NOT be detected as macOS bundle (e.g., Erlang .app)
-    tmp.dir.writeFile(.{ .sub_path = "erlang.app", .data = "{application,test,[]}.\n" }) catch return error.SkipZigTest;
-    const rp2 = tmp.dir.realpath("erlang.app", &pb) catch return error.SkipZigTest;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "erlang.app", .data = "{application,test,[]}.\n" }) catch return error.SkipZigTest;
+    const rp2 = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "erlang.app") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(rp2);
     try std.testing.expectEqual(BundleType.none, detectBundleType(rp2));
 
     // NOT an .app bundle (just has .app in the name)
@@ -8428,8 +8384,8 @@ test "validateFile returns error for unknown directory type" {
     defer tmp_dir.cleanup();
 
     // Get the path to the temp directory
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const tmp_path = tmp_dir.dir.realpath(".", &path_buf) catch return;
+    const tmp_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, ".") catch return;
+    defer std.testing.allocator.free(tmp_path);
 
     // Validate the directory (which is not a bundle)
     var validator = FormatValidator.init();
@@ -8467,25 +8423,25 @@ test "validateFileDeep routes git directories to git validator" {
     defer tmp_dir.cleanup();
 
     // Get the full path
-    const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+    const tmp_path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, ".");
     defer allocator.free(tmp_path);
 
     // Create a minimal .git directory structure that git_validator can validate
     // This is the minimum structure needed for a valid git repository
-    try tmp_dir.dir.makePath(".git/objects/pack");
-    try tmp_dir.dir.makePath(".git/objects/info");
-    try tmp_dir.dir.makePath(".git/refs/heads");
-    try tmp_dir.dir.makePath(".git/refs/tags");
+    try tmp_dir.dir.createDirPath(runtime.io(), ".git/objects/pack");
+    try tmp_dir.dir.createDirPath(runtime.io(), ".git/objects/info");
+    try tmp_dir.dir.createDirPath(runtime.io(), ".git/refs/heads");
+    try tmp_dir.dir.createDirPath(runtime.io(), ".git/refs/tags");
 
     // Create HEAD file pointing to master
-    const head_file = try tmp_dir.dir.createFile(".git/HEAD", .{});
-    try head_file.writeAll("ref: refs/heads/master\n");
-    head_file.close();
+    const head_file = try tmp_dir.dir.createFile(runtime.io(), ".git/HEAD", .{});
+    try head_file.writePositionalAll(runtime.io(), "ref: refs/heads/master\n", 0);
+    head_file.close(runtime.io());
 
     // Create config file
-    const config_file = try tmp_dir.dir.createFile(".git/config", .{});
-    try config_file.writeAll("[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n");
-    config_file.close();
+    const config_file = try tmp_dir.dir.createFile(runtime.io(), ".git/config", .{});
+    try config_file.writePositionalAll(runtime.io(), "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n", 0);
+    config_file.close(runtime.io());
 
     // Build path to .git directory
     const git_path = try std.fs.path.join(allocator, &.{ tmp_path, ".git" });
@@ -8527,14 +8483,14 @@ test "git_repository: real ground truth sample validates at full depth" {
         );
         child.spawn() catch return error.SkipZigTest;
         const term = child.wait() catch return error.SkipZigTest;
-        if (term.Exited != 0) return error.SkipZigTest;
+        if (term.exited != 0) return error.SkipZigTest;
     };
 
     // Build path to .git inside the extracted sample
     const git_path = "ground_truth_examples/git_repository/sample/.git";
     runtime.access(git_path, .{}) catch return error.SkipZigTest;
 
-    const full_path = try std.fs.cwd().realpathAlloc(allocator, git_path);
+    const full_path = try allocator.dupe(u8, git_path);
     defer allocator.free(full_path);
 
     var validator = FormatValidator.initDeep();
@@ -8550,9 +8506,9 @@ test "false positive: RECORD file should NOT be detected as INI" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const content = "anyio/METADATA,sha256=abc123,4277\nanyio/RECORD,,\n";
-    tmp.dir.writeFile(.{ .sub_path = "RECORD", .data = content }) catch return error.SkipZigTest;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("RECORD", &pb) catch return error.SkipZigTest;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "RECORD", .data = content }) catch return error.SkipZigTest;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "RECORD") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(rp);
     var validator = FormatValidator.init();
     const result = validator.validateFile(rp);
     // Should NOT be classified as INI
@@ -8563,9 +8519,9 @@ test "false positive: TypeScript .d.ts should NOT be detected as MPEG-TS" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const content = "export declare function create(): void;\nexport interface Options { timeout: number; }\n";
-    tmp.dir.writeFile(.{ .sub_path = "types.d.ts", .data = content }) catch return error.SkipZigTest;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("types.d.ts", &pb) catch return error.SkipZigTest;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "types.d.ts", .data = content }) catch return error.SkipZigTest;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "types.d.ts") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(rp);
     var validator = FormatValidator.init();
     const result = validator.validateFile(rp);
     // Should NOT be MPEG-TS, should not be invalid
@@ -8577,9 +8533,9 @@ test "false positive: Erlang .app should NOT be detected as macOS app bundle" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const content = "{application,myapp,[{applications,[kernel,stdlib]},{mod,{myapp_app,[]}}]}.\n";
-    tmp.dir.writeFile(.{ .sub_path = "myapp.app", .data = content }) catch return error.SkipZigTest;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("myapp.app", &pb) catch return error.SkipZigTest;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "myapp.app", .data = content }) catch return error.SkipZigTest;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "myapp.app") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(rp);
     var validator = FormatValidator.init();
     const result = validator.validateFile(rp);
     // Should be erlang_term, NOT macos_app
@@ -8591,9 +8547,9 @@ test "tiny/empty files should be UNKNOWN, not INVALID" {
     defer tmp.cleanup();
 
     // Empty file
-    tmp.dir.writeFile(.{ .sub_path = "empty.dat", .data = "" }) catch return error.SkipZigTest;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("empty.dat", &pb) catch return error.SkipZigTest;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "empty.dat", .data = "" }) catch return error.SkipZigTest;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "empty.dat") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(rp);
     var validator = FormatValidator.init();
     const result = validator.validateFile(rp);
     // Empty files are unidentifiable, not corrupt
@@ -8601,8 +8557,9 @@ test "tiny/empty files should be UNKNOWN, not INVALID" {
     try std.testing.expect(result.is_valid); // NOT invalid
 
     // 1-byte file
-    tmp.dir.writeFile(.{ .sub_path = "tiny.dat", .data = "x" }) catch return error.SkipZigTest;
-    const rp2 = tmp.dir.realpath("tiny.dat", &pb) catch return error.SkipZigTest;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "tiny.dat", .data = "x" }) catch return error.SkipZigTest;
+    const rp2 = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "tiny.dat") catch return error.SkipZigTest;
+    defer std.testing.allocator.free(rp2);
     const result2 = validator.validateFile(rp2);
     try std.testing.expectEqual(FileFormat.unknown, result2.format);
     try std.testing.expect(result2.is_valid);

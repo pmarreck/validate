@@ -259,7 +259,7 @@ pub const FlateStream = struct {
 };
 
 fn findFlateStreams(allocator: Allocator, pdf_data: []const u8) ![]FlateStream {
-	var out: std.ArrayListUnmanaged(FlateStream) = .{};
+	var out: std.ArrayListUnmanaged(FlateStream) = .empty;
 	errdefer out.deinit(allocator);
 
 	// Try xref-driven enumeration first. It handles incremental updates via
@@ -560,10 +560,10 @@ test "validatePdfFlateStreams: valid Flate stream passes" {
 	const compressed = try zlib.deflateZlib(allocator, payload_text);
 	defer allocator.free(compressed);
 
-	var pdf: std.ArrayListUnmanaged(u8) = .{};
+	var pdf: std.ArrayListUnmanaged(u8) = .empty;
 	defer pdf.deinit(allocator);
 	try pdf.appendSlice(allocator, "%PDF-1.4\n");
-	try pdf.writer(allocator).print(
+	try pdf.print(allocator, 
 		"1 0 obj\n<< /Length {d} /Filter /FlateDecode >>\nstream\n",
 		.{compressed.len},
 	);
@@ -597,10 +597,10 @@ test "validatePdfFlateStreams: corrupted Flate stream fails" {
 	// been self-checking — so it correctly returns data_error here.
 	if (compressed.len > 4) compressed[compressed.len / 2] ^= 0xFF;
 
-	var pdf: std.ArrayListUnmanaged(u8) = .{};
+	var pdf: std.ArrayListUnmanaged(u8) = .empty;
 	defer pdf.deinit(allocator);
 	try pdf.appendSlice(allocator, "%PDF-1.4\n");
-	try pdf.writer(allocator).print(
+	try pdf.print(allocator, 
 		"1 0 obj\n<< /Length {d} /Filter /FlateDecode >>\nstream\n",
 		.{compressed.len},
 	);
@@ -624,10 +624,10 @@ test "validatePdfFlateStreams: excluded object numbers are skipped" {
 	const compressed = try zlib.deflateZlib(allocator, payload_text);
 	defer allocator.free(compressed);
 
-	var pdf: std.ArrayListUnmanaged(u8) = .{};
+	var pdf: std.ArrayListUnmanaged(u8) = .empty;
 	defer pdf.deinit(allocator);
 	try pdf.appendSlice(allocator, "%PDF-1.4\n");
-	try pdf.writer(allocator).print(
+	try pdf.print(allocator, 
 		"1 0 obj\n<< /Length {d} /Filter /FlateDecode >>\nstream\n",
 		.{compressed.len},
 	);
@@ -661,7 +661,7 @@ test "validatePdfFlateStreams: encrypted PDF skips non-excluded FlateDecode stre
 	// Garbage bytes — definitely not a valid zlib stream.
 	const garbage = [_]u8{ 0x21, 0x14, 0xf7, 0x89, 0xe0, 0x65, 0x88, 0xf4, 0x98, 0x9b, 0xfc, 0x33 };
 
-	var pdf: std.ArrayListUnmanaged(u8) = .{};
+	var pdf: std.ArrayListUnmanaged(u8) = .empty;
 	defer pdf.deinit(allocator);
 	try pdf.appendSlice(allocator, "%PDF-1.4\n");
 	// Object 1: minimal /Encrypt dictionary (just enough for parseEncryptionParams).
@@ -672,7 +672,7 @@ test "validatePdfFlateStreams: encrypted PDF skips non-excluded FlateDecode stre
 		" /P -4 >>\nendobj\n",
 	);
 	// Object 2: a garbage FlateDecode stream (post-encryption bytes).
-	try pdf.writer(allocator).print(
+	try pdf.print(allocator, 
 		"2 0 obj\n<< /Length {d} /Filter /FlateDecode >>\nstream\n",
 		.{garbage.len},
 	);

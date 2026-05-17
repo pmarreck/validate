@@ -640,7 +640,7 @@ const PesBuffer = struct {
 
     fn init(st: StreamType) PesBuffer {
         return .{
-            .data = .{},
+            .data = .empty,
             .stream_type = st,
             .started = false,
         };

@@ -4,6 +4,7 @@
 //! and After Effects (.aep).
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -990,8 +991,8 @@ test "validateEps rejects garbage file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
-    tmp.dir.writeFile(.{ .sub_path = "bad.eps", .data = &garbage }) catch return;
-    const path = tmp.dir.realpathAlloc(testing.allocator, "bad.eps") catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.eps", .data = &garbage }) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, testing.allocator, "bad.eps") catch return;
     defer testing.allocator.free(path);
     var source = FileSource.open(path) catch return;
     defer source.close();
@@ -1003,8 +1004,8 @@ test "validateFcpxml rejects garbage file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
-    tmp.dir.writeFile(.{ .sub_path = "bad.fcpxml", .data = &garbage }) catch return;
-    const path = tmp.dir.realpathAlloc(testing.allocator, "bad.fcpxml") catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.fcpxml", .data = &garbage }) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, testing.allocator, "bad.fcpxml") catch return;
     defer testing.allocator.free(path);
     var source = FileSource.open(path) catch return;
     defer source.close();
@@ -1016,8 +1017,8 @@ test "validatePrproj rejects garbage file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 };
-    tmp.dir.writeFile(.{ .sub_path = "bad.prproj", .data = &garbage }) catch return;
-    const path = tmp.dir.realpathAlloc(testing.allocator, "bad.prproj") catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.prproj", .data = &garbage }) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, testing.allocator, "bad.prproj") catch return;
     defer testing.allocator.free(path);
     var source = FileSource.open(path) catch return;
     defer source.close();
@@ -1135,11 +1136,11 @@ test "validateAi accepts valid PDF-based AI file" {
         \\%%EOF
     ;
 
-    const file = try tmp_dir.dir.createFile("test.ai", .{});
-    try file.writeAll(pdf_ai);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.ai", .{});
+    try file.writePositionalAll(runtime.io(), pdf_ai, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ai");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.ai");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1169,11 +1170,11 @@ test "validateAi accepts valid PostScript-based AI file" {
         \\%%EOF
     ;
 
-    const file = try tmp_dir.dir.createFile("legacy.ai", .{});
-    try file.writeAll(ps_ai);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "legacy.ai", .{});
+    try file.writePositionalAll(runtime.io(), ps_ai, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "legacy.ai");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "legacy.ai");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1203,11 +1204,11 @@ test "validateEps accepts valid EPS file" {
         \\%%EOF
     ;
 
-    const file = try tmp_dir.dir.createFile("test.eps", .{});
-    try file.writeAll(eps_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.eps", .{});
+    try file.writePositionalAll(runtime.io(), eps_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.eps");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.eps");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1233,11 +1234,11 @@ test "validateEps rejects EPS missing BoundingBox" {
         \\%%EOF
     ;
 
-    const file = try tmp_dir.dir.createFile("bad.eps", .{});
-    try file.writeAll(bad_eps);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "bad.eps", .{});
+    try file.writePositionalAll(runtime.io(), bad_eps, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.eps");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bad.eps");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1270,11 +1271,11 @@ test "validateAep accepts valid AEP file structure" {
     @memcpy(aep_data[20..24], "test");
     @memset(aep_data[24..28], 0);
 
-    const file = try tmp_dir.dir.createFile("test.aep", .{});
-    try file.writeAll(&aep_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.aep", .{});
+    try file.writePositionalAll(runtime.io(), &aep_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.aep");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.aep");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1300,11 +1301,11 @@ test "validateAep rejects file with wrong format marker" {
     std.mem.writeInt(u32, bad_aep[4..8], 4, .big);
     @memcpy(bad_aep[8..12], "XXXX"); // Wrong marker
 
-    const file = try tmp_dir.dir.createFile("bad.aep", .{});
-    try file.writeAll(&bad_aep);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "bad.aep", .{});
+    try file.writePositionalAll(runtime.io(), &bad_aep, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.aep");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bad.aep");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1349,11 +1350,11 @@ test "validatePrproj accepts gzip-compressed PRPROJ" {
     prproj_data[9] = 0xff; // OS (unknown)
     @memset(prproj_data[10..20], 0); // Dummy compressed data
 
-    const file = try tmp_dir.dir.createFile("test.prproj", .{});
-    try file.writeAll(&prproj_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.prproj", .{});
+    try file.writePositionalAll(runtime.io(), &prproj_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.prproj");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.prproj");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1376,11 +1377,11 @@ test "validatePrproj accepts legacy XML PRPROJ" {
     // Legacy uncompressed XML PRPROJ
     const xml_content = "<?xml version=\"1.0\"?><Project></Project>";
 
-    const file = try tmp_dir.dir.createFile("legacy.prproj", .{});
-    try file.writeAll(xml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "legacy.prproj", .{});
+    try file.writePositionalAll(runtime.io(), xml_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "legacy.prproj");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "legacy.prproj");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1404,11 +1405,11 @@ test "validatePrproj rejects invalid compression method" {
     bad_prproj[2] = 0x07; // Wrong compression method (not deflate)
     @memset(bad_prproj[3..20], 0);
 
-    const file = try tmp_dir.dir.createFile("bad.prproj", .{});
-    try file.writeAll(&bad_prproj);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "bad.prproj", .{});
+    try file.writePositionalAll(runtime.io(), &bad_prproj, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.prproj");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bad.prproj");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1454,10 +1455,10 @@ test "validateIndd accepts valid INDD file structure" {
     // Duplicate master page: magic at offset 4096, seq=0 at offset 4124
     @memcpy(indd_data[4096..4112], &indd_magic);
 
-    const file = try tmp_dir.dir.createFile("test.indd", .{});
-    try file.writeAll(&indd_data);    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.indd", .{});
+    try file.writePositionalAll(runtime.io(), &indd_data, 0);    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.indd");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.indd");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1512,11 +1513,11 @@ test "validateIndd rejects file with wrong magic bytes" {
     @memcpy(bad_indd[16..24], "DOCUMENT");
     @memset(bad_indd[24..32], 0);
 
-    const file = try tmp_dir.dir.createFile("bad.indd", .{});
-    try file.writeAll(&bad_indd);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "bad.indd", .{});
+    try file.writePositionalAll(runtime.io(), &bad_indd, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.indd");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bad.indd");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1551,11 +1552,11 @@ test "validateIdml accepts valid IDML file structure" {
     idml_data[3] = 0x04;
     @memset(idml_data[4..30], 0); // Rest of local file header
 
-    const file = try tmp_dir.dir.createFile("test.idml", .{});
-    try file.writeAll(&idml_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.idml", .{});
+    try file.writePositionalAll(runtime.io(), &idml_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.idml");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.idml");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();

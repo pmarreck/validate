@@ -227,7 +227,7 @@ pub fn parseSegmentHeader(allocator: Allocator, data: []const u8) Jbig2Error!str
 
     // Read referred-to segment numbers
     // Use ArrayListUnmanaged to avoid allocator confusion
-    var referred_segments: std.ArrayListUnmanaged(u32) = .{};
+    var referred_segments: std.ArrayListUnmanaged(u32) = .empty;
     errdefer referred_segments.deinit(allocator);
 
     var i: u32 = 0;
@@ -2386,7 +2386,7 @@ pub const SymbolDictDecoder = struct {
         }
 
         // Arithmetic coding path
-        var symbols: std.ArrayListUnmanaged(Symbol) = .{};
+        var symbols: std.ArrayListUnmanaged(Symbol) = .empty;
         errdefer {
             for (symbols.items) |*sym| {
                 sym.deinit();
@@ -2598,7 +2598,7 @@ pub const SymbolDictDecoder = struct {
 
         _ = table_agginst; // Will be used when aggregate coding is supported
 
-        var symbols: std.ArrayListUnmanaged(Symbol) = .{};
+        var symbols: std.ArrayListUnmanaged(Symbol) = .empty;
         errdefer {
             for (symbols.items) |*sym| {
                 sym.deinit();
@@ -2627,7 +2627,7 @@ pub const SymbolDictDecoder = struct {
             var first_in_row = true;
 
             // Collect bitmaps for this height class
-            var row_symbols: std.ArrayListUnmanaged(struct { width: u32, height: u32 }) = .{};
+            var row_symbols: std.ArrayListUnmanaged(struct { width: u32, height: u32 }) = .empty;
             defer row_symbols.deinit(allocator);
 
             // Decode symbols in this height class
@@ -3510,9 +3510,9 @@ pub const Jbig2Decoder = struct {
     pub fn init(allocator: Allocator) Self {
         return Self{
             .allocator = allocator,
-            .global_dicts = .{},
-            .page_dicts = .{},
-            .pages = .{},
+            .global_dicts = .empty,
+            .page_dicts = .empty,
+            .pages = .empty,
             .current_page = null,
             .truncation_tolerated = false,
         };
@@ -3760,7 +3760,7 @@ pub const Jbig2Decoder = struct {
         var mq = try MqDecoder.init(seg_data);
 
         // Gather input symbols from referred dictionaries
-        var input_symbols: std.ArrayListUnmanaged(*const Symbol) = .{};
+        var input_symbols: std.ArrayListUnmanaged(*const Symbol) = .empty;
         defer input_symbols.deinit(self.allocator);
 
         // Add symbols from global dictionaries
@@ -3821,7 +3821,7 @@ pub const Jbig2Decoder = struct {
         }
 
         // Gather symbols
-        var symbols: std.ArrayListUnmanaged(*const Symbol) = .{};
+        var symbols: std.ArrayListUnmanaged(*const Symbol) = .empty;
         defer symbols.deinit(self.allocator);
 
         for (self.global_dicts.items) |*dict| {
@@ -4492,7 +4492,7 @@ test "findJbig2InPdf returns null for non-JBIG2 PDF" {
 /// Create a minimal valid JBIG2 file with a 1x1 all-white page
 /// This is useful for testing the decoder infrastructure
 pub fn createMinimalJbig2WhitePage(allocator: Allocator) Jbig2Error![]u8 {
-    var buffer: std.ArrayListUnmanaged(u8) = .{};
+    var buffer: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buffer.deinit(allocator);
 
     // File header (9 bytes, unknown page count)

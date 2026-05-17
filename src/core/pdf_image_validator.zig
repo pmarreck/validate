@@ -12,6 +12,7 @@
 //! validates their embedded image data.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
@@ -360,7 +361,7 @@ pub fn findPdfImages(allocator: Allocator, data: []const u8) ![]PdfImageInfo {
 
 /// Find all image XObjects via linear byte scan (O(N) fallback).
 pub fn findPdfImagesLinear(allocator: Allocator, data: []const u8) ![]PdfImageInfo {
-    var images: std.ArrayListUnmanaged(PdfImageInfo) = .{};
+    var images: std.ArrayListUnmanaged(PdfImageInfo) = .empty;
     errdefer images.deinit(allocator);
 
     var i: usize = 0;
@@ -403,7 +404,7 @@ pub fn findPdfImagesLinear(allocator: Allocator, data: []const u8) ![]PdfImageIn
             var height: ?u32 = null;
             var bits: ?u8 = null;
             var stream_length: ?u32 = null;
-            var filters: std.ArrayListUnmanaged(ImageFilter) = .{};
+            var filters: std.ArrayListUnmanaged(ImageFilter) = .empty;
             defer filters.deinit(allocator);
             var stream_start: ?usize = null;
             var stream_end: ?usize = null;
@@ -624,7 +625,7 @@ pub fn findPdfImagesViaXref(allocator: Allocator, data: []const u8) ?[]PdfImageI
     var xref_table = pdf_xref_parser.parseXrefTable(allocator, data) orelse return null;
     defer xref_table.deinit(allocator);
 
-    var images: std.ArrayListUnmanaged(PdfImageInfo) = .{};
+    var images: std.ArrayListUnmanaged(PdfImageInfo) = .empty;
     errdefer {
         for (images.items) |img| allocator.free(img.filters);
         images.deinit(allocator);
@@ -669,7 +670,7 @@ fn parseObjectForImage(allocator: Allocator, data: []const u8, offset: usize, ob
     var height: ?u32 = null;
     var bits: ?u8 = null;
     var stream_length: ?u32 = null;
-    var filters: std.ArrayListUnmanaged(ImageFilter) = .{};
+    var filters: std.ArrayListUnmanaged(ImageFilter) = .empty;
     var stream_start: ?usize = null;
     var stream_end: ?usize = null;
     var jbig2_globals_obj: ?u32 = null;
@@ -965,14 +966,14 @@ pub fn validateExtractedImage(allocator: Allocator, data: []const u8, filter: Im
 /// Validate all images in a PDF
 pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageValidationResult {
     const timing_debug = isPdfTimingDebug();
-    const total_start = if (timing_debug) std.time.nanoTimestamp() else 0;
+    const total_start = if (timing_debug) runtime.nanoTimestamp() else 0;
     const parse_start = total_start;
 
     const images = try findPdfImages(allocator, pdf_data);
     defer freePdfImages(allocator, images);
 
     if (timing_debug) {
-        const parse_end = std.time.nanoTimestamp();
+        const parse_end = runtime.nanoTimestamp();
         const parse_ms = @as(f64, @floatFromInt(parse_end - parse_start)) / 1_000_000.0;
         std.debug.print("PDF parsing: found {d} images in {d:.1}ms ({d:.2}MB PDF)\n", .{
             images.len,
@@ -1014,7 +1015,7 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
 
     // Use parallel validation for PDFs with many images
     if (images.len >= PARALLEL_IMAGE_THRESHOLD) {
-        const parallel_start = if (timing_debug) std.time.nanoTimestamp() else 0;
+        const parallel_start = if (timing_debug) runtime.nanoTimestamp() else 0;
         const result = try validatePdfImagesParallel(
             allocator,
             images,
@@ -1026,7 +1027,7 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
             is_encrypted,
         );
         if (timing_debug) {
-            const parallel_end = std.time.nanoTimestamp();
+            const parallel_end = runtime.nanoTimestamp();
             const parallel_ms = @as(f64, @floatFromInt(parallel_end - parallel_start)) / 1_000_000.0;
             const total_ms = @as(f64, @floatFromInt(parallel_end - total_start)) / 1_000_000.0;
             std.debug.print("PDF parallel validation: {d:.1}ms, TOTAL: {d:.1}ms\n", .{ parallel_ms, total_ms });
@@ -1035,7 +1036,7 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
     }
 
     // Sequential validation for small image counts
-    var results: std.ArrayListUnmanaged(ImageValidationResult) = .{};
+    var results: std.ArrayListUnmanaged(ImageValidationResult) = .empty;
     errdefer results.deinit(allocator);
 
     var validated: u32 = 0;
@@ -1295,17 +1296,17 @@ const ParallelContext = struct {
 
 /// Check if PDF image timing debug is enabled
 fn isPdfTimingDebug() bool {
-    // std.posix.getenv is unavailable on Windows
+    // std.c.getenv is unavailable on Windows
     if (comptime builtin.os.tag == .windows) {
         return false;
     }
-    return std.posix.getenv("PDF_IMAGE_TIMING") != null;
+    return std.c.getenv("PDF_IMAGE_TIMING") != null;
 }
 
 /// Execute a single image validation task (called by worker threads)
 fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
     const timing_debug = isPdfTimingDebug();
-    const task_start = if (timing_debug) std.time.nanoTimestamp() else 0;
+    const task_start = if (timing_debug) runtime.nanoTimestamp() else 0;
 
     const ctx: *const ParallelContext = @ptrCast(@alignCast(ctx_ptr orelse return .{
         .result = null,
@@ -1401,10 +1402,10 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
             };
         },
         .flate_decode => blk: {
-            const decomp_start = if (timing_debug) std.time.nanoTimestamp() else 0;
+            const decomp_start = if (timing_debug) runtime.nanoTimestamp() else 0;
             switch (decompressFlate(allocator, image_data)) {
                 .ok, .ok_lenient => |decompressed| {
-                    const decomp_end = if (timing_debug) std.time.nanoTimestamp() else 0;
+                    const decomp_end = if (timing_debug) runtime.nanoTimestamp() else 0;
                     const decomp_ms = if (timing_debug) @as(f64, @floatFromInt(decomp_end - decomp_start)) / 1_000_000.0 else 0;
 
                     if (timing_debug) {
@@ -1417,9 +1418,9 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
                     }
 
                     if (detectDecompressedFormat(decompressed)) |nested_format| {
-                        const validate_start = if (timing_debug) std.time.nanoTimestamp() else 0;
+                        const validate_start = if (timing_debug) runtime.nanoTimestamp() else 0;
                         var result = validateExtractedImage(allocator, decompressed, nested_format);
-                        const validate_end = if (timing_debug) std.time.nanoTimestamp() else 0;
+                        const validate_end = if (timing_debug) runtime.nanoTimestamp() else 0;
                         result.object_num = img.object_num;
 
                         if (timing_debug) {
@@ -1434,7 +1435,7 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
                     } else {
                         // Raw pixel data - decompression succeeded, consider valid
                         if (timing_debug) {
-                            const total_ms = @as(f64, @floatFromInt(std.time.nanoTimestamp() - task_start)) / 1_000_000.0;
+                            const total_ms = @as(f64, @floatFromInt(runtime.nanoTimestamp() - task_start)) / 1_000_000.0;
                             std.debug.print("  -> raw pixels, total: {d:.1}ms\n", .{total_ms});
                         }
                         break :blk .{
@@ -1550,8 +1551,8 @@ fn validatePdfImagesParallel(
     const pool_allocator = heap.validateAllocator();
 
     // Collect results thread-safely
-    var results_mutex: std.Thread.Mutex = .{};
-    var collected_results: std.ArrayListUnmanaged(ImageValidationResult) = .{};
+    var results_mutex: std.Io.Mutex = .init;
+    var collected_results: std.ArrayListUnmanaged(ImageValidationResult) = .empty;
     errdefer collected_results.deinit(pool_allocator);
 
     var validated = std.atomic.Value(u32).init(0);
@@ -1561,7 +1562,7 @@ fn validatePdfImagesParallel(
     var skipped_corrupt_count = std.atomic.Value(u32).init(0);
 
     const ResultContext = struct {
-        mutex: *std.Thread.Mutex,
+        mutex: *std.Io.Mutex,
         results: *std.ArrayListUnmanaged(ImageValidationResult),
         allocator: Allocator,
         validated: *std.atomic.Value(u32),
@@ -1608,8 +1609,8 @@ fn validatePdfImagesParallel(
                 }
 
                 if (task_result.result) |result| {
-                    rc.mutex.lock();
-                    defer rc.mutex.unlock();
+                    rc.mutex.lockUncancelable(runtime.io());
+                    defer rc.mutex.unlock(runtime.io());
                     rc.results.append(rc.allocator, result) catch {};
                 }
             }
@@ -1742,7 +1743,7 @@ test "findPdfImages on real PDF file" {
     const file = std.fs.openFileAbsolute(pdf_path, .{}) catch {
         return; // Skip if file doesn't exist
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
     const data = file.readToEndAlloc(allocator, 100 * 1024 * 1024) catch {
         return;

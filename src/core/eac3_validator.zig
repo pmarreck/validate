@@ -12,6 +12,7 @@
 //! Reference: ETSI TS 102 366 (Digital Audio Compression)
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const BitReader = @import("bitstream_reader.zig").BitReader;
 const errmsg = @import("error_messages.zig");
@@ -292,11 +293,9 @@ pub fn validateEac3Stream(data: []const u8, max_frames: u32) Eac3ValidationResul
 /// Validate E-AC-3 from file
 pub fn validateEac3File(path: []const u8, max_frames: u32) Eac3ValidationResult {
     // Read entire file for CRC validation of all frames
-    const data = std.fs.cwd().readFileAlloc(
-        heap.validateAllocator(),
-        path,
-        256 * 1024 * 1024, // 256MB max
-    ) catch {
+    const data = runtime.cwd().readFileAlloc(runtime.io(), path, 
+        heap.validateAllocator(), .limited(256 * 1024 * 1024, // 256MB max
+    )) catch {
         return Eac3ValidationResult.invalid(errmsg.failedToRead("file"), 0);
     };
     defer heap.validateAllocator().free(data);

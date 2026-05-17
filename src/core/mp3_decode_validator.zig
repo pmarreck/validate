@@ -14,6 +14,7 @@
 //! 3. Report any decode errors
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
@@ -284,10 +285,10 @@ test "MP3 validation rejects empty file" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = tmp_dir.dir.createFile("empty.mp3", .{}) catch unreachable;
-    file.close();
+    const file = tmp_dir.dir.createFile(runtime.io(), "empty.mp3", .{}) catch unreachable;
+    file.close(runtime.io());
 
-    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "empty.mp3") catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "empty.mp3") catch unreachable;
     defer std.testing.allocator.free(path);
 
     const result = validateMp3DecodePath(path);
@@ -298,11 +299,11 @@ test "MP3 validation rejects garbage file" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = tmp_dir.dir.createFile("garbage.mp3", .{ .read = true }) catch unreachable;
+    const file = tmp_dir.dir.createFile(runtime.io(), "garbage.mp3", .{ .read = true }) catch unreachable;
     _ = file.write(&[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 }) catch unreachable;
-    file.close();
+    file.close(runtime.io());
 
-    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "garbage.mp3") catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "garbage.mp3") catch unreachable;
     defer std.testing.allocator.free(path);
 
     const result = validateMp3DecodePath(path);

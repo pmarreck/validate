@@ -1459,7 +1459,7 @@ test "parseHeifContainer is thread-safe under concurrent calls" {
 		fn make(allocator: std.mem.Allocator, primary_id: u16) ![]u8 {
 			// Build a minimal HEIF: ftyp + meta { hdlr + pitm + iinf(1 entry, hvc1) + iloc(1 location) }.
 			// Hand-crafted byte sequence with size fixups.
-			var out = std.ArrayListUnmanaged(u8){};
+			var out = std.ArrayListUnmanaged(u8).empty;
 			defer out.deinit(allocator);
 
 			// ftyp: brand=heic, compat=heic

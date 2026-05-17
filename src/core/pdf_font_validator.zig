@@ -121,7 +121,7 @@ pub fn extractFontStreams(allocator: Allocator, pdf_data: []const u8) ![]PdfFont
     // First, collect all font object references (fast linear scan for /FontFile*)
     // Deduplicate by object number — the same font can be referenced from multiple
     // pages/descriptors, and we only need to validate it once.
-    var font_refs: std.ArrayListUnmanaged(struct { obj_num: u32, font_type: PdfFontType }) = .{};
+    var font_refs: std.ArrayListUnmanaged(struct { obj_num: u32, font_type: PdfFontType }) = .empty;
     defer font_refs.deinit(allocator);
     var seen_obj_nums: std.AutoHashMapUnmanaged(u32, void) = .{};
     defer seen_obj_nums.deinit(allocator);
@@ -155,7 +155,7 @@ pub fn extractFontStreams(allocator: Allocator, pdf_data: []const u8) ![]PdfFont
     index.build(pdf_data) catch return error.OutOfMemory;
 
     // Now look up each font object using the index (O(1) per lookup)
-    var fonts: std.ArrayListUnmanaged(PdfFontInfo) = .{};
+    var fonts: std.ArrayListUnmanaged(PdfFontInfo) = .empty;
     errdefer fonts.deinit(allocator);
 
     for (font_refs.items) |ref| {

@@ -4,6 +4,7 @@
 //! DOS header (MZ), PE signature, COFF header, optional header, and section table.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -227,19 +228,13 @@ test "validatePe with ground truth" {
 }
 
 test "validatePe with truncated PE" {
-    const tmp_dir = std.posix.getenv("TMPDIR") orelse "/tmp";
-    const tmp_path = std.fmt.comptimePrint("{s}", .{"pe_truncated_test.exe"});
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ tmp_dir, tmp_path }) catch unreachable;
-
-    // Write "MZ" + 2 zero bytes (4 bytes total — well below 128 minimum)
-    {
-        const file = std.fs.createFileAbsolute(full_path, .{}) catch return;
-        defer file.close();
-        file.writeAll(&[_]u8{ 'M', 'Z', 0, 0 }) catch return;
-    }
-    defer std.fs.deleteFileAbsolute(full_path) catch {};
-
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "pe_truncated_test.exe", .{});
+    try file.writePositionalAll(runtime.io(), &[_]u8{ 'M', 'Z', 0, 0 }, 0);
+    file.close(runtime.io());
+    const full_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "pe_truncated_test.exe");
+    defer std.testing.allocator.free(full_path);
     var source = FileSource.open(full_path) catch return;
     defer source.close();
     const result = validatePe(&source);
@@ -247,25 +242,19 @@ test "validatePe with truncated PE" {
 }
 
 test "validatePe with invalid magic" {
-    const tmp_dir = std.posix.getenv("TMPDIR") orelse "/tmp";
-    const tmp_path = std.fmt.comptimePrint("{s}", .{"pe_badmagic_test.exe"});
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ tmp_dir, tmp_path }) catch unreachable;
-
-    // Write 4 random (non-MZ) bytes, padded to 256 bytes to pass size check
-    {
-        const file = std.fs.createFileAbsolute(full_path, .{}) catch return;
-        defer file.close();
-        var buf: [256]u8 = undefined;
-        @memset(&buf, 0);
-        buf[0] = 0xDE;
-        buf[1] = 0xAD;
-        buf[2] = 0xBE;
-        buf[3] = 0xEF;
-        file.writeAll(&buf) catch return;
-    }
-    defer std.fs.deleteFileAbsolute(full_path) catch {};
-
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "pe_badmagic_test.exe", .{});
+    var buf: [256]u8 = undefined;
+    @memset(&buf, 0);
+    buf[0] = 0xDE;
+    buf[1] = 0xAD;
+    buf[2] = 0xBE;
+    buf[3] = 0xEF;
+    try file.writePositionalAll(runtime.io(), &buf, 0);
+    file.close(runtime.io());
+    const full_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "pe_badmagic_test.exe");
+    defer std.testing.allocator.free(full_path);
     var source = FileSource.open(full_path) catch return;
     defer source.close();
     const result = validatePe(&source);

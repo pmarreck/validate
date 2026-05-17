@@ -14,6 +14,7 @@
 //! for the Vorbis bitstream itself.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -282,11 +283,11 @@ test "Vorbis validation with invalid file returns error" {
     defer tmp_dir.cleanup();
 
     // Create a file with garbage data
-    const file = tmp_dir.dir.createFile("garbage.ogg", .{ .read = true }) catch unreachable;
+    const file = tmp_dir.dir.createFile(runtime.io(), "garbage.ogg", .{ .read = true }) catch unreachable;
     _ = file.write(&[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF }) catch unreachable;
-    file.close();
+    file.close(runtime.io());
 
-    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "garbage.ogg") catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "garbage.ogg") catch unreachable;
     defer std.testing.allocator.free(path);
 
     const result = validateOggVorbisPath(path);

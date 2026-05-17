@@ -13,6 +13,7 @@
 //! No checksums exist in the format — all validation is structural.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const fv = @import("format_validation.zig");
 const FileFormat = fv.FileFormat;
 const ValidationResult = fv.ValidationResult;
@@ -286,7 +287,7 @@ test "validateRealMedia: deep validation of ground truth sample" {
 	const ground_truth = "ground_truth_examples/rm/sample.rm";
 
 	// Skip if not present
-	std.fs.cwd().access(ground_truth, .{}) catch return error.SkipZigTest;
+	runtime.access(ground_truth, .{}) catch return error.SkipZigTest;
 
 	var source = try FileSource.open(ground_truth);
 	defer source.close();
@@ -303,13 +304,13 @@ test "validateRealMedia: rejects file with wrong magic" {
 	defer tmp.cleanup();
 
 	const wrong_magic = buildTestRmfHeader("FAKE", 18, 0, 0, 5);
-	const tmpfile = try tmp.dir.createFile("bad_magic.bin", .{});
-	defer tmpfile.close();
-	try tmpfile.writeAll(&wrong_magic);
+	const tmpfile = try tmp.dir.createFile(runtime.io(), "bad_magic.bin", .{});
+	defer tmpfile.close(runtime.io());
+	try tmpfile.writePositionalAll(runtime.io(), &wrong_magic, 0);
 
 	// Build an absolute path for FileSource.open
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const abs_path = try tmp.dir.realpath("bad_magic.bin", &path_buf);
+	const abs_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_magic.bin");
+	defer std.testing.allocator.free(abs_path);
 
 	var src = try FileSource.open(abs_path);
 	defer src.close();
@@ -324,12 +325,12 @@ test "validateRealMedia: rejects file that is too small" {
 	defer tmp.cleanup();
 
 	const tiny_data = [_]u8{ '.', 'R', 'M', 'F' }; // Only 4 bytes
-	const tmpfile = try tmp.dir.createFile("too_small.bin", .{});
-	defer tmpfile.close();
-	try tmpfile.writeAll(&tiny_data);
+	const tmpfile = try tmp.dir.createFile(runtime.io(), "too_small.bin", .{});
+	defer tmpfile.close(runtime.io());
+	try tmpfile.writePositionalAll(runtime.io(), &tiny_data, 0);
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const abs_path = try tmp.dir.realpath("too_small.bin", &path_buf);
+	const abs_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "too_small.bin");
+	defer std.testing.allocator.free(abs_path);
 
 	var src = try FileSource.open(abs_path);
 	defer src.close();

@@ -5,6 +5,7 @@
 //! Chromium PAK, BSP (Quake/Source maps), VPK (Valve PAK), IFF, and Blorb.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
@@ -21,7 +22,7 @@ const testing = std.testing;
 
 /// Skip test if a ground truth file doesn't exist (e.g., samples in external repo).
 fn skipIfMissing(comptime path: []const u8) !void {
-    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+    runtime.access(path, .{}) catch return error.SkipZigTest;
 }
 
 // ============ WAD (DOOM) Validator ============
@@ -964,11 +965,11 @@ test "VPK validation - bad signature rejected" {
 	};
 	const tmp_path = "/tmp/vpk_test_bad_sig.vpk";
 	{
-		const tmp = try std.fs.cwd().createFile(tmp_path, .{});
-		defer tmp.close();
-		try tmp.writeAll(&buf);
+		const tmp = try runtime.createFile(tmp_path, .{});
+		defer tmp.close(runtime.io());
+		try tmp.writePositionalAll(runtime.io(), &buf, 0);
 	}
-	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 	var source = try FileSource.open(tmp_path);
 	defer source.close();
 	const result = validateVpk(&source);
@@ -988,11 +989,11 @@ test "VPK validation - v2 section size mismatch rejected" {
 	};
 	const tmp_path = "/tmp/vpk_test_v2_mismatch.vpk";
 	{
-		const tmp = try std.fs.cwd().createFile(tmp_path, .{});
-		defer tmp.close();
-		try tmp.writeAll(&buf);
+		const tmp = try runtime.createFile(tmp_path, .{});
+		defer tmp.close(runtime.io());
+		try tmp.writePositionalAll(runtime.io(), &buf, 0);
 	}
-	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 	var source = try FileSource.open(tmp_path);
 	defer source.close();
 	const result = validateVpk(&source);
@@ -1032,13 +1033,13 @@ test "VPK validation - entry missing 0xFFFF terminator rejected" {
 
 	const tmp_path = "/tmp/vpk_test_bad_term.vpk";
 	{
-		const tmp = try std.fs.cwd().createFile(tmp_path, .{});
-		defer tmp.close();
-		try tmp.writeAll(&header);
-		for (tree_parts) |p| try tmp.writeAll(p);
-		try tmp.writeAll(end_ext);
+		const tmp = try runtime.createFile(tmp_path, .{});
+		defer tmp.close(runtime.io());
+		try tmp.writePositionalAll(runtime.io(), &header, 0);
+		for (tree_parts) |p| try tmp.writePositionalAll(runtime.io(), p, 0);
+		try tmp.writePositionalAll(runtime.io(), end_ext, 0);
 	}
-	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 	var source = try FileSource.open(tmp_path);
 	defer source.close();
 	const result = validateVpk(&source);
@@ -1056,7 +1057,7 @@ test "IFF deep validation - valid ILBM ByteRun1 sample" {
 
 test "IFF deep validation - corrupted ByteRun1 stream detected" {
 	// Create a corrupted copy of the sample file
-	const src = std.fs.cwd().openFile("ground_truth_examples/iff/sample.iff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+	const src = runtime.openFile("ground_truth_examples/iff/sample.iff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
 	defer src.close();
 	const file_size = src.getEndPos() catch return;
 	const data = testing.allocator.alloc(u8, file_size) catch return;
@@ -1074,13 +1075,13 @@ test "IFF deep validation - corrupted ByteRun1 stream detected" {
 
 	// Write corrupted data to a temp file
 	const tmp_path = "/tmp/iff_test_corrupt.iff";
-	const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return;
-	tmp.writeAll(data) catch {
-		tmp.close();
+	const tmp = runtime.createFile(tmp_path, .{}) catch return;
+	tmp.writePositionalAll(runtime.io(), data, 0) catch {
+		tmp.close(runtime.io());
 		return;
 	};
-	tmp.close();
-	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	tmp.close(runtime.io());
+	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 
 	var tmp_src = FileSource.open(tmp_path) catch return;
 	defer tmp_src.close();
@@ -1089,7 +1090,7 @@ test "IFF deep validation - corrupted ByteRun1 stream detected" {
 }
 
 test "IFF deep validation - invalid chunk ID detected" {
-	const src = std.fs.cwd().openFile("ground_truth_examples/iff/sample.iff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+	const src = runtime.openFile("ground_truth_examples/iff/sample.iff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
 	defer src.close();
 	const file_size = src.getEndPos() catch return;
 	const data = testing.allocator.alloc(u8, file_size) catch return;
@@ -1103,13 +1104,13 @@ test "IFF deep validation - invalid chunk ID detected" {
 	}
 
 	const tmp_path = "/tmp/iff_test_bad_id.iff";
-	const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return;
-	tmp.writeAll(data) catch {
-		tmp.close();
+	const tmp = runtime.createFile(tmp_path, .{}) catch return;
+	tmp.writePositionalAll(runtime.io(), data, 0) catch {
+		tmp.close(runtime.io());
 		return;
 	};
-	tmp.close();
-	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	tmp.close(runtime.io());
+	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 
 	var tmp_src2 = FileSource.open(tmp_path) catch return;
 	defer tmp_src2.close();
@@ -1192,11 +1193,11 @@ test "BSP validator - rejects truncated file" {
 
 	const tmp_path = "/tmp/bsp_test_truncated.bsp";
 	{
-		const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return error.SkipZigTest;
-		tmp.writeAll(&buf) catch { tmp.close(); return error.SkipZigTest; };
-		tmp.close();
+		const tmp = runtime.createFile(tmp_path, .{}) catch return error.SkipZigTest;
+		tmp.writePositionalAll(runtime.io(), &buf, 0) catch { tmp.close(runtime.io()); return error.SkipZigTest; };
+		tmp.close(runtime.io());
 	}
-	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 
 	var source = FileSource.open(tmp_path) catch return error.SkipZigTest;
 	defer source.close();
@@ -1215,11 +1216,11 @@ test "BSP validator - rejects lump beyond file size" {
 
 	const tmp_path = "/tmp/bsp_test_oob_lump.bsp";
 	{
-		const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return error.SkipZigTest;
-		tmp.writeAll(&buf) catch { tmp.close(); return error.SkipZigTest; };
-		tmp.close();
+		const tmp = runtime.createFile(tmp_path, .{}) catch return error.SkipZigTest;
+		tmp.writePositionalAll(runtime.io(), &buf, 0) catch { tmp.close(runtime.io()); return error.SkipZigTest; };
+		tmp.close(runtime.io());
 	}
-	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 
 	var source = FileSource.open(tmp_path) catch return error.SkipZigTest;
 	defer source.close();
@@ -1243,11 +1244,11 @@ test "BSP validator - rejects overlapping lumps" {
 
 	const tmp_path = "/tmp/bsp_test_overlap.bsp";
 	{
-		const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return error.SkipZigTest;
-		tmp.writeAll(&buf) catch { tmp.close(); return error.SkipZigTest; };
-		tmp.close();
+		const tmp = runtime.createFile(tmp_path, .{}) catch return error.SkipZigTest;
+		tmp.writePositionalAll(runtime.io(), &buf, 0) catch { tmp.close(runtime.io()); return error.SkipZigTest; };
+		tmp.close(runtime.io());
 	}
-	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 
 	var source = FileSource.open(tmp_path) catch return error.SkipZigTest;
 	defer source.close();
@@ -1271,11 +1272,11 @@ test "BSP validator - accepts valid Quake 1 BSP in memory" {
 
 	const tmp_path = "/tmp/bsp_test_valid_q1.bsp";
 	{
-		const tmp = std.fs.cwd().createFile(tmp_path, .{}) catch return error.SkipZigTest;
-		tmp.writeAll(&buf) catch { tmp.close(); return error.SkipZigTest; };
-		tmp.close();
+		const tmp = runtime.createFile(tmp_path, .{}) catch return error.SkipZigTest;
+		tmp.writePositionalAll(runtime.io(), &buf, 0) catch { tmp.close(runtime.io()); return error.SkipZigTest; };
+		tmp.close(runtime.io());
 	}
-	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 
 	var source = FileSource.open(tmp_path) catch return error.SkipZigTest;
 	defer source.close();

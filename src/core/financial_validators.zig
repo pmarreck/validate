@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
@@ -752,7 +753,7 @@ pub fn validateNachaDeep(allocator: Allocator, source: *FileSource) ValidationRe
 	}
 
 	// Split into lines (handling CRLF, LF, or fixed-width 94-char records)
-	var lines = std.ArrayListUnmanaged([]const u8){};
+	var lines = std.ArrayListUnmanaged([]const u8).empty;
 	defer lines.deinit(allocator);
 	{
 		var pos: usize = 0;
@@ -1457,7 +1458,7 @@ pub fn validateBai2Deep(allocator: Allocator, source: *FileSource) ValidationRes
 	}
 
 	// Collect logical records (handling continuation with 88 records)
-	var lines = std.ArrayListUnmanaged([]const u8){};
+	var lines = std.ArrayListUnmanaged([]const u8).empty;
 	defer lines.deinit(allocator);
 	{
 		var pos: usize = 0;
@@ -1706,11 +1707,11 @@ test "QBW validator: modern SQL Anywhere format" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test.qbw", .{});
-	try file.writeAll(&header);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.qbw", .{});
+	try file.writePositionalAll(runtime.io(), &header, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.qbw");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.qbw");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -1743,11 +1744,11 @@ test "QBW validator: legacy MAUI format" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test_maui.qbw", .{});
-	try file.writeAll(&file_data);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test_maui.qbw", .{});
+	try file.writePositionalAll(runtime.io(), &file_data, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_maui.qbw");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_maui.qbw");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -1764,11 +1765,11 @@ test "QBW validator: invalid signature" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test_bad.qbw", .{});
-	try file.writeAll(&header);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test_bad.qbw", .{});
+	try file.writePositionalAll(runtime.io(), &header, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_bad.qbw");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_bad.qbw");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -1796,11 +1797,11 @@ test "QBW validator: MAUI block count mismatch" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test_mismatch.qbw", .{});
-	try file.writeAll(&file_data);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test_mismatch.qbw", .{});
+	try file.writePositionalAll(runtime.io(), &file_data, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_mismatch.qbw");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_mismatch.qbw");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -1826,11 +1827,11 @@ test "QBB validator: OLE2 format" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test.qbb", .{});
-	try file.writeAll(&header);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.qbb", .{});
+	try file.writePositionalAll(runtime.io(), &header, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.qbb");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.qbb");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -1856,11 +1857,11 @@ test "QDF validator: OLE2 variant" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test.qdf", .{});
-	try file.writeAll(&header);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.qdf", .{});
+	try file.writePositionalAll(runtime.io(), &header, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.qdf");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.qdf");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -1883,11 +1884,11 @@ test "QDF validator: ZIP variant" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test_zip.qdf", .{});
-	try file.writeAll(&header);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test_zip.qdf", .{});
+	try file.writePositionalAll(runtime.io(), &header, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_zip.qdf");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_zip.qdf");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -1911,11 +1912,11 @@ test "QDF validator: legacy format" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test_legacy.qdf", .{});
-	try file.writeAll(&header);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test_legacy.qdf", .{});
+	try file.writePositionalAll(runtime.io(), &header, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_legacy.qdf");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_legacy.qdf");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -1942,11 +1943,11 @@ test "OFX validator: SGML format (OFX 1.x)" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test.ofx", .{});
-	try file.writeAll(ofx_content);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.ofx", .{});
+	try file.writePositionalAll(runtime.io(), ofx_content, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.ofx");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.ofx");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -1970,11 +1971,11 @@ test "OFX validator: XML format (OFX 2.x)" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test.ofx", .{});
-	try file.writeAll(ofx_content);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.ofx", .{});
+	try file.writePositionalAll(runtime.io(), ofx_content, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.ofx");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.ofx");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2001,11 +2002,11 @@ test "QIF validator: Bank type" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test.qif", .{});
-	try file.writeAll(qif_content);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.qif", .{});
+	try file.writePositionalAll(runtime.io(), qif_content, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.qif");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.qif");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2022,11 +2023,11 @@ test "QIF validator: invalid content" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test_bad.qif", .{});
-	try file.writeAll(bad_content);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test_bad.qif", .{});
+	try file.writePositionalAll(runtime.io(), bad_content, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_bad.qif");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_bad.qif");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2051,11 +2052,11 @@ test "TXF validator: valid format" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test.txf", .{});
-	try file.writeAll(txf_content);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.txf", .{});
+	try file.writePositionalAll(runtime.io(), txf_content, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.txf");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.txf");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2072,11 +2073,11 @@ test "TXF validator: invalid content" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test_bad.txf", .{});
-	try file.writeAll(bad_content);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test_bad.txf", .{});
+	try file.writePositionalAll(runtime.io(), bad_content, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_bad.txf");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_bad.txf");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2090,11 +2091,11 @@ test "QBW validator: too small" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test_tiny.qbw", .{});
-	try file.writeAll("tiny");
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test_tiny.qbw", .{});
+	try file.writePositionalAll(runtime.io(), "tiny", 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_tiny.qbw");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_tiny.qbw");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2116,11 +2117,11 @@ test "QBW validator: SQL Anywhere with wrong page alignment" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test_misaligned.qbw", .{});
-	try file.writeAll(&header);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test_misaligned.qbw", .{});
+	try file.writePositionalAll(runtime.io(), &header, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_misaligned.qbw");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_misaligned.qbw");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2180,14 +2181,14 @@ test "QBW deep: valid CRC-32 pages" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("valid_deep.qbw", .{});
-	try file.writeAll(&page0);
-	try file.writeAll(&page1);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "valid_deep.qbw", .{});
+	try file.writePositionalAll(runtime.io(), &page0, 0);
+	try file.writePositionalAll(runtime.io(), &page1, 0);
+	file.close(runtime.io());
 
 	// Construct a path for the deep validator
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("valid_deep.qbw", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "valid_deep.qbw");
+	defer std.testing.allocator.free(path);
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2216,12 +2217,12 @@ test "QBW deep: corrupted CRC-32 detected" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("corrupt_deep.qbw", .{});
-	try file.writeAll(&page0);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt_deep.qbw", .{});
+	try file.writePositionalAll(runtime.io(), &page0, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("corrupt_deep.qbw", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "corrupt_deep.qbw");
+	defer std.testing.allocator.free(path);
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2230,11 +2231,7 @@ test "QBW deep: corrupted CRC-32 detected" {
 }
 
 test "ground truth: QBW deep validation passes all page CRCs" {
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/B18_Managing_Company_Files.qbw", &path_buf) catch |err| {
-		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
-		return err;
-	};
+	const path: []const u8 = "ground_truth_examples/qbw/B18_Managing_Company_Files.qbw";
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2265,11 +2262,7 @@ test "parseSaMajorVersion extracts version from copyright string" {
 test "ground truth: QBW v11 (Sybase) deep validation returns structural" {
 	// SQL Anywhere v11 is detected via copyright string parsing.
 	// v11 does not have per-page CRC on data pages, so we honestly report structural.
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/Farm2010.QBW", &path_buf) catch |err| {
-		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
-		return err;
-	};
+	const path: []const u8 = "ground_truth_examples/qbw/Farm2010.QBW";
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2281,11 +2274,7 @@ test "ground truth: QBW v11 (Sybase) deep validation returns structural" {
 }
 
 test "ground truth: QBW v11 password-protected deep validation" {
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/qbw/Farm2010 - pass.QBW", &path_buf) catch |err| {
-		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
-		return err;
-	};
+	const path: []const u8 = "ground_truth_examples/qbw/Farm2010 - pass.QBW";
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2296,11 +2285,7 @@ test "ground truth: QBW v11 password-protected deep validation" {
 }
 
 test "ground truth: QDF deep validation via OLE2" {
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/qdf/LONDON_2018.QDF", &path_buf) catch |err| {
-		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
-		return err;
-	};
+	const path: []const u8 = "ground_truth_examples/qdf/LONDON_2018.QDF";
 
 	var source = FileSource.open(path) catch return error.SkipZigTest;
 	defer source.close();
@@ -2328,12 +2313,12 @@ test "NACHA structural: valid file header" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test.ach", .{});
-	try file.writeAll(&rec);
-	try file.writeAll("\n");
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.ach", .{});
+	try file.writePositionalAll(runtime.io(), &rec, 0);
+	try file.writePositionalAll(runtime.io(), "\n", 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.ach");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.ach");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2351,12 +2336,12 @@ test "NACHA structural: invalid record type" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("bad.ach", .{});
-	try file.writeAll(&rec);
-	try file.writeAll("\n");
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "bad.ach", .{});
+	try file.writePositionalAll(runtime.io(), &rec, 0);
+	try file.writePositionalAll(runtime.io(), "\n", 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"bad.ach");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "bad.ach");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2372,12 +2357,12 @@ test "NACHA structural: invalid priority code" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("bad_priority.ach", .{});
-	try file.writeAll(&rec);
-	try file.writeAll("\n");
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "bad_priority.ach", .{});
+	try file.writePositionalAll(runtime.io(), &rec, 0);
+	try file.writePositionalAll(runtime.io(), "\n", 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"bad_priority.ach");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "bad_priority.ach");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2391,11 +2376,11 @@ test "NACHA structural: file too small" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("tiny.ach", .{});
-	try file.writeAll("101 short");
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "tiny.ach", .{});
+	try file.writePositionalAll(runtime.io(), "101 short", 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"tiny.ach");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "tiny.ach");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2432,12 +2417,12 @@ test "NACHA deep: valid file with correct integrity" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("valid_deep.ach", .{});
-	try file.writeAll(file_data);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "valid_deep.ach", .{});
+	try file.writePositionalAll(runtime.io(), file_data, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("valid_deep.ach", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "valid_deep.ach");
+	defer std.testing.allocator.free(path);
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2460,12 +2445,12 @@ test "NACHA deep: corrupted entry hash detected" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("corrupt_hash.ach", .{});
-	try file.writeAll(file_data);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt_hash.ach", .{});
+	try file.writePositionalAll(runtime.io(), file_data, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("corrupt_hash.ach", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "corrupt_hash.ach");
+	defer std.testing.allocator.free(path);
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2487,12 +2472,12 @@ test "NACHA deep: corrupted credit total detected" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("corrupt_credit.ach", .{});
-	try file.writeAll(file_data);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt_credit.ach", .{});
+	try file.writePositionalAll(runtime.io(), file_data, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("corrupt_credit.ach", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "corrupt_credit.ach");
+	defer std.testing.allocator.free(path);
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2526,11 +2511,11 @@ test "MT940 structural: SWIFT envelope" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test.mt940", .{});
-	try file.writeAll(mt940);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.mt940", .{});
+	try file.writePositionalAll(runtime.io(), mt940, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.mt940");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.mt940");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2552,11 +2537,11 @@ test "MT940 structural: bare format (starts with :20:)" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test_bare.mt940", .{});
-	try file.writeAll(mt940);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test_bare.mt940", .{});
+	try file.writePositionalAll(runtime.io(), mt940, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test_bare.mt940");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_bare.mt940");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2572,11 +2557,11 @@ test "MT940 structural: invalid content" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("bad.mt940", .{});
-	try file.writeAll(bad);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "bad.mt940", .{});
+	try file.writePositionalAll(runtime.io(), bad, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"bad.mt940");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "bad.mt940");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2604,12 +2589,12 @@ test "MT940 deep: valid balance arithmetic" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("valid_deep.mt940", .{});
-	try file.writeAll(mt940);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "valid_deep.mt940", .{});
+	try file.writePositionalAll(runtime.io(), mt940, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("valid_deep.mt940", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "valid_deep.mt940");
+	defer std.testing.allocator.free(path);
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2633,12 +2618,12 @@ test "MT940 deep: balance arithmetic mismatch detected" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("corrupt_balance.mt940", .{});
-	try file.writeAll(mt940);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt_balance.mt940", .{});
+	try file.writePositionalAll(runtime.io(), mt940, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("corrupt_balance.mt940", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "corrupt_balance.mt940");
+	defer std.testing.allocator.free(path);
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2657,12 +2642,12 @@ test "MT940 deep: currency mismatch detected" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("currency_mismatch.mt940", .{});
-	try file.writeAll(mt940);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "currency_mismatch.mt940", .{});
+	try file.writePositionalAll(runtime.io(), mt940, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("currency_mismatch.mt940", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "currency_mismatch.mt940");
+	defer std.testing.allocator.free(path);
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2686,12 +2671,12 @@ test "MT940 deep: debit opening balance" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("debit_opening.mt940", .{});
-	try file.writeAll(mt940);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "debit_opening.mt940", .{});
+	try file.writePositionalAll(runtime.io(), mt940, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("debit_opening.mt940", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "debit_opening.mt940");
+	defer std.testing.allocator.free(path);
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2724,11 +2709,11 @@ test "BAI2 structural: valid file header" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("test.bai2", .{});
-	try file.writeAll(bai2);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.bai2", .{});
+	try file.writePositionalAll(runtime.io(), bai2, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"test.bai2");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.bai2");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2745,11 +2730,11 @@ test "BAI2 structural: invalid start" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("bad.bai2", .{});
-	try file.writeAll(bad);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "bad.bai2", .{});
+	try file.writePositionalAll(runtime.io(), bad, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"bad.bai2");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "bad.bai2");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2765,11 +2750,11 @@ test "BAI2 structural: missing terminator" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("no_slash.bai2", .{});
-	try file.writeAll(bad);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "no_slash.bai2", .{});
+	try file.writePositionalAll(runtime.io(), bad, 0);
+	file.close(runtime.io());
 
-	const read_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator,"no_slash.bai2");
+	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "no_slash.bai2");
 	defer std.testing.allocator.free(read_path);
 	var read_source = try FileSource.open(read_path);
 	defer read_source.close();
@@ -2799,12 +2784,12 @@ test "BAI2 deep: valid cascading control totals" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("valid_deep.bai2", .{});
-	try file.writeAll(bai2);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "valid_deep.bai2", .{});
+	try file.writePositionalAll(runtime.io(), bai2, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("valid_deep.bai2", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "valid_deep.bai2");
+	defer std.testing.allocator.free(path);
 
 	var source = try FileSource.open(path);
 	defer source.close();
@@ -2828,12 +2813,12 @@ test "BAI2 deep: account control total mismatch detected" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("corrupt_total.bai2", .{});
-	try file.writeAll(bai2);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt_total.bai2", .{});
+	try file.writePositionalAll(runtime.io(), bai2, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("corrupt_total.bai2", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "corrupt_total.bai2");
+	defer std.testing.allocator.free(path);
 
 	var source = try FileSource.open(path);
 	defer source.close();
@@ -2854,12 +2839,12 @@ test "BAI2 deep: group record count mismatch detected" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("corrupt_count.bai2", .{});
-	try file.writeAll(bai2);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt_count.bai2", .{});
+	try file.writePositionalAll(runtime.io(), bai2, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("corrupt_count.bai2", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "corrupt_count.bai2");
+	defer std.testing.allocator.free(path);
 
 	var source = try FileSource.open(path);
 	defer source.close();
@@ -2879,12 +2864,12 @@ test "BAI2 deep: file group count mismatch detected" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 
-	const file = try tmp_dir.dir.createFile("corrupt_groups.bai2", .{});
-	try file.writeAll(bai2);
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt_groups.bai2", .{});
+	try file.writePositionalAll(runtime.io(), bai2, 0);
+	file.close(runtime.io());
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath("corrupt_groups.bai2", &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "corrupt_groups.bai2");
+	defer std.testing.allocator.free(path);
 
 	var source = try FileSource.open(path);
 	defer source.close();
@@ -2917,11 +2902,7 @@ test "ground truth: NACHA sample structural validation" {
 }
 
 test "ground truth: NACHA sample deep validation" {
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/nacha/sample.ach", &path_buf) catch |err| {
-		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
-		return err;
-	};
+	const path: []const u8 = "ground_truth_examples/nacha/sample.ach";
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2944,11 +2925,7 @@ test "ground truth: MT940 sample structural validation" {
 }
 
 test "ground truth: MT940 sample deep validation" {
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/mt940/sample.mt940", &path_buf) catch |err| {
-		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
-		return err;
-	};
+	const path: []const u8 = "ground_truth_examples/mt940/sample.mt940";
 
 	var src = try FileSource.open(path);
 	defer src.close();
@@ -2971,11 +2948,7 @@ test "ground truth: BAI2 sample structural validation" {
 }
 
 test "ground truth: BAI2 sample deep validation" {
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = std.fs.cwd().realpath("ground_truth_examples/bai2/sample.bai2", &path_buf) catch |err| {
-		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
-		return err;
-	};
+	const path: []const u8 = "ground_truth_examples/bai2/sample.bai2";
 
 	var source = FileSource.open(path) catch return error.SkipZigTest;
 	defer source.close();

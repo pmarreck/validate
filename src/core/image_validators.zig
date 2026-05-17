@@ -3,6 +3,7 @@
 //! JBIG2, HEIC, AVIF, ICO, QOI, TGA, and DNG.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
@@ -115,14 +116,14 @@ fn debugLog(comptime fmt: []const u8, args: anytype) void {
     // Use fixed path for reliability (TMPDIR varies per process on macOS)
     const log_path = "/tmp/es_format_debug.log";
     // Create file if it doesn't exist, otherwise append
-    const file = std.fs.cwd().createFile(log_path, .{
+    const file = runtime.createFile(log_path, .{
         .truncate = false,
     }) catch return;
-    defer file.close();
-    file.seekFromEnd(0) catch return;
+    defer file.close(runtime.io());
+    const end = file.length(runtime.io()) catch return;
     var buf: [1024]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    _ = file.write(msg) catch return;
+    file.writePositionalAll(runtime.io(), msg, end) catch return;
 }
 
 // ============ JPEG Validator ============
@@ -5703,11 +5704,11 @@ test "validatePng rejects truncated PNG" {
     defer tmp.cleanup();
     // Valid PNG signature but no IHDR chunk
     const data = [_]u8{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
-    const f = try tmp.dir.createFile("bad.png", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_png: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_png = tmp.dir.realpath("bad.png", &path_buf_bad_png) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.png", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_png = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.png") catch return;
+    defer std.testing.allocator.free(realpath_bad_png);
     var source = FileSource.open(realpath_bad_png) catch return;
     defer source.close();
     const result = validatePng(&source);
@@ -5725,11 +5726,11 @@ test "validatePng rejects non-IHDR first chunk" {
         'X',  'X',  'X',  'X', // chunk type (not IHDR)
         0x00, 0x00, 0x00, 0x00, // CRC
     };
-    const f = try tmp.dir.createFile("bad2.png", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad2_png: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad2_png = tmp.dir.realpath("bad2.png", &path_buf_bad2_png) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad2.png", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad2_png = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad2.png") catch return;
+    defer std.testing.allocator.free(realpath_bad2_png);
     var source = FileSource.open(realpath_bad2_png) catch return;
     defer source.close();
     const result = validatePng(&source);
@@ -5738,7 +5739,7 @@ test "validatePng rejects non-IHDR first chunk" {
 
 test "validatePngDeep accepts valid PNG from ground truth" {
     const allocator = testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/png/generated_gradient.png") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/png/generated_gradient.png") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
     var source = FileSource.open(path) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
@@ -5762,11 +5763,11 @@ test "validateJpeg rejects truncated JPEG" {
     defer tmp.cleanup();
     // Valid SOI marker but nothing else
     const data = [_]u8{ 0xFF, 0xD8 };
-    const f = try tmp.dir.createFile("bad.jpg", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_jpg: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_jpg = tmp.dir.realpath("bad.jpg", &path_buf_bad_jpg) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.jpg", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_jpg = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.jpg") catch return;
+    defer std.testing.allocator.free(realpath_bad_jpg);
     var source = FileSource.open(realpath_bad_jpg) catch return;
     defer source.close();
     const result = validateJpeg(&source);
@@ -5779,11 +5780,11 @@ test "validateJpeg rejects invalid magic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 0x00, 0x00, 0x00, 0x00 };
-    const f = try tmp.dir.createFile("bad2.jpg", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad2_jpg: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad2_jpg = tmp.dir.realpath("bad2.jpg", &path_buf_bad2_jpg) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad2.jpg", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad2_jpg = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad2.jpg") catch return;
+    defer std.testing.allocator.free(realpath_bad2_jpg);
     var source = FileSource.open(realpath_bad2_jpg) catch return;
     defer source.close();
     const result = validateJpeg(&source);
@@ -5804,11 +5805,11 @@ test "validateGif rejects invalid header" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 'N', 'O', 'T', 'G', 'I', 'F' };
-    const f = try tmp.dir.createFile("bad.gif", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_gif: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_gif = tmp.dir.realpath("bad.gif", &path_buf_bad_gif) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.gif", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_gif = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.gif") catch return;
+    defer std.testing.allocator.free(realpath_bad_gif);
     var source = FileSource.open(realpath_bad_gif) catch return;
     defer source.close();
     const result = validateGif(&source);
@@ -5820,11 +5821,11 @@ test "validateGif rejects too-small file" {
     defer tmp.cleanup();
     // Valid GIF header but file too small (< 13 bytes)
     const data = [_]u8{ 'G', 'I', 'F', '8', '9', 'a', 0x01, 0x00, 0x01, 0x00, 0x00, 0x00 };
-    const f = try tmp.dir.createFile("small.gif", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_small_gif: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_small_gif = tmp.dir.realpath("small.gif", &path_buf_small_gif) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "small.gif", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_small_gif = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "small.gif") catch return;
+    defer std.testing.allocator.free(realpath_small_gif);
     var source = FileSource.open(realpath_small_gif) catch return;
     defer source.close();
     const result = validateGif(&source);
@@ -5845,11 +5846,11 @@ test "validateBmp rejects invalid signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 'X', 'X', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00 };
-    const f = try tmp.dir.createFile("bad.bmp", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_bmp: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_bmp = tmp.dir.realpath("bad.bmp", &path_buf_bad_bmp) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.bmp", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_bmp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.bmp") catch return;
+    defer std.testing.allocator.free(realpath_bad_bmp);
     var source = FileSource.open(realpath_bad_bmp) catch return;
     defer source.close();
     const result = validateBmp(&source);
@@ -5875,9 +5876,9 @@ test "validateBmp rejects corrupted planes field" {
     defer tmp.cleanup();
 
     // Valid BMP
-    tmp.dir.writeFile(.{ .sub_path = "good.bmp", .data = &bmp }) catch return;
-    var pb_good_bmp: [std.fs.max_path_bytes]u8 = undefined;
-    const rp_good_bmp = tmp.dir.realpath("good.bmp", &pb_good_bmp) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "good.bmp", .data = &bmp }) catch return;
+    const rp_good_bmp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "good.bmp") catch return;
+    defer std.testing.allocator.free(rp_good_bmp);
     var good = FileSource.open(rp_good_bmp) catch return;
     defer good.close();
     try testing.expect(validateBmp(&good).is_valid);
@@ -5885,11 +5886,11 @@ test "validateBmp rejects corrupted planes field" {
     // Corrupt planes to 5
     var bad = bmp;
     std.mem.writeInt(u16, bad[26..28], 5, .little);
-    tmp.dir.writeFile(.{ .sub_path = "bad_planes.bmp", .data = &bad }) catch return;
-    var pb_bad_planes_bmp: [std.fs.max_path_bytes]u8 = undefined;
-    const rp_bad_planes_bmp = tmp.dir.realpath("bad_planes.bmp", &pb_bad_planes_bmp) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_planes.bmp", .data = &bad }) catch return;
+    const rp_bad_planes_bmp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_planes.bmp") catch return;
+    defer std.testing.allocator.free(rp_bad_planes_bmp);
     var f = FileSource.open(rp_bad_planes_bmp) catch return;
-    defer f.close();
+    defer f.close(runtime.io());
     try testing.expect(!validateBmp(&f).is_valid);
 }
 
@@ -5912,11 +5913,11 @@ test "validateBmp rejects corrupted bit count" {
     std.mem.writeInt(u16, bad[28..30], 13, .little);
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "bad_bpp.bmp", .data = &bad }) catch return;
-    var pb_bad_bpp_bmp: [std.fs.max_path_bytes]u8 = undefined;
-    const rp_bad_bpp_bmp = tmp.dir.realpath("bad_bpp.bmp", &pb_bad_bpp_bmp) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_bpp.bmp", .data = &bad }) catch return;
+    const rp_bad_bpp_bmp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_bpp.bmp") catch return;
+    defer std.testing.allocator.free(rp_bad_bpp_bmp);
     var f = FileSource.open(rp_bad_bpp_bmp) catch return;
-    defer f.close();
+    defer f.close(runtime.io());
     try testing.expect(!validateBmp(&f).is_valid);
 }
 
@@ -5936,11 +5937,11 @@ test "validateBmp rejects pixel data exceeding file size" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "too_big.bmp", .data = &bmp }) catch return;
-    var pb_too_big_bmp: [std.fs.max_path_bytes]u8 = undefined;
-    const rp_too_big_bmp = tmp.dir.realpath("too_big.bmp", &pb_too_big_bmp) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "too_big.bmp", .data = &bmp }) catch return;
+    const rp_too_big_bmp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "too_big.bmp") catch return;
+    defer std.testing.allocator.free(rp_too_big_bmp);
     var f = FileSource.open(rp_too_big_bmp) catch return;
-    defer f.close();
+    defer f.close(runtime.io());
     try testing.expect(!validateBmp(&f).is_valid);
 }
 
@@ -5958,11 +5959,11 @@ test "validateTiff rejects invalid byte order" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 'X', 'X', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00 };
-    const f = try tmp.dir.createFile("bad.tif", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_tif: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_tif = tmp.dir.realpath("bad.tif", &path_buf_bad_tif) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.tif", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_tif = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.tif") catch return;
+    defer std.testing.allocator.free(realpath_bad_tif);
     var source = FileSource.open(realpath_bad_tif) catch return;
     defer source.close();
     const result = validateTiff(&source, .tiff);
@@ -5983,11 +5984,11 @@ test "validateWebp rejects invalid RIFF signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 'N', 'O', 'P', 'E', 0x00, 0x00, 0x00, 0x00, 'W', 'E', 'B', 'P' };
-    const f = try tmp.dir.createFile("bad.webp", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_webp: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_webp = tmp.dir.realpath("bad.webp", &path_buf_bad_webp) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.webp", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_webp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.webp") catch return;
+    defer std.testing.allocator.free(realpath_bad_webp);
     var source = FileSource.open(realpath_bad_webp) catch return;
     defer source.close();
     const result = validateWebp(&source);
@@ -5998,11 +5999,11 @@ test "validateWebp rejects invalid fourcc" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 'R', 'I', 'F', 'F', 0x04, 0x00, 0x00, 0x00, 'N', 'O', 'P', 'E' };
-    const f = try tmp.dir.createFile("bad2.webp", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad2_webp: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad2_webp = tmp.dir.realpath("bad2.webp", &path_buf_bad2_webp) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad2.webp", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad2_webp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad2.webp") catch return;
+    defer std.testing.allocator.free(realpath_bad2_webp);
     var source = FileSource.open(realpath_bad2_webp) catch return;
     defer source.close();
     const result = validateWebp(&source);
@@ -6022,11 +6023,11 @@ test "validateSvg accepts valid SVG from ground truth" {
 test "validateSvg rejects non-SVG content" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.svg", .{});
-    try f.writeAll("This is not an SVG file at all.");
-    f.close();
-    var path_buf_bad_svg: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_svg = tmp.dir.realpath("bad.svg", &path_buf_bad_svg) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.svg", .{});
+    try f.writePositionalAll(runtime.io(), "This is not an SVG file at all.", 0);
+    f.close(runtime.io());
+    const realpath_bad_svg = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.svg") catch return;
+    defer std.testing.allocator.free(realpath_bad_svg);
     var source = FileSource.open(realpath_bad_svg) catch return;
     defer source.close();
     const result = validateSvg(&source);
@@ -6035,7 +6036,7 @@ test "validateSvg rejects non-SVG content" {
 
 test "validateSvgDeep accepts valid SVG from ground truth" {
     const allocator = testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/svg/sample.svg") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/svg/sample.svg") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
     var source = FileSource.open(path) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
@@ -6058,11 +6059,11 @@ test "validateJxl rejects invalid signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    const f = try tmp.dir.createFile("bad.jxl", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_jxl: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_jxl = tmp.dir.realpath("bad.jxl", &path_buf_bad_jxl) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.jxl", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_jxl = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.jxl") catch return;
+    defer std.testing.allocator.free(realpath_bad_jxl);
     var source = FileSource.open(realpath_bad_jxl) catch return;
     defer source.close();
     const result = validateJxl(&source);
@@ -6083,11 +6084,11 @@ test "validateExr rejects invalid magic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    const f = try tmp.dir.createFile("bad.exr", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_exr: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_exr = tmp.dir.realpath("bad.exr", &path_buf_bad_exr) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.exr", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_exr = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.exr") catch return;
+    defer std.testing.allocator.free(realpath_bad_exr);
     var source = FileSource.open(realpath_bad_exr) catch return;
     defer source.close();
     const result = validateExr(&source);
@@ -6096,7 +6097,7 @@ test "validateExr rejects invalid magic" {
 
 test "validateExrDeep accepts valid EXR from ground truth" {
     const allocator = testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/exr/sample.exr") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/exr/sample.exr") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
     var source = FileSource.open(path) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
@@ -6127,11 +6128,11 @@ test "validateIco rejects invalid reserved field" {
         0x10, 0x10, 0x00, 0x00, 0x01, 0x00, 0x20, 0x00,
         0x00, 0x04, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00,
     };
-    const f = try tmp.dir.createFile("bad.ico", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_ico: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_ico = tmp.dir.realpath("bad.ico", &path_buf_bad_ico) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.ico", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_ico = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.ico") catch return;
+    defer std.testing.allocator.free(realpath_bad_ico);
     var source = FileSource.open(realpath_bad_ico) catch return;
     defer source.close();
     const result = validateIco(&source);
@@ -6146,11 +6147,11 @@ test "validateIco rejects zero image count" {
         0x01, 0x00, // type = icon
         0x00, 0x00, // count = 0
     };
-    const f = try tmp.dir.createFile("empty.ico", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_empty_ico: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_empty_ico = tmp.dir.realpath("empty.ico", &path_buf_empty_ico) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "empty.ico", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_empty_ico = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "empty.ico") catch return;
+    defer std.testing.allocator.free(realpath_empty_ico);
     var source = FileSource.open(realpath_empty_ico) catch return;
     defer source.close();
     const result = validateIco(&source);
@@ -6171,11 +6172,11 @@ test "validateQoi rejects invalid magic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 'n', 'o', 'p', 'e', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x03, 0x00 };
-    const f = try tmp.dir.createFile("bad.qoi", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_qoi: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_qoi = tmp.dir.realpath("bad.qoi", &path_buf_bad_qoi) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.qoi", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_qoi = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.qoi") catch return;
+    defer std.testing.allocator.free(realpath_bad_qoi);
     var source = FileSource.open(realpath_bad_qoi) catch return;
     defer source.close();
     const result = validateQoi(&source);
@@ -6186,11 +6187,11 @@ test "validateQoi rejects zero width" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 'q', 'o', 'i', 'f', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x00 };
-    const f = try tmp.dir.createFile("zero_w.qoi", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_zero_w_qoi: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_zero_w_qoi = tmp.dir.realpath("zero_w.qoi", &path_buf_zero_w_qoi) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "zero_w.qoi", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_zero_w_qoi = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "zero_w.qoi") catch return;
+    defer std.testing.allocator.free(realpath_zero_w_qoi);
     var source = FileSource.open(realpath_zero_w_qoi) catch return;
     defer source.close();
     const result = validateQoi(&source);
@@ -6202,11 +6203,11 @@ test "validateQoi rejects invalid channels" {
     defer tmp.cleanup();
     // channels = 5 (must be 3 or 4)
     const data = [_]u8{ 'q', 'o', 'i', 'f', 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x00 };
-    const f = try tmp.dir.createFile("bad_ch.qoi", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_ch_qoi: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_ch_qoi = tmp.dir.realpath("bad_ch.qoi", &path_buf_bad_ch_qoi) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad_ch.qoi", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_ch_qoi = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_ch.qoi") catch return;
+    defer std.testing.allocator.free(realpath_bad_ch_qoi);
     var source = FileSource.open(realpath_bad_ch_qoi) catch return;
     defer source.close();
     const result = validateQoi(&source);
@@ -6233,11 +6234,11 @@ test "validateTga rejects invalid color map type" {
     data[12] = 0x01; // width = 1
     data[14] = 0x01; // height = 1
     data[16] = 24; // pixel depth
-    const f = try tmp.dir.createFile("bad.tga", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_tga: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_tga = tmp.dir.realpath("bad.tga", &path_buf_bad_tga) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.tga", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_tga = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.tga") catch return;
+    defer std.testing.allocator.free(realpath_bad_tga);
     var source = FileSource.open(realpath_bad_tga) catch return;
     defer source.close();
     const result = validateTga(&source);
@@ -6253,11 +6254,11 @@ test "validateTga rejects invalid image type" {
     data[12] = 0x01;
     data[14] = 0x01;
     data[16] = 24;
-    const f = try tmp.dir.createFile("bad2.tga", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad2_tga: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad2_tga = tmp.dir.realpath("bad2.tga", &path_buf_bad2_tga) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad2.tga", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad2_tga = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad2.tga") catch return;
+    defer std.testing.allocator.free(realpath_bad2_tga);
     var source = FileSource.open(realpath_bad2_tga) catch return;
     defer source.close();
     const result = validateTga(&source);
@@ -6283,11 +6284,11 @@ test "validateTga v2 footer returns structural depth" {
     @memcpy(data[26..42], sig);
     data[42] = '.';
     data[43] = 0x00;
-    const f = try tmp.dir.createFile("v2.tga", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("v2.tga", &path_buf) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "v2.tga", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "v2.tga") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateTga(&source);
@@ -6305,11 +6306,11 @@ test "validateTga v1 (no footer) returns structural depth" {
     data[12] = 1;
     data[14] = 1;
     data[16] = 24;
-    const f = try tmp.dir.createFile("v1.tga", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("v1.tga", &path_buf) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "v1.tga", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "v1.tga") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateTga(&source);
@@ -6331,11 +6332,11 @@ test "validateTga v2 rejects out-of-bounds extension_offset" {
     const sig = "TRUEVISION-XFILE";
     @memcpy(data[26..42], sig);
     data[42] = '.'; data[43] = 0x00;
-    const f = try tmp.dir.createFile("bad_ext.tga", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("bad_ext.tga", &path_buf) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad_ext.tga", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_ext.tga") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateTga(&source);
@@ -6356,11 +6357,11 @@ test "validateTga v2 rejects out-of-bounds dev_area_offset" {
     const sig = "TRUEVISION-XFILE";
     @memcpy(data[26..42], sig);
     data[42] = '.'; data[43] = 0x00;
-    const f = try tmp.dir.createFile("bad_dev.tga", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("bad_dev.tga", &path_buf) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad_dev.tga", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_dev.tga") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateTga(&source);
@@ -6380,11 +6381,11 @@ test "validatePam accepts valid PPM from ground truth with structural depth" {
 test "validatePam rejects invalid magic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.pam", .{});
-    try f.writeAll("X6 1 1 255\n");
-    f.close();
-    var path_buf_bad_pam: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_pam = tmp.dir.realpath("bad.pam", &path_buf_bad_pam) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.pam", .{});
+    try f.writePositionalAll(runtime.io(), "X6 1 1 255\n", 0);
+    f.close(runtime.io());
+    const realpath_bad_pam = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.pam") catch return;
+    defer std.testing.allocator.free(realpath_bad_pam);
     var source = FileSource.open(realpath_bad_pam) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6394,11 +6395,11 @@ test "validatePam rejects invalid magic" {
 test "validatePam rejects out-of-range type" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad2.pam", .{});
-    try f.writeAll("P8 1 1\n");
-    f.close();
-    var path_buf_bad2_pam: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad2_pam = tmp.dir.realpath("bad2.pam", &path_buf_bad2_pam) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad2.pam", .{});
+    try f.writePositionalAll(runtime.io(), "P8 1 1\n", 0);
+    f.close(runtime.io());
+    const realpath_bad2_pam = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad2.pam") catch return;
+    defer std.testing.allocator.free(realpath_bad2_pam);
     var source = FileSource.open(realpath_bad2_pam) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6412,9 +6413,9 @@ test "validatePam returns structural depth for exact-size P6" {
     var data = [_]u8{0} ** 23;
     @memcpy(data[0..11], "P6\n2 2\n255\n");
     // pixel data: 12 bytes of zeros (valid black pixels) already zero-initialized
-    tmp.dir.writeFile(.{ .sub_path = "exact.ppm", .data = &data }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("exact.ppm", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "exact.ppm", .data = &data }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "exact.ppm") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6428,9 +6429,9 @@ test "validatePam rejects truncated P6" {
     var data = [_]u8{0} ** 17;
     @memcpy(data[0..11], "P6\n2 2\n255\n");
     // Only 6 bytes of pixel data instead of 12 — truncated
-    tmp.dir.writeFile(.{ .sub_path = "trunc.ppm", .data = &data }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("trunc.ppm", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "trunc.ppm", .data = &data }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "trunc.ppm") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6460,9 +6461,9 @@ test "validatePam: P4 off-by-one in last row is WARN, not hard FAIL" {
     var data: [header.len + 55]u8 = undefined;
     @memcpy(data[0..header.len], header);
     @memset(data[header.len..], 0);
-    tmp.dir.writeFile(.{ .sub_path = "off-by-one.pbm", .data = &data }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("off-by-one.pbm", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "off-by-one.pbm", .data = &data }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "off-by-one.pbm") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6480,9 +6481,9 @@ test "validatePam: P4 narrow row missing 1 byte still FAILs (full row of data lo
     var data: [header.len + 7]u8 = undefined;
     @memcpy(data[0..header.len], header);
     @memset(data[header.len..], 0);
-    tmp.dir.writeFile(.{ .sub_path = "narrow-trunc.pbm", .data = &data }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("narrow-trunc.pbm", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "narrow-trunc.pbm", .data = &data }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "narrow-trunc.pbm") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6499,9 +6500,9 @@ test "validatePam: P4 wide row missing 8 bytes still FAILs (>7 bytes lost)" {
     var data: [header.len + 72]u8 = undefined;
     @memcpy(data[0..header.len], header);
     @memset(data[header.len..], 0);
-    tmp.dir.writeFile(.{ .sub_path = "wide-trunc.pbm", .data = &data }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("wide-trunc.pbm", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "wide-trunc.pbm", .data = &data }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "wide-trunc.pbm") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6520,9 +6521,9 @@ test "validatePam returns full depth for P5 with maxval < 255 (pixel values vali
     data[header.len + 1] = 99;
     data[header.len + 2] = 0;
     data[header.len + 3] = 100; // exactly maxval — valid
-    tmp.dir.writeFile(.{ .sub_path = "valid_low_maxval.pgm", .data = &data }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("valid_low_maxval.pgm", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "valid_low_maxval.pgm", .data = &data }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "valid_low_maxval.pgm") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6541,9 +6542,9 @@ test "validatePam detects pixel value exceeding maxval in binary P5" {
     data[header.len + 1] = 200; // EXCEEDS maxval (100)
     data[header.len + 2] = 30; // ok
     data[header.len + 3] = 99; // ok
-    tmp.dir.writeFile(.{ .sub_path = "bad_maxval.pgm", .data = &data }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("bad_maxval.pgm", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_maxval.pgm", .data = &data }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_maxval.pgm") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6555,9 +6556,9 @@ test "validatePam fully validates ASCII P3 PPM with maxval check" {
     const data = "P3\n2 2\n255\n0 0 0 255 255 255\n128 64 32 0 0 0\n";
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "ascii.ppm", .data = data }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("ascii.ppm", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "ascii.ppm", .data = data }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "ascii.ppm") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6573,9 +6574,9 @@ test "validatePam rejects ASCII P3 with value exceeding maxval" {
     const data = "P3\n2 1\n100\n50 60 70 200 80 90\n";
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "bad_ascii.ppm", .data = data }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("bad_ascii.ppm", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_ascii.ppm", .data = data }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_ascii.ppm") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6587,9 +6588,9 @@ test "validatePam rejects ASCII P3 with wrong pixel count" {
     const data = "P3\n2 2\n255\n0 0 0 128 64 32\n";
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "truncated_ascii.ppm", .data = data }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("truncated_ascii.ppm", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "truncated_ascii.ppm", .data = data }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "truncated_ascii.ppm") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validatePam(&source);
@@ -6614,11 +6615,11 @@ test "validateDpx rejects invalid magic" {
     data[1] = 'O';
     data[2] = 'P';
     data[3] = 'E';
-    const f = try tmp.dir.createFile("bad.dpx", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_dpx: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_dpx = tmp.dir.realpath("bad.dpx", &path_buf_bad_dpx) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.dpx", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_dpx = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.dpx") catch return;
+    defer std.testing.allocator.free(realpath_bad_dpx);
     var source = FileSource.open(realpath_bad_dpx) catch return;
     defer source.close();
     const result = validateDpx(&source);
@@ -6646,9 +6647,9 @@ test "validateDpx rejects corrupted orientation" {
     defer tmp.cleanup();
 
     // Valid first
-    tmp.dir.writeFile(.{ .sub_path = "good.dpx", .data = &dpx }) catch return;
-    var pb_good_dpx: [std.fs.max_path_bytes]u8 = undefined;
-    const rp_good_dpx = tmp.dir.realpath("good.dpx", &pb_good_dpx) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "good.dpx", .data = &dpx }) catch return;
+    const rp_good_dpx = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "good.dpx") catch return;
+    defer std.testing.allocator.free(rp_good_dpx);
     var good = FileSource.open(rp_good_dpx) catch return;
     defer good.close();
     try testing.expect(validateDpx(&good).is_valid);
@@ -6656,11 +6657,11 @@ test "validateDpx rejects corrupted orientation" {
     // Corrupt orientation to 99
     var bad = dpx;
     std.mem.writeInt(u16, bad[768..770], 99, .big);
-    tmp.dir.writeFile(.{ .sub_path = "bad_orient.dpx", .data = &bad }) catch return;
-    var pb_bad_orient_dpx: [std.fs.max_path_bytes]u8 = undefined;
-    const rp_bad_orient_dpx = tmp.dir.realpath("bad_orient.dpx", &pb_bad_orient_dpx) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_orient.dpx", .data = &bad }) catch return;
+    const rp_bad_orient_dpx = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_orient.dpx") catch return;
+    defer std.testing.allocator.free(rp_bad_orient_dpx);
     var f = FileSource.open(rp_bad_orient_dpx) catch return;
-    defer f.close();
+    defer f.close(runtime.io());
     try testing.expect(!validateDpx(&f).is_valid);
 }
 
@@ -6681,11 +6682,11 @@ test "validateDpx rejects corrupted element count" {
     std.mem.writeInt(u16, bad[770..772], 0, .big);
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "bad_elem.dpx", .data = &bad }) catch return;
-    var pb_bad_elem_dpx: [std.fs.max_path_bytes]u8 = undefined;
-    const rp_bad_elem_dpx = tmp.dir.realpath("bad_elem.dpx", &pb_bad_elem_dpx) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_elem.dpx", .data = &bad }) catch return;
+    const rp_bad_elem_dpx = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_elem.dpx") catch return;
+    defer std.testing.allocator.free(rp_bad_elem_dpx);
     var f = FileSource.open(rp_bad_elem_dpx) catch return;
-    defer f.close();
+    defer f.close(runtime.io());
     try testing.expect(!validateDpx(&f).is_valid);
 }
 
@@ -6703,9 +6704,9 @@ test "validateDpx returns structural depth when declared size matches actual" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "full.dpx", .data = &dpx }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("full.dpx", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "full.dpx", .data = &dpx }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "full.dpx") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateDpx(&source);
@@ -6727,9 +6728,9 @@ test "validateDpx returns structural when declared size mismatches actual" {
 
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "mismatch.dpx", .data = &dpx }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("mismatch.dpx", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "mismatch.dpx", .data = &dpx }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "mismatch.dpx") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateDpx(&source);
@@ -6759,11 +6760,11 @@ test "validateJpeg2000 rejects invalid signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    const f = try tmp.dir.createFile("bad.jp2", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_jp2: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_jp2 = tmp.dir.realpath("bad.jp2", &path_buf_bad_jp2) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.jp2", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_jp2 = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.jp2") catch return;
+    defer std.testing.allocator.free(realpath_bad_jp2);
     var source = FileSource.open(realpath_bad_jp2) catch return;
     defer source.close();
     const result = validateJpeg2000(&source);
@@ -6784,11 +6785,11 @@ test "validateJbig2File rejects invalid signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const data = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    const f = try tmp.dir.createFile("bad.jbig2", .{});
-    try f.writeAll(&data);
-    f.close();
-    var path_buf_bad_jbig2: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath_bad_jbig2 = tmp.dir.realpath("bad.jbig2", &path_buf_bad_jbig2) catch return;
+    const f = try tmp.dir.createFile(runtime.io(), "bad.jbig2", .{});
+    try f.writePositionalAll(runtime.io(), &data, 0);
+    f.close(runtime.io());
+    const realpath_bad_jbig2 = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.jbig2") catch return;
+    defer std.testing.allocator.free(realpath_bad_jbig2);
     var source = FileSource.open(realpath_bad_jbig2) catch return;
     defer source.close();
     const result = validateJbig2File(&source);
@@ -6799,7 +6800,7 @@ test "validateJbig2File rejects invalid signature" {
 
 test "validateHeicDeep accepts valid HEIC from ground truth" {
     const allocator = testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/heic/sample.heic") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/heic/sample.heic") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
     var source = FileSource.open(path) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
@@ -6812,7 +6813,7 @@ test "validateHeicDeep accepts valid HEIC from ground truth" {
 
 test "validateAvifDeep accepts valid AVIF from ground truth" {
     const allocator = testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/avif/fox.avif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/avif/fox.avif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
     var source = FileSource.open(path) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer source.close();
@@ -6909,12 +6910,12 @@ test "FormatValidator detects corrupted PNG file" {
     };
 
     // Write corrupted PNG to temp file
-    const file = try tmp_dir.dir.createFile("corrupted.png", .{});
-    defer file.close();
-    try file.writeAll(&corrupted_png);
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupted.png", .{});
+    defer file.close(runtime.io());
+    try file.writePositionalAll(runtime.io(), &corrupted_png, 0);
 
     // Get full path
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.png");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupted.png");
     defer allocator.free(path);
 
     // Validate the file
@@ -6962,11 +6963,11 @@ test "FormatValidator accepts valid PNG file" {
         0xAE, 0x42, 0x60, 0x82, // CRC
     };
 
-    const file = try tmp_dir.dir.createFile("valid.png", .{});
-    try file.writeAll(&valid_png);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.png", .{});
+    try file.writePositionalAll(runtime.io(), &valid_png, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.png");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.png");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7083,11 +7084,11 @@ test "FormatValidator accepts valid JPEG file" {
         0xFF, 0xD9,
     };
 
-    const file = try tmp_dir.dir.createFile("valid.jpg", .{});
-    try file.writeAll(&valid_jpeg);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.jpg", .{});
+    try file.writePositionalAll(runtime.io(), &valid_jpeg, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.jpg");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.jpg");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7132,11 +7133,11 @@ test "FormatValidator rejects corrupted JPEG file" {
         // Missing EOI - corrupted!
     };
 
-    const file = try tmp_dir.dir.createFile("corrupted.jpg", .{});
-    try file.writeAll(&corrupted_jpeg);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupted.jpg", .{});
+    try file.writePositionalAll(runtime.io(), &corrupted_jpeg, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.jpg");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupted.jpg");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7162,11 +7163,11 @@ test "FormatValidator accepts valid JPEG XL codestream" {
         0x00, 0x00, 0x00, 0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("valid.jxl", .{});
-    try file.writeAll(&valid_jxl);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.jxl", .{});
+    try file.writePositionalAll(runtime.io(), &valid_jxl, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.jxl");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.jxl");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7192,11 +7193,11 @@ test "FormatValidator accepts valid JPEG XL container" {
         0x00, 0x00, 0x00, 0x00, // minor version
     };
 
-    const file = try tmp_dir.dir.createFile("valid_container.jxl", .{});
-    try file.writeAll(&valid_jxl_container);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_container.jxl", .{});
+    try file.writePositionalAll(runtime.io(), &valid_jxl_container, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_container.jxl");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_container.jxl");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7221,11 +7222,11 @@ test "FormatValidator rejects invalid JPEG XL" {
         0x00, 0x10,
     };
 
-    const file = try tmp_dir.dir.createFile("invalid.jxl", .{});
-    try file.writeAll(&invalid_jxl);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.jxl", .{});
+    try file.writePositionalAll(runtime.io(), &invalid_jxl, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.jxl");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.jxl");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7269,11 +7270,11 @@ test "FormatValidator accepts valid GIF87a" {
         0x3B,
     };
 
-    const file = try tmp_dir.dir.createFile("valid87.gif", .{});
-    try file.writeAll(&valid_gif);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid87.gif", .{});
+    try file.writePositionalAll(runtime.io(), &valid_gif, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid87.gif");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid87.gif");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7311,11 +7312,11 @@ test "FormatValidator accepts valid GIF89a" {
         0x3B,
     };
 
-    const file = try tmp_dir.dir.createFile("valid89.gif", .{});
-    try file.writeAll(&valid_gif);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid89.gif", .{});
+    try file.writePositionalAll(runtime.io(), &valid_gif, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid89.gif");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid89.gif");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7341,11 +7342,11 @@ test "FormatValidator rejects truncated GIF" {
         // Missing trailer (0x3B)
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.gif", .{});
-    try file.writeAll(&truncated_gif);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.gif", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_gif, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.gif");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.gif");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7367,7 +7368,7 @@ test "FormatValidator deep validates real GIF from ground truth" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/gif/sample_1.gif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/gif/sample_1.gif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7392,7 +7393,7 @@ test "FormatValidator deep validates animated GIF with LZW stream validation" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/gif/animated_sample.gif") catch |err| {
+    const path = allocator.dupe(u8, "ground_truth_examples/gif/animated_sample.gif") catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
@@ -7439,11 +7440,11 @@ test "FormatValidator accepts valid BMP" {
         0x00, 0x00, 0xFF, 0x00, // red pixel (BGR) + 1 byte padding
     };
 
-    const file = try tmp_dir.dir.createFile("valid.bmp", .{});
-    try file.writeAll(&valid_bmp);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.bmp", .{});
+    try file.writePositionalAll(runtime.io(), &valid_bmp, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.bmp");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.bmp");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7471,11 +7472,11 @@ test "FormatValidator rejects truncated BMP" {
         // Truncated - missing rest of header and pixel data
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.bmp", .{});
-    try file.writeAll(&truncated_bmp);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.bmp", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_bmp, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.bmp");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.bmp");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7497,7 +7498,7 @@ test "FormatValidator deep validates real BMP from ground truth" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/bmp/sample.bmp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/bmp/sample.bmp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7529,11 +7530,11 @@ test "FormatValidator accepts valid WebP VP8" {
         0x01, 0x00, 0x01, 0x00, // width/height
     };
 
-    const file = try tmp_dir.dir.createFile("valid.webp", .{});
-    try file.writeAll(&valid_webp);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.webp", .{});
+    try file.writePositionalAll(runtime.io(), &valid_webp, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.webp");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.webp");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7564,11 +7565,11 @@ test "FormatValidator rejects truncated WebP" {
         // Truncated
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.webp", .{});
-    try file.writeAll(&truncated_webp);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.webp", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_webp, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.webp");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.webp");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7590,7 +7591,7 @@ test "FormatValidator deep validates real WebP from ground truth" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/webp/sample.webp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/webp/sample.webp") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7633,7 +7634,7 @@ test "FormatValidator deep validates real JXL from ground truth" {
         return; // Skip if not a valid JXL file
     }
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/jxl/sample.jxl") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/jxl/sample.jxl") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7668,11 +7669,11 @@ test "FormatValidator accepts valid TIFF little-endian" {
         0x00, 0x00, 0x00, 0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("valid_le.tiff", .{});
-    try file.writeAll(&valid_tiff);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_le.tiff", .{});
+    try file.writePositionalAll(runtime.io(), &valid_tiff, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_le.tiff");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_le.tiff");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7709,11 +7710,11 @@ test "FormatValidator accepts valid TIFF big-endian" {
         0x00, 0x00, 0x00, 0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("valid_be.tiff", .{});
-    try file.writeAll(&valid_tiff);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_be.tiff", .{});
+    try file.writePositionalAll(runtime.io(), &valid_tiff, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_be.tiff");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_be.tiff");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7738,11 +7739,11 @@ test "FormatValidator rejects truncated TIFF" {
         0xFF, 0x00, 0x00, 0x00, // IFD offset (255, beyond file)
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.tiff", .{});
-    try file.writeAll(&truncated_tiff);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.tiff", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_tiff, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.tiff");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.tiff");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -7764,7 +7765,7 @@ test "FormatValidator deep validates real TIFF from ground truth" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tiff/bali.tif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/tiff/bali.tif") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7810,11 +7811,11 @@ test "validatePngDeep accepts valid PNG with correct CRCs" {
         0xAE, 0x42, 0x60, 0x82, // CRC (verified correct)
     };
 
-    const file = try tmp_dir.dir.createFile("valid.png", .{});
-    try file.writeAll(&valid_png);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.png", .{});
+    try file.writePositionalAll(runtime.io(), &valid_png, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.png");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.png");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7864,11 +7865,11 @@ test "validatePngDeep rejects PNG with corrupted IHDR CRC" {
         0xAE, 0x42, 0x60, 0x82,
     };
 
-    const file = try tmp_dir.dir.createFile("corrupted.png", .{});
-    try file.writeAll(&corrupted_png);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupted.png", .{});
+    try file.writePositionalAll(runtime.io(), &corrupted_png, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.png");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupted.png");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7908,11 +7909,11 @@ test "validatePngDeep rejects PNG with corrupted IDAT CRC" {
         0xAE, 0x42, 0x60, 0x82,
     };
 
-    const file = try tmp_dir.dir.createFile("corrupted_idat.png", .{});
-    try file.writeAll(&corrupted_png);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupted_idat.png", .{});
+    try file.writePositionalAll(runtime.io(), &corrupted_png, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted_idat.png");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupted_idat.png");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7951,11 +7952,11 @@ test "validatePngDeep rejects PNG with single bit flip in IDAT data" {
         0xAE, 0x42, 0x60, 0x82,
     };
 
-    const file = try tmp_dir.dir.createFile("bitrot.png", .{});
-    try file.writeAll(&bitrot_png);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "bitrot.png", .{});
+    try file.writePositionalAll(runtime.io(), &bitrot_png, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "bitrot.png");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bitrot.png");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -7981,11 +7982,11 @@ test "FormatValidator accepts valid SVG without extension mismatch" {
         \\</svg>
     ;
 
-    const file = try tmp_dir.dir.createFile("test.svg", .{});
-    try file.writeAll(svg_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.svg", .{});
+    try file.writePositionalAll(runtime.io(), svg_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.svg");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.svg");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -8044,11 +8045,11 @@ test "validatePsd accepts valid PSD with uncompressed data" {
     valid_psd[i] = 0x80; // Pixel data: 1 grayscale byte
     i += 1;
 
-    const file = try tmp_dir.dir.createFile("valid.psd", .{});
-    try file.writeAll(&valid_psd);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.psd", .{});
+    try file.writePositionalAll(runtime.io(), &valid_psd, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.psd");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.psd");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -8071,11 +8072,11 @@ test "validatePsd rejects truncated PSD header" {
     // Truncated PSD: only signature and version
     const truncated_psd = [_]u8{ '8', 'B', 'P', 'S', 0, 1 };
 
-    const file = try tmp_dir.dir.createFile("truncated.psd", .{});
-    try file.writeAll(&truncated_psd);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.psd", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_psd, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.psd");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.psd");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -8124,11 +8125,11 @@ test "validatePsdFromBuffer matches validatePsd file result" {
     valid_psd[i] = 0x80;
     i += 1;
 
-    const file = try tmp_dir.dir.createFile("buffer_test.psd", .{});
-    try file.writeAll(&valid_psd);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "buffer_test.psd", .{});
+    try file.writePositionalAll(runtime.io(), &valid_psd, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "buffer_test.psd");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "buffer_test.psd");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -8197,11 +8198,11 @@ test "validatePsdDeep accepts valid PSD with RLE compression" {
     rle_psd[i] = 0x80; // The pixel
     i += 1;
 
-    const file = try tmp_dir.dir.createFile("rle.psd", .{});
-    try file.writeAll(&rle_psd);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "rle.psd", .{});
+    try file.writePositionalAll(runtime.io(), &rle_psd, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "rle.psd");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "rle.psd");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -8241,11 +8242,11 @@ test "PNG file with .ico extension should not hang (extension mismatch)" {
     };
 
     // Save PNG data with .ico extension (the problematic case)
-    const file = try tmp_dir.dir.createFile("test_image.ico", .{});
-    try file.writeAll(&png_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test_image.ico", .{});
+    try file.writePositionalAll(runtime.io(), &png_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test_image.ico");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test_image.ico");
     defer allocator.free(path);
 
     // Heap-allocated shared state to prevent use-after-free if timeout occurs.
@@ -8276,10 +8277,10 @@ test "PNG file with .ico extension should not hang (extension mismatch)" {
 
     // Wait up to 5 seconds for validation to complete
     const timeout_ns: u64 = 5 * std.time.ns_per_s;
-    const start = std.time.nanoTimestamp();
+    const start = runtime.nanoTimestamp();
 
     while (!shared.completed.load(.acquire)) {
-        const elapsed = @as(u64, @intCast(std.time.nanoTimestamp() - start));
+        const elapsed = @as(u64, @intCast(runtime.nanoTimestamp() - start));
         if (elapsed > timeout_ns) {
             // Test fails: validation hung for more than 5 seconds
             // Note: We detach the thread and leak shared state to avoid use-after-free.
@@ -8288,7 +8289,7 @@ test "PNG file with .ico extension should not hang (extension mismatch)" {
             std.debug.print("\nFAILURE: PNG with .ico extension caused validation to hang (>5s)\n", .{});
             return error.ValidationHung;
         }
-        std.Thread.sleep(10 * std.time.ns_per_ms); // Check every 10ms
+        runtime.sleep(10 * std.time.ns_per_ms); // Check every 10ms
     }
 
     // Thread completed - join it and free shared state
@@ -8404,13 +8405,13 @@ test "validateGifDeep fully validates minimal synthetic GIF" {
 
     };
 
-    const file = try tmp_dir.dir.createFile("test.gif", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.gif", .{});
 
-    try file.writeAll(&gif_data);
+    try file.writePositionalAll(runtime.io(), &gif_data, 0);
 
-    file.close();
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.gif");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.gif");
 
     defer allocator.free(path);
 
@@ -8465,13 +8466,13 @@ test "validateGifDeep detects LZW corruption in synthetic GIF" {
 
     };
 
-    const file = try tmp_dir.dir.createFile("corrupt.gif", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt.gif", .{});
 
-    try file.writeAll(&gif_data);
+    try file.writePositionalAll(runtime.io(), &gif_data, 0);
 
-    file.close();
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.gif");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupt.gif");
 
     defer allocator.free(path);
 
@@ -8488,13 +8489,15 @@ test "validateGifDeep detects LZW corruption in synthetic GIF" {
 
 test "findTiffPreviewLocation finds NRW preview via IFD" {
     const allocator = std.testing.allocator;
-    const file = std.fs.cwd().openFile("ground_truth_examples/nrw/RAW_NIKON_COOLPIX_P7100.NRW", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/nrw/RAW_NIKON_COOLPIX_P7100.NRW", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
-    const data = try file.readToEndAlloc(allocator, 32 * 1024 * 1024);
+    defer file.close(runtime.io());
+    const __sz = try file.length(runtime.io());
+    const data = try allocator.alloc(u8, @intCast(@min(__sz, 32 * 1024 * 1024)));
     defer allocator.free(data);
+    _ = try file.readPositionalAll(runtime.io(), data, 0);
 
     const loc = findTiffPreviewLocation(data, FileFormat.nef) orelse {
         return error.TestExpectedPreviewNotFound;
@@ -8508,13 +8511,15 @@ test "findTiffPreviewLocation finds NRW preview via IFD" {
 
 test "findTiffPreviewLocation finds CR2 preview via IFD" {
     const allocator = std.testing.allocator;
-    const file = std.fs.cwd().openFile("ground_truth_examples/cr2/canon_eos_40d_sraw2.cr2", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/cr2/canon_eos_40d_sraw2.cr2", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
-    const data = try file.readToEndAlloc(allocator, 32 * 1024 * 1024);
+    defer file.close(runtime.io());
+    const __sz = try file.length(runtime.io());
+    const data = try allocator.alloc(u8, @intCast(@min(__sz, 32 * 1024 * 1024)));
     defer allocator.free(data);
+    _ = try file.readPositionalAll(runtime.io(), data, 0);
 
     const loc = findTiffPreviewLocation(data, FileFormat.cr2) orelse {
         return error.TestExpectedPreviewNotFound;
@@ -8526,13 +8531,15 @@ test "findTiffPreviewLocation finds CR2 preview via IFD" {
 
 test "findTiffPreviewLocation finds ARW preview via IFD" {
     const allocator = std.testing.allocator;
-    const file = std.fs.cwd().openFile("ground_truth_examples/arw/sony_ilce_7s.arw", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/arw/sony_ilce_7s.arw", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
-    const data = try file.readToEndAlloc(allocator, 32 * 1024 * 1024);
+    defer file.close(runtime.io());
+    const __sz = try file.length(runtime.io());
+    const data = try allocator.alloc(u8, @intCast(@min(__sz, 32 * 1024 * 1024)));
     defer allocator.free(data);
+    _ = try file.readPositionalAll(runtime.io(), data, 0);
 
     const loc = findTiffPreviewLocation(data, FileFormat.arw) orelse {
         return error.TestExpectedPreviewNotFound;
@@ -8546,12 +8553,14 @@ test "validateTiffDeep detects corrupted preview JPEG in NRW" {
     const allocator = std.testing.allocator;
 
     const src_path = "ground_truth_examples/nrw/RAW_NIKON_COOLPIX_P7100.NRW";
-    const src_file = std.fs.cwd().openFile(src_path, .{}) catch |err| {
+    const src_file = runtime.openFile(src_path, .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    const orig_data = try src_file.readToEndAlloc(allocator, 32 * 1024 * 1024);
-    src_file.close();
+    const __orig_sz = try src_file.length(runtime.io());
+    const orig_data = try allocator.alloc(u8, @intCast(@min(__orig_sz, 32 * 1024 * 1024)));
+    _ = try src_file.readPositionalAll(runtime.io(), orig_data, 0);
+    src_file.close(runtime.io());
     defer allocator.free(orig_data);
 
     const loc = findTiffPreviewLocation(orig_data, FileFormat.nef) orelse return error.TestExpectedPreviewNotFound;
@@ -8564,11 +8573,11 @@ test "validateTiffDeep detects corrupted preview JPEG in NRW" {
 
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const out = try tmp_dir.dir.createFile("corrupt.nrw", .{});
-    try out.writeAll(mutated);
-    out.close();
+    const out = try tmp_dir.dir.createFile(runtime.io(), "corrupt.nrw", .{});
+    try out.writePositionalAll(runtime.io(), mutated, 0);
+    out.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.nrw");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupt.nrw");
     defer allocator.free(path);
 
     var source = try FileSource.open(path);

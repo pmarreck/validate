@@ -624,7 +624,7 @@ fn validateMp4AacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) Au
         return AudioValidationResult.invalid(errmsg.tooMany("samples"), .aac);
     }
 
-    var sample_sizes: std.ArrayListUnmanaged(u32) = .{};
+    var sample_sizes: std.ArrayListUnmanaged(u32) = .empty;
     defer sample_sizes.deinit(allocator);
 
     if (default_size == 0) {
@@ -641,7 +641,7 @@ fn validateMp4AacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) Au
     }
 
     // Parse chunk offsets
-    var chunk_offsets: std.ArrayListUnmanaged(u64) = .{};
+    var chunk_offsets: std.ArrayListUnmanaged(u64) = .empty;
     defer chunk_offsets.deinit(allocator);
 
     const chunk_box = if (stco != null) stco.? else co64.?;
@@ -680,7 +680,7 @@ fn validateMp4AacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) Au
     // Parse stsc (sample-to-chunk) to know how many samples are in each chunk
     const stsc = findChildBox(file, stbl.offset + stbl.header_size, stbl.size - stbl.header_size, "stsc");
 
-    var stsc_entries: std.ArrayListUnmanaged(StscEntry) = .{};
+    var stsc_entries: std.ArrayListUnmanaged(StscEntry) = .empty;
     defer stsc_entries.deinit(allocator);
 
     if (stsc != null) {
@@ -714,9 +714,9 @@ fn validateMp4AacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) Au
     // at the start). We need max_real_frames of actual audio data.
     const max_real_frames: u32 = 10;
     const max_total_samples: u32 = 5000; // scan limit to skip past priming region (Apple encoder can emit 1000+ priming frames)
-    var frame_data: std.ArrayListUnmanaged(u8) = .{};
+    var frame_data: std.ArrayListUnmanaged(u8) = .empty;
     defer frame_data.deinit(allocator);
-    var frame_sizes: std.ArrayListUnmanaged(u32) = .{};
+    var frame_sizes: std.ArrayListUnmanaged(u32) = .empty;
     defer frame_sizes.deinit(allocator);
 
     var sample_index: u32 = 0;
@@ -814,7 +814,7 @@ fn validateMp4AlacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) A
     }
 
     // Parse sample sizes
-    var sample_sizes: std.ArrayListUnmanaged(u32) = .{};
+    var sample_sizes: std.ArrayListUnmanaged(u32) = .empty;
     defer sample_sizes.deinit(allocator);
 
     // stsz is a FullBox: skip header + 4 bytes version/flags, then read sample_size + sample_count
@@ -848,7 +848,7 @@ fn validateMp4AlacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) A
     }
 
     // Parse chunk offsets
-    var chunk_offsets: std.ArrayListUnmanaged(u64) = .{};
+    var chunk_offsets: std.ArrayListUnmanaged(u64) = .empty;
     defer chunk_offsets.deinit(allocator);
 
     const chunk_box = if (stco != null) stco.? else co64.?;
@@ -886,9 +886,9 @@ fn validateMp4AlacTrack(allocator: Allocator, file: *FileSource, stbl: Mp4Box) A
 
     // Collect frame data and sizes
     const max_frames: u32 = 10;
-    var frame_data: std.ArrayListUnmanaged(u8) = .{};
+    var frame_data: std.ArrayListUnmanaged(u8) = .empty;
     defer frame_data.deinit(allocator);
-    var frame_sizes: std.ArrayListUnmanaged(u32) = .{};
+    var frame_sizes: std.ArrayListUnmanaged(u32) = .empty;
     defer frame_sizes.deinit(allocator);
 
     // Simple approach: read samples from first chunk

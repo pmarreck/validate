@@ -8,9 +8,9 @@ const heap = @import("heap.zig");
 const runtime = @import("runtime.zig");
 
 /// 0.16: std.Io.Dir methods take `io` as their first parameter. This shim
-/// lets us preserve the original `std.fs.cwd().openFile(path, .{})`-style
+/// lets us preserve the original `runtime.openFile(path, .{})`-style
 /// call shape without forking every caller's signature.
-fn openCwdFile(path: []const u8, opts: std.Io.File.OpenOptions) std.Io.File.OpenError!std.Io.File {
+fn openCwdFile(path: []const u8, opts: std.Io.Dir.OpenFileOptions) std.Io.File.OpenError!std.Io.File {
     runtime.ensureInit();
     return std.Io.Dir.cwd().openFile(runtime.io(), path, opts);
 }
@@ -74,10 +74,11 @@ pub const FileSource = struct {
     /// Open a file, preferring mmap on POSIX systems.
     /// Falls back to regular file I/O if mmap fails.
     pub fn open(path: []const u8) !FileSource {
+        runtime.ensureInit();
         const file = try openFileTolerant(path);
-        errdefer file.close();
+        errdefer file.close(runtime.io());
 
-        const file_size = try file.getEndPos();
+        const file_size = try file.length(runtime.io());
 
         // Don't mmap empty files or files > 8GB (virtual address space caution)
         if (file_size == 0 or file_size > 8 * 1024 * 1024 * 1024) {
@@ -92,7 +93,7 @@ pub const FileSource = struct {
             const mapped = std.posix.mmap(
                 null,
                 @intCast(file_size),
-                std.posix.PROT.READ,
+                .{ .READ = true },
                 .{ .TYPE = .SHARED },
                 file.handle,
                 0,
@@ -108,7 +109,7 @@ pub const FileSource = struct {
             std.posix.madvise(@constCast(mapped.ptr), mapped.len, std.posix.MADV.RANDOM) catch {};
 
             // Close the file handle — the mapping keeps the file alive
-            file.close();
+            file.close(runtime.io());
 
             return .{
                 .backing = .{ .mapped = .{ .data = mapped } },
@@ -127,7 +128,8 @@ pub const FileSource = struct {
     /// The caller retains ownership of the underlying file handle.
     /// Do NOT call close() on this FileSource — it does not own the handle.
     pub fn fromFile(file: std.Io.File) FileSource {
-        const file_size = file.getEndPos() catch 0;
+        runtime.ensureInit();
+        const file_size = file.length(runtime.io()) catch 0;
         return .{
             .backing = .{ .file = file },
             .file_size = file_size,
@@ -153,7 +155,7 @@ pub const FileSource = struct {
                     std.posix.munmap(ptr[0..m.data.len]);
                 }
             },
-            .file => |f| f.close(),
+            .file => |f| f.close(runtime.io()),
             .buffer => {}, // no-op, caller owns the buffer
         }
     }
@@ -169,14 +171,12 @@ pub const FileSource = struct {
     }
 
     /// Seek to an absolute position.
+    /// 0.16: std.Io.File has no internal position cursor — positional reads
+    /// take an offset arg. We track position ourselves via self.pos for the
+    /// .file backing too; the read paths thread it into readPositional.
     pub fn seekTo(self: *FileSource, pos: u64) !void {
-        switch (self.backing) {
-            .mapped, .buffer => {
-                if (pos > self.file_size) return error.Unseekable;
-                self.pos = @intCast(pos);
-            },
-            .file => |f| try f.seekTo(pos),
-        }
+        if (pos > self.file_size) return error.Unseekable;
+        self.pos = @intCast(pos);
     }
 
     /// Read into a buffer, returning the number of bytes read.
@@ -198,11 +198,21 @@ pub const FileSource = struct {
                 self.pos += to_read;
                 return to_read;
             },
-            .file => |f| return f.read(dest),
+            // 0.16: Io.File uses positional reads; we provide the offset from
+            // self.pos and advance it manually. Vector form expects a slice
+            // of buffers; wrap dest in a single-element slice.
+            .file => |f| {
+                runtime.ensureInit();
+                const n = try f.readPositional(runtime.io(), &.{dest}, self.pos);
+                self.pos += n;
+                return n;
+            },
         }
     }
 
-    /// Read exactly `dest.len` bytes, returning the count actually read.
+    /// Read up to `dest.len` bytes, returning the count actually read.
+    /// On a partial-read (EOF reached before dest.len), the short count is
+    /// returned (matching the prior 0.15 readAll semantics).
     pub fn readAll(self: *FileSource, dest: []u8) !usize {
         switch (self.backing) {
             .mapped => |m| {
@@ -221,16 +231,20 @@ pub const FileSource = struct {
                 self.pos += to_read;
                 return to_read;
             },
-            .file => |f| return f.readAll(dest),
+            .file => |f| {
+                runtime.ensureInit();
+                const n = try f.readPositionalAll(runtime.io(), dest, self.pos);
+                self.pos += n;
+                return n;
+            },
         }
     }
 
     /// Get current position.
     pub fn getPos(self: *FileSource) !u64 {
-        switch (self.backing) {
-            .mapped, .buffer => return @intCast(self.pos),
-            .file => |f| return f.getPos(),
-        }
+        // 0.16: position is owned by FileSource for all backings now;
+        // Io.File doesn't have an internal cursor.
+        return @intCast(self.pos);
     }
 
     /// Get file size (end position).
@@ -304,7 +318,7 @@ pub const FileSource = struct {
 
 
     /// Error type for FileSource reader — covers all backing variants.
-    pub const ReaderError = std.Io.File.ReadError || error{Unseekable};
+    pub const ReaderError = std.Io.File.ReadPositionalError || error{Unseekable};
 
     /// Generic reader adapter — allows FileSource to be passed to APIs expecting
     /// a std.io.GenericReader (e.g. std.compress.xz.decompress).
@@ -330,11 +344,11 @@ test "FileSource mmap read and seek" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const content = "Hello, mmap world! This is a test of the file source abstraction.";
-    tmp.dir.writeFile(.{ .sub_path = "test.bin", .data = content }) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.bin", .data = content }) catch return;
 
     // Get absolute path
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = tmp.dir.realpath("test.bin", &path_buf) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.bin") catch return;
+    defer std.testing.allocator.free(path);
 
     var source = FileSource.open(path) catch return;
     defer source.close();
@@ -365,10 +379,10 @@ test "FileSource mmap read and seek" {
 test "FileSource read past end returns partial" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "small.bin", .data = "abc" }) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "small.bin", .data = "abc" }) catch return;
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = tmp.dir.realpath("small.bin", &path_buf) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "small.bin") catch return;
+    defer std.testing.allocator.free(path);
 
     var source = FileSource.open(path) catch return;
     defer source.close();
@@ -383,10 +397,10 @@ test "FileSource read past end returns partial" {
 test "FileSource seek past end returns error" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "tiny.bin", .data = "x" }) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "tiny.bin", .data = "x" }) catch return;
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = tmp.dir.realpath("tiny.bin", &path_buf) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "tiny.bin") catch return;
+    defer std.testing.allocator.free(path);
 
     var source = FileSource.open(path) catch return;
     defer source.close();
@@ -401,9 +415,9 @@ test "getMappedSlice returns full file content for mmap'd file" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const content = "Hello, zero-copy world!";
-    tmp.dir.writeFile(.{ .sub_path = "mapped.bin", .data = content }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = tmp.dir.realpath("mapped.bin", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "mapped.bin", .data = content }) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "mapped.bin") catch return;
+    defer std.testing.allocator.free(path);
     var source = FileSource.open(path) catch return;
     defer source.close();
     if (source.getMappedSlice()) |slice| {
@@ -416,9 +430,9 @@ test "getMappedRange returns bounded slice" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const content = "ABCDEFGHIJ";
-    tmp.dir.writeFile(.{ .sub_path = "range.bin", .data = content }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = tmp.dir.realpath("range.bin", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "range.bin", .data = content }) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "range.bin") catch return;
+    defer std.testing.allocator.free(path);
     var source = FileSource.open(path) catch return;
     defer source.close();
     if (source.getMappedRange(3, 4)) |slice| {
@@ -464,9 +478,9 @@ test "getMappedOrSlurp returns too_large when ceiling exceeded" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const content = "0123456789" ** 200; // 2000 bytes
-    tmp.dir.writeFile(.{ .sub_path = "big.bin", .data = content }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = tmp.dir.realpath("big.bin", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "big.bin", .data = content }) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "big.bin") catch return;
+    defer std.testing.allocator.free(path);
     var source = FileSource.open(path) catch return;
     defer source.close();
     if (source.isMapped()) return error.SkipZigTest; // mmap path doesn't exercise the slurp branch
@@ -486,9 +500,9 @@ test "getMappedOrSlurp returns heap when below ceiling and not mapped" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const content = "small file content";
-    tmp.dir.writeFile(.{ .sub_path = "small.bin", .data = content }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = tmp.dir.realpath("small.bin", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "small.bin", .data = content }) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "small.bin") catch return;
+    defer std.testing.allocator.free(path);
     var source = FileSource.open(path) catch return;
     defer source.close();
     // mmap path is the common case here, but it's still a valid result.

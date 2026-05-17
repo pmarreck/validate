@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const format_validation = @import("format_validation.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -218,7 +219,7 @@ pub fn validateICalendarDeep(allocator: Allocator, source: *FileSource) Validati
 	}
 
 	// Verify file ends with END:VCALENDAR (possibly followed by CRLF/LF/whitespace)
-	const trimmed = std.mem.trimRight(u8, content, " \t\r\n");
+	const trimmed = std.mem.trimEnd(u8, content, " \t\r\n");
 	if (!std.mem.endsWith(u8, trimmed, "END:VCALENDAR")) {
 		return ValidationResult.invalidCode(.icalendar, .invalid_value, "missing END:VCALENDAR at end of file");
 	}
@@ -232,7 +233,7 @@ pub fn validateICalendarDeep(allocator: Allocator, source: *FileSource) Validati
 		if (std.mem.startsWith(u8, line, "BEGIN:")) {
 			const component_name = line[6..];
 			// Strip any trailing CR for mixed line endings
-			const clean_name = std.mem.trimRight(u8, component_name, "\r");
+			const clean_name = std.mem.trimEnd(u8, component_name, "\r");
 			if (!isKnownIcalComponent(clean_name)) {
 				return ValidationResult.invalidCode(.icalendar, .invalid_value, "unknown component type");
 			}
@@ -252,7 +253,7 @@ pub fn validateICalendarDeep(allocator: Allocator, source: *FileSource) Validati
 		} else if (std.mem.startsWith(u8, line, "DTSTART:") or std.mem.startsWith(u8, line, "DTSTART;")) {
 			// Validate datetime format for DTSTART
 			if (std.mem.startsWith(u8, line, "DTSTART:")) {
-				const dt_value = std.mem.trimRight(u8, line[8..], "\r");
+				const dt_value = std.mem.trimEnd(u8, line[8..], "\r");
 				if (dt_value.len > 0 and !isValidIcalDatetime(dt_value)) {
 					return ValidationResult.invalidCode(.icalendar, .invalid_value, "invalid DTSTART datetime format");
 				}
@@ -260,7 +261,7 @@ pub fn validateICalendarDeep(allocator: Allocator, source: *FileSource) Validati
 			// DTSTART;...VALUE=DATE:YYYYMMDD handled by property params, skip for now
 		} else if (std.mem.startsWith(u8, line, "DTEND:") or std.mem.startsWith(u8, line, "DTEND;")) {
 			if (std.mem.startsWith(u8, line, "DTEND:")) {
-				const dt_value = std.mem.trimRight(u8, line[6..], "\r");
+				const dt_value = std.mem.trimEnd(u8, line[6..], "\r");
 				if (dt_value.len > 0 and !isValidIcalDatetime(dt_value)) {
 					return ValidationResult.invalidCode(.icalendar, .invalid_value, "invalid DTEND datetime format");
 				}
@@ -354,7 +355,7 @@ pub fn validateVCardDeep(allocator: Allocator, source: *FileSource) ValidationRe
 	}
 
 	// Verify file ends with END:VCARD
-	const trimmed = std.mem.trimRight(u8, content, " \t\r\n");
+	const trimmed = std.mem.trimEnd(u8, content, " \t\r\n");
 	if (!std.mem.endsWith(u8, trimmed, "END:VCARD")) {
 		return ValidationResult.invalidCode(.vcard, .invalid_value, "missing END:VCARD at end of file");
 	}
@@ -368,7 +369,7 @@ pub fn validateVCardDeep(allocator: Allocator, source: *FileSource) ValidationRe
 	var lines = LineIterator.init(content[start..]);
 
 	while (lines.next()) |line| {
-		const clean = std.mem.trimRight(u8, line, "\r");
+		const clean = std.mem.trimEnd(u8, line, "\r");
 		if (clean.len == 0) continue;
 
 		if (std.mem.eql(u8, clean, "BEGIN:VCARD")) {
@@ -464,12 +465,11 @@ test "iCalendar structural: valid VCALENDAR" {
 	// Write to temp file
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
-	const wf = try tmp_dir.dir.createFile("test.ics", .{});
-	try wf.writeAll(data);
-	wf.close();
+	const wf = try tmp_dir.dir.createFile(runtime.io(), "test.ics", .{});
+	try wf.writePositionalAll(runtime.io(), data, 0);
+	wf.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = try tmp_dir.dir.realpath("test.ics", &real_path_buf);
+	const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.ics");
 	var source = try FileSource.open(real_path);
 	defer source.close();
 
@@ -482,10 +482,10 @@ test "iCalendar deep: balanced nesting" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 	const data = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//Test//EN\r\nBEGIN:VEVENT\r\nDTSTART:20250101T120000Z\r\nDTEND:20250101T130000Z\r\nSUMMARY:Test Event\r\nBEGIN:VALARM\r\nACTION:DISPLAY\r\nDESCRIPTION:Reminder\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-	try tmp_dir.dir.writeFile(.{ .sub_path = "test.ics", .data = data });
+	try tmp_dir.dir.writeFile(runtime.io(), .{ .sub_path = "test.ics", .data = data });
 
 	// Get the real path for the deep validator
-	const real_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, "test.ics");
+	const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.ics");
 	defer std.testing.allocator.free(real_path);
 
 	var src = try FileSource.open(real_path);
@@ -499,12 +499,11 @@ test "vCard structural: valid VCARD v4" {
 	const data = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:John Doe\r\nN:Doe;John;;;\r\nEND:VCARD\r\n";
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
-	const wf = try tmp_dir.dir.createFile("test.vcf", .{});
-	try wf.writeAll(data);
-	wf.close();
+	const wf = try tmp_dir.dir.createFile(runtime.io(), "test.vcf", .{});
+	try wf.writePositionalAll(runtime.io(), data, 0);
+	wf.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = try tmp_dir.dir.realpath("test.vcf", &real_path_buf);
+	const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.vcf");
 	var source = try FileSource.open(real_path);
 	defer source.close();
 
@@ -517,9 +516,9 @@ test "vCard deep: required properties present" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 	const data = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:John Doe\r\nN:Doe;John;;;\r\nEND:VCARD\r\n";
-	try tmp_dir.dir.writeFile(.{ .sub_path = "test.vcf", .data = data });
+	try tmp_dir.dir.writeFile(runtime.io(), .{ .sub_path = "test.vcf", .data = data });
 
-	const real_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, "test.vcf");
+	const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.vcf");
 	defer std.testing.allocator.free(real_path);
 
 	var src = try FileSource.open(real_path);
@@ -534,9 +533,9 @@ test "vCard deep: v3 requires N and FN" {
 	defer tmp_dir.cleanup();
 	// Missing N property — should fail for v3.0
 	const data = "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:John Doe\r\nEND:VCARD\r\n";
-	try tmp_dir.dir.writeFile(.{ .sub_path = "test.vcf", .data = data });
+	try tmp_dir.dir.writeFile(runtime.io(), .{ .sub_path = "test.vcf", .data = data });
 
-	const real_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, "test.vcf");
+	const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.vcf");
 	defer std.testing.allocator.free(real_path);
 
 	var src = try FileSource.open(real_path);
@@ -549,9 +548,9 @@ test "iCalendar deep: invalid datetime rejected" {
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
 	const data = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Test//EN\r\nBEGIN:VEVENT\r\nDTSTART:not-a-date\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
-	try tmp_dir.dir.writeFile(.{ .sub_path = "test.ics", .data = data });
+	try tmp_dir.dir.writeFile(runtime.io(), .{ .sub_path = "test.ics", .data = data });
 
-	const real_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, "test.ics");
+	const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.ics");
 	defer std.testing.allocator.free(real_path);
 
 	var src = try FileSource.open(real_path);
@@ -564,12 +563,12 @@ test "iCalendar with bare LF line endings" {
 	const data = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//Test//EN\nBEGIN:VEVENT\nDTSTART:20250101T120000Z\nSUMMARY:Test\nEND:VEVENT\nEND:VCALENDAR\n";
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
-	const wf = try tmp_dir.dir.createFile("test.ics", .{});
-	try wf.writeAll(data);
-	wf.close();
+	const wf = try tmp_dir.dir.createFile(runtime.io(), "test.ics", .{});
+	try wf.writePositionalAll(runtime.io(), data, 0);
+	wf.close(runtime.io());
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = try tmp_dir.dir.realpath("test.ics", &real_path_buf);
+	const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.ics");
+	defer std.testing.allocator.free(real_path);
 	var source = try FileSource.open(real_path);
 	defer source.close();
 

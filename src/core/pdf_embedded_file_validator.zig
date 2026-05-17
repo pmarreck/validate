@@ -81,7 +81,7 @@ pub const EmbeddedFileValidationSummary = struct {
 
 /// Extract embedded file streams from a PDF.
 pub fn extractEmbeddedFiles(allocator: Allocator, pdf_data: []const u8) ![]PdfEmbeddedFile {
-    var files: std.ArrayListUnmanaged(PdfEmbeddedFile) = .{};
+    var files: std.ArrayListUnmanaged(PdfEmbeddedFile) = .empty;
     errdefer files.deinit(allocator);
 
     // Find all /EmbeddedFile objects
@@ -498,7 +498,7 @@ test "validatePdfEmbeddedFilesBasic surfaces skip_reason on encrypted PDF" {
     // skip_reason so the consumer can route an INFO to the verdict.
     const allocator = std.testing.allocator;
 
-    var pdf: std.ArrayListUnmanaged(u8) = .{};
+    var pdf: std.ArrayListUnmanaged(u8) = .empty;
     defer pdf.deinit(allocator);
     try pdf.appendSlice(allocator, "%PDF-1.4\n");
     // EmbeddedFile object 1 (FlateDecode-filtered, garbage payload that

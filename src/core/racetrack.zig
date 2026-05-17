@@ -44,6 +44,7 @@
 //! mixed file sizes — convoy effect collapses throughput).
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 
 pub const Racetrack = struct {
 	allocator: std.mem.Allocator,
@@ -112,7 +113,7 @@ pub const Racetrack = struct {
 		self.mutex.lock();
 		defer self.mutex.unlock();
 
-		const start = std.time.nanoTimestamp();
+		const start = runtime.nanoTimestamp();
 		var blocked = false;
 
 		// Per-iteration logic:
@@ -137,7 +138,7 @@ pub const Racetrack = struct {
 		}
 
 		if (blocked) {
-			const elapsed: u64 = @intCast(std.time.nanoTimestamp() - start);
+			const elapsed: u64 = @intCast(runtime.nanoTimestamp() - start);
 			self.stats.blocked_acquire_count += 1;
 			self.stats.total_blocked_ns += elapsed;
 			if (elapsed > self.stats.max_blocked_ns) self.stats.max_blocked_ns = elapsed;
@@ -373,8 +374,8 @@ const LoadTestResult = struct {
 };
 
 fn busyWaitNs(ns: u64) void {
-	const start = std.time.nanoTimestamp();
-	while (std.time.nanoTimestamp() - start < ns) {
+	const start = runtime.nanoTimestamp();
+	while (runtime.nanoTimestamp() - start < ns) {
 		// busy-wait keeps thread on-CPU (more deterministic than sleep)
 		// for short durations characteristic of decode loops.
 		std.atomic.spinLoopHint();
@@ -446,12 +447,12 @@ fn runRacetrackLoad(parent_allocator: std.mem.Allocator, params: LoadTestParams)
 	const threads = try parent_allocator.alloc(std.Thread, params.num_workers);
 	defer parent_allocator.free(threads);
 
-	const start = std.time.nanoTimestamp();
+	const start = runtime.nanoTimestamp();
 	for (threads, 0..) |*t, i| {
 		t.* = try std.Thread.spawn(.{}, workerRacetrack, .{ &rt, &prngs[i], &ops_count, params });
 	}
 	for (threads) |t| t.join();
-	const elapsed: u64 = @intCast(std.time.nanoTimestamp() - start);
+	const elapsed: u64 = @intCast(runtime.nanoTimestamp() - start);
 
 	return .{
 		.wall_ns = elapsed,
@@ -470,12 +471,12 @@ fn runArenaLoad(parent_allocator: std.mem.Allocator, params: LoadTestParams) !Lo
 	const threads = try parent_allocator.alloc(std.Thread, params.num_workers);
 	defer parent_allocator.free(threads);
 
-	const start = std.time.nanoTimestamp();
+	const start = runtime.nanoTimestamp();
 	for (threads, 0..) |*t, i| {
 		t.* = try std.Thread.spawn(.{}, workerArena, .{ parent_allocator, &prngs[i], &ops_count, params });
 	}
 	for (threads) |t| t.join();
-	const elapsed: u64 = @intCast(std.time.nanoTimestamp() - start);
+	const elapsed: u64 = @intCast(runtime.nanoTimestamp() - start);
 
 	return .{
 		.wall_ns = elapsed,
@@ -484,11 +485,11 @@ fn runArenaLoad(parent_allocator: std.mem.Allocator, params: LoadTestParams) !Lo
 }
 
 test "Racetrack load test: heterogeneous workload (convoy hazard)" {
-	if (@import("builtin").is_test and std.process.hasEnvVarConstant("VALIDATE_SKIP_RACETRACK_LOADTEST")) return error.SkipZigTest;
+	if (@import("builtin").is_test and runtime.hasEnvVar("VALIDATE_SKIP_RACETRACK_LOADTEST")) return error.SkipZigTest;
 
 	// Reduce ops in test mode so the suite stays fast.
 	// Set VALIDATE_RACETRACK_FULL=1 for the full 10K-op run.
-	const params: LoadTestParams = if (std.process.hasEnvVarConstant("VALIDATE_RACETRACK_FULL"))
+	const params: LoadTestParams = if (runtime.hasEnvVar("VALIDATE_RACETRACK_FULL"))
 		.{}
 	else
 		.{ .total_ops = 1000 };
@@ -536,9 +537,9 @@ test "Racetrack load test: heterogeneous workload (convoy hazard)" {
 }
 
 test "Racetrack load test: uniform workload (best case for racetrack)" {
-	if (std.process.hasEnvVarConstant("VALIDATE_SKIP_RACETRACK_LOADTEST")) return error.SkipZigTest;
+	if (runtime.hasEnvVar("VALIDATE_SKIP_RACETRACK_LOADTEST")) return error.SkipZigTest;
 
-	const params: LoadTestParams = if (std.process.hasEnvVarConstant("VALIDATE_RACETRACK_FULL")) .{
+	const params: LoadTestParams = if (runtime.hasEnvVar("VALIDATE_RACETRACK_FULL")) .{
 		.large_fraction = 0.0, // no slow tasks
 		.small_size_min = 4096,
 		.small_size_max = 16 * 1024,

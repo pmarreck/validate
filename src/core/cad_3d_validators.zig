@@ -2,6 +2,7 @@
 //! Covers DWG, DXF, Blender, STEP, STL, OBJ, PLY, glTF, and GLB.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
@@ -461,7 +462,7 @@ pub fn validateStep(file: *FileSource) ValidationResult {
     }
 
     // Read entire file
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -688,7 +689,7 @@ pub fn validateStlAscii(file: *FileSource) ValidationResult {
     }
 
     // Read entire file for parsing
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -919,7 +920,7 @@ pub fn validateObj(file: *FileSource) ValidationResult {
     }
 
     // Read entire file
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -1341,7 +1342,7 @@ pub fn validatePlyAsciiData(file: *FileSource, header_end: usize, vertex_count: 
         return validatePlyAsciiSample(file, vertex_count, face_count);
     }
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -1592,7 +1593,7 @@ pub fn validateGltf(file: *FileSource) ValidationResult {
     }
 
     // Read entire file
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -1867,7 +1868,7 @@ pub fn validateGlbJsonChunk(file: *FileSource, offset: u64, length: u32) Validat
         return validateGlbChunkReadable(file, offset, length);
     }
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -2102,15 +2103,15 @@ test "validateDxf with ground truth" {
 }
 
 test "validateDxf rejects invalid data" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.dxf", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
-        wf.writeAll("this is not a DXF file at all") catch return;
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
+        wf.writePositionalAll(runtime.io(), "this is not a DXF file at all", 0) catch return;
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var file = FileSource.open(path) catch return;
     defer file.close();
     const result = validateDxf(&file);
@@ -2125,15 +2126,15 @@ test "validateStep with ground truth" {
 }
 
 test "validateStep rejects invalid data" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.stp", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
-        wf.writeAll("this is not a STEP file at all") catch return;
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
+        wf.writePositionalAll(runtime.io(), "this is not a STEP file at all", 0) catch return;
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var file = FileSource.open(path) catch return;
     defer file.close();
     const result = validateStep(&file);
@@ -2148,15 +2149,15 @@ test "validateStl with ground truth" {
 }
 
 test "validateStl rejects invalid data" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.stl", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
-        wf.writeAll("this is not a STL file at all") catch return;
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
+        wf.writePositionalAll(runtime.io(), "this is not a STL file at all", 0) catch return;
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var file = FileSource.open(path) catch return;
     defer file.close();
     const result = validateStl(&file);
@@ -2171,15 +2172,15 @@ test "validateObj with ground truth" {
 }
 
 test "validateObj rejects invalid data" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.obj", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
-        wf.writeAll("this is not an OBJ file at all") catch return;
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
+        wf.writePositionalAll(runtime.io(), "this is not an OBJ file at all", 0) catch return;
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var file = FileSource.open(path) catch return;
     defer file.close();
     const result = validateObj(&file);
@@ -2194,15 +2195,15 @@ test "validatePly with ground truth" {
 }
 
 test "validatePly rejects invalid data" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.ply", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
-        wf.writeAll("this is not a PLY file at all") catch return;
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
+        wf.writePositionalAll(runtime.io(), "this is not a PLY file at all", 0) catch return;
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var file = FileSource.open(path) catch return;
     defer file.close();
     const result = validatePly(&file);
@@ -2217,15 +2218,15 @@ test "validateGltf with ground truth" {
 }
 
 test "validateGltf rejects invalid data" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.gltf", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
-        wf.writeAll("this is not a glTF file at all") catch return;
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
+        wf.writePositionalAll(runtime.io(), "this is not a glTF file at all", 0) catch return;
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var file = FileSource.open(path) catch return;
     defer file.close();
     const result = validateGltf(&file);
@@ -2240,15 +2241,15 @@ test "validateGlb with ground truth" {
 }
 
 test "validateGlb rejects invalid data" {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_invalid.glb", .{tmpdir}) catch return;
     {
-        const wf = std.fs.cwd().createFile(path, .{}) catch return;
-        defer wf.close();
-        wf.writeAll("this is not a GLB file at all") catch return;
+        const wf = runtime.createFile(path, .{}) catch return;
+        defer wf.close(runtime.io());
+        wf.writePositionalAll(runtime.io(), "this is not a GLB file at all", 0) catch return;
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
     var file = FileSource.open(path) catch return;
     defer file.close();
     const result = validateGlb(&file);
@@ -2379,11 +2380,11 @@ test "FormatValidator accepts valid DXF text" {
         \\EOF
     ;
 
-    const file = try tmp_dir.dir.createFile("test.dxf", .{});
-    try file.writeAll(dxf_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.dxf", .{});
+    try file.writePositionalAll(runtime.io(), dxf_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.dxf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.dxf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2413,11 +2414,11 @@ test "FormatValidator accepts valid ASCII STL" {
         \\endsolid test
     ;
 
-    const file = try tmp_dir.dir.createFile("test.stl", .{});
-    try file.writeAll(stl_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.stl", .{});
+    try file.writePositionalAll(runtime.io(), stl_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.stl");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.stl");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2457,14 +2458,14 @@ test "validateStl accepts valid binary STL structure" {
     @memset(stl_data[84..134], 0);
 
     {
-        const wf = try tmp_dir.dir.createFile("test_binary.stl", .{});
-        defer wf.close();
-        try wf.writeAll(&stl_data);
+        const wf = try tmp_dir.dir.createFile(runtime.io(), "test_binary.stl", .{});
+        defer wf.close(runtime.io());
+        try wf.writePositionalAll(runtime.io(), &stl_data, 0);
     }
 
     // Open the file and call validateStl directly
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const stl_path = try tmp_dir.dir.realpath("test_binary.stl", &path_buf);
+    const stl_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test_binary.stl");
+    defer std.testing.allocator.free(stl_path);
     var validate_file = try FileSource.open(stl_path);
     defer validate_file.close();
 
@@ -2492,11 +2493,11 @@ test "FormatValidator detects and validates binary STL via extension fallback" {
     // Triangle: normal (12) + v1 (12) + v2 (12) + v3 (12) + attribute (2) = 50 bytes
     @memset(stl_data[84..134], 0);
 
-    const file = try tmp_dir.dir.createFile("test_binary.stl", .{});
-    try file.writeAll(&stl_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test_binary.stl", .{});
+    try file.writePositionalAll(runtime.io(), &stl_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test_binary.stl");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test_binary.stl");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2520,11 +2521,11 @@ test "validateDwg accepts valid DWG file structure" {
     @memcpy(dwg_data[0..6], "AC1032"); // Version code for DWG 2018
     @memset(dwg_data[6..32], 0); // Padding
 
-    const file = try tmp_dir.dir.createFile("test.dwg", .{});
-    try file.writeAll(&dwg_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.dwg", .{});
+    try file.writePositionalAll(runtime.io(), &dwg_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.dwg");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.dwg");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2549,11 +2550,11 @@ test "validateDwg accepts older DWG version codes" {
     @memcpy(dwg_data[0..6], "AC1015");
     @memset(dwg_data[6..32], 0);
 
-    const file = try tmp_dir.dir.createFile("old.dwg", .{});
-    try file.writeAll(&dwg_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "old.dwg", .{});
+    try file.writePositionalAll(runtime.io(), &dwg_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "old.dwg");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "old.dwg");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2575,11 +2576,11 @@ test "validateDwg rejects invalid magic" {
     @memcpy(bad_dwg[0..6], "XX1032"); // Wrong magic
     @memset(bad_dwg[6..32], 0);
 
-    const file = try tmp_dir.dir.createFile("bad.dwg", .{});
-    try file.writeAll(&bad_dwg);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "bad.dwg", .{});
+    try file.writePositionalAll(runtime.io(), &bad_dwg, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.dwg");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bad.dwg");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2614,11 +2615,11 @@ test "validateBlend accepts valid Blender file structure" {
     @memcpy(blend_data[9..12], "280"); // Version 2.80
     @memset(blend_data[12..32], 0);
 
-    const file = try tmp_dir.dir.createFile("test.blend", .{});
-    try file.writeAll(&blend_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.blend", .{});
+    try file.writePositionalAll(runtime.io(), &blend_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.blend");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.blend");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2646,11 +2647,11 @@ test "validateBlend accepts 64-bit big-endian Blender file" {
     @memcpy(blend_data[9..12], "300"); // Version 3.00
     @memset(blend_data[12..32], 0);
 
-    const file = try tmp_dir.dir.createFile("big.blend", .{});
-    try file.writeAll(&blend_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "big.blend", .{});
+    try file.writePositionalAll(runtime.io(), &blend_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "big.blend");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "big.blend");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2675,11 +2676,11 @@ test "validateBlend rejects invalid magic" {
     @memcpy(bad_blend[9..12], "280");
     @memset(bad_blend[12..32], 0);
 
-    const file = try tmp_dir.dir.createFile("bad.blend", .{});
-    try file.writeAll(&bad_blend);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "bad.blend", .{});
+    try file.writePositionalAll(runtime.io(), &bad_blend, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad.blend");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bad.blend");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -2767,11 +2768,11 @@ test "validateBlendDeep rejects corrupted DNA1 block data" {
     std.mem.writeInt(u32, blend_buf[pos + 4 ..][0..4], 0, .little);
 
     // First verify the valid file passes
-    const valid_file = try tmp_dir.dir.createFile("valid.blend", .{});
-    try valid_file.writeAll(&blend_buf);
-    valid_file.close();
+    const valid_file = try tmp_dir.dir.createFile(runtime.io(), "valid.blend", .{});
+    try valid_file.writePositionalAll(runtime.io(), &blend_buf, 0);
+    valid_file.close(runtime.io());
 
-    const valid_path = try tmp_dir.dir.realpathAlloc(allocator, "valid.blend");
+    const valid_path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.blend");
     defer allocator.free(valid_path);
 
     var valid_src = try FileSource.open(valid_path);
@@ -2788,11 +2789,11 @@ test "validateBlendDeep rejects corrupted DNA1 block data" {
         corrupt_buf[i] = 0xDE;
     }
 
-    const corrupt_file = try tmp_dir.dir.createFile("corrupt.blend", .{});
-    try corrupt_file.writeAll(&corrupt_buf);
-    corrupt_file.close();
+    const corrupt_file = try tmp_dir.dir.createFile(runtime.io(), "corrupt.blend", .{});
+    try corrupt_file.writePositionalAll(runtime.io(), &corrupt_buf, 0);
+    corrupt_file.close(runtime.io());
 
-    const corrupt_path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.blend");
+    const corrupt_path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupt.blend");
     defer allocator.free(corrupt_path);
 
     var corrupt_src = try FileSource.open(corrupt_path);

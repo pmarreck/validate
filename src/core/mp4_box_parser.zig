@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 
@@ -78,12 +79,12 @@ test "readMp4BoxHeader parses standard box" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     {
-        const wf = tmp_dir.dir.createFile("test.mp4", .{}) catch unreachable;
-        wf.writeAll(&box_data) catch unreachable;
-        wf.close();
+        const wf = tmp_dir.dir.createFile(runtime.io(), "test.mp4", .{}) catch unreachable;
+        wf.writePositionalAll(runtime.io(), &box_data, 0) catch unreachable;
+        wf.close(runtime.io());
     }
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = tmp_dir.dir.realpath("test.mp4", &path_buf) catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.mp4") catch unreachable;
+    defer std.testing.allocator.free(path);
     var source = FileSource.open(path) catch unreachable;
     defer source.close();
 
@@ -107,12 +108,12 @@ test "readMp4BoxHeader rejects zero-size extended box" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     {
-        const wf = tmp_dir.dir.createFile("test.mp4", .{}) catch unreachable;
-        wf.writeAll(&box_data) catch unreachable;
-        wf.close();
+        const wf = tmp_dir.dir.createFile(runtime.io(), "test.mp4", .{}) catch unreachable;
+        wf.writePositionalAll(runtime.io(), &box_data, 0) catch unreachable;
+        wf.close(runtime.io());
     }
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = tmp_dir.dir.realpath("test.mp4", &path_buf) catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.mp4") catch unreachable;
+    defer std.testing.allocator.free(path);
     var source = FileSource.open(path) catch unreachable;
     defer source.close();
 

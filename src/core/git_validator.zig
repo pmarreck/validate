@@ -28,7 +28,7 @@ const Sha1 = std.crypto.hash.Sha1;
 
 /// Cached git availability check
 var git_available: ?bool = null;
-var git_check_mutex: std.Thread.Mutex = .{};
+var git_check_mutex: std.Io.Mutex = .init;
 
 /// Validation depth achieved
 pub const GitValidationDepth = enum {
@@ -136,8 +136,9 @@ pub const ObjectType = enum(u3) {
 
 /// Check if git is available on the system PATH
 fn isGitAvailable() bool {
-    git_check_mutex.lock();
-    defer git_check_mutex.unlock();
+    // 0.16: Io.Mutex.lockUncancelable doesn't return error (we don't use io cancellation).
+    git_check_mutex.lockUncancelable(runtime.io());
+    defer git_check_mutex.unlock(runtime.io());
 
     if (git_available) |available| {
         return available;
@@ -146,11 +147,10 @@ fn isGitAvailable() bool {
     // On Windows, explicitly use .exe extension for reliability
     const git_cmd = if (comptime builtin.os.tag == .windows) "git.exe" else "git";
 
-    // Try to run git --version
-    const result = std.process.Child.run(.{
-        .allocator = heap.validateAllocator(),
+    // Try to run git --version. 0.16: std.process.Child.run → std.process.run(gpa, io, opts).
+    const result = std.process.run(heap.validateAllocator(), runtime.io(), .{
         .argv = &[_][]const u8{ git_cmd, "--version" },
-        .max_output_bytes = 1024,
+        .stdout_limit = .limited(1024), .stderr_limit = .limited(1024),
     }) catch {
         git_available = false;
         return false;
@@ -160,7 +160,7 @@ fn isGitAvailable() bool {
 
     // Check exit code
     const exit_ok = switch (result.term) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 
@@ -196,15 +196,14 @@ fn parseGitCountObjects(output: []const u8) ObjectCounts {
 /// Run `git count-objects -v` and return parsed counts.
 fn getObjectCounts(allocator: Allocator, repo_path: []const u8) ObjectCounts {
     const git_cmd = if (comptime builtin.os.tag == .windows) "git.exe" else "git";
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, runtime.io(), .{
         .argv = &[_][]const u8{
             git_cmd,
             "-C", repo_path,
             "count-objects",
             "-v",
         },
-        .max_output_bytes = 4096,
+        .stdout_limit = .limited(4096), .stderr_limit = .limited(4096),
     }) catch return .{};
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
@@ -223,8 +222,7 @@ fn validateWithGitFsck(allocator: Allocator, repo_path: []const u8) ?GitValidati
     // --full: check all objects including alternates
     // --strict: enable stricter checking
     // --no-progress: suppress progress output
-    const result = std.process.Child.run(.{
-        .allocator = allocator,
+    const result = std.process.run(allocator, runtime.io(), .{
         .argv = &[_][]const u8{
             git_cmd,
             "-C", repo_path, // Run in repo directory
@@ -233,7 +231,7 @@ fn validateWithGitFsck(allocator: Allocator, repo_path: []const u8) ?GitValidati
             "--strict",
             "--no-progress",
         },
-        .max_output_bytes = 256 * 1024, // 256KB for error messages
+        .stdout_limit = .limited(256 * 1024), .stderr_limit = .limited(256 * 1024), // 256KB for error messages
     }) catch {
         // If we can't run git, return null to fall back to checksum validation
         return null;
@@ -243,7 +241,7 @@ fn validateWithGitFsck(allocator: Allocator, repo_path: []const u8) ?GitValidati
 
     // Check exit status
     const exit_code = switch (result.term) {
-        .Exited => |code| code,
+        .exited => |code| code,
         else => 1,
     };
 
@@ -303,16 +301,16 @@ pub fn validateLooseObject(allocator: Allocator, object_path: []const u8, expect
     const file = runtime.openFile(object_path, .{}) catch |err| {
         return err;
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
-    const file_size = try file.getEndPos();
+    const file_size = try file.length(runtime.io());
     if (file_size == 0) return false;
     if (file_size > 100 * 1024 * 1024) return error.ObjectTooLarge; // 100MB limit for loose objects
 
     // Read compressed data (std.fs.File — not FileSource, can't use mmap)
     const compressed = try allocator.alloc(u8, file_size);
     defer allocator.free(compressed);
-    const bytes_read = try file.readAll(compressed);
+    const bytes_read = try file.readPositionalAll(runtime.io(), compressed, 0);
     if (bytes_read != file_size) return false;
 
     // Stream-decompress and feed the SHA-1 hasher incrementally
@@ -384,14 +382,14 @@ pub fn validatePackFile(allocator: Allocator, pack_path: []const u8) !bool {
     _ = allocator;
 
     const file = try runtime.openFile(pack_path, .{});
-    defer file.close();
+    defer file.close(runtime.io());
 
-    const file_size = try file.getEndPos();
+    const file_size = try file.length(runtime.io());
     if (file_size < 32) return false; // Minimum: header(12) + SHA-1(20)
 
     // Read and verify header
     var header: [12]u8 = undefined;
-    _ = try file.read(&header);
+    _ = try file.readPositional(runtime.io(), &.{&header}, 0);
 
     if (!std.mem.eql(u8, header[0..4], "PACK")) return false;
 
@@ -399,23 +397,23 @@ pub fn validatePackFile(allocator: Allocator, pack_path: []const u8) !bool {
     if (version < 2 or version > 3) return false;
 
     // Read stored SHA-1 from end
-    try file.seekTo(file_size - 20);
     var stored_hash: [20]u8 = undefined;
-    _ = try file.read(&stored_hash);
+    _ = try file.readPositional(runtime.io(), &.{&stored_hash}, file_size - 20);
 
     // Compute SHA-1 of everything except the trailing hash
-    try file.seekTo(0);
     var hasher = Sha1.init(.{});
 
     const content_size = file_size - 20;
     var buffer: [8192]u8 = undefined;
+    var pos: u64 = 0;
     var bytes_remaining = content_size;
 
     while (bytes_remaining > 0) {
         const to_read = @min(buffer.len, bytes_remaining);
-        const bytes_read = try file.read(buffer[0..to_read]);
+        const bytes_read = try file.readPositional(runtime.io(), &.{buffer[0..to_read]}, pos);
         if (bytes_read == 0) break;
         hasher.update(buffer[0..bytes_read]);
+        pos += bytes_read;
         bytes_remaining -= bytes_read;
     }
 
@@ -440,14 +438,14 @@ pub fn validatePackIndex(allocator: Allocator, idx_path: []const u8, pack_hash: 
     _ = allocator;
 
     const file = try runtime.openFile(idx_path, .{});
-    defer file.close();
+    defer file.close(runtime.io());
 
-    const file_size = try file.getEndPos();
+    const file_size = try file.length(runtime.io());
     if (file_size < 8 + 256 * 4 + 40) return false; // Minimum size
 
     // Check for v2 magic
     var header: [8]u8 = undefined;
-    _ = try file.read(&header);
+    _ = try file.readPositional(runtime.io(), &.{&header}, 0);
 
     const is_v2 = std.mem.eql(u8, header[0..4], "\xff\x74\x4f\x63");
     if (!is_v2) {
@@ -459,11 +457,10 @@ pub fn validatePackIndex(allocator: Allocator, idx_path: []const u8, pack_hash: 
     if (version != 2) return false;
 
     // Read stored SHA-1s from end (pack hash + index hash)
-    try file.seekTo(file_size - 40);
     var stored_pack_hash: [20]u8 = undefined;
     var stored_index_hash: [20]u8 = undefined;
-    _ = try file.read(&stored_pack_hash);
-    _ = try file.read(&stored_index_hash);
+    _ = try file.readPositional(runtime.io(), &.{&stored_pack_hash}, file_size - 40);
+    _ = try file.readPositional(runtime.io(), &.{&stored_index_hash}, file_size - 20);
 
     // Verify pack hash matches if provided
     if (pack_hash) |ph| {
@@ -471,18 +468,19 @@ pub fn validatePackIndex(allocator: Allocator, idx_path: []const u8, pack_hash: 
     }
 
     // Compute SHA-1 of everything except the trailing index hash
-    try file.seekTo(0);
     var hasher = Sha1.init(.{});
 
     const content_size = file_size - 20;
     var buffer: [8192]u8 = undefined;
+    var pos: u64 = 0;
     var bytes_remaining = content_size;
 
     while (bytes_remaining > 0) {
         const to_read = @min(buffer.len, bytes_remaining);
-        const bytes_read = try file.read(buffer[0..to_read]);
+        const bytes_read = try file.readPositional(runtime.io(), &.{buffer[0..to_read]}, pos);
         if (bytes_read == 0) break;
         hasher.update(buffer[0..bytes_read]);
+        pos += bytes_read;
         bytes_remaining -= bytes_read;
     }
 
@@ -501,14 +499,14 @@ pub fn validateIndexFile(allocator: Allocator, index_path: []const u8) !bool {
         if (err == error.FileNotFound) return true; // No index is valid (empty repo)
         return err;
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
-    const file_size = try file.getEndPos();
+    const file_size = try file.length(runtime.io());
     if (file_size < 12 + 20) return false; // Header + SHA-1
 
     // Verify header
     var header: [12]u8 = undefined;
-    _ = try file.read(&header);
+    _ = try file.readPositional(runtime.io(), &.{&header}, 0);
 
     if (!std.mem.eql(u8, header[0..4], "DIRC")) return false;
 
@@ -516,23 +514,23 @@ pub fn validateIndexFile(allocator: Allocator, index_path: []const u8) !bool {
     if (version < 2 or version > 4) return false;
 
     // Read stored SHA-1 from end
-    try file.seekTo(file_size - 20);
     var stored_hash: [20]u8 = undefined;
-    _ = try file.read(&stored_hash);
+    _ = try file.readPositional(runtime.io(), &.{&stored_hash}, file_size - 20);
 
     // Compute SHA-1 of everything except the trailing hash
-    try file.seekTo(0);
     var hasher = Sha1.init(.{});
 
     const content_size = file_size - 20;
     var buffer: [8192]u8 = undefined;
+    var pos: u64 = 0;
     var bytes_remaining = content_size;
 
     while (bytes_remaining > 0) {
         const to_read = @min(buffer.len, bytes_remaining);
-        const bytes_read = try file.read(buffer[0..to_read]);
+        const bytes_read = try file.readPositional(runtime.io(), &.{buffer[0..to_read]}, pos);
         if (bytes_read == 0) break;
         hasher.update(buffer[0..bytes_read]);
+        pos += bytes_read;
         bytes_remaining -= bytes_read;
     }
 
@@ -581,10 +579,10 @@ fn validateRepositoryChecksumOnly(allocator: Allocator, repo_path: []const u8, g
     var dir = runtime.openDir(objects_dir, .{ .iterate = true }) catch {
         return GitValidationResult.invalid("Cannot open .git/objects");
     };
-    defer dir.close();
+    defer dir.close(runtime.io());
 
     var dir_iter = dir.iterate();
-    while (try dir_iter.next()) |entry| {
+    while (try dir_iter.next(runtime.io())) |entry| {
         if (entry.kind != .directory) continue;
         if (entry.name.len != 2) continue;
         if (std.mem.eql(u8, entry.name, "pack") or std.mem.eql(u8, entry.name, "info")) continue;
@@ -594,10 +592,10 @@ fn validateRepositoryChecksumOnly(allocator: Allocator, repo_path: []const u8, g
         const subdir_path = try std.fmt.bufPrint(&subdir_buf, "{s}/{s}", .{ objects_dir, entry.name });
 
         var subdir = runtime.openDir(subdir_path, .{ .iterate = true }) catch continue;
-        defer subdir.close();
+        defer subdir.close(runtime.io());
 
         var subdir_iter = subdir.iterate();
-        while (try subdir_iter.next()) |obj_entry| {
+        while (try subdir_iter.next(runtime.io())) |obj_entry| {
             if (obj_entry.kind != .file) continue;
             if (obj_entry.name.len != 38) continue; // SHA-1 remainder
 
@@ -627,10 +625,10 @@ fn validateRepositoryChecksumOnly(allocator: Allocator, repo_path: []const u8, g
 
     if (runtime.openDir(pack_dir, .{ .iterate = true })) |pack_dir_handle_const| {
         var pack_dir_handle = pack_dir_handle_const;
-        defer pack_dir_handle.close();
+        defer pack_dir_handle.close(runtime.io());
 
         var pack_iter = pack_dir_handle.iterate();
-        while (try pack_iter.next()) |pack_entry| {
+        while (try pack_iter.next(runtime.io())) |pack_entry| {
             if (pack_entry.kind != .file) continue;
 
             if (std.mem.endsWith(u8, pack_entry.name, ".pack")) {

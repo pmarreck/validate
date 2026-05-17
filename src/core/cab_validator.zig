@@ -4,6 +4,7 @@
 //! folder/file entry offsets, and CFDATA block checksums (XOR-fold algorithm).
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const fv = @import("format_validation.zig");
 const FileFormat = fv.FileFormat;
 const ValidationResult = fv.ValidationResult;
@@ -371,12 +372,12 @@ test "validateCabDeep: valid CAB ground truth deep" {
 /// Returns the FileSource (caller calls close()) and path buf is populated.
 fn tmpCabFile(tmp_dir: *std.testing.TmpDir, name: []const u8, data: []const u8) !FileSource {
 	{
-		const wf = try tmp_dir.dir.createFile(name, .{});
-		defer wf.close();
-		try wf.writeAll(data);
+		const wf = try tmp_dir.dir.createFile(runtime.io(), name, .{});
+		defer wf.close(runtime.io());
+		try wf.writePositionalAll(runtime.io(), data, 0);
 	}
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath(name, &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, name);
+	defer std.testing.allocator.free(path);
 	return FileSource.open(path);
 }
 
@@ -696,12 +697,12 @@ test "validateCabDeep: corrupt CFDATA checksum rejected" {
 	var tmp = testing.tmpDir(.{});
 	defer tmp.cleanup();
 	{
-		const wf = try tmp.dir.createFile("corrupt.cab", .{});
-		defer wf.close();
-		try wf.writeAll(buf[0..n]);
+		const wf = try tmp.dir.createFile(runtime.io(), "corrupt.cab", .{});
+		defer wf.close(runtime.io());
+		try wf.writePositionalAll(runtime.io(), buf[0..n], 0);
 	}
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const tmp_path = try tmp.dir.realpath("corrupt.cab", &path_buf);
+	const tmp_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "corrupt.cab");
+	defer std.testing.allocator.free(tmp_path);
 
 	// Structural pass should succeed (magic/header unchanged)
 	var struct_src = try FileSource.open(tmp_path);

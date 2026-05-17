@@ -19,6 +19,7 @@
 //! OGG uses polynomial 0x04C11DB7 (reflected: 0xEDB88320).
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const errmsg = @import("error_messages.zig");
@@ -223,7 +224,7 @@ pub const PacketExtractResult = struct {
 /// Caller must call result.deinit() when done.
 /// Only extracts packets from the first logical bitstream encountered.
 pub fn extractPackets(allocator: std.mem.Allocator, file: *FileSource) !PacketExtractResult {
-    var packets: std.ArrayListUnmanaged(OggPacket) = .{};
+    var packets: std.ArrayListUnmanaged(OggPacket) = .empty;
     errdefer {
         for (packets.items) |packet| {
             allocator.free(packet.data);
@@ -232,7 +233,7 @@ pub fn extractPackets(allocator: std.mem.Allocator, file: *FileSource) !PacketEx
     }
 
     // Buffer for building packets that span multiple segments
-    var packet_buffer: std.ArrayListUnmanaged(u8) = .{};
+    var packet_buffer: std.ArrayListUnmanaged(u8) = .empty;
     defer packet_buffer.deinit(allocator);
 
     var serial_number: ?u32 = null;
@@ -412,10 +413,10 @@ test "OGG validation rejects empty file" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = tmp_dir.dir.createFile("empty.ogg", .{}) catch unreachable;
-    file.close();
+    const file = tmp_dir.dir.createFile(runtime.io(), "empty.ogg", .{}) catch unreachable;
+    file.close(runtime.io());
 
-    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "empty.ogg") catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "empty.ogg") catch unreachable;
     defer std.testing.allocator.free(path);
 
     const result = validateOggCrcPath(path);
@@ -427,11 +428,11 @@ test "OGG validation rejects garbage data" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = tmp_dir.dir.createFile("garbage.ogg", .{ .read = true }) catch unreachable;
+    const file = tmp_dir.dir.createFile(runtime.io(), "garbage.ogg", .{ .read = true }) catch unreachable;
     _ = file.write(&[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 }) catch unreachable;
-    file.close();
+    file.close(runtime.io());
 
-    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "garbage.ogg") catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "garbage.ogg") catch unreachable;
     defer std.testing.allocator.free(path);
 
     const result = validateOggCrcPath(path);
@@ -485,11 +486,11 @@ test "OGG validation detects valid page with correct CRC" {
     page[24] = @truncate(crc >> 16);
     page[25] = @truncate(crc >> 24);
 
-    const file = tmp_dir.dir.createFile("valid.ogg", .{ .read = true }) catch unreachable;
+    const file = tmp_dir.dir.createFile(runtime.io(), "valid.ogg", .{ .read = true }) catch unreachable;
     _ = file.write(&page) catch unreachable;
-    file.close();
+    file.close(runtime.io());
 
-    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "valid.ogg") catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "valid.ogg") catch unreachable;
     defer std.testing.allocator.free(path);
 
     const result = validateOggCrcPath(path);
@@ -535,11 +536,11 @@ test "OGG validation detects corrupted CRC" {
     page[24] = @truncate(crc >> 16);
     page[25] = @truncate(crc >> 24);
 
-    const file = tmp_dir.dir.createFile("corrupted.ogg", .{ .read = true }) catch unreachable;
+    const file = tmp_dir.dir.createFile(runtime.io(), "corrupted.ogg", .{ .read = true }) catch unreachable;
     _ = file.write(&page) catch unreachable;
-    file.close();
+    file.close(runtime.io());
 
-    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "corrupted.ogg") catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "corrupted.ogg") catch unreachable;
     defer std.testing.allocator.free(path);
 
     const result = validateOggCrcPath(path);
@@ -595,11 +596,11 @@ test "OGG packet extraction from single-packet page" {
     page[24] = @truncate(crc >> 16);
     page[25] = @truncate(crc >> 24);
 
-    const file = tmp_dir.dir.createFile("packet.ogg", .{ .read = true }) catch unreachable;
+    const file = tmp_dir.dir.createFile(runtime.io(), "packet.ogg", .{ .read = true }) catch unreachable;
     _ = file.write(&page) catch unreachable;
-    file.close();
+    file.close(runtime.io());
 
-    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "packet.ogg") catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "packet.ogg") catch unreachable;
     defer std.testing.allocator.free(path);
 
     var result = extractPacketsPath(std.testing.allocator, path) catch unreachable;
@@ -660,11 +661,11 @@ test "OGG packet extraction with multi-segment packet" {
     page[24] = @truncate(crc >> 16);
     page[25] = @truncate(crc >> 24);
 
-    const file = tmp_dir.dir.createFile("multi_seg.ogg", .{ .read = true }) catch unreachable;
+    const file = tmp_dir.dir.createFile(runtime.io(), "multi_seg.ogg", .{ .read = true }) catch unreachable;
     _ = file.write(&page) catch unreachable;
-    file.close();
+    file.close(runtime.io());
 
-    const path = tmp_dir.dir.realpathAlloc(std.testing.allocator, "multi_seg.ogg") catch unreachable;
+    const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "multi_seg.ogg") catch unreachable;
     defer std.testing.allocator.free(path);
 
     var result = extractPacketsPath(std.testing.allocator, path) catch unreachable;

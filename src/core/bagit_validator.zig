@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const format_validation = @import("format_validation.zig");
 const file_source = @import("file_source.zig");
@@ -76,16 +77,16 @@ pub fn validateBagitDeep(allocator: Allocator, path: []const u8) ValidationResul
 	else
 		path;
 
-	var bag_dir = std.fs.cwd().openDir(bag_dir_path, .{}) catch {
+	var bag_dir = runtime.openDir(bag_dir_path, .{}) catch {
 		return ValidationResult.invalidCode(.bagit, .failed_to_read, "cannot open bag directory");
 	};
-	defer bag_dir.close();
+	defer bag_dir.close(runtime.io());
 
 	// Check data/ subdirectory exists
-	var data_dir = bag_dir.openDir("data", .{}) catch {
+	var data_dir = bag_dir.openDir(runtime.io(), "data", .{}) catch {
 		return ValidationResult.invalidCode(.bagit, .invalid_value, "missing data/ subdirectory");
 	};
-	data_dir.close();
+	data_dir.close(runtime.io());
 
 	// Try to find a manifest file: manifest-sha256.txt, manifest-sha512.txt, manifest-md5.txt
 	const Algorithm = enum { sha256, sha512, md5 };
@@ -95,10 +96,10 @@ pub fn validateBagitDeep(allocator: Allocator, path: []const u8) ValidationResul
 		.{ .name = "manifest-md5.txt", .alg = .md5 },
 	};
 
-	var manifest_file: ?std.fs.File = null;
+	var manifest_file: ?std.Io.File = null;
 	var chosen_alg: Algorithm = .sha256;
 	for (manifest_names) |entry| {
-		if (bag_dir.openFile(entry.name, .{})) |f| {
+		if (bag_dir.openFile(runtime.io(), entry.name, .{})) |f| {
 			manifest_file = f;
 			chosen_alg = entry.alg;
 			break;
@@ -108,13 +109,16 @@ pub fn validateBagitDeep(allocator: Allocator, path: []const u8) ValidationResul
 	const mf = manifest_file orelse {
 		return ValidationResult.invalidCode(.bagit, .invalid_value, "no manifest file found");
 	};
-	defer mf.close();
+	defer mf.close(runtime.io());
 
-	// Read entire manifest
-	const manifest_content = mf.readToEndAlloc(allocator, 10 * 1024 * 1024) catch {
+	// Read entire manifest (0.16: no readToEndAlloc on Io.File; size + positional read)
+	const manifest_size = mf.length(runtime.io()) catch return ValidationResult.invalidCode(.bagit, .failed_to_read, "manifest file");
+	if (manifest_size > 10 * 1024 * 1024) return ValidationResult.invalidCode(.bagit, .exceeds_bounds, "manifest size");
+	const manifest_content = allocator.alloc(u8, @intCast(manifest_size)) catch return ValidationResult.invalidCode(.bagit, .out_of_memory, "manifest buffer");
+	defer allocator.free(manifest_content);
+	_ = mf.readPositionalAll(runtime.io(), manifest_content, 0) catch {
 		return ValidationResult.invalidCode(.bagit, .failed_to_read, "manifest file");
 	};
-	defer allocator.free(manifest_content);
 
 	// Parse and verify each line
 	var line_iter = std.mem.splitScalar(u8, manifest_content, '\n');
@@ -139,11 +143,11 @@ pub fn validateBagitDeep(allocator: Allocator, path: []const u8) ValidationResul
 		}
 
 		// Open and hash the file
-		const target_file = bag_dir.openFile(file_path, .{}) catch {
+		const target_file = bag_dir.openFile(runtime.io(), file_path, .{}) catch {
 			return ValidationResult.invalidCodeMsg(.bagit, .checksum_mismatch, file_path, "file listed in manifest not found");
 		};
-		const target_size = target_file.getEndPos() catch {
-			target_file.close();
+		const target_size = target_file.length(runtime.io()) catch {
+			target_file.close(runtime.io());
 			return ValidationResult.invalidCodeMsg(.bagit, .failed_to_read, file_path, "failed to get file size for hashing");
 		};
 		var target_source = FileSource{ .backing = .{ .file = target_file }, .file_size = target_size };
@@ -199,10 +203,10 @@ test "BagIt structural: valid bagit.txt" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.writeFile(.{ .sub_path = "bagit.txt", .data = "BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n" });
+	try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bagit.txt", .data = "BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n" });
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = try tmp.dir.realpath("bagit.txt", &real_path_buf);
+	const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bagit.txt");
+	defer std.testing.allocator.free(real_path);
 	var source = try FileSource.open(real_path);
 	defer source.close();
 
@@ -216,10 +220,10 @@ test "BagIt structural: missing version line" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.writeFile(.{ .sub_path = "bagit.txt", .data = "Not a valid bagit file\n" });
+	try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bagit.txt", .data = "Not a valid bagit file\n" });
 
-	var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const real_path = try tmp.dir.realpath("bagit.txt", &real_path_buf);
+	const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bagit.txt");
+	defer std.testing.allocator.free(real_path);
 	var source = try FileSource.open(real_path);
 	defer source.close();
 
@@ -233,11 +237,11 @@ test "BagIt deep: verify SHA-256 manifest" {
 	defer tmp.cleanup();
 
 	// Create bag structure
-	try tmp.dir.writeFile(.{ .sub_path = "bagit.txt", .data = "BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n" });
-	try tmp.dir.makePath("data");
+	try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bagit.txt", .data = "BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n" });
+	try tmp.dir.createDirPath(runtime.io(), "data");
 
 	const payload = "Hello, BagIt!\n";
-	try tmp.dir.writeFile(.{ .sub_path = "data/test.txt", .data = payload });
+	try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "data/test.txt", .data = payload });
 
 	// Compute SHA-256 of payload
 	var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
@@ -247,11 +251,11 @@ test "BagIt deep: verify SHA-256 manifest" {
 	// Write manifest
 	var manifest_buf: [256]u8 = undefined;
 	const manifest_content = std.fmt.bufPrint(&manifest_buf, "{s}  data/test.txt\n", .{@as([]const u8, &hex)}) catch unreachable;
-	try tmp.dir.writeFile(.{ .sub_path = "manifest-sha256.txt", .data = manifest_content });
+	try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "manifest-sha256.txt", .data = manifest_content });
 
 	// Get real path to the bag directory
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const bag_path = try tmp.dir.realpath(".", &path_buf);
+	const bag_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, ".");
+	defer std.testing.allocator.free(bag_path);
 
 	const result = validateBagitDeep(std.testing.allocator, bag_path);
 	try std.testing.expect(result.is_valid);
@@ -264,15 +268,15 @@ test "BagIt deep: hash mismatch detected" {
 	defer tmp.cleanup();
 
 	// Create bag structure
-	try tmp.dir.writeFile(.{ .sub_path = "bagit.txt", .data = "BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n" });
-	try tmp.dir.makePath("data");
-	try tmp.dir.writeFile(.{ .sub_path = "data/test.txt", .data = "actual content\n" });
+	try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bagit.txt", .data = "BagIt-Version: 1.0\nTag-File-Character-Encoding: UTF-8\n" });
+	try tmp.dir.createDirPath(runtime.io(), "data");
+	try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "data/test.txt", .data = "actual content\n" });
 
 	// Write manifest with WRONG hash
-	try tmp.dir.writeFile(.{ .sub_path = "manifest-sha256.txt", .data = "0000000000000000000000000000000000000000000000000000000000000000  data/test.txt\n" });
+	try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "manifest-sha256.txt", .data = "0000000000000000000000000000000000000000000000000000000000000000  data/test.txt\n" });
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const bag_path = try tmp.dir.realpath(".", &path_buf);
+	const bag_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, ".");
+	defer std.testing.allocator.free(bag_path);
 
 	const result = validateBagitDeep(std.testing.allocator, bag_path);
 	try std.testing.expect(!result.is_valid);

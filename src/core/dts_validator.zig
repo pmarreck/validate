@@ -9,6 +9,7 @@
 //! Reference: ETSI TS 102 114 (DTS Coherent Acoustics), Section 5.3
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const errmsg = @import("error_messages.zig");
 
 /// DTS Core sync word (big-endian 14-bit packing)
@@ -353,11 +354,11 @@ pub const DtsValidationResult = struct {
 // ============ Tests ============
 
 test "DTS validates ground truth sample" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/dts/sample.dts", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/dts/sample.dts", .{}) catch |err| {
         if (err == error.FileNotFound) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
     const data = file.readToEndAlloc(std.testing.allocator, 10 * 1024 * 1024) catch return error.SkipZigTest;
     defer std.testing.allocator.free(data);

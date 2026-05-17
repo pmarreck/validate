@@ -3,12 +3,12 @@
     .version = "0.16.0",
     .dependencies = .{
         .toml = .{
-            .url = "git+https://github.com/sam701/zig-toml?ref=HEAD#cf50bd59c6276fb2b6d34b8d71d35486eecc719c",
-            .hash = "toml-0.3.0-bV14Bd-EAQBKoXhpYft303BtA2vgLNlxntUCIWgRUl46",
+            .url = "git+https://github.com/sam701/zig-toml?ref=HEAD#24e0deeceaad1b7f1b12027ebae1c65ff1d86e33",
+            .hash = "toml-0.3.0-bV14BVqIAQANb68hDuVPZ72hrcIhT-fv_fcIbetQIAyg",
         },
         .@"zig-xml" = .{
-            .url = "git+https://github.com/ianprime0509/zig-xml#8874de5b846f4e3e806a062cd11a01b2bb90fc7a",
-            .hash = "xml-0.2.0-ZTbP3wE6AgCsnyZut_plzxi6WB2tzzh3kFRBOp3AL7n9",
+            .url = "git+https://github.com/ianprime0509/zig-xml#b97f2ab4868ae3cac9902b33a40d3f31d2df739d",
+            .hash = "xml-0.2.0-ZTbP3yI6AgB9Rpd2hQrueO63ib0Bm6mQiL_WB1t7JAmP",
         },
         .zigimg = .{
             .url = "git+https://github.com/pmarreck/zigimg#12e5dc934b92b2d0ef5481c1f67f1346f3a365e0",

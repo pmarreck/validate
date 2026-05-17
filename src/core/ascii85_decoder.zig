@@ -21,7 +21,7 @@ pub const Ascii85DecodeError = error{
 /// Decode ASCII85-encoded data.
 /// Returns allocated buffer that caller must free.
 pub fn decode(allocator: Allocator, input: []const u8) Ascii85DecodeError![]u8 {
-	var result: std.ArrayListUnmanaged(u8) = .{};
+	var result: std.ArrayListUnmanaged(u8) = .empty;
 	errdefer result.deinit(allocator);
 
 	var group: [5]u8 = undefined;

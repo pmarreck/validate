@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
@@ -379,7 +380,7 @@ fn validateWavFloatSamples(file: *FileSource, data_offset: u64, data_size: u32, 
 /// is zero (broken WAV header) the literal `time=?` is emitted so the caller
 /// still gets the byte offset and the user knows time is undetermined.
 /// Concise format chosen so multiple findings fit in the 512-byte warning buffer.
-fn writeTimeOffset(w: anytype, sample_index: u64, sample_rate: u32) !void {
+fn writeTimeOffset(w: *std.Io.Writer, sample_index: u64, sample_rate: u32) !void {
     if (sample_rate == 0) {
         try w.print("time=?", .{});
         return;
@@ -475,8 +476,7 @@ fn scanWavMonoS16Heuristic(file: *FileSource, data_offset: u64, data_size: u32, 
         .likely_corrupt => "likely PCM corruption",
     };
 
-    var stream = std.io.fixedBufferStream(&S.buf);
-    const w = stream.writer();
+    var w = std.Io.Writer.fixed(&S.buf);
     w.print("statistical-corruption heuristic: {s} (score={d}/100", .{ severity_label, scan.score }) catch {};
     if (scan.synth_flat) {
         w.print(", synth-flat", .{}) catch {};
@@ -489,13 +489,13 @@ fn scanWavMonoS16Heuristic(file: *FileSource, data_offset: u64, data_size: u32, 
             .constant_run => |cr| {
                 const byte_offset = data_offset + cr.sample_offset * 2;
                 w.print("; constant_run byte=0x{X} ", .{byte_offset}) catch {};
-                writeTimeOffset(w, cr.sample_offset, sample_rate) catch {};
+                writeTimeOffset(&w, cr.sample_offset, sample_rate) catch {};
                 w.print(" len={d} val={d}", .{ cr.length, cr.value }) catch {};
                 emitted += 1;
             },
             .diagnosed_bit_flip => |bf| {
                 w.print("; bit_flip byte=0x{X} ", .{bf.byte_offset}) catch {};
-                writeTimeOffset(w, bf.sample_offset, sample_rate) catch {};
+                writeTimeOffset(&w, bf.sample_offset, sample_rate) catch {};
                 w.print(" bit={d} z={d:.1}->{d:.1}", .{ bf.bit_index, bf.z_before, bf.z_after }) catch {};
                 emitted += 1;
             },
@@ -506,7 +506,7 @@ fn scanWavMonoS16Heuristic(file: *FileSource, data_offset: u64, data_size: u32, 
                 else
                     0;
                 w.print("; sector_cluster byte=0x{X} ", .{sc.first_byte}) catch {};
-                writeTimeOffset(w, sample_idx, sample_rate) catch {};
+                writeTimeOffset(&w, sample_idx, sample_rate) catch {};
                 w.print(" span={d} sector={d}", .{ sc.span, sc.sector_size }) catch {};
                 emitted += 1;
             },
@@ -515,7 +515,7 @@ fn scanWavMonoS16Heuristic(file: *FileSource, data_offset: u64, data_size: u32, 
     if (data_size > MAX_SCAN_BYTES) {
         w.print("; scanned first {d}MiB", .{MAX_SCAN_BYTES / (1024 * 1024)}) catch {};
     }
-    const written = stream.getWritten();
+    const written = w.buffered();
     return ValidationResult.okWithDepthAndWarning(.wav, .structural, written);
 }
 
@@ -3002,9 +3002,9 @@ test "validateAmr rejects reserved AMR-NB frame type 12" {
     defer tmp.cleanup();
     // "#!AMR\n" + frame header with reserved type 12: (12 << 3) = 0x60
     const bad_data = "#!AMR\n" ++ [_]u8{0x60} ++ [_]u8{0x00} ** 13;
-    tmp.dir.writeFile(.{ .sub_path = "bad_ft.amr", .data = bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad_ft.amr", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_ft.amr", .data = bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_ft.amr") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateAmr(&source);
@@ -3016,9 +3016,9 @@ test "validateAmr accepts truncated-last-frame AMR-NB (streaming tolerance)" {
     defer tmp.cleanup();
     // "#!AMR\n" + frame header mode 7 (0x3c = type 7, 32-byte payload) but only 10 payload bytes
     const data = "#!AMR\n" ++ [_]u8{0x3c} ++ [_]u8{0xaa} ** 10;
-    tmp.dir.writeFile(.{ .sub_path = "trunc.amr", .data = data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("trunc.amr", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "trunc.amr", .data = data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "trunc.amr") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateAmr(&source);
@@ -3161,9 +3161,9 @@ test "validateWav rejects truncated WAV" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const truncated = "RIFF" ++ [_]u8{ 0xFF, 0x00, 0x00, 0x00 } ++ "WAVE";
-    tmp.dir.writeFile(.{ .sub_path = "bad.wav", .data = truncated }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.wav", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.wav", .data = truncated }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.wav") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateWav(&source);
@@ -3174,9 +3174,9 @@ test "validateFlac rejects invalid FLAC signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = "fLaX" ++ [_]u8{0x00} ** 34;
-    tmp.dir.writeFile(.{ .sub_path = "bad.flac", .data = bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.flac", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.flac", .data = bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.flac") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateFlac(&source);
@@ -3187,9 +3187,9 @@ test "validateFlac rejects non-STREAMINFO first block" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = "fLaC" ++ [_]u8{ 0x01, 0x00, 0x00, 0x22 } ++ [_]u8{0x00} ** 34;
-    tmp.dir.writeFile(.{ .sub_path = "bad.flac", .data = bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.flac", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.flac", .data = bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.flac") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateFlac(&source);
@@ -3200,9 +3200,9 @@ test "validateMp3 rejects random bytes" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{ 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09 };
-    tmp.dir.writeFile(.{ .sub_path = "bad.mp3", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.mp3", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.mp3", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.mp3") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateMp3(&source);
@@ -3213,9 +3213,9 @@ test "validateOgg rejects non-OggS data" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 28;
-    tmp.dir.writeFile(.{ .sub_path = "bad.ogg", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.ogg", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.ogg", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.ogg") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateOgg(&source);
@@ -3226,9 +3226,9 @@ test "validateMidi rejects non-MThd data" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 22;
-    tmp.dir.writeFile(.{ .sub_path = "bad.mid", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.mid", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.mid", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.mid") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateMidi(&source);
@@ -3239,9 +3239,9 @@ test "validateAc3 rejects wrong sync word" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{ 0x0B, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    tmp.dir.writeFile(.{ .sub_path = "bad.ac3", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.ac3", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.ac3", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.ac3") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateAc3(&source);
@@ -3253,9 +3253,9 @@ test "validateEac3 rejects wrong bsid" {
     defer tmp.cleanup();
     // Sync word correct (0x0B77) but bsid=8 (AC-3) instead of 16 (E-AC-3)
     const bad_data = [_]u8{ 0x0B, 0x77, 0x00, 0x00, 0x00, 0x08 << 3 };
-    tmp.dir.writeFile(.{ .sub_path = "bad.eac3", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.eac3", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.eac3", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.eac3") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateEac3(&source);
@@ -3266,9 +3266,9 @@ test "validateApe rejects non-MAC signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 32;
-    tmp.dir.writeFile(.{ .sub_path = "bad.ape", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.ape", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.ape", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.ape") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateApe(&source);
@@ -3279,9 +3279,9 @@ test "validateDsf rejects non-DSD signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 80;
-    tmp.dir.writeFile(.{ .sub_path = "bad.dsf", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.dsf", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.dsf", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.dsf") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateDsf(&source);
@@ -3292,9 +3292,9 @@ test "validateDff rejects non-FRM8 signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 28;
-    tmp.dir.writeFile(.{ .sub_path = "bad.dff", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.dff", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.dff", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.dff") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateDff(&source);
@@ -3305,9 +3305,9 @@ test "validateAmr rejects non-AMR data" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 16;
-    tmp.dir.writeFile(.{ .sub_path = "bad.amr", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.amr", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.amr", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.amr") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateAmr(&source);
@@ -3318,9 +3318,9 @@ test "validateAu rejects non-snd magic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 24;
-    tmp.dir.writeFile(.{ .sub_path = "bad.au", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.au", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.au", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.au") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateAu(&source);
@@ -3331,9 +3331,9 @@ test "validateTta rejects non-TTA1 magic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 22;
-    tmp.dir.writeFile(.{ .sub_path = "bad.tta", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.tta", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.tta", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.tta") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateTta(&source);
@@ -3344,9 +3344,9 @@ test "validateCaf rejects non-caff magic" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 20;
-    tmp.dir.writeFile(.{ .sub_path = "bad.caf", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.caf", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.caf", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.caf") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateCaf(&source);
@@ -3357,9 +3357,9 @@ test "validateXm rejects non-XM data" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 80;
-    tmp.dir.writeFile(.{ .sub_path = "bad.xm", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.xm", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.xm", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.xm") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateXm(&source);
@@ -3370,9 +3370,9 @@ test "validateIt rejects non-IMPM data" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 192;
-    tmp.dir.writeFile(.{ .sub_path = "bad.it", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.it", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.it", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.it") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateIt(&source);
@@ -3383,9 +3383,9 @@ test "validateS3m rejects non-SCRM data" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 96;
-    tmp.dir.writeFile(.{ .sub_path = "bad.s3m", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.s3m", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.s3m", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.s3m") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateS3m(&source);
@@ -3396,9 +3396,9 @@ test "validateMod rejects file too small for MOD" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     const bad_data = [_]u8{0x00} ** 100;
-    tmp.dir.writeFile(.{ .sub_path = "bad.mod", .data = &bad_data }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const realpath = tmp.dir.realpath("bad.mod", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.mod", .data = &bad_data }) catch return;
+    const realpath = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.mod") catch return;
+    defer std.testing.allocator.free(realpath);
     var source = FileSource.open(realpath) catch return;
     defer source.close();
     const result = validateMod(&source);
@@ -3458,8 +3458,8 @@ test "validateWavDeep rejects corrupted block_align" {
     // Verify valid first
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "good.wav", .data = &wav }) catch return;
-    const good_path = tmp.dir.realpathAlloc(testing.allocator, "good.wav") catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "good.wav", .data = &wav }) catch return;
+    const good_path = runtime.tmpRealpathAlloc(&tmp, testing.allocator, "good.wav") catch return;
     defer testing.allocator.free(good_path);
     var good_src = FileSource.open(good_path) catch return;
     defer good_src.close();
@@ -3469,8 +3469,8 @@ test "validateWavDeep rejects corrupted block_align" {
     // Corrupt block_align (byte 32-33: change from 4 to 99)
     var bad_wav = wav;
     std.mem.writeInt(u16, bad_wav[32..34], 99, .little);
-    tmp.dir.writeFile(.{ .sub_path = "bad_align.wav", .data = &bad_wav }) catch return;
-    const bad_path = tmp.dir.realpathAlloc(testing.allocator, "bad_align.wav") catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_align.wav", .data = &bad_wav }) catch return;
+    const bad_path = runtime.tmpRealpathAlloc(&tmp, testing.allocator, "bad_align.wav") catch return;
     defer testing.allocator.free(bad_path);
     var bad_src = FileSource.open(bad_path) catch return;
     defer bad_src.close();
@@ -3500,8 +3500,8 @@ test "validateWavDeep rejects corrupted byte_rate" {
     std.mem.writeInt(u32, bad_wav[28..32], 999999, .little);
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "bad_rate.wav", .data = &bad_wav }) catch return;
-    const path = tmp.dir.realpathAlloc(testing.allocator, "bad_rate.wav") catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_rate.wav", .data = &bad_wav }) catch return;
+    const path = runtime.tmpRealpathAlloc(&tmp, testing.allocator, "bad_rate.wav") catch return;
     defer testing.allocator.free(path);
     var src = FileSource.open(path) catch return;
     defer src.close();
@@ -3545,8 +3545,8 @@ test "validateAiffDeep rejects corrupted channel count" {
     defer tmp.cleanup();
 
     // Verify valid
-    tmp.dir.writeFile(.{ .sub_path = "good.aiff", .data = &full }) catch return;
-    const good_path = tmp.dir.realpathAlloc(testing.allocator, "good.aiff") catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "good.aiff", .data = &full }) catch return;
+    const good_path = runtime.tmpRealpathAlloc(&tmp, testing.allocator, "good.aiff") catch return;
     defer testing.allocator.free(good_path);
     var good_src = FileSource.open(good_path) catch return;
     defer good_src.close();
@@ -3556,8 +3556,8 @@ test "validateAiffDeep rejects corrupted channel count" {
     // Corrupt numChannels to 0
     var bad = full;
     std.mem.writeInt(u16, bad[20..22], 0, .big);
-    tmp.dir.writeFile(.{ .sub_path = "bad_ch.aiff", .data = &bad }) catch return;
-    const bad_path = tmp.dir.realpathAlloc(testing.allocator, "bad_ch.aiff") catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_ch.aiff", .data = &bad }) catch return;
+    const bad_path = runtime.tmpRealpathAlloc(&tmp, testing.allocator, "bad_ch.aiff") catch return;
     defer testing.allocator.free(bad_path);
     var bad_src = FileSource.open(bad_path) catch return;
     defer bad_src.close();
@@ -3590,9 +3590,9 @@ test "validateCaf rejects corrupted sample rate" {
     defer tmp.cleanup();
 
     // Verify valid
-    tmp.dir.writeFile(.{ .sub_path = "good.caf", .data = &caf }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const good_path = tmp.dir.realpath("good.caf", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "good.caf", .data = &caf }) catch return;
+    const good_path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "good.caf") catch return;
+    defer std.testing.allocator.free(good_path);
     var good = FileSource.open(good_path) catch return;
     defer good.close();
     const good_result = validateCaf(&good);
@@ -3602,9 +3602,9 @@ test "validateCaf rejects corrupted sample rate" {
     var bad_caf = caf;
     const nan_bits: u64 = @bitCast(@as(f64, std.math.nan(f64)));
     std.mem.writeInt(u64, bad_caf[20..28], nan_bits, .big);
-    tmp.dir.writeFile(.{ .sub_path = "bad_sr.caf", .data = &bad_caf }) catch return;
-    var path_buf2: [std.fs.max_path_bytes]u8 = undefined;
-    const bad_path = tmp.dir.realpath("bad_sr.caf", &path_buf2) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_sr.caf", .data = &bad_caf }) catch return;
+    const bad_path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_sr.caf") catch return;
+    defer std.testing.allocator.free(bad_path);
     var bad = FileSource.open(bad_path) catch return;
     defer bad.close();
     const bad_result = validateCaf(&bad);
@@ -3632,9 +3632,9 @@ test "validateCaf rejects corrupted channel count" {
     std.mem.writeInt(u32, bad_caf[44..48], 0, .big);
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "bad_ch.caf", .data = &bad_caf }) catch return;
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const bad_path = tmp.dir.realpath("bad_ch.caf", &path_buf) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad_ch.caf", .data = &bad_caf }) catch return;
+    const bad_path = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_ch.caf") catch return;
+    defer std.testing.allocator.free(bad_path);
     var bad = FileSource.open(bad_path) catch return;
     defer bad.close();
     const result = validateCaf(&bad);
@@ -3655,7 +3655,7 @@ test "FormatValidator deep validates real MIDI from ground truth" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/midi/fur_elise.mid") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/midi/fur_elise.mid") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -3677,7 +3677,7 @@ test "FormatValidator deep validates MOD from ground truth" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/otm.mod") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/tracker/otm.mod") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -3699,7 +3699,7 @@ test "FormatValidator deep validates XM from ground truth" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/agony.xm") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/tracker/agony.xm") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -3721,7 +3721,7 @@ test "FormatValidator deep validates IT from ground truth" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/flitter.it") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/tracker/flitter.it") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -3743,7 +3743,7 @@ test "FormatValidator deep validates S3M from ground truth" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/tracker/twilight_garden.s3m") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/tracker/twilight_garden.s3m") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -3774,11 +3774,11 @@ test "FormatValidator accepts valid MP3 with ID3" {
         0x90, 0x00, // bitrate, sample rate, etc
     };
 
-    const file = try tmp_dir.dir.createFile("valid_id3.mp3", .{});
-    try file.writeAll(&valid_mp3);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_id3.mp3", .{});
+    try file.writePositionalAll(runtime.io(), &valid_mp3, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_id3.mp3");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_id3.mp3");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3802,17 +3802,17 @@ test "FormatValidator accepts MP3 with large metadata gap after ID3" {
     // Simulate an MP3 audiobook with ~8KB of non-audio metadata (e.g., MusicMatch)
     // between the ID3v2 tag and the first MPEG frame sync.
     // This exercises the scan-forward logic that previously only searched 4KB.
-    const file = try tmp_dir.dir.createFile("valid_large_gap.mp3", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_large_gap.mp3", .{});
     // ID3v2 header (10 bytes, size=0 meaning no tag frames)
-    try file.writeAll(&[_]u8{ 'I', 'D', '3', 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 });
+    try file.writePositionalAll(runtime.io(), &[_]u8{ 'I', 'D', '3', 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, 0);
     // 8192 bytes of non-sync padding (0x42 avoids false frame sync)
     const padding: [8192]u8 = .{0x42} ** 8192;
-    try file.writeAll(&padding);
+    try file.writePositionalAll(runtime.io(), &padding, 0);
     // Valid MP3 frame sync
-    try file.writeAll(&[_]u8{ 0xFF, 0xFB, 0x90, 0x00 });
-    file.close();
+    try file.writePositionalAll(runtime.io(), &[_]u8{ 0xFF, 0xFB, 0x90, 0x00 }, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_large_gap.mp3");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_large_gap.mp3");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3841,11 +3841,11 @@ test "FormatValidator accepts valid MP3 without ID3" {
     valid_mp3[2] = 0x90; // bitrate index 9 (128kbps), sample rate 0 (44100Hz)
     valid_mp3[3] = 0x00; // padding=0, private=0, channel=stereo
 
-    const file = try tmp_dir.dir.createFile("valid_raw.mp3", .{});
-    try file.writeAll(&valid_mp3);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_raw.mp3", .{});
+    try file.writePositionalAll(runtime.io(), &valid_mp3, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_raw.mp3");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_raw.mp3");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3874,11 +3874,11 @@ test "FormatValidator rejects invalid MP3" {
         0x00, 0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("invalid.mp3", .{});
-    try file.writeAll(&invalid_mp3);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.mp3", .{});
+    try file.writePositionalAll(runtime.io(), &invalid_mp3, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.mp3");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.mp3");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3916,11 +3916,11 @@ test "FormatValidator accepts valid FLAC" {
         0x00, 0x00, 0x00, 0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("valid.flac", .{});
-    try file.writeAll(&valid_flac);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.flac", .{});
+    try file.writePositionalAll(runtime.io(), &valid_flac, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.flac");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.flac");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3950,11 +3950,11 @@ test "FormatValidator rejects invalid FLAC" {
         0x22,
     };
 
-    const file = try tmp_dir.dir.createFile("invalid.flac", .{});
-    try file.writeAll(&invalid_flac);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.flac", .{});
+    try file.writePositionalAll(runtime.io(), &invalid_flac, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.flac");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.flac");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3989,11 +3989,11 @@ test "FormatValidator accepts valid WAV" {
         0x00, 0x00, 0x00, 0x00, // data size (0)
     };
 
-    const file = try tmp_dir.dir.createFile("valid.wav", .{});
-    try file.writeAll(&valid_wav);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.wav", .{});
+    try file.writePositionalAll(runtime.io(), &valid_wav, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.wav");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.wav");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4023,11 +4023,11 @@ test "FormatValidator rejects truncated WAV" {
         // Missing fmt chunk
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.wav", .{});
-    try file.writeAll(&truncated_wav);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.wav", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_wav, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.wav");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.wav");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4049,7 +4049,7 @@ test "FormatValidator deep validates real WAV from ground truth" {
     };
     source.close();
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/wav/sample.wav") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/wav/sample.wav") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -4080,11 +4080,11 @@ test "validateMp3Deep accepts valid MP3 with frame sync" {
         // Frame data (padding to min frame size ~417 bytes for 128kbps@44.1kHz)
     } ++ [_]u8{0x00} ** 417;
 
-    const file = try tmp_dir.dir.createFile("valid.mp3", .{});
-    try file.writeAll(&valid_mp3);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.mp3", .{});
+    try file.writePositionalAll(runtime.io(), &valid_mp3, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.mp3");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.mp3");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -4117,11 +4117,11 @@ test "validateMp3Deep accepts valid MP3 with ID3 tag" {
 
     const valid_mp3 = id3_header ++ frame;
 
-    const file = try tmp_dir.dir.createFile("valid_id3.mp3", .{});
-    try file.writeAll(&valid_mp3);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_id3.mp3", .{});
+    try file.writePositionalAll(runtime.io(), &valid_mp3, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_id3.mp3");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_id3.mp3");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -4153,11 +4153,11 @@ test "validateMp3Deep rejects invalid frame sync after ID3" {
 
     const invalid_mp3 = id3_header ++ invalid_frame;
 
-    const file = try tmp_dir.dir.createFile("invalid.mp3", .{});
-    try file.writeAll(&invalid_mp3);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.mp3", .{});
+    try file.writePositionalAll(runtime.io(), &invalid_mp3, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.mp3");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.mp3");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -4202,11 +4202,11 @@ test "FormatValidator accepts valid MIDI" {
         0x00, 0xFF, 0x2F, 0x00, // End of track meta event
     };
 
-    const file = try tmp_dir.dir.createFile("test.mid", .{});
-    try file.writeAll(&midi_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.mid", .{});
+    try file.writePositionalAll(runtime.io(), &midi_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.mid");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.mid");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4239,11 +4239,11 @@ test "FormatValidator rejects MIDI with invalid format type" {
         0x2F, 0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("invalid_format.mid", .{});
-    try file.writeAll(&midi_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid_format.mid", .{});
+    try file.writePositionalAll(runtime.io(), &midi_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid_format.mid");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid_format.mid");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4271,11 +4271,11 @@ test "FormatValidator rejects MIDI with missing track" {
         // Missing MTrk chunk
     };
 
-    const file = try tmp_dir.dir.createFile("no_track.mid", .{});
-    try file.writeAll(&midi_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "no_track.mid", .{});
+    try file.writePositionalAll(runtime.io(), &midi_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "no_track.mid");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "no_track.mid");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4343,11 +4343,11 @@ test "FormatValidator accepts valid XM" {
     xm_data[69] = 0x00;
     @memset(xm_data[70..80], 0);
 
-    const file = try tmp_dir.dir.createFile("test.xm", .{});
-    try file.writeAll(&xm_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.xm", .{});
+    try file.writePositionalAll(runtime.io(), &xm_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xm");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.xm");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4383,11 +4383,11 @@ test "FormatValidator accepts valid IT" {
     it_data[0x2B] = 0x02;
     @memset(it_data[0x2C..192], 0);
 
-    const file = try tmp_dir.dir.createFile("test.it", .{});
-    try file.writeAll(&it_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.it", .{});
+    try file.writePositionalAll(runtime.io(), &it_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.it");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.it");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4422,11 +4422,11 @@ test "FormatValidator accepts valid S3M" {
     @memcpy(s3m_data[44..48], "SCRM"); // Signature
     @memset(s3m_data[48..96], 0);
 
-    const file = try tmp_dir.dir.createFile("test.s3m", .{});
-    try file.writeAll(&s3m_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.s3m", .{});
+    try file.writePositionalAll(runtime.io(), &s3m_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.s3m");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.s3m");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4459,7 +4459,7 @@ test "FormatValidator accepts valid APE (modern v3990, full deep decode)" {
     const allocator = std.testing.allocator;
 
     const path = "ground_truth_examples/ape/corpus_synthetic.ape";
-    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+    runtime.access(path, .{}) catch return error.SkipZigTest;
     const path_dup = try allocator.dupe(u8, path);
     defer allocator.free(path_dup);
 
@@ -4478,7 +4478,7 @@ test "FormatValidator accepts large real APE (sample.ape, full deep decode)" {
     const allocator = std.testing.allocator;
 
     const path = "ground_truth_examples/ape/sample.ape";
-    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+    runtime.access(path, .{}) catch return error.SkipZigTest;
     const path_dup = try allocator.dupe(u8, path);
     defer allocator.free(path_dup);
 
@@ -4511,11 +4511,11 @@ test "FormatValidator rejects APE with invalid descriptor" {
     ape_data[11] = 0;
     @memset(ape_data[12..32], 0);
 
-    const file = try tmp_dir.dir.createFile("test.ape", .{});
-    try file.writeAll(&ape_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.ape", .{});
+    try file.writePositionalAll(runtime.io(), &ape_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.ape");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.ape");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4532,7 +4532,7 @@ test "FormatValidator accepts valid WavPack" {
     // validator can actually decode blocks. A 32-byte synthetic header
     // is no longer enough — libwavpack rejects partial files at open time.
     const allocator = std.testing.allocator;
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/wavpack/sample.wv") catch |err| switch (err) {
+    const path = allocator.dupe(u8, "ground_truth_examples/wavpack/sample.wv") catch |err| switch (err) {
         error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
         else => return err,
     };
@@ -4566,11 +4566,11 @@ test "FormatValidator rejects WavPack with invalid version" {
     wv_data[9] = 0x03;
     @memset(wv_data[10..32], 0);
 
-    const file = try tmp_dir.dir.createFile("test.wv", .{});
-    try file.writeAll(&wv_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.wv", .{});
+    try file.writePositionalAll(runtime.io(), &wv_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.wv");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.wv");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4637,11 +4637,11 @@ test "FormatValidator accepts valid DSF" {
     std.mem.writeInt(u64, dsf_data[84..92], 20, .little); // data chunk size (12 header + 8 data)
     @memset(dsf_data[92..100], 0); // Minimal audio data
 
-    const file = try tmp_dir.dir.createFile("test.dsf", .{});
-    try file.writeAll(&dsf_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.dsf", .{});
+    try file.writePositionalAll(runtime.io(), &dsf_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.dsf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.dsf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4675,11 +4675,11 @@ test "FormatValidator accepts valid DFF" {
     // Pad to 40 bytes
     @memset(dff_data[32..40], 0);
 
-    const file = try tmp_dir.dir.createFile("test.dff", .{});
-    try file.writeAll(&dff_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.dff", .{});
+    try file.writePositionalAll(runtime.io(), &dff_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.dff");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.dff");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4721,11 +4721,11 @@ test "FormatValidator rejects DSF with invalid sample rate" {
     std.mem.writeInt(u64, dsf_data[84..92], 20, .little);
     @memset(dsf_data[92..100], 0);
 
-    const file = try tmp_dir.dir.createFile("invalid.dsf", .{});
-    try file.writeAll(&dsf_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.dsf", .{});
+    try file.writePositionalAll(runtime.io(), &dsf_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.dsf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.dsf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();

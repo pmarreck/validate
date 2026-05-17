@@ -10,6 +10,7 @@
 //! Supports both raw codestream (.j2k/.j2c) and JP2 container (.jp2) formats.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const errmsg = @import("error_messages.zig");
 
 /// OpenJPEG C API bindings
@@ -270,11 +271,11 @@ test "validateJpeg2000 on real JP2 container file" {
     const allocator = std.testing.allocator;
 
     // Ground truth JP2 file (public domain balloon image)
-    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon.jp2", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/jpeg2k/balloon.jp2", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
     const data = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return;
     defer allocator.free(data);
@@ -295,11 +296,11 @@ test "validateJpeg2000 on real J2K codestream file" {
     const allocator = std.testing.allocator;
 
     // Ground truth J2K codestream file (public domain balloon image)
-    const file = std.fs.cwd().openFile("ground_truth_examples/jpeg2k/balloon.j2c", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/jpeg2k/balloon.j2c", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
     const data = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return;
     defer allocator.free(data);

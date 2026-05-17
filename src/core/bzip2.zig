@@ -42,43 +42,12 @@ pub const decompressNoCrc = bzip2z.decompressNoCrc;
 /// tarballs, etc.) without holding the full payload in heap.
 ///
 /// Candidate for upstreaming to bzip2z.
-pub fn validateStream(allocator: Allocator, input: []const u8) Error!void {
-    var decompressor = try Decompressor.init(allocator);
-    defer decompressor.deinit();
-
-    var input_stream = std.io.fixedBufferStream(input);
-    var discard = DiscardWriter{};
-    decompressor.decompressInternal(input_stream.reader(), discard.writer(), true) catch |err| switch (err) {
-        // bzip2z is strict about trailing data — it treats any post-stream
-        // bytes as the start of another stream and returns InvalidMagic
-        // when they don't begin with BZh. Real bunzip2 is more lenient
-        // ("trailing garbage after EOF ignored"). Bzip2-wrapped DMGs and
-        // pbzip2 multi-stream files commonly hit this. If we successfully
-        // decoded at least one block before the error, treat it as OK
-        // since the user-relevant data is fine. Real corruption (CRC
-        // mismatches, truncated streams) still fires.
-        Error.InvalidMagic, Error.InvalidBlockSize => {
-            if (discard.bytes_written > 0) return; // trailing garbage tolerated
-            return err;
-        },
-        else => return err,
-    };
+pub fn validateStream(allocator: Allocator, input: []const u8) !void {
+    // TODO(0.16): bzip2z's Decompressor.decompressInternal still expects 0.15
+    // reader/writer interfaces. Until bzip2z is ported to std.Io, fall back to
+    // the in-memory decompress and discard the output. Memory grows with the
+    // decompressed size — fine for typical archives, problematic for multi-GB
+    // bz2 streams. Restore streaming when bzip2z gains a std.Io decompress API.
+    const output = bzip2z.decompress(allocator, input) catch |err| return err;
+    defer allocator.free(output);
 }
-
-/// Writer adapter that discards all bytes written to it. Used by
-/// `validateStream` for memory-bounded bzip2 validation.
-const DiscardWriter = struct {
-    bytes_written: u64 = 0,
-
-    pub const WriteError = error{};
-    pub const Writer = std.io.GenericWriter(*DiscardWriter, WriteError, write);
-
-    fn write(self: *DiscardWriter, bytes: []const u8) WriteError!usize {
-        self.bytes_written += bytes.len;
-        return bytes.len;
-    }
-
-    pub fn writer(self: *DiscardWriter) Writer {
-        return .{ .context = self };
-    }
-};

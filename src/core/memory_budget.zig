@@ -91,7 +91,7 @@ pub const MemoryBudget = struct {
 			self.available_bytes += bytes;
 		}
 		self.active_count -= 1;
-		self.cond.broadcast();
+		self.cond.broadcast(runtime.io());
 	}
 
 	pub fn snapshot(self: *MemoryBudget) struct { total: usize, available: usize, active: usize } {
@@ -148,7 +148,7 @@ pub fn detectTotalRam() usize {
 	}
 	if (@import("builtin").os.tag == .linux) {
 		const file = std.fs.openFileAbsolute("/proc/meminfo", .{}) catch return 0;
-		defer file.close();
+		defer file.close(runtime.io());
 		var buf: [4096]u8 = undefined;
 		const n = file.readAll(&buf) catch return 0;
 		const data = buf[0..n];

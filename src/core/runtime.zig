@@ -55,33 +55,72 @@ pub fn io() std.Io {
 // where the old API didn't have one) by closing over the runtime singleton.
 // Mechanical sed targets across the codebase.
 
-/// 0.16 replacement for `std.fs.cwd().openFile(path, opts)`.
+/// 0.16 replacement for `runtime.openFile(path, opts)`.
 pub fn openFile(path: []const u8, opts: std.Io.Dir.OpenFileOptions) std.Io.File.OpenError!std.Io.File {
     ensureInit();
     return std.Io.Dir.cwd().openFile(g_io.?, path, opts);
 }
 
-/// 0.16 replacement for `std.fs.cwd().createFile(path, opts)`.
+/// 0.16 replacement for `runtime.createFile(path, opts)`.
 pub fn createFile(path: []const u8, opts: std.Io.Dir.CreateFileOptions) std.Io.File.OpenError!std.Io.File {
     ensureInit();
     return std.Io.Dir.cwd().createFile(g_io.?, path, opts);
 }
 
-/// 0.16 replacement for `std.fs.cwd().openDir(path, opts)`.
+/// 0.16 replacement for `runtime.openDir(path, opts)`.
 pub fn openDir(path: []const u8, opts: std.Io.Dir.OpenOptions) std.Io.Dir.OpenError!std.Io.Dir {
     ensureInit();
     return std.Io.Dir.cwd().openDir(g_io.?, path, opts);
 }
 
-/// 0.16 replacement for `std.fs.cwd().access(path, opts)`.
+/// 0.16 replacement for `runtime.access(path, opts)`.
 pub fn access(path: []const u8, opts: std.Io.Dir.AccessOptions) std.Io.Dir.AccessError!void {
     ensureInit();
     return std.Io.Dir.cwd().access(g_io.?, path, opts);
 }
 
-/// 0.16 replacement for `std.fs.cwd().statFile(path)`. 0.16 grew an options
+/// 0.16 replacement for `runtime.statFile(path)`. 0.16 grew an options
 /// param; we default to `.{}` to match the prior call shape exactly.
 pub fn statFile(path: []const u8) std.Io.Dir.StatFileError!std.Io.Dir.Stat {
     ensureInit();
     return std.Io.Dir.cwd().statFile(g_io.?, path, .{});
+}
+
+/// 0.16 replacement for `std.Io.Dir.cwd()` but ensures init first so the
+/// returned handle is usable for io-taking method calls.
+pub fn cwd() std.Io.Dir {
+    ensureInit();
+    return std.Io.Dir.cwd();
+}
+
+/// 0.16 replacement for `runtime.nanoTimestamp()`. Backed by the
+/// `std.Io.Timestamp` API on the runtime singleton.
+pub fn nanoTimestamp() i128 {
+    ensureInit();
+    return std.Io.Timestamp.now(g_io.?, .awake).nanoseconds;
+}
+
+/// 0.16 replacement for `runtime.hasEnvVar`. Uses POSIX
+/// `getenv` directly (non-allocating, safe for constant string keys).
+pub fn hasEnvVar(comptime name: [:0]const u8) bool {
+    return std.c.getenv(name.ptr) != null;
+}
+
+/// 0.16 replacement for `runtime.sleep(ns)`. Maps to `std.Io.sleep`
+/// on the runtime singleton with a monotonic clock.
+pub fn sleep(nanoseconds: u64) void {
+    ensureInit();
+    std.Io.sleep(g_io.?, std.Io.Duration.fromNanoseconds(@intCast(nanoseconds)), .awake) catch {};
+}
+
+/// Test-helper: in 0.15 we used `tmp_dir.dir.realpath(name, &buf)` to get an
+/// absolute path that survives across cwd-relative `FileSource.open` calls.
+/// 0.16 removed `realpath`/`realpathAlloc` from `std.fs` and `std.Io.Dir`.
+/// We synthesize the equivalent by concatenating tmpDir's parent path with
+/// its random sub-path. The result is owned by the caller.
+pub fn tmpRealpathAlloc(tmp_dir: anytype, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+    // std.testing.TmpDir stores its random sub_path; the parent_dir is the
+    // top-level zig-cache tmp dir. We rely on the tmpDir path layout being
+    // stable across the std.testing implementation: `.zig-cache/tmp/<sub_path>/`.
+    return std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/{s}", .{ &tmp_dir.sub_path, name });
 }

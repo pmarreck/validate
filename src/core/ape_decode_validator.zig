@@ -19,6 +19,7 @@
 //! into the validator. Mirrors the libwavpack vendor pattern exactly.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 
 const ape = @cImport({
@@ -96,12 +97,12 @@ test "validateApeDecode rejects garbage" {
 
 test "ground truth - APE corpus_synthetic validates clean" {
 	const path = "ground_truth_examples/ape/corpus_synthetic.ape";
-	const f = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+	const f = runtime.openFile(path, .{}) catch |err| switch (err) {
 		error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
 		else => return err,
 	};
-	defer f.close();
-	const bytes = try f.readToEndAlloc(std.testing.allocator, 16 * 1024 * 1024);
+	defer f.close(runtime.io());
+	const bytes = blk: { const __sz = try f.length(runtime.io()); if (__sz > 16 * 1024 * 1024) return error.StreamTooLong; const __b = try std.testing.allocator.alloc(u8, @intCast(__sz)); _ = try f.readPositionalAll(runtime.io(), __b, 0); break :blk __b; };
 	defer std.testing.allocator.free(bytes);
 
 	const r = validateApeDecode(bytes);
@@ -113,12 +114,12 @@ test "ground truth - APE corpus_synthetic validates clean" {
 
 test "ground truth - APE sample.ape validates clean" {
 	const path = "ground_truth_examples/ape/sample.ape";
-	const f = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+	const f = runtime.openFile(path, .{}) catch |err| switch (err) {
 		error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
 		else => return err,
 	};
-	defer f.close();
-	const bytes = try f.readToEndAlloc(std.testing.allocator, 32 * 1024 * 1024);
+	defer f.close(runtime.io());
+	const bytes = blk: { const __sz = try f.length(runtime.io()); if (__sz > 32 * 1024 * 1024) return error.StreamTooLong; const __b = try std.testing.allocator.alloc(u8, @intCast(__sz)); _ = try f.readPositionalAll(runtime.io(), __b, 0); break :blk __b; };
 	defer std.testing.allocator.free(bytes);
 
 	const r = validateApeDecode(bytes);
@@ -130,12 +131,12 @@ test "ground truth - APE sample.ape validates clean" {
 
 test "APE mid-frame bit flip is caught" {
 	const path = "ground_truth_examples/ape/corpus_synthetic.ape";
-	const f = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+	const f = runtime.openFile(path, .{}) catch |err| switch (err) {
 		error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
 		else => return err,
 	};
-	defer f.close();
-	var bytes = try f.readToEndAlloc(std.testing.allocator, 16 * 1024 * 1024);
+	defer f.close(runtime.io());
+	var bytes = blk: { const __sz = try f.length(runtime.io()); if (__sz > 16 * 1024 * 1024) return error.StreamTooLong; const __b = try std.testing.allocator.alloc(u8, @intCast(__sz)); _ = try f.readPositionalAll(runtime.io(), __b, 0); break :blk __b; };
 	defer std.testing.allocator.free(bytes);
 
 	if (bytes.len < 12_000) return error.SkipZigTest;

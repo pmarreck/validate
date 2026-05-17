@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const fv = @import("format_validation.zig");
 const FileFormat = fv.FileFormat;
 const ValidationResult = fv.ValidationResult;
@@ -105,12 +106,12 @@ const testing = std.testing;
 
 fn tmpToastFile(tmp_dir: *std.testing.TmpDir, name: []const u8, data: []const u8) !FileSource {
 	{
-		const wf = try tmp_dir.dir.createFile(name, .{});
-		defer wf.close();
-		try wf.writeAll(data);
+		const wf = try tmp_dir.dir.createFile(runtime.io(), name, .{});
+		defer wf.close(runtime.io());
+		try wf.writePositionalAll(runtime.io(), data, 0);
 	}
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-	const path = try tmp_dir.dir.realpath(name, &path_buf);
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, name);
+	defer std.testing.allocator.free(path);
 	return FileSource.open(path);
 }
 

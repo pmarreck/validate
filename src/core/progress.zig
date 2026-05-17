@@ -9,7 +9,7 @@ const terminal = progrez.terminal;
 const render = progrez.render;
 const runtime = @import("runtime.zig");
 
-/// 0.16: `std.time.nanoTimestamp()` was removed; clocks moved to std.Io.
+/// 0.16: `runtime.nanoTimestamp()` was removed; clocks moved to std.Io.
 /// Local helper keeps the i128-nanoseconds semantics the callers expect.
 inline fn nanoTimestamp() i128 {
     runtime.ensureInit();

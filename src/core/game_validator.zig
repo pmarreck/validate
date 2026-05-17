@@ -4,6 +4,7 @@
 //! Sega Genesis/Mega Drive, and CHD (MAME compressed disk images).
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
@@ -824,7 +825,7 @@ pub fn validateChd(file: *FileSource) ValidationResult {
 
 /// Skip test if a ground truth file doesn't exist (e.g., samples in external repo).
 fn skipIfMissing(comptime path: []const u8) !void {
-    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+    runtime.access(path, .{}) catch return error.SkipZigTest;
 }
 
 test "detectFormat IFF generic" {
@@ -868,11 +869,11 @@ test "FormatValidator accepts valid IFF" {
     @memcpy(iff_data[12..16], "DATA"); // Chunk type
     std.mem.writeInt(u32, iff_data[16..20], 0, .big); // Chunk size
 
-    const file = try tmp_dir.dir.createFile("test.iff", .{});
-    try file.writeAll(&iff_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.iff", .{});
+    try file.writePositionalAll(runtime.io(), &iff_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.iff");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.iff");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -900,11 +901,11 @@ test "FormatValidator accepts valid Blorb" {
     std.mem.writeInt(u32, blorb_data[20..24], 0, .big); // Number of resources
     @memset(blorb_data[24..32], 0); // Padding
 
-    const file = try tmp_dir.dir.createFile("test.blorb", .{});
-    try file.writeAll(&blorb_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.blorb", .{});
+    try file.writePositionalAll(runtime.io(), &blorb_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.blorb");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.blorb");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -930,11 +931,11 @@ test "FormatValidator rejects Blorb without RIdx" {
     @memcpy(blorb_data[12..16], "AUTH"); // Auth chunk, not RIdx
     std.mem.writeInt(u32, blorb_data[16..20], 0, .big);
 
-    const file = try tmp_dir.dir.createFile("invalid.blorb", .{});
-    try file.writeAll(&blorb_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.blorb", .{});
+    try file.writePositionalAll(runtime.io(), &blorb_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.blorb");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.blorb");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -969,7 +970,7 @@ test "validateGenesisDeep: corrupted ROM detected by checksum" {
 
     // Read a valid ROM and corrupt data in the checksummed region (0x200+)
     try skipIfMissing("ground_truth_examples/genesis/Afterburner II (J).gen");
-    const original = try std.fs.cwd().readFileAlloc(allocator, "ground_truth_examples/genesis/Afterburner II (J).gen", 8 * 1024 * 1024);
+    const original = try runtime.cwd().readFileAlloc(runtime.io(), "ground_truth_examples/genesis/Afterburner II (J).gen", allocator, .limited(8 * 1024 * 1024));
     defer allocator.free(original);
 
     var corrupted = try allocator.dupe(u8, original);
@@ -983,11 +984,11 @@ test "validateGenesisDeep: corrupted ROM detected by checksum" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("corrupt.gen", .{});
-    try file.writeAll(corrupted);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt.gen", .{});
+    try file.writePositionalAll(runtime.io(), corrupted, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.gen");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupt.gen");
     defer allocator.free(path);
 
     var source = try FileSource.open(path);
@@ -1009,7 +1010,7 @@ test "validateN64Deep: corrupted ROM detected by CRC" {
     const allocator = std.testing.allocator;
 
     try skipIfMissing("ground_truth_examples/n64/Mario 64 (J).z64");
-    const original = try std.fs.cwd().readFileAlloc(allocator, "ground_truth_examples/n64/Super Mario 64.z64", 64 * 1024 * 1024);
+    const original = try runtime.cwd().readFileAlloc(runtime.io(), "ground_truth_examples/n64/Super Mario 64.z64", allocator, .limited(64 * 1024 * 1024));
     defer allocator.free(original);
 
     var corrupted = try allocator.dupe(u8, original);
@@ -1022,11 +1023,11 @@ test "validateN64Deep: corrupted ROM detected by CRC" {
     var tmp_dir = std.testing.tmpDir(.{});
     defer tmp_dir.cleanup();
 
-    const file = try tmp_dir.dir.createFile("corrupt.z64", .{});
-    try file.writeAll(corrupted);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt.z64", .{});
+    try file.writePositionalAll(runtime.io(), corrupted, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt.z64");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupt.z64");
     defer allocator.free(path);
 
     var source = try FileSource.open(path);

@@ -4,6 +4,7 @@
 //! for ISO 9660 disk images and Apple DMG disk images.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 
 const format_validation = @import("format_validation.zig");
@@ -290,10 +291,10 @@ test "ISO structural: valid synthetic ISO with CD001 signature" {
     // "CD001" at offset 0x8001
     @memcpy(data[0x8001..0x8006], "CD001");
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.iso", .data = &data });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.iso", .data = &data });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.iso", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.iso");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -312,10 +313,10 @@ test "ISO structural: missing CD001 rejected" {
     // Write wrong signature
     @memcpy(data[0x8001..0x8006], "XXXXX");
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.iso", .data = &data });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.iso", .data = &data });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.iso", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.iso");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -330,10 +331,10 @@ test "ISO structural: file too small rejected" {
 
     // File smaller than offset 0x8001 + 5
     const small_data = [_]u8{0} ** 100;
-    try tmp.dir.writeFile(.{ .sub_path = "test.iso", .data = &small_data });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.iso", .data = &small_data });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.iso", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.iso");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -356,9 +357,9 @@ test "ISO deep: ground truth sample.iso" {
     const allocator = testing.allocator;
 
     // Just check file exists
-    std.fs.cwd().access("ground_truth_examples/iso/sample.iso", .{}) catch return;
+    runtime.access("ground_truth_examples/iso/sample.iso", .{}) catch return;
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/iso/sample.iso") catch return;
+    const path = allocator.dupe(u8, "ground_truth_examples/iso/sample.iso") catch return;
     defer allocator.free(path);
 
     var src = try FileSource.open(path);
@@ -378,10 +379,10 @@ test "DMG structural: valid synthetic DMG with koly trailer" {
     // Write "koly" at offset 512 (= 1024 - 512)
     @memcpy(data[512..516], "koly");
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.dmg", .data = &data });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.dmg", .data = &data });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.dmg", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.dmg");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -397,10 +398,10 @@ test "DMG structural: missing koly rejected" {
     var data: [1024]u8 = [_]u8{0} ** 1024;
     // No "koly" signature
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.dmg", .data = &data });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.dmg", .data = &data });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.dmg", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.dmg");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -413,10 +414,10 @@ test "DMG structural: file too small rejected" {
     defer tmp.cleanup();
 
     const small_data = [_]u8{0} ** 100;
-    try tmp.dir.writeFile(.{ .sub_path = "test.dmg", .data = &small_data });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.dmg", .data = &small_data });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.dmg", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.dmg");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -440,10 +441,10 @@ test "DMG structural: valid pre-UDIF DMG with DDM + APM signatures" {
     std.mem.writeInt(u16, data[512..514], apm_parser.PM_SIGNATURE, .big);
     std.mem.writeInt(u32, data[516..520], 1, .big); // map_entries = 1
 
-    try tmp.dir.writeFile(.{ .sub_path = "test_pre_udif.dmg", .data = &data });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test_pre_udif.dmg", .data = &data });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test_pre_udif.dmg", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test_pre_udif.dmg");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -467,10 +468,10 @@ test "DMG structural: DDM without partition map still accepted" {
 
     // Block 1: NOT a partition map (all zeros)
 
-    try tmp.dir.writeFile(.{ .sub_path = "test_ddm_only.dmg", .data = &data });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test_ddm_only.dmg", .data = &data });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test_ddm_only.dmg", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test_ddm_only.dmg");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 

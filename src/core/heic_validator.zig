@@ -5,6 +5,7 @@
 //! Replaces libheif for HEIC validation.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const heif = @import("heif_container_parser.zig");
 const h265 = @import("h265_validator.zig");
@@ -424,8 +425,8 @@ test "HEIC validation rejects non-HEIF data" {
 test "HEIC grid image fully validates all tiles" {
     const allocator = std.testing.allocator;
     const path = "ground_truth_examples/heic/sample.heic";
-    const file = std.fs.cwd().openFile(path, .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-    defer file.close();
+    const file = runtime.openFile(path, .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    defer file.close(runtime.io());
 
     const file_size = try file.getEndPos();
     const data = try allocator.alloc(u8, file_size);

@@ -12,6 +12,7 @@
 //! Reference: ATSC A/52 (Digital Audio Compression Standard)
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const errmsg = @import("error_messages.zig");
 
@@ -281,10 +282,10 @@ pub fn validateAc3Stream(data: []const u8, max_frames: u32) Ac3ValidationResult 
 
 /// Validate AC-3 from file
 pub fn validateAc3File(path: []const u8, max_frames: u32) Ac3ValidationResult {
-    const file = std.fs.cwd().openFile(path, .{}) catch {
+    const file = runtime.openFile(path, .{}) catch {
         return Ac3ValidationResult.invalid(errmsg.failedToOpen("file"), 0);
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
     const file_size = file.getEndPos() catch {
         return Ac3ValidationResult.invalid(errmsg.failedToGet("file size"), 0);
@@ -295,11 +296,9 @@ pub fn validateAc3File(path: []const u8, max_frames: u32) Ac3ValidationResult {
     }
 
     // Memory-map the entire file for CRC validation of all frames
-    const data = std.fs.cwd().readFileAlloc(
-        heap.validateAllocator(),
-        path,
-        256 * 1024 * 1024, // 256MB max
-    ) catch {
+    const data = runtime.cwd().readFileAlloc(runtime.io(), path, 
+        heap.validateAllocator(), .limited(256 * 1024 * 1024, // 256MB max
+    )) catch {
         return Ac3ValidationResult.invalid(errmsg.failedToRead("file"), 0);
     };
     defer heap.validateAllocator().free(data);

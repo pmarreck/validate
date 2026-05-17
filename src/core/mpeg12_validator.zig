@@ -16,6 +16,7 @@
 //! - 0x000001B8: Group of pictures start code
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 const mpeg12_decoder = @import("mpeg12_decoder.zig");
 const BitReader = @import("bitstream_reader.zig").BitReader;
@@ -739,11 +740,11 @@ test "parsePictureHeader I-frame" {
 test "deep validation on ground truth MPEG-1 sample" {
     // Read ground truth MPEG-PS sample containing MPEG-1 video
     const allocator = std.testing.allocator;
-    const file = std.fs.cwd().openFile("ground_truth_examples/mpeg12/sample_mpeg1.mpg", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/mpeg12/sample_mpeg1.mpg", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
     const data = file.readToEndAlloc(allocator, 1024 * 1024) catch return;
     defer allocator.free(data);
@@ -763,11 +764,11 @@ test "deep validation on ground truth MPEG-1 sample" {
 test "deep validation on ground truth MPEG-2 sample" {
     // Read ground truth MPEG-PS sample containing MPEG-2 video
     const allocator = std.testing.allocator;
-    const file = std.fs.cwd().openFile("ground_truth_examples/mpeg12/sample.mpg", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/mpeg12/sample.mpg", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
     const data = file.readToEndAlloc(allocator, 1024 * 1024) catch return;
     defer allocator.free(data);

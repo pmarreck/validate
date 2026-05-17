@@ -3,6 +3,7 @@
 // Reference: https://xiph.org/flac/format.html
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 const Md5 = std.crypto.hash.Md5;
 
@@ -1152,11 +1153,11 @@ test "verifyFlacMd5 streams instead of slurping (peak alloc < file size)" {
 	// forces verifyFlacMd5 down the read-from-source path — which is the path
 	// we expect to stream rather than slurp.
 	const path = "ground_truth_examples/flac/generated_pinknoise.flac";
-	const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+	const file = runtime.openFile(path, .{}) catch |err| {
 		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
 		return err;
 	};
-	defer file.close();
+	defer file.close(runtime.io());
 	const file_size = try file.getEndPos();
 	if (file_size < 64 * 1024) return error.SkipZigTest;
 
@@ -1183,11 +1184,11 @@ test "decodeFlacFull streams instead of slurping (peak alloc < file size)" {
 	const FileSource = @import("file_source.zig").FileSource;
 
 	const path = "ground_truth_examples/flac/generated_pinknoise.flac";
-	const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+	const file = runtime.openFile(path, .{}) catch |err| {
 		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
 		return err;
 	};
-	defer file.close();
+	defer file.close(runtime.io());
 	const file_size = try file.getEndPos();
 	if (file_size < 64 * 1024) return error.SkipZigTest;
 

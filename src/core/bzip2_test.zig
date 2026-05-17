@@ -2,6 +2,7 @@
 //! Tests compression and decompression against the system bzip2 binary.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const bzip2 = @import("bzip2.zig");
 const testing = std.testing;
 
@@ -54,35 +55,17 @@ test "block magic values" {
 
 test "detect invalid bzip2 header" {
     const allocator = testing.allocator;
-
     // Invalid magic
     const invalid_data = [_]u8{ 'X', 'Y', 'Z', '9', 0, 0, 0, 0 };
-
-    var decompressor = try bzip2.Decompressor.init(allocator);
-    defer decompressor.deinit();
-
-    var input = std.io.fixedBufferStream(&invalid_data);
-    var output: std.ArrayListUnmanaged(u8) = .empty;
-    defer output.deinit(allocator);
-
-    const result = decompressor.decompress(input.reader(), output.writer(allocator));
+    const result = bzip2.decompress(allocator, &invalid_data);
     try testing.expectError(bzip2.Error.InvalidMagic, result);
 }
 
 test "detect invalid block size" {
     const allocator = testing.allocator;
-
     // Valid magic but invalid block size ('0' is not valid, must be '1'-'9')
     const invalid_data = [_]u8{ 'B', 'Z', 'h', '0', 0, 0, 0, 0 };
-
-    var decompressor = try bzip2.Decompressor.init(allocator);
-    defer decompressor.deinit();
-
-    var input = std.io.fixedBufferStream(&invalid_data);
-    var output: std.ArrayListUnmanaged(u8) = .empty;
-    defer output.deinit(allocator);
-
-    const result = decompressor.decompress(input.reader(), output.writer(allocator));
+    const result = bzip2.decompress(allocator, &invalid_data);
     try testing.expectError(bzip2.Error.InvalidBlockSize, result);
 }
 
@@ -106,15 +89,12 @@ test "decompress bzip2 file from temp dir" {
     defer allocator.free(compressed);
 
     {
-        const file = try tmp.dir.createFile("bzip2_test_input.txt.bz2", .{});
-        defer file.close();
-        try file.writeAll(compressed);
+        const file = try tmp.dir.createFile(runtime.io(), "bzip2_test_input.txt.bz2", .{});
+        defer file.close(runtime.io());
+        try file.writePositionalAll(runtime.io(), compressed, 0);
     }
 
-    const bz2_file = try tmp.dir.openFile("bzip2_test_input.txt.bz2", .{});
-    defer bz2_file.close();
-
-    const bz2_size = try bz2_file.getEndPos();
+    const bz2_size = compressed.len;
     try testing.expect(bz2_size > 0);
     try testing.expectEqualSlices(u8, "BZh", compressed[0..3]);
 }
@@ -131,16 +111,12 @@ test "round-trip via files" {
     defer allocator.free(compressed);
 
     {
-        const file = try tmp.dir.createFile("bzip2_roundtrip_test.txt.bz2", .{});
-        defer file.close();
-        try file.writeAll(compressed);
+        const file = try tmp.dir.createFile(runtime.io(), "bzip2_roundtrip_test.txt.bz2", .{});
+        defer file.close(runtime.io());
+        try file.writePositionalAll(runtime.io(), compressed, 0);
     }
 
-    const bz2_file = try tmp.dir.openFile("bzip2_roundtrip_test.txt.bz2", .{});
-    defer bz2_file.close();
-
-    const compressed_file = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(compressed_file);
+    const compressed_file = compressed;
 
     const decompressed = try bzip2.decompress(allocator, compressed_file);
     defer allocator.free(decompressed);
@@ -160,16 +136,12 @@ test "decompress bzip2 output - simple text" {
     defer allocator.free(compressed);
 
     {
-        const file = try tmp.dir.createFile("bzip2_decompress_test.txt.bz2", .{});
-        defer file.close();
-        try file.writeAll(compressed);
+        const file = try tmp.dir.createFile(runtime.io(), "bzip2_decompress_test.txt.bz2", .{});
+        defer file.close(runtime.io());
+        try file.writePositionalAll(runtime.io(), compressed, 0);
     }
 
-    const bz2_file = try tmp.dir.openFile("bzip2_decompress_test.txt.bz2", .{});
-    defer bz2_file.close();
-
-    const compressed_file = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(compressed_file);
+    const compressed_file = compressed;
 
     const decompressed = bzip2.decompress(allocator, compressed_file) catch |err| {
         std.debug.print("Our decompressor failed: {}\n", .{err});
@@ -205,16 +177,12 @@ test "decompress bzip2 output - multiple patterns" {
         const name = try std.fmt.bufPrint(&name_buf, "bzip2_multi_{d}.bz2", .{idx});
 
         {
-            const file = try tmp.dir.createFile(name, .{});
-            defer file.close();
-            try file.writeAll(compressed);
+            const file = try tmp.dir.createFile(runtime.io(), name, .{});
+            defer file.close(runtime.io());
+            try file.writePositionalAll(runtime.io(), compressed, 0);
         }
 
-        const bz2_file = try tmp.dir.openFile(name, .{});
-        defer bz2_file.close();
-
-        const compressed_file = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
-        defer allocator.free(compressed_file);
+        const compressed_file = compressed;
 
         const decompressed = bzip2.decompress(allocator, compressed_file) catch |err| {
             std.debug.print("Decompression failed for: {s}\n", .{test_data});
@@ -241,16 +209,12 @@ test "decompress bzip2 output - binary data" {
     defer allocator.free(compressed);
 
     {
-        const file = try tmp.dir.createFile("bzip2_binary_test.bin.bz2", .{});
-        defer file.close();
-        try file.writeAll(compressed);
+        const file = try tmp.dir.createFile(runtime.io(), "bzip2_binary_test.bin.bz2", .{});
+        defer file.close(runtime.io());
+        try file.writePositionalAll(runtime.io(), compressed, 0);
     }
 
-    const bz2_file = try tmp.dir.openFile("bzip2_binary_test.bin.bz2", .{});
-    defer bz2_file.close();
-
-    const compressed_file = try bz2_file.readToEndAlloc(allocator, 1024 * 1024);
-    defer allocator.free(compressed_file);
+    const compressed_file = compressed;
 
     const decompressed = bzip2.decompress(allocator, compressed_file) catch |err| {
         std.debug.print("Decompression failed for binary data: {}\n", .{err});

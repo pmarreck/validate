@@ -452,7 +452,7 @@ export fn validate_get_max_memory() u64 {
 }
 
 /// Cross-platform getenv that returns null on Windows.
-/// 0.16: std.posix.getenv removed; std.c.getenv preserves the borrowed-pointer
+/// 0.16: std.c.getenv removed; std.c.getenv preserves the borrowed-pointer
 /// semantics (no allocator needed).
 fn cross_platform_getenv(name: [:0]const u8) ?[]const u8 {
     if (@import("builtin").os.tag == .windows) return null;
@@ -665,7 +665,7 @@ fn estimateBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) usize {
     const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return 1024 * 1024));
     const path_ptr = ctx.paths[task.index] orelse return 1024 * 1024;
     const path_slice = std.mem.span(path_ptr);
-    const stat = cwd().statFile(path_slice) catch return 1024 * 1024;
+    const stat = runtime.statFile(path_slice) catch return 1024 * 1024;
     return @intCast(stat.size);
 }
 fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
@@ -684,7 +684,7 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     // Large-file semaphore: files above threshold block until a slot is free,
     // preventing N workers all simultaneously validating huge files.
     const is_large = blk: {
-        const stat = cwd().statFile(path_slice) catch break :blk false;
+        const stat = runtime.statFile(path_slice) catch break :blk false;
         break :blk stat.size > LARGE_FILE_THRESHOLD;
     };
     if (is_large) g_large_file_sem.wait(runtime.io()) catch |err| std.debug.panic("sem wait failed: {s}", .{@errorName(err)});
@@ -699,7 +699,7 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
         while (wait_ms < 500) {
             const rss = getCurrentRss();
             if (rss == 0 or rss < budget) break;
-            std.Thread.sleep(50 * std.time.ns_per_ms);
+            runtime.sleep(50 * std.time.ns_per_ms);
             wait_ms += 50;
             if (g_interrupt_flag.load(.seq_cst)) return;
         }
@@ -773,7 +773,9 @@ export fn validate_batch(
     // Pre-init decoder libraries
     core.preInit();
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    // 0.16: GeneralPurposeAllocator renamed to DebugAllocator (the latter
+    // signals more honestly that its leak-tracking overhead is for Debug).
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -941,14 +943,14 @@ export fn validate_test_coverage(
     const alloc = arena.allocator();
 
     // Load the whole file into a reference buffer
-    const file = cwd().openFile(path_slice, .{}) catch return null;
-    defer file.close();
-    const file_size = file.getEndPos() catch return null;
+    const file = runtime.openFile(path_slice, .{}) catch return null;
+    defer file.close(runtime.io());
+    const file_size = file.length(runtime.io()) catch return null;
     if (file_size == 0 or file_size > 2 * 1024 * 1024 * 1024) return null;
 
     const original = std.heap.page_allocator.alloc(u8, @intCast(file_size)) catch return null;
     defer std.heap.page_allocator.free(original);
-    const bytes_read = file.readAll(original) catch return null;
+    const bytes_read = file.readPositionalAll(runtime.io(), original, 0) catch return null;
     const orig_slice = original[0..bytes_read];
 
     // Baseline validation — must be valid to proceed

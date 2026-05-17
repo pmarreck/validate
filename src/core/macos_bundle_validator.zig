@@ -10,6 +10,7 @@
 //! validation to existing Mach-O validators.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
@@ -329,26 +330,26 @@ pub fn plistKeyExistsAny(plist_data: []const u8, key: []const u8) bool {
 /// Validate a .app bundle deeply.
 /// Checks Info.plist, executable, code signature, and stray files.
 pub fn validateAppBundle(allocator: Allocator, path: []const u8) BundleValidationResult {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	var result = BundleValidationResult{
 		.valid = false,
 		.depth = .structural,
 	};
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
 	// 0. Check for WrappedBundle (iOS Catalyst apps)
 	const wrapped_path = std.fmt.bufPrint(&path_buf, "{s}/WrappedBundle", .{path}) catch {
 		result.warning = "path too long";
 		return result;
 	};
-	if (std.fs.cwd().access(wrapped_path, .{})) |_| {
+	if (runtime.access(wrapped_path, .{})) |_| {
 		// iOS Catalyst app — has WrappedBundle/ instead of Contents/
 		// Check for Wrapper/Info.plist (the macOS wrapper's plist)
 		const wrapper_plist = std.fmt.bufPrint(&path_buf, "{s}/Wrapper/Info.plist", .{path}) catch {
 			result.warning = "WrappedBundle present but path too long";
 			return result;
 		};
-		if (std.fs.cwd().access(wrapper_plist, .{})) |_| {
+		if (runtime.access(wrapper_plist, .{})) |_| {
 			result.has_info_plist = true;
 			result.valid = true;
 			result.depth = .structural;
@@ -369,7 +370,7 @@ pub fn validateAppBundle(allocator: Allocator, path: []const u8) BundleValidatio
 		return result;
 	};
 
-	const plist_data = std.fs.cwd().readFileAlloc(allocator, info_plist_path, 1024 * 1024) catch {
+	const plist_data = runtime.cwd().readFileAlloc(runtime.io(), info_plist_path, allocator, .limited(1024 * 1024)) catch {
 		result.warning = "missing or unreadable Contents/Info.plist";
 		return result;
 	};
@@ -400,14 +401,14 @@ pub fn validateAppBundle(allocator: Allocator, path: []const u8) BundleValidatio
 				return result;
 			};
 
-			if (std.fs.cwd().access(exec_path, .{})) |_| {
+			if (runtime.access(exec_path, .{})) |_| {
 				result.has_executable = true;
 
 				// Check Mach-O magic (first 4 bytes)
-				if (std.fs.cwd().openFile(exec_path, .{})) |file| {
-					defer file.close();
+				if (runtime.openFile(exec_path, .{})) |file| {
+					defer file.close(runtime.io());
 					var magic: [4]u8 = undefined;
-					if (file.read(&magic)) |n| {
+					if (file.readPositional(runtime.io(), &.{&magic}, 0)) |n| {
 						if (n >= 4) {
 							const m = std.mem.readInt(u32, &magic, .little);
 							// MH_MAGIC, MH_MAGIC_64, MH_CIGAM, MH_CIGAM_64, FAT_MAGIC, FAT_CIGAM
@@ -430,7 +431,7 @@ pub fn validateAppBundle(allocator: Allocator, path: []const u8) BundleValidatio
 		result.warning = "path too long";
 		return result;
 	};
-	if (std.fs.cwd().access(codesig_path, .{})) |_| {
+	if (runtime.access(codesig_path, .{})) |_| {
 		result.has_code_signature = true;
 	} else |_| {}
 
@@ -440,15 +441,15 @@ pub fn validateAppBundle(allocator: Allocator, path: []const u8) BundleValidatio
 		return result;
 	};
 
-	var contents_dir = std.fs.cwd().openDir(contents_path, .{ .iterate = true }) catch {
+	var contents_dir = runtime.openDir(contents_path, .{ .iterate = true }) catch {
 		result.warning = "cannot open Contents/ directory";
 		return result;
 	};
-	defer contents_dir.close();
+	defer contents_dir.close(runtime.io());
 
 	var stray_count: u32 = 0;
 	var iter = contents_dir.iterate();
-	while (iter.next() catch null) |entry| {
+	while (iter.next(runtime.io()) catch null) |entry| {
 		var is_allowed = false;
 		for (app_allowed_contents) |allowed| {
 			if (std.mem.eql(u8, entry.name, allowed)) {
@@ -494,13 +495,13 @@ pub fn validateAppBundle(allocator: Allocator, path: []const u8) BundleValidatio
 
 /// Validate a .framework bundle deeply.
 pub fn validateFrameworkBundle(allocator: Allocator, path: []const u8) BundleValidationResult {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	_ = allocator;
 	var result = BundleValidationResult{
 		.valid = false,
 		.depth = .structural,
 	};
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
 	// Frameworks have either Versions/ (modern) or flat (Headers/, Resources/ directly)
 	const versions_path = std.fmt.bufPrint(&path_buf, "{s}/Versions", .{path}) catch {
@@ -508,7 +509,7 @@ pub fn validateFrameworkBundle(allocator: Allocator, path: []const u8) BundleVal
 		return result;
 	};
 
-	const has_versions = if (std.fs.cwd().access(versions_path, .{})) |_| true else |_| false;
+	const has_versions = if (runtime.access(versions_path, .{})) |_| true else |_| false;
 
 	if (has_versions) {
 		// Check Versions/Current symlink
@@ -517,7 +518,7 @@ pub fn validateFrameworkBundle(allocator: Allocator, path: []const u8) BundleVal
 			return result;
 		};
 
-		if (std.fs.cwd().access(current_path, .{})) |_| {
+		if (runtime.access(current_path, .{})) |_| {
 			result.valid = true;
 			result.depth = .structural;
 		} else |_| {
@@ -531,7 +532,7 @@ pub fn validateFrameworkBundle(allocator: Allocator, path: []const u8) BundleVal
 			return result;
 		};
 
-		if (std.fs.cwd().access(headers_path, .{})) |_| {
+		if (runtime.access(headers_path, .{})) |_| {
 			result.valid = true;
 			result.depth = .structural;
 		} else |_| {
@@ -539,7 +540,7 @@ pub fn validateFrameworkBundle(allocator: Allocator, path: []const u8) BundleVal
 				result.warning = "path too long";
 				return result;
 			};
-			if (std.fs.cwd().access(resources_path, .{})) |_| {
+			if (runtime.access(resources_path, .{})) |_| {
 				result.valid = true;
 				result.depth = .structural;
 			} else |_| {
@@ -556,7 +557,7 @@ pub fn validateFrameworkBundle(allocator: Allocator, path: []const u8) BundleVal
 		std.fmt.bufPrint(&path_buf, "{s}/Resources/Info.plist", .{path}) catch null;
 
 	if (info_path) |ip| {
-		if (std.fs.cwd().access(ip, .{})) |_| {
+		if (runtime.access(ip, .{})) |_| {
 			result.has_info_plist = true;
 		} else |_| {}
 	}
@@ -587,6 +588,7 @@ pub const CodeResourcesResult = struct {
 /// 1. Every file in the `files` dict exists on disk
 /// 2. No unlisted files exist in Resources/ or other covered directories
 pub fn verifyCodeResources(allocator: Allocator, contents_path: []const u8) CodeResourcesResult {
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	var result = CodeResourcesResult{
 		.valid = false,
 		.missing_files = 0,
@@ -595,11 +597,10 @@ pub fn verifyCodeResources(allocator: Allocator, contents_path: []const u8) Code
 		.total_on_disk = 0,
 	};
 
-	var path_buf: [std.fs.max_path_bytes]u8 = undefined;
 
 	// Read CodeResources
 	const cr_path = std.fmt.bufPrint(&path_buf, "{s}/_CodeSignature/CodeResources", .{contents_path}) catch return result;
-	const cr_data = std.fs.cwd().readFileAlloc(allocator, cr_path, 4 * 1024 * 1024) catch return result;
+	const cr_data = runtime.cwd().readFileAlloc(runtime.io(), cr_path, allocator, .limited(4 * 1024 * 1024)) catch return result;
 	defer allocator.free(cr_data);
 
 	// Extract listed file paths from the `files` dict in the XML plist
@@ -688,14 +689,14 @@ pub fn verifyCodeResources(allocator: Allocator, contents_path: []const u8) Code
 	var unlisted: u32 = 0;
 	var on_disk: u32 = 0;
 
-	var contents_dir = std.fs.cwd().openDir(contents_path, .{ .iterate = true }) catch return result;
-	defer contents_dir.close();
+	var contents_dir = runtime.openDir(contents_path, .{ .iterate = true }) catch return result;
+	defer contents_dir.close(runtime.io());
 
 	// We need to walk recursively. Use a stack-based approach.
 	var walker = contents_dir.walk(allocator) catch return result;
 	defer walker.deinit();
 
-	while (walker.next() catch null) |entry| {
+	while (walker.next(runtime.io()) catch null) |entry| {
 		if (entry.kind != .file) continue;
 		const rel_path = entry.path;
 
@@ -727,7 +728,7 @@ pub fn verifyCodeResources(allocator: Allocator, contents_path: []const u8) Code
 	var key_iter = listed_files.keyIterator();
 	while (key_iter.next()) |k| {
 		const file_rel = k.*;
-		if (contents_dir.access(file_rel, .{})) |_| {
+		if (contents_dir.access(runtime.io(), file_rel, .{})) |_| {
 			// exists
 		} else |_| {
 			missing += 1;
@@ -810,8 +811,8 @@ test "validateAppBundle: detects missing Info.plist" {
 	tmp.dir.makeDir("Fake.app/Contents") catch return error.SkipZigTest;
 	tmp.dir.makeDir("Fake.app/Contents/MacOS") catch return error.SkipZigTest;
 
-	var pb: [std.fs.max_path_bytes]u8 = undefined;
-	const rp = tmp.dir.realpath("Fake.app", &pb) catch return error.SkipZigTest;
+	const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "Fake.app") catch return error.SkipZigTest;
+	defer std.testing.allocator.free(rp);
 
 	const result = validateAppBundle(testing.allocator, rp);
 	try testing.expect(!result.valid or result.warning != null);
@@ -836,21 +837,21 @@ test "validateAppBundle: detects stray files" {
     \\<key>CFBundleName</key><string>Test</string>
     \\</dict></plist>
 	;
-	tmp.dir.writeFile(.{ .sub_path = "Stray.app/Contents/Info.plist", .data = plist }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Stray.app/Contents/Info.plist", .data = plist }) catch return error.SkipZigTest;
 
 	// Create the executable (fake Mach-O with correct magic)
 	const macho_magic = [_]u8{ 0xCF, 0xFA, 0xED, 0xFE, 0x00, 0x00, 0x00, 0x00 };
-	tmp.dir.writeFile(.{ .sub_path = "Stray.app/Contents/MacOS/test", .data = &macho_magic }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Stray.app/Contents/MacOS/test", .data = &macho_magic }) catch return error.SkipZigTest;
 
 	// Add a fake code signature so we reach full depth (where stray check matters)
 	tmp.dir.makeDir("Stray.app/Contents/_CodeSignature") catch return error.SkipZigTest;
-	tmp.dir.writeFile(.{ .sub_path = "Stray.app/Contents/_CodeSignature/CodeResources", .data = "<plist/>" }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Stray.app/Contents/_CodeSignature/CodeResources", .data = "<plist/>" }) catch return error.SkipZigTest;
 
 	// Add a stray file
-	tmp.dir.writeFile(.{ .sub_path = "Stray.app/Contents/hacker_was_here.txt", .data = "gotcha" }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Stray.app/Contents/hacker_was_here.txt", .data = "gotcha" }) catch return error.SkipZigTest;
 
-	var pb: [std.fs.max_path_bytes]u8 = undefined;
-	const rp = tmp.dir.realpath("Stray.app", &pb) catch return error.SkipZigTest;
+	const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "Stray.app") catch return error.SkipZigTest;
+	defer std.testing.allocator.free(rp);
 
 	const result = validateAppBundle(testing.allocator, rp);
 	try testing.expect(result.valid);
@@ -875,10 +876,10 @@ test "validateAppBundle: detects missing executable" {
     \\<key>CFBundleName</key><string>Test</string>
     \\</dict></plist>
 	;
-	tmp.dir.writeFile(.{ .sub_path = "NoExec.app/Contents/Info.plist", .data = plist }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "NoExec.app/Contents/Info.plist", .data = plist }) catch return error.SkipZigTest;
 
-	var pb: [std.fs.max_path_bytes]u8 = undefined;
-	const rp = tmp.dir.realpath("NoExec.app", &pb) catch return error.SkipZigTest;
+	const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "NoExec.app") catch return error.SkipZigTest;
+	defer std.testing.allocator.free(rp);
 
 	const result = validateAppBundle(testing.allocator, rp);
 	try testing.expect(!result.valid or (result.warning != null and std.mem.indexOf(u8, result.warning.?, "missing") != null));
@@ -887,7 +888,7 @@ test "validateAppBundle: detects missing executable" {
 
 test "extractBplistStringValue: extracts from real binary plist" {
 	// Read Spark.app's binary plist if available
-	const data = std.fs.cwd().readFileAlloc(testing.allocator, "/Applications/Spark.app/Contents/Info.plist", 1024 * 1024) catch return error.SkipZigTest;
+	const data = runtime.cwd().readFileAlloc(runtime.io(), "/Applications/Spark.app/Contents/Info.plist", testing.allocator, .limited(1024 * 1024)) catch return error.SkipZigTest;
 	defer testing.allocator.free(data);
 
 	if (data.len < 6 or !std.mem.eql(u8, data[0..6], "bplist")) return error.SkipZigTest;
@@ -919,10 +920,10 @@ test "validateAppBundle: WrappedBundle (iOS Catalyst) detected" {
 	tmp.dir.makeDir("Catalyst.app") catch return error.SkipZigTest;
 	tmp.dir.makeDir("Catalyst.app/WrappedBundle") catch return error.SkipZigTest;
 	tmp.dir.makeDir("Catalyst.app/Wrapper") catch return error.SkipZigTest;
-	tmp.dir.writeFile(.{ .sub_path = "Catalyst.app/Wrapper/Info.plist", .data = "<plist/>" }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Catalyst.app/Wrapper/Info.plist", .data = "<plist/>" }) catch return error.SkipZigTest;
 
-	var pb: [std.fs.max_path_bytes]u8 = undefined;
-	const rp = tmp.dir.realpath("Catalyst.app", &pb) catch return error.SkipZigTest;
+	const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "Catalyst.app") catch return error.SkipZigTest;
+	defer std.testing.allocator.free(rp);
 
 	const result = validateAppBundle(testing.allocator, rp);
 	try testing.expect(result.valid);
@@ -953,7 +954,7 @@ test "verifyCodeResources: detects unlisted file in signed bundle" {
 	tmp.dir.makeDir("Signed.app/Contents/_CodeSignature") catch return error.SkipZigTest;
 
 	// Write a file that IS listed
-	tmp.dir.writeFile(.{ .sub_path = "Signed.app/Contents/Resources/icon.icns", .data = "icon" }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Signed.app/Contents/Resources/icon.icns", .data = "icon" }) catch return error.SkipZigTest;
 
 	// Write CodeResources listing only icon.icns
 	const code_resources =
@@ -968,13 +969,13 @@ test "verifyCodeResources: detects unlisted file in signed bundle" {
     \\</dict>
     \\</plist>
 	;
-	tmp.dir.writeFile(.{ .sub_path = "Signed.app/Contents/_CodeSignature/CodeResources", .data = code_resources }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Signed.app/Contents/_CodeSignature/CodeResources", .data = code_resources }) catch return error.SkipZigTest;
 
 	// Add an UNLISTED file (the intruder)
-	tmp.dir.writeFile(.{ .sub_path = "Signed.app/Contents/Resources/injected.dylib", .data = "malware" }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Signed.app/Contents/Resources/injected.dylib", .data = "malware" }) catch return error.SkipZigTest;
 
-	var pb: [std.fs.max_path_bytes]u8 = undefined;
-	const rp = tmp.dir.realpath("Signed.app/Contents", &pb) catch return error.SkipZigTest;
+	const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "Signed.app/Contents") catch return error.SkipZigTest;
+	defer std.testing.allocator.free(rp);
 
 	const manifest_result = verifyCodeResources(testing.allocator, rp);
 	try testing.expect(manifest_result.unlisted_files > 0);
@@ -989,7 +990,7 @@ test "verifyCodeResources: clean bundle has no unlisted files" {
 	tmp.dir.makeDir("Clean.app/Contents/Resources") catch return error.SkipZigTest;
 	tmp.dir.makeDir("Clean.app/Contents/_CodeSignature") catch return error.SkipZigTest;
 
-	tmp.dir.writeFile(.{ .sub_path = "Clean.app/Contents/Resources/icon.icns", .data = "icon" }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Clean.app/Contents/Resources/icon.icns", .data = "icon" }) catch return error.SkipZigTest;
 
 	const code_resources =
     \\<?xml version="1.0" encoding="UTF-8"?>
@@ -1003,10 +1004,10 @@ test "verifyCodeResources: clean bundle has no unlisted files" {
     \\</dict>
     \\</plist>
 	;
-	tmp.dir.writeFile(.{ .sub_path = "Clean.app/Contents/_CodeSignature/CodeResources", .data = code_resources }) catch return error.SkipZigTest;
+	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Clean.app/Contents/_CodeSignature/CodeResources", .data = code_resources }) catch return error.SkipZigTest;
 
-	var pb: [std.fs.max_path_bytes]u8 = undefined;
-	const rp = tmp.dir.realpath("Clean.app/Contents", &pb) catch return error.SkipZigTest;
+	const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "Clean.app/Contents") catch return error.SkipZigTest;
+	defer std.testing.allocator.free(rp);
 
 	const manifest_result = verifyCodeResources(testing.allocator, rp);
 	try testing.expectEqual(@as(u32, 0), manifest_result.unlisted_files);

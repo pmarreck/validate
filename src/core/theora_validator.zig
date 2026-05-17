@@ -278,7 +278,7 @@ pub fn validateTheoraStream(allocator: Allocator, data: []const u8, max_frames: 
 /// Validate Theora from an Ogg file by extracting Theora stream data.
 /// This parses Ogg pages and validates the Theora packets.
 pub fn validateTheoraFromOgg(allocator: Allocator, file: *FileSource, max_frames: u32) TheoraValidationResult {
-    var packets: std.ArrayListUnmanaged([]u8) = .{};
+    var packets: std.ArrayListUnmanaged([]u8) = .empty;
     defer {
         for (packets.items) |pkt| {
             allocator.free(pkt);

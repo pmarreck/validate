@@ -8,6 +8,7 @@
 //! Spec reference: [MS-DOC] — FibBase, FibRgLw97, FibRgFcLcb97, CLX/Piece Table.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 
 const format_validation = @import("format_validation.zig");
@@ -550,7 +551,7 @@ fn validatePlcBtePapx(data: []const u8, _: u32, wd_size: usize) ?[]const u8 {
 
 /// Skip test if a ground truth file doesn't exist (e.g., samples in external repo).
 fn skipIfMissing(comptime path: []const u8) !void {
-    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+    runtime.access(path, .{}) catch return error.SkipZigTest;
 }
 
 test "parseFibBase from synthetic data" {

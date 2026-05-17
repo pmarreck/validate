@@ -18,7 +18,7 @@ pub const AsciiHexDecodeError = error{
 /// Returns allocated buffer that caller must free.
 pub fn decode(allocator: Allocator, input: []const u8) AsciiHexDecodeError![]u8 {
 	// Output is at most half the input size (2 hex chars = 1 byte)
-	var result: std.ArrayListUnmanaged(u8) = .{};
+	var result: std.ArrayListUnmanaged(u8) = .empty;
 	errdefer result.deinit(allocator);
 
 	var high_nibble: ?u4 = null;

@@ -4,6 +4,7 @@
 //! for document formats: SQLite, OLE2 (DOC/XLS/PPT), WordPerfect, MDB, ACCDB.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 
@@ -1161,10 +1162,10 @@ test "OLE2 structural: valid OLE2 header accepted" {
     // Mini sector size power at 0x20 = 6 (64 bytes)
     std.mem.writeInt(u16, header[0x20..0x22], 6, .little);
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.ole2", .data = &header });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.ole2", .data = &header });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.ole2", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.ole2");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -1181,10 +1182,10 @@ test "OLE2 structural: wrong magic rejected" {
     // Wrong magic
     @memcpy(header[0..8], &[_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 });
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.ole2", .data = &header });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.ole2", .data = &header });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.ole2", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.ole2");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -1204,10 +1205,10 @@ test "OLE2 structural: invalid major version rejected" {
     std.mem.writeInt(u16, header[0x1E..0x20], 9, .little);
     std.mem.writeInt(u16, header[0x20..0x22], 6, .little);
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.ole2", .data = &header });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.ole2", .data = &header });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.ole2", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.ole2");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -1254,10 +1255,10 @@ test "SQLite structural: valid synthetic header" {
     // Cell content offset = 0x0FFF (near end of page) (bytes 105-106)
     std.mem.writeInt(u16, page[105..107], 0x0FFF, .big);
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.sqlite", .data = &page });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.sqlite", .data = &page });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.sqlite", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.sqlite");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -1273,10 +1274,10 @@ test "SQLite structural: invalid magic rejected" {
     var data: [100]u8 = [_]u8{0} ** 100;
     @memcpy(data[0..16], "Not a SQLite DB\x00");
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.sqlite", .data = &data });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.sqlite", .data = &data });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.sqlite", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.sqlite");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -1293,10 +1294,10 @@ test "SQLite structural: invalid page size rejected" {
     // Bad page size: 777 (not power of 2)
     std.mem.writeInt(u16, data[16..18], 777, .big);
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.sqlite", .data = &data });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.sqlite", .data = &data });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.sqlite", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.sqlite");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -1307,9 +1308,9 @@ test "SQLite structural: invalid page size rejected" {
 test "SQLite deep: ground truth chinook.sqlite" {
     const allocator = testing.allocator;
 
-    std.fs.cwd().access("ground_truth_examples/sqlite/chinook.sqlite", .{}) catch return;
+    runtime.access("ground_truth_examples/sqlite/chinook.sqlite", .{}) catch return;
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/sqlite/chinook.sqlite") catch return;
+    const path = allocator.dupe(u8, "ground_truth_examples/sqlite/chinook.sqlite") catch return;
     defer allocator.free(path);
 
     const result = validateSqliteDeep(allocator, path);
@@ -1347,10 +1348,10 @@ test "WordPerfect structural: valid synthetic header" {
     // File type = 0x0A (WPD) (byte 9)
     header[9] = 0x0A;
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.wpd", .data = &header });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.wpd", .data = &header });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.wpd", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.wpd");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -1370,10 +1371,10 @@ test "WordPerfect structural: wrong magic rejected" {
     header[2] = 0x00;
     header[3] = 0x00;
 
-    try tmp.dir.writeFile(.{ .sub_path = "test.wpd", .data = &header });
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.wpd", .data = &header });
 
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("test.wpd", &real_path_buf);
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.wpd");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
 
@@ -1641,11 +1642,11 @@ test "DBF buffer validation: invalid deletion flag rejected" {
 test "DBF structural: ground truth sample.dbf from shapefile" {
     // sample.dbf lives alongside the shapefile ground truth
     const path = "ground_truth_examples/shapefile/companions/sample.dbf";
-    var file = std.fs.cwd().openFile(path, .{}) catch |err| {
+    var file = runtime.openFile(path, .{}) catch |err| {
         if (err == error.FileNotFound) return error.SkipZigTest;
         return err;
     };
-    defer file.close();
+    defer file.close(runtime.io());
     var src = @import("file_source.zig").FileSource.fromFile(file);
     const result = validateDbf(&src);
     try testing.expect(result.is_valid);

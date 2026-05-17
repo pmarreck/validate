@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const format_validation = @import("format_validation.zig");
@@ -147,9 +148,10 @@ pub fn formatUnicodeWarnings(allocator: Allocator, warnings: []const UnicodeWarn
         }
     }
 
-    // Build formatted string using ArrayList
-    var list = std.ArrayListUnmanaged(u8){};
-    const writer = list.writer(allocator);
+    // Build formatted string using std.Io.Writer.Allocating (0.16 replacement for ArrayList.writer).
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    const writer = &aw.writer;
 
     writer.writeAll("[") catch return null;
     var first_group = true;
@@ -173,15 +175,15 @@ pub fn formatUnicodeWarnings(allocator: Allocator, warnings: []const UnicodeWarn
             if (idx > 0) {
                 writer.writeAll(", ") catch return null;
             }
-            std.fmt.format(writer, "{d}", .{offset}) catch return null;
+            writer.print("{d}", .{offset}) catch return null;
         }
         if (group.total > group.offsets.len) {
-            std.fmt.format(writer, ", ... ({d} total)", .{group.total}) catch return null;
+            writer.print(", ... ({d} total)", .{group.total}) catch return null;
         }
     }
 
     writer.writeAll("]") catch return null;
-    return list.toOwnedSlice(allocator) catch return null;
+    return aw.toOwnedSlice() catch return null;
 }
 
 // ============ UTF-8 Validator ============
@@ -409,7 +411,7 @@ pub fn validateJson(file: *FileSource, ext_hint: ?[]const u8) ValidationResult {
     const data = text_result.content;
 
     // Try to parse the JSON using Scanner
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
 
     // First try strict JSON parsing
@@ -625,7 +627,7 @@ pub fn validateToml(file: *FileSource) ValidationResult {
     };
 
     // Use the sam701/zig-toml parser to parse as a generic Table
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -1086,7 +1088,7 @@ fn parseXmlWellFormed(had_doctype: bool, data: []const u8) XmlParseOutcome {
 fn isXml11Declared(data: []const u8) bool {
     const head_len = @min(data.len, 256);
     const head = data[0..head_len];
-    if (!std.mem.startsWith(u8, std.mem.trimLeft(u8, head, &[_]u8{ ' ', '\t', '\r', '\n', 0xEF, 0xBB, 0xBF }), "<?xml")) return false;
+    if (!std.mem.startsWith(u8, std.mem.trimStart(u8, head, &[_]u8{ ' ', '\t', '\r', '\n', 0xEF, 0xBB, 0xBF }), "<?xml")) return false;
     const decl_end = std.mem.indexOf(u8, head, "?>") orelse return false;
     const decl = head[0..decl_end];
     // Look for version="1.1" or version='1.1' allowing surrounding whitespace.
@@ -1148,7 +1150,7 @@ fn isXml11OnlyControl(c: u32) bool {
 const RewriteResult = struct { data: []const u8, allocated: bool };
 fn rewriteXml11ControlRefs(allocator: Allocator, data: []const u8) ?RewriteResult {
     if (!hasXml11ControlCharRef(data)) return RewriteResult{ .data = data, .allocated = false };
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = std.ArrayListUnmanaged(u8).empty;
     out.ensureTotalCapacity(allocator, data.len) catch {
         out.deinit(allocator);
         return null;
@@ -2065,7 +2067,7 @@ pub fn validateGcode(file: *FileSource) ValidationResult {
 
             // Strip inline comment
             const cmd_end = std.mem.indexOfScalar(u8, line, ';') orelse line.len;
-            const cmd = std.mem.trimRight(u8, line[0..cmd_end], " \t");
+            const cmd = std.mem.trimEnd(u8, line[0..cmd_end], " \t");
             if (cmd.len == 0) continue;
 
             // Valid command starts with G, M, T, N, O, or a parameter letter
@@ -2103,7 +2105,7 @@ pub fn validateGcode(file: *FileSource) ValidationResult {
         const line = std.mem.trim(u8, line_buf[0..carry], " \t\r");
         if (line.len > 0 and line[0] != ';' and line[0] != '%') {
             const cmd_end = std.mem.indexOfScalar(u8, line, ';') orelse line.len;
-            const cmd = std.mem.trimRight(u8, line[0..cmd_end], " \t");
+            const cmd = std.mem.trimEnd(u8, line[0..cmd_end], " \t");
             if (cmd.len > 0) {
                 if (!isGcodeCommandStart(cmd[0]) or !validateGcodeLine(cmd)) {
                     return ValidationResult.invalid(.gcode, "Invalid G-code syntax");
@@ -2949,11 +2951,11 @@ test "validateJson accepts valid ground truth JSON file" {
 test "validateJson rejects truncated JSON" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.json", .{});
-    try f.writeAll("{\"key\": ");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("bad.json", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "bad.json", .{});
+    try f.writePositionalAll(runtime.io(), "{\"key\": ", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.json");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateJson(&source, null);
@@ -2963,10 +2965,10 @@ test "validateJson rejects truncated JSON" {
 test "validateJson rejects empty file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("empty.json", .{});
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("empty.json", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "empty.json", .{});
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "empty.json");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateJson(&source, null);
@@ -2985,11 +2987,11 @@ test "validateToml accepts valid ground truth TOML file" {
 test "validateToml rejects truncated TOML" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.toml", .{});
-    try f.writeAll("[section\nkey = ");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("bad.toml", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "bad.toml", .{});
+    try f.writePositionalAll(runtime.io(), "[section\nkey = ", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.toml");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateToml(&source);
@@ -2999,10 +3001,10 @@ test "validateToml rejects truncated TOML" {
 test "validateToml rejects empty file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("empty.toml", .{});
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("empty.toml", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "empty.toml", .{});
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "empty.toml");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateToml(&source);
@@ -3020,11 +3022,11 @@ test "validateIni accepts valid ground truth INI file" {
 test "validateIni rejects file with invalid syntax" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.ini", .{});
-    try f.writeAll("[section]\n<<<invalid>>>\n");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("bad.ini", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "bad.ini", .{});
+    try f.writePositionalAll(runtime.io(), "[section]\n<<<invalid>>>\n", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.ini");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateIni(&source);
@@ -3043,11 +3045,11 @@ test "validateXml accepts valid ground truth XML file" {
 test "validateXml rejects malformed XML" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.xml", .{});
-    try f.writeAll("<?xml version=\"1.0\"?>\n<root><unclosed>\n");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("bad.xml", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "bad.xml", .{});
+    try f.writePositionalAll(runtime.io(), "<?xml version=\"1.0\"?>\n<root><unclosed>\n", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.xml");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateXml(&source);
@@ -3057,10 +3059,10 @@ test "validateXml rejects malformed XML" {
 test "validateXml rejects empty file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("empty.xml", .{});
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("empty.xml", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "empty.xml", .{});
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "empty.xml");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateXml(&source);
@@ -3124,11 +3126,11 @@ test "validateCsv accepts valid ground truth CSV file" {
 test "validateCsv rejects unclosed quoted field" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.csv", .{});
-    try f.writeAll("name,desc\nAlice,\"unclosed\n");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("bad.csv", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "bad.csv", .{});
+    try f.writePositionalAll(runtime.io(), "name,desc\nAlice,\"unclosed\n", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.csv");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateCsv(&source);
@@ -3146,11 +3148,11 @@ test "validateRtf accepts valid ground truth RTF file" {
 test "validateRtf rejects missing signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.rtf", .{});
-    try f.writeAll("not an rtf file at all");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("bad.rtf", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "bad.rtf", .{});
+    try f.writePositionalAll(runtime.io(), "not an rtf file at all", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.rtf");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateRtf(&source);
@@ -3160,11 +3162,11 @@ test "validateRtf rejects missing signature" {
 test "validateRtf rejects missing closing brace" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("noclosing.rtf", .{});
-    try f.writeAll("{\\rtf1\\ansi no closing brace here ");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("noclosing.rtf", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "noclosing.rtf", .{});
+    try f.writePositionalAll(runtime.io(), "{\\rtf1\\ansi no closing brace here ", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "noclosing.rtf");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateRtf(&source);
@@ -3172,10 +3174,7 @@ test "validateRtf rejects missing closing brace" {
 }
 
 test "validateRtfDeep accepts valid ground truth RTF file" {
-    const path_buf = std.fs.cwd().realpathAlloc(
-        testing.allocator,
-        "ground_truth_examples/rtf/sample.rtf",
-    ) catch return;
+    const path_buf = testing.allocator.dupe(u8, "ground_truth_examples/rtf/sample.rtf") catch return;
     defer testing.allocator.free(path_buf);
     var source = FileSource.open(path_buf) catch return;
     defer source.close();
@@ -3187,9 +3186,9 @@ test "validateRtfDeep accepts valid ground truth RTF file" {
 test "validateRtfDeep detects unmatched closing brace" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("extrabrace.rtf", .{});
-    try f.writeAll("{\\rtf1\\ansi Hello}}");
-    f.close();
+    const f = try tmp.dir.createFile(runtime.io(), "extrabrace.rtf", .{});
+    try f.writePositionalAll(runtime.io(), "{\\rtf1\\ansi Hello}}", 0);
+    f.close(runtime.io());
     const path_buf = tmp.dir.realpathAlloc(
         testing.allocator,
         "extrabrace.rtf",
@@ -3204,9 +3203,9 @@ test "validateRtfDeep detects unmatched closing brace" {
 test "validateRtfDeep detects unclosed brace" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("unclosed.rtf", .{});
-    try f.writeAll("{\\rtf1\\ansi {nested text");
-    f.close();
+    const f = try tmp.dir.createFile(runtime.io(), "unclosed.rtf", .{});
+    try f.writePositionalAll(runtime.io(), "{\\rtf1\\ansi {nested text", 0);
+    f.close(runtime.io());
     const path_buf = tmp.dir.realpathAlloc(
         testing.allocator,
         "unclosed.rtf",
@@ -3229,11 +3228,11 @@ test "validateHtml accepts valid ground truth HTML file" {
 test "validateHtml warns (not fails) for file without DOCTYPE or html tag" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.html", .{});
-    try f.writeAll("<div>Just a div, no html or doctype</div>");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("bad.html", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "bad.html", .{});
+    try f.writePositionalAll(runtime.io(), "<div>Just a div, no html or doctype</div>", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.html");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateHtml(&source);
@@ -3245,11 +3244,11 @@ test "validateHtml warns (not fails) for file without DOCTYPE or html tag" {
 test "validateHtml rejects tiny file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("tiny.html", .{});
-    try f.writeAll("hi");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("tiny.html", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "tiny.html", .{});
+    try f.writePositionalAll(runtime.io(), "hi", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "tiny.html");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateHtml(&source);
@@ -3267,11 +3266,11 @@ test "validateKml accepts valid ground truth KML file" {
 test "validateKml rejects file without kml element" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.kml", .{});
-    try f.writeAll("<?xml version=\"1.0\"?>\n<notKml>test</notKml>\n");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("bad.kml", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "bad.kml", .{});
+    try f.writePositionalAll(runtime.io(), "<?xml version=\"1.0\"?>\n<notKml>test</notKml>\n", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.kml");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateKml(&source);
@@ -3279,10 +3278,7 @@ test "validateKml rejects file without kml element" {
 }
 
 test "validateKmlDeep accepts valid ground truth KML file" {
-    const path_buf = std.fs.cwd().realpathAlloc(
-        testing.allocator,
-        "ground_truth_examples/kml/sample.kml",
-    ) catch return;
+    const path_buf = testing.allocator.dupe(u8, "ground_truth_examples/kml/sample.kml") catch return;
     defer testing.allocator.free(path_buf);
     var source = FileSource.open(path_buf) catch return;
     defer source.close();
@@ -3303,11 +3299,11 @@ test "validateKmz accepts valid ground truth KMZ file" {
 test "validateKmz rejects non-ZIP file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("bad.kmz", .{});
-    try f.writeAll("not a zip file");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("bad.kmz", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "bad.kmz", .{});
+    try f.writePositionalAll(runtime.io(), "not a zip file", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.kmz");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validateKmz(&source);
@@ -3342,10 +3338,10 @@ test "validatePlainText falls back to Latin-1 for non-UTF-8 text" {
 test "validatePlainText accepts empty file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("empty.txt", .{});
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("empty.txt", &real_path_buf);
+    const f = try tmp.dir.createFile(runtime.io(), "empty.txt", .{});
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "empty.txt");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validatePlainText(null, &source);
@@ -3365,12 +3361,12 @@ test "validatePlainTextUtf16 accepts valid UTF-16 LE file" {
 test "validatePlainTextUtf16 rejects odd byte count" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const f = try tmp.dir.createFile("odd.txt", .{});
+    const f = try tmp.dir.createFile(runtime.io(), "odd.txt", .{});
     // UTF-16 LE BOM + 3 bytes (odd after BOM)
-    try f.writeAll("\xFF\xFE\x41\x00\x42");
-    f.close();
-    var real_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const real_path = try tmp.dir.realpath("odd.txt", &real_path_buf);
+    try f.writePositionalAll(runtime.io(), "\xFF\xFE\x41\x00\x42", 0);
+    f.close(runtime.io());
+    const real_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "odd.txt");
+    defer std.testing.allocator.free(real_path);
     var source = try FileSource.open(real_path);
     defer source.close();
     const result = validatePlainTextUtf16(null, &source);
@@ -3403,11 +3399,11 @@ test "FormatValidator accepts valid RTF" {
     // Simple valid RTF document
     const valid_rtf = "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Arial;}}Hello World}";
 
-    const file = try tmp_dir.dir.createFile("valid.rtf", .{});
-    try file.writeAll(valid_rtf);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.rtf", .{});
+    try file.writePositionalAll(runtime.io(), valid_rtf, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.rtf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.rtf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3431,11 +3427,11 @@ test "FormatValidator rejects RTF missing closing brace" {
     // RTF missing closing brace
     const invalid_rtf = "{\\rtf1\\ansi\\deff0 Hello World";
 
-    const file = try tmp_dir.dir.createFile("invalid.rtf", .{});
-    try file.writeAll(invalid_rtf);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.rtf", .{});
+    try file.writePositionalAll(runtime.io(), invalid_rtf, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.rtf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.rtf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3456,11 +3452,11 @@ test "UTF-8 fallback validates plain text file" {
     // Create plain ASCII text file (no format signature)
     const text_content = "Hello, world!\nThis is a plain text file.\nNo special format signature.";
 
-    const file = try tmp_dir.dir.createFile("test.txt", .{});
-    try file.writeAll(text_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.txt", .{});
+    try file.writePositionalAll(runtime.io(), text_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.txt");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.txt");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3484,12 +3480,12 @@ test "UTF-8 fallback validates UTF-8 with BOM" {
     const bom = [_]u8{ 0xEF, 0xBB, 0xBF };
     const text = "UTF-8 text with BOM: \xC3\xA9\xC3\xA0\xC3\xBC"; // é, à, ü
 
-    const file = try tmp_dir.dir.createFile("test_bom.txt", .{});
-    try file.writeAll(&bom);
-    try file.writeAll(text);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test_bom.txt", .{});
+    try file.writePositionalAll(runtime.io(), &bom, 0);
+    try file.writePositionalAll(runtime.io(), text, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test_bom.txt");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test_bom.txt");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3515,11 +3511,11 @@ test "UTF-8 fallback does not validate binary file" {
         byte.* = @intCast(i % 32); // Mix of control characters and nulls
     }
 
-    const file = try tmp_dir.dir.createFile("test.bin", .{});
-    try file.writeAll(&binary_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.bin", .{});
+    try file.writePositionalAll(runtime.io(), &binary_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.bin");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.bin");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3543,11 +3539,11 @@ test "UTF-8 fallback validates multi-byte UTF-8" {
     // Create file with multi-byte UTF-8 sequences (no format signature)
     const utf8_content = "日本語テキスト\n中文文本\n한국어 텍스트\nΕλληνικά\n";
 
-    const file = try tmp_dir.dir.createFile("test_multibyte.txt", .{});
-    try file.writeAll(utf8_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test_multibyte.txt", .{});
+    try file.writePositionalAll(runtime.io(), utf8_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test_multibyte.txt");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test_multibyte.txt");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3578,11 +3574,11 @@ test "CP437 detection for demoscene NFO files" {
         0xC0, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xC4, 0xD9, 0x0D, 0x0A, // └─────────────────┘\r\n
     };
 
-    const file = try tmp_dir.dir.createFile("release.nfo", .{});
-    try file.writeAll(&cp437_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "release.nfo", .{});
+    try file.writePositionalAll(runtime.io(), &cp437_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "release.nfo");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "release.nfo");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3613,11 +3609,11 @@ test "FormatValidator accepts valid JSON" {
         \\}
     ;
 
-    const file = try tmp_dir.dir.createFile("test.json", .{});
-    try file.writeAll(json_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.json", .{});
+    try file.writePositionalAll(runtime.io(), json_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.json");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.json");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3645,11 +3641,11 @@ test "FormatValidator rejects invalid JSON" {
         \\  "missing_closing_brace"
     ;
 
-    const file = try tmp_dir.dir.createFile("test.json", .{});
-    try file.writeAll(json_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.json", .{});
+    try file.writePositionalAll(runtime.io(), json_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.json");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.json");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3674,11 +3670,11 @@ test "Log files with timestamps not misidentified as JSON" {
         \\[23:24:15][no_game_date][triggerimplementation.cpp:9557]: common/scripted_effects/BLT_scripted_effects.txt:77: has_game_rule
     ;
 
-    const file = try tmp_dir.dir.createFile("game.log", .{});
-    try file.writeAll(log_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "game.log", .{});
+    try file.writePositionalAll(runtime.io(), log_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "game.log");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "game.log");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3707,11 +3703,11 @@ test "FormatValidator accepts JSONC with line comments" {
         \\}
     ;
 
-    const file = try tmp_dir.dir.createFile("test.json", .{});
-    try file.writeAll(jsonc_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.json", .{});
+    try file.writePositionalAll(runtime.io(), jsonc_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.json");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.json");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3741,11 +3737,11 @@ test "FormatValidator accepts JSONC with block comments" {
         \\}
     ;
 
-    const file = try tmp_dir.dir.createFile("test.json", .{});
-    try file.writeAll(jsonc_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.json", .{});
+    try file.writePositionalAll(runtime.io(), jsonc_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.json");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.json");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3774,11 +3770,11 @@ test "FormatValidator does not strip comments inside JSON strings" {
         \\}
     ;
 
-    const file = try tmp_dir.dir.createFile("test.json", .{});
-    try file.writeAll(json_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.json", .{});
+    try file.writePositionalAll(runtime.io(), json_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.json");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.json");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3809,11 +3805,11 @@ test "FormatValidator accepts valid TOML" {
         \\enabled = true
     ;
 
-    const file = try tmp_dir.dir.createFile("test.toml", .{});
-    try file.writeAll(toml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.toml", .{});
+    try file.writePositionalAll(runtime.io(), toml_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.toml");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.toml");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3841,11 +3837,11 @@ test "FormatValidator rejects invalid TOML" {
         \\port = 8080
     ;
 
-    const file = try tmp_dir.dir.createFile("test.toml", .{});
-    try file.writeAll(toml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.toml", .{});
+    try file.writePositionalAll(runtime.io(), toml_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.toml");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.toml");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3873,11 +3869,11 @@ test "FormatValidator accepts valid XML" {
         \\</root>
     ;
 
-    const file = try tmp_dir.dir.createFile("test.xml", .{});
-    try file.writeAll(xml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.xml", .{});
+    try file.writePositionalAll(runtime.io(), xml_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xml");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.xml");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3904,11 +3900,11 @@ test "FormatValidator rejects invalid XML with mismatched tags" {
         \\</root>
     ;
 
-    const file = try tmp_dir.dir.createFile("test.xml", .{});
-    try file.writeAll(xml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.xml", .{});
+    try file.writePositionalAll(runtime.io(), xml_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xml");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.xml");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3933,11 +3929,11 @@ test "FormatValidator rejects XML with unclosed tags" {
         \\</root>
     ;
 
-    const file = try tmp_dir.dir.createFile("test.xml", .{});
-    try file.writeAll(xml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.xml", .{});
+    try file.writePositionalAll(runtime.io(), xml_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xml");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.xml");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -3963,11 +3959,11 @@ test "FormatValidator accepts XML with undefined entity when DOCTYPE was strippe
         \\<root>&demo;</root>
     ;
 
-    const file = try tmp_dir.dir.createFile("test.xml", .{});
-    try file.writeAll(xml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.xml", .{});
+    try file.writePositionalAll(runtime.io(), xml_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.xml");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.xml");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4038,11 +4034,11 @@ test "FormatValidator accepts valid KML" {
         \\</kml>
     ;
 
-    const file = try tmp_dir.dir.createFile("test.kml", .{});
-    try file.writeAll(kml_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.kml", .{});
+    try file.writePositionalAll(runtime.io(), kml_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.kml");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.kml");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4108,13 +4104,13 @@ test "validatePlainText: self-extracting shell script returns WARN, not FAIL" {
     defer tmp.cleanup();
 
     // Write the synthetic self-extractor
-    const file = try tmp.dir.createFile("installer.sh", .{});
-    try file.writeAll(script_prefix);
-    try file.writeAll(&binary_payload);
-    file.close();
+    const file = try tmp.dir.createFile(runtime.io(), "installer.sh", .{});
+    try file.writePositionalAll(runtime.io(), script_prefix, 0);
+    try file.writePositionalAll(runtime.io(), &binary_payload, 0);
+    file.close(runtime.io());
 
     // Open and validate as plain text
-    const opened = try tmp.dir.openFile("installer.sh", .{});
+    const opened = try tmp.dir.openFile(runtime.io(), "installer.sh", .{});
     defer opened.close();
     var source = FileSource.fromFile(opened);
     const result = validatePlainText(std.testing.allocator, &source);
@@ -4137,12 +4133,12 @@ test "validatePlainText: script with <5 non-blank lines + binary is NOT self-ext
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("short.sh", .{});
-    try file.writeAll(script_prefix);
-    try file.writeAll(&binary_payload);
-    file.close();
+    const file = try tmp.dir.createFile(runtime.io(), "short.sh", .{});
+    try file.writePositionalAll(runtime.io(), script_prefix, 0);
+    try file.writePositionalAll(runtime.io(), &binary_payload, 0);
+    file.close(runtime.io());
 
-    const opened = try tmp.dir.openFile("short.sh", .{});
+    const opened = try tmp.dir.openFile(runtime.io(), "short.sh", .{});
     defer opened.close();
     var source = FileSource.fromFile(opened);
     const result = validatePlainText(std.testing.allocator, &source);
@@ -4167,12 +4163,12 @@ test "validatePlainText: file without shebang + binary is NOT self-extractor" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const file = try tmp.dir.createFile("notscript.txt", .{});
-    try file.writeAll(text_prefix);
-    try file.writeAll(&binary_payload);
-    file.close();
+    const file = try tmp.dir.createFile(runtime.io(), "notscript.txt", .{});
+    try file.writePositionalAll(runtime.io(), text_prefix, 0);
+    try file.writePositionalAll(runtime.io(), &binary_payload, 0);
+    file.close(runtime.io());
 
-    const opened = try tmp.dir.openFile("notscript.txt", .{});
+    const opened = try tmp.dir.openFile(runtime.io(), "notscript.txt", .{});
     defer opened.close();
     var source = FileSource.fromFile(opened);
     const result = validatePlainText(std.testing.allocator, &source);
@@ -4191,9 +4187,9 @@ test "validateJson with ext_hint 'json5' suppresses JSON5 warning" {
     const json5_content = "{unquoted: 'value', trailing: 1,}";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "test.json5", .data = json5_content }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("test.json5", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.json5", .data = json5_content }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.json5") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateJson(&source, "json5");
@@ -4207,9 +4203,9 @@ test "validateJson with ext_hint 'json' still warns about JSON5 features" {
     const json5_content = "{unquoted: 'value', trailing: 1,}";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "test.json", .data = json5_content }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("test.json", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.json", .data = json5_content }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.json") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateJson(&source, "json");
@@ -4238,9 +4234,9 @@ test "validateGcode accepts valid G-code" {
     ;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "test.gcode", .data = gcode }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("test.gcode", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.gcode", .data = gcode }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.gcode") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateGcode(&source);
@@ -4258,9 +4254,9 @@ test "validateGcode rejects file with invalid command" {
     ;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "bad.gcode", .data = gcode }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("bad.gcode", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "bad.gcode", .data = gcode }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad.gcode") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateGcode(&source);
@@ -4275,9 +4271,9 @@ test "validateGcode accepts comment-only file" {
     ;
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "comments.gcode", .data = gcode }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("comments.gcode", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "comments.gcode", .data = gcode }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "comments.gcode") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateGcode(&source);
@@ -4287,9 +4283,9 @@ test "validateGcode accepts comment-only file" {
 test "validateGcode rejects empty file" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "empty.gcode", .data = "" }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("empty.gcode", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "empty.gcode", .data = "" }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "empty.gcode") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateGcode(&source);
@@ -4299,9 +4295,9 @@ test "validateJson with ext_hint 'jsonc' suppresses JSONC warning" {
     const jsonc_content = "// comment\n{\"key\": \"value\"}";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "test.jsonc", .data = jsonc_content }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("test.jsonc", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.jsonc", .data = jsonc_content }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.jsonc") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateJson(&source, "jsonc");
@@ -4313,9 +4309,9 @@ test "validateJson with null ext_hint still warns about JSON5" {
     const json5_content = "{unquoted: 'value', trailing: 1,}";
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    tmp.dir.writeFile(.{ .sub_path = "test.json", .data = json5_content }) catch return;
-    var pb: [std.fs.max_path_bytes]u8 = undefined;
-    const rp = tmp.dir.realpath("test.json", &pb) catch return;
+    tmp.dir.writeFile(runtime.io(), .{ .sub_path = "test.json", .data = json5_content }) catch return;
+    const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "test.json") catch return;
+    defer std.testing.allocator.free(rp);
     var source = FileSource.open(rp) catch return;
     defer source.close();
     const result = validateJson(&source, null);

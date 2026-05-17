@@ -216,7 +216,7 @@ pub fn validateOggTheora(allocator: std.mem.Allocator, source: *FileSource) Theo
     }
 
     // Convert []OggPacket -> []const []const u8 for the validator.
-    var view: std.ArrayListUnmanaged([]const u8) = .{};
+    var view: std.ArrayListUnmanaged([]const u8) = .empty;
     defer view.deinit(allocator);
     view.ensureTotalCapacity(allocator, packet_result.packets.len) catch {
         return TheoraDecodeResult.invalid("Allocation failure", 0, 0);

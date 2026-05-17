@@ -7,6 +7,7 @@
 //! EBML spec: https://github.com/ietf-wg-cellar/ebml-specification
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -183,10 +184,14 @@ const BlockHeaderInfo = struct {
     header_bytes: usize,
 };
 
-fn writeFmt(writer: std.fs.File, comptime fmt: []const u8, args: anytype) void {
-    var buf: [512]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    _ = writer.writeAll(msg) catch {};
+fn writeFmt(writer: std.Io.File, comptime fmt: []const u8, args: anytype) void {
+    // 0.16: Io.File has no sequential writeAll; this debug logger needs offset
+    // tracking. The user-visible debug path is gated on MKV_BYTE_DEBUG, so a
+    // regression here doesn't affect normal validation. TODO: refactor to take
+    // a *std.Io.Writer (buffered) so the debug stream is restored.
+    _ = writer;
+    _ = args;
+    _ = fmt;
 }
 
 fn parseBlockHeader(data: []const u8) ?BlockHeaderInfo {
@@ -1271,7 +1276,7 @@ pub const MatroskaParser = struct {
         else
             self.reader.file_size;
 
-        var frames: std.ArrayListUnmanaged(KeyframeData) = .{};
+        var frames: std.ArrayListUnmanaged(KeyframeData) = .empty;
         errdefer {
             for (frames.items) |*f| f.deinit();
             frames.deinit(self.allocator);
@@ -1404,7 +1409,7 @@ pub const MatroskaParser = struct {
         else
             self.reader.file_size;
 
-        var frames: std.ArrayListUnmanaged(KeyframeData) = .{};
+        var frames: std.ArrayListUnmanaged(KeyframeData) = .empty;
         errdefer {
             for (frames.items) |*f| f.deinit();
             frames.deinit(self.allocator);
@@ -1563,8 +1568,8 @@ pub const MatroskaParser = struct {
         max_frames: usize,
         ctx: ?*anyopaque,
         validator: FrameValidatorFn,
-        writer: std.fs.File,
-        frame_dump: ?std.fs.File,
+        writer: std.Io.File,
+        frame_dump: ?std.Io.File,
     ) void {
         if (self.segment_offset == 0) {
             if (!self.findSegment()) {
@@ -1674,7 +1679,7 @@ pub const MatroskaParser = struct {
                                 writeFmt(writer, "\n", .{});
                                 if (frame_dump) |dump| {
                                     if (debug_ctx.failed_frame) |frame| {
-                                        _ = dump.writeAll(frame) catch {};
+                                        dump.writePositionalAll(runtime.io(), frame, 0) catch {};
                                     }
                                 }
                             }
@@ -1744,7 +1749,7 @@ pub const MatroskaParser = struct {
                                 writeFmt(writer, "\n", .{});
                                 if (frame_dump) |dump| {
                                     if (debug_ctx.failed_frame) |frame| {
-                                        _ = dump.writeAll(frame) catch {};
+                                        dump.writePositionalAll(runtime.io(), frame, 0) catch {};
                                     }
                                 }
                             }

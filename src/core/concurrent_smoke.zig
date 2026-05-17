@@ -16,6 +16,7 @@
 //! `VALIDATE_CONCURRENT_SMOKE_ITERS` env var.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const heic_validator = @import("heic_validator.zig");
@@ -84,8 +85,8 @@ fn runConcurrentStress(probe: Probe, data: []const u8, num_threads: usize, itera
 }
 
 fn iterationsFromEnv() usize {
-	if (std.process.hasEnvVarConstant("VALIDATE_CONCURRENT_SMOKE_FAST")) return 10;
-	if (std.process.hasEnvVarConstant("VALIDATE_CONCURRENT_SMOKE_FULL")) return 200;
+	if (runtime.hasEnvVar("VALIDATE_CONCURRENT_SMOKE_FAST")) return 10;
+	if (runtime.hasEnvVar("VALIDATE_CONCURRENT_SMOKE_FULL")) return 200;
 	return 50;
 }
 
@@ -103,7 +104,7 @@ test "concurrent stress: heif_container_parser" {
 	// reduced to one sample for speed).
 	const Sample = struct {
 		fn make(allocator: std.mem.Allocator, primary_id: u16) ![]u8 {
-			var out: std.ArrayListUnmanaged(u8) = .{};
+			var out: std.ArrayListUnmanaged(u8) = .empty;
 			defer out.deinit(allocator);
 
 			// ftyp

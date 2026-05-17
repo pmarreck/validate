@@ -9,6 +9,7 @@
 //! Reference: Apple TrueType Reference Manual, OpenType spec
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const errmsg = @import("error_messages.zig");
 const zlib = @import("zlib.zig");
@@ -1480,11 +1481,11 @@ test "validateWoff2 deep rejects non-zero reserved" {
 test "validateWoff2 validates ground truth sample" {
 	// Read the ground truth WOFF2 file
 	const path = "ground_truth_examples/woff2/sample.woff2";
-	const file = std.fs.cwd().openFile(path, .{}) catch {
+	const file = runtime.openFile(path, .{}) catch {
 		// Skip if file not available (CI may not have it)
 		return;
 	};
-	defer file.close();
+	defer file.close(runtime.io());
 
 	const stat = file.stat() catch return;
 	const data = std.testing.allocator.alloc(u8, @intCast(stat.size)) catch return;
@@ -1503,8 +1504,8 @@ test "validateWoff2 validates ground truth sample" {
 
 test "validateWoff2 detects corruption in ground truth sample" {
 	const path = "ground_truth_examples/woff2/sample.woff2";
-	const file = std.fs.cwd().openFile(path, .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-	defer file.close();
+	const file = runtime.openFile(path, .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+	defer file.close(runtime.io());
 
 	const stat = file.stat() catch return;
 	const data = std.testing.allocator.alloc(u8, @intCast(stat.size)) catch return;
@@ -1540,11 +1541,11 @@ test "validateWoff2 detects corruption in ground truth sample" {
 // sfntVersion="true".
 test "validateTtfOtf accepts Apple legacy 'true' sfnt magic" {
 	const path = "tests/fixtures/fonts/sfnt_true_magic.ttf";
-	const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+	const file = runtime.openFile(path, .{}) catch |err| {
 		if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
 		return err;
 	};
-	defer file.close();
+	defer file.close(runtime.io());
 	const stat = try file.stat();
 	const data = try std.testing.allocator.alloc(u8, @intCast(stat.size));
 	defer std.testing.allocator.free(data);

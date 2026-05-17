@@ -90,7 +90,7 @@ pub const NalHeader = struct {
         const nal_ref_idc: u2 = @intCast((header_byte >> 5) & 0x03);
         const nal_type_val: u5 = @intCast(header_byte & 0x1F);
 
-        const nal_unit_type = std.meta.intToEnum(NalUnitType, nal_type_val) catch return null;
+        const nal_unit_type = std.enums.fromInt(NalUnitType, nal_type_val) orelse return null;
 
         return .{
             .forbidden_zero_bit = forbidden_zero_bit,

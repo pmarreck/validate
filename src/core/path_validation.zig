@@ -4,6 +4,7 @@
 //! and reports per-file results via a callback.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const format_validation = @import("format_validation.zig");
 
@@ -13,12 +14,13 @@ const FormatValidator = format_validation.FormatValidator;
 
 const DEFAULT_MAX_FILES: usize = std.math.maxInt(usize);
 
-/// Cross-platform getenv that returns null on Windows (where std.posix.getenv is unavailable).
-fn getenvCrossPlatform(comptime name: []const u8) ?[:0]const u8 {
+/// Cross-platform getenv that returns null on Windows (where std.c.getenv is unavailable).
+fn getenvCrossPlatform(comptime name: [:0]const u8) ?[:0]const u8 {
     if (comptime builtin.os.tag == .windows) {
         return null;
     }
-    return std.posix.getenv(name);
+    const result = std.c.getenv(name.ptr) orelse return null;
+    return std.mem.span(result);
 }
 
 /// Check if debug tracing is enabled via VALIDATE_DEBUG env var.
@@ -316,12 +318,12 @@ fn workerMain(shared: *Shared) void {
 			debugTrace("START {s}", .{item.path});
 		}
 
-		const start_ns = std.time.nanoTimestamp();
+		const start_ns = runtime.nanoTimestamp();
 		const result = if (validator.deep_validation)
 			validator.validateFileDeep(arena.allocator(), item.path)
 		else
 			validator.validateFile(item.path);
-		const elapsed_ns = std.time.nanoTimestamp() - start_ns;
+		const elapsed_ns = runtime.nanoTimestamp() - start_ns;
 		const elapsed_seconds = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
 
 		// Debug trace: print completion with timing
@@ -398,12 +400,12 @@ fn validateSingleFile(
 	var arena = std.heap.ArenaAllocator.init(allocator);
 	defer arena.deinit();
 
-	const start_ns = std.time.nanoTimestamp();
+	const start_ns = runtime.nanoTimestamp();
 	const result = if (validator.deep_validation)
 		validator.validateFileDeep(arena.allocator(), path)
 	else
 		validator.validateFile(path);
-	const elapsed_ns = std.time.nanoTimestamp() - start_ns;
+	const elapsed_ns = runtime.nanoTimestamp() - start_ns;
 	const elapsed_seconds = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
 
 	var counts = ValidationCounts{};
@@ -426,7 +428,7 @@ fn openDirForPath(path: []const u8) !std.fs.Dir {
 	if (std.fs.path.isAbsolute(path)) {
 		return std.fs.openDirAbsolute(path, .{ .iterate = true });
 	}
-	return std.fs.cwd().openDir(path, .{ .iterate = true });
+	return runtime.openDir(path, .{ .iterate = true });
 }
 
 /// Stat a path, handling both absolute and relative paths correctly.
@@ -510,13 +512,13 @@ fn statPathPosix(path: []const u8) !std.fs.File.Stat {
             },
             else => return err,
         };
-        defer file.close();
+        defer file.close(runtime.io());
         return file.stat();
     }
     // For relative paths, try as file first, then as directory
-    return std.fs.cwd().statFile(path) catch |err| switch (err) {
+    return runtime.statFile(path) catch |err| switch (err) {
         error.IsDir => {
-            var dir = std.fs.cwd().openDir(path, .{}) catch |dir_err| {
+            var dir = runtime.openDir(path, .{}) catch |dir_err| {
                 return dir_err;
             };
             defer dir.close();
@@ -564,7 +566,7 @@ fn shuffleWorkItems(items: []WorkItem, seed: u64) void {
 
 	// Use provided seed or generate from timestamp
 	const actual_seed = if (seed != 0) seed else blk: {
-		const ts = std.time.nanoTimestamp();
+		const ts = runtime.nanoTimestamp();
 		// Truncate i128 to u64 - we only need entropy, not the full value
 		break :blk @as(u64, @truncate(@as(u128, @bitCast(ts))));
 	};
@@ -627,7 +629,7 @@ pub fn validatePathParallelEx(
 
 	// Check if this is a BagIt bag directory (contains bagit.txt)
 	{
-		var check_dir = std.fs.cwd().openDir(path, .{}) catch null;
+		var check_dir = runtime.openDir(path, .{}) catch null;
 		if (check_dir) |*d| {
 			defer d.close();
 			if (d.access("bagit.txt", .{})) |_| {
@@ -733,7 +735,7 @@ test "statPath handles relative directory" {
 	defer tmp_dir.cleanup();
 
 	// Get the absolute path to avoid cwd-relative issues in test environments
-	const path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, ".");
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, ".");
 	defer std.testing.allocator.free(path);
 
 	// stat should return directory
@@ -749,11 +751,11 @@ test "statPath handles files" {
 	defer tmp_dir.cleanup();
 
 	// Create a test file
-	const file = try tmp_dir.dir.createFile("test.txt", .{});
-	file.close();
+	const file = try tmp_dir.dir.createFile(runtime.io(), "test.txt", .{});
+	file.close(runtime.io());
 
 	// Build the path
-	const full_path = try tmp_dir.dir.realpathAlloc(std.testing.allocator, "test.txt");
+	const full_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.txt");
 	defer std.testing.allocator.free(full_path);
 
 	const stat = statPath(full_path) catch |err| {
@@ -780,26 +782,26 @@ test "parallel validation does not recurse into .git directories" {
 	defer tmp_dir.cleanup();
 
 	// Get the full path
-	const tmp_path = try tmp_dir.dir.realpathAlloc(allocator, ".");
+	const tmp_path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, ".");
 	defer allocator.free(tmp_path);
 
 	// Create a minimal .git directory structure
-	try tmp_dir.dir.makePath(".git/objects/ab");
-	try tmp_dir.dir.makePath(".git/objects/pack");
-	try tmp_dir.dir.makePath(".git/refs/heads");
+	try tmp_dir.dir.createDirPath(runtime.io(), ".git/objects/ab");
+	try tmp_dir.dir.createDirPath(runtime.io(), ".git/objects/pack");
+	try tmp_dir.dir.createDirPath(runtime.io(), ".git/refs/heads");
 
 	// Create HEAD file
-	const head_file = try tmp_dir.dir.createFile(".git/HEAD", .{});
-	try head_file.writeAll("ref: refs/heads/master\n");
-	head_file.close();
+	const head_file = try tmp_dir.dir.createFile(runtime.io(), ".git/HEAD", .{});
+	try head_file.writePositionalAll(runtime.io(), "ref: refs/heads/master\n", 0);
+	head_file.close(runtime.io());
 
 	// Create a fake loose object file (to test that we DON'T recurse into it)
-	const object_file = try tmp_dir.dir.createFile(".git/objects/ab/cdef1234567890", .{});
+	const object_file = try tmp_dir.dir.createFile(runtime.io(), ".git/objects/ab/cdef1234567890", .{});
 	try object_file.writeAll("fake object content");
 	object_file.close();
 
 	// Create a regular file outside .git
-	const regular_file = try tmp_dir.dir.createFile("README.md", .{});
+	const regular_file = try tmp_dir.dir.createFile(runtime.io(), "README.md", .{});
 	try regular_file.writeAll("# Test\n");
 	regular_file.close();
 

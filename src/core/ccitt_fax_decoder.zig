@@ -867,7 +867,7 @@ pub fn decode(allocator: Allocator, data: []const u8, params: CcittParams) Decod
 
 /// Validate CCITT Fax data without keeping the decoded bitmap
 pub fn validate(data: []const u8, params: CcittParams) struct { valid: bool, error_message: ?[]const u8, width: u32, height: u32 } {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
 
     var result = decode(gpa.allocator(), data, params);

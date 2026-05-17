@@ -4,6 +4,7 @@
 //! for PDF files, including embedded image/font/file validation and telemetry.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 
 const format_validation = @import("format_validation.zig");
@@ -429,7 +430,7 @@ fn applyFlateStreamCheck(
 
 pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const telemetry = PdfTelemetry.init();
-	const total_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const total_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
 
 	const file_size = source.getEndPos() catch {
 		return ValidationResult.invalidCodeWithDepth(.pdf, .failed_to_get, "file size", .structural);
@@ -439,7 +440,7 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 		return ValidationResult.invalidCodeWithDepth(.pdf, .file_too_small, "valid PDF", .structural);
 	}
 
-	const structural_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const structural_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
 
 	// Tiered search for %%EOF: try small window first (fast path), expand if needed
 	const eof_marker = "%%EOF";
@@ -565,7 +566,7 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 		}
 	}
 
-	const structural_ns = if (telemetry.enabled) std.time.nanoTimestamp() - structural_start_ns else 0;
+	const structural_ns = if (telemetry.enabled) runtime.nanoTimestamp() - structural_start_ns else 0;
 
 	// Deep validation: read entire file and validate embedded content
 	source.seekTo(0) catch {
@@ -595,11 +596,11 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	}
 
 	// Validate embedded images
-	const image_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const image_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
 	var image_result = pdf_image_validator.validatePdfImages(allocator, pdf_data) catch {
 		return ValidationResult.okWithDepth(.pdf, .full);
 	};
-	const image_ns = if (telemetry.enabled) std.time.nanoTimestamp() - image_start_ns else 0;
+	const image_ns = if (telemetry.enabled) runtime.nanoTimestamp() - image_start_ns else 0;
 	defer image_result.deinit(allocator);
 	if (!image_result.valid) {
 		if (toleratedPdfImageFailures(image_result)) |tolerated| {
@@ -642,9 +643,9 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	}
 
 	// Validate embedded fonts
-	const font_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const font_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
 	const font_result = pdf_font_validator.validatePdfFonts(allocator, pdf_data);
-	const font_ns = if (telemetry.enabled) std.time.nanoTimestamp() - font_start_ns else 0;
+	const font_ns = if (telemetry.enabled) runtime.nanoTimestamp() - font_start_ns else 0;
 	if (!font_result.valid) {
 		return ValidationResult.invalidWithDepth(.pdf, font_result.error_message orelse "Embedded font validation failed", .full);
 	}
@@ -660,9 +661,9 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	}
 
 	// Validate embedded files (attachments)
-	const embed_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const embed_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
 	const embed_result = pdf_embedded_file_validator.validatePdfEmbeddedFilesBasic(allocator, pdf_data);
-	const embed_ns = if (telemetry.enabled) std.time.nanoTimestamp() - embed_start_ns else 0;
+	const embed_ns = if (telemetry.enabled) runtime.nanoTimestamp() - embed_start_ns else 0;
 	if (!embed_result.valid) {
 		return ValidationResult.invalidWithDepth(.pdf, embed_result.error_message orelse "Embedded file validation failed", .full);
 	}
@@ -685,7 +686,7 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 		if (info_message == null) info_message = info;
 	}
 
-	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;
+	const total_ns = if (telemetry.enabled) runtime.nanoTimestamp() - total_start_ns else 0;
 	logPdfSlow(telemetry, "<source>", total_ns, structural_ns, image_ns, font_ns, embed_ns, image_result, font_result, embed_result);
 
 	// Determine validation depth: downgrade to structural if any streams were
@@ -742,7 +743,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	// embedded-file paths whenever the Adobe-InDesign-style truncated-
 	// Adler-32 quirk fires; read at end to surface a WARN verdict.
 	pdf_image_validator.lenient_recovery_seen = false;
-	const total_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const total_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
 	if (pdf_data.len < 50) {
 		return ValidationResult.invalidWithDepth(.pdf, "PDF too small for deep validation", .structural);
 	}
@@ -756,7 +757,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	var warning_message: ?[]const u8 = null;
 	var info_message: ?[]const u8 = null;
 
-	const structural_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const structural_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
 
 	// Find %%EOF marker (search from end)
 	const eof_marker = "%%EOF";
@@ -812,14 +813,14 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 		return ValidationResult.invalidCodeWithDepth(.pdf, .invalid_value, "xref structure at startxref position", .full);
 	}
 
-	const structural_ns = if (telemetry.enabled) std.time.nanoTimestamp() - structural_start_ns else 0;
+	const structural_ns = if (telemetry.enabled) runtime.nanoTimestamp() - structural_start_ns else 0;
 
 	// Validate embedded images
-	const image_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const image_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
 	var image_result = pdf_image_validator.validatePdfImages(allocator, pdf_data) catch {
 		return ValidationResult.okWithDepth(.pdf, .full);
 	};
-	const image_ns = if (telemetry.enabled) std.time.nanoTimestamp() - image_start_ns else 0;
+	const image_ns = if (telemetry.enabled) runtime.nanoTimestamp() - image_start_ns else 0;
 	defer image_result.deinit(allocator);
 	if (!image_result.valid) {
 		if (toleratedPdfImageFailures(image_result)) |tolerated| {
@@ -841,9 +842,9 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	}
 
 	// Validate embedded fonts
-	const font_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const font_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
 	const font_result = pdf_font_validator.validatePdfFonts(allocator, pdf_data);
-	const font_ns = if (telemetry.enabled) std.time.nanoTimestamp() - font_start_ns else 0;
+	const font_ns = if (telemetry.enabled) runtime.nanoTimestamp() - font_start_ns else 0;
 	if (!font_result.valid) {
 		return ValidationResult.invalidWithDepth(.pdf, font_result.error_message orelse "Embedded font validation failed", .full);
 	}
@@ -856,9 +857,9 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 	}
 
 	// Validate embedded files (attachments)
-	const embed_start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0;
+	const embed_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
 	const embed_result = pdf_embedded_file_validator.validatePdfEmbeddedFilesBasic(allocator, pdf_data);
-	const embed_ns = if (telemetry.enabled) std.time.nanoTimestamp() - embed_start_ns else 0;
+	const embed_ns = if (telemetry.enabled) runtime.nanoTimestamp() - embed_start_ns else 0;
 	if (!embed_result.valid) {
 		return ValidationResult.invalidWithDepth(.pdf, embed_result.error_message orelse "Embedded file validation failed", .full);
 	}
@@ -890,7 +891,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 		warning_message = "PDF contains FlateDecode streams with truncated/missing zlib Adler-32 trailers (Adobe InDesign style; tolerated by all readers)";
 	}
 
-	const total_ns = if (telemetry.enabled) std.time.nanoTimestamp() - total_start_ns else 0;
+	const total_ns = if (telemetry.enabled) runtime.nanoTimestamp() - total_start_ns else 0;
 	logPdfSlow(telemetry, "<buffer>", total_ns, structural_ns, image_ns, font_ns, embed_ns, image_result, font_result, embed_result);
 
 	// Determine validation depth (same logic as validatePdfDeep)
@@ -1040,11 +1041,11 @@ test "FormatValidator accepts valid PDF file" {
         \\%%EOF
     ;
 
-    const file = try tmp_dir.dir.createFile("valid.pdf", .{});
-    try file.writeAll(valid_pdf);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.pdf", .{});
+    try file.writePositionalAll(runtime.io(), valid_pdf, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.pdf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.pdf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1074,11 +1075,11 @@ test "FormatValidator rejects corrupted PDF file" {
         \\% This file is truncated - no end marker
     ;
 
-    const file = try tmp_dir.dir.createFile("corrupted.pdf", .{});
-    try file.writeAll(corrupted_pdf);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupted.pdf", .{});
+    try file.writePositionalAll(runtime.io(), corrupted_pdf, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.pdf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupted.pdf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1121,11 +1122,11 @@ test "FormatValidator returns structural for encrypted PDF" {
         \\%%EOF
     ;
 
-    const file = try tmp_dir.dir.createFile("encrypted.pdf", .{});
-    try file.writeAll(encrypted_pdf);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "encrypted.pdf", .{});
+    try file.writePositionalAll(runtime.io(), encrypted_pdf, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "encrypted.pdf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "encrypted.pdf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -1174,11 +1175,11 @@ test "FormatValidator detects MIME-wrapped PDF and warns loudly" {
         \\%%EOF
     ;
 
-    const file = try tmp_dir.dir.createFile("mime_wrapped.pdf", .{});
-    try file.writeAll(mime_wrapped_pdf);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "mime_wrapped.pdf", .{});
+    try file.writePositionalAll(runtime.io(), mime_wrapped_pdf, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "mime_wrapped.pdf");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "mime_wrapped.pdf");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();

@@ -300,20 +300,20 @@ fn validateDescriptorBuffer(buf: []const u8) ?[]const u8 {
     var lines = std.mem.splitScalar(u8, buf, '\n');
     while (lines.next()) |raw_line| {
         // Strip trailing \r if present.
-        const line = std.mem.trimRight(u8, raw_line, "\r");
+        const line = std.mem.trimEnd(u8, raw_line, "\r");
         if (line.len == 0 or line[0] == '#') continue;
 
         // Check for version= key.
         if (std.mem.startsWith(u8, line, "version=")) {
             found_version = true;
-            const val = std.mem.trimLeft(u8, line[8..], " \t");
+            const val = std.mem.trimStart(u8, line[8..], " \t");
             if (val.len == 0) return "VMDK descriptor: empty version field";
         }
 
         // Check for CID= (Content ID — a hex number).
         if (std.mem.startsWith(u8, line, "CID=")) {
             found_cid = true;
-            const val = std.mem.trimLeft(u8, line[4..], " \t");
+            const val = std.mem.trimStart(u8, line[4..], " \t");
             if (val.len == 0) return "VMDK descriptor: empty CID field";
             // CID should be 8 hex digits.
             for (val) |ch| {

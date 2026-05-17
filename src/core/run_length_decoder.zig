@@ -16,7 +16,7 @@ pub const RunLengthDecodeError = error{
 /// Decode run-length encoded data.
 /// Returns allocated buffer that caller must free.
 pub fn decode(allocator: Allocator, input: []const u8) RunLengthDecodeError![]u8 {
-	var result: std.ArrayListUnmanaged(u8) = .{};
+	var result: std.ArrayListUnmanaged(u8) = .empty;
 	errdefer result.deinit(allocator);
 
 	var i: usize = 0;

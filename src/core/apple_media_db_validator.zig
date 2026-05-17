@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -342,13 +343,13 @@ test "deep validation rejects truncated file" {
 	@memcpy(header[16..23], "1.6.5.3");
 	// Write to temp file
 	const tmp_path = "/tmp/test_hfma_truncated.tvdb";
-	const tmp_file = std.fs.cwd().createFile(tmp_path, .{}) catch return error.SkipZigTest;
-	tmp_file.writeAll(&header) catch return error.SkipZigTest;
+	const tmp_file = runtime.createFile(tmp_path, .{}) catch return error.SkipZigTest;
+	tmp_file.writePositionalAll(runtime.io(), &header, 0) catch return error.SkipZigTest;
 	// Write only 16 bytes of "encrypted" data (not enough for valid zlib after decrypt)
 	const fake_payload = [_]u8{0} ** 32;
-	tmp_file.writeAll(&fake_payload) catch return error.SkipZigTest;
-	tmp_file.close();
-	defer std.fs.cwd().deleteFile(tmp_path) catch {};
+	tmp_file.writePositionalAll(runtime.io(), &fake_payload, 0) catch return error.SkipZigTest;
+	tmp_file.close(runtime.io());
+	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 
 	var source = try FileSource.open(tmp_path);
 	defer source.close();

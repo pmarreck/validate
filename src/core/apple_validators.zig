@@ -45,9 +45,9 @@ pub fn hasResourceFork(path: []const u8) bool {
 		runtime.openFile(rsrc_path, .{}) catch return false
 	else
 		runtime.openFile(rsrc_path, .{}) catch return false;
-	defer file.close();
+	defer file.close(runtime.io());
 
-	const stat = file.stat() catch return false;
+	const stat = file.stat(runtime.io()) catch return false;
 	return stat.size > 0;
 }
 
@@ -65,9 +65,9 @@ pub fn getResourceForkSize(path: []const u8) u64 {
 		runtime.openFile(rsrc_path, .{}) catch return 0
 	else
 		runtime.openFile(rsrc_path, .{}) catch return 0;
-	defer file.close();
+	defer file.close(runtime.io());
 
-	const stat = file.stat() catch return 0;
+	const stat = file.stat(runtime.io()) catch return 0;
 	return stat.size;
 }
 
@@ -82,15 +82,15 @@ pub fn readResourceFork(allocator: Allocator, path: []const u8) !?[]u8 {
 	const rsrc_path = std.fmt.bufPrint(&rsrc_path_buf, "{s}/..namedfork/rsrc", .{path}) catch return null;
 
 	const file = runtime.openFile(rsrc_path, .{}) catch return null;
-	defer file.close();
+	defer file.close(runtime.io());
 
-	const stat = file.stat() catch return null;
+	const stat = file.stat(runtime.io()) catch return null;
 	if (stat.size == 0) return null;
 
 	const data = try allocator.alloc(u8, stat.size);
 	errdefer allocator.free(data);
 
-	const bytes_read = try file.readAll(data);
+	const bytes_read = try file.readPositionalAll(runtime.io(), data, 0);
 	if (bytes_read != stat.size) {
 		allocator.free(data);
 		return null;

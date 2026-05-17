@@ -5,6 +5,7 @@
 //! Tar, PAR2, and WARC.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 
@@ -1398,7 +1399,7 @@ pub const ZipEntryTelemetry = struct {
     pub fn init(telemetry: ZipTelemetry, entry_index: usize) ZipEntryTelemetry {
         return .{
             .enabled = telemetry.enabled,
-            .start_ns = if (telemetry.enabled) std.time.nanoTimestamp() else 0,
+            .start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0,
             .entry_index = entry_index,
         };
     }
@@ -1410,7 +1411,7 @@ pub const ZipEntryTelemetry = struct {
 
     pub fn finish(self: *ZipEntryTelemetry, telemetry: ZipTelemetry, format: FileFormat) void {
         if (!self.enabled) return;
-        const elapsed_ns = std.time.nanoTimestamp() - self.start_ns;
+        const elapsed_ns = runtime.nanoTimestamp() - self.start_ns;
         if (elapsed_ns < telemetry.slow_threshold_ns) {
             return;
         }
@@ -2467,7 +2468,7 @@ pub fn validateBzip2Deep(allocator: Allocator, source: *FileSource) ValidationRe
     // and stream CRCs without materializing the full decompressed output —
     // memory bounded by MAX_EXPANDED_BLOCK_SIZE regardless of file size.
     bzip2.validateStream(allocator, compressed_data) catch |err| {
-        if (std.process.hasEnvVarConstant("BZIP2_DEBUG")) {
+        if (runtime.hasEnvVar("BZIP2_DEBUG")) {
             std.debug.print("bzip2 decompress error: {s}\n", .{@errorName(err)});
         }
         return switch (err) {
@@ -2491,6 +2492,7 @@ pub fn validateBzip2Deep(allocator: Allocator, source: *FileSource) ValidationRe
                 w.warning_message = "Bzip2 decoder hit per-block safety cap mid-stream (file may still be usable; consider bzip2-wrapped DMG or pbzip2 multi-stream)";
                 break :blk w;
             },
+            else => ValidationResult.invalidWithDepth(.bzip2, "Decompression error", .structural),
         };
     };
 
@@ -2546,50 +2548,42 @@ pub fn validateXzDeep(allocator: Allocator, source: *FileSource) ValidationResul
         .too_large => return ValidationResult.okWithDepthAndWarning(.xz, .structural, "XZ too large for non-mmap deep validation"),
     };
 
-    // Wrap bytes in a fixed buffer stream for the old GenericReader-based XZ API
-    var stream = std.io.fixedBufferStream(bytes);
-    const deprecated_reader = stream.reader();
-
-    // Initialize XZ decompressor
-    var decompressor = std.compress.xz.decompress(allocator, deprecated_reader) catch |err| {
+    // 0.16: std.compress.xz.Decompress.init takes *std.Io.Reader (not the
+    // old GenericReader) plus a buffer it will resize via the allocator.
+    var src_reader = std.Io.Reader.fixed(bytes);
+    const initial_buf = allocator.alloc(u8, 64 * 1024) catch {
+        return ValidationResult.invalidWithDepth(.xz, "Decompressor init failed", .structural);
+    };
+    var decompressor = std.compress.xz.Decompress.init(&src_reader, allocator, initial_buf) catch |err| {
+        allocator.free(initial_buf);
         return switch (err) {
-            error.BadHeader => ValidationResult.invalidCodeWithDepth(.xz, .invalid_value, "XZ header", .structural),
             error.WrongChecksum => ValidationResult.invalidCodeMsgWithDepth(.xz, .checksum_mismatch, "Header", "Header checksum mismatch", .full),
+            error.NotXzStream => ValidationResult.invalidCodeWithDepth(.xz, .invalid_value, "XZ header", .structural),
             else => ValidationResult.invalidWithDepth(.xz, "Decompressor init failed", .structural),
         };
     };
-    defer decompressor.deinit();
+    defer {
+        const taken = decompressor.takeBuffer();
+        if (taken.len > 0) allocator.free(taken);
+        decompressor.deinit();
+    }
 
-    // Stream decompression, discarding output but verifying integrity
-    // XZ decoder verifies CRC checksums internally
-    const discard_buf = allocator.alloc(u8, 65536) catch {
-        return ValidationResult.invalidWithDepth(.xz, "Decompression error", .full);
-    };
-    defer allocator.free(discard_buf);
+    // Stream decompression, discarding output but verifying integrity.
+    // XZ decoder verifies CRC checksums internally.
+    var discard_buf: [65536]u8 = undefined;
     var total_decompressed: u64 = 0;
 
     while (true) {
-        const bytes_read = decompressor.read(discard_buf) catch |err| {
-            // Check for specific error types
-            return switch (err) {
-                error.CorruptInput => ValidationResult.invalidWithDepth(.xz, "Corrupt compressed data", .full),
-                error.WrongChecksum => ValidationResult.invalidCodeMsgWithDepth(.xz, .checksum_mismatch, "CRC", "CRC checksum mismatch", .full),
-                error.EndOfStream => ValidationResult.invalidWithDepth(.xz, "Unexpected end of stream", .structural),
-                else => ValidationResult.invalidWithDepth(.xz, "Decompression error", .full),
-            };
+        const n = decompressor.reader.readSliceShort(&discard_buf) catch {
+            return ValidationResult.invalidWithDepth(.xz, "Decompression error", .full);
         };
-
-        if (bytes_read == 0) break; // EOF
-
-        total_decompressed += bytes_read;
-
-        // Zip bomb protection
+        if (n == 0) break;
+        total_decompressed += n;
         if (total_decompressed > format_validation.MAX_DECOMPRESSED_SIZE) {
             return ValidationResult.invalidCodeMsgWithDepth(.xz, .exceeds_bounds, "Decompressed size", "Decompressed size exceeds limit", .structural);
         }
     }
 
-    // Successfully decompressed entire stream with CRC verification
     return ValidationResult.okWithDepth(.xz, .full);
 }
 
@@ -2923,7 +2917,7 @@ fn openGroundTruth(comptime path: []const u8) !FileSource {
 
 /// Skip test if a ground truth file doesn't exist (e.g., samples in external repo).
 fn skipIfMissing(comptime path: []const u8) !void {
-    std.fs.cwd().access(path, .{}) catch return error.SkipZigTest;
+    runtime.access(path, .{}) catch return error.SkipZigTest;
 }
 
 // ---------- Structural validators on valid ground truth files ----------
@@ -3114,15 +3108,15 @@ test "validateZstdDeep: xxHash64 checksum verified on ground truth" {
 
 test "validateZstdDeep: corrupted checksum detected" {
     // Create a zstd file with valid compressed data but a corrupted content checksum.
-    const src_file = std.fs.cwd().openFile("ground_truth_examples/zstd/sample.zst", .{}) catch |err| {
+    const src_file = runtime.openFile("ground_truth_examples/zstd/sample.zst", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    defer src_file.close();
-    const file_size = try src_file.getEndPos();
+    defer src_file.close(runtime.io());
+    const file_size = try src_file.length(runtime.io());
     const data = try testing.allocator.alloc(u8, @intCast(file_size));
     defer testing.allocator.free(data);
-    const read = try src_file.readAll(data);
+    const read = try src_file.readPositionalAll(runtime.io(), data, 0);
     try testing.expect(read == data.len);
 
     // Verify checksum flag is set (bit 2 of byte 4)
@@ -3134,10 +3128,10 @@ test "validateZstdDeep: corrupted checksum detected" {
     // Write corrupted data to a temp file
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("corrupt_checksum.zst", .{ .read = true });
-    try file.writeAll(data);
-    file.close();
-    const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "corrupt_checksum.zst");
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt_checksum.zst", .{ .read = true });
+    try file.writePositionalAll(runtime.io(), data, 0);
+    file.close(runtime.io());
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, testing.allocator, "corrupt_checksum.zst");
     defer testing.allocator.free(path);
 
     var source = FileSource.open(path) catch return;
@@ -3421,28 +3415,27 @@ test "validateWarcDeep: synthetic WARC with valid SHA-1 digest returns full" {
 
     // Construct the WARC file content using a fixed buffer
     var warc_buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&warc_buf);
-    const writer = fbs.writer();
-    try writer.print("WARC/1.0\r\n", .{});
-    try writer.print("WARC-Type: resource\r\n", .{});
-    try writer.print("WARC-Record-ID: <urn:uuid:test-0001>\r\n", .{});
-    try writer.print("WARC-Date: 2025-01-28T00:00:00Z\r\n", .{});
-    try writer.print("Content-Length: {d}\r\n", .{body.len});
-    try writer.print("WARC-Block-Digest: sha1:{s}\r\n", .{b32_hash});
-    try writer.print("\r\n", .{}); // end of headers
-    try writer.writeAll(body);
-    try writer.writeAll("\r\n\r\n"); // record separator
+    var fbs = std.Io.Writer.fixed(&warc_buf);
+    try fbs.print("WARC/1.0\r\n", .{});
+    try fbs.print("WARC-Type: resource\r\n", .{});
+    try fbs.print("WARC-Record-ID: <urn:uuid:test-0001>\r\n", .{});
+    try fbs.print("WARC-Date: 2025-01-28T00:00:00Z\r\n", .{});
+    try fbs.print("Content-Length: {d}\r\n", .{body.len});
+    try fbs.print("WARC-Block-Digest: sha1:{s}\r\n", .{b32_hash});
+    try fbs.print("\r\n", .{}); // end of headers
+    try fbs.writeAll(body);
+    try fbs.writeAll("\r\n\r\n"); // record separator
 
-    const warc_data = fbs.getWritten();
+    const warc_data = fbs.buffered();
 
     // Write to temp file
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const tmp_file = try tmp_dir.dir.createFile("test.warc", .{});
-    try tmp_file.writeAll(warc_data);
-    tmp_file.close();
+    const tmp_file = try tmp_dir.dir.createFile(runtime.io(), "test.warc", .{});
+    try tmp_file.writePositionalAll(runtime.io(), warc_data, 0);
+    tmp_file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test.warc");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, testing.allocator, "test.warc");
     defer testing.allocator.free(path);
 
     var src = try FileSource.open(path);
@@ -3460,27 +3453,26 @@ test "validateWarcDeep: synthetic WARC with wrong SHA-1 digest returns invalid" 
     const wrong_b32 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // 32 chars = 20 bytes of zeros
 
     var warc_buf: [4096]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&warc_buf);
-    const writer = fbs.writer();
-    try writer.print("WARC/1.0\r\n", .{});
-    try writer.print("WARC-Type: resource\r\n", .{});
-    try writer.print("WARC-Record-ID: <urn:uuid:test-0002>\r\n", .{});
-    try writer.print("WARC-Date: 2025-01-28T00:00:00Z\r\n", .{});
-    try writer.print("Content-Length: {d}\r\n", .{body.len});
-    try writer.print("WARC-Block-Digest: sha1:{s}\r\n", .{wrong_b32});
-    try writer.print("\r\n", .{});
-    try writer.writeAll(body);
-    try writer.writeAll("\r\n\r\n");
+    var fbs = std.Io.Writer.fixed(&warc_buf);
+    try fbs.print("WARC/1.0\r\n", .{});
+    try fbs.print("WARC-Type: resource\r\n", .{});
+    try fbs.print("WARC-Record-ID: <urn:uuid:test-0002>\r\n", .{});
+    try fbs.print("WARC-Date: 2025-01-28T00:00:00Z\r\n", .{});
+    try fbs.print("Content-Length: {d}\r\n", .{body.len});
+    try fbs.print("WARC-Block-Digest: sha1:{s}\r\n", .{wrong_b32});
+    try fbs.print("\r\n", .{});
+    try fbs.writeAll(body);
+    try fbs.writeAll("\r\n\r\n");
 
-    const warc_data = fbs.getWritten();
+    const warc_data = fbs.buffered();
 
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const tmp_file = try tmp_dir.dir.createFile("test_bad.warc", .{});
-    try tmp_file.writeAll(warc_data);
-    tmp_file.close();
+    const tmp_file = try tmp_dir.dir.createFile(runtime.io(), "test_bad.warc", .{});
+    try tmp_file.writePositionalAll(runtime.io(), warc_data, 0);
+    tmp_file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "test_bad.warc");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, testing.allocator, "test_bad.warc");
     defer testing.allocator.free(path);
 
     var src = try FileSource.open(path);
@@ -3544,10 +3536,10 @@ test "validateZstdDeep: too-small file detected" {
     // Instead test with a file that is structurally too small.
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
-    const file = try tmp_dir.dir.createFile("tiny.zst", .{ .read = true });
-    try file.writeAll(&[_]u8{ 0x28, 0xB5, 0x2F, 0xFD, 0x00 });
-    file.close();
-    const path = try tmp_dir.dir.realpathAlloc(testing.allocator, "tiny.zst");
+    const file = try tmp_dir.dir.createFile(runtime.io(), "tiny.zst", .{ .read = true });
+    try file.writePositionalAll(runtime.io(), &[_]u8{ 0x28, 0xB5, 0x2F, 0xFD, 0x00 }, 0);
+    file.close(runtime.io());
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, testing.allocator, "tiny.zst");
     defer testing.allocator.free(path);
     var source = FileSource.open(path) catch return;
     defer source.close();
@@ -3687,12 +3679,12 @@ test "validateGzip: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     {
-        const wf = try tmp_dir.dir.createFile("tiny.gz", .{});
-        defer wf.close();
-        try wf.writeAll(&[_]u8{ 0x1F, 0x8B, 0x08, 0x00, 0x00 });
+        const wf = try tmp_dir.dir.createFile(runtime.io(), "tiny.gz", .{});
+        defer wf.close(runtime.io());
+        try wf.writePositionalAll(runtime.io(), &[_]u8{ 0x1F, 0x8B, 0x08, 0x00, 0x00 }, 0);
     }
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp_dir.dir.realpath("tiny.gz", &path_buf);
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "tiny.gz");
+    defer std.testing.allocator.free(path);
     var file = try FileSource.open(path);
     defer file.close();
     const result = validateGzip(&file);
@@ -3704,12 +3696,12 @@ test "validateBzip2: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     {
-        const wf = try tmp_dir.dir.createFile("tiny.bz2", .{});
-        defer wf.close();
-        try wf.writeAll("BZh");
+        const wf = try tmp_dir.dir.createFile(runtime.io(), "tiny.bz2", .{});
+        defer wf.close(runtime.io());
+        try wf.writePositionalAll(runtime.io(), "BZh", 0);
     }
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp_dir.dir.realpath("tiny.bz2", &path_buf);
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "tiny.bz2");
+    defer std.testing.allocator.free(path);
     var file = try FileSource.open(path);
     defer file.close();
     const result = validateBzip2(&file);
@@ -3721,12 +3713,12 @@ test "validateXz: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     {
-        const wf = try tmp_dir.dir.createFile("tiny.xz", .{});
-        defer wf.close();
-        try wf.writeAll(&[_]u8{ 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00 });
+        const wf = try tmp_dir.dir.createFile(runtime.io(), "tiny.xz", .{});
+        defer wf.close(runtime.io());
+        try wf.writePositionalAll(runtime.io(), &[_]u8{ 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00 }, 0);
     }
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp_dir.dir.realpath("tiny.xz", &path_buf);
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "tiny.xz");
+    defer std.testing.allocator.free(path);
     var file = try FileSource.open(path);
     defer file.close();
     const result = validateXz(&file);
@@ -3738,12 +3730,12 @@ test "validateZstd: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     {
-        const wf = try tmp_dir.dir.createFile("tiny.zst", .{});
-        defer wf.close();
-        try wf.writeAll(&[_]u8{ 0x28, 0xB5, 0x2F, 0xFD });
+        const wf = try tmp_dir.dir.createFile(runtime.io(), "tiny.zst", .{});
+        defer wf.close(runtime.io());
+        try wf.writePositionalAll(runtime.io(), &[_]u8{ 0x28, 0xB5, 0x2F, 0xFD }, 0);
     }
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp_dir.dir.realpath("tiny.zst", &path_buf);
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "tiny.zst");
+    defer std.testing.allocator.free(path);
     var file = try FileSource.open(path);
     defer file.close();
     const result = validateZstd(&file);
@@ -3755,12 +3747,12 @@ test "validate7z: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     {
-        const wf = try tmp_dir.dir.createFile("tiny.7z", .{});
-        defer wf.close();
-        try wf.writeAll(&[_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C });
+        const wf = try tmp_dir.dir.createFile(runtime.io(), "tiny.7z", .{});
+        defer wf.close(runtime.io());
+        try wf.writePositionalAll(runtime.io(), &[_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C }, 0);
     }
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp_dir.dir.realpath("tiny.7z", &path_buf);
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "tiny.7z");
+    defer std.testing.allocator.free(path);
     var file = try FileSource.open(path);
     defer file.close();
     const result = validate7z(&file);
@@ -3772,12 +3764,12 @@ test "validateTar: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     {
-        const wf = try tmp_dir.dir.createFile("tiny.tar", .{});
-        defer wf.close();
-        try wf.writeAll("too short for tar header");
+        const wf = try tmp_dir.dir.createFile(runtime.io(), "tiny.tar", .{});
+        defer wf.close(runtime.io());
+        try wf.writePositionalAll(runtime.io(), "too short for tar header", 0);
     }
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp_dir.dir.realpath("tiny.tar", &path_buf);
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "tiny.tar");
+    defer std.testing.allocator.free(path);
     var file = try FileSource.open(path);
     defer file.close();
     const result = validateTar(&file);
@@ -3789,12 +3781,12 @@ test "validatePar2: too-small input rejected" {
     var tmp_dir = testing.tmpDir(.{});
     defer tmp_dir.cleanup();
     {
-        const wf = try tmp_dir.dir.createFile("tiny.par2", .{});
-        defer wf.close();
-        try wf.writeAll("PAR2\x00PKT"); // Only 8 bytes, need 64
+        const wf = try tmp_dir.dir.createFile(runtime.io(), "tiny.par2", .{});
+        defer wf.close(runtime.io());
+        try wf.writePositionalAll(runtime.io(), "PAR2\x00PKT", 0); // Only 8 bytes, need 64
     }
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const path = try tmp_dir.dir.realpath("tiny.par2", &path_buf);
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "tiny.par2");
+    defer std.testing.allocator.free(path);
     var file = try FileSource.open(path);
     defer file.close();
     const result = validatePar2(std.testing.allocator, &file);
@@ -3879,7 +3871,7 @@ fn decodeBinhex4Payload(allocator: Allocator, file_data: []const u8) BinhexError
     const end_rel = std.mem.indexOfScalar(u8, after_start, ':') orelse return error.InvalidEnvelope;
     const encoded = after_start[0..end_rel];
 
-    var decoded: std.ArrayListUnmanaged(u8) = .{};
+    var decoded: std.ArrayListUnmanaged(u8) = .empty;
     errdefer decoded.deinit(allocator);
 
     var group: [4]u8 = undefined;
@@ -3914,7 +3906,7 @@ fn decodeBinhex4Payload(allocator: Allocator, file_data: []const u8) BinhexError
 }
 
 fn expandBinhex4Rle(allocator: Allocator, packed_data: []const u8) BinhexError![]u8 {
-    var expanded: std.ArrayListUnmanaged(u8) = .{};
+    var expanded: std.ArrayListUnmanaged(u8) = .empty;
     errdefer expanded.deinit(allocator);
 
     var i: usize = 0;
@@ -4282,12 +4274,12 @@ test "FormatValidator accepts valid ZIP file" {
     };
 
     // Write valid ZIP to temp file
-    const file = try tmp_dir.dir.createFile("valid.zip", .{});
-    try file.writeAll(&valid_zip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.zip", .{});
+    try file.writePositionalAll(runtime.io(), &valid_zip, 0);
+    file.close(runtime.io());
 
     // Get full path
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.zip");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.zip");
     defer allocator.free(path);
 
     // Validate the file
@@ -4401,11 +4393,11 @@ test "FormatValidator accepts real-world ZIP file with extra fields" {
         0x00, 0x00, // comment length
     };
 
-    const file = try tmp_dir.dir.createFile("real.zip", .{});
-    try file.writeAll(&real_zip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "real.zip", .{});
+    try file.writePositionalAll(runtime.io(), &real_zip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "real.zip");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "real.zip");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4444,11 +4436,11 @@ test "FormatValidator rejects corrupted ZIP file" {
         // Missing central directory and EOCD - this is corrupted!
     };
 
-    const file = try tmp_dir.dir.createFile("corrupted.zip", .{});
-    try file.writeAll(&corrupted_zip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupted.zip", .{});
+    try file.writePositionalAll(runtime.io(), &corrupted_zip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.zip");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupted.zip");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4474,7 +4466,7 @@ test "FormatValidator accepts valid EPUB file" {
     };
     const epub_data = buildMinimalZip(&files);
 
-    const file = try tmp_dir.dir.createFile("valid.epub", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.epub", .{});
     // Find actual data length (up to end of EOCD + 22)
     var data_len: usize = 0;
     for (epub_data, 0..) |_, i| {
@@ -4486,10 +4478,10 @@ test "FormatValidator accepts valid EPUB file" {
         }
     }
     if (data_len == 0) data_len = 512; // fallback
-    try file.writeAll(epub_data[0..data_len]);
-    file.close();
+    try file.writePositionalAll(runtime.io(), epub_data[0..data_len], 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.epub");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.epub");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4516,7 +4508,7 @@ test "FormatValidator rejects corrupted EPUB file" {
     };
     const zip_data = buildMinimalZip(&files);
 
-    const file = try tmp_dir.dir.createFile("corrupted.epub", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupted.epub", .{});
     var data_len: usize = 512;
     for (zip_data, 0..) |_, i| {
         if (i >= 4 and zip_data[i - 4] == 0x50 and zip_data[i - 3] == 0x4B and
@@ -4526,10 +4518,10 @@ test "FormatValidator rejects corrupted EPUB file" {
             break;
         }
     }
-    try file.writeAll(zip_data[0..data_len]);
-    file.close();
+    try file.writePositionalAll(runtime.io(), zip_data[0..data_len], 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.epub");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupted.epub");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4557,7 +4549,7 @@ test "FormatValidator accepts valid DOCX file" {
     };
     const docx_data = buildMinimalZip(&files);
 
-    const file = try tmp_dir.dir.createFile("valid.docx", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.docx", .{});
     var data_len: usize = 512;
     for (docx_data, 0..) |_, i| {
         if (i >= 4 and docx_data[i - 4] == 0x50 and docx_data[i - 3] == 0x4B and
@@ -4567,10 +4559,10 @@ test "FormatValidator accepts valid DOCX file" {
             break;
         }
     }
-    try file.writeAll(docx_data[0..data_len]);
-    file.close();
+    try file.writePositionalAll(runtime.io(), docx_data[0..data_len], 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.docx");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.docx");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4598,7 +4590,7 @@ test "FormatValidator rejects DOCX missing word directory" {
     };
     const zip_data = buildMinimalZip(&files);
 
-    const file = try tmp_dir.dir.createFile("invalid.docx", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.docx", .{});
     var data_len: usize = 512;
     for (zip_data, 0..) |_, i| {
         if (i >= 4 and zip_data[i - 4] == 0x50 and zip_data[i - 3] == 0x4B and
@@ -4608,10 +4600,10 @@ test "FormatValidator rejects DOCX missing word directory" {
             break;
         }
     }
-    try file.writeAll(zip_data[0..data_len]);
-    file.close();
+    try file.writePositionalAll(runtime.io(), zip_data[0..data_len], 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.docx");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.docx");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4636,7 +4628,7 @@ test "FormatValidator accepts valid XLSX file" {
     };
     const xlsx_data = buildMinimalZip(&files);
 
-    const file = try tmp_dir.dir.createFile("valid.xlsx", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.xlsx", .{});
     var data_len: usize = 512;
     for (xlsx_data, 0..) |_, i| {
         if (i >= 4 and xlsx_data[i - 4] == 0x50 and xlsx_data[i - 3] == 0x4B and
@@ -4646,10 +4638,10 @@ test "FormatValidator accepts valid XLSX file" {
             break;
         }
     }
-    try file.writeAll(xlsx_data[0..data_len]);
-    file.close();
+    try file.writePositionalAll(runtime.io(), xlsx_data[0..data_len], 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.xlsx");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.xlsx");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4677,7 +4669,7 @@ test "FormatValidator accepts valid PPTX file" {
     };
     const pptx_data = buildMinimalZip(&files);
 
-    const file = try tmp_dir.dir.createFile("valid.pptx", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.pptx", .{});
     var data_len: usize = 512;
     for (pptx_data, 0..) |_, i| {
         if (i >= 4 and pptx_data[i - 4] == 0x50 and pptx_data[i - 3] == 0x4B and
@@ -4687,10 +4679,10 @@ test "FormatValidator accepts valid PPTX file" {
             break;
         }
     }
-    try file.writeAll(pptx_data[0..data_len]);
-    file.close();
+    try file.writePositionalAll(runtime.io(), pptx_data[0..data_len], 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.pptx");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.pptx");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4718,7 +4710,7 @@ test "FormatValidator accepts valid Studio One .song file with metainfo.xml" {
     };
     const song_data = buildMinimalZip(&files);
 
-    const file = try tmp_dir.dir.createFile("valid.song", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.song", .{});
     var data_len: usize = 512;
     for (song_data, 0..) |_, i| {
         if (i >= 4 and song_data[i - 4] == 0x50 and song_data[i - 3] == 0x4B and
@@ -4728,10 +4720,10 @@ test "FormatValidator accepts valid Studio One .song file with metainfo.xml" {
             break;
         }
     }
-    try file.writeAll(song_data[0..data_len]);
-    file.close();
+    try file.writePositionalAll(runtime.io(), song_data[0..data_len], 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.song");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.song");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4758,7 +4750,7 @@ test "FormatValidator rejects Studio One .song file missing metainfo.xml" {
     };
     const zip_data = buildMinimalZip(&files);
 
-    const file = try tmp_dir.dir.createFile("invalid.song", .{});
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.song", .{});
     var data_len: usize = 512;
     for (zip_data, 0..) |_, i| {
         if (i >= 4 and zip_data[i - 4] == 0x50 and zip_data[i - 3] == 0x4B and
@@ -4768,10 +4760,10 @@ test "FormatValidator rejects Studio One .song file missing metainfo.xml" {
             break;
         }
     }
-    try file.writeAll(zip_data[0..data_len]);
-    file.close();
+    try file.writePositionalAll(runtime.io(), zip_data[0..data_len], 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.song");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.song");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4807,11 +4799,11 @@ test "FormatValidator rejects truncated ZIP-based files" {
         // Missing central directory and EOCD - this is truncated!
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.zip", .{});
-    try file.writeAll(&truncated_zip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.zip", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_zip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.zip");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.zip");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4829,13 +4821,13 @@ test "FormatValidator deep validates Brotli from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth Brotli file ("Hello" compressed)
-    const file = std.fs.cwd().openFile("ground_truth_examples/brotli/hello.br", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/brotli/hello.br", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    file.close(runtime.io());
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/brotli/hello.br") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/brotli/hello.br") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -4856,11 +4848,11 @@ test "FormatValidator detects Brotli by extension" {
 
     // Minimal valid Brotli (empty string, window bits=10)
     const empty_brotli = [_]u8{0x06};
-    const file = try tmp_dir.dir.createFile("empty.br", .{});
-    try file.writeAll(&empty_brotli);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "empty.br", .{});
+    try file.writePositionalAll(runtime.io(), &empty_brotli, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "empty.br");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "empty.br");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -4882,11 +4874,11 @@ test "FormatValidator rejects corrupted Brotli" {
 
     // Invalid Brotli data (random bytes)
     const invalid = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF };
-    const file = try tmp_dir.dir.createFile("invalid.br", .{});
-    try file.writeAll(&invalid);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.br", .{});
+    try file.writePositionalAll(runtime.io(), &invalid, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.br");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.br");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -4953,11 +4945,11 @@ test "validateZipDeep accepts valid ZIP with stored entry" {
         0x00, 0x00, // comment length
     };
 
-    const file = try tmp_dir.dir.createFile("valid.zip", .{});
-    try file.writeAll(&valid_zip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.zip", .{});
+    try file.writePositionalAll(runtime.io(), &valid_zip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.zip");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.zip");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5029,11 +5021,11 @@ test "validateZipDeep rejects ZIP with corrupted stored entry CRC" {
         0x00, 0x00, 0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("corrupted.zip", .{});
-    try file.writeAll(&corrupted_zip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupted.zip", .{});
+    try file.writePositionalAll(runtime.io(), &corrupted_zip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted.zip");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupted.zip");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5098,11 +5090,11 @@ test "validateZipDeep rejects ZIP with bitrot in stored data" {
         0x00, 0x00, 0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("bitrot.zip", .{});
-    try file.writeAll(&bitrot_zip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "bitrot.zip", .{});
+    try file.writePositionalAll(runtime.io(), &bitrot_zip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "bitrot.zip");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bitrot.zip");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5175,11 +5167,11 @@ test "validateZipDeep returns structural for encrypted ZIP entries" {
         0x00, 0x00, 0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("encrypted.zip", .{});
-    try file.writeAll(&encrypted_zip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "encrypted.zip", .{});
+    try file.writePositionalAll(runtime.io(), &encrypted_zip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "encrypted.zip");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "encrypted.zip");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5255,11 +5247,11 @@ test "FormatValidator accepts valid gzip file" {
         0x00,
     };
 
-    const file = try tmp_dir.dir.createFile("valid.gz", .{});
-    try file.writeAll(&valid_gzip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.gz", .{});
+    try file.writePositionalAll(runtime.io(), &valid_gzip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.gz");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.gz");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5289,11 +5281,11 @@ test "FormatValidator rejects truncated gzip file" {
         // Truncated - no compressed data or trailer
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.gz", .{});
-    try file.writeAll(&truncated_gzip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.gz", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_gzip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.gz");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.gz");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5325,11 +5317,11 @@ test "FormatValidator rejects gzip with invalid compression method" {
         0x05, 0x00, 0x00, 0x00, // ISIZE
     };
 
-    const file = try tmp_dir.dir.createFile("invalid.gz", .{});
-    try file.writeAll(&invalid_gzip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.gz", .{});
+    try file.writePositionalAll(runtime.io(), &invalid_gzip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.gz");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.gz");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5367,11 +5359,11 @@ test "FormatValidator accepts valid bzip2 file" {
     // Fill rest with some data (would be compressed blocks in real file)
     @memset(valid_bz2[4..], 0x00);
 
-    const file = try tmp_dir.dir.createFile("valid.bz2", .{});
-    try file.writeAll(&valid_bz2);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.bz2", .{});
+    try file.writePositionalAll(runtime.io(), &valid_bz2, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.bz2");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.bz2");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5395,11 +5387,11 @@ test "FormatValidator rejects truncated bzip2 file" {
         0x00, 0x00, // Only 6 bytes total
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.bz2", .{});
-    try file.writeAll(&truncated_bz2);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.bz2", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_bz2, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.bz2");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.bz2");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5426,11 +5418,11 @@ test "FormatValidator rejects bzip2 with invalid block size" {
     invalid_bz2[3] = 0x30; // 0 - invalid! (must be 1-9)
     @memset(invalid_bz2[4..], 0x00);
 
-    const file = try tmp_dir.dir.createFile("invalid_block.bz2", .{});
-    try file.writeAll(&invalid_bz2);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid_block.bz2", .{});
+    try file.writePositionalAll(runtime.io(), &invalid_bz2, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid_block.bz2");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid_block.bz2");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5478,11 +5470,11 @@ test "FormatValidator accepts valid 7z file" {
     const start_crc = std.hash.Crc32.hash(valid_7z[12..32]);
     std.mem.writeInt(u32, valid_7z[8..12], start_crc, .little);
 
-    const file = try tmp_dir.dir.createFile("valid.7z", .{});
-    try file.writeAll(&valid_7z);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.7z", .{});
+    try file.writePositionalAll(runtime.io(), &valid_7z, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.7z");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.7z");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5508,11 +5500,11 @@ test "FormatValidator rejects truncated 7z file" {
         // Missing: CRC, next header offset/size/crc
     };
 
-    const file = try tmp_dir.dir.createFile("truncated.7z", .{});
-    try file.writeAll(&truncated_7z);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.7z", .{});
+    try file.writePositionalAll(runtime.io(), &truncated_7z, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.7z");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.7z");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5594,11 +5586,11 @@ test "FormatValidator accepts valid tar file" {
     // Second 512-byte block: end-of-archive (all zeros)
     // Already zeroed
 
-    const file = try tmp_dir.dir.createFile("valid.tar", .{});
-    try file.writeAll(&valid_tar);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid.tar", .{});
+    try file.writePositionalAll(runtime.io(), &valid_tar, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid.tar");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid.tar");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5641,11 +5633,11 @@ test "FormatValidator rejects tar with invalid checksum" {
     invalid_tar[263] = '0';
     invalid_tar[264] = '0';
 
-    const file = try tmp_dir.dir.createFile("invalid.tar", .{});
-    try file.writeAll(&invalid_tar);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid.tar", .{});
+    try file.writePositionalAll(runtime.io(), &invalid_tar, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid.tar");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid.tar");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5677,11 +5669,11 @@ test "validateGzipDeep accepts valid gzip and verifies trailer" {
         0x05, 0x00, 0x00, 0x00, // ISIZE = 5
     };
 
-    const file = try tmp_dir.dir.createFile("valid_deep.gz", .{});
-    try file.writeAll(&valid_gzip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_deep.gz", .{});
+    try file.writePositionalAll(runtime.io(), &valid_gzip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_deep.gz");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_deep.gz");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5713,11 +5705,11 @@ test "validateGzipDeep detects CRC corruption" {
         0x05, 0x00, 0x00, 0x00, // ISIZE = 5 (correct)
     };
 
-    const file = try tmp_dir.dir.createFile("corrupt_crc.gz", .{});
-    try file.writeAll(&corrupt_gzip);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupt_crc.gz", .{});
+    try file.writePositionalAll(runtime.io(), &corrupt_gzip, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupt_crc.gz");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupt_crc.gz");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5754,11 +5746,11 @@ test "validate7zDeep detects CRC corruption in start header" {
     corrupted_7z[11] = 0xEF;
     @memset(corrupted_7z[12..32], 0);
 
-    const file = try tmp_dir.dir.createFile("corrupted_crc.7z", .{});
-    try file.writeAll(&corrupted_7z);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "corrupted_crc.7z", .{});
+    try file.writePositionalAll(runtime.io(), &corrupted_7z, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "corrupted_crc.7z");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupted_crc.7z");
     defer allocator.free(path);
 
     var validator = FormatValidator.initDeep();
@@ -5808,11 +5800,11 @@ test "FormatValidator accepts valid ALS (gzip-based)" {
     als_data[9] = 0xFF; // OS (unknown)
     @memset(als_data[10..20], 0);
 
-    const file = try tmp_dir.dir.createFile("test.als", .{});
-    try file.writeAll(&als_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.als", .{});
+    try file.writePositionalAll(runtime.io(), &als_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.als");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.als");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5850,11 +5842,11 @@ test "FormatValidator accepts valid WARC" {
         \\
     ;
 
-    const file = try tmp_dir.dir.createFile("test.warc", .{});
-    try file.writeAll(warc_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.warc", .{});
+    try file.writePositionalAll(runtime.io(), warc_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.warc");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.warc");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5911,11 +5903,11 @@ test "FormatValidator accepts valid PAR2" {
     std.crypto.hash.Md5.hash(par2_data[32..64], &digest, .{});
     @memcpy(par2_data[16..32], &digest);
 
-    const file = try tmp_dir.dir.createFile("test.par2", .{});
-    try file.writeAll(&par2_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.par2", .{});
+    try file.writePositionalAll(runtime.io(), &par2_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.par2");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.par2");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5948,11 +5940,11 @@ test "FormatValidator rejects truncated PAR2" {
     truncated[6] = 'K';
     truncated[7] = 'T';
 
-    const file = try tmp_dir.dir.createFile("truncated.par2", .{});
-    try file.writeAll(&truncated);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "truncated.par2", .{});
+    try file.writePositionalAll(runtime.io(), &truncated, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "truncated.par2");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "truncated.par2");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5988,11 +5980,11 @@ test "FormatValidator rejects PAR2 with invalid packet length" {
     bad_par2[8] = 0x80; // 128
     bad_par2[9] = 0x00;
 
-    const file = try tmp_dir.dir.createFile("bad_length.par2", .{});
-    try file.writeAll(&bad_par2);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "bad_length.par2", .{});
+    try file.writePositionalAll(runtime.io(), &bad_par2, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "bad_length.par2");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bad_length.par2");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -6008,13 +6000,13 @@ test "FormatValidator validates PAR2 from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth PAR2 file
-    const file = std.fs.cwd().openFile("ground_truth_examples/par2/sample.par2", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/par2/sample.par2", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
-    file.close();
+    file.close(runtime.io());
 
-    const path = std.fs.cwd().realpathAlloc(allocator, "ground_truth_examples/par2/sample.par2") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
+    const path = allocator.dupe(u8, "ground_truth_examples/par2/sample.par2") catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer allocator.free(path);
 
     var validator = FormatValidator.init();

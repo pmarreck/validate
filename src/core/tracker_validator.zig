@@ -13,6 +13,7 @@
 //! - File size consistency checks
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const errmsg = @import("error_messages.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -438,10 +439,10 @@ test "MOD validates minimal synthetic file" {
 
     // Write to a temp file and validate
     const tmp_path = "/tmp/validate_test_mod.mod";
-    const file = std.fs.cwd().createFile(tmp_path, .{}) catch return;
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
-    defer file.close();
-    file.writeAll(&data) catch return;
+    const file = runtime.createFile(tmp_path, .{}) catch return;
+    defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
+    defer file.close(runtime.io());
+    file.writePositionalAll(runtime.io(), &data, 0) catch return;
 
     var src = FileSource.open(tmp_path) catch return;
     defer src.close();
@@ -481,10 +482,10 @@ test "XM validates minimal synthetic file" {
     std.mem.writeInt(u16, data[72..74], 0, .little);
 
     const tmp_path = "/tmp/validate_test_xm.xm";
-    const file = std.fs.cwd().createFile(tmp_path, .{}) catch return;
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
-    defer file.close();
-    file.writeAll(&data) catch return;
+    const file = runtime.createFile(tmp_path, .{}) catch return;
+    defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
+    defer file.close(runtime.io());
+    file.writePositionalAll(runtime.io(), &data, 0) catch return;
 
     var src = FileSource.open(tmp_path) catch return;
     defer src.close();
@@ -517,10 +518,10 @@ test "IT validates minimal synthetic file" {
     data[0xC0] = 0;
 
     const tmp_path = "/tmp/validate_test_it.it";
-    const file = std.fs.cwd().createFile(tmp_path, .{}) catch return;
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
-    defer file.close();
-    file.writeAll(&data) catch return;
+    const file = runtime.createFile(tmp_path, .{}) catch return;
+    defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
+    defer file.close(runtime.io());
+    file.writePositionalAll(runtime.io(), &data, 0) catch return;
 
     var src = FileSource.open(tmp_path) catch return;
     defer src.close();
@@ -557,10 +558,10 @@ test "S3M validates minimal synthetic file" {
     data[0x60] = 0;
 
     const tmp_path = "/tmp/validate_test_s3m.s3m";
-    const file = std.fs.cwd().createFile(tmp_path, .{}) catch return;
-    defer std.fs.cwd().deleteFile(tmp_path) catch {};
-    defer file.close();
-    file.writeAll(&data) catch return;
+    const file = runtime.createFile(tmp_path, .{}) catch return;
+    defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
+    defer file.close(runtime.io());
+    file.writePositionalAll(runtime.io(), &data, 0) catch return;
 
     var src = FileSource.open(tmp_path) catch return;
     defer src.close();

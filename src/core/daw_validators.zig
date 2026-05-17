@@ -6,6 +6,7 @@
 //! - RPP (REAPER Project)
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");
@@ -787,11 +788,11 @@ test "FormatValidator accepts valid RPP" {
     // Create minimal valid Reaper project file
     const rpp_content = "<REAPER_PROJECT 0.1 \"6.0\" 1234567890\n  RIPPLE 0\n  GROUPOVERRIDE 0 0 0\n  AUTOXFADE 1\n>\n";
 
-    const file = try tmp_dir.dir.createFile("test.rpp", .{});
-    try file.writeAll(rpp_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.rpp", .{});
+    try file.writePositionalAll(runtime.io(), rpp_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.rpp");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.rpp");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -812,11 +813,11 @@ test "FormatValidator rejects invalid RPP" {
     // Create file that starts like RPP but has invalid content
     const bad_content = "<REAPER_PROJEC\xFF\xFE\x00\x00"; // Invalid RPP (missing T, plus invalid UTF-8)
 
-    const file = try tmp_dir.dir.createFile("test.rpp", .{});
-    try file.writeAll(bad_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.rpp", .{});
+    try file.writePositionalAll(runtime.io(), bad_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.rpp");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.rpp");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();

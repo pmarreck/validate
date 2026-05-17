@@ -8,6 +8,7 @@
 //! validators without disk I/O.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 
 pub const CorruptionMode = enum {
@@ -429,7 +430,7 @@ pub fn runCoverage(
     var prng = std.Random.DefaultPrng.init(config.seed);
     const rng = prng.random();
 
-    const start_ns = std.time.nanoTimestamp();
+    const start_ns = runtime.nanoTimestamp();
     var detected_count: u32 = 0;
 
     // Memory optimization: allocate + copy the working buffer ONCE, then each
@@ -481,7 +482,7 @@ pub fn runCoverage(
         };
 
         if (comptime @import("builtin").os.tag != .windows) {
-            if (std.posix.getenv("VALIDATE_COVERAGE_TRACE")) |_| {
+            if (std.c.getenv("VALIDATE_COVERAGE_TRACE")) |_| {
                 std.debug.print(
                     "[coverage trace] seed={d} round={d}/{d} mode={s} offset={d} bit={d} size={d}\n",
                     .{ config.seed, round + 1, config.rounds, event.mode.name(), event.offset, event.bit, event.size },
@@ -564,7 +565,7 @@ pub fn runCoverage(
     // still holds its initial cap value, which equals `round` here.
     if (actual_rounds == config.rounds) actual_rounds = round;
 
-    const end_ns = std.time.nanoTimestamp();
+    const end_ns = runtime.nanoTimestamp();
 
     // Trim the events buffer down to what we actually filled. The caller's
     // `deinit` will `free(events)` and that requires the slice length to
@@ -607,14 +608,17 @@ pub const ColorDepth = enum {
     pub fn detectFromEnv() ColorDepth {
         if (comptime @import("builtin").os.tag == .windows) return .ansi256;
         // NO_COLOR takes absolute precedence per https://no-color.org/.
-        if (std.posix.getenv("NO_COLOR")) |v| {
+        if (std.c.getenv("NO_COLOR")) |v_ptr| {
+            const v = std.mem.span(v_ptr);
             if (v.len > 0) return .ascii;
         }
-        if (std.posix.getenv("COLORTERM")) |ct| {
+        if (std.c.getenv("COLORTERM")) |ct_ptr| {
+            const ct = std.mem.span(ct_ptr);
             if (std.mem.eql(u8, ct, "truecolor") or std.mem.eql(u8, ct, "24bit")) return .truecolor;
             if (std.mem.eql(u8, ct, "direct")) return .ansi256;
         }
-        if (std.posix.getenv("TERM")) |term| {
+        if (std.c.getenv("TERM")) |term_ptr| {
+            const term = std.mem.span(term_ptr);
             if (std.mem.endsWith(u8, term, "-256color") or std.mem.endsWith(u8, term, "-direct")) return .ansi256;
         }
         return .ansi16;
@@ -638,7 +642,7 @@ fn emitHeatmapCell(out_writer: anytype, depth: ColorDepth, q: usize, steps: usiz
             // black(40) → red(41) → bright-red(101) → yellow(43) → bright-yellow(103) → bright-white(107).
             const palette = [_]u8{ 40, 41, 101, 43, 103, 107 };
             const idx = (qc * (palette.len - 1)) / (steps - 1);
-            try std.fmt.format(out_writer, "\x1b[{d}m ", .{palette[idx]});
+            try out_writer.print("\x1b[{d}m ", .{palette[idx]});
         },
         .ansi256 => {
             // 16-step `hot` palette over the 6x6x6 cube + grayscale ramp endpoint:
@@ -646,7 +650,7 @@ fn emitHeatmapCell(out_writer: anytype, depth: ColorDepth, q: usize, steps: usiz
             // → 226(yellow) → 227,228,229,230(pale yellow) → 231(white).
             const palette = [_]u8{ 16, 52, 88, 124, 160, 196, 202, 208, 214, 220, 226, 227, 228, 229, 230, 231 };
             const idx = (qc * (palette.len - 1)) / (steps - 1);
-            try std.fmt.format(out_writer, "\x1b[48;5;{d}m ", .{palette[idx]});
+            try out_writer.print("\x1b[48;5;{d}m ", .{palette[idx]});
         },
         .truecolor => {
             // Classic matplotlib `hot` colormap, computed:
@@ -672,7 +676,7 @@ fn emitHeatmapCell(out_writer: anytype, depth: ColorDepth, q: usize, steps: usiz
             const ri: u8 = @intFromFloat(@min(255.0, @max(0.0, r * 255.0)));
             const gi: u8 = @intFromFloat(@min(255.0, @max(0.0, g * 255.0)));
             const bi: u8 = @intFromFloat(@min(255.0, @max(0.0, b * 255.0)));
-            try std.fmt.format(out_writer, "\x1b[48;2;{d};{d};{d}m ", .{ ri, gi, bi });
+            try out_writer.print("\x1b[48;2;{d};{d};{d}m ", .{ ri, gi, bi });
         },
     }
 }
@@ -727,18 +731,19 @@ pub fn renderHeatmapWithDepth(
     var max_count: u32 = 0;
     for (buckets) |c| max_count = @max(max_count, c);
 
-    var out = std.ArrayListUnmanaged(u8){};
-    defer out.deinit(allocator);
+    var aw = std.Io.Writer.Allocating.init(allocator);
+    defer aw.deinit();
+    const out_writer = &aw.writer;
 
     // We always quantize into 16 steps so every depth tier maps consistently.
     const steps: usize = 16;
     for (buckets) |count| {
         const q = if (max_count == 0) 0 else (@as(usize, count) * (steps - 1)) / max_count;
-        try emitHeatmapCell(out.writer(allocator), depth, q, steps);
+        try emitHeatmapCell(out_writer, depth, q, steps);
     }
-    if (depth != .ascii) try out.writer(allocator).writeAll("\x1b[0m");
+    if (depth != .ascii) try out_writer.writeAll("\x1b[0m");
 
-    return out.toOwnedSlice(allocator);
+    return aw.toOwnedSlice();
 }
 
 // ============================================================

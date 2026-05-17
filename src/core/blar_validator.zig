@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
@@ -157,10 +158,10 @@ test "validateBlarDeep: valid mblar with checksum" {
 }
 
 test "validateBlarDeep: corrupted blar detected" {
-    const file = std.fs.cwd().openFile("ground_truth_examples/blar/sample.blar", .{}) catch {
+    const file = runtime.openFile("ground_truth_examples/blar/sample.blar", .{}) catch {
         return error.SkipZigTest;
     };
-    defer file.close();
+    defer file.close(runtime.io());
 
     const data = file.readToEndAlloc(std.testing.allocator, 1024 * 1024) catch return error.SkipZigTest;
     defer std.testing.allocator.free(data);
@@ -173,11 +174,11 @@ test "validateBlarDeep: corrupted blar detected" {
     // Write corrupted data to temp file
     const tmp_path = "/tmp/validate-test-corrupted.blar";
     const tmp_file = std.fs.createFileAbsolute(tmp_path, .{}) catch return error.SkipZigTest;
-    tmp_file.writeAll(data) catch {
-        tmp_file.close();
+    tmp_file.writePositionalAll(runtime.io(), data, 0) catch {
+        tmp_file.close(runtime.io());
         return error.SkipZigTest;
     };
-    tmp_file.close();
+    tmp_file.close(runtime.io());
     defer std.fs.deleteFileAbsolute(tmp_path) catch {};
 
     var source = FileSource.open(tmp_path) catch return error.SkipZigTest;

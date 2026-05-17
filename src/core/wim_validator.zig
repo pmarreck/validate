@@ -7,6 +7,7 @@
 //! Header is 208 bytes, all multi-byte integers are little-endian.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 const format_validation = @import("format_validation.zig");

@@ -1,4 +1,5 @@
 const std = @import("std");
+const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
@@ -1577,7 +1578,7 @@ fn parseDicomDataElements(
 /// No file-level checksum — metadata field corruption is undetectable.
 pub fn validateDicom(file: *FileSource) ValidationResult {
     // Use GPA for temporary allocations during validation
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -4228,19 +4229,19 @@ test "FITS without CHECKSUM/DATASUM returns structural depth" {
     @memcpy(header[240..320], end);
 
     // Write to temp file using TMPDIR (RAM-backed)
-    const tmpdir = std.posix.getenv("TMPDIR") orelse "/tmp";
+    const tmpdir = std.c.getenv("TMPDIR") orelse "/tmp";
     var path_buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&path_buf, "{s}/test_fits_no_checksum.fits", .{tmpdir}) catch "/tmp/test_fits_no_checksum.fits";
 
     {
-        const wfile = try std.fs.cwd().createFile(path, .{});
+        const wfile = try runtime.createFile(path, .{});
         try wfile.writeAll(&header);
         wfile.close();
     }
-    defer std.fs.cwd().deleteFile(path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
 
     var file = try FileSource.open(path);
-    defer file.close();
+    defer file.close(runtime.io());
     const result = validateFits(&file);
     // Without CHECKSUM or DATASUM, data is NOT verified → must be .structural
     try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
@@ -4329,11 +4330,11 @@ test "FormatValidator accepts valid FITS" {
     // END keyword (columns 241-320)
     @memcpy(fits_data[240..243], "END");
 
-    const file = try tmp_dir.dir.createFile("test.fits", .{});
-    try file.writeAll(&fits_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.fits", .{});
+    try file.writePositionalAll(runtime.io(), &fits_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.fits");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.fits");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4391,11 +4392,11 @@ test "FormatValidator accepts valid DICOM" {
     dicom_data[179] = 0x00; // Length = 22 (padded)
     @memcpy(dicom_data[180..202], "1.2.840.10008.5.1.4.1 ");
 
-    const file = try tmp_dir.dir.createFile("test.dcm", .{});
-    try file.writeAll(&dicom_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.dcm", .{});
+    try file.writePositionalAll(runtime.io(), &dicom_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.dcm");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.dcm");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4420,11 +4421,11 @@ test "FormatValidator accepts valid FASTA" {
         \\MKRISTTITTTITITTGNGAG
     ;
 
-    const file = try tmp_dir.dir.createFile("test.fasta", .{});
-    try file.writeAll(fasta_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.fasta", .{});
+    try file.writePositionalAll(runtime.io(), fasta_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.fasta");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.fasta");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4451,11 +4452,11 @@ test "FormatValidator accepts valid FASTQ" {
         \\
     ;
 
-    const file = try tmp_dir.dir.createFile("test.fastq", .{});
-    try file.writeAll(fastq_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.fastq", .{});
+    try file.writePositionalAll(runtime.io(), fastq_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.fastq");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.fastq");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4493,11 +4494,11 @@ test "FormatValidator accepts valid MATLAB v5" {
     // Minimal array content (will be skipped, just needs to exist)
     @memset(matlab_data[136..152], 0);
 
-    const file = try tmp_dir.dir.createFile("test.mat", .{});
-    try file.writeAll(&matlab_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.mat", .{});
+    try file.writePositionalAll(runtime.io(), &matlab_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.mat");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.mat");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4541,11 +4542,11 @@ test "FormatValidator accepts valid NIfTI" {
     // Magic: "ni1\0" at offset 344 (header-only, no data in this file)
     @memcpy(nifti_data[344..348], "ni1\x00");
 
-    const file = try tmp_dir.dir.createFile("test.nii", .{});
-    try file.writeAll(&nifti_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.nii", .{});
+    try file.writePositionalAll(runtime.io(), &nifti_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.nii");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.nii");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4570,11 +4571,11 @@ test "FormatValidator accepts valid PDB" {
         \\END
     ;
 
-    const file = try tmp_dir.dir.createFile("test.pdb", .{});
-    try file.writeAll(pdb_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.pdb", .{});
+    try file.writePositionalAll(runtime.io(), pdb_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.pdb");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.pdb");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4603,11 +4604,11 @@ test "FormatValidator accepts valid CIF" {
         \\1 C
     ;
 
-    const file = try tmp_dir.dir.createFile("test.cif", .{});
-    try file.writeAll(cif_content);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.cif", .{});
+    try file.writePositionalAll(runtime.io(), cif_content, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.cif");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.cif");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4646,11 +4647,11 @@ test "FormatValidator accepts valid Shapefile" {
     // Bounding box (8 doubles, all zeros for now)
     @memset(shp_data[36..100], 0);
 
-    const file = try tmp_dir.dir.createFile("test.shp", .{});
-    try file.writeAll(&shp_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "test.shp", .{});
+    try file.writePositionalAll(runtime.io(), &shp_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "test.shp");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test.shp");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4755,11 +4756,11 @@ test "FITS without checksums validates successfully" {
     // END
     @memcpy(fits_data[240..243], "END");
 
-    const file = try tmp_dir.dir.createFile("no_checksum.fits", .{});
-    try file.writeAll(&fits_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "no_checksum.fits", .{});
+    try file.writePositionalAll(runtime.io(), &fits_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "no_checksum.fits");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "no_checksum.fits");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4868,11 +4869,11 @@ test "FITS with valid CHECKSUM validates successfully" {
     sum = computeFitsChecksum(&fits_data);
     try std.testing.expectEqual(@as(u32, 0xFFFFFFFF), sum);
 
-    const file = try tmp_dir.dir.createFile("valid_checksum.fits", .{});
-    try file.writeAll(&fits_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_checksum.fits", .{});
+    try file.writePositionalAll(runtime.io(), &fits_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_checksum.fits");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_checksum.fits");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -4928,11 +4929,11 @@ test "FITS with invalid CHECKSUM fails validation" {
     // END
     @memcpy(fits_data[320..323], "END");
 
-    const file = try tmp_dir.dir.createFile("invalid_checksum.fits", .{});
-    try file.writeAll(&fits_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "invalid_checksum.fits", .{});
+    try file.writePositionalAll(runtime.io(), &fits_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "invalid_checksum.fits");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "invalid_checksum.fits");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
@@ -5015,11 +5016,11 @@ test "FITS with valid DATASUM validates successfully" {
     const datasum_str = std.fmt.bufPrint(&datasum_buf, "{d}", .{data_checksum}) catch unreachable;
     @memcpy(fits_data[331 .. 331 + datasum_str.len], datasum_str);
 
-    const file = try tmp_dir.dir.createFile("valid_datasum.fits", .{});
-    try file.writeAll(&fits_data);
-    file.close();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_datasum.fits", .{});
+    try file.writePositionalAll(runtime.io(), &fits_data, 0);
+    file.close(runtime.io());
 
-    const path = try tmp_dir.dir.realpathAlloc(allocator, "valid_datasum.fits");
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_datasum.fits");
     defer allocator.free(path);
 
     var validator = FormatValidator.init();
