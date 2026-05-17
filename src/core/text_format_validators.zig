@@ -3476,7 +3476,7 @@ test "UTF-8 fallback validates UTF-8 with BOM" {
 
     const file = try tmp_dir.dir.createFile(runtime.io(), "test_bom.txt", .{});
     try file.writePositionalAll(runtime.io(), &bom, 0);
-    try file.writePositionalAll(runtime.io(), text, 0);
+    try file.writePositionalAll(runtime.io(), text, bom.len);
     file.close(runtime.io());
 
     const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "test_bom.txt");
@@ -4100,7 +4100,7 @@ test "validatePlainText: self-extracting shell script returns WARN, not FAIL" {
     // Write the synthetic self-extractor
     const file = try tmp.dir.createFile(runtime.io(), "installer.sh", .{});
     try file.writePositionalAll(runtime.io(), script_prefix, 0);
-    try file.writePositionalAll(runtime.io(), &binary_payload, 0);
+    try file.writePositionalAll(runtime.io(), &binary_payload, script_prefix.len);
     file.close(runtime.io());
 
     // Open and validate as plain text
@@ -4129,7 +4129,7 @@ test "validatePlainText: script with <5 non-blank lines + binary is NOT self-ext
 
     const file = try tmp.dir.createFile(runtime.io(), "short.sh", .{});
     try file.writePositionalAll(runtime.io(), script_prefix, 0);
-    try file.writePositionalAll(runtime.io(), &binary_payload, 0);
+    try file.writePositionalAll(runtime.io(), &binary_payload, script_prefix.len);
     file.close(runtime.io());
 
     const opened = try tmp.dir.openFile(runtime.io(), "short.sh", .{});
@@ -4159,7 +4159,7 @@ test "validatePlainText: file without shebang + binary is NOT self-extractor" {
 
     const file = try tmp.dir.createFile(runtime.io(), "notscript.txt", .{});
     try file.writePositionalAll(runtime.io(), text_prefix, 0);
-    try file.writePositionalAll(runtime.io(), &binary_payload, 0);
+    try file.writePositionalAll(runtime.io(), &binary_payload, text_prefix.len);
     file.close(runtime.io());
 
     const opened = try tmp.dir.openFile(runtime.io(), "notscript.txt", .{});

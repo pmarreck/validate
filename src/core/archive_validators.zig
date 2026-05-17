@@ -2583,6 +2583,16 @@ pub fn validateXzDeep(allocator: Allocator, source: *FileSource) ValidationResul
             return ValidationResult.invalidCodeMsgWithDepth(.xz, .exceeds_bounds, "Decompressed size", "Decompressed size exceeds limit", .structural);
         }
     }
+    // 0.16: Decompress stashes errors in `.err` and returns error.ReadFailed.
+    // The read loop above maps any ReadFailed to invalid, but an EOF reached
+    // with err set means the stream ended on a tail-validation failure
+    // (CRC mismatch, missing footer, etc.) — check explicitly.
+    if (decompressor.err) |xz_err| {
+        return switch (xz_err) {
+            error.WrongChecksum => ValidationResult.invalidCodeMsgWithDepth(.xz, .checksum_mismatch, "CRC", "CRC checksum mismatch", .full),
+            else => ValidationResult.invalidWithDepth(.xz, "Decompression error", .full),
+        };
+    }
 
     return ValidationResult.okWithDepth(.xz, .full);
 }

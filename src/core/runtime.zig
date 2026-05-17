@@ -118,6 +118,15 @@ pub fn sleep(nanoseconds: u64) void {
 /// 0.16 removed `realpath`/`realpathAlloc` from `std.fs` and `std.Io.Dir`.
 /// We synthesize the equivalent by concatenating tmpDir's parent path with
 /// its random sub-path. The result is owned by the caller.
+/// Helper: write a sequence of byte slices to a file, tracking the
+/// offset across calls. Replaces the 0.15 pattern of multiple sequential
+/// `file.writeAll(X)` calls, which 0.16's positional-only `Io.File` API
+/// can't replicate without offset tracking.
+pub fn writeAllAt(file: std.Io.File, offset: u64, bytes: []const u8) !void {
+    ensureInit();
+    try file.writePositionalAll(g_io.?, bytes, offset);
+}
+
 pub fn tmpRealpathAlloc(tmp_dir: *std.testing.TmpDir, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     // std.testing.TmpDir stores its random sub_path; the parent_dir is the
     // top-level zig-cache tmp dir. We rely on the tmpDir path layout being

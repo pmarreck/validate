@@ -1035,9 +1035,14 @@ test "VPK validation - entry missing 0xFFFF terminator rejected" {
 	{
 		const tmp = try runtime.createFile(tmp_path, .{});
 		defer tmp.close(runtime.io());
-		try tmp.writePositionalAll(runtime.io(), &header, 0);
-		for (tree_parts) |p| try tmp.writePositionalAll(runtime.io(), p, 0);
-		try tmp.writePositionalAll(runtime.io(), end_ext, 0);
+		var __off: u64 = 0;
+		try tmp.writePositionalAll(runtime.io(), &header, __off);
+		__off += header.len;
+		for (tree_parts) |p| {
+			try tmp.writePositionalAll(runtime.io(), p, __off);
+			__off += p.len;
+		}
+		try tmp.writePositionalAll(runtime.io(), end_ext, __off);
 	}
 	defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 	var source = try FileSource.open(tmp_path);

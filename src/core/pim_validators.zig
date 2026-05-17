@@ -470,6 +470,7 @@ test "iCalendar structural: valid VCALENDAR" {
 	wf.close(runtime.io());
 
 	const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.ics");
+	defer std.testing.allocator.free(real_path);
 	var source = try FileSource.open(real_path);
 	defer source.close();
 
@@ -504,6 +505,7 @@ test "vCard structural: valid VCARD v4" {
 	wf.close(runtime.io());
 
 	const real_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.vcf");
+	defer std.testing.allocator.free(real_path);
 	var source = try FileSource.open(real_path);
 	defer source.close();
 

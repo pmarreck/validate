@@ -2183,7 +2183,7 @@ test "QBW deep: valid CRC-32 pages" {
 
 	const file = try tmp_dir.dir.createFile(runtime.io(), "valid_deep.qbw", .{});
 	try file.writePositionalAll(runtime.io(), &page0, 0);
-	try file.writePositionalAll(runtime.io(), &page1, 0);
+	try file.writePositionalAll(runtime.io(), &page1, page0.len);
 	file.close(runtime.io());
 
 	// Construct a path for the deep validator
@@ -2264,7 +2264,10 @@ test "ground truth: QBW v11 (Sybase) deep validation returns structural" {
 	// v11 does not have per-page CRC on data pages, so we honestly report structural.
 	const path: []const u8 = "ground_truth_examples/qbw/Farm2010.QBW";
 
-	var src = try FileSource.open(path);
+	var src = FileSource.open(path) catch |err| switch (err) {
+		error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
+		else => return err,
+	};
 	defer src.close();
 	const result = validateQbwDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
@@ -2276,7 +2279,10 @@ test "ground truth: QBW v11 (Sybase) deep validation returns structural" {
 test "ground truth: QBW v11 password-protected deep validation" {
 	const path: []const u8 = "ground_truth_examples/qbw/Farm2010 - pass.QBW";
 
-	var src = try FileSource.open(path);
+	var src = FileSource.open(path) catch |err| switch (err) {
+		error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
+		else => return err,
+	};
 	defer src.close();
 	const result = validateQbwDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
@@ -2315,7 +2321,7 @@ test "NACHA structural: valid file header" {
 
 	const file = try tmp_dir.dir.createFile(runtime.io(), "test.ach", .{});
 	try file.writePositionalAll(runtime.io(), &rec, 0);
-	try file.writePositionalAll(runtime.io(), "\n", 0);
+	try file.writePositionalAll(runtime.io(), "\n", rec.len);
 	file.close(runtime.io());
 
 	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "test.ach");
@@ -2338,7 +2344,7 @@ test "NACHA structural: invalid record type" {
 
 	const file = try tmp_dir.dir.createFile(runtime.io(), "bad.ach", .{});
 	try file.writePositionalAll(runtime.io(), &rec, 0);
-	try file.writePositionalAll(runtime.io(), "\n", 0);
+	try file.writePositionalAll(runtime.io(), "\n", rec.len);
 	file.close(runtime.io());
 
 	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "bad.ach");
@@ -2359,7 +2365,7 @@ test "NACHA structural: invalid priority code" {
 
 	const file = try tmp_dir.dir.createFile(runtime.io(), "bad_priority.ach", .{});
 	try file.writePositionalAll(runtime.io(), &rec, 0);
-	try file.writePositionalAll(runtime.io(), "\n", 0);
+	try file.writePositionalAll(runtime.io(), "\n", rec.len);
 	file.close(runtime.io());
 
 	const read_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "bad_priority.ach");
