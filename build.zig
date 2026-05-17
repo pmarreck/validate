@@ -297,14 +297,14 @@ pub fn build(b: *std.Build) void {
     const libraw_lib = libraw_dep.artifact("libraw_clib");
     const libraw_mod = libraw_dep.module("libraw");
 
-    // BLIP container library for .blar/.mblar archive validation
-    // Only import mini_blar (archive reader/verifier), not blip (which pulls in jxl)
-    const blip_dep = b.dependency("blip", .{
+    // mini_blar extracted from BLIP to its own repo (2026-05). validate
+    // only ever consumed the archive reader/verifier; the rest of BLIP
+    // (which pulls in jxl) is not needed.
+    const mini_blar_dep = b.dependency("mini_blar", .{
         .target = target,
         .optimize = deps_optimize,
-        .enable_compression = false,
     });
-    const mini_blar_mod = blip_dep.module("mini_blar");
+    const mini_blar_mod = mini_blar_dep.module("mini_blar");
 
     // Core module - validation logic
     const core_mod = b.addModule("validate_core", .{
@@ -625,11 +625,12 @@ pub fn build(b: *std.Build) void {
         .root_module = fuzz_bzip2_mod,
     });
     // Link required libraries for core module dependencies (all Zig-built)
-    fuzz_bzip2.linkLibC();
-    fuzz_bzip2.linkLibrary(sqlite3_lib);
-    fuzz_bzip2.linkLibrary(pcre2_lib);
-    fuzz_bzip2.linkLibrary(libjpeg_lib);
-    fuzz_bzip2.linkLibrary(zlib_lib);
+    // 0.16: route through Module (mirrors lib + lib_shared + cli_c above).
+    fuzz_bzip2.root_module.link_libc = true;
+    fuzz_bzip2.root_module.linkLibrary(sqlite3_lib);
+    fuzz_bzip2.root_module.linkLibrary(pcre2_lib);
+    fuzz_bzip2.root_module.linkLibrary(libjpeg_lib);
+    fuzz_bzip2.root_module.linkLibrary(zlib_lib);
 
     const install_fuzz_bzip2 = b.addInstallArtifact(fuzz_bzip2, .{});
     const fuzz_step = b.step("fuzz", "Build fuzzers");
@@ -648,10 +649,11 @@ pub fn build(b: *std.Build) void {
         .root_module = core_mod,
         .filters = test_filters,
     });
-    for (all_c_deps) |dep| core_tests.linkLibrary(dep);
-    core_tests.linkLibrary(sqlite3_lib); // Tests need sqlite3 directly (CLI links it separately)
-    core_tests.linkLibC();
-    core_tests.linkLibCpp(); // Required for libjxl, libopenmpt (C++ libraries)
+    // 0.16: route through Module.
+    for (all_c_deps) |dep| core_tests.root_module.linkLibrary(dep);
+    core_tests.root_module.linkLibrary(sqlite3_lib); // Tests need sqlite3 directly (CLI links it separately)
+    core_tests.root_module.link_libc = true;
+    core_tests.root_module.link_libcpp = true; // Required for libjxl, libopenmpt (C++ libraries)
 
     const host_is_windows = b.graph.host.result.os.tag == .windows;
     const target_is_windows = target.result.os.tag == .windows;
@@ -671,10 +673,11 @@ pub fn build(b: *std.Build) void {
         .root_module = ffi_mod,
         .filters = test_filters,
     });
-    for (all_c_deps) |dep| ffi_tests.linkLibrary(dep);
-    ffi_tests.linkLibrary(sqlite3_lib);
-    ffi_tests.linkLibC();
-    ffi_tests.linkLibCpp();
+    // 0.16: route through Module.
+    for (all_c_deps) |dep| ffi_tests.root_module.linkLibrary(dep);
+    ffi_tests.root_module.linkLibrary(sqlite3_lib);
+    ffi_tests.root_module.link_libc = true;
+    ffi_tests.root_module.link_libcpp = true;
 
     const run_ffi_tests = if (target_is_windows and !host_is_windows and windows_test_wine != null) blk: {
         const run = b.addSystemCommand(&.{

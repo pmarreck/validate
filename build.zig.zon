@@ -55,9 +55,13 @@
             .url = "https://github.com/pmarreck/pcre2/archive/refs/tags/zig-0.16.0.tar.gz",
             .hash = "pcre2-10.47.0-S7QTbvnVMgDsA1ipkKNj5kVoEda9wcIuZYUpdrTuDaCh",
         },
+        // chearon/libjpeg-turbo's build.zig is 0.15-only; forked to pmarreck +
+        // ported (Step.Compile method calls routed through root_module per
+        // migration doc 12.21), and bumped its pinned nasm dep to current
+        // main (sno2/nasm 20f90eec, already 0.16-ready).
         .libjpeg_turbo = .{
-            .url = "https://github.com/chearon/libjpeg-turbo/archive/refs/heads/main.tar.gz",
-            .hash = "libjpeg_turbo-3.1.1-1-iiYWshOCSQAUOo5zsLPqfjJMOLgpkJvcFTf6Cyn_AvkA",
+            .url = "https://github.com/pmarreck/libjpeg-turbo/archive/f0abba9810aee6b5aec64a475aee6316ce2b9441.tar.gz",
+            .hash = "libjpeg_turbo-3.1.1-1-iiYWsqiCSQAUbrkiZ_Q7Kh2f5Nk-HOimWftFo-9n6GLi",
         },
         .zlib = .{
             .url = "https://github.com/allyourcodebase/zlib/archive/refs/heads/main.tar.gz",
@@ -114,6 +118,11 @@
         .blip = .{
             .url = "git+https://github.com/pmarreck/BLIP#2855eb88743b505bd3c90df8e0b7857cc305cb42",
             .hash = "blip-0.1.0-rcNuGAOaBwC6_peTLnpRQWj7CBmiSqsMuItS6C4at5ED",
+        },
+        // mini_blar extracted from BLIP to its own repo; consume its module directly.
+        .mini_blar = .{
+            .url = "git+https://github.com/pmarreck/mini_blar#e1dd0b8f30bfbb4281af3fcdc794a10b77a7bd34",
+            .hash = "mini_blar-3.0.0-3792nNzwAQD17kS0jQfrf-IQ9Z8qfQ-kj2mdEBPlOWuu",
         },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",
