@@ -389,9 +389,12 @@ pub fn detectFromEnv() Locale {
         return .en;
     }
     // LC_MESSAGES takes priority over LANG
-    const sources = [_][]const u8{ "LC_MESSAGES", "LANG" };
+    // 0.16: std.posix.getenv removed; std.c.getenv preserves the ?[]const u8
+    // semantics (borrowed pointer, no allocator). Wrap with std.mem.span.
+    const sources = [_][:0]const u8{ "LC_MESSAGES", "LANG" };
     for (sources) |name| {
-        if (std.posix.getenv(name)) |val| {
+        if (std.c.getenv(name.ptr)) |raw| {
+            const val = std.mem.span(raw);
             if (Locale.fromString(val)) |locale| {
                 return locale;
             }
@@ -654,10 +657,12 @@ pub fn getEnvLocalized(comptime env_var: EnvVar) ?[*:0]const u8 {
     }
     const aliases = comptime getEnvAliases(env_var);
     inline for (aliases) |alias| {
-        if (std.posix.getenv(alias)) |val| {
+        // 0.16: std.posix.getenv removed; std.c.getenv returns ?[*:0]const u8
+        // directly, which is what this fn already returns.
+        if (std.c.getenv(alias.ptr)) |raw| {
+            const val = std.mem.span(raw);
             if (val.len > 0) {
-                // POSIX guarantees getenv strings are null-terminated
-                return val.ptr;
+                return raw;
             }
         }
     }

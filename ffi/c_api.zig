@@ -437,11 +437,13 @@ export fn validate_get_max_memory() u64 {
     return @intCast(core.memory_budget.defaultBudget(@intCast(sys_mem)));
 }
 
-/// Cross-platform getenv that returns null on Windows where std.posix.getenv
-/// is unavailable.
+/// Cross-platform getenv that returns null on Windows.
+/// 0.16: std.posix.getenv removed; std.c.getenv preserves the borrowed-pointer
+/// semantics (no allocator needed).
 fn cross_platform_getenv(name: [:0]const u8) ?[]const u8 {
     if (@import("builtin").os.tag == .windows) return null;
-    return std.posix.getenv(name);
+    if (std.c.getenv(name.ptr)) |raw| return std.mem.span(raw);
+    return null;
 }
 
 fn getSystemMemory() u64 {
