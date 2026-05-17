@@ -72,8 +72,8 @@
             .hash = "libopenmpt-0.8.0-5ozQWMtEGQtgeboPzSxcC8bin2KmYCnF3KMOs2BT_w6f",
         },
         .cj5 = .{
-            .url = "git+https://github.com/pmarreck/cj5#532ca7b19f23a4d6f50c042b6eb109d2d03b634a",
-            .hash = "cj5-1.0.0-wO-emzjcAACw1lf_PjPeWK0G7Dvd0_bsGFPeJq2GDOW-",
+            .url = "git+https://github.com/pmarreck/cj5#b70941c4fe022df55a4177f696b0474ba3ef8125",
+            .hash = "cj5-1.0.0-wO-em1zcAADAeO71NFuI_Z-cmq7BT-0YSVegGQ2q8SCe",
         },
         .libraw = .{
             .url = "git+https://github.com/phcreery/LibRaw-zig#master",

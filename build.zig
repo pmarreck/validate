@@ -572,8 +572,9 @@ pub fn build(b: *std.Build) void {
         .name = "validate",
         .root_module = cli_c_mod,
     });
-    cli_c.linkLibrary(lib);
-    cli_c.linkLibrary(sqlite3_lib);
+    // 0.16: linkLibrary lives on Module, not Compile.
+    cli_c.root_module.linkLibrary(lib);
+    cli_c.root_module.linkLibrary(sqlite3_lib);
 
 
     const install_cli = b.addInstallArtifact(cli_c, .{});
