@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const heap = @import("heap.zig");
+const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
@@ -41,9 +42,9 @@ pub fn hasResourceFork(path: []const u8) bool {
 
 	// Try to open the resource fork - handle both absolute and relative paths
 	const file = if (std.fs.path.isAbsolute(rsrc_path))
-		std.fs.cwd().openFile(rsrc_path, .{}) catch return false
+		runtime.openFile(rsrc_path, .{}) catch return false
 	else
-		std.fs.cwd().openFile(rsrc_path, .{}) catch return false;
+		runtime.openFile(rsrc_path, .{}) catch return false;
 	defer file.close();
 
 	const stat = file.stat() catch return false;
@@ -61,9 +62,9 @@ pub fn getResourceForkSize(path: []const u8) u64 {
 
 	// Handle both absolute and relative paths
 	const file = if (std.fs.path.isAbsolute(rsrc_path))
-		std.fs.cwd().openFile(rsrc_path, .{}) catch return 0
+		runtime.openFile(rsrc_path, .{}) catch return 0
 	else
-		std.fs.cwd().openFile(rsrc_path, .{}) catch return 0;
+		runtime.openFile(rsrc_path, .{}) catch return 0;
 	defer file.close();
 
 	const stat = file.stat() catch return 0;
@@ -80,7 +81,7 @@ pub fn readResourceFork(allocator: Allocator, path: []const u8) !?[]u8 {
 	var rsrc_path_buf: [std.fs.max_path_bytes]u8 = undefined;
 	const rsrc_path = std.fmt.bufPrint(&rsrc_path_buf, "{s}/..namedfork/rsrc", .{path}) catch return null;
 
-	const file = std.fs.cwd().openFile(rsrc_path, .{}) catch return null;
+	const file = runtime.openFile(rsrc_path, .{}) catch return null;
 	defer file.close();
 
 	const stat = file.stat() catch return null;

@@ -80,6 +80,7 @@ const flac_decoder = @import("flac_decoder.zig");
 
 // Import JPEG validator for libjpeg-turbo deep validation
 const jpeg_validator = @import("jpeg_validator.zig");
+const runtime = @import("runtime.zig");
 
 // Import JPEG Lossless decoder for DICOM SOF3 validation (Pure Zig)
 const jpeg_lossless_decoder = @import("jpeg_lossless_decoder.zig");
@@ -362,12 +363,12 @@ pub fn detectBundleType(path: []const u8) BundleType {
         // If not, it might be an Erlang .app file or other non-bundle .app.
         var contents_buf: [std.fs.max_path_bytes]u8 = undefined;
         const contents_path = std.fmt.bufPrint(&contents_buf, "{s}/Contents", .{path}) catch return .none;
-        if (std.fs.cwd().access(contents_path, .{})) |_| {
+        if (runtime.access(contents_path, .{})) |_| {
             return .macos_app;
         } else |_| {
             // Also check for WrappedBundle (iOS Catalyst)
             const wrapped = std.fmt.bufPrint(&contents_buf, "{s}/WrappedBundle", .{path}) catch return .none;
-            if (std.fs.cwd().access(wrapped, .{})) |_| {
+            if (runtime.access(wrapped, .{})) |_| {
                 return .macos_app;
             } else |_| {
                 return .none; // Not a macOS bundle — probably Erlang .app
@@ -1896,7 +1897,7 @@ const non_zero_offset_sigs: [non_zero_offset_sig_count]u8 = blk: {
 
 /// Extended format detection for formats that need more than magic bytes.
 /// Returns format based on deeper inspection of header content.
-fn detectExtendedFormat(header: []const u8, file: std.fs.File) FileFormat {
+fn detectExtendedFormat(header: []const u8, file: std.Io.File) FileFormat {
     // RIFF-based formats: WebP, AVI, WAV
     if (header.len >= 12 and std.mem.eql(u8, header[0..4], "RIFF")) {
         if (std.mem.eql(u8, header[8..12], "WEBP")) {
@@ -1996,7 +1997,7 @@ fn detectExtendedFormat(header: []const u8, file: std.fs.File) FileFormat {
 }
 
 /// Detect TIFF subformat (DNG, NEF, ARW, or plain TIFF).
-fn detectTiffSubformat(file: std.fs.File, is_le: bool) FileFormat {
+fn detectTiffSubformat(file: std.Io.File, is_le: bool) FileFormat {
     // Read more of the file to check for RAW markers
     file.seekTo(0) catch return .tiff;
     var buffer: [1024]u8 = undefined;
@@ -2068,7 +2069,7 @@ fn findTiffTag(buffer: []const u8, len: usize, tag_id: u16, is_le: bool) bool {
 }
 
 /// Detect Matroska subformat (MKV vs WebM).
-fn detectMatroskaSubformat(file: std.fs.File) FileFormat {
+fn detectMatroskaSubformat(file: std.Io.File) FileFormat {
     file.seekTo(0) catch return .mkv;
     var buffer: [4096]u8 = undefined;
     const bytes_read = file.read(&buffer) catch return .mkv;
@@ -2663,7 +2664,7 @@ fn detectMimeWrapper(data: []const u8) MimeWrapperResult {
 /// Find the end of embedded content in a MIME-wrapped file.
 /// Looks for closing MIME boundary (------=... followed by --) near end of file.
 /// Returns the offset where the embedded content ends.
-fn findMimeContentEnd(file: std.fs.File, content_start: usize, file_size: u64) !u64 {
+fn findMimeContentEnd(file: std.Io.File, content_start: usize, file_size: u64) !u64 {
     // Search backwards from end of file for closing MIME boundary
     // Closing boundaries look like: \r\n------=_Part_xxx--\r\n
     const search_size: u64 = 4096;
@@ -4673,7 +4674,7 @@ fn debugLog(comptime fmt: []const u8, args: anytype) void {
     // Use fixed path for reliability (TMPDIR varies per process on macOS)
     const log_path = "/tmp/es_format_debug.log";
     // Create file if it doesn't exist, otherwise append
-    const file = std.fs.cwd().createFile(log_path, .{
+    const file = runtime.createFile(log_path, .{
         .truncate = false,
     }) catch return;
     defer file.close();
@@ -4963,27 +4964,27 @@ test "looksLikeCp437 detects box-drawing characters" {
 // ============ Font Validators (TTF/OTF/WOFF/WOFF2) ============
 
 /// Validate TrueType font file with table checksum verification.
-fn validateTtf(allocator: Allocator, file: std.fs.File) ValidationResult {
+fn validateTtf(allocator: Allocator, file: std.Io.File) ValidationResult {
     return validateFontFile(allocator, file, .ttf);
 }
 
 /// Validate OpenType (CFF) font file with table checksum verification.
-fn validateOtf(allocator: Allocator, file: std.fs.File) ValidationResult {
+fn validateOtf(allocator: Allocator, file: std.Io.File) ValidationResult {
     return validateFontFile(allocator, file, .otf);
 }
 
 /// Validate WOFF container.
-fn validateWoff(allocator: Allocator, file: std.fs.File) ValidationResult {
+fn validateWoff(allocator: Allocator, file: std.Io.File) ValidationResult {
     return validateFontFile(allocator, file, .woff);
 }
 
 /// Validate WOFF2 container.
-fn validateWoff2(allocator: Allocator, file: std.fs.File) ValidationResult {
+fn validateWoff2(allocator: Allocator, file: std.Io.File) ValidationResult {
     return validateFontFile(allocator, file, .woff2);
 }
 
 /// Validate Type1 (PFB/PFA) font.
-fn validateType1Font(allocator: Allocator, file: std.fs.File) ValidationResult {
+fn validateType1Font(allocator: Allocator, file: std.Io.File) ValidationResult {
     // Get file size
     const stat = file.stat() catch {
         return ValidationResult.invalidCode(.type1, .failed_to_stat, "font file");
@@ -5027,7 +5028,7 @@ fn validateType1Font(allocator: Allocator, file: std.fs.File) ValidationResult {
 }
 
 /// Common font validation implementation.
-fn validateFontFile(allocator: Allocator, file: std.fs.File, format: FileFormat) ValidationResult {
+fn validateFontFile(allocator: Allocator, file: std.Io.File, format: FileFormat) ValidationResult {
     // Get file size
     const stat = file.stat() catch {
         return ValidationResult.invalidCode(format, .failed_to_stat, "font file");
@@ -5086,7 +5087,7 @@ fn validateFontFile(allocator: Allocator, file: std.fs.File, format: FileFormat)
 /// If the file is valid UTF-8 text, returns ok with charset validation.
 /// This provides some level of integrity checking for text files that don't match
 /// any known format signatures.
-fn validateUnknownWithUtf8Fallback(file: std.fs.File) ValidationResult {
+fn validateUnknownWithUtf8Fallback(file: std.Io.File) ValidationResult {
     // Read first chunk of file to check for UTF-8 or binary STL
     const sample_size: usize = 8192;
     var buffer: [sample_size]u8 = undefined;
@@ -5319,7 +5320,7 @@ pub const FormatValidator = struct {
         }
 
         // Check if path is a directory (but not a known bundle)
-        const stat = std.fs.cwd().statFile(path) catch {
+        const stat = runtime.statFile(path) catch {
             return ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
         };
         if (stat.kind == .directory) {
@@ -5328,7 +5329,7 @@ pub const FormatValidator = struct {
             const bagit_txt_path = std.fmt.bufPrint(&bagit_path_buf, "{s}/bagit.txt", .{path}) catch {
                 return ValidationResult.invalidCode(.unknown, .unknown_element, "directory type (not a recognized bundle)");
             };
-            if (std.fs.cwd().access(bagit_txt_path, .{})) |_| {
+            if (runtime.access(bagit_txt_path, .{})) |_| {
                 return ValidationResult.okWithDepth(.bagit, .structural);
             } else |_| {}
 
@@ -5337,7 +5338,7 @@ pub const FormatValidator = struct {
         }
 
         // Open the file
-        const file = std.fs.cwd().openFile(path, .{}) catch {
+        const file = runtime.openFile(path, .{}) catch {
             return ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
         };
         defer file.close();
@@ -5386,7 +5387,7 @@ pub const FormatValidator = struct {
             };
             if (ext_is_validatable_text) {
                 // Reopen and validate with extension-detected format
-                const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+                const reopen_file = runtime.openFile(path, .{}) catch {
                     result = ValidationResult.ok(ext_format);
                     return result;
                 };
@@ -5406,7 +5407,7 @@ pub const FormatValidator = struct {
                 // For extension-only formats that lack magic bytes, trust the
                 // extension and validate with the format-specific validator.
                 if (no_magic_set.contains(ext_format) and ext_format.hasValidator()) {
-                    const reopen_ext = std.fs.cwd().openFile(path, .{}) catch {
+                    const reopen_ext = runtime.openFile(path, .{}) catch {
                         result = ValidationResult.ok(ext_format);
                         return result;
                     };
@@ -5501,7 +5502,7 @@ pub const FormatValidator = struct {
 
             if (is_binary_format) {
                 // Read file content for secondary signature detection
-                const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+                const reopen_file = runtime.openFile(path, .{}) catch {
                     return result;
                 };
                 defer reopen_file.close();
@@ -5622,7 +5623,7 @@ pub const FormatValidator = struct {
             };
             if (is_text_format and ext_is_text and result.format != ext_format) {
                 // Extension wins for text formats - re-validate with correct format
-                const reopen_file = std.fs.cwd().openFile(path, .{}) catch {
+                const reopen_file = runtime.openFile(path, .{}) catch {
                     // Couldn't reopen, just use extension format
                     result.format = ext_format;
                     return result;
@@ -5707,7 +5708,7 @@ pub const FormatValidator = struct {
         }
         if (expected_format == .song and result.format == .zip) {
             // Studio One .song files must contain metainfo.xml — check before promoting
-            const song_file = std.fs.cwd().openFile(path, .{}) catch null;
+            const song_file = runtime.openFile(path, .{}) catch null;
             if (song_file) |sf| {
                 defer sf.close();
                 var song_src = FileSource.fromFile(sf);
@@ -5889,7 +5890,7 @@ pub const FormatValidator = struct {
                 // the source — and those formats may refer to directories where
                 // open() would succeed on the dir handle and then mmap would panic.
                 // Gate opening on whether the path is a regular file.
-                const is_regular_file = if (std.fs.cwd().statFile(path)) |st|
+                const is_regular_file = if (runtime.statFile(path)) |st|
                     st.kind == .file
                 else |_| false;
                 var source = if (is_regular_file)
@@ -5947,7 +5948,7 @@ pub const FormatValidator = struct {
     /// Returns null if extraction fails (caller should fall back to structural).
     fn validateMimeWrappedDeep(allocator: Allocator, path: []const u8, format: FileFormat) ?ValidationResult {
         // Open the original file
-        const file = std.fs.cwd().openFile(path, .{}) catch return null;
+        const file = runtime.openFile(path, .{}) catch return null;
         defer file.close();
 
         const file_size = file.getEndPos() catch return null;
@@ -6487,13 +6488,13 @@ pub const FormatValidator = struct {
             return ValidationResult.invalidWithDepth(.macos_app, "Path too long", .structural);
         };
 
-        if (std.fs.cwd().access(info_plist_path, .{})) |_| {
+        if (runtime.access(info_plist_path, .{})) |_| {
             // Modern bundle — also require Contents/MacOS
             const macos_dir_path = std.fmt.bufPrint(&path_buf, "{s}/Contents/MacOS", .{path}) catch {
                 return ValidationResult.invalidWithDepth(.macos_app, "Path too long", .structural);
             };
 
-            std.fs.cwd().access(macos_dir_path, .{}) catch {
+            runtime.access(macos_dir_path, .{}) catch {
                 return ValidationResult.invalidCodeWithDepth(.macos_app, .missing, "Contents/MacOS directory", .structural);
             };
 
@@ -6505,7 +6506,7 @@ pub const FormatValidator = struct {
             return ValidationResult.invalidWithDepth(.macos_app, "Path too long", .structural);
         };
 
-        std.fs.cwd().access(flat_info_path, .{}) catch {
+        runtime.access(flat_info_path, .{}) catch {
             return ValidationResult.invalidCodeWithDepth(.macos_app, .missing, "Contents/Info.plist or Info.plist", .structural);
         };
 
@@ -6525,7 +6526,7 @@ pub const FormatValidator = struct {
         };
 
         // Try Versions first
-        if (std.fs.cwd().access(versions_path, .{})) |_| {
+        if (runtime.access(versions_path, .{})) |_| {
             return ValidationResult.okWithDepth(.macos_framework, .structural);
         } else |_| {}
 
@@ -6534,7 +6535,7 @@ pub const FormatValidator = struct {
             return ValidationResult.invalidWithDepth(.macos_framework, "Path too long", .structural);
         };
 
-        if (std.fs.cwd().access(headers_path, .{})) |_| {
+        if (runtime.access(headers_path, .{})) |_| {
             return ValidationResult.okWithDepth(.macos_framework, .structural);
         } else |_| {}
 
@@ -6543,7 +6544,7 @@ pub const FormatValidator = struct {
             return ValidationResult.invalidWithDepth(.macos_framework, "Path too long", .structural);
         };
 
-        if (std.fs.cwd().access(resources_path, .{})) |_| {
+        if (runtime.access(resources_path, .{})) |_| {
             return ValidationResult.okWithDepth(.macos_framework, .structural);
         } else |_| {
             return ValidationResult.invalidCodeWithDepth(.macos_framework, .missing, "Versions, Headers, or Resources directory", .structural);
@@ -6561,7 +6562,7 @@ pub const FormatValidator = struct {
             return ValidationResult.invalidWithDepth(.macos_bundle, "Path too long", .structural);
         };
 
-        if (std.fs.cwd().access(info_plist_path, .{})) |_| {
+        if (runtime.access(info_plist_path, .{})) |_| {
             return ValidationResult.okWithDepth(.macos_bundle, .structural);
         } else |_| {}
 
@@ -6570,7 +6571,7 @@ pub const FormatValidator = struct {
             return ValidationResult.invalidWithDepth(.macos_bundle, "Path too long", .structural);
         };
 
-        if (std.fs.cwd().access(flat_info_path, .{})) |_| {
+        if (runtime.access(flat_info_path, .{})) |_| {
             return ValidationResult.okWithDepth(.macos_bundle, .structural);
         } else |_| {
             return ValidationResult.invalidCodeWithDepth(.macos_bundle, .missing, "Info.plist", .structural);
@@ -6588,13 +6589,13 @@ pub const FormatValidator = struct {
         const alternatives_path = std.fmt.bufPrint(&path_buf, "{s}/Alternatives", .{path}) catch {
             return ValidationResult.invalidWithDepth(.band, "Path too long", .structural);
         };
-        const has_alternatives = if (std.fs.cwd().access(alternatives_path, .{})) |_| true else |_| false;
+        const has_alternatives = if (runtime.access(alternatives_path, .{})) |_| true else |_| false;
 
         // Check for older structure: projectData file at bundle root
         const project_data_path = std.fmt.bufPrint(&path_buf, "{s}/projectData", .{path}) catch {
             return ValidationResult.invalidWithDepth(.band, "Path too long", .structural);
         };
-        const has_project_data = if (std.fs.cwd().access(project_data_path, .{})) |_| true else |_| false;
+        const has_project_data = if (runtime.access(project_data_path, .{})) |_| true else |_| false;
 
         if (!has_alternatives and !has_project_data) {
             return ValidationResult.invalidCodeWithDepth(.band, .missing, "projectData or Alternatives directory", .structural);
@@ -6602,7 +6603,7 @@ pub const FormatValidator = struct {
 
         // If projectData exists, verify it looks like a plist (binary or XML)
         if (has_project_data) {
-            const pd_file = std.fs.cwd().openFile(project_data_path, .{}) catch {
+            const pd_file = runtime.openFile(project_data_path, .{}) catch {
                 return ValidationResult.invalidCodeWithDepth(.band, .failed_to_open, "projectData", .structural);
             };
             defer pd_file.close();
@@ -6624,7 +6625,7 @@ pub const FormatValidator = struct {
     }
 
     /// Validate using an already-open file handle.
-    pub fn validateFileHandle(self: *Self, file: std.fs.File) ValidationResult {
+    pub fn validateFileHandle(self: *Self, file: std.Io.File) ValidationResult {
         if (!self.enabled) {
             return ValidationResult.unknown();
         }
@@ -7179,7 +7180,7 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
 
 /// Validate Erlang/Elixir BEAM bytecode files.
 /// Deep-validates compressed chunks (LitT zlib, Dbgi ETF-compressed) to catch bitrot.
-fn validateBeam(allocator: Allocator, file: std.fs.File) ValidationResult {
+fn validateBeam(allocator: Allocator, file: std.Io.File) ValidationResult {
     const stat = file.stat() catch {
         return ValidationResult.invalidCode(.beam, .failed_to_stat, "file");
     };
@@ -7643,7 +7644,7 @@ test "FormatValidator deep validates real OLE2 XLS from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth XLS file (OLE2/CFBF format)
-    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.xls", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/ole2/sample.xls", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
@@ -7667,7 +7668,7 @@ test "FormatValidator deep validates real OLE2 PPT from ground truth" {
     const allocator = std.testing.allocator;
 
     // Ground truth PPT file (OLE2/CFBF format)
-    const file = std.fs.cwd().openFile("ground_truth_examples/ole2/sample.ppt", .{}) catch |err| {
+    const file = runtime.openFile("ground_truth_examples/ole2/sample.ppt", .{}) catch |err| {
         if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
         return err;
     };
@@ -8515,10 +8516,10 @@ test "git_repository: real ground truth sample validates at full depth" {
     const sample_dir = "ground_truth_examples/git_repository/sample";
 
     // Check if tarball exists
-    std.fs.cwd().access(tar_path, .{}) catch return error.SkipZigTest;
+    runtime.access(tar_path, .{}) catch return error.SkipZigTest;
 
     // Untar if sample/ doesn't exist yet
-    std.fs.cwd().access(sample_dir, .{}) catch {
+    runtime.access(sample_dir, .{}) catch {
         // Extract using system tar (available on all platforms we target)
         var child = std.process.Child.init(
             &.{ "tar", "xzf", tar_path, "-C", "ground_truth_examples/git_repository/" },
@@ -8531,7 +8532,7 @@ test "git_repository: real ground truth sample validates at full depth" {
 
     // Build path to .git inside the extracted sample
     const git_path = "ground_truth_examples/git_repository/sample/.git";
-    std.fs.cwd().access(git_path, .{}) catch return error.SkipZigTest;
+    runtime.access(git_path, .{}) catch return error.SkipZigTest;
 
     const full_path = try std.fs.cwd().realpathAlloc(allocator, git_path);
     defer allocator.free(full_path);

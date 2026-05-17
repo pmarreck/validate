@@ -56,9 +56,15 @@ pub fn io() std.Io {
 // Mechanical sed targets across the codebase.
 
 /// 0.16 replacement for `std.fs.cwd().openFile(path, opts)`.
-pub fn openFile(path: []const u8, opts: std.Io.File.OpenOptions) std.Io.File.OpenError!std.Io.File {
+pub fn openFile(path: []const u8, opts: std.Io.Dir.OpenFileOptions) std.Io.File.OpenError!std.Io.File {
     ensureInit();
     return std.Io.Dir.cwd().openFile(g_io.?, path, opts);
+}
+
+/// 0.16 replacement for `std.fs.cwd().createFile(path, opts)`.
+pub fn createFile(path: []const u8, opts: std.Io.Dir.CreateFileOptions) std.Io.File.OpenError!std.Io.File {
+    ensureInit();
+    return std.Io.Dir.cwd().createFile(g_io.?, path, opts);
 }
 
 /// 0.16 replacement for `std.fs.cwd().openDir(path, opts)`.

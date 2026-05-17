@@ -141,6 +141,12 @@ fn processFile(gpa: Allocator, io: Io, path: []const u8, opts: *const Options) !
 
     if (edits.items.len == 0) return .{ .edits_count = 0 };
 
+    // If any pattern referenced the runtime module, make sure the file
+    // imports it. Skip if the import is already present.
+    if (needsRuntimeImport(edits.items) and !hasRuntimeImport(source_z)) {
+        try insertRuntimeImport(gpa, source_z, opts, &edits);
+    }
+
     // Sort by start descending so back-to-front application doesn't shift positions.
     std.sort.block(Edit, edits.items, {}, struct {
         fn lt(_: void, a: Edit, b: Edit) bool {
@@ -194,6 +200,49 @@ fn byteOffsetToLine(source: []const u8, offset: u32) u32 {
         if (source[i] == '\n') line += 1;
     }
     return line;
+}
+
+// ─── Auto-import handling ────────────────────────────────────────────────
+
+fn needsRuntimeImport(edits: []const Edit) bool {
+    for (edits) |e| {
+        if (std.mem.indexOf(u8, e.replacement, "runtime.") != null) return true;
+    }
+    return false;
+}
+
+fn hasRuntimeImport(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "const runtime = @import") != null or
+        std.mem.indexOf(u8, source, "core.runtime") != null;
+}
+
+/// Insert `const runtime = @import("runtime.zig");` after the last top-level
+/// `@import(...)` we can find within the first 4 KB. Brittle-but-works: relies
+/// on the conventional "imports clustered at the top of the file" layout.
+fn insertRuntimeImport(
+    gpa: Allocator,
+    source: [:0]const u8,
+    opts: *const Options,
+    edits: *std.ArrayListUnmanaged(Edit),
+) !void {
+    _ = opts;
+    const search_limit = @min(source.len, 4096);
+    var last_line_end: ?u32 = null;
+    var search_start: usize = 0;
+    while (std.mem.indexOfPos(u8, source, search_start, "@import(")) |pos| {
+        if (pos >= search_limit) break;
+        const nl = std.mem.indexOfScalarPos(u8, source, pos, '\n') orelse break;
+        last_line_end = @intCast(nl + 1);
+        search_start = nl + 1;
+    }
+    if (last_line_end) |pos| {
+        try edits.append(gpa, .{
+            .start = pos,
+            .end = pos,
+            .replacement = try gpa.dupe(u8, "const runtime = @import(\"runtime.zig\");\n"),
+            .pattern_name = "auto-insert: const runtime = @import(\"runtime.zig\")",
+        });
+    }
 }
 
 // ─── Pattern matching ────────────────────────────────────────────────────

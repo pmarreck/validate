@@ -22,6 +22,7 @@
 const std = @import("std");
 const heap = @import("heap.zig");
 const builtin = @import("builtin");
+const runtime = @import("runtime.zig");
 const Allocator = std.mem.Allocator;
 const Sha1 = std.crypto.hash.Sha1;
 
@@ -299,7 +300,7 @@ fn validateWithGitFsck(allocator: Allocator, repo_path: []const u8) ?GitValidati
 /// Validate a loose git object file.
 /// Returns true if SHA-1 of decompressed content matches the expected hash.
 pub fn validateLooseObject(allocator: Allocator, object_path: []const u8, expected_hash: *const [40]u8) !bool {
-    const file = std.fs.cwd().openFile(object_path, .{}) catch |err| {
+    const file = runtime.openFile(object_path, .{}) catch |err| {
         return err;
     };
     defer file.close();
@@ -382,7 +383,7 @@ pub fn hashFromLooseObjectPath(path: []const u8) ?[40]u8 {
 pub fn validatePackFile(allocator: Allocator, pack_path: []const u8) !bool {
     _ = allocator;
 
-    const file = try std.fs.cwd().openFile(pack_path, .{});
+    const file = try runtime.openFile(pack_path, .{});
     defer file.close();
 
     const file_size = try file.getEndPos();
@@ -438,7 +439,7 @@ pub fn validatePackFile(allocator: Allocator, pack_path: []const u8) !bool {
 pub fn validatePackIndex(allocator: Allocator, idx_path: []const u8, pack_hash: ?*const [20]u8) !bool {
     _ = allocator;
 
-    const file = try std.fs.cwd().openFile(idx_path, .{});
+    const file = try runtime.openFile(idx_path, .{});
     defer file.close();
 
     const file_size = try file.getEndPos();
@@ -496,7 +497,7 @@ pub fn validatePackIndex(allocator: Allocator, idx_path: []const u8, pack_hash: 
 pub fn validateIndexFile(allocator: Allocator, index_path: []const u8) !bool {
     _ = allocator;
 
-    const file = std.fs.cwd().openFile(index_path, .{}) catch |err| {
+    const file = runtime.openFile(index_path, .{}) catch |err| {
         if (err == error.FileNotFound) return true; // No index is valid (empty repo)
         return err;
     };
@@ -549,7 +550,7 @@ pub fn validateRepository(allocator: Allocator, repo_path: []const u8) !GitValid
     const git_dir = try std.fmt.bufPrint(&git_dir_buf, "{s}/.git", .{repo_path});
 
     // Check .git directory exists
-    std.fs.cwd().access(git_dir, .{}) catch {
+    runtime.access(git_dir, .{}) catch {
         return GitValidationResult.invalid("Not a git repository (no .git directory)");
     };
 
@@ -577,7 +578,7 @@ fn validateRepositoryChecksumOnly(allocator: Allocator, repo_path: []const u8, g
     var objects_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const objects_dir = try std.fmt.bufPrint(&objects_dir_buf, "{s}/objects", .{git_dir});
 
-    var dir = std.fs.cwd().openDir(objects_dir, .{ .iterate = true }) catch {
+    var dir = runtime.openDir(objects_dir, .{ .iterate = true }) catch {
         return GitValidationResult.invalid("Cannot open .git/objects");
     };
     defer dir.close();
@@ -592,7 +593,7 @@ fn validateRepositoryChecksumOnly(allocator: Allocator, repo_path: []const u8, g
         var subdir_buf: [std.fs.max_path_bytes]u8 = undefined;
         const subdir_path = try std.fmt.bufPrint(&subdir_buf, "{s}/{s}", .{ objects_dir, entry.name });
 
-        var subdir = std.fs.cwd().openDir(subdir_path, .{ .iterate = true }) catch continue;
+        var subdir = runtime.openDir(subdir_path, .{ .iterate = true }) catch continue;
         defer subdir.close();
 
         var subdir_iter = subdir.iterate();
@@ -624,7 +625,7 @@ fn validateRepositoryChecksumOnly(allocator: Allocator, repo_path: []const u8, g
     var pack_dir_buf: [std.fs.max_path_bytes]u8 = undefined;
     const pack_dir = try std.fmt.bufPrint(&pack_dir_buf, "{s}/objects/pack", .{git_dir});
 
-    if (std.fs.cwd().openDir(pack_dir, .{ .iterate = true })) |pack_dir_handle_const| {
+    if (runtime.openDir(pack_dir, .{ .iterate = true })) |pack_dir_handle_const| {
         var pack_dir_handle = pack_dir_handle_const;
         defer pack_dir_handle.close();
 
