@@ -1058,11 +1058,11 @@ test "IFF deep validation - valid ILBM ByteRun1 sample" {
 test "IFF deep validation - corrupted ByteRun1 stream detected" {
 	// Create a corrupted copy of the sample file
 	const src = runtime.openFile("ground_truth_examples/iff/sample.iff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-	defer src.close();
-	const file_size = src.getEndPos() catch return;
+	defer src.close(runtime.io());
+	const file_size = src.length(runtime.io()) catch return;
 	const data = testing.allocator.alloc(u8, file_size) catch return;
 	defer testing.allocator.free(data);
-	_ = src.read(data) catch return;
+	_ = src.readPositionalAll(runtime.io(), data, 0) catch return;
 
 	// Corrupt bytes in the BODY data area (offset 104 = BODY header at 96 + 8)
 	// The BODY data starts at offset 104 in our sample
@@ -1091,11 +1091,11 @@ test "IFF deep validation - corrupted ByteRun1 stream detected" {
 
 test "IFF deep validation - invalid chunk ID detected" {
 	const src = runtime.openFile("ground_truth_examples/iff/sample.iff", .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
-	defer src.close();
-	const file_size = src.getEndPos() catch return;
+	defer src.close(runtime.io());
+	const file_size = src.length(runtime.io()) catch return;
 	const data = testing.allocator.alloc(u8, file_size) catch return;
 	defer testing.allocator.free(data);
-	_ = src.read(data) catch return;
+	_ = src.readPositionalAll(runtime.io(), data, 0) catch return;
 
 	// Corrupt a chunk ID to contain non-printable characters
 	// BMHD chunk ID starts at offset 12

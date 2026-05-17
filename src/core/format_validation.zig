@@ -8228,7 +8228,7 @@ test "validatePngFromBuffer matches validatePng file result" {
 
     // Validate via file
     const reopen = try tmp_dir.dir.openFile(runtime.io(), "test.png", .{});
-    defer reopen.close();
+    defer reopen.close(runtime.io());
     var test_src = file_source.FileSource.fromFile(reopen);
     const file_result = image_validators.validatePng(&test_src);
 
@@ -8270,7 +8270,7 @@ test "FormatValidator with allocator uses buffer-based validation" {
 
     // Validate via file handle - should use buffer-based validation internally
     const reopen = try tmp_dir.dir.openFile(runtime.io(), "test.png", .{});
-    defer reopen.close();
+    defer reopen.close(runtime.io());
     const result = validator.validateFileHandle(reopen);
 
     try std.testing.expectEqual(FileFormat.png, result.format);
@@ -8477,13 +8477,12 @@ test "git_repository: real ground truth sample validates at full depth" {
     // Untar if sample/ doesn't exist yet
     runtime.access(sample_dir, .{}) catch {
         // Extract using system tar (available on all platforms we target)
-        var child = std.process.Child.init(
-            &.{ "tar", "xzf", tar_path, "-C", "ground_truth_examples/git_repository/" },
-            allocator,
-        );
-        child.spawn() catch return error.SkipZigTest;
-        const term = child.wait() catch return error.SkipZigTest;
-        if (term.exited != 0) return error.SkipZigTest;
+        const run_result = std.process.run(allocator, runtime.io(), .{
+            .argv = &.{ "tar", "xzf", tar_path, "-C", "ground_truth_examples/git_repository/" },
+        }) catch return error.SkipZigTest;
+        defer allocator.free(run_result.stdout);
+        defer allocator.free(run_result.stderr);
+        if (run_result.term != .exited or run_result.term.exited != 0) return error.SkipZigTest;
     };
 
     // Build path to .git inside the extracted sample

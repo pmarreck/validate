@@ -437,7 +437,7 @@ test "ThreadPool basic functionality" {
 
     const Context = struct {
         results: *usize,
-        mutex: *std.Thread.Mutex,
+        mutex: *std.Io.Mutex,
     };
 
     var ctx = Context{

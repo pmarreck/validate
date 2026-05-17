@@ -500,7 +500,7 @@ test "MP3 validation rejects garbage data" {
     defer tmp_dir.cleanup();
 
     const file = tmp_dir.dir.createFile(runtime.io(), "garbage.mp3", .{ .read = true }) catch unreachable;
-    _ = file.write(&[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 }) catch unreachable;
+    file.writePositionalAll(runtime.io(), &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 }, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "garbage.mp3") catch unreachable;
@@ -528,7 +528,7 @@ test "MP3 validation accepts valid frame without CRC" {
     @memset(frame[4..], 0);
 
     const file = tmp_dir.dir.createFile(runtime.io(), "valid_nocrc.mp3", .{ .read = true }) catch unreachable;
-    _ = file.write(&frame) catch unreachable;
+    file.writePositionalAll(runtime.io(), &frame, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "valid_nocrc.mp3") catch unreachable;
@@ -576,7 +576,7 @@ test "MP3 validation accepts valid frame with correct CRC" {
     frame[5] = @truncate(crc);
 
     const file = tmp_dir.dir.createFile(runtime.io(), "valid_crc.mp3", .{ .read = true }) catch unreachable;
-    _ = file.write(&frame) catch unreachable;
+    file.writePositionalAll(runtime.io(), &frame, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "valid_crc.mp3") catch unreachable;
@@ -660,7 +660,7 @@ test "MP3 Layer I CRC verification with valid frame" {
     frame[5] = @truncate(computed);
 
     const file = tmp_dir.dir.createFile(runtime.io(), "layer1_crc.mp3", .{ .read = true }) catch unreachable;
-    _ = file.write(&frame) catch unreachable;
+    file.writePositionalAll(runtime.io(), &frame, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "layer1_crc.mp3") catch unreachable;
@@ -693,7 +693,7 @@ test "MP3 Layer I CRC detects corruption" {
     frame[10] = 0xAA;
 
     const file = tmp_dir.dir.createFile(runtime.io(), "layer1_corrupt.mp3", .{ .read = true }) catch unreachable;
-    _ = file.write(&frame) catch unreachable;
+    file.writePositionalAll(runtime.io(), &frame, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "layer1_corrupt.mp3") catch unreachable;
@@ -732,7 +732,7 @@ test "MP3 Layer II CRC verification with valid frame" {
     frame[5] = @truncate(computed);
 
     const file = tmp_dir.dir.createFile(runtime.io(), "layer2_crc.mp3", .{ .read = true }) catch unreachable;
-    _ = file.write(&frame) catch unreachable;
+    file.writePositionalAll(runtime.io(), &frame, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "layer2_crc.mp3") catch unreachable;
@@ -765,7 +765,7 @@ test "MP3 Layer II CRC detects corruption" {
     frame[20] = 0xFF;
 
     const file = tmp_dir.dir.createFile(runtime.io(), "layer2_corrupt.mp3", .{ .read = true }) catch unreachable;
-    _ = file.write(&frame) catch unreachable;
+    file.writePositionalAll(runtime.io(), &frame, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "layer2_corrupt.mp3") catch unreachable;
@@ -803,7 +803,7 @@ test "MP3 validation detects corrupted CRC" {
     @memset(frame[38..], 0);
 
     const file = tmp_dir.dir.createFile(runtime.io(), "corrupt_crc.mp3", .{ .read = true }) catch unreachable;
-    _ = file.write(&frame) catch unreachable;
+    file.writePositionalAll(runtime.io(), &frame, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "corrupt_crc.mp3") catch unreachable;

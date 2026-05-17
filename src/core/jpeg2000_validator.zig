@@ -277,7 +277,10 @@ test "validateJpeg2000 on real JP2 container file" {
     };
     defer file.close(runtime.io());
 
-    const data = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return;
+    const __sz_data = file.length(runtime.io()) catch return;
+    if (__sz_data > 10 * 1024 * 1024) return;
+    const data = allocator.alloc(u8, @intCast(__sz_data)) catch return;
+    _ = file.readPositionalAll(runtime.io(), data, 0) catch return;
     defer allocator.free(data);
 
     // Verify detection works
@@ -302,7 +305,10 @@ test "validateJpeg2000 on real J2K codestream file" {
     };
     defer file.close(runtime.io());
 
-    const data = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return;
+    const __sz_data = file.length(runtime.io()) catch return;
+    if (__sz_data > 10 * 1024 * 1024) return;
+    const data = allocator.alloc(u8, @intCast(__sz_data)) catch return;
+    _ = file.readPositionalAll(runtime.io(), data, 0) catch return;
     defer allocator.free(data);
 
     // Verify detection works

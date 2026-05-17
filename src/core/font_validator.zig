@@ -1487,11 +1487,11 @@ test "validateWoff2 validates ground truth sample" {
 	};
 	defer file.close(runtime.io());
 
-	const stat = file.stat() catch return;
+	const stat = file.stat(runtime.io()) catch return;
 	const data = std.testing.allocator.alloc(u8, @intCast(stat.size)) catch return;
 	defer std.testing.allocator.free(data);
 
-	const bytes_read = file.readAll(data) catch return;
+	const bytes_read = file.readPositionalAll(runtime.io(), data, 0) catch return;
 	if (bytes_read != stat.size) return;
 
 	const result = validateWoff2WithAllocator(data[0..bytes_read], std.testing.allocator);
@@ -1507,11 +1507,11 @@ test "validateWoff2 detects corruption in ground truth sample" {
 	const file = runtime.openFile(path, .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
 	defer file.close(runtime.io());
 
-	const stat = file.stat() catch return;
+	const stat = file.stat(runtime.io()) catch return;
 	const data = std.testing.allocator.alloc(u8, @intCast(stat.size)) catch return;
 	defer std.testing.allocator.free(data);
 
-	const bytes_read = file.readAll(data) catch return;
+	const bytes_read = file.readPositionalAll(runtime.io(), data, 0) catch return;
 	if (bytes_read != stat.size) return;
 
 	// Corrupt the compressed data at multiple locations to ensure detection
@@ -1546,10 +1546,10 @@ test "validateTtfOtf accepts Apple legacy 'true' sfnt magic" {
 		return err;
 	};
 	defer file.close(runtime.io());
-	const stat = try file.stat();
+	const stat = try file.stat(runtime.io());
 	const data = try std.testing.allocator.alloc(u8, @intCast(stat.size));
 	defer std.testing.allocator.free(data);
-	const n = try file.readAll(data);
+	const n = try file.readPositionalAll(runtime.io(), data, 0);
 	const result = validateTtfOtfWithOptions(data[0..n], .{
 		.skip_checksums = false,
 		.lenient_checksums = true,

@@ -1740,15 +1740,18 @@ test "findPdfImages on real PDF file" {
     // Try to read a real PDF from the user's Documents
     const pdf_path = "/Users/pmarreck/Documents/27 Overlook Deed.pdf";
 
-    const file = std.fs.openFileAbsolute(pdf_path, .{}) catch {
+    const file = runtime.openFile(pdf_path, .{}) catch {
         return; // Skip if file doesn't exist
     };
     defer file.close(runtime.io());
 
-    const data = file.readToEndAlloc(allocator, 100 * 1024 * 1024) catch {
+    const __sz = file.length(runtime.io()) catch return;
+    if (__sz > 100 * 1024 * 1024) return;
+    const data = allocator.alloc(u8, @intCast(__sz)) catch {
         return;
     };
     defer allocator.free(data);
+    _ = file.readPositionalAll(runtime.io(), data, 0) catch return;
 
     const images = try findPdfImages(allocator, data);
     defer freePdfImages(allocator, images);

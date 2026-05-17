@@ -300,7 +300,7 @@ test "MP3 validation rejects garbage file" {
     defer tmp_dir.cleanup();
 
     const file = tmp_dir.dir.createFile(runtime.io(), "garbage.mp3", .{ .read = true }) catch unreachable;
-    _ = file.write(&[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 }) catch unreachable;
+    file.writePositionalAll(runtime.io(), &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 }, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "garbage.mp3") catch unreachable;

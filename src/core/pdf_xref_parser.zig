@@ -1144,13 +1144,13 @@ test "ground truth PDFs parse xref successfully" {
         const file = runtime.openFile(path, .{}) catch continue; // skip if not present
         defer file.close(runtime.io());
 
-        const file_size = file.getEndPos() catch continue;
+        const file_size = file.length(runtime.io()) catch continue;
         if (file_size > 100 * 1024 * 1024) continue; // skip very large files
 
         const data = std.testing.allocator.alloc(u8, @intCast(file_size)) catch continue;
         defer std.testing.allocator.free(data);
 
-        const bytes_read = file.readAll(data) catch continue;
+        const bytes_read = file.readPositionalAll(runtime.io(), data, 0) catch continue;
         if (bytes_read != file_size) continue;
 
         var table = parseXrefTable(std.testing.allocator, data[0..bytes_read]) orelse {
@@ -1183,13 +1183,13 @@ test "xref path finds same images as linear scan" {
         const file = runtime.openFile(path, .{}) catch continue;
         defer file.close(runtime.io());
 
-        const file_size = file.getEndPos() catch continue;
+        const file_size = file.length(runtime.io()) catch continue;
         if (file_size > 50 * 1024 * 1024) continue;
 
         const data = std.testing.allocator.alloc(u8, @intCast(file_size)) catch continue;
         defer std.testing.allocator.free(data);
 
-        const bytes_read = file.readAll(data) catch continue;
+        const bytes_read = file.readPositionalAll(runtime.io(), data, 0) catch continue;
         if (bytes_read != file_size) continue;
 
         const buf = data[0..bytes_read];

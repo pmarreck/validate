@@ -746,7 +746,10 @@ test "deep validation on ground truth MPEG-1 sample" {
     };
     defer file.close(runtime.io());
 
-    const data = file.readToEndAlloc(allocator, 1024 * 1024) catch return;
+    const __sz_data = file.length(runtime.io()) catch return;
+    if (__sz_data > 1024 * 1024) return;
+    const data = allocator.alloc(u8, @intCast(__sz_data)) catch return;
+    _ = file.readPositionalAll(runtime.io(), data, 0) catch return;
     defer allocator.free(data);
 
     // The sample is an MPEG-PS, so deep validation should work on the embedded video ES
@@ -770,7 +773,10 @@ test "deep validation on ground truth MPEG-2 sample" {
     };
     defer file.close(runtime.io());
 
-    const data = file.readToEndAlloc(allocator, 1024 * 1024) catch return;
+    const __sz_data = file.length(runtime.io()) catch return;
+    if (__sz_data > 1024 * 1024) return;
+    const data = allocator.alloc(u8, @intCast(__sz_data)) catch return;
+    _ = file.readPositionalAll(runtime.io(), data, 0) catch return;
     defer allocator.free(data);
 
     const result = validateMpeg12Deep(data, 10);

@@ -118,9 +118,10 @@ pub fn sleep(nanoseconds: u64) void {
 /// 0.16 removed `realpath`/`realpathAlloc` from `std.fs` and `std.Io.Dir`.
 /// We synthesize the equivalent by concatenating tmpDir's parent path with
 /// its random sub-path. The result is owned by the caller.
-pub fn tmpRealpathAlloc(tmp_dir: anytype, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
+pub fn tmpRealpathAlloc(tmp_dir: *std.testing.TmpDir, allocator: std.mem.Allocator, name: []const u8) ![]u8 {
     // std.testing.TmpDir stores its random sub_path; the parent_dir is the
     // top-level zig-cache tmp dir. We rely on the tmpDir path layout being
     // stable across the std.testing implementation: `.zig-cache/tmp/<sub_path>/`.
-    return std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/{s}", .{ &tmp_dir.sub_path, name });
+    const sub: []const u8 = tmp_dir.sub_path[0..];
+    return std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/{s}", .{ sub, name });
 }

@@ -3189,10 +3189,7 @@ test "validateRtfDeep detects unmatched closing brace" {
     const f = try tmp.dir.createFile(runtime.io(), "extrabrace.rtf", .{});
     try f.writePositionalAll(runtime.io(), "{\\rtf1\\ansi Hello}}", 0);
     f.close(runtime.io());
-    const path_buf = tmp.dir.realpathAlloc(
-        testing.allocator,
-        "extrabrace.rtf",
-    ) catch return;
+    const path_buf = runtime.tmpRealpathAlloc(&tmp, testing.allocator, "extrabrace.rtf") catch return;
     defer testing.allocator.free(path_buf);
     var source = FileSource.open(path_buf) catch return;
     defer source.close();
@@ -3206,10 +3203,7 @@ test "validateRtfDeep detects unclosed brace" {
     const f = try tmp.dir.createFile(runtime.io(), "unclosed.rtf", .{});
     try f.writePositionalAll(runtime.io(), "{\\rtf1\\ansi {nested text", 0);
     f.close(runtime.io());
-    const path_buf = tmp.dir.realpathAlloc(
-        testing.allocator,
-        "unclosed.rtf",
-    ) catch return;
+    const path_buf = runtime.tmpRealpathAlloc(&tmp, testing.allocator, "unclosed.rtf") catch return;
     defer testing.allocator.free(path_buf);
     var source2 = FileSource.open(path_buf) catch return;
     defer source2.close();
@@ -4111,7 +4105,7 @@ test "validatePlainText: self-extracting shell script returns WARN, not FAIL" {
 
     // Open and validate as plain text
     const opened = try tmp.dir.openFile(runtime.io(), "installer.sh", .{});
-    defer opened.close();
+    defer opened.close(runtime.io());
     var source = FileSource.fromFile(opened);
     const result = validatePlainText(std.testing.allocator, &source);
 
@@ -4139,7 +4133,7 @@ test "validatePlainText: script with <5 non-blank lines + binary is NOT self-ext
     file.close(runtime.io());
 
     const opened = try tmp.dir.openFile(runtime.io(), "short.sh", .{});
-    defer opened.close();
+    defer opened.close(runtime.io());
     var source = FileSource.fromFile(opened);
     const result = validatePlainText(std.testing.allocator, &source);
 
@@ -4169,7 +4163,7 @@ test "validatePlainText: file without shebang + binary is NOT self-extractor" {
     file.close(runtime.io());
 
     const opened = try tmp.dir.openFile(runtime.io(), "notscript.txt", .{});
-    defer opened.close();
+    defer opened.close(runtime.io());
     var source = FileSource.fromFile(opened);
     const result = validatePlainText(std.testing.allocator, &source);
 

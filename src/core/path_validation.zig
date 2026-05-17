@@ -33,9 +33,7 @@ fn isDebugTraceEnabled() bool {
 
 /// Print debug trace to stderr (thread-safe via stderr's internal locking)
 fn debugTrace(comptime fmt: []const u8, args: anytype) void {
-    var buf: [4096]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "[DEBUG] " ++ fmt ++ "\n", args) catch return;
-    std.fs.File.stderr().writeAll(msg) catch {};
+    std.debug.print("[DEBUG] " ++ fmt ++ "\n", args);
 }
 
 pub const ValidationCounts = struct {
@@ -107,9 +105,9 @@ const ResultItem = struct {
 };
 
 const WorkQueue = struct {
-	mutex: std.Thread.Mutex = .{},
-	cond: std.Thread.Condition = .{},
-	items: std.ArrayListUnmanaged(WorkItem) = .{},
+	mutex: std.Io.Mutex = .init,
+	cond: std.Io.Condition = .init,
+	items: std.ArrayListUnmanaged(WorkItem) = .empty,
 	closed: bool = false,
 	allocator: Allocator,
 
@@ -126,17 +124,17 @@ const WorkQueue = struct {
 	}
 
 	pub fn push(self: *WorkQueue, item: WorkItem) !void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(runtime.io());
+		defer self.mutex.unlock(runtime.io());
 		try self.items.append(self.allocator, item);
-		self.cond.signal();
+		self.cond.signal(runtime.io());
 	}
 
 	pub fn pop(self: *WorkQueue) ?WorkItem {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(runtime.io());
+		defer self.mutex.unlock(runtime.io());
 		while (self.items.items.len == 0 and !self.closed) {
-			self.cond.wait(&self.mutex);
+			self.cond.waitUncancelable(runtime.io(), &self.mutex);
 		}
 		if (self.items.items.len == 0) {
 			return null;
@@ -145,18 +143,18 @@ const WorkQueue = struct {
 	}
 
 	pub fn close(self: *WorkQueue) void {
-		self.mutex.lock();
+		self.mutex.lockUncancelable(runtime.io());
 		self.closed = true;
-		self.mutex.unlock();
-		self.cond.broadcast();
+		self.mutex.unlock(runtime.io());
+		self.cond.broadcast(runtime.io());
 	}
 };
 
 /// Queue for validation results, consumed by a dedicated output thread.
 const ResultQueue = struct {
-	mutex: std.Thread.Mutex = .{},
-	cond: std.Thread.Condition = .{},
-	items: std.ArrayListUnmanaged(ResultItem) = .{},
+	mutex: std.Io.Mutex = .init,
+	cond: std.Io.Condition = .init,
+	items: std.ArrayListUnmanaged(ResultItem) = .empty,
 	closed: bool = false,
 	allocator: Allocator,
 
@@ -172,17 +170,17 @@ const ResultQueue = struct {
 	}
 
 	pub fn push(self: *ResultQueue, item: ResultItem) !void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(runtime.io());
+		defer self.mutex.unlock(runtime.io());
 		try self.items.append(self.allocator, item);
-		self.cond.signal();
+		self.cond.signal(runtime.io());
 	}
 
 	pub fn pop(self: *ResultQueue) ?ResultItem {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(runtime.io());
+		defer self.mutex.unlock(runtime.io());
 		while (self.items.items.len == 0 and !self.closed) {
-			self.cond.wait(&self.mutex);
+			self.cond.waitUncancelable(runtime.io(), &self.mutex);
 		}
 		if (self.items.items.len == 0) {
 			return null;
@@ -191,10 +189,10 @@ const ResultQueue = struct {
 	}
 
 	pub fn close(self: *ResultQueue) void {
-		self.mutex.lock();
+		self.mutex.lockUncancelable(runtime.io());
 		self.closed = true;
-		self.mutex.unlock();
-		self.cond.signal();
+		self.mutex.unlock(runtime.io());
+		self.cond.signal(runtime.io());
 	}
 };
 
@@ -208,7 +206,7 @@ const Shared = struct {
 	allocator: Allocator,
 };
 
-fn shouldValidateFile(kind: std.fs.File.Kind) bool {
+fn shouldValidateFile(kind: std.Io.File.Kind) bool {
 	return kind == .file;
 }
 
@@ -218,10 +216,10 @@ fn isBundleDirectory(entry_path: []const u8) bool {
 }
 
 /// Check if a subdirectory is a BagIt bag (contains bagit.txt).
-fn isBagitDirectory(parent_dir: std.fs.Dir, subdir_name: []const u8) bool {
-	var subdir = parent_dir.openDir(subdir_name, .{}) catch return false;
-	defer subdir.close();
-	subdir.access("bagit.txt", .{}) catch return false;
+fn isBagitDirectory(parent_dir: std.Io.Dir, subdir_name: []const u8) bool {
+	var subdir = parent_dir.openDir(runtime.io(), subdir_name, .{}) catch return false;
+	defer subdir.close(runtime.io());
+	subdir.access(runtime.io(), "bagit.txt", .{}) catch return false;
 	return true;
 }
 
@@ -229,14 +227,14 @@ fn isBagitDirectory(parent_dir: std.fs.Dir, subdir_name: []const u8) bool {
 /// Bundle directories are added as work items and NOT recursed into.
 fn enumerateWithBundles(
 	allocator: Allocator,
-	dir: std.fs.Dir,
+	dir: std.Io.Dir,
 	base_path: []const u8,
 	relative_prefix: []const u8,
 	work_items: *std.ArrayListUnmanaged(WorkItem),
 	max_files_limit: usize,
 ) !void {
 	var iter = dir.iterate();
-	while (try iter.next()) |entry| {
+	while (try iter.next(runtime.io())) |entry| {
 		if (work_items.items.len >= max_files_limit) break;
 
 		// Build the relative path for display
@@ -275,11 +273,11 @@ fn enumerateWithBundles(
 				// Free paths since we won't use them (recursion will create new ones)
 				allocator.free(full_path);
 
-				var subdir = dir.openDir(entry.name, .{ .iterate = true }) catch {
+				var subdir = dir.openDir(runtime.io(), entry.name, .{ .iterate = true }) catch {
 					allocator.free(display_path);
 					continue;
 				};
-				defer subdir.close();
+				defer subdir.close(runtime.io());
 
 				enumerateWithBundles(
 					allocator,
@@ -424,9 +422,9 @@ fn validateSingleFile(
 	return counts;
 }
 
-fn openDirForPath(path: []const u8) !std.fs.Dir {
+fn openDirForPath(path: []const u8) !std.Io.Dir {
 	if (std.fs.path.isAbsolute(path)) {
-		return std.fs.openDirAbsolute(path, .{ .iterate = true });
+		return runtime.openDir(path, .{ .iterate = true });
 	}
 	return runtime.openDir(path, .{ .iterate = true });
 }
@@ -436,7 +434,7 @@ fn openDirForPath(path: []const u8) !std.fs.Dir {
 /// special handling when the current directory is on a different drive.
 /// On Windows, we use GetFileAttributesW for initial type detection since it
 /// works for protected folders like Documents without requiring file open permissions.
-fn statPath(path: []const u8) !std.fs.File.Stat {
+fn statPath(path: []const u8) !std.Io.File.Stat {
     if (comptime builtin.os.tag == .windows) {
         return statPathWindows(path);
     }
@@ -446,7 +444,7 @@ fn statPath(path: []const u8) !std.fs.File.Stat {
 /// Windows-specific path stat using GetFileAttributesW for type detection.
 /// This avoids the AccessDenied errors that occur when trying to open
 /// protected Windows folders (Documents, Downloads, etc.) with Zig's std lib.
-fn statPathWindows(path: []const u8) !std.fs.File.Stat {
+fn statPathWindows(path: []const u8) !std.Io.File.Stat {
     const windows = std.os.windows;
 
     // Convert path to null-terminated wide string
@@ -486,7 +484,7 @@ fn statPathWindows(path: []const u8) !std.fs.File.Stat {
 
     // Return a minimal stat with just the kind field populated
     // On Windows, time fields are i128 FILETIME values
-    return std.fs.File.Stat{
+    return std.Io.File.Stat{
         .inode = 0,
         .size = 0,
         .mode = 0,
@@ -498,22 +496,22 @@ fn statPathWindows(path: []const u8) !std.fs.File.Stat {
 }
 
 /// POSIX path stat - works on macOS, Linux, etc.
-fn statPathPosix(path: []const u8) !std.fs.File.Stat {
+fn statPathPosix(path: []const u8) !std.Io.File.Stat {
     if (std.fs.path.isAbsolute(path)) {
         // For absolute paths, open the file directly with absolute path
-        var file = std.fs.openFileAbsolute(path, .{}) catch |err| switch (err) {
+        var file = runtime.openFile(path, .{}) catch |err| switch (err) {
             // Directory - try opening as directory to stat it
             error.IsDir => {
-                var dir = std.fs.openDirAbsolute(path, .{}) catch |dir_err| {
+                var dir = runtime.openDir(path, .{}) catch |dir_err| {
                     return dir_err;
                 };
-                defer dir.close();
-                return dir.stat();
+                defer dir.close(runtime.io());
+                return dir.stat(runtime.io());
             },
             else => return err,
         };
         defer file.close(runtime.io());
-        return file.stat();
+        return file.stat(runtime.io());
     }
     // For relative paths, try as file first, then as directory
     return runtime.statFile(path) catch |err| switch (err) {
@@ -521,8 +519,8 @@ fn statPathPosix(path: []const u8) !std.fs.File.Stat {
             var dir = runtime.openDir(path, .{}) catch |dir_err| {
                 return dir_err;
             };
-            defer dir.close();
-            return dir.stat();
+            defer dir.close(runtime.io());
+            return dir.stat(runtime.io());
         },
         else => return err,
     };
@@ -631,8 +629,8 @@ pub fn validatePathParallelEx(
 	{
 		var check_dir = runtime.openDir(path, .{}) catch null;
 		if (check_dir) |*d| {
-			defer d.close();
-			if (d.access("bagit.txt", .{})) |_| {
+			defer d.close(runtime.io());
+			if (d.access(runtime.io(), "bagit.txt", .{})) |_| {
 				return validateSingleFile(allocator, validator_template, path, callback, callback_ctx);
 			} else |_| {}
 		}
@@ -672,12 +670,12 @@ pub fn validatePathParallelEx(
 	}
 
 	var dir = try openDirForPath(path);
-	defer dir.close();
+	defer dir.close(runtime.io());
 
 	// Collect files and bundle directories into a list (needed for shuffling)
 	// Uses bundle-aware enumeration: .git directories are added as work items
 	// and NOT recursed into.
-	var work_items: std.ArrayListUnmanaged(WorkItem) = .{};
+	var work_items: std.ArrayListUnmanaged(WorkItem) = .empty;
 	defer {
 		// Free any items that weren't pushed (e.g., on error)
 		for (work_items.items) |item| {
@@ -726,7 +724,7 @@ test "statPath handles current directory" {
 		std.debug.print("statPath(\".\") failed with: {}\n", .{err});
 		return err;
 	};
-	try std.testing.expectEqual(std.fs.File.Kind.directory, stat.kind);
+	try std.testing.expectEqual(std.Io.File.Kind.directory, stat.kind);
 }
 
 test "statPath handles relative directory" {
@@ -743,7 +741,7 @@ test "statPath handles relative directory" {
 		std.debug.print("statPath relative dir failed with: {}\n", .{err});
 		return err;
 	};
-	try std.testing.expectEqual(std.fs.File.Kind.directory, stat.kind);
+	try std.testing.expectEqual(std.Io.File.Kind.directory, stat.kind);
 }
 
 test "statPath handles files" {
@@ -762,7 +760,7 @@ test "statPath handles files" {
 		std.debug.print("statPath file failed with: {}\n", .{err});
 		return err;
 	};
-	try std.testing.expectEqual(std.fs.File.Kind.file, stat.kind);
+	try std.testing.expectEqual(std.Io.File.Kind.file, stat.kind);
 }
 
 test "parallel validation does not recurse into .git directories" {
@@ -797,13 +795,13 @@ test "parallel validation does not recurse into .git directories" {
 
 	// Create a fake loose object file (to test that we DON'T recurse into it)
 	const object_file = try tmp_dir.dir.createFile(runtime.io(), ".git/objects/ab/cdef1234567890", .{});
-	try object_file.writeAll("fake object content");
-	object_file.close();
+	try object_file.writePositionalAll(runtime.io(), "fake object content", 0);
+	object_file.close(runtime.io());
 
 	// Create a regular file outside .git
 	const regular_file = try tmp_dir.dir.createFile(runtime.io(), "README.md", .{});
-	try regular_file.writeAll("# Test\n");
-	regular_file.close();
+	try regular_file.writePositionalAll(runtime.io(), "# Test\n", 0);
+	regular_file.close(runtime.io());
 
 	// Track validated paths
 	const TrackingContext = struct {
@@ -834,7 +832,7 @@ test "parallel validation does not recurse into .git directories" {
 	};
 
 	var tracking_ctx = TrackingContext{
-		.validated_paths = .{},
+		.validated_paths = .empty,
 		.allocator = allocator,
 	};
 	defer tracking_ctx.deinit();

@@ -360,7 +360,10 @@ test "DTS validates ground truth sample" {
     };
     defer file.close(runtime.io());
 
-    const data = file.readToEndAlloc(std.testing.allocator, 10 * 1024 * 1024) catch return error.SkipZigTest;
+    const __sz_data = file.length(runtime.io()) catch return error.SkipZigTest;
+    if (__sz_data > 10 * 1024 * 1024) return error.SkipZigTest;
+    const data = std.testing.allocator.alloc(u8, @intCast(__sz_data)) catch return error.SkipZigTest;
+    _ = file.readPositionalAll(runtime.io(), data, 0) catch return error.SkipZigTest;
     defer std.testing.allocator.free(data);
 
     const result = validateDtsStream(data, 10);

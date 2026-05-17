@@ -1158,7 +1158,7 @@ test "verifyFlacMd5 streams instead of slurping (peak alloc < file size)" {
 		return err;
 	};
 	defer file.close(runtime.io());
-	const file_size = try file.getEndPos();
+	const file_size = try file.length(runtime.io());
 	if (file_size < 64 * 1024) return error.SkipZigTest;
 
 	var source = FileSource.fromFile(file);
@@ -1189,7 +1189,7 @@ test "decodeFlacFull streams instead of slurping (peak alloc < file size)" {
 		return err;
 	};
 	defer file.close(runtime.io());
-	const file_size = try file.getEndPos();
+	const file_size = try file.length(runtime.io());
 	if (file_size < 64 * 1024) return error.SkipZigTest;
 
 	var source = FileSource.fromFile(file);

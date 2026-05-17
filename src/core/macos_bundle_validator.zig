@@ -807,9 +807,9 @@ test "validateAppBundle: detects missing Info.plist" {
 	defer tmp.cleanup();
 
 	// Create a fake .app with no Info.plist
-	tmp.dir.makeDir("Fake.app") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Fake.app/Contents") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Fake.app/Contents/MacOS") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Fake.app") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Fake.app/Contents") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Fake.app/Contents/MacOS") catch return error.SkipZigTest;
 
 	const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "Fake.app") catch return error.SkipZigTest;
 	defer std.testing.allocator.free(rp);
@@ -824,9 +824,9 @@ test "validateAppBundle: detects stray files" {
 	defer tmp.cleanup();
 
 	// Create a minimal valid .app with a stray file
-	tmp.dir.makeDir("Stray.app") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Stray.app/Contents") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Stray.app/Contents/MacOS") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Stray.app") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Stray.app/Contents") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Stray.app/Contents/MacOS") catch return error.SkipZigTest;
 
 	// Write a minimal Info.plist
 	const plist =
@@ -844,7 +844,7 @@ test "validateAppBundle: detects stray files" {
 	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Stray.app/Contents/MacOS/test", .data = &macho_magic }) catch return error.SkipZigTest;
 
 	// Add a fake code signature so we reach full depth (where stray check matters)
-	tmp.dir.makeDir("Stray.app/Contents/_CodeSignature") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Stray.app/Contents/_CodeSignature") catch return error.SkipZigTest;
 	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Stray.app/Contents/_CodeSignature/CodeResources", .data = "<plist/>" }) catch return error.SkipZigTest;
 
 	// Add a stray file
@@ -864,9 +864,9 @@ test "validateAppBundle: detects missing executable" {
 	var tmp = testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	tmp.dir.makeDir("NoExec.app") catch return error.SkipZigTest;
-	tmp.dir.makeDir("NoExec.app/Contents") catch return error.SkipZigTest;
-	tmp.dir.makeDir("NoExec.app/Contents/MacOS") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "NoExec.app") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "NoExec.app/Contents") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "NoExec.app/Contents/MacOS") catch return error.SkipZigTest;
 
 	const plist =
     \\<?xml version="1.0" encoding="UTF-8"?>
@@ -917,9 +917,9 @@ test "validateAppBundle: WrappedBundle (iOS Catalyst) detected" {
 	defer tmp.cleanup();
 
 	// Create a fake iOS Catalyst app structure
-	tmp.dir.makeDir("Catalyst.app") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Catalyst.app/WrappedBundle") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Catalyst.app/Wrapper") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Catalyst.app") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Catalyst.app/WrappedBundle") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Catalyst.app/Wrapper") catch return error.SkipZigTest;
 	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Catalyst.app/Wrapper/Info.plist", .data = "<plist/>" }) catch return error.SkipZigTest;
 
 	const rp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "Catalyst.app") catch return error.SkipZigTest;
@@ -948,10 +948,10 @@ test "verifyCodeResources: detects unlisted file in signed bundle" {
 	defer tmp.cleanup();
 
 	// Create a signed bundle with a CodeResources listing one file
-	tmp.dir.makeDir("Signed.app") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Signed.app/Contents") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Signed.app/Contents/Resources") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Signed.app/Contents/_CodeSignature") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Signed.app") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Signed.app/Contents") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Signed.app/Contents/Resources") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Signed.app/Contents/_CodeSignature") catch return error.SkipZigTest;
 
 	// Write a file that IS listed
 	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Signed.app/Contents/Resources/icon.icns", .data = "icon" }) catch return error.SkipZigTest;
@@ -985,10 +985,10 @@ test "verifyCodeResources: clean bundle has no unlisted files" {
 	var tmp = testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	tmp.dir.makeDir("Clean.app") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Clean.app/Contents") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Clean.app/Contents/Resources") catch return error.SkipZigTest;
-	tmp.dir.makeDir("Clean.app/Contents/_CodeSignature") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Clean.app") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Clean.app/Contents") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Clean.app/Contents/Resources") catch return error.SkipZigTest;
+	tmp.dir.createDirPath(runtime.io(), "Clean.app/Contents/_CodeSignature") catch return error.SkipZigTest;
 
 	tmp.dir.writeFile(runtime.io(), .{ .sub_path = "Clean.app/Contents/Resources/icon.icns", .data = "icon" }) catch return error.SkipZigTest;
 

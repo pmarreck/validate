@@ -429,7 +429,7 @@ test "OGG validation rejects garbage data" {
     defer tmp_dir.cleanup();
 
     const file = tmp_dir.dir.createFile(runtime.io(), "garbage.ogg", .{ .read = true }) catch unreachable;
-    _ = file.write(&[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 }) catch unreachable;
+    file.writePositionalAll(runtime.io(), &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 }, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "garbage.ogg") catch unreachable;
@@ -487,7 +487,7 @@ test "OGG validation detects valid page with correct CRC" {
     page[25] = @truncate(crc >> 24);
 
     const file = tmp_dir.dir.createFile(runtime.io(), "valid.ogg", .{ .read = true }) catch unreachable;
-    _ = file.write(&page) catch unreachable;
+    file.writePositionalAll(runtime.io(), &page, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "valid.ogg") catch unreachable;
@@ -537,7 +537,7 @@ test "OGG validation detects corrupted CRC" {
     page[25] = @truncate(crc >> 24);
 
     const file = tmp_dir.dir.createFile(runtime.io(), "corrupted.ogg", .{ .read = true }) catch unreachable;
-    _ = file.write(&page) catch unreachable;
+    file.writePositionalAll(runtime.io(), &page, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "corrupted.ogg") catch unreachable;
@@ -597,7 +597,7 @@ test "OGG packet extraction from single-packet page" {
     page[25] = @truncate(crc >> 24);
 
     const file = tmp_dir.dir.createFile(runtime.io(), "packet.ogg", .{ .read = true }) catch unreachable;
-    _ = file.write(&page) catch unreachable;
+    file.writePositionalAll(runtime.io(), &page, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "packet.ogg") catch unreachable;
@@ -662,7 +662,7 @@ test "OGG packet extraction with multi-segment packet" {
     page[25] = @truncate(crc >> 24);
 
     const file = tmp_dir.dir.createFile(runtime.io(), "multi_seg.ogg", .{ .read = true }) catch unreachable;
-    _ = file.write(&page) catch unreachable;
+    file.writePositionalAll(runtime.io(), &page, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "multi_seg.ogg") catch unreachable;

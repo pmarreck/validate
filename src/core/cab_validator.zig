@@ -376,7 +376,7 @@ fn tmpCabFile(tmp_dir: *std.testing.TmpDir, name: []const u8, data: []const u8) 
 		defer wf.close(runtime.io());
 		try wf.writePositionalAll(runtime.io(), data, 0);
 	}
-	const path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, name);
+	const path = try runtime.tmpRealpathAlloc(tmp_dir, std.testing.allocator, name);
 	defer std.testing.allocator.free(path);
 	return FileSource.open(path);
 }

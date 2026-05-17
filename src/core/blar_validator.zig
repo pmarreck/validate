@@ -163,7 +163,10 @@ test "validateBlarDeep: corrupted blar detected" {
     };
     defer file.close(runtime.io());
 
-    const data = file.readToEndAlloc(std.testing.allocator, 1024 * 1024) catch return error.SkipZigTest;
+    const __sz_data = file.length(runtime.io()) catch return error.SkipZigTest;
+    if (__sz_data > 1024 * 1024) return error.SkipZigTest;
+    const data = std.testing.allocator.alloc(u8, @intCast(__sz_data)) catch return error.SkipZigTest;
+    _ = file.readPositionalAll(runtime.io(), data, 0) catch return error.SkipZigTest;
     defer std.testing.allocator.free(data);
 
     // Flip a byte in the middle of the data (well after header, before checksum)
@@ -173,13 +176,13 @@ test "validateBlarDeep: corrupted blar detected" {
 
     // Write corrupted data to temp file
     const tmp_path = "/tmp/validate-test-corrupted.blar";
-    const tmp_file = std.fs.createFileAbsolute(tmp_path, .{}) catch return error.SkipZigTest;
+    const tmp_file = runtime.createFile(tmp_path, .{}) catch return error.SkipZigTest;
     tmp_file.writePositionalAll(runtime.io(), data, 0) catch {
         tmp_file.close(runtime.io());
         return error.SkipZigTest;
     };
     tmp_file.close(runtime.io());
-    defer std.fs.deleteFileAbsolute(tmp_path) catch {};
+    defer runtime.cwd().deleteFile(runtime.io(), tmp_path) catch {};
 
     var source = FileSource.open(tmp_path) catch return error.SkipZigTest;
     defer source.close();

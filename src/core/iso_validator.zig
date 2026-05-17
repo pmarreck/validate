@@ -275,7 +275,7 @@ fn validateIsoViaIso9660(
     formats_found = @intCast(format_set.count());
     const ext_result = ext_tracker.toArray();
 
-    const vol_id = std.mem.trimRight(u8, &pvd.volume_identifier, " \x00");
+    const vol_id = std.mem.trimEnd(u8, &pvd.volume_identifier, " \x00");
 
     return IsoValidationResult.ok(
         .iso9660,

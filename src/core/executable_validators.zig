@@ -991,7 +991,7 @@ pub fn validateJavaClassDeep(allocator: std.mem.Allocator, source: *FileSource) 
 
 test "validateJavaClass accepts minimal valid class buffer" {
     // cp_count=3: cp[1]=Class(name_index=2), cp[2]=Utf8(5,"Hello")
-    const w_aw_ = std.Io.Writer.Allocating.init(std.testing.allocator); defer w_aw_.deinit(); const w = &w_aw_.writer;
+    var w_aw_ = std.Io.Writer.Allocating.init(std.testing.allocator); defer w_aw_.deinit(); const w = &w_aw_.writer;
     // magic
     try w.writeAll(&[_]u8{ 0xCA, 0xFE, 0xBA, 0xBE });
     // minor=0, major=52 (Java 8)
@@ -1033,7 +1033,7 @@ test "validateJavaClass rejects wrong magic" {
 }
 
 test "validateJavaClass rejects truncated constant pool" {
-    const w_aw_ = std.Io.Writer.Allocating.init(std.testing.allocator); defer w_aw_.deinit(); const w = &w_aw_.writer;
+    var w_aw_ = std.Io.Writer.Allocating.init(std.testing.allocator); defer w_aw_.deinit(); const w = &w_aw_.writer;
     try w.writeAll(&[_]u8{ 0xCA, 0xFE, 0xBA, 0xBE });
     try w.writeInt(u16, 0, .big);   // minor
     try w.writeInt(u16, 52, .big);  // major
@@ -1044,7 +1044,7 @@ test "validateJavaClass rejects truncated constant pool" {
 }
 
 test "validateJavaClass rejects unknown constant pool tag" {
-    const w_aw_ = std.Io.Writer.Allocating.init(std.testing.allocator); defer w_aw_.deinit(); const w = &w_aw_.writer;
+    var w_aw_ = std.Io.Writer.Allocating.init(std.testing.allocator); defer w_aw_.deinit(); const w = &w_aw_.writer;
     try w.writeAll(&[_]u8{ 0xCA, 0xFE, 0xBA, 0xBE });
     try w.writeInt(u16, 0, .big);
     try w.writeInt(u16, 52, .big);

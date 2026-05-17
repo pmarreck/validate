@@ -52,8 +52,8 @@ pub const Racetrack = struct {
 	total_size: usize,
 	window_size: usize,
 
-	mutex: std.Thread.Mutex = .{},
-	cond: std.Thread.Condition = .{},
+	mutex: std.Io.Mutex = .init,
+	cond: std.Io.Condition = .init,
 
 	next_logical: u64 = 0,
 	head_logical: u64 = 0,
@@ -61,7 +61,7 @@ pub const Racetrack = struct {
 	// FIFO of live entries; oldest at front. Compacted when head advances.
 	// Variable-size; never expected to grow beyond `window_size /
 	// min_alloc_size`. Backed by ArrayListUnmanaged.
-	live: std.ArrayListUnmanaged(LiveBlock) = .{},
+	live: std.ArrayListUnmanaged(LiveBlock) = .empty,
 
 	// Diagnostics — sampled by load test, otherwise harmless overhead.
 	stats: Stats = .{},
@@ -110,8 +110,8 @@ pub const Racetrack = struct {
 		std.debug.assert(size > 0);
 		std.debug.assert(size <= self.window_size);
 
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(runtime.io());
+		defer self.mutex.unlock(runtime.io());
 
 		const start = runtime.nanoTimestamp();
 		var blocked = false;
@@ -134,7 +134,7 @@ pub const Racetrack = struct {
 				break;
 			}
 			blocked = true;
-			self.cond.wait(&self.mutex);
+			self.cond.waitUncancelable(runtime.io(), &self.mutex);
 		}
 
 		if (blocked) {
@@ -164,8 +164,8 @@ pub const Racetrack = struct {
 
 	/// Try to acquire without blocking. Returns null if window full.
 	pub fn tryAcquire(self: *Racetrack, size: usize) !?struct { token: Token, bytes: []u8 } {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(runtime.io());
+		defer self.mutex.unlock(runtime.io());
 		if ((self.next_logical - self.head_logical) + size > self.window_size) return null;
 
 		const offset = self.next_logical;
@@ -188,8 +188,8 @@ pub const Racetrack = struct {
 	/// Mark `token`'s allocation as released. The head advances past any
 	/// contiguous freed blocks, waking waiters.
 	pub fn release(self: *Racetrack, token: Token) void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(runtime.io());
+		defer self.mutex.unlock(runtime.io());
 
 		// Find the entry. Linear scan; live list is bounded by
 		// window_size/min_size which is small in practice.
@@ -210,15 +210,15 @@ pub const Racetrack = struct {
 			// Drop the freed prefix.
 			std.mem.copyForwards(LiveBlock, self.live.items[0 .. self.live.items.len - advanced], self.live.items[advanced..]);
 			self.live.shrinkRetainingCapacity(self.live.items.len - advanced);
-			self.cond.broadcast();
+			self.cond.broadcast(runtime.io());
 		}
 
 		self.stats.release_count += 1;
 	}
 
 	pub fn snapshot(self: *Racetrack) Stats {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		self.mutex.lockUncancelable(runtime.io());
+		defer self.mutex.unlock(runtime.io());
 		return self.stats;
 	}
 };
@@ -266,8 +266,8 @@ test "Racetrack out-of-order release does not advance head until front frees" {
 	rt.release(b.token);
 	rt.release(c.token);
 	{
-		rt.mutex.lock();
-		defer rt.mutex.unlock();
+		rt.mutex.lockUncancelable(runtime.io());
+		defer rt.mutex.unlock(runtime.io());
 		try std.testing.expectEqual(@as(u64, 0), rt.head_logical);
 		try std.testing.expectEqual(@as(u64, 300), rt.next_logical);
 	}
@@ -275,8 +275,8 @@ test "Racetrack out-of-order release does not advance head until front frees" {
 	// Releasing a should sweep all three.
 	rt.release(a.token);
 	{
-		rt.mutex.lock();
-		defer rt.mutex.unlock();
+		rt.mutex.lockUncancelable(runtime.io());
+		defer rt.mutex.unlock(runtime.io());
 		try std.testing.expectEqual(@as(u64, 300), rt.head_logical);
 	}
 }

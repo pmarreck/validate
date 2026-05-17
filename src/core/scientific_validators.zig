@@ -4235,13 +4235,13 @@ test "FITS without CHECKSUM/DATASUM returns structural depth" {
 
     {
         const wfile = try runtime.createFile(path, .{});
-        try wfile.writeAll(&header);
-        wfile.close();
+        try wfile.writePositionalAll(runtime.io(), &header, 0);
+        wfile.close(runtime.io());
     }
     defer runtime.cwd().deleteFile(runtime.io(), path) catch {};
 
     var file = try FileSource.open(path);
-    defer file.close(runtime.io());
+    defer file.close();
     const result = validateFits(&file);
     // Without CHECKSUM or DATASUM, data is NOT verified → must be .structural
     try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);

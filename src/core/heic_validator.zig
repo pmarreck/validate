@@ -428,10 +428,10 @@ test "HEIC grid image fully validates all tiles" {
     const file = runtime.openFile(path, .{}) catch |err| { if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest; return err; };
     defer file.close(runtime.io());
 
-    const file_size = try file.getEndPos();
+    const file_size = try file.length(runtime.io());
     const data = try allocator.alloc(u8, file_size);
     defer allocator.free(data);
-    _ = try file.readAll(data);
+    _ = try file.readPositionalAll(runtime.io(), data, 0);
 
     const container = try heif.parseHeifContainer(data);
 

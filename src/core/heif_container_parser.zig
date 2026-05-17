@@ -1466,7 +1466,7 @@ test "parseHeifContainer is thread-safe under concurrent calls" {
 			try out.appendSlice(allocator, &[_]u8{ 0, 0, 0, 24, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c', 0, 0, 0, 0, 'h', 'e', 'i', 'c', 'm', 'i', 'f', '1' });
 
 			// meta box body
-			var meta_body = std.ArrayListUnmanaged(u8){};
+			var meta_body = std.ArrayListUnmanaged(u8).empty;
 			defer meta_body.deinit(allocator);
 			try meta_body.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // version+flags
 

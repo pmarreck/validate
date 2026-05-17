@@ -4532,10 +4532,7 @@ test "FormatValidator accepts valid WavPack" {
     // validator can actually decode blocks. A 32-byte synthetic header
     // is no longer enough — libwavpack rejects partial files at open time.
     const allocator = std.testing.allocator;
-    const path = allocator.dupe(u8, "ground_truth_examples/wavpack/sample.wv") catch |err| switch (err) {
-        error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
-        else => return err,
-    };
+    const path = allocator.dupe(u8, "ground_truth_examples/wavpack/sample.wv") catch return error.SkipZigTest;
     defer allocator.free(path);
 
     var validator = FormatValidator.init();

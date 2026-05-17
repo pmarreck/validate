@@ -284,7 +284,7 @@ test "Vorbis validation with invalid file returns error" {
 
     // Create a file with garbage data
     const file = tmp_dir.dir.createFile(runtime.io(), "garbage.ogg", .{ .read = true }) catch unreachable;
-    _ = file.write(&[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF }) catch unreachable;
+    file.writePositionalAll(runtime.io(), &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF }, 0) catch unreachable;
     file.close(runtime.io());
 
     const path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "garbage.ogg") catch unreachable;

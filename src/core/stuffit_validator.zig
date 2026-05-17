@@ -855,7 +855,6 @@ test "validateSit: corrupt magic rejected" {
     var bad = sample_sit_classic;
     bad[0] = 0xAA; // corrupt magic
     try f.writePositionalAll(runtime.io(), &bad, 0);
-    try f.seekTo(0);
     var fs = FileSource.fromFile(f);
     const result = validateSit(&fs);
     try testing.expect(!result.is_valid);
@@ -875,7 +874,7 @@ test "validateSitDeep: bad entry header CRC rejected" {
 
     // We need to reopen as read-only for FileSource.fromFile
     const rf = try tmp_dir.dir.openFile(runtime.io(), "bad_crc.sit", .{});
-    defer rf.close();
+    defer rf.close(runtime.io());
 
     const abs_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "bad_crc.sit");
     defer std.testing.allocator.free(abs_path);

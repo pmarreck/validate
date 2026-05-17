@@ -5890,7 +5890,7 @@ test "validateBmp rejects corrupted planes field" {
     const rp_bad_planes_bmp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_planes.bmp") catch return;
     defer std.testing.allocator.free(rp_bad_planes_bmp);
     var f = FileSource.open(rp_bad_planes_bmp) catch return;
-    defer f.close(runtime.io());
+    defer f.close();
     try testing.expect(!validateBmp(&f).is_valid);
 }
 
@@ -5917,7 +5917,7 @@ test "validateBmp rejects corrupted bit count" {
     const rp_bad_bpp_bmp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_bpp.bmp") catch return;
     defer std.testing.allocator.free(rp_bad_bpp_bmp);
     var f = FileSource.open(rp_bad_bpp_bmp) catch return;
-    defer f.close(runtime.io());
+    defer f.close();
     try testing.expect(!validateBmp(&f).is_valid);
 }
 
@@ -5941,7 +5941,7 @@ test "validateBmp rejects pixel data exceeding file size" {
     const rp_too_big_bmp = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "too_big.bmp") catch return;
     defer std.testing.allocator.free(rp_too_big_bmp);
     var f = FileSource.open(rp_too_big_bmp) catch return;
-    defer f.close(runtime.io());
+    defer f.close();
     try testing.expect(!validateBmp(&f).is_valid);
 }
 
@@ -6661,7 +6661,7 @@ test "validateDpx rejects corrupted orientation" {
     const rp_bad_orient_dpx = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_orient.dpx") catch return;
     defer std.testing.allocator.free(rp_bad_orient_dpx);
     var f = FileSource.open(rp_bad_orient_dpx) catch return;
-    defer f.close(runtime.io());
+    defer f.close();
     try testing.expect(!validateDpx(&f).is_valid);
 }
 
@@ -6686,7 +6686,7 @@ test "validateDpx rejects corrupted element count" {
     const rp_bad_elem_dpx = runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "bad_elem.dpx") catch return;
     defer std.testing.allocator.free(rp_bad_elem_dpx);
     var f = FileSource.open(rp_bad_elem_dpx) catch return;
-    defer f.close(runtime.io());
+    defer f.close();
     try testing.expect(!validateDpx(&f).is_valid);
 }
 

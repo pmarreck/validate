@@ -111,7 +111,7 @@ test "concurrent stress: heif_container_parser" {
 			try out.appendSlice(allocator, &[_]u8{ 0, 0, 0, 24, 'f', 't', 'y', 'p', 'h', 'e', 'i', 'c', 0, 0, 0, 0, 'h', 'e', 'i', 'c', 'm', 'i', 'f', '1' });
 
 			// meta body
-			var meta: std.ArrayListUnmanaged(u8) = .{};
+			var meta: std.ArrayListUnmanaged(u8) = .empty;
 			defer meta.deinit(allocator);
 			try meta.appendSlice(allocator, &[_]u8{ 0, 0, 0, 0 }); // ver+flags
 
