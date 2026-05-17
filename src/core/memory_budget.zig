@@ -17,15 +17,28 @@
 //! Pair with arena-per-task to keep actual usage bounded.
 
 const std = @import("std");
+const runtime = @import("runtime.zig");
+
+// 0.16: std.Thread.Mutex / Condition removed; sync primitives moved to
+// std.Io.Mutex / std.Io.Condition with an `io` parameter on lock/wait.
+// Under Io.Threaded these are mutex-equivalent; we treat lock()/wait()
+// failure as a panic since validate doesn't use Io cancellation.
+inline fn lockOrPanic(m: *std.Io.Mutex) void {
+	m.lock(runtime.io()) catch |err| std.debug.panic("Io.Mutex.lock failed: {s}", .{@errorName(err)});
+}
+inline fn condWaitOrPanic(c: *std.Io.Condition, m: *std.Io.Mutex) void {
+	c.wait(runtime.io(), m) catch |err| std.debug.panic("Io.Condition.wait failed: {s}", .{@errorName(err)});
+}
 
 pub const MemoryBudget = struct {
-	mutex: std.Thread.Mutex = .{},
-	cond: std.Thread.Condition = .{},
+	mutex: std.Io.Mutex = .init,
+	cond: std.Io.Condition = .init,
 	total_bytes: usize,
 	available_bytes: usize,
 	active_count: usize = 0,
 
 	pub fn init(total_bytes: usize) MemoryBudget {
+		runtime.ensureInit();
 		return .{
 			.total_bytes = total_bytes,
 			.available_bytes = total_bytes,
@@ -35,18 +48,18 @@ pub const MemoryBudget = struct {
 	/// Block until `bytes` can be reserved against the budget. Tasks larger
 	/// than the total budget are admitted alone (when active_count == 0).
 	pub fn acquire(self: *MemoryBudget, bytes: usize) void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		lockOrPanic(&self.mutex);
+		defer self.mutex.unlock(runtime.io());
 
 		if (bytes > self.total_bytes) {
-			while (self.active_count > 0) self.cond.wait(&self.mutex);
+			while (self.active_count > 0) condWaitOrPanic(&self.cond, &self.mutex);
 			self.active_count += 1;
 			self.available_bytes = 0; // oversized task drains the budget so no peer admits
 			return;
 		}
 
 		while (self.available_bytes < bytes) {
-			self.cond.wait(&self.mutex);
+			condWaitOrPanic(&self.cond, &self.mutex);
 		}
 		self.available_bytes -= bytes;
 		self.active_count += 1;
@@ -54,8 +67,8 @@ pub const MemoryBudget = struct {
 
 	/// Try to acquire without blocking. Returns true if reserved.
 	pub fn tryAcquire(self: *MemoryBudget, bytes: usize) bool {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		lockOrPanic(&self.mutex);
+		defer self.mutex.unlock(runtime.io());
 		if (bytes > self.total_bytes) {
 			if (self.active_count > 0) return false;
 			self.active_count += 1;
@@ -69,8 +82,8 @@ pub const MemoryBudget = struct {
 	}
 
 	pub fn release(self: *MemoryBudget, bytes: usize) void {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		lockOrPanic(&self.mutex);
+		defer self.mutex.unlock(runtime.io());
 		if (bytes > self.total_bytes) {
 			// oversized release: restore full budget
 			self.available_bytes = self.total_bytes;
@@ -82,8 +95,8 @@ pub const MemoryBudget = struct {
 	}
 
 	pub fn snapshot(self: *MemoryBudget) struct { total: usize, available: usize, active: usize } {
-		self.mutex.lock();
-		defer self.mutex.unlock();
+		lockOrPanic(&self.mutex);
+		defer self.mutex.unlock(runtime.io());
 		return .{
 			.total = self.total_bytes,
 			.available = self.available_bytes,

@@ -49,6 +49,20 @@ const format_validation = core.format_validation;
 const git_validator = core.git_validator;
 const thread_pool = core.thread_pool;
 const i18n = core.i18n;
+const runtime = core.runtime;
+
+/// 0.16: nanoTimestamp() was removed; clocks moved to std.Io.
+inline fn nanoTimestamp() i128 {
+    runtime.ensureInit();
+    return std.Io.Timestamp.now(runtime.io(), .awake).nanoseconds;
+}
+
+/// 0.16: std.fs.cwd() → std.Io.Dir.cwd(). Cwd itself doesn't take io;
+/// the io parameter enters at the method calls on the returned Dir
+/// (openFile, statFile, etc).
+inline fn cwd() std.Io.Dir {
+    return std.Io.Dir.cwd();
+}
 
 // Force progress module exports into the compilation unit (C FFI symbols)
 comptime {
@@ -523,10 +537,10 @@ export fn validate(path: ?[*:0]const u8) ?[*:0]u8 {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
-    const start_ns = std.time.nanoTimestamp();
+    const start_ns = nanoTimestamp();
     var validator = format_validation.FormatValidator.initDeep();
     const result = validator.validateFileDeep(arena.allocator(), path_slice);
-    const elapsed_ns: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+    const elapsed_ns: i64 = @intCast(nanoTimestamp() - start_ns);
 
     // Build result string (uses page_allocator for the result itself)
     const result_str = buildValidationResult(std.heap.page_allocator, result, elapsed_ns) catch {
@@ -553,12 +567,12 @@ export fn validate_git(path: ?[*:0]const u8) ?[*:0]u8 {
 
     const path_slice = std.mem.span(p);
 
-    const start_ns = std.time.nanoTimestamp();
+    const start_ns = nanoTimestamp();
     const result = git_validator.validateRepository(std.heap.page_allocator, path_slice) catch {
         errors.setLastError(.internal_unexpected, "Git validation failed", .{});
         return null;
     };
-    const elapsed_ns: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+    const elapsed_ns: i64 = @intCast(nanoTimestamp() - start_ns);
 
     const result_str = buildGitResult(std.heap.page_allocator, result, elapsed_ns) catch {
         errors.setLastError(.internal_out_of_memory, "Failed to allocate result", .{});
@@ -630,7 +644,7 @@ const LARGE_FILE_THRESHOLD: u64 = 50 * 1024 * 1024;
 /// (under LARGE_FILE_THRESHOLD) bypass this and run full parallel.
 /// Default 2 concurrent large files; reconfigured by validate_batch based on
 /// thread count and memory budget.
-var g_large_file_sem: std.Thread.Semaphore = .{ .permits = 2 };
+var g_large_file_sem: std.Io.Semaphore = .{ .permits = 2 };
 
 /// Set the begin callback (called when validation starts for each file)
 export fn validate_set_begin_callback(callback: BeginCallback, ctx: ?*anyopaque) void {
@@ -651,7 +665,7 @@ fn estimateBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) usize {
     const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return 1024 * 1024));
     const path_ptr = ctx.paths[task.index] orelse return 1024 * 1024;
     const path_slice = std.mem.span(path_ptr);
-    const stat = std.fs.cwd().statFile(path_slice) catch return 1024 * 1024;
+    const stat = cwd().statFile(path_slice) catch return 1024 * 1024;
     return @intCast(stat.size);
 }
 fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
@@ -670,11 +684,11 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     // Large-file semaphore: files above threshold block until a slot is free,
     // preventing N workers all simultaneously validating huge files.
     const is_large = blk: {
-        const stat = std.fs.cwd().statFile(path_slice) catch break :blk false;
+        const stat = cwd().statFile(path_slice) catch break :blk false;
         break :blk stat.size > LARGE_FILE_THRESHOLD;
     };
-    if (is_large) g_large_file_sem.wait();
-    defer if (is_large) g_large_file_sem.post();
+    if (is_large) g_large_file_sem.wait(runtime.io()) catch |err| std.debug.panic("sem wait failed: {s}", .{@errorName(err)});
+    defer if (is_large) g_large_file_sem.post(runtime.io());
 
     // Memory pressure throttle: if RSS is approaching budget, yield briefly
     // so other workers can finish and free memory. Caps at 500ms total wait
@@ -709,10 +723,10 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     core.heap.setThreadArena(task_alloc);
     defer core.heap.clearThreadArena();
 
-    const start_ns = std.time.nanoTimestamp();
+    const start_ns = nanoTimestamp();
     var validator = format_validation.FormatValidator.initDeep();
     const result = validator.validateFileDeep(task_alloc, path_slice);
-    const elapsed_ns: i64 = @intCast(std.time.nanoTimestamp() - start_ns);
+    const elapsed_ns: i64 = @intCast(nanoTimestamp() - start_ns);
 
     // Build result string
     const result_str = buildValidationResult(std.heap.page_allocator, result, elapsed_ns) catch return;
@@ -754,7 +768,7 @@ export fn validate_batch(
     const budget = validate_get_max_memory();
     const slots_from_mem: usize = @intCast(@max(@as(u64, 1), budget / (256 * 1024 * 1024)));
     const large_file_slots = @min(@max(@as(usize, 2), slots_from_mem), actual_threads);
-    g_large_file_sem = .{ .permits = large_file_slots };
+    g_large_file_sem = std.Io.Semaphore{ .permits = large_file_slots };
 
     // Pre-init decoder libraries
     core.preInit();
@@ -927,7 +941,7 @@ export fn validate_test_coverage(
     const alloc = arena.allocator();
 
     // Load the whole file into a reference buffer
-    const file = std.fs.cwd().openFile(path_slice, .{}) catch return null;
+    const file = cwd().openFile(path_slice, .{}) catch return null;
     defer file.close();
     const file_size = file.getEndPos() catch return null;
     if (file_size == 0 or file_size > 2 * 1024 * 1024 * 1024) return null;
@@ -1128,7 +1142,7 @@ export fn validate_test_coverage(
         const base = rounds / nworkers;
         const rem = rounds % nworkers;
         var spawned: u32 = 0;
-        const t_start = std.time.nanoTimestamp();
+        const t_start = nanoTimestamp();
         errdefer {
             // Join whatever we've already spawned before returning.
             for (0..spawned) |i| threads[i].join();
@@ -1155,7 +1169,7 @@ export fn validate_test_coverage(
             spawned += 1;
         }
         for (0..nworkers) |i| threads[i].join();
-        const t_end = std.time.nanoTimestamp();
+        const t_end = nanoTimestamp();
 
         // Merge: concat events, sum by_mode, take max duration (wall-clock).
         var offset: usize = 0;

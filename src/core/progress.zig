@@ -7,6 +7,14 @@ const progrez = @import("progrez");
 const core = progrez.core;
 const terminal = progrez.terminal;
 const render = progrez.render;
+const runtime = @import("runtime.zig");
+
+/// 0.16: `std.time.nanoTimestamp()` was removed; clocks moved to std.Io.
+/// Local helper keeps the i128-nanoseconds semantics the callers expect.
+inline fn nanoTimestamp() i128 {
+    runtime.ensureInit();
+    return std.Io.Timestamp.now(runtime.io(), .awake).nanoseconds;
+}
 
 /// Global progress state (single-instance, managed by the CLI).
 /// Thread safety: all progress functions are called from the main thread only
@@ -33,7 +41,7 @@ var g_bytes_done: u64 = 0;
 export fn validate_progress_init(label: [*:0]const u8) void {
     const slice = std.mem.span(label);
     g_state = core.ProgrezState.init(slice);
-    g_state.start_time_ns = std.time.nanoTimestamp();
+    g_state.start_time_ns = nanoTimestamp();
     g_state.sparkline_enabled = true;
     g_files_done = 0;
     g_bytes_done = 0;
@@ -81,7 +89,7 @@ export fn validate_progress_set_indeterminate() void {
 export fn validate_progress_update(file_bytes: u64) void {
     g_files_done += 1;
     g_bytes_done += file_bytes;
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = nanoTimestamp();
     g_state.recordUpdate(g_bytes_done, g_files_done, now_ns);
 }
 
@@ -94,7 +102,7 @@ export fn validate_progress_render_line(buf: [*]u8, buf_size: usize, width: u16)
     var caps = g_caps;
     caps.width = width;
 
-    const now_ns = std.time.nanoTimestamp();
+    const now_ns = nanoTimestamp();
     const slice = buf[0..buf_size];
     const rendered = render.renderLine(&g_state, caps, now_ns, slice, render.GradientColors.default);
     return rendered.len;

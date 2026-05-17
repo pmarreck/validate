@@ -5,6 +5,15 @@
 /// mounts (NAS/SMB/NFS) where each seekTo+read is a network round-trip.
 const std = @import("std");
 const heap = @import("heap.zig");
+const runtime = @import("runtime.zig");
+
+/// 0.16: std.Io.Dir methods take `io` as their first parameter. This shim
+/// lets us preserve the original `std.fs.cwd().openFile(path, .{})`-style
+/// call shape without forking every caller's signature.
+fn openCwdFile(path: []const u8, opts: std.Io.File.OpenOptions) std.Io.File.OpenError!std.Io.File {
+    runtime.ensureInit();
+    return std.Io.Dir.cwd().openFile(runtime.io(), path, opts);
+}
 
 pub const FileSource = struct {
     /// The backing storage — either mmap'd memory or a file handle
@@ -16,7 +25,7 @@ pub const FileSource = struct {
 
     const Backing = union(enum) {
         mapped: MappedData,
-        file: std.fs.File,
+        file: std.Io.File,
         /// Borrowed in-memory buffer (caller owns the data). close() is a no-op.
         buffer: []const u8,
     };
@@ -33,9 +42,9 @@ pub const FileSource = struct {
     /// `AI Is the Bubble to Burst Them All | WIRED.md` on Peter's
     /// Documents folder get rejected by plain CreateFileW but open fine
     /// through `\\?\C:\Users\...\AI Is...WIRED.md`.
-    fn openFileTolerant(path: []const u8) !std.fs.File {
+    fn openFileTolerant(path: []const u8) !std.Io.File {
         const first_err = blk: {
-            const f = std.fs.cwd().openFile(path, .{}) catch |err| break :blk err;
+            const f = openCwdFile(path, .{}) catch |err| break :blk err;
             return f;
         };
 
@@ -59,7 +68,7 @@ pub const FileSource = struct {
         for (abs_path) |*c| if (c.* == '/') { c.* = '\\'; };
 
         const prefixed = std.fmt.allocPrint(alloc, "\\\\?\\{s}", .{abs_path}) catch return first_err;
-        return std.fs.cwd().openFile(prefixed, .{}) catch return first_err;
+        return openCwdFile(prefixed, .{}) catch return first_err;
     }
 
     /// Open a file, preferring mmap on POSIX systems.
@@ -114,10 +123,10 @@ pub const FileSource = struct {
         };
     }
 
-    /// Wrap an existing std.fs.File into a FileSource (file-backed, no mmap).
+    /// Wrap an existing std.Io.File into a FileSource (file-backed, no mmap).
     /// The caller retains ownership of the underlying file handle.
     /// Do NOT call close() on this FileSource — it does not own the handle.
-    pub fn fromFile(file: std.fs.File) FileSource {
+    pub fn fromFile(file: std.Io.File) FileSource {
         const file_size = file.getEndPos() catch 0;
         return .{
             .backing = .{ .file = file },
@@ -295,7 +304,7 @@ pub const FileSource = struct {
 
 
     /// Error type for FileSource reader — covers all backing variants.
-    pub const ReaderError = std.fs.File.ReadError || error{Unseekable};
+    pub const ReaderError = std.Io.File.ReadError || error{Unseekable};
 
     /// Generic reader adapter — allows FileSource to be passed to APIs expecting
     /// a std.io.GenericReader (e.g. std.compress.xz.decompress).
