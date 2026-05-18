@@ -81,6 +81,19 @@
 									apple-sdk
 								];
 
+							# libjpeg-turbo + openjpeg are required by jpegz (Phase 1
+							# wrapper around the system C libs). Forwarded to the
+							# jpegz Zig dep via -Dlibjpeg-* / -Dopenjpeg-* options
+							# in buildPhase below. Native builds only — cross builds
+							# would need cross-compiled libjpeg/openjpeg which is
+							# orthogonal and lands separately.
+							buildInputs = pkgs.lib.optionals (!cross) [
+								pkgs.libjpeg_turbo
+								pkgs.libjpeg_turbo.dev
+								pkgs.openjpeg
+								pkgs.openjpeg.dev
+							];
+
 							buildPhase = ''
 								export HOME=$TMPDIR
 								export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
@@ -88,7 +101,21 @@
 								cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
 								chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
 								${if cross then "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS" else ""}
-								zig build -Doptimize=ReleaseFast --release=fast ${if cross then "-Dtarget=${zigTarget}" else ""}
+								${if !cross then ''
+								# Forward libjpeg + openjpeg paths to the jpegz dep.
+								# openjpeg.h is nested under include/openjpeg-2.5/.
+								LIBJPEG_DEV=${pkgs.libjpeg_turbo.dev}
+								LIBJPEG_OUT=${pkgs.libjpeg_turbo}
+								OPENJPEG_DEV=${pkgs.openjpeg.dev}
+								OPENJPEG_OUT=${pkgs.openjpeg}
+								JPEGZ_OPTS="-Dlibjpeg-include=$LIBJPEG_DEV/include \
+								            -Dlibjpeg-lib=$LIBJPEG_OUT/lib \
+								            -Dopenjpeg-include=$OPENJPEG_DEV/include/openjpeg-2.5 \
+								            -Dopenjpeg-lib=$OPENJPEG_OUT/lib"
+								'' else ''
+								JPEGZ_OPTS=""
+								''}
+								zig build $JPEGZ_OPTS -Doptimize=ReleaseFast --release=fast ${if cross then "-Dtarget=${zigTarget}" else ""}
 							'';
 
 							installPhase = ''
@@ -241,6 +268,9 @@
 							libjpegStatic.dev
 							libopenmptStatic
 							libopenmptStatic.dev
+							# openjpeg for jpegz Phase 1 wrapper (JPEG 2000 decode).
+							pkgs.openjpeg
+							pkgs.openjpeg.dev
 							sqlite
 							zlib
 							ffmpeg  # For testing ffmpeg fallback validation paths
@@ -257,6 +287,11 @@
 							export PCRE2_INCLUDE_ROOT="${pcre2Static.dev}"
 							export LIBJPEG_STATIC_ROOT="${libjpegStatic.out}"
 							export LIBJPEG_INCLUDE_ROOT="${libjpegStatic.dev}"
+							# jpegz consumes these via build.zig's -Dopenjpeg-include /
+							# -Dopenjpeg-lib options. openjpeg.h is nested under
+							# include/openjpeg-2.5/ in nixpkgs.
+							export OPENJPEG_INC="${pkgs.openjpeg.dev}/include/openjpeg-2.5"
+							export OPENJPEG_LIB="${pkgs.openjpeg}/lib"
 							export LIBOPENMPT_STATIC_ROOT="${libopenmptStatic.out}"
 							export LIBOPENMPT_INCLUDE_ROOT="${libopenmptStatic.dev}"
 							if [ -d /Applications/Xcode.app/Contents/Developer ]; then

@@ -124,6 +124,15 @@
             .url = "git+https://github.com/pmarreck/mini_blar#e1dd0b8f30bfbb4281af3fcdc794a10b77a7bd34",
             .hash = "mini_blar-3.0.0-3792nNzwAQD17kS0jQfrf-IQ9Z8qfQ-kj2mdEBPlOWuu",
         },
+        // jpegz: spec-complete JPEG family decoder library (Zig core).
+        // Phase 1 wraps libjpeg-turbo (BSD-3) for T.81 + JPEG-LS, openjpeg
+        // (BSD-2) for JPEG 2000, and lifts validate's existing pure-Zig
+        // lossless decoder. We consume the Zig module path (per jpegz/tiffz
+        // recommendation) — the C ABI is currently a thin scaffold.
+        .jpegz = .{
+            .url = "git+https://github.com/pmarreck/jpegz#f8dcb8e98f3e00543101f4a2a1668add539afd6f",
+            .hash = "jpegz-0.1.0-staw4H4ECgADl_IUt3tUVQWgdChXCqbeRYRZ7vt815UC",
+        },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",
             .hash = "N-V-__8AAAZvRACqqks-KAMLJ7bhK0Ei0r-c4ox4dym2esGj",

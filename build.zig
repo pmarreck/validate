@@ -187,6 +187,75 @@ pub fn build(b: *std.Build) void {
     });
     const libjpeg_lib = libjpeg_turbo_dep.artifact("libjpeg_turbo");
 
+    // jpegz: spec-complete JPEG family decoder library (MIT, pmarreck/jpegz).
+    // Consumes libjpeg-turbo + openjpeg internally (Phase 1 wrapper). We use
+    // the Zig module path; the C ABI is a thin scaffold today.
+    //
+    // Path options come from the flake (dev shell sets LIBJPEG_*_ROOT env;
+    // nix-build sandbox passes the same paths via -D options on the zig build
+    // invocation). When unset (raw `zig build` outside nix), jpegz's
+    // linkSystemLibrary calls fall back to whatever's on the system search
+    // path — works on macOS via Homebrew, breaks on bare-OS targets.
+    const opt_libjpeg_inc = b.option(
+        []const u8,
+        "libjpeg-include",
+        "Path to libjpeg-turbo headers (forwarded to jpegz)",
+    ) orelse blk: {
+        const v = b.graph.environ_map.get("LIBJPEG_INCLUDE_ROOT") orelse break :blk "";
+        // The env var points at the nix-store `-dev` output root; the
+        // actual include path is .../include.
+        break :blk b.fmt("{s}/include", .{v});
+    };
+    const opt_libjpeg_lib = b.option(
+        []const u8,
+        "libjpeg-lib",
+        "Path to libjpeg-turbo library directory (forwarded to jpegz)",
+    ) orelse blk: {
+        const v = b.graph.environ_map.get("LIBJPEG_STATIC_ROOT") orelse break :blk "";
+        break :blk b.fmt("{s}/lib", .{v});
+    };
+    const opt_openjpeg_inc = b.option(
+        []const u8,
+        "openjpeg-include",
+        "Path to openjpeg headers (incl. version subdir, forwarded to jpegz)",
+    ) orelse (b.graph.environ_map.get("OPENJPEG_INC") orelse "");
+    const opt_openjpeg_lib = b.option(
+        []const u8,
+        "openjpeg-lib",
+        "Path to openjpeg library directory (forwarded to jpegz)",
+    ) orelse (b.graph.environ_map.get("OPENJPEG_LIB") orelse "");
+
+    const jpegz_dep = blk: {
+        if (opt_libjpeg_inc.len > 0 and opt_libjpeg_lib.len > 0 and
+            opt_openjpeg_inc.len > 0 and opt_openjpeg_lib.len > 0)
+        {
+            break :blk b.dependency("jpegz", .{
+                .target = target,
+                .optimize = deps_optimize,
+                .@"with-charls" = false,
+                .@"libjpeg-include" = opt_libjpeg_inc,
+                .@"libjpeg-lib" = opt_libjpeg_lib,
+                .@"openjpeg-include" = opt_openjpeg_inc,
+                .@"openjpeg-lib" = opt_openjpeg_lib,
+            });
+        }
+        if (opt_libjpeg_inc.len > 0 and opt_libjpeg_lib.len > 0) {
+            break :blk b.dependency("jpegz", .{
+                .target = target,
+                .optimize = deps_optimize,
+                .@"with-charls" = false,
+                .@"libjpeg-include" = opt_libjpeg_inc,
+                .@"libjpeg-lib" = opt_libjpeg_lib,
+            });
+        }
+        break :blk b.dependency("jpegz", .{
+            .target = target,
+            .optimize = deps_optimize,
+            .@"with-charls" = false,
+        });
+    };
+    const jpegz_mod = jpegz_dep.module("jpegz");
+
     // zlib for deflate compression/decompression (zlib license, allyourcodebase/zlib)
     const zlib_dep = b.dependency("zlib", .{
         .target = target,
@@ -323,6 +392,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "par2_core", .module = par2z_core_mod }, // PAR2 packet parser via par2z
             .{ .name = "progrez", .module = progrez_module }, // Progress bar rendering (pure-Zig)
             .{ .name = "mini_blar", .module = mini_blar_mod }, // BLIP archive reader/verifier
+            .{ .name = "jpegz", .module = jpegz_mod }, // JPEG family decoder + validator (MIT, pmarreck/jpegz)
         },
     });
 
@@ -331,6 +401,14 @@ pub fn build(b: *std.Build) void {
 
     // Add libjpeg include path (from Zig-built dependency)
     core_mod.addIncludePath(libjpeg_lib.getEmittedIncludeTree());
+
+    // jpegz's Zig module calls linkSystemLibrary("jpeg") and ("openjp2"),
+    // and those propagate to consumers — but `addLibraryPath` on the dep's
+    // internal module does NOT propagate. So add the same paths here on the
+    // consumer side. Skipped when paths are empty (cross-build or system-PATH
+    // fallback).
+    if (opt_libjpeg_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
+    if (opt_openjpeg_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
 
     // Add libwebp include path (from Zig-built dependency)
     core_mod.addIncludePath(libwebp_lib.getEmittedIncludeTree());
@@ -442,8 +520,14 @@ pub fn build(b: *std.Build) void {
     // on *Build.Module now. The "1:1 rewrite" pattern is to route through
     // compile.root_module.X(...) instead of compile.X(...).
     for (all_c_deps) |dep| lib.root_module.linkLibrary(dep);
+    for (all_c_deps) |dep| lib.root_module.linkLibrary(dep);
     lib.root_module.link_libc = true;
     lib.root_module.link_libcpp = true; // Required for libjxl, libopenmpt (C++ libraries)
+    // jpegz transitively requires libjpeg + openjp2 via linkSystemLibrary; add
+    // search paths on the actual link target (Module addLibraryPath doesn't
+    // propagate through the import graph to the final compile step's linker).
+    if (opt_libjpeg_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
+    if (opt_openjpeg_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
     // On Windows, LibRaw uses ntohs/htons/htonl/ntohl from ws2_32
     if (target.result.os.tag == .windows) {
         lib.root_module.linkSystemLibrary("ws2_32", .{});
@@ -575,6 +659,10 @@ pub fn build(b: *std.Build) void {
     // 0.16: linkLibrary lives on Module, not Compile.
     cli_c.root_module.linkLibrary(lib);
     cli_c.root_module.linkLibrary(sqlite3_lib);
+    // jpegz brings -ljpeg / -lopenjp2 to the link line; the final exe needs
+    // the corresponding -L paths so those system libs resolve.
+    if (opt_libjpeg_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
+    if (opt_openjpeg_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
 
 
     const install_cli = b.addInstallArtifact(cli_c, .{});
