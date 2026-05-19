@@ -2770,8 +2770,9 @@ pub fn validateZstdDeep(allocator: Allocator, source: *FileSource) ValidationRes
 
 // ============ 7-Zip Deep Validation ============
 
-/// Deep 7-Zip validation using the sevenz_validator module.
-/// This validates header CRCs and uses the system's 7z command for full integrity testing.
+/// Deep 7-Zip validation via z7z (Peter's cleanroom LZMA2 decoder).
+/// No external `7z` command dependency — z7z is linked as a static
+/// library and called through its C FFI from `sevenz_validator.zig`.
 pub fn validate7zDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const result = sevenz_validator.validateSevenZDeep(allocator, source);
 
