@@ -3,6 +3,7 @@
 //! JBIG2, HEIC, AVIF, ICO, QOI, TGA, and DNG.
 
 const std = @import("std");
+const jpeg_validator = @import("jpeg_validator.zig");
 const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
@@ -12,7 +13,6 @@ const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const MalformationType = format_validation.MalformationType;
-const jpegz_shim = @import("jpegz_shim.zig");
 const jxl_validator = @import("jxl_validator.zig");
 const webp_validator = @import("webp_validator.zig");
 const bmp_decoder = @import("bmp_decoder.zig");
@@ -913,7 +913,7 @@ pub fn validateRafDeep(allocator: Allocator, source: *FileSource) ValidationResu
         break :blk buf[0..got];
     };
 
-    const jpeg_result = jpegz_shim.validateJpegDeepFromBuffer(jpeg_slice);
+    const jpeg_result = jpeg_validator.validateJpegDeepFromBuffer(jpeg_slice);
     if (jpeg_result.valid) {
         return ValidationResult.okWithDepth(.raf, .full);
     }
@@ -2026,7 +2026,7 @@ pub fn validateJpegDeep(allocator: Allocator, source: *FileSource) ValidationRes
         .too_large => return ValidationResult.okWithDepthAndWarning(.jpeg, .structural, "JPEG too large for non-mmap deep decode"),
     };
 
-    const result = jpegz_shim.validateJpegDeepFromBuffer(buf_slice);
+    const result = jpeg_validator.validateJpegDeepFromBuffer(buf_slice);
     if (result.valid) {
         if (is_large_file) {
             return ValidationResult.okWithDepthAndWarning(.jpeg, .full, "Large image file (>200MB)");
@@ -3322,7 +3322,7 @@ pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResu
 
 /// Validate a JPEG buffer using libjpeg-turbo
 pub fn validateJpegBufferForDng(data: []const u8) bool {
-    const result = jpegz_shim.validateJpegDeepFromBuffer(data);
+    const result = jpeg_validator.validateJpegDeepFromBuffer(data);
     return result.valid;
 }
 

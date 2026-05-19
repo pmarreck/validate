@@ -8,7 +8,6 @@ const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const ValidationDepth = format_validation.ValidationDepth;
 const jpeg_validator = @import("jpeg_validator.zig");
-const jpegz_shim = @import("jpegz_shim.zig");
 const jpeg_lossless_decoder = @import("jpeg_lossless_decoder.zig");
 const jpeg2000_validator = @import("jpeg2000_validator.zig");
 const errmsg = @import("error_messages.zig");
@@ -1211,7 +1210,7 @@ fn validateDicomJpegFragment(allocator: Allocator, file: *FileSource, offset: u6
         }
 
         // Regular JPEG (baseline/progressive) - use libjpeg-turbo
-        const result = jpegz_shim.validateJpegDeepFromBuffer(data);
+        const result = jpeg_validator.validateJpegDeepFromBuffer(data);
         return result.valid;
     }
 

@@ -180,13 +180,6 @@ pub fn build(b: *std.Build) void {
     });
     const pcre2_lib = pcre2_dep.artifact("pcre2-8");
 
-    // libjpeg-turbo for JPEG decode validation (BSD-3, chearon/libjpeg-turbo Zig build)
-    const libjpeg_turbo_dep = b.dependency("libjpeg_turbo", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const libjpeg_lib = libjpeg_turbo_dep.artifact("libjpeg_turbo");
-
     // jpegz: spec-complete JPEG family decoder library (MIT, pmarreck/jpegz).
     // Consumes libjpeg-turbo + openjpeg internally (Phase 1 wrapper). We use
     // the Zig module path; the C ABI is a thin scaffold today.
@@ -399,9 +392,6 @@ pub fn build(b: *std.Build) void {
     // Add PCRE2 include path (from Zig-built dependency)
     core_mod.addIncludePath(pcre2_lib.getEmittedIncludeTree());
 
-    // Add libjpeg include path (from Zig-built dependency)
-    core_mod.addIncludePath(libjpeg_lib.getEmittedIncludeTree());
-
     // jpegz's Zig module calls linkSystemLibrary("jpeg") and ("openjp2"),
     // and those propagate to consumers — but `addLibraryPath` on the dep's
     // internal module does NOT propagate. So add the same paths here on the
@@ -489,7 +479,6 @@ pub fn build(b: *std.Build) void {
     const all_c_deps: []const *std.Build.Step.Compile = &.{
         pcre2_lib,     // regex/glob matching
         zlib_lib,      // deflate decompression (replaces buggy std.compress.flate)
-        libjpeg_lib,   // JPEG decode validation
         libwebp_lib,   // WebP deep validation
         libopus_lib,   // Opus audio deep validation
         libogg_lib,    // OGG container support (required by libvorbis)
@@ -548,7 +537,6 @@ pub fn build(b: *std.Build) void {
             lib.getEmittedBin(),
             pcre2_lib.getEmittedBin(),
             zlib_lib.getEmittedBin(),
-            libjpeg_lib.getEmittedBin(),
             libwebp_lib.getEmittedBin(),
             libopus_lib.getEmittedBin(),
             libogg_lib.getEmittedBin(),
@@ -717,7 +705,6 @@ pub fn build(b: *std.Build) void {
     fuzz_bzip2.root_module.link_libc = true;
     fuzz_bzip2.root_module.linkLibrary(sqlite3_lib);
     fuzz_bzip2.root_module.linkLibrary(pcre2_lib);
-    fuzz_bzip2.root_module.linkLibrary(libjpeg_lib);
     fuzz_bzip2.root_module.linkLibrary(zlib_lib);
 
     const install_fuzz_bzip2 = b.addInstallArtifact(fuzz_bzip2, .{});

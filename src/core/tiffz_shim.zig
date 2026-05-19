@@ -3,7 +3,7 @@
 //! validation path; same `validateTiffDeep(allocator, source, format)`
 //! contract from the caller's perspective.
 //!
-//! Architecture mirrors jpegz_shim.zig:
+//! Architecture mirrors jpeg_validator.zig:
 //!   - `validateTiffDeepBuffer(buffer)` is the integration entry point;
 //!     `validateTiffDeep` in `image_validators.zig` calls it after
 //!     slurping/mmap'ing the buffer.

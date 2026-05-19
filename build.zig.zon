@@ -55,14 +55,6 @@
             .url = "https://github.com/pmarreck/pcre2/archive/refs/tags/zig-0.16.0.tar.gz",
             .hash = "pcre2-10.47.0-S7QTbvnVMgDsA1ipkKNj5kVoEda9wcIuZYUpdrTuDaCh",
         },
-        // chearon/libjpeg-turbo's build.zig is 0.15-only; forked to pmarreck +
-        // ported (Step.Compile method calls routed through root_module per
-        // migration doc 12.21), and bumped its pinned nasm dep to current
-        // main (sno2/nasm 20f90eec, already 0.16-ready).
-        .libjpeg_turbo = .{
-            .url = "https://github.com/pmarreck/libjpeg-turbo/archive/f0abba9810aee6b5aec64a475aee6316ce2b9441.tar.gz",
-            .hash = "libjpeg_turbo-3.1.1-1-iiYWsqiCSQAUbrkiZ_Q7Kh2f5Nk-HOimWftFo-9n6GLi",
-        },
         .zlib = .{
             .url = "https://github.com/allyourcodebase/zlib/archive/refs/heads/main.tar.gz",
             .hash = "zlib-1.3.2-ZZQ7lc8NAAAHm9MDfplvwoesXvk4tVm6VCsiI8KnIbT0",

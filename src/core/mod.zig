@@ -177,10 +177,10 @@ pub fn getVersion() []const u8 {
 /// This triggers lazy SIMD detection and global state initialization
 /// in all C libraries, preventing race conditions during parallel validation.
 pub fn preInit() void {
-    // libjpeg-turbo - triggers SIMD detection on first jpeg_create_decompress()
-    var jpeg_init_src = file_source.FileSource.fromBuffer(&[_]u8{});
-    _ = jpeg_validator.validateJpegDeep(&jpeg_init_src);
-
+    // libjpeg-turbo preInit was removed when jpegz Phase 1 (2026-05-18)
+    // retired the libjpeg-turbo runtime dep. jpegz's cleanroom decoder
+    // has no lazy SIMD setup; the warmup is dead weight.
+    //
     // libwebp - triggers DSP function initialization
     var webp_init_src = file_source.FileSource.fromBuffer(&[_]u8{});
     _ = webp_validator.validateWebpDeep(&webp_init_src);

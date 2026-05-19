@@ -12,11 +12,11 @@
 //! validates their embedded image data.
 
 const std = @import("std");
+const jpeg_validator = @import("jpeg_validator.zig");
 const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
-const jpegz_shim = @import("jpegz_shim.zig");
 const jpeg2000_validator = @import("jpeg2000_validator.zig");
 const jbig2_decoder = @import("jbig2_decoder.zig");
 const ccitt_fax_decoder = @import("ccitt_fax_decoder.zig");
@@ -880,7 +880,7 @@ pub fn validateExtractedImage(allocator: Allocator, data: []const u8, filter: Im
     switch (filter) {
         .dct_decode => {
             // JPEG validation via libjpeg-turbo
-            const result = jpegz_shim.validateJpegDeepFromBuffer(data);
+            const result = jpeg_validator.validateJpegDeepFromBuffer(data);
             return .{
                 .object_num = 0,
                 .filter = filter,
