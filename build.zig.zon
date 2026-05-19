@@ -130,8 +130,8 @@
         // lossless decoder. We consume the Zig module path (per jpegz/tiffz
         // recommendation) — the C ABI is currently a thin scaffold.
         .jpegz = .{
-            .url = "git+https://github.com/pmarreck/jpegz#f8dcb8e98f3e00543101f4a2a1668add539afd6f",
-            .hash = "jpegz-0.1.0-staw4H4ECgADl_IUt3tUVQWgdChXCqbeRYRZ7vt815UC",
+            .url = "git+https://github.com/pmarreck/jpegz#24b34fe45feaef5835dde25bd30fe246b8c1c290",
+            .hash = "jpegz-0.1.0-staw4KEPCgDLLCn_wMvIAjzrvu401i58ohbx_VuB8tZJ",
         },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",

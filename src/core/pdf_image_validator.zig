@@ -16,7 +16,6 @@ const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
-const jpeg_validator = @import("jpeg_validator.zig");
 const jpegz_shim = @import("jpegz_shim.zig");
 const jpeg2000_validator = @import("jpeg2000_validator.zig");
 const jbig2_decoder = @import("jbig2_decoder.zig");

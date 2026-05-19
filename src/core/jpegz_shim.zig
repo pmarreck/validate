@@ -40,6 +40,21 @@ pub fn validateJpegDeepFromBuffer(data: []const u8) jpeg_validator.JpegValidatio
         return jpeg_validator.JpegValidationResult.invalid("jpegz: out of memory");
     defer report.deinit(std.heap.c_allocator);
 
+    // Promote findings validate considers integrity-relevant to FAIL even
+    // when jpegz tagged them WARN. jpegz's lenient cleanroom decode
+    // surfaces mid-stream truncation as a WARN-tier `insufficient_data`
+    // finding (the file decoded as far as it could, deferred to caller).
+    // For validate's "is this preview corrupt?" question, mid-stream
+    // data shortage IS corruption. Same precedent as our `old_style_lzw_codes`
+    // promotion on the tiffz side.
+    if (report.overall == .warn) {
+        for (report.findings.items) |f| {
+            if (f.severity == .warn and isIntegrityFailFinding(f.code)) {
+                return jpeg_validator.JpegValidationResult.invalid(findingCodeMessage(f.code));
+            }
+        }
+    }
+
     switch (report.overall) {
         .pass, .info => return jpeg_validator.JpegValidationResult.ok(),
         .warn => {
@@ -68,6 +83,22 @@ pub fn validateJpegDeepFromHandle(file: anytype) jpeg_validator.JpegValidationRe
     const n = file.readAll(buf) catch
         return jpeg_validator.JpegValidationResult.invalid("file read failed");
     return validateJpegDeepFromBuffer(buf[0..n]);
+}
+
+/// FindingCodes that validate elevates from WARN to FAIL. These signal
+/// real data-integrity problems even though jpegz reports them at
+/// "tool-tolerated" tier (because it can still produce pixels). Same
+/// validate-side promotion pattern documented in
+/// `~/Documents-CloudManaged/validate/inbox/2026-05-06-jpegz-mapping-table.md`
+/// (last section on `trailing_data_after_eoi`).
+fn isIntegrityFailFinding(code: jpegz.FindingCode) bool {
+    return switch (code) {
+        // Mid-stream entropy data ran out before the decoder completed —
+        // for validate, this is always a corrupt-file signal regardless of
+        // jpegz's lenient-mode tolerance.
+        .insufficient_data => true,
+        else => false,
+    };
 }
 
 /// Return the first finding at or above the given severity, mapped to a
@@ -139,8 +170,9 @@ fn findingCodeMessage(code: jpegz.FindingCode) []const u8 {
         .xmp_metadata_present => "JPEG XMP metadata",
         .photoshop_irb_present => "JPEG Photoshop IRB",
 
-        // Deviation (WARN-ish)
+        // Deviation (WARN-ish) / data-integrity (validate promotes to FAIL)
         .trailing_data_after_eoi => "JPEG trailing data after EOI",
+        .insufficient_data => "JPEG insufficient data — entropy stream truncated mid-decode",
 
         else => "JPEG validation finding (uncategorized)",
     };

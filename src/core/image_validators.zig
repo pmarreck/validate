@@ -12,7 +12,6 @@ const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
 const FileFormat = format_validation.FileFormat;
 const MalformationType = format_validation.MalformationType;
-const jpeg_validator = @import("jpeg_validator.zig");
 const jpegz_shim = @import("jpegz_shim.zig");
 const jxl_validator = @import("jxl_validator.zig");
 const webp_validator = @import("webp_validator.zig");
@@ -3323,7 +3322,7 @@ pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResu
 
 /// Validate a JPEG buffer using libjpeg-turbo
 pub fn validateJpegBufferForDng(data: []const u8) bool {
-    const result = jpeg_validator.validateJpegDeepFromBuffer(data);
+    const result = jpegz_shim.validateJpegDeepFromBuffer(data);
     return result.valid;
 }
 
