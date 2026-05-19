@@ -59,11 +59,17 @@ pub fn validateTiffDeepBuffer(
 
     // Walk additional IFDs (multi-page TIFF, DNG SubIFDs, etc.) so
     // their findings emit through the same callback. `ifd(N)` parses
-    // lazily; calling it forces each one.
+    // lazily and grows the count on each successful parse; iterate
+    // until ifdCount() stops growing or a parse errors out.
     var i: usize = 1;
-    while (true) : (i += 1) {
+    while (i < decoder.ifdCount() + 1) : (i += 1) {
         _ = decoder.ifd(i) catch |err| switch (err) {
-            // End of IFD chain — normal termination.
+            // InvalidArgument = ran past the end of the IFD chain
+            // (decoder reached next_ifd_offset==0). Normal termination.
+            error.InvalidArgument => break,
+            // Malformed = next IFD entry was structurally bad. Also a
+            // graceful termination for our purposes — earlier IFDs
+            // parsed successfully and accumulated their findings.
             error.Malformed => break,
             else => return routeError(err, format),
         };
@@ -96,7 +102,7 @@ fn routeError(err: tiffz.Error, format: FileFormat) ValidationResult {
         error.Malformed => ValidationResult.invalidCodeWithDepth(format, .invalid_value, "TIFF structure", .full),
         error.SourceTooShort => ValidationResult.invalidCodeWithDepth(format, .file_too_small, "TIFF header", .full),
         error.SourceShortRead => ValidationResult.invalidCodeWithDepth(format, .truncated, "TIFF strip/tile data", .full),
-        error.SourceSeekTooFarBack => ValidationResult.invalidCodeWithDepth(format, .failed_to_seek, null, .full),
+        error.SourceSeekTooFarBack => ValidationResult.invalidCodeWithDepth(format, .failed_to_seek, "TIFF source", .full),
         error.Io => ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "TIFF source", .full),
 
         // ── Decoder-level FAIL ──
@@ -105,7 +111,7 @@ fn routeError(err: tiffz.Error, format: FileFormat) ValidationResult {
         error.UnsupportedPredictor => ValidationResult.invalidCodeWithDepth(format, .unsupported, "TIFF Predictor", .full),
         error.UnsupportedBitDepth => ValidationResult.invalidCodeWithDepth(format, .unsupported, "TIFF BitsPerSample", .full),
         error.UnsupportedTagType => ValidationResult.invalidCodeWithDepth(format, .unsupported, "TIFF tag field type", .full),
-        error.DestTooSmall => ValidationResult.invalidCodeWithDepth(format, .buffer_too_small, null, .full),
+        error.DestTooSmall => ValidationResult.invalidCodeWithDepth(format, .buffer_too_small, "tiffz output", .full),
 
         // ── Resource-limit FAIL ──
         error.LimitExceededIfdCount,
@@ -121,7 +127,7 @@ fn routeError(err: tiffz.Error, format: FileFormat) ValidationResult {
         => ValidationResult.invalidCodeWithDepth(format, .exceeds_bounds, "TIFF resource", .full),
 
         // ── Allocation / internal ──
-        error.OutOfMemory => ValidationResult.invalidCodeWithDepth(format, .out_of_memory, null, .full),
+        error.OutOfMemory => ValidationResult.invalidCodeWithDepth(format, .out_of_memory, "during TIFF decode", .full),
         error.Bug => ValidationResult.invalidWithDepth(format, "tiffz internal invariant violated", .full),
     };
 }

@@ -27,6 +27,7 @@ pub const file_source = @import("file_source.zig");
 pub const format_validation = @import("format_validation.zig");
 pub const test_coverage = @import("test_coverage.zig");
 pub const jpeg_validator = @import("jpeg_validator.zig");
+pub const tiffz_shim = @import("tiffz_shim.zig");
 pub const alac_validator = @import("alac_validator.zig");
 pub const ac3_validator = @import("ac3_validator.zig");
 pub const dts_validator = @import("dts_validator.zig");

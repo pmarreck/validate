@@ -2233,7 +2233,10 @@ test "QBW deep: corrupted CRC-32 detected" {
 test "ground truth: QBW deep validation passes all page CRCs" {
 	const path: []const u8 = "ground_truth_examples/qbw/B18_Managing_Company_Files.qbw";
 
-	var src = try FileSource.open(path);
+	var src = FileSource.open(path) catch |err| switch (err) {
+		error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
+		else => return err,
+	};
 	defer src.close();
 	const result = validateQbwDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
@@ -2910,7 +2913,10 @@ test "ground truth: NACHA sample structural validation" {
 test "ground truth: NACHA sample deep validation" {
 	const path: []const u8 = "ground_truth_examples/nacha/sample.ach";
 
-	var src = try FileSource.open(path);
+	var src = FileSource.open(path) catch |err| switch (err) {
+		error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
+		else => return err,
+	};
 	defer src.close();
 	const result = validateNachaDeep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);
@@ -2933,7 +2939,10 @@ test "ground truth: MT940 sample structural validation" {
 test "ground truth: MT940 sample deep validation" {
 	const path: []const u8 = "ground_truth_examples/mt940/sample.mt940";
 
-	var src = try FileSource.open(path);
+	var src = FileSource.open(path) catch |err| switch (err) {
+		error.FileNotFound, error.AccessDenied => return error.SkipZigTest,
+		else => return err,
+	};
 	defer src.close();
 	const result = validateMt940Deep(std.testing.allocator, &src);
 	try std.testing.expect(result.is_valid);

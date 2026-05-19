@@ -217,6 +217,19 @@ pub fn build(b: *std.Build) void {
         "openjpeg-lib",
         "Path to openjpeg library directory (forwarded to jpegz)",
     ) orelse (b.graph.environ_map.get("OPENJPEG_LIB") orelse "");
+    // System zlib paths — forwarded to tiffz (its `linkSystemLibrary("z")`
+    // call needs them on hosts where libz isn't in libSystem, i.e. all
+    // non-Apple targets and Nix sandbox).
+    const opt_zlib_inc = b.option(
+        []const u8,
+        "zlib-include",
+        "Path to zlib headers (forwarded to tiffz)",
+    ) orelse (b.graph.environ_map.get("ZLIB_INCLUDE_ROOT") orelse "");
+    const opt_zlib_lib = b.option(
+        []const u8,
+        "zlib-lib",
+        "Path to zlib library directory (forwarded to tiffz)",
+    ) orelse (b.graph.environ_map.get("ZLIB_LIB_ROOT") orelse "");
 
     const jpegz_dep = blk: {
         if (opt_libjpeg_inc.len > 0 and opt_libjpeg_lib.len > 0 and
@@ -248,6 +261,41 @@ pub fn build(b: *std.Build) void {
         });
     };
     const jpegz_mod = jpegz_dep.module("jpegz");
+
+    // tiffz: pure-Zig TIFF / DNG / NEF / NRW / CR2 / ARW structural
+    // validator. Consumes jpegz.decode for Compression=7 + lossless
+    // JPEG. Same option-cascade as jpegz to forward system library
+    // paths in the no-libpaths/libpaths-only/full cases.
+    const tiffz_dep = blk: {
+        if (opt_libjpeg_inc.len > 0 and opt_libjpeg_lib.len > 0 and
+            opt_openjpeg_inc.len > 0 and opt_openjpeg_lib.len > 0 and
+            opt_zlib_inc.len > 0 and opt_zlib_lib.len > 0)
+        {
+            break :blk b.dependency("tiffz", .{
+                .target = target,
+                .optimize = deps_optimize,
+                .@"libjpeg-include" = opt_libjpeg_inc,
+                .@"libjpeg-lib" = opt_libjpeg_lib,
+                .@"openjpeg-include" = opt_openjpeg_inc,
+                .@"openjpeg-lib" = opt_openjpeg_lib,
+                .@"zlib-include" = opt_zlib_inc,
+                .@"zlib-lib" = opt_zlib_lib,
+            });
+        }
+        if (opt_zlib_inc.len > 0 and opt_zlib_lib.len > 0) {
+            break :blk b.dependency("tiffz", .{
+                .target = target,
+                .optimize = deps_optimize,
+                .@"zlib-include" = opt_zlib_inc,
+                .@"zlib-lib" = opt_zlib_lib,
+            });
+        }
+        break :blk b.dependency("tiffz", .{
+            .target = target,
+            .optimize = deps_optimize,
+        });
+    };
+    const tiffz_mod = tiffz_dep.module("tiffz");
 
     // zlib for deflate compression/decompression (zlib license, allyourcodebase/zlib)
     const zlib_dep = b.dependency("zlib", .{
@@ -386,6 +434,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "progrez", .module = progrez_module }, // Progress bar rendering (pure-Zig)
             .{ .name = "mini_blar", .module = mini_blar_mod }, // BLIP archive reader/verifier
             .{ .name = "jpegz", .module = jpegz_mod }, // JPEG family decoder + validator (MIT, pmarreck/jpegz)
+            .{ .name = "tiffz", .module = tiffz_mod }, // TIFF family validator (MIT, pmarreck/tiffz)
         },
     });
 
@@ -399,6 +448,7 @@ pub fn build(b: *std.Build) void {
     // fallback).
     if (opt_libjpeg_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
     if (opt_openjpeg_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
+    if (opt_zlib_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_zlib_lib });
 
     // Add libwebp include path (from Zig-built dependency)
     core_mod.addIncludePath(libwebp_lib.getEmittedIncludeTree());
@@ -517,6 +567,7 @@ pub fn build(b: *std.Build) void {
     // propagate through the import graph to the final compile step's linker).
     if (opt_libjpeg_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
     if (opt_openjpeg_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
+    if (opt_zlib_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib });
     // On Windows, LibRaw uses ntohs/htons/htonl/ntohl from ws2_32
     if (target.result.os.tag == .windows) {
         lib.root_module.linkSystemLibrary("ws2_32", .{});
@@ -651,6 +702,7 @@ pub fn build(b: *std.Build) void {
     // the corresponding -L paths so those system libs resolve.
     if (opt_libjpeg_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
     if (opt_openjpeg_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
+    if (opt_zlib_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib });
 
 
     const install_cli = b.addInstallArtifact(cli_c, .{});

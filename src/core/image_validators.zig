@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const jpeg_validator = @import("jpeg_validator.zig");
+const tiffz_shim = @import("tiffz_shim.zig");
 const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
@@ -2752,8 +2753,8 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
         return validateTiff1BitLzw(allocator, source);
     }
 
-    // Feed zigimg from the source. mmap zero-copy when available, else bounded
-    // heap slurp (64 MB cap). zigimg.Image.fromMemory() needs a flat buffer.
+    // Feed tiffz from the source. mmap zero-copy when available, else
+    // bounded heap slurp (64 MB cap). tiffz operates on a flat buffer.
     const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
         return ValidationResult.okWithDepthAndWarning(format, .structural, "I/O error reading image");
     var heap_ref: ?[]u8 = null;
@@ -2764,36 +2765,7 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
         .too_large => return ValidationResult.okWithDepthAndWarning(format, .structural, "image too large for non-mmap deep decode"),
     };
 
-    // Try to load the image - this performs full decompression and validates the data
-    var image = zigimg.Image.fromMemory(allocator, buffer) catch |err| {
-        // Debug output for error diagnosis
-        if (format_validation.getenvCrossPlatform("TIFF_DEBUG")) |_| {
-            std.debug.print("TIFF decode error: {s}\n", .{@errorName(err)});
-        }
-        return switch (err) {
-            // Clear I/O errors - definitely invalid
-            error.EndOfStream => ValidationResult.invalidCodeWithDepth(format, .truncated, "file", .full),
-            error.OutOfMemory => ValidationResult.invalidCodeWithDepth(format, .out_of_memory, "during decode", .full),
-
-            // InvalidData could mean corruption OR unsupported format features
-            // zigimg has limited support (e.g., unusual strip sizes, some predictor modes)
-            error.InvalidData => {
-                return ValidationResult.okWithDepthAndWarning(format, .structural, "zigimg decode failed, structural only");
-            },
-
-            // Unsupported - zigimg doesn't handle this format variant (e.g., 16-bit TIFF)
-            error.Unsupported => {
-                return ValidationResult.okWithDepthAndWarning(format, .structural, "unsupported format variant");
-            },
-
-            // Other errors - structural validation only
-            else => ValidationResult.okWithDepthAndWarning(format, .structural, "decode failed"),
-        };
-    };
-    image.deinit(allocator);
-
-    // If we get here, the image decoded successfully
-    return ValidationResult.okWithDepth(format, .full);
+    return tiffz_shim.validateTiffDeepBuffer(allocator, buffer, format);
 }
 
 /// Result of checking TIFF tags for zigimg compatibility

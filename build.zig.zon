@@ -125,6 +125,14 @@
             .url = "git+https://github.com/pmarreck/jpegz#24b34fe45feaef5835dde25bd30fe246b8c1c290",
             .hash = "jpegz-0.1.0-staw4KEPCgDLLCn_wMvIAjzrvu401i58ohbx_VuB8tZJ",
         },
+        // tiffz: cleanroom pure-Zig TIFF / DNG / NEF / NRW / CR2 / ARW
+        // structural validator. Consumes jpegz.decode for JPEG-in-TIFF
+        // (Compression=7) and lossless JPEG (DNG). Pins jpegz + zstdz
+        // to the same commits/hashes as validate for Zig package dedup.
+        .tiffz = .{
+            .url = "git+https://github.com/pmarreck/tiffz#f1eab2edb6629e4aec4eabd832ce47ae574b2f48",
+            .hash = "tiffz-0.1.0-qutJASOsYgE1d2-3NEXU4iJ0tZy4yy4K2QH1nxDXaH2g",
+        },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",
             .hash = "N-V-__8AAAZvRACqqks-KAMLJ7bhK0Ei0r-c4ox4dym2esGj",

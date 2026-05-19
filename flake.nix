@@ -92,6 +92,8 @@
 								pkgs.libjpeg_turbo.dev
 								pkgs.openjpeg
 								pkgs.openjpeg.dev
+								pkgs.zlib
+								pkgs.zlib.dev
 							];
 
 							buildPhase = ''
@@ -108,10 +110,14 @@
 								LIBJPEG_OUT=${pkgs.libjpeg_turbo.out}
 								OPENJPEG_DEV=${pkgs.openjpeg.dev}
 								OPENJPEG_OUT=${pkgs.openjpeg}
+								ZLIB_DEV=${pkgs.zlib.dev}
+								ZLIB_OUT=${pkgs.zlib.out}
 								JPEGZ_OPTS="-Dlibjpeg-include=$LIBJPEG_DEV/include \
 								            -Dlibjpeg-lib=$LIBJPEG_OUT/lib \
 								            -Dopenjpeg-include=$OPENJPEG_DEV/include/openjpeg-2.5 \
-								            -Dopenjpeg-lib=$OPENJPEG_OUT/lib"
+								            -Dopenjpeg-lib=$OPENJPEG_OUT/lib \
+								            -Dzlib-include=$ZLIB_DEV/include \
+								            -Dzlib-lib=$ZLIB_OUT/lib"
 								'' else ''
 								JPEGZ_OPTS=""
 								''}
@@ -211,6 +217,18 @@
 								apple-sdk
 							];
 
+						# Same system libs that the main build uses — jpegz needs libjpeg/openjpeg,
+						# tiffz needs zlib. Test derivation is a fresh nix sandbox so it can't
+						# rely on host PATH or the dev shell's env exports.
+						buildInputs = [
+							pkgs.libjpeg_turbo
+							pkgs.libjpeg_turbo.dev
+							pkgs.openjpeg
+							pkgs.openjpeg.dev
+							pkgs.zlib
+							pkgs.zlib.dev
+						];
+
 						buildPhase = ''
 							export HOME=$TMPDIR
 							export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
@@ -220,7 +238,19 @@
 							# Force non-interactive: Zig's test runner emits terminal escape
 							# sequences when stderr is a TTY, which can hang in CI.
 							export TERM=dumb
-							timeout 600 zig build test 2>&1 || {
+							LIBJPEG_DEV=${pkgs.libjpeg_turbo.dev}
+							LIBJPEG_OUT=${pkgs.libjpeg_turbo.out}
+							OPENJPEG_DEV=${pkgs.openjpeg.dev}
+							OPENJPEG_OUT=${pkgs.openjpeg}
+							ZLIB_DEV=${pkgs.zlib.dev}
+							ZLIB_OUT=${pkgs.zlib.out}
+							JPEGZ_OPTS="-Dlibjpeg-include=$LIBJPEG_DEV/include \
+							            -Dlibjpeg-lib=$LIBJPEG_OUT/lib \
+							            -Dopenjpeg-include=$OPENJPEG_DEV/include/openjpeg-2.5 \
+							            -Dopenjpeg-lib=$OPENJPEG_OUT/lib \
+							            -Dzlib-include=$ZLIB_DEV/include \
+							            -Dzlib-lib=$ZLIB_OUT/lib"
+							timeout 600 zig build $JPEGZ_OPTS test 2>&1 || {
 							  echo "Tests timed out or failed after 10 minutes"
 							  exit 1
 							}
