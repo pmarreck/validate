@@ -105,7 +105,7 @@
 								# Forward libjpeg + openjpeg paths to the jpegz dep.
 								# openjpeg.h is nested under include/openjpeg-2.5/.
 								LIBJPEG_DEV=${pkgs.libjpeg_turbo.dev}
-								LIBJPEG_OUT=${pkgs.libjpeg_turbo}
+								LIBJPEG_OUT=${pkgs.libjpeg_turbo.out}
 								OPENJPEG_DEV=${pkgs.openjpeg.dev}
 								OPENJPEG_OUT=${pkgs.openjpeg}
 								JPEGZ_OPTS="-Dlibjpeg-include=$LIBJPEG_DEV/include \
