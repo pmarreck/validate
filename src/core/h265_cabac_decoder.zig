@@ -10,6 +10,7 @@ const std = @import("std");
 const BitReader = @import("bitstream_reader.zig").BitReader;
 const h265_tables = @import("h265_cabac_tables.zig");
 const codec_utils = @import("codec_utils.zig");
+const trace = @import("trace.zig");
 
 // ============================================================================
 // Scan Order Tables (ITU-T H.265 Section 6.5.3)
@@ -1162,15 +1163,27 @@ pub fn validateH265IntraCabac(
 
     const max_ctus: u32 = @min(total_ctus, 1024);
 
+    const trace_cabac = trace.isEnabled(.h265_cabac);
+    if (trace_cabac) trace.print(.h265_cabac, "slice_enter total_ctus={d} max_ctus={d} pic_w_ctbs={d} pic_h_ctbs={d} log2_ctb={d} rbsp_bits={d} qp={d} sao={} pcm={}", .{
+        total_ctus, max_ctus, info.pic_width_in_ctbs, info.pic_height_in_ctbs, info.log2_ctb_size, cabac_start_bits, info.slice_qp, info.sao_enabled, info.pcm_enabled,
+    });
+
     while (ctu_rs_addr < max_ctus) : (ctu_rs_addr += 1) {
-        if (!engine.valid) return .{
-            .ctus_decoded = ctu_rs_addr,
-            .terminated_cleanly = false,
-            .bits_remaining = reader.remainingBits(),
-            .total_rbsp_bits = cabac_start_bits,
-            .engine_valid = false,
-        };
-        if (reader.remainingBits() < 2) break;
+        const bits_at_ctu_start = reader.remainingBits();
+        if (!engine.valid) {
+            if (trace_cabac) trace.print(.h265_cabac, "ctu_invalid ctu={d} bits_remain={d}", .{ ctu_rs_addr, bits_at_ctu_start });
+            return .{
+                .ctus_decoded = ctu_rs_addr,
+                .terminated_cleanly = false,
+                .bits_remaining = bits_at_ctu_start,
+                .total_rbsp_bits = cabac_start_bits,
+                .engine_valid = false,
+            };
+        }
+        if (reader.remainingBits() < 2) {
+            if (trace_cabac) trace.print(.h265_cabac, "ctu_underflow ctu={d} bits_remain={d}", .{ ctu_rs_addr, bits_at_ctu_start });
+            break;
+        }
 
         const rx = ctu_rs_addr % info.pic_width_in_ctbs;
         const ry = ctu_rs_addr / info.pic_width_in_ctbs;
@@ -1180,7 +1193,22 @@ pub fn validateH265IntraCabac(
 
         if (info.sao_enabled) {
             parseSaoParams(&engine, info, rx, ry);
-            if (!engine.valid) return .{
+            if (!engine.valid) {
+                if (trace_cabac) trace.print(.h265_cabac, "ctu_fail_sao ctu={d} bits_remain={d}", .{ ctu_rs_addr, reader.remainingBits() });
+                return .{
+                    .ctus_decoded = ctu_rs_addr,
+                    .terminated_cleanly = false,
+                    .bits_remaining = reader.remainingBits(),
+                    .total_rbsp_bits = cabac_start_bits,
+                    .engine_valid = false,
+                };
+            }
+        }
+
+        codingQuadtree(&engine, info, x0, y0, info.log2_ctb_size, 0);
+        if (!engine.valid) {
+            if (trace_cabac) trace.print(.h265_cabac, "ctu_fail_quadtree ctu={d} bits_remain={d}", .{ ctu_rs_addr, reader.remainingBits() });
+            return .{
                 .ctus_decoded = ctu_rs_addr,
                 .terminated_cleanly = false,
                 .bits_remaining = reader.remainingBits(),
@@ -1189,16 +1217,12 @@ pub fn validateH265IntraCabac(
             };
         }
 
-        codingQuadtree(&engine, info, x0, y0, info.log2_ctb_size, 0);
-        if (!engine.valid) return .{
-            .ctus_decoded = ctu_rs_addr,
-            .terminated_cleanly = false,
-            .bits_remaining = reader.remainingBits(),
-            .total_rbsp_bits = cabac_start_bits,
-            .engine_valid = false,
-        };
-
-        if (engine.decodeTerminate() == 1) {
+        const bits_after_quadtree = reader.remainingBits();
+        const terminate = engine.decodeTerminate();
+        if (trace_cabac) trace.print(.h265_cabac, "ctu ctu={d}/{d} x0={d} y0={d} bits_in={d} bits_after_quadtree={d} bits_after_term={d} term={d} valid={}", .{
+            ctu_rs_addr, total_ctus, x0, y0, bits_at_ctu_start, bits_after_quadtree, reader.remainingBits(), terminate, engine.valid,
+        });
+        if (terminate == 1) {
             return .{
                 .ctus_decoded = ctu_rs_addr + 1,
                 .terminated_cleanly = true,
@@ -1215,6 +1239,10 @@ pub fn validateH265IntraCabac(
             .engine_valid = false,
         };
     }
+
+    if (trace_cabac) trace.print(.h265_cabac, "slice_exit_loop ctus_done={d} max={d} bits_remain={d} engine_valid={}", .{
+        ctu_rs_addr, max_ctus, reader.remainingBits(), engine.valid,
+    });
 
     return .{
         .ctus_decoded = ctu_rs_addr,

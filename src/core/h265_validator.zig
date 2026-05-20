@@ -16,6 +16,8 @@ const BitReader = @import("bitstream_reader.zig").BitReader;
 const errmsg = @import("error_messages.zig");
 const codec_utils = @import("codec_utils.zig");
 const h265_cabac = @import("h265_cabac_decoder.zig");
+const trace = @import("trace.zig");
+const heap = @import("heap.zig");
 
 // ============================================================================
 // NAL Unit Types (ITU-T H.265 Table 7-1)
@@ -930,6 +932,7 @@ pub const H265ValidationResult = struct {
 /// `data` must be in Annex B format (start code prefixed NAL units).
 /// `max_frames` limits the number of coded pictures to validate (0 = unlimited).
 pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResult {
+    if (trace.isEnabled(.h265)) trace.print(.h265, "validateH265Stream_enter data_len={d} max_frames={d}", .{ data.len, max_frames });
     if (data.len < 5) {
         return H265ValidationResult.invalid("Data too small for H.265");
     }
@@ -1047,14 +1050,47 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                 const can_cabac = current_sps != null and current_pps != null and
                     current_sps.?.has_extended_fields and current_pps.?.has_extended_fields;
 
+                if (trace.isEnabled(.h265)) trace.print(.h265, "slice_nal nal_type={s} nal_len={d} can_cabac={} sps_ext={?} pps_ext={?}", .{
+                    @tagName(nal_type),
+                    nal.data.len,
+                    can_cabac,
+                    if (current_sps) |s| s.has_extended_fields else null,
+                    if (current_pps) |p| p.has_extended_fields else null,
+                });
+
                 if (can_cabac) {
-                    // Full RBSP removal for CABAC decode
-                    // Use a large stack buffer for the full NAL (up to 256KB)
-                    var large_rbsp_buf: [256 * 1024]u8 = undefined;
-                    const rbsp_data = if (nal.data.len <= large_rbsp_buf.len)
-                        removeEmulationPreventionBytes(nal.data, &large_rbsp_buf)
-                    else
-                        null;
+                    // Heap-allocate RBSP buffer sized to the NAL. The prior
+                    // implementation used a 256 KB stack buffer and silently
+                    // returned null for larger NALs — that swallowed CABAC
+                    // for any non-trivial HEIC item (autumn's 282 KB NAL
+                    // was a representative case) and was the primary cause
+                    // of corruption silently passing validation. Per the
+                    // "no silent skip" policy: if we can't run CABAC, the
+                    // result must surface as an anomaly, not as a clean PASS.
+                    const allocator = heap.validateAllocator();
+                    const rbsp_data: ?[]u8 = blk: {
+                        const scratch = allocator.alloc(u8, nal.data.len) catch break :blk null;
+                        defer allocator.free(scratch);
+                        const rbsp_slice = removeEmulationPreventionBytes(nal.data, scratch) orelse break :blk null;
+                        const owned = allocator.alloc(u8, rbsp_slice.len) catch break :blk null;
+                        @memcpy(owned, rbsp_slice);
+                        break :blk owned;
+                    };
+                    defer if (rbsp_data) |r| allocator.free(r);
+
+                    if (trace.isEnabled(.h265)) trace.print(.h265, "slice_rbsp rbsp_present={} rbsp_len={?}", .{
+                        rbsp_data != null,
+                        if (rbsp_data) |r| r.len else null,
+                    });
+
+                    // Per "no silent skip": if RBSP allocation or de-emulation
+                    // failed, count it as an anomaly so the caller learns
+                    // CABAC wasn't actually exercised. Otherwise corruption in
+                    // the entropy data would invisibly pass.
+                    if (rbsp_data == null) {
+                        cabac_anomalies += 1;
+                        if (trace.isEnabled(.h265)) trace.print(.h265, "slice_rbsp_alloc_failed nal_len={d}", .{nal.data.len});
+                    }
 
                     if (rbsp_data) |rbsp| {
                         const sps = &current_sps.?;
@@ -1062,6 +1098,9 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
 
                         const maybe_slice_info = parseFullSliceSegmentHeader(rbsp, nal_type, sps, pps);
                         if (maybe_slice_info) |slice_info| {
+                            if (trace.isEnabled(.h265)) trace.print(.h265, "slice_hdr type={d} first_in_pic={} fully_parsed={} header_bits={d}", .{
+                                slice_info.slice_type, slice_info.first_slice_segment_in_pic_flag, slice_info.header_fully_parsed, slice_info.header_bits,
+                            });
                             if (slice_info.first_slice_segment_in_pic_flag) {
                                 frames_counted += 1;
                             }
@@ -1117,6 +1156,12 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                                 cabac_expected_ctus_total += expected_ctus;
                                 if (result.ctus_decoded >= expected_ctus) {
                                     cabac_slices_complete += 1;
+                                }
+                                if (trace.isEnabled(.h265)) {
+                                    const consumed = if (result.bits_remaining <= result.total_rbsp_bits) result.total_rbsp_bits - result.bits_remaining else 0;
+                                    trace.print(.h265, "slice_cabac slice_type={d} qp={d} expected_ctus={d} ctus_decoded={d} terminated_cleanly={} engine_valid={} bits_consumed={d} bits_remaining={d} rbsp_bits={d}", .{
+                                        slice_info.slice_type, slice_qp, expected_ctus, result.ctus_decoded, result.terminated_cleanly, result.engine_valid, consumed, result.bits_remaining, result.total_rbsp_bits,
+                                    });
                                 }
 
                                 // Corruption detection. Signals worth flagging:

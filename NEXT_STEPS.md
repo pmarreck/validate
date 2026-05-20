@@ -1,6 +1,6 @@
 # NEXT_STEPS.md
 
-**Last updated:** 2026-05-20 (EST), end of session focused on HEIC/HEIF deep-validation gap investigation.
+**Last updated:** 2026-05-20 evening (EST), second HEIC/HEIF session — Bug #1 (silent CABAC skip for NALs > 256 KB) fixed; Bug #2 (CABAC bit under-consumption) diagnosed and characterized but not yet fixed.
 
 This file orients the *next* Claude/Codex/agent session walking into a fresh context window. Assume nothing carries over except what's in this file + the codebase + `MEMORY.md` + `CLAUDE.md`.
 
@@ -23,7 +23,7 @@ df3e3f28f tiffz: switch validate's TIFF deep-validation from zigimg to tiffz
 394ae5c18 jpeg_validator: retire libjpeg-turbo FFI; keep filename as JPEG validation hub
 ```
 
-The HEIC/HEIF investigation in *this* session produced uncommitted dial-turns (NAL RBSP forbidden-sequence check, CABAC overshoot/mid-slice anomaly criteria, warning plumbing through 3 layers, plus one skipped sniper test) — see the `src/core/heic_validator.zig` and `src/core/h265_validator.zig` diffs. Commit-or-revert decision is up to the next session; my recommendation is **commit them as net-positive structural improvements** before starting the deeper CABAC work below.
+**This session's commits (afternoon/evening 2026-05-20):** added env-flag-gated trace module (`src/core/trace.zig` + categories VALIDATE_TRACE_H265 / VALIDATE_TRACE_H265_CABAC / etc.), instrumented `validateH265Stream` slice-dispatch and `validateH265IntraCabac` CTU loop, then used the trace to discover and fix Bug #1 (NALs > 256 KB were silent-skipping CABAC via a 256 KB stack `large_rbsp_buf` whose `else` branch yielded `null`). Buffer is now heap-allocated via `heap.validateAllocator()`, sized to `nal.data.len`; alloc/de-emulation failure increments `cabac_anomalies` per "no silent skip" policy. The previous "uncommitted dial-turns" from the earlier session of 2026-05-20 had already shipped in `1c8e13cd9`.
 
 ---
 
@@ -33,14 +33,30 @@ The HEIC/HEIF investigation in *this* session produced uncommitted dial-turns (N
 
 **Empirically:** 0 of 24 corruption attempts caught (1-byte to 1024-byte spans, at offsets 5K/50K/100K/200K/etc. in `autumn_1440x960.heic`). Single-byte and multi-byte corruption deep in H.265 entropy data sails through as `valid=true, depth=full, no warning`.
 
-**Three silencing layers identified and partially fixed this session:**
+**Silencing layers — updated 2026-05-20 (evening):**
 
 | Layer | File | Status |
 |---|---|---|
-| 1. CABAC anomaly criteria | `h265_validator.zig:1115` (CABAC dispatch block) | Tightened to also flag overshoot + mid-slice fail. Net-positive; no false positives on clean files. Doesn't actually catch our test cases because of layer 4 below. |
-| 2. H.265 verdict policy | `h265_validator.zig:1224` | Was "WARN not FAIL" comment + always `valid=true`. Now: anomalies → `valid=true + warning_message`. Caller responsibility to map WARN → depth=structural. |
-| 3. HEIC result routing | `heic_validator.zig:341` (`validateHevcData`) + `validateDirectHevcItem` + `validateGridTiles` | Was dropping the layer-2 warning. Now: propagates `warning_message` through all 3 paths via `okWithWarning(...)`. |
-| **4. CABAC decoder coverage** (the real root cause) | `h265_cabac_decoder.zig` and `h265_validator.zig:1042-1162` slice dispatch | **Not yet fixed.** Our CABAC desyncs on CLEAN files: trace shows `ctus_decoded=64/64, terminated_cleanly=false, bits_remaining≈30%`. The engine never goes invalid but never sees `decodeTerminate()=1` at the right bit position. This is what masks corruption — the engine absorbs bit-flips into wrong-bin decisions without crashing. |
+| 1. CABAC anomaly criteria | `h265_validator.zig` (CABAC dispatch block) | Tightened to flag overshoot + immediate-fail + mid-slice fail. Net-positive; no false positives on clean files. |
+| 2. H.265 verdict policy | `h265_validator.zig` end-of-`validateH265Stream` | Anomalies → `valid=true + warning_message`; caller propagates as depth=structural+warning. |
+| 3. HEIC result routing | `heic_validator.zig` (`validateHevcData` + `validateDirectHevcItem` + `validateGridTiles`) | Propagates `warning_message` via `okWithWarning(...)`. |
+| 4a. CABAC silent-skip on NAL > 256 KB | `h265_validator.zig` slice dispatch | **FIXED 2026-05-20 evening.** Buffer is heap-allocated to `nal.data.len`. Alloc/de-emulation failure increments `cabac_anomalies` (no silent skip). Empirical: autumn (282 KB NAL) now exercises CABAC instead of returning clean PASS with zero CABAC invocations. |
+| 4b. CABAC bit under-consumption | `h265_cabac_decoder.zig` + syntax-element decoders | **OPEN.** With Bug #1 fixed, CABAC now runs on all 6 ground-truth HEICs. The per-CTU bit consumption is suspiciously uniform (~1960-2215 bits/CTU on the 1440x960 corpus regardless of content), while encoder-produced rates range 1162-6711 bits/CTU. Net effect: decoder either runs out of CTUs without seeing `decodeTerminate()==1` (crowd/winter), or false-terminates mid-stream when the engine state coincidentally satisfies the terminator probability (autumn at CTU 292/345, spring at 173/345, summer at 27/345). |
+
+**Baseline trace numbers (2026-05-20 evening), all six clean ground-truth HEICs via `VALIDATE_TRACE_H265=1 ./zig-out/bin/validate <file>`:**
+
+```
+File                NAL_len  expected_ctus  ctus_decoded  terminated  bits_consumed  bits_remaining  rbsp_bits  bits/CTU(actual)  bits/CTU(expected)
+autumn   1440x960    282KB           345           292    YES (false)        572473         1742719    2315192             1961                 6711
+crowd    1440x960    124KB           345           345         no            764280          248392    1012672             2215                 2935
+sample   tile1                       64            64         no            256544          595056     851600             4009                13306
+sample   tile2                       64            64         no            141540          704460     846000             2211                13219
+spring   1440x960     49KB           345           173    YES (false)        277762          123230     400992             1605                 1162
+summer   1440x960    192KB           345            27    YES (false)         86362         1490526    1576888             3199                 4570
+winter   1440x960    239KB           345           345         no            676343         1281073    1957416             1960                 5673
+```
+
+The previous-session observation of "ctus_decoded=64/64, bits_remaining≈30%" was actually `sample.heic` (a 64-CTU tile), not autumn. Autumn under the old buffer-too-small code was producing **no CABAC trace at all** (because the silent-skip path fired before any CABAC was attempted).
 
 **What needs to happen for the sniper test to pass:**
 

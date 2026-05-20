@@ -21,6 +21,7 @@ pub const errors = @import("errors.zig");
 pub const compat = @import("compat.zig");
 pub const heap = @import("heap.zig");
 pub const runtime = @import("runtime.zig");
+pub const trace = @import("trace.zig");
 pub const memory_budget = @import("memory_budget.zig");
 pub const racetrack = @import("racetrack.zig");
 pub const file_source = @import("file_source.zig");

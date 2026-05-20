@@ -560,16 +560,34 @@ test "HEIC grid image fully validates all tiles" {
 
 test "HEIC corruption: single-byte flip deep in H.265 data must not silent-pass" {
     // PENDING (skipped, body kept live for one-line re-enable):
-    // Documents the H.265 deep-validation gap. The H.265 CABAC decoder
-    // currently desyncs on CLEAN ground-truth files (terminates at CTU 64
-    // with bits_remaining ≈ 30%, no `decodeTerminate()=1`), so it cannot
-    // serve as a reliable corruption oracle. See NEXT_STEPS.md ->
-    // "HEIC/HEIF deep validation" for the broadening-CABAC plan.
+    // Documents the residual H.265 deep-validation gap. Two interacting
+    // bugs were behind the silent-pass:
     //
-    // When CABAC reliably reaches `decodeTerminate()=1` at all CTUs on
-    // clean files, remove the `if (true) return ...` line below and this
-    // becomes the regression guard against borked-input-produces-correct-
-    // output false PASS.
+    //   Bug #1 (FIXED): for any NAL > 256 KB (autumn's 282 KB is the
+    //   canonical case), the H.265 slice-dispatch in `validateH265Stream`
+    //   silently skipped CABAC entirely because the de-emulation buffer
+    //   was a 256 KB stack array and the `else` branch yielded `null`.
+    //   No anomaly was recorded → the validator returned valid+no-warning.
+    //   Buffer is now heap-allocated and an alloc/de-emulation failure
+    //   is counted as a CABAC anomaly.
+    //
+    //   Bug #2 (OPEN): the H.265 CABAC decoder systematically
+    //   under-consumes bits per CTU (~1960 bits/CTU observed across
+    //   the 1440x960 ground-truth set regardless of content). The
+    //   engine never invalidates; it either runs out of CTUs without
+    //   seeing `decodeTerminate()==1`, or hits a coincidental
+    //   terminator at the wrong bit position and exits "cleanly" mid-
+    //   stream. Net effect: the autumn corruption at offset 50% lands
+    //   beyond where the decoder stopped, so corruption is invisible.
+    //
+    // Local runs (with autumn_1440x960.heic present in
+    // ground_truth_examples/heic/) will FAIL this assertion; nix-sandboxed
+    // `./test` skips because the file is not git-tracked.
+    //
+    // When CABAC reliably consumes all bits and reaches
+    // `decodeTerminate()==1` at the expected CTU, remove the
+    // `if (true) return ...` line below and this becomes the regression
+    // guard against bork-input-produces-clean-output false PASS.
     if (true) return error.SkipZigTest;
     const allocator = std.testing.allocator;
     const path = "ground_truth_examples/heic/autumn_1440x960.heic";
