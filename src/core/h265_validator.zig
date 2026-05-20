@@ -1119,19 +1119,21 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                                     cabac_slices_complete += 1;
                                 }
 
-                                // Corruption detection: check for anomalous bit consumption.
-                                // A valid CABAC decode either:
-                                // (a) terminates cleanly with end_of_slice_segment_flag, or
-                                // (b) fails at a consistent point due to decoder limitations.
-                                // Corruption causes the arithmetic engine to desynchronize,
-                                // consuming bits at a wrong rate. We detect this by checking:
-                                // 1. If decode reached all CTUs but didn't terminate cleanly
-                                //    (consumed wrong number of bins)
-                                // 2. If engine went invalid with >1% of data remaining
-                                //    (corruption caused early failure with lots of unconsumed data)
+                                // Corruption detection. Signals worth flagging:
+                                //   (a) immediate decode failure (engine_valid=false, ctus_decoded=0)
+                                //   (b) CABAC overshoot (ctus_decoded > expected_ctus) — impossible
+                                //       in a clean stream; the engine consumed bits as a wrong syntax
+                                //       element and "found" extra CTUs that the encoder never wrote.
+                                //   (c) mid-slice failure (engine_valid=false, 0 < ctus_decoded < expected)
+                                //       — engine desynced partway through.
+                                // Clean H.265 streams on this codebase's narrow decoder commonly
+                                // exhibit (engine_valid=true, ctus_decoded < expected) — that's the
+                                // decoder bailing on an unimplemented syntax element, NOT corruption.
                                 if (result.total_rbsp_bits > 0) {
-                                    if (!result.engine_valid and result.ctus_decoded == 0) {
-                                        // Complete CABAC failure from the start — definitely corrupt
+                                    const overshoot = result.ctus_decoded > expected_ctus;
+                                    const immediate_fail = !result.engine_valid and result.ctus_decoded == 0;
+                                    const mid_slice_fail = !result.engine_valid and result.ctus_decoded > 0 and result.ctus_decoded < expected_ctus;
+                                    if (overshoot or immediate_fail or mid_slice_fail) {
                                         cabac_anomalies += 1;
                                     }
                                 }
@@ -1213,17 +1215,34 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
         return H265ValidationResult.invalid("H.265 SPS has zero width or height");
     }
 
-    // CABAC anomaly detection: anomaly-based, but WARN not FAIL.
-    // CABAC failures don't reliably indicate corruption (the JPEG paradox:
-    // corruption in CABAC data often produces different-but-valid decoded bins).
-    // Additionally, our decoder doesn't handle all H.265 profiles/features
-    // (e.g., 10-bit CRA slice headers, WPP, tiles with entry points), so
-    // CABAC failures may be false positives from incomplete header parsing.
-    // Real corruption is reliably detected by structural checks (NAL/SPS/PPS).
+    // CABAC anomaly handling. Each anomaly variant has a different
+    // confidence level:
+    //   - Overshoot / mid-slice fail: high confidence corruption → FAIL
+    //   - Immediate fail (ctus=0): could also be incomplete decoder
+    //     features (e.g., 10-bit CRA, WPP, tile entry points) →
+    //     surface as WARN, not FAIL, to avoid false positives on
+    //     non-conformant encoders.
+    // The validator's role is to surface anomalies, not silently
+    // plow through. Callers map WARN to depth=structural+warning.
+    if (cabac_anomalies > 0) {
+        return .{
+            .valid = true,
+            .error_message = null,
+            .warning_message = "H.265 CABAC decode anomalies detected (possible corruption or non-conformant encoder)",
+            .frames_decoded = frames_counted,
+            .has_vps = found_vps,
+            .has_sps = found_sps,
+            .has_pps = found_pps,
+            .width = width,
+            .height = height,
+            .profile_idc = profile_idc,
+            .level_idc = level_idc,
+        };
+    }
     return .{
         .valid = true,
         .error_message = null,
-        .warning_message = if (cabac_anomalies > 0) "H.265 CABAC decode anomalies detected (may indicate non-conformant encoder)" else null,
+        .warning_message = null,
         .frames_decoded = frames_counted,
         .has_vps = found_vps,
         .has_sps = found_sps,

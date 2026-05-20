@@ -6,6 +6,12 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ---
 
+> **Mid-session handoff:** If you are starting fresh after a context wipe, read
+> [`NEXT_STEPS.md`](NEXT_STEPS.md) first. It captures the unfinished HEIC/HEIF
+> CABAC-desync investigation (#62), the still-pending PDF per-stream
+> decryption work (#64), debug tooling guidance, and the recommended path
+> forward.
+
 ## Active queue
 
 ### Memory subsystem (raised 2026-04-28; two concurrent runs OOM'd 128 GB Mac)

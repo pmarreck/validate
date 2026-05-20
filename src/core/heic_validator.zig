@@ -13,6 +13,33 @@ const errmsg = @import("error_messages.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 
+/// Scan a NAL unit's payload (the bytes AFTER the 2-byte NAL header) for
+/// emulation-prevention violations: any occurrence of 0x000000, 0x000001,
+/// or 0x000002 inside the payload is illegal per H.265 Annex B / RBSP
+/// rules — the encoder MUST insert a 0x03 emulation prevention byte to
+/// break such sequences. A bit-flip or partial overwrite in entropy-coded
+/// data has a measurable chance of creating one of these forbidden
+/// patterns, which is unambiguous corruption (zero false positives by
+/// spec). Returns true if a violation is found.
+fn nalHasEmulationViolation(nal: []const u8) bool {
+    if (nal.len < 3) return false;
+    // Skip the 2-byte NAL header — the 0x000003 emulation prevention rule
+    // applies to payload bytes only.
+    var i: usize = 2;
+    while (i + 2 < nal.len) : (i += 1) {
+        if (nal[i] == 0x00 and nal[i + 1] == 0x00) {
+            const next = nal[i + 2];
+            // Legal third bytes: 0x03 (emulation prevention) or
+            // payload byte > 0x03. Forbidden: 0x00, 0x01, 0x02.
+            if (next == 0x00 or next == 0x01 or next == 0x02) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+
 pub const HeicValidationResult = struct {
     valid: bool,
     structural_only: bool,
@@ -188,6 +215,9 @@ fn validateDirectHevcItem(data: []const u8, container: heif.HeifContainerInfo) H
     const result = validateHevcData(image_data, container.decoder_config);
 
     if (result.valid and !result.structural_only) {
+        if (result.warning_message) |msg| {
+            return HeicValidationResult.okWithWarning(width, height, msg);
+        }
         return HeicValidationResult.okWithDimensions(width, height);
     }
     return result;
@@ -208,6 +238,7 @@ fn validateGridTiles(data: []const u8, container: heif.HeifContainerInfo) HeicVa
 
     var tiles_validated: usize = 0;
     var tiles_structural: usize = 0;
+    var tiles_with_anomaly: usize = 0;
 
     for (container.dimg_tile_ids) |tile_id| {
         const loc = heif.findItemLocation(container.locations, tile_id) orelse continue;
@@ -234,6 +265,9 @@ fn validateGridTiles(data: []const u8, container: heif.HeifContainerInfo) HeicVa
             }
             if (result.valid and !result.structural_only) {
                 tiles_validated += 1;
+                if (result.warning_message != null) {
+                    tiles_with_anomaly += 1;
+                }
             } else {
                 tiles_structural += 1;
             }
@@ -256,6 +290,9 @@ fn validateGridTiles(data: []const u8, container: heif.HeifContainerInfo) HeicVa
             return HeicValidationResult.invalid("HEIC grid tile data corrupted: expected tiles missing");
         }
 
+        if (tiles_with_anomaly > 0) {
+            return HeicValidationResult.okWithWarning(width, height, "H.265 CABAC decode anomalies in one or more grid tiles (possible corruption or non-conformant encoder)");
+        }
         if (tiles_structural > 0) {
             return HeicValidationResult.okWithWarning(width, height, "Some grid tiles could not be fully validated");
         }
@@ -312,6 +349,15 @@ fn validateHevcData(image_data: []const u8, decoder_config: ?[]const u8) HeicVal
             }
         }
 
+        // RBSP emulation-prevention check: forbidden 0x000000/01/02
+        // sequences inside the NAL payload indicate corruption. The
+        // encoder MUST insert a 0x03 byte to break any such sequence;
+        // their presence in a decoded NAL means either bit-flip
+        // corruption or a non-conformant encoder. Either way, fail.
+        if (nalHasEmulationViolation(image_data[pos..][0..nal_len])) {
+            return HeicValidationResult.invalid("HEIC NAL RBSP emulation-prevention violated (corruption)");
+        }
+
         if (annex_b_len + 4 + nal_len <= annex_b_buf.len) {
             annex_b_buf[annex_b_len] = 0;
             annex_b_buf[annex_b_len + 1] = 0;
@@ -338,6 +384,13 @@ fn validateHevcData(image_data: []const u8, decoder_config: ?[]const u8) HeicVal
     // HEIC items are single intra-frames, so max_frames=1
     const h265_result = h265.validateH265Stream(annex_b_buf[0..annex_b_len], 1);
     if (h265_result.valid) {
+        // Propagate any H.265-level WARN (CABAC anomaly etc.) up to the
+        // caller. The HEIC result carries dimensions of 0,0 here because
+        // validateDirectHevcItem / validateGridTiles overwrite them with
+        // the container-reported dimensions before returning.
+        if (h265_result.warning_message) |msg| {
+            return HeicValidationResult.okWithWarning(0, 0, msg);
+        }
         return HeicValidationResult.ok();
     } else {
         if (h265_result.has_sps or h265_result.has_pps) {
@@ -491,3 +544,72 @@ test "HEIC grid image fully validates all tiles" {
     try std.testing.expectEqual(@as(usize, 0), tiles_structural);
     try std.testing.expectEqual(container.dimg_tile_ids.len, tiles_full);
 }
+
+// ============================================================================
+// Corruption-detection sniper test
+//
+// Documents the "borked input produces correct output" gap: a single-byte
+// flip deep in the H.265 entropy data should not produce `valid=true,
+// depth=full`. Previously, CABAC anomaly detection only fired on immediate
+// decode failure (ctus_decoded == 0) and the verdict policy explicitly
+// downgraded all anomalies to WARN, so mid-slice desync slipped through
+// silently. This test pins the new behavior: corruption MUST surface
+// (either FAIL, or at minimum a non-null warning_message that the caller
+// can propagate as a depth=structural+warning result).
+// ============================================================================
+
+test "HEIC corruption: single-byte flip deep in H.265 data must not silent-pass" {
+    // PENDING (skipped, body kept live for one-line re-enable):
+    // Documents the H.265 deep-validation gap. The H.265 CABAC decoder
+    // currently desyncs on CLEAN ground-truth files (terminates at CTU 64
+    // with bits_remaining ≈ 30%, no `decodeTerminate()=1`), so it cannot
+    // serve as a reliable corruption oracle. See NEXT_STEPS.md ->
+    // "HEIC/HEIF deep validation" for the broadening-CABAC plan.
+    //
+    // When CABAC reliably reaches `decodeTerminate()=1` at all CTUs on
+    // clean files, remove the `if (true) return ...` line below and this
+    // becomes the regression guard against borked-input-produces-correct-
+    // output false PASS.
+    if (true) return error.SkipZigTest;
+    const allocator = std.testing.allocator;
+    const path = "ground_truth_examples/heic/autumn_1440x960.heic";
+    const file = runtime.openFile(path, .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer file.close(runtime.io());
+
+    const file_size = try file.length(runtime.io());
+    const original = try allocator.alloc(u8, file_size);
+    defer allocator.free(original);
+    _ = try file.readPositionalAll(runtime.io(), original, 0);
+
+    // Baseline: the clean file must validate cleanly.
+    const baseline = validateHeicDeepFromBuffer(original);
+    try std.testing.expect(baseline.valid);
+    try std.testing.expect(!baseline.structural_only);
+    try std.testing.expect(baseline.warning_message == null);
+
+    // Corruption: flip every bit of one byte at offset 50% — deep in the
+    // entropy-coded H.265 data, past container/ftyp/meta/iloc boxes.
+    // 50% chosen empirically as "definitely in mdat tile data" for the
+    // 1440x960 autumn fixture.
+    const corrupted = try allocator.dupe(u8, original);
+    defer allocator.free(corrupted);
+    const corrupt_offset: usize = file_size / 2;
+    corrupted[corrupt_offset] ^= 0xFF;
+
+    const result = validateHeicDeepFromBuffer(corrupted);
+    // Acceptance criterion per "no silent skip" policy: corruption must
+    // surface either as FAIL (preferred) or as a non-null warning. A clean
+    // valid+structural_only==false+no warning is the bug we are fixing.
+    const surfaced = (!result.valid) or (result.warning_message != null) or result.structural_only;
+    if (!surfaced) {
+        std.debug.print(
+            "\n  HEIC corruption silently passed: valid={}, structural_only={}, warning={?s}, err={?s}\n",
+            .{ result.valid, result.structural_only, result.warning_message, result.error_message },
+        );
+    }
+    try std.testing.expect(surfaced);
+}
+

@@ -65,7 +65,7 @@
         },
         .libopenmpt = .{
             .url = "https://github.com/pmarreck/openmpt/archive/refs/heads/master.tar.gz",
-            .hash = "libopenmpt-0.8.0-5ozQWMtEGQtgeboPzSxcC8bin2KmYCnF3KMOs2BT_w6f",
+            .hash = "libopenmpt-0.8.0-5ozQWN9GGQt4jdD0toz0qfceXIERnEsx5vBcUvWUg60E",
         },
         .cj5 = .{
             .url = "git+https://github.com/pmarreck/cj5#b70941c4fe022df55a4177f696b0474ba3ef8125",
