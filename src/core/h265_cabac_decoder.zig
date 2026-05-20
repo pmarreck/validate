@@ -104,6 +104,17 @@ pub const H265CabacEngine = struct {
     reader: *BitReader,
     contexts: [h265_tables.NUM_H265_CONTEXTS]h265_tables.ContextState,
     valid: bool,
+    // Diagnostic counters — diagnostic only, no spec semantics. Used by
+    // VALIDATE_TRACE_H265_CABAC to figure out which syntax-element family
+    // is consuming bins. Bypass_bins counts EACH bit of decodeBypassBits.
+    context_bins: u32,
+    bypass_bins: u32,
+    terminate_bins: u32,
+    // residualCoding aggregates: counts ACROSS all calls in the slice
+    residual_calls: u32,
+    residual_sig_total: u32,
+    residual_greater1_total: u32,
+    residual_remaining_total: u32,
 
     pub fn init(reader: *BitReader, slice_qp: i32) H265CabacEngine {
         const contexts = h265_tables.initContexts(slice_qp, true); // always I-slice for HEIC
@@ -119,6 +130,13 @@ pub const H265CabacEngine = struct {
             .reader = reader,
             .contexts = contexts,
             .valid = true,
+            .context_bins = 0,
+            .bypass_bins = 0,
+            .terminate_bins = 0,
+            .residual_calls = 0,
+            .residual_sig_total = 0,
+            .residual_greater1_total = 0,
+            .residual_remaining_total = 0,
         };
     }
 
@@ -128,6 +146,7 @@ pub const H265CabacEngine = struct {
             self.valid = false;
             return 0;
         }
+        self.context_bins +%= 1;
 
         const p_state_idx = self.contexts[ctx_idx].p_state_idx;
         const val_mps = self.contexts[ctx_idx].val_mps;
@@ -159,6 +178,7 @@ pub const H265CabacEngine = struct {
 
     pub fn decodeBypass(self: *H265CabacEngine) u1 {
         if (!self.valid) return 0;
+        self.bypass_bins +%= 1;
 
         self.cod_i_offset = (self.cod_i_offset << 1) | self.readOneBit();
 
@@ -180,6 +200,7 @@ pub const H265CabacEngine = struct {
 
     pub fn decodeTerminate(self: *H265CabacEngine) u1 {
         if (!self.valid) return 1;
+        self.terminate_bins +%= 1;
 
         self.cod_i_range -= 2;
 
@@ -640,16 +661,42 @@ fn residualCoding(
     is_luma: bool,
 ) void {
     if (!engine.valid) return;
+    engine.residual_calls +%= 1;
+    var tu_sig_total: u32 = 0;
+    var tu_greater1_total: u32 = 0;
+    var tu_remaining_total: u32 = 0;
+    defer {
+        engine.residual_sig_total +%= tu_sig_total;
+        engine.residual_greater1_total +%= tu_greater1_total;
+        engine.residual_remaining_total +%= tu_remaining_total;
+    }
 
     const tb_size_clamped = std.math.clamp(log2_tb_size, 2, 5);
 
-    // last_sig_coeff_x_prefix + suffix
-    const last_x = decodeLastSigCoeff(engine, tb_size_clamped, is_luma, true);
+    // last_sig_coeff per spec section 7.3.8.11: prefix-X, prefix-Y, then
+    // suffix-X, then suffix-Y. The previous implementation decoded prefix+
+    // suffix for X first, then prefix+suffix for Y, which desynced the
+    // bitstream for any TB where either prefix > 3 (suffix bits present).
+    const last_x_prefix = decodeLastSigCoeffPrefix(engine, tb_size_clamped, is_luma, true);
     if (!engine.valid) return;
-
-    // last_sig_coeff_y_prefix + suffix
-    const last_y = decodeLastSigCoeff(engine, tb_size_clamped, is_luma, false);
+    const last_y_prefix = decodeLastSigCoeffPrefix(engine, tb_size_clamped, is_luma, false);
     if (!engine.valid) return;
+    const last_x_suffix = blk: {
+        const bits = lastSigCoeffSuffixBits(last_x_prefix);
+        if (bits == 0) break :blk @as(u32, 0);
+        const v = engine.decodeBypassBits(bits);
+        if (!engine.valid) return;
+        break :blk v;
+    };
+    const last_y_suffix = blk: {
+        const bits = lastSigCoeffSuffixBits(last_y_prefix);
+        if (bits == 0) break :blk @as(u32, 0);
+        const v = engine.decodeBypassBits(bits);
+        if (!engine.valid) return;
+        break :blk v;
+    };
+    const last_x = combineLastSigCoeff(last_x_prefix, last_x_suffix);
+    const last_y = combineLastSigCoeff(last_y_prefix, last_y_suffix);
 
     // Sub-block dimensions
     const log2_sb_size: u32 = if (tb_size_clamped == 2) 0 else 2; // 4x4 sub-blocks (or 1x1 for 4x4 TB)
@@ -807,6 +854,7 @@ fn residualCoding(
             if (sig_flags[scan_pos]) num_sig += 1;
         }
 
+        tu_sig_total += num_sig;
         if (num_sig == 0) continue;
 
         // coeff_abs_level_greater1_flag — Section 7.3.8.11
@@ -865,6 +913,7 @@ fn residualCoding(
             g1_count += 1;
         }
 
+        tu_greater1_total += num_greater1;
         // Update cross-sub-block tracking
         last_greater1_ctx = greater1_ctx;
         last_greater1_flag = num_greater1 > 0;
@@ -909,6 +958,7 @@ fn residualCoding(
         // The FIRST coeff with greater1==1 also had greater2 tested.
         const num_past_8: u32 = if (num_sig > g1_count) num_sig - g1_count else 0;
         const total_remaining = num_greater1 + num_past_8;
+        tu_remaining_total += total_remaining;
 
         var rice_param: u32 = 0;
         for (0..total_remaining) |rem_idx| {
@@ -952,8 +1002,11 @@ fn findSubBlockScanIdx(scan: []const [2]u8, total: u32, x: u8, y: u8) ?u32 {
     return null;
 }
 
-/// Decode last_sig_coeff_x/y_prefix + suffix — Section 7.3.8.11
-fn decodeLastSigCoeff(engine: *H265CabacEngine, log2_tb_size: u32, is_luma: bool, is_x: bool) u32 {
+/// Decode last_sig_coeff prefix only (context-coded). Spec section 7.3.8.11
+/// requires prefix-X, prefix-Y, then suffix-X, then suffix-Y — calling this
+/// for X and Y separately and decoding suffixes via `lastSigCoeffSuffixBits`
+/// reproduces the spec interleaving.
+fn decodeLastSigCoeffPrefix(engine: *H265CabacEngine, log2_tb_size: u32, is_luma: bool, is_x: bool) u32 {
     if (!engine.valid) return 0;
 
     // Context offset depends on TU size and luma/chroma — Table 9-38/9-39
@@ -978,14 +1031,25 @@ fn decodeLastSigCoeff(engine: *H265CabacEngine, log2_tb_size: u32, is_luma: bool
         const bin = engine.decodeBin(ctx);
         if (bin == 0) break;
     }
+    return prefix;
+}
 
+/// Number of bypass suffix bits required for a given last_sig_coeff prefix.
+/// Returns 0 for prefix ≤ 3 (no suffix).
+fn lastSigCoeffSuffixBits(prefix: u32) u32 {
+    if (prefix < 4) return 0;
+    return (prefix >> 1) - 1;
+}
+
+/// Combine prefix + already-decoded suffix into the final last_sig_coeff_x
+/// or _y value, per spec section 7.4.9.11.
+fn combineLastSigCoeff(prefix: u32, suffix: u32) u32 {
     if (prefix < 2) return prefix;
-
-    // Suffix: (prefix >> 1) - 1 bypass bins
-    const suffix_bits = (prefix >> 1) - 1;
-    const suffix = engine.decodeBypassBits(suffix_bits);
-    if (!engine.valid) return 0;
-
+    const suffix_bits = lastSigCoeffSuffixBits(prefix);
+    if (suffix_bits == 0) {
+        // prefix in {2, 3} — value is simply the prefix.
+        return prefix;
+    }
     const shift: u5 = @intCast(suffix_bits);
     return (@as(u32, 1) << shift) * (2 + (prefix & 1)) + suffix;
 }
@@ -1128,6 +1192,16 @@ pub const CabacDecodeResult = struct {
     bits_remaining: usize, // bits left in RBSP after decode
     total_rbsp_bits: usize, // total RBSP bits (after header)
     engine_valid: bool, // CABAC engine still in valid state
+    // Diagnostic counters — used by VALIDATE_TRACE_H265_CABAC to figure out
+    // which syntax-element family is consuming bins. No spec semantics; safe
+    // to ignore.
+    context_bins: u32 = 0,
+    bypass_bins: u32 = 0,
+    terminate_bins: u32 = 0,
+    residual_calls: u32 = 0,
+    residual_sig_total: u32 = 0,
+    residual_greater1_total: u32 = 0,
+    residual_remaining_total: u32 = 0,
 };
 
 /// Validate CABAC-encoded slice data for an H.265 intra slice.
@@ -1145,6 +1219,29 @@ pub fn validateH265IntraCabac(
         .total_rbsp_bits = 0,
         .engine_valid = false,
     };
+
+    // Helper: build a CabacDecodeResult that carries the engine's diagnostic
+    // counters (context_bins, bypass_bins, etc.) in addition to the
+    // verdict-level fields. Eliminates ~80 lines of struct-init duplication
+    // across early returns.
+    const buildResult = struct {
+        fn call(eng: *const H265CabacEngine, ctus: u32, terminated: bool, bits_left: usize, total_bits: usize, valid_override: ?bool) CabacDecodeResult {
+            return .{
+                .ctus_decoded = ctus,
+                .terminated_cleanly = terminated,
+                .bits_remaining = bits_left,
+                .total_rbsp_bits = total_bits,
+                .engine_valid = valid_override orelse eng.valid,
+                .context_bins = eng.context_bins,
+                .bypass_bins = eng.bypass_bins,
+                .terminate_bins = eng.terminate_bins,
+                .residual_calls = eng.residual_calls,
+                .residual_sig_total = eng.residual_sig_total,
+                .residual_greater1_total = eng.residual_greater1_total,
+                .residual_remaining_total = eng.residual_remaining_total,
+            };
+        }
+    }.call;
 
     var reader = BitReader.init(rbsp);
 
@@ -1172,13 +1269,7 @@ pub fn validateH265IntraCabac(
         const bits_at_ctu_start = reader.remainingBits();
         if (!engine.valid) {
             if (trace_cabac) trace.print(.h265_cabac, "ctu_invalid ctu={d} bits_remain={d}", .{ ctu_rs_addr, bits_at_ctu_start });
-            return .{
-                .ctus_decoded = ctu_rs_addr,
-                .terminated_cleanly = false,
-                .bits_remaining = bits_at_ctu_start,
-                .total_rbsp_bits = cabac_start_bits,
-                .engine_valid = false,
-            };
+            return buildResult(&engine, ctu_rs_addr, false, bits_at_ctu_start, cabac_start_bits, false);
         }
         if (reader.remainingBits() < 2) {
             if (trace_cabac) trace.print(.h265_cabac, "ctu_underflow ctu={d} bits_remain={d}", .{ ctu_rs_addr, bits_at_ctu_start });
@@ -1195,26 +1286,14 @@ pub fn validateH265IntraCabac(
             parseSaoParams(&engine, info, rx, ry);
             if (!engine.valid) {
                 if (trace_cabac) trace.print(.h265_cabac, "ctu_fail_sao ctu={d} bits_remain={d}", .{ ctu_rs_addr, reader.remainingBits() });
-                return .{
-                    .ctus_decoded = ctu_rs_addr,
-                    .terminated_cleanly = false,
-                    .bits_remaining = reader.remainingBits(),
-                    .total_rbsp_bits = cabac_start_bits,
-                    .engine_valid = false,
-                };
+                return buildResult(&engine, ctu_rs_addr, false, reader.remainingBits(), cabac_start_bits, false);
             }
         }
 
         codingQuadtree(&engine, info, x0, y0, info.log2_ctb_size, 0);
         if (!engine.valid) {
             if (trace_cabac) trace.print(.h265_cabac, "ctu_fail_quadtree ctu={d} bits_remain={d}", .{ ctu_rs_addr, reader.remainingBits() });
-            return .{
-                .ctus_decoded = ctu_rs_addr,
-                .terminated_cleanly = false,
-                .bits_remaining = reader.remainingBits(),
-                .total_rbsp_bits = cabac_start_bits,
-                .engine_valid = false,
-            };
+            return buildResult(&engine, ctu_rs_addr, false, reader.remainingBits(), cabac_start_bits, false);
         }
 
         const bits_after_quadtree = reader.remainingBits();
@@ -1223,34 +1302,18 @@ pub fn validateH265IntraCabac(
             ctu_rs_addr, total_ctus, x0, y0, bits_at_ctu_start, bits_after_quadtree, reader.remainingBits(), terminate, engine.valid,
         });
         if (terminate == 1) {
-            return .{
-                .ctus_decoded = ctu_rs_addr + 1,
-                .terminated_cleanly = true,
-                .bits_remaining = reader.remainingBits(),
-                .total_rbsp_bits = cabac_start_bits,
-                .engine_valid = engine.valid,
-            };
+            return buildResult(&engine, ctu_rs_addr + 1, true, reader.remainingBits(), cabac_start_bits, null);
         }
-        if (!engine.valid) return .{
-            .ctus_decoded = ctu_rs_addr,
-            .terminated_cleanly = false,
-            .bits_remaining = reader.remainingBits(),
-            .total_rbsp_bits = cabac_start_bits,
-            .engine_valid = false,
-        };
+        if (!engine.valid) return buildResult(&engine, ctu_rs_addr, false, reader.remainingBits(), cabac_start_bits, false);
     }
 
-    if (trace_cabac) trace.print(.h265_cabac, "slice_exit_loop ctus_done={d} max={d} bits_remain={d} engine_valid={}", .{
+    if (trace_cabac) trace.print(.h265_cabac, "slice_exit_loop ctus_done={d} max={d} bits_remain={d} engine_valid={} ctx_bins={d} bypass_bins={d} term_bins={d} resid_calls={d} resid_sig={d} resid_g1={d} resid_rem={d}", .{
         ctu_rs_addr, max_ctus, reader.remainingBits(), engine.valid,
+        engine.context_bins, engine.bypass_bins, engine.terminate_bins,
+        engine.residual_calls, engine.residual_sig_total, engine.residual_greater1_total, engine.residual_remaining_total,
     });
 
-    return .{
-        .ctus_decoded = ctu_rs_addr,
-        .terminated_cleanly = false,
-        .bits_remaining = reader.remainingBits(),
-        .total_rbsp_bits = cabac_start_bits,
-        .engine_valid = engine.valid,
-    };
+    return buildResult(&engine, ctu_rs_addr, false, reader.remainingBits(), cabac_start_bits, null);
 }
 
 // ============================================================================

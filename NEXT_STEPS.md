@@ -41,22 +41,23 @@ df3e3f28f tiffz: switch validate's TIFF deep-validation from zigimg to tiffz
 | 2. H.265 verdict policy | `h265_validator.zig` end-of-`validateH265Stream` | Anomalies → `valid=true + warning_message`; caller propagates as depth=structural+warning. |
 | 3. HEIC result routing | `heic_validator.zig` (`validateHevcData` + `validateDirectHevcItem` + `validateGridTiles`) | Propagates `warning_message` via `okWithWarning(...)`. |
 | 4a. CABAC silent-skip on NAL > 256 KB | `h265_validator.zig` slice dispatch | **FIXED 2026-05-20 evening.** Buffer is heap-allocated to `nal.data.len`. Alloc/de-emulation failure increments `cabac_anomalies` (no silent skip). Empirical: autumn (282 KB NAL) now exercises CABAC instead of returning clean PASS with zero CABAC invocations. |
-| 4b. CABAC bit under-consumption | `h265_cabac_decoder.zig` + syntax-element decoders | **OPEN.** With Bug #1 fixed, CABAC now runs on all 6 ground-truth HEICs. The per-CTU bit consumption is suspiciously uniform (~1960-2215 bits/CTU on the 1440x960 corpus regardless of content), while encoder-produced rates range 1162-6711 bits/CTU. Net effect: decoder either runs out of CTUs without seeing `decodeTerminate()==1` (crowd/winter), or false-terminates mid-stream when the engine state coincidentally satisfies the terminator probability (autumn at CTU 292/345, spring at 173/345, summer at 27/345). |
+| 4b. CABAC bit under-consumption — last_sig_coeff bit order | `h265_cabac_decoder.zig` `residualCoding`/`decodeLastSigCoeff` | **PARTIALLY FIXED 2026-05-20 evening.** Spec section 7.3.8.11 reads `last_sig_coeff` as prefix-X, prefix-Y, then suffix-X, then suffix-Y. The previous monolithic `decodeLastSigCoeff(is_x=true)` then `decodeLastSigCoeff(is_x=false)` read prefix-X, suffix-X, prefix-Y, suffix-Y — wrong for any TB where either prefix > 3 (the case for all but tiny / low-frequency TBs). Split into `decodeLastSigCoeffPrefix`, `lastSigCoeffSuffixBits`, `combineLastSigCoeff`; `residualCoding` now interleaves per spec. |
+| 4c. CABAC bit under-consumption — RESIDUAL | (same) | **OPEN.** Fixing 4b changed where the desync surfaces (summer 27→149 CTUs is a clear improvement; spring now signals via `engine_valid=false` instead of false-terminate; autumn/crowd/winter still false-terminate but at different positions). Bin counters were added (`context_bins` / `bypass_bins` / `terminate_bins` / `residual_calls` / `residual_sig_total` / `residual_greater1_total` / `residual_remaining_total` on `CabacDecodeResult`) and surface via `VALIDATE_TRACE_H265` `slice_bins` line — use these to bisect the remaining ordering / arithmetic bugs. |
 
-**Baseline trace numbers (2026-05-20 evening), all six clean ground-truth HEICs via `VALIDATE_TRACE_H265=1 ./zig-out/bin/validate <file>`:**
+**Baseline trace numbers (2026-05-20 evening, AFTER Bug #2 partial fix), all six clean ground-truth HEICs via `VALIDATE_TRACE_H265=1 ./zig-out/bin/validate <file>`:**
 
 ```
-File                NAL_len  expected_ctus  ctus_decoded  terminated  bits_consumed  bits_remaining  rbsp_bits  bits/CTU(actual)  bits/CTU(expected)
-autumn   1440x960    282KB           345           292    YES (false)        572473         1742719    2315192             1961                 6711
-crowd    1440x960    124KB           345           345         no            764280          248392    1012672             2215                 2935
-sample   tile1                       64            64         no            256544          595056     851600             4009                13306
-sample   tile2                       64            64         no            141540          704460     846000             2211                13219
-spring   1440x960     49KB           345           173    YES (false)        277762          123230     400992             1605                 1162
-summer   1440x960    192KB           345            27    YES (false)         86362         1490526    1576888             3199                 4570
-winter   1440x960    239KB           345           345         no            676343         1281073    1957416             1960                 5673
+File                NAL_len  expected_ctus  ctus_decoded  terminated_cleanly  engine_valid  bits_consumed  bits_remaining  rbsp_bits
+autumn   1440x960    282KB           345           113    YES (false)        true             93479         2221713    2315192
+crowd    1440x960    124KB           345           158    YES (false)        true            141058          871614    1012672
+sample   tile1                       64            64         no              true             96783          754817     851600
+sample   tile2                       64            64         no              true            210930          635070     846000
+spring   1440x960     49KB           345           165         no              FALSE           400992               0     400992  (consumed all bits, engine bailed — clear desync signal!)
+summer   1440x960    192KB           345           149    YES (false)        true            275957         1300931    1576888
+winter   1440x960    239KB           345            41    YES (false)        true             50020         1907396    1957416
 ```
 
-The previous-session observation of "ctus_decoded=64/64, bits_remaining≈30%" was actually `sample.heic` (a 64-CTU tile), not autumn. Autumn under the old buffer-too-small code was producing **no CABAC trace at all** (because the silent-skip path fired before any CABAC was attempted).
+Per-CTU bit consumption now varies significantly across CTUs (e.g. sample tile1 ranges 56-19940 bits/CTU) and clearly responds to content. Slice-level under-consumption persists, so there is at least one more spec-ordering or arithmetic bug. Suggested next bisection step: compare per-CTU bin counts against a reference HEVC decoder (ffmpeg `-loglevel trace`) on `summer_1440x960.heic` (smallest improvement-from-fix delta → likely shortest path to next bug). The previous-session observation of "ctus_decoded=64/64, bits_remaining≈30%" was actually `sample.heic` (a 64-CTU tile), not autumn. Autumn under the old buffer-too-small code was producing **no CABAC trace at all** (because the silent-skip path fired before any CABAC was attempted).
 
 **What needs to happen for the sniper test to pass:**
 

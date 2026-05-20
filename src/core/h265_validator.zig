@@ -1162,6 +1162,10 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                                     trace.print(.h265, "slice_cabac slice_type={d} qp={d} expected_ctus={d} ctus_decoded={d} terminated_cleanly={} engine_valid={} bits_consumed={d} bits_remaining={d} rbsp_bits={d}", .{
                                         slice_info.slice_type, slice_qp, expected_ctus, result.ctus_decoded, result.terminated_cleanly, result.engine_valid, consumed, result.bits_remaining, result.total_rbsp_bits,
                                     });
+                                    trace.print(.h265, "slice_bins ctx={d} bypass={d} term={d} resid_calls={d} resid_sig={d} resid_g1={d} resid_rem={d}", .{
+                                        result.context_bins, result.bypass_bins, result.terminate_bins,
+                                        result.residual_calls, result.residual_sig_total, result.residual_greater1_total, result.residual_remaining_total,
+                                    });
                                 }
 
                                 // Corruption detection. Signals worth flagging:
