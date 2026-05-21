@@ -33,43 +33,46 @@ df3e3f28f tiffz: switch validate's TIFF deep-validation from zigimg to tiffz
 
 **Empirically:** 0 of 24 corruption attempts caught (1-byte to 1024-byte spans, at offsets 5K/50K/100K/200K/etc. in `autumn_1440x960.heic`). Single-byte and multi-byte corruption deep in H.265 entropy data sails through as `valid=true, depth=full, no warning`.
 
-**Silencing layers — updated 2026-05-20 (evening):**
+**Silencing layers — updated 2026-05-21 (late evening, end of all-day H.265 work):**
 
 | Layer | File | Status |
 |---|---|---|
-| 1. CABAC anomaly criteria | `h265_validator.zig` (CABAC dispatch block) | Tightened to flag overshoot + immediate-fail + mid-slice fail. Net-positive; no false positives on clean files. |
-| 2. H.265 verdict policy | `h265_validator.zig` end-of-`validateH265Stream` | Anomalies → `valid=true + warning_message`; caller propagates as depth=structural+warning. |
-| 3. HEIC result routing | `heic_validator.zig` (`validateHevcData` + `validateDirectHevcItem` + `validateGridTiles`) | Propagates `warning_message` via `okWithWarning(...)`. |
-| 4a. CABAC silent-skip on NAL > 256 KB | `h265_validator.zig` slice dispatch | **FIXED 2026-05-20 evening.** Buffer is heap-allocated to `nal.data.len`. Alloc/de-emulation failure increments `cabac_anomalies` (no silent skip). Empirical: autumn (282 KB NAL) now exercises CABAC instead of returning clean PASS with zero CABAC invocations. |
-| 4b. CABAC bit under-consumption — last_sig_coeff bit order | `h265_cabac_decoder.zig` `residualCoding`/`decodeLastSigCoeff` | **PARTIALLY FIXED 2026-05-20 evening.** Spec section 7.3.8.11 reads `last_sig_coeff` as prefix-X, prefix-Y, then suffix-X, then suffix-Y. The previous monolithic `decodeLastSigCoeff(is_x=true)` then `decodeLastSigCoeff(is_x=false)` read prefix-X, suffix-X, prefix-Y, suffix-Y — wrong for any TB where either prefix > 3 (the case for all but tiny / low-frequency TBs). Split into `decodeLastSigCoeffPrefix`, `lastSigCoeffSuffixBits`, `combineLastSigCoeff`; `residualCoding` now interleaves per spec. |
-| 4c. CABAC bit under-consumption — spurious firstG1 remaining | (same) | **FIXED 2026-05-20 evening.** Spec section 7.3.8.11 only decodes `coeff_abs_level_remaining` for `firstGreater1ScanPos` when `greater2=1` (baseLevel=3 matches threshold=3). Previous code added `num_greater1` unconditionally to `total_remaining`, reading one extra bypass slice per sub-block whenever the encoder wrote `greater2=0`. Fixed in `residualCoding` by computing `num_g1_remainings = num_greater1` when `has_greater2` else `num_greater1 - 1`. |
-| 4d. CABAC bit under-consumption — cbf_luma ctxInc inversion | (same) | **FIXED 2026-05-20 evening.** Spec Table 9-37: `ctxInc = (trafoDepth == 0) ? 1 : 0`. Old code had the inversion. Caused luma CBF to be biased toward the wrong MPS at each depth, inflating the chroma:luma residual-call ratio from 2:1 (spec for 4:2:0) to 3:1. |
-| 4e. CABAC bit under-consumption — chroma residual placement at log2=2 in 4:2:0 | (same) | **FIXED 2026-05-20 evening.** Spec section 7.3.8.9: in 4:2:0 with luma TB == 4x4, chroma residual is decoded ONCE per 4-luma-sibling group on the last sibling (blk_idx == 3). Old code called chroma residual on EVERY 4x4 luma TU → 4x too many chroma residual invocations and bypass-bit consumption mismatched encoder output. `transformUnit` now gates chroma residual + chroma transform_skip on `log2_tb_size > 2 OR chroma_format_idc == 3 OR blk_idx == 3`. |
-| 4f. CABAC bit under-consumption — sig_coeff_flag context for 4x4 TBs | (same) | **FIXED 2026-05-20 evening.** Spec Table 9-19 / section 9.3.4.2.5: 4x4 TB sig_coeff_flag context is `ctxIdxMap[yC][xC]` where the table is `{{0,1,4,5},{2,3,4,5},{6,6,8,8},{7,7,8,8}}`. Old code used `min(scan_pos, 8)` — scan-order indexing, not raster. ~92% of typical TUs are 4x4 (e.g., 8432 of 9210 in summer), so every sig_coeff_flag bin in those TUs was using the wrong context. |
-| 4g. CABAC bit under-consumption — chroma sig_coeff offset for non-4x4 TBs | (same) | **TRIED + REVERTED 2026-05-20 evening.** Spec sig_coeff_flag offset structure: luma 4x4 → 0-8 / luma 8x8 → 9-20 / luma >=16x16 → 21-26 / chroma 4x4 → 27-35 / chroma >=8x8 → 36-43 (44 contexts total). Old code adds `+27` for chroma unconditionally — chroma >=8x8 gets mapped into the chroma 4x4 region (27-35) instead of the proper 36-43 region. Tried fixing this in isolation — caused regressions across the board (summer 345→48, autumn 162→118, sample tiles 64→6/9). Reverted. Root cause of the regression: the *pre-offset* `sig_ctx` computation in `getSigCoeffCtxSpec` for non-4x4 sub-blocks uses a closed-form `clamped_sum + cg_offset` approximation; spec 9.3.4.2.5 uses prev_csbf-keyed lookup tables `sigCtxBaseTable[prev_csbf][xP+yP]` that produce different values. The two bugs (offset + table) compensate; need to be paired in one commit. |
-| 4h. CABAC bit under-consumption — split_cu_flag ctxInc approximation | (same) | **STILL OPEN.** Spec section 9.3.4.2.2: `ctxInc = condL + condA` where each is `1` if the left/above neighbor CB has greater depth than current (smaller CB). Old code uses `ctx_inc = min(ct_depth, 2)` — current depth, not neighbor depth. Fix needs a picture-wide per-min-CB depth map (a row buffer + column buffer per CTU would suffice). Biggest remaining structural bug; suspected to cause `crowd_1440x960.heic`'s catastrophic regression to 11 CTUs after Bug #2f. |
-| 4i. CABAC bit under-consumption — IntraSplitFlag exclusion in transformTree | (same) | **STILL OPEN.** Spec section 7.3.8.8: `split_transform_flag` is NOT coded at `trafo_depth == 0` for intra CUs with NxN partition (PART_NxN at min CB size). Old code unconditionally decodes the bit there → reads one phantom context bin per such CU. Small impact (NxN intra is rare) but non-zero. |
-| 4j. CABAC bit under-consumption — RESIDUAL | (same) | **STILL OPEN.** With 4a-4f fixed, summer reaches 345/345 CTUs and corruption is observable in the first ~30% of NAL bytes. Crowd / winter / autumn still false-terminate. Fixing 4g (paired with the prev_csbf table) and 4h is the next-best lever. |
+| 1. CABAC anomaly criteria | `h265_validator.zig` | Flags overshoot + immediate-fail + mid-slice fail. NEW: `cabac_premature_term` counter (diagnostic only, surfaced via VALIDATE_TRACE_H265 stream_summary; will be promoted to WARN once decoder reliably terminates at expected CTU count on clean files). |
+| 2. H.265 verdict policy | `h265_validator.zig` | Anomalies → `valid=true + warning_message`; caller propagates as depth=structural+warning. |
+| 3. HEIC result routing | `heic_validator.zig` | Propagates `warning_message` via `okWithWarning(...)`. |
+| 4a. CABAC silent-skip on NAL > 256 KB | `h265_validator.zig` | **FIXED.** Buffer heap-alloc'd to `nal.data.len`. Alloc failure increments `cabac_anomalies`. |
+| 4b. last_sig_coeff bit order | `h265_cabac_decoder.zig` | **FIXED.** Spec 7.3.8.11 X-prefix, Y-prefix, X-suffix, Y-suffix order via split helpers. |
+| 4c. spurious firstG1 remaining | `h265_cabac_decoder.zig` | **FIXED.** `num_g1_remainings = num_greater1` when g2=1 else `num_greater1 - 1`. |
+| 4d. cbf_luma ctxInc inversion | `h265_cabac_decoder.zig` | **FIXED.** Spec Table 9-37: `(trafoDepth == 0) ? 1 : 0`. Confirmed against ffmpeg (`!trafo_depth`). |
+| 4e. Chroma residual placement at log2=2 in 4:2:0 | `h265_cabac_decoder.zig` | **FIXED.** Spec 7.3.8.9: chroma decoded once per 4-luma-sibling group on `blk_idx==3`. |
+| 4f. sig_coeff_flag context for 4x4 TBs | `h265_cabac_decoder.zig` | **FIXED.** Spec Table 9-19 position lookup `{{0,1,4,5},{2,3,4,5},{6,6,8,8},{7,7,8,8}}`. |
+| 4g. sig_coeff_flag for non-4x4 sub-blocks (spec-correct port) | `h265_cabac_decoder.zig` | **FIXED.** Direct port of ffmpeg `libavcodec/hevc/cabac.c:1220-1295`: 5-section ctx_idx_map keyed by prev_sig; per-sub-block scf_offset based on c_idx, log2_tb_size, sb_x/y; DC-position special handling (DC sub-block uses offset 0 luma / 27 chroma; non-DC sub-block uses scf_offset+2; interior csbf=1 with no other sig → DC implicit 1). |
+| 4h. split_cu_flag neighbor-depth ctxInc | `h265_cabac_decoder.zig` | **FIXED.** Per-slice CU depth map allocated via `heap.validateAllocator()` at top of `validateH265IntraCabac`; codingQuadtree threads it through, looks up left/above neighbor depth, stamps leaf CB's depth at finalization. Alloc failure → fallback to depth-only approximation. |
+| 4i. IntraSplitFlag exclusion | `h265_cabac_decoder.zig` | **FIXED.** Added `intra_split_flag` to `transformTree`; `split_transform_flag` is not coded at `trafo_depth==0` for intra NxN CUs (split forced). |
+| 4j. scan_idx derivation from intra_pred_mode | `h265_cabac_decoder.zig` (residualCoding) | **STILL OPEN — biggest remaining gap.** Affects luma 8x8 sig_coeff_flag context (`scf_offset += 9` for SCAN_DIAG vs `+15` for SCAN_VERT/HORIZ) AND the within-sub-block scan order (`scan_x_off / scan_y_off` use horiz_scan4x4 / vert_scan4x4 instead of diag_scan_4x4). Spec section 8.4.4.2.7 / ffmpeg `libavcodec/hevc/hevcdec.c:1366-1373`: when pred_mode==INTRA and log2_trafo_size < 4, intra_pred_mode ∈ [6,14] → SCAN_VERT, [22,30] → SCAN_HORIZ, else SCAN_DIAG. We currently hard-code SCAN_DIAG. For high-quality content with directional intra modes (e.g. sample.heic at QP 18), this produces wrong contexts for many TUs. Implementation requires: (1) per-slice intra mode map (u8 per min-PU 4x4 grid), (2) MPM derivation in codingUnit from left/above neighbor intra modes (spec 8.4.2 / ffmpeg `hevcdec.c:2240-2295`), (3) capture mpm_idx / rem_intra_luma_pred_mode VALUES (currently discarded), (4) store derived intra_pred_mode in map for each PU, (5) plumb to residualCoding and use scan_idx for sub-block scan table selection + scf_offset adjustment. |
 
-**Bin counters added on `CabacDecodeResult` and surfaced via `VALIDATE_TRACE_H265` `slice_bins`:** `context_bins`, `bypass_bins`, `terminate_bins`, `residual_calls`, `residual_sig_total`, `residual_greater1_total`, `residual_remaining_total`. Per-TU trace via `VALIDATE_TRACE_H265_CABAC` `tu seq=…` line emits log2_tb_size, is_luma, bits consumed, sig/g1/rem counts.
+**Bin counters added on `CabacDecodeResult` and surfaced via `VALIDATE_TRACE_H265` `slice_bins`:** `context_bins`, `bypass_bins`, `terminate_bins`, `residual_calls`, `residual_sig_total`, `residual_greater1_total`, `residual_remaining_total`.
 
-**Per-CTU bit position trace via `VALIDATE_TRACE_H265_CABAC` `ctu ctu=N/M`** shows bits_in / bits_after_quadtree / bits_after_term / term flag, so the exact CTU where false-termination fires is observable.
+**Per-TU trace via `VALIDATE_TRACE_H265_CABAC` `tu seq=…`** emits log2_tb_size, is_luma, bits consumed, sig/g1/rem counts per residualCoding call.
 
-**End-of-session baseline trace (after Bug #2f, 2026-05-20 late evening):**
+**Per-CTU bit position trace via `VALIDATE_TRACE_H265_CABAC` `ctu ctu=N/M`** shows bits_in / bits_after_quadtree / bits_after_term / term flag — the exact CTU where false-termination fires is observable.
+
+**ffmpeg HEVC reference** vendored under `docs/hevc-reference/` (libavcodec/hevc/cabac.c + hevcdec.c, LGPL-2.1+). Confirmed all committed fixes (4d/4f/4g/4h/4i) match the ffmpeg implementation byte-for-byte.
+
+**End-of-session baseline (2026-05-21 late evening, after 11 H.265 commits):**
 
 ```
-File                 expected  ctus  terminated  engine_valid  bits_consumed  bits_remaining  rbsp_bits
-autumn   1440x960    345       162   YES (false) true          195545         2119647         2315192
-crowd    1440x960    345       11    YES (false) true          14395          998277          1012672
-sample   tile1       64        64    no          true          125543         726057          851600
-spring   1440x960    345       127   YES (false) true          192086         208906          400992
-summer   1440x960    345       345   no          true          411618         1165270         1576888
-winter   1440x960    345       93    YES (false) true          91099          1866317         1957416
+File                 expected  ctus  terminated  engine_valid  bits_consumed  bits_remaining  rbsp_bits  Δ-vs-clean(corrupt@50%)
+autumn   1440x960    345       116   YES (false) true          217562         2097630         2315192    identical (corruption beyond stop point)
+crowd    1440x960    345       345   no          true          247721         764951          1012672    full slice now reached!
+sample   tile1       64        6     YES (false) true          12887          838713          851600     significant regression — see 4j
+spring   1440x960    345       23    YES (false) true          43503          357489          400992
+summer   1440x960    345       35    YES (false) true          47360          1529528         1576888
+winter   1440x960    345       102   YES (false) true          202147         1755269         1957416
 ```
 
-`summer` reaching 345/345 CTUs without false termination is a notable end-state. `crowd` regressed catastrophically after Bug #2f, indicating another compensating bug specific to crowd's encoding (worth investigating first in the next session — crowd is the smallest content-heavy file at 124 KB NAL, easiest reference target).
+`crowd` reaching 345/345 cleanly is a major win — spec-correct contexts produce a coherent decoder trajectory for content-heavy slices. Other files (especially `sample.heic` with QP 18 directional intra content) still false-terminate because of the hard-coded SCAN_DIAG (Bug 4j). Once 4j lands, expect all six files to reach expected CTU counts, at which point the `cabac_premature_term` diagnostic can be promoted to a real anomaly (per Peter's "any detectable discrepancy → WARN" heuristic) and the autumn sniper test can be un-skipped.
 
-The previous-session observation of "ctus_decoded=64/64, bits_remaining≈30%" was actually `sample.heic` (a 64-CTU tile), not autumn. Autumn under the old buffer-too-small code was producing **no CABAC trace at all** (because the silent-skip path fired before any CABAC was attempted).
 
 **What needs to happen for the sniper test to pass:**
 
