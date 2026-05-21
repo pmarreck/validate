@@ -1644,36 +1644,57 @@ fn getSigCoeffCtxSpec(
     return @intCast(if (sig_ctx > 43) @as(u32, 43) else sig_ctx);
 }
 
-/// Decode coeff_abs_level_remaining using Rice-Golomb (bypass coded)
-/// Returns the decoded value for rice parameter tracking.
+/// Decode coeff_abs_level_remaining per H.265 spec section 9.3.3.10 / x265
+/// encoder entropy.cpp:1877 / ffmpeg cabac.c:941.
+///
+/// COEF_REMAIN_BIN_REDUCTION = 3 (NOT 4!). The prefix is unbounded unary
+/// terminated by a 0 bit — there is ALWAYS a terminator (the spec's TR
+/// "no terminator when prefixVal >= cMax" rule turns out NOT to apply in
+/// this context as both x265 and ffmpeg encode/decode it). The prior
+/// implementation capped the prefix loop at 4 and used a different escape
+/// formula, reading 1 fewer bit per value >= 4. Cross-verified against
+/// both x265's encoder (writes 6 bits for value=4 cRP=0 — see x265
+/// `writeCoefRemainExGolomb` with `((1 << (3 + length + 1)) - 2)`) and
+/// ffmpeg's decoder (`prefix < 3` branch / `prefix_minus3` escape).
+///
+/// Bit consumption per value at cRiceParam=0:
+///   0 → 1 bit  ("0")
+///   1 → 2 bits ("10")
+///   2 → 3 bits ("110")
+///   3 → 4 bits ("1110")        ← still simple path in our terms, escape in ffmpeg's
+///   4 → 6 bits ("111100")      ← was 5 in old code — 1 bit short
+///   5 → 6 bits ("111101")
+///   6..9   → 8 bits
+///   10..17 → 10 bits           etc.
 fn decodeCoeffAbsLevelRemainingVal(engine: *H265CabacEngine, rice_param: u32) u32 {
     if (!engine.valid) return 0;
 
-    // Prefix: unary in bypass mode
-    const cTRMax: u32 = 4; // COEF_REMAIN_BIN_REDUCTION
+    // Read unary prefix until 0 bit (or CABAC_MAX_BIN safety cap).
+    const MAX_BIN: u32 = 31;
     var prefix: u32 = 0;
-    while (prefix < cTRMax and engine.valid) : (prefix += 1) {
+    while (prefix < MAX_BIN) : (prefix += 1) {
         if (engine.decodeBypass() == 0) break;
+        if (!engine.valid) return 0;
     }
     if (!engine.valid) return 0;
 
-    if (prefix < cTRMax) {
-        // Truncated Rice: value = prefix << rice_param + suffix
+    if (prefix < 3) {
+        // Simple Rice path: value = (prefix << cRP) + cRP-bit suffix
         var suffix: u32 = 0;
         if (rice_param > 0) {
             suffix = engine.decodeBypassBits(rice_param);
+            if (!engine.valid) return 0;
         }
         return (prefix << @intCast(rice_param)) + suffix;
     } else {
-        // Escape: Exp-Golomb coded suffix
-        var eg_prefix: u32 = 0;
-        while (eg_prefix < 20 and engine.valid) : (eg_prefix += 1) {
-            if (engine.decodeBypass() == 0) break;
-        }
+        // Escape: read (prefix - 3 + cRP) suffix bits.
+        // value = (((1 << (prefix-3)) + 3 - 1) << cRP) + suffix
+        //       = ((1 << (prefix-3)) + 2) << cRP + suffix
+        const prefix_minus3 = prefix - 3;
+        const suffix_bits = prefix_minus3 + rice_param;
+        const suffix = engine.decodeBypassBits(suffix_bits);
         if (!engine.valid) return 0;
-        const suffix_val = engine.decodeBypassBits(eg_prefix + rice_param);
-        if (!engine.valid) return 0;
-        return (cTRMax << @intCast(rice_param)) + (@as(u32, 1) << @intCast(eg_prefix)) - 1 + suffix_val;
+        return ((@as(u32, 1) << @intCast(prefix_minus3)) + 2) << @intCast(rice_param) | suffix;
     }
 }
 
