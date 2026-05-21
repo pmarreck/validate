@@ -52,6 +52,29 @@ non-canonical." If your workflow needs strict spec compliance (e.g.,
 distributing files to other strict validators), re-encode any WARN
 file before shipping.
 
+### Shim implementer guide: routing decoder-library errors
+
+When a format-shim (`tiffz_shim.zig`, `jpegz_shim.zig`, future
+format shims) maps an error from the underlying decoder library, the
+verdict-tier mapping follows the principle above:
+
+| Underlying-library error | Verdict | Rationale |
+|---|---|---|
+| Codec rejected input bytes (e.g. `tiffz.Error.Malformed` from `decodeStrip`; jpegz's "huffman_table_corrupt" finding) | **FAIL** | The codec is doing exactly what corruption detection requires: rejecting bits that don't make sense. Cosmic ray / sector failure / network glitch → here. |
+| Resource limit / I/O failure (OOM, `LimitExceeded*`, `SourceTooShort`, `SourceShortRead`) | **FAIL** | The validator hit a hard wall. User needs to know it's not just a missing-feature gap. |
+| Unsupported format variant (e.g. `tiffz.Error.UnsupportedCompression`, `.UnsupportedPhotometric`) | **WARN** at `structural` depth | The decoder library hasn't implemented this variant yet. The file is probably fine; just don't tell the user it's been fully validated. |
+| Decoder library SUCCESSFULLY decoded via a known-quirk fallback (e.g. tiffz's `old_style_lzw_codes` finding fires on libtiff-style legacy LZW) | **WARN** | The tolerated-deviation case from the WARN definition above. File is readable everywhere; just non-canonical. |
+
+The two WARN sub-cases differ in depth: known-quirk fallback returns
+`full` depth (the file was fully decoded); unsupported-variant returns
+`structural` depth (depth degraded because the codec couldn't run).
+
+If a single error code from the underlying library conflates the
+"corruption" and "unsupported variant" cases (no signal to
+distinguish), that's an upstream library-design issue worth flagging
+— the library should split into distinct error names so shim
+implementers can route them differently.
+
 ## Goals
 - Provide deterministic, byte-level validation across a wide range of file formats (at least 100 thus far).
 - Maximize auditability and reproducibility (same bytes => same result).

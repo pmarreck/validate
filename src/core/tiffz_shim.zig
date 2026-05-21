@@ -122,9 +122,17 @@ pub fn validateTiffDeepBuffer(
         var ws = tiffz.Workspace.init(allocator);
         defer ws.deinit();
         decoder.validateAllStripsAndTiles(&ws) catch |err| switch (err) {
-            // Real terminal failures — surface as FAIL so the user
-            // knows the validator hit a hard wall (not just a
-            // missing-feature gap).
+            // Real terminal failures + corruption: surface as FAIL.
+            // Per Peter 2026-05-21: a WARN is for malformations that
+            // are the tolerated result of some encoder's quirk (e.g.
+            // old-style LZW codes — tiffz still decodes them and
+            // emits the `old_style_lzw_codes` finding for WARN
+            // routing); a FAIL is for malformations too great to
+            // decode OR byte corruption (cosmic rays / sector
+            // failures / network glitches / etc.). tiffz's
+            // `error.Malformed` is the latter — codec saw input it
+            // genuinely couldn't make sense of.
+            error.Malformed,
             error.OutOfMemory,
             error.LimitExceededIfdCount,
             error.LimitExceededTagCount,
@@ -138,10 +146,14 @@ pub fn validateTiffDeepBuffer(
             error.SourceTooShort,
             error.SourceShortRead,
             => return routeError(err, format),
-            // Everything else (Malformed, UnsupportedCompression,
-            // UnsupportedPhotometric, DestTooSmall past the
-            // max_decompressed_strip_bytes cap, etc.) is a decoder
-            // coverage gap — flag as WARN-eligible and move on.
+            // Genuine tiffz coverage gaps (variants the decoder
+            // doesn't support yet): WARN at structural depth so
+            // clean-but-uncovered files don't FAIL while still
+            // flagging that full validation didn't happen.
+            // Includes UnsupportedCompression, UnsupportedPhotometric,
+            // UnsupportedPredictor, UnsupportedBitDepth,
+            // UnsupportedTagType, DestTooSmall past the
+            // max_decompressed_strip_bytes cap, etc.
             else => {
                 strip_decode_failed = true;
             },
