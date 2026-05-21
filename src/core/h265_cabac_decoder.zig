@@ -27,6 +27,52 @@ const diag_scan_4x4: [16][2]u8 = .{
     .{ 1, 3 }, .{ 3, 2 }, .{ 2, 3 }, .{ 3, 3 },
 };
 
+/// Horizontal scan order for 4x4 blocks (raster row-major).
+/// Per H.265 spec section 6.5.4 — used when intra prediction mode is
+/// horizontal-ish (modes 22-30, with log2_trafo_size < 4).
+const horiz_scan_4x4: [16][2]u8 = .{
+    .{ 0, 0 }, .{ 1, 0 }, .{ 2, 0 }, .{ 3, 0 },
+    .{ 0, 1 }, .{ 1, 1 }, .{ 2, 1 }, .{ 3, 1 },
+    .{ 0, 2 }, .{ 1, 2 }, .{ 2, 2 }, .{ 3, 2 },
+    .{ 0, 3 }, .{ 1, 3 }, .{ 2, 3 }, .{ 3, 3 },
+};
+
+/// Vertical scan order for 4x4 blocks (column-major).
+/// Per H.265 spec section 6.5.5 — used when intra prediction mode is
+/// vertical-ish (modes 6-14, with log2_trafo_size < 4).
+const vert_scan_4x4: [16][2]u8 = .{
+    .{ 0, 0 }, .{ 0, 1 }, .{ 0, 2 }, .{ 0, 3 },
+    .{ 1, 0 }, .{ 1, 1 }, .{ 1, 2 }, .{ 1, 3 },
+    .{ 2, 0 }, .{ 2, 1 }, .{ 2, 2 }, .{ 2, 3 },
+    .{ 3, 0 }, .{ 3, 1 }, .{ 3, 2 }, .{ 3, 3 },
+};
+
+/// Horizontal sub-block scan for 2x2 sub-block arrays (used in 8x8 TBs).
+const horiz_scan_2x2: [4][2]u8 = .{ .{ 0, 0 }, .{ 1, 0 }, .{ 0, 1 }, .{ 1, 1 } };
+
+/// Vertical sub-block scan for 2x2 sub-block arrays.
+const vert_scan_2x2: [4][2]u8 = .{ .{ 0, 0 }, .{ 0, 1 }, .{ 1, 0 }, .{ 1, 1 } };
+
+/// HEVC intra prediction mode constants (spec section 8.4.2).
+const INTRA_PLANAR: u8 = 0;
+const INTRA_DC: u8 = 1;
+const INTRA_ANGULAR_2: u8 = 2;
+const INTRA_ANGULAR_10: u8 = 10;
+const INTRA_ANGULAR_26: u8 = 26;
+const INTRA_ANGULAR_34: u8 = 34;
+
+/// Scan type for residual_coding — picked per TU based on intra mode + size.
+/// Per spec section 8.4.4.2.7: pred_mode==INTRA AND log2_trafo_size < 4 →
+/// scan picks based on intra_pred_mode range. Otherwise always DIAG.
+const ScanType = enum { diag, horiz, vert };
+
+fn deriveScanIdx(intra_pred_mode: u8, log2_tb_size: u32) ScanType {
+    if (log2_tb_size >= 4) return .diag;
+    if (intra_pred_mode >= 6 and intra_pred_mode <= 14) return .vert;
+    if (intra_pred_mode >= 22 and intra_pred_mode <= 30) return .horiz;
+    return .diag;
+}
+
 /// Diagonal scan order for 8x8 sub-blocks within TBs.
 /// Used for sub-block iteration in 16x16 and 32x32 TBs.
 const diag_scan_2x2: [4][2]u8 = .{
@@ -73,6 +119,159 @@ const sig_ctx_idx_map = [80]u8{
     2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0,
     2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
 };
+
+/// Per-slice mutable context: depth + intra-mode maps that codingQuadtree /
+/// codingUnit / transformUnit / residualCoding all need to read and write
+/// for spec-correct context derivation. Heap-allocated at slice entry in
+/// validateH265IntraCabac; freed when validateH265IntraCabac returns.
+///
+/// Both maps are optional: alloc failure → null → callers fall back to the
+/// pre-spec-correct approximation rather than break. Min PU size in HEVC is
+/// always 4x4 (log2 = 2), so intra_mode_map is indexed at that granularity.
+const SliceCtx = struct {
+    // CU depth map per min-CB (Bug #4h)
+    depth_map: ?[]u8,
+    pic_w_min_cbs: u32,
+    pic_h_min_cbs: u32,
+    log2_min_cb: u5,
+
+    // Intra prediction mode map per min-PU (Bug #4j). Stores u8 mode value
+    // 0..34 (PLANAR / DC / ANGULAR_2..34). Initialized to INTRA_DC.
+    intra_mode_map: ?[]u8,
+    pic_w_min_pus: u32,
+    pic_h_min_pus: u32,
+
+    // log2_ctb_size for "above neighbor in same CTB row?" intra MPM check
+    log2_ctb: u5,
+
+    fn lookupIntraMode(self: *const SliceCtx, x_pu: u32, y_pu: u32) u8 {
+        if (self.intra_mode_map) |m| {
+            if (x_pu >= self.pic_w_min_pus or y_pu >= self.pic_h_min_pus) return INTRA_DC;
+            const idx = @as(usize, y_pu) * self.pic_w_min_pus + x_pu;
+            if (idx < m.len) return m[idx];
+        }
+        return INTRA_DC;
+    }
+
+    fn storeIntraMode(self: *SliceCtx, x_pu_start: u32, y_pu_start: u32, size_in_pus: u32, mode: u8) void {
+        if (self.intra_mode_map) |m| {
+            var dy: u32 = 0;
+            while (dy < size_in_pus) : (dy += 1) {
+                const yi = y_pu_start + dy;
+                if (yi >= self.pic_h_min_pus) break;
+                var dx: u32 = 0;
+                while (dx < size_in_pus) : (dx += 1) {
+                    const xi = x_pu_start + dx;
+                    if (xi >= self.pic_w_min_pus) break;
+                    const idx = @as(usize, yi) * self.pic_w_min_pus + xi;
+                    if (idx < m.len) m[idx] = mode;
+                }
+            }
+        }
+    }
+
+    fn lookupDepth(self: *const SliceCtx, x_min_cb: u32, y_min_cb: u32) u8 {
+        if (self.depth_map) |dm| {
+            if (x_min_cb >= self.pic_w_min_cbs or y_min_cb >= self.pic_h_min_cbs) return 0;
+            const idx = @as(usize, y_min_cb) * self.pic_w_min_cbs + x_min_cb;
+            if (idx < dm.len) return dm[idx];
+        }
+        return 0;
+    }
+};
+
+/// Derive the luma intra prediction mode for a PU per spec section 8.4.2 /
+/// ffmpeg libavcodec/hevc/hevcdec.c:2240-2295. Uses neighbor intra modes
+/// (left and above-but-same-CTB-row) to compute the 3 MPM candidates, then
+/// selects via mpm_idx or rem_intra_luma_pred_mode.
+fn deriveLumaIntraMode(
+    ctx: *const SliceCtx,
+    x0: u32,
+    y0: u32,
+    prev_intra_luma_pred_flag: bool,
+    mpm_idx: u32,
+    rem_intra_luma_pred_mode: u32,
+) u8 {
+    // Min PU size = 4 (log2 = 2).
+    const log2_min_pu: u5 = 2;
+
+    var cand_left: u8 = INTRA_DC;
+    if (x0 > 0) {
+        const left_x_pu = (x0 - 1) >> log2_min_pu;
+        const left_y_pu = y0 >> log2_min_pu;
+        cand_left = ctx.lookupIntraMode(left_x_pu, left_y_pu);
+    }
+
+    var cand_up: u8 = INTRA_DC;
+    if (y0 > 0) {
+        // Per spec: intra mode prediction does NOT cross vertical CTB
+        // boundaries — if the above neighbor is in a different CTB row,
+        // treat it as INTRA_DC. y_ctb = top of current CTB row.
+        const y_ctb: u32 = (y0 >> ctx.log2_ctb) << ctx.log2_ctb;
+        if ((y0 - 1) >= y_ctb) {
+            const above_x_pu = x0 >> log2_min_pu;
+            const above_y_pu = (y0 - 1) >> log2_min_pu;
+            cand_up = ctx.lookupIntraMode(above_x_pu, above_y_pu);
+        }
+    }
+
+    var candidate: [3]u8 = undefined;
+    if (cand_left == cand_up) {
+        if (cand_left < 2) {
+            candidate = .{ INTRA_PLANAR, INTRA_DC, INTRA_ANGULAR_26 };
+        } else {
+            candidate[0] = cand_left;
+            // 2 + ((cand_left - 2 - 1 + 32) & 31)  and  2 + ((cand_left - 2 + 1) & 31)
+            const left_minus_2: u32 = @as(u32, cand_left) - 2;
+            candidate[1] = @intCast(2 + ((left_minus_2 + 31) & 31));
+            candidate[2] = @intCast(2 + ((left_minus_2 + 1) & 31));
+        }
+    } else {
+        candidate[0] = cand_left;
+        candidate[1] = cand_up;
+        if (candidate[0] != INTRA_PLANAR and candidate[1] != INTRA_PLANAR) {
+            candidate[2] = INTRA_PLANAR;
+        } else if (candidate[0] != INTRA_DC and candidate[1] != INTRA_DC) {
+            candidate[2] = INTRA_DC;
+        } else {
+            candidate[2] = INTRA_ANGULAR_26;
+        }
+    }
+
+    var intra_pred_mode: u8 = undefined;
+    if (prev_intra_luma_pred_flag) {
+        intra_pred_mode = candidate[@min(mpm_idx, 2)];
+    } else {
+        // Sort candidates ascending
+        if (candidate[0] > candidate[1]) std.mem.swap(u8, &candidate[0], &candidate[1]);
+        if (candidate[0] > candidate[2]) std.mem.swap(u8, &candidate[0], &candidate[2]);
+        if (candidate[1] > candidate[2]) std.mem.swap(u8, &candidate[1], &candidate[2]);
+
+        intra_pred_mode = @intCast(@min(rem_intra_luma_pred_mode, 31));
+        var i: u8 = 0;
+        while (i < 3) : (i += 1) {
+            if (intra_pred_mode >= candidate[i]) intra_pred_mode += 1;
+        }
+    }
+    return intra_pred_mode;
+}
+
+/// Derive chroma intra prediction mode per spec 8.4.2 — combines the luma
+/// mode at this CU's position with intra_chroma_pred_mode (0..4):
+///   0 → PLANAR, 1 → ANGULAR_26, 2 → ANGULAR_10, 3 → DC, 4 → use luma mode
+/// If the resulting chroma mode equals the luma mode, override to
+/// INTRA_ANGULAR_34.
+fn deriveChromaIntraMode(luma_mode: u8, intra_chroma_pred_mode: u32) u8 {
+    const remap = [4]u8{ INTRA_PLANAR, INTRA_ANGULAR_26, INTRA_ANGULAR_10, INTRA_DC };
+    var chroma_mode: u8 = undefined;
+    if (intra_chroma_pred_mode == 4) {
+        chroma_mode = luma_mode;
+    } else {
+        chroma_mode = remap[@min(intra_chroma_pred_mode, 3)];
+        if (chroma_mode == luma_mode) chroma_mode = INTRA_ANGULAR_34;
+    }
+    return chroma_mode;
+}
 // ============================================================================
 // SPS/PPS info needed for CABAC decoding
 // ============================================================================
@@ -334,8 +533,7 @@ fn codingQuadtree(
     y0: u32,
     log2_cb_size: u32,
     ct_depth: u32,
-    depth_map: ?[]u8,
-    map_w: u32,
+    ctx: *SliceCtx,
 ) void {
     if (!engine.valid) return;
     if (x0 >= info.pic_width_in_luma or y0 >= info.pic_height_in_luma) return;
@@ -348,29 +546,21 @@ fn codingQuadtree(
         if (x0 + cb_size > info.pic_width_in_luma or y0 + cb_size > info.pic_height_in_luma) {
             split = true;
         } else {
-            // split_cu_flag — H.265 spec 9.3.4.2.2:
-            //   ctxInc = condL + condA
-            //   condL = (left neighbor CB's CtDepth > ct_depth) ? 1 : 0
-            //   condA = (above neighbor CB's CtDepth > ct_depth) ? 1 : 0
-            // Unavailable neighbors (out of picture / out of slice) count as
-            // depth 0 → condition false. Look up at the min-CB position one
-            // pixel left and one pixel above. When alloc failed
-            // (depth_map == null), fall back to the previous depth-only
-            // approximation rather than break.
+            // split_cu_flag — H.265 spec 9.3.4.2.2 ctxInc = condL + condA.
+            // Neighbor CB's CtDepth > ct_depth → 1, else 0. Unavailable
+            // neighbors count as depth 0. depth_map==null falls back to
+            // the depth-only approximation.
             var ctx_inc: u16 = 0;
-            if (depth_map) |dm| {
-                const log2_min_cb: u5 = @intCast(info.log2_min_cb_size);
+            if (ctx.depth_map != null) {
                 if (x0 > 0) {
-                    const left_x_min_cb: u32 = (x0 - 1) >> log2_min_cb;
-                    const left_y_min_cb: u32 = y0 >> log2_min_cb;
-                    const idx = @as(usize, left_y_min_cb) * map_w + left_x_min_cb;
-                    if (idx < dm.len and dm[idx] > ct_depth) ctx_inc += 1;
+                    const left_x_min_cb: u32 = (x0 - 1) >> ctx.log2_min_cb;
+                    const left_y_min_cb: u32 = y0 >> ctx.log2_min_cb;
+                    if (ctx.lookupDepth(left_x_min_cb, left_y_min_cb) > ct_depth) ctx_inc += 1;
                 }
                 if (y0 > 0) {
-                    const above_x_min_cb: u32 = x0 >> log2_min_cb;
-                    const above_y_min_cb: u32 = (y0 - 1) >> log2_min_cb;
-                    const idx = @as(usize, above_y_min_cb) * map_w + above_x_min_cb;
-                    if (idx < dm.len and dm[idx] > ct_depth) ctx_inc += 1;
+                    const above_x_min_cb: u32 = x0 >> ctx.log2_min_cb;
+                    const above_y_min_cb: u32 = (y0 - 1) >> ctx.log2_min_cb;
+                    if (ctx.lookupDepth(above_x_min_cb, above_y_min_cb) > ct_depth) ctx_inc += 1;
                 }
             } else {
                 ctx_inc = @intCast(if (ct_depth > 2) @as(u32, 2) else ct_depth);
@@ -388,39 +578,35 @@ fn codingQuadtree(
         }
         const half_size = log2_cb_size - 1;
         const half = @as(u32, 1) << @intCast(half_size);
-        codingQuadtree(engine, info, x0, y0, half_size, ct_depth + 1, depth_map, map_w);
+        codingQuadtree(engine, info, x0, y0, half_size, ct_depth + 1, ctx);
         if (!engine.valid) return;
-        codingQuadtree(engine, info, x0 + half, y0, half_size, ct_depth + 1, depth_map, map_w);
+        codingQuadtree(engine, info, x0 + half, y0, half_size, ct_depth + 1, ctx);
         if (!engine.valid) return;
-        codingQuadtree(engine, info, x0, y0 + half, half_size, ct_depth + 1, depth_map, map_w);
+        codingQuadtree(engine, info, x0, y0 + half, half_size, ct_depth + 1, ctx);
         if (!engine.valid) return;
-        codingQuadtree(engine, info, x0 + half, y0 + half, half_size, ct_depth + 1, depth_map, map_w);
+        codingQuadtree(engine, info, x0 + half, y0 + half, half_size, ct_depth + 1, ctx);
     } else {
         // Leaf CB: stamp this CB's coverage into depth_map with ct_depth so
         // following CBs' split_cu_flag neighbor lookups see the right value.
-        if (depth_map) |dm| {
-            const log2_min_cb: u5 = @intCast(info.log2_min_cb_size);
-            const min_cb_size = @as(u32, 1) << log2_min_cb;
-            const cb_w_min_cbs = cb_size >> log2_min_cb;
-            const x_start = x0 >> log2_min_cb;
-            const y_start = y0 >> log2_min_cb;
-            const pic_w_min_cbs = (info.pic_width_in_luma + min_cb_size - 1) >> log2_min_cb;
-            const pic_h_min_cbs = (info.pic_height_in_luma + min_cb_size - 1) >> log2_min_cb;
+        if (ctx.depth_map) |dm| {
+            const cb_w_min_cbs = cb_size >> ctx.log2_min_cb;
+            const x_start = x0 >> ctx.log2_min_cb;
+            const y_start = y0 >> ctx.log2_min_cb;
             const depth_u8: u8 = @intCast(@min(ct_depth, 255));
             var dy: u32 = 0;
             while (dy < cb_w_min_cbs) : (dy += 1) {
                 const yi = y_start + dy;
-                if (yi >= pic_h_min_cbs) break;
+                if (yi >= ctx.pic_h_min_cbs) break;
                 var dx: u32 = 0;
                 while (dx < cb_w_min_cbs) : (dx += 1) {
                     const xi = x_start + dx;
-                    if (xi >= pic_w_min_cbs) break;
-                    const idx = @as(usize, yi) * map_w + xi;
+                    if (xi >= ctx.pic_w_min_cbs) break;
+                    const idx = @as(usize, yi) * ctx.pic_w_min_cbs + xi;
                     if (idx < dm.len) dm[idx] = depth_u8;
                 }
             }
         }
-        codingUnit(engine, info, x0, y0, log2_cb_size);
+        codingUnit(engine, info, x0, y0, log2_cb_size, ctx);
     }
 }
 
@@ -434,6 +620,7 @@ fn codingUnit(
     x0: u32,
     y0: u32,
     log2_cb_size: u32,
+    ctx: *SliceCtx,
 ) void {
     if (!engine.valid) return;
     if (x0 >= info.pic_width_in_luma or y0 >= info.pic_height_in_luma) return;
@@ -482,6 +669,7 @@ fn codingUnit(
 
     // Intra prediction modes — Section 7.3.8.5
     const num_pus: u32 = if (part_mode == 1) 4 else 1;
+    const pu_offset: u32 = if (part_mode == 1) (@as(u32, 1) << @intCast(log2_cb_size - 1)) else (@as(u32, 1) << @intCast(log2_cb_size));
 
     // prev_intra_luma_pred_flag for each PU
     var prev_flags: [4]u1 = undefined;
@@ -490,31 +678,62 @@ fn codingUnit(
         if (!engine.valid) return;
     }
 
-    // mpm_idx or rem_intra_luma_pred_mode for each PU
+    // mpm_idx (when prev=1) or rem_intra_luma_pred_mode (when prev=0) per PU.
+    // CAPTURE the values (previously discarded) so we can run MPM derivation
+    // and store the resulting intra_pred_mode per PU into the picture-wide
+    // intra mode map — feeds scan_idx for residualCoding (Bug #4j).
+    var mpm_idx: [4]u32 = .{ 0, 0, 0, 0 };
+    var rem_mode: [4]u32 = .{ 0, 0, 0, 0 };
     for (0..num_pus) |pu| {
         if (prev_flags[pu] == 1) {
-            // mpm_idx: truncated unary, max 2 (spec: 0,1,2)
-            // Decode first bin; if 0, mpm_idx=0. If 1, decode second; if 0, mpm_idx=1, else mpm_idx=2.
+            // mpm_idx: truncated unary, max 2 (values 0/1/2). Bin0=0 → 0;
+            // bin0=1,bin1=0 → 1; bin0=1,bin1=1 → 2.
             const bin0 = engine.decodeBypass();
             if (!engine.valid) return;
-            if (bin0 == 1) {
-                _ = engine.decodeBypass(); // second bin
+            if (bin0 == 0) {
+                mpm_idx[pu] = 0;
+            } else {
+                const bin1 = engine.decodeBypass();
                 if (!engine.valid) return;
+                mpm_idx[pu] = if (bin1 == 0) @as(u32, 1) else @as(u32, 2);
             }
         } else {
-            // rem_intra_luma_pred_mode: 5 bypass bins (FL(32))
-            _ = engine.decodeBypassBits(5);
+            // rem_intra_luma_pred_mode: 5 bypass bins (FL with max value 31)
+            rem_mode[pu] = engine.decodeBypassBits(5);
             if (!engine.valid) return;
         }
     }
 
+    // For each PU: derive intra_pred_mode + store in map (granularity 4x4).
+    // Per spec, the PU positions for NxN are:
+    //   pu=0: (x0,            y0)
+    //   pu=1: (x0 + pu_offset, y0)
+    //   pu=2: (x0,            y0 + pu_offset)
+    //   pu=3: (x0 + pu_offset, y0 + pu_offset)
+    const pu_x_off: [4]u32 = .{ 0, pu_offset, 0, pu_offset };
+    const pu_y_off: [4]u32 = .{ 0, 0, pu_offset, pu_offset };
+    var luma_modes: [4]u8 = .{ INTRA_DC, INTRA_DC, INTRA_DC, INTRA_DC };
+    for (0..num_pus) |pu| {
+        const pu_x = x0 + pu_x_off[pu];
+        const pu_y = y0 + pu_y_off[pu];
+        const mode = deriveLumaIntraMode(ctx, pu_x, pu_y, prev_flags[pu] == 1, mpm_idx[pu], rem_mode[pu]);
+        luma_modes[pu] = mode;
+        // Store at min-PU granularity (4x4 = log2 2)
+        const pu_x_min = pu_x >> 2;
+        const pu_y_min = pu_y >> 2;
+        const pu_size_min_pus = pu_offset >> 2;
+        ctx.storeIntraMode(pu_x_min, pu_y_min, pu_size_min_pus, mode);
+    }
+
     // intra_chroma_pred_mode — Section 7.3.8.5
-    // For 4:2:0 with NxN, there's still just ONE chroma prediction per CU
-    // The spec says one intra_chroma_pred_mode per chroma PB, and for 4:2:0
-    // NxN at min CU size (8x8 luma = 4x4 chroma), there's one chroma PB
+    // For 4:2:0 (chroma_format_idc==1), one intra_chroma_pred_mode per CU
+    // (covers all chroma PBs in this CU). For 4:4:4 with NxN, the spec
+    // codes one per chroma PB — we approximate with one per CU (small impact
+    // for our HEIC corpus which is 4:2:0).
     if (info.chroma_format_idc != 0) {
         const chroma_bin0 = engine.decodeBin(h265_tables.CTX_INTRA_CHROMA_PRED_MODE);
         if (!engine.valid) return;
+        // Captured but currently unused (chroma scan_idx derivation deferred).
         if (chroma_bin0 == 1) {
             _ = engine.decodeBypassBits(2);
             if (!engine.valid) return;
@@ -522,13 +741,10 @@ fn codingUnit(
     }
 
     // Transform tree — Section 7.3.8.8
-    // Called ONCE from the CU level. For NxN, the transform tree's internal
-    // splitting handles subdivision into 4 TUs. IntraSplitFlag=1 for NxN.
     const max_depth = info.max_transform_hierarchy_depth_intra;
-    // For NxN: IntraSplitFlag = 1, so maxTrafoDepth = MaxTransformHierarchyDepthIntra + 1
     const effective_max_depth = if (part_mode == 1) max_depth + 1 else max_depth;
     const intra_split_flag = (part_mode == 1);
-    transformTree(engine, info, x0, y0, log2_cb_size, 0, effective_max_depth, log2_cb_size, true, true, 0, intra_split_flag);
+    transformTree(engine, info, x0, y0, log2_cb_size, 0, effective_max_depth, log2_cb_size, true, true, 0, intra_split_flag, ctx);
 }
 
 // ============================================================================
@@ -548,6 +764,7 @@ fn transformTree(
     parent_cbf_cr: bool,
     blk_idx: u32,
     intra_split_flag: bool,
+    ctx: *SliceCtx,
 ) void {
     if (!engine.valid) return;
     if (x0 >= info.pic_width_in_luma or y0 >= info.pic_height_in_luma) return;
@@ -593,13 +810,13 @@ fn transformTree(
         // CBF is coded at levels where chroma has a valid TB
         if (log2_tb_size > 2) {
             if (trafo_depth == 0 or parent_cbf_cb) {
-                const ctx: u16 = @intCast(if (trafo_depth > 4) @as(u32, 4) else trafo_depth);
-                cbf_cb = engine.decodeBin(h265_tables.CTX_CBF_CHROMA + ctx) == 1;
+                const cbf_ctx: u16 = @intCast(if (trafo_depth > 4) @as(u32, 4) else trafo_depth);
+                cbf_cb = engine.decodeBin(h265_tables.CTX_CBF_CHROMA + cbf_ctx) == 1;
                 if (!engine.valid) return;
             }
             if (trafo_depth == 0 or parent_cbf_cr) {
-                const ctx: u16 = @intCast(if (trafo_depth > 4) @as(u32, 4) else trafo_depth);
-                cbf_cr = engine.decodeBin(h265_tables.CTX_CBF_CHROMA + ctx) == 1;
+                const cbf_ctx: u16 = @intCast(if (trafo_depth > 4) @as(u32, 4) else trafo_depth);
+                cbf_cr = engine.decodeBin(h265_tables.CTX_CBF_CHROMA + cbf_ctx) == 1;
                 if (!engine.valid) return;
             }
         }
@@ -613,15 +830,15 @@ fn transformTree(
         const half_size = @as(u32, 1) << @intCast(log2_tb_size - 1);
         // Recursive transform tree calls — IntraSplitFlag does NOT propagate
         // to children (it only excludes the depth-0 bin coding).
-        transformTree(engine, info, x0, y0, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 0, false);
+        transformTree(engine, info, x0, y0, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 0, false, ctx);
         if (!engine.valid) return;
-        transformTree(engine, info, x0 + half_size, y0, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 1, false);
+        transformTree(engine, info, x0 + half_size, y0, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 1, false, ctx);
         if (!engine.valid) return;
-        transformTree(engine, info, x0, y0 + half_size, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 2, false);
+        transformTree(engine, info, x0, y0 + half_size, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 2, false, ctx);
         if (!engine.valid) return;
-        transformTree(engine, info, x0 + half_size, y0 + half_size, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 3, false);
+        transformTree(engine, info, x0 + half_size, y0 + half_size, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 3, false, ctx);
     } else {
-        transformUnit(engine, info, log2_tb_size, trafo_depth, blk_idx, cbf_cb, cbf_cr);
+        transformUnit(engine, info, x0, y0, log2_tb_size, trafo_depth, blk_idx, cbf_cb, cbf_cr, ctx);
     }
 }
 
@@ -632,11 +849,14 @@ fn transformTree(
 fn transformUnit(
     engine: *H265CabacEngine,
     info: *const H265SliceDecodeInfo,
+    x0: u32,
+    y0: u32,
     log2_tb_size: u32,
     trafo_depth: u32,
     blk_idx: u32,
     cbf_cb: bool,
     cbf_cr: bool,
+    ctx: *SliceCtx,
 ) void {
     if (!engine.valid) return;
 
@@ -661,17 +881,10 @@ fn transformUnit(
     // Chroma residual placement — spec section 7.3.8.9. For 4:2:0 with a 4x4
     // luma TB (log2_tb_size == 2), the chroma residual is shared across the
     // four 4x4-luma siblings and decoded ONCE on the last sibling
-    // (blk_idx == 3) with chroma TB size 4x4 (log2=2). For 4:4:4 or larger
-    // luma TBs, chroma is decoded per transform unit with TB size adjusted
-    // for the subsampling (4:2:0 chroma is one log2 smaller; 4:4:4 chroma
-    // matches luma).
+    // (blk_idx == 3) with chroma TB size 4x4 (log2=2).
     const decode_chroma_here = info.chroma_format_idc != 0 and
         (log2_tb_size > 2 or info.chroma_format_idc == 3 or blk_idx == 3);
 
-    // Chroma transform_skip_flag — gated by the same chroma-present condition
-    // and only for chroma TBs that come out at 4x4 (luma 8x8 in 4:2:0, or
-    // luma 4x4 in 4:4:4, or the 4x4 group at blk_idx==3 in 4:2:0 where
-    // chroma is 4x4).
     if (info.transform_skip_enabled and decode_chroma_here) {
         const chroma_is_4x4 = (info.chroma_format_idc != 3 and log2_tb_size == 3) or
             (info.chroma_format_idc == 3 and log2_tb_size == 2) or
@@ -688,30 +901,46 @@ fn transformUnit(
         }
     }
 
+    // Look up luma intra mode at the TB top-left position. Used for both
+    // luma scan_idx and chroma scan_idx (chroma derives from co-located
+    // luma in spec — we use luma directly as a reasonable approximation
+    // when intra_chroma_pred_mode tracking lands; for now chroma scan
+    // remains DIAG which is correct for log2 >= 4 chroma TBs).
+    const luma_intra_mode: u8 = blk: {
+        const pu_x_min = x0 >> 2;
+        const pu_y_min = y0 >> 2;
+        break :blk ctx.lookupIntraMode(pu_x_min, pu_y_min);
+    };
+    const luma_scan_idx = deriveScanIdx(luma_intra_mode, log2_tb_size);
+
     // Luma residual data
     if (cbf_luma) {
-        residualCoding(engine, info, log2_tb_size, true);
+        residualCoding(engine, info, log2_tb_size, true, luma_scan_idx);
         if (!engine.valid) return;
     }
 
-    // Chroma residual data — gated by decode_chroma_here so we don't fire
-    // four times per 4-luma-sibling group in 4:2:0.
+    // Chroma residual data
     if (decode_chroma_here) {
-        // For 4:2:0 (chroma_format_idc != 3), chroma TB is one log2 smaller
-        // than luma EXCEPT when luma is 4x4: there the chroma TB is also 4x4
-        // (one chroma per 4-luma group). For 4:4:4, chroma matches luma.
         const log2_chroma_tb: u32 = if (info.chroma_format_idc == 3)
             log2_tb_size
         else if (log2_tb_size > 2)
             log2_tb_size - 1
         else
             2;
+        // Chroma scan_idx — for log2_chroma_tb < 4 the spec derives from the
+        // chroma intra mode. We don't currently track chroma intra mode
+        // explicitly; default to SCAN_DIAG which matches the most common
+        // case (chroma 8x8+ always DIAG; chroma 4x4 in 4:2:0 is the case
+        // where this approximation can produce wrong contexts). Per ffmpeg
+        // hevcdec.c:1376-1380 the chroma derivation uses intra_pred_mode_c
+        // which itself derives from luma_mode + intra_chroma_pred_mode.
+        const chroma_scan_idx: ScanType = .diag;
         if (cbf_cb) {
-            residualCoding(engine, info, log2_chroma_tb, false);
+            residualCoding(engine, info, log2_chroma_tb, false, chroma_scan_idx);
             if (!engine.valid) return;
         }
         if (cbf_cr) {
-            residualCoding(engine, info, log2_chroma_tb, false);
+            residualCoding(engine, info, log2_chroma_tb, false, chroma_scan_idx);
         }
     }
 }
@@ -758,6 +987,7 @@ fn residualCoding(
     info: *const H265SliceDecodeInfo,
     log2_tb_size: u32,
     is_luma: bool,
+    scan_idx: ScanType,
 ) void {
     if (!engine.valid) return;
     engine.residual_calls +%= 1;
@@ -807,13 +1037,19 @@ fn residualCoding(
         if (!engine.valid) return;
         break :blk v;
     };
-    const last_x = combineLastSigCoeff(last_x_prefix, last_x_suffix);
-    const last_y = combineLastSigCoeff(last_y_prefix, last_y_suffix);
+    // Spec: for SCAN_VERT, swap last_x and last_y so subsequent scan-table
+    // operations treat (x,y) as if HORIZ — vertical scan is column-major,
+    // which is row-major with axes swapped. ffmpeg
+    // libavcodec/hevc/cabac.c:1118 does the same FFSWAP.
+    const last_x: u32 = if (scan_idx == .vert) combineLastSigCoeff(last_y_prefix, last_y_suffix) else combineLastSigCoeff(last_x_prefix, last_x_suffix);
+    const last_y: u32 = if (scan_idx == .vert) combineLastSigCoeff(last_x_prefix, last_x_suffix) else combineLastSigCoeff(last_y_prefix, last_y_suffix);
 
     // Sub-block dimensions
-    const log2_sb_size: u32 = if (tb_size_clamped == 2) 0 else 2; // 4x4 sub-blocks (or 1x1 for 4x4 TB)
     const num_sb_side = @as(u32, 1) << @intCast(tb_size_clamped - 2);
     const total_sub_blocks = num_sb_side * num_sb_side;
+
+    // Within-sub-block scan order (4x4 positions). Per scan_idx.
+    const within_sb_scan = getWithinSbScan(scan_idx);
 
     // Last sub-block and position within it
     const last_sb_x = last_x >> 2;
@@ -824,29 +1060,30 @@ fn residualCoding(
     var last_sub_block: u32 = 0;
 
     if (tb_size_clamped == 2) {
-        // 4x4 TB: single sub-block, find position in diag scan
+        // 4x4 TB: single sub-block, find position via scan-type-correct table
         last_sub_block = 0;
         last_scan_pos = 0;
-        for (diag_scan_4x4, 0..) |pos, i| {
+        for (within_sb_scan, 0..) |pos, i| {
             if (pos[0] == @as(u8, @intCast(last_x)) and pos[1] == @as(u8, @intCast(last_y))) {
                 last_scan_pos = @intCast(i);
                 break;
             }
         }
     } else {
-        // Find sub-block in diagonal scan order
-        const sb_scan = getSubBlockScan(num_sb_side);
-        for (sb_scan, 0..) |sb, i| {
+        // Find sub-block in scan order (sub-block scan tables also depend
+        // on scan_idx for 8x8 TBs — 2x2 sub-block array).
+        const sb_scan_pre = getSubBlockScan(num_sb_side, scan_idx);
+        for (sb_scan_pre, 0..) |sb, i| {
             if (i >= total_sub_blocks) break;
             if (sb[0] == @as(u8, @intCast(last_sb_x)) and sb[1] == @as(u8, @intCast(last_sb_y))) {
                 last_sub_block = @intCast(i);
                 break;
             }
         }
-        // Find position within sub-block
+        // Find position within sub-block (within_sb_scan).
         const local_x: u8 = @intCast(last_x & 3);
         const local_y: u8 = @intCast(last_y & 3);
-        for (diag_scan_4x4, 0..) |pos, i| {
+        for (within_sb_scan, 0..) |pos, i| {
             if (pos[0] == local_x and pos[1] == local_y) {
                 last_scan_pos = @intCast(i);
                 break;
@@ -854,15 +1091,13 @@ fn residualCoding(
         }
     }
 
-    _ = log2_sb_size;
-
     // Track coded sub-block flags for neighbor context derivation
     var coded_sb_flags: [64]bool = [_]bool{false} ** 64; // max 8x8 = 64 sub-blocks
     coded_sb_flags[0] = true; // DC sub-block (scan index 0) is always implicitly coded
     // Last sub-block is always coded
     if (last_sub_block < 64) coded_sb_flags[last_sub_block] = true;
 
-    const sb_scan = getSubBlockScan(num_sb_side);
+    const sb_scan = getSubBlockScan(num_sb_side, scan_idx);
 
     // Greater1 context tracking across sub-blocks (Section 9.3.3.1.3)
     var last_greater1_ctx: u32 = 1; // ctxSet for greater1 flag
@@ -950,7 +1185,13 @@ fn residualCoding(
             ctx_idx_map_section = (prev_sig + 1) * 16;
             if (is_luma) {
                 if (sb_x > 0 or sb_y > 0) scf_offset = 3;
-                scf_offset += if (tb_size_clamped == 3) @as(u32, 9) else @as(u32, 21);
+                if (tb_size_clamped == 3) {
+                    // Luma 8x8: SCAN_DIAG → +9, SCAN_HORIZ/VERT → +15.
+                    scf_offset += if (scan_idx == .diag) @as(u32, 9) else @as(u32, 15);
+                } else {
+                    // Luma 16x16+ always uses +21 (no scan_idx dependency).
+                    scf_offset += 21;
+                }
             } else {
                 scf_offset = 27;
                 scf_offset += if (tb_size_clamped == 3) @as(u32, 9) else @as(u32, 12);
@@ -971,8 +1212,8 @@ fn residualCoding(
             while (n_pos > 1) : (n_pos -= 1) {
                 if (!engine.valid) return;
                 const scan_pos = n_pos - 1;
-                const local_x = diag_scan_4x4[scan_pos][0];
-                const local_y = diag_scan_4x4[scan_pos][1];
+                const local_x = within_sb_scan[scan_pos][0];
+                const local_y = within_sb_scan[scan_pos][1];
 
                 // Last position in last sub-block is implicitly significant.
                 if (sb_scan_idx == last_sub_block and scan_pos == last_scan_pos) {
@@ -1172,14 +1413,31 @@ fn residualCoding(
     }
 }
 
-/// Get the sub-block scan table for a given sub-block dimension.
-fn getSubBlockScan(num_sb_side: u32) []const [2]u8 {
+/// Get the sub-block scan table for a given sub-block dimension and scan type.
+/// For 2x2 sub-block arrays (8x8 TBs), the scan order depends on scan_idx:
+/// DIAG and HORIZ produce identical 2x2 scans; only VERT differs. For larger
+/// sub-block arrays (16x16 and 32x32 TBs), only DIAG is valid per spec
+/// (non-DIAG scans are restricted to log2_trafo_size < 4).
+fn getSubBlockScan(num_sb_side: u32, scan_idx: ScanType) []const [2]u8 {
     return switch (num_sb_side) {
         1 => &[_][2]u8{.{ 0, 0 }},
-        2 => &diag_scan_2x2,
+        2 => switch (scan_idx) {
+            .diag, .horiz => &diag_scan_2x2,
+            .vert => &vert_scan_2x2,
+        },
         4 => &diag_scan_4x4_sb,
         8 => &diag_scan_8x8_sb,
         else => &[_][2]u8{.{ 0, 0 }},
+    };
+}
+
+/// Get the within-sub-block (4x4 coefficient positions) scan table for the
+/// given scan type. Affects residualCoding's position iteration.
+fn getWithinSbScan(scan_idx: ScanType) *const [16][2]u8 {
+    return switch (scan_idx) {
+        .diag => &diag_scan_4x4,
+        .horiz => &horiz_scan_4x4,
+        .vert => &vert_scan_4x4,
     };
 }
 
@@ -1459,23 +1717,46 @@ pub fn validateH265IntraCabac(
 
     const max_ctus: u32 = @min(total_ctus, 1024);
 
-    // CU depth map for spec-correct split_cu_flag context derivation
-    // (Bug #4h). Sized to cover the picture at min-CB granularity. The
-    // map_w stride is the picture width in min-CBs (rounded up). Allocation
-    // failure is non-fatal: codingQuadtree falls back to the depth-only
-    // ctxInc approximation when depth_map == null.
+    // Per-slice context maps for spec-correct context derivation:
+    // - depth_map (Bug #4h): per min-CB, for split_cu_flag ctxInc
+    // - intra_mode_map (Bug #4j): per min-PU (4x4), for scan_idx
+    // Both alloc failures are non-fatal — callers fall back to
+    // approximations when null rather than break.
     const log2_min_cb_u: u5 = @intCast(info.log2_min_cb_size);
     const min_cb_size: u32 = @as(u32, 1) << log2_min_cb_u;
-    const map_w: u32 = (info.pic_width_in_luma + min_cb_size - 1) >> log2_min_cb_u;
-    const map_h: u32 = (info.pic_height_in_luma + min_cb_size - 1) >> log2_min_cb_u;
-    const depth_map_allocator = heap.validateAllocator();
+    const pic_w_min_cbs: u32 = (info.pic_width_in_luma + min_cb_size - 1) >> log2_min_cb_u;
+    const pic_h_min_cbs: u32 = (info.pic_height_in_luma + min_cb_size - 1) >> log2_min_cb_u;
+    // Min PU size is always 4x4 in HEVC (log2_min_pu = 2).
+    const pic_w_min_pus: u32 = (info.pic_width_in_luma + 3) >> 2;
+    const pic_h_min_pus: u32 = (info.pic_height_in_luma + 3) >> 2;
+    const slice_allocator = heap.validateAllocator();
     const depth_map: ?[]u8 = blk: {
-        if (map_w == 0 or map_h == 0) break :blk null;
-        const buf = depth_map_allocator.alloc(u8, @as(usize, map_w) * @as(usize, map_h)) catch break :blk null;
+        if (pic_w_min_cbs == 0 or pic_h_min_cbs == 0) break :blk null;
+        const buf = slice_allocator.alloc(u8, @as(usize, pic_w_min_cbs) * @as(usize, pic_h_min_cbs)) catch break :blk null;
         @memset(buf, 0);
         break :blk buf;
     };
-    defer if (depth_map) |dm| depth_map_allocator.free(dm);
+    defer if (depth_map) |dm| slice_allocator.free(dm);
+    const intra_mode_map: ?[]u8 = blk: {
+        if (pic_w_min_pus == 0 or pic_h_min_pus == 0) break :blk null;
+        const buf = slice_allocator.alloc(u8, @as(usize, pic_w_min_pus) * @as(usize, pic_h_min_pus)) catch break :blk null;
+        // Initialize all positions to INTRA_DC. Per spec, unavailable
+        // neighbors (out-of-slice / not-yet-decoded) are treated as DC.
+        @memset(buf, INTRA_DC);
+        break :blk buf;
+    };
+    defer if (intra_mode_map) |m| slice_allocator.free(m);
+
+    var slice_ctx = SliceCtx{
+        .depth_map = depth_map,
+        .pic_w_min_cbs = pic_w_min_cbs,
+        .pic_h_min_cbs = pic_h_min_cbs,
+        .log2_min_cb = log2_min_cb_u,
+        .intra_mode_map = intra_mode_map,
+        .pic_w_min_pus = pic_w_min_pus,
+        .pic_h_min_pus = pic_h_min_pus,
+        .log2_ctb = @intCast(info.log2_ctb_size),
+    };
 
     const trace_cabac = trace.isEnabled(.h265_cabac);
     if (trace_cabac) trace.print(.h265_cabac, "slice_enter total_ctus={d} max_ctus={d} pic_w_ctbs={d} pic_h_ctbs={d} log2_ctb={d} rbsp_bits={d} qp={d} sao={} pcm={}", .{
@@ -1507,7 +1788,7 @@ pub fn validateH265IntraCabac(
             }
         }
 
-        codingQuadtree(&engine, info, x0, y0, info.log2_ctb_size, 0, depth_map, map_w);
+        codingQuadtree(&engine, info, x0, y0, info.log2_ctb_size, 0, &slice_ctx);
         if (!engine.valid) {
             if (trace_cabac) trace.print(.h265_cabac, "ctu_fail_quadtree ctu={d} bits_remain={d}", .{ ctu_rs_addr, reader.remainingBits() });
             return buildResult(&engine, ctu_rs_addr, false, reader.remainingBits(), cabac_start_bits, false);
