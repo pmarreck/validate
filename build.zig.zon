@@ -130,8 +130,8 @@
         // (Compression=7) and lossless JPEG (DNG). Pins jpegz + zstdz
         // to the same commits/hashes as validate for Zig package dedup.
         .tiffz = .{
-            .url = "git+https://github.com/pmarreck/tiffz#2d3560405d6bd739dcb525404f5a3a08a3b07283",
-            .hash = "tiffz-0.1.0-qutJASOsYgFrRAQY_gYC318WW7kaGvqw6ICqxMjwkNUR",
+            .url = "git+https://github.com/pmarreck/tiffz#579f133b487aaf2c4f221c6e169be004c7c5f4e2",
+            .hash = "tiffz-0.1.0-qutJARXHYgGyR_e1IaOIFoDaRRjKORIu1VGz0S7lOhFx",
         },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",

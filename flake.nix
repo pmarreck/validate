@@ -29,7 +29,7 @@
 
 			# Pre-fetched Zig dependencies (fixed-output derivation)
 			# This hash must be updated when build.zig.zon changes
-			zigDepsHash = "sha256-p1N7CTbJZInsikh5Aa5SLJre1/M+LGhJKLg3sR1zQo0=";
+			zigDepsHash = "sha256-P6CyEmfhm0LjW7I+cbmbDWjQfOo3vqkKUnf8kQkZYXI=";
 		in {
 			# Packages for Garnix/Nix builds
 			packages = forBuildSystems (buildSystem:
@@ -53,6 +53,12 @@
 						buildPhase = ''
 							export HOME=$TMPDIR
 							export ZIG_GLOBAL_CACHE_DIR=$out
+							# Zig 0.16 needs these subdirs to pre-exist or its
+							# package fetcher fails on .zip transitive deps with
+							# the misleading 'failed to create temporary zip
+							# file: FileNotFound' (the parent dir is missing,
+							# not the file). Diagnosed 2026-05-21.
+							mkdir -p $out/tmp $out/p $out/o
 							export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
 							export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
 							zig build --fetch=all
@@ -194,6 +200,12 @@
 						buildPhase = ''
 							export HOME=$TMPDIR
 							export ZIG_GLOBAL_CACHE_DIR=$out
+							# Zig 0.16 needs these subdirs to pre-exist or its
+							# package fetcher fails on .zip transitive deps with
+							# the misleading 'failed to create temporary zip
+							# file: FileNotFound' (the parent dir is missing,
+							# not the file). Diagnosed 2026-05-21.
+							mkdir -p $out/tmp $out/p $out/o
 							export SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
 							export GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
 							zig build --fetch=all

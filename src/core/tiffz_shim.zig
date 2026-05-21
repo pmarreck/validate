@@ -58,7 +58,14 @@ pub fn validateTiffDeepBuffer(
     var acc = FindingAccumulator.init(allocator);
     defer acc.deinit();
 
-    var decoder = tiffz.Decoder.open(allocator, source) catch |err| return routeError(err, format);
+    var decoder = tiffz.Decoder.openWithLimits(allocator, source, .{
+        // Cap the convenience method's internal scratch growth at
+        // 64 MiB to preserve the original strip-decode patch's
+        // memory ceiling. Larger TIFFs hit DestTooSmall, route
+        // through the WARN path, and validate degrades to structural
+        // depth rather than allocating gigabytes.
+        .max_decompressed_strip_bytes = 64 * 1024 * 1024,
+    }) catch |err| return routeError(err, format);
     defer decoder.deinit();
 
     decoder.setFindingCallback(&FindingAccumulator.callback, @ptrCast(&acc));
@@ -105,78 +112,43 @@ pub fn validateTiffDeepBuffer(
     // LZW codes — tiffz's deferred LZWFixupTags issue). We surface the
     // gap as WARN at structural depth so clean-but-uncovered files don't
     // FAIL while still flagging that full validation didn't happen.
+    // Per tiffz 2026-05-21 ship: a single library call decodes every
+    // strip + tile of every materialized IFD. Internally grows the
+    // dest buffer (1 MiB start, doubles on DestTooSmall, capped at
+    // limits.max_decompressed_strip_bytes). Replaces the ~60-line
+    // inline loop the original strip-decode patch used.
     var strip_decode_failed: bool = false;
     {
         var ws = tiffz.Workspace.init(allocator);
         defer ws.deinit();
-        var scratch_size: usize = 4 * 1024 * 1024;
-        const scratch_cap: usize = 64 * 1024 * 1024;
-        var scratch = allocator.alloc(u8, scratch_size) catch
-            return routeError(error.OutOfMemory, format);
-        defer allocator.free(scratch);
-
-        var ifd_n: usize = 0;
-        ifd_loop: while (ifd_n < decoder.ifdCount()) : (ifd_n += 1) {
-            const dir = decoder.ifd(ifd_n) catch |err| switch (err) {
-                error.InvalidArgument, error.Malformed => break :ifd_loop,
-                else => return routeError(err, format),
-            };
-
-            const tile_entry = dir.get(tiffz.tags.tile_offsets);
-            const strip_entry = dir.get(tiffz.tags.strip_byte_counts);
-            const count: u64 = if (tile_entry) |t| t.count else if (strip_entry) |s| s.count else 0;
-            if (count == 0) continue;
-
-            var chunk: u64 = 0;
-            chunk_loop: while (chunk < count) : (chunk += 1) {
-                while (true) {
-                    const res = if (tile_entry != null)
-                        decoder.decodeTile(ifd_n, @intCast(chunk), scratch, &ws)
-                    else
-                        decoder.decodeStrip(ifd_n, @intCast(chunk), scratch, &ws);
-                    if (res) |_| break else |err| switch (err) {
-                        error.DestTooSmall => {
-                            if (scratch_size >= scratch_cap) {
-                                strip_decode_failed = true;
-                                break :chunk_loop;
-                            }
-                            const new_size = @min(scratch_size * 2, scratch_cap);
-                            allocator.free(scratch);
-                            scratch = allocator.alloc(u8, new_size) catch
-                                return routeError(error.OutOfMemory, format);
-                            scratch_size = new_size;
-                            continue;
-                        },
-                        // Resource limits and OOM are real terminal errors —
-                        // surface as FAIL so the user knows the validator
-                        // hit a hard wall (not just a missing-feature gap).
-                        error.OutOfMemory,
-                        error.LimitExceededIfdCount,
-                        error.LimitExceededTagCount,
-                        error.LimitExceededStripCount,
-                        error.LimitExceededTagValueBytes,
-                        error.LimitExceededDimension,
-                        error.LimitExceededTotalSamples,
-                        error.LimitExceededCodecScratch,
-                        error.LimitExceededCompressedStripBytes,
-                        error.LimitExceededDecompressedStripBytes,
-                        error.SourceTooShort,
-                        error.SourceShortRead,
-                        => return routeError(err, format),
-                        // Everything else (Malformed, UnsupportedCompression,
-                        // UnsupportedPhotometric, etc.) is a decoder coverage
-                        // gap — flag as WARN-eligible and move on.
-                        else => {
-                            strip_decode_failed = true;
-                            break :chunk_loop;
-                        },
-                    }
-                }
-            }
-        }
+        decoder.validateAllStripsAndTiles(&ws) catch |err| switch (err) {
+            // Real terminal failures — surface as FAIL so the user
+            // knows the validator hit a hard wall (not just a
+            // missing-feature gap).
+            error.OutOfMemory,
+            error.LimitExceededIfdCount,
+            error.LimitExceededTagCount,
+            error.LimitExceededStripCount,
+            error.LimitExceededTagValueBytes,
+            error.LimitExceededDimension,
+            error.LimitExceededTotalSamples,
+            error.LimitExceededCodecScratch,
+            error.LimitExceededCompressedStripBytes,
+            error.LimitExceededDecompressedStripBytes,
+            error.SourceTooShort,
+            error.SourceShortRead,
+            => return routeError(err, format),
+            // Everything else (Malformed, UnsupportedCompression,
+            // UnsupportedPhotometric, DestTooSmall past the
+            // max_decompressed_strip_bytes cap, etc.) is a decoder
+            // coverage gap — flag as WARN-eligible and move on.
+            else => {
+                strip_decode_failed = true;
+            },
+        };
     }
 
-    // Decode succeeded structurally. Walk the accumulator and pick
+        // Decode succeeded structurally. Walk the accumulator and pick
     // the most "severe" routing: error > warning > info.
     const final_depth: format_validation.ValidationDepth = if (strip_decode_failed) .structural else .full;
     var result = ValidationResult.okWithDepth(format, final_depth);
