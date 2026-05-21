@@ -968,6 +968,20 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
     var cabac_slices_complete: u32 = 0;
     var cabac_expected_ctus_total: u32 = 0;
     var cabac_anomalies: u32 = 0;
+    // Diagnostic-only counter: how many CABAC slices terminated early
+    // (terminated_cleanly=true but ctus_decoded < expected_ctus). Per H.265
+    // spec, end_of_slice_segment_flag appears EXACTLY ONCE at the end of the
+    // slice — premature termination indicates the engine state coincidentally
+    // satisfied the terminator probability at the wrong bit position
+    // (i.e., the decoder is desynced). Surfaced via VALIDATE_TRACE_H265 only;
+    // NOT yet promoted to a verdict-level anomaly because the current decoder
+    // produces premature termination on most clean ground-truth HEICs as
+    // well — would false-positive every clean photo until the residual
+    // residual_coding spec gaps (see NEXT_STEPS.md 4g/4h/4i) are closed.
+    // Once clean files reliably terminate at the expected CTU count, move
+    // this into the cabac_anomalies bucket per Peter's "any detectable
+    // discrepancy → WARN" heuristic.
+    var cabac_premature_term: u32 = 0;
 
     // Allocate RBSP buffer on stack for parameter set parsing.
     var rbsp_buf: [8192]u8 = undefined;
@@ -1185,6 +1199,10 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                                     if (overshoot or immediate_fail or mid_slice_fail) {
                                         cabac_anomalies += 1;
                                     }
+                                    // Diagnostic only — see cabac_premature_term declaration for rationale.
+                                    if (result.terminated_cleanly and result.ctus_decoded < expected_ctus) {
+                                        cabac_premature_term += 1;
+                                    }
                                 }
 
                             }
@@ -1273,6 +1291,11 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
     //     non-conformant encoders.
     // The validator's role is to surface anomalies, not silently
     // plow through. Callers map WARN to depth=structural+warning.
+    if (trace.isEnabled(.h265)) trace.print(.h265, "stream_summary nal_count={d} frames={d} cabac_slices_tested={d} cabac_slices_complete={d} cabac_total_ctus={d} cabac_expected_ctus={d} cabac_anomalies={d} cabac_premature_term={d}", .{
+        nal_count, frames_counted, cabac_slices_tested, cabac_slices_complete,
+        cabac_total_ctus_decoded, cabac_expected_ctus_total, cabac_anomalies, cabac_premature_term,
+    });
+
     if (cabac_anomalies > 0) {
         return .{
             .valid = true,
