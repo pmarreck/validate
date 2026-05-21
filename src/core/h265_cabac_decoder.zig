@@ -135,9 +135,14 @@ const SliceCtx = struct {
     pic_h_min_cbs: u32,
     log2_min_cb: u5,
 
-    // Intra prediction mode map per min-PU (Bug #4j). Stores u8 mode value
-    // 0..34 (PLANAR / DC / ANGULAR_2..34). Initialized to INTRA_DC.
+    // Intra LUMA prediction mode map per min-PU (Bug #4j). Stores u8 mode
+    // value 0..34 (PLANAR / DC / ANGULAR_2..34). Initialized to INTRA_DC.
     intra_mode_map: ?[]u8,
+    // Intra CHROMA prediction mode map per min-PU (Bug #4k). Stored at the
+    // same granularity as luma so transformUnit can look up by TB top-left.
+    // For 4:2:0 the chroma mode is uniform per CU; the storeChromaMode call
+    // covers the whole CU area.
+    chroma_mode_map: ?[]u8,
     pic_w_min_pus: u32,
     pic_h_min_pus: u32,
 
@@ -153,19 +158,38 @@ const SliceCtx = struct {
         return INTRA_DC;
     }
 
+    fn lookupChromaMode(self: *const SliceCtx, x_pu: u32, y_pu: u32) u8 {
+        if (self.chroma_mode_map) |m| {
+            if (x_pu >= self.pic_w_min_pus or y_pu >= self.pic_h_min_pus) return INTRA_DC;
+            const idx = @as(usize, y_pu) * self.pic_w_min_pus + x_pu;
+            if (idx < m.len) return m[idx];
+        }
+        return INTRA_DC;
+    }
+
     fn storeIntraMode(self: *SliceCtx, x_pu_start: u32, y_pu_start: u32, size_in_pus: u32, mode: u8) void {
         if (self.intra_mode_map) |m| {
-            var dy: u32 = 0;
-            while (dy < size_in_pus) : (dy += 1) {
-                const yi = y_pu_start + dy;
-                if (yi >= self.pic_h_min_pus) break;
-                var dx: u32 = 0;
-                while (dx < size_in_pus) : (dx += 1) {
-                    const xi = x_pu_start + dx;
-                    if (xi >= self.pic_w_min_pus) break;
-                    const idx = @as(usize, yi) * self.pic_w_min_pus + xi;
-                    if (idx < m.len) m[idx] = mode;
-                }
+            self.fillMap(m, x_pu_start, y_pu_start, size_in_pus, mode);
+        }
+    }
+
+    fn storeChromaMode(self: *SliceCtx, x_pu_start: u32, y_pu_start: u32, size_in_pus: u32, mode: u8) void {
+        if (self.chroma_mode_map) |m| {
+            self.fillMap(m, x_pu_start, y_pu_start, size_in_pus, mode);
+        }
+    }
+
+    fn fillMap(self: *SliceCtx, m: []u8, x_pu_start: u32, y_pu_start: u32, size_in_pus: u32, mode: u8) void {
+        var dy: u32 = 0;
+        while (dy < size_in_pus) : (dy += 1) {
+            const yi = y_pu_start + dy;
+            if (yi >= self.pic_h_min_pus) break;
+            var dx: u32 = 0;
+            while (dx < size_in_pus) : (dx += 1) {
+                const xi = x_pu_start + dx;
+                if (xi >= self.pic_w_min_pus) break;
+                const idx = @as(usize, yi) * self.pic_w_min_pus + xi;
+                if (idx < m.len) m[idx] = mode;
             }
         }
     }
@@ -725,19 +749,30 @@ fn codingUnit(
         ctx.storeIntraMode(pu_x_min, pu_y_min, pu_size_min_pus, mode);
     }
 
-    // intra_chroma_pred_mode — Section 7.3.8.5
-    // For 4:2:0 (chroma_format_idc==1), one intra_chroma_pred_mode per CU
-    // (covers all chroma PBs in this CU). For 4:4:4 with NxN, the spec
-    // codes one per chroma PB — we approximate with one per CU (small impact
-    // for our HEIC corpus which is 4:2:0).
+    // intra_chroma_pred_mode — Section 7.3.8.5 / ffmpeg cabac.c:725.
+    // Binarization: bin0=0 → value 4 (use luma mode); bin0=1 + 2 bypass bins
+    // → values 0/1/2/3 (high bit first). Per spec 9.3.2.5.
+    // For ChromaArrayType==1 (4:2:0) — our HEIC case — one chroma_pred_mode
+    // per CU and the derived chroma mode uses the luma mode at the CU's
+    // TOP-LEFT position (luma_modes[0]). Store the resulting chroma mode at
+    // every min-PU position the CU covers so transformUnit can look it up
+    // by TB top-left coordinate.
     if (info.chroma_format_idc != 0) {
         const chroma_bin0 = engine.decodeBin(h265_tables.CTX_INTRA_CHROMA_PRED_MODE);
         if (!engine.valid) return;
-        // Captured but currently unused (chroma scan_idx derivation deferred).
+        var intra_chroma_pred_mode: u32 = 4;
         if (chroma_bin0 == 1) {
-            _ = engine.decodeBypassBits(2);
+            const cb_b1 = engine.decodeBypass();
             if (!engine.valid) return;
+            const cb_b0 = engine.decodeBypass();
+            if (!engine.valid) return;
+            intra_chroma_pred_mode = (@as(u32, cb_b1) << 1) | @as(u32, cb_b0);
         }
+        const chroma_mode = deriveChromaIntraMode(luma_modes[0], intra_chroma_pred_mode);
+        const cu_size_min_pus = (@as(u32, 1) << @intCast(log2_cb_size)) >> 2;
+        const cu_x_min = x0 >> 2;
+        const cu_y_min = y0 >> 2;
+        ctx.storeChromaMode(cu_x_min, cu_y_min, cu_size_min_pus, chroma_mode);
     }
 
     // Transform tree — Section 7.3.8.8
@@ -927,14 +962,18 @@ fn transformUnit(
             log2_tb_size - 1
         else
             2;
-        // Chroma scan_idx — for log2_chroma_tb < 4 the spec derives from the
-        // chroma intra mode. We don't currently track chroma intra mode
-        // explicitly; default to SCAN_DIAG which matches the most common
-        // case (chroma 8x8+ always DIAG; chroma 4x4 in 4:2:0 is the case
-        // where this approximation can produce wrong contexts). Per ffmpeg
-        // hevcdec.c:1376-1380 the chroma derivation uses intra_pred_mode_c
-        // which itself derives from luma_mode + intra_chroma_pred_mode.
-        const chroma_scan_idx: ScanType = .diag;
+        // Chroma scan_idx (Bug #4k): derived from the stored chroma intra
+        // mode at this chroma TB's position. The chroma_mode_map is filled
+        // in codingUnit during intra_chroma_pred_mode decode (and is
+        // INTRA_DC by default if alloc failed). For log2_chroma_tb >= 4
+        // scan_idx is always DIAG per spec, so this only matters for chroma
+        // 4x4 and 8x8 TBs.
+        const chroma_mode_at_tb: u8 = blk: {
+            const pu_x_min = x0 >> 2;
+            const pu_y_min = y0 >> 2;
+            break :blk ctx.lookupChromaMode(pu_x_min, pu_y_min);
+        };
+        const chroma_scan_idx = deriveScanIdx(chroma_mode_at_tb, log2_chroma_tb);
         if (cbf_cb) {
             residualCoding(engine, info, log2_chroma_tb, false, chroma_scan_idx);
             if (!engine.valid) return;
@@ -1746,6 +1785,13 @@ pub fn validateH265IntraCabac(
         break :blk buf;
     };
     defer if (intra_mode_map) |m| slice_allocator.free(m);
+    const chroma_mode_map: ?[]u8 = blk: {
+        if (pic_w_min_pus == 0 or pic_h_min_pus == 0) break :blk null;
+        const buf = slice_allocator.alloc(u8, @as(usize, pic_w_min_pus) * @as(usize, pic_h_min_pus)) catch break :blk null;
+        @memset(buf, INTRA_DC);
+        break :blk buf;
+    };
+    defer if (chroma_mode_map) |m| slice_allocator.free(m);
 
     var slice_ctx = SliceCtx{
         .depth_map = depth_map,
@@ -1753,6 +1799,7 @@ pub fn validateH265IntraCabac(
         .pic_h_min_cbs = pic_h_min_cbs,
         .log2_min_cb = log2_min_cb_u,
         .intra_mode_map = intra_mode_map,
+        .chroma_mode_map = chroma_mode_map,
         .pic_w_min_pus = pic_w_min_pus,
         .pic_h_min_pus = pic_h_min_pus,
         .log2_ctb = @intCast(info.log2_ctb_size),
