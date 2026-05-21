@@ -49,7 +49,9 @@ df3e3f28f tiffz: switch validate's TIFF deep-validation from zigimg to tiffz
 | 4g. sig_coeff_flag for non-4x4 sub-blocks (spec-correct port) | `h265_cabac_decoder.zig` | **FIXED.** Direct port of ffmpeg `libavcodec/hevc/cabac.c:1220-1295`: 5-section ctx_idx_map keyed by prev_sig; per-sub-block scf_offset based on c_idx, log2_tb_size, sb_x/y; DC-position special handling (DC sub-block uses offset 0 luma / 27 chroma; non-DC sub-block uses scf_offset+2; interior csbf=1 with no other sig → DC implicit 1). |
 | 4h. split_cu_flag neighbor-depth ctxInc | `h265_cabac_decoder.zig` | **FIXED.** Per-slice CU depth map allocated via `heap.validateAllocator()` at top of `validateH265IntraCabac`; codingQuadtree threads it through, looks up left/above neighbor depth, stamps leaf CB's depth at finalization. Alloc failure → fallback to depth-only approximation. |
 | 4i. IntraSplitFlag exclusion | `h265_cabac_decoder.zig` | **FIXED.** Added `intra_split_flag` to `transformTree`; `split_transform_flag` is not coded at `trafo_depth==0` for intra NxN CUs (split forced). |
-| 4j. scan_idx derivation from intra_pred_mode | `h265_cabac_decoder.zig` (residualCoding) | **STILL OPEN — biggest remaining gap.** Affects luma 8x8 sig_coeff_flag context (`scf_offset += 9` for SCAN_DIAG vs `+15` for SCAN_VERT/HORIZ) AND the within-sub-block scan order (`scan_x_off / scan_y_off` use horiz_scan4x4 / vert_scan4x4 instead of diag_scan_4x4). Spec section 8.4.4.2.7 / ffmpeg `libavcodec/hevc/hevcdec.c:1366-1373`: when pred_mode==INTRA and log2_trafo_size < 4, intra_pred_mode ∈ [6,14] → SCAN_VERT, [22,30] → SCAN_HORIZ, else SCAN_DIAG. We currently hard-code SCAN_DIAG. For high-quality content with directional intra modes (e.g. sample.heic at QP 18), this produces wrong contexts for many TUs. Implementation requires: (1) per-slice intra mode map (u8 per min-PU 4x4 grid), (2) MPM derivation in codingUnit from left/above neighbor intra modes (spec 8.4.2 / ffmpeg `hevcdec.c:2240-2295`), (3) capture mpm_idx / rem_intra_luma_pred_mode VALUES (currently discarded), (4) store derived intra_pred_mode in map for each PU, (5) plumb to residualCoding and use scan_idx for sub-block scan table selection + scf_offset adjustment. |
+| 4j. Luma scan_idx derivation from intra_pred_mode | `h265_cabac_decoder.zig` | **FIXED 2026-05-21.** Picture-wide intra mode map (u8 per min-PU = 4x4 grid). MPM derivation in codingUnit from left/above neighbor intra modes (port of ffmpeg `hevcdec.c:2240-2295`). Captures mpm_idx / rem_intra_luma_pred_mode VALUES. Stored derived intra_pred_mode in map for each PU. transformUnit looks up luma mode at TB top-left and passes scan_idx to residualCoding. residualCoding uses scan_idx for sub-block scan table selection (getSubBlockScan accepts scan_idx, getWithinSbScan returns DIAG/HORIZ/VERT table) AND scf_offset adjustment (luma 8x8 SCAN_DIAG → +9, SCAN_HORIZ/VERT → +15). last_x/last_y swapped for SCAN_VERT per spec / ffmpeg cabac.c:1118. |
+| 4k. Chroma scan_idx via intra_chroma_pred_mode | `h265_cabac_decoder.zig` | **FIXED 2026-05-21.** Captures intra_chroma_pred_mode value (bin0=0 → 4; bin0=1 + 2 bypass → 0..3 high-bit-first). Derives chroma mode from luma_modes[0] + chroma_pred_mode via deriveChromaIntraMode (port of ffmpeg `hevcdec.c:2353-2375`). Stamps chroma mode into a separate `chroma_mode_map` (same dim as intra_mode_map) covering the whole CU. transformUnit looks up chroma_mode at TB top-left and derives chroma_scan_idx. |
+| 4l. coeff_abs_level_remaining decode (PROBE) | `h265_cabac_decoder.zig` `decodeCoeffAbsLevelRemainingVal` | **MAYBE OPEN.** A close reading of ffmpeg `libavcodec/hevc/cabac.c:941-968` vs our impl showed potential 1-bit divergence in the escape-path bit consumption (ffmpeg unbounded prefix loop and `prefix_minus3` formula vs our spec-text-literal cTRMax=4 + explicit EG decode). Both formulas compute the same VALUE for the same encoded stream, but their bit-consumption accounting differs in edge cases. Worth empirical verification against ffmpeg on the same NAL — spec text and ffmpeg source seem to disagree. Either ffmpeg is non-conformant (unlikely; tested against many conformance streams) or my spec reading misses something. Next session priority: build a fixture test against a known HEVC stream with controlled escape values. |
 
 **Bin counters added on `CabacDecodeResult` and surfaced via `VALIDATE_TRACE_H265` `slice_bins`:** `context_bins`, `bypass_bins`, `terminate_bins`, `residual_calls`, `residual_sig_total`, `residual_greater1_total`, `residual_remaining_total`.
 
@@ -57,21 +59,21 @@ df3e3f28f tiffz: switch validate's TIFF deep-validation from zigimg to tiffz
 
 **Per-CTU bit position trace via `VALIDATE_TRACE_H265_CABAC` `ctu ctu=N/M`** shows bits_in / bits_after_quadtree / bits_after_term / term flag — the exact CTU where false-termination fires is observable.
 
-**ffmpeg HEVC reference** vendored under `docs/hevc-reference/` (libavcodec/hevc/cabac.c + hevcdec.c, LGPL-2.1+). Confirmed all committed fixes (4d/4f/4g/4h/4i) match the ffmpeg implementation byte-for-byte.
+**ffmpeg HEVC reference** vendored under `docs/hevc-reference/` (libavcodec/hevc/cabac.c + hevcdec.c, LGPL-2.1+). Confirmed all committed fixes (4d/4f/4g/4h/4i/4j/4k) match the ffmpeg implementation byte-for-byte; only 4l has the unresolved discrepancy.
 
-**End-of-session baseline (2026-05-21 late evening, after 11 H.265 commits):**
+**End-of-session baseline (2026-05-21 deep evening, after 16 H.265 commits + ffmpeg port):**
 
 ```
-File                 expected  ctus  terminated  engine_valid  bits_consumed  bits_remaining  rbsp_bits  Δ-vs-clean(corrupt@50%)
-autumn   1440x960    345       116   YES (false) true          217562         2097630         2315192    identical (corruption beyond stop point)
-crowd    1440x960    345       345   no          true          247721         764951          1012672    full slice now reached!
-sample   tile1       64        6     YES (false) true          12887          838713          851600     significant regression — see 4j
-spring   1440x960    345       23    YES (false) true          43503          357489          400992
-summer   1440x960    345       35    YES (false) true          47360          1529528         1576888
-winter   1440x960    345       102   YES (false) true          202147         1755269         1957416
+File                expected  ctus  terminated  engine_valid  bits_consumed  bits_remaining  rbsp_bits  notes
+autumn  1440x960    345        33   YES (false) true           76384         2238808         2315192    swung post-#4k
+crowd   1440x960    345       345   no          true          482556          530116         1012672    full slice
+sample  tile1        64        64   no          true          123535          728065          851600    full slice
+spring  1440x960    345       180   YES (false) true          300704          100288          400992    consumed 75% of bits
+summer  1440x960    345       163   YES (false) true          309383         1267505         1576888
+winter  1440x960    345       244   YES (false) true          278483         1678933         1957416
 ```
 
-`crowd` reaching 345/345 cleanly is a major win — spec-correct contexts produce a coherent decoder trajectory for content-heavy slices. Other files (especially `sample.heic` with QP 18 directional intra content) still false-terminate because of the hard-coded SCAN_DIAG (Bug 4j). Once 4j lands, expect all six files to reach expected CTU counts, at which point the `cabac_premature_term` diagnostic can be promoted to a real anomaly (per Peter's "any detectable discrepancy → WARN" heuristic) and the autumn sniper test can be un-skipped.
+`crowd` and `sample tile1` both at 100% expected CTUs is a strong correctness signal. `spring` at 75% bit consumption is also close. The remaining false-terminations on `autumn` / `summer` / `winter` suggest at least one more bug (candidates: 4l above; or possibly something subtle in the SCAN_VERT last_x/last_y swap; or further chroma-mode interactions). Strong corruption signal: clean autumn → ctus=33; corrupt autumn at file offsets 5%/10%/20% → 105/284/203 (clearly distinct). Anomaly detection via `cabac_premature_term` would catch corruption AND every clean file, so promotion requires the decoder reaching expected ctus on clean files first.
 
 
 **What needs to happen for the sniper test to pass:**
