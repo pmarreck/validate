@@ -11,6 +11,7 @@ const BitReader = @import("bitstream_reader.zig").BitReader;
 const h265_tables = @import("h265_cabac_tables.zig");
 const codec_utils = @import("codec_utils.zig");
 const trace = @import("trace.zig");
+const heap = @import("heap.zig");
 
 // ============================================================================
 // Scan Order Tables (ITU-T H.265 Section 6.5.3)
@@ -333,6 +334,8 @@ fn codingQuadtree(
     y0: u32,
     log2_cb_size: u32,
     ct_depth: u32,
+    depth_map: ?[]u8,
+    map_w: u32,
 ) void {
     if (!engine.valid) return;
     if (x0 >= info.pic_width_in_luma or y0 >= info.pic_height_in_luma) return;
@@ -345,12 +348,33 @@ fn codingQuadtree(
         if (x0 + cb_size > info.pic_width_in_luma or y0 + cb_size > info.pic_height_in_luma) {
             split = true;
         } else {
-            // split_cu_flag — Section 9.3.4.5
-            // ctxInc = condL + condA (availability of left/above neighbors with smaller depth)
-            // Since we don't track per-CU depth map, use depth-based approximation
-            // This is the only remaining approximation — full neighbor tracking would require
-            // a CU depth map the size of the picture
-            const ctx_inc: u16 = @intCast(if (ct_depth > 2) @as(u32, 2) else ct_depth);
+            // split_cu_flag — H.265 spec 9.3.4.2.2:
+            //   ctxInc = condL + condA
+            //   condL = (left neighbor CB's CtDepth > ct_depth) ? 1 : 0
+            //   condA = (above neighbor CB's CtDepth > ct_depth) ? 1 : 0
+            // Unavailable neighbors (out of picture / out of slice) count as
+            // depth 0 → condition false. Look up at the min-CB position one
+            // pixel left and one pixel above. When alloc failed
+            // (depth_map == null), fall back to the previous depth-only
+            // approximation rather than break.
+            var ctx_inc: u16 = 0;
+            if (depth_map) |dm| {
+                const log2_min_cb: u5 = @intCast(info.log2_min_cb_size);
+                if (x0 > 0) {
+                    const left_x_min_cb: u32 = (x0 - 1) >> log2_min_cb;
+                    const left_y_min_cb: u32 = y0 >> log2_min_cb;
+                    const idx = @as(usize, left_y_min_cb) * map_w + left_x_min_cb;
+                    if (idx < dm.len and dm[idx] > ct_depth) ctx_inc += 1;
+                }
+                if (y0 > 0) {
+                    const above_x_min_cb: u32 = x0 >> log2_min_cb;
+                    const above_y_min_cb: u32 = (y0 - 1) >> log2_min_cb;
+                    const idx = @as(usize, above_y_min_cb) * map_w + above_x_min_cb;
+                    if (idx < dm.len and dm[idx] > ct_depth) ctx_inc += 1;
+                }
+            } else {
+                ctx_inc = @intCast(if (ct_depth > 2) @as(u32, 2) else ct_depth);
+            }
             const split_flag = engine.decodeBin(h265_tables.CTX_SPLIT_CU_FLAG + ctx_inc);
             if (!engine.valid) return;
             split = split_flag == 1;
@@ -364,14 +388,38 @@ fn codingQuadtree(
         }
         const half_size = log2_cb_size - 1;
         const half = @as(u32, 1) << @intCast(half_size);
-        codingQuadtree(engine, info, x0, y0, half_size, ct_depth + 1);
+        codingQuadtree(engine, info, x0, y0, half_size, ct_depth + 1, depth_map, map_w);
         if (!engine.valid) return;
-        codingQuadtree(engine, info, x0 + half, y0, half_size, ct_depth + 1);
+        codingQuadtree(engine, info, x0 + half, y0, half_size, ct_depth + 1, depth_map, map_w);
         if (!engine.valid) return;
-        codingQuadtree(engine, info, x0, y0 + half, half_size, ct_depth + 1);
+        codingQuadtree(engine, info, x0, y0 + half, half_size, ct_depth + 1, depth_map, map_w);
         if (!engine.valid) return;
-        codingQuadtree(engine, info, x0 + half, y0 + half, half_size, ct_depth + 1);
+        codingQuadtree(engine, info, x0 + half, y0 + half, half_size, ct_depth + 1, depth_map, map_w);
     } else {
+        // Leaf CB: stamp this CB's coverage into depth_map with ct_depth so
+        // following CBs' split_cu_flag neighbor lookups see the right value.
+        if (depth_map) |dm| {
+            const log2_min_cb: u5 = @intCast(info.log2_min_cb_size);
+            const min_cb_size = @as(u32, 1) << log2_min_cb;
+            const cb_w_min_cbs = cb_size >> log2_min_cb;
+            const x_start = x0 >> log2_min_cb;
+            const y_start = y0 >> log2_min_cb;
+            const pic_w_min_cbs = (info.pic_width_in_luma + min_cb_size - 1) >> log2_min_cb;
+            const pic_h_min_cbs = (info.pic_height_in_luma + min_cb_size - 1) >> log2_min_cb;
+            const depth_u8: u8 = @intCast(@min(ct_depth, 255));
+            var dy: u32 = 0;
+            while (dy < cb_w_min_cbs) : (dy += 1) {
+                const yi = y_start + dy;
+                if (yi >= pic_h_min_cbs) break;
+                var dx: u32 = 0;
+                while (dx < cb_w_min_cbs) : (dx += 1) {
+                    const xi = x_start + dx;
+                    if (xi >= pic_w_min_cbs) break;
+                    const idx = @as(usize, yi) * map_w + xi;
+                    if (idx < dm.len) dm[idx] = depth_u8;
+                }
+            }
+        }
         codingUnit(engine, info, x0, y0, log2_cb_size);
     }
 }
@@ -1411,6 +1459,24 @@ pub fn validateH265IntraCabac(
 
     const max_ctus: u32 = @min(total_ctus, 1024);
 
+    // CU depth map for spec-correct split_cu_flag context derivation
+    // (Bug #4h). Sized to cover the picture at min-CB granularity. The
+    // map_w stride is the picture width in min-CBs (rounded up). Allocation
+    // failure is non-fatal: codingQuadtree falls back to the depth-only
+    // ctxInc approximation when depth_map == null.
+    const log2_min_cb_u: u5 = @intCast(info.log2_min_cb_size);
+    const min_cb_size: u32 = @as(u32, 1) << log2_min_cb_u;
+    const map_w: u32 = (info.pic_width_in_luma + min_cb_size - 1) >> log2_min_cb_u;
+    const map_h: u32 = (info.pic_height_in_luma + min_cb_size - 1) >> log2_min_cb_u;
+    const depth_map_allocator = heap.validateAllocator();
+    const depth_map: ?[]u8 = blk: {
+        if (map_w == 0 or map_h == 0) break :blk null;
+        const buf = depth_map_allocator.alloc(u8, @as(usize, map_w) * @as(usize, map_h)) catch break :blk null;
+        @memset(buf, 0);
+        break :blk buf;
+    };
+    defer if (depth_map) |dm| depth_map_allocator.free(dm);
+
     const trace_cabac = trace.isEnabled(.h265_cabac);
     if (trace_cabac) trace.print(.h265_cabac, "slice_enter total_ctus={d} max_ctus={d} pic_w_ctbs={d} pic_h_ctbs={d} log2_ctb={d} rbsp_bits={d} qp={d} sao={} pcm={}", .{
         total_ctus, max_ctus, info.pic_width_in_ctbs, info.pic_height_in_ctbs, info.log2_ctb_size, cabac_start_bits, info.slice_qp, info.sao_enabled, info.pcm_enabled,
@@ -1441,7 +1507,7 @@ pub fn validateH265IntraCabac(
             }
         }
 
-        codingQuadtree(&engine, info, x0, y0, info.log2_ctb_size, 0);
+        codingQuadtree(&engine, info, x0, y0, info.log2_ctb_size, 0, depth_map, map_w);
         if (!engine.valid) {
             if (trace_cabac) trace.print(.h265_cabac, "ctu_fail_quadtree ctu={d} bits_remain={d}", .{ ctu_rs_addr, reader.remainingBits() });
             return buildResult(&engine, ctu_rs_addr, false, reader.remainingBits(), cabac_start_bits, false);
