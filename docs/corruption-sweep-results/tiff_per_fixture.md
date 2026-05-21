@@ -26,7 +26,7 @@ lzw-single-strip.tiff              80        100   LZW (already strong)
 minisblack-1c-8b.tiff               0          0   uncompressed grayscale
 palette-1c-8b.tiff                  0          9   uncompressed palette
 pc260001.tif                        0          0   uncompressed RGB
-quad-lzw.tif                      100        100   LZW (NB: failing baseline — strip 24 fails clean-file decode; coverage gap)
+quad-lzw.tif                      100        100   LZW — false-positive baseline (see note)
 quad-tile.tif                       7        100   LZW tiled
 rgb-3c-8b.tiff                      0          0   uncompressed RGB
 strike.tif                          9        100   pre-multiplied alpha LZW
@@ -43,12 +43,15 @@ ycbcr-cat.tif                      11        100   YCbCr (JPEG-in-TIFF)
   here would need an external integrity primitive (sidecar hash,
   filesystem metadata) outside TIFF proper. Validate's
   `PROJECT_OVERVIEW.md` honest-depth note captures this.
-- **quad-lzw.tif** shows as 100/100 but it's a *false positive
+- **quad-lzw.tif** shows as 100/100 here but it's a *false-positive
   baseline* — the clean file also fails strip-decode in tiffz's
-  current LZW codec at strip 24 (pre-existing coverage gap;
-  routed to WARN via `old_style_lzw_codes` finding routing).
-  Real detection rate is undefined until tiffz's LZW handles this
-  file's specific variant combo. Tracking on tiffz's side.
+  LZW codec at strip 24 in the tiffz version this binary was
+  built against. Root cause was a one-line KwKwK code-width-bump
+  asymmetry; fixed in tiffz `579f133b` (2026-05-21). Real
+  detection rates land once validate bumps the tiffz pin and
+  re-runs the sweep — expected ~70-95% sniper, ~100% shotgun
+  (matching other LZW fixtures: bali / quad-tile / strike).
+  This table will be regenerated after the tiffz bump.
 
 ## How to regenerate
 
