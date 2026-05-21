@@ -56,6 +56,22 @@ const diag_scan_8x8_sb: [64][2]u8 = blk: {
     break :blk table;
 };
 
+// Spec-correct sig_coeff_flag context map per H.265 Table 9-19, mirrored
+// from ffmpeg libavcodec/hevc/cabac.c:1226 (vendored in
+// docs/hevc-reference/ffmpeg-hevc-cabac.c). 5 sections of 16 entries
+// each, indexed by (y_local * 4 + x_local) within the 4x4 sub-block:
+//   Section 0 (offset  0): 4x4 TB position lookup
+//   Section 1 (offset 16): non-4x4 TB with prev_sig == 0
+//   Section 2 (offset 32): non-4x4 TB with prev_sig == 1
+//   Section 3 (offset 48): non-4x4 TB with prev_sig == 2
+//   Section 4 (offset 64): non-4x4 TB with prev_sig == 3 (default)
+const sig_ctx_idx_map = [80]u8{
+    0, 1, 4, 5, 2, 3, 4, 5, 6, 6, 8, 8, 7, 7, 8, 8,
+    1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+    2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+    2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0, 2, 1, 0, 0,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+};
 // ============================================================================
 // SPS/PPS info needed for CABAC decoding
 // ============================================================================
@@ -836,61 +852,124 @@ fn residualCoding(
 
         if (!coded) continue;
 
-        // sig_coeff_flag for each position in the 4x4 sub-block (reverse diag scan)
+        // sig_coeff_flag for each position in the 4x4 sub-block, in reverse
+        // diag scan order. Spec-correct context derivation per H.265 spec
+        // section 9.3.4.2.5 / ffmpeg libavcodec/hevc/cabac.c:1220-1295
+        // (see docs/hevc-reference/ffmpeg-hevc-cabac.c).
         var sig_flags: [16]bool = [_]bool{false} ** 16;
         var num_sig: u32 = 0;
 
+        // Compute prev_sig: 0..3 from right+below sub-block coded flags.
+        // (Bit 0 = right-neighbor coded; bit 1 = below-neighbor coded.)
+        var prev_sig: u32 = 0;
+        if (sb_x + 1 < num_sb_side) {
+            if (findSubBlockScanIdx(sb_scan, total_sub_blocks, @intCast(sb_x + 1), @intCast(sb_y))) |right_idx| {
+                if (coded_sb_flags[right_idx]) prev_sig = 1;
+            }
+        }
+        if (sb_y + 1 < num_sb_side) {
+            if (findSubBlockScanIdx(sb_scan, total_sub_blocks, @intCast(sb_x), @intCast(sb_y + 1))) |below_idx| {
+                if (coded_sb_flags[below_idx]) prev_sig += 2;
+            }
+        }
+
+        // scf_offset and ctx_idx_map section for non-DC positions in this
+        // sub-block. Spec offsets per H.265 / Table 9-15:
+        //   4x4 TB:    luma 0-8,  chroma 27-35
+        //   8x8 TB:    luma 9-20  (DC sb 9-11, non-DC 12-20)
+        //              chroma 36-38 (DC sb 36-38)
+        //   16x16+ TB: luma 21-26 (DC sb 21-23, non-DC 24-26)
+        //              chroma 39-43
+        // NOTE: SCAN_HORIZ/VERT scans for 8x8 luma add +6 (offsets 15-23).
+        // We always assume SCAN_DIAG until intra-mode tracking lands (Bug #2h).
+        var scf_offset: u32 = 0;
+        var ctx_idx_map_section: u32 = 0;
+        if (tb_size_clamped == 2) {
+            ctx_idx_map_section = 0; // Section 0: 4x4 TB position table
+            if (!is_luma) scf_offset = 27;
+        } else {
+            // Non-4x4 TB: prev_sig-keyed section (offset by +1 to skip the
+            // 4x4 section at index 0).
+            ctx_idx_map_section = (prev_sig + 1) * 16;
+            if (is_luma) {
+                if (sb_x > 0 or sb_y > 0) scf_offset = 3;
+                scf_offset += if (tb_size_clamped == 3) @as(u32, 9) else @as(u32, 21);
+            } else {
+                scf_offset = 27;
+                scf_offset += if (tb_size_clamped == 3) @as(u32, 9) else @as(u32, 12);
+            }
+        }
+
+        // Interior sub-blocks (csbf was DECODED as 1 — neither DC nor last)
+        // imply DC=1 unless we find another sig coeff in the non-DC
+        // positions. Cleared if any decoded sig_coeff_flag bin is 1.
+        var implicit_dc_nonzero = sb_scan_idx > 0 and sb_scan_idx != last_sub_block;
+
         const first_scan_pos: u32 = if (sb_scan_idx == last_sub_block) last_scan_pos else 15;
-        const last_pos_in_sb: u32 = if (sb_scan_idx == 0 and total_sub_blocks > 1) 0 else 0;
-        _ = last_pos_in_sb;
 
-        // Decode sig_coeff_flags in reverse scan order
-        var n_pos: u32 = first_scan_pos + 1;
-        while (n_pos > 0) : (n_pos -= 1) {
+        // Decode positions first_scan_pos..1 (DC at position 0 handled
+        // separately below per spec).
+        if (first_scan_pos > 0) {
+            var n_pos: u32 = first_scan_pos + 1;
+            while (n_pos > 1) : (n_pos -= 1) {
+                if (!engine.valid) return;
+                const scan_pos = n_pos - 1;
+                const local_x = diag_scan_4x4[scan_pos][0];
+                const local_y = diag_scan_4x4[scan_pos][1];
+
+                // Last position in last sub-block is implicitly significant.
+                if (sb_scan_idx == last_sub_block and scan_pos == last_scan_pos) {
+                    sig_flags[scan_pos] = true;
+                    num_sig += 1;
+                    implicit_dc_nonzero = false;
+                    continue;
+                }
+
+                const map_idx: u32 = @as(u32, local_y) * 4 + @as(u32, local_x);
+                const table_inc: u32 = sig_ctx_idx_map[ctx_idx_map_section + map_idx];
+                const full_ctx: u16 = @intCast(@as(u32, h265_tables.CTX_SIG_COEFF_FLAG) + table_inc + scf_offset);
+                if (full_ctx >= h265_tables.NUM_H265_CONTEXTS) {
+                    engine.valid = false;
+                    return;
+                }
+                sig_flags[scan_pos] = engine.decodeBin(full_ctx) == 1;
+                if (!engine.valid) return;
+                if (sig_flags[scan_pos]) {
+                    num_sig += 1;
+                    implicit_dc_nonzero = false;
+                }
+            }
+        }
+
+        // Handle position 0 (DC of sub-block) per spec.
+        if (sb_scan_idx == last_sub_block and last_scan_pos == 0) {
+            // DC is the slice's last sig coeff — implicitly significant.
+            sig_flags[0] = true;
+            num_sig += 1;
+        } else if (implicit_dc_nonzero) {
+            // Interior sub-block: csbf=1 was decoded and no other sig
+            // appeared. The encoder couldn't have written csbf=1 without
+            // at least one nonzero coeff, so DC must be it.
+            sig_flags[0] = true;
+            num_sig += 1;
+        } else {
+            // DC sub-block (sb_scan_idx==0) or last sub-block with last>0:
+            // decode DC explicitly with the spec's DC-special offset.
+            //   DC sub-block: luma 0, chroma 27
+            //   non-DC sub-block: scf_offset + 2
             if (!engine.valid) return;
-            const scan_pos = n_pos - 1;
-
-            // Position (x,y) within the 4x4 sub-block
-            const local_x = diag_scan_4x4[scan_pos][0];
-            const local_y = diag_scan_4x4[scan_pos][1];
-
-            // Last position in last sub-block is implicitly significant
-            if (sb_scan_idx == last_sub_block and scan_pos == last_scan_pos) {
-                sig_flags[scan_pos] = true;
-                num_sig += 1;
-                continue;
-            }
-
-            // If this is last scan pos (0) in DC sub-block and num_sig == 0,
-            // it's implicitly significant if the sub-block is coded
-            if (scan_pos == 0 and sb_scan_idx == 0 and num_sig == 0) {
-                sig_flags[0] = true;
-                num_sig += 1;
-                continue;
-            }
-
-            // sig_coeff_flag context — Section 9.3.3.1.4
-            const sig_ctx = getSigCoeffCtxSpec(
-                @intCast(local_x),
-                @intCast(local_y),
-                @intCast(sb_x),
-                @intCast(sb_y),
-                is_luma,
-                tb_size_clamped,
-                scan_pos,
-                &coded_sb_flags,
-                num_sb_side,
-                sb_scan,
-                total_sub_blocks,
-            );
-            const full_ctx = h265_tables.CTX_SIG_COEFF_FLAG + sig_ctx;
+            const dc_offset: u32 = if (sb_scan_idx == 0)
+                (if (is_luma) @as(u32, 0) else @as(u32, 27))
+            else
+                scf_offset + 2;
+            const full_ctx: u16 = @intCast(@as(u32, h265_tables.CTX_SIG_COEFF_FLAG) + dc_offset);
             if (full_ctx >= h265_tables.NUM_H265_CONTEXTS) {
                 engine.valid = false;
                 return;
             }
-            sig_flags[scan_pos] = engine.decodeBin(full_ctx) == 1;
+            sig_flags[0] = engine.decodeBin(full_ctx) == 1;
             if (!engine.valid) return;
-            if (sig_flags[scan_pos]) num_sig += 1;
+            if (sig_flags[0]) num_sig += 1;
         }
 
         tu_sig_total += num_sig;
