@@ -13,6 +13,8 @@ const Allocator = std.mem.Allocator;
 
 pub const CorruptionMode = enum {
     sniper,       // flip one random bit
+    bolter,       // flip ALL 8 bits of one random byte (XOR with 0xFF) — intermediate
+                  // granularity between sniper (1 bit) and shotgun (4096 bytes random data)
     shotgun,      // overwrite K random bytes at random offset
     header,       // shotgun restricted to first 10% of file
     tail,         // shotgun restricted to last 10% of file
@@ -25,6 +27,7 @@ pub const CorruptionMode = enum {
     pub fn name(self: CorruptionMode) []const u8 {
         return switch (self) {
             .sniper => "sniper",
+            .bolter => "bolter",
             .shotgun => "shotgun",
             .header => "header",
             .tail => "tail",
@@ -81,6 +84,25 @@ pub fn applySniper(buffer: []u8, rng: std.Random) CorruptionEvent {
         .mode = .sniper,
         .offset = offset,
         .bit = bit,
+        .size = 1,
+        .detected = false,
+    };
+}
+
+/// Apply a bolter corruption: pick one random byte and XOR with 0xFF (flip
+/// all 8 bits of that byte). Intermediate granularity between sniper
+/// (single bit flip) and shotgun (4 KB random overwrite) — exercises
+/// "one byte completely wrong" without spraying changes across kilobytes.
+/// Named affectionately after the Warhammer 40K bolter (single big
+/// projectile, not a single bullet, not a spray of pellets).
+pub fn applyBolter(buffer: []u8, rng: std.Random) CorruptionEvent {
+    std.debug.assert(buffer.len > 0);
+    const offset = rng.uintLessThan(u64, buffer.len);
+    buffer[@intCast(offset)] ^= 0xFF;
+    return .{
+        .mode = .bolter,
+        .offset = offset,
+        .bit = 0,
         .size = 1,
         .detected = false,
     };
@@ -472,6 +494,7 @@ pub fn runCoverage(
         const chosen_mode = enabled_modes[rng.uintLessThan(usize, enabled_modes.len)];
         var event: CorruptionEvent = switch (chosen_mode) {
             .sniper => applySniper(work, rng),
+            .bolter => applyBolter(work, rng),
             .shotgun => applyShotgun(work, rng, config.shotgun_bytes),
             .header => applyHeader(work, rng, config.shotgun_bytes),
             .tail => applyTail(work, rng, config.shotgun_bytes),

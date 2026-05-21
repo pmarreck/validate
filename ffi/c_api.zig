@@ -1007,6 +1007,7 @@ export fn validate_test_coverage(
         if (mask & (1 << 5) != 0) set.insert(.xor);
         if (mask & (1 << 6) != 0) set.insert(.sparse_noise);
         if (mask & (1 << 7) != 0) set.insert(.boundary);
+        if (mask & (1 << 8) != 0) set.insert(.bolter);
         break :blk set;
     };
 

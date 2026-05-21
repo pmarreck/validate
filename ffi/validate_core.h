@@ -300,6 +300,11 @@ typedef void (*validate_coverage_progress_t)(void* ctx, uint32_t round, uint32_t
 #define VALIDATE_COVERAGE_MODE_XOR          (1u << 5)
 #define VALIDATE_COVERAGE_MODE_SPARSE_NOISE (1u << 6)
 #define VALIDATE_COVERAGE_MODE_BOUNDARY     (1u << 7)
+#define VALIDATE_COVERAGE_MODE_BOLTER       (1u << 8)
+/* "Bolter" = flip ALL 8 bits of one random byte (XOR with 0xFF) —
+ * intermediate granularity between sniper (1 bit) and shotgun (4 KB).
+ * Named after Warhammer 40K's bolter (single big projectile, not a
+ * single bullet, not a spray of pellets). */
 /* Default modes — sniper + shotgun. These two together cover per-byte
  * (sniper) and per-region (shotgun) detection; passing 0 to validate_test_coverage's
  * modes_bitmask resolves to this. */

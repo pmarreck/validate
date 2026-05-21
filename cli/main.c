@@ -1917,7 +1917,8 @@ static void print_usage(const char* program) {
 	printf("    --lang CODE        Set output language (e.g., en, de)\n");
 	printf("    --test-coverage N  Run up to N corruption rounds against a file, report detection rate (default 1000)\n");
 	printf("    --modes LIST       Corruption modes for --test-coverage (comma-sep; default = sniper,shotgun)\n");
-	printf("                       Valid: sniper, shotgun, header, tail, zeroed, xor, sparse-noise, boundary\n");
+	printf("                       Valid: sniper, bolter, shotgun, header, tail, zeroed, xor, sparse-noise, boundary\n");
+	printf("                       'bolter' = flip all 8 bits of one random byte (intermediate between sniper and shotgun)\n");
 	printf("    --shotgun-bytes N  Bytes overwritten by shotgun/header/tail/zeroed/xor (default 4096; accepts K/M suffix)\n");
 	printf("    --no-heatmap       Suppress the undetected-corruption heatmap at the end of --test-coverage\n");
 	printf("    --per-mode-heatmap Render one heatmap per corruption mode (stacked) instead of the aggregate\n");
@@ -2339,10 +2340,11 @@ int main(int argc, char* argv[]) {
 				else if (strcmp(buf, "xor") == 0) bit = 1u << 5;
 				else if (strcmp(buf, "sparse-noise") == 0) bit = 1u << 6;
 				else if (strcmp(buf, "boundary") == 0) bit = 1u << 7;
-				else if (strcmp(buf, "all") == 0) bit = 0x3Fu; /* sniper..xor */
-				else if (strcmp(buf, "everything") == 0) bit = 0xFFu; /* including opt-in modes */
+				else if (strcmp(buf, "bolter") == 0) bit = 1u << 8;
+				else if (strcmp(buf, "all") == 0) bit = 0x3Fu | (1u << 8); /* sniper..xor + bolter */
+				else if (strcmp(buf, "everything") == 0) bit = 0x1FFu; /* all 9 modes */
 				else {
-					fprintf(stderr, "%sError: unknown mode '%s'. Valid: sniper, shotgun, header, tail, zeroed, xor, sparse-noise, boundary, all, everything%s\n",
+					fprintf(stderr, "%sError: unknown mode '%s'. Valid: sniper, bolter, shotgun, header, tail, zeroed, xor, sparse-noise, boundary, all, everything%s\n",
 						COLOR_RED, buf, COLOR_RESET);
 					free(paths);
 					return 2;
@@ -2496,7 +2498,7 @@ int main(int argc, char* argv[]) {
 			return 2;
 		}
 		int overall_exit = 0;
-		const char *modes[] = { "sniper", "shotgun", "header", "tail", "zeroed", "xor", "sparse_noise", "boundary" };
+		const char *modes[] = { "sniper", "shotgun", "header", "tail", "zeroed", "xor", "sparse_noise", "boundary", "bolter" };
 		const size_t modes_count = sizeof(modes) / sizeof(modes[0]);
 		/* Carry the outer thread budget down into nested validators (PDF image
 		 * fan-out, libwebp, etc.) so total parallelism stays close to CPU
