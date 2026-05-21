@@ -479,7 +479,8 @@ fn codingUnit(
     const max_depth = info.max_transform_hierarchy_depth_intra;
     // For NxN: IntraSplitFlag = 1, so maxTrafoDepth = MaxTransformHierarchyDepthIntra + 1
     const effective_max_depth = if (part_mode == 1) max_depth + 1 else max_depth;
-    transformTree(engine, info, x0, y0, log2_cb_size, 0, effective_max_depth, log2_cb_size, true, true, 0);
+    const intra_split_flag = (part_mode == 1);
+    transformTree(engine, info, x0, y0, log2_cb_size, 0, effective_max_depth, log2_cb_size, true, true, 0, intra_split_flag);
 }
 
 // ============================================================================
@@ -498,6 +499,7 @@ fn transformTree(
     parent_cbf_cb: bool,
     parent_cbf_cr: bool,
     blk_idx: u32,
+    intra_split_flag: bool,
 ) void {
     if (!engine.valid) return;
     if (x0 >= info.pic_width_in_luma or y0 >= info.pic_height_in_luma) return;
@@ -513,6 +515,11 @@ fn transformTree(
     var split = false;
 
     if (log2_tb_size > info.log2_max_tb_size) {
+        split = true;
+    } else if (intra_split_flag and trafo_depth == 0) {
+        // Spec section 7.3.8.8: split_transform_flag is NOT coded at the
+        // top of an intra CU with NxN partition (IntraSplitFlag=1) — split
+        // is forced. Reading a bin here is a phantom read that desyncs.
         split = true;
     } else if (log2_tb_size <= info.log2_min_tb_size) {
         split = false;
@@ -556,13 +563,15 @@ fn transformTree(
             return;
         }
         const half_size = @as(u32, 1) << @intCast(log2_tb_size - 1);
-        transformTree(engine, info, x0, y0, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 0);
+        // Recursive transform tree calls — IntraSplitFlag does NOT propagate
+        // to children (it only excludes the depth-0 bin coding).
+        transformTree(engine, info, x0, y0, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 0, false);
         if (!engine.valid) return;
-        transformTree(engine, info, x0 + half_size, y0, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 1);
+        transformTree(engine, info, x0 + half_size, y0, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 1, false);
         if (!engine.valid) return;
-        transformTree(engine, info, x0, y0 + half_size, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 2);
+        transformTree(engine, info, x0, y0 + half_size, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 2, false);
         if (!engine.valid) return;
-        transformTree(engine, info, x0 + half_size, y0 + half_size, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 3);
+        transformTree(engine, info, x0 + half_size, y0 + half_size, log2_cb_size, trafo_depth + 1, max_depth, log2_pu_size, cbf_cb, cbf_cr, 3, false);
     } else {
         transformUnit(engine, info, log2_tb_size, trafo_depth, blk_idx, cbf_cb, cbf_cr);
     }
