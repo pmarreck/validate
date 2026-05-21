@@ -1146,13 +1146,22 @@ fn getSigCoeffCtxSpec(
     sb_scan: []const [2]u8,
     total_sub_blocks: u32,
 ) u16 {
-    // For 4x4 TBs, use simplified context
+    _ = scan_pos; // unused in spec-correct derivation; kept for API stability
+    // For 4x4 TBs: position-based context, spec Table 9-19 ctxIdxMap[y][x].
+    // The previous code used min(scan_pos, 8) which is the WRONG indexing
+    // (scan order, not raster position) — affected the overwhelming
+    // majority of TUs in typical encodes since 4x4 is the most common TU
+    // size at moderate-to-high QPs. Luma ctx range 0-8; chroma ctx range
+    // 27-35 per spec offsets.
+    const ctx_idx_map_4x4 = [4][4]u8{
+        .{ 0, 1, 4, 5 },
+        .{ 2, 3, 4, 5 },
+        .{ 6, 6, 8, 8 },
+        .{ 7, 7, 8, 8 },
+    };
     if (log2_tb_size == 2) {
-        if (!is_luma) {
-            const p: u32 = if (scan_pos > 8) 8 else scan_pos;
-            return @intCast(27 + p);
-        }
-        return @intCast(if (scan_pos > 8) @as(u32, 8) else scan_pos);
+        const base: u32 = ctx_idx_map_4x4[local_y][local_x];
+        return @intCast(if (is_luma) base else base + 27);
     }
 
     // For larger TBs, context depends on position and neighbor sub-blocks
