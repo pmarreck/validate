@@ -14,17 +14,26 @@
 //!   - Terminal errors map through `routeError` to validate's
 //!     `ValidationErrorCode` taxonomy.
 //!
-//! What we deliberately do NOT do today:
-//!   - Pixel-level decode loop for every strip/tile. tiffz's
-//!     `Decoder.open` does the heavy structural lifting (IFD walk,
-//!     tag parsing, codec selection, predictor wiring) and emits the
-//!     bulk of findings before we ever call `decodeStrip`. For
-//!     validate's "is this file structurally valid?" question, the
-//!     open-and-walk pass catches the same corruption a full decode
-//!     would. If integrity-critical paths emerge (e.g. mandatory CRC
-//!     over decompressed strips), upgrade then.
+//! What we ALSO do (added 2026-05-21 after tiffz reported the original
+//! shim claimed structural validation was enough — empirically wasn't):
+//!   - Decode every strip and every tile of every materialized IFD.
+//!     `Decoder.open` + the IFD walk only inspect ~200 bytes of
+//!     header / IFD metadata; the bulk of the file is strip / tile
+//!     data, invisible until the codec actually runs. tiffz's
+//!     corruption-sweep on `ground_truth_examples/tiff/` shows
+//!     structural-only catches ~0% of compressed-TIFF corruption,
+//!     versus 57-100% with strips actually decoded.
 //!   - Promote `old_style_lzw_codes` to WARN here. We promote it on
 //!     a per-callback basis in `routeInfoFinding` instead; same effect.
+//!
+//! Caveat — UNCOMPRESSED TIFFs (and BMP, raw PCM, etc.): wire bytes
+//! ARE the format. There is no codec to fail and no per-strip checksum
+//! in the TIFF spec, so byte-level integrity of uncompressed strip
+//! data is genuinely outside the format's scope. validate's depth tier
+//! for uncompressed-codec TIFFs is "structural + codec-level", not
+//! "byte-level integrity". Detecting bit-flips inside uncompressed
+//! strip bytes would need an external integrity primitive (sidecar
+//! hash, FS metadata, etc.).
 
 const std = @import("std");
 const tiffz = @import("tiffz");
@@ -75,9 +84,105 @@ pub fn validateTiffDeepBuffer(
         };
     }
 
+    // Decode every strip and tile of every materialized IFD so the codec
+    // layer actually sees the bulk-data bytes. Without this loop, the
+    // open + IFD walk above only inspects ~200 bytes of header/IFD entries
+    // and corruption in the rest of the file slips past silently — tiffz
+    // measured 0% detection on most compressed TIFFs vs 57-100% with the
+    // loop in place. See module docstring caveat re: uncompressed TIFFs.
+    //
+    // Scratch buffer grows on-demand (doubling, capped at 64 MiB) when a
+    // strip/tile decode reports DestTooSmall. Starting at 4 MiB handles
+    // every fixture in ground_truth_examples/tiff/; the doubling path
+    // covers large scientific / whole-slide-pathology TIFFs without
+    // forcing callers to pre-compute strip sizes.
+    //
+    // Strip/tile decode errors are tracked but NOT propagated as FAIL —
+    // per Peter's "any detectable discrepancy → WARN, but only FAIL if a
+    // normal decoder would render visibly wrong" heuristic: a normal
+    // decoder (libtiff with LZWFixupTags-style backward-compat) accepts
+    // some files tiffz currently rejects (e.g., quad-lzw.tif's old-style
+    // LZW codes — tiffz's deferred LZWFixupTags issue). We surface the
+    // gap as WARN at structural depth so clean-but-uncovered files don't
+    // FAIL while still flagging that full validation didn't happen.
+    var strip_decode_failed: bool = false;
+    {
+        var ws = tiffz.Workspace.init(allocator);
+        defer ws.deinit();
+        var scratch_size: usize = 4 * 1024 * 1024;
+        const scratch_cap: usize = 64 * 1024 * 1024;
+        var scratch = allocator.alloc(u8, scratch_size) catch
+            return routeError(error.OutOfMemory, format);
+        defer allocator.free(scratch);
+
+        var ifd_n: usize = 0;
+        ifd_loop: while (ifd_n < decoder.ifdCount()) : (ifd_n += 1) {
+            const dir = decoder.ifd(ifd_n) catch |err| switch (err) {
+                error.InvalidArgument, error.Malformed => break :ifd_loop,
+                else => return routeError(err, format),
+            };
+
+            const tile_entry = dir.get(tiffz.tags.tile_offsets);
+            const strip_entry = dir.get(tiffz.tags.strip_byte_counts);
+            const count: u64 = if (tile_entry) |t| t.count else if (strip_entry) |s| s.count else 0;
+            if (count == 0) continue;
+
+            var chunk: u64 = 0;
+            chunk_loop: while (chunk < count) : (chunk += 1) {
+                while (true) {
+                    const res = if (tile_entry != null)
+                        decoder.decodeTile(ifd_n, @intCast(chunk), scratch, &ws)
+                    else
+                        decoder.decodeStrip(ifd_n, @intCast(chunk), scratch, &ws);
+                    if (res) |_| break else |err| switch (err) {
+                        error.DestTooSmall => {
+                            if (scratch_size >= scratch_cap) {
+                                strip_decode_failed = true;
+                                break :chunk_loop;
+                            }
+                            const new_size = @min(scratch_size * 2, scratch_cap);
+                            allocator.free(scratch);
+                            scratch = allocator.alloc(u8, new_size) catch
+                                return routeError(error.OutOfMemory, format);
+                            scratch_size = new_size;
+                            continue;
+                        },
+                        // Resource limits and OOM are real terminal errors —
+                        // surface as FAIL so the user knows the validator
+                        // hit a hard wall (not just a missing-feature gap).
+                        error.OutOfMemory,
+                        error.LimitExceededIfdCount,
+                        error.LimitExceededTagCount,
+                        error.LimitExceededStripCount,
+                        error.LimitExceededTagValueBytes,
+                        error.LimitExceededDimension,
+                        error.LimitExceededTotalSamples,
+                        error.LimitExceededCodecScratch,
+                        error.LimitExceededCompressedStripBytes,
+                        error.LimitExceededDecompressedStripBytes,
+                        error.SourceTooShort,
+                        error.SourceShortRead,
+                        => return routeError(err, format),
+                        // Everything else (Malformed, UnsupportedCompression,
+                        // UnsupportedPhotometric, etc.) is a decoder coverage
+                        // gap — flag as WARN-eligible and move on.
+                        else => {
+                            strip_decode_failed = true;
+                            break :chunk_loop;
+                        },
+                    }
+                }
+            }
+        }
+    }
+
     // Decode succeeded structurally. Walk the accumulator and pick
     // the most "severe" routing: error > warning > info.
-    var result = ValidationResult.okWithDepth(format, .full);
+    const final_depth: format_validation.ValidationDepth = if (strip_decode_failed) .structural else .full;
+    var result = ValidationResult.okWithDepth(format, final_depth);
+    if (strip_decode_failed and result.warning_message == null) {
+        result.warning_message = "TIFF strip/tile decode hit unsupported codec or malformed data; structural validation only (likely tiffz coverage gap such as LZWFixupTags-style old-style LZW codes)";
+    }
     var first_warning: ?[]const u8 = null;
     for (acc.findings.items) |entry| {
         const routed = routeInfoFinding(entry.code);
