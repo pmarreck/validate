@@ -952,12 +952,23 @@ fn residualCoding(
             if (!engine.valid) return;
         }
 
-        // coeff_abs_level_remaining — decode for coefficients that need it
-        // Per spec: num_greater1 coeffs had greater1==1 and need remaining.
-        // Additionally, coefficients past the first 8 significant always need remaining.
-        // The FIRST coeff with greater1==1 also had greater2 tested.
+        // coeff_abs_level_remaining — decode for coefficients that need it.
+        // Per spec section 7.3.8.11, a coefficient gets a remaining value
+        // only when baseLevel == threshold:
+        //   - For the first 8 significant coeffs (in reverse scan):
+        //       - The coefficient at firstGreater1ScanPos has threshold=3
+        //         (matches only when greater2_flag=1).
+        //       - All others have threshold=2 (matches when greater1=1).
+        //   - Coefficients past the first 8 have threshold=1 (always match).
+        // So: firstGreater1 contributes a remaining ONLY when greater2=1.
+        // The previous code added num_greater1 unconditionally, over-counting
+        // by 1 whenever greater2 was decoded as 0 — that read one extra
+        // coeff_abs_level_remaining bypass slice and desynced the stream.
         const num_past_8: u32 = if (num_sig > g1_count) num_sig - g1_count else 0;
-        const total_remaining = num_greater1 + num_past_8;
+        const num_g1_remainings: u32 = if (num_greater1 == 0)
+            0
+        else if (has_greater2) num_greater1 else num_greater1 - 1;
+        const total_remaining = num_g1_remainings + num_past_8;
         tu_remaining_total += total_remaining;
 
         var rice_param: u32 = 0;
@@ -966,9 +977,13 @@ fn residualCoding(
             const decoded_val = decodeCoeffAbsLevelRemainingVal(engine, rice_param);
             if (!engine.valid) return;
 
-            // Determine base level for rice param update
+            // Determine base level for rice param update. Spec section 9.3.3.9.
+            // rem_idx=0 is the highest-scan-pos coeff needing remaining (reverse
+            // scan); when has_greater2=true and num_g1>0 this is firstG1 with
+            // baseLevel=3, otherwise it's the next g1=1 coeff with baseLevel=2
+            // or (if num_g1_remainings=0) a past-first-8 coeff with baseLevel=1.
             var coeff_base: u32 = 1;
-            if (rem_idx < num_greater1) {
+            if (rem_idx < num_g1_remainings) {
                 coeff_base = 2;
                 if (rem_idx == 0 and has_greater2) coeff_base = 3;
             }

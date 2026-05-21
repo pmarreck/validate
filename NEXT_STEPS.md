@@ -42,22 +42,23 @@ df3e3f28f tiffz: switch validate's TIFF deep-validation from zigimg to tiffz
 | 3. HEIC result routing | `heic_validator.zig` (`validateHevcData` + `validateDirectHevcItem` + `validateGridTiles`) | Propagates `warning_message` via `okWithWarning(...)`. |
 | 4a. CABAC silent-skip on NAL > 256 KB | `h265_validator.zig` slice dispatch | **FIXED 2026-05-20 evening.** Buffer is heap-allocated to `nal.data.len`. Alloc/de-emulation failure increments `cabac_anomalies` (no silent skip). Empirical: autumn (282 KB NAL) now exercises CABAC instead of returning clean PASS with zero CABAC invocations. |
 | 4b. CABAC bit under-consumption — last_sig_coeff bit order | `h265_cabac_decoder.zig` `residualCoding`/`decodeLastSigCoeff` | **PARTIALLY FIXED 2026-05-20 evening.** Spec section 7.3.8.11 reads `last_sig_coeff` as prefix-X, prefix-Y, then suffix-X, then suffix-Y. The previous monolithic `decodeLastSigCoeff(is_x=true)` then `decodeLastSigCoeff(is_x=false)` read prefix-X, suffix-X, prefix-Y, suffix-Y — wrong for any TB where either prefix > 3 (the case for all but tiny / low-frequency TBs). Split into `decodeLastSigCoeffPrefix`, `lastSigCoeffSuffixBits`, `combineLastSigCoeff`; `residualCoding` now interleaves per spec. |
-| 4c. CABAC bit under-consumption — RESIDUAL | (same) | **OPEN.** Fixing 4b changed where the desync surfaces (summer 27→149 CTUs is a clear improvement; spring now signals via `engine_valid=false` instead of false-terminate; autumn/crowd/winter still false-terminate but at different positions). Bin counters were added (`context_bins` / `bypass_bins` / `terminate_bins` / `residual_calls` / `residual_sig_total` / `residual_greater1_total` / `residual_remaining_total` on `CabacDecodeResult`) and surface via `VALIDATE_TRACE_H265` `slice_bins` line — use these to bisect the remaining ordering / arithmetic bugs. |
+| 4c. CABAC bit under-consumption — spurious firstG1 remaining | (same) | **FIXED 2026-05-20 evening.** Spec section 7.3.8.11 only decodes `coeff_abs_level_remaining` for `firstGreater1ScanPos` when `greater2=1` (baseLevel=3 matches threshold=3). Previous code added `num_greater1` unconditionally to `total_remaining`, reading one extra bypass slice per sub-block whenever the encoder wrote `greater2=0`. Fixed in `residualCoding` by computing `num_g1_remainings = num_greater1` when `has_greater2` else `num_greater1 - 1`. |
+| 4d. CABAC bit under-consumption — RESIDUAL | (same) | **STILL OPEN.** Sample tiles improved uniformly (all 14 tile slices now reach 64/64 CTUs — previously tiles 3 and 4 false-terminated at 16 and 1 respectively). The 1440x960 photo slices regressed in CTU count (autumn 113→20, crowd 158→26, winter 41→33, summer 149→53, spring engine_invalid→72 false-terminate). This regression is the desync surfacing earlier as the engine is more spec-honest — there is at least one more bug. Bin counters (`context_bins` / `bypass_bins` / `terminate_bins` / `residual_calls` / `residual_sig_total` / `residual_greater1_total` / `residual_remaining_total` on `CabacDecodeResult`) surface via `VALIDATE_TRACE_H265` `slice_bins` line — use these for the next bisection. Strongly recommend obtaining an ffmpeg `-loglevel trace` reference for `summer_1440x960.heic` CTU 0 to do a per-bin-position comparison; without a reference, further bug hunting is speculative. |
 
-**Baseline trace numbers (2026-05-20 evening, AFTER Bug #2 partial fix), all six clean ground-truth HEICs via `VALIDATE_TRACE_H265=1 ./zig-out/bin/validate <file>`:**
+**Latest baseline trace numbers (2026-05-20 evening, AFTER Bug #2c fix):**
 
 ```
 File                NAL_len  expected_ctus  ctus_decoded  terminated_cleanly  engine_valid  bits_consumed  bits_remaining  rbsp_bits
-autumn   1440x960    282KB           345           113    YES (false)        true             93479         2221713    2315192
-crowd    1440x960    124KB           345           158    YES (false)        true            141058          871614    1012672
-sample   tile1                       64            64         no              true             96783          754817     851600
-sample   tile2                       64            64         no              true            210930          635070     846000
-spring   1440x960     49KB           345           165         no              FALSE           400992               0     400992  (consumed all bits, engine bailed — clear desync signal!)
-summer   1440x960    192KB           345           149    YES (false)        true            275957         1300931    1576888
-winter   1440x960    239KB           345            41    YES (false)        true             50020         1907396    1957416
+autumn   1440x960    282KB           345            20    YES (false)        true             14042         2301150    2315192
+crowd    1440x960    124KB           345            26    YES (false)        true             38701          973971    1012672
+sample   tile1                       64            64         no              true            118505          733095     851600
+sample   tile2..tile14               64            64         no              true            (uniformly 64/64 — clear sample-corpus win)
+spring   1440x960     49KB           345            72    YES (false)        true             82877          318115     400992
+summer   1440x960    192KB           345            53    YES (false)        true            166885         1410003    1576888
+winter   1440x960    239KB           345            33    YES (false)        true             49473         1907943    1957416
 ```
 
-Per-CTU bit consumption now varies significantly across CTUs (e.g. sample tile1 ranges 56-19940 bits/CTU) and clearly responds to content. Slice-level under-consumption persists, so there is at least one more spec-ordering or arithmetic bug. Suggested next bisection step: compare per-CTU bin counts against a reference HEVC decoder (ffmpeg `-loglevel trace`) on `summer_1440x960.heic` (smallest improvement-from-fix delta → likely shortest path to next bug). The previous-session observation of "ctus_decoded=64/64, bits_remaining≈30%" was actually `sample.heic` (a 64-CTU tile), not autumn. Autumn under the old buffer-too-small code was producing **no CABAC trace at all** (because the silent-skip path fired before any CABAC was attempted).
+The previous-session observation of "ctus_decoded=64/64, bits_remaining≈30%" was actually `sample.heic` (a 64-CTU tile), not autumn. Autumn under the old buffer-too-small code was producing **no CABAC trace at all** (because the silent-skip path fired before any CABAC was attempted).
 
 **What needs to happen for the sniper test to pass:**
 
