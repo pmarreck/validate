@@ -566,10 +566,10 @@ fn transformUnit(
     cbf_cr: bool,
 ) void {
     if (!engine.valid) return;
-    _ = blk_idx; // Reserved for future spec-perfect chroma placement
 
-    // cbf_luma
-    const luma_ctx: u16 = if (trafo_depth == 0) 0 else 1;
+    // cbf_luma — spec Table 9-37: ctxInc = (trafoDepth == 0) ? 1 : 0.
+    // Note the inversion: trafoDepth==0 uses context index 1, deeper uses 0.
+    const luma_ctx: u16 = if (trafo_depth == 0) 1 else 0;
     const cbf_luma = engine.decodeBin(h265_tables.CTX_CBF_LUMA + luma_ctx) == 1;
     if (!engine.valid) return;
 
@@ -585,16 +585,33 @@ fn transformUnit(
         if (!engine.valid) return;
     }
 
-    // Chroma transform_skip_flag (for 4x4 chroma TBs)
-    if (info.transform_skip_enabled and info.chroma_format_idc != 0 and log2_tb_size == 3) {
-        // In 4:2:0, when luma TB is 8x8, chroma TB is 4x4
-        if (cbf_cb) {
-            _ = engine.decodeBin(h265_tables.CTX_TRANSFORM_SKIP_FLAG + 1);
-            if (!engine.valid) return;
-        }
-        if (cbf_cr) {
-            _ = engine.decodeBin(h265_tables.CTX_TRANSFORM_SKIP_FLAG + 1);
-            if (!engine.valid) return;
+    // Chroma residual placement — spec section 7.3.8.9. For 4:2:0 with a 4x4
+    // luma TB (log2_tb_size == 2), the chroma residual is shared across the
+    // four 4x4-luma siblings and decoded ONCE on the last sibling
+    // (blk_idx == 3) with chroma TB size 4x4 (log2=2). For 4:4:4 or larger
+    // luma TBs, chroma is decoded per transform unit with TB size adjusted
+    // for the subsampling (4:2:0 chroma is one log2 smaller; 4:4:4 chroma
+    // matches luma).
+    const decode_chroma_here = info.chroma_format_idc != 0 and
+        (log2_tb_size > 2 or info.chroma_format_idc == 3 or blk_idx == 3);
+
+    // Chroma transform_skip_flag — gated by the same chroma-present condition
+    // and only for chroma TBs that come out at 4x4 (luma 8x8 in 4:2:0, or
+    // luma 4x4 in 4:4:4, or the 4x4 group at blk_idx==3 in 4:2:0 where
+    // chroma is 4x4).
+    if (info.transform_skip_enabled and decode_chroma_here) {
+        const chroma_is_4x4 = (info.chroma_format_idc != 3 and log2_tb_size == 3) or
+            (info.chroma_format_idc == 3 and log2_tb_size == 2) or
+            (info.chroma_format_idc != 3 and log2_tb_size == 2 and blk_idx == 3);
+        if (chroma_is_4x4) {
+            if (cbf_cb) {
+                _ = engine.decodeBin(h265_tables.CTX_TRANSFORM_SKIP_FLAG + 1);
+                if (!engine.valid) return;
+            }
+            if (cbf_cr) {
+                _ = engine.decodeBin(h265_tables.CTX_TRANSFORM_SKIP_FLAG + 1);
+                if (!engine.valid) return;
+            }
         }
     }
 
@@ -604,9 +621,18 @@ fn transformUnit(
         if (!engine.valid) return;
     }
 
-    // Chroma residual: in 4:2:0, chroma TB is one size smaller
-    if (info.chroma_format_idc != 0) {
-        const log2_chroma_tb = if (log2_tb_size > 2) log2_tb_size - 1 else log2_tb_size;
+    // Chroma residual data — gated by decode_chroma_here so we don't fire
+    // four times per 4-luma-sibling group in 4:2:0.
+    if (decode_chroma_here) {
+        // For 4:2:0 (chroma_format_idc != 3), chroma TB is one log2 smaller
+        // than luma EXCEPT when luma is 4x4: there the chroma TB is also 4x4
+        // (one chroma per 4-luma group). For 4:4:4, chroma matches luma.
+        const log2_chroma_tb: u32 = if (info.chroma_format_idc == 3)
+            log2_tb_size
+        else if (log2_tb_size > 2)
+            log2_tb_size - 1
+        else
+            2;
         if (cbf_cb) {
             residualCoding(engine, info, log2_chroma_tb, false);
             if (!engine.valid) return;
@@ -665,10 +691,23 @@ fn residualCoding(
     var tu_sig_total: u32 = 0;
     var tu_greater1_total: u32 = 0;
     var tu_remaining_total: u32 = 0;
+
+    const tu_trace = trace.isEnabled(.h265_cabac);
+    const tu_bits_in = if (tu_trace) engine.reader.remainingBits() else 0;
+    const tu_seq = if (tu_trace) engine.residual_calls else 0;
+
     defer {
         engine.residual_sig_total +%= tu_sig_total;
         engine.residual_greater1_total +%= tu_greater1_total;
         engine.residual_remaining_total +%= tu_remaining_total;
+        if (tu_trace) {
+            const bits_out = engine.reader.remainingBits();
+            const consumed = if (tu_bits_in >= bits_out) tu_bits_in - bits_out else 0;
+            trace.print(.h265_cabac, "tu seq={d} log2={d} is_luma={} bits_in={d} consumed={d} sig={d} g1={d} rem={d} valid={}", .{
+                tu_seq, log2_tb_size, is_luma, tu_bits_in, consumed,
+                tu_sig_total, tu_greater1_total, tu_remaining_total, engine.valid,
+            });
+        }
     }
 
     const tb_size_clamped = std.math.clamp(log2_tb_size, 2, 5);
