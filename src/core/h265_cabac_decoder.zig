@@ -390,6 +390,8 @@ pub const H265CabacEngine = struct {
 
         const p_state_idx = self.contexts[ctx_idx].p_state_idx;
         const val_mps = self.contexts[ctx_idx].val_mps;
+        const r_before = self.cod_i_range;
+        const v_before = self.cod_i_offset;
 
         const q_idx: u2 = @intCast((self.cod_i_range >> 6) & 3);
         const cod_i_range_lps: u16 = h265_tables.rangeTabLPS[p_state_idx][q_idx];
@@ -397,9 +399,11 @@ pub const H265CabacEngine = struct {
         self.cod_i_range -= cod_i_range_lps;
 
         var bin_val: u1 = undefined;
+        var lps_path: bool = undefined;
 
         if (self.cod_i_offset >= self.cod_i_range) {
             bin_val = 1 - val_mps;
+            lps_path = true;
             self.cod_i_offset -= self.cod_i_range;
             self.cod_i_range = cod_i_range_lps;
 
@@ -409,7 +413,20 @@ pub const H265CabacEngine = struct {
             self.contexts[ctx_idx].p_state_idx = @intCast(h265_tables.transIdxLPS[p_state_idx]);
         } else {
             bin_val = val_mps;
+            lps_path = false;
             self.contexts[ctx_idx].p_state_idx = @intCast(h265_tables.transIdxMPS[p_state_idx]);
+        }
+
+        if (trace.isEnabled(.h265_bins)) {
+            // Format matched to libde265 trace shape so diff lines up:
+            //   "[ N] ctx=C bit=B path=MPS|LPS state_pre=S r_pre=X v_pre=Y r_post=X v_post=Y"
+            // Per-bin counter (context+bypass+terminate counts combined).
+            const n = self.context_bins + self.bypass_bins + self.terminate_bins;
+            trace.print(.h265_bins, "[{d}] ctx={d} bit={d} path={s} state_pre={d} r_pre={x} v_pre={x} r_post={x} v_post={x}", .{
+                n, ctx_idx, bin_val, if (lps_path) "LPS" else "MPS",
+                (@as(u32, p_state_idx) << 1) | @as(u32, val_mps),
+                r_before, v_before, self.cod_i_range, self.cod_i_offset,
+            });
         }
 
         self.renormalize();
@@ -419,14 +436,24 @@ pub const H265CabacEngine = struct {
     pub fn decodeBypass(self: *H265CabacEngine) u1 {
         if (!self.valid) return 0;
         self.bypass_bins +%= 1;
+        const r_before = self.cod_i_range;
+        const v_before = self.cod_i_offset;
 
         self.cod_i_offset = (self.cod_i_offset << 1) | self.readOneBit();
 
+        var ret: u1 = 0;
         if (self.cod_i_offset >= self.cod_i_range) {
             self.cod_i_offset -= self.cod_i_range;
-            return 1;
+            ret = 1;
         }
-        return 0;
+
+        if (trace.isEnabled(.h265_bins)) {
+            const n = self.context_bins + self.bypass_bins + self.terminate_bins;
+            trace.print(.h265_bins, "[{d}] bypass bit={d} r_pre={x} v_pre={x} v_post={x}", .{
+                n, ret, r_before, v_before, self.cod_i_offset,
+            });
+        }
+        return ret;
     }
 
     pub fn decodeBypassBits(self: *H265CabacEngine, n: u32) u32 {
@@ -441,15 +468,25 @@ pub const H265CabacEngine = struct {
     pub fn decodeTerminate(self: *H265CabacEngine) u1 {
         if (!self.valid) return 1;
         self.terminate_bins +%= 1;
+        const r_before = self.cod_i_range;
+        const v_before = self.cod_i_offset;
 
         self.cod_i_range -= 2;
 
+        var ret: u1 = 0;
         if (self.cod_i_offset >= self.cod_i_range) {
-            return 1;
+            ret = 1;
+        } else {
+            self.renormalize();
         }
 
-        self.renormalize();
-        return 0;
+        if (trace.isEnabled(.h265_bins)) {
+            const n = self.context_bins + self.bypass_bins + self.terminate_bins;
+            trace.print(.h265_bins, "[{d}] term bit={d} r_pre={x} v_pre={x} r_post={x} v_post={x}", .{
+                n, ret, r_before, v_before, self.cod_i_range, self.cod_i_offset,
+            });
+        }
+        return ret;
     }
 
     fn renormalize(self: *H265CabacEngine) void {
@@ -1796,6 +1833,19 @@ pub fn validateH265IntraCabac(
     reader.alignToByte();
 
     const cabac_start_bits = reader.remainingBits();
+    // DEBUG: dump byte_pos + first 4 bytes at CABAC entry point so we can
+    // verify against libde265's CABAC starting position.
+    if (trace.isEnabled(.h265_bins)) {
+        const byte_pos: u32 = @intCast((rbsp.len * 8 - cabac_start_bits) / 8);
+        const remaining_bytes = rbsp.len -| byte_pos;
+        const b0: u8 = if (remaining_bytes >= 1) rbsp[byte_pos] else 0;
+        const b1: u8 = if (remaining_bytes >= 2) rbsp[byte_pos + 1] else 0;
+        const b2: u8 = if (remaining_bytes >= 3) rbsp[byte_pos + 2] else 0;
+        const b3: u8 = if (remaining_bytes >= 4) rbsp[byte_pos + 3] else 0;
+        trace.print(.h265_bins, "CABAC_ENTRY byte_pos={d} first_bytes={x} {x} {x} {x} header_bits={d}", .{
+            byte_pos, b0, b1, b2, b3, header_bits,
+        });
+    }
 
     var engine = H265CabacEngine.init(&reader, info.slice_qp);
     if (!engine.valid) return fail_result;
