@@ -1337,6 +1337,13 @@ fn residualCoding(
         // greater1Ctx starts at 1 within each set (0 is for flag=0 tracking)
         var greater1_ctx: u32 = 1;
 
+        // Per-position greater1 flags. Indexed by scan_pos within the sub-block
+        // (0..15). Saved so the trans_coeff_level loop (ffmpeg cabac.c:1366)
+        // can interleave g1-based remaining reads with past-8 unconditional
+        // remaining reads in REVERSE SCAN ORDER — critical for correct
+        // rice_param trajectory (rice_param updates after each remaining;
+        // wrong order = wrong rice = wrong bit count from then on).
+        var g1_flags_pos: [16]bool = [_]bool{false} ** 16;
         var g1_count: u32 = 0;
         var scan_i: u32 = first_scan_pos + 1;
         while (scan_i > 0) : (scan_i -= 1) {
@@ -1356,6 +1363,7 @@ fn residualCoding(
             if (!engine.valid) return;
 
             if (g1 == 1) {
+                g1_flags_pos[sp] = true;
                 num_greater1 += 1;
                 if (first_greater1_scan_pos == 16) first_greater1_scan_pos = sp;
                 // After seeing a 1, context goes to 0 (stays there)
@@ -1407,48 +1415,70 @@ fn residualCoding(
             if (!engine.valid) return;
         }
 
-        // coeff_abs_level_remaining — decode for coefficients that need it.
-        // Per spec section 7.3.8.11, a coefficient gets a remaining value
-        // only when baseLevel == threshold:
-        //   - For the first 8 significant coeffs (in reverse scan):
-        //       - The coefficient at firstGreater1ScanPos has threshold=3
-        //         (matches only when greater2_flag=1).
-        //       - All others have threshold=2 (matches when greater1=1).
-        //   - Coefficients past the first 8 have threshold=1 (always match).
-        // So: firstGreater1 contributes a remaining ONLY when greater2=1.
-        // The previous code added num_greater1 unconditionally, over-counting
-        // by 1 whenever greater2 was decoded as 0 — that read one extra
-        // coeff_abs_level_remaining bypass slice and desynced the stream.
-        const num_past_8: u32 = if (num_sig > g1_count) num_sig - g1_count else 0;
-        const num_g1_remainings: u32 = if (num_greater1 == 0)
-            0
-        else if (has_greater2) num_greater1 else num_greater1 - 1;
-        const total_remaining = num_g1_remainings + num_past_8;
-        tu_remaining_total += total_remaining;
-
+        // coeff_abs_level_remaining — decode in REVERSE SCAN ORDER, one pass
+        // through every sig position. Port of ffmpeg cabac.c:1366-1410 main
+        // trans_coeff_level loop. The order matters: rice_param updates after
+        // each remaining read, so reading the past-8 (low-scan-pos) remainings
+        // before some of the high-scan-pos g1 remainings — as the old code
+        // accidentally did — gives the wrong rice trajectory and corrupts the
+        // bit count from then on. This is Bug #4m (was masked when bug #4l
+        // gave us a different off-by-one trade).
+        //
+        // Per spec section 7.3.8.11:
+        //   - Positions 0..7 (in reverse scan) get a remaining only when
+        //     baseLevel == threshold:
+        //       * If position == firstG1: threshold = 3 (matches only when
+        //         g2_flag == 1, since baseLevel = 1 + g1(=1) + g2)
+        //       * Other g1==1 positions: threshold = 2 (matches; baseLevel = 1+1)
+        //       * g1==0 positions: baseLevel = 1, threshold = 2, no remaining
+        //   - Positions 8+ (in reverse scan): always remaining; baseLevel = 1.
         var rice_param: u32 = 0;
-        for (0..total_remaining) |rem_idx| {
+        var sig_visited: u32 = 0;
+        var r_scan_i: u32 = first_scan_pos + 1;
+        var remainings_this_sb: u32 = 0;
+        while (r_scan_i > 0) : (r_scan_i -= 1) {
             if (!engine.valid) return;
+            const sp = r_scan_i - 1;
+            if (!sig_flags[sp]) continue;
+            const is_first_8 = sig_visited < 8;
+            sig_visited += 1;
+
+            var coeff_base: u32 = 1;
+            var needs_remaining = false;
+            if (is_first_8) {
+                if (g1_flags_pos[sp]) {
+                    if (sp == first_greater1_scan_pos) {
+                        // firstG1: threshold 3 — needs remaining iff g2==1
+                        if (has_greater2) {
+                            coeff_base = 3;
+                            needs_remaining = true;
+                        }
+                    } else {
+                        // other g1==1: threshold 2, baseLevel = 1+1 = 2, matches
+                        coeff_base = 2;
+                        needs_remaining = true;
+                    }
+                }
+                // g1==0 in first 8: baseLevel = 1, no remaining.
+            } else {
+                // Past-8: always remaining, baseLevel = 1.
+                coeff_base = 1;
+                needs_remaining = true;
+            }
+
+            if (!needs_remaining) continue;
+
             const decoded_val = decodeCoeffAbsLevelRemainingVal(engine, rice_param);
             if (!engine.valid) return;
-
-            // Determine base level for rice param update. Spec section 9.3.3.9.
-            // rem_idx=0 is the highest-scan-pos coeff needing remaining (reverse
-            // scan); when has_greater2=true and num_g1>0 this is firstG1 with
-            // baseLevel=3, otherwise it's the next g1=1 coeff with baseLevel=2
-            // or (if num_g1_remainings=0) a past-first-8 coeff with baseLevel=1.
-            var coeff_base: u32 = 1;
-            if (rem_idx < num_g1_remainings) {
-                coeff_base = 2;
-                if (rem_idx == 0 and has_greater2) coeff_base = 3;
-            }
+            remainings_this_sb += 1;
             const abs_level = coeff_base + decoded_val;
 
-            // Rice parameter update per spec (Section 9.3.3.9)
+            // Rice parameter update per spec 9.3.3.9 / ffmpeg cabac.c:1376.
             if (abs_level > 3 * (@as(u32, 1) << @intCast(rice_param))) {
                 if (rice_param < 4) rice_param += 1;
             }
         }
+        tu_remaining_total += remainings_this_sb;
     }
 }
 
