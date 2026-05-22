@@ -566,6 +566,22 @@ pub const PictureParameterSet = struct {
     transquant_bypass_enabled_flag: bool = false,
     tiles_enabled_flag: bool = false,
     entropy_coding_sync_enabled_flag: bool = false,
+    // Slice-header-parser dependencies (Bug #4m fix — without these the
+    // slice header parser would stop at slice_qp_delta and report the
+    // wrong header_bits, causing CABAC to start reading at the wrong
+    // bitstream offset).
+    pps_slice_chroma_qp_offsets_present_flag: bool = false,
+    pps_loop_filter_across_slices_enabled_flag: bool = false,
+    deblocking_filter_control_present_flag: bool = false,
+    deblocking_filter_override_enabled_flag: bool = false,
+    pps_deblocking_filter_disabled_flag: bool = false,
+    slice_segment_header_extension_present_flag: bool = false,
+    // True only if we successfully parsed through
+    // slice_segment_header_extension_present_flag — i.e., all PPS bits
+    // that the slice header parser depends on are known. False if a
+    // pps_scaling_list_data_present_flag forced an early return (we
+    // don't parse scaling_list_data() yet).
+    has_slice_header_deps: bool = false,
     has_extended_fields: bool = false,
 };
 
@@ -632,7 +648,7 @@ fn parsePps(rbsp: []const u8) ?PictureParameterSet {
     _ = reader.readSignedExpGolomb() orelse return pps;
 
     // pps_slice_chroma_qp_offsets_present_flag: u(1)
-    _ = reader.readBit() orelse return pps;
+    pps.pps_slice_chroma_qp_offsets_present_flag = (reader.readBit() orelse return pps) != 0;
 
     // weighted_pred_flag: u(1)
     _ = reader.readBit() orelse return pps;
@@ -650,6 +666,58 @@ fn parsePps(rbsp: []const u8) ?PictureParameterSet {
     pps.entropy_coding_sync_enabled_flag = (reader.readBit() orelse return pps) != 0;
 
     pps.has_extended_fields = true;
+
+    // From here on we parse the fields the slice header parser depends on.
+    // Per H.265 spec section 7.3.2.3.1. If any of these reads fail, we
+    // return the PPS without `has_slice_header_deps = true` so the slice
+    // header parser knows to fall back to its old (incomplete) behavior.
+
+    if (pps.tiles_enabled_flag) {
+        const num_tile_cols_minus1 = reader.readExpGolomb() orelse return pps;
+        const num_tile_rows_minus1 = reader.readExpGolomb() orelse return pps;
+        const uniform_spacing = (reader.readBit() orelse return pps) != 0;
+        if (!uniform_spacing) {
+            var i: u32 = 0;
+            while (i < num_tile_cols_minus1) : (i += 1) {
+                _ = reader.readExpGolomb() orelse return pps;
+            }
+            i = 0;
+            while (i < num_tile_rows_minus1) : (i += 1) {
+                _ = reader.readExpGolomb() orelse return pps;
+            }
+        }
+        _ = reader.readBit() orelse return pps; // loop_filter_across_tiles_enabled_flag
+    }
+
+    pps.pps_loop_filter_across_slices_enabled_flag = (reader.readBit() orelse return pps) != 0;
+    pps.deblocking_filter_control_present_flag = (reader.readBit() orelse return pps) != 0;
+    if (pps.deblocking_filter_control_present_flag) {
+        pps.deblocking_filter_override_enabled_flag = (reader.readBit() orelse return pps) != 0;
+        pps.pps_deblocking_filter_disabled_flag = (reader.readBit() orelse return pps) != 0;
+        if (!pps.pps_deblocking_filter_disabled_flag) {
+            _ = reader.readSignedExpGolomb() orelse return pps; // pps_beta_offset_div2
+            _ = reader.readSignedExpGolomb() orelse return pps; // pps_tc_offset_div2
+        }
+    }
+
+    // pps_scaling_list_data_present_flag — if set, the spec requires us
+    // to parse scaling_list_data() before continuing. That's a non-
+    // trivial parser (4 size classes × 6 matrices × variable counts).
+    // For now: if scaling list is present, abort the extended PPS parse
+    // and the slice header parser falls back. This keeps us correct on
+    // streams that don't use custom scaling lists (the common case for
+    // HEIC), and broken-the-same-way-as-before on streams that do.
+    const scaling_list_present = (reader.readBit() orelse return pps) != 0;
+    if (scaling_list_present) return pps;
+
+    _ = reader.readBit() orelse return pps; // lists_modification_present_flag
+    _ = reader.readExpGolomb() orelse return pps; // log2_parallel_merge_level_minus2
+    pps.slice_segment_header_extension_present_flag = (reader.readBit() orelse return pps) != 0;
+
+    // Everything after this point (pps_extension_present_flag,
+    // pps_extension_flag, rbsp_trailing_bits) is irrelevant for the
+    // slice header parser — we have everything we need now.
+    pps.has_slice_header_deps = true;
     return pps;
 }
 
@@ -773,8 +841,86 @@ fn parseFullSliceSegmentHeader(
         return info;
     };
 
-    // Remaining fields: deblocking params, entry points, etc.
-    // Skip for now — we have enough for CABAC init
+    // Bug #4m fix — continue parsing through byte_alignment so CABAC
+    // starts at the correct bitstream offset. The old code stopped here
+    // and reported header_bits = bit_pos-so-far, which made CABAC read
+    // bins from the middle of the slice header for any HEIC tile (and
+    // most other tiled streams).
+    //
+    // If the PPS parser bailed before parsing the slice-header-dependent
+    // fields (e.g. scaling_list_data is present), fall back to the old
+    // truncated behavior. CABAC will be wrong, but no MORE wrong than
+    // before — and at least we surface the gap honestly.
+    if (!pps.has_slice_header_deps) {
+        info.header_bits = reader.bit_pos;
+        return info;
+    }
+
+    if (pps.pps_slice_chroma_qp_offsets_present_flag) {
+        _ = reader.readSignedExpGolomb() orelse return null; // slice_cb_qp_offset
+        _ = reader.readSignedExpGolomb() orelse return null; // slice_cr_qp_offset
+    }
+    // Range extensions only: cu_chroma_qp_offset_enabled_flag.
+    // Main profile (HEIC) is always 0, skip without reading.
+
+    var slice_deblocking_disabled = pps.pps_deblocking_filter_disabled_flag;
+    if (pps.deblocking_filter_override_enabled_flag) {
+        const override_flag = (reader.readBit() orelse return null) != 0;
+        if (override_flag) {
+            slice_deblocking_disabled = (reader.readBit() orelse return null) != 0;
+            if (!slice_deblocking_disabled) {
+                _ = reader.readSignedExpGolomb() orelse return null; // slice_beta_offset_div2
+                _ = reader.readSignedExpGolomb() orelse return null; // slice_tc_offset_div2
+            }
+        }
+    }
+
+    if (pps.pps_loop_filter_across_slices_enabled_flag and
+        (info.slice_sao_luma_flag or info.slice_sao_chroma_flag or !slice_deblocking_disabled))
+    {
+        _ = reader.readBit() orelse return null; // slice_loop_filter_across_slices_enabled_flag
+    }
+
+    if (pps.tiles_enabled_flag or pps.entropy_coding_sync_enabled_flag) {
+        const num_entry_point_offsets = reader.readExpGolomb() orelse return null;
+        // Sanity cap: an HEVC slice can't have more than (CTUs in picture)
+        // entry points. 64K is well past anything reasonable for ground-
+        // truth test fixtures and stops a corrupted ue(v) from making us
+        // loop billions of times.
+        if (num_entry_point_offsets > 65535) return null;
+        if (num_entry_point_offsets > 0) {
+            const offset_len_minus1 = reader.readExpGolomb() orelse return null;
+            if (offset_len_minus1 > 31) return null;
+            // offset_len <= 32 always (offset_len_minus1 capped at 31).
+            // readBits expects u6 but our value fits; for >32 we'd use
+            // readBits64. Since we capped above, u6 cast is safe.
+            const offset_len: u6 = @intCast(offset_len_minus1 + 1);
+            var i: u32 = 0;
+            while (i < num_entry_point_offsets) : (i += 1) {
+                _ = reader.readBits(offset_len) orelse return null;
+            }
+        }
+    }
+
+    if (pps.slice_segment_header_extension_present_flag) {
+        const ext_len = reader.readExpGolomb() orelse return null;
+        // Spec: ext_len upper bound is implementation-defined but in
+        // practice tiny. 4096 is a generous safety cap.
+        if (ext_len > 4096) return null;
+        var i: u32 = 0;
+        while (i < ext_len) : (i += 1) {
+            _ = reader.readBits(8) orelse return null;
+        }
+    }
+
+    // byte_alignment(): a single "1" bit followed by 0..7 "0" bits to
+    // pad to the next byte boundary. Per spec section 7.3.2.11.
+    const align_bit = reader.readBit() orelse return null;
+    if (align_bit != 1) return null;
+    while ((reader.bit_pos % 8) != 0) {
+        const z = reader.readBit() orelse return null;
+        if (z != 0) return null;
+    }
 
     info.header_bits = reader.bit_pos;
     info.header_fully_parsed = true;

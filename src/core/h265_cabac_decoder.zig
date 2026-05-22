@@ -12,6 +12,7 @@ const h265_tables = @import("h265_cabac_tables.zig");
 const codec_utils = @import("codec_utils.zig");
 const trace = @import("trace.zig");
 const heap = @import("heap.zig");
+const runtime = @import("runtime.zig");
 
 // ============================================================================
 // Scan Order Tables (ITU-T H.265 Section 6.5.3)
@@ -417,7 +418,11 @@ pub const H265CabacEngine = struct {
             self.contexts[ctx_idx].p_state_idx = @intCast(h265_tables.transIdxMPS[p_state_idx]);
         }
 
-        if (trace.isEnabled(.h265_bins)) {
+        // Cap per-bin trace at first 2000 bins per slice. Without this,
+        // a single 345-CTU autumn run produces ~100MB of trace output and
+        // can fill /tmp. Set VALIDATE_TRACE_H265_BINS_FULL to override.
+        if (trace.isEnabled(.h265_bins) and
+            (self.context_bins + self.bypass_bins + self.terminate_bins < 2000 or runtime.hasEnvVar("VALIDATE_TRACE_H265_BINS_FULL"))) {
             // Format matched to libde265 trace shape so diff lines up:
             //   "[ N] ctx=C bit=B path=MPS|LPS state_pre=S r_pre=X v_pre=Y r_post=X v_post=Y"
             // Per-bin counter (context+bypass+terminate counts combined).
@@ -447,7 +452,8 @@ pub const H265CabacEngine = struct {
             ret = 1;
         }
 
-        if (trace.isEnabled(.h265_bins)) {
+        if (trace.isEnabled(.h265_bins) and
+            (self.context_bins + self.bypass_bins + self.terminate_bins < 2000 or runtime.hasEnvVar("VALIDATE_TRACE_H265_BINS_FULL"))) {
             const n = self.context_bins + self.bypass_bins + self.terminate_bins;
             trace.print(.h265_bins, "[{d}] bypass bit={d} r_pre={x} v_pre={x} v_post={x}", .{
                 n, ret, r_before, v_before, self.cod_i_offset,
@@ -480,7 +486,8 @@ pub const H265CabacEngine = struct {
             self.renormalize();
         }
 
-        if (trace.isEnabled(.h265_bins)) {
+        if (trace.isEnabled(.h265_bins) and
+            (self.context_bins + self.bypass_bins + self.terminate_bins < 2000 or runtime.hasEnvVar("VALIDATE_TRACE_H265_BINS_FULL"))) {
             const n = self.context_bins + self.bypass_bins + self.terminate_bins;
             trace.print(.h265_bins, "[{d}] term bit={d} r_pre={x} v_pre={x} r_post={x} v_post={x}", .{
                 n, ret, r_before, v_before, self.cod_i_range, self.cod_i_offset,
