@@ -87,7 +87,22 @@ validate --about
 | `--shuffle` | Shuffle file order |
 | `--append` | Append to output files instead of overwriting |
 | `-`, `--stdin`, `@stdin` | Read file paths from stdin (newline-delimited) |
+| `--strict` | Promote any WARN to FAIL globally — "is this byte-perfectly spec-compliant?" mode (opt-in) |
+| `--no-strict` | In `--test-coverage`, disable the always-on strict default (legacy FAIL-only detection) |
+| `--test-coverage N` | Run up to N corruption rounds against a file, report detection rate (see below) |
+| `--modes LIST` | Corruption modes for `--test-coverage`: `sniper` (1 bit), `bolter` (1 byte XOR 0xFF), `shotgun` (4 KB random), `header`, `tail`, `zeroed`, `xor`, `sparse-noise`, `boundary`, `all`, `everything` |
 
+### Corruption test modes: sniper, bolter, shotgun
+
+`--test-coverage` perturbs a known-clean file and asks "did the validator notice?" — useful both for measuring validator strength per format and for confirming a new validator catches what it should.
+
+| Mode | Granularity | What it does |
+|------|-------------|--------------|
+| **sniper** | 1 bit | Flip one random bit. Cheapest, hardest to detect (codecs often tolerate single-bit errors). |
+| **bolter** | 1 byte | XOR one random byte with `0xFF` (flip all 8 bits of that byte). Intermediate granularity. Named after Warhammer 40K's bolter — single big projectile, not a single bullet, not a spray of pellets. |
+| **shotgun** | 4 KB | Overwrite 4096 random bytes at a random offset. Easiest to detect; sometimes wipes enough structural metadata that the validator gives up gracefully (which only counts in strict mode — see next paragraph). |
+
+**`--strict` is ON by default for `--test-coverage`** because the harness asks "did the validator notice ANY deviation?" — without it, a shotgun corruption that produces a depth-degraded WARN (rather than FAIL) gets miscounted as "undetected" even though the validator clearly noticed something. Concrete example from `deflate-last-strip.tiff`: shotgun detection is **69% non-strict** vs **100% strict**; the gap is purely WARN outcomes that the legacy metric didn't count. Disable with `--no-strict` to get the legacy semantics.
 `--jobs 0` (default) uses all available cores (logical CPU count).
 `MAX_FILES` limits the number of files scanned when validating a directory.
 `MAX_VIDEO_SIZE` limits deep video validation to files under N MB (unset = no limit).

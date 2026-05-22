@@ -982,6 +982,10 @@ static void output_unlock(void) {
 
 /* Forward declarations — defined in TUI section below */
 static int g_tui_enabled;
+/* --strict: when set, regular-validation WARNs (warning_message or any
+ * malformation bit) get demoted to FAIL by emit_text_result. Set from
+ * main() during arg parsing; never reset during a run. */
+static int g_global_strict_mode = 0;
 static int g_term_width;
 static int g_term_height;
 static void get_terminal_size(int* width, int* height);
@@ -1216,6 +1220,21 @@ static void print_validation_result(const char* path, const char* result) {
 	int has_info = (has_info_malformations || has_info_msg);
 
 	char rest_buf[2048];
+
+	/* --strict promotes WARN to FAIL. INFO is an observation about a
+	 * spec-clean file — NOT a deviation — and stays a passing verdict
+	 * even in strict mode. Only WARN-level signals (warning_message or
+	 * any malformation bit) demote here. The counters get fixed up by
+	 * the caller because we've inverted is_valid. */
+	if (is_valid && g_global_strict_mode && (has_malformations || has_warning)) {
+		is_valid = 0;
+		if (!err_msg[0]) {
+			/* Compose a synthetic err_msg from the warn_msg so the FAIL
+			 * line still carries the diagnostic detail the user needs. */
+			snprintf(err_msg, sizeof(err_msg), "strict mode: %s",
+				has_warning ? warn_msg : "spec deviation (see malformation flags)");
+		}
+	}
 
 	if (is_valid) {
 		if (has_malformations || has_warning) {
@@ -1927,6 +1946,13 @@ static void print_usage(const char* program) {
 	printf("                       Lower = tighter CI = more rounds; e.g., 0.001 ~ +/-0.1%%. Range: (0, 0.5].\n");
 	printf("    --no-early-stop    Disable adaptive early-stop; run all N rounds requested\n");
 	printf("    --no-progress      Suppress live --test-coverage progress (auto-off when stderr is not a TTY)\n");
+	printf("    --strict           Treat any WARN as FAIL globally — \"is this byte-perfectly spec-compliant?\" mode.\n");
+	printf("                       Opt-in for normal validation (default off). For archival / ML / spec-rigor workflows\n");
+	printf("                       where any deviation (extension mismatch, decoder-fallback heuristic, etc.) should fail.\n");
+	printf("                       AUTOMATICALLY ON for --test-coverage since the harness asks \"did the validator notice\n");
+	printf("                       ANY deviation?\" — without strict, shotgun corruptions that produce a depth-degraded WARN\n");
+	printf("                       (instead of FAIL) get miscounted as undetected. Disable with --no-strict.\n");
+	printf("    --no-strict        Opt out of strict mode in --test-coverage (use legacy FAIL-only detection semantics)\n");
 #endif
 	printf("\n");
 	printf("ENVIRONMENT:\n");
@@ -2058,6 +2084,11 @@ static uint8_t parse_cli_arg(const char* arg) {
 	 * before falling through to validate_match_arg so the i18n alias table
 	 * doesn't need a row in every locale for this UX-only flag. */
 	if (strcmp(arg, "--no-progress") == 0) return VALIDATE_ARG_NO_PROGRESS;
+	/* --strict / --no-strict — not localized for the same reason as --no-progress.
+	 * --strict promotes WARN to FAIL globally. --no-strict opts out of the
+	 * always-on strict default in --test-coverage detection. */
+	if (strcmp(arg, "--strict") == 0) return VALIDATE_ARG_STRICT;
+	if (strcmp(arg, "--no-strict") == 0) return VALIDATE_ARG_NO_STRICT;
 
 #ifdef _WIN32
 	/* Windows prefix forms */
@@ -2163,6 +2194,24 @@ int main(int argc, char* argv[]) {
 	uint32_t test_coverage_jobs = 0; /* 0 = auto, 1 = single-thread */
 	double test_coverage_early_stop_radius = 0.0; /* 0.0 = use library default (0.025) */
 	int test_coverage_no_early_stop = 0;
+	/* --strict mode: promote WARN to FAIL.
+	 *
+	 *   global_strict_mode: applies to regular validation output.
+	 *   Default 0 (off) — preserves UX where WARN-able quirks (file
+	 *   ext mismatch, decoder-fallback heuristics) stay yellow rather
+	 *   than red. Opt-in via --strict for archival / ML / spec-rigor
+	 *   workflows where any deviation should fail the check.
+	 *
+	 *   test_coverage_strict: applies to --test-coverage detection.
+	 *   Default 1 (on) because the harness asks "did the validator
+	 *   notice ANY deviation?" — in non-strict the metric falsely
+	 *   undercounts when a corruption produces a WARN instead of FAIL
+	 *   (see the deflate-last-strip.tiff shotgun-vs-bolter paradox).
+	 *   Override with --no-strict for legacy semantics.
+	 *
+	 * See README "test coverage" section. */
+	int global_strict_mode = 0;
+	int test_coverage_strict = 1;
 	int test_coverage_no_progress = 0; /* --no-progress: suppress live coverage progress */
 	int shuffle = 0;
 	size_t stress_iterations = 0;
@@ -2429,6 +2478,16 @@ int main(int argc, char* argv[]) {
 				test_coverage_no_progress = 1;
 				continue;
 			}
+			case VALIDATE_ARG_STRICT: {
+				global_strict_mode = 1;
+				g_global_strict_mode = 1;
+				test_coverage_strict = 1;  /* idempotent — default is already 1 */
+				continue;
+			}
+			case VALIDATE_ARG_NO_STRICT: {
+				test_coverage_strict = 0;
+				continue;
+			}
 			default:
 				fprintf(stderr, "%sError: Unknown option: %s\n%s", COLOR_RED, arg, COLOR_RESET);
 				free(paths);
@@ -2595,7 +2654,8 @@ int main(int argc, char* argv[]) {
 			}
 			char *result = validate_test_coverage(paths[i], test_coverage_rounds, seed,
 				test_coverage_shotgun_bytes, test_coverage_modes_bitmask, heatmap_width,
-				test_coverage_jobs, effective_radius, prog_cb_ptr, prog_ctx_ptr);
+				test_coverage_jobs, effective_radius, prog_cb_ptr, prog_ctx_ptr,
+				test_coverage_strict ? true : false);
 			/* Clear the in-place progress line so the result block starts fresh. */
 			if (progress_eligible) fprintf(stderr, "\r\x1b[2K");
 			if (!result) {

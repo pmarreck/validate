@@ -134,6 +134,31 @@ Any deviation from the clean baseline could be made into a corruption signal onc
 
 `inbox/` cleaned per LLMsend protocol: tiffz's three notes (corruption-sweep-shim-needs-strip-decode, convenience-method-shipped, lzw-kwkwk-fix) all read, acted on, and moved to `/tmp/`. The non-tiffz `2026-05-08-mecha-release-plan-validate-slice.md` is the only thing still in `inbox/` — keep for now (Mecha release plan is informational, no action item).
 
+## Open design discussions
+
+### Killing WARN entirely (Peter's "corrupt police department" insight, 2026-05-21)
+
+Every WARN is an implicit policy choice ("this deviation is tolerable") and every implicit policy choice muddies the corruption-detection signal. The deflate-last-strip.tiff paradox where shotgun-shows-69%-but-bolter-shows-94% is a direct symptom — WARN is "valid+message", FAIL is "invalid", but the line between "tolerated quirk" and "real corruption" is exactly the kind of ad-hoc judgment call a strict spec validator should NOT be making.
+
+**Shipped this session: `--strict` flag** (opt-in for regular validation, default-ON for `--test-coverage`) — minimal version that promotes WARN→FAIL at the result-interpretation boundary. Closes the harness paradox: shotgun + strict now reports 100% detection on deflate-last-strip.tiff.
+
+**Principled end-state, deferred:** kill WARN entirely. Promote every current WARN-routing to either:
+- **PASS with a typed `info` finding** the consumer can choose to display — for cases like ext mismatch where the file is genuinely fine
+- **FAIL** for cases that are non-spec
+- **depth degradation** (independent of WARN/FAIL) for "I couldn't fully validate"
+
+Then there's no policy fuzziness — WARN becomes a UX rendering concept, not a validator output. The `--strict` flag becomes unnecessary because strict IS the default and only mode. This is a meaningful refactor (touching every `warning_message =` site across all validators); land it once the H.265 work settles.
+
+### Future vision — "every problem described in detail; repair where possible" (Peter, 2026-05-21)
+
+Two principles for a future major version:
+
+1. **Every problem described in detail.** Not "Invalid TIFF structure" — but "IFD entry at offset 0x1234 declares tag 0x0117 with count=4 but the offset (0x5678) is past the file end (file size 0xABCD)". Diagnostic precision is the same posture as the "back of the cabinet" rule applied to error messages. Today's validators range from terse (most) to verbose (a few). Standardize across.
+
+2. **Repair where possible (with information loss).** Today validate is read-only: it tells you the file is broken, nothing more. The future vision: when a corruption is localized (e.g., one block of a decompression stream), produce a recovered output that contains everything decodable up to the corruption point, plus a manifest of what was skipped. Think `gzip -d --quiet` continuing past CRC errors, but with explicit accounting. Major architectural shift — validate would gain a `--repair OUT` flag that opens a write path through every validator. Codecs that can skip corrupt blocks (deflate, LZW, Vorbis, FLAC frame loss concealment) get first-class support; codecs that can't (most encryption layers) report "unrepairable past offset X". The repair output is byte-honest about what survived and what didn't.
+
+Both are major scope, both worth doing eventually. Filed here so they don't get lost.
+
 
 
 **What needs to happen for the sniper test to pass:**

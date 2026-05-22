@@ -177,6 +177,8 @@ typedef enum {
     VALIDATE_ARG_EARLY_STOP_RADIUS = 21,
     VALIDATE_ARG_NO_EARLY_STOP = 22,
     VALIDATE_ARG_NO_PROGRESS = 23,
+    VALIDATE_ARG_STRICT = 24,
+    VALIDATE_ARG_NO_STRICT = 25,
     VALIDATE_ARG_UNKNOWN = 255,
 } validate_arg_t;
 
@@ -359,7 +361,8 @@ char* validate_test_coverage(const char* path, uint32_t rounds, uint64_t seed,
                              uint32_t shotgun_bytes, uint32_t modes_bitmask,
                              uint32_t heatmap_width, uint32_t jobs,
                              double early_stop_radius,
-                             validate_coverage_progress_t progress_cb, void* progress_ctx);
+                             validate_coverage_progress_t progress_cb, void* progress_ctx,
+                             bool strict);
 /* ========== Batch Validation ========== */
 
 /**

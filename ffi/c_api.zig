@@ -934,6 +934,12 @@ export fn validate_test_coverage(
     early_stop_radius: f64,
     progress_cb: CoverageProgressCallback,
     progress_ctx: ?*anyopaque,
+    /// If true, treat any validator-emitted warning_message as "detected"
+    /// (i.e. WARN counts the same as FAIL). Default in the C CLI is true
+    /// for --test-coverage because the harness asks "did the validator
+    /// notice ANY deviation?" — clean is_valid is the only correct answer.
+    /// Pass false to preserve the old "FAIL only" semantics.
+    strict: bool,
 ) ?[*:0]u8 {
     const p = path orelse return null;
     const path_slice = std.mem.span(p);
@@ -965,6 +971,7 @@ export fn validate_test_coverage(
         format: format_validation.FileFormat,
         user_cb: CoverageProgressCallback,
         user_ctx: ?*anyopaque,
+        strict: bool,
     };
 
     const validate_fn = struct {
@@ -975,6 +982,16 @@ export fn validate_test_coverage(
             var inner_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer inner_arena.deinit();
             const r = rc.validator.validateDeepFromSource(inner_arena.allocator(), rc.format, &src);
+            // "Detected" = the validator noticed a deviation. In non-strict
+            // mode, only FAIL (is_valid = false) counts. In strict mode,
+            // any warning_message ALSO counts — closes the
+            // shotgun-vs-bolter detection paradox where shotgun's 4 KB
+            // overwrite sometimes produces a depth-degraded WARN instead
+            // of FAIL (e.g., deflate-last-strip.tiff: 26% of shotgun
+            // outcomes are WARN-routed-as-undetected in non-strict mode).
+            if (rc.strict) {
+                return !r.is_valid or r.warning_message != null;
+            }
             return !r.is_valid;
         }
     }.cb;
@@ -1053,6 +1070,7 @@ export fn validate_test_coverage(
             .format = baseline.format,
             .user_cb = progress_cb,
             .user_ctx = progress_ctx,
+            .strict = strict,
         };
         var sub = test_coverage.runCoverage(
             alloc,
@@ -1089,6 +1107,7 @@ export fn validate_test_coverage(
             my_rounds: u32,
             my_seed: u64,
             shotgun_bytes: u32,
+            strict: bool,
             enabled: std.EnumSet(test_coverage.CorruptionMode),
             early_stop_radius: f64,
             baseline_format: format_validation.FileFormat,
@@ -1106,6 +1125,7 @@ export fn validate_test_coverage(
                     .format = self.baseline_format,
                     .user_cb = null,
                     .user_ctx = null,
+                    .strict = self.strict,
                 };
                 // Heap-backed events/work. Using page_allocator avoids
                 // carrying a cross-thread arena.
@@ -1159,6 +1179,7 @@ export fn validate_test_coverage(
                 .my_rounds = my_rounds,
                 .my_seed = seed +% @as(u64, i),
                 .shotgun_bytes = shotgun_bytes,
+                .strict = strict,
                 .enabled = modes,
                 .early_stop_radius = early_stop_radius_resolved,
                 .baseline_format = baseline.format,
