@@ -147,11 +147,23 @@ pub fn detectTotalRam() usize {
 		return 0;
 	}
 	if (@import("builtin").os.tag == .linux) {
-		const file = std.fs.openFileAbsolute("/proc/meminfo", .{}) catch return 0;
-		defer file.close(runtime.io());
+		// 0.16: std.fs.openFileAbsolute + file.readAll require the std.Io stack;
+		// for /proc/meminfo we use raw linux syscalls to avoid the dependency.
+		const linux = std.os.linux;
+		const fd_raw = linux.open("/proc/meminfo", .{ .ACCMODE = .RDONLY }, 0);
+		const fd_signed: isize = @bitCast(fd_raw);
+		if (fd_signed < 0) return 0;
+		const fd: i32 = @intCast(fd_raw);
+		defer _ = linux.close(fd);
 		var buf: [4096]u8 = undefined;
-		const n = file.readAll(&buf) catch return 0;
-		const data = buf[0..n];
+		var total: usize = 0;
+		while (total < buf.len) {
+			const n_raw = linux.read(fd, buf[total..].ptr, buf.len - total);
+			const n_signed: isize = @bitCast(n_raw);
+			if (n_signed <= 0) break;
+			total += @intCast(n_raw);
+		}
+		const data = buf[0..total];
 		// Parse "MemTotal:    16384000 kB"
 		var it = std.mem.splitScalar(u8, data, '\n');
 		while (it.next()) |line| {

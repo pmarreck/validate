@@ -505,10 +505,20 @@ fn getCurrentRss() u64 {
         return 0;
     } else if (comptime @import("builtin").os.tag == .linux) {
         // Linux: /proc/self/statm (second field = resident pages)
+        // 0.16: std.fs.openFileAbsolute moved to std.Io.Dir and requires an io
+        // param + lots of ceremony for a tiny /proc peek. Raw syscalls match
+        // the macOS branch's std.c.sysctl style and avoid the std.Io stack.
         var buf: [256]u8 = undefined;
-        const file = std.fs.openFileAbsolute("/proc/self/statm", .{}) catch return 0;
-        defer file.close();
-        const n = file.read(&buf) catch return 0;
+        const linux = std.os.linux;
+        const fd_raw = linux.open("/proc/self/statm", .{ .ACCMODE = .RDONLY }, 0);
+        const fd_signed: isize = @bitCast(fd_raw);
+        if (fd_signed < 0) return 0;
+        const fd: i32 = @intCast(fd_raw);
+        defer _ = linux.close(fd);
+        const n_raw = linux.read(fd, &buf, buf.len);
+        const n_signed: isize = @bitCast(n_raw);
+        if (n_signed <= 0) return 0;
+        const n: usize = @intCast(n_raw);
         const content = buf[0..n];
         // Skip first field (total pages), read second (resident pages)
         var i: usize = 0;
