@@ -75,6 +75,57 @@ distinguish), that's an upstream library-design issue worth flagging
 — the library should split into distinct error names so shim
 implementers can route them differently.
 
+## Caveat: codec-level vs byte-level integrity
+
+Validate's verdict tiers describe what it observes about *structural*
+correctness and *codec* acceptance. Several common file format
+classes have NO byte-level integrity primitive built into the format
+spec, which bounds what any validator (validate or anyone else) can
+detect from the bytes alone:
+
+### Uncompressed payload formats
+
+TIFF (Compression=1), BMP, raw PCM audio, raw camera sensor data, and
+any other format where the payload bytes ARE the data: a flipped bit
+or even a wholesale byte substitution inside the payload produces a
+visibly different but structurally valid file. No checksum exists in
+the spec to detect this. Validate's claim on such files is bounded
+to "structural + codec-level" — not "byte-level integrity."
+
+Detecting bit-level changes in uncompressed payloads would require an
+external integrity primitive (sidecar hash, filesystem metadata, ECC
+storage, content-addressed retrieval).
+
+### Codecs without per-byte integrity primitives
+
+LZW, PackBits, raw run-length encodings, naive Huffman, and other
+"structural-only" codecs fail on logical impossibilities (forward
+references, output overruns, EOD-at-wrong-position) but typically
+accept individual bit flips silently and emit garbage decoded bytes.
+Empirically (TIFF corruption-sweep, 2026-05-21): LZW catches ~7-11%
+of single-bit flips in compressed strip data via its
+forward-reference check — but the other ~90% land on still-valid
+codes that just decode wrong. Same fundamental limit applies wherever
+LZW is embedded: TIFF, PDF, GIF, PostScript, TGA, etc.
+
+By contrast, codecs that DO carry per-byte integrity primitives
+(Deflate/zlib's CRC32, JPEG entropy-coded markers, ZSTD's xxhash, the
+T.4/T.6 EOL line markers) catch most bit-level corruption naturally
+and consequently push validate's sniper-detection rates into the
+60-100% range on files using those codecs. See
+`docs/corruption-sweep-results/tiff_per_fixture.md` for the per-codec
+empirical breakdown.
+
+### Shotgun vs sniper
+
+A multi-KB sector failure (shotgun-style corruption) catches in the
+~57-100% range across nearly every compressed codec — even
+"structural-only" codecs fail when thousands of consecutive codes
+get scrambled. Single-bit flips (sniper-style) only catch where the
+codec has per-byte integrity. This shape of failure is the
+"interesting" case for storage-medium corruption (typically
+sector-aligned), and validate's claim against it is genuinely strong.
+
 ## Goals
 - Provide deterministic, byte-level validation across a wide range of file formats (at least 100 thus far).
 - Maximize auditability and reproducibility (same bytes => same result).
