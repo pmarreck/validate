@@ -46,7 +46,7 @@ jobs:
     name: ${{ matrix.name }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: DeterminateSystems/nix-installer-action@main
 
@@ -65,7 +65,7 @@ jobs:
         run: nix build .#checks.${{ matrix.system }}.test
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: validate-${{ matrix.name }}
           path: validate-${{ matrix.name }}*
