@@ -30,8 +30,8 @@
 | ICO | **63%** | **70%** | sample.ico (multi-res) | 232 KB | 2026-04-23 | Directory entries + embedded PNG/BMP image validation. Multi-resolution ICO has high structural-byte density. |
 | QOI | 0% | 0% | sample.qoi | 23 KB | 2026-04-23 | QOI spec has no per-opcode checksum — bit flips in pixel data decode to different-but-valid pixels. Only magic (4 B) and end marker (8 B) are checkable. Fundamental format limit. |
 | JPEG2K | 6% | **97%** | balloon_eciRGB_icc.jp2 | 1.9 MB | 2026-03-06 | Codestream marker structure |
-| GIF | 2% | **94%** | sample_1.gif | 194 KB | 2026-03-06 | LZW decode (shotgun desyncs state) |
-| JPEG | 0% | **93%** | w3c_exif_420.jpg | 768 KB | 2026-03-06 | libjpeg-turbo full decode |
+| GIF | 9% | **100%** | animated_sample.gif | 400 KB | 2026-05-27 | LZW decode (shotgun desyncs state); larger animated fixture lifts header-tamper detection |
+| JPEG | 4% | **100%** | w3c_exif_420.jpg | 750 KB | 2026-05-27 | jpegz wrapperDecode (062393f); most single-byte tamper lands in entropy-coded data, which JPEG tolerates by design |
 | EXR | 1% | **100%** | zip_plasma.exr | 388 KB | 2026-04-23 | ZIP-compressed EXR — zlib decompress path runs on every scanline block. Shotgun detection perfect; sniper lower than the 26 KB NONE-compressed sample (6%) because structural bytes are a smaller fraction on the larger file. Both paths validated. |
 | PSD | 2% | **50%** | rle_plasma.psd | 1.8 MB | 2026-04-23 | RLE-compressed PSD — `validatePsdDeep` decodes every scanline. The old RAW-compressed `sample.psd` (0%/7%) is retained; sweep picks the larger RLE one. Measures the strong path that the RAW sample couldn't exercise. |
 | HEIC | 0% | 4% | sample.heic | 2.9 MB | 2026-03-06 | H.265 CABAC per tile — **arithmetic coding absorbs single-bit errors by design** |
@@ -39,7 +39,7 @@
 | BMP | 0% | 0% | sample.bmp | 921 KB | 2026-04-23 | BMP spec has no data checksums — `bmp_decoder.validateBmp` walks every pixel row proving accessibility but cannot detect bit-flips in pixel bytes. 0/400 at ±0.5% CI. Fundamental format limit. |
 | DPX | 0% | 0% | sample.dpx | 1.8 MB | 2026-03-06 | Raw pixel; SMPTE 268M spec has no checksum |
 | PAM/PPM | 0% | 0% | sample.ppm | 1.8 MB | 2026-03-06 | Raw pixel; Netpbm spec has no checksum |
-| TGA | 0% | 0% | sample.tga | 11 KB | 2026-03-06 | Raw pixel; TGA spec has no checksum |
+| TGA | 25% | **100%** | sample.tga | 11 KB | 2026-05-27 | Header + image-spec validation catches malformed-byte tamper; tiny 11 KB fixture pushes structural-byte density up |
 | TIFF | 0% | 0% | pc260001.tif | 937 KB | 2026-03-06 | IFD structural only — no per-strip checksum |
 | JBIG2 | 0% | — | annex-h-truncated.jbig2 | 860 B | 2026-04-25 | Bi-level image stream walk; sniper 0% on truncated sample. Shotgun N/A (sample < 4 KB). |
 
@@ -47,7 +47,7 @@
 
 | Format | Sniper | Shotgun | Sample | Size | Run | Mechanism |
 |--------|-------:|--------:|--------|-----:|-----|-----------|
-| DNG | 0% | 0% | blackmagic_micro_cinema.dng | 1.2 MB | 2026-03-06 | TIFF-based; preview JPEG decode via libjpeg-turbo (BlackMagic sample lacks a preview) |
+| DNG | 3% | 3% | L1006922_leica_M11.DNG | 77 MB | 2026-05-27 | TIFF-based via tiffz strip+tile decode loop + jpegz preview decode; 77 MB sensor dump dilutes detection density per byte |
 | CR2 | 1% | 6% | canon_eos_40d_sraw2.cr2 | 5.8 MB | 2026-04-25 | TIFF-based; IFD-walked preview JPEG decoded via libjpeg-turbo (sRAW2 lossless strip filtered out so heuristic keeps the real preview) |
 | NEF | 0% | 0% | nikon_coolscan_iv.nef | 2.2 MB | 2026-03-06 | TIFF-based; deep via zigimg |
 | ARW | 0% | 0% | sony_ilce_7s.arw | 6.2 MB | 2026-03-06 | TIFF-based; deep via zigimg |
@@ -115,7 +115,7 @@
 
 | Format | Sniper | Shotgun | Sample | Size | Run | Mechanism |
 |--------|-------:|--------:|--------|-----:|-----|-----------|
-| XLS | 12% | **90%** | poi_formula.xls | 178 KB | 2026-03-06 | BIFF8 records + SST + formulas + cells |
+| XLS | 22% | **96%** | poi_formula.xls | 174 KB | 2026-05-27 | BIFF8 records + SST + formulas + cells |
 | DOC (large) | 2% | 2% | word95_large.doc | 603 KB | 2026-03-06 | FIB + 31 fc/lcb pair bounds + CLX piece table. Detection density drops on large docs — body text is most of the file. |
 | DOC (small) | — | **52%** | word97_simple.doc | 19 KB | 2026-03-06 | Same validator, smaller file — shotgun has ~21% chance of hitting FIB/Table/CLX. |
 | PDF | n/a† | n/a† | (varies — see breakout) | varies | 2026-04-27 | †Headline numbers are misleading for PDF: detection rate is dominated by which compression filters the document uses for its embedded streams (Flate, DCT/JPEG, JPX/JPEG2000, JBIG2, CCITT), not by the validator. See "PDF detection by stream-filter dominance" subsection below for the breakout table. The exit-code bug from 2026-03-06 was fixed in commit `c304f36` (2026-04-23, Action Item #1). |

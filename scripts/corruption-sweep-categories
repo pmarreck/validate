@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# corruption-sweep-categories: Run sniper+bolter+shotgun sweep on the 6
+# categories requested for the 2026-05-27 detection report.
+#
+# Categories: PDF; H.264; H.265; common images; Office/iWork; pro+medical.
+# Outputs to docs/corruption-sweep-results/2026-05-27/ to avoid clobbering
+# the historical sniper/shotgun TSVs.
+#
+# Usage: corruption-sweep-categories [--count N] [--seed N]
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+EXPERIMENT="$SCRIPT_DIR/corruption-experiment"
+OUT_DIR="$PROJECT_DIR/docs/corruption-sweep-results/2026-05-27"
+
+COUNT=100
+SEED=42
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--count) COUNT="$2"; shift 2 ;;
+		--seed) SEED="$2"; shift 2 ;;
+		*) echo "Unknown arg: $1" >&2; exit 1 ;;
+	esac
+done
+
+mkdir -p "$OUT_DIR"
+
+# Format aliases: <slug>\t<path>. The slug is what the output TSV is named.
+# Use codec-specific names for h264/h265 to distinguish container alone vs
+# container+codec coverage.
+FIXTURES=(
+	# --- 1) PDF ---
+	"pdf	ground_truth_examples/pdf/nasa_satellite_images_1976.pdf"
+
+	# --- 2) H.264 ---
+	"mp4_h264	ground_truth_examples/mp4/bigbuckbunny_360_10s.mp4"
+	"mkv_h264	ground_truth_examples/mkv/h264_aac.mkv"
+	"mov_h264	ground_truth_examples/mov/jellyfish_h264.mov"
+
+	# --- 3) H.265 ---
+	"heic	ground_truth_examples/heic/sample.heic"
+	"mp4_h265	ground_truth_examples/mp4/h265_main.mp4"
+	"mkv_h265	ground_truth_examples/mkv/h265_aac.mkv"
+
+	# --- 4) Common image formats ---
+	"png	ground_truth_examples/png/generated_plasma.png"
+	"jpeg	ground_truth_examples/jpeg/w3c_exif_420.jpg"
+	"gif	ground_truth_examples/gif/animated_sample.gif"
+	"bmp	ground_truth_examples/bmp/sample.bmp"
+	"tiff	ground_truth_examples/tiff/pc260001.tif"
+	"webp	ground_truth_examples/webp/google_gallery_3.webp"
+	"jxl	ground_truth_examples/jxl/animation_icos4d.jxl"
+	"avif	ground_truth_examples/avif/butterfly.avif"
+	"ico	ground_truth_examples/ico/sample.ico"
+	"qoi	ground_truth_examples/qoi/sample.qoi"
+	"tga	ground_truth_examples/tga/sample.tga"
+	"jpeg2k	ground_truth_examples/jpeg2k/balloon_eciRGB_icc.jp2"
+
+	# --- 5) Office + iWork ---
+	"docx	ground_truth_examples/docx/sample.docx"
+	"xlsx	ground_truth_examples/xlsx/sample.xlsx"
+	"pptx	ground_truth_examples/pptx/sample.pptx"
+	"doc	ground_truth_examples/doc/word95_large.doc"
+	"xls	ground_truth_examples/xls/poi_formula.xls"
+	"odt	ground_truth_examples/odt/sample.odt"
+	"ods	ground_truth_examples/ods/sample.ods"
+	"odp	ground_truth_examples/odp/sample.odp"
+	"pages	ground_truth_examples/pages/sample.pages"
+	"numbers	ground_truth_examples/numbers/sample.numbers"
+	"keynote	ground_truth_examples/keynote/sample.key"
+
+	# --- 6) Professional + medical ---
+	"psd	ground_truth_examples/psd/rle_plasma.psd"
+	"exr	ground_truth_examples/exr/zip_plasma.exr"
+	"dpx	ground_truth_examples/dpx/sample.dpx"
+	"dng	ground_truth_examples/dng/L1006922_leica_M11.DNG"
+	"arw	ground_truth_examples/arw/sony_ilce_7s.arw"
+	"cr2	ground_truth_examples/cr2/canon_eos_40d_sraw2.cr2"
+	"cr3	ground_truth_examples/cr3/sample.CR3"
+	"nef	ground_truth_examples/nef/nikon_coolscan_iv.nef"
+	"raf	ground_truth_examples/raf/DSCF0652_fuji_GFX_100.RAF"
+	"orf	ground_truth_examples/orf/PB120976.ORF"
+	"rw2	ground_truth_examples/rw2/panasonic_16-9.RW2"
+	"dicom	ground_truth_examples/dicom/CT_small.dcm"
+	"fits	ground_truth_examples/fits/sample.fits"
+)
+
+cd "$PROJECT_DIR" || exit 1
+
+start_epoch=$(date +%s)
+total_pairs=$(( ${#FIXTURES[@]} * 3 ))
+done_pairs=0
+
+echo "=== Corruption sweep: ${#FIXTURES[@]} formats × 3 modes × $COUNT trials ===" >&2
+echo "=== Output dir: $OUT_DIR ===" >&2
+
+for entry in "${FIXTURES[@]}"; do
+	IFS=$'\t' read -r slug path <<< "$entry"
+	if [ ! -f "$path" ]; then
+		echo "[$slug] MISSING fixture: $path" >&2
+		continue
+	fi
+	sz=$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path")
+	echo "" >&2
+	echo "--- $slug ($sz bytes): $path ---" >&2
+
+	for mode in sniper bolter shotgun; do
+		outfile="$OUT_DIR/${slug}_${mode}.tsv"
+		# Shotgun requires >=4096-byte fixture
+		if [ "$mode" = "shotgun" ] && [ "$sz" -lt 4096 ]; then
+			echo "  $mode: SKIP (file < 4096 bytes)" >&2
+			done_pairs=$(( done_pairs + 1 ))
+			continue
+		fi
+		now=$(date +%s)
+		elapsed=$(( now - start_epoch ))
+		echo "  [$done_pairs/$total_pairs +${elapsed}s] $mode..." >&2
+		"$EXPERIMENT" "$mode" "$path" --count "$COUNT" --seed "$SEED" --output "$outfile" 2>&1 \
+			| grep -E '(Detection rate|Detected|Missed)' | head -3 | sed 's/^/    /' >&2
+		done_pairs=$(( done_pairs + 1 ))
+	done
+done
+
+total_elapsed=$(( $(date +%s) - start_epoch ))
+echo "" >&2
+echo "=== Sweep complete in ${total_elapsed}s. Results in $OUT_DIR ===" >&2

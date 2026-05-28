@@ -1,7 +1,7 @@
 #!/usr/bin/env luajit
 --[[
 corruption-experiment: Statistical corruption detection estimator for validate.
-Modes: sniper (single-bit flip), shotgun (4KB overwrite).
+Modes: sniper (single-bit flip), bolter (1-byte XOR 0xFF), shotgun (4KB overwrite).
 Uses seeded PCG32 for reproducibility. Outputs TSV + human summary with Wilson CI.
 ]]
 
@@ -100,6 +100,7 @@ Usage: corruption-experiment <mode> <file> [options]
 
 Modes:
   sniper    Single-bit flip at random byte offset
+  bolter    Single-byte XOR 0xFF (flips all 8 bits of one byte)
   shotgun   Overwrite 4096 consecutive bytes with random data
 
 Options:
@@ -121,7 +122,7 @@ Options:
 		elseif a == "--output" then
 			i = i + 1
 			opts.output = argv[i] or error("--output requires a path")
-		elseif not opts.mode and (a == "sniper" or a == "shotgun") then
+		elseif not opts.mode and (a == "sniper" or a == "shotgun" or a == "bolter") then
 			opts.mode = a
 		elseif not opts.file then
 			opts.file = a
@@ -131,7 +132,7 @@ Options:
 		i = i + 1
 	end
 
-	if not opts.mode then error("Missing mode (sniper or shotgun)") end
+	if not opts.mode then error("Missing mode (sniper, bolter, or shotgun)") end
 	if not opts.file then error("Missing file argument") end
 	if not opts.seed then opts.seed = random_seed() end
 
@@ -164,6 +165,15 @@ local function corrupt_sniper(data, rng)
 	ffi.copy(buf, data, #data)
 	buf[off] = bit.bxor(buf[off], bit.lshift(1, b))
 	return ffi.string(buf, #data), off, b
+end
+
+--- Bolter: XOR a single random byte with 0xFF (flips all 8 bits of one byte).
+local function corrupt_bolter(data, rng)
+	local off = rng:uniform(#data)
+	local buf = ffi.new("uint8_t[?]", #data)
+	ffi.copy(buf, data, #data)
+	buf[off] = bit.bxor(buf[off], 0xFF)
+	return ffi.string(buf, #data), off, nil
 end
 
 --- Shotgun: overwrite 4096 consecutive bytes with random data.
@@ -255,6 +265,11 @@ local function print_summary(opts, filesize, k, n, seed, p_hat, ci_lo, ci_hi, ra
 			"                   validation. A random single-bit flip has\n" ..
 			"                   a %d%% chance of being caught.\n",
 			pct_round, pct_round))
+	elseif opts.mode == "bolter" then
+		io.stderr:write(string.format(
+			"  Plain English:   A random single-byte corruption (XOR 0xFF)\n" ..
+			"                   has a %d%% chance of being caught.\n",
+			pct_round))
 	else
 		io.stderr:write(string.format(
 			"  Plain English:   A random 4KB sector failure has a %.1f%%\n" ..
@@ -288,8 +303,18 @@ local function main()
 		tostring(opts.seed), opts.mode, basename, filesize))
 	tsv_out:write("trial\tmode\tfilesize\toff\tbit\tspan\tdetected\n")
 
-	local corrupt_fn = opts.mode == "sniper" and corrupt_sniper or corrupt_shotgun
-	local span = opts.mode == "sniper" and 1 or 4096
+	local corrupt_fn
+	local span
+	if opts.mode == "sniper" then
+		corrupt_fn = corrupt_sniper
+		span = 1
+	elseif opts.mode == "bolter" then
+		corrupt_fn = corrupt_bolter
+		span = 1
+	else
+		corrupt_fn = corrupt_shotgun
+		span = 4096
+	end
 
 	local k = 0
 	local n = 0

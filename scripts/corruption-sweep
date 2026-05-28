@@ -55,7 +55,7 @@ for i in $(seq $START $((END - 1))); do
 	IFS='	' read -r fmt path sz <<< "${PAIRS[$i]}"
 	echo "--- $fmt ($sz bytes): $path ---" >&2
 
-	for mode in sniper shotgun; do
+	for mode in sniper bolter shotgun; do
 		outfile="$RESULTS_DIR/${fmt}_${mode}.tsv"
 		if [ -f "$outfile" ]; then
 			echo "  $mode: already done, skipping" >&2

@@ -1,0 +1,136 @@
+#!/usr/bin/env luajit
+--[[
+summarize-corruption-sweep: Aggregate per-(format,mode) detection rates from
+TSVs produced by corruption-experiment. Emits a markdown table to stdout.
+
+Usage: summarize-corruption-sweep <results-dir> [--categories cat1,cat2,...]
+]]
+
+local TSV_DIR = arg[1] or error("usage: summarize-corruption-sweep <dir>")
+
+-- Wilson 95% CI half-width
+local function wilson_radius(k, n)
+	if n == 0 then return 0 end
+	local z = 1.959963984540054
+	local p = k / n
+	local z2 = z * z
+	local den = 1 + z2 / n
+	return (z * math.sqrt(p * (1 - p) / n + z2 / (4 * n * n))) / den
+end
+
+-- Parse a single TSV; returns {n=…, k=…, filesize=…, mode=…, file=…}
+local function parse_tsv(path)
+	local f = io.open(path, "r")
+	if not f then return nil end
+	local n, k, filesize, file_name, mode = 0, 0, 0, "", ""
+	for line in f:lines() do
+		if line:sub(1, 1) == "#" then
+			-- Header: # seed=42 mode=sniper file=foo.png filesize=224566
+			file_name = line:match("file=([^%s]+)") or file_name
+			filesize = tonumber(line:match("filesize=(%d+)") or "0")
+			mode = line:match("mode=(%S+)") or mode
+		elseif line:sub(1, 5) == "trial" then
+			-- header row
+		elseif #line > 0 then
+			local cols = {}
+			for c in line:gmatch("[^\t]+") do cols[#cols + 1] = c end
+			local det = cols[#cols]
+			n = n + 1
+			if det == "true" then k = k + 1 end
+		end
+	end
+	f:close()
+	return { n = n, k = k, filesize = filesize, file = file_name, mode = mode }
+end
+
+-- Category assignments
+local CATEGORY = {
+	-- PDF
+	pdf = "1. PDF",
+	-- H.264
+	mp4_h264 = "2. H.264", mkv_h264 = "2. H.264", mov_h264 = "2. H.264",
+	-- H.265
+	heic = "3. H.265", mp4_h265 = "3. H.265", mkv_h265 = "3. H.265",
+	-- Common images
+	png = "4. Common images", jpeg = "4. Common images", gif = "4. Common images",
+	bmp = "4. Common images", tiff = "4. Common images", webp = "4. Common images",
+	jxl = "4. Common images", avif = "4. Common images", ico = "4. Common images",
+	qoi = "4. Common images", tga = "4. Common images", jpeg2k = "4. Common images",
+	-- Office + iWork
+	docx = "5. Office + iWork", xlsx = "5. Office + iWork", pptx = "5. Office + iWork",
+	doc = "5. Office + iWork", xls = "5. Office + iWork",
+	odt = "5. Office + iWork", ods = "5. Office + iWork", odp = "5. Office + iWork",
+	pages = "5. Office + iWork", numbers = "5. Office + iWork", keynote = "5. Office + iWork",
+	-- Pro + medical
+	psd = "6. Pro + medical", exr = "6. Pro + medical", dpx = "6. Pro + medical",
+	dng = "6. Pro + medical", arw = "6. Pro + medical", cr2 = "6. Pro + medical",
+	cr3 = "6. Pro + medical", nef = "6. Pro + medical", raf = "6. Pro + medical",
+	orf = "6. Pro + medical", rw2 = "6. Pro + medical",
+	dicom = "6. Pro + medical", fits = "6. Pro + medical",
+}
+
+-- Enumerate TSVs in directory
+local p = io.popen("ls -1 '" .. TSV_DIR .. "' 2>/dev/null")
+if not p then error("Cannot list " .. TSV_DIR) end
+
+-- results[category][slug][mode] = {n, k, filesize, file}
+local results = {}
+local all_formats = {}
+for fn in p:lines() do
+	local slug, mode = fn:match("^(.+)_(sniper)%.tsv$")
+	if not slug then slug, mode = fn:match("^(.+)_(bolter)%.tsv$") end
+	if not slug then slug, mode = fn:match("^(.+)_(shotgun)%.tsv$") end
+	if slug then
+		local r = parse_tsv(TSV_DIR .. "/" .. fn)
+		if r then
+			local cat = CATEGORY[slug] or "Z. (uncategorized)"
+			results[cat] = results[cat] or {}
+			results[cat][slug] = results[cat][slug] or {}
+			results[cat][slug][mode] = r
+			all_formats[slug] = true
+		end
+	end
+end
+p:close()
+
+-- Emit markdown
+io.write("# Corruption Detection Sweep — 2026-05-27\n\n")
+io.write("Detection rates measured by `scripts/corruption-experiment` against ")
+io.write("a freshly-built `validate` binary, 100 trials per (format, mode), seed 42.\n\n")
+io.write("- **sniper**  — single-bit flip at a random byte offset\n")
+io.write("- **bolter**  — single byte XOR'd with `0xFF` (flips all 8 bits of one byte)\n")
+io.write("- **shotgun** — overwrite 4096 consecutive bytes with random data\n\n")
+io.write("Confidence intervals are 95% Wilson half-widths. `n/a` means the fixture was too small for that mode (shotgun needs ≥4096 bytes).\n\n")
+
+local cat_order = {}
+for cat in pairs(results) do cat_order[#cat_order + 1] = cat end
+table.sort(cat_order)
+
+for _, cat in ipairs(cat_order) do
+	io.write("## " .. cat .. "\n\n")
+	io.write("| Format | File | Size | sniper | bolter | shotgun |\n")
+	io.write("|---|---|---:|---:|---:|---:|\n")
+	local slugs = {}
+	for s in pairs(results[cat]) do slugs[#slugs + 1] = s end
+	table.sort(slugs)
+	for _, slug in ipairs(slugs) do
+		local row = results[cat][slug]
+		local any = row.sniper or row.bolter or row.shotgun
+		local file = any and any.file or "?"
+		local sz = any and any.filesize or 0
+		local function cell(mode)
+			local r = row[mode]
+			if not r or r.n == 0 then return "n/a" end
+			local pct = (r.k / r.n) * 100
+			local radius = wilson_radius(r.k, r.n) * 100
+			return string.format("%.1f%% ±%.1f", pct, radius)
+		end
+		io.write(string.format("| `%s` | `%s` | %s | %s | %s | %s |\n",
+			slug, file, sz >= 1024 and (math.floor(sz/1024) .. " KB") or (sz .. " B"),
+			cell("sniper"), cell("bolter"), cell("shotgun")))
+	end
+	io.write("\n")
+end
+
+io.write("---\n\n")
+io.write("Reproduce: `scripts/corruption-sweep-categories --count 100 --seed 42`\n")
