@@ -7,8 +7,7 @@
 //! - V1 R2: 40-bit RC4 (PDF 1.3)
 //! - V2 R3: Variable-length RC4 up to 128-bit (PDF 1.4)
 //! - V4 R4: AES-128 or RC4-128 (PDF 1.5+)
-//!
-//! Note: V5 R5/R6 (AES-256, PDF 2.0) is not yet supported.
+//! - V5 R5/R6: AES-256 (PDF 2.0) — empty user password (Algorithm 2.A/2.B)
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
