@@ -35,11 +35,19 @@ pub const EncryptionParams = struct {
     document_id: [16]u8, // First element of /ID array
     use_aes: bool, // True if using AES (V4 with /CFM /AESV2)
 
+    // V5 (AES-256, R5/R6) only — populated when version == 5; defaults keep
+    // V1/2/4 callers and existing struct literals unchanged.
+    /// Full 48-byte /U: hash[0..32] ++ Validation Salt[32..40] ++ Key Salt[40..48].
+    u_full: [48]u8 = [_]u8{0} ** 48,
+    /// 32-byte /UE (User Encryption key) — AES-256-CBC(IV=0,no-pad) decrypts to the file key.
+    ue: [32]u8 = [_]u8{0} ** 32,
+
     /// Check if encryption is supported
     pub fn isSupported(self: EncryptionParams) bool {
         return switch (self.version) {
             1, 2 => self.revision == 2 or self.revision == 3,
             4 => self.revision == 4,
+            5 => self.revision == 5 or self.revision == 6,
             else => false,
         };
     }
@@ -160,7 +168,7 @@ pub fn parseEncryptionParams(data: []const u8) ?EncryptionParams {
         return null;
     }
 
-    // Parse /U (user key) - 32 bytes
+    // Parse /U (user key). V1/2/4: 32 bytes. V5: 48 bytes (hash ++ salts).
     if (findDictValue(enc_dict, "/U")) |v| {
         if (parseStringValue(enc_dict, v)) |parsed| {
             const str = parsed.slice();
@@ -169,6 +177,9 @@ pub fn parseEncryptionParams(data: []const u8) ?EncryptionParams {
             } else {
                 return null;
             }
+            if (params.version == 5 and str.len >= 48) {
+                @memcpy(&params.u_full, str[0..48]);
+            }
         } else {
             return null;
         }
@@ -176,17 +187,36 @@ pub fn parseEncryptionParams(data: []const u8) ?EncryptionParams {
         return null;
     }
 
-    // Check for AES (/CFM /AESV2)
+    // Parse /UE (V5 only) — 32-byte intermediate the file key is unwrapped from.
+    if (params.version == 5) {
+        if (findDictValue(enc_dict, "/UE")) |v| {
+            if (parseStringValue(enc_dict, v)) |parsed| {
+                const str = parsed.slice();
+                if (str.len >= 32) {
+                    @memcpy(&params.ue, str[0..32]);
+                } else {
+                    return null;
+                }
+            } else {
+                return null;
+            }
+        } else {
+            return null;
+        }
+    }
+
+    // Check for AES. AESV2 = V4 AES-128; AESV3 = V5 AES-256.
     if (std.mem.indexOf(u8, enc_dict, "/AESV2") != null or
         std.mem.indexOf(u8, enc_dict, "/AESV3") != null)
     {
         params.use_aes = true;
     }
 
-    // Parse document ID from trailer
+    // Parse document ID from trailer. Required for V1/2/4 key derivation; V5
+    // key derivation does not use it, so its absence is not fatal there.
     if (parseDocumentId(data)) |id| {
         params.document_id = id;
-    } else {
+    } else if (params.version != 5) {
         return null;
     }
 
@@ -801,4 +831,31 @@ test "thread-safety: concurrent computeEncryptionKey calls" {
     for (&contexts) |*ctx| {
         try std.testing.expect(ctx.success);
     }
+}
+
+test "parseEncryptionParams: V5/R6 AES-256 fixture parses U(48)/UE(32) and isSupported" {
+    const pdf = @embedFile("fixtures/encrypted_v5r6_aes256.pdf");
+    const params = parseEncryptionParams(pdf) orelse return error.ParseFailed;
+    try std.testing.expectEqual(@as(u8, 5), params.version);
+    try std.testing.expectEqual(@as(u8, 6), params.revision);
+    try std.testing.expect(params.use_aes);
+    try std.testing.expect(params.isSupported());
+    // u_full must be non-zero (48-byte /U: hash ++ validation salt ++ key salt).
+    var u_nonzero = false;
+    for (params.u_full) |b| {
+        if (b != 0) {
+            u_nonzero = true;
+            break;
+        }
+    }
+    try std.testing.expect(u_nonzero);
+    // /UE must be non-zero (32-byte user encryption key blob).
+    var ue_nonzero = false;
+    for (params.ue) |b| {
+        if (b != 0) {
+            ue_nonzero = true;
+            break;
+        }
+    }
+    try std.testing.expect(ue_nonzero);
 }
