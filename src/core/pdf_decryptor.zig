@@ -466,6 +466,87 @@ fn verifyV5UserPassword(allocator: Allocator, params: EncryptionParams, password
 }
 
 
+/// AES-256-CBC decrypt, no IV prefix, no padding removal. Used to unwrap the
+/// V5 file key from /UE (ISO 32000-2 Algorithm 2.A uses a zero IV and the
+/// result is exactly 32 bytes, no PKCS#7). Writes plaintext into `out`.
+fn aes256CbcDecryptNoPad(out: []u8, data: []const u8, key: [32]u8, iv: [16]u8) void {
+    const Aes256 = std.crypto.core.aes.Aes256;
+    var ctx = Aes256.initDec(key);
+    var prev: [16]u8 = iv;
+    var i: usize = 0;
+    while (i < data.len) : (i += 16) {
+        var block: [16]u8 = undefined;
+        @memcpy(&block, data[i..][0..16]);
+        var dec: [16]u8 = undefined;
+        ctx.decrypt(&dec, &block);
+        for (0..16) |j| out[i + j] = dec[j] ^ prev[j];
+        prev = block;
+    }
+}
+
+/// Retrieve the 32-byte V5 file encryption key via ISO 32000-2 Algorithm 2.A.
+/// Verifies the user password first; then the intermediate key =
+/// hash(password ++ Key Salt /U[40..48]) is the AES-256 key that decrypts /UE
+/// (zero IV, no padding) into the file key. Returns null if the password is
+/// wrong or unsupported.
+fn retrieveV5FileKey(allocator: Allocator, params: EncryptionParams, password: []const u8) ?[32]u8 {
+    if (!verifyV5UserPassword(allocator, params, password)) return null;
+    const key_salt = params.u_full[40..48];
+    const intermediate = computeV5Hash(allocator, params, password, key_salt) catch return null;
+    var file_key: [32]u8 = undefined;
+    const zero_iv = [_]u8{0} ** 16;
+    aes256CbcDecryptNoPad(&file_key, &params.ue, intermediate, zero_iv);
+    return file_key;
+}
+
+/// Try the empty user password against a V5 (AES-256) document, returning the
+/// 32-byte file encryption key on success. The caller decrypts each stream
+/// with decryptStreamV5 using this key. Returns null if the empty password
+/// does not unlock the document.
+pub fn tryEmptyPasswordV5(allocator: Allocator, params: EncryptionParams) ?[32]u8 {
+    if (params.version != 5 or !params.isSupported()) return null;
+    return retrieveV5FileKey(allocator, params, "");
+}
+
+/// Decrypt a V5 (AES-256) stream. Unlike V1/2/4 there is no per-object key
+/// derivation: every stream uses the file key directly. Layout is a 16-byte
+/// IV prefix followed by AES-256-CBC ciphertext with PKCS#7 padding.
+pub fn decryptStreamV5(allocator: Allocator, encrypted_data: []const u8, file_key: [32]u8) ![]u8 {
+    if (encrypted_data.len < 16) return error.DataTooShort;
+    const iv = encrypted_data[0..16];
+    const ciphertext = encrypted_data[16..];
+    if (ciphertext.len == 0 or ciphertext.len % 16 != 0) return error.InvalidPadding;
+
+    const result = try allocator.alloc(u8, ciphertext.len);
+    errdefer allocator.free(result);
+
+    const Aes256 = std.crypto.core.aes.Aes256;
+    var aes = Aes256.initDec(file_key);
+    var prev_block: [16]u8 = iv.*;
+    var i: usize = 0;
+    while (i < ciphertext.len) : (i += 16) {
+        var block: [16]u8 = undefined;
+        @memcpy(&block, ciphertext[i..][0..16]);
+        var dec: [16]u8 = undefined;
+        aes.decrypt(&dec, &block);
+        for (0..16) |j| result[i + j] = dec[j] ^ prev_block[j];
+        prev_block = block;
+    }
+
+    // Remove PKCS#7 padding.
+    const pad_len = result[result.len - 1];
+    if (pad_len > 16 or pad_len == 0) return error.InvalidPadding;
+    for (result[result.len - pad_len ..]) |b| {
+        if (b != pad_len) return error.InvalidPadding;
+    }
+    const unpadded_len = result.len - pad_len;
+    const final_result = try allocator.alloc(u8, unpadded_len);
+    @memcpy(final_result, result[0..unpadded_len]);
+    allocator.free(result);
+    return final_result;
+}
+
+
 pub fn decryptStream(
     allocator: Allocator,
     encrypted_data: []const u8,

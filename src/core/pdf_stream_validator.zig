@@ -144,9 +144,16 @@ pub fn validatePdfFlateStreams(
 	var enc_key_len: u8 = 0;
 	var enc_use_aes = false;
 	var have_key = false;
+	var enc_v5_key: [32]u8 = undefined;
+	var have_v5_key = false;
 	if (is_encrypted) key_blk: {
 		const params = pdf_decryptor.parseEncryptionParams(pdf_data) orelse break :key_blk;
 		if (!params.isSupported()) break :key_blk;
+		if (params.version == 5) {
+			enc_v5_key = pdf_decryptor.tryEmptyPasswordV5(allocator, params) orelse break :key_blk;
+			have_v5_key = true;
+			break :key_blk;
+		}
 		const r = pdf_decryptor.tryEmptyPassword(params);
 		if (!r.success) break :key_blk;
 		enc_key = r.encryption_key orelse break :key_blk;
@@ -189,14 +196,19 @@ pub fn validatePdfFlateStreams(
 		const raw: bool = false;
 
 		if (is_encrypted) {
-			if (!have_key) {
+			if (!have_key and !have_v5_key) {
 				// Encrypted but no usable key (unsupported handler / non-empty
 				// password). Keep legacy skip semantics — no false positive.
 				skipped_encrypted_count += 1;
 				continue;
 			}
-			// Decrypt → inflate. On success, count and move on.
-			if (pdf_decryptor.decryptStream(allocator, raw_bytes, enc_key[0..enc_key_len], s.object_num, 0, enc_use_aes)) |dec| {
+			// Decrypt → inflate. On success, count and move on. V5 (AES-256)
+			// uses the file key directly; V1/2/4 derive a per-object key.
+			const dec_opt = if (have_v5_key)
+				pdf_decryptor.decryptStreamV5(allocator, raw_bytes, enc_v5_key)
+			else
+				pdf_decryptor.decryptStream(allocator, raw_bytes, enc_key[0..enc_key_len], s.object_num, 0, enc_use_aes);
+			if (dec_opt) |dec| {
 				defer allocator.free(dec);
 				var lenient_used = false;
 				if (zlib.inflateStreamValidateLenient(dec, MAX_DECOMPRESSED_BYTES, raw, &lenient_used)) |produced| {
@@ -720,4 +732,18 @@ test "validatePdfFlateStreams: encrypted PDF skips non-excluded FlateDecode stre
 	// Encrypted PDF residual streams MUST be reported via skipped_encrypted
 	// (not silently lumped into skipped_already_validated).
 	try testing.expectEqual(@as(u32, 1), result.skipped_encrypted);
+}
+
+test "validatePdfFlateStreams: encrypted AES-256 (V5/R6) PDF validates streams (Bug #64)" {
+	const allocator = std.testing.allocator;
+	const pdf = @embedFile("fixtures/encrypted_v5r6_aes256.pdf");
+	var excluded: std.AutoHashMapUnmanaged(u32, void) = .{};
+	defer excluded.deinit(allocator);
+
+	const result = validatePdfFlateStreams(allocator, pdf, &excluded);
+	try std.testing.expect(result.total_flate_streams > 0);
+	try std.testing.expect(result.validated > 0);
+	try std.testing.expectEqual(@as(u32, 0), result.failed);
+	// V5 streams are now decrypted via the file key — no residual encrypted skips.
+	try std.testing.expectEqual(@as(u32, 0), result.skipped_encrypted);
 }
