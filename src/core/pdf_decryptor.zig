@@ -337,6 +337,135 @@ fn verifyUserPassword(params: EncryptionParams, key: []const u8) bool {
 }
 
 /// Decrypt a stream with the given key and object/generation numbers
+/// AES-128-CBC encrypt, no padding. data.len must be a multiple of 16.
+/// Used only by the R6 Algorithm 2.B password hash. Writes ciphertext to `out`.
+fn aes128CbcEncryptNoPad(out: []u8, data: []const u8, key: [16]u8, iv: [16]u8) void {
+    const Aes128 = std.crypto.core.aes.Aes128;
+    var ctx = Aes128.initEnc(key);
+    var prev: [16]u8 = iv;
+    var i: usize = 0;
+    while (i < data.len) : (i += 16) {
+        var block: [16]u8 = undefined;
+        for (0..16) |j| block[j] = data[i + j] ^ prev[j];
+        var enc: [16]u8 = undefined;
+        ctx.encrypt(&enc, &block);
+        @memcpy(out[i..][0..16], &enc);
+        prev = enc;
+    }
+}
+
+/// PDF 2.0 (R6) password hash — ISO 32000-2 §7.6.4.3.4, "Algorithm 2.B".
+/// `udata` is empty for the user-password path. Returns the 32-byte digest.
+///
+/// Technique: seed K = SHA-256(password ++ salt ++ udata), then iterate:
+/// build K1 = (password ++ K ++ udata) × 64, AES-128-CBC-encrypt it with
+/// key=K[0..16]/IV=K[16..32], pick SHA-256/384/512 by (sum(E[0..16]) mod 3),
+/// and rehash. Stop after ≥64 rounds once the last ciphertext byte ≤ round−32.
+fn hash2B(allocator: Allocator, password: []const u8, salt: []const u8, udata: []const u8) ![32]u8 {
+    const sha2 = std.crypto.hash.sha2;
+
+    var k_buf: [64]u8 = undefined; // holds up to a SHA-512 digest
+    var k_len: usize = 32;
+    {
+        var h = sha2.Sha256.init(.{});
+        h.update(password);
+        h.update(salt);
+        h.update(udata);
+        var d: [32]u8 = undefined;
+        h.final(&d);
+        @memcpy(k_buf[0..32], &d);
+    }
+
+    const unit_max = password.len + 64 + udata.len;
+    const k1 = try allocator.alloc(u8, unit_max * 64);
+    defer allocator.free(k1);
+    const e = try allocator.alloc(u8, unit_max * 64);
+    defer allocator.free(e);
+
+    var round: usize = 0;
+    while (true) {
+        // K1 = (password ++ K[0..k_len] ++ udata) repeated 64 times.
+        const unit_len = password.len + k_len + udata.len;
+        var off: usize = 0;
+        @memcpy(k1[off..][0..password.len], password);
+        off += password.len;
+        @memcpy(k1[off..][0..k_len], k_buf[0..k_len]);
+        off += k_len;
+        @memcpy(k1[off..][0..udata.len], udata);
+        var n: usize = 1;
+        while (n < 64) : (n += 1) {
+            @memcpy(k1[n * unit_len ..][0..unit_len], k1[0..unit_len]);
+        }
+        const k1_len = unit_len * 64;
+
+        var key16: [16]u8 = undefined;
+        @memcpy(&key16, k_buf[0..16]);
+        var iv16: [16]u8 = undefined;
+        @memcpy(&iv16, k_buf[16..32]);
+        aes128CbcEncryptNoPad(e[0..k1_len], k1[0..k1_len], key16, iv16);
+
+        var sum: u32 = 0;
+        for (e[0..16]) |b| sum += b;
+        switch (sum % 3) {
+            0 => {
+                var h = sha2.Sha256.init(.{});
+                h.update(e[0..k1_len]);
+                var d: [32]u8 = undefined;
+                h.final(&d);
+                @memcpy(k_buf[0..32], &d);
+                k_len = 32;
+            },
+            1 => {
+                var h = sha2.Sha384.init(.{});
+                h.update(e[0..k1_len]);
+                var d: [48]u8 = undefined;
+                h.final(&d);
+                @memcpy(k_buf[0..48], &d);
+                k_len = 48;
+            },
+            else => {
+                var h = sha2.Sha512.init(.{});
+                h.update(e[0..k1_len]);
+                var d: [64]u8 = undefined;
+                h.final(&d);
+                @memcpy(k_buf[0..64], &d);
+                k_len = 64;
+            },
+        }
+
+        round += 1;
+        if (round >= 64 and e[k1_len - 1] <= round - 32) break;
+    }
+
+    var out: [32]u8 = undefined;
+    @memcpy(&out, k_buf[0..32]);
+    return out;
+}
+
+/// Compute the V5 password hash with `salt`, dispatching by revision:
+/// R5 = SHA-256(password ++ salt); R6 = Algorithm 2.B. udata is empty (the
+/// user-password path). Returns the 32-byte digest.
+fn computeV5Hash(allocator: Allocator, params: EncryptionParams, password: []const u8, salt: []const u8) ![32]u8 {
+    if (params.revision >= 6) {
+        return hash2B(allocator, password, salt, "");
+    }
+    var h = std.crypto.hash.sha2.Sha256.init(.{});
+    h.update(password);
+    h.update(salt);
+    var d: [32]u8 = undefined;
+    h.final(&d);
+    return d;
+}
+
+/// Verify a V5 user password: hash(password ++ Validation Salt /U[32..40])
+/// must equal the stored hash /U[0..32].
+fn verifyV5UserPassword(allocator: Allocator, params: EncryptionParams, password: []const u8) bool {
+    const validation_salt = params.u_full[32..40];
+    const computed = computeV5Hash(allocator, params, password, validation_salt) catch return false;
+    return std.mem.eql(u8, &computed, params.u_full[0..32]);
+}
+
+
 pub fn decryptStream(
     allocator: Allocator,
     encrypted_data: []const u8,
@@ -858,4 +987,37 @@ test "parseEncryptionParams: V5/R6 AES-256 fixture parses U(48)/UE(32) and isSup
         }
     }
     try std.testing.expect(ue_nonzero);
+}
+
+test "verifyV5UserPassword: empty password validates against V5/R6 fixture (Algorithm 2.B)" {
+    // End-to-end known-answer test for hash2B: the empty user password must
+    // hash (via Algorithm 2.B with the Validation Salt) to the stored /U hash.
+    const pdf = @embedFile("fixtures/encrypted_v5r6_aes256.pdf");
+    const params = parseEncryptionParams(pdf) orelse return error.ParseFailed;
+    try std.testing.expectEqual(@as(u8, 6), params.revision);
+    try std.testing.expect(verifyV5UserPassword(std.testing.allocator, params, ""));
+    // A wrong password must NOT validate (proves hash2B discriminates).
+    try std.testing.expect(!verifyV5UserPassword(std.testing.allocator, params, "wrong"));
+}
+
+test "computeV5Hash: R5 path is plain SHA-256(password ++ salt)" {
+    const sha2 = std.crypto.hash.sha2;
+    const params = EncryptionParams{
+        .version = 5,
+        .revision = 5,
+        .key_length = 32,
+        .permissions = -4,
+        .owner_key = undefined,
+        .user_key = undefined,
+        .document_id = undefined,
+        .use_aes = true,
+    };
+    const salt = "abcdefgh";
+    const got = try computeV5Hash(std.testing.allocator, params, "pw", salt);
+    var want: [32]u8 = undefined;
+    var h = sha2.Sha256.init(.{});
+    h.update("pw");
+    h.update(salt);
+    h.final(&want);
+    try std.testing.expectEqualSlices(u8, &want, &got);
 }
