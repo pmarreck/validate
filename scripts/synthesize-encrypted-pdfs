@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Regenerate encrypted PDF fixtures used by Bug #64 (per-stream decryption) tests.
+# Requires qpdf on PATH (qpdf 12.x). Empty user+owner password (the common
+# owner-protected case that opens without prompting).
+#
+# Fixtures land in src/core/fixtures/ and are @embedFile'd by
+# pdf_stream_validator.zig tests.
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# Base is a small, image-rich PDF with many FlateDecode content streams.
+# (alice = 1.7 MB; keeps the embedded test fixtures lean vs the 22 MB nasa scan.)
+SRC="$ROOT/ground_truth_examples/pdf/alice_in_wonderland_illustrated.pdf"
+DST="$ROOT/src/core/fixtures"
+
+if ! command -v qpdf >/dev/null 2>&1; then
+	echo "ERROR: qpdf not on PATH (need qpdf 12.x). Try: nix shell nixpkgs#qpdf" >&2
+	exit 1
+fi
+if [ ! -f "$SRC" ]; then
+	echo "ERROR: base PDF not found: $SRC" >&2
+	exit 1
+fi
+
+mkdir -p "$DST"
+
+# V=2 / R=3 — RC4-128. qpdf 11+ refuses to emit RC4 (weak crypto) without an
+# explicit opt-in; we deliberately want a legacy-handler fixture to test the
+# RC4 decrypt path. --allow-weak-crypto is a GLOBAL option and must precede
+# the --encrypt block (it is not one of the 128-bit encryption sub-options).
+qpdf --allow-weak-crypto --encrypt --user-password= --owner-password= --bits=128 --use-aes=n -- \
+	"$SRC" "$DST/encrypted_v2r3_rc4_128.pdf"
+
+# V=4 / R=4 — AES-128
+qpdf --encrypt --user-password= --owner-password= --bits=128 --use-aes=y -- \
+	"$SRC" "$DST/encrypted_v4r4_aes128.pdf"
+
+# V=5 / R=6 — AES-256 (PDF 2.0). qpdf 12.x emits R=6 for 256-bit.
+qpdf --encrypt --user-password= --owner-password= --bits=256 -- \
+	"$SRC" "$DST/encrypted_v5r6_aes256.pdf"
+
+# V=5 / R=5 (deprecated AES-256) is no longer emitted by qpdf >=11; synthesize
+# separately via an older pinned qpdf if/when Phase 2 needs it.
+
+echo "Synthesized encrypted fixtures:"
+for f in encrypted_v2r3_rc4_128 encrypted_v4r4_aes128 encrypted_v5r6_aes256; do
+	printf '  %-28s ' "$f.pdf"
+	qpdf --show-encryption "$DST/$f.pdf" 2>/dev/null | grep -E '^(R|V) =' | tr '\n' ' '
+	echo
+done

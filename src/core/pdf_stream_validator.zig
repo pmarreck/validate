@@ -17,6 +17,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const zlib = @import("zlib.zig");
+const pdf_decryptor = @import("pdf_decryptor.zig");
 const pdf_xref_parser = @import("pdf_xref_parser.zig");
 
 // ---------------------------------------------------------------------------
@@ -131,17 +132,28 @@ pub fn validatePdfFlateStreams(
 	};
 	defer allocator.free(streams);
 
-	// Encrypted PDFs (e.g. /Encrypt with /Filter /Standard) re-encrypt their
-	// FlateDecode stream contents *after* the deflate compression. The bytes
-	// stored on disk are NOT a valid zlib stream — feeding them to inflate()
-	// produces a data error and falsely flags an otherwise-healthy file as
-	// corrupt. The image / font / embedded-file validators already handle
-	// decryption explicitly via pdf_decryptor and validate the streams they
-	// own; the residual sweep here has no decryption path, so we skip its
-	// non-excluded streams in encrypted PDFs rather than guarantee a false
-	// positive. (Reproducer: S2000_C.pdf, an encrypted Yamaha service manual
-	// that opens fine in Preview/QuickLook.)
+	// Bug #64: encrypted PDFs re-encrypt their FlateDecode stream contents
+	// *after* deflate compression, so the on-disk bytes are not a valid zlib
+	// stream. Rather than skip every stream (the old behavior), derive the
+	// document encryption key once — empty-password / owner-protected-only is
+	// the common case — and decrypt each stream before inflating it. If the
+	// handler is unsupported or the empty password fails, fall back to the
+	// legacy skip semantics so we never emit a false positive.
 	const is_encrypted = pdfHasEncryptEntry(pdf_data);
+	var enc_key: [16]u8 = undefined;
+	var enc_key_len: u8 = 0;
+	var enc_use_aes = false;
+	var have_key = false;
+	if (is_encrypted) key_blk: {
+		const params = pdf_decryptor.parseEncryptionParams(pdf_data) orelse break :key_blk;
+		if (!params.isSupported()) break :key_blk;
+		const r = pdf_decryptor.tryEmptyPassword(params);
+		if (!r.success) break :key_blk;
+		enc_key = r.encryption_key orelse break :key_blk;
+		enc_key_len = r.key_length;
+		enc_use_aes = r.use_aes;
+		have_key = true;
+	}
 
 	for (streams) |s| {
 		total += 1;
@@ -149,15 +161,6 @@ pub fn validatePdfFlateStreams(
 		// Skip streams already validated by image / font / embedded-file paths.
 		if (excluded_object_nums.contains(s.object_num)) {
 			skipped += 1;
-			continue;
-		}
-
-		if (is_encrypted) {
-			// Bytes are post-encryption; can't be inflated without the key.
-			// Tracked separately from skipped_already_validated so the caller
-			// can surface a specific INFO ("N residual streams skipped —
-			// encrypted PDF") rather than silently rolling them in.
-			skipped_encrypted_count += 1;
 			continue;
 		}
 
@@ -175,24 +178,49 @@ pub fn validatePdfFlateStreams(
 			continue;
 		}
 
-		const compressed = pdf_data[s.stream_start..s.stream_end];
+		const raw_bytes = pdf_data[s.stream_start..s.stream_end];
 
 		// A valid zlib stream begins with a 2-byte header whose first byte's
 		// low 4 bits are 8 (deflate method). We do not reject on header shape
-		// alone, because encrypted PDFs store FlateDecode streams that are
-		// re-encrypted (no zlib header). Only actual inflate-time errors (CRC
-		// / data / truncation) are treated as corruption.
-		//
-		// Use the lenient validator: many PDF producers (notably Adobe
-		// InDesign) emit FlateDecode streams whose deflate body is intact
-		// but whose zlib wrapper is missing the trailing Adler-32 checksum.
-		// All major PDF readers tolerate this. The lenient path validates
-		// the header, then retries as raw deflate on the body — genuine
-		// corruption still fails because the deflate body itself must
-		// terminate cleanly.
+		// alone. The lenient validator tolerates the Adobe-InDesign quirk of a
+		// FlateDecode body with a missing trailing Adler-32 — genuine
+		// corruption still fails because the deflate body must terminate
+		// cleanly.
 		const raw: bool = false;
+
+		if (is_encrypted) {
+			if (!have_key) {
+				// Encrypted but no usable key (unsupported handler / non-empty
+				// password). Keep legacy skip semantics — no false positive.
+				skipped_encrypted_count += 1;
+				continue;
+			}
+			// Decrypt → inflate. On success, count and move on.
+			if (pdf_decryptor.decryptStream(allocator, raw_bytes, enc_key[0..enc_key_len], s.object_num, 0, enc_use_aes)) |dec| {
+				defer allocator.free(dec);
+				var lenient_used = false;
+				if (zlib.inflateStreamValidateLenient(dec, MAX_DECOMPRESSED_BYTES, raw, &lenient_used)) |produced| {
+					validated += 1;
+					if (lenient_used) validated_lenient += 1;
+					bytes_verified += produced;
+					continue;
+				} else |_| {
+					// Decrypted bytes don't form a valid zlib stream. The most
+					// common cause is a cross-reference stream, which ISO 32000
+					// §7.5.8.2 mandates is NEVER encrypted. Fall through to the
+					// raw-bytes attempt below: it validates the stream if it is
+					// genuinely unencrypted, and only flags it as failed if the
+					// raw bytes also fail to inflate (true corruption). This
+					// preserves the zero-false-positive guarantee.
+				}
+			} else |_| {
+				// decryptStream errored outright; fall through to raw attempt.
+			}
+		}
+
+		// Unencrypted PDF, or encrypted-PDF fallback (suspected xref stream).
 		var lenient_used: bool = false;
-		const result = zlib.inflateStreamValidateLenient(compressed, MAX_DECOMPRESSED_BYTES, raw, &lenient_used);
+		const result = zlib.inflateStreamValidateLenient(raw_bytes, MAX_DECOMPRESSED_BYTES, raw, &lenient_used);
 		if (result) |produced| {
 			validated += 1;
 			if (lenient_used) validated_lenient += 1;
