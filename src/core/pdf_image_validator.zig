@@ -986,18 +986,28 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
     var is_encrypted = false;
     var decryption_succeeded = false;
     var encryption_key: ?[16]u8 = null;
+    var v5_file_key: ?[32]u8 = null;
     var key_length: u8 = 0;
     var use_aes = false;
 
     if (pdf_decryptor.parseEncryptionParams(pdf_data)) |enc_params| {
         is_encrypted = true;
-        const decrypt_result = pdf_decryptor.tryEmptyPassword(enc_params);
-        if (decrypt_result.success) {
-            decryption_succeeded = true;
-            encryption_key = decrypt_result.encryption_key;
-            key_length = decrypt_result.key_length;
-            use_aes = decrypt_result.use_aes;
+        if (enc_params.version == 5) {
+            // V5 (AES-256): unwrap the file key from /UE via empty user password.
+            if (pdf_decryptor.tryEmptyPasswordV5(allocator, enc_params)) |fk| {
+                decryption_succeeded = true;
+                v5_file_key = fk;
+            }
         } else {
+            const decrypt_result = pdf_decryptor.tryEmptyPassword(enc_params);
+            if (decrypt_result.success) {
+                decryption_succeeded = true;
+                encryption_key = decrypt_result.encryption_key;
+                key_length = decrypt_result.key_length;
+                use_aes = decrypt_result.use_aes;
+            }
+        }
+        if (!decryption_succeeded) {
             // Encryption present but requires password - can't validate images
             return .{
                 .valid = true, // Not a validation failure, just can't verify
@@ -1021,6 +1031,7 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
             images,
             pdf_data,
             encryption_key,
+            v5_file_key,
             key_length,
             use_aes,
             decryption_succeeded,
@@ -1061,7 +1072,15 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
         defer if (decrypted_data) |d| allocator.free(d);
 
         if (decryption_succeeded) {
-            if (encryption_key) |key| {
+            if (v5_file_key) |fk| {
+                decrypted_data = pdf_decryptor.decryptStreamV5(allocator, raw_data, fk) catch null;
+                if (decrypted_data) |d| {
+                    raw_data = d;
+                } else {
+                    skipped += 1;
+                    continue;
+                }
+            } else if (encryption_key) |key| {
                 decrypted_data = pdf_decryptor.decryptStream(
                     allocator,
                     raw_data,
@@ -1289,6 +1308,7 @@ const ParallelContext = struct {
     images: []const PdfImageInfo,
     pdf_data: []const u8,
     encryption_key: ?[16]u8,
+    v5_file_key: ?[32]u8,
     key_length: u8,
     use_aes: bool,
     decryption_succeeded: bool,
@@ -1333,7 +1353,12 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
 
     // Decrypt if needed
     if (ctx.decryption_succeeded) {
-        if (ctx.encryption_key) |key| {
+        if (ctx.v5_file_key) |fk| {
+            const decrypted = pdf_decryptor.decryptStreamV5(allocator, raw_data, fk) catch {
+                return .{ .result = null, .status = .skipped };
+            };
+            raw_data = decrypted;
+        } else if (ctx.encryption_key) |key| {
             const decrypted = pdf_decryptor.decryptStream(
                 allocator,
                 raw_data,
@@ -1524,6 +1549,7 @@ fn validatePdfImagesParallel(
     images: []const PdfImageInfo,
     pdf_data: []const u8,
     encryption_key: ?[16]u8,
+    v5_file_key: ?[32]u8,
     key_length: u8,
     use_aes: bool,
     decryption_succeeded: bool,
@@ -1539,6 +1565,7 @@ fn validatePdfImagesParallel(
         .images = images,
         .pdf_data = pdf_data,
         .encryption_key = encryption_key,
+        .v5_file_key = v5_file_key,
         .key_length = key_length,
         .use_aes = use_aes,
         .decryption_succeeded = decryption_succeeded,
@@ -1848,4 +1875,16 @@ test "decompressFlate recovers from missing zlib trailer (Adobe InDesign quirk)"
         .data_error, .corrupt => return error.TestExpectedRecoveryButGotError,
         .exceeded_limit, .alloc_error => return error.TestEnvironmentIssue,
     }
+}
+
+test "validatePdfImages: V5/R6 AES-256 PDF decrypts images (Bug #64)" {
+    // Before the V5 wiring, validatePdfImages bailed on V5 with
+    // decryption_succeeded=false and skipped every image. Now it unwraps the
+    // file key and decrypts, so both flags must be true.
+    const allocator = std.testing.allocator;
+    const pdf = @embedFile("fixtures/encrypted_v5r6_aes256.pdf");
+    var result = try validatePdfImages(allocator, pdf);
+    defer result.deinit(allocator);
+    try std.testing.expect(result.is_encrypted);
+    try std.testing.expect(result.decryption_succeeded);
 }
