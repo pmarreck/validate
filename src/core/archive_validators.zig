@@ -1740,7 +1740,7 @@ pub fn validateZipDeepWithCentralDirectory(
         const local_uncompressed_size = readLe(u32, local_header[18..22]);
         const local_filename_len = readLe(u16, local_header[22..24]);
         const local_extra_len = readLe(u16, local_header[24..26]);
-        const local_flags = readLe(u16, local_header[0..2]);
+        const local_flags = readLe(u16, local_header[2..4]); // flags @ file offset 6-7 (header is post-signature)
 
         // Cross-validate central directory vs local file header fields
         if (local_compression != compression_method) {
@@ -6634,4 +6634,18 @@ test "RPM: source package (type=1) accepted" {
     @memcpy(buf[96 + sig_hdr.len + pad .. 96 + sig_hdr.len + pad + main_hdr.len], main_hdr);
     const result = validateRpmFromBuffer(buf);
     try std.testing.expect(result.is_valid);
+}
+
+test "ZIP: LFH flags-offset bug — version-needed bit 3 must not skip CRC check" {
+    // lfh_versionbit3_crc_bad.zip: LFH version-needed = 0x2D (bit 3 set) plus a
+    // deliberately-wrong LFH CRC. The pre-fix bug read general-purpose flags
+    // from local_header[0..2] (= version-needed), so has_data_descriptor saw
+    // bit 3 set and SKIPPED the CRC cross-check, wrongly validating the file.
+    // Reading flags from the correct offset (local_header[2..4] = 0) makes the
+    // CRC cross-check run and catch the mismatch.
+    const zip = @embedFile("fixtures/zip_tamper/lfh_versionbit3_crc_bad.zip");
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    try testing.expect(!result.is_valid);
+    if (result.error_code) |ec| try testing.expect(ec == .checksum_mismatch);
 }

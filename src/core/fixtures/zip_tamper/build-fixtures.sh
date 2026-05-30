@@ -4,7 +4,7 @@
 # corrupts ONE known field at a known offset so a specific cross-check can be
 # proven. Requires `zip` (nix-shell -p zip). Run from repo root.
 set -u
-DST="tests/fixtures/zip_tamper"
+DST="src/core/fixtures/zip_tamper"
 mkdir -p "$DST"
 
 TMP="$(mktemp -d)"
