@@ -496,6 +496,7 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
     // routes it to the verdict.
     var decryption_succeeded: bool = false;
     var encryption_key: ?[16]u8 = null;
+    var v5_file_key: ?[32]u8 = null;
     var key_length: u8 = 0;
     var use_aes: bool = false;
     var encryption_present: bool = false;
@@ -503,14 +504,24 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
 
     if (pdf_decryptor.parseEncryptionParams(pdf_data)) |enc_params| {
         encryption_present = true;
-        const decrypt_result = pdf_decryptor.tryEmptyPassword(enc_params);
-        if (decrypt_result.success) {
-            decryption_succeeded = true;
-            encryption_key = decrypt_result.encryption_key;
-            key_length = decrypt_result.key_length;
-            use_aes = decrypt_result.use_aes;
+        if (enc_params.version == 5) {
+            // V5 (AES-256): unwrap the file key from /UE via empty user password.
+            if (pdf_decryptor.tryEmptyPasswordV5(allocator, enc_params)) |fk| {
+                decryption_succeeded = true;
+                v5_file_key = fk;
+            } else {
+                skip_reason = "embedded font deep validation skipped — PDF encryption uses a non-empty password or unsupported variant; per-stream decryption unavailable";
+            }
         } else {
-            skip_reason = "embedded font deep validation skipped — PDF encryption uses a non-empty password or unsupported variant; per-stream decryption unavailable";
+            const decrypt_result = pdf_decryptor.tryEmptyPassword(enc_params);
+            if (decrypt_result.success) {
+                decryption_succeeded = true;
+                encryption_key = decrypt_result.encryption_key;
+                key_length = decrypt_result.key_length;
+                use_aes = decrypt_result.use_aes;
+            } else {
+                skip_reason = "embedded font deep validation skipped — PDF encryption uses a non-empty password or unsupported variant; per-stream decryption unavailable";
+            }
         }
     } else if (std.mem.indexOf(u8, pdf_data, "/Encrypt") != null) {
         // /Encrypt is declared but the encryption dictionary couldn't be
@@ -555,15 +566,14 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
         var decrypted_data: ?[]u8 = null;
         defer if (decrypted_data) |d| allocator.free(d);
         const stream_data: []const u8 = if (decryption_succeeded) blk_dec: {
-            const key = encryption_key.?;
-            const dec = pdf_decryptor.decryptStream(
-                allocator,
-                raw_stream,
-                key[0..key_length],
-                fnt.object_num,
-                fnt.gen_num,
-                use_aes,
-            ) catch null;
+            // V5 streams decrypt with the file key directly; V1/2/4 derive a
+            // per-object key. Both skip-on-failure (catch null) identically.
+            const dec = if (v5_file_key) |fk|
+                (pdf_decryptor.decryptStreamV5(allocator, raw_stream, fk) catch null)
+            else legacy: {
+                const key = encryption_key.?;
+                break :legacy (pdf_decryptor.decryptStream(allocator, raw_stream, key[0..key_length], fnt.object_num, fnt.gen_num, use_aes) catch null);
+            };
             if (dec) |d| {
                 decrypted_data = d;
                 break :blk_dec d;
