@@ -1750,7 +1750,11 @@ pub fn validateZipDeepWithCentralDirectory(
         // CRC/sizes may be zero in local header if data descriptor flag (bit 3) is set
         const has_data_descriptor = (local_flags & 0x0008) != 0;
         if (!has_data_descriptor) {
-            if (local_crc != 0 and stored_crc != 0 and local_crc != @as(u32, @intCast(stored_crc & 0xFFFFFFFF))) {
+            const stored_crc_u32 = @as(u32, @intCast(stored_crc & 0xFFFFFFFF));
+            // Fail on any CRC mismatch. The only legal both-zero case is a
+            // genuinely empty entry; otherwise a zeroed field is tamper. (Was a
+            // short-circuit that skipped the check whenever either side was 0.)
+            if (local_crc != stored_crc_u32 and !(local_crc == 0 and stored_crc_u32 == 0 and compressed_size == 0)) {
                 return ValidationResult.invalidCodeWithDepth(format, .checksum_mismatch, "ZIP CRC-32 mismatch (central vs local header)", .full);
             }
             if (local_compressed_size != 0 and compressed_size != 0 and
@@ -6644,6 +6648,18 @@ test "ZIP: LFH flags-offset bug — version-needed bit 3 must not skip CRC check
     // Reading flags from the correct offset (local_header[2..4] = 0) makes the
     // CRC cross-check run and catch the mismatch.
     const zip = @embedFile("fixtures/zip_tamper/lfh_versionbit3_crc_bad.zip");
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    try testing.expect(!result.is_valid);
+    if (result.error_code) |ec| try testing.expect(ec == .checksum_mismatch);
+}
+
+test "ZIP: zeroed local CRC must not bypass the CRC cross-check" {
+    // lfh_crc_zero.zip zeros the LFH CRC field. The pre-fix short-circuit
+    // (`if (local_crc != 0 and stored_crc != 0 ...)`) skipped the check when
+    // either side was zero, so the tampered file passed. The fix fails on any
+    // mismatch unless both are zero AND the entry is genuinely empty.
+    const zip = @embedFile("fixtures/zip_tamper/lfh_crc_zero.zip");
     var src = FileSource.fromBuffer(zip);
     const result = validateZipDeep(testing.allocator, &src);
     try testing.expect(!result.is_valid);
