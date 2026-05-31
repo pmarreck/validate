@@ -1606,6 +1606,7 @@ pub fn validateZipDeepWithCentralDirectory(
     }
 
     var entry_count: u64 = 0;
+    var extra_len_mismatch = false;
     var encrypted_entry_count: u64 = 0;
     var cdir_pos = central.offset;
     const max_entries: u64 = 100000;
@@ -1754,6 +1755,10 @@ pub fn validateZipDeepWithCentralDirectory(
             return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP general-purpose-flag mismatch (central vs local)", .full);
         }
 
+        // LFH vs CD extra-field length: OOXML/EPUB legitimately differ;
+        // record a non-fatal WARN (CLI --strict promotes to FAIL).
+        if (local_extra_len != extra_len) extra_len_mismatch = true;
+
         // CRC/sizes may be zero in local header if data descriptor flag (bit 3) is set
         const has_data_descriptor = (local_flags & 0x0008) != 0;
         if (!has_data_descriptor) {
@@ -1890,6 +1895,9 @@ pub fn validateZipDeepWithCentralDirectory(
         };
     }
 
+    if (extra_len_mismatch) {
+        return ValidationResult.okWithDepthAndWarning(format, .full, "ZIP extra-field length mismatch (central vs local)");
+    }
     return ValidationResult.okWithDepth(format, .full);
 }
 
@@ -6681,4 +6689,17 @@ test "ZIP: LFH general-purpose-flag mismatch with central directory must fail" {
     const result = validateZipDeep(testing.allocator, &src);
     try testing.expect(!result.is_valid);
     if (result.error_code) |ec| try testing.expect(ec == .invalid_value);
+}
+
+test "ZIP: asymmetric LFH/CD extra-field length is WARN, not FAIL (OOXML-style)" {
+    // lfh_cd_extra_mismatch.zip is a fully valid archive from `zip` (no -X):
+    // the local header carries a 28-byte UT+ux extra, the central directory a
+    // 24-byte UT-only extra. Office (OOXML) and EPUB produce the same legitimate
+    // divergence, so it must be a non-fatal WARN (CLI --strict promotes it to a
+    // FAIL), never an outright failure.
+    const zip = @embedFile("fixtures/zip_tamper/lfh_cd_extra_mismatch.zip");
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message != null);
 }
