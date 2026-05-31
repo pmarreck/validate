@@ -153,6 +153,20 @@ pub fn validatePem(file: *FileSource) ValidationResult {
 		// Skip leading whitespace
 		var i: usize = 0;
 		while (i < content.len and (content[i] == '\n' or content[i] == '\r')) : (i += 1) {}
+		// RFC 1421 / OpenSSL encapsulated headers (Proc-Type:, DEK-Info:) for
+		// password-encrypted / legacy keys sit between the BEGIN line and a
+		// blank line. They contain ':'/',' (not base64), so skip the header
+		// block up to its terminating blank line before the base64 check.
+		const first_nl = std.mem.indexOfScalarPos(u8, content, i, '\n') orelse content.len;
+		if (std.mem.indexOfScalar(u8, content[i..first_nl], ':') != null) {
+			while (i < content.len) {
+				const le = std.mem.indexOfScalarPos(u8, content, i, '\n') orelse content.len;
+				var line = content[i..le];
+				if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
+				i = if (le < content.len) le + 1 else le;
+				if (line.len == 0) break;
+			}
+		}
 		// Check that remaining content is valid base64
 		for (content[i..]) |b| {
 			if (!isBase64Byte(b)) {
@@ -995,6 +1009,36 @@ test "DER structural: valid ASN.1 sequence" {
 	const result = validateDer(&source);
 	try std.testing.expect(result.is_valid);
 	try std.testing.expectEqual(FileFormat.der, result.format);
+}
+
+test "PEM structural: encrypted key with RFC 1421 headers accepted" {
+	// Password-encrypted / legacy OpenSSL keys carry Proc-Type / DEK-Info
+	// encapsulated headers after the BEGIN line. validatePem must skip them
+	// before the base64 check (regression for Validate-GUI false positive on
+	// npm public-encrypt / parse-asn1 fixtures).
+	const pem_content =
+		"-----BEGIN RSA PRIVATE KEY-----\n" ++
+		"Proc-Type: 4,ENCRYPTED\n" ++
+		"DEK-Info: DES-EDE3-CBC,0123456789ABCDEF\n" ++
+		"\n" ++
+		"MIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Q\n" ++
+		"uKUpRKfFLfRYC9AIKjbJTWit+CqvjSFmbaY=\n" ++
+		"-----END RSA PRIVATE KEY-----\n";
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	const tmp_file = tmp_dir.dir.createFile(runtime.io(), "enc.pem", .{}) catch unreachable;
+	tmp_file.writePositionalAll(runtime.io(), pem_content, 0) catch unreachable;
+	tmp_file.close(runtime.io());
+
+	const real_path = runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "enc.pem") catch unreachable;
+	defer std.testing.allocator.free(real_path);
+	var source = FileSource.open(real_path) catch unreachable;
+	defer source.close();
+
+	const result = validatePem(&source);
+	try std.testing.expect(result.is_valid);
 }
 
 test "PEM structural: invalid base64 rejected" {

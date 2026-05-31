@@ -38,3 +38,7 @@ inbox
 zig-pkg/
 # Pre-upgrade lock backups.
 flake.lock.bak_*
+.git-old/
+.claude/
+result-win/
+.watchmanconfig
