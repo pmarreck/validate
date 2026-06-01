@@ -1901,6 +1901,22 @@ pub fn validateZipDeepWithCentralDirectory(
         return ValidationResult.invalidWithDepth(format, "No entries found", .full);
     }
 
+    // Phase 5: EOCD entry-count undercount. The loop is bounded by the
+    // EOCD-claimed count; a too-HIGH claim already fails (bad signature on a
+    // missing record). A too-LOW claim leaves trailing real CD records
+    // un-iterated and was silent. If, after iterating exactly central.entries
+    // records, the next 4 bytes are another CD header (PK\x01\x02) instead of
+    // the EOCD signature, the EOCD undercounts the central directory. Skip
+    // under ZIP64 (sentinel counts) and when capped by max_entries.
+    if (central.entries < 0xFFFF and entry_count == central.entries and entry_count < max_entries) {
+        file.seekTo(cdir_pos) catch return ValidationResult.invalidCodeWithDepth(format, .failed_to_seek, "post-CD position", .full);
+        var tail_sig: [4]u8 = undefined;
+        const tail_n = file.readAll(&tail_sig) catch 0;
+        if (tail_n == 4 and tail_sig[0] == 'P' and tail_sig[1] == 'K' and tail_sig[2] == 1 and tail_sig[3] == 2) {
+            return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP entry count mismatch (EOCD undercounts central directory)", .full);
+        }
+    }
+
     if (encrypted_entry_count > 0 and encrypted_entry_count == entry_count) {
         return ValidationResult{
             .format = format,
@@ -6742,4 +6758,16 @@ test "ZIP: LFH/CD extra-field content byte-flip is WARN, not FAIL" {
     const result = validateZipDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
     try testing.expect(result.warning_message != null);
+}
+
+test "ZIP: EOCD entry-count undercount must FAIL" {
+    // eocd_entry_count_low.zip has TWO central-directory records but its EOCD
+    // total_entries is forced to 1. After iterating the 1 claimed record, the
+    // next 4 bytes are another CD header (PK 01 02) instead of the EOCD
+    // signature -> the EOCD undercounts the central directory -> FAIL.
+    const zip = @embedFile("fixtures/zip_tamper/eocd_entry_count_low.zip");
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    try testing.expect(!result.is_valid);
+    if (result.error_code) |ec| try testing.expect(ec == .invalid_value);
 }
