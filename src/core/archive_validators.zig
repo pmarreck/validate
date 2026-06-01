@@ -2626,6 +2626,11 @@ pub fn validateXzDeep(allocator: Allocator, source: *FileSource) ValidationResul
     // Read stream check type from header byte 7 (stream flags).
     // 0x00=none, 0x01=CRC32, 0x04=CRC64, 0x0A=SHA-256.
     const check_type: u8 = bytes[7] & 0x0F;
+    // We only compute/verify CRC32 (0x01) and CRC64 (0x04) per-block below.
+    // 0x00 (no check) is legitimately nothing to verify; SHA-256 (0x0A) and
+    // the spec-reserved types are not verified here — flag those so we do not
+    // claim full per-block integrity we did not actually check.
+    const xz_check_unverified = !(check_type == 0x00 or check_type == 0x01 or check_type == 0x04);
     const check_size: usize = switch (check_type) {
         0x00 => 0,
         0x01 => 4,
@@ -2745,6 +2750,9 @@ pub fn validateXzDeep(allocator: Allocator, source: *FileSource) ValidationResul
         }
     }
 
+    if (xz_check_unverified) {
+        return ValidationResult.okWithDepthAndWarning(.xz, .full, "XZ stream Check type not verified (only CRC32/CRC64 are checked per-block)");
+    }
     return ValidationResult.okWithDepth(.xz, .full);
 }
 
@@ -3244,6 +3252,17 @@ test "validateXzDeep: valid XZ ground truth" {
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.xz, result.format);
     try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateXzDeep: SHA-256 check type warns (not verified per-block)" {
+    // xz_check_sha256.xz uses Check=SHA-256 (0x0A). We only verify CRC32/CRC64
+    // per-block, so the file must stay valid but carry a warning rather than
+    // silently claiming full per-block integrity it did not check.
+    const xz = @embedFile("fixtures/xz_check_sha256.xz");
+    var source = FileSource.fromBuffer(xz);
+    const result = validateXzDeep(testing.allocator, &source);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message != null);
 }
 
 test "validateZstdDeep: valid Zstd ground truth" {
