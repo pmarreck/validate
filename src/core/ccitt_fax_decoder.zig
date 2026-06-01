@@ -487,76 +487,53 @@ fn decodeRunLength(reader: *BitReader, is_white: bool) ?u32 {
 }
 
 /// Decode a single run length code
+/// O(1) run-length dispatch. The fleet review flagged the linear-table-scan in
+/// decodeRunLengthCode (peek 13 bits, then for-loop over up to 5 ~100-entry
+/// tables per run). We build [1<<13] LUTs at comptime by replicating the EXACT
+/// same ordered scan (terminating -> makeup -> extended, first match wins), so
+/// the fast path is provably equivalent. CCITT modified-Huffman codes are
+/// prefix-free, so a 13-bit lookahead uniquely identifies each codeword.
+const CcittRlEntry = struct { run: u32, len: u5 };
+
+/// Replicate decodeRunLengthCode's match logic for one 13-bit peek value,
+/// scanning the given tables in order and returning the first hit.
+fn matchCcittRl(comptime tables: []const []const [3]u16, peek13: u32) ?CcittRlEntry {
+    for (tables) |table| {
+        for (table) |entry| {
+            const code = entry[0];
+            const len = entry[1];
+            if (len <= 13) {
+                const shift: u5 = @intCast(13 - len);
+                if ((peek13 >> shift) == code) {
+                    return .{ .run = entry[2], .len = @intCast(len) };
+                }
+            }
+        }
+    }
+    return null;
+}
+
+fn buildCcittRlLut(comptime tables: []const []const [3]u16) [1 << 13]?CcittRlEntry {
+    @setEvalBranchQuota(80_000_000);
+    var lut: [1 << 13]?CcittRlEntry = undefined;
+    for (&lut, 0..) |*slot, peek| {
+        slot.* = matchCcittRl(tables, @intCast(peek));
+    }
+    return lut;
+}
+
+const white_rl_lut: [1 << 13]?CcittRlEntry = buildCcittRlLut(&.{
+    &white_terminating_codes, &white_makeup_codes, &extended_makeup_codes,
+});
+const black_rl_lut: [1 << 13]?CcittRlEntry = buildCcittRlLut(&.{
+    &black_terminating_codes, &black_makeup_codes, &extended_makeup_codes,
+});
+
 fn decodeRunLengthCode(reader: *BitReader, is_white: bool) ?u32 {
     const peek13 = reader.peekBits(13) orelse return null;
-
-    if (is_white) {
-        // White terminating codes (4-8 bits)
-        for (white_terminating_codes) |entry| {
-            const code = entry[0];
-            const len = entry[1];
-            const run = entry[2];
-            const shift = @as(u5, @intCast(13 - len));
-            if ((peek13 >> shift) == code) {
-                reader.skipBits(@intCast(len));
-                return run;
-            }
-        }
-
-        // White makeup codes (5-9 bits)
-        for (white_makeup_codes) |entry| {
-            const code = entry[0];
-            const len = entry[1];
-            const run = entry[2];
-            const shift = @as(u5, @intCast(13 - len));
-            if ((peek13 >> shift) == code) {
-                reader.skipBits(@intCast(len));
-                return run;
-            }
-        }
-    } else {
-        // Black terminating codes (2-12 bits)
-        for (black_terminating_codes) |entry| {
-            const code = entry[0];
-            const len = entry[1];
-            const run = entry[2];
-            if (len <= 13) {
-                const shift = @as(u5, @intCast(13 - len));
-                if ((peek13 >> shift) == code) {
-                    reader.skipBits(@intCast(len));
-                    return run;
-                }
-            }
-        }
-
-        // Black makeup codes (10-13 bits)
-        for (black_makeup_codes) |entry| {
-            const code = entry[0];
-            const len = entry[1];
-            const run = entry[2];
-            if (len <= 13) {
-                const shift = @as(u5, @intCast(13 - len));
-                if ((peek13 >> shift) == code) {
-                    reader.skipBits(@intCast(len));
-                    return run;
-                }
-            }
-        }
-    }
-
-    // Extended makeup codes (11-12 bits, common to both)
-    for (extended_makeup_codes) |entry| {
-        const code = entry[0];
-        const len = entry[1];
-        const run = entry[2];
-        const shift = @as(u5, @intCast(13 - len));
-        if ((peek13 >> shift) == code) {
-            reader.skipBits(@intCast(len));
-            return run;
-        }
-    }
-
-    return null;
+    const entry = (if (is_white) white_rl_lut[peek13] else black_rl_lut[peek13]) orelse return null;
+    reader.skipBits(entry.len);
+    return entry.run;
 }
 
 /// Find b1 position (first changing pixel on reference line at or after a0 of opposite color)
@@ -882,6 +859,29 @@ pub fn validate(data: []const u8, params: CcittParams) struct { valid: bool, err
 }
 
 // ============ Tests ============
+
+test "CCITT RL LUT matches ordered linear scan for all 13-bit prefixes" {
+    // matchCcittRl replicates the original decodeRunLengthCode scan order
+    // (terminating -> makeup -> extended, first match wins); the comptime LUTs
+    // are built from it. Assert they agree for every possible 13-bit lookahead.
+    var peek: u32 = 0;
+    while (peek < (1 << 13)) : (peek += 1) {
+        const w_ref = matchCcittRl(&.{ &white_terminating_codes, &white_makeup_codes, &extended_makeup_codes }, peek);
+        const w_got = white_rl_lut[peek];
+        try std.testing.expectEqual(w_ref == null, w_got == null);
+        if (w_ref) |r| {
+            try std.testing.expectEqual(r.run, w_got.?.run);
+            try std.testing.expectEqual(r.len, w_got.?.len);
+        }
+        const b_ref = matchCcittRl(&.{ &black_terminating_codes, &black_makeup_codes, &extended_makeup_codes }, peek);
+        const b_got = black_rl_lut[peek];
+        try std.testing.expectEqual(b_ref == null, b_got == null);
+        if (b_ref) |r| {
+            try std.testing.expectEqual(r.run, b_got.?.run);
+            try std.testing.expectEqual(r.len, b_got.?.len);
+        }
+    }
+}
 
 test "BitReader reads bits correctly" {
     const data = [_]u8{ 0b10110100, 0b11001010 };
