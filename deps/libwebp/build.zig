@@ -91,6 +91,13 @@ pub fn build(b: *std.Build) void {
         "src/utils/utils.c",
     };
 
+    // Demux sources — needed to walk ANMF animation frames for per-frame
+    // validation of animated WebP (VP8X+ANIM). Depends only on the decoder
+    // + utils units already built here.
+    const demux_sources: []const []const u8 = &.{
+        "src/demux/demux.c",
+    };
+
     // Add all sources
     lib.root_module.addCSourceFiles(.{
         .root = libwebp_src.path(""),
@@ -107,6 +114,12 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addCSourceFiles(.{
         .root = libwebp_src.path(""),
         .files = utils_sources,
+        .flags = cflags,
+    });
+
+    lib.root_module.addCSourceFiles(.{
+        .root = libwebp_src.path(""),
+        .files = demux_sources,
         .flags = cflags,
     });
 
@@ -133,6 +146,8 @@ pub fn build(b: *std.Build) void {
     // Install headers
     lib.installHeader(libwebp_src.path("src/webp/decode.h"), "webp/decode.h");
     lib.installHeader(libwebp_src.path("src/webp/types.h"), "webp/types.h");
+    lib.installHeader(libwebp_src.path("src/webp/demux.h"), "webp/demux.h");
+    lib.installHeader(libwebp_src.path("src/webp/mux_types.h"), "webp/mux_types.h");
 
     b.installArtifact(lib);
 
