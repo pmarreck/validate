@@ -199,7 +199,13 @@ pub const ContextState = struct {
 pub fn initContexts(slice_qp: i32, is_i_slice: bool) [NUM_H265_CONTEXTS]ContextState {
     var contexts: [NUM_H265_CONTEXTS]ContextState = undefined;
 
-    const init_values = if (is_i_slice) init_values_i_slice else init_values_i_slice; // TODO: P/B slice init values
+    // Only I-slice CABAC init tables (HEVC Table 9-4, initType 0) are shipped.
+    // P/B slices (initType 1/2) need their own initValue tables; until those are
+    // wired up, refuse the non-I path loudly rather than silently loading the
+    // wrong priors (which would corrupt inter-frame CABAC validation). The sole
+    // production caller passes is_i_slice=true (HEIC is intra-only).
+    std.debug.assert(is_i_slice); // P/B slice init tables not yet implemented
+    const init_values = init_values_i_slice;
 
     const qp = std.math.clamp(slice_qp, 0, 51);
 
