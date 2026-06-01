@@ -756,41 +756,88 @@ pub const MmrDecoder = struct {
         return .eol;
     }
 
-    /// Decode a white run length using Huffman tables
-    fn decodeWhiteRun(self: *Self) ?u32 {
-        // White run-length codes (ITU-T T.4 Tables 2 and 3)
-        // This is a simplified implementation using bit-by-bit decoding
-        var code: u32 = 0;
-        var code_len: u5 = 0;
+    /// O(1) modified-Huffman (CCITT T.4) run-length lookup. The fleet review
+    /// flagged the original bit-by-bit + linear-table-scan path as O(bits x
+    /// table) per run (~25x100 comparisons). We keep decodeWhiteCode/
+    /// decodeBlackCode as the canonical spec tables and build a peek-13
+    /// dispatch table FROM them at comptime, so the fast path is provably
+    /// equivalent (no transcription) while decoding each run in O(1).
+    const CcittLutEntry = struct { value: u32, len: u5 };
 
-        while (code_len < 25) {
-            const bit = self.readBit() orelse return null;
-            code = (code << 1) | bit;
-            code_len += 1;
-
-            // Check against white code table
-            if (decodeWhiteCode(code, code_len)) |run_len| {
-                return run_len;
+    /// Build a [1<<13] table mapping the next 13 bits (MSB-first, zero-padded)
+    /// to (run value, code bit-length), using `decodeFn` as the oracle. CCITT
+    /// codes are prefix-free, so the shortest matching prefix is THE codeword.
+    fn buildCcittLut(comptime decodeFn: fn (u32, u5) ?u32) [1 << 13]?CcittLutEntry {
+        @setEvalBranchQuota(40_000_000);
+        var lut: [1 << 13]?CcittLutEntry = undefined;
+        for (&lut, 0..) |*slot, peek| {
+            slot.* = null;
+            var len: u5 = 1;
+            while (len <= 13) : (len += 1) {
+                const code: u32 = @as(u32, @intCast(peek)) >> @intCast(13 - len);
+                if (decodeFn(code, len)) |v| {
+                    slot.* = .{ .value = v, .len = len };
+                    break;
+                }
             }
         }
-        return null; // Invalid code
+        return lut;
+    }
+
+    const white_lut: [1 << 13]?CcittLutEntry = buildCcittLut(decodeWhiteCode);
+    const black_lut: [1 << 13]?CcittLutEntry = buildCcittLut(decodeBlackCode);
+
+    /// Peek up to 13 bits MSB-first without advancing. Returns the bits packed
+    /// left-aligned into a 13-bit value, plus how many real bits were available
+    /// (the rest are zero-padded). Mirrors the bit order of readBit.
+    fn peek13(self: *Self) struct { bits: u32, avail: u5 } {
+        var bits: u32 = 0;
+        var avail: u5 = 0;
+        var bp = self.byte_pos;
+        var bit: i32 = self.bit_pos;
+        while (avail < 13) {
+            if (bp >= self.data.len) break;
+            const b: u32 = @truncate((self.data[bp] >> @intCast(bit)) & 1);
+            bits = (bits << 1) | b;
+            avail += 1;
+            if (bit == 0) {
+                bit = 7;
+                bp += 1;
+            } else {
+                bit -= 1;
+            }
+        }
+        // Left-align to 13 bits so the table index is comparable regardless of
+        // how many real bits we got.
+        bits <<= @intCast(13 - avail);
+        return .{ .bits = bits, .avail = avail };
+    }
+
+    /// Advance the reader by n bits (n <= 13).
+    fn skipBits(self: *Self, n: u5) void {
+        var i: u5 = 0;
+        while (i < n) : (i += 1) {
+            _ = self.readBit();
+        }
+    }
+
+    /// Decode a white run length using Huffman tables
+    fn decodeWhiteRun(self: *Self) ?u32 {
+        // O(1) via the comptime peek-13 LUT (built from decodeWhiteCode).
+        const p = self.peek13();
+        const entry = white_lut[p.bits] orelse return null;
+        if (entry.len > p.avail) return null; // code would run past EOF
+        self.skipBits(entry.len);
+        return entry.value;
     }
 
     /// Decode a black run length using Huffman tables
     fn decodeBlackRun(self: *Self) ?u32 {
-        var code: u32 = 0;
-        var code_len: u5 = 0;
-
-        while (code_len < 25) {
-            const bit = self.readBit() orelse return null;
-            code = (code << 1) | bit;
-            code_len += 1;
-
-            if (decodeBlackCode(code, code_len)) |run_len| {
-                return run_len;
-            }
-        }
-        return null;
+        const p = self.peek13();
+        const entry = black_lut[p.bits] orelse return null;
+        if (entry.len > p.avail) return null;
+        self.skipBits(entry.len);
+        return entry.value;
     }
 
     /// Decode white run-length code (terminating + makeup codes)
@@ -1777,6 +1824,54 @@ pub fn validateJbig2(allocator: Allocator, data: []const u8) Jbig2ValidateResult
 }
 
 // ============ Tests ============
+
+test "decodeRun white terminating + makeup (O(1) LUT path)" {
+    // White run=2 is code 0111 (len 4); a terminating code (<64) ends the run.
+    // bytes 0x73 0x50 = 0111 00110101 -> run 2 (0111), then this decoder call
+    // returns 2 because 0111 is itself terminating (value 2 < 64).
+    {
+        var d = MmrDecoder.init(&.{ 0x73, 0x50 });
+        try std.testing.expectEqual(@as(?u32, 2), d.decodeRun(false));
+    }
+    // White makeup 64 (11011, len 5) MUST be followed by a terminating code to
+    // complete the run; 0xD9 0xA8 = 11011 00110101 -> 64 + 0 = 64.
+    {
+        var d = MmrDecoder.init(&.{ 0xD9, 0xA8 });
+        try std.testing.expectEqual(@as(?u32, 64), d.decodeRun(false));
+    }
+}
+
+test "CCITT LUT matches linear oracle for all 13-bit prefixes" {
+    // Provable equivalence: for every possible 13-bit lookahead, the comptime
+    // LUT must return the same (value,len) the original linear scan would for
+    // the shortest matching prefix.
+    var peek: u32 = 0;
+    while (peek < (1 << 13)) : (peek += 1) {
+        inline for (.{
+            .{ MmrDecoder.white_lut, MmrDecoder.decodeWhiteCode },
+            .{ MmrDecoder.black_lut, MmrDecoder.decodeBlackCode },
+        }) |pair| {
+            const lut = pair[0];
+            const decodeFn = pair[1];
+            // Reference: shortest matching prefix via the canonical tables.
+            var ref: ?MmrDecoder.CcittLutEntry = null;
+            var len: u5 = 1;
+            while (len <= 13) : (len += 1) {
+                const code: u32 = peek >> @intCast(13 - len);
+                if (decodeFn(code, len)) |v| {
+                    ref = .{ .value = v, .len = len };
+                    break;
+                }
+            }
+            const got = lut[peek];
+            try std.testing.expectEqual(ref == null, got == null);
+            if (ref) |r| {
+                try std.testing.expectEqual(r.value, got.?.value);
+                try std.testing.expectEqual(r.len, got.?.len);
+            }
+        }
+    }
+}
 
 test "isJbig2 detects valid signature" {
     const valid = FILE_SIGNATURE ++ [_]u8{ 0x00, 0x00, 0x00, 0x01 };
