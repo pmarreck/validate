@@ -320,16 +320,11 @@ test "Opus decode rejects garbage data" {
     defer destroyDecoder(decoder);
 
     var output: [5760 * 2]i16 = undefined;
+    // 0xDE TOC selects a config whose declared frame layout is inconsistent with
+    // this 8-byte payload, so libopus returns OPUS_INVALID_PACKET -> error.
+    // (Behavior verified empirically against the project's libopus.)
     const garbage: []const u8 = &.{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 };
-
-    const result = validateOpusPacket(decoder, garbage, &output, 2);
-    // Garbage data might either decode with errors or produce garbage output
-    // Libopus is quite resilient, so it might not always error
-    _ = result catch {
-        // Expected - garbage rejected
-        return;
-    };
-    // If it didn't error, that's also valid behavior for some garbage
+    try std.testing.expectError(error.OpusDecodeError, validateOpusPacket(decoder, garbage, &output, 2));
 }
 
 test "Opus validation with no packets returns invalid" {
@@ -349,18 +344,12 @@ test "Opus decode valid silence packet" {
 
     var output: [5760 * 2]i16 = undefined;
 
-    // A minimal valid Opus packet (TOC byte + minimal data)
-    // TOC: 0xFC = SILK-only, 20ms frame, stereo
-    // This is a simplified test - real Opus packets are more complex
-    const silence_toc: []const u8 = &.{
-        0xFC, // TOC: config 31 (CELT FB), s=1 (stereo), c=0 (1 frame)
-        0x00, // Minimal data
-    };
+    // TOC 0xFC = config 31 (CELT fullband), stereo, 1 frame; a single 0x00 data
+    // byte is a well-formed minimal CELT frame. libopus decodes it to one 20 ms
+    // frame = 960 samples per channel @ 48 kHz. (Sample count verified
+    // empirically against the project's libopus.)
+    const silence_toc: []const u8 = &.{ 0xFC, 0x00 };
 
-    // This may or may not decode depending on libopus validation
-    // The point is to verify we can call the decode function
-    _ = validateOpusPacket(decoder, silence_toc, &output, 2) catch {
-        // Some simplified packets might be rejected - that's OK
-        return;
-    };
+    const samples = try validateOpusPacket(decoder, silence_toc, &output, 2);
+    try std.testing.expectEqual(@as(i32, 960), samples);
 }
