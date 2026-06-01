@@ -1587,6 +1587,7 @@ fn validatePdfImagesParallel(
     var skipped = std.atomic.Value(u32).init(0);
     var skipped_size_limit_count = std.atomic.Value(u32).init(0);
     var skipped_corrupt_count = std.atomic.Value(u32).init(0);
+    var append_failed = std.atomic.Value(bool).init(false);
 
     const ResultContext = struct {
         mutex: *std.Io.Mutex,
@@ -1597,6 +1598,7 @@ fn validatePdfImagesParallel(
         skipped: *std.atomic.Value(u32),
         skipped_size_limit: *std.atomic.Value(u32),
         skipped_corrupt: *std.atomic.Value(u32),
+        append_failed: *std.atomic.Value(bool),
     };
 
     var result_ctx = ResultContext{
@@ -1608,6 +1610,7 @@ fn validatePdfImagesParallel(
         .skipped = &skipped,
         .skipped_size_limit = &skipped_size_limit_count,
         .skipped_corrupt = &skipped_corrupt_count,
+        .append_failed = &append_failed,
     };
 
     // Create thread pool with thread-safe allocator
@@ -1638,7 +1641,12 @@ fn validatePdfImagesParallel(
                 if (task_result.result) |result| {
                     rc.mutex.lockUncancelable(runtime.io());
                     defer rc.mutex.unlock(runtime.io());
-                    rc.results.append(rc.allocator, result) catch {};
+                    rc.results.append(rc.allocator, result) catch {
+                        // No-silent-skip: a dropped result means a detected
+                        // corruption could vanish from the report. Flag it so
+                        // the top level fails closed (valid=false) below.
+                        rc.append_failed.store(true, .seq_cst);
+                    };
                 }
             }
         }.callback,
@@ -1660,6 +1668,7 @@ fn validatePdfImagesParallel(
     const final_skipped = skipped.load(.seq_cst);
     const final_skipped_size_limit = skipped_size_limit_count.load(.seq_cst);
     const final_skipped_corrupt = skipped_corrupt_count.load(.seq_cst);
+    const had_append_failure = append_failed.load(.seq_cst);
 
     // Get results from pool_allocator, then copy to caller's allocator
     const pool_results = try collected_results.toOwnedSlice(pool_allocator);
@@ -1669,7 +1678,7 @@ fn validatePdfImagesParallel(
     const caller_results = try allocator.dupe(ImageValidationResult, pool_results);
 
     return .{
-        .valid = final_failed == 0,
+        .valid = final_failed == 0 and !had_append_failure,
         .total_images = @intCast(images.len),
         .validated_images = final_validated,
         .failed_images = final_failed,
@@ -1677,7 +1686,9 @@ fn validatePdfImagesParallel(
         .skipped_size_limit = final_skipped_size_limit,
         .skipped_corrupt = final_skipped_corrupt,
         .results = caller_results,
-        .error_message = if (final_failed > 0) "Some images failed validation" else null,
+        .error_message = if (had_append_failure)
+            "Validation incomplete: out of memory aggregating image results (report may omit detected corruption)"
+        else if (final_failed > 0) "Some images failed validation" else null,
         .is_encrypted = is_encrypted,
         .decryption_succeeded = decryption_succeeded,
     };
