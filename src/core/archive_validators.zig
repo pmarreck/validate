@@ -1607,12 +1607,17 @@ pub fn validateZipDeepWithCentralDirectory(
 
     var entry_count: u64 = 0;
     var extra_len_mismatch = false;
+    var extra_content_mismatch = false;
     var encrypted_entry_count: u64 = 0;
     var cdir_pos = central.offset;
     const max_entries: u64 = 100000;
 
     while (entry_count < central.entries and entry_count < max_entries) : (entry_count += 1) {
         file.seekTo(cdir_pos) catch return ValidationResult.invalidCodeWithDepth(format, .failed_to_seek, "to central directory", .full);
+        // Phase 4: per-entry capture of the CD extra bytes (cap 256) so the
+        // local-header extra can be byte-compared below. Reset each iteration.
+        var cd_extra_cap: [256]u8 = undefined;
+        var cd_extra_capn: usize = 0;
 
         var header: [46]u8 = undefined;
         const header_read = file.readAll(&header) catch {
@@ -1677,6 +1682,9 @@ pub fn validateZipDeepWithCentralDirectory(
             if (extra_read != extra_len_usize) {
                 return ValidationResult.invalidCodeWithDepth(format, .truncated, "central directory extra", .full);
             }
+            const cap_n = @min(extra_len_usize, cd_extra_cap.len);
+            @memcpy(cd_extra_cap[0..cap_n], extra_buf[0..cap_n]);
+            cd_extra_capn = cap_n;
         }
 
         if (comment_len_usize > 0) {
@@ -1817,10 +1825,27 @@ pub fn validateZipDeepWithCentralDirectory(
                 return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "local filename", .full);
             };
         }
-        const skip_local_extra: i64 = @intCast(local_extra_len);
-        file.seekBy(skip_local_extra) catch {
-            return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "local extra", .full);
-        };
+        // Phase 4: when LFH and CD extra lengths match (length mismatch is
+        // Phase 3), byte-compare the extras; a content difference is a WARN.
+        if (local_extra_len == extra_len and local_extra_len > 0 and
+            local_extra_len <= cd_extra_cap.len and cd_extra_capn == local_extra_len)
+        {
+            var lfh_extra_cap: [256]u8 = undefined;
+            const lfh_n = file.readAll(lfh_extra_cap[0..local_extra_len]) catch {
+                return ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "local extra", .full);
+            };
+            if (lfh_n != local_extra_len) {
+                return ValidationResult.invalidCodeWithDepth(format, .truncated, "local extra", .full);
+            }
+            if (!std.mem.eql(u8, lfh_extra_cap[0..local_extra_len], cd_extra_cap[0..local_extra_len])) {
+                extra_content_mismatch = true;
+            }
+        } else {
+            const skip_local_extra: i64 = @intCast(local_extra_len);
+            file.seekBy(skip_local_extra) catch {
+                return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "local extra", .full);
+            };
+        }
 
         if (entry_telemetry.encrypted) {
             encrypted_entry_count += 1;
@@ -1897,6 +1922,9 @@ pub fn validateZipDeepWithCentralDirectory(
 
     if (extra_len_mismatch) {
         return ValidationResult.okWithDepthAndWarning(format, .full, "ZIP extra-field length mismatch (central vs local)");
+    }
+    if (extra_content_mismatch) {
+        return ValidationResult.okWithDepthAndWarning(format, .full, "ZIP extra-field content mismatch (central vs local)");
     }
     return ValidationResult.okWithDepth(format, .full);
 }
@@ -6698,6 +6726,18 @@ test "ZIP: asymmetric LFH/CD extra-field length is WARN, not FAIL (OOXML-style)"
     // divergence, so it must be a non-fatal WARN (CLI --strict promotes it to a
     // FAIL), never an outright failure.
     const zip = @embedFile("fixtures/zip_tamper/lfh_cd_extra_mismatch.zip");
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message != null);
+}
+
+test "ZIP: LFH/CD extra-field content byte-flip is WARN, not FAIL" {
+    // lfh_extra_byte_flip.zip has an 8-byte extra field in BOTH the local
+    // header and the central directory (equal length, so Phase 3 does not
+    // fire), but one byte inside the LFH copy is flipped. A content divergence
+    // is a non-fatal WARN (CLI --strict promotes to FAIL).
+    const zip = @embedFile("fixtures/zip_tamper/lfh_extra_byte_flip.zip");
     var src = FileSource.fromBuffer(zip);
     const result = validateZipDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
