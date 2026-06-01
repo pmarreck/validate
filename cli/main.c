@@ -667,12 +667,21 @@ static int path_list_add(path_list_t* list, const char* path, size_t file_size) 
 	}
 	if (list->count >= list->capacity) {
 		size_t new_capacity = list->capacity * 2;
+		/* Realloc one array at a time, committing each to list->* immediately on
+		 * success. realloc frees the old block when it returns a new one, so we
+		 * must NOT leave list->* pointing at a freed block: assigning right away
+		 * keeps the list internally consistent (and safe for path_list_free) even
+		 * if a later array fails to grow. The buffers may end up larger than
+		 * list->capacity on partial failure, which is harmless (capacity is a
+		 * floor; the extra space is simply unused until the next successful grow). */
 		char** new_paths = (char**)realloc(list->paths, new_capacity * sizeof(char*));
-		uint32_t* new_ids = (uint32_t*)realloc(list->ids, new_capacity * sizeof(uint32_t));
-		size_t* new_sizes = (size_t*)realloc(list->sizes, new_capacity * sizeof(size_t));
-		if (!new_paths || !new_ids || !new_sizes) return -1;
+		if (!new_paths) return -1;
 		list->paths = new_paths;
+		uint32_t* new_ids = (uint32_t*)realloc(list->ids, new_capacity * sizeof(uint32_t));
+		if (!new_ids) return -1;
 		list->ids = new_ids;
+		size_t* new_sizes = (size_t*)realloc(list->sizes, new_capacity * sizeof(size_t));
+		if (!new_sizes) return -1;
 		list->sizes = new_sizes;
 		list->capacity = new_capacity;
 	}
