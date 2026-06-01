@@ -1670,12 +1670,15 @@ pub fn validateZipDeepWithCentralDirectory(
             };
         }
 
+        // extra_buf is read later by readZip64Extra (ZIP64 sentinel path), so its
+        // free MUST be at loop-body scope, not the if-block — otherwise it is
+        // freed before that read (use-after-free).
         var extra_buf: []u8 = &[_]u8{};
+        defer if (extra_buf.len > 0) allocator.free(extra_buf);
         if (extra_len_usize > 0) {
             extra_buf = allocator.alloc(u8, extra_len_usize) catch {
                 return ValidationResult.invalidCodeWithDepth(format, .out_of_memory, "reading central directory extra", .full);
             };
-            defer allocator.free(extra_buf);
             const extra_read = file.readAll(extra_buf) catch {
                 return ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "central directory extra", .full);
             };
@@ -6770,4 +6773,17 @@ test "ZIP: EOCD entry-count undercount must FAIL" {
     const result = validateZipDeep(testing.allocator, &src);
     try testing.expect(!result.is_valid);
     if (result.error_code) |ec| try testing.expect(ec == .invalid_value);
+}
+
+test "ZIP64: CD extra with sentinel offset must validate (no use-after-free)" {
+    // zip64_cd_extra.zip is a valid single-entry archive whose CD record sets
+    // local_header_offset to the 0xFFFFFFFF sentinel and carries a 0x0001 ZIP64
+    // extra holding the real u64 offset (0). This forces the readZip64Extra path
+    // that reads the CD extra buffer. Under testing.allocator (which poisons
+    // freed memory) a use-after-free of that buffer corrupts the resolved offset;
+    // a correct lifetime keeps it alive and the archive validates.
+    const zip = @embedFile("fixtures/zip_tamper/zip64_cd_extra.zip");
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    try testing.expect(result.is_valid);
 }
