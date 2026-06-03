@@ -104,6 +104,7 @@ pub const image_validators = @import("image_validators.zig");
 pub const cad_3d_validators = @import("cad_3d_validators.zig");
 pub const executable_validators = @import("executable_validators.zig");
 pub const apple_validators = @import("apple_validators.zig");
+pub const spotlight_ivf = @import("spotlight_ivf.zig");
 pub const apple_media_db_validator = @import("apple_media_db_validator.zig");
 pub const financial_validators = @import("financial_validators.zig");
 pub const pim_validators = @import("pim_validators.zig");
@@ -300,6 +301,7 @@ test {
     _ = @import("executable_validators.zig");
     // Apple/macOS format validators (Plist, DS_Store, Spotlight, AppleDouble, resource forks, ClarisWorks, MacWrite)
     _ = @import("apple_validators.zig");
+    _ = @import("spotlight_ivf.zig");
     // Apple Media Library Database validator (Music.app, TV.app .musicdb/.tvdb)
     _ = @import("apple_media_db_validator.zig");
     // Financial data format validators (QBW, QBB, QDF, OFX, QIF, TXF)
