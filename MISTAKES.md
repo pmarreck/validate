@@ -1,5 +1,30 @@
 # MISTAKES.md
 
+## 2026-06-05 — A cached Nix FOD masks dependency-hash changes; local green != CI green
+
+**What happened:** A dep (`sqlite3`) drifted (pinned to a moving `heads/main`
+branch; upstream 3.51.0->3.53.2), breaking Garnix on every platform. I pinned
+it to a commit SHA + updated `build.zig.zon` `.hash`, ran
+`nix build .#checks.aarch64-darwin.test` -> GREEN, pushed. Garnix STILL failed
+on every platform with the same dep-tree FOD hash mismatch. Root cause: the
+`flake.nix` `zigDepsHash` (whole-dep-tree fixed-output-derivation hash) ALSO
+changes when a dep moves, but my machine reused the CACHED FOD output, so the
+local build never re-derived it and never saw the mismatch. Garnix, building
+clean, did. Cost a whole extra fix+push+CI cycle.
+
+**How to apply (the rule):** When ANY Zig dependency changes (`build.zig.zon`
+url/hash), the `flake.nix` `zigDepsHash` is almost certainly stale too. Do NOT
+trust a local `nix build` green — it can be cache-masked. Force the FOD to
+re-derive: set `zigDepsHash` to `sha256-AAAA...A=` (fakeHash), `nix build`,
+copy the printed `got:` hash back in, rebuild. Commit `build.zig.zon` AND
+`flake.nix` together. (Same class of trap as the jj/watchman "local snapshot
+masks reality" bug: a cached local layer hid the true state.)
+
+**Bonus rule:** never pin a dep to `refs/heads/main|master` (a moving branch)
+— it silently drifts and breaks CI later. Pin to an immutable commit SHA or
+tag. (zlib + openmpt in this repo still violate this — flagged for follow-up.)
+
+
 ## 2026-06-02 — jj + stale Watchman fsmonitor silently drops files from commits
 
 **What happened:** While committing the animated-WebP fix, the
