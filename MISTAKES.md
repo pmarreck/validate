@@ -1,5 +1,36 @@
 # MISTAKES.md
 
+## 2026-06-02 — jj + stale Watchman fsmonitor silently drops files from commits
+
+**What happened:** While committing the animated-WebP fix, the
+`deps/libwebp/build.zig` change (adding demux.c to the build) was on disk
+(4876 bytes, demux present) but jj's working-copy `@` kept the OLD content
+(4291 bytes). `jj commit <paths>` and `jj squash` both said "Nothing
+changed"; `jj file show -r <commit>` confirmed the committed build.zig was
+the original. The validator commit thus referenced demux.h that the lib
+never built — broken on fresh checkout — and I pushed it before noticing.
+
+**Root cause:** this repo had `fsmonitor.backend = "watchman"` in jj config.
+Watchman's view was stale (same Watchman gremlin from the May-30 crisis), so
+it never reported `deps/libwebp/build.zig` as changed, and jj trusted
+Watchman and skipped snapshotting it — even after `touch` and appending real
+bytes. The `.git-old` tracked-then-gitignored flood made `jj status` noisy,
+which masked the problem.
+
+**How to apply (the rule):**
+1. Proved the file content actually landed in the COMMIT, not just on disk:
+   `jj file show -r <change> <path> | grep <marker>` (or compare byte sizes
+   of `jj file show -r @ <path>` vs the on-disk file). A green `nix build`
+   does NOT prove this — nix reads the working tree (disk), so it builds the
+   correct bytes even when jj/the commit has the stale ones.
+2. If jj refuses to snapshot a known-changed file, run with the fsmonitor
+   disabled: `jj --config fsmonitor.backend=none status` (forces a direct
+   filesystem scan). That immediately surfaced the real diff.
+3. Fixed permanently for this repo: `jj config set --repo fsmonitor.backend none`.
+4. Don't leave large dirs (.git-old) tracked-but-gitignored; untrack them
+   (`jj file untrack .git-old`) so `jj status` stays readable.
+
+
 A running log of mistakes made while working on `validate`, so future sessions
 (and future me) don't repeat them. Newest first.
 
