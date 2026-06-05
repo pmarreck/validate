@@ -138,16 +138,18 @@
 								'' else ''
 								# Forward libjpeg + openjpeg + zlib paths to jpegz/tiffz.
 								# openjpeg.h is nested under include/openjpeg-2.5/.
+								# Cross: forward only libjpeg + zlib (both cross-build clean).
+								# NOT openjpeg: nix pkgsCross openjpeg drags libtiff->libwebp
+								# whose img2webp.exe fails to cross-link under mingw. jpegz/tiffz
+								# fall back to their libjpeg-only tier; validate's CORE builds its
+								# OWN openjpeg (deps/openjpeg, Zig-cross-compiled) for the
+								# jpeg2000_validator @cImport, so JP2 validation is unaffected.
 								LIBJPEG_DEV=${crossPkgs.libjpeg_turbo.dev}
 								LIBJPEG_OUT=${crossPkgs.libjpeg_turbo.out}
-								OPENJPEG_DEV=${crossPkgs.openjpeg.dev}
-								OPENJPEG_OUT=${crossPkgs.openjpeg}
 								ZLIB_DEV=${crossPkgs.zlib.dev}
 								ZLIB_OUT=${crossPkgs.zlib.out}
 								JPEGZ_OPTS="-Dlibjpeg-include=$LIBJPEG_DEV/include \
 								            -Dlibjpeg-lib=$LIBJPEG_OUT/lib \
-								            -Dopenjpeg-include=$OPENJPEG_DEV/include/openjpeg-2.5 \
-								            -Dopenjpeg-lib=$OPENJPEG_OUT/lib \
 								            -Dzlib-include=$ZLIB_DEV/include \
 								            -Dzlib-lib=$ZLIB_OUT/lib"
 								''}
