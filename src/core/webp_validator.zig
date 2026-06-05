@@ -119,25 +119,17 @@ pub fn validateWebpDeepFromBuffer(data: []const u8) WebpValidationResult {
         return WebpValidationResult.invalid("Decoded image too large");
     }
 
-    // Allocate output buffer for decoded pixels
-    const output_buffer = std.c.malloc(output_size) orelse {
-        return WebpValidationResult.invalid("Memory allocation failed for decode");
-    };
-    defer std.c.free(output_buffer);
-
-    // Attempt full decode to RGBA
-    const stride: c_int = width * 4;
-    const decoded = c.WebPDecodeRGBAInto(
-        data.ptr,
-        data.len,
-        @ptrCast(output_buffer),
-        output_size,
-        stride,
-    );
-
+    // output_size sanity-checked above; decode via WebPDecodeRGBA so libwebp
+    // owns a correctly SIMD-padded output buffer. (WebPDecodeRGBAInto with an
+    // exact-size buffer lets the x86_64 SSE2 decoder over-write past the end
+    // and segfault — see the animated path; same class of bug.)
+    var dec_w: c_int = 0;
+    var dec_h: c_int = 0;
+    const decoded = c.WebPDecodeRGBA(data.ptr, data.len, &dec_w, &dec_h);
     if (decoded == null) {
         return WebpValidationResult.invalid("WebP decode failed - corrupted data");
     }
+    c.WebPFree(decoded);
 
     return WebpValidationResult.ok();
 }
@@ -184,14 +176,18 @@ fn validateAnimatedWebp(data: []const u8) WebpValidationResult {
         if (out_size > 512 * 1024 * 1024) {
             return WebpValidationResult.invalid("Animated WebP frame too large to decode");
         }
-        const out = std.c.malloc(out_size) orelse {
-            return WebpValidationResult.invalid("Memory allocation failed for frame decode");
-        };
-        const ok = c.WebPDecodeRGBAInto(iter.fragment.bytes, iter.fragment.size, @ptrCast(out), out_size, fw * 4);
-        std.c.free(out);
-        if (ok == null) {
+        // Use WebPDecodeRGBA (libwebp self-allocates a correctly SIMD-padded
+        // output buffer) rather than ...Into with an exact-size buffer: on
+        // x86_64 the SSE2 lossless decoder writes in 16-byte strides and
+        // over-writes past a tightly-sized buffer, segfaulting (caught only on
+        // x86_64-linux CI, not aarch64-darwin/NEON). Let libwebp own the buffer.
+        var dec_w: c_int = 0;
+        var dec_h: c_int = 0;
+        const pixels = c.WebPDecodeRGBA(iter.fragment.bytes, iter.fragment.size, &dec_w, &dec_h);
+        if (pixels == null) {
             return WebpValidationResult.invalid("Animated WebP frame decode failed - corrupted data");
         }
+        c.WebPFree(pixels);
         decoded_frames += 1;
         if (c.WebPDemuxNextFrame(&iter) == 0) break;
     }
