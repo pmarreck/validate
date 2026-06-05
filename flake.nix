@@ -75,6 +75,17 @@
 							targetIsDarwin = builtins.match ".*darwin" targetSystem != null;
 							targetIsWindows = builtins.match ".*windows" targetSystem != null;
 							binaryName = if targetIsWindows then "validate.exe" else "validate";
+							# Cross-compiled C deps (libjpeg-turbo/openjpeg/zlib) from nixpkgs
+							# pkgsCross, forwarded to jpegz/tiffz so cross packages link real
+							# libs (native gets host pkgs below). Reproducible, no system search.
+							crossPkgsFor = {
+								"aarch64-darwin" = pkgs.pkgsCross.aarch64-darwin;
+								"x86_64-windows" = pkgs.pkgsCross.mingwW64;
+								"aarch64-windows" = pkgs.pkgsCross.ucrtAarch64;
+								"x86_64-linux" = pkgs.pkgsCross.gnu64;
+								"aarch64-linux" = pkgs.pkgsCross.aarch64-multiplatform;
+							};
+							crossPkgs = crossPkgsFor.${targetSystem} or pkgs;
 						in pkgs.stdenv.mkDerivation {
 							pname = "validate-${targetSystem}";
 							version = "0.1.0";
@@ -110,7 +121,7 @@
 								chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
 								${if cross then "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS" else ""}
 								${if !cross then ''
-								# Forward libjpeg + openjpeg paths to the jpegz dep.
+								# Forward libjpeg + openjpeg + zlib paths to jpegz/tiffz.
 								# openjpeg.h is nested under include/openjpeg-2.5/.
 								LIBJPEG_DEV=${pkgs.libjpeg_turbo.dev}
 								LIBJPEG_OUT=${pkgs.libjpeg_turbo.out}
@@ -125,7 +136,20 @@
 								            -Dzlib-include=$ZLIB_DEV/include \
 								            -Dzlib-lib=$ZLIB_OUT/lib"
 								'' else ''
-								JPEGZ_OPTS=""
+								# Forward libjpeg + openjpeg + zlib paths to jpegz/tiffz.
+								# openjpeg.h is nested under include/openjpeg-2.5/.
+								LIBJPEG_DEV=${crossPkgs.libjpeg_turbo.dev}
+								LIBJPEG_OUT=${crossPkgs.libjpeg_turbo.out}
+								OPENJPEG_DEV=${crossPkgs.openjpeg.dev}
+								OPENJPEG_OUT=${crossPkgs.openjpeg}
+								ZLIB_DEV=${crossPkgs.zlib.dev}
+								ZLIB_OUT=${crossPkgs.zlib.out}
+								JPEGZ_OPTS="-Dlibjpeg-include=$LIBJPEG_DEV/include \
+								            -Dlibjpeg-lib=$LIBJPEG_OUT/lib \
+								            -Dopenjpeg-include=$OPENJPEG_DEV/include/openjpeg-2.5 \
+								            -Dopenjpeg-lib=$OPENJPEG_OUT/lib \
+								            -Dzlib-include=$ZLIB_DEV/include \
+								            -Dzlib-lib=$ZLIB_OUT/lib"
 								''}
 								zig build $JPEGZ_OPTS -Doptimize=ReleaseFast --release=fast ${if cross then "-Dtarget=${zigTarget}" else ""}
 							'';
