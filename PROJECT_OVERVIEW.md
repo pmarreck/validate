@@ -147,5 +147,16 @@ sector-aligned), and validate's claim against it is genuinely strong.
 - **Format validator**: A format-specific validator implementation.
 - **FFI**: C ABI boundary used by wrappers/clients (CLI, apps, other languages).
 
+## Internationalization (i18n)
+- **i18n phase: enforce.** Every user-facing string lives in a no-default Zig
+  struct (`Strings`), so the compiler rejects any incomplete locale at build
+  time — a missing translation breaks the build, never silently falls back to
+  English.
+- **50 locales** supported (the fleet-canonical set; see `docs/I18N.md` for the
+  full list and selection rationale). CLI/env alias maps are merged at comptime
+  with a same-name→different-arg collision guard (`@compileError`).
+- Errors are bilingual: the localized message carries the English original in
+  parentheses (`(search for: "...")`) for searchability.
+
 ## Non-Goals
 - Repair, redundancy/parity, or protection. Those belong to a future for-pay project that I am still working on.

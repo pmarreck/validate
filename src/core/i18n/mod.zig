@@ -39,6 +39,26 @@ pub const uk = @import("uk.zig");
 pub const ur = @import("ur.zig");
 pub const vi = @import("vi.zig");
 pub const zh_hans = @import("zh_hans.zig");
+pub const am = @import("am.zig");
+pub const bg = @import("bg.zig");
+pub const bs = @import("bs.zig");
+pub const da = @import("da.zig");
+pub const fi = @import("fi.zig");
+pub const fil = @import("fil.zig");
+pub const ha = @import("ha.zig");
+pub const hr = @import("hr.zig");
+pub const id = @import("id.zig");
+pub const ig = @import("ig.zig");
+pub const is = @import("is.zig");
+pub const mk = @import("mk.zig");
+pub const nb = @import("nb.zig");
+pub const nl = @import("nl.zig");
+pub const sl = @import("sl.zig");
+pub const sq = @import("sq.zig");
+pub const sr = @import("sr.zig");
+pub const sv = @import("sv.zig");
+pub const yo = @import("yo.zig");
+pub const zh_hant = @import("zh_hant.zig");
 
 // ============================================================================
 // Type aliases for locale data
@@ -92,46 +112,93 @@ pub const Locale = enum {
     ur,
     vi,
     zh_hans,
+    am,
+    bg,
+    bs,
+    da,
+    fi,
+    fil,
+    ha,
+    hr,
+    id,
+    ig,
+    is,
+    mk,
+    nb,
+    nl,
+    sl,
+    sq,
+    sr,
+    sv,
+    yo,
+    zh_hant,
 
     pub fn isRtl(self: Locale) bool {
         return self == .ar or self == .he or self == .fa or self == .ps or self == .ur;
     }
 
+    /// Locale-code table for fromString longest-match. Order does not matter;
+    /// the matcher picks the LONGEST code that matches at a separator/end
+    /// boundary (so "fil" beats "fi", "zh_hant" beats "zh").
+    const code_table = [_]struct { code: []const u8, locale: Locale }{
+        // Multi-segment first for readability (matcher is length-based anyway).
+        .{ .code = "zh_hant", .locale = .zh_hant }, .{ .code = "zh_hans", .locale = .zh_hans },
+        .{ .code = "pt_br", .locale = .pt_br },     .{ .code = "fil", .locale = .fil },
+        .{ .code = "am", .locale = .am }, .{ .code = "ar", .locale = .ar }, .{ .code = "az", .locale = .az },
+        .{ .code = "bg", .locale = .bg }, .{ .code = "bn", .locale = .bn }, .{ .code = "bs", .locale = .bs },
+        .{ .code = "da", .locale = .da }, .{ .code = "de", .locale = .de }, .{ .code = "el", .locale = .el },
+        .{ .code = "en", .locale = .en }, .{ .code = "es", .locale = .es }, .{ .code = "fa", .locale = .fa },
+        .{ .code = "fi", .locale = .fi }, .{ .code = "fr", .locale = .fr }, .{ .code = "ha", .locale = .ha },
+        .{ .code = "he", .locale = .he }, .{ .code = "hi", .locale = .hi }, .{ .code = "hr", .locale = .hr },
+        .{ .code = "hu", .locale = .hu }, .{ .code = "id", .locale = .id }, .{ .code = "ig", .locale = .ig },
+        .{ .code = "is", .locale = .is }, .{ .code = "it", .locale = .it }, .{ .code = "ja", .locale = .ja },
+        .{ .code = "km", .locale = .km }, .{ .code = "ko", .locale = .ko }, .{ .code = "mk", .locale = .mk },
+        .{ .code = "nb", .locale = .nb }, .{ .code = "nl", .locale = .nl }, .{ .code = "pa", .locale = .pa },
+        .{ .code = "pl", .locale = .pl }, .{ .code = "ps", .locale = .ps }, .{ .code = "ro", .locale = .ro },
+        .{ .code = "ru", .locale = .ru }, .{ .code = "sl", .locale = .sl }, .{ .code = "sq", .locale = .sq },
+        .{ .code = "sr", .locale = .sr }, .{ .code = "sv", .locale = .sv }, .{ .code = "sw", .locale = .sw },
+        .{ .code = "ta", .locale = .ta }, .{ .code = "th", .locale = .th }, .{ .code = "tr", .locale = .@"tr" },
+        .{ .code = "uk", .locale = .uk }, .{ .code = "ur", .locale = .ur }, .{ .code = "vi", .locale = .vi },
+        .{ .code = "yo", .locale = .yo },
+    };
+
+    /// Parse a locale code (e.g. "fr", "pt_BR", "zh_Hant", "de_DE.UTF-8",
+    /// "fil_PH") to a Locale. Case-insensitive; longest known code that ends at
+    /// a separator (`_`/`-`/`.`) or end-of-string wins, so "fil" is not
+    /// shadowed by "fi" and "zh_hant" is reachable. Returns null if no match.
     pub fn fromString(s: []const u8) ?Locale {
-        if (s.len < 2) return null;
-        const prefix = s[0..2];
-        // Two-letter prefix matching
-        if (std.mem.eql(u8, prefix, "en")) return .en;
-        if (std.mem.eql(u8, prefix, "ar")) return .ar;
-        if (std.mem.eql(u8, prefix, "az")) return .az;
-        if (std.mem.eql(u8, prefix, "bn")) return .bn;
-        if (std.mem.eql(u8, prefix, "de")) return .de;
-        if (std.mem.eql(u8, prefix, "el")) return .el;
-        if (std.mem.eql(u8, prefix, "es")) return .es;
-        if (std.mem.eql(u8, prefix, "fa")) return .fa;
-        if (std.mem.eql(u8, prefix, "fr")) return .fr;
-        if (std.mem.eql(u8, prefix, "he")) return .he;
-        if (std.mem.eql(u8, prefix, "hi")) return .hi;
-        if (std.mem.eql(u8, prefix, "hu")) return .hu;
-        if (std.mem.eql(u8, prefix, "it")) return .it;
-        if (std.mem.eql(u8, prefix, "ja")) return .ja;
-        if (std.mem.eql(u8, prefix, "km")) return .km;
-        if (std.mem.eql(u8, prefix, "ko")) return .ko;
-        if (std.mem.eql(u8, prefix, "pa")) return .pa;
-        if (std.mem.eql(u8, prefix, "pl")) return .pl;
-        if (std.mem.eql(u8, prefix, "ps")) return .ps;
-        if (std.mem.eql(u8, prefix, "ro")) return .ro;
-        if (std.mem.eql(u8, prefix, "ru")) return .ru;
-        if (std.mem.eql(u8, prefix, "sw")) return .sw;
-        if (std.mem.eql(u8, prefix, "ta")) return .ta;
-        if (std.mem.eql(u8, prefix, "th")) return .th;
-        if (std.mem.eql(u8, prefix, "tr")) return .@"tr";
-        if (std.mem.eql(u8, prefix, "uk")) return .uk;
-        if (std.mem.eql(u8, prefix, "ur")) return .ur;
-        if (std.mem.eql(u8, prefix, "vi")) return .vi;
-        // Special cases: pt_BR -> pt_br, zh_Hans -> zh_hans
-        if (std.mem.eql(u8, prefix, "pt")) return .pt_br;
-        if (std.mem.eql(u8, prefix, "zh")) return .zh_hans;
+        var best: ?Locale = null;
+        var best_len: usize = 0;
+        for (code_table) |entry| {
+            const n = entry.code.len;
+            if (n <= best_len) continue; // only consider longer matches
+            if (s.len < n) continue;
+            if (!std.ascii.eqlIgnoreCase(s[0..n], entry.code)) continue;
+            // Must end at a separator boundary or string end.
+            if (s.len > n) {
+                const c = s[n];
+                if (c != '_' and c != '-' and c != '.') continue;
+            }
+            best = entry.locale;
+            best_len = n;
+        }
+        if (best) |b| return b;
+        // Generic Chinese without an explicit Hans/Hant script subtag
+        // ("zh", "zh_CN", "zh-TW", ...). Default to Simplified; only the
+        // historically-Traditional regions (TW/HK/MO) fold to Traditional.
+        if (s.len >= 2 and std.ascii.eqlIgnoreCase(s[0..2], "zh")) {
+            const boundary = s.len == 2 or s[2] == '_' or s[2] == '-' or s[2] == '.';
+            if (boundary) {
+                if (s.len >= 5) {
+                    const region = s[3..5];
+                    if (std.ascii.eqlIgnoreCase(region, "TW") or
+                        std.ascii.eqlIgnoreCase(region, "HK") or
+                        std.ascii.eqlIgnoreCase(region, "MO"))
+                        return .zh_hant;
+                }
+                return .zh_hans;
+            }
+        }
         return null;
     }
 };
@@ -182,6 +249,26 @@ pub fn setLocale(locale: Locale) void {
         .ur => &ur.strings,
         .vi => &vi.strings,
         .zh_hans => &zh_hans.strings,
+        .am => &am.strings,
+        .bg => &bg.strings,
+        .bs => &bs.strings,
+        .da => &da.strings,
+        .fi => &fi.strings,
+        .fil => &fil.strings,
+        .ha => &ha.strings,
+        .hr => &hr.strings,
+        .id => &id.strings,
+        .ig => &ig.strings,
+        .is => &is.strings,
+        .mk => &mk.strings,
+        .nb => &nb.strings,
+        .nl => &nl.strings,
+        .sl => &sl.strings,
+        .sq => &sq.strings,
+        .sr => &sr.strings,
+        .sv => &sv.strings,
+        .yo => &yo.strings,
+        .zh_hant => &zh_hant.strings,
     };
     g_format_descs = switch (locale) {
         .en => &en.format_descriptions,
@@ -214,6 +301,26 @@ pub fn setLocale(locale: Locale) void {
         .ur => &ur.format_descriptions,
         .vi => &vi.format_descriptions,
         .zh_hans => &zh_hans.format_descriptions,
+        .am => &am.format_descriptions,
+        .bg => &bg.format_descriptions,
+        .bs => &bs.format_descriptions,
+        .da => &da.format_descriptions,
+        .fi => &fi.format_descriptions,
+        .fil => &fil.format_descriptions,
+        .ha => &ha.format_descriptions,
+        .hr => &hr.format_descriptions,
+        .id => &id.format_descriptions,
+        .ig => &ig.format_descriptions,
+        .is => &is.format_descriptions,
+        .mk => &mk.format_descriptions,
+        .nb => &nb.format_descriptions,
+        .nl => &nl.format_descriptions,
+        .sl => &sl.format_descriptions,
+        .sq => &sq.format_descriptions,
+        .sr => &sr.format_descriptions,
+        .sv => &sv.format_descriptions,
+        .yo => &yo.format_descriptions,
+        .zh_hant => &zh_hant.format_descriptions,
     };
     g_error_map = switch (locale) {
         .en => &empty_error_map, // English = identity passthrough
@@ -246,6 +353,26 @@ pub fn setLocale(locale: Locale) void {
         .ur => &ur.error_translations,
         .vi => &vi.error_translations,
         .zh_hans => &zh_hans.error_translations,
+        .am => &am.error_translations,
+        .bg => &bg.error_translations,
+        .bs => &bs.error_translations,
+        .da => &da.error_translations,
+        .fi => &fi.error_translations,
+        .fil => &fil.error_translations,
+        .ha => &ha.error_translations,
+        .hr => &hr.error_translations,
+        .id => &id.error_translations,
+        .ig => &ig.error_translations,
+        .is => &is.error_translations,
+        .mk => &mk.error_translations,
+        .nb => &nb.error_translations,
+        .nl => &nl.error_translations,
+        .sl => &sl.error_translations,
+        .sq => &sq.error_translations,
+        .sr => &sr.error_translations,
+        .sv => &sv.error_translations,
+        .yo => &yo.error_translations,
+        .zh_hant => &zh_hant.error_translations,
     };
     g_warning_map = switch (locale) {
         .en => &empty_warning_map, // English = identity passthrough
@@ -278,6 +405,26 @@ pub fn setLocale(locale: Locale) void {
         .ur => &ur.warning_translations,
         .vi => &vi.warning_translations,
         .zh_hans => &zh_hans.warning_translations,
+        .am => &am.warning_translations,
+        .bg => &bg.warning_translations,
+        .bs => &bs.warning_translations,
+        .da => &da.warning_translations,
+        .fi => &fi.warning_translations,
+        .fil => &fil.warning_translations,
+        .ha => &ha.warning_translations,
+        .hr => &hr.warning_translations,
+        .id => &id.warning_translations,
+        .ig => &ig.warning_translations,
+        .is => &is.warning_translations,
+        .mk => &mk.warning_translations,
+        .nb => &nb.warning_translations,
+        .nl => &nl.warning_translations,
+        .sl => &sl.warning_translations,
+        .sq => &sq.warning_translations,
+        .sr => &sr.warning_translations,
+        .sv => &sv.warning_translations,
+        .yo => &yo.warning_translations,
+        .zh_hant => &zh_hant.warning_translations,
     };
 }
 
@@ -452,9 +599,9 @@ pub const StringId = enum(u32) {
 };
 
 /// Look up a translated string by its numeric ID.
-pub fn getStringById(id: u32) ?[:0]const u8 {
+pub fn getStringById(string_id: u32) ?[:0]const u8 {
     const s = g_strings;
-    return switch (@as(StringId, @enumFromInt(id))) {
+    return switch (@as(StringId, @enumFromInt(string_id))) {
         .label_ok => s.label_ok,
         .label_warn => s.label_warn,
         .label_fail => s.label_fail,
@@ -506,9 +653,9 @@ pub fn malformBitToStringId(bit: u32) ?StringId {
     // Malformation string IDs start at malform_pdf_garbage_after_eof
     // and match the enum order in MalformationType
     const base: u32 = @intFromEnum(StringId.malform_pdf_garbage_after_eof);
-    const id = base + bit;
-    if (id > @intFromEnum(StringId.malform_pdf_jbig2_decode_failed)) return null;
-    return @enumFromInt(id);
+    const sid = base + bit;
+    if (sid > @intFromEnum(StringId.malform_pdf_jbig2_decode_failed)) return null;
+    return @enumFromInt(sid);
 }
 
 // ============================================================================
@@ -522,6 +669,10 @@ const locale_modules = .{
     it,        ja,        km,     ko,       pa,    pl,
     ps,        pt_br,     ro,     ru,       sw,    ta,
     th,        tr_locale, uk,     ur,       vi,    zh_hans,
+    am,        bg,        bs,     da,       fi,    fil,
+    ha,        hr,        id,     ig,       is,    mk,
+    nb,        nl,        sl,     sq,       sr,    sv,
+    yo,        zh_hant,
 };
 
 /// Number of CliAliases fields.
@@ -752,6 +903,19 @@ test "Locale.fromString parses prefixes" {
     try std.testing.expectEqual(Locale.@"tr", Locale.fromString("tr_TR.UTF-8").?);
     try std.testing.expectEqual(Locale.ur, Locale.fromString("ur_PK.UTF-8").?);
     try std.testing.expectEqual(@as(?Locale, null), Locale.fromString("x"));
+    // 50-locale + longest-match regressions (skill #5):
+    try std.testing.expectEqual(Locale.fil, Locale.fromString("fil_PH.UTF-8").?);
+    try std.testing.expectEqual(Locale.fil, Locale.fromString("fil").?);
+    try std.testing.expectEqual(Locale.fi, Locale.fromString("fi_FI").?);
+    try std.testing.expectEqual(Locale.fi, Locale.fromString("fi").?);
+    try std.testing.expectEqual(Locale.zh_hant, Locale.fromString("zh_Hant").?);
+    try std.testing.expectEqual(Locale.zh_hant, Locale.fromString("zh_hant.UTF-8").?);
+    try std.testing.expectEqual(Locale.zh_hans, Locale.fromString("zh_Hans").?);
+    try std.testing.expectEqual(Locale.nb, Locale.fromString("nb_NO").?);
+    try std.testing.expectEqual(Locale.sr, Locale.fromString("sr_RS").?);
+    try std.testing.expectEqual(Locale.yo, Locale.fromString("yo-NG").?);
+    try std.testing.expectEqual(@as(?Locale, null), Locale.fromString("xx"));
+    try std.testing.expectEqual(@as(?Locale, null), Locale.fromString(""));
 }
 
 test "isRtl includes ps and ur" {
