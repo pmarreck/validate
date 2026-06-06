@@ -11,6 +11,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
+const spotlight_store = @import("spotlight_store.zig");
 
 const format_validation = @import("format_validation.zig");
 const ValidationResult = format_validation.ValidationResult;
@@ -370,8 +371,36 @@ pub fn validateSpotlight(file: *FileSource) ValidationResult {
 		return ValidationResult.invalidCode(.spotlight, .invalid_value, "magic bytes");
 	}
 
-	// Proprietary format - structural validation only (magic verified)
-	return ValidationResult.structuralOnly(.spotlight);
+	// Structural validation: read the header region + block 0 and verify the
+	// 8tsd skeleton (header sizes, block-0 map magic, directory fits the file).
+	// The default block layout puts block 0 at header_size (commonly 4096), so
+	// a 64 KiB read covers header + map for typical stores.
+	const file_size = file.getEndPos() catch {
+		return ValidationResult.invalidCode(.spotlight, .failed_to_get, "Spotlight file size");
+	};
+	var hdr_buf: [64 * 1024]u8 = undefined;
+	const want: usize = @intCast(@min(@as(u64, hdr_buf.len), file_size));
+	file.seekTo(0) catch {
+		return ValidationResult.invalidCode(.spotlight, .failed_to_seek, "Spotlight header region");
+	};
+	const n = file.readAll(hdr_buf[0..want]) catch {
+		return ValidationResult.invalidCode(.spotlight, .failed_to_read, "Spotlight header region");
+	};
+	const info = spotlight_store.validateHeader(hdr_buf[0..n], file_size) catch |err| {
+		return switch (err) {
+			error.TooSmall => ValidationResult.invalidCode(.spotlight, .truncated, "Spotlight store header"),
+			error.BadMagic => ValidationResult.invalidCode(.spotlight, .invalid_value, "Spotlight store magic"),
+			error.BadHeaderSize, error.BadBlockSize => ValidationResult.invalidCode(.spotlight, .invalid_value, "Spotlight store header sizes"),
+			error.BlockZeroOutOfRange => ValidationResult.invalidCode(.spotlight, .truncated, "Spotlight block 0"),
+			error.BadMapMagic => ValidationResult.invalidCode(.spotlight, .invalid_value, "Spotlight block-0 map magic"),
+			error.MapOverrunsFile => ValidationResult.invalidCode(.spotlight, .exceeds_bounds, "Spotlight block directory"),
+		};
+	};
+	// A torn header garbles the embedded original_path; flag it (non-fatal).
+	if (!info.original_path_valid_utf8) {
+		return ValidationResult.okWithDepthAndWarning(.spotlight, .structural, "Spotlight store original_path field not valid UTF-8 (possible header damage)");
+	}
+	return ValidationResult.okWithDepth(.spotlight, .structural);
 }
 
 /// Validate binary plist format (bplist00/bplist01)
