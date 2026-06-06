@@ -56,7 +56,9 @@
             .hash = "pcre2-10.47.0-S7QTbvnVMgDsA1ipkKNj5kVoEda9wcIuZYUpdrTuDaCh",
         },
         .zlib = .{
-            .url = "https://github.com/allyourcodebase/zlib/archive/refs/heads/main.tar.gz",
+            // Pinned to immutable commit (was refs/heads/main; moving branches
+            // drift and break CI — see sqlite3 2026-06-05).
+            .url = "https://github.com/allyourcodebase/zlib/archive/d3b5519d3b73616a6bfece0712f080029d2a9244.tar.gz",
             .hash = "zlib-1.3.2-ZZQ7lc8NAAAHm9MDfplvwoesXvk4tVm6VCsiI8KnIbT0",
         },
         .sqlite3 = .{
@@ -66,7 +68,8 @@
             .hash = "sqlite3-3.53.2-DMxLWuAOAAA_Px0arJOIOaP4AKEu5prbsQgPMA35W1zz",
         },
         .libopenmpt = .{
-            .url = "https://github.com/pmarreck/openmpt/archive/refs/heads/master.tar.gz",
+            // Pinned to immutable commit (was refs/heads/master).
+            .url = "https://github.com/pmarreck/openmpt/archive/4066adfb77c095ac9f5d3437448fdcefb6a77e92.tar.gz",
             .hash = "libopenmpt-0.8.0-5ozQWN9GGQt4jdD0toz0qfceXIERnEsx5vBcUvWUg60E",
         },
         .cj5 = .{
