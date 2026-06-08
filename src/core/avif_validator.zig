@@ -315,12 +315,27 @@ test "AVIF validation rejects non-HEIF data" {
 }
 
 test "validateAv1Data does not blow the stack on small thread" {
-    // Regression test: validateAv1Data previously used a 2MB stack buffer
-    // which crashed on worker threads with 512KB-1MB stacks.
-    // Run the function on a thread with a small (256KB) stack to verify
-    // it no longer stack-overflows.
+    // Regression test: validateAv1Data previously used a 2MB stack buffer that
+    // crashed on worker threads with 512KB-1MB stacks. Run it on a constrained
+    // thread stack so a reintroduced multi-MB stack buffer overflows (and fails
+    // this test) while the fixed, heap-based implementation passes.
+    //
+    // Stack size = 1.5MB is a deliberate window, not an arbitrary "small" number:
+    //   * Lower bound (~850KB on glibc x86_64): validate links many C libs
+    //     (libjxl/libvpx/openmpt/sqlite/...) whose static TLS totals ~827KB
+    //     (measured: PT_TLS MemSiz). glibc places static TLS inside each thread's
+    //     stack region, so pthread_create's effective minimum is TLS + STACK_MIN
+    //     ≈ 850KB. A request below that returns EINVAL, which Zig's Thread.spawn
+    //     maps to `unreachable` → abort (this is why 256KB and 512KB crashed).
+    //   * Upper bound (<2MB): on small-TLS targets (macOS) usable stack ≈ the
+    //     requested size, so staying under 2MB keeps the old 2MB-buffer
+    //     regression detectable there too.
+    // 1.5MB clears the Linux TLS floor with ~650KB margin while leaving usable
+    // stack well under 2MB on every target. If a future TLS bump pushes the
+    // floor past this, raise it (but keep it under ~2.8MB so the regression
+    // stays catchable).
     const Thread = std.Thread;
-    const thread = try Thread.spawn(.{ .stack_size = 256 * 1024 }, struct {
+    const thread = try Thread.spawn(.{ .stack_size = 1536 * 1024 }, struct {
         fn run() void {
             // Minimal valid-looking AV1 data (will fail validation but must not crash)
             const fake_av1 = [_]u8{ 0x0A, 0x0D, 0x00, 0x00, 0x00, 0x24, 0x4F, 0x7E, 0x7F, 0x00, 0x68, 0x83, 0x00, 0x83, 0x02 };

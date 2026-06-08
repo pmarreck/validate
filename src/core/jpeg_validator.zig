@@ -42,7 +42,11 @@ pub const JpegValidationResult = struct {
 
 const std = @import("std");
 const jpeg_validator = @import("jpeg_validator.zig");
-const jpegz = @import("jpegz");
+// jpegz reached through tiffz's re-export so the whole build graph shares ONE
+// jpegz module instance (validate + tiffz both depending on jpegz directly
+// created two instances of the same root file, which Zig 0.16 rejects / the
+// nix sandbox SEGVs on). See validate #32.
+const jpegz = @import("tiffz").jpegz;
 
 
 /// Drop-in for `jpeg_validator.validateJpegDeepFromBuffer`.

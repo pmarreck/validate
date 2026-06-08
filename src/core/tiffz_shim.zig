@@ -189,6 +189,7 @@ fn routeError(err: tiffz.Error, format: FileFormat) ValidationResult {
         // ── Structural FAIL ──
         error.InvalidArgument => ValidationResult.invalidCodeWithDepth(format, .invalid_value, "tiffz API argument", .full),
         error.Malformed => ValidationResult.invalidCodeWithDepth(format, .invalid_value, "TIFF structure", .full),
+        error.IfdChainCycle => ValidationResult.invalidCodeWithDepth(format, .invalid_value, "TIFF IFD chain cycle (next-IFD offset revisits a parsed IFD)", .full),
         error.SourceTooShort => ValidationResult.invalidCodeWithDepth(format, .file_too_small, "TIFF header", .full),
         error.SourceShortRead => ValidationResult.invalidCodeWithDepth(format, .truncated, "TIFF strip/tile data", .full),
         error.SourceSeekTooFarBack => ValidationResult.invalidCodeWithDepth(format, .failed_to_seek, "TIFF source", .full),

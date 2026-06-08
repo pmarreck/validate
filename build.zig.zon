@@ -121,22 +121,16 @@
             .url = "git+https://github.com/pmarreck/mini_blar#e1dd0b8f30bfbb4281af3fcdc794a10b77a7bd34",
             .hash = "mini_blar-3.0.0-3792nNzwAQD17kS0jQfrf-IQ9Z8qfQ-kj2mdEBPlOWuu",
         },
-        // jpegz: spec-complete JPEG family decoder library (Zig core).
-        // Phase 1 wraps libjpeg-turbo (BSD-3) for T.81 + JPEG-LS, openjpeg
-        // (BSD-2) for JPEG 2000, and lifts validate's existing pure-Zig
-        // lossless decoder. We consume the Zig module path (per jpegz/tiffz
-        // recommendation) — the C ABI is currently a thin scaffold.
-        .jpegz = .{
-            .url = "git+https://github.com/pmarreck/jpegz#9dd7368107a85546150b4dbade9a9624a839e95b",
-            .hash = "jpegz-0.1.0-staw4JvNCgDeay56iuevbFpgjMRYLuXrZHx1AsOAAmzf",
-        },
         // tiffz: cleanroom pure-Zig TIFF / DNG / NEF / NRW / CR2 / ARW
-        // structural validator. Consumes jpegz.decode for JPEG-in-TIFF
-        // (Compression=7) and lossless JPEG (DNG). Pins jpegz + zstdz
-        // to the same commits/hashes as validate for Zig package dedup.
+        // structural validator. Owns the jpegz pin and re-exports it as
+        // `tiffz.jpegz`, so validate consumes a SINGLE jpegz module instance
+        // through tiffz. Depending on jpegz directly here too created a second
+        // jpegz module instance sharing the same root file, which Zig 0.16
+        // rejects ("file exists in modules 'jpegz' and 'jpegz0'") and the nix
+        // sandbox SEGVs on during the Debug test compile. See validate #32.
         .tiffz = .{
-            .url = "git+https://github.com/pmarreck/tiffz#e1f6066a8ba0b9612ccd2e7f8a95aaebca6dd825",
-            .hash = "tiffz-0.1.0-qutJAca7YgFo9kzBA1uegdXoZna_jA1-ngev-tneDGi_",
+            .url = "git+https://github.com/pmarreck/tiffz#67a624f6e08245dd09a0cbb77bf29155d1737397",
+            .hash = "tiffz-0.1.0-qutJAbr6YgFO4rCmyDgkUhCxry7B0363jmB7VYLh13f9",
         },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",

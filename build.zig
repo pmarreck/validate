@@ -231,36 +231,16 @@ pub fn build(b: *std.Build) void {
         "Path to zlib library directory (forwarded to tiffz)",
     ) orelse (b.graph.environ_map.get("ZLIB_LIB_ROOT") orelse "");
 
-    const jpegz_dep = blk: {
-        if (opt_libjpeg_inc.len > 0 and opt_libjpeg_lib.len > 0 and
-            opt_openjpeg_inc.len > 0 and opt_openjpeg_lib.len > 0)
-        {
-            break :blk b.dependency("jpegz", .{
-                .target = target,
-                .optimize = deps_optimize,
-                .@"with-charls" = false,
-                .@"libjpeg-include" = opt_libjpeg_inc,
-                .@"libjpeg-lib" = opt_libjpeg_lib,
-                .@"openjpeg-include" = opt_openjpeg_inc,
-                .@"openjpeg-lib" = opt_openjpeg_lib,
-            });
-        }
-        if (opt_libjpeg_inc.len > 0 and opt_libjpeg_lib.len > 0) {
-            break :blk b.dependency("jpegz", .{
-                .target = target,
-                .optimize = deps_optimize,
-                .@"with-charls" = false,
-                .@"libjpeg-include" = opt_libjpeg_inc,
-                .@"libjpeg-lib" = opt_libjpeg_lib,
-            });
-        }
-        break :blk b.dependency("jpegz", .{
-            .target = target,
-            .optimize = deps_optimize,
-            .@"with-charls" = false,
-        });
-    };
-    const jpegz_mod = jpegz_dep.module("jpegz");
+    // jpegz is intentionally NOT a direct dependency of validate. It is reached
+    // through tiffz's re-export (`@import("tiffz").jpegz`) so the whole build
+    // graph contains exactly ONE jpegz module instance. Depending on jpegz here
+    // AND inside tiffz created two instances of the same root file, which Zig
+    // 0.16 rejects ("file exists in modules 'jpegz' and 'jpegz0'") and the nix
+    // sandbox crashes on (SEGV during the Debug test compile). tiffz owns the
+    // jpegz pin; validate consumes it transitively. See #32.
+    // The opt_libjpeg_* / opt_openjpeg_* paths above are still forwarded to
+    // tiffz (which forwards them to its jpegz) and used for the consumer-side
+    // -L library search paths below.
 
     // tiffz: pure-Zig TIFF / DNG / NEF / NRW / CR2 / ARW structural
     // validator. Consumes jpegz.decode for Compression=7 + lossless
@@ -433,7 +413,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "par2_core", .module = par2z_core_mod }, // PAR2 packet parser via par2z
             .{ .name = "progrez", .module = progrez_module }, // Progress bar rendering (pure-Zig)
             .{ .name = "mini_blar", .module = mini_blar_mod }, // BLIP archive reader/verifier
-            .{ .name = "jpegz", .module = jpegz_mod }, // JPEG family decoder + validator (MIT, pmarreck/jpegz)
+            // jpegz reached via tiffz re-export (single instance) — see #32.
             .{ .name = "tiffz", .module = tiffz_mod }, // TIFF family validator (MIT, pmarreck/tiffz)
         },
     });
@@ -772,6 +752,22 @@ pub fn build(b: *std.Build) void {
     const windows_test_wine = b.option([]const u8, "windows-test-wine", "Path to CrossOver wine for Windows tests");
     const windows_test_bottle = b.option([]const u8, "windows-test-bottle", "CrossOver bottle name for Windows tests") orelse "windows-dev-test";
 
+    // #32 workaround + self-removing tripwire. Zig 0.16's self-hosted x86_64
+    // backend SEGVs compiling the Debug-native test binary on Linux, so we force
+    // the (mature) LLVM backend for the test compiles — exactly what the
+    // ReleaseFast build already uses. The comptime guard makes this self-expiring:
+    // when the fleet bumps Zig past 0.16, the @compileError fires so someone
+    // re-verifies whether the upstream backend bug is fixed instead of silently
+    // carrying this forever.
+    const force_test_llvm: bool = blk: {
+        const zver = @import("builtin").zig_version;
+        if (zver.major == 0 and zver.minor <= 16) break :blk true;
+        @compileError("Zig >0.16 detected: re-check the self-hosted x86_64 Debug-backend " ++
+            "test-compile SEGV (validate #32). Build tests with -Doptimize=Debug -Dtarget=native " ++
+            "on x86_64-linux WITHOUT use_llvm; if green, delete this block and the two guarded " ++
+            "`use_llvm` assignments below. If it still crashes, widen this version guard.");
+    };
+
     const core_tests = b.addTest(.{
         .root_module = core_mod,
         .filters = test_filters,
@@ -781,6 +777,7 @@ pub fn build(b: *std.Build) void {
     core_tests.root_module.linkLibrary(sqlite3_lib); // Tests need sqlite3 directly (CLI links it separately)
     core_tests.root_module.link_libc = true;
     core_tests.root_module.link_libcpp = true; // Required for libjxl, libopenmpt (C++ libraries)
+    if (force_test_llvm) core_tests.use_llvm = true; // see force_test_llvm tripwire above (#32)
 
     const host_is_windows = b.graph.host.result.os.tag == .windows;
     const target_is_windows = target.result.os.tag == .windows;
@@ -805,6 +802,7 @@ pub fn build(b: *std.Build) void {
     ffi_tests.root_module.linkLibrary(sqlite3_lib);
     ffi_tests.root_module.link_libc = true;
     ffi_tests.root_module.link_libcpp = true;
+    if (force_test_llvm) ffi_tests.use_llvm = true; // see force_test_llvm tripwire above (#32)
 
     const run_ffi_tests = if (target_is_windows and !host_is_windows and windows_test_wine != null) blk: {
         const run = b.addSystemCommand(&.{

@@ -47,6 +47,13 @@ pub fn ensureInit() void {
 
 /// Return the global `Io`. Panics if `ensureInit()` was not called first.
 pub fn io() std.Io {
+    // Self-initialize: callers (and especially tests) must never observe a
+    // null global Io. ensureInit() is idempotent and thread-safe, so this is
+    // a single acquire-load on the steady-state path. Previously io() panicked
+    // when called before ensureInit(), which made tests that use it directly
+    // pass or crash depending on test execution order (a prior test happening
+    // to call ensureInit() first) — non-deterministic across platforms/seeds.
+    ensureInit();
     return g_io.?;
 }
 
