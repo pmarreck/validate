@@ -72,9 +72,10 @@ assert_contains "$DECOV" 'Linux · macOS · Windows' "all-platforms cell present
 # ── Per-OS honesty: JPEG-family Windows phrasing ─────────────────
 ENCOV="$DOCS/coverage/index.html"
 assert_contains "$ENCOV" 'deep JPEG decode is Linux/macOS-only at launch' "EN windows note"
-# the note must appear exactly as many times as flagged rows (JPEG, JPEG2K)
+# the note must appear exactly as many times as flagged rows
+# (JPEG, JPEG2K, AVI, CR2, DNG, RAF — per validate's 2026-06-11 trace)
 note_count=$(grep -o 'os-partial' "$ENCOV" | wc -l | tr -d ' ')
-[ "$note_count" -eq 2 ] || fail "expected 2 os-partial cells (JPEG, JPEG2K), got $note_count"
+[ "$note_count" -eq 6 ] || fail "expected 6 os-partial cells, got $note_count"
 assert_contains "$ENCOV" 'Measured, not claimed' "candor framing present"
 
 # ── Suggestion banner is suggestion-only ─────────────────────────

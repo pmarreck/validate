@@ -89,17 +89,34 @@ function M.parse_report_string(md)
 end
 
 -- ── Per-OS honesty (Einstein MFIC condition, 2026-06-11) ─────────
--- Measured rates were taken on Linux/macOS builds. Windows ships with the
--- JPEG family at structural depth only; these rows must NOT claim measured
--- Windows numbers. Exact row list pending confirmation from the validate
--- session (JPEG, JPEG2000/JPX, JPEG-in-TIFF, JPEG-LS, RAW JPEG previews).
+-- Measured rates were taken on Linux/macOS builds. Exact set confirmed by
+-- the validate session's call-site trace (inbox note 2026-06-11): all deep
+-- JPEG/JPEG2000 decoding routes through jpegz/openjp2, which the launch
+-- Windows build cannot link, so exactly these rows' measured numbers drop
+-- to structural on Windows. Do NOT widen this set: TIFF/NEF/ARW/NRW/PEF/
+-- RW2/CR3 are structural/0% on every OS, and the PDF DCT/JPX breakout
+-- sub-rows are not rendered on the site (headline PDF claims n/a, nothing
+-- to flag — revisit if the breakout table is ever included). When jpegz
+-- vendoring lands and Windows is re-swept, validate pings us to lift these.
 local WINDOWS_STRUCTURAL_ONLY = {
-	["JPEG"] = true,
-	["JPEG2K"] = true,
+	["JPEG"] = true,    -- jpegz wrapperDecode (libjpeg)
+	["JPEG2K"] = true,  -- openjpeg codestream decode
+	["AVI"] = true,     -- MJPEG per-frame decode via jpegz (93% shotgun → ~0%)
+	["CR2"] = true,     -- embedded preview JPEG via jpegz
+	["DNG"] = true,     -- tiffz strip/tile + jpegz preview
+	["RAF"] = true,     -- embedded preview JPEG via jpegz
 }
 
 function M.windows_structural_only(name)
 	return WINDOWS_STRUCTURAL_ONLY[name] == true
+end
+
+-- Sorted list of flagged row names, for tests that sweep the set.
+function M.windows_flagged_names()
+	local names = {}
+	for name in pairs(WINDOWS_STRUCTURAL_ONLY) do names[#names + 1] = name end
+	table.sort(names)
+	return names
 end
 
 -- ── Localized-name join against the app's i18n format keys ────────

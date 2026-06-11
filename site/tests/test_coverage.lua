@@ -96,12 +96,22 @@ eq(meta.mode, "sniper", "TSV mode parsed")
 ok(meta.n == 100, "TSV trial count is 100, got " .. tostring(meta.n))
 
 -- ── Per-OS honesty flags (Einstein MFIC condition) ─────────────────
--- JPEG-family rows are structural-only on Windows at launch; everything
--- else applies to all three OSes. Set pending exact list from validate.
-ok(cov.windows_structural_only("JPEG"), "JPEG flagged windows-structural")
-ok(cov.windows_structural_only("JPEG2K"), "JPEG2K flagged windows-structural")
-ok(not cov.windows_structural_only("PNG"), "PNG not flagged")
-ok(not cov.windows_structural_only("ZIP"), "ZIP not flagged")
+-- Exact set confirmed by the validate session 2026-06-11 (call-site trace):
+-- every deep JPEG/JPEG2000 path routes through jpegz/openjp2, which the
+-- launch Windows build cannot link — these rows' measured numbers drop to
+-- structural on Windows. Everything else is pure-Zig and identical per OS.
+for _, name in ipairs({ "JPEG", "JPEG2K", "AVI", "CR2", "DNG", "RAF" }) do
+	ok(cov.windows_structural_only(name), name .. " flagged windows-structural")
+end
+-- Explicit do-NOT-flag set (numbers identical on Windows): over-flagging
+-- under-claims Windows coverage, which is its own form of dishonesty.
+for _, name in ipairs({ "PNG", "ZIP", "TIFF", "NEF", "ARW", "PDF" }) do
+	ok(not cov.windows_structural_only(name), name .. " must NOT be flagged")
+end
+-- The flagged set must never name a row absent from the report (typo guard).
+for _, name in ipairs(cov.windows_flagged_names()) do
+	ok(by[name] ~= nil, "flagged row not in report: " .. name)
+end
 
 -- ── Localized-name join: classifier over the WHOLE row set ─────────
 -- Every report row must either resolve to an app i18n format key (so its
