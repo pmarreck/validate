@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# site/test — run all site generator tests; accumulate failures.
+# NO set -e (commands under test legitimately return non-zero). set -u only.
+set -u
+
+SITE_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SITE_DIR" || exit 1
+
+failures=0
+
+# Lua unit tests
+for t in tests/test_*.lua; do
+	[ -e "$t" ] || continue
+	out="$(luajit "$t" 2>&1)"
+	rc=$?
+	if [ $rc -eq 0 ]; then
+		echo "PASS $t"
+	else
+		echo "FAIL $t (exit $rc)"
+		echo "$out" | sed 's/^/  /'
+		failures=$((failures + 1))
+	fi
+done
+
+# Bash integration tests (post-generate output assertions)
+for t in tests/test_*.bash; do
+	[ -e "$t" ] || continue
+	out="$(bash "$t" 2>&1)"
+	rc=$?
+	if [ $rc -eq 0 ]; then
+		echo "PASS $t"
+	else
+		echo "FAIL $t (exit $rc)"
+		echo "$out" | sed 's/^/  /'
+		failures=$((failures + 1))
+	fi
+done
+
+echo ""
+if [ $failures -eq 0 ]; then
+	echo "site tests: ALL PASS"
+else
+	echo "site tests: $failures file(s) FAILED"
+fi
+exit $failures
