@@ -1,0 +1,95 @@
+#!/usr/bin/env luajit
+--[[
+generate: build the validate.pics static site into ../docs/.
+
+Emits, for each of the 50 locales: a home page and a coverage page
+(English at the site root as the hreflang x-default; every other locale
+under /<slug>/). Plus shared assets and a sitemap. Format names on the
+coverage page come from the app's own i18n catalogs; coverage numbers come
+from the canonical corruption-detection report (itself TSV-derived, and
+cross-checked against the raw TSVs by the test suite).
+
+Usage: site/generate  (from anywhere; paths derive from the script location)
+]]
+
+local SITE = arg[0]:match("^(.*)/[^/]+$") or "."
+package.path = SITE .. "/lib/?.lua;" .. SITE .. "/templates/?.lua;" .. package.path
+
+local locales = require("locales")
+local coverage = require("coverage")
+local zig_catalog = require("zig_catalog")
+local home_tpl = require("home")
+local coverage_tpl = require("coverage_page") -- templates/coverage_page.lua
+local shared = require("shared")
+
+local ROOT = SITE .. "/.."
+local DOCS = ROOT .. "/docs"
+local I18N_APP = ROOT .. "/src/core/i18n/"
+
+local function slurp(path)
+	local f = assert(io.open(path, "r"), "cannot open " .. path)
+	local s = f:read("*a")
+	f:close()
+	return s
+end
+
+local function shellquote(s)
+	return "'" .. s:gsub("'", "'\\''") .. "'"
+end
+
+local function write_file(path, content)
+	local dir = path:match("^(.*)/[^/]+$")
+	if dir then os.execute("mkdir -p " .. shellquote(dir)) end
+	local f = assert(io.open(path, "w"), "cannot write " .. path)
+	f:write(content)
+	f:close()
+end
+
+-- ── Load shared data once ─────────────────────────────────────────
+local rows = coverage.parse_report_string(slurp(ROOT .. "/docs/corruption-detection-report.md"))
+assert(#rows >= 180, "suspiciously few report rows: " .. #rows)
+
+local by_code = {}
+for _, l in ipairs(locales.list) do by_code[l.code] = l end
+
+local pages = 0
+for _, locale in ipairs(locales.list) do
+	local catalog_chunk = loadfile(SITE .. "/i18n/" .. locale.code .. ".lua")
+	assert(catalog_chunk, "missing site catalog: " .. locale.code .. " (site is enforce-phase: all 50 required)")
+	local t = catalog_chunk()
+	local names = zig_catalog.load_format_descriptions(I18N_APP .. locale.code .. ".zig")
+
+	local ctx = {
+		locale = locale,
+		t = t,
+		locales = locales.list,
+		locales_by_code = by_code,
+		rows = rows,
+		names = names,
+	}
+
+	local prefix = locale.slug == "" and "" or ("/" .. locale.slug)
+	ctx.page = "home"
+	write_file(DOCS .. prefix .. "/index.html", home_tpl.render(ctx))
+	ctx.page = "coverage"
+	write_file(DOCS .. prefix .. "/coverage/index.html", coverage_tpl.render(ctx))
+	pages = pages + 2
+end
+
+-- ── Assets ────────────────────────────────────────────────────────
+write_file(DOCS .. "/assets/site.css", slurp(SITE .. "/assets/site.css"))
+write_file(DOCS .. "/assets/site.js", slurp(SITE .. "/assets/site.js"))
+
+-- ── Sitemap ───────────────────────────────────────────────────────
+local sm = { '<?xml version="1.0" encoding="UTF-8"?>',
+	'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' }
+for _, l in ipairs(locales.list) do
+	for _, page in ipairs({ "home", "coverage" }) do
+		sm[#sm + 1] = "<url><loc>" .. shared.BASE_URL .. shared.page_path(l, page) .. "</loc></url>"
+	end
+end
+sm[#sm + 1] = "</urlset>"
+write_file(DOCS .. "/sitemap.xml", table.concat(sm, "\n"))
+
+io.stderr:write(("generate: %d pages, %d locales, %d coverage rows\n")
+	:format(pages, #locales.list, #rows))

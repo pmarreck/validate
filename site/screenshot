@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# screenshot — render generated pages in headless Chrome for Peter's eyes.
+# Visual judgments are never encoded without him seeing these (CLAUDE.md:
+# "Peter is your output eyes"). Outputs PNGs to $OUT (default: TMPDIR).
+set -u
+
+SITE_DIR="$(cd "$(dirname "$0")" && pwd)"
+DOCS="$SITE_DIR/../docs"
+OUT="${OUT:-${TMPDIR:-/tmp}/validate-pics-shots}"
+PORT="${PORT:-8123}"
+CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+mkdir -p "$OUT"
+
+npx --yes http-server "$DOCS" -p "$PORT" --silent &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null' EXIT
+sleep 1.5
+
+shot() { # path-out-name url-path width height
+	"$CHROME" --headless --disable-gpu --hide-scrollbars \
+		--screenshot="$OUT/$1.png" --window-size="$3,$4" \
+		"http://127.0.0.1:$PORT$2" 2>/dev/null
+	echo "$OUT/$1.png"
+}
+
+shot home-en /            1440 900
+shot home-ar /ar/         1440 900
+shot home-ja /ja/         1440 900
+shot coverage-en /coverage/        1440 1800
+shot coverage-de /de/coverage/     1440 1800
+shot coverage-ar-rtl /ar/coverage/ 1440 1800
+shot home-en-mobile / 390 844
+
+echo "screenshots in $OUT"

@@ -43,11 +43,25 @@ Integration: LLMsend `validate` session to integrate+push, CC Einstein.
   `docs/<slug>/{index.html,coverage/}` ×49, shared `docs/assets/`.
 
 ## Checkboxes
-- [ ] Scaffold site/ + failing tests (locales registry, zig_catalog, coverage)
-- [ ] Coverage data pipeline (TSV latest-run-wins + report mechanism notes + per-OS flags)
-- [ ] EN templates: home (rebrand port) + coverage page
-- [ ] 50-locale emit: hreflang/x-default, RTL, switcher, banner
-- [ ] Site catalogs: first-class 10 hand-done
-- [ ] Site catalogs: remaining 40 LLM-grade (subagent fan-out)
+- [x] Scaffold site/ + failing tests (locales registry, zig_catalog, coverage) — 2026-06-11 ~15:30 EST
+- [x] Coverage data pipeline (report rows + MFIC TSV cross-checks + per-OS flags) — 2026-06-11 ~15:50 EST
+- [x] Templates: home (rebrand port) + coverage page + shared chrome/assets — 2026-06-11 ~16:20 EST
+- [x] Site catalogs: first-class 10 hand-done (en de fr es it pt_br ja zh_hans ko nl) — 2026-06-11 ~16:40 EST
+- [ ] Site catalogs: remaining 40 LLM-grade (4 subagents, in flight)
+- [ ] Full generate + test_output green (blocked on all 50 catalogs)
 - [ ] Screenshots → Peter (icons judgment + general look)
 - [ ] LLMsend validate: confirm JPEG-family row set; integration+push request when ready
+
+## Decisions log
+- Brand (mecha_llc_website 2026-06-11): keep sky identity; accent #3b82f6;
+  Inter stack, NO webfont fetch (zero-external-deps story); text wordmark;
+  footer "A Mecha, LLC product" → mecha.llc; Buy CTA → mecha.llc/validate/
+  (commercial page lives there; validate.pics = technical showcase).
+- Coverage table row source = canonical report (already incorporates the
+  2026-05-27 sweep); tests recompute png/jpeg rates from raw TSVs as MFIC
+  drift tripwires. Bolter mode exists only for 44 re-swept formats → not
+  shown (polish-depth cut).
+- Rows with no honest app i18n key stay English-only: NRW, MPEG-4 Part 2,
+  Opus, JSON5 (aliasing would mislabel them).
+- PDF breakout sub-table (#### heading) excluded; headline PDF row points
+  readers at the full report.

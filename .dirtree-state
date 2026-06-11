@@ -5,3 +5,13 @@ depth=2
 close=[
 	deps/*
 ]
+
+annotate=[
+	site = validate.pics static-site generator (LuaJIT) — emits docs/ for GitHub Pages, 50 locales
+	site/generate = SSG entry point: renders home+coverage per locale into docs/, assets, sitemap
+	site/i18n = site string catalogs ×50 (Lua); enforce-phase key parity vs en.lua
+	site/lib/coverage.lua = parses corruption-detection-report tables + raw TSVs; per-OS honesty flags; app-key join
+	site/lib/locales.lua = canonical 50-locale registry (slug/hreflang/native/rtl); test cross-checks vs app catalogs
+	site/lib/zig_catalog.lua = extracts .key="value" pairs from app Zig i18n catalogs incl. \xNN and @"..." keys
+	site/test = site test runner (Bash, set -u, accumulates failures)
+]
