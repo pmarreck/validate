@@ -47,10 +47,17 @@ Integration: LLMsend `validate` session to integrate+push, CC Einstein.
 - [x] Coverage data pipeline (report rows + MFIC TSV cross-checks + per-OS flags) — 2026-06-11 ~15:50 EST
 - [x] Templates: home (rebrand port) + coverage page + shared chrome/assets — 2026-06-11 ~16:20 EST
 - [x] Site catalogs: first-class 10 hand-done (en de fr es it pt_br ja zh_hans ko nl) — 2026-06-11 ~16:40 EST
-- [ ] Site catalogs: remaining 40 LLM-grade (4 subagents, in flight)
-- [ ] Full generate + test_output green (blocked on all 50 catalogs)
-- [ ] Screenshots → Peter (icons judgment + general look)
-- [ ] LLMsend validate: confirm JPEG-family row set; integration+push request when ready
+- [x] Site catalogs: remaining 40 LLM-grade (4 subagents) — 2026-06-11 ~17:10 EST
+- [x] Full generate + test_output green (ALL PASS, 100 pages) — 2026-06-11 ~17:15 EST
+- [x] Per-OS flag set finalized from validate's jpegz trace: +AVI/CR2/DNG/RAF — 2026-06-11 ~17:25 EST
+- [x] Screenshots → Peter (7 shots sent; icons question asked) — 2026-06-11 ~17:35 EST
+- [x] LLMsend validate (integration+push request) + Einstein (status CC) — 2026-06-11 ~17:40 EST
+
+## Open / blocked on others
+- [ ] Peter's visual sign-off (eyebrow lockup, blue CTAs, RTL, icons-too-dark answer)
+- [ ] Deploy timing: validate session integrates + pushes (pushing deploys GitHub Pages)
+- [ ] jpegz vendoring lands → validate pings → lift Windows flags / measured numbers
+- [ ] mecha_llc_website may send blessed icon set later → apply
 
 ## Decisions log
 - Brand (mecha_llc_website 2026-06-11): keep sky identity; accent #3b82f6;

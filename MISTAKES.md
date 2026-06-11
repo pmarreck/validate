@@ -105,3 +105,8 @@ exact-match approach above, building green before each commit.
 - Bash tool output intermittently drops when several calls are batched in one
   message — use sequential single calls and write results to `/tmp` files when
   it matters.
+
+## 2026-06-11 (site agent, validate_pics workspace)
+- Wrote a PCRE non-capturing group `(?:...)` inside a Lua pattern (zig_catalog.lua). Lua patterns are not regex; escaped-quote string scanning needs a manual walker. Caught by the first red test run.
+- Byte-truncated a localized string for a meta description (`s:sub(1,120)`) — would have emitted invalid UTF-8 on ja/zh pages. Caught in review before ship. Rule: never byte-slice translated text; pass full strings and let consumers truncate at display time.
+- Misused `capture` (dotfiles capture.bash): it populates `out`/`err`/`rc` and requires them declared in caller scope — not `STDOUT`/`RETURN_CODE`. Read the helper's header before first use.
