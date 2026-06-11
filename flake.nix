@@ -198,7 +198,12 @@
 					# Linux x86_64/aarch64 are built natively by Garnix on those platforms
 					windows-x86_64 = mkValidate { targetSystem = "x86_64-windows"; cross = true; };
 					windows-aarch64 = mkValidate { targetSystem = "aarch64-windows"; cross = true; };
-					macos-aarch64 = mkValidate { targetSystem = "aarch64-darwin"; cross = true; };
+					# NOTE: macos-aarch64 is intentionally NOT cross-built from Linux.
+					# Garnix builds it NATIVELY (the green `macos-aarch64` check), which is
+					# the supported path; cross-compiling a Darwin target from Linux drags
+					# in Apple-SDK deps that nixpkgs marks badPlatforms. Per the policy
+					# above (cross only for targets without native builders) it's redundant.
+					# See validate #32.
 				} else if buildSystem == "aarch64-darwin" then {
 					# Cross-compile from macOS (Zig cross-compiles natively from any host)
 					linux-x86_64 = mkValidate { targetSystem = "x86_64-linux"; cross = true; };
