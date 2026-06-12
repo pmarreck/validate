@@ -1309,9 +1309,12 @@ export fn validate_test_coverage(
         const s = std.fmt.bufPrintZ(&buf, "{d}", .{result.duration_ns}) catch return null;
         builder.add("duration_ns", s) catch return null;
     }
-    // Per-mode stats
-    const all_modes = [_]test_coverage.CorruptionMode{ .sniper, .shotgun, .header, .tail, .zeroed, .xor, .sparse_noise, .boundary };
-    for (all_modes) |mode| {
+    // Per-mode stats — emit for EVERY CorruptionMode, exhaustively over the enum.
+    // A hand-maintained list previously omitted `bolter` (added out-of-sequence),
+    // so bolter ran but was never reported and the CLI silently dropped its row
+    // (it skips modes whose total==0). Iterating the enum makes that class of
+    // bug impossible: any future mode is reported automatically. (#bolter-2026-06-12)
+    for (std.enums.values(test_coverage.CorruptionMode)) |mode| {
         const stats = result.by_mode.get(mode);
         var keybuf: [32]u8 = undefined;
         var valbuf: [16]u8 = undefined;
@@ -1408,4 +1411,56 @@ test "KvBuilder produces correct format" {
     try std.testing.expect(std.mem.indexOf(u8, result, "flag") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "num_u64") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "42") != null);
+}
+
+/// Extract the u64 value of `mode_<mode>_<field>` from a KV-US-RS result.
+fn kvModeU64(kv: []const u8, mode: []const u8, field: []const u8) ?u64 {
+    var keybuf: [48]u8 = undefined;
+    const key = std.fmt.bufPrint(&keybuf, "mode_{s}_{s}", .{ mode, field }) catch return null;
+    const idx = std.mem.indexOf(u8, kv, key) orelse return null;
+    var p = idx + key.len;
+    if (p >= kv.len or kv[p] != US) return null; // must be the key→value boundary
+    p += 1;
+    const end = std.mem.indexOfScalarPos(u8, kv, p, RS) orelse kv.len;
+    return std.fmt.parseInt(u64, kv[p..end], 10) catch null;
+}
+
+test "test-coverage reports EVERY requested mode (regression: bolter was dropped)" {
+    // Regression guard for the bolter-omission bug: bolter (CorruptionMode bit
+    // 1<<8, added out-of-sequence after the original 8 modes) was *run* but its
+    // per-mode stats were never emitted by the FFI — the emission used a
+    // hardcoded mode list that omitted it. The CLI then silently dropped the
+    // bolter row (it skips modes whose total==0). This asserts that every mode
+    // the caller requests actually runs AND is reported (total > 0), as a SET —
+    // not just the default sniper/shotgun pair.
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var data: [8192]u8 = undefined;
+    for (&data, 0..) |*b, i| b.* = @truncate(i);
+    {
+        const wf = tmp.dir.createFile(runtime.io(), "cov.bin", .{}) catch unreachable;
+        defer wf.close(runtime.io());
+        wf.writePositionalAll(runtime.io(), &data, 0) catch unreachable;
+    }
+    const path = runtime.tmpRealpathAlloc(&tmp, allocator, "cov.bin") catch unreachable;
+    defer allocator.free(path);
+    const pathz = allocator.dupeZ(u8, path) catch unreachable;
+    defer allocator.free(pathz);
+
+    // sniper(1<<0) | shotgun(1<<1) | bolter(1<<8) = 0x103 — exactly Peter's repro.
+    const mask: u32 = (1 << 0) | (1 << 1) | (1 << 8);
+    // 30 rounds / 3 modes = 10 each; negative early-stop radius disables early
+    // stop so all rounds run deterministically; single-threaded for determinism.
+    const result = validate_test_coverage(pathz.ptr, 30, 42, 4096, mask, 0, 1, -1.0, null, null, true) orelse return error.NullCoverageResult;
+    defer validate_free(result);
+    const kv = std.mem.span(result);
+
+    for ([_][]const u8{ "sniper", "shotgun", "bolter" }) |m| {
+        const total = kvModeU64(kv, m, "total") orelse {
+            std.debug.print("coverage KV is missing mode_{s}_total — requested mode not reported\n", .{m});
+            return error.RequestedModeNotReported;
+        };
+        try std.testing.expect(total > 0); // the mode actually ran
+    }
 }

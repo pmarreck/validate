@@ -46,4 +46,7 @@ result-win/
 # Spotlight orphan-tombstone case study: the 6.9GB binary index mirror is
 # local-only quarantine data (pm 2026-06-10). CASE_STUDY.md + metadata.ndjson
 # stay tracked; the raw indexes do not.
-case-studies/spotlight-orphan-tombstone-2026-06-09/spotlight-indexes/
+# (broadened) entire orphan-tombstone case study is local-only pending the
+# "is this a separate integrity product?" decision — keep out of validate's tree.
+case-studies/spotlight-orphan-tombstone-2026-06-09/
+case-studies/spotlight*
