@@ -110,3 +110,29 @@ exact-match approach above, building green before each commit.
 - Wrote a PCRE non-capturing group `(?:...)` inside a Lua pattern (zig_catalog.lua). Lua patterns are not regex; escaped-quote string scanning needs a manual walker. Caught by the first red test run.
 - Byte-truncated a localized string for a meta description (`s:sub(1,120)`) — would have emitted invalid UTF-8 on ja/zh pages. Caught in review before ship. Rule: never byte-slice translated text; pass full strings and let consumers truncate at display time.
 - Misused `capture` (dotfiles capture.bash): it populates `out`/`err`/`rc` and requires them declared in caller scope — not `STDOUT`/`RETURN_CODE`. Read the helper's header before first use.
+
+## 2026-06-11 — #32 cross-platform CI marathon (validate side)
+
+- **Empty-FOD-from-broken-sandbox masquerades as a "platform-divergent hash."**
+  framework-nixos's nix *sandbox* couldn't fetch, so the zigDeps FOD produced
+  an EMPTY `p/o/tmp` tree — whose sha256 is stable and real-looking, so
+  `nix build` kept reporting it as "linux's hash" ≠ darwin's. No real
+  divergence existed. **Tell:** the suspicious `got:` hash equals
+  `mktemp -d; mkdir p o tmp; nix hash path --sri`. Trust darwin/Garnix
+  (working sandboxes) for FOD hashes; distrust framework-nixos-sourced ones.
+- **One "test SEGV" was FIVE bugs, each masking the next.** Once the compiler
+  stopped crashing (use_llvm), real errors surfaced one at a time. Re-run after
+  each fix; read the NEW top error, don't assume one symptom = one cause.
+- **Zig 0.16 self-hosted x86_64 Debug backend SEGVs on large test binaries** →
+  `compile.use_llvm = true` on the test step, gated by a comptime `zig_version`
+  tripwire that `@compileError`s on >0.16 so the workaround self-expires.
+- **pthread stack minimum is TLS-inflated.** ~827KB static TLS (libjxl/libvpx/
+  openmpt) lives inside each thread stack → `Thread.spawn(.stack_size=256KB)`
+  EINVALs → Zig `unreachable` → abort. Measure `readelf -lW <bin> | grep TLS`.
+- **Duplicate module from transitive+direct shared dep** (validate + tiffz both
+  `b.dependency("jpegz")`) → Zig 0.16 `file exists in modules 'jpegz'/'jpegz0'`,
+  sandbox SEGVs. Fix: one owner re-exports (`tiffz pub const jpegz`), consumers
+  reach it transitively. Single instance, no dual-pin drift.
+- **jpegz `linkSystemLibrary("jpeg"/"openjp2")` is unconditional** → blocks
+  mingw `-static` cross. Real fix = Zig-vendor the C libs (option A), not nix
+  static-mingw overrides.
