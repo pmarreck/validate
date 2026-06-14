@@ -136,3 +136,14 @@ exact-match approach above, building green before each commit.
 - **jpegz `linkSystemLibrary("jpeg"/"openjp2")` is unconditional** → blocks
   mingw `-static` cross. Real fix = Zig-vendor the C libs (option A), not nix
   static-mingw overrides.
+
+## 2026-06-13 — `rg -rn` ≠ `grep -rn` (self-inflicted "mangling")
+Typed `rg -rn "pat" file` out of grep muscle memory. In ripgrep `-r` is
+`--replace REPLACEMENT` (NOT recursive — rg recurses by default), so `-rn`
+parsed as `--replace=n`: every match was substituted with the literal "n".
+Spent real cycles misattributing this to codescan, then to Claude Code's
+Bash parser, before a hexdump of redirected output proved rg itself wrote
+the "n" — and `rg --help` showed `-r REPLACEMENT`. Lesson: for ripgrep use
+`rg -n` (or `--no-filename`/`-l` etc.); NEVER `-r` unless you actually want
+match replacement. When output looks corrupted, hexdump the bytes before
+blaming a tool — and check your own flags first.
