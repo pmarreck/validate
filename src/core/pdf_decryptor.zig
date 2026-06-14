@@ -134,14 +134,36 @@ pub fn parseEncryptionParams(data: []const u8) ?EncryptionParams {
         }
     }
 
-    // Parse /Length (key length in bits)
-    if (findDictValue(enc_dict, "/Length")) |v| {
-        if (parseNumber(enc_dict, v)) |num| {
-            params.key_length = @intCast(@max(5, @min(16, @divFloor(num.value, 8))));
+    // Parse /Length (key length in bits). Depth-aware: take the TOP-LEVEL
+    // (brace-depth-1) /Length, NOT the /CF crypt-filter subdict's /Length (which
+    // is the per-filter key length in BYTES, not bits). qpdf and others order the
+    // /CF subdict before the top-level /Length, so a naive first-match grabs the
+    // nested 16 → @divFloor(16,8)=2 → clamps to 5 → a 40-bit key for V4/AES-128.
+    {
+        var depth: i32 = 0;
+        var p: usize = 0;
+        var found_len = false;
+        while (p + 1 < enc_dict.len) : (p += 1) {
+            if (enc_dict[p] == '<' and enc_dict[p + 1] == '<') {
+                depth += 1;
+                p += 1;
+            } else if (enc_dict[p] == '>' and enc_dict[p + 1] == '>') {
+                depth -= 1;
+                p += 1;
+            } else if (depth == 1 and std.mem.startsWith(u8, enc_dict[p..], "/Length")) {
+                if (findDictValue(enc_dict[p..], "/Length")) |v| {
+                    if (parseNumber(enc_dict[p..], v)) |num| {
+                        params.key_length = @intCast(@max(5, @min(16, @divFloor(num.value, 8))));
+                        found_len = true;
+                    }
+                }
+                break;
+            }
         }
-    } else {
-        // Default key length based on version
-        params.key_length = if (params.version >= 2) 16 else 5;
+        if (!found_len) {
+            // Default key length based on version.
+            params.key_length = if (params.version >= 2) 16 else 5;
+        }
     }
 
     // Parse /P (permissions)
@@ -1100,4 +1122,26 @@ test "computeV5Hash: R5 path is plain SHA-256(password ++ salt)" {
     h.update(salt);
     h.final(&want);
     try std.testing.expectEqualSlices(u8, &want, &got);
+}
+
+test "parseEncryptionParams: V4/AES-128 uses top-level /Length 128, not /CF subdict's /Length 16" {
+    // Regression (reported by docscan, 2026-06-14). qpdf orders the /CF
+    // crypt-filter subdict — whose own /Length 16 is the key length in BYTES —
+    // BEFORE the top-level /Length 128 (key length in BITS). A naive first-match
+    // /Length scan grabs the nested 16, computes @divFloor(16,8)=2, clamps to 5,
+    // and derives a 40-bit key instead of 128-bit → wrong file key → garbage.
+    // The scan must take the top-level (brace-depth-1) /Length.
+    const data =
+        "%PDF-1.6\n" ++
+        "trailer << /Encrypt 5 0 R /Root 1 0 R /ID [(0123456789ABCDEF)(0123456789ABCDEF)] >>\n" ++
+        "5 0 obj\n" ++
+        "<< /CF << /StdCF << /AuthEvent /DocOpen /CFM /AESV2 /Length 16 >> >> " ++
+        "/Filter /Standard /V 4 /R 4 /Length 128 /P -44 " ++
+        "/O (" ++ ("O" ** 32) ++ ") /U (" ++ ("U" ** 32) ++ ") >>\n" ++
+        "endobj\n";
+    const params = parseEncryptionParams(data) orelse return error.ParseFailed;
+    try std.testing.expectEqual(@as(u8, 4), params.version);
+    try std.testing.expect(params.use_aes);
+    // Pre-fix: 5 (40-bit). Correct: 128 bits / 8 = 16 bytes.
+    try std.testing.expectEqual(@as(u8, 16), params.key_length);
 }
