@@ -111,6 +111,7 @@ pub const financial_validators = @import("financial_validators.zig");
 pub const pim_validators = @import("pim_validators.zig");
 pub const edi_validators = @import("edi_validators.zig");
 pub const crypto_validators = @import("crypto_validators.zig");
+pub const license = @import("license.zig");
 pub const pdf_validator = @import("pdf_validator.zig");
 pub const cab_validator = @import("cab_validator.zig");
 pub const wim_validator = @import("wim_validator.zig");
@@ -314,6 +315,8 @@ test {
     _ = @import("edi_validators.zig");
     // Crypto/certificate format validators (PEM, DER)
     _ = @import("crypto_validators.zig");
+    // Offline Ed25519 license-token verifier
+    _ = @import("license.zig");
     // BagIt (RFC 8493) bag validator
     _ = @import("bagit_validator.zig");
     // StuffIt archive validator (.sit / .sitx)

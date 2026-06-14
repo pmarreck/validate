@@ -14,6 +14,21 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+### Licensing — offline Ed25519 verifier (raised 2026-06-14; Paddle launch-critical)
+
+Contract v1 locked with `mecha_llc_website` (issuer = mecha-commerce Worker;
+verifier = validate app, offline). Wire: `b64url_nopad(payload).b64url_nopad(sig)`,
+sign/verify over the left ASCII bytes, no `alg` field. **Email-only gate**
+(ASCII-lower exact); `name` is display/audit-only (dropped name-matching to kill
+a JS↔Zig Unicode-casing divergence). `kid`-selected pubkeys, injected `today`.
+
+- [x] `src/core/license.zig` pure core + 16 tests (happy + every error branch,
+      incl. real payload-substitution → bad_signature). Registered in mod.zig.
+      Zig suite green via `nix build .#checks.test`. — 2026-06-14
+- [ ] C-FFI `mecha_license_verify` + C-CLI dogfood; error_code → bilingual i18n.
+- [ ] Pin to shared `license_vectors.json` (mecha-commerce) — differential MFIC
+      oracle; embed real per-product pubkeys+kids; reconcile parse-before-verify
+      ordering (kid lives inside signed payload) against the vector rows.
 ### Memory subsystem (raised 2026-04-28; two concurrent runs OOM'd 128 GB Mac)
 
 **Status as of 2026-05-01.** Profiling harness, `heap.validateAllocator`,

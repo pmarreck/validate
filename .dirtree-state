@@ -14,4 +14,5 @@ annotate=[
 	site/lib/locales.lua = canonical 50-locale registry (slug/hreflang/native/rtl); test cross-checks vs app catalogs
 	site/lib/zig_catalog.lua = extracts .key="value" pairs from app Zig i18n catalogs incl. \xNN and @"..." keys
 	site/test = site test runner (Bash, set -u, accumulates failures)
+	src/core/license.zig = Offline Ed25519 license-token verifier — contract v1 (b64url.b64url token, sign-over-left, email-only gate, kid-selected pubkeys, injected today, ErrorCode enum for i18n)
 ]
