@@ -9,6 +9,15 @@ cd "$SCRIPT_DIR"
 # Detect system
 system=$(nix eval --raw 'nixpkgs#system' 2>/dev/null || echo "aarch64-darwin")
 
+# Provision ground-truth fixtures. They are NOT committed in this repo (they live
+# in the sibling private repo ../validate_gui, kept out to avoid bloat / submodule
+# detection). If the local dir is missing but the sibling has it, symlink so the
+# CLI tests run against real samples. If neither is present, fixture-dependent CLI
+# tests SKIP loudly (exit 77) rather than FAIL — see tests/cli/_lib.sh.
+if [ ! -e ground_truth_examples ] && [ -d ../validate_gui/ground_truth_examples ]; then
+	ln -s ../validate_gui/ground_truth_examples ground_truth_examples
+	echo "=== Linked ground_truth_examples -> ../validate_gui/ground_truth_examples ==="
+fi
 # Reassemble any split-up large ground-truth fixtures before running tests.
 # Files over GitHub's 100 MB limit are committed as .chunk.NNN pieces; the
 # reassembly script cats them back together and sha256-verifies against a
@@ -35,19 +44,30 @@ mkdir -p zig-out/bin
 cp -f result/bin/validate zig-out/bin/validate
 
 cli_failures=0
+cli_skipped=0
 if [[ -d tests/cli ]]; then
 	echo "=== Running CLI tests ==="
 	for test_script in tests/cli/*; do
 		if [[ -x "$test_script" ]]; then
 			test_name="$(basename "$test_script")"
-			if VALIDATE_BIN=./zig-out/bin/validate "$test_script" > /dev/null 2>&1; then
+			VALIDATE_BIN=./zig-out/bin/validate "$test_script" > /dev/null 2>&1
+			rc=$?
+			if [[ $rc -eq 0 ]]; then
 				echo "  PASS: $test_name"
+			elif [[ $rc -eq 77 ]]; then
+				# Exit 77 = loud SKIP (e.g. ground-truth fixture not provisioned).
+				echo "  SKIP: $test_name (fixture unavailable)"
+				((cli_skipped++)) || true
 			else
 				echo "  FAIL: $test_name"
 				((cli_failures++)) || true
 			fi
 		fi
 	done
+fi
+
+if [[ $cli_skipped -gt 0 ]]; then
+	echo "=== $cli_skipped CLI test(s) SKIPPED (provision ../validate_gui for full coverage) ==="
 fi
 
 if [[ $cli_failures -gt 0 ]]; then

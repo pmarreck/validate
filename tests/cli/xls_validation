@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(dirname "$0")/_lib.sh"; skip_if_missing ground_truth_examples
 # MS-XLS deep validation tests: ground truth + corruption detection
 
 set -u

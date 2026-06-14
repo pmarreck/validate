@@ -50,3 +50,9 @@ result-win/
 # "is this a separate integrity product?" decision — keep out of validate's tree.
 case-studies/spotlight-orphan-tombstone-2026-06-09/
 case-studies/spotlight*
+
+# Ground-truth fixtures are provisioned externally from the sibling ../validate_gui
+# repo (kept out of this repo to avoid bloat / submodule detection). ./test
+# symlinks it in when absent; never commit it here.
+ground_truth_examples
+ground_truth_examples/
