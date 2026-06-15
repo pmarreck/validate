@@ -26,9 +26,12 @@ a JS↔Zig Unicode-casing divergence). `kid`-selected pubkeys, injected `today`.
       incl. real payload-substitution → bad_signature). Registered in mod.zig.
       Zig suite green via `nix build .#checks.test`. — 2026-06-14
 - [ ] C-FFI `mecha_license_verify` + C-CLI dogfood; error_code → bilingual i18n.
-- [ ] Pin to shared `license_vectors.json` (mecha-commerce) — differential MFIC
-      oracle; embed real per-product pubkeys+kids; reconcile parse-before-verify
-      ordering (kid lives inside signed payload) against the vector rows.
+- [x] Pin to shared `license_vectors.json` (issuer-authored differential MFIC
+      oracle, vendored as `src/core/fixtures/license_vectors.json`): verify()
+      reordered to the contract error precedence, `expected_product` now optional,
+      dates range-checked, email trimmed. All 18 vector cases agree. — 2026-06-15
+- [ ] Embed real per-product pubkeys+kids once mecha-commerce generates them
+      (vectors use a test key); production keys arrive via inbox.
 ### Memory subsystem (raised 2026-04-28; two concurrent runs OOM'd 128 GB Mac)
 
 **Status as of 2026-05-01.** Profiling harness, `heap.validateAllocator`,

@@ -20,10 +20,12 @@
 //!     divergence that would reject a paying non-Latin-named customer's key).
 //!
 //! Independence note (MFIC): the verifier is pinned to a shared differential
-//! vector file (`license_vectors.json` in mecha-commerce) that the issuer side
-//! authors — neither side authors the other's oracle. The `signToken` helper in
-//! this file's tests is only an author-side convenience for the red→green loop,
-//! NOT the trusted oracle.
+//! vector file authored by the ISSUER side (mecha-commerce), vendored here as
+//! `fixtures/license_vectors.json` for hermetic testing — neither side authors
+//! the other's oracle, so passing it proves the two independent implementations
+//! agree, not that we marked our own homework. The `signToken` helper in this
+//! file's tests is only an author-side convenience for the red→green loop, NOT
+//! the trusted oracle. Re-sync the fixture if the issuer regenerates it.
 
 const std = @import("std");
 const Ed25519 = std.crypto.sign.Ed25519;
@@ -93,52 +95,58 @@ pub const Payload = struct {
 /// Per-contract hard ceiling: reject anything larger before doing any work.
 pub const max_token_len: usize = 4096;
 
-/// ASCII-only case-insensitive byte-equality. Non-ASCII bytes are compared
-/// verbatim (std.ascii.toLower passes them through), which is exactly the agreed
-/// email match rule: "ASCII A–Z lowercase both sides, exact byte-equality."
-fn asciiEqualIgnoreCase(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |x, y| {
-        if (std.ascii.toLower(x) != std.ascii.toLower(y)) return false;
+/// Email match per contract: ASCII-trim + ASCII-lowercase the user input, then
+/// byte-compare to the token's `email` (which the issuer already canonicalized).
+/// We do NOT Unicode-fold — emails are ASCII; IDN domains arrive punycode.
+fn canonicalEmailEqual(user_email: []const u8, payload_email: []const u8) bool {
+    const trimmed = std.mem.trim(u8, user_email, " \t\r\n");
+    if (trimmed.len != payload_email.len) return false;
+    for (trimmed, payload_email) |u, e| {
+        if (std.ascii.toLower(u) != e) return false;
     }
     return true;
 }
 
-/// True iff `s` is a well-formed "YYYY-MM-DD" string (shape only — not a
-/// calendar-validity check; lexicographic order is what the expiry compare
-/// relies on, and that only needs fixed-width zero-padded fields).
-fn isIsoDate(s: []const u8) bool {
+/// Well-formed "YYYY-MM-DD": fixed shape AND range-checked (month 1–12, day
+/// 1–31), matching the issuer's reference so the lexicographic expiry compare is
+/// meaningful and `bad_date` fires on the same inputs on both sides.
+fn isWellFormedDate(s: []const u8) bool {
     if (s.len != 10) return false;
     if (s[4] != '-' or s[7] != '-') return false;
     for ([_]usize{ 0, 1, 2, 3, 5, 6, 8, 9 }) |i| {
         if (!std.ascii.isDigit(s[i])) return false;
     }
-    return true;
+    const mo = (s[5] - '0') * 10 + (s[6] - '0');
+    const d = (s[8] - '0') * 10 + (s[9] - '0');
+    return mo >= 1 and mo <= 12 and d >= 1 and d <= 31;
 }
 
 /// Verify a license token offline. Pure: no I/O, no clock — `today` is injected
-/// as "YYYY-MM-DD". On success the returned `Verified` owns an arena the caller
-/// must `deinit`.
+/// as "YYYY-MM-DD". `expected_product` is optional: when non-null it gates
+/// `wrong_product`; null leaves the product ungated. On success the returned
+/// `Verified` owns an arena the caller must `deinit`.
 ///
-/// Ordering note: the `kid` that selects the public key lives inside the signed
-/// payload, so we base64-decode + JSON-parse the (length-bounded, ≤4 KiB)
-/// payload to read `kid` BEFORE the cryptographic check. No payload field is
-/// *trusted* until `sig.verify` succeeds — product/email/expiry gates all run
-/// post-verify. Algorithm is hardcoded (no `alg` field), so there is no
-/// downgrade surface regardless of parse order. To be reconciled exactly
-/// against the shared `license_vectors.json` when it lands.
+/// error_code precedence (pinned to the shared differential oracle
+/// `fixtures/license_vectors.json`, mirroring mecha-commerce's license.mjs):
+///   malformed_token → bad_base64 → bad_json → unknown_kid → bad_signature
+///   → bad_date → wrong_product → expired → email_mismatch → ok
+///
+/// The `kid` selecting the public key lives inside the signed payload, so we
+/// decode + JSON-parse the (≤4 KiB) payload to read `kid` before the crypto
+/// check. No payload field is *trusted* until `sig.verify` succeeds — every gate
+/// runs post-verify. Algorithm is hardcoded (no `alg` field): no downgrade
+/// surface regardless of parse order.
 pub fn verify(
     gpa: std.mem.Allocator,
     token: []const u8,
     user_email: []const u8,
     pubkeys: []const PubKey,
     today: []const u8,
-    expected_product: []const u8,
+    expected_product: ?[]const u8,
 ) VerifyResult {
+    // 1. Length + shape → malformed_token. Split on '.'; require exactly two
+    //    non-empty halves (no missing/extra dot).
     if (token.len == 0 or token.len > max_token_len) return .{ .err = .malformed_token };
-    if (!isIsoDate(today)) return .{ .err = .bad_date };
-
-    // Split on the single '.'; reject missing/empty halves and extra dots.
     const dot = std.mem.indexOfScalar(u8, token, '.') orelse return .{ .err = .malformed_token };
     const left = token[0..dot];
     const right = token[dot + 1 ..];
@@ -147,56 +155,68 @@ pub fn verify(
 
     const dec = std.base64.url_safe_no_pad.Decoder;
 
-    // Decode the signature (fixed 64 bytes).
-    var sig_bytes: [Ed25519.Signature.encoded_length]u8 = undefined;
-    const sig_size = dec.calcSizeForSlice(right) catch return .{ .err = .bad_base64 };
-    if (sig_size != sig_bytes.len) return .{ .err = .malformed_token };
-    dec.decode(&sig_bytes, right) catch return .{ .err = .bad_base64 };
-    const sig = Ed25519.Signature.fromBytes(sig_bytes);
-
-    // Decode the payload.
+    // 2. base64url-decode BOTH halves → bad_base64 on any base64 error. The sig
+    //    length is NOT enforced here: a valid-b64 wrong-length signature surfaces
+    //    as bad_signature after the kid lookup (matches the reference precedence).
+    //    Stack buffers: both halves are bounded by the 4 KiB token cap.
+    var payload_buf: [max_token_len]u8 = undefined;
     const payload_size = dec.calcSizeForSlice(left) catch return .{ .err = .bad_base64 };
-    const payload_buf = gpa.alloc(u8, payload_size) catch return .{ .err = .malformed_token };
-    defer gpa.free(payload_buf);
-    dec.decode(payload_buf, left) catch return .{ .err = .bad_base64 };
+    if (payload_size > payload_buf.len) return .{ .err = .bad_base64 };
+    dec.decode(payload_buf[0..payload_size], left) catch return .{ .err = .bad_base64 };
 
-    // Parse JSON (needed to read `kid`). Arena freed on every error path; kept
-    // only on success (handed to the caller inside Verified).
-    // `.alloc_always`: copy every string into the parse arena so the result is
-    // independent of `payload_buf` (which we free on return).
+    var sig_buf: [max_token_len]u8 = undefined;
+    const sig_size = dec.calcSizeForSlice(right) catch return .{ .err = .bad_base64 };
+    if (sig_size > sig_buf.len) return .{ .err = .bad_base64 };
+    dec.decode(sig_buf[0..sig_size], right) catch return .{ .err = .bad_base64 };
+
+    // 3. JSON parse → bad_json. `.alloc_always` copies strings into the parse
+    //    arena so the returned Verified is independent of the stack payload_buf.
     const parsed = std.json.parseFromSlice(
         Payload,
         gpa,
-        payload_buf,
+        payload_buf[0..payload_size],
         .{ .ignore_unknown_fields = true, .allocate = .alloc_always },
     ) catch return .{ .err = .bad_json };
     var keep = false;
     defer if (!keep) parsed.deinit();
     const p = parsed.value;
 
-    // Select the embedded public key by kid.
+    // 4. Select the embedded public key by kid → unknown_kid.
     const pk_bytes = blk: {
         for (pubkeys) |pk| {
             if (std.mem.eql(u8, pk.kid, p.kid)) break :blk pk.key;
         }
         return .{ .err = .unknown_kid };
     };
-    const public_key = Ed25519.PublicKey.fromBytes(pk_bytes) catch return .{ .err = .bad_signature };
 
-    // Cryptographic gate: signature over the LEFT ASCII bytes.
+    // 5. Cryptographic gate → bad_signature (wrong-length sig lands here too).
+    if (sig_size != Ed25519.Signature.encoded_length) return .{ .err = .bad_signature };
+    const public_key = Ed25519.PublicKey.fromBytes(pk_bytes) catch return .{ .err = .bad_signature };
+    var sig_arr: [Ed25519.Signature.encoded_length]u8 = undefined;
+    @memcpy(&sig_arr, sig_buf[0..Ed25519.Signature.encoded_length]);
+    const sig = Ed25519.Signature.fromBytes(sig_arr);
     sig.verify(left, public_key) catch return .{ .err = .bad_signature };
 
-    // Trusted from here on.
-    if (!std.mem.eql(u8, p.product, expected_product)) return .{ .err = .wrong_product };
-    if (!asciiEqualIgnoreCase(p.email, user_email)) return .{ .err = .email_mismatch };
-
-    if (!isIsoDate(p.issued)) return .{ .err = .bad_date };
+    // 6. Dates → bad_date (issued, then expiry, then today — this exact order).
+    if (!isWellFormedDate(p.issued)) return .{ .err = .bad_date };
     if (p.expiry) |exp| {
-        if (!isIsoDate(exp)) return .{ .err = .bad_date };
-        // Lexicographic compare is valid for fixed-width YYYY-MM-DD.
-        // Expired iff today is strictly after expiry (today == expiry accepts).
+        if (!isWellFormedDate(exp)) return .{ .err = .bad_date };
+    }
+    if (!isWellFormedDate(today)) return .{ .err = .bad_date };
+
+    // 7. Product gate (only when expected_product is non-null) → wrong_product.
+    if (expected_product) |want| {
+        if (!std.mem.eql(u8, p.product, want)) return .{ .err = .wrong_product };
+    }
+
+    // 8. Expiry → expired. Lexicographic compare is valid for YYYY-MM-DD;
+    //    inclusive (today == expiry is still valid).
+    if (p.expiry) |exp| {
         if (std.mem.order(u8, today, exp) == .gt) return .{ .err = .expired };
     }
+
+    // 9. Email gate → email_mismatch.
+    if (!canonicalEmailEqual(user_email, p.email)) return .{ .err = .email_mismatch };
 
     keep = true;
     return .{ .ok = .{ .parsed = parsed } };
@@ -458,4 +478,70 @@ test "valid base64 but non-JSON payload is rejected (bad_json)" {
     defer a.free(token);
 
     try expectErr(verify(a, token, "buyer@example.com", &pubkeys, "2026-09-01", "validate"), .bad_json);
+}
+
+// ─────────────── differential oracle (MFIC independence layer) ───────────────
+//
+// The shared vector file is authored by the ISSUER side (mecha-commerce's
+// Worker / license.mjs), not by validate — so passing it proves the two
+// independent implementations agree byte-for-byte, not that we marked our own
+// homework. It is vendored here (a verbatim copy of
+// ../mecha-commerce/license_vectors.json) so the test is hermetic in the nix
+// sandbox; re-sync if the issuer regenerates it.
+
+const VectorFile = struct {
+    pubkeys: []const struct {
+        kid: []const u8,
+        key_hex: []const u8,
+    },
+    cases: []const struct {
+        desc: []const u8,
+        token: []const u8,
+        user_email: []const u8,
+        today: []const u8,
+        expected_product: ?[]const u8,
+        expect: struct {
+            valid: bool,
+            error_code: []const u8,
+        },
+    },
+};
+
+test "differential oracle: every license_vectors.json case agrees with verify()" {
+    const a = std.testing.allocator;
+    const json = @embedFile("fixtures/license_vectors.json");
+
+    const parsed = try std.json.parseFromSlice(VectorFile, a, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const vf = parsed.value;
+
+    // Build the pubkey set once (hex → 32 bytes).
+    var pubkeys = try a.alloc(PubKey, vf.pubkeys.len);
+    defer a.free(pubkeys);
+    for (vf.pubkeys, 0..) |pk, i| {
+        var key: [Ed25519.PublicKey.encoded_length]u8 = undefined;
+        const decoded = try std.fmt.hexToBytes(&key, pk.key_hex);
+        try std.testing.expectEqual(@as(usize, Ed25519.PublicKey.encoded_length), decoded.len);
+        pubkeys[i] = .{ .kid = pk.kid, .key = key };
+    }
+
+    var failures: usize = 0;
+    for (vf.cases) |c| {
+        const res = verify(a, c.token, c.user_email, pubkeys, c.today, c.expected_product);
+        const got_valid = res == .ok;
+        const got_code = switch (res) {
+            .ok => "ok",
+            .err => |code| @tagName(code),
+        };
+        if (res == .ok) res.ok.deinit();
+
+        if (got_valid != c.expect.valid or !std.mem.eql(u8, got_code, c.expect.error_code)) {
+            failures += 1;
+            std.debug.print(
+                "VECTOR MISMATCH [{s}]: expected {{valid={}, code={s}}}, got {{valid={}, code={s}}}\n",
+                .{ c.desc, c.expect.valid, c.expect.error_code, got_valid, got_code },
+            );
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), failures);
 }

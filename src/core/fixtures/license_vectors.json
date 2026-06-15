@@ -1,0 +1,223 @@
+{
+	"version": 1,
+	"contract": "mecha-license v1",
+	"note": "Differential oracle shared by the issuer (mecha-commerce Worker) and verifiers (validate, rotshield). For each case, look up the pubkey by the token payload kid, verify, and assert {valid, error_code}. No private keys here — verification needs only the public key. expected_product (when non-null) is passed to the verifier to enable the wrong_product gate.",
+	"error_code_precedence": [
+		"malformed_token",
+		"bad_base64",
+		"bad_json",
+		"unknown_kid",
+		"bad_signature",
+		"bad_date",
+		"wrong_product",
+		"expired",
+		"email_mismatch",
+		"ok"
+	],
+	"pubkeys": [
+		{
+			"kid": "validate-test",
+			"key_hex": "fae0229f88f3f2dc6ef767aaff2a4b3061aa463e4ffd4c390a52a654c489dbc7"
+		}
+	],
+	"cases": [
+		{
+			"desc": "valid perpetual token",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6bnVsbCwiZmVhdHVyZXMiOlsiZnVsbCJdLCJ0eG4iOiJ0eG5fZGVtbyIsImtpZCI6InZhbGlkYXRlLXRlc3QifQ.0Sj94zqxC8YdXe1gkJmDMg45DbU0GxFJFlA1bA5f_1_9an3jfxKOsU4JZJGAGOxeBJXtHd2AYeublDQpp0IZAA",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": "validate",
+			"expect": {
+				"valid": true,
+				"error_code": "ok"
+			}
+		},
+		{
+			"desc": "missing dot",
+			"token": "no-dot-here",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "malformed_token"
+			}
+		},
+		{
+			"desc": "extra dot",
+			"token": "a.b.c",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "malformed_token"
+			}
+		},
+		{
+			"desc": "non-b64url chars",
+			"token": "@@@.@@@",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "bad_base64"
+			}
+		},
+		{
+			"desc": "non-JSON payload",
+			"token": "bm90IGpzb257.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "bad_json"
+			}
+		},
+		{
+			"desc": "tampered payload, original sig",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6IkJvYiIsImlzc3VlZCI6IjIwMjYtMDYtMTUiLCJleHBpcnkiOm51bGwsImZlYXR1cmVzIjpbImZ1bGwiXSwidHhuIjoidHhuX2RlbW8iLCJraWQiOiJ2YWxpZGF0ZS10ZXN0In0.L2fKEx2JFTlLQe7_VWUYLh9jq1emJ2C0ba0uusERbEgylv-BZ7jkP_S3Q5ekXR9pqMtYYhtGIEk9MQFmcc_dCA",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "bad_signature"
+			}
+		},
+		{
+			"desc": "flipped signature byte",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6IkFsaWNlIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6bnVsbCwiZmVhdHVyZXMiOlsiZnVsbCJdLCJ0eG4iOiJ0eG5fZGVtbyIsImtpZCI6InZhbGlkYXRlLXRlc3QifQ.0GfKEx2JFTlLQe7_VWUYLh9jq1emJ2C0ba0uusERbEgylv-BZ7jkP_S3Q5ekXR9pqMtYYhtGIEk9MQFmcc_dCA",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "bad_signature"
+			}
+		},
+		{
+			"desc": "signed by wrong key",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6bnVsbCwiZmVhdHVyZXMiOlsiZnVsbCJdLCJ0eG4iOiJ0eG5fZGVtbyIsImtpZCI6InZhbGlkYXRlLXRlc3QifQ.UGs_CxDhSXCO26rJPCkBR4TUMzG4h0_NNHTXrkGr4_iO9piVrivt62JsKiw-3GFXNb91PFBkb9Wu60cpVqTfCg",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "bad_signature"
+			}
+		},
+		{
+			"desc": "unknown kid",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6bnVsbCwiZmVhdHVyZXMiOlsiZnVsbCJdLCJ0eG4iOiJ0eG5fZGVtbyIsImtpZCI6Imdob3N0LWtpZCJ9.NPaivt0eEQ4szT4lDCpNAUqQGsEbsNh_mL8TMmRMYdD9jgmYVqHiArU96xscwowR_wuqpLr6byGlaOAVF1MxCA",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "unknown_kid"
+			}
+		},
+		{
+			"desc": "product match (gated)",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6bnVsbCwiZmVhdHVyZXMiOlsiZnVsbCJdLCJ0eG4iOiJ0eG5fZGVtbyIsImtpZCI6InZhbGlkYXRlLXRlc3QifQ.0Sj94zqxC8YdXe1gkJmDMg45DbU0GxFJFlA1bA5f_1_9an3jfxKOsU4JZJGAGOxeBJXtHd2AYeublDQpp0IZAA",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": "validate",
+			"expect": {
+				"valid": true,
+				"error_code": "ok"
+			}
+		},
+		{
+			"desc": "product mismatch (gated)",
+			"token": "eyJ2IjoxLCJwcm9kdWN0Ijoicm90c2hpZWxkIiwiZW1haWwiOiJidXllckBleGFtcGxlLmNvbSIsIm5hbWUiOiJKb3PDqSIsImlzc3VlZCI6IjIwMjYtMDYtMTUiLCJleHBpcnkiOm51bGwsImZlYXR1cmVzIjpbImZ1bGwiXSwidHhuIjoidHhuX2RlbW8iLCJraWQiOiJ2YWxpZGF0ZS10ZXN0In0.sE3BBvK3j3tZYtimzRJeIXXPCyMhM3-CJ61w5MGe3K_FU9YXF3M9cFwnEuQ3uufY5MLv4ivGvrAP61FtoxkhCw",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": "validate",
+			"expect": {
+				"valid": false,
+				"error_code": "wrong_product"
+			}
+		},
+		{
+			"desc": "today < expiry",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6IjIwMjYtMDYtMTYiLCJmZWF0dXJlcyI6WyJmdWxsIl0sInR4biI6InR4bl9kZW1vIiwia2lkIjoidmFsaWRhdGUtdGVzdCJ9.JCbFq3RPTaWiOp7CCQpmepMgOP2BhjhwFKqnyk6bXQmreEKisF4KdjpGvW3564PRaZWR84_X5cJiMFlliJc7AQ",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": true,
+				"error_code": "ok"
+			}
+		},
+		{
+			"desc": "today == expiry (inclusive)",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6IjIwMjYtMDYtMTUiLCJmZWF0dXJlcyI6WyJmdWxsIl0sInR4biI6InR4bl9kZW1vIiwia2lkIjoidmFsaWRhdGUtdGVzdCJ9.MRmdVGZIG5FBFTHR0n4UgrgIEhllCiftPe2RgmItk3l-fdEOjFfDwloq3ILbSQlET6HF_EpGajww1EfQiTpsBQ",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": true,
+				"error_code": "ok"
+			}
+		},
+		{
+			"desc": "today > expiry",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6IjIwMjYtMDYtMTQiLCJmZWF0dXJlcyI6WyJmdWxsIl0sInR4biI6InR4bl9kZW1vIiwia2lkIjoidmFsaWRhdGUtdGVzdCJ9.3l-vmIFj7QKis0kIDRw1PgqVxeOYre9USrouHxtSXsg2IeupnC_SzRBhTiHivnv-ewedx20RkwbzIsUbAXiRCw",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "expired"
+			}
+		},
+		{
+			"desc": "malformed expiry",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6IjIwMjYtMTMtNDAiLCJmZWF0dXJlcyI6WyJmdWxsIl0sInR4biI6InR4bl9kZW1vIiwia2lkIjoidmFsaWRhdGUtdGVzdCJ9.-dCZKkdkk4HrqGAjkmxKMYmvzy5beZYoIfV8an24iADIeofhSXk6uAIEgmOSIqm-2I5A3f8yUYfyzaZodMrEDQ",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "bad_date"
+			}
+		},
+		{
+			"desc": "email exact",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6bnVsbCwiZmVhdHVyZXMiOlsiZnVsbCJdLCJ0eG4iOiJ0eG5fZGVtbyIsImtpZCI6InZhbGlkYXRlLXRlc3QifQ.0Sj94zqxC8YdXe1gkJmDMg45DbU0GxFJFlA1bA5f_1_9an3jfxKOsU4JZJGAGOxeBJXtHd2AYeublDQpp0IZAA",
+			"user_email": "buyer@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": true,
+				"error_code": "ok"
+			}
+		},
+		{
+			"desc": "email case-differs but ASCII-equal",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6bnVsbCwiZmVhdHVyZXMiOlsiZnVsbCJdLCJ0eG4iOiJ0eG5fZGVtbyIsImtpZCI6InZhbGlkYXRlLXRlc3QifQ.0Sj94zqxC8YdXe1gkJmDMg45DbU0GxFJFlA1bA5f_1_9an3jfxKOsU4JZJGAGOxeBJXtHd2AYeublDQpp0IZAA",
+			"user_email": "BUYER@EXAMPLE.COM",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": true,
+				"error_code": "ok"
+			}
+		},
+		{
+			"desc": "email mismatch",
+			"token": "eyJ2IjoxLCJwcm9kdWN0IjoidmFsaWRhdGUiLCJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibmFtZSI6Ikpvc8OpIiwiaXNzdWVkIjoiMjAyNi0wNi0xNSIsImV4cGlyeSI6bnVsbCwiZmVhdHVyZXMiOlsiZnVsbCJdLCJ0eG4iOiJ0eG5fZGVtbyIsImtpZCI6InZhbGlkYXRlLXRlc3QifQ.0Sj94zqxC8YdXe1gkJmDMg45DbU0GxFJFlA1bA5f_1_9an3jfxKOsU4JZJGAGOxeBJXtHd2AYeublDQpp0IZAA",
+			"user_email": "other@example.com",
+			"today": "2026-06-15",
+			"expected_product": null,
+			"expect": {
+				"valid": false,
+				"error_code": "email_mismatch"
+			}
+		}
+	]
+}
