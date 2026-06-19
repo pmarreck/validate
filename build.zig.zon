@@ -77,8 +77,8 @@
             .hash = "cj5-1.0.0-wO-em1zcAADAeO71NFuI_Z-cmq7BT-0YSVegGQ2q8SCe",
         },
         .libraw = .{
-            .url = "git+https://github.com/phcreery/LibRaw-zig#master",
-            .hash = "libraw-0.21.4-c166SaOCAABnwCAwPECgFypND-jT9Ws-iidaxsJC_N05",
+            .url = "git+https://github.com/phcreery/LibRaw-zig#d6a01722b2f702b1bd41811cc588b69c63210a63",
+            .hash = "libraw-0.21.4-c166SQR6AADQHFPUvMe5mMpjqLf6XAFFu5x9N1KjGSN8",
         },
         .z7z = .{
             .url = "git+https://github.com/pmarreck/z7z#91fa1d3ddeede630decf33d16b3602dacde04674",
@@ -129,8 +129,8 @@
         // rejects ("file exists in modules 'jpegz' and 'jpegz0'") and the nix
         // sandbox SEGVs on during the Debug test compile. See validate #32.
         .tiffz = .{
-            .url = "git+https://github.com/pmarreck/tiffz#67a624f6e08245dd09a0cbb77bf29155d1737397",
-            .hash = "tiffz-0.1.0-qutJAbr6YgFO4rCmyDgkUhCxry7B0363jmB7VYLh13f9",
+            .url = "git+https://github.com/pmarreck/tiffz#059ff38b233ecf1f1945c9849aff67391af945a6",
+            .hash = "tiffz-0.1.0-qutJAeH6YgF5l2VFsU5WkEpzcC-D0lWcbW2M6D9AiAgG",
         },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",

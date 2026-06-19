@@ -62,7 +62,7 @@ pub const FileSource = struct {
         const abs_path = if (std.fs.path.isAbsolute(path))
             alloc.dupe(u8, path) catch return first_err
         else blk: {
-            const cwd = std.process.getCwdAlloc(alloc) catch return first_err;
+            const cwd = std.process.currentPathAlloc(runtime.io(), alloc) catch return first_err;
             break :blk std.fs.path.join(alloc, &.{ cwd, path }) catch return first_err;
         };
         for (abs_path) |*c| if (c.* == '/') { c.* = '\\'; };

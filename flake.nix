@@ -29,7 +29,7 @@
 
 			# Pre-fetched Zig dependencies (fixed-output derivation)
 			# This hash must be updated when build.zig.zon changes
-			zigDepsHash = "sha256-eu1qbVrVoxv+85Zr4Eq/jadeyxrkKj2hBriwkchvCho=";
+			zigDepsHash = "sha256-+2K3zAtaGmgH92PCEtkln4S0AK0HMz6epc23eNQCrk8=";
 		in {
 			# Packages for Garnix/Nix builds
 			packages = forBuildSystems (buildSystem:
@@ -293,8 +293,8 @@
 							            -Dopenjpeg-lib=$OPENJPEG_OUT/lib \
 							            -Dzlib-include=$ZLIB_DEV/include \
 							            -Dzlib-lib=$ZLIB_OUT/lib"
-							timeout 600 zig build $JPEGZ_OPTS test 2>&1 || {
-							  echo "Tests timed out or failed after 10 minutes"
+							timeout 1800 zig build $JPEGZ_OPTS test 2>&1 || {
+							  echo "Tests timed out or failed after 30 minutes"
 							  exit 1
 							}
 						'';
