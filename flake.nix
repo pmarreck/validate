@@ -197,7 +197,16 @@
 					# Only cross-compile for targets without native Garnix builders
 					# Linux x86_64/aarch64 are built natively by Garnix on those platforms
 					windows-x86_64 = mkValidate { targetSystem = "x86_64-windows"; cross = true; };
-					windows-aarch64 = mkValidate { targetSystem = "aarch64-windows"; cross = true; };
+					# NOTE: windows-aarch64 is intentionally NOT built — blocked by an
+					# UPSTREAM nixpkgs bug. pkgsCross.ucrtAarch64's compiler-rt builds its
+					# standalone libatomic with -DCOMPILER_RT_LIBATOMIC_USE_PTHREAD, so
+					# compiler-rt/lib/builtins/atomic.c does `#include <pthread.h>`, which the
+					# bare aarch64-w64-mingw32 cross sysroot lacks at that bootstrap stage
+					# ("fatal error: 'pthread.h' file not found"). Reproduced on nixpkgs-unstable
+					# 8a1b0127 AND 3e41b24a (compiler-rt 21.1.8); a top-level compiler-rt overlay
+					# does NOT reach the cross llvmPackages fixpoint. x86_64-windows is full-parity
+					# and unaffected. Re-add when nixpkgs fixes the aarch64-mingw compiler-rt
+					# libatomic config. See validate #64 + NixOS/nixpkgs#534236.
 					# NOTE: macos-aarch64 is intentionally NOT cross-built from Linux.
 					# Garnix builds it NATIVELY (the green `macos-aarch64` check), which is
 					# the supported path; cross-compiling a Darwin target from Linux drags
@@ -208,7 +217,8 @@
 					# Cross-compile from macOS (Zig cross-compiles natively from any host)
 					linux-x86_64 = mkValidate { targetSystem = "x86_64-linux"; cross = true; };
 					windows-x86_64 = mkValidate { targetSystem = "x86_64-windows"; cross = true; };
-					windows-aarch64 = mkValidate { targetSystem = "aarch64-windows"; cross = true; };
+					# windows-aarch64 omitted — blocked by upstream nixpkgs aarch64-mingw
+					# compiler-rt bug (see the note in the x86_64-linux branch above + #64).
 				} else { }));
 
 			# Checks for `nix flake check` / Garnix
