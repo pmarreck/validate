@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "E tụrụ ya n'ihe, ọ bụghị naanị nkwupụta.",
 	cov_intro = "Ọnụọgụgụ ọ bụla dị n'okpuru ka e ji itinye ezigbo mmebi n'ime ezigbo faịlụ nlele tụọ, ma gụọ ihe onye nyocha jidere — nnwale 100 maka ụdị ọ bụla na ọnọdụ ọ bụla, seed a kapịrị ọnụ, data izizi nke nnwale ọ bụla dị na repository. Anyị na-ebipụtakwa efu: ụfọdụ ụdị enweghị usoro izuoke ọ bụla, anyị họọrọ ịgwa gị nke ahụ karịa ime ka ọ dị ka ọ dị iche.",
 	cov_method_sniper = "ntụgharị otu bit na-enweghị usoro n'ọnọdụ byte a họọrọ na-enweghị usoro — mmebi kachasị sie ike ijide.",
+	cov_method_bolter = "otu byte nke a tụgharịrị bit 8 ya niile n'ọnọdụ na-enweghị usoro — mkpuchi otu byte dị arọ karịa nke sniper, ma ka pụrụ ịtụgharị ya kpamkpam.",
 	cov_method_shotgun = "e degharịrị byte 4,096 sochiri ibe ha na-enweghị usoro n'otu ọnọdụ — ọ na-eṅomi sector disk dara ada.",
 	cov_roadmap = "Ọnụego nchọpụta na-arị elu na mwepụta ọ bụla: a na-agbakwunye decoder miri emi otu ụdị ka otu ụdị, a na-emepụtakwa tebụl a ọzọ site na data ntụtụ izizi mgbe ọ bụla.",
 	cov_col_format = "Ụdị",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Platform",
 	cov_col_mechanism = "Otu e si ejide ya (ma ọ bụ ihe mere a na-apụghị)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Nchekwa",
 	sec_game_rom = "ROM Egwuregwu",
 	sec_disk_other = "Onyonyo Disk / Sistem Faịlụ / Executable / Ndị ọzọ",
-	sec_late_additions = "Mgbakwunye ikpeazụ (imechi oghere mkpuchi)",
 }

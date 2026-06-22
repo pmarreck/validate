@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Umepimwa, si madai tu.",
 	cov_intro = "Kila nambari hapa chini ilipimwa kwa kuingiza uharibifu halisi katika faili halisi za mfano na kuhesabu kile kithibitishaji kilichokamata — majaribio 100 kwa kila fomati kwa kila hali, mbegu isiyobadilika, na data ghafi ya kila jaribio imo katika hazina ya msimbo. Hata sufuri zinachapishwa: baadhi ya fomati hazina utaratibu wowote wa uadilifu, na tungependa kukuambia hivyo waziwazi badala ya kudokeza vinginevyo.",
 	cov_method_sniper = "ubadilishaji wa biti moja ya nasibu katika nafasi ya baiti ya nasibu — uharibifu mgumu zaidi kukamata.",
+	cov_method_bolter = "baiti moja yenye biti zake zote 8 zikipinduliwa katika nafasi ya nasibu — pigo zito zaidi la baiti moja kuliko sniper, bado linaweza kutenduliwa kabisa.",
 	cov_method_shotgun = "baiti 4,096 mfululizo za nasibu zinaandikwa upya katika nafasi ya nasibu — huiga sekta ya diski iliyoharibika.",
 	cov_roadmap = "Viwango vya ugunduzi hupanda kwa kila toleo: dekoda za kina huongezwa fomati kwa fomati, na jedwali hili huzalishwa upya kutoka kwa data ghafi ya vipimo kila mara.",
 	cov_col_format = "Fomati",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Majukwaa",
 	cov_col_mechanism = "Jinsi inavyokamatwa (au kwa nini haiwezekani)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Hifadhi",
 	sec_game_rom = "ROM za Michezo",
 	sec_disk_other = "Taswira ya Diski / Mfumo wa Faili / Programu / Nyinginezo",
-	sec_late_additions = "Nyongeza za baadaye (kuziba mapengo ya upeo)",
 }

@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Izmjereno, a ne samo tvrđeno.",
 	cov_intro = "Svaki broj u nastavku izmjeren je ubacivanjem stvarnih oštećenja u stvarne uzorke datoteka i brojanjem onoga što je validator uhvatio — 100 pokusa po formatu i po načinu rada, fiksni seed, a sirovi podaci svakog pokusa nalaze se u repozitoriju. Objavljujemo i nule: neki formati jednostavno nemaju nikakav mehanizam integriteta, a radije ćemo vam to reći nego sugerirati suprotno.",
 	cov_method_sniper = "jedan nasumični bit flip na nasumičnom pomaku bajta — oštećenje koje je najteže uhvatiti.",
+	cov_method_bolter = "jedan bajt sa svih 8 bitova preokrenutih na nasumičnom pomaku — teži pogodak jednog bajta od snipera, i dalje potpuno reverzibilan.",
 	cov_method_shotgun = "4.096 uzastopnih nasumičnih bajtova prepisano na nasumičnom pomaku — simulira neispravan sektor diska.",
 	cov_roadmap = "Stope detekcije rastu sa svakim izdanjem: dubinski dekoderi dodaju se format po format, a ova se tablica svaki put iznova generira iz sirovih mjernih podataka.",
 	cov_col_format = "Format",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Platforme",
 	cov_col_mechanism = "Kako se hvata (ili zašto se ne može)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Arhive",
 	sec_game_rom = "ROM-ovi igara",
 	sec_disk_other = "Slika diska / datotečni sustav / izvršne datoteke / ostalo",
-	sec_late_additions = "Kasniji dodaci (zatvaranje praznina u pokrivenosti)",
 }

@@ -26,7 +26,9 @@ local SECTION_KEYS = {
 	["Archive"] = "sec_archive",
 	["Game ROM"] = "sec_game_rom",
 	["Disk Image / Filesystem / Executable / Other"] = "sec_disk_other",
-	["Wave 2026-04-25b: coverage gap closure (extra-tiny + missing dirs)"] = "sec_late_additions",
+	-- (No "Wave …" entry: validate dissolved that chronological heading at
+	-- source — every row now sits under a real section. A row that somehow
+	-- still carried it would hit the error() below, loudly.)
 }
 
 local function rate_cell(display, pct, strong)
@@ -58,6 +60,7 @@ function M.render(ctx)
 	out[#out + 1] = ("<p>%s</p>"):format(esc(t.cov_intro))
 	out[#out + 1] = "<ul>"
 	out[#out + 1] = ('<li><strong>Sniper</strong> — %s</li>'):format(esc(t.cov_method_sniper))
+	out[#out + 1] = ('<li><strong>Bolter</strong> — %s</li>'):format(esc(t.cov_method_bolter))
 	out[#out + 1] = ('<li><strong>Shotgun</strong> — %s</li>'):format(esc(t.cov_method_shotgun))
 	out[#out + 1] = "</ul>"
 	out[#out + 1] = ("<p>%s</p>"):format(esc(t.cov_roadmap))
@@ -85,9 +88,9 @@ function M.render(ctx)
 		end
 		out[#out + 1] = ('<h2 class="cov-section">%s</h2>'):format(esc(t[key]))
 		out[#out + 1] = '<div class="cov-card cov-table-wrap"><table class="cov-table">'
-		out[#out + 1] = ('<thead><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr></thead><tbody>')
-			:format(esc(t.cov_col_format), esc(t.cov_col_sniper), esc(t.cov_col_shotgun),
-				esc(t.cov_col_platforms), esc(t.cov_col_mechanism))
+		out[#out + 1] = ('<thead><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr></thead><tbody>')
+			:format(esc(t.cov_col_format), esc(t.cov_col_sniper), esc(t.cov_col_bolter),
+				esc(t.cov_col_shotgun), esc(t.cov_col_platforms), esc(t.cov_col_mechanism))
 		for _, r in ipairs(sec.rows) do
 			local app_key = coverage.app_key_for(r.name)
 			local display = app_key and ctx.names[app_key] or r.name
@@ -107,6 +110,7 @@ function M.render(ctx)
 				:format(esc(r.mechanism), esc(r.sample), esc(r.size), esc(t.cov_measured), esc(r.run))
 			out[#out + 1] = "<tr>" .. name_cell
 				.. rate_cell(r.sniper, r.sniper_pct, r.strong_sniper)
+				.. rate_cell(r.bolter, r.bolter_pct, r.strong_bolter)
 				.. rate_cell(r.shotgun, r.shotgun_pct, r.strong_shotgun)
 				.. platforms .. mech .. "</tr>"
 		end

@@ -42,9 +42,11 @@ local function parse_cell(raw)
 	return v, pct, strong
 end
 
--- Parse every 7-column table row under ###-level sections, skipping
+-- Parse every 8-column results row under ###-level sections, skipping
 -- #### sub-tables (e.g. the PDF stream-filter breakout) and non-results
--- tables (they have different column counts).
+-- tables (different column counts). Column contract agreed with the
+-- validate session (2026-06-22), enforced by the count check below:
+--   | Format | Sniper | Bolter | Shotgun | Sample | Size | Run | Mechanism |
 function M.parse_report_string(md)
 	local rows = {}
 	local category = nil
@@ -69,17 +71,19 @@ function M.parse_report_string(md)
 			end
 			-- drop trailing empty edge cell if present
 			if #cells > 0 and cells[#cells] == "" then cells[#cells] = nil end
-			if #cells == 7 and cells[1] ~= "Format" and not cells[1]:match("^[-: ]*$") then
+			if #cells == 8 and cells[1] ~= "Format" and not cells[1]:match("^[-: ]*$") then
 				local sniper, sniper_pct, strong_sniper = parse_cell(cells[2])
-				local shotgun, shotgun_pct, strong_shotgun = parse_cell(cells[3])
+				local bolter, bolter_pct, strong_bolter = parse_cell(cells[3])
+				local shotgun, shotgun_pct, strong_shotgun = parse_cell(cells[4])
 				rows[#rows + 1] = {
 					name = cells[1],
 					sniper = sniper, sniper_pct = sniper_pct, strong_sniper = strong_sniper,
+					bolter = bolter, bolter_pct = bolter_pct, strong_bolter = strong_bolter,
 					shotgun = shotgun, shotgun_pct = shotgun_pct, strong_shotgun = strong_shotgun,
-					sample = cells[4],
-					size = cells[5],
-					run = cells[6],
-					mechanism = cells[7],
+					sample = cells[5],
+					size = cells[6],
+					run = cells[7],
+					mechanism = cells[8],
 					category = category,
 				}
 			end

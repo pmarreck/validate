@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Wíwọ̀n ni, kì í ṣe ọ̀rọ̀ lásán.",
 	cov_intro = "Gbogbo nọ́mbà tí ó wà nísàlẹ̀ ni a wọ̀n nípa fífi ìbàjẹ́ gidi sínú àwọn fáìlì àpẹẹrẹ gidi, ká sì ka ohun tí olùṣàyẹ̀wò mú — ìdánwò 100 fún fọ́máàtì kọ̀ọ̀kan ní ipò kọ̀ọ̀kan, seed tí kò yí padà, gbogbo dátà ìdánwò kọ̀ọ̀kan sì wà nínú ibi ìpamọ́ kóòdù. A tún ń tẹ àwọn òfo jáde: àwọn fọ́máàtì kan kò ní ètò ìpéye kankan rárá, a sì fẹ́ràn láti sọ ìyẹn fún ọ ní gbangba ju kí a fi ọ́ tan.",
 	cov_method_sniper = "ìyípadà bíìtì àrìnnàkò kan ṣoṣo ní ipò báìtì àrìnnàkò — ìbàjẹ́ tí ó nira jù láti mú.",
+	cov_method_bolter = "báìtì kan ṣoṣo tí gbogbo bíìtì 8 rẹ̀ yí padà ní ipò àrìnnàkò — ìkọlù báìtì-kan tí ó wúwo ju sniper lọ, ó sì ṣì ṣeé yí padà pátápátá.",
 	cov_method_shotgun = "báìtì àrìnnàkò 4,096 tí ó tẹ̀léra ni a tún kọ ní ipò àrìnnàkò — ó ṣàfarawé apá dísíkì tí ó bàjẹ́.",
 	cov_roadmap = "Ìwọ̀n ìṣàwárí ń gòkè pẹ̀lú ìtújáde kọ̀ọ̀kan: a ń fi àwọn olùtúmọ̀ jíjinlẹ̀ kún un ní fọ́máàtì-dé-fọ́máàtì, a sì ń tún tábìlì yìí ṣe láti inú dátà ìwọ̀n ìpilẹ̀ṣẹ̀ nígbà gbogbo.",
 	cov_col_format = "Fọ́máàtì",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Àwọn Pílátífọ́ọ̀mù",
 	cov_col_mechanism = "Bí a ṣe ń mú un (tàbí ìdí tí kò fi ṣeé ṣe)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Àkójọpọ̀ Ìpamọ́",
 	sec_game_rom = "ROM Eré",
 	sec_disk_other = "Àwòrán Dísíkì / Ètò Fáìlì / Prógrámù / Òmíràn",
-	sec_late_additions = "Àfikún ìkẹ́yìn (dídí àlàfo ìwọ̀n ìṣàwárí)",
 }

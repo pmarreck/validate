@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Măsurat, nu doar afirmat.",
 	cov_intro = "Fiecare număr de mai jos a fost măsurat injectând corupere reală în fișiere-mostră reale și numărând ce a prins validatorul — 100 de încercări per format per mod, seed fix, iar datele brute per încercare se află în repository. Publicăm și zerourile: unele formate pur și simplu nu conțin niciun mecanism de integritate, iar noi preferăm să-ți spunem asta decât să sugerăm altceva.",
 	cov_method_sniper = "un singur bit inversat aleatoriu la un offset de octet aleatoriu — coruperea cel mai greu de prins.",
+	cov_method_bolter = "un singur octet cu toți cei 8 biți inversați la un offset aleatoriu — o lovitură mai grea pe un singur octet decât sniper, totuși complet reversibilă.",
 	cov_method_shotgun = "4.096 de octeți aleatorii consecutivi suprascriși la un offset aleatoriu — simulează un sector de disc defect.",
 	cov_roadmap = "Ratele de detecție cresc cu fiecare versiune: decodoarele profunde sunt adăugate format cu format, iar acest tabel este regenerat de fiecare dată din datele brute de măsurare.",
 	cov_col_format = "Format",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Platforme",
 	cov_col_mechanism = "Cum este prinsă (sau de ce nu poate fi)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Arhive",
 	sec_game_rom = "ROM-uri de jocuri",
 	sec_disk_other = "Imagine de disc / sistem de fișiere / executabile / altele",
-	sec_late_additions = "Adăugiri târzii (închiderea golurilor de acoperire)",
 }

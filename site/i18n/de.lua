@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Gemessen, nicht behauptet.",
 	cov_intro = "Jede Zahl unten wurde gemessen: echte Korruption wurde in echte Beispieldateien injiziert und gezählt, was der Validator fängt — 100 Versuche pro Format und Modus, fester Seed, die Rohdaten jedes Versuchs liegen im Repository. Auch Nullen werden veröffentlicht: Manche Formate enthalten schlicht keinen Integritätsmechanismus, und das sagen wir lieber offen, als etwas anderes zu suggerieren.",
 	cov_method_sniper = "ein einzelner zufälliger Bit-Flip an einem zufälligen Byte-Offset — die am schwersten zu fangende Korruption.",
+	cov_method_bolter = "ein einzelnes Byte mit allen 8 gekippten Bits an zufälliger Stelle — ein kräftigerer Einzelbyte-Treffer als der Sniper, aber weiterhin vollständig umkehrbar.",
 	cov_method_shotgun = "4.096 aufeinanderfolgende Zufallsbytes an einem zufälligen Offset überschrieben — simuliert einen defekten Festplattensektor.",
 	cov_roadmap = "Die Erkennungsraten steigen mit jeder Version: Tiefendecoder kommen Format für Format hinzu, und diese Tabelle wird jedes Mal aus den Rohmessdaten neu generiert.",
 	cov_col_format = "Format",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Plattformen",
 	cov_col_mechanism = "Wie es gefangen wird (oder warum nicht)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Archive",
 	sec_game_rom = "Spiele-ROMs",
 	sec_disk_other = "Datenträger-Abbild / Dateisystem / Programme / Sonstiges",
-	sec_late_additions = "Späte Ergänzungen (Lückenschluss)",
 }

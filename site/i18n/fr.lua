@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Mesurée, pas proclamée.",
 	cov_intro = "Chaque chiffre ci-dessous a été mesuré en injectant de la corruption réelle dans de vrais fichiers d'exemple et en comptant ce que le validateur attrape — 100 essais par format et par mode, graine fixe, les données brutes de chaque essai sont dans le dépôt. Les zéros sont publiés aussi : certains formats ne contiennent tout simplement aucun mécanisme d'intégrité, et nous préférons vous le dire plutôt que de laisser croire le contraire.",
 	cov_method_sniper = "un seul bit inversé à un décalage d'octet aléatoire — la corruption la plus difficile à attraper.",
+	cov_method_bolter = "un seul octet dont les 8 bits sont tous inversés à un décalage aléatoire — une frappe d'un octet plus lourde que le sniper, mais toujours entièrement réversible.",
 	cov_method_shotgun = "4 096 octets aléatoires consécutifs écrasés à un décalage aléatoire — simule un secteur de disque défaillant.",
 	cov_roadmap = "Les taux de détection grimpent à chaque version : les décodeurs profonds arrivent format par format, et ce tableau est régénéré à chaque fois à partir des données de mesure brutes.",
 	cov_col_format = "Format",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Plates-formes",
 	cov_col_mechanism = "Comment c'est attrapé (ou pourquoi c'est impossible)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Archives",
 	sec_game_rom = "ROM de jeux",
 	sec_disk_other = "Image disque / Système de fichiers / Exécutables / Divers",
-	sec_late_additions = "Ajouts tardifs (comblement des lacunes)",
 }

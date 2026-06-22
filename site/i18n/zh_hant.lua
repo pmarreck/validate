@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "實測數據，不是空口宣稱。",
 	cov_intro = "下方每個數字都是實測得來：將真實損毀注入真實樣本檔案，並統計驗證器抓到了多少——每種格式每種模式各 100 次試驗、固定隨機種子，逐次試驗的原始資料都在程式碼儲存庫中。連零分也照樣公布：有些格式根本不含任何完整性機制，我們寧可直接告訴你，也不願讓你誤以為有。",
 	cov_method_sniper = "在隨機位元組位置翻轉單一隨機位元——最難抓到的損毀。",
+	cov_method_bolter = "在隨機位置將單一位元組的全部 8 個位元翻轉——比 sniper 更重的單位元組打擊，仍可完全還原。",
 	cov_method_shotgun = "在隨機位置覆寫連續 4,096 個隨機位元組——模擬故障的磁碟磁區。",
 	cov_roadmap = "偵測率隨每次釋出而攀升：深度解碼器逐一格式加入，而此表格每次都會從原始量測資料重新產生。",
 	cov_col_format = "格式",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "平台",
 	cov_col_mechanism = "如何抓到（或為何抓不到）",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "壓縮檔",
 	sec_game_rom = "遊戲 ROM",
 	sec_disk_other = "磁碟映像 / 檔案系統 / 執行檔 / 其他",
-	sec_late_additions = "後期新增（補齊涵蓋缺口）",
 }

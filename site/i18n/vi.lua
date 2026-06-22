@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Được đo lường, không phải tuyên bố suông.",
 	cov_intro = "Mọi con số bên dưới đều được đo bằng cách tiêm hỏng hóc thật vào các tệp mẫu thật rồi đếm những gì trình kiểm tra bắt được — 100 lượt thử cho mỗi định dạng mỗi chế độ, seed cố định, dữ liệu thô từng lượt thử có trong kho mã. Cả những con số 0 cũng được công bố: một số định dạng đơn giản là không có cơ chế toàn vẹn nào, và chúng tôi thà nói thẳng với bạn còn hơn để bạn hiểu nhầm.",
 	cov_method_sniper = "lật một bit ngẫu nhiên duy nhất tại một vị trí byte ngẫu nhiên — kiểu hỏng khó bắt nhất.",
+	cov_method_bolter = "lật toàn bộ 8 bit của một byte duy nhất tại một vị trí ngẫu nhiên — một cú đánh một byte nặng hơn sniper, vẫn hoàn toàn có thể đảo ngược.",
 	cov_method_shotgun = "4.096 byte ngẫu nhiên liên tiếp bị ghi đè tại một vị trí ngẫu nhiên — mô phỏng một sector đĩa bị hỏng.",
 	cov_roadmap = "Tỷ lệ phát hiện tăng theo từng bản phát hành: các bộ giải mã chuyên sâu được bổ sung theo từng định dạng, và bảng này được tạo lại từ dữ liệu đo thô mỗi lần.",
 	cov_col_format = "Định dạng",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Nền tảng",
 	cov_col_mechanism = "Bắt lỗi bằng cách nào (hoặc vì sao không thể)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Lưu trữ",
 	sec_game_rom = "ROM trò chơi",
 	sec_disk_other = "Ảnh đĩa / Hệ thống tệp / Tệp thực thi / Khác",
-	sec_late_additions = "Bổ sung muộn (lấp khoảng trống phạm vi)",
 }

@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Mælt, ekki bara fullyrt.",
 	cov_intro = "Sérhver tala hér fyrir neðan var mæld með því að setja raunverulegar skemmdir í raunverulegar sýnisskrár og telja hvað staðfestingartólið greip — 100 tilraunir á hvert snið í hverri stillingu, fast slembifræ (seed), og hrágögn hverrar tilraunar eru í gagnageymslunni. Núll eru líka birt: sum snið innihalda einfaldlega enga heilindavörn, og við segjum þér það frekar en að gefa annað í skyn.",
 	cov_method_sniper = "einum bita snúið af handahófi á handahófskenndri bætastöðu — sú skemmd sem erfiðast er að grípa.",
+	cov_method_bolter = "eitt bæti með öllum 8 bitunum snúið á handahófskenndri stöðu — þyngra einnar-bæta högg en sniper, samt að fullu afturkræft.",
 	cov_method_shotgun = "4.096 samliggjandi handahófsbæti yfirskrifuð á handahófskenndri stöðu — líkir eftir biluðum diskgeira.",
 	cov_roadmap = "Greiningarhlutföll hækka með hverri útgáfu: djúpum afkóðurum er bætt við snið fyrir snið, og þessi tafla er endurgerð úr hráu mæligögnunum í hvert sinn.",
 	cov_col_format = "Snið",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Stýrikerfi",
 	cov_col_mechanism = "Hvernig það næst (eða hvers vegna það er ekki hægt)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Safnskrár",
 	sec_game_rom = "Leikja-ROM",
 	sec_disk_other = "Diskmynd / skráakerfi / keyrsluskrár / annað",
-	sec_late_additions = "Síðbúnar viðbætur (lokun þekjugata)",
 }

@@ -78,6 +78,18 @@ note_count=$(grep -o 'os-partial' "$ENCOV" | wc -l | tr -d ' ')
 [ "$note_count" -eq 6 ] || fail "expected 6 os-partial cells, got $note_count"
 assert_contains "$ENCOV" 'Measured, not claimed' "candor framing present"
 
+# ── Bolter column (3rd rate column, between Sniper and Shotgun) ───
+assert_contains "$ENCOV" '<th>Sniper</th><th>Bolter</th><th>Shotgun</th>' "Bolter column between Sniper and Shotgun"
+assert_contains "$ENCOV" '<strong>Bolter</strong>' "Bolter method bullet in intro"
+# DE coverage carries the localized bolter method sentence (not English)
+assert_contains "$DECOV" '<strong>Bolter</strong>' "de bolter bullet present"
+
+# ── Category correctness: CPT re-homed, no chronological bucket ───
+assert_contains "$ENCOV" '<h2 class="cov-section">Archive</h2>' "Archive section present"
+assert_contains "$ENCOV" 'Compact Pro Archive' "CPT renders as Compact Pro (localized app name)"
+assert_not_contains "$ENCOV" 'Late addition' "no Late additions section"
+assert_not_contains "$ENCOV" 'Wave 2026' "no chronological Wave heading leaked"
+
 # ── Suggestion banner is suggestion-only ─────────────────────────
 JS="$DOCS/assets/site.js"
 [ -f "$JS" ] || fail "site.js not emitted"

@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "E matur, jo thjesht e pretenduar.",
 	cov_intro = "Çdo shifër më poshtë është matur duke injektuar dëmtime reale në skedarë realë shembull dhe duke numëruar çfarë kapi validuesi — 100 prova për format për regjim, seed fiks, dhe të dhënat e papërpunuara për çdo provë ndodhen në repository. Edhe zerot i publikojmë: disa formate thjesht nuk përmbajnë asnjë mekanizëm integriteti, dhe ne preferojmë t'jua themi këtë sesa të lëmë të kuptohet ndryshe.",
 	cov_method_sniper = "një bit i vetëm i përmbysur rastësisht në një offset të rastësishëm bajti — dëmtimi më i vështirë për t'u kapur.",
+	cov_method_bolter = "një bajt i vetëm me të 8 bitet e përmbysura në një offset të rastësishëm — një goditje më e rëndë mbi një bajt sesa sniper, prapëseprapë plotësisht e kthyeshme.",
 	cov_method_shotgun = "4.096 bajte të njëpasnjëshme të rastësishme të mbishkruara në një offset të rastësishëm — simulon një sektor disku të dështuar.",
 	cov_roadmap = "Shkallët e zbulimit rriten me çdo version: dekoderët e thellë shtohen format pas formati, dhe kjo tabelë rigjenerohet çdo herë nga të dhënat e papërpunuara të matjeve.",
 	cov_col_format = "Formati",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Platformat",
 	cov_col_mechanism = "Si kapet (ose pse nuk mund të kapet)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Arkiva",
 	sec_game_rom = "ROM lojërash",
 	sec_disk_other = "Imazh disku / sistem skedarësh / të ekzekutueshëm / të tjera",
-	sec_late_additions = "Shtesa të vona (mbyllja e boshllëqeve të mbulimit)",
 }

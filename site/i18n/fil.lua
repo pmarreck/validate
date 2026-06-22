@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Sinukat, hindi basta inangkin.",
 	cov_intro = "Ang bawat numero sa ibaba ay sinukat sa pamamagitan ng pag-inject ng totoong corruption sa totoong mga sample na file at pagbilang sa kung ano ang nahuli ng validator — 100 pagsubok bawat format bawat mode, fixed na seed, at nasa repository ang raw na datos ng bawat pagsubok. Inilalathala rin namin ang mga zero: may mga format na talagang walang anumang mekanismo ng integridad, at mas gusto naming sabihin iyon sa inyo kaysa magpahiwatig ng kabaligtaran.",
 	cov_method_sniper = "isang random na bit flip sa random na byte offset — ang pinakamahirap mahuling corruption.",
+	cov_method_bolter = "isang byte na binaligtad ang lahat ng 8 bit nito sa random na offset — mas mabigat na single-byte na tama kaysa sa sniper, mababalik pa rin nang buo.",
 	cov_method_shotgun = "4,096 na magkakasunod na random na byte ang na-overwrite sa random na offset — ginagaya ang isang sirang disk sector.",
 	cov_roadmap = "Tumataas ang detection rate sa bawat release: idinaragdag ang mga deep decoder isa-isang format, at ang talahanayang ito ay muling binubuo mula sa raw na datos ng pagsukat sa bawat pagkakataon.",
 	cov_col_format = "Format",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Mga Platform",
 	cov_col_mechanism = "Paano ito nahuhuli (o bakit hindi maaari)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Archive",
 	sec_game_rom = "Game ROM",
 	sec_disk_other = "Disk Image / Filesystem / Executable / Iba Pa",
-	sec_late_additions = "Mga huling dagdag (pagsasara ng coverage gap)",
 }

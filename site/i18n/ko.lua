@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "주장이 아닌, 측정.",
 	cov_intro = "아래의 모든 숫자는 측정된 것입니다. 실제 샘플 파일에 실제 손상을 주입하고 검증기가 잡아낸 횟수를 셌습니다 — 형식·모드당 100회 시도, 고정 시드, 각 시도의 원시 데이터는 저장소에 있습니다. 0도 그대로 공개합니다. 일부 형식에는 무결성 메커니즘 자체가 없으며, 아닌 척하기보다는 그 사실을 말씀드리는 쪽을 택합니다.",
 	cov_method_sniper = "무작위 바이트 위치에서 단일 비트 반전 — 가장 잡기 어려운 손상입니다.",
+	cov_method_bolter = "무작위 위치에서 한 바이트의 8비트를 모두 뒤집기 — sniper보다 묵직한 단일 바이트 타격이지만 역시 완전히 되돌릴 수 있습니다.",
 	cov_method_shotgun = "무작위 위치에서 연속 4,096바이트를 무작위 데이터로 덮어쓰기 — 디스크 섹터 장애를 모의합니다.",
 	cov_roadmap = "탐지율은 릴리스마다 올라갑니다. 심층 디코더가 형식별로 추가되며, 이 표는 매번 원시 측정 데이터에서 다시 생성됩니다.",
 	cov_col_format = "형식",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "플랫폼",
 	cov_col_mechanism = "어떻게 잡아내는가 (또는 왜 불가능한가)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "아카이브",
 	sec_game_rom = "게임 ROM",
 	sec_disk_other = "디스크 이미지 / 파일 시스템 / 실행 파일 / 기타",
-	sec_late_additions = "후속 추가분 (커버리지 보완)",
 }

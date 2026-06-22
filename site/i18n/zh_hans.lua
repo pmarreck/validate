@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "实测数据,而非空口承诺。",
 	cov_intro = "以下每个数字都是实测得出:向真实样本文件注入真实损坏,统计验证器捕获了多少——每种格式每种模式 100 次试验,固定种子,每次试验的原始数据都在仓库中。零也照样公布:有些格式根本不包含任何完整性机制,我们宁愿直说,也不愿暗示并非如此。",
 	cov_method_sniper = "在随机字节偏移处翻转单个比特——最难捕获的损坏。",
+	cov_method_bolter = "在随机位置将单个字节的全部 8 位翻转 — 比 sniper 更重的单字节打击,但同样完全可逆。",
 	cov_method_shotgun = "在随机偏移处用随机数据覆盖连续 4,096 字节——模拟磁盘扇区故障。",
 	cov_roadmap = "检测率随每个版本提升:深度解码器逐格式加入,此表每次都从原始测量数据重新生成。",
 	cov_col_format = "格式",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "平台",
 	cov_col_mechanism = "如何捕获(或为何无法捕获)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "归档",
 	sec_game_rom = "游戏 ROM",
 	sec_disk_other = "磁盘映像 / 文件系统 / 可执行文件 / 其他",
-	sec_late_additions = "后期补充(覆盖缺口收尾)",
 }

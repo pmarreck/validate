@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "İddia deyil, ölçülüb.",
 	cov_intro = "Aşağıdakı hər rəqəm real nümunə fayllara real korlanma yeridilərək və validatorun nəyi tutduğu sayılaraq ölçülüb — hər format və hər rejim üçün 100 sınaq, sabit seed, hər sınağın xam məlumatları repozitoriyadadır. Sıfırlar da dərc olunur: bəzi formatlarda sadəcə heç bir bütövlük mexanizmi yoxdur və biz bunu gizlətmək əvəzinə açıq deməyi üstün tuturuq.",
 	cov_method_sniper = "təsadüfi bayt mövqeyində tək təsadüfi bitin çevrilməsi — tutulması ən çətin korlanma.",
+	cov_method_bolter = "təsadüfi mövqedə hər 8 biti çevrilmiş bir bayt — sniper-dən daha ağır tək-baytlıq zərbə, yenə də tam geri qaytarıla bilən.",
 	cov_method_shotgun = "təsadüfi mövqedə 4.096 ardıcıl təsadüfi baytın üzərinə yazılması — sıradan çıxmış disk sektorunu imitasiya edir.",
 	cov_roadmap = "Aşkarlama göstəriciləri hər buraxılışla yüksəlir: dərin dekoderlər format-format əlavə olunur və bu cədvəl hər dəfə xam ölçmə məlumatlarından yenidən yaradılır.",
 	cov_col_format = "Format",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Platformalar",
 	cov_col_mechanism = "Necə tutulur (və ya niyə tutula bilmir)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Arxiv",
 	sec_game_rom = "Oyun ROM-u",
 	sec_disk_other = "Disk obrazı / fayl sistemi / icra faylı / digər",
-	sec_late_additions = "Son əlavələr (əhatə boşluqlarının bağlanması)",
 }

@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Gemeten, niet beweerd.",
 	cov_intro = "Elk getal hieronder is gemeten door echte corruptie in echte voorbeeldbestanden te injecteren en te tellen wat de validator ving — 100 pogingen per formaat per modus, vaste seed, de ruwe data van elke poging staat in de repository. Ook nullen publiceren we: sommige formaten bevatten simpelweg geen integriteitsmechanisme, en dat zeggen we liever eerlijk dan iets anders te suggereren.",
 	cov_method_sniper = "één willekeurige bit-flip op een willekeurige byte-offset — de moeilijkst te vangen corruptie.",
+	cov_method_bolter = "één byte met alle 8 bits omgedraaid op een willekeurige offset — een zwaardere één-byte-treffer dan de sniper, maar nog steeds volledig omkeerbaar.",
 	cov_method_shotgun = "4.096 opeenvolgende willekeurige bytes overschreven op een willekeurige offset — simuleert een kapotte schijfsector.",
 	cov_roadmap = "De detectiegraad stijgt met elke release: diepe decoders komen formaat voor formaat erbij, en deze tabel wordt telkens opnieuw gegenereerd uit de ruwe meetdata.",
 	cov_col_format = "Formaat",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Platforms",
 	cov_col_mechanism = "Hoe het gevangen wordt (of waarom het niet kan)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Archieven",
 	sec_game_rom = "Game-ROM's",
 	sec_disk_other = "Schijfimage / Bestandssysteem / Uitvoerbare bestanden / Overig",
-	sec_late_additions = "Late toevoegingen (dekkingsgaten gedicht)",
 }

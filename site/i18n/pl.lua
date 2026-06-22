@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Zmierzone, nie deklarowane.",
 	cov_intro = "Każda liczba poniżej została zmierzona przez wstrzykiwanie prawdziwych uszkodzeń do prawdziwych plików przykładowych i liczenie, co walidator wychwycił — 100 prób na format i tryb, stały seed, a surowe dane z każdej próby są w repozytorium. Publikujemy też zera: niektóre formaty po prostu nie zawierają żadnego mechanizmu integralności i wolimy Ci o tym powiedzieć, niż sugerować coś innego.",
 	cov_method_sniper = "pojedyncze losowe przestawienie bitu pod losowym przesunięciem bajtowym — najtrudniejsze do wykrycia uszkodzenie.",
+	cov_method_bolter = "pojedynczy bajt z odwróconymi wszystkimi 8 bitami pod losowym przesunięciem — cięższe trafienie w jeden bajt niż sniper, wciąż w pełni odwracalne.",
 	cov_method_shotgun = "4096 kolejnych losowych bajtów nadpisanych pod losowym przesunięciem — symuluje uszkodzony sektor dysku.",
 	cov_roadmap = "Skuteczność wykrywania rośnie z każdym wydaniem: głębokie dekodery są dodawane format po formacie, a ta tabela jest za każdym razem generowana na nowo z surowych danych pomiarowych.",
 	cov_col_format = "Format",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Platformy",
 	cov_col_mechanism = "Jak to jest wykrywane (lub dlaczego się nie da)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Archiwa",
 	sec_game_rom = "ROM-y gier",
 	sec_disk_other = "Obraz dysku / system plików / pliki wykonywalne / inne",
-	sec_late_additions = "Późne uzupełnienia (domykanie luk w pokryciu)",
 }

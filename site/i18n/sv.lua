@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Uppmätt, inte påstått.",
 	cov_intro = "Varje siffra nedan har uppmätts genom att injicera verklig korruption i verkliga exempelfiler och räkna vad validatorn fångade — 100 försök per format och läge, fast slumpfrö, rådata per försök finns i repositoriet. Även nollorna publiceras: vissa format innehåller helt enkelt ingen integritetsmekanism, och vi berättar hellre det än antyder något annat.",
 	cov_method_sniper = "en enda slumpmässig bitflipp på en slumpmässig byteposition — den svåraste korruptionen att fånga.",
+	cov_method_bolter = "en enda byte med alla 8 bitar vända på en slumpmässig position — en tyngre enbytesträff än sniper, fortfarande helt reversibel.",
 	cov_method_shotgun = "4 096 på varandra följande slumpmässiga byte överskrivna på en slumpmässig position — simulerar en trasig disksektor.",
 	cov_roadmap = "Detekteringsgraden stiger med varje utgåva: djupa avkodare läggs till format för format, och tabellen genereras om från de råa mätdata varje gång.",
 	cov_col_format = "Format",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Plattformar",
 	cov_col_mechanism = "Hur det fångas (eller varför det inte går)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Arkiv",
 	sec_game_rom = "Spel-ROM",
 	sec_disk_other = "Diskavbild / filsystem / körbar / övrigt",
-	sec_late_additions = "Sena tillägg (täppning av täckningsluckor)",
 }

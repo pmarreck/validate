@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "An auna, ba da'awa kawai ba.",
 	cov_intro = "Kowace lamba da ke ƙasa an auna ta ne ta hanyar saka ɓarna ta gaske cikin fayilolin samfur na gaske sannan a ƙidaya abin da validator ɗin ya kama — gwaji 100 ga kowane nau'i a kowane yanayi, da seed guda kafaffe, kuma cikakken bayanan kowane gwaji suna cikin repository. Muna kuma buga sifili: wasu nau'o'i ba su da wata hanyar tabbatar da aminci kwata-kwata, kuma mun gwammace mu gaya muku haka da mu nuna akasin haka.",
 	cov_method_sniper = "juya bit guda ɗaya bisa zaɓin tsautsayi a wani wurin byte na tsautsayi — ɓarnar da ta fi wahalar kamawa.",
+	cov_method_bolter = "byte guda da aka juya dukkan bit 8 ɗinsa a wani wurin tsautsayi — buga byte guda da ya fi na sniper nauyi, amma har yanzu ana iya juyar da shi gaba ɗaya.",
 	cov_method_shotgun = "an sake rubuta byte 4,096 a jere bisa tsautsayi a wani wuri — yana kwaikwayon sector ɗin disk da ya lalace.",
 	cov_roadmap = "Adadin ganowa yana ƙaruwa da kowane sabon saki: ana ƙara zurfafan decoder nau'i bayan nau'i, kuma ana sake gina wannan tebur daga ainihin bayanan awo a kowane lokaci.",
 	cov_col_format = "Nau'i",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Dandamali",
 	cov_col_mechanism = "Yadda ake kama shi (ko dalilin da ya sa ba za a iya ba)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Ma'ajiya",
 	sec_game_rom = "ROM na Wasa",
 	sec_disk_other = "Hoton Diski / Tsarin Fayil / Executable / Sauransu",
-	sec_late_additions = "Ƙari na baya-bayan nan (rufe gibin ganowa)",
 }

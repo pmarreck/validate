@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Mitattu, ei väitetty.",
 	cov_intro = "Jokainen alla oleva luku on mitattu syöttämällä aitoa korruptiota aitoihin näytetiedostoihin ja laskemalla, mitä validaattori sai kiinni — 100 koetta per muoto per tila, kiinteä siemenluku, jokaisen kokeen raakadata on repositoriossa. Myös nollat julkaistaan: joissakin muodoissa ei yksinkertaisesti ole mitään eheysmekanismia, ja kerromme sen mieluummin suoraan kuin annamme ymmärtää muuta.",
 	cov_method_sniper = "yksittäinen satunnainen bittikääntö satunnaisessa tavukohdassa — vaikein mahdollinen korruptio havaita.",
+	cov_method_bolter = "yksittäinen tavu, jonka kaikki 8 bittiä on käännetty satunnaisessa kohdassa — sniperia raskaampi yhden tavun osuma, mutta silti täysin palautettavissa.",
 	cov_method_shotgun = "4 096 peräkkäistä satunnaista tavua ylikirjoitettuna satunnaisessa kohdassa — simuloi viallista levysektoria.",
 	cov_roadmap = "Havaintoprosentit nousevat joka julkaisussa: syvädekoodereita lisätään muoto kerrallaan, ja tämä taulukko generoidaan joka kerta uudelleen raa'asta mittausdatasta.",
 	cov_col_format = "Muoto",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Alustat",
 	cov_col_mechanism = "Miten se havaitaan (tai miksi ei voida)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Arkisto",
 	sec_game_rom = "Peli-ROM",
 	sec_disk_other = "Levykuva / tiedostojärjestelmä / suoritettava / muu",
-	sec_late_additions = "Myöhäiset lisäykset (kattavuusaukkojen paikkaus)",
 }

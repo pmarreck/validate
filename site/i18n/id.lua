@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Diukur, bukan sekadar klaim.",
 	cov_intro = "Setiap angka di bawah diukur dengan menyuntikkan kerusakan nyata ke file sampel nyata lalu menghitung apa yang tertangkap oleh validator — 100 percobaan per format per mode, seed tetap, data mentah per percobaan tersedia di repositori. Angka nol pun kami publikasikan: sebagian format memang tidak memiliki mekanisme integritas sama sekali, dan kami lebih memilih memberi tahu Anda apa adanya daripada mengesankan sebaliknya.",
 	cov_method_sniper = "satu bit flip acak pada offset byte acak — kerusakan yang paling sulit ditangkap.",
+	cov_method_bolter = "satu byte dengan seluruh 8 bitnya dibalik pada offset acak — pukulan satu byte yang lebih berat daripada sniper, tetap sepenuhnya dapat dibalik.",
 	cov_method_shotgun = "4.096 byte acak berurutan ditimpa pada offset acak — menyimulasikan sektor disk yang gagal.",
 	cov_roadmap = "Tingkat deteksi naik di setiap rilis: decoder mendalam ditambahkan format demi format, dan tabel ini dibuat ulang dari data pengukuran mentah setiap kalinya.",
 	cov_col_format = "Format",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Platform",
 	cov_col_mechanism = "Cara menangkapnya (atau mengapa tidak bisa)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Arsip",
 	sec_game_rom = "ROM Game",
 	sec_disk_other = "Image Disk / Sistem File / Executable / Lainnya",
-	sec_late_additions = "Tambahan terakhir (menutup celah cakupan)",
 }

@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Mérve, nem csak állítva.",
 	cov_intro = "Az alábbi minden szám úgy született, hogy valódi sérülést injektáltunk valódi mintafájlokba, és megszámoltuk, mit fogott meg a validátor — formátumonként és módonként 100 kísérlet, rögzített seed, a kísérletenkénti nyers adatok megtalálhatók a tárolóban. A nullákat is közzétesszük: egyes formátumok egyszerűen semmilyen integritási mechanizmust nem tartalmaznak, és ezt inkább elmondjuk, mint hogy az ellenkezőjét sugalljuk.",
 	cov_method_sniper = "egyetlen véletlenszerű bitfordítás véletlenszerű bájteltolásnál — a legnehezebben elkapható sérülés.",
+	cov_method_bolter = "egyetlen bájt mind a 8 bitje megfordítva véletlenszerű eltolásnál — a snipernél súlyosabb egybájtos találat, mégis teljesen visszafordítható.",
 	cov_method_shotgun = "4 096 egymást követő véletlenszerű bájt felülírása véletlenszerű eltolásnál — meghibásodott lemezszektort szimulál.",
 	cov_roadmap = "Az észlelési arányok minden kiadással emelkednek: a mély dekóderek formátumról formátumra kerülnek be, és ez a táblázat minden alkalommal a nyers mérési adatokból generálódik újra.",
 	cov_col_format = "Formátum",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Platformok",
 	cov_col_mechanism = "Hogyan kapjuk el (vagy miért nem lehet)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Archívum",
 	sec_game_rom = "Játék-ROM",
 	sec_disk_other = "Lemezkép / fájlrendszer / futtatható / egyéb",
-	sec_late_additions = "Kései kiegészítések (lefedettségi hiányok pótlása)",
 }

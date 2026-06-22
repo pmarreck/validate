@@ -49,10 +49,12 @@ return {
 	cov_subtitle = "Medida, no proclamada.",
 	cov_intro = "Cada número de abajo se midió inyectando corrupción real en archivos de muestra reales y contando qué atrapó el validador — 100 intentos por formato y modo, semilla fija, los datos crudos de cada intento están en el repositorio. También publicamos los ceros: algunos formatos simplemente no contienen ningún mecanismo de integridad, y preferimos decírtelo antes que insinuar lo contrario.",
 	cov_method_sniper = "un solo bit invertido en un desplazamiento de byte aleatorio — la corrupción más difícil de atrapar.",
+	cov_method_bolter = "un único byte con sus 8 bits invertidos en un desplazamiento aleatorio — un golpe de un byte más fuerte que el sniper, pero igualmente reversible por completo.",
 	cov_method_shotgun = "4.096 bytes aleatorios consecutivos sobrescritos en un desplazamiento aleatorio — simula un sector de disco fallido.",
 	cov_roadmap = "Las tasas de detección suben con cada versión: los decodificadores profundos llegan formato a formato, y esta tabla se regenera cada vez a partir de los datos de medición crudos.",
 	cov_col_format = "Formato",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Plataformas",
 	cov_col_mechanism = "Cómo se atrapa (o por qué no se puede)",
@@ -73,5 +75,4 @@ return {
 	sec_archive = "Archivos comprimidos",
 	sec_game_rom = "ROM de juegos",
 	sec_disk_other = "Imagen de disco / Sistema de archivos / Ejecutables / Otros",
-	sec_late_additions = "Adiciones tardías (cierre de brechas)",
 }

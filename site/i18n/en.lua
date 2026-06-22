@@ -52,10 +52,12 @@ return {
 	cov_subtitle = "Measured, not claimed.",
 	cov_intro = "Every number below was measured by injecting real corruption into real sample files and counting what the validator caught — 100 trials per format per mode, fixed seed, raw per-trial data in the repository. Zeros are published too: some formats simply contain no integrity mechanism, and we would rather tell you that than imply otherwise.",
 	cov_method_sniper = "a single random bit flip at a random byte offset — the hardest corruption to catch.",
+	cov_method_bolter = "a single byte with all 8 bits flipped at a random offset — a heavier single-byte hit than the sniper, still fully reversible.",
 	cov_method_shotgun = "4,096 consecutive random bytes overwritten at a random offset — simulates a failed disk sector.",
 	cov_roadmap = "Detection rates climb with every release: deep decoders are added format by format, and this table is regenerated from the raw measurement data each time.",
 	cov_col_format = "Format",
 	cov_col_sniper = "Sniper",
+	cov_col_bolter = "Bolter",
 	cov_col_shotgun = "Shotgun",
 	cov_col_platforms = "Platforms",
 	cov_col_mechanism = "How it's caught (or why it can't be)",
@@ -76,5 +78,4 @@ return {
 	sec_archive = "Archive",
 	sec_game_rom = "Game ROM",
 	sec_disk_other = "Disk Image / Filesystem / Executable / Other",
-	sec_late_additions = "Late additions (coverage gap closure)",
 }
