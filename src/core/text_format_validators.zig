@@ -410,6 +410,12 @@ pub fn validateJson(file: *FileSource, ext_hint: ?[]const u8) ValidationResult {
 
     const data = text_result.content;
 
+    // RFC 8259: JSON text MUST be UTF-8. A byte that breaks UTF-8 is corruption,
+    // not a parseable document — reject it (don't let a permissive path accept it).
+    if (!std.unicode.utf8ValidateSlice(data)) {
+        return ValidationResult.invalidCode(.json, .invalid_value, "UTF-8 encoding");
+    }
+
     // Try to parse the JSON using Scanner
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -626,6 +632,11 @@ pub fn validateToml(file: *FileSource) ValidationResult {
         break :blk content;
     };
 
+    // TOML spec: a TOML file MUST be a valid UTF-8 document. A byte that breaks
+    // UTF-8 is corruption — reject it before the parser (which is permissive).
+    if (!std.unicode.utf8ValidateSlice(data)) {
+        return ValidationResult.invalidCode(.toml, .invalid_value, "UTF-8 encoding");
+    }
     // Use the sam701/zig-toml parser to parse as a generic Table
     var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -1686,6 +1697,25 @@ pub fn validateRtfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 
 // ============ HTML Validator ============
 
+/// Case-insensitive substring search (std.ascii provides only startsWith/eql).
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        if (std.ascii.startsWithIgnoreCase(haystack[i..], needle)) return true;
+    }
+    return false;
+}
+
+/// True if the HTML head declares a UTF-8 charset (<meta charset=utf-8> or a
+/// Content-Type meta with utf-8). Gates strict UTF-8 validation so we don't
+/// false-positive on legacy (e.g. windows-1252) documents.
+fn htmlDeclaresUtf8(head: []const u8) bool {
+    if (!containsIgnoreCase(head, "charset")) return false;
+    return containsIgnoreCase(head, "utf-8") or containsIgnoreCase(head, "utf8");
+}
+
 /// Validate HTML document.
 /// Checks for DOCTYPE declaration or <html> tag, validates basic tag structure.
 pub fn validateHtml(file: *FileSource) ValidationResult {
@@ -1703,6 +1733,20 @@ pub fn validateHtml(file: *FileSource) ValidationResult {
     if (bytes_read < 7) return ValidationResult.invalid(.html, "HTML too short");
 
     const data = buf[0..bytes_read];
+
+    // If the document declares charset=utf-8, the byte stream MUST be valid UTF-8;
+    // a flipped byte that breaks UTF-8 is corruption. Gated on an explicit utf-8
+    // declaration to avoid false positives on legacy charsets. Validate the WHOLE
+    // file (not just this 8 KB head) so corruption anywhere is caught.
+    if (htmlDeclaresUtf8(data)) {
+        var html_heap: ?[]u8 = null;
+        defer if (html_heap) |b| heap.validateAllocator().free(b);
+        if (getFileContent(file, max_text_file_size, &html_heap)) |full| {
+            if (!std.unicode.utf8ValidateSlice(full)) {
+                return ValidationResult.invalidCode(.html, .invalid_value, "UTF-8 encoding");
+            }
+        }
+    }
 
     // Skip BOM if present
     var start: usize = 0;
@@ -2383,10 +2427,13 @@ pub fn validatePlainTextLatin1Fallback(file: *FileSource) ValidationResult {
 	// ASCII-only files end up here only if they have high bytes that
 	// failed UTF-8 conformance — so any uchardet hit is by definition
 	// non-UTF-8 text. Surface as plain_text_latin1 for the structural
-	// "this is text in some encoding" verdict. Specific charset string
-	// is logged in debug builds; could be exposed as warning_message
-	// later if useful.
-	return ValidationResult.okWithDepth(.plain_text_latin1, .structural);
+	// "this is text in some encoding" verdict, and WARN: the content is NOT
+	// valid UTF-8, so we fell back to a permissive single-byte decode. This
+	// surfaces the corruption signal (a flipped byte that breaks UTF-8) instead
+	// of silently passing — the human decides if Latin-1 was intended. The warn
+	// is unconditional (not date-gated): mtime is non-deterministic, spoofable,
+	// and often absent (stdin/embedded), and would only hide real corruption.
+	return ValidationResult.okWithDepthAndWarning(.plain_text_latin1, .structural, "not valid UTF-8; fell back to Latin-1/single-byte decode (search for: \"fell back to Latin-1\")");
 }
 
 /// Validate plain text file as UTF-16 using streaming validation.
@@ -4311,4 +4358,41 @@ test "validateJson with null ext_hint still warns about JSON5" {
     const result = validateJson(&source, null);
     try testing.expect(result.is_valid);
     try testing.expect(result.warning_message != null);
+}
+
+// ── UTF-8 integrity: declared/required-UTF-8 formats must reject invalid UTF-8 ──
+// A lone 0x80 is an invalid UTF-8 sequence (continuation byte with no lead). The
+// formats below are UTF-8 by spec (JSON RFC 8259, CSV, TOML) or by declaration
+// (XML default; HTML with charset=utf-8). They must NOT silently accept a byte
+// that breaks UTF-8 — that is exactly the corruption EML/MBOX already catch.
+// (Raised by Peter 2026-06-22: text formats showing ~0% corruption detection.)
+
+test "JSON rejects invalid UTF-8 in a string value" {
+    var s = FileSource.fromBuffer("{\"k\":\"v\x80w\"}");
+    const r = validateJson(&s, null);
+    try testing.expect(!r.is_valid);
+}
+
+test "CSV rejects invalid UTF-8 in a field" {
+    var s = FileSource.fromBuffer("name,age\nbob,\x80\n");
+    const r = validateCsv(&s);
+    try testing.expect(!r.is_valid);
+}
+
+test "TOML rejects invalid UTF-8 in a string value" {
+    var s = FileSource.fromBuffer("title = \"hi\x80\"\n");
+    const r = validateToml(&s);
+    try testing.expect(!r.is_valid);
+}
+
+test "XML rejects invalid UTF-8 in text content" {
+    var s = FileSource.fromBuffer("<?xml version=\"1.0\"?><r>a\x80b</r>");
+    const r = validateXml(&s);
+    try testing.expect(!r.is_valid);
+}
+
+test "HTML (charset=utf-8) rejects invalid UTF-8 in body" {
+    var s = FileSource.fromBuffer("<!doctype html><meta charset=\"utf-8\"><p>a\x80b</p>");
+    const r = validateHtml(&s);
+    try testing.expect(!r.is_valid);
 }
