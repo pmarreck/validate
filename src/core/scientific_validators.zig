@@ -2863,18 +2863,31 @@ pub fn validateParquetDeep(allocator: Allocator, source: *FileSource) Validation
     var pages_checked: u32 = 0;
     var pages_with_crc: u32 = 0;
     var crcs_verified: u32 = 0;
+    // A clean scan ends only at `page_start + 4 >= data_end`. Any other break is
+    // truncation/corruption and must NOT be allowed to fall through to .full.
+    var truncated = false; // declared page data ran past EOF -> file is invalid
+    var scan_incomplete = false; // unparseable page header / seek failure mid-scan
     var page_header_buf: [256]u8 = undefined;
     const read_buf = allocator.alloc(u8, 65536) catch return ValidationResult.invalidCodeWithDepth(.parquet, .failed_to_read, "page buffer", .full);
     defer allocator.free(read_buf);
 
     while (pages_checked < 10000) {
-        const page_start = source.getPos() catch break;
-        if (page_start + 4 >= data_end) break;
+        const page_start = source.getPos() catch {
+            scan_incomplete = true;
+            break;
+        };
+        if (page_start + 4 >= data_end) break; // clean finish: reached the footer
 
         // Read enough for the page header (Thrift struct, usually < 100 bytes)
         const to_read = @min(page_header_buf.len, @as(usize, @intCast(data_end - page_start)));
-        const hdr_read = source.read(page_header_buf[0..to_read]) catch break;
-        if (hdr_read < 3) break;
+        const hdr_read = source.read(page_header_buf[0..to_read]) catch {
+            scan_incomplete = true;
+            break;
+        };
+        if (hdr_read < 3) {
+            scan_incomplete = true;
+            break;
+        }
 
         const hdr = page_header_buf[0..hdr_read];
 
@@ -2945,12 +2958,16 @@ pub fn validateParquetDeep(allocator: Allocator, source: *FileSource) Validation
         }
 
         if (!header_valid or compressed_size <= 0 or page_type < 0) {
-            // Can't parse this page header — stop scanning
+            // Can't parse this page header mid-scan — stop, but don't claim full.
+            scan_incomplete = true;
             break;
         }
 
         // Seek past the header to the page data
-        source.seekTo(page_start + pos) catch break;
+        source.seekTo(page_start + pos) catch {
+            scan_incomplete = true;
+            break;
+        };
 
         if (page_crc) |expected_crc| {
             pages_with_crc += 1;
@@ -2966,7 +2983,11 @@ pub fn validateParquetDeep(allocator: Allocator, source: *FileSource) Validation
                 remaining -= n;
             }
 
-            if (remaining > 0) break; // couldn't read all data
+            if (remaining > 0) {
+                // Declared page data ran past EOF — the file is truncated/corrupt.
+                truncated = true;
+                break;
+            }
 
             const computed = crc.final();
             if (computed != expected_crc) {
@@ -2975,13 +2996,26 @@ pub fn validateParquetDeep(allocator: Allocator, source: *FileSource) Validation
             crcs_verified += 1;
         } else {
             // No CRC — skip past the page data
-            source.seekTo(page_start + pos + @as(u64, @intCast(compressed_size))) catch break;
+            source.seekTo(page_start + pos + @as(u64, @intCast(compressed_size))) catch {
+                scan_incomplete = true;
+                break;
+            };
         }
 
         pages_checked += 1;
     }
 
+    if (truncated) {
+        // A truncated/corrupt Parquet must never pass — and never as .full.
+        return ValidationResult.invalidCodeMsgWithDepth(.parquet, .failed_to_read, "page data", "Parquet file truncated: a page's declared data extends past end of file", .structural);
+    }
+
     if (crcs_verified > 0) {
+        if (scan_incomplete) {
+            // Some pages verified, but the scan could not parse a later page —
+            // honestly report structural (not full) rather than over-claim.
+            return ValidationResult.okWithDepthAndWarning(.parquet, .structural, "Parquet page scan ended early (unparseable page) — not all pages verified");
+        }
         return ValidationResult.okWithDepth(.parquet, .full);
     }
 
@@ -5032,3 +5066,75 @@ test "FITS with valid DATASUM validates successfully" {
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
 }
 
+
+test "validateParquetDeep: truncated page after a verified-CRC page must NOT report .full" {
+	// Reproduces the Parquet false-pass: page 1 carries a valid page CRC (so
+	// crcs_verified becomes 1), then page 2 declares a huge compressed_size but
+	// the file is truncated mid-data. Pre-fix the scan just `break`s and falls
+	// through to okWithDepth(.parquet, .full) — a corrupt/truncated file passing
+	// as "fully byte-validated". A truncated Parquet must be INVALID.
+	const Buf = struct {
+		data: [512]u8 = undefined,
+		len: usize = 0,
+		fn byte(self: *@This(), b: u8) void {
+			self.data[self.len] = b;
+			self.len += 1;
+		}
+		fn slice(self: *@This(), s: []const u8) void {
+			@memcpy(self.data[self.len..][0..s.len], s);
+			self.len += s.len;
+		}
+		// Thrift compact zigzag varint (matches readThriftVarint's decode).
+		fn zz(self: *@This(), v: i64) void {
+			var u: u64 = @bitCast((v << 1) ^ (v >> 63));
+			while (true) {
+				const lo: u8 = @intCast(u & 0x7F);
+				u >>= 7;
+				if (u == 0) {
+					self.byte(lo);
+					break;
+				}
+				self.byte(lo | 0x80);
+			}
+		}
+	};
+
+	var b = Buf{};
+	b.slice("PAR1"); // leading magic; data pages start at offset 4
+
+	// --- page 1: a valid page CRC over its 4 data bytes ---
+	const page1 = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF };
+	var c = std.hash.Crc32.init();
+	c.update(&page1);
+	const crc1: i64 = @as(i32, @bitCast(c.final()));
+	b.byte(0x15); // field 1 (type), compact type 5 (i32), delta 1
+	b.zz(0); // page_type = 0 (DATA_PAGE)
+	b.byte(0x25); // field 3 (compressed_page_size), delta 2
+	b.zz(4);
+	b.byte(0x15); // field 4 (crc), delta 1
+	b.zz(crc1);
+	b.byte(0x00); // STOP
+	b.slice(&page1);
+
+	// --- page 2: declares 1,000,000 bytes but only 3 exist before EOF ---
+	b.byte(0x15);
+	b.zz(0);
+	b.byte(0x25);
+	b.zz(1_000_000);
+	b.byte(0x15);
+	b.zz(0);
+	b.byte(0x00); // STOP
+	b.slice(&[_]u8{ 0x01, 0x02, 0x03 });
+
+	// --- footer: footer_length=0 then "PAR1" ---
+	b.slice(&[_]u8{ 0, 0, 0, 0 });
+	b.slice("PAR1");
+
+	var src = FileSource.fromBuffer(b.data[0..b.len]);
+	const result = validateParquetDeep(std.testing.allocator, &src);
+	// Pre-fix: page 1's CRC verifies, then page 2 truncates and the scan just
+	// `break`s into okWithDepth(.parquet, .full) — a truncated file passing as
+	// fully byte-validated. Must be INVALID, and must never claim .full.
+	try std.testing.expect(!result.is_valid);
+	try std.testing.expect(result.validation_depth != ValidationDepth.full);
+}
