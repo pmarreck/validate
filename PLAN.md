@@ -14,6 +14,25 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+### Corruption report: generated + Bolter column + UTF-8 re-sweep — DONE (2026-06-22)
+
+- [x] **UTF-8 text re-sweep** on validate_gui's new ≥12 KB multibyte fixtures:
+      JSON 47→43/100/100, TOML 37→42/100/100, XML 64→52/100/100, HTML 2→22/100/100,
+      Plain Text 0→0/0/95 (sniper/bolter/shotgun). — 2026-06-22
+- [x] **Fixed CSV silent-pass bug** — `.csv` (UTF-8-required) was omitted from the
+      extension-remap dispatch and skipped its UTF-8 check; even a 4 KB random
+      overwrite passed as OK. CSV now 0/0/0 → 26/100/100. Guarded by new MFIC
+      set-classifier `tests/cli/utf8_required_formats_reject`. — 2026-06-22
+- [x] **Report is now generated** — `scripts/generate-corruption-report` (8-col with
+      Bolter; flag>env>default paths; `n/a` never blank). Sidecar bootstrapped via
+      one-shot `scripts/migrate-report-to-sidecar`. Wave 2026-04-25b heading dissolved
+      (13 rows → proper sections), CPT moved Audio→Archive. — 2026-06-22
+- [x] **Full bolter sweep** across the corpus (5→145 bolter TSVs); fixed latent
+      `corruption-sweep` no-op (`find` → `find -L` on the ground_truth symlink). — 2026-06-22
+- [ ] Send validate_pics the 14 category assignments; ready their bolter i18n pass.
+- [ ] (held per Peter) RAW preview-JPEG decode across the family (#43) — revisit
+      after the above; then re-adjust those RAW numbers.
+
 ### Windows full-parity — DONE (2026-06-22)
 
 x86_64-windows upgraded C-floor → **full parity** (real JPEG-in-TIFF + JPEG2000
@@ -253,9 +272,12 @@ commits. Highlights:
   (67354680); thread-budget propagation `--coverage-jobs N` setting
   `VALIDATE_INNER_JOBS = cpus/N` (13bdc474); JPEG2000 / JBIG2 / JPEG warning
   escalation in PDFs (a3960722) lifted JPEG-mixed PDF sniper ~20% → ~46%.
-- **P2 regen tooling** — drift detector `scripts/audit-corruption-report` +
-  `tests/cli/master_report_drift` (d48128a0 + 68de05cf). 101/101 formats
-  verified clean.
+- **P2 regen tooling** — `docs/corruption-detection-report.md` is now GENERATED
+  by `scripts/generate-corruption-report` (TSV numbers + `…/generated/` sidecar
+  prose; 8-col incl. Bolter; `n/a` never blank; report path/corpus env-overridable).
+  `tests/cli/master_report_drift` is now a regeneration-idempotence guard
+  (committed report must equal a fresh regen). The old hand-audit
+  `scripts/audit-corruption-report` was retired 2026-06-22 (superseded).
 
 ### 2026-04-25 — Format Coverage Chew-Through
 

@@ -1,0 +1,237 @@
+Image & Photo	PNG	png	2026-03-06	CRC32 per chunk	generated_plasma.png	353280	100		100
+Image & Photo	JXL	jxl	2026-03-06	Container + frame checksums	animation_icos4d.jxl	360448	87		100
+Image & Photo	WebP	webp	2026-03-06	libwebp full decode	google_gallery_3.webp	207872	83		84
+Image & Photo	ICNS	icns	2026-04-23	TLV chunk stream; near-total coverage	sample.icns	245760	97		100
+Image & Photo	SWF	swf	2026-04-23	CWS = zlib wrapper; any flip = zlib CRC fail	cws_sample.swf	24576	100		100
+Image & Photo	SVG	svg	2026-04-23	XML parse — almost any corruption breaks the XML grammar.	sample.svg	30720	45		99
+Image & Photo	ICO	ico	2026-04-23	Directory entries + embedded PNG/BMP image validation. Multi-resolution ICO has high structural-byte density.	sample.ico (multi-res)	237568	63		70
+Image & Photo	QOI	qoi	2026-04-23	QOI spec has no per-opcode checksum — bit flips in pixel data decode to different-but-valid pixels. Only magic (4 B) and end marker (8 B) are checkable. Fundamental format limit.	sample.qoi	23552	0		0
+Image & Photo	JPEG2K	jpeg2k	2026-03-06	Codestream marker structure	balloon_eciRGB_icc.jp2	1992294	6		97
+Image & Photo	GIF	gif	2026-05-27	LZW decode (shotgun desyncs state); larger animated fixture lifts header-tamper detection	animated_sample.gif	409600	9		100
+Image & Photo	JPEG	jpeg	2026-05-27	jpegz wrapperDecode (062393f); most single-byte tamper lands in entropy-coded data, which JPEG tolerates by design	w3c_exif_420.jpg	768000	4		100
+Image & Photo	EXR	exr	2026-04-23	ZIP-compressed EXR — zlib decompress path runs on every scanline block. Shotgun detection perfect; sniper lower than the 26 KB NONE-compressed sample (6%) because structural bytes are a smaller fraction on the larger file. Both paths validated.	zip_plasma.exr	397312	1		100
+Image & Photo	PSD	psd	2026-04-23	RLE-compressed PSD — `validatePsdDeep` decodes every scanline. The old RAW-compressed `sample.psd` (0%/7%) is retained; sweep picks the larger RLE one. Measures the strong path that the RAW sample couldn't exercise.	rle_plasma.psd	1887437	2		50
+Image & Photo	HEIC	heic	2026-03-06	H.265 CABAC per tile — **arithmetic coding absorbs single-bit errors by design**	sample.heic	3040870	0		4
+Image & Photo	AVIF	avif	2026-03-06	AV1 OBU + CABAC — same limitation	butterfly.avif	89088	0		1
+Image & Photo	BMP	bmp	2026-04-23	BMP spec has no data checksums — `bmp_decoder.validateBmp` walks every pixel row proving accessibility but cannot detect bit-flips in pixel bytes. 0/400 at ±0.5% CI. Fundamental format limit.	sample.bmp	943104	0		0
+Image & Photo	DPX	dpx	2026-03-06	Raw pixel; SMPTE 268M spec has no checksum	sample.dpx	1887437	0		0
+Image & Photo	PAM/PPM	pam	2026-03-06	Raw pixel; Netpbm spec has no checksum	sample.ppm	1887437	0		0
+Image & Photo	TGA	tga	2026-05-27	Header + image-spec validation catches malformed-byte tamper; tiny 11 KB fixture pushes structural-byte density up	sample.tga	11264	25		100
+Image & Photo	TIFF	tiff	2026-03-06	IFD structural only — no per-strip checksum	pc260001.tif	959488	0		0
+Image & Photo	JBIG2	jbig2	2026-04-25	Bi-level image stream walk; sniper 0% on truncated sample. Shotgun N/A (sample < 4 KB).	annex-h-truncated.jbig2	860	0		
+RAW Camera	DNG	dng	2026-05-27	TIFF-based via tiffz strip+tile decode loop + jpegz preview decode; 77 MB sensor dump dilutes detection density per byte	L1006922_leica_M11.DNG	80740352	3		3
+RAW Camera	CR2	cr2	2026-04-25	TIFF-based; IFD-walked preview JPEG decoded via libjpeg-turbo (sRAW2 lossless strip filtered out so heuristic keeps the real preview)	canon_eos_40d_sraw2.cr2	6081741	1		6
+RAW Camera	NEF	nef	2026-03-06	TIFF-based; deep via zigimg	nikon_coolscan_iv.nef	2306867	0		0
+RAW Camera	ARW	arw	2026-03-06	TIFF-based; deep via zigimg	sony_ilce_7s.arw	6501171	0		0
+RAW Camera	RAF	raf	2026-04-23	Fuji; validator decodes the JPEG preview at 0x54/0x58, but preview is ~0.5% of a 208 MB sensor dump — shotgun almost never lands in it. ⚠ See Action Items.	DSCF0652_fuji_GFX_100.RAF	218103808	0		1
+RAW Camera	NRW	nrw	2026-04-23	Nikon; dispatched through LibRaw which unpacks sensor data but the format has no per-row checksum. `libraw_unpack_thumb` is not currently wired up — adding it would catch corruption inside the embedded preview JPEG and could lift this to ~15-30% shotgun. Follow-up item.	NIKON_COOLPIX_P7100.NRW	16777216	0		0
+RAW Camera	ORF	orf	2026-04-23	Olympus; validator WARNs on "uncompressed IFD claims but Huffman-compressed data". Structural-only.	PB120976.ORF	14680064	0		0
+RAW Camera	PEF	pef	2026-04-23	Pentax; TIFF-wrapped. Structural-only.	IMGP1754.PEF	11534336	0		0
+RAW Camera	RW2	rw2	2026-04-23	Panasonic; TIFF-wrapped. Structural-only.	panasonic_16-9.RW2	11534336	0		0
+RAW Camera	CR3 (Canon)	cr3	2026-04-25	ISOBMFF-based Canon RAW 3; structural box walk. 15 MB sample at 0%/0% confirms no integrity mechanism beyond structure.	sample.CR3	15728640	0		0
+Video	MKV	mkv	2026-03-06	CRC32 per EBML cluster — **gold standard**	generated_testsrc.mkv	478208	100		100
+Video	AV1	av1	2026-03-06	OBU structure + tile decode	sample.av1	7885	5		100
+Video	MPEG-TS	mpeg_ts	2026-03-06	PAT/PMT CRC + continuity counters	mpeg2_aac_latm.ts	148480	4		100
+Video	MIDI	midi	2026-03-06	Track framing + delta/event validation	fur_elise.mid	20480	15		100
+Video	ProRes/MOV	prores	2026-03-06	ProRes intra-frame DCT decode per frame	prores_4444_xq.mov	6920602	5		78
+Video	MP4	mp4	2026-03-06	H.264 CABAC + AAC decode (sample = `avc1` + AAC)	jellyfish_360_10s.mp4	1048576	0		66
+Video	MOV	mov_h264	2026-04-23	H.264 CABAC decode — new sample generated from public-domain jellyfish footage via ffmpeg. Old MPEG-4 Part 2 sample kept in `sample.mov` but sweep now picks the larger H.264 one.	jellyfish_h264.mov	1048576	1		75
+Video	WebM (VP9+Opus)	webm	2026-04-24	libvpx 1.14.1 full VP9 decode per frame — every frame entropy + DCT decoded via `vpx_codec_decode`. Opus audio CRC provides additional coverage.	jellyfish_vp9_opus.webm	1887437	86		78
+Video	WebM (VP8)		2026-04-24	libvpx 1.14.1 full VP8 decode. **Critical:** uses `VP8D_GET_FRAME_CORRUPTED` control query after each frame — without it, VP8's built-in error concealment silently patches bit flips. Both sniper and shotgun lift by ~90 points because of this query.	jellyfish_360_10s.webm	1048576	88		90
+Video	AVI	avi	2026-04-23	MJPEG per-frame decode via libjpeg-turbo — new sample generated via ffmpeg. Old MPEG-4 Part 2 sample kept in `generated_testsrc.avi` but sweep picks the larger MJPEG one.	jellyfish_mjpeg.avi	8912896	0		93
+Video	DV	dv	2026-03-06	DV spec has no checksum; relies on tape physical ECC	sample.dv	368640	0		0
+Video	MPEG-ES	mpeg_es	2026-03-06	Start codes only	sample.m1v	30720	0		0
+Video	MPEG-1/2	mpeg12	2026-03-06	Start codes only	sample.mpg	16384	0		0
+Video	MPEG-4 Part 2	mpeg4p2	2026-03-06	VOP header parsing tolerates VOP failures	ubAVIxvid10.avi	1258291	0		0
+Video	RM	rm	2026-04-23	RealMedia spec has no checksums; structural chunk walk only	sample.rm	14336	0		2
+Video	FLV	flv	2026-04-25	Flash Video tag walk; no per-tag CRC. Tiny 33 B sample — sniper hits magic + header bytes. Shotgun N/A (sample < 4 KB).	sample.flv	33	40		
+Video	MPEG-PS	mpeg_ps	2026-04-25	MPEG Program Stream; PES header walk; no CRC. Shotgun N/A (sample < 4 KB).	sample.mpg	2048	0		
+Video	Theora (.ogv)	theora	2026-04-25	Theora-in-Ogg; libtheora-encoded testsrc (CC0). Ogg page CRC32 catches every probed bit flip in both modes.	sample.ogv	51200	100		100
+Video	VP8 (raw IVF)	ivf	2026-04-25	IVF container with VP8 frames; structural-only without libvpx wired into the IVF dispatch path. Hand-authored CC0 sample. Detection is fundamentally low until VP8-in-IVF gets the same `VP8D_GET_FRAME_CORRUPTED` query as VP8-in-WebM.	sample.ivf	9216	0		0
+Audio	AC3	ac3	2026-04-23	CRC-16 per syncframe. Previous sample `TomorrowNeverDies-...ac3` was malformed (started with bytes 0x84 4F 59 11, not AC3 sync 0B 77) — validator correctly rejected it, so the old 100%/100% number was a false positive from trial inheritance. Removed 2026-04-23; now measured against a genuinely valid sample.	Canyon-5.1-48khz-448kbit.ac3	2202010	100		100
+Audio	OGG	ogg	2026-03-06	CRC32 per OGG page	wikipedia_example.ogg	106496	100		100
+Audio	E-AC3 (large)	eac3_large	2026-03-06	CRC-16 per syncframe (full file, after 2026-03-06 fix)	sample1_5.1_640kbps.eac3	4299162	100		100
+Audio	E-AC3 (small)	eac3	2026-03-06	⚠ Lower coverage on smaller file — reflects frame-size / coverage density, not a bug	sample3_5.1_256kbps.eac3	1258291	81		85
+Audio	FLAC	flac	2026-03-06	MD5 audio hash + CRC-8/CRC-16 per frame	generated_middle_c.flac	45056	80		88
+Audio	ALAC	alac	2026-03-06	Lossless decode — 4KB overwrite kills a frame	sample.m4a	18432	1		100
+Audio	Opus	opus	2026-03-06	OGG page CRC + libopus decode	test_audio_video.webm	57344	1		35
+Audio	AAC (M4A)	aac	2026-03-06	MP4 box + AAC syntax decode	sample.m4a	16384	4		31
+Audio	AAC (ADTS)	aac_adts	2026-03-06	ADTS framing + syntax	sample.aac	9216	6		20
+Audio	MP3	mp3	2026-03-06	Frame sync only — MP3 spec has no data CRC	generated_tone_880hz.mp3	51200	1		1
+Audio	WAV	wav	2026-03-06	RIFF structural; no data checksum	sample.wav	9216	0		2
+Audio	AIFF	aiff	2026-03-06	IFF structural; no data checksum	sample.aiff	8192	0		1
+Audio	CAF	caf	2026-03-06	Chunk walk; no data checksum	sample.caf	9216	0		1
+Audio	AU	au	2026-03-06	Header + raw PCM	sample.au	9216	0		0
+Audio	Tracker (MOD)	tracker	2026-03-06	No integrity mechanism in format	otm.mod	315392	0		0
+Audio	AMR	amr	2026-04-25	Adaptive Multi-Rate audio; frame-table based, no per-frame CRC. Sniper at 14% reflects sync-byte coverage on a 38 B sample. Shotgun N/A.	sample.amr	38	14		
+Audio	APE (Monkey's Audio)	ape	2026-04-26	MAC header + descriptor + per-frame CRC32. Full deep-decode validation now wired via vendored upstream Monkey's Audio SDK 12.73 (`deps/libape/`, BSD-3 since 2023). The validator runs structural rigor first (descriptor, header, seek-table monotonicity, audio-region bounds, field sanity, version range) then decodes every frame and surfaces per-frame CRC32-over-decoded-PCM mismatches via the C-shim `validate_ape_decode_check`. Truncation is caught either by the structural seek-table walk (modern v3980+ has audio_data_length) or by the decoder's sample-count-mismatch path. Synthetic 16 KB corpus is now a real APE encoded by the SDK from white-noise WAV (\`mac -c2000\`), so it actually decodes; sniper hits 99% (only the descriptor MD5 bytes — which are byte-level metadata not bitstream — escape detection in some random flips), shotgun hits 100%. Tested with the in-tree Zig tests + tests/cli/ape_validation (11 PASS).	corpus_synthetic.ape	16384	99		100
+Audio	CD+G (Karaoke)	cdg	2026-04-25	24-byte fixed-size sectors; structural only — no checksum. 0%/2% confirms fundamental format limit.	sample.cdg	14438	0		2
+Audio	DFF (DSDIFF)	dff	2026-04-25	DSD audio container; chunk walk only. Tiny 32 B header-only sample. Shotgun N/A.	sample.dff	32	52		
+Audio	DSF (DSD)	dsf	2026-04-25	Sony DSD; structural walk. Shotgun N/A.	sample.dsf	88	60		
+Audio	DTS (Digital Surround)	dts	2026-04-25	Frame sync + size walk; no per-frame CRC. Shotgun lift from 4 KB overwrite desyncing the frame stream.	sample.dts	377856	0		51
+Audio	TTA (True Audio)	tta	2026-04-25	Per-frame CRC32 catches almost every probed bit flip. Shotgun N/A (sample < 4 KB).	sample.tta	3174	97		
+Audio	WavPack	wavpack	2026-04-26	libwavpack 5.9.0 deep decode: every block decoded to PCM, per-block CRC over decoded samples + checksum sub-block + sample-count drift. Block-checksum sub-block (`ID_BLOCK_CHECKSUM`) catches header/bitstream tampering at open-time; post-decode CRC catches arithmetic drift; truncation surfaces as decoded < expected sample count.	corpus_xorshift.wv	120832	100		100
+Document & Office	XLS	xls	2026-05-27	BIFF8 records + SST + formulas + cells	poi_formula.xls	178176	22		96
+Document & Office	DOC (large)	doc	2026-03-06	FIB + 31 fc/lcb pair bounds + CLX piece table. Detection density drops on large docs — body text is most of the file.	word95_large.doc	617472	2		2
+Document & Office	DOC (small)		2026-03-06	Same validator, smaller file — shotgun has ~21% chance of hitting FIB/Table/CLX.	word97_simple.doc	19456			52
+Document & Office	PDF		2026-04-27	†Headline numbers are misleading for PDF: detection rate is dominated by which compression filters the document uses for its embedded streams (Flate, DCT/JPEG, JPX/JPEG2000, JBIG2, CCITT), not by the validator. See "PDF detection by stream-filter dominance" subsection below for the breakout table. The exit-code bug from 2026-03-06 was fixed in commit `c304f36` (2026-04-23, Action Item #1).	(varies — see breakout)	0			
+Document & Office	OLE2 (PPT)	ole2	2026-03-06	FAT/directory structural only	sample.ppt	933888	0		0
+Document & Office	InDesign	indd	2026-03-06	Page structure.	sample.indd	4096	1		73
+Document & Office	DOCX	docx	2026-04-23	OOXML = ZIP with per-entry CRC32. Sample replaced 2026-04-23 from Apache 2.0 Tika test corpus.	sample.docx (Tika `testWORD.docx`)	13312	87		100
+Document & Office	XLSX	xlsx	2026-04-23	OOXML = ZIP with per-entry CRC32. Sample from Apache Tika.	sample.xlsx (Tika `test-columnar.xlsx`)	10240	82		100
+Document & Office	PPTX	pptx	2026-04-23	OOXML = ZIP with per-entry CRC32. Sample from Apache Tika.	sample.pptx (Tika `testPPT.pptx`)	36864	93		100
+Document & Office	ODT	odt	2026-04-23	ODF = ZIP with per-entry CRC32. Sample from Apache Tika. Note: currently auto-detected as EPUB (also ZIP) — separate detection-priority bug.	sample.odt (Tika `testODFwithOOo3.odt`)	24576	96		100
+Document & Office	ODS	ods	2026-04-23	Same as ODT.	sample.ods (Tika `LibreOfficeCalc_ods_1.3.ods`)	9011	88		100
+Document & Office	ODP	odp	2026-04-23	Same as ODT.	sample.odp (Tika `LibreOfficeImpress_odp_1.3.odp`)	24576	97		100
+Document & Office	RTF	rtf	2026-04-23	Structural only — RTF has no checksums. Shotgun high because 4 KB overwrite reliably breaks brace matching or control-word syntax.	sample.rtf (Tika `testRTFEmbeddedFiles.rtf`)	1258291	0		92
+Document & Office	EML	eml	2026-04-25	UTF-8 + NUL-byte integrity check on the raw file before structural parsing. NUL is never legal in a mail message; flipping the high bit of an ASCII byte produces a lone UTF-8 continuation byte. Caught ~50% of single-bit ASCII flips and ~80% of 4 KB shotgun overwrites.	sample.eml (Tika `testRFC822-big`)	6758	12		84
+Document & Office	MBOX	mbox	2026-04-25	Same UTF-8 + NUL-byte check as EML, applied to the whole concatenated file. Shotgun catches every 4 KB random overwrite (random bytes almost always include NUL or invalid UTF-8 sequences). Sniper catches roughly half the random bit flips.	sample.mbox (synthesized from 4 Tika RFC822 messages)	17408	13		100
+Document & Office	Pages	pages	2026-04-25	iWork bundle = ZIP with per-entry CRC32. Hand-authored from scratch (no Apple software, no permissive corpus exists); `scripts/build-pages-sample` regenerates a deterministic 8-IWA inner `Index.zip` with high-entropy openssl-AES-CTR payloads plus real plist metadata. CRC32 per entry catches every bit flip and every 4 KB shotgun overwrite.	sample.pages (hand-authored CC0)	57344	100		100
+Document & Office	Keynote	keynote	2026-04-25	iWork bundle = ZIP with per-entry CRC32. Hand-authored mirroring the Pages sample; `scripts/build-keynote-sample` regenerates a 9-IWA inner `Index.zip` plus an uncompressed `buildVersionHistory.plist` carrying `com.apple.iWork.Keynote` so the format detector keys on it. CRC32 per entry catches every 4 KB shotgun overwrite and ~99% of single-bit flips.	sample.key (hand-authored CC0)	65536	99		100
+Document & Office	Numbers	numbers	2026-04-25	Same iWork-bundle template as Keynote with a Tables/-shaped IWA layout. The `com.apple.iWork.Numbers` marker is stored uncompressed at the head of the outer ZIP. CRC32 per entry catches every probed bit flip and every 4 KB shotgun overwrite.	sample.numbers (hand-authored CC0)	65536	100		100
+Document & Office	AI (Adobe Illustrator)	ai	2026-04-25	PostScript-derived header + PDF body. Tiny 372 B sample is mostly PDF magic; later bytes are uncovered text. Shotgun N/A.	sample.ai	372	6		
+Document & Office	BAI2 (Bank Admin Inst.)	bai2	2026-04-25	Fixed-format banking text; structural validation of record-type prefixes. No checksum. Shotgun N/A.	sample.bai2	362	20		
+Document & Office	CSV	csv	2026-06-22	Structural CSV + mandatory UTF-8 validation. bolter/shotgun reliably produce invalid UTF-8 -> 100%; sniper 26% = flips landing in a multibyte sequence. (Was 0/0/0 before 2026-06-22: CSV was omitted from the extension-remap dispatch and silently skipped its UTF-8 check; fixed and guarded by tests/cli/utf8_required_formats_reject.)	sample.csv	70	0		
+Document & Office	ClarisWorks	cwk	2026-04-25	Legacy AppleWorks. Structural walk. Shotgun N/A.	sample.cwk	64	6		
+Document & Office	EDIFACT	edifact	2026-04-25	Fixed-format trade messages; validator cross-checks UNH/UNT counts. Shotgun N/A.	sample.edifact	152	37		
+Document & Office	EPS	eps	2026-04-25	PostScript header + structural walk. Shotgun N/A.	sample.eps	430	4		
+Document & Office	EPUB	epub	2026-04-25	ZIP container with mimetype check; per-entry CRC32. Shotgun N/A.	sample.epub	2048	69		
+Document & Office	HTML	html	2026-06-22	Tag-tree parse + UTF-8 validation gated on a declared charset (<meta charset=utf-8>). bolter/shotgun -> 100%; sniper 22% on the >=12 KB fixture.	simple.html	196	2		
+Document & Office	iCalendar (RFC 5545)	icalendar	2026-04-25	Structural; BEGIN/END pairing + property syntax. Shotgun N/A.	sample.ics	650	21		
+Document & Office	IDML (InDesign)	idml	2026-04-25	ZIP+XML markup; per-entry CRC32. Shotgun N/A.	sample.idml	884	55		
+Document & Office	INI	ini	2026-04-25	Plain-text key-value; structural only. Shotgun N/A.	sample.ini	60	17		
+Document & Office	JSON	json	2026-06-22	RFC 8259 mandates UTF-8: the validator rejects invalid UTF-8, then parses structure. On the >=12 KB multibyte fixture, bolter/shotgun almost always corrupt a UTF-8 sequence -> 100%; sniper 43% is the share of single-bit flips that land in a multibyte byte or a JSON token.	sample.json	94	47		
+Document & Office	JSON5	json5	2026-04-25	JSON5 parser; structural only. Shotgun N/A.	sample.json5	329	30		
+Document & Office	MT940 (SWIFT)	mt940	2026-04-25	Banking text; structural only. Shotgun N/A.	sample.mt940	347	11		
+Document & Office	MacWrite Document	mwd	2026-04-25	Legacy word processor; structural only. Tiny sample. Shotgun N/A.	sample.mwd	64	0		
+Document & Office	NACHA (ACH)	nacha	2026-04-25	Banking fixed-format text; record-type validation. Shotgun N/A.	sample.ach	950	15		
+Document & Office	OFX (Open Financial)	ofx	2026-04-25	Banking SGML/XML; structural only. Shotgun N/A.	sample.ofx	850	2		
+Document & Office	Plain Text	plain_text	2026-06-22	UTF-8 + control-char check. Invalid UTF-8 that is still Latin-1-decodable falls back to single-byte decode with a WARN (exit 0, so counted as not-detected) -> sniper/bolter ~0%; shotgun 95% because a random 4 KB overwrite injects NUL or undecodable bytes that hard-fail.	sample.txt	254	0		
+Document & Office	PTX (Pro Tools)	ptx	2026-04-25	Avid session structural walk. 0%/0% on 40 KB confirms structural-only.	sample.ptx	40755	0		0
+Document & Office	QIF (Quicken Interchange)	qif	2026-04-25	Plain-text; structural only. Shotgun N/A.	sample.qif	218	3		
+Document & Office	TOML	toml	2026-06-22	TOML structural parse + mandatory UTF-8. bolter/shotgun -> 100% (invalid UTF-8); sniper 42% on the >=12 KB multibyte fixture.	sample.toml	72	37		
+Document & Office	TXF (Tax Exchange)	txf	2026-04-25	Plain-text; structural only. Shotgun N/A.	sample.txf	140	3		
+Document & Office	vCard (RFC 6350)	vcard	2026-04-25	Structural BEGIN/END pairing + property syntax. Shotgun N/A.	sample.vcf	198	32		
+Document & Office	WordPerfect	wpd	2026-04-25	Header walk; structural only. Shotgun N/A.	sample.wpd	512	2		
+Document & Office	X12 EDI	x12_edi	2026-04-25	Fixed-format trade messages; ISA/IEA + GS/GE counts cross-validated. Shotgun N/A.	sample.edi	262	21		
+Document & Office	XML	xml	2026-06-22	XML well-formedness + mandatory UTF-8. bolter/shotgun -> 100%; sniper 52% from tag/quote/multibyte density on the >=12 KB fixture.	sample.xml	110	64		
+Document & Office	YAML	yaml	2026-04-25	Plain-text; structural only. Shotgun N/A.	sample.yaml	68	0		
+Document & Office	Markdown	markdown	2026-04-25	Plain-text; structural only. Shotgun N/A.	sample.md	525	0		
+Font	TTF	ttf	2026-03-06	Per-table checksum + whole-file checkSumAdjustment (strict mode)	noto_sans_regular.ttf	636928	100		100
+Font	OTF	otf	2026-03-06	Per-table checksum + whole-file checkSumAdjustment	source_sans_regular.otf	343040	100		100
+Font	WOFF	woff	2026-04-23	Per-table zlib-decompress + origChecksum verification (font_validator.zig:370). Prior "0%/0%" was a stale sweep — the code was already doing the right thing.	roboto_regular.woff	266240	100		100
+Font	WOFF2	woff2	2026-04-23	Per-table Brotli-decompress + origChecksum verification. Prior "0%/0%" was a stale sweep. Sniper is lower than WOFF because WOFF2's Brotli framing is more compact (fewer structural bytes), but shotgun still perfect.	roboto_regular.woff2	181248	49		100
+Scientific	FITS (with CHECKSUM)	fits_checksum	2026-03-06	CHECKSUM/DATASUM per HDU	sample_with_checksum.fits	5837	100		100
+Scientific	FITS (no CHECKSUM)	fits	2026-03-06	Keyword validation only	sample.fits	715776	0		2
+Scientific	DICOM	dicom	2026-03-06	Tag structure + value validation	CT_small.dcm	39936	5		20
+Scientific	HDF5	hdf5	2026-03-06	Jenkins lookup3 checksum (small file)	sample_v2.h5	6144	4		13
+Scientific	PDB (Protein)	pdb_struct	2026-03-06	ATOM/HETATM record cross-validation	1CRN.pdb	50176	16		39
+Scientific	CIF (Crystallographic Info)	cif	2026-04-25	Plain-text scientific format; structural only. Shotgun N/A.	sample.cif	145	0		
+Scientific	FASTA	fasta	2026-04-25	Plain-text bioinformatics; structural only. Shotgun N/A.	sample.fasta	479	22		
+Scientific	FASTQ	fastq	2026-04-25	Plain-text bioinformatics; per-record sequence/quality length cross-check. Shotgun N/A.	sample.fastq	447	28		
+Scientific	MAT-File	matlab	2026-04-25	Element header + flag walk; magic + endian + tag length validation. Shotgun N/A.	sample.mat	1331	94		
+Scientific	NetCDF	netcdf	2026-04-25	NetCDF classic header walk; HDF5-derived NetCDF-4 reuses HDF5's lookup3 checksums. Tiny sample. Shotgun N/A.	sample.nc	84	39		
+Scientific	NIfTI-1	nifti	2026-04-25	Header magic + dims; no checksum. Shotgun N/A.	sample.nii	416	1		
+Scientific	Parquet	parquet	2026-04-25	Footer + page CRC32 (not currently verified by validator beyond header). Shotgun N/A.	sample.parquet	484	2		
+Scientific	Shapefile	shapefile	2026-04-25	GIS .shp; record-by-record header check + magic. Shotgun N/A.	sample.shp	128	89		
+Database	QBW	qbw	2026-03-06	CRC32 per 4096-byte page (v12+)	B18_Managing_Company_Files.qbw	15728640	100		100
+Database	SQLite	sqlite	2026-03-06	Page headers + btree structure	chinook.sqlite	1048576	54		100
+Database	ACCDB	accdb	2026-03-06	Jet engine page structure (small file)	sample.accdb	4096	1		73
+Database	MDB	mdb	2026-03-06	Jet engine page structure (small file)	sample.mdb	4096	1		73
+Database	QuickBooks Backup (.qbb)	qbb	2026-04-25	OLE2-based; dispatches through document_validators (no per-stream checksum). Sample shared with ole2/sample.doc.	sample.qbb	19456	8		24
+Database	dBASE (.dbf)	dbf	2026-04-25	Header version + date + record-length cross-validation; hand-authored CC0 dBASE III. Sniper rate fundamental (no per-record checksum); shotgun lands in tail records past header-declared range.	sample.dbf	21504	0		100
+Archive	CPT	cpt	2026-03-06	CRC per resource fork entry (Compact Pro archive, not audio)	sample.cpt	20480	100		100
+Archive	TAR	tar	2026-03-06	Header checksum per 512-byte block	sample.tar	4096	15		73
+Archive	7z	sevenz	2026-04-25	7z next-header CRC32 + per-stream CRC32. Hand-authored xorshift corpus (CC0). Both sniper and shotgun catch nearly every flip.	corpus_xorshift.7z	17408	99		100
+Archive	AR (Unix archive)	ar	2026-04-25	`!<arch>\n` magic + 60-byte member headers; no per-entry checksum. Shotgun N/A.	minimal.a	88	38		
+Archive	BLAR (Blake3 Archive)	blar	2026-04-25	Peter's archive format with Blake3 per-entry hashing. Every probed bit flip detected. Shotgun N/A.	sample.blar	1024	100		
+Archive	Brotli	br	2026-04-26	Raw Brotli stream; full streaming decompression via libbrotli. RFC 7932 has no whole-file checksum, but the entropy coder rejects most structurally invalid prefix codes / distance overflows / window-bits errors. ~47% of single-bit flips on dense English-text Huffman streams cascade into decoder failure; the rest decode to wrong-but-valid bytes (silent). 4 KB shotgun overwrites are essentially always rejected. Earlier 0%/0% row used a pathological xorshift random-noise corpus where compressed output is ~8 bits/byte and bit flips are statistically valid Huffman codes; replaced with a deterministic CC0 English-text corpus (scripts/build-brotli-corpus).	realistic_corpus.br	27648	47		100
+Archive	Bzip2	bzip2	2026-04-25	CRC32 per block + combined CRC. Hand-authored xorshift corpus (CC0).	corpus_xorshift.bz2	17408	100		100
+Archive	CAB (Microsoft)	cab	2026-04-25	Per-folder + per-file CSUM (Adler-like) cross-validated. CC0 sample built via gcab.	corpus_xorshift.cab	27648	100		100
+Archive	Gzip	gzip	2026-04-25	CRC32 + ISIZE in trailer. Hand-authored xorshift corpus (CC0).	corpus_xorshift.gz	16384	100		100
+Archive	BinHex (.hqx)	hqx	2026-04-25	BinHex 4.0 header + per-fork CRC16. Hand-authored CC0 sample (encoder reverse-engineered from validator).	corpus_xorshift.hqx	13312	100		100
+Archive	MBLAR (Multi-Blake3)	mblar	2026-04-25	Peter's manifest-bundle archive; Blake3 per file. Shotgun N/A.	sample.mblar	393	100		
+Archive	PAR2	par2	2026-04-25	MD5 of every packet + recovery slice integrity. Built via par2cmdline (BSD-licensed).	corpus_xorshift.par2	34816	100		100
+Archive	RAR	rar	2026-04-25	Per-entry CRC32 + RAR5 BLAKE2sp option. CC0 corpus (rar -m5).	corpus_xorshift.rar	16384	100		100
+Archive	StuffIt	sit	2026-04-25	Header + entry walk; sniper 94% on 140 B from header dominance. Shotgun N/A.	sample.sit	140	94		
+Archive	XZ	xz	2026-04-25	CRC32/CRC64/SHA-256 per stream + index integrity. Hand-authored xorshift corpus (CC0).	corpus_xorshift.xz	16384	100		100
+Archive	ZIP	zip	2026-04-25	Per-entry CRC32 + EOCD record. Hand-authored xorshift corpus (CC0).	corpus_xorshift.zip	16384	100		100
+Archive	Zstd	zstd	2026-04-25	Frame-level XXH64 + frame footer. Hand-authored xorshift corpus (CC0).	corpus_xorshift.zst	16384	100		100
+Archive	Studio One Project (.song)	song	2026-04-25	ZIP-based; per-entry CRC32 + metainfo.xml integrity. Hand-authored CC0 sample.	sample.song	41984	100		100
+Archive	StuffIt X (.sitx)	sitx	2026-04-25	Magic + structural header walk only; no per-entry checksums in current validator. Hand-authored.	sample.sitx	16384	0		0
+Game ROM	SNES	snes	2026-03-06	Internal ROM checksum + complement	F-ZERO.smc	536576	100		99
+Game ROM	GB	gb	2026-03-06	Header checksum only (tiny coverage)	Addams	134144	0		1
+Game ROM	GBA	gba	2026-03-06	Header checksum only	Bomberman	8808038	0		0
+Game ROM	Genesis	genesis	2026-03-06	Header checksum only	Aero	536576	0		1
+Game ROM	NES	nes	2026-03-06	iNES header only	1943	134144	0		0
+Game ROM	N64	n64	2026-03-06	No integrity mechanism	Super	8808038	0		0
+Game ROM	CHD (MAME)	chd	2026-04-25	MAME's compressed disc; SHA-1 per hunk + global SHA-1. Tiny synthetic 124 B sample. Shotgun N/A.	synthetic_chd.chd	124	10		
+Game ROM	NDS (Nintendo DS)	nds	2026-04-25	Header CRC16 (logo + secure area). 41% sniper on 1 KB. Shotgun N/A.	synthetic_nds_rom.nds	1024	41		
+Game ROM	WAD (Doom/Wii)	wad	2026-04-25	Lump table; structural only. Tiny synthetic sample — header IS most of file. Shotgun N/A.	sample.wad	12	100		
+Disk Image / Filesystem / Executable / Other	DMG	dmg	2026-03-06	Plist + koly trailer	sample.dmg	17408	0		10
+Disk Image / Filesystem / Executable / Other	ISO	iso	2026-03-06	PVD structural only	sample.iso	366592	0		0
+Disk Image / Filesystem / Executable / Other	COFF	coff	2026-03-06	Section header structure	sample.o	10240	0		1
+Disk Image / Filesystem / Executable / Other	Mach-O Fat	macho_fat	2026-03-06	Architecture header only	sample	33792	0		0
+Disk Image / Filesystem / Executable / Other	Blorb	blorb	2026-03-06	IFF structural only	Alabaster.gblorb	3250586	0		0
+Disk Image / Filesystem / Executable / Other	DS_Store	ds_store	2026-03-06	BTree page structure	sample.ds_store	10240	0		25
+Disk Image / Filesystem / Executable / Other	ASF	asf	2026-03-06	GUID/object structural	sample.asf	7168	1		0
+Disk Image / Filesystem / Executable / Other	QDF	qdf	2026-03-06	OLE2/ZIP structural	LONDON_2018.QDF	5347738	1		0
+Disk Image / Filesystem / Executable / Other	3MF (3D Manufacturing)	3mf	2026-04-25	ZIP-based; per-entry CRC32 + XML manifest. Shotgun N/A (sample < 4 KB).	sample.3mf	1536	75		
+Disk Image / Filesystem / Executable / Other	AEP (After Effects Project)	aep	2026-04-25	RIFX container; structural-only walk. Tiny sample (44 B). Shotgun N/A.	sample.aep	44	27		
+Disk Image / Filesystem / Executable / Other	ALS (Ableton Live Set)	als	2026-04-25	gzip-wrapped XML. Tiny sample — gzip CRC32 + zlib structure catches most bit flips. Shotgun N/A.	sample.als	82	90		
+Disk Image / Filesystem / Executable / Other	Apple Media DB	apple_media_db	2026-04-25	tvdb/photo SQLite-derived store. Structural walk. Shotgun N/A.	sample.tvdb	253	46		
+Disk Image / Filesystem / Executable / Other	GarageBand (.band)	band	2026-04-25	Bundle (directory) format — `projectData` inside is a plist routed to plist validator. Sweep-only on the plist file. Shotgun N/A.	projectData (inside .band bundle)	512	0		
+Disk Image / Filesystem / Executable / Other	BEAM (Erlang)	beam	2026-04-25	FOR1/IFF chunk container; chunk lengths cross-validated. No CRC. Shotgun N/A.	sample.beam	736	36		
+Disk Image / Filesystem / Executable / Other	Blender (.blend)	blend	2026-04-25	DNA-block-based binary. Structural walk; no checksum. Tiny header-only sample. Shotgun N/A.	sample.blend	104	47		
+Disk Image / Filesystem / Executable / Other	BSP (Quake)	bsp	2026-04-25	Lump-table walk; no CRC. Structural only. Shotgun N/A.	sample.bsp	1024	39		
+Disk Image / Filesystem / Executable / Other	Bitwig Project	bwproject	2026-04-25	ZIP-derived but tiny sample (128 B). Sniper 0% — sample is below ZIP minimum. Shotgun N/A.	sample.bwproject	128	0		
+Disk Image / Filesystem / Executable / Other	Chromium PAK	chromium_pak	2026-04-25	Resource bundle; index walk only. Tiny synthetic sample. Shotgun N/A.	sample.pak	30	0		
+Disk Image / Filesystem / Executable / Other	Cubase Project	cpr	2026-04-25	Steinberg binary. Structural only. Shotgun N/A.	sample.cpr	76	49		
+Disk Image / Filesystem / Executable / Other	DER (ASN.1)	der	2026-04-25	TLV-walked. Structural; no checksum. Shotgun N/A.	sample.der	688	7		
+Disk Image / Filesystem / Executable / Other	DRP (DR Painter)	drp	2026-04-25	Generic binary — high sniper from header dominance. Shotgun N/A.	sample.drp	263	60		
+Disk Image / Filesystem / Executable / Other	DWG (AutoCAD)	dwg	2026-04-25	Section structure walk. Tiny sample. Shotgun N/A.	sample.dwg	1024	1		
+Disk Image / Filesystem / Executable / Other	DXF (AutoCAD)	dxf	2026-04-25	Plain-text CAD; structural only. Shotgun N/A.	sample.dxf	388	5		
+Disk Image / Filesystem / Executable / Other	Erlang Mix .eex	eex	2026-04-25	Plain-text template; structural only. Shotgun N/A.	sample.eex	378	0		
+Disk Image / Filesystem / Executable / Other	ELF	elf	2026-04-25	Section header walk; no whole-file checksum. Tiny synthetic 64 B sample. Shotgun N/A.	minimal.elf	64	20		
+Disk Image / Filesystem / Executable / Other	Erlang BERT	erlang_term	2026-04-25	External Term Format walk. Shotgun N/A.	sample.app	281	0		
+Disk Image / Filesystem / Executable / Other	FCPXML (Final Cut)	fcpxml	2026-04-25	XML-based; structural walk. Shotgun N/A.	sample.fcpxml	134	58		
+Disk Image / Filesystem / Executable / Other	FL Studio	flp	2026-04-25	Project file structural walk. Tiny sample. Shotgun N/A.	sample.flp	122	6		
+Disk Image / Filesystem / Executable / Other	GLB (glTF binary)	glb	2026-04-25	Chunk-based; structural walk. JSON chunk + BIN chunk lengths cross-validated. Shotgun N/A.	box.glb	1638	32		
+Disk Image / Filesystem / Executable / Other	glTF (JSON)	gltf	2026-04-25	JSON manifest; structural only. Shotgun N/A.	box.gltf	2867	20		
+Disk Image / Filesystem / Executable / Other	IFF (EA)	iff	2026-04-25	Chunk walk; no CRC. Shotgun N/A.	sample.iff	232	46		
+Disk Image / Filesystem / Executable / Other	Java .class	java_class	2026-04-25	ClassFile constant pool walk; magic + version check. Shotgun N/A.	Hello.class	397	21		
+Disk Image / Filesystem / Executable / Other	KML	kml	2026-04-25	GIS XML; structural only. Shotgun N/A.	sample.kml	1024	58		
+Disk Image / Filesystem / Executable / Other	KMZ	kmz	2026-04-25	KMZ = zipped KML; per-entry CRC32 catches almost any bit flip on the small sample. Shotgun N/A.	sample.kmz	538	95		
+Disk Image / Filesystem / Executable / Other	Logic Pro X	logicx	2026-04-25	Bundle format — sample is `ProjectData` plist alone. Shotgun N/A.	sample.logicx (ProjectData)	249	71		
+Disk Image / Filesystem / Executable / Other	LSPK (Larian Studios)	lspk	2026-04-25	Pak file; structural only. Shotgun N/A.	sample.lspk	256	3		
+Disk Image / Filesystem / Executable / Other	Mach-O	macho	2026-04-25	Single-arch sample; load command walk; no checksum. Shotgun N/A.	sample.o	536	0		
+Disk Image / Filesystem / Executable / Other	OBJ (Wavefront)	obj	2026-04-25	Plain-text 3D; vertex/face syntax check. Shotgun N/A.	sample.obj	652	44		
+Disk Image / Filesystem / Executable / Other	PAK (Quake)	pak	2026-04-25	Header offset/length cross-check. Tiny synthetic sample (12 B). Shotgun N/A.	sample.pak	12	60		
+Disk Image / Filesystem / Executable / Other	PE (Windows)	pe	2026-04-25	MZ + PE headers; optional checksum (rarely populated). Tiny sample. Shotgun N/A.	sample.exe	1024	3		
+Disk Image / Filesystem / Executable / Other	PEM (RFC 7468)	pem	2026-04-25	Base64 envelope; structural only. Shotgun N/A.	sample.pem	989	51		
+Disk Image / Filesystem / Executable / Other	PGP Signed Message	pgp_signed	2026-04-25	Header/footer detect + Base64 walk. Shotgun N/A.	sample.asc	370	81		
+Disk Image / Filesystem / Executable / Other	Plist	plist	2026-04-25	Both XML and binary plist; structural only. Shotgun N/A.	sample.plist	830	52		
+Disk Image / Filesystem / Executable / Other	PLY (3D)	ply	2026-04-25	Header + element count; no per-element checksum. Shotgun N/A.	sample.ply	447	51		
+Disk Image / Filesystem / Executable / Other	Premiere Project	prproj	2026-04-25	Gzip-wrapped XML. Tiny sample. Shotgun N/A.	sample.prproj	112	55		
+Disk Image / Filesystem / Executable / Other	Reason (Propellerhead)	reason	2026-04-25	Bundle binary; structural walk. Shotgun N/A.	sample.reason	96	33		
+Disk Image / Filesystem / Executable / Other	RPP (Reaper)	rpp	2026-04-25	Plain-text project; structural only. Shotgun N/A.	sample.rpp	44	50		
+Disk Image / Filesystem / Executable / Other	Sketch (.sketch)	sketch	2026-04-25	ZIP-based; per-entry CRC32. Shotgun N/A.	sample.sketch	631	56		
+Disk Image / Filesystem / Executable / Other	SSH Signature	ssh_signature	2026-04-25	RFC 4880-like wire-format walk. Shotgun N/A.	sample.sig	294	64		
+Disk Image / Filesystem / Executable / Other	STEP (.step)	step	2026-04-25	ISO 10303-21 plain-text CAD. Shotgun N/A.	sample.stp	711	23		
+Disk Image / Filesystem / Executable / Other	STL (3D)	stl	2026-04-25	Both ASCII and binary stl; sniper 73% on small ASCII sample. Shotgun N/A.	sample.stl	518	73		
+Disk Image / Filesystem / Executable / Other	Toast (Roxio)	toast	2026-04-25	Apple Toast disc image; structural walk.	sample.toast	36864	0		10
+Disk Image / Filesystem / Executable / Other	Type 1 Font	type1	2026-04-25	PostScript-derived font; eexec encrypted body walk. Shotgun N/A.	sample.pfa	174	0		
+Disk Image / Filesystem / Executable / Other	VMDK	vmdk	2026-04-25	VMware disk descriptor + extent walk. 65 KB sample at 0%/0% — structural-only.	sample.vmdk	65536	0		0
+Disk Image / Filesystem / Executable / Other	VPK (Valve Pak)	vpk	2026-04-25	Tiny synthetic 28 B sample; structural walk catches every flip (header IS the file). Shotgun N/A.	sample.vpk	28	100		
+Disk Image / Filesystem / Executable / Other	WARC (Web Archive)	warc	2026-04-25	Record header + content-length walk. Shotgun N/A.	sample.warc	1126	48		
+Disk Image / Filesystem / Executable / Other	WebAssembly	wasm	2026-04-25	Section LEB128 length walk; magic + version. Tiny sample. Shotgun N/A.	minimal.wasm	24	35		
+Disk Image / Filesystem / Executable / Other	WIM (Windows Imaging)	wim	2026-04-25	XPRESS/LZX section walk; partial integrity. Shotgun N/A.	sample.wim	1229	8		
+Disk Image / Filesystem / Executable / Other	Microsoft Installer (.msi)	msi	2026-04-25	OLE2 compound file (no integrity beyond CFBF FAT structure). Built via wixl. Shotgun catches FAT/dir mismatch.	sample.msi	9216	0		43
+Disk Image / Filesystem / Executable / Other	Windows ESD (.esd)	esd	2026-04-25	WIM variant with LZMS compression; structural header walk (208-byte WIM header). Hand-authored.	sample.esd	16384	1		0
+Disk Image / Filesystem / Executable / Other	LLVM Precompiled Header (.pch)	llvm_pch	2026-04-25	Magic ("CPCH") + LLVM bitcode signature only. Bitcode contents are version-specific; structural only.	sample.pch	16384	0		0
+Disk Image / Filesystem / Executable / Other	LLVM Serialized Diagnostics (.dia)	llvm_diag	2026-04-25	Magic ("DIAG") + LLVM bitcode signature only. Same limit as .pch.	sample.dia	16384	0		0
+Disk Image / Filesystem / Executable / Other	PCAP	pcap	2026-04-25	Hand-authored (no sudo for tcpdump in nix sandbox). Walks every packet record's incl_len/orig_len; shotgun lands in valid trailer bytes that fail length checks. Fixed 64 MiB-stack-overflow bug in `validatePcap` while landing the sample.	sample.pcap	13312	4		100
+Disk Image / Filesystem / Executable / Other	PCAPNG	pcapng	2026-04-25	Section Header Block + IDB + EPBs structural walk; pcapng-validator checks magic and BOM only (no block-level CRC verification yet — pcapng has optional CRC32 per block).	sample.pcapng	9216	0		0
+Disk Image / Filesystem / Executable / Other	G-code	gcode	2026-04-25	Text format; line-grammar walk catches 27% sniper (most flips break a coordinate or G/M code prefix). Shotgun 98% — large overwrite breaks too many lines to ignore. Hand-authored CC0.	sample.gcode	20480	27		98
+Disk Image / Filesystem / Executable / Other	MessagePack (.msgpack)	msgpack	2026-04-25	Type-tagged binary; validator walks tag stream but spec has no checksum. Most flips land in payload bytes that decode to different-but-valid values. Fundamental limit per RFC. Hand-authored CC0.	sample.msgpack	19456	0		0
+Disk Image / Filesystem / Executable / Other	RPM Package (.rpm)	rpm	2026-04-25	RPM v3 lead + signature header + main header. Validator computes SHA-1 over main header (when sig tag 269 present). Shotgun 30% reflects header dominance vs payload mass. Built via rpmbuild (CC0 spec). Fixed 16 MiB-stack-overflow bug in `validateRpm` while landing the sample.	sample.rpm	22528	3		30

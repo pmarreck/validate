@@ -1,13 +1,37 @@
 #!/usr/bin/env bash
-# Regression guard: docs/corruption-detection-report.md must not drift
-# from the raw sweep data in docs/corruption-sweep-results/. Catches the
-# class of bug where validator improvements land in TSVs but the report
-# prose isn't refreshed.
+# Regeneration-idempotence guard for the GENERATED corruption report.
 #
-# This is a thin pass-through to scripts/audit-corruption-report which
-# does the actual work; it's wired into tests/cli/ so ./test fails if
-# any new TSV row diverges from its corresponding report row by more
-# than ±2pp.
-
+# docs/corruption-detection-report.md is produced by
+# scripts/generate-corruption-report from the sweep TSVs + the sidecar in
+# docs/corruption-sweep-results/generated/. The committed file MUST be
+# byte-identical to a fresh regeneration. This catches both:
+#   (a) TSV/sidecar changes that were not regenerated into the report, and
+#   (b) any hand-edit of the generated table (numbers must come from TSVs).
+# Supersedes the old hand-audit (scripts/audit-corruption-report).
+#
+# set -u only; exit codes asserted explicitly.
 set -u
-exec "$(cd "$(dirname "$0")/../.." && pwd)/scripts/audit-corruption-report"
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+tmp="$(mktemp "${TMPDIR:-/tmp}/report-regen.XXXXXX.md")"
+trap 'rm -f "$tmp"' EXIT
+
+# luajit is in the nix dev shell; prefer it directly, fall back to nix develop.
+if command -v luajit >/dev/null 2>&1; then
+	( cd "$ROOT" && luajit scripts/generate-corruption-report --out "$tmp" ) >/dev/null 2>&1
+else
+	( cd "$ROOT" && nix develop -c luajit scripts/generate-corruption-report --out "$tmp" ) >/dev/null 2>&1
+fi
+rc=$?
+if [ $rc -ne 0 ]; then
+	echo "FAIL: generate-corruption-report exited $rc" >&2
+	exit 1
+fi
+
+if ! diff -q "$ROOT/docs/corruption-detection-report.md" "$tmp" >/dev/null 2>&1; then
+	echo "FAIL: docs/corruption-detection-report.md is stale — regenerate with scripts/generate-corruption-report" >&2
+	diff "$ROOT/docs/corruption-detection-report.md" "$tmp" 2>&1 | head -40 >&2
+	exit 1
+fi
+echo "report is byte-identical to a fresh regeneration (no drift)"
+exit 0

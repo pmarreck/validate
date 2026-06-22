@@ -5367,7 +5367,7 @@ pub const FormatValidator = struct {
         if (isPlainTextOrUnknown(result.format) and ext_format != .unknown) {
             // Check if this is a text format that can be validated
             const ext_is_validatable_text = switch (ext_format) {
-                .json, .toml, .ini, .xml, .gcode => true,
+                .json, .toml, .ini, .xml, .gcode, .csv => true,
                 else => false,
             };
             if (ext_is_validatable_text) {
@@ -5386,6 +5386,7 @@ pub const FormatValidator = struct {
                     .ini => text_format_validators.validateIni(&ext_source),
                     .xml => text_format_validators.validateXml(&ext_source),
                     .gcode => text_format_validators.validateGcode(&ext_source),
+                    .csv => text_format_validators.validateCsv(&ext_source),
                     else => ValidationResult.ok(ext_format),
                 };
             } else {

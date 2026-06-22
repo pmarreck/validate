@@ -8,7 +8,10 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 EXPERIMENT="$SCRIPT_DIR/corruption-experiment"
-RESULTS_DIR="$PROJECT_DIR/docs/corruption-sweep-results"
+# Results dir and corpus are env-overridable so the full pipeline can be run
+# against a small fixture corpus in tests (see tests/cli/corruption_report_generator).
+RESULTS_DIR="${VALIDATE_SWEEP_RESULTS_DIR:-$PROJECT_DIR/docs/corruption-sweep-results}"
+GROUND_TRUTH="${VALIDATE_GROUND_TRUTH_DIR:-$PROJECT_DIR/ground_truth_examples}"
 
 COUNT=100
 SEED=42
@@ -32,7 +35,7 @@ PAIRS=()
 while IFS='	' read -r sz fmt path; do
 	PAIRS+=("$fmt	$path	$sz")
 done < <(
-	find "$PROJECT_DIR/ground_truth_examples" -maxdepth 2 -type f \
+	find -L "$GROUND_TRUTH" -maxdepth 2 -type f \
 		-not -name '*corrupted*' -not -name 'README*' -not -name '*.txt' -not -name '.DS_Store' \
 		-size +4095c | while read -r f; do
 		dir=$(dirname "$f")

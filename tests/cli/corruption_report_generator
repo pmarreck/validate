@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Tests scripts/generate-corruption-report: the TSV+sidecar -> 8-column
+# canonical report generator (bolter column, "n/a never blank" contract,
+# flag/env/default path precedence).
+#
+# set -u only (NOT set -euo pipefail): error-path commands return non-zero on
+# purpose and we assert exit codes explicitly.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+GEN="$PROJECT_DIR/scripts/generate-corruption-report"
+
+fails=0
+pass() { printf '  ok: %s\n' "$1"; }
+fail() { printf '  FAIL: %s\n' "$1" >&2; fails=$((fails+1)); }
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/genrep.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+rd="$work/results"
+mkdir -p "$rd"
+
+# --- synthetic TSVs (corruption-experiment format) -------------------------
+mk_tsv() { # path mode file filesize k n
+	local p="$1" mode="$2" file="$3" fsz="$4" k="$5" n="$6"
+	{
+		printf '# seed=42 mode=%s file=%s filesize=%s\n' "$mode" "$file" "$fsz"
+		printf 'trial\tdetected\n'
+		local i
+		for ((i=0;i<n;i++)); do
+			if [ "$i" -lt "$k" ]; then printf '%d\ttrue\n' "$i"; else printf '%d\tfalse\n' "$i"; fi
+		done
+	} > "$p"
+}
+# foo: sniper + bolter + shotgun (50/80/100)
+mk_tsv "$rd/foo_sniper.tsv"  sniper  foo.bin 200000 50 100
+mk_tsv "$rd/foo_bolter.tsv"  bolter  foo.bin 200000 80 100
+mk_tsv "$rd/foo_shotgun.tsv" shotgun foo.bin 200000 100 100
+# bar: sniper + shotgun only (NO bolter) -> bolter cell must be n/a, never blank
+mk_tsv "$rd/bar_sniper.tsv"  sniper  bar.bin 9000 0 100
+mk_tsv "$rd/bar_shotgun.tsv" shotgun bar.bin 9000 7 100
+
+# --- synthetic sidecar -----------------------------------------------------
+# columns (tab): section, display, slug, run, mechanism, fb_sample, fb_size, fb_sniper, fb_bolter, fb_shotgun
+mkdir -p "$rd/generated"
+rows="$rd/generated/report-rows.tsv"
+{
+	printf 'Image & Photo\tFoo\tfoo\t2026-06-22\tCRC per chunk\t\t\t\t\t\n'
+	printf 'Image & Photo\tBar\tbar\t2026-06-22\tStructural only\t\t\t\t\t\n'
+	# baz: NO tsv at all -> falls back to sidecar frozen numbers
+	printf 'Archive\tBaz\tbaz\t2026-03-06\tFrozen row\tbaz.q\t40960\t12\tn/a\t99\n'
+} > "$rows"
+
+pre="$rd/generated/report-preamble.md"; printf '# Test Report\n\nPreamble.\n' > "$pre"
+post="$rd/generated/report-postamble.md"; printf '## Postamble\n\nEnd.\n' > "$post"
+
+# ===========================================================================
+# Case 1: explicit flags, write to an --out file
+# ===========================================================================
+out="$work/out.md"
+nix develop -c luajit "$GEN" --rows "$rows" --results-dir "$rd" --preamble "$pre" --postamble "$post" --out "$out" 2>"$work/err"
+rc=$?
+[ $rc -eq 0 ] || { fail "generator exited $rc; stderr: $(cat "$work/err")"; echo "$fails"; exit "$fails"; }
+[ -f "$out" ] || fail "--out did not write the report file"
+
+grep -qF '| Format | Sniper | Bolter | Shotgun | Sample | Size | Run | Mechanism |' "$out" \
+	&& pass "8-column contract header" || fail "missing locked contract header"
+grep -E '^\| .*Foo.* \|' "$out" | grep -q '80' && pass "foo bolter 80% from TSV" || fail "foo bolter not 80%"
+barline="$(grep -E '^\| .*Bar.* \|' "$out")"
+printf '%s' "$barline" | grep -q 'n/a' && pass "bar bolter shows n/a" || fail "bar bolter not n/a: $barline"
+printf '%s' "$barline" | grep -qE '\|[[:space:]]*\|' && fail "bar row has empty cell: $barline" || pass "bar row no blank cells"
+bazline="$(grep -E '^\| .*Baz.* \|' "$out")"
+{ printf '%s' "$bazline" | grep -q '12' && printf '%s' "$bazline" | grep -q '99'; } && pass "baz fallback numbers" || fail "baz fallback wrong: $bazline"
+grep -qF 'Preamble.' "$out" && pass "preamble included" || fail "preamble missing"
+grep -qF 'Postamble' "$out" && pass "postamble included" || fail "postamble missing"
+grep -qF '### Image & Photo' "$out" && pass "section heading" || fail "section heading missing"
+
+# ===========================================================================
+# Case 2: env-var override (no path flags) — the testability ask. Defaults for
+# rows/preamble/postamble derive from $VALIDATE_SWEEP_RESULTS_DIR/generated/.
+# ===========================================================================
+envout="$work/env-report.md"
+VALIDATE_SWEEP_RESULTS_DIR="$rd" VALIDATE_CORRUPTION_REPORT="$envout" \
+	nix develop -c luajit "$GEN" 2>"$work/enverr"
+rc=$?
+[ $rc -eq 0 ] || fail "env-var run exited $rc; stderr: $(cat "$work/enverr")"
+[ -f "$envout" ] || fail "VALIDATE_CORRUPTION_REPORT path not written"
+grep -qF '| Format | Sniper | Bolter | Shotgun | Sample | Size | Run | Mechanism |' "$envout" \
+	&& pass "env-var run produced contract header" || fail "env-var run missing header"
+# flag must override env: --out beats $VALIDATE_CORRUPTION_REPORT
+flagout="$work/flag-wins.md"
+VALIDATE_CORRUPTION_REPORT="$work/should-not-exist.md" \
+	nix develop -c luajit "$GEN" --rows "$rows" --results-dir "$rd" --preamble "$pre" --postamble "$post" --out "$flagout" 2>/dev/null
+{ [ -f "$flagout" ] && [ ! -f "$work/should-not-exist.md" ]; } && pass "--out overrides env var" || fail "flag did not override env var"
+
+# stdout sink
+VALIDATE_SWEEP_RESULTS_DIR="$rd" nix develop -c luajit "$GEN" --out - 2>/dev/null | grep -qF '### Image & Photo' \
+	&& pass "--out - writes to stdout" || fail "--out - did not write to stdout"
+
+if [ "$fails" -gt 0 ]; then echo "=== $fails assertion(s) failed ==="; exit 1; fi
+echo "all assertions passed"
+exit 0

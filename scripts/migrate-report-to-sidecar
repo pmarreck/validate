@@ -1,0 +1,277 @@
+#!/usr/bin/env luajit
+--[[
+migrate-report-to-sidecar: ONE-SHOT migration tool. Parses the hand-maintained
+docs/corruption-detection-report.md into the inputs the generator consumes:
+  - report-preamble.md            (everything before the first "### " section)
+  - report-postamble.md           (from "## Pre-Launch Action Items" to EOF)
+  - appendix-<section-slug>.md     (per-section trailing prose, e.g. PDF breakout)
+  - report-rows.tsv               (the sidecar: one line per format row)
+
+Slug resolution (the load-bearing, MFIC part): each report row names a Sample
+filename. We build a map  basename(file=) -> {slug, sniper%}  from every
+*_sniper.tsv header, then resolve each row's slug to the candidate whose
+measured sniper% matches the report's published sniper% (disambiguates shared
+samples like sample.m4a used by both alac and aac). Unresolved/ambiguous rows
+are reported to stderr so a human can eyeball them — the migration is verified,
+not trusted.
+
+Usage: migrate-report-to-sidecar <report.md> <results-dir> <out-dir>
+]]
+
+local report_path = arg[1] or error("usage: migrate-report-to-sidecar <report.md> <results-dir> <out-dir>")
+local results_dir = arg[2] or error("need results-dir")
+local out_dir     = arg[3] or error("need out-dir")
+
+local function read_lines(path)
+	local f = io.open(path, "r"); if not f then error("cannot open " .. path) end
+	local t = {}; for l in f:lines() do t[#t+1] = l end; f:close(); return t
+end
+local function basename(p) return (p:gsub(".*/", "")) end
+local function trim(s) return (s:gsub("^%s+", ""):gsub("%s+$", "")) end
+local function round(x) return math.floor(x + 0.5) end
+
+-- ---- build basename -> {slug,pct} candidates from sniper TSVs --------------
+local function list_dir(d)
+	local p = io.popen("find '" .. d .. "' -name '*_sniper.tsv' 2>/dev/null")
+	if not p then return {} end
+	local t = {}; for l in p:lines() do t[#t+1] = l end; p:close(); return t
+end
+local function parse_sniper(path)
+	local f = io.open(path, "r"); if not f then return nil end
+	local n, k, file = 0, 0, ""
+	for line in f:lines() do
+		if line:sub(1,1) == "#" then
+			file = line:match("file=([^%s]+)") or file
+		elseif line:sub(1,5) == "trial" then
+		elseif #line > 0 then
+			local last; for c in line:gmatch("[^\t]+") do last = c end
+			n = n + 1; if last == "true" then k = k + 1 end
+		end
+	end
+	f:close()
+	if n == 0 then return nil end
+	return basename(file), round((k/n)*100)
+end
+
+local samplemap = {}  -- basename -> { {slug=, pct=}, ... } (deduped by slug)
+for _, path in ipairs(list_dir(results_dir)) do
+	local slug = basename(path):gsub("_sniper%.tsv$", "")
+	local fb, pct = parse_sniper(path)
+	if fb then
+		samplemap[fb] = samplemap[fb] or {}
+		local seen = false
+		for _, c in ipairs(samplemap[fb]) do if c.slug == slug then seen = true; break end end
+		if not seen then table.insert(samplemap[fb], { slug = slug, pct = pct }) end
+	end
+end
+
+-- Display-name -> slug overrides for rows the filename+pct join can't
+-- disambiguate (two distinct slugs share a sample), or whose sample filename
+-- drifted from the TSV's (text formats re-swept onto larger fixtures; NRW's
+-- "RAW_" prefix). The generator pulls numbers from <slug>_<mode>.tsv, so these
+-- automatically reflect the latest sweep.
+local OVERRIDE = {
+	["MOV"] = "mov_h264", ["MPEG-1/2"] = "mpeg12", ["MPEG-PS"] = "mpeg_ps",
+	["COFF"] = "coff", ["Mach-O"] = "macho",
+	["JSON"] = "json", ["CSV"] = "csv", ["TOML"] = "toml", ["XML"] = "xml",
+	["HTML"] = "html", ["Plain Text"] = "plain_text",
+	["NRW"] = "nrw", ["GarageBand (.band)"] = "band",
+}
+
+-- ---- helpers to parse report cells ----------------------------------------
+local function parse_pct(cell)
+	cell = trim(cell)
+	local num = cell:match("(%d+)%%")
+	if num then return tostring(tonumber(num)) end
+	return ""  -- "—", "n/a", "n/a†", "varies" -> no measured number
+end
+local function size_to_bytes(cell)
+	cell = trim(cell)
+	local num, unit = cell:match("([%d%.]+)%s*([KMG]?B)")
+	if not num then return 0 end
+	num = tonumber(num)
+	if unit == "B" then return round(num)
+	elseif unit == "KB" then return round(num * 1024)
+	elseif unit == "MB" then return round(num * 1024 * 1024)
+	elseif unit == "GB" then return round(num * 1024 * 1024 * 1024) end
+	return 0
+end
+local function split_cells(line)
+	-- "| a | b | c |" -> {a,b,c}
+	local cells = {}
+	for c in (line .. "|"):gmatch("%s*(.-)%s*|") do cells[#cells+1] = c end
+	-- first element is the empty bit before the leading pipe
+	table.remove(cells, 1)
+	return cells
+end
+
+-- ---- walk the report -------------------------------------------------------
+local lines = read_lines(report_path)
+local preamble, postamble = {}, {}
+local section_slug = function(s) return (s:lower():gsub("[^%w]+","-"):gsub("^%-",""):gsub("%-$","")) end
+local appendices = {}  -- section -> {lines}
+local rows = {}        -- ordered list of row tables
+
+local phase = "pre"    -- pre | sections | post
+local cur_section = nil
+local in_appendix = false
+
+-- Section reassignment: dissolve the chronological "Wave 2026-04-25b" heading by
+-- routing its rows — plus the misfiled CPT row (was under Audio) — into their
+-- proper semantic sections. (Assignments reported to validate_pics so it can
+-- drop the matching CATEGORY_OVERRIDE entries; report = single source of truth.)
+local DISK = "Disk Image / Filesystem / Executable / Other"
+local SECTION_OF = {
+	["CPT"] = "Archive",
+	["Studio One Project (.song)"] = "Archive",
+	["StuffIt X (.sitx)"] = "Archive",
+	["Microsoft Installer (.msi)"] = DISK,
+	["Windows ESD (.esd)"] = DISK,
+	["LLVM Precompiled Header (.pch)"] = DISK,
+	["LLVM Serialized Diagnostics (.dia)"] = DISK,
+	["QuickBooks Backup (.qbb)"] = "Database",
+	["PCAP"] = DISK,
+	["PCAPNG"] = DISK,
+	["dBASE (.dbf)"] = "Database",
+	["G-code"] = DISK,
+	["MessagePack (.msgpack)"] = DISK,
+	["RPM Package (.rpm)"] = DISK,
+}
+local SECTION_ORDER = {
+	"Image & Photo", "RAW Camera", "Video", "Audio", "Document & Office",
+	"Font", "Scientific", "Database", "Archive", "Game ROM", DISK,
+}
+local SECTION_RANK = {}; for i, s in ipairs(SECTION_ORDER) do SECTION_RANK[s] = i end
+
+local function add_row(section, cells)
+	local c1 = trim(cells[1] or "")
+	if c1 == "Format" or c1:match("^[%-:]+$") then return end
+	if #cells < 7 then return end
+	rows[#rows+1] = {
+		section = SECTION_OF[c1] or section,
+		display = c1,
+		sniper = parse_pct(cells[2]),
+		shotgun = parse_pct(cells[3]),
+		sample_raw = trim(cells[4]),
+		size = size_to_bytes(cells[5]),
+		run = trim(cells[6]),
+		mechanism = trim(cells[7]),
+	}
+end
+
+local in_post = false    -- past "## Pre-Launch Action Items"
+local wave_mode = false  -- inside a dissolved detection section in the postamble region
+for _, line in ipairs(lines) do
+	if phase == "pre" then
+		if line:match("^###%s") then phase = "sections"
+		else preamble[#preamble+1] = line end
+	end
+	if phase ~= "sections" then goto continue end
+
+	if not in_post and line:match("^##%s") and line:match("Pre%-Launch Action Items") then
+		in_post = true
+		postamble[#postamble+1] = line
+	elseif not in_post then
+		-- Region B: canonical detection sections (+ PDF breakout appendix)
+		if line:match("^###%s") then cur_section = trim(line:gsub("^###%s*", "")); in_appendix = false
+		elseif line:match("^####%s") then in_appendix = true; appendices[cur_section] = appendices[cur_section] or {}; table.insert(appendices[cur_section], line)
+		elseif in_appendix then appendices[cur_section] = appendices[cur_section] or {}; table.insert(appendices[cur_section], line)
+		elseif line:match("^|") then add_row(cur_section, split_cells(line))
+		end
+	else
+		-- Region C: postamble verbatim, but dissolve embedded detection sections (Wave)
+		if line:match("^###%s") then
+			local sec = trim(line:gsub("^###%s*", ""))
+			if sec:match("^Wave ") then wave_mode = true; cur_section = sec  -- dissolve heading
+			else wave_mode = false; postamble[#postamble+1] = line end
+		elseif wave_mode then
+			if line:match("^|") then add_row(cur_section, split_cells(line)) end
+			-- else: drop wave intro prose / table header / separators (dissolved)
+		else
+			postamble[#postamble+1] = line
+		end
+	end
+	::continue::
+end
+-- trim trailing blank lines the dissolved Wave section left at the tail
+while #postamble > 0 and trim(postamble[#postamble]) == "" do postamble[#postamble] = nil end
+
+-- ---- resolve slugs + verify ------------------------------------------------
+local resolved, unresolved, ambiguous = 0, {}, {}
+for _, r in ipairs(rows) do
+	local fb = basename(r.sample_raw:gsub("%s*%(.*$", ""))  -- strip " (multi-res)" etc.
+	local cands = samplemap[fb]
+	r.slug = ""
+	if OVERRIDE[r.display] then
+		r.slug = OVERRIDE[r.display]; resolved = resolved + 1
+	elseif cands then
+		local want = tonumber(r.sniper)
+		local matches = {}
+		for _, c in ipairs(cands) do
+			if want ~= nil and c.pct == want then matches[#matches+1] = c.slug end
+		end
+		if #matches == 1 then
+			r.slug = matches[1]; resolved = resolved + 1
+		elseif #matches > 1 then
+			-- multiple slugs share filename AND pct: pick first, flag
+			r.slug = matches[1]; resolved = resolved + 1
+			ambiguous[#ambiguous+1] = string.format("%s [%s] -> %s (pct %s)", r.display, fb, table.concat(matches, ","), r.sniper)
+		elseif #cands == 1 then
+			-- single candidate for the filename but pct differs (sweep refreshed): accept, flag
+			r.slug = cands[1].slug; resolved = resolved + 1
+			ambiguous[#ambiguous+1] = string.format("%s [%s] slug=%s report-sniper=%s tsv-sniper=%d (pct drift)", r.display, fb, cands[1].slug, r.sniper, cands[1].pct)
+		else
+			unresolved[#unresolved+1] = string.format("%s [%s] report-sniper=%s (no pct match among %d cands)", r.display, fb, r.sniper, #cands)
+		end
+	else
+		unresolved[#unresolved+1] = string.format("%s [%s] (no TSV with this sample)", r.display, fb)
+	end
+end
+
+-- ---- write outputs ---------------------------------------------------------
+local function write_file(path, content)
+	local f = io.open(path, "w"); if not f then error("cannot write " .. path) end
+	f:write(content); f:close()
+end
+local function rstrip_blanklines(t)
+	while #t > 0 and trim(t[#t]) == "" do t[#t] = nil end
+	return t
+end
+
+write_file(out_dir .. "/report-preamble.md", table.concat(rstrip_blanklines(preamble), "\n") .. "\n")
+write_file(out_dir .. "/report-postamble.md", table.concat(postamble, "\n") .. "\n")
+for section, alines in pairs(appendices) do
+	rstrip_blanklines(alines)
+	write_file(out_dir .. "/appendix-" .. section_slug(section) .. ".md", table.concat(alines, "\n") .. "\n")
+end
+
+-- order rows by canonical section, stable within section (so reassigned rows —
+-- CPT, the Wave formats — land at the end of their new section in encounter order)
+for i, r in ipairs(rows) do r.idx = i end
+table.sort(rows, function(a, b)
+	local ra, rb = SECTION_RANK[a.section] or 99, SECTION_RANK[b.section] or 99
+	if ra ~= rb then return ra < rb end
+	return a.idx < b.idx
+end)
+
+-- sidecar: section, display, slug, run, mechanism, fb_sample, fb_size, fb_sniper, fb_bolter, fb_shotgun
+local sidecar = {}
+for _, r in ipairs(rows) do
+	sidecar[#sidecar+1] = table.concat({
+		r.section, r.display, r.slug, r.run, r.mechanism,
+		r.sample_raw, tostring(r.size), r.sniper, "", r.shotgun,
+	}, "\t")
+end
+write_file(out_dir .. "/report-rows.tsv", table.concat(sidecar, "\n") .. "\n")
+
+-- ---- report verification to stderr ----------------------------------------
+io.stderr:write(string.format("rows=%d resolved=%d unresolved=%d ambiguous=%d\n",
+	#rows, resolved, #unresolved, #ambiguous))
+if #unresolved > 0 then
+	io.stderr:write("--- UNRESOLVED (will use frozen fallback numbers) ---\n")
+	for _, u in ipairs(unresolved) do io.stderr:write("  " .. u .. "\n") end
+end
+if #ambiguous > 0 then
+	io.stderr:write("--- AMBIGUOUS / DRIFT (accepted, eyeball) ---\n")
+	for _, a in ipairs(ambiguous) do io.stderr:write("  " .. a .. "\n") end
+end

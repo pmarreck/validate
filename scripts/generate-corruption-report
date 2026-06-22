@@ -1,0 +1,206 @@
+#!/usr/bin/env luajit
+--[[
+generate-corruption-report: assemble the canonical corruption-detection report
+from (a) a hand-authored metadata sidecar (sections, display names, slug,
+run date, mechanism, frozen fallbacks) and (b) the measured detection rates in
+the raw TSVs produced by `corruption-experiment`.
+
+Numbers (sniper/bolter/shotgun) and Sample/Size come from the TSVs when a TSV
+exists for that (slug,mode); otherwise they fall back to the frozen values in
+the sidecar. Every cell is non-empty — missing data renders as `n/a`, never a
+blank cell (a blank would render as a measured-looking 0% on the site).
+
+Column contract (locked with validate_pics 2026-06-22):
+  | Format | Sniper | Bolter | Shotgun | Sample | Size | Run | Mechanism |
+
+Usage:
+  generate-corruption-report --rows <sidecar.tsv> --results-dir <dir> \
+      [--preamble <file>] [--postamble <file>]
+]]
+
+-- ---- arg parsing ---------------------------------------------------------
+local opts = { rows = nil, results = nil, preamble = nil, postamble = nil, out = nil }
+do
+	local i = 1
+	while i <= #arg do
+		local a = arg[i]
+		if a == "--rows" then opts.rows = arg[i+1]; i = i + 2
+		elseif a == "--results-dir" then opts.results = arg[i+1]; i = i + 2
+		elseif a == "--preamble" then opts.preamble = arg[i+1]; i = i + 2
+		elseif a == "--postamble" then opts.postamble = arg[i+1]; i = i + 2
+		elseif a == "--out" or a == "-o" then opts.out = arg[i+1]; i = i + 2
+		else io.stderr:write("Unknown arg: " .. a .. "\n"); os.exit(2) end
+	end
+end
+
+-- Precedence: explicit flag > env var > default. Lets a test point the whole
+-- pipeline at a small fixture corpus + scratch output path.
+opts.results   = opts.results   or os.getenv("VALIDATE_SWEEP_RESULTS_DIR")  or "docs/corruption-sweep-results"
+local gendir   = opts.results .. "/generated"
+opts.rows      = opts.rows      or os.getenv("VALIDATE_CORRUPTION_SIDECAR")  or (gendir .. "/report-rows.tsv")
+opts.preamble  = opts.preamble  or os.getenv("VALIDATE_CORRUPTION_PREAMBLE") or (gendir .. "/report-preamble.md")
+opts.postamble = opts.postamble or os.getenv("VALIDATE_CORRUPTION_POSTAMBLE")or (gendir .. "/report-postamble.md")
+opts.out       = opts.out       or os.getenv("VALIDATE_CORRUPTION_REPORT")   or "docs/corruption-detection-report.md"
+
+-- ---- helpers -------------------------------------------------------------
+local function read_file(path)
+	if not path then return nil end
+	local f = io.open(path, "r"); if not f then return nil end
+	local s = f:read("*a"); f:close(); return s
+end
+
+local function file_exists(path)
+	local f = io.open(path, "r"); if f then f:close(); return true end; return false
+end
+
+-- Parse a corruption-experiment TSV; returns {n,k,filesize,file} or nil.
+local function parse_tsv(path)
+	local f = io.open(path, "r"); if not f then return nil end
+	local n, k, filesize, file_name = 0, 0, 0, ""
+	for line in f:lines() do
+		if line:sub(1,1) == "#" then
+			file_name = line:match("file=([^%s]+)") or file_name
+			filesize = tonumber(line:match("filesize=(%d+)") or "0")
+		elseif line:sub(1,5) == "trial" then
+			-- header
+		elseif #line > 0 then
+			local last
+			for c in line:gmatch("[^\t]+") do last = c end
+			n = n + 1
+			if last == "true" then k = k + 1 end
+		end
+	end
+	f:close()
+	-- strip any directory component from file= so the report shows a basename
+	file_name = file_name:gsub(".*/", "")
+	return { n = n, k = k, filesize = filesize, file = file_name }
+end
+
+-- Locate a TSV for (slug,mode): flat results dir first, then known dated
+-- subdirs (newest-looking last wins). Returns parsed table or nil.
+local SUBDIRS = { "", "2026-05-27/" }
+local function find_tsv(slug, mode)
+	local found = nil
+	for _, sub in ipairs(SUBDIRS) do
+		local p = opts.results .. "/" .. sub .. slug .. "_" .. mode .. ".tsv"
+		if file_exists(p) then found = parse_tsv(p) end
+	end
+	return found
+end
+
+local function round(x) return math.floor(x + 0.5) end
+
+-- Render a detection-rate cell. `tsv` from find_tsv (or nil); `fallback` is the
+-- frozen string from the sidecar (may be "", "n/a", or a number like "12").
+local function rate_cell(tsv, fallback)
+	if tsv and tsv.n > 0 then
+		local pct = round((tsv.k / tsv.n) * 100)
+		if pct >= 80 then return string.format("**%d%%**", pct) end
+		return string.format("%d%%", pct)
+	end
+	-- no measurement: use frozen fallback, but never blank
+	if fallback == nil or fallback == "" then return "n/a" end
+	if fallback:match("^%d+$") then
+		local pct = tonumber(fallback)
+		if pct >= 80 then return string.format("**%d%%**", pct) end
+		return string.format("%d%%", pct)
+	end
+	return fallback  -- already "n/a" or "—" or similar
+end
+
+local function fmt_size(bytes)
+	bytes = tonumber(bytes) or 0
+	if bytes <= 0 then return "n/a" end
+	if bytes < 1024 then return string.format("%d B", bytes) end
+	if bytes < 1024 * 1024 then return string.format("%d KB", math.floor(bytes / 1024)) end
+	return string.format("%.1f MB", bytes / (1024 * 1024))
+end
+
+-- ---- read sidecar --------------------------------------------------------
+-- columns: section, display, slug, run, mechanism, fb_sample, fb_size, fb_sniper, fb_bolter, fb_shotgun
+local section_order, by_section = {}, {}
+do
+	local f = io.open(opts.rows, "r")
+	if not f then io.stderr:write("Cannot open sidecar: " .. opts.rows .. "\n"); os.exit(2) end
+	for line in f:lines() do
+		if #line > 0 and line:sub(1,1) ~= "#" then
+			local cols = {}
+			-- split on tab, preserving empty trailing fields
+			local start = 1
+			while true do
+				local sep = line:find("\t", start, true)
+				if sep then cols[#cols+1] = line:sub(start, sep-1); start = sep + 1
+				else cols[#cols+1] = line:sub(start); break end
+			end
+			local r = {
+				section = cols[1] or "", display = cols[2] or "", slug = cols[3] or "",
+				run = cols[4] or "", mechanism = cols[5] or "",
+				fb_sample = cols[6] or "", fb_size = cols[7] or "",
+				fb_sniper = cols[8] or "", fb_bolter = cols[9] or "", fb_shotgun = cols[10] or "",
+			}
+			if not by_section[r.section] then
+				by_section[r.section] = {}
+				section_order[#section_order+1] = r.section
+			end
+			table.insert(by_section[r.section], r)
+		end
+	end
+	f:close()
+end
+
+-- ---- emit ----------------------------------------------------------------
+local out = {}
+local function w(s) out[#out+1] = s end
+
+local pre = read_file(opts.preamble)
+if pre then w(pre); if pre:sub(-1) ~= "\n" then w("\n") end; w("\n") end
+
+-- Optional per-section appendix prose (e.g. the PDF stream-filter breakout that
+-- lives inside the Document & Office section). Convention: a file named
+-- `appendix-<section-slug>.md` next to the sidecar, where section-slug is the
+-- section lowercased with runs of non-alphanumerics collapsed to a single '-'.
+local rows_dir = opts.rows:match("^(.*)/[^/]*$") or "."
+local function section_slug(s)
+	return (s:lower():gsub("[^%w]+", "-"):gsub("^%-", ""):gsub("%-$", ""))
+end
+
+for _, section in ipairs(section_order) do
+	w("### " .. section .. "\n\n")
+	w("| Format | Sniper | Bolter | Shotgun | Sample | Size | Run | Mechanism |\n")
+	w("|--------|-------:|-------:|--------:|--------|-----:|-----|-----------|\n")
+	for _, r in ipairs(by_section[section]) do
+		local sniper = find_tsv(r.slug, "sniper")
+		local bolter = find_tsv(r.slug, "bolter")
+		local shotgun = find_tsv(r.slug, "shotgun")
+		-- sample/size from any present TSV header, else frozen fallback
+		local any = sniper or bolter or shotgun
+		local sample = (any and any.file ~= "" and any.file) or r.fb_sample
+		if sample == nil or sample == "" then sample = "n/a" end
+		local sizebytes = (any and any.filesize and any.filesize > 0) and any.filesize or r.fb_size
+		local sizestr = fmt_size(sizebytes)
+		local run = (r.run ~= "" and r.run) or "n/a"
+		local mech = (r.mechanism ~= "" and r.mechanism) or "n/a"
+		w(string.format("| %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			r.display,
+			rate_cell(sniper, r.fb_sniper),
+			rate_cell(bolter, r.fb_bolter),
+			rate_cell(shotgun, r.fb_shotgun),
+			sample, sizestr, run, mech))
+	end
+	w("\n")
+	local appendix = read_file(rows_dir .. "/appendix-" .. section_slug(section) .. ".md")
+	if appendix then w(appendix); if appendix:sub(-1) ~= "\n" then w("\n") end; w("\n") end
+end
+
+local post = read_file(opts.postamble)
+if post then w(post) end
+
+local rendered = table.concat(out)
+if opts.out == "-" or opts.out == "@stdout" then
+	io.write(rendered)
+else
+	local f = io.open(opts.out, "w")
+	if not f then io.stderr:write("Cannot write report: " .. opts.out .. "\n"); os.exit(2) end
+	f:write(rendered); f:close()
+	io.stderr:write("wrote " .. opts.out .. " (" .. #rendered .. " bytes)\n")
+end

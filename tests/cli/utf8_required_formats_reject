@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# MFIC set-classifier test: EVERY format that mandates UTF-8 (JSON, CSV, TOML,
+# XML, HTML) must REJECT a file containing invalid UTF-8 when validated through
+# the real CLI dispatch — not just in isolated unit tests. This guards against
+# the class of bug where a format is wired into the main dispatch switch but
+# omitted from one of the parallel extension-remap switches, so a
+# content-detected-as-plain-text file silently skips the format's UTF-8 check.
+#
+# set -u only (NOT set -e): we assert exit codes explicitly.
+set -u
+
+VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
+[ -x "$VALIDATE" ] || { echo "SKIP: validate binary not built ($VALIDATE)"; exit 77; }
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/utf8req.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+fails=0
+pass() { printf '  ok: %s\n' "$1"; }
+fail() { printf '  FAIL: %s\n' "$1" >&2; fails=$((fails+1)); }
+
+# Each fixture is valid, multibyte-UTF-8 content for its format (multibyte so the
+# content sniffer routes it through the plain-text/extension path, exercising the
+# remap dispatch). We then flip a mid-file byte to 0xFF (a lone, always-invalid
+# UTF-8 byte) and assert the validator FAILS (non-zero exit).
+emit() { # ext content
+	printf '%s' "$2" > "$work/sample.$1"
+}
+emit json '{"café":"naïve Zürich São Paulo 日本語 العربية","x":[1,2,3,4,5,6,7,8,9,10]}'
+emit csv  'name,city,note
+José,Zürich,naïve café
+さくら,東京,日本語テスト
+Ægir,Reykjavík,Ísland'
+emit toml 'title = "café"
+[owner]
+name = "naïve Zürich 日本語"
+city = "São Paulo"'
+emit xml  '<?xml version="1.0" encoding="UTF-8"?><doc><city>Zürich</city><n>日本語 café naïve</n></doc>'
+emit html '<!doctype html><html><head><meta charset="utf-8"></head><body><p>café naïve 日本語 Zürich</p></body></html>'
+
+for ext in json csv toml xml html; do
+	f="$work/sample.$ext"
+	# sanity: clean file must validate OK
+	if ! "$VALIDATE" "$f" >/dev/null 2>&1; then
+		fail "$ext: clean fixture unexpectedly rejected"
+		continue
+	fi
+	# corrupt a mid-file byte to 0xFF (invalid UTF-8)
+	sz=$(wc -c < "$f")
+	off=$(( sz / 2 ))
+	printf '\377' | dd of="$f" bs=1 seek="$off" count=1 conv=notrunc 2>/dev/null
+	if "$VALIDATE" "$f" >/dev/null 2>&1; then
+		fail "$ext: invalid UTF-8 NOT detected (validator returned OK)"
+	else
+		pass "$ext: invalid UTF-8 rejected"
+	fi
+done
+
+if [ "$fails" -gt 0 ]; then echo "=== $fails UTF-8-required format(s) failed to reject invalid UTF-8 ==="; exit 1; fi
+echo "all UTF-8-required formats reject invalid UTF-8"
+exit 0

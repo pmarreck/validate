@@ -147,3 +147,18 @@ the "n" — and `rg --help` showed `-r REPLACEMENT`. Lesson: for ripgrep use
 `rg -n` (or `--no-filename`/`-l` etc.); NEVER `-r` unless you actually want
 match replacement. When output looks corrupted, hexdump the bytes before
 blaming a tool — and check your own flags first.
+
+## 2026-06-22 — Edited a Bash script while it was running in the background
+
+While a long `scripts/corruption-sweep` ran in the background, I edited that
+same script (added env-var lines near the top, changed the `find` line). Bash
+reads scripts from disk by **byte offset** as it executes; inserting lines
+shifted every subsequent offset, so when the running instance finally re-read
+near the file's end it desynced and aborted with a bogus `line 68: syntax
+error near unexpected token 'then'` — even though the on-disk file was
+syntactically perfect (`bash -n` clean). The sweep had already buffered its
+main `for` loop (a compound command bash reads whole), so 145/145 TSVs landed
+before the tail aborted — I got lucky. **Lesson:** never edit a script (or any
+file) that a running process is reading. Wait for it to finish, copy it to a
+new path and edit the copy, or stop the process first. The on-disk file being
+valid does NOT mean a mid-flight interpreter is reading valid bytes.
