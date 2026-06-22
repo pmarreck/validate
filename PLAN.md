@@ -14,6 +14,19 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+### Windows full-parity — DONE (2026-06-22)
+
+x86_64-windows upgraded C-floor → **full parity** (real JPEG-in-TIFF + JPEG2000
+deep validation) by driving the jpegz A-track through the pin chain:
+jpegz `f60da91f` (vendored openjpeg, lazy; Mode-2 RGB cleanroom fix) → tiffz
+`059ff38b` (cleanroom JPEG-in-TIFF, libjpeg dropped) → validate `3312e276`.
+Also fixed: file_source.zig Windows `currentPathAlloc` (0.16), libraw moving
+`#master` → commit-pinned. All Garnix checks GREEN.
+
+- [x] x86_64-windows full parity, native+Linux+macOS green. — 2026-06-22
+- [ ] windows-aarch64: **scope-cut** (`ec8c06d7`) — blocked by upstream nixpkgs
+      aarch64-w64-mingw32 compiler-rt libatomic/pthread.h bug (NixOS/nixpkgs#534236;
+      not validate code). Re-add when upstream fixes it. Mirrors macos-aarch64 cut.
 ### Licensing — offline Ed25519 verifier (raised 2026-06-14; Paddle launch-critical)
 
 Contract v1 locked with `mecha_llc_website` (issuer = mecha-commerce Worker;
