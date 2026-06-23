@@ -147,7 +147,7 @@ pub fn validateWav(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCode(.wav, .failed_to_get, "file size");
     };
 
-    if (riff_size + 8 > file_size) {
+    if (@as(u64, riff_size) + 8 > file_size) {
         return ValidationResult.invalidCodeMsg(.wav, .exceeds_bounds, "RIFF size", "RIFF size exceeds file size (truncated)");
     }
 
@@ -555,7 +555,7 @@ pub fn validateAiffDeep(allocator: Allocator, source: *FileSource) ValidationRes
     }
 
     const form_size = std.mem.readInt(u32, data[4..8], .big);
-    if (form_size + 8 > file_size) {
+    if (@as(u64, form_size) + 8 > file_size) {
         return ValidationResult.invalidCodeMsgWithDepth(.aiff, .exceeds_bounds, "FORM size", "FORM size exceeds file size", .structural);
     }
 
@@ -717,7 +717,7 @@ pub fn validateRiffAudio(file: *FileSource, format: FileFormat) ValidationResult
         return ValidationResult.invalidCode(format, .failed_to_get, "file size");
     };
 
-    if (declared_size + 8 > file_size) {
+    if (@as(u64, declared_size) + 8 > file_size) {
         return ValidationResult.invalidCodeMsg(format, .exceeds_bounds, "Container size", "Container size exceeds file size (truncated)");
     }
 
@@ -4902,3 +4902,23 @@ test "validateWavDeep: ground truth WAV stays clean (no statistical warning)" {
     try testing.expect(result.warning_message == null);
 }
 
+
+test "validateWav: u32-overflow declared RIFF size must not bypass the truncation guard" {
+	// riff_size = 0xFFFFFFFF on a 12-byte file. Pre-fix `riff_size + 8` is u32
+	// arithmetic: it wraps to 7 (ReleaseFast) or panics (safe build) -> the
+	// truncation guard is bypassed. The fix widens the LHS to u64.
+	const buf = [_]u8{ 'R', 'I', 'F', 'F', 0xFF, 0xFF, 0xFF, 0xFF, 'W', 'A', 'V', 'E' };
+	var src = FileSource.fromBuffer(&buf);
+	const r = validateWav(&src);
+	// Assert the SPECIFIC truncation error (not just any failure): in ReleaseFast
+	// the wrap would bypass the guard and fail later for a different reason, so a
+	// bare !is_valid would pass vacuously.
+	try std.testing.expect(!r.is_valid and r.error_code != null and r.error_code.? == .exceeds_bounds);
+}
+
+test "validateAiffDeep: u32-overflow declared FORM size must not bypass the truncation guard" {
+	const buf = [_]u8{ 'F', 'O', 'R', 'M', 0xFF, 0xFF, 0xFF, 0xFF, 'A', 'I', 'F', 'F' };
+	var src = FileSource.fromBuffer(&buf);
+	const r = validateAiffDeep(std.testing.allocator, &src);
+	try std.testing.expect(!r.is_valid and r.error_code != null and r.error_code.? == .exceeds_bounds);
+}

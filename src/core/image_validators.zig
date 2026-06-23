@@ -696,7 +696,7 @@ pub fn validateWebp(file: *FileSource) ValidationResult {
     };
 
     // RIFF size should be file_size - 8 (excludes RIFF header)
-    if (riff_size + 8 > file_size) {
+    if (@as(u64, riff_size) + 8 > file_size) {
         return ValidationResult.invalidCodeMsg(.webp, .exceeds_bounds, "RIFF size", "RIFF size exceeds file size (truncated)");
     }
 
@@ -8616,4 +8616,15 @@ test "validateTiffDeep accepts clean NEF (regression guard)" {
 
     const result = validateTiffDeep(allocator, &source, FileFormat.nef);
     try std.testing.expect(result.is_valid);
+}
+
+test "validateWebp: u32-overflow declared RIFF size must not bypass the truncation guard" {
+	// riff_size = 0xFFFFFFFF on a 12-byte file; pre-fix `riff_size + 8` (u32)
+	// wraps/panics and bypasses the truncation guard. Fix widens the LHS to u64.
+	const buf = [_]u8{ 'R', 'I', 'F', 'F', 0xFF, 0xFF, 0xFF, 0xFF, 'W', 'E', 'B', 'P' };
+	var src = FileSource.fromBuffer(&buf);
+	const r = validateWebp(&src);
+	// Specific truncation error, not just any failure (avoid a vacuous pass if the
+	// wrap bypasses the guard and the validator fails later for another reason).
+	try std.testing.expect(!r.is_valid and r.error_code != null and r.error_code.? == .exceeds_bounds);
 }
