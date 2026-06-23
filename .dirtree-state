@@ -7,6 +7,7 @@ close=[
 ]
 
 annotate=[
+	docs/FUZZ_PLAN.md = Approved two-tier fuzz-suite design (robustness+detection oracle, mutation operators, ReleaseSafe sweep, committed-crasher CI corpus) — build spec, not yet implemented
 	docs/corruption-sweep-results/generated = Generator inputs (canonical source): report-rows.tsv sidecar + report-preamble/postamble.md + appendix-*.md; consumed by scripts/generate-corruption-report
 	scripts/generate-corruption-report = Generates the canonical 8-col corruption-detection report (Format|Sniper|Bolter|Shotgun|Sample|Size|Run|Mechanism) from sweep TSVs + sidecar; flag>env>default paths (VALIDATE_CORRUPTION_REPORT / VALIDATE_SWEEP_RESULTS_DIR); n/a never blank
 	scripts/migrate-report-to-sidecar = One-shot bootstrap: parses the old hand-maintained report into generator inputs (sidecar rows.tsv + preamble/postamble/appendix); resolves slug via Sample-filename+sniper% join; dissolves the Wave section + reassigns CPT→Archive
