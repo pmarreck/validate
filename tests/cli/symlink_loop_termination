@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Reproduce-first guard: the recursive directory enumerator must NOT follow
+# symlinks out of the requested tree. Pre-fix it used stat() (follows symlinks),
+# so a symlink inside the scanned dir pointing OUTSIDE it (e.g. to / or $HOME,
+# or back to an ancestor → redundant re-walk) caused validate to descend into
+# and validate unrelated files. Post-fix it uses lstat() (symlinks skipped) plus
+# a recursion-depth cap. We assert an out-of-tree file is NOT validated.
+#
+# set -u only; exit codes asserted explicitly.
+set -u
+
+VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
+[ -x "$VALIDATE" ] || { echo "SKIP: validate binary not built ($VALIDATE)"; exit 77; }
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/symesc.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$work/realdir" "$work/outside"
+printf 'in-tree\n'  > "$work/realdir/intree.txt"
+printf 'OUT\n'      > "$work/outside/escaped_marker.txt"
+ln -s "$work/outside" "$work/realdir/link"   # symlink escaping the scanned tree
+
+out="$("$VALIDATE" "$work/realdir" 2>&1)"
+
+# The in-tree file must be validated; the out-of-tree file must NOT be.
+if ! printf '%s' "$out" | grep -q 'intree.txt'; then
+	echo "FAIL: in-tree file was not validated (test setup/output mismatch)" >&2
+	printf '%s\n' "$out" >&2
+	exit 1
+fi
+if printf '%s' "$out" | grep -q 'escaped_marker.txt'; then
+	echo "FAIL: followed symlink out of the tree and validated an external file" >&2
+	exit 1
+fi
+echo "ok: symlink out of tree not followed; out-of-tree file skipped"
+exit 0

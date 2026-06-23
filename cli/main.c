@@ -696,7 +696,8 @@ static int path_list_add(path_list_t* list, const char* path, size_t file_size) 
 }
 
 /* Recursive directory enumeration */
-static int enumerate_directory(const char* dir_path, path_list_t* list);
+#define MAX_ENUM_DEPTH 256 /* directory-recursion cap: DoS guard against deep/cyclic trees */
+static int enumerate_directory(const char* dir_path, path_list_t* list, int depth);
 
 /* Helper to check if path ends with a suffix */
 static int ends_with(const char* path, size_t len, const char* suffix) {
@@ -750,9 +751,13 @@ static int is_bagit_directory(const char* path) {
 	return result;
 }
 
-static int enumerate_path(const char* path, path_list_t* list) {
+static int enumerate_path(const char* path, path_list_t* list, int depth) {
 	struct stat st;
-	if (stat(path, &st) != 0) {
+	/* lstat, not stat: do NOT follow symlinks during recursion. A symlink to an
+	 * ancestor directory would otherwise be followed back into the tree and
+	 * recurse forever (C stack overflow). Symlinks become S_ISLNK below and are
+	 * skipped. Top-level path args are still stat()'d by the caller. */
+	if (lstat(path, &st) != 0) {
 		/* Skip inaccessible files (broken symlinks, permission denied, etc.)
 		 * rather than failing the entire enumeration */
 		return 0;
@@ -770,13 +775,20 @@ static int enumerate_path(const char* path, path_list_t* list) {
 		if (is_bagit_directory(path)) {
 			return path_list_add(list, path, (size_t)st.st_size);
 		}
-		return enumerate_directory(path, list);
+		return enumerate_directory(path, list, depth + 1);
 	}
 	/* Skip other types (symlinks, devices, etc.) */
 	return 0;
 }
 
-static int enumerate_directory(const char* dir_path, path_list_t* list) {
+static int enumerate_directory(const char* dir_path, path_list_t* list, int depth) {
+	/* Recursion-depth cap: defense-in-depth against pathologically deep trees and
+	 * any residual directory cycle (e.g. hardlinked dirs) that lstat can't catch. */
+	if (depth > MAX_ENUM_DEPTH) {
+		fprintf(stderr, "\033[1;33mWARN\033[0m Skipping directory past max depth %d: %s\n",
+		        MAX_ENUM_DEPTH, dir_path);
+		return 0;
+	}
 	DIR* dir = opendir(dir_path);
 	if (!dir) {
 		/* Skip inaccessible directories (permission denied, etc.)
@@ -816,7 +828,7 @@ static int enumerate_directory(const char* dir_path, path_list_t* list) {
 		}
 		memcpy(full_path + dir_len + needs_sep, entry->d_name, name_len + 1);
 
-		int rc = enumerate_path(full_path, list);
+		int rc = enumerate_path(full_path, list, depth + 1);
 		free(full_path);
 
 		if (rc != 0) {
@@ -2824,7 +2836,7 @@ int main(int argc, char* argv[]) {
 			if (is_bundle_directory(paths[i]) || is_bagit_directory(paths[i])) {
 				path_list_add(&file_list, paths[i], (size_t)st.st_size);
 			} else {
-				enumerate_directory(paths[i], &file_list);
+				enumerate_directory(paths[i], &file_list, 0);
 			}
 		} else if (S_ISREG(st.st_mode)) {
 			path_list_add(&file_list, paths[i], (size_t)st.st_size);
