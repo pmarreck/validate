@@ -289,6 +289,10 @@ const FatReadError = error{
 };
 
 fn readFat(allocator: Allocator, file: *FileSource, header: *const Ole2Header, total_sectors: u32) FatReadError![]u32 {
+    // DoS guard: a CFBF cannot contain more FAT sectors than it has sectors
+    // total; reject a crafted header whose total_fat_sectors would request a
+    // giant allocation (a ~512-byte file claiming millions of FAT sectors ≈ 17 GB).
+    if (header.total_fat_sectors > total_sectors) return error.InvalidFatSector;
     const entries_per_sector = header.sector_size / 4;
     const total_fat_entries = header.total_fat_sectors * entries_per_sector;
 
@@ -1003,4 +1007,23 @@ test "validate FAT integrity rejects out-of-bounds reference" {
     const fat = [_]u32{ 100, ENDOFCHAIN }; // Sector 100 beyond file
     const result = validateFatIntegrity(&fat, 10);
     try std.testing.expect(!result.valid);
+}
+
+test "readFat rejects a crafted huge total_fat_sectors without a giant allocation (DoS guard)" {
+	// A ~512-byte crafted CFBF (.doc/.xls/.msi/Thumbs.db) can declare
+	// total_fat_sectors large enough that readFat allocates ~15 GB from a single
+	// unchecked 4-byte header field. A file cannot contain more FAT sectors than
+	// it has sectors total; bound against that. The FixedBufferAllocator makes a
+	// giant request surface as OutOfMemory, so pre-fix this returns OutOfMemory
+	// (the giant alloc) and post-fix returns InvalidFatSector BEFORE allocating.
+	var backing: [1024]u8 = undefined;
+	var src = FileSource.fromBuffer(backing[0..]);
+	var header = std.mem.zeroes(Ole2Header);
+	header.sector_size = 512;
+	header.total_fat_sectors = 30_000_000; // * 128 entries/sector = ~3.84e9 u32 = ~15 GB
+	for (&header.difat_array) |*d| d.* = FREESECT;
+	var arena: [64 * 1024]u8 = undefined;
+	var fba = std.heap.FixedBufferAllocator.init(&arena);
+	const result = readFat(fba.allocator(), &src, &header, 1); // total_sectors = 1
+	try std.testing.expectError(error.InvalidFatSector, result);
 }
