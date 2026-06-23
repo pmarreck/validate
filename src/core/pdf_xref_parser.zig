@@ -653,9 +653,19 @@ pub fn parseXrefTable(allocator: Allocator, data: []const u8) ?XrefTable {
 
     var current_offset: ?u64 = xref_offset;
     var first_trailer = true;
+    // DoS guard: a self-referential or cyclic /Prev chain would otherwise walk
+    // forever at 100% CPU. Track visited section offsets and cap total sections.
+    var visited_offsets = std.AutoHashMap(u64, void).init(allocator);
+    defer visited_offsets.deinit();
+    var sections_walked: u32 = 0;
+    const max_xref_sections: u32 = 4096;
 
     while (current_offset) |off| {
         if (off >= data.len) break;
+        if (visited_offsets.contains(off)) break; // cyclic /Prev — stop
+        visited_offsets.put(off, {}) catch break; // OOM — stop walking
+        sections_walked += 1;
+        if (sections_walked > max_xref_sections) break; // backstop
         const offset: usize = std.math.cast(usize, off) orelse break;
 
         // Determine if traditional xref or xref stream
@@ -1310,4 +1320,21 @@ test "parseTraditionalXref rejects object number exceeding u32 via large first_o
     const result = parseTraditionalXref(data, 0, &table, std.testing.allocator);
     // The second entry (4294967295 + 1) overflows u32 via std.math.cast, returns null
     try std.testing.expect(result == null);
+}
+
+test "parseXrefTable terminates on a self-referential /Prev chain (DoS guard)" {
+	// Crafted xref whose trailer /Prev points back to the same section (offset 0).
+	// Pre-fix the /Prev walk had no visited-set or cap and looped forever at
+	// 100% CPU during deep validation. The visited-set must make it terminate.
+	const data = "xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 1 /Prev 0 >>\nstartxref\n0\n%%EOF\n";
+
+	// Sanity: the fixture genuinely encodes a self-referential /Prev (offset 0),
+	// so this exercises the cycle rather than passing vacuously.
+	const ti = parseTrailerDict(data, 0);
+	try std.testing.expect(ti != null and ti.?.prev_offset != null and ti.?.prev_offset.? == 0);
+
+	// The full xref walk must RETURN (terminate); pre-fix it never did.
+	var result = parseXrefTable(std.testing.allocator, data);
+	if (result) |*t| t.entries.deinit(std.testing.allocator);
+	try std.testing.expect(result != null);
 }
