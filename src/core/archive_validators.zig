@@ -5044,7 +5044,9 @@ test "FormatValidator detects Brotli by extension" {
     // Should detect as Brotli by extension
     try std.testing.expectEqual(FileFormat.br, result.format);
     try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    // Raw brotli has no built-in checksum (unlike gzip CRC-32), so its ceiling is
+    // .structural per the 2026-06-23 depth-gate ruling; the depth clamp enforces it.
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "FormatValidator rejects corrupted Brotli" {

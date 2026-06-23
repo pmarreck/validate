@@ -5138,3 +5138,17 @@ test "validateParquetDeep: truncated page after a verified-CRC page must NOT rep
 	try std.testing.expect(!result.is_valid);
 	try std.testing.expect(result.validation_depth != ValidationDepth.full);
 }
+
+test "MFIC depth gate: okWithDepth never reports above a format's maxAchievableDepth ceiling" {
+	// External oracle the producer cannot satisfy with wrong work: every result's
+	// reported depth must be <= the format's own achievable ceiling. Durably kills
+	// the whole over-claim class (DTS/STL/DV/TAR/Brotli/PAM ...) and any future
+	// regression at the construction boundary. maxAchievableDepth() is reconciled
+	// with the validators per Einstein's 2026-06-23 ruling.
+	const FF = format_validation.FileFormat;
+	const VR = format_validation.ValidationResult;
+	for (std.enums.values(FF)) |f| {
+		const r = VR.okWithDepth(f, .full);
+		try std.testing.expect(@intFromEnum(r.validation_depth) <= @intFromEnum(f.maxAchievableDepth()));
+	}
+}

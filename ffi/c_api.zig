@@ -260,16 +260,20 @@ fn buildValidationResult(
     }
     try builder.add("err_detail", result.error_detail orelse "");
 
-    // Depth
-    try builder.addU8("depth_u8", switch (result.validation_depth) {
+    // Depth. Clamp the emitted actual depth to the format's ceiling so the FFI
+    // can never report depth > ceiling (the MFIC depth<=ceiling invariant holds
+    // at the wire boundary regardless of how the result was constructed).
+    const actual_depth_u8: u8 = switch (result.validation_depth) {
         .structural => 0,
         .full => 1,
-    });
+    };
+    const ceiling_depth_u8: u8 = switch (result.format.maxAchievableDepth()) {
+        .structural => 0,
+        .full => 1,
+    };
+    try builder.addU8("depth_u8", @min(actual_depth_u8, ceiling_depth_u8));
     try builder.add("depth_desc", result.validation_depth.description());
-    try builder.addU8("depth_ceiling_u8", switch (result.format.maxAchievableDepth()) {
-        .structural => 0,
-        .full => 1,
-    });
+    try builder.addU8("depth_ceiling_u8", ceiling_depth_u8);
     try builder.add("depth_ceiling_reason", result.format.depthCeilingReason());
 
     // Malformations split into WARN-tier (deviations) and INFO-tier

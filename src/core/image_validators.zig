@@ -6485,9 +6485,11 @@ test "validatePam: P4 wide row missing 8 bytes still FAILs (>7 bytes lost)" {
     try testing.expect(!result.is_valid);
 }
 
-test "validatePam returns full depth for P5 with maxval < 255 (pixel values validated)" {
-    // P5 (grayscale binary), 2x2, maxval=100 — all values within range
-    // When maxval < 255, we can validate every pixel byte is <= maxval — that's full validation.
+test "validatePam reports structural depth for P5 with maxval < 255 (range check is not byte-integrity)" {
+    // P5 (grayscale binary), 2x2, maxval=100 — all values within range.
+    // A `byte <= maxval` range check is NOT an integrity primitive (in-range
+    // corruption is undetected), so PAM's ceiling is .structural per the
+    // 2026-06-23 depth-gate ruling — the depth clamp enforces it.
     const header = "P5\n2 2\n100\n";
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -6504,7 +6506,7 @@ test "validatePam returns full depth for P5 with maxval < 255 (pixel values vali
     defer source.close();
     const result = validatePam(&source);
     try testing.expect(result.is_valid);
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validatePam detects pixel value exceeding maxval in binary P5" {
@@ -6527,7 +6529,7 @@ test "validatePam detects pixel value exceeding maxval in binary P5" {
     try testing.expect(!result.is_valid);
 }
 
-test "validatePam fully validates ASCII P3 PPM with maxval check" {
+test "validatePam reports structural depth for ASCII P3 PPM (range check is not byte-integrity)" {
     // P3 (ASCII RGB), 2x2, maxval=255 — all values valid
     const data = "P3\n2 2\n255\n0 0 0 255 255 255\n128 64 32 0 0 0\n";
     var tmp = testing.tmpDir(.{});
@@ -6540,7 +6542,7 @@ test "validatePam fully validates ASCII P3 PPM with maxval check" {
     const result = validatePam(&source);
     try testing.expect(result.is_valid);
     // ASCII PPM should achieve full depth (every value parsed and range-checked)
-    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
     // No "Full validation unavailable" warning
     try testing.expect(result.warning_message == null);
 }

@@ -887,30 +887,37 @@ pub const FileFormat = enum {
             .ar, .kmz, .blar, .mblar, .lspk, .chromium_pak, .pak, // archives with structure
             .type1, // Type 1 font with structure
             .llvm_diag, .llvm_pch, // LLVM binary formats
+            // Reconciled 2026-06-23 (Einstein depth-gate ruling + verified in each
+            // validator): these verify a real integrity primitive — CRC (ac3/eac3
+            // syncframe CRC-16, tta/qbw/hqx/cpt CRC-32, dmg UDIF checksum, sketch
+            // ZIP per-entry CRC, prproj gzip CRC) or industry-standard control
+            // totals (nacha/mt940/bai2/x12_edi/edifact) — so full validation is achievable.
+            .ac3, .eac3, .tta, .cpt, .dmg, .sketch, .prproj,
+            .qbw, .hqx, .nacha, .mt940, .bai2, .x12_edi, .edifact,
             => .full,
 
             // Formats where raw data has no integrity signal — structural is the ceiling
             .plain_text, .plain_text_utf16, .plain_text_latin1, .plain_text_cp437,
             .csv, .xml, .toml, .ini, .yaml, .html, .markdown, .kml, .rtf, .svg,
             .eex, .erlang_term,
-            .au, .amr, .caf, .dsf, .dff, .tta, // raw audio, no checksums
-            .pam, .dpx, .qoi, // raw pixel data, no checksums
+            .au, .amr, .caf, .dsf, .dff, // raw audio, no checksums
+            .pam, .dpx, .qoi, // raw pixel/range-only data, no integrity primitive
             .obj, .ply, .stl, .step, .dxf, // text/raw geometry, no checksums
             .dwg, .blend, // proprietary, structural parse only
             .fasta, .fastq, .shapefile, .pdb_struct, .cif, .nifti, .matlab,
             .eml, .mbox,
-            .icalendar, .vcard, .x12_edi, .edifact,
-            .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2,
+            .icalendar, .vcard,
+            .qbb, .qdf, .ofx, .qif, .txf,
             .orf, .pef, .raf, .rw2, .cr3, // camera RAW without checksums
             .pcap, .pcapng,
             .wad, .bsp, .vpk, .iff, .blorb,
-            .ac3, .eac3, .dts, .mp2, .cdg,
+            .dts, .mp2, .cdg,
             .rm, .dv, .ivf,
-            .prproj, .indd, .idml, .fcpxml, .drp, .sketch, .aep, .ai, .eps,
+            .indd, .idml, .fcpxml, .drp, .aep, .ai, .eps,
             .bwproject, .ptx, .rpp,
             .cwk, .mwd, .wpd,
-            .iso, .dmg, .toast, .vmdk, .wim, .esd, .msi, .thumbs_db,
-            .br, .hqx, .cpt, .tar,
+            .iso, .toast, .vmdk, .wim, .esd, .msi, .thumbs_db,
+            .br, .tar,
             .ds_store, .plist, .spotlight, .apple_double, .apple_media_db,
             => .structural,
 
@@ -1293,12 +1300,21 @@ pub const ValidationResult = struct {
         };
     }
 
+    /// Cap a claimed depth to what the format can actually achieve. Enforces the
+    /// MFIC invariant `validation_depth <= maxAchievableDepth()` at the result
+    /// construction boundary, so no validator can over-claim `.full` above a
+    /// format's structural ceiling (DTS/STL/DV/TAR/Brotli/PAM, and any future case).
+    fn cappedDepth(format: FileFormat, depth: ValidationDepth) ValidationDepth {
+        const ceiling = format.maxAchievableDepth();
+        return if (@intFromEnum(depth) > @intFromEnum(ceiling)) ceiling else depth;
+    }
+
     pub fn okWithDepth(format: FileFormat, depth: ValidationDepth) ValidationResult {
         return .{
             .format = format,
             .is_valid = true,
             .error_message = null,
-            .validation_depth = depth,
+            .validation_depth = cappedDepth(format, depth),
         };
     }
 
@@ -1308,7 +1324,7 @@ pub const ValidationResult = struct {
             .format = format,
             .is_valid = true,
             .error_message = null,
-            .validation_depth = depth,
+            .validation_depth = cappedDepth(format, depth),
             .validated_via_ffmpeg = true,
         };
     }
@@ -1330,7 +1346,7 @@ pub const ValidationResult = struct {
             .is_valid = true,
             .error_message = null,
             .warning_message = warning,
-            .validation_depth = depth,
+            .validation_depth = cappedDepth(format, depth),
         };
     }
 
@@ -1345,7 +1361,7 @@ pub const ValidationResult = struct {
             .is_valid = true,
             .error_message = null,
             .info_message = info,
-            .validation_depth = depth,
+            .validation_depth = cappedDepth(format, depth),
         };
     }
 
@@ -1377,7 +1393,7 @@ pub const ValidationResult = struct {
             .format = format,
             .is_valid = true,
             .error_message = null,
-            .validation_depth = depth,
+            .validation_depth = cappedDepth(format, depth),
         };
         result.malformations.insert(malformation);
         return result;
