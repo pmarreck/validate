@@ -185,6 +185,15 @@
 									printf "\\x$byte" >> "$binary"
 									i=$((i+2))
 								done
+
+								# Bundle license + third-party notices with the binary. The static
+								# binary merges ~20 BSD/zlib/MIT libraries whose licenses require their
+								# copyright notice in binary redistributions; ship them so the sold
+								# artifact carries the required attribution.
+								mkdir -p $out/share/licenses/validate
+								cp LICENSE $out/share/licenses/validate/ 2>/dev/null || true
+								cp THIRD_PARTY_NOTICES.md $out/share/licenses/validate/ 2>/dev/null || true
+								cp -r LICENSES $out/share/licenses/validate/ 2>/dev/null || true
 							'';
 
 							dontFixup = true;

@@ -58,6 +58,8 @@ echo "=== Building native ==="
 nix build || { echo "Native build failed."; exit 1; }
 mkdir -p zig-out/bin
 cp -f result/bin/$EXEC_NAME zig-out/bin/$EXEC_NAME
+# Bundle the third-party license notices alongside the binary (required for redistribution).
+mkdir -p zig-out/share && cp -rf result/share/licenses zig-out/share/ 2>/dev/null || true
 echo "  -> zig-out/bin/$EXEC_NAME"
 
 # Cross-compile targets via nix build flake outputs.
@@ -111,6 +113,7 @@ for dir_name in $(echo "${!CROSS_ATTRS[@]} ${!NATIVE_ATTRS[@]}" | tr ' ' '\n' | 
 	mkdir -p "$out_dir"
 	if nix build ".#$attr" -o "result-$dir_name" 2>&1; then
 		cp "result-$dir_name/bin/$exec_name" "$out_dir/$exec_name"
+		cp -rf "result-$dir_name/share/licenses" "zig-out/$dir_name/share/" 2>/dev/null || mkdir -p "zig-out/$dir_name/share" && cp -rf "result-$dir_name/share/licenses" "zig-out/$dir_name/share/" 2>/dev/null || true
 		rm -f "result-$dir_name"
 		echo "  -> $out_dir/$exec_name"
 	else
