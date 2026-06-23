@@ -114,6 +114,10 @@ pub fn validatePngWithOptions(file: *FileSource, skip_magic: bool) ValidationRes
 
 /// Debug log file for format validation (written to /tmp/es_format_debug.log)
 fn debugLog(comptime fmt: []const u8, args: anytype) void {
+    // Debug builds ONLY. In a released binary this appended the validated file
+    // path to a world-shared /tmp path on every failure — a privacy leak +
+    // symlink/TOCTOU surface that contradicts validate's read-only promise.
+    if (comptime @import("builtin").mode != .Debug) return;
     // Use fixed path for reliability (TMPDIR varies per process on macOS)
     const log_path = "/tmp/es_format_debug.log";
     // Create file if it doesn't exist, otherwise append

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Released (non-Debug) builds must NOT write the validated file path to the
+# world-shared /tmp/es_format_debug.log (privacy leak + symlink/TOCTOU surface
+# that contradicts validate's read-only promise). debugLog is now gated to
+# Debug builds. Assert the shipped binary does not create/append it.
+#
+# set -u only. Race-tolerant: a concurrent process may legitimately own the
+# shared path, so we only assert THIS run does not create or grow it.
+set -u
+
+VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
+[ -x "$VALIDATE" ] || { echo "SKIP: validate binary not built ($VALIDATE)"; exit 77; }
+LOG=/tmp/es_format_debug.log
+
+before=-1; [ -f "$LOG" ] && before=$(wc -c < "$LOG" 2>/dev/null | tr -d ' ')
+
+trunc="$(mktemp "${TMPDIR:-/tmp}/trunc.XXXXXX")"
+trap 'rm -f "$trunc"' EXIT
+# Truncated JPEG (SOI + APP0 + DQT start, no EOI) -> triggers the JPEG debugLog path.
+printf '\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xdb\x00\x43\x00' > "$trunc"
+"$VALIDATE" "$trunc" >/dev/null 2>&1
+
+after=-1; [ -f "$LOG" ] && after=$(wc -c < "$LOG" 2>/dev/null | tr -d ' ')
+
+if [ "$before" = "-1" ] && [ "$after" != "-1" ]; then
+	echo "FAIL: release binary CREATED $LOG (privacy leak)" >&2; exit 1
+fi
+if [ "$before" != "-1" ] && [ "$after" != "$before" ]; then
+	echo "FAIL: release binary appended to $LOG (privacy leak)" >&2; exit 1
+fi
+echo "ok: no /tmp debug-log write in release build"
+exit 0
