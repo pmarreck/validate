@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Top-level fuzz entry point (house convention: ./fuzz runs the fuzz suite,
+# SEPARATE from ./test). Delegates to tests/fuzz/run-sweep.bash. See ./fuzz --help.
+exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tests/fuzz/run-sweep.bash" "$@"

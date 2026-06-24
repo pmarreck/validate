@@ -56,3 +56,9 @@ case-studies/spotlight*
 # symlinks it in when absent; never commit it here.
 ground_truth_examples
 ground_truth_examples/
+
+# session handoff docs (skill: handoff)
+HANDOFF*
+
+# Fuzz crash reproducers (transient output; minimized crashers live in tests/fuzz/corpus/)
+fuzz-crashes/

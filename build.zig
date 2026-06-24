@@ -719,30 +719,57 @@ pub fn build(b: *std.Build) void {
     bench_step.dependOn(&install_bench_bzip2.step);
 
     // Fuzzing
-    const fuzz_bzip2_mod = b.createModule(.{
-        .root_source_file = b.path("fuzz/fuzz_stream_bzip2.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "core", .module = core_mod },
-        },
-    });
-
-    const fuzz_bzip2 = b.addExecutable(.{
-        .name = "fuzz-stream-bzip2",
-        .root_module = fuzz_bzip2_mod,
-    });
-    // Link required libraries for core module dependencies (all Zig-built)
-    // 0.16: route through Module (mirrors lib + lib_shared + cli_c above).
-    fuzz_bzip2.root_module.link_libc = true;
-    fuzz_bzip2.root_module.linkLibrary(sqlite3_lib);
-    fuzz_bzip2.root_module.linkLibrary(pcre2_lib);
-    fuzz_bzip2.root_module.linkLibrary(zlib_lib);
-
-    const install_fuzz_bzip2 = b.addInstallArtifact(fuzz_bzip2, .{});
     const fuzz_step = b.step("fuzz", "Build fuzzers");
-    fuzz_step.dependOn(&install_fuzz_bzip2.step);
 
+    // NOTE: tests/fuzz/fuzz_stream_bzip2.zig (the Tier-2 bzip2 round-trip harness) is
+    // bit-rotted against Zig 0.16 — it uses the removed std.io reader/writer +
+    // GeneralPurposeAllocator APIs and needs a std.Io.Reader/Writer migration.
+    // Excluded from the build until that Tier-2 repair (FUZZ_PLAN sequencing
+    // step 3). The Tier-1 whole-surface harnesses below are the current target.
+
+    // Tier-1 whole-surface fuzz harnesses. Unlike the bzip2 round-trip fuzzer
+    // (which only touches the bzip2 path), these route every input through the
+    // full detect→shallow→deep dispatch, so they pull in ALL validators and
+    // therefore need the complete C-dependency link set (mirrors core_tests /
+    // cli_c). Helper closes over the link incantation to avoid divergence.
+    const fuzzExe = struct {
+        fn make(
+            bld: *std.Build,
+            name: []const u8,
+            root: []const u8,
+            mod_core: *std.Build.Module,
+            tgt: std.Build.ResolvedTarget,
+            opt: std.builtin.OptimizeMode,
+            c_deps: []const *std.Build.Step.Compile,
+            sqlite_lib: *std.Build.Step.Compile,
+            jpeg_path: []const u8,
+            openjpeg_path: []const u8,
+            zlib_path: []const u8,
+        ) *std.Build.Step.Compile {
+            const m = bld.createModule(.{
+                .root_source_file = bld.path(root),
+                .target = tgt,
+                .optimize = opt,
+                .imports = &.{.{ .name = "core", .module = mod_core }},
+            });
+            const exe = bld.addExecutable(.{ .name = name, .root_module = m });
+            for (c_deps) |dep| exe.root_module.linkLibrary(dep);
+            exe.root_module.linkLibrary(sqlite_lib);
+            exe.root_module.link_libc = true;
+            exe.root_module.link_libcpp = true; // libjxl, libopenmpt are C++
+            if (jpeg_path.len > 0) exe.root_module.addLibraryPath(.{ .cwd_relative = jpeg_path });
+            if (openjpeg_path.len > 0) exe.root_module.addLibraryPath(.{ .cwd_relative = openjpeg_path });
+            if (zlib_path.len > 0) exe.root_module.addLibraryPath(.{ .cwd_relative = zlib_path });
+            if (tgt.result.os.tag == .windows) exe.root_module.linkSystemLibrary("ws2_32", .{});
+            return exe;
+        }
+    }.make;
+
+    const fuzz_dispatch = fuzzExe(b, "fuzz-dispatch", "tests/fuzz/fuzz_dispatch.zig", core_mod, target, optimize, all_c_deps, sqlite3_lib, opt_libjpeg_lib, opt_openjpeg_lib, opt_zlib_lib);
+    fuzz_step.dependOn(&b.addInstallArtifact(fuzz_dispatch, .{}).step);
+
+    const fuzz_sweep = fuzzExe(b, "fuzz-sweep", "tests/fuzz/fuzz_sweep.zig", core_mod, target, optimize, all_c_deps, sqlite3_lib, opt_libjpeg_lib, opt_openjpeg_lib, opt_zlib_lib);
+    fuzz_step.dependOn(&b.addInstallArtifact(fuzz_sweep, .{}).step);
     // Tests
     const test_filter = b.option([]const u8, "test-filter", "Run only tests containing this text");
     var test_filters: []const []const u8 = &.{};
