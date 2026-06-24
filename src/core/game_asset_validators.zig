@@ -203,7 +203,9 @@ pub fn validatePakDeep(allocator: Allocator, source: *FileSource) ValidationResu
     const dir_offset = std.mem.readInt(u32, header[4..8], .little);
     const dir_size = std.mem.readInt(u32, header[8..12], .little);
 
-    if (dir_offset + dir_size > file_size or dir_size % 64 != 0) {
+    // Widen to u64: dir_offset/dir_size are attacker-controlled u32 header fields;
+    // their sum overflowed u32 (e.g. 12 + 0xFFFFFFFF). file_size is u64.
+    if (@as(u64, dir_offset) + dir_size > file_size or dir_size % 64 != 0) {
         return ValidationResult.invalidCode(.pak, .invalid_value, "directory");
     }
 
@@ -228,7 +230,7 @@ pub fn validatePakDeep(allocator: Allocator, source: *FileSource) ValidationResu
         const file_offset = std.mem.readInt(u32, dir_data[entry_offset + 56 ..][0..4], .little);
         const file_len = std.mem.readInt(u32, dir_data[entry_offset + 60 ..][0..4], .little);
 
-        if (file_len > 0 and file_offset + file_len > file_size) {
+        if (file_len > 0 and @as(u64, file_offset) + file_len > file_size) {
             return ValidationResult.invalid(.pak, "File entry extends beyond archive");
         }
     }
@@ -1288,3 +1290,18 @@ test "BSP validator - accepts valid Quake 1 BSP in memory" {
 	const result = validateBsp(&source);
 	try testing.expect(result.is_valid);
 	try testing.expectEqual(ValidationDepth.structural, result.validation_depth);}
+
+// Regression (fuzz-found, 2026-06-24): validatePakDeep computed
+// `dir_offset + dir_size > file_size` (and `file_offset + file_len`) in u32;
+// attacker-controlled header fields overflowed (12 + 0xFFFFFFFF). Widened to
+// u64. Found by the Tier-1 fuzzer max-out-ing a 12-byte PAK. MFIC: replays the
+// exact minimized crasher through the public entry via FileSource.fromBuffer.
+test "validatePakDeep does not overflow on maxed dir_size (fuzz regression)" {
+    // "PACK" + dir_offset=0x0000000c + dir_size=0xFFFFFFFF
+    const crasher = [_]u8{ 0x50, 0x41, 0x43, 0x4b, 0x0c, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff };
+    var source = FileSource.fromBuffer(&crasher);
+    defer source.close();
+    // Pre-fix: u32 overflow panic. Post-fix: a clean invalid verdict.
+    const result = validatePakDeep(testing.allocator, &source);
+    try testing.expect(!result.is_valid);
+}

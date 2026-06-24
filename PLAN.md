@@ -24,10 +24,18 @@ Crashers found + fixed (reproduce-first), each committed to `tests/fuzz/corpus/`
 - [x] jbig2 `parseSegmentHeader` double-free on truncated data-length (unit test)
 - [x] h265 CABAC `residualCoding` abs_level u32 overflow (corpus replay)
 - [x] AVI `(chunk_size+1)` u32 overflow ×8 sites → widened to u64 (corpus replay)
-- [ ] **NEXT:** mpeg12 `validateMpeg12Stream:194` @intCast "does not fit"
-  (reproducer in fuzz-crashes/, seed 1592652030, maxout) — and continue the
-  deterministic sweep; the maxout/splice operators keep surfacing unchecked
-  size/length arithmetic across validators. Goal: sweep runs CLEAN (ship gate).
+- [x] mpeg12 `parseSequenceExtension` size-extension overflow — u12 size fields
+  too small for the 14-bit value+extension; widened to u14 (unit test)
+- [x] PAK `validatePakDeep` `dir_offset+dir_size` / `file_offset+file_len` u32
+  overflow → widened to u64 (unit test)
+- [ ] **CONTINUE the sweep** (deterministic, seed 1592652030 default): the
+  maxout/splice operators keep surfacing unchecked u32 size/length arithmetic
+  across validators — expect more of the same class. Re-run `./fuzz` (or
+  `zig-out/bin/fuzz-sweep --iters N <corpus>`), Debug-trace each (ReleaseSafe
+  line #s are inlining-misattributed — always confirm with a Debug build),
+  fix (saturating `+|` or `@as(u64, …)` widening), reproduce-first test or
+  corpus replay, commit, push. Goal: sweep runs CLEAN (ship gate) → ping Einstein.
+  Also vary `--seed` to widen coverage; consider an AFL++/honggfuzz coverage run.
 ### Corruption report: generated + Bolter column + UTF-8 re-sweep — DONE (2026-06-22)
 
 - [x] **UTF-8 text re-sweep** on validate_gui's new ≥12 KB multibyte fixtures:
