@@ -1515,7 +1515,11 @@ fn residualCoding(
             const decoded_val = decodeCoeffAbsLevelRemainingVal(engine, rice_param);
             if (!engine.valid) return;
             remainings_this_sb += 1;
-            const abs_level = coeff_base + decoded_val;
+            // Saturating add: decoded_val (coeff_abs_level_remaining, Golomb-Rice)
+            // can reach near-u32-max on a corrupt/fuzzed CABAC stream, so a plain
+            // `+` overflowed. abs_level is only used as a magnitude for the Rice-
+            // param update below, so saturating is semantically harmless.
+            const abs_level = coeff_base +| decoded_val;
 
             // Rice parameter update per spec 9.3.3.9 / ffmpeg cabac.c:1376.
             if (abs_level > 3 * (@as(u32, 1) << @intCast(rice_param))) {
