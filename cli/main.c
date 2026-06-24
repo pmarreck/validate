@@ -756,8 +756,15 @@ static int enumerate_path(const char* path, path_list_t* list, int depth) {
 	/* lstat, not stat: do NOT follow symlinks during recursion. A symlink to an
 	 * ancestor directory would otherwise be followed back into the tree and
 	 * recurse forever (C stack overflow). Symlinks become S_ISLNK below and are
-	 * skipped. Top-level path args are still stat()'d by the caller. */
+	 * skipped. Top-level path args are still stat()'d by the caller.
+	 * Windows (MinGW) has no lstat(); Windows symlinks/reparse points are rare
+	 * and handled differently by the OS, and the MAX_ENUM_DEPTH cap below still
+	 * bounds any cycle — so fall back to stat() there. */
+#if defined(_WIN32)
+	if (stat(path, &st) != 0) {
+#else
 	if (lstat(path, &st) != 0) {
+#endif
 		/* Skip inaccessible files (broken symlinks, permission denied, etc.)
 		 * rather than failing the entire enumeration */
 		return 0;
