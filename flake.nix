@@ -352,6 +352,59 @@
 						[ "$fail" -eq 0 ] || exit 1
 						touch $out
 					'';
+
+					# Fuzz regression replay (the ship gate's CI arm): build the Tier-1
+					# harnesses (ReleaseSafe, bounds ON) and replay every committed
+					# minimized crasher through fuzz-dispatch. Each must terminate
+					# normally — a segv/abort/bus/timeout means a fixed bug regressed.
+					# Self-contained: crashers live in tests/fuzz/corpus/ (no fixtures).
+					fuzz = pkgs.stdenv.mkDerivation {
+						pname = "validate-fuzz-replay";
+						version = "0.1.0";
+						src = ./.;
+						nativeBuildInputs = with pkgs; [ zig coreutils ]
+							++ pkgs.lib.optionals isDarwin [ darwin.cctools apple-sdk ];
+						buildInputs = [
+							pkgs.libjpeg_turbo pkgs.libjpeg_turbo.dev
+							pkgs.openjpeg pkgs.openjpeg.dev
+							pkgs.zlib pkgs.zlib.dev
+						];
+						buildPhase = ''
+							export HOME=$TMPDIR
+							export ZIG_GLOBAL_CACHE_DIR=$TMPDIR/zig-cache
+							mkdir -p $ZIG_GLOBAL_CACHE_DIR
+							cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
+							chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+							export TERM=dumb MUTE_DEBUG_STATUS=1
+							LIBJPEG_DEV=${pkgs.libjpeg_turbo.dev}
+							LIBJPEG_OUT=${pkgs.libjpeg_turbo.out}
+							OPENJPEG_DEV=${pkgs.openjpeg.dev}
+							OPENJPEG_OUT=${pkgs.openjpeg}
+							ZLIB_DEV=${pkgs.zlib.dev}
+							ZLIB_OUT=${pkgs.zlib.out}
+							JPEGZ_OPTS="-Dlibjpeg-include=$LIBJPEG_DEV/include \
+							            -Dlibjpeg-lib=$LIBJPEG_OUT/lib \
+							            -Dopenjpeg-include=$OPENJPEG_DEV/include/openjpeg-2.5 \
+							            -Dopenjpeg-lib=$OPENJPEG_OUT/lib \
+							            -Dzlib-include=$ZLIB_DEV/include \
+							            -Dzlib-lib=$ZLIB_OUT/lib"
+							timeout 1800 zig build $JPEGZ_OPTS fuzz -Doptimize=ReleaseSafe || {
+							  echo "fuzz harness build failed"; exit 1; }
+							replayed=0; fail=0
+							for f in $(find tests/fuzz/corpus -type f ! -name '*.md'); do
+								replayed=$((replayed + 1))
+								timeout 60 zig-out/bin/fuzz-dispatch < "$f" >/dev/null 2>&1
+								rc=$?
+								case "$rc" in
+									134|137|138|139|124)
+										echo "REGRESSED: $f (rc=$rc)"; fail=1 ;;
+								esac
+							done
+							echo "fuzz replay: $replayed committed crasher(s)"
+							[ "$fail" -eq 0 ] || { echo "fuzz replay FAILED — a fixed crash regressed"; exit 1; }
+						'';
+						installPhase = ''mkdir -p $out; echo "fuzz replay clean" > $out/result'';
+					};
 				});
 
 			devShells = forAllSystems (system:

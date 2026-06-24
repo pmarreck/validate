@@ -14,6 +14,20 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+### Fuzzing — Tier-1 whole-surface suite LIVE, grinding crashers (2026-06-24)
+Built per `docs/FUZZ_PLAN.md`: `tests/fuzz/` harnesses (dispatch + stdin +
+deterministic seeded sweep), two-tier oracle (robustness always; gzip-CRC
+detection probe proven non-vacuous), `./fuzz` runner, ReleaseSafe nix build,
+CI replay (`checks.fuzz`) of committed crashers. Ship stays ReleaseFast.
+Crashers found + fixed (reproduce-first), each committed to `tests/fuzz/corpus/`:
+- [x] mpeg_ts `getPayloadInfo` u8 overflow on adaptation_length 0xFF (unit test)
+- [x] jbig2 `parseSegmentHeader` double-free on truncated data-length (unit test)
+- [x] h265 CABAC `residualCoding` abs_level u32 overflow (corpus replay)
+- [x] AVI `(chunk_size+1)` u32 overflow ×8 sites → widened to u64 (corpus replay)
+- [ ] **NEXT:** mpeg12 `validateMpeg12Stream:194` @intCast "does not fit"
+  (reproducer in fuzz-crashes/, seed 1592652030, maxout) — and continue the
+  deterministic sweep; the maxout/splice operators keep surfacing unchecked
+  size/length arithmetic across validators. Goal: sweep runs CLEAN (ship gate).
 ### Corruption report: generated + Bolter column + UTF-8 re-sweep — DONE (2026-06-22)
 
 - [x] **UTF-8 text re-sweep** on validate_gui's new ≥12 KB multibyte fixtures:
