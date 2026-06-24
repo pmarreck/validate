@@ -28,6 +28,18 @@ Crashers found + fixed (reproduce-first), each committed to `tests/fuzz/corpus/`
   too small for the 14-bit value+extension; widened to u14 (unit test)
 - [x] PAK `validatePakDeep` `dir_offset+dir_size` / `file_offset+file_len` u32
   overflow → widened to u64 (unit test)
+- [x] FLAC `decodeLpcSubframe` LPC reconstruction — checked `@intCast(i64→i32)`
+  panicked on corrupt input; → `@truncate` (matches the `+%=` modular add;
+  corruption still caught by frame CRC-16 / stream MD5). Corpus replay (~64 KB).
+- [ ] **rarz dependency crash (BLOCKS clean-sweep ship gate)** — corrupt RAR5
+  filter descriptor → `@enumFromInt(u3)` on `FilterType` (which lacks all 8
+  values) → "invalid enum value" panic in
+  `rarz/src/lib/decompress/unpack50.zig:306 parseFilterDescriptor`. One-line fix
+  in the **rarz sibling repo** (`~/Code/rarz`): `std.meta.intToEnum(...) catch
+  return error.InvalidData`. Then commit+push rarz, bump validate's `.rarz` pin
+  (currently `faa59313`) + refresh `zigDepsHash`. Reproducer (766 B) saved in
+  this session's $TMPDIR. Unlike the tiffz feature bump, this pin bump is ON the
+  critical path to a clean sweep. Awaiting fix-now-vs-defer ruling.
 - [ ] **CONTINUE the sweep** (deterministic, seed 1592652030 default): the
   maxout/splice operators keep surfacing unchecked u32 size/length arithmetic
   across validators — expect more of the same class. Re-run `./fuzz` (or
@@ -36,6 +48,14 @@ Crashers found + fixed (reproduce-first), each committed to `tests/fuzz/corpus/`
   fix (saturating `+|` or `@as(u64, …)` widening), reproduce-first test or
   corpus replay, commit, push. Goal: sweep runs CLEAN (ship gate) → ping Einstein.
   Also vary `--seed` to widen coverage; consider an AFL++/honggfuzz coverage run.
+- [ ] **AFTER sweep is clean — bump tiffz pin `→ 0d4898c5`** (Einstein ruling
+  2026-06-26, gated on sweep-clean). Picks up 5 new jpegz JPEG corruption
+  findings via the `tiffz.jpegz` re-export (quantization_table_corrupt,
+  sof_component_count_invalid, sos_component_mismatch, progressive/lossless SOS,
+  arithmetic_table_corrupt) + a Linux-CI FOD fix. Update `.tiffz` pin, refresh
+  `zigDepsHash` (fakeHash trick), `./build` + `./test`, push. Then re-sweep —
+  the new finding-paths are fresh untrusted-input surface. Note archived:
+  `inbox/processed/2026-06-26-tiffz-jpegz-bump-0d4898c5.md`.
 ### Corruption report: generated + Bolter column + UTF-8 re-sweep — DONE (2026-06-22)
 
 - [x] **UTF-8 text re-sweep** on validate_gui's new ≥12 KB multibyte fixtures:

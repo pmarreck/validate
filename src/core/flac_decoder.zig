@@ -618,10 +618,16 @@ pub const FlacDecoder = struct {
                 prediction += @as(i64, coefficients[j]) * @as(i64, self.subframe_buffer[i - 1 - j]);
             }
 
+            // @truncate (not @intCast): LPC reconstruction is modular — the add
+            // is `+%=` (wrapping) and the final sample fits i32 by FLAC's design.
+            // On corrupt input the i64 intermediate can exceed i32; a checked
+            // @intCast panicked. Truncation matches the wrapping add (identical
+            // for valid data) and any real corruption still fails the frame
+            // CRC-16 / stream MD5 downstream. (fuzz-found, 2026-06-26)
             if (shift >= 0) {
-                self.subframe_buffer[i] +%= @intCast(prediction >> @intCast(shift));
+                self.subframe_buffer[i] +%= @truncate(prediction >> @intCast(shift));
             } else {
-                self.subframe_buffer[i] +%= @intCast(prediction << @intCast(-shift));
+                self.subframe_buffer[i] +%= @truncate(prediction << @intCast(-shift));
             }
         }
     }
