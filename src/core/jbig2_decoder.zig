@@ -261,7 +261,9 @@ pub fn parseSegmentHeader(allocator: Allocator, data: []const u8) Jbig2Error!str
 
     // Data length (4 bytes)
     if (data.len < offset + 4) {
-        referred_segments.deinit(allocator);
+        // NOTE: do NOT deinit referred_segments here — the errdefer above
+        // already frees it on this error return. Deiniting twice double-freed
+        // (ArrayList.deinit poisons self to undefined → second free segfaults).
         return Jbig2Error.UnexpectedEndOfData;
     }
 
@@ -4886,4 +4888,26 @@ test "validatePdfJbig2 handles trailing garbage after valid segments" {
     try std.testing.expect(result.valid);
     try std.testing.expectEqual(@as(u32, 8), result.width);
     try std.testing.expectEqual(@as(u32, 8), result.height);
+}
+
+// Regression (fuzz-found, 2026-06-24): parseSegmentHeader double-freed
+// referred_segments on a truncated data-length field. The error branch at the
+// data_length bounds check called referred_segments.deinit(allocator) AND
+// returned an error, which ALSO fired the errdefer that deinits the same list.
+// ArrayList.deinit sets self to undefined (0xaa…), so the second free
+// segfaulted. Found by the Tier-1 dispatch fuzzer truncating a JBIG2 sample to
+// 59 bytes. MFIC: replays the exact minimized crasher through the public entry.
+test "validateJbig2 does not double-free on truncated segment header (fuzz regression)" {
+    // The 59-byte minimized crasher inline (corpus mirror lives at
+    // tests/fuzz/corpus/jbig2/double_free_truncated_segheader.jbig2; @embedFile
+    // can't escape the core module's package path, so the bytes are inlined).
+    const crasher = [_]u8{
+        0x97, 0x4a, 0x42, 0x32, 0x0d, 0x0a, 0x1a, 0x0a, 0x02, 0x00, 0x00, 0x00,
+        0x00, 0x30, 0x00, 0x01, 0x00, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00, 0x01,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x31, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x33, 0x00, 0x00, 0x00, 0x00,
+    };
+    // Pre-fix: double-free segfault. Post-fix: returns a result cleanly.
+    _ = validateJbig2(std.testing.allocator, &crasher);
 }
