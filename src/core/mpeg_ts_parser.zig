@@ -222,7 +222,10 @@ pub fn getPayloadInfo(data: []const u8) ?struct { offset: usize, length: usize }
         // Has adaptation field
         if (offset >= data.len) return null;
         const adaptation_length = data[offset];
-        offset += 1 + adaptation_length;
+        // Widen to usize before adding: adaptation_length is attacker-controlled
+        // (0..255) and `1 + adaptation_length` evaluated in u8 overflows when it
+        // is 0xFF. The bounds check below rejects oversized offsets.
+        offset += 1 + @as(usize, adaptation_length);
     }
 
     if (offset >= TS_PACKET_SIZE) return null;
@@ -1139,4 +1142,22 @@ test "MPEG-TS ground truth - real sample validation" {
     try std.testing.expect(result.valid);
     try std.testing.expectEqual(@as(u32, 3), result.packets_parsed);
     try std.testing.expectEqual(@as(u32, 0), result.sync_errors);
+}
+
+// Regression (fuzz-found, 2026-06-24): getPayloadInfo computed
+// `offset += 1 + adaptation_length` where `1 + adaptation_length` was evaluated
+// in u8. An attacker-controlled adaptation_length of 0xFF made `1 + 255`
+// overflow u8 → panic in ReleaseSafe/Debug. Found by the Tier-1 dispatch fuzzer
+// splicing an MPEG-TS sample. Reproducer: tests/fuzz/corpus/mpeg_ts/.
+// MFIC: targeted unit probe of the exact arithmetic, independent of the codec
+// path the original splice happened to traverse.
+test "getPayloadInfo does not overflow on adaptation_length 0xFF (fuzz regression)" {
+    var packet: [TS_PACKET_SIZE]u8 = [_]u8{0} ** TS_PACKET_SIZE;
+    packet[0] = TS_SYNC_BYTE; // 0x47 sync
+    packet[3] = 0x30; // adaptation_field_control = 11 (adaptation + payload)
+    packet[4] = 0xFF; // adaptation_length = 255 → 1 + 255 overflows u8 if narrow
+    // Pre-fix: panics with "integer overflow". Post-fix: returns null because
+    // the (widened) offset 4 + 1 + 255 = 260 exceeds TS_PACKET_SIZE (188).
+    const info = getPayloadInfo(&packet);
+    try std.testing.expect(info == null);
 }
