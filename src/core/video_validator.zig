@@ -1135,7 +1135,7 @@ fn parseAviStructure(file: *FileSource, file_size: u64) ?AviStreamInfo {
             }
         }
 
-        position += 8 + ((chunk_size + 1) & ~@as(u32, 1)); // Word-aligned
+        position += 8 + ((@as(u64, chunk_size) + 1) & ~@as(u64, 1)); // Word-aligned
     }
 
     if (!found_video_stream or info.movi_offset == 0) return null;
@@ -1245,7 +1245,7 @@ fn validateMjpegFromAvi(allocator: Allocator, file: *FileSource, avi_info: AviSt
                 position += 12;
                 continue;
             }
-            position += 8 + ((chunk_size + 1) & ~@as(u32, 1));
+            position += 8 + ((@as(u64, chunk_size) + 1) & ~@as(u64, 1));
             continue;
         }
 
@@ -1274,7 +1274,7 @@ fn validateMjpegFromAvi(allocator: Allocator, file: *FileSource, avi_info: AviSt
             // Skip nested LIST (like rec chunks)
         }
 
-        position += 8 + ((chunk_size + 1) & ~@as(u32, 1));
+        position += 8 + ((@as(u64, chunk_size) + 1) & ~@as(u64, 1));
     }
 
     if (frames_validated == 0) {
@@ -1336,7 +1336,7 @@ fn validateMpeg12FromAvi(allocator: Allocator, file: *FileSource, avi_info: AviS
             }
         }
 
-        position += 8 + ((chunk_size + 1) & ~@as(u32, 1));
+        position += 8 + ((@as(u64, chunk_size) + 1) & ~@as(u64, 1));
     }
 
     if (video_data.items.len == 0) {
@@ -1403,7 +1403,7 @@ fn validateH264FromAvi(allocator: Allocator, file: *FileSource, avi_info: AviStr
                 position += 12;
                 continue;
             }
-            position += 8 + ((chunk_size + 1) & ~@as(u32, 1));
+            position += 8 + ((@as(u64, chunk_size) + 1) & ~@as(u64, 1));
             continue;
         }
 
@@ -1422,7 +1422,7 @@ fn validateH264FromAvi(allocator: Allocator, file: *FileSource, avi_info: AviStr
             }
         }
 
-        position += 8 + ((chunk_size + 1) & ~@as(u32, 1));
+        position += 8 + ((@as(u64, chunk_size) + 1) & ~@as(u64, 1));
     }
 
     if (video_data.items.len == 0) {
@@ -1492,7 +1492,7 @@ fn validateMpeg4P2FromAvi(allocator: Allocator, file: *FileSource, avi_info: Avi
                 continue;
             }
             // Other LIST types: skip
-            position += 8 + ((chunk_size + 1) & ~@as(u32, 1));
+            position += 8 + ((@as(u64, chunk_size) + 1) & ~@as(u64, 1));
             continue;
         }
 
@@ -1515,7 +1515,7 @@ fn validateMpeg4P2FromAvi(allocator: Allocator, file: *FileSource, avi_info: Avi
             }
         }
 
-        position += 8 + ((chunk_size + 1) & ~@as(u32, 1));
+        position += 8 + ((@as(u64, chunk_size) + 1) & ~@as(u64, 1));
     }
 
     if (video_data.items.len == 0) {
