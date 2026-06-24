@@ -312,6 +312,15 @@
 							            -Dopenjpeg-lib=$OPENJPEG_OUT/lib \
 							            -Dzlib-include=$ZLIB_DEV/include \
 							            -Dzlib-lib=$ZLIB_OUT/lib"
+							# Test-discovery floor (CI-honesty MFIC): zig build test is silent on
+							# success, so guard the discovery invariant at the SOURCE — fail if
+							# modules drop out of mod.zig's test block (the rot that hid 28 modules)
+							# or tests get deleted. Deterministic grep; bites on regression.
+							imp=$(sed -n '/^test {/,/^}/p' src/core/mod.zig | grep -c '_ = @import')
+							decl=$(grep -rho '^test "' src | wc -l | tr -d ' ')
+							echo "test-discovery floor: $imp module imports, $decl test declarations"
+							if [ "$imp" -lt 140 ]; then echo "FAIL: test-block module imports ($imp) < 140 — modules dropped from discovery"; exit 1; fi
+							if [ "$decl" -lt 2000 ]; then echo "FAIL: test declarations ($decl) < 2000 — tests deleted/disabled"; exit 1; fi
 							timeout 1800 zig build $JPEGZ_OPTS test 2>&1 || {
 							  echo "Tests timed out or failed after 30 minutes"
 							  exit 1
@@ -323,6 +332,26 @@
 							echo "tests passed" > $out/result
 						'';
 					};
+
+					# CI-honesty: run the fixture-free CLI tests + the master_report_drift
+					# corruption-drift oracle against the PACKAGED binary in CI. These
+					# previously lived ONLY in ./test and never ran in Garnix (the false-green).
+					# Excludes fixture-dependent tests (ground_truth_examples is absent in the
+					# sandbox) and ones that hardcode `nix develop` (unavailable in-sandbox).
+					cli = pkgs.runCommandLocal "validate-cli-mfic" {
+						nativeBuildInputs = [ pkgs.bash pkgs.luajit pkgs.coreutils ];
+					} ''
+						export VALIDATE_BIN=${self.packages.${system}.default}/bin/validate
+						export TMPDIR=$(mktemp -d)
+						root=${./.}
+						fail=0
+						for t in master_report_drift utf8_required_formats_reject symlink_loop_termination no_tmp_debug_log_in_release; do
+							echo "=== CLI check: $t ==="
+							if ! bash "$root/tests/cli/$t"; then echo "FAIL: $t"; fail=1; fi
+						done
+						[ "$fail" -eq 0 ] || exit 1
+						touch $out
+					'';
 				});
 
 			devShells = forAllSystems (system:
