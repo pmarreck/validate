@@ -33,7 +33,16 @@ at the bottom. Older completed sections were rolled up — full history lives in
 - [ ] (held per Peter) RAW preview-JPEG decode across the family (#43) — revisit
       after the above; then re-adjust those RAW numbers.
 
-### Windows full-parity — DONE (2026-06-22)
+### Windows x86_64 — COMPILE-parity (2026-06-22); runtime NOT verified in CI
+
+**Honest status (CI-honesty reconcile 2026-06-24):** x86_64-windows is
+cross-COMPILED with the full feature set (real JPEG-in-TIFF + JPEG2000 deep
+validation), and Garnix *builds* the `.exe` — but **CI never runs it** (no wine
+runtime test; the `Test` step runs `checks.test` only for `package == default`,
+i.e. the host platform). So "full parity" means **feature/compile parity**, not
+runtime-verified-on-Windows. Linux/macOS DO run the full suite. windows-aarch64
+has **no binary at all** (upstream nixpkgs aarch64-mingw compiler-rt bug — see
+below). Follow-up: a wine smoke test, or keep this honest marking.
 
 x86_64-windows upgraded C-floor → **full parity** (real JPEG-in-TIFF + JPEG2000
 deep validation) by driving the jpegz A-track through the pin chain:
@@ -42,7 +51,8 @@ jpegz `f60da91f` (vendored openjpeg, lazy; Mode-2 RGB cleanroom fix) → tiffz
 Also fixed: file_source.zig Windows `currentPathAlloc` (0.16), libraw moving
 `#master` → commit-pinned. All Garnix checks GREEN.
 
-- [x] x86_64-windows full parity, native+Linux+macOS green. — 2026-06-22
+- [x] x86_64-windows: compile-parity, Garnix BUILDS the .exe (not runtime-tested).
+      Linux/macOS run the full suite green. — 2026-06-22
 - [ ] windows-aarch64: **scope-cut** (`ec8c06d7`) — blocked by upstream nixpkgs
       aarch64-w64-mingw32 compiler-rt libatomic/pthread.h bug (NixOS/nixpkgs#534236;
       not validate code). Re-add when upstream fixes it. Mirrors macos-aarch64 cut.
