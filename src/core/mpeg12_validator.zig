@@ -73,8 +73,12 @@ pub const aspect_ratio_mpeg2 = [_]struct { w: u8, h: u8 }{
 
 /// Sequence header information
 pub const SequenceHeader = struct {
-    horizontal_size: u12,
-    vertical_size: u12,
+    // 14 bits: MPEG-2 sequence_extension adds a 2-bit *_size_extension as the two
+    // MSBs above the 12-bit *_size_value (h_size |= h_ext << 12), so the combined
+    // field needs 14 bits. Was u12, which overflowed @intCast on any non-zero
+    // size extension (fuzz-found, and would also bite valid MPEG-2 streams).
+    horizontal_size: u14,
+    vertical_size: u14,
     aspect_ratio_code: u4,
     frame_rate_code: u4,
     bit_rate: u18, // In 400 bps units
@@ -703,8 +707,8 @@ test "parseSequenceHeader minimal" {
     try std.testing.expect(result != null);
 
     const header = result.?.header;
-    try std.testing.expectEqual(@as(u12, 352), header.horizontal_size);
-    try std.testing.expectEqual(@as(u12, 288), header.vertical_size);
+    try std.testing.expectEqual(@as(u14, 352), header.horizontal_size);
+    try std.testing.expectEqual(@as(u14, 288), header.vertical_size);
     try std.testing.expectEqual(@as(u4, 2), header.aspect_ratio_code);
     try std.testing.expectEqual(@as(u4, 3), header.frame_rate_code);
     try std.testing.expectEqual(@as(f32, 25.0), header.getFrameRate());
@@ -804,4 +808,35 @@ test "validateMpeg12Deep surfaces skip_reason when no I-frames present" {
     try std.testing.expect(!result.deep_valid);
     try std.testing.expect(result.skip_reason != null);
     try std.testing.expect(std.mem.indexOf(u8, result.skip_reason.?, "no I-frames") != null);
+}
+
+// Regression (fuzz-found, 2026-06-24): parseSequenceExtension did
+// `header.horizontal_size |= @intCast(h_ext << 12)` into a u12 field; a non-zero
+// 2-bit *_size_extension sets bits 12-13 (e.g. h_ext=3 → 0x3000), which does not
+// fit u12 → "integer does not fit in destination type" panic. Found by the
+// Tier-1 fuzzer max-out-ing an MPEG-2-in-TS sample; would also bite valid MPEG-2.
+// Fields widened to u14 (12-bit value + 2-bit extension). MFIC: crafts the exact
+// sequence_extension bitstream (h_ext=v_ext=3) and asserts the extended size.
+test "parseSequenceExtension size-extension does not overflow (fuzz regression)" {
+    // [00 00 01 B5] extension start code, then bits:
+    // ext_id=1(4) profile=0(8) progressive=0(1) chroma=0(2) h_ext=3(2) v_ext=3(2)
+    // bit_rate_ext=0(12) marker=1(1) vbv_ext=0(8) low_delay+fr=0(8)
+    const ext = [_]u8{ 0x00, 0x00, 0x01, 0xB5, 0x10, 0x01, 0xE0, 0x01, 0x00, 0x00 };
+    var header = SequenceHeader{
+        .horizontal_size = 0,
+        .vertical_size = 0,
+        .aspect_ratio_code = 0,
+        .frame_rate_code = 0,
+        .bit_rate = 0,
+        .vbv_buffer_size = 0,
+        .constrained_parameters_flag = false,
+        .profile_level = null,
+        .progressive_sequence = null,
+        .chroma_format = null,
+    };
+    // Pre-fix: @intCast panic. Post-fix: extension bits land at 12-13 → 0x3000.
+    const consumed = parseSequenceExtension(&ext, 0, &header);
+    try std.testing.expect(consumed != null);
+    try std.testing.expectEqual(@as(u14, 0x3000), header.horizontal_size);
+    try std.testing.expectEqual(@as(u14, 0x3000), header.vertical_size);
 }
