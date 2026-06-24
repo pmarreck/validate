@@ -404,4 +404,43 @@ test {
     _ = @import("i18n/mod.zig");
     // Progress bar (progrez wrapper)
     _ = @import("progress.zig");
+
+    // Test-discovery fix (CODE_REVIEW CI-honesty): these modules are re-exported
+    // above but were absent from this block, so their tests ran only via a subtle
+    // 0.16 reachability rule (or not at all). Import them explicitly so the suite
+    // deterministically runs every module's tests — incl. format_validation.zig's
+    // ~71 tests and the codec/decoder engines that carry the most parser risk.
+    _ = @import("format_validation.zig");
+    _ = @import("jpeg_validator.zig");
+    _ = @import("jpeg2000_validator.zig");
+    _ = @import("jbig2_decoder.zig");
+    _ = @import("ccitt_fax_decoder.zig");
+    _ = @import("webp_validator.zig");
+    _ = @import("video_validator.zig");
+    _ = @import("prores_validator.zig");
+    _ = @import("ebml_parser.zig");
+    _ = @import("ac3_validator.zig");
+    _ = @import("eac3_validator.zig");
+    _ = @import("mp3_validator.zig");
+    _ = @import("mp3_decode_validator.zig");
+    _ = @import("alac_validator.zig");
+    _ = @import("ogg_validator.zig");
+    _ = @import("opus_validator.zig");
+    _ = @import("vorbis_validator.zig");
+    _ = @import("libopenmpt.zig");
+    _ = @import("libraw_validator.zig");
+    _ = @import("pdf_image_validator.zig");
+    _ = @import("bzip2.zig");
+    // NOTE: resource_fork.zig is intentionally NOT imported here. The
+    // test-discovery audit found it is DEAD CODE (re-exported but no production
+    // caller) and its functions have bit-rotted against Zig 0.16
+    // (fs.openFileAbsolute / fs.cwd / ArrayList.items). Forcing analysis only
+    // breaks the build. Tracked for separate deletion-or-repair; do not re-add
+    // until it compiles + has a live caller.
+    _ = @import("tiffz_shim.zig");
+    _ = @import("trace.zig");
+    _ = @import("runtime.zig");
+    _ = @import("errors.zig");
+    _ = @import("types.zig");
+    _ = @import("compat.zig");
 }
