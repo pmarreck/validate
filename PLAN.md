@@ -31,15 +31,21 @@ Crashers found + fixed (reproduce-first), each committed to `tests/fuzz/corpus/`
 - [x] FLAC `decodeLpcSubframe` LPC reconstruction — checked `@intCast(i64→i32)`
   panicked on corrupt input; → `@truncate` (matches the `+%=` modular add;
   corruption still caught by frame CRC-16 / stream MD5). Corpus replay (~64 KB).
-- [ ] **rarz dependency crash (BLOCKS clean-sweep ship gate)** — corrupt RAR5
-  filter descriptor → `@enumFromInt(u3)` on `FilterType` (which lacks all 8
-  values) → "invalid enum value" panic in
-  `rarz/src/lib/decompress/unpack50.zig:306 parseFilterDescriptor`. One-line fix
-  in the **rarz sibling repo** (`~/Code/rarz`): `std.meta.intToEnum(...) catch
-  return error.InvalidData`. Then commit+push rarz, bump validate's `.rarz` pin
-  (currently `faa59313`) + refresh `zigDepsHash`. Reproducer (766 B) saved in
-  this session's $TMPDIR. Unlike the tiffz feature bump, this pin bump is ON the
-  critical path to a clean sweep. Awaiting fix-now-vs-defer ruling.
+- [x] **rarz dependency crash FIXED** (Einstein FIX-NOW ruling 2026-07-01) — corrupt
+  RAR5 filter descriptor → `@enumFromInt(u3)` on `FilterType` (only 4 of 8 values)
+  → "invalid enum value" panic (Debug/ReleaseSafe) / silent UB (ReleaseFast) in
+  `rarz .../unpack50.zig:306`. Fixed in the rarz sibling with
+  `std.enums.fromInt(...) orelse return error.InvalidData` (NOTE: `std.meta.intToEnum`
+  is gone in 0.16 → `std.enums.fromInt`). rarz yolo `6406ef8e` (pushed); validate
+  `.rarz` pin bumped + hashes refreshed; crasher in `tests/fuzz/corpus/rar/`.
+  - **⚠ 2 secondary findings surfaced (reported to Einstein, NOT yet fixed):**
+    (1) rarz runs its own test suite in **ReleaseFast**, masking ≥3 pre-existing
+    crashes that only appear under Debug/ReleaseSafe (single-byte-corruption sweep
+    "integer does not fit", lz copyMatch wrap-around, unpack50 truncated-data) —
+    rarz should build tests under Debug/ReleaseSafe. (2) rarz had entangled prior-
+    session WIP (extra_has_encryption / extract_blake2sp_hash_raw, +191 lines,
+    tested) that a path-scoped commit split; landed as a coherent recovery commit
+    to keep rarz yolo compiling.
 - [ ] **CONTINUE the sweep** (deterministic, seed 1592652030 default): the
   maxout/splice operators keep surfacing unchecked u32 size/length arithmetic
   across validators — expect more of the same class. Re-run `./fuzz` (or

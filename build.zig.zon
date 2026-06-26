@@ -85,8 +85,8 @@
             .hash = "z7z-0.1.0-rkKuF6vKBgBABoiu3SBYBwKgjVARX7AK9OId3azwZAle",
         },
         .rarz = .{
-            .url = "https://github.com/pmarreck/rarz/archive/faa593135484e535dca6dfe59c7e55979b30121c.tar.gz",
-            .hash = "rarz-0.1.0-BNfrfh_YCQDSasbU9I6wrjsAxilPHDvkdU7HRQdl6mfP",
+            .url = "https://github.com/pmarreck/rarz/archive/6406ef8e90cff33943112d5673fe16c145231ff2.tar.gz",
+            .hash = "rarz-0.1.0-BNfrfkQRCgD5tnLBGevOINe3pnJuOYhrd0RjLryWVbhP",
         },
         .bzip2z = .{
             .url = "https://github.com/pmarreck/bzip2z/archive/9b9e28dafb8dc3d34a88d43b7359b6ca9efd78f1.tar.gz",
