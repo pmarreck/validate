@@ -72,6 +72,23 @@ Crashers found + fixed (reproduce-first), each committed to `tests/fuzz/corpus/`
     UNAFFECTED (reports the fixture OK). Curiosity poke (non-urgent): what does validate's
     "fully validated" mean for a .part1 whose payload spans 6 volumes?
   - Then the (i)-merge queue: a241→a17d→aba8→ae02→afa34 (hold a0ff/thumbs_db).
+- [ ] **TOP MORNING ITEM — tiffz chain bump (BLESSED by Einstein 2026-07-02), unblocks
+  the CLEAN sweep.** jpegz owner fixed #9 (IDCT wrapping-with-detection, byte-exact vs
+  libjpeg-turbo oracle; the 16MB DNG reproducer now decodes with NO panic and emits
+  finding 58 `dct_coefficient_overflow`=FAIL). Also carries a jpegls 16-bit threshold
+  correctness fix. Steps:
+  1. Bump `.tiffz` pin → `9a2c18e9c5` (full: refetch; NOTE a ~3-min overnight window may
+     yield an empty placeholder `28863b7e` — real rev is `9a2c18e9`; carries jpegz
+     `cc844e274a057e1bb1fb278ab27cab8da15582b3` via `tiffz.jpegz`, no double-bump).
+     Refresh `zigDepsHash` (fakeHash→nix-reports-real trick; the helper is stale-prone).
+     tiffz's own zigDepsHash ref = `sha256-ai54zBb6VeSkOBGG5xscMp5PBjvCQeMgW9CbuxGybss=`.
+  2. Replay `~/validate-fuzz-repros/jpegz9-idct-overflow-via-dng.bin` → expect no panic,
+     verdict INVALID (58 is FAIL-severity). Full `./test`. Commit + push. Ping Einstein.
+  3. Optional 2-line polish: add `.dct_coefficient_overflow => "JPEG DCT coefficient
+     overflow (corrupt entropy data)"` to `findingCodeMessage` (jpeg_validator.zig) —
+     currently falls to generic else; no elevation needed (58 already FAIL at source).
+  4. THEN resume the sweep — **zero KNOWN panics remain** (rarz ×3 + jpegz ×2 fixed);
+     gate = CLEAN, NO carve-outs (the DNG carve-out dies with this bump).
 - [ ] **CONTINUE the sweep** (deterministic, seed 1592652030 default): the
   maxout/splice operators keep surfacing unchecked u32 size/length arithmetic
   across validators — expect more of the same class. Re-run `./fuzz` (or
