@@ -14,6 +14,22 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+### ⏸ RESUME HERE — fleet wind-down / Thelio migration (2026-07-06→08)
+All fuzz work is GREEN + pushed (`yolo` @ this commit). Fleet moved off this Mac
+(now a darwin-build appliance); SCM is going **git-native** (jj abandoned per Peter
+2026-07-08 — on the Thelio use plain `git`, the block-git hook won't be there).
+**Exact resume state:** 11 crashers fixed reproduce-first (9 validate in-tree
+[mpeg_ts, jbig2, h265, AVI, mpeg12, PAK, FLAC, PDF-xref] + 2 rarz UB) + rarz enum
+fix + rarz ReleaseSafe test-flip + 2 blessed dep fixes (rarz filter-type, jpegz #9
+IDCT). Dependency chain is panic-free; the sweep still surfaces validate's own
+long-tail (last = PDF-xref `parseTrailerDict` OOB #10).
+**Immediate next steps (in order):**
+1. Re-bump `.rarz` → `b920d603` (rarz owner landed A/B/C; steps in the rarz item below).
+2. Resume the deterministic sweep (`./fuzz` or `zig-out/bin/fuzz-sweep --iters N
+   <corpus>`, seed 1592652030) — NO carve-outs; Debug-trace each (ReleaseSafe line
+   #s are inlining-misattributed), fix (saturating `+|` / `@as(u64,…)` widen / bounds
+   check), reproduce-first test or corpus replay, commit, push. Goal: sweep CLEAN = ship gate.
+3. (i)-merge queue: a241→a17d→aba8→ae02→afa34 (hold a0ff/thumbs_db).
 ### Fuzzing — Tier-1 whole-surface suite LIVE, grinding crashers (2026-06-24)
 Built per `docs/FUZZ_PLAN.md`: `tests/fuzz/` harnesses (dispatch + stdin +
 deterministic seeded sweep), two-tier oracle (robustness always; gzip-CRC
