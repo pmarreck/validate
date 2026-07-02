@@ -38,14 +38,17 @@ Crashers found + fixed (reproduce-first), each committed to `tests/fuzz/corpus/`
   `std.enums.fromInt(...) orelse return error.InvalidData` (NOTE: `std.meta.intToEnum`
   is gone in 0.16 → `std.enums.fromInt`). rarz yolo `6406ef8e` (pushed); validate
   `.rarz` pin bumped + hashes refreshed; crasher in `tests/fuzz/corpus/rar/`.
-  - **⚠ 2 secondary findings surfaced (reported to Einstein, NOT yet fixed):**
-    (1) rarz runs its own test suite in **ReleaseFast**, masking ≥3 pre-existing
-    crashes that only appear under Debug/ReleaseSafe (single-byte-corruption sweep
-    "integer does not fit", lz copyMatch wrap-around, unpack50 truncated-data) —
-    rarz should build tests under Debug/ReleaseSafe. (2) rarz had entangled prior-
-    session WIP (extra_has_encryption / extract_blake2sp_hash_raw, +191 lines,
-    tested) that a path-scoped commit split; landed as a coherent recovery commit
-    to keep rarz yolo compiling.
+  - **✅ secondary finding #1 FIXED (Einstein-authorized 2026-07-01):** flipped rarz's
+    unit-test build to **ReleaseSafe** (was ReleaseFast → masked UB); that unmasked 2
+    crashers, both fixed reproduce-first (existing tests are the oracle): unpack50
+    `byte_count` u2→u8 (guard ran after the narrowing cast); lz `copyMatch` bulk-@memcpy
+    physical-non-overlap guard (distance==buffer.len aliased src==dst). rarz yolo
+    `a29b2b3b`; validate `.rarz` pin re-bumped + zigDepsHash refreshed; ./test green.
+    NOTE (fleet pattern Einstein is recording): sibling libs whose tests run ReleaseFast
+    are false-green for the UB class.
+  - **secondary finding #2 (shipped WIP + red intermediate commit):** Einstein ACCEPTed
+    (tested+green, force-push blocked); flagged to Peter. Process note: build each commit
+    before pushing.
 - [ ] **CONTINUE the sweep** (deterministic, seed 1592652030 default): the
   maxout/splice operators keep surfacing unchecked u32 size/length arithmetic
   across validators — expect more of the same class. Re-run `./fuzz` (or
