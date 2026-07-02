@@ -49,6 +49,29 @@ Crashers found + fixed (reproduce-first), each committed to `tests/fuzz/corpus/`
   - **secondary finding #2 (shipped WIP + red intermediate commit):** Einstein ACCEPTed
     (tested+green, force-push blocked); flagged to Peter. Process note: build each commit
     before pushing.
+- [ ] **rarz MORNING QUEUE** (Einstein checker report 2026-07-02; rarz master `./test`
+  = 6 failed suites, but ALL of tonight's work EXONERATED — my fixes are correct).
+  ⚠ Verification-scope lesson: I claimed rarz "green" from `zig build test` +
+  validate `./test` but never ran rarz's **master `./test`** (zig units + 10 CLI
+  suites). "Pushed green" must mean the MASTER suite, in-env, going forward.
+  Do in order (all in `~/Code/rarz`), each verified via `nix develop -c ./test`:
+  - **A (harness, pre-existing, ~min):** `./test` runs CLI suites bare (unrar only in
+    devshell → interop fails) + suites use `set -euo pipefail` and `fail(){ ((errors++)); }`
+    (`((errors++))` from 0 returns nonzero → `set -e` aborts). Fix: run CLI suites under
+    `nix develop -c`; strip `set -e`/pipefail; `errors=$((errors+1))`. (Aligns w/ Peter's
+    test-script rules.)
+  - **B (MINE, minor):** `fuzz_filter_type_invalid.rar` sits in `tests/fixtures/` whose
+    Interop Gate A has an implicit all-valid contract → flags the deliberately-invalid
+    fixture. Move to `tests/fixtures/invalid/` (my regression test INLINES the bytes, so
+    no path repoint needed) OR teach Gate A to skip `fuzz_*`. Verify Gate A's sweep scope.
+  - **C (REAL pre-existing bug, reproduce-first):** multi-volume verify false-INVALID —
+    `rarz t tests/fixtures/rar5_vol_store.part1.rar` → "payload CRC32 mismatch" on a VALID
+    archive (unrar oracle: All OK; baseline 507922c5 fails identically). Verify path
+    miscomputes CRC across the volume span. Committed fixture IS the reproducer (will now
+    FAIL loudly once A unhides the suite → red-before-green). validate paid product
+    UNAFFECTED (reports the fixture OK). Curiosity poke (non-urgent): what does validate's
+    "fully validated" mean for a .part1 whose payload spans 6 volumes?
+  - Then the (i)-merge queue: a241→a17d→aba8→ae02→afa34 (hold a0ff/thumbs_db).
 - [ ] **CONTINUE the sweep** (deterministic, seed 1592652030 default): the
   maxout/splice operators keep surfacing unchecked u32 size/length arithmetic
   across validators — expect more of the same class. Re-run `./fuzz` (or
