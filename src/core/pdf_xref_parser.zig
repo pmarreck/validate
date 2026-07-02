@@ -240,6 +240,9 @@ pub fn parseTrailerDict(data: []const u8, start: usize) ?TrailerInfo {
     // Parse dict entries until ">>"
     while (i + 1 < data.len) {
         i = skipWs(data, i);
+        // skipWs can reach data.len (trailing whitespace); the `>>` check below
+        // only guards its own access, so re-check before the `data[i]` reads.
+        if (i >= data.len) break;
         if (i + 1 < data.len and data[i] == '>' and data[i + 1] == '>') break;
 
         if (data[i] == '/') {
@@ -1337,4 +1340,18 @@ test "parseXrefTable terminates on a self-referential /Prev chain (DoS guard)" {
 	var result = parseXrefTable(std.testing.allocator, data);
 	if (result) |*t| t.entries.deinit(std.testing.allocator);
 	try std.testing.expect(result != null);
+}
+
+// Regression (fuzz-found, 2026-07-02): parseTrailerDict's entry loop did
+// `i = skipWs(data, i)` then read `data[i]` at the `/` check without re-checking
+// bounds — skipWs can advance i to data.len (trailing whitespace / maxout'd
+// dict), and the intervening `>>` check only guards its OWN access (i+1<len), so
+// i==len fell through to an out-of-bounds `data[i]`. Found by the Tier-1 fuzzer
+// max-out-ing an Adobe Illustrator (PDF) sample. MFIC: minimal "<<"+whitespace
+// buffer that drives skipWs to the end.
+test "parseTrailerDict does not index out of bounds on trailing whitespace (fuzz regression)" {
+    // "<<" then only whitespace → skipWs reaches data.len inside the entry loop.
+    const r = parseTrailerDict("<<   ", 0);
+    // Pre-fix: index-out-of-bounds panic. Post-fix: returns gracefully (no Size → null).
+    try std.testing.expect(r == null);
 }

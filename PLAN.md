@@ -31,6 +31,15 @@ Crashers found + fixed (reproduce-first), each committed to `tests/fuzz/corpus/`
 - [x] FLAC `decodeLpcSubframe` LPC reconstruction — checked `@intCast(i64→i32)`
   panicked on corrupt input; → `@truncate` (matches the `+%=` modular add;
   corruption still caught by frame CRC-16 / stream MD5). Corpus replay (~64 KB).
+- [x] PDF xref `parseTrailerDict` index-out-of-bounds — after `i = skipWs(data, i)`
+  the entry loop read `data[i]` without re-checking bounds; skipWs can reach
+  `data.len` (trailing whitespace / maxout'd dict) → OOB. Added `if (i >= data.len)
+  break;`. Fuzz-found max-out-ing an Adobe Illustrator (PDF) sample. Unit test +
+  corpus (`tests/fuzz/corpus/pdf/trailer_dict_oob.ai`, 372 B). [9 in-tree fixes now]
+- [x] **tiffz→9a2c18e9 BLESSED bump DONE** — jpegz #9 (IDCT overflow) fixed via chain;
+  DNG reproducer now decodes clean → INVALID (finding 58); ./test green; pushed.
+  Last known DEPENDENCY panic dead (rarz ×3 + jpegz ×2). rarz A/B/C reassigned to a
+  dedicated rarz owner agent — HANDS OFF ~/Code/rarz.
 - [x] **rarz dependency crash FIXED** (Einstein FIX-NOW ruling 2026-07-01) — corrupt
   RAR5 filter descriptor → `@enumFromInt(u3)` on `FilterType` (only 4 of 8 values)
   → "invalid enum value" panic (Debug/ReleaseSafe) / silent UB (ReleaseFast) in
