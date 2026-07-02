@@ -58,7 +58,17 @@ Crashers found + fixed (reproduce-first), each committed to `tests/fuzz/corpus/`
   - **secondary finding #2 (shipped WIP + red intermediate commit):** Einstein ACCEPTed
     (tested+green, force-push blocked); flagged to Peter. Process note: build each commit
     before pushing.
-- [ ] **rarz MORNING QUEUE** (Einstein checker report 2026-07-02; rarz master `./test`
+- [ ] **NEXT COMMIT CYCLE — re-bump `.rarz` → `b920d603`** (Einstein 2026-07-02, routine,
+  NOT sweep-blocking). rarz owner-agent landed all 3 fixes (A harness / B fixture / C the
+  real multi-volume split-file CRC bug); rarz yolo `b920d603`, master ./test green in-env +
+  sandboxed checks pass. Action: bump url→b920d603, refetch `.rarz.hash` (`zig fetch`),
+  refresh `zigDepsHash` (fakeHash→nix-reports trick), ./test, commit+push. validate's RAR
+  path was never affected (bug was in rarz's `t` command: authoritative CRC lives in the
+  LAST volume part, was compared against the FIRST). **MFIC lesson (worth internalizing):**
+  producer==checker round-trip tests (writer+verifier same author, same wrong assumption)
+  HID it — now fixed with embedded official-rar fixtures as an INDEPENDENT oracle. HANDS
+  OFF ~/Code/rarz (owner agent's repo).
+- [x] **rarz A/B/C DONE by the dedicated rarz owner agent** (reassigned by Peter 2026-07-02).
   = 6 failed suites, but ALL of tonight's work EXONERATED — my fixes are correct).
   ⚠ Verification-scope lesson: I claimed rarz "green" from `zig build test` +
   validate `./test` but never ran rarz's **master `./test`** (zig units + 10 CLI
