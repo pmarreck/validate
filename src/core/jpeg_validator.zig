@@ -163,7 +163,7 @@ fn findingCodeMessage(code: jpegz.FindingCode) []const u8 {
         .sos_component_mismatch => "JPEG SOS component mismatch",
         .restart_marker_missing => "JPEG missing restart marker",
         .restart_marker_unexpected => "JPEG unexpected restart marker",
-        .dct_coefficient_overflow => "JPEG DCT coefficient overflow",
+        .dct_coefficient_overflow => "JPEG DCT coefficient overflow (corrupt entropy data)",
         .progressive_scan_invalid => "JPEG invalid progressive scan",
 
         // Lossless (T.81 §13)
