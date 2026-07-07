@@ -455,6 +455,13 @@ export fn validate_get_max_memory() u64 {
     return @intCast(core.memory_budget.defaultBudget(@intCast(sys_mem)));
 }
 
+/// Largest file (bytes) coverage can process at `jobs` workers within the
+/// current memory budget (budget / (jobs + 1)). Lets a consumer gate or scale
+/// a coverage run before calling validate_test_coverage. jobs=0 = single worker.
+export fn validate_coverage_max_bytes(jobs: u32) u64 {
+    return test_coverage.coverageMaxBytes(jobs, validate_get_max_memory());
+}
+
 /// Cross-platform getenv that returns null on Windows.
 /// 0.16: std.c.getenv removed; std.c.getenv preserves the borrowed-pointer
 /// semantics (no allocator needed).
@@ -1056,12 +1063,15 @@ export fn validate_test_coverage(
         break :blk early_stop_radius;
     };
 
-    // Determine worker count. 0 = auto (detect CPU count, cap at 16 to keep
-    // thread-startup + cache pressure sane on very-wide hosts).
-    const nworkers: u32 = blk: {
-        const requested = if (jobs == 0) @as(u32, @intCast(std.Thread.getCpuCount() catch 1)) else jobs;
-        break :blk @max(1, @min(requested, 16));
-    };
+    // Determine worker count: memory-proportional — coverage holds ~(jobs+1)
+    // file copies in RAM, so cap by the memory budget, not an arbitrary flat
+    // 16 (which throttled wide hosts). See test_coverage.computeCoverageJobs.
+    const nworkers: u32 = test_coverage.computeCoverageJobs(
+        jobs,
+        @intCast(std.Thread.getCpuCount() catch 1),
+        validate_get_max_memory(),
+        file_size,
+    );
 
     // Shared state merged-result containers. We build a synthesized
     // CoverageResult after workers join so the KV/heatmap code below stays

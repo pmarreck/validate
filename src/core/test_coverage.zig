@@ -1199,3 +1199,57 @@ test "runCoverage tighter early_stop_radius needs more rounds before stopping" {
     defer tight.deinit();
     try testing.expect(tight.rounds > loose.rounds);
 }
+
+// ── Coverage worker sizing (pure; fed CPU count + memory budget by the FFI) ──
+
+/// Largest file (bytes) coverage can process at `jobs` workers within the
+/// memory budget: budget / (jobs + 1). Coverage holds (jobs+1) file copies in
+/// RAM (1 baseline + 1 corrupted copy per worker). Inverse of the memory bound
+/// in computeCoverageJobs — lets a consumer gate/scale before launching.
+/// Exposed via FFI validate_coverage_max_bytes. complexity: O(1)
+pub fn coverageMaxBytes(jobs: u32, mem_budget: u64) u64 {
+    return mem_budget / (@as(u64, jobs) + 1);
+}
+
+/// Safe coverage worker count. Coverage holds ~(jobs+1) copies of the file in
+/// RAM (1 baseline + 1 corrupted copy per worker), so cap workers so
+/// (jobs+1)*file_size stays within the memory budget. Replaces an arbitrary
+/// flat cap-at-16 that throttled wide hosts while still risking OOM on big
+/// files. requested==0 => auto (CPU count is the ceiling). Always >= 1.
+/// complexity: O(1)
+pub fn computeCoverageJobs(requested: u32, cpu_count: u32, mem_budget: u64, file_size: u64) u32 {
+    const want: u32 = if (requested == 0) cpu_count else requested;
+    const ceil: u32 = @max(1, want);
+    if (file_size == 0 or mem_budget == 0) return ceil;
+    const copies_that_fit: u64 = mem_budget / file_size; // includes baseline copy
+    const mem_cap: u32 = if (copies_that_fit <= 1)
+        1
+    else
+        @intCast(@min(copies_that_fit - 1, @as(u64, std.math.maxInt(u32))));
+    return @max(1, @min(ceil, mem_cap));
+}
+
+test "computeCoverageJobs caps by memory budget, not a flat 16" {
+    const MiB = 1024 * 1024;
+    const GiB = 1024 * MiB;
+    try std.testing.expectEqual(@as(u32, 128), computeCoverageJobs(0, 128, 64 * GiB, 100 * MiB));
+    try std.testing.expectEqual(@as(u32, 15), computeCoverageJobs(0, 128, 64 * GiB, 4 * GiB));
+    try std.testing.expectEqual(@as(u32, 15), computeCoverageJobs(64, 128, 64 * GiB, 4 * GiB));
+    try std.testing.expectEqual(@as(u32, 8), computeCoverageJobs(8, 128, 64 * GiB, 100 * MiB));
+    try std.testing.expectEqual(@as(u32, 4), computeCoverageJobs(0, 4, 64 * GiB, 1 * MiB));
+    try std.testing.expectEqual(@as(u32, 1), computeCoverageJobs(0, 128, 1 * GiB, 4 * GiB));
+    try std.testing.expectEqual(@as(u32, 8), computeCoverageJobs(8, 128, 64 * GiB, 0));
+}
+
+test "coverageMaxBytes is the inverse memory bound" {
+    const MiB = 1024 * 1024;
+    const GiB = 1024 * MiB;
+    try std.testing.expectEqual(@as(u64, 4 * GiB), coverageMaxBytes(15, 64 * GiB));
+    try std.testing.expectEqual(@as(u64, 64 * GiB), coverageMaxBytes(0, 64 * GiB));
+    var n: u32 = 1;
+    while (n <= 64) : (n += 1) {
+        const mb = coverageMaxBytes(n, 64 * GiB);
+        try std.testing.expect((@as(u64, n) + 1) * mb <= 64 * GiB);
+        try std.testing.expect(computeCoverageJobs(0, 256, 64 * GiB, mb) >= n);
+    }
+}

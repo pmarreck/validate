@@ -237,6 +237,10 @@ void validate_set_max_memory(uint64_t bytes);
  */
 uint64_t validate_get_max_memory(void);
 
+/* Largest file (bytes) coverage can process at `jobs` workers within the
+ * current memory budget. Gate/scale before validate_test_coverage. */
+uint64_t validate_coverage_max_bytes(uint32_t jobs);
+
 /**
  * Snapshot of the active memory-budget state. Populated by
  * validate_get_memory_usage() while a batch is running. All sizes are
