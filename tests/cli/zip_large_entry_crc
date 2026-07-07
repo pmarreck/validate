@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Regression gate: a large zip entry (over the old 512 MiB MAX_ZIP_ENTRY_SIZE)
+# must still be CRC-verified — corruption in it must be DETECTED, never reported
+# "fully validated". Reproduces the validate_gui field report (1.4 GB movie zip:
+# 0/60 coverage yet depth:"fully validated"). Fix = always stream-CRC every
+# entry (no per-entry size ceiling); stored entries already stream in 64 KB
+# chunks, so this is memory-safe regardless of entry size.
+#
+# Independent oracle: the ZIP's own stored CRC-32 vs the decompressed bytes —
+# authorship-independent (the zip tool wrote the CRC; we recompute it).
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VALIDATE_BIN="${VALIDATE_BIN:-$PROJECT_ROOT/zig-out/bin/validate}"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == win32 ]]; then
+	VALIDATE_BIN="$PROJECT_ROOT/zig-out/bin/validate.exe"
+fi
+# The runner may pass a relative VALIDATE_BIN (e.g. ./zig-out/bin/validate); we
+# cd into a temp dir below, so resolve it to an absolute path first.
+case "$VALIDATE_BIN" in
+	/*) ;;
+	*) VALIDATE_BIN="$(cd "$(dirname "$VALIDATE_BIN")" && pwd)/$(basename "$VALIDATE_BIN")" ;;
+esac
+
+# `zip` is TOOLING that flake.nix (checks.test nativeBuildInputs) is designed to
+# provide. A missing tool is a misconfiguration, not a legitimately-absent fixture
+# — so FAIL LOUD (exit 1), never skip. (exit 77 / skip is reserved for optional
+# ground-truth fixtures via _lib.sh, which this test does not use — it self-generates.)
+if ! command -v zip >/dev/null 2>&1; then
+	echo "FAIL: 'zip' not on PATH — flake.nix must provide it (checks.test nativeBuildInputs). Fix the flake; do not skip." >&2
+	exit 1
+fi
+zipcmd() { zip "$@"; }
+
+W="$(mktemp -d "${TMPDIR:-/tmp}/zip_large_crc.XXXXXX")"
+trap 'rm -rf "$W"' EXIT
+cd "$W"
+
+# 513 MiB stored entry — just over the old 512 MiB ceiling.
+SZ=$(( 513 * 1024 * 1024 ))
+head -c "$SZ" /dev/zero | tr '\0' 'A' > big.bin
+zipcmd -0 -q big.zip big.bin || { echo "FAIL: could not create test zip" >&2; exit 1; }
+
+failures=0
+
+# Clean large zip → valid:true
+out=$("$VALIDATE_BIN" --ndjson big.zip 2>/dev/null); rc=$?
+if [[ $rc -eq 0 ]] && printf '%s' "$out" | grep -q '"valid":true'; then
+	echo "PASS: clean 513 MiB zip → valid:true"
+else
+	echo "FAIL: clean 513 MiB zip expected valid:true/rc0; got rc=$rc :: $(printf '%s' "$out" | grep -v '^#')"
+	failures=$((failures + 1))
+fi
+
+# Corrupt a payload byte deep inside the large stored entry (~100 MiB in).
+cp big.zip big_corrupt.zip
+off=$(( 100 * 1024 * 1024 ))
+orig=$(dd if=big_corrupt.zip bs=1 skip=$off count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+new=$(( orig ^ 0xFF ))
+printf "$(printf '\\%03o' "$new")" | dd of=big_corrupt.zip bs=1 seek=$off count=1 conv=notrunc 2>/dev/null
+
+# Corrupt large zip → MUST be detected (valid:false). This is the bug: the entry
+# was skipped for exceeding 512 MiB and the archive claimed "fully validated".
+out=$("$VALIDATE_BIN" --ndjson big_corrupt.zip 2>/dev/null); rc=$?
+if [[ $rc -ne 0 ]] && printf '%s' "$out" | grep -q '"valid":false'; then
+	echo "PASS: corrupt 513 MiB zip DETECTED (valid:false)"
+else
+	echo "FAIL: corrupt 513 MiB zip NOT detected — reported $(printf '%s' "$out" | grep -v '^#')"
+	failures=$((failures + 1))
+fi
+
+if [[ $failures -eq 0 ]]; then
+	echo "=== large-zip CRC gate passed ==="
+	exit 0
+fi
+exit 1

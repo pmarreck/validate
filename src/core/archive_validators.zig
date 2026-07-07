@@ -1866,27 +1866,28 @@ pub fn validateZipDeepWithCentralDirectory(
             continue;
         }
 
-        if (entry.uncompressed_size > format_validation.MAX_ZIP_ENTRY_SIZE) {
-            cdir_pos = next_cdir_pos;
-            continue;
-        }
-
-        if (entry.compressed_size > @as(u64, std.math.maxInt(u32)) or entry.uncompressed_size > @as(u64, std.math.maxInt(u32))) {
-            cdir_pos = next_cdir_pos;
-            continue;
-        }
-
-        const compressed_u32: u32 = @intCast(entry.compressed_size);
-        const uncompressed_u32: u32 = @intCast(entry.uncompressed_size);
-
         switch (@as(ZipCompressionMethod, @enumFromInt(entry.compression_method))) {
             .store => {
-                const result = validateZipStoredEntry(file, entry.crc32, compressed_u32);
+                // Always stream-CRC stored entries regardless of size. The CRC is
+                // computed in 64 KB chunks (O(1) memory), so a 1.4 GB movie entry is
+                // as cheap to verify as a tiny one. The old MAX_ZIP_ENTRY_SIZE gate
+                // silently skipped big entries yet still reported "fully validated",
+                // making their corruption invisible (a false pass).
+                const result = validateZipStoredEntry(file, entry.crc32, entry.compressed_size);
                 if (!result.is_valid) {
                     return ValidationResult.invalidWithDepth(format, result.error_message orelse "CRC mismatch", .full);
                 }
             },
             .deflate => {
+                // Deflate still uses a one-shot inflate bounded to u32 sizes; ZIP64
+                // (> 4 GiB) deflate stream-inflate lands in the follow-up. Sub-u32
+                // large deflate entries are handled inside validateZipDeflatedEntry.
+                if (entry.compressed_size > @as(u64, std.math.maxInt(u32)) or entry.uncompressed_size > @as(u64, std.math.maxInt(u32))) {
+                    cdir_pos = next_cdir_pos;
+                    continue;
+                }
+                const compressed_u32: u32 = @intCast(entry.compressed_size);
+                const uncompressed_u32: u32 = @intCast(entry.uncompressed_size);
                 const result = validateZipDeflatedEntry(allocator, file, entry.crc32, compressed_u32, uncompressed_u32);
                 if (!result.is_valid) {
                     return ValidationResult.invalidWithDepth(format, result.error_message orelse "Deflate CRC mismatch", .full);
@@ -2210,16 +2211,16 @@ pub fn validateZipDeep(allocator: Allocator, source: *FileSource) ValidationResu
 }
 
 /// Validate a stored (uncompressed) ZIP entry by computing CRC-32.
-pub fn validateZipStoredEntry(file: *FileSource, stored_crc: u32, size: u32) ValidationResult {
+pub fn validateZipStoredEntry(file: *FileSource, stored_crc: u32, size: u64) ValidationResult {
     var crc = std.hash.Crc32.init();
-    var remaining: u32 = size;
+    var remaining: u64 = size;
     const read_buffer = heap.validateAllocator().alloc(u8, 65536) catch {
         return ValidationResult.invalidCode(.zip, .failed_to_read, "entry data");
     };
     defer heap.validateAllocator().free(read_buffer);
 
     while (remaining > 0) {
-        const to_read = @min(remaining, read_buffer.len);
+        const to_read: usize = @intCast(@min(remaining, @as(u64, read_buffer.len)));
         const bytes_read = file.read(read_buffer[0..to_read]) catch |err| {
             if (err == error.EndOfStream) {
                 return ValidationResult.invalid(.zip, "Unexpected EOF in entry data");
@@ -2230,7 +2231,7 @@ pub fn validateZipStoredEntry(file: *FileSource, stored_crc: u32, size: u32) Val
             return ValidationResult.invalid(.zip, "Unexpected EOF in entry data");
         }
         crc.update(read_buffer[0..bytes_read]);
-        remaining -= @as(u32, @intCast(bytes_read));
+        remaining -= @as(u64, @intCast(bytes_read));
     }
 
     const computed_crc = crc.final();

@@ -272,7 +272,7 @@
 						version = "0.1.0";
 						src = ./.;
 
-						nativeBuildInputs = with pkgs; [ zig ffmpeg coreutils ]
+						nativeBuildInputs = with pkgs; [ zig ffmpeg coreutils zip ]
 							++ pkgs.lib.optionals isDarwin [
 								darwin.cctools
 								# macOS SDK for system frameworks
@@ -448,6 +448,7 @@
 							sqlite
 							zlib
 							ffmpeg  # For testing ffmpeg fallback validation paths
+							zip  # For the large-zip CRC gate (tests/cli/zip_large_entry_crc)
 						] ++ pkgs.lib.optionals isDarwin [
 							xcodegen
 							# macOS SDK for system frameworks
