@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# MFIC differential gate for keyframe-segment-parallel VP9 decode.
+#
+# The vp9_multikf fixture has 7 keyframes / 100 frames, so it crosses the
+# parallel-path thresholds (>= 4 segments, >= 64 frames) and is decoded by
+# splitting at keyframes and fanning segments across cores. Segment-parallel
+# MUST produce the identical verdict to a sequential decode:
+#   - a bad keyframe split (a segment starting mid-GOP) would make libvpx fail
+#     to decode a clean file → clean would flip to INVALID (false positive);
+#   - a missed corruption in a parallel segment → corrupt would flip to VALID.
+# Independent oracle: libvpx's own decode result / VP8D_GET_FRAME_CORRUPTED flag.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VALIDATE_BIN="${VALIDATE_BIN:-$PROJECT_ROOT/zig-out/bin/validate}"
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == win32 ]]; then
+	VALIDATE_BIN="$PROJECT_ROOT/zig-out/bin/validate.exe"
+fi
+case "$VALIDATE_BIN" in
+	/*) ;;
+	*) VALIDATE_BIN="$(cd "$(dirname "$VALIDATE_BIN")" && pwd)/$(basename "$VALIDATE_BIN")" ;;
+esac
+
+FIX="$PROJECT_ROOT/tests/fixtures/vp9"
+CLEAN="$FIX/vp9_multikf.webm"
+CORRUPT="$FIX/vp9_multikf_corrupt.webm"
+# These are committed fixtures the repo provides; a miss is a real defect → FAIL.
+for p in "$CLEAN" "$CORRUPT"; do
+	if [[ ! -f "$p" ]]; then
+		echo "FAIL: missing committed fixture $p" >&2
+		exit 1
+	fi
+done
+
+failures=0
+
+out=$("$VALIDATE_BIN" --ndjson "$CLEAN" 2>/dev/null); rc=$?
+if [[ $rc -eq 0 ]] && printf '%s' "$out" | grep -q '"valid":true'; then
+	echo "PASS: multi-keyframe VP9 (parallel path) → valid"
+else
+	echo "FAIL: multikf expected valid:true/rc0; got rc=$rc :: $out"
+	failures=$((failures + 1))
+fi
+
+out=$("$VALIDATE_BIN" --ndjson "$CORRUPT" 2>/dev/null); rc=$?
+if [[ $rc -ne 0 ]] && printf '%s' "$out" | grep -q '"valid":false'; then
+	echo "PASS: corrupt multi-keyframe VP9 DETECTED (parallel path)"
+else
+	echo "FAIL: corrupt multikf expected valid:false; got rc=$rc :: $out"
+	failures=$((failures + 1))
+fi
+
+if [[ $failures -eq 0 ]]; then
+	echo "=== VP9 parallel-decode differential gate passed ==="
+	exit 0
+fi
+exit 1

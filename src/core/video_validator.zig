@@ -868,7 +868,7 @@ pub fn validateMkvVideo(allocator: Allocator, source: *FileSource, max_frames: u
             .vp9 => .vp9,
             else => unreachable,
         };
-        const result = vpx_decode.validateFrames(vpx_codec, frame_slices);
+        const result = vpx_decode.validateFramesParallel(allocator, vpx_codec, frame_slices);
         if (!result.valid) {
             return VideoValidationResult.invalid(
                 result.error_message orelse "libvpx decode failed",

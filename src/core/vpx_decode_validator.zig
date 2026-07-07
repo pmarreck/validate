@@ -76,6 +76,15 @@ fn vpxErrString(err: c_int) []const u8 {
 /// VP9 superframes, libvpx handles the index internally so a whole
 /// superframe chunk works fine as one call).
 pub fn validateFrames(codec: VpxCodec, frames: []const []const u8) VpxDecodeResult {
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    return validateFramesWithThreads(codec, frames, @intCast(@min(cpu_count, 8)));
+}
+
+/// Core decode: feed every frame through one libvpx decoder using `threads`
+/// internal worker threads. The segment-parallel path calls this with threads=1
+/// (segment-level parallelism fills the cores); the plain sequential path uses a
+/// modest internal count.
+pub fn validateFramesWithThreads(codec: VpxCodec, frames: []const []const u8, threads: u32) VpxDecodeResult {
     if (frames.len == 0) {
         return VpxDecodeResult.invalid("No frames to decode", 0, 0);
     }
@@ -97,13 +106,7 @@ pub fn validateFrames(codec: VpxCodec, frames: []const []const u8) VpxDecodeResu
     };
 
     var cfg: vpx_c.vpx_codec_dec_cfg_t = std.mem.zeroes(vpx_c.vpx_codec_dec_cfg_t);
-    // Decode across cores. With CONFIG_MULTITHREAD=1, libvpx runs the loop filter
-    // on a worker thread and parallelizes tile columns; the useful thread count is
-    // stream-bounded, so cap it (beyond ~8 gives diminishing returns for a single
-    // stream while each worker allocates frame buffers). File-level parallelism
-    // (many files at once) is handled by the caller's worker pool.
-    const cpu_count = std.Thread.getCpuCount() catch 1;
-    cfg.threads = @intCast(@min(cpu_count, 8));
+    cfg.threads = threads;
 
     var ctx: vpx_c.vpx_codec_ctx_t = std.mem.zeroes(vpx_c.vpx_codec_ctx_t);
     // Use the _ver entry point directly so we don't depend on the
@@ -167,6 +170,150 @@ pub fn validateFrames(codec: VpxCodec, frames: []const []const u8) VpxDecodeResu
     }
 
     return VpxDecodeResult.ok(decoded);
+}
+
+// ---- Keyframe-segment-parallel decode ----------------------------------------
+
+/// MSB-first bit reader over a byte slice (VP9 uncompressed-header parsing).
+const BitReader = struct {
+    data: []const u8,
+    byte: usize = 0,
+    bit: u3 = 0,
+
+    fn read(self: *BitReader, n: u4) u32 {
+        var v: u32 = 0;
+        var i: u4 = 0;
+        while (i < n) : (i += 1) {
+            if (self.byte < self.data.len) {
+                const shift: u3 = 7 - self.bit;
+                const b: u32 = (self.data[self.byte] >> shift) & 1;
+                v = (v << 1) | b;
+            } else {
+                v <<= 1; // past end → read as 0
+            }
+            if (self.bit == 7) {
+                self.bit = 0;
+                self.byte += 1;
+            } else {
+                self.bit += 1;
+            }
+        }
+        return v;
+    }
+};
+
+/// True if `frame` begins a keyframe — a resync point that resets all references,
+/// so the following inter frames only reference within its GOP. Splitting the
+/// stream at keyframes yields independently-decodable segments.
+fn isKeyframe(codec: VpxCodec, frame: []const u8) bool {
+    if (frame.len < 3) return false;
+    switch (codec) {
+        // VP8 frame tag (24-bit LE); bit 0 of byte 0 == 0 → key frame.
+        .vp8 => return (frame[0] & 0x01) == 0,
+        // VP9 uncompressed header: frame_marker(2)=2, profile bits (+reserved if
+        // profile 3), show_existing_frame(1) (a repeat, not a key frame), then
+        // frame_type(1): 0 = KEY_FRAME.
+        .vp9 => {
+            var br = BitReader{ .data = frame };
+            if (br.read(2) != 2) return false;
+            const p_low = br.read(1);
+            const p_high = br.read(1);
+            if (((p_high << 1) | p_low) == 3) _ = br.read(1); // reserved_zero
+            if (br.read(1) == 1) return false; // show_existing_frame
+            return br.read(1) == 0; // frame_type == KEY_FRAME
+        },
+    }
+}
+
+const SegCtx = struct {
+    codec: VpxCodec,
+    frames: []const []const u8,
+    bounds: []const usize, // segment i = frames[bounds[i]..bounds[i+1]]
+    next: std.atomic.Value(usize),
+    results: []VpxDecodeResult,
+};
+
+/// Worker: pull segment indices off the shared counter and decode each with a
+/// single-threaded libvpx instance (segment-level parallelism fills the cores).
+fn segWorker(ctx: *SegCtx) void {
+    while (true) {
+        const i = ctx.next.fetchAdd(1, .monotonic);
+        if (i >= ctx.results.len) break;
+        const seg = ctx.frames[ctx.bounds[i]..ctx.bounds[i + 1]];
+        ctx.results[i] = validateFramesWithThreads(ctx.codec, seg, 1);
+    }
+}
+
+/// Validate a VP8/VP9 stream by decoding keyframe-delimited segments in parallel
+/// across cores. Every frame is still fully decoded and corruption-checked — the
+/// work is merely partitioned. The verdict is identical to a sequential decode:
+/// keyframes reset all references, so each segment is independently decodable,
+/// and any segment's corruption fails the whole stream. Falls back to sequential
+/// for short streams, a single segment, or on any allocation/spawn failure.
+pub fn validateFramesParallel(
+    allocator: std.mem.Allocator,
+    codec: VpxCodec,
+    frames: []const []const u8,
+) VpxDecodeResult {
+    if (frames.len == 0) return VpxDecodeResult.invalid("No frames to decode", 0, 0);
+
+    var bounds: std.ArrayListUnmanaged(usize) = .empty;
+    defer bounds.deinit(allocator);
+    bounds.append(allocator, 0) catch return validateFrames(codec, frames);
+    for (frames, 0..) |f, i| {
+        if (i == 0) continue;
+        if (isKeyframe(codec, f)) {
+            bounds.append(allocator, i) catch return validateFrames(codec, frames);
+        }
+    }
+    bounds.append(allocator, frames.len) catch return validateFrames(codec, frames);
+    const num_segs = bounds.items.len - 1;
+
+    // With only a few segments, 1-thread-per-segment loses to internal libvpx
+    // threading over the whole stream (uneven segment sizes stall on the largest),
+    // so fall back there; segment-parallel wins once there are enough segments to
+    // fill the cores. Short streams likewise aren't worth the fan-out.
+    const min_frames_for_parallel = 64;
+    const min_segments_for_parallel = 4;
+    if (num_segs < min_segments_for_parallel or frames.len < min_frames_for_parallel) {
+        return validateFrames(codec, frames);
+    }
+
+    const cpu = std.Thread.getCpuCount() catch 1;
+    // Bound by segment count and a memory ceiling (each decoder allocs frame buffers).
+    const n_threads = @min(@min(cpu, num_segs), 64);
+
+    const results = allocator.alloc(VpxDecodeResult, num_segs) catch return validateFrames(codec, frames);
+    defer allocator.free(results);
+
+    var ctx = SegCtx{
+        .codec = codec,
+        .frames = frames,
+        .bounds = bounds.items,
+        .next = std.atomic.Value(usize).init(0),
+        .results = results,
+    };
+
+    const threads = allocator.alloc(std.Thread, n_threads) catch return validateFrames(codec, frames);
+    defer allocator.free(threads);
+    var spawned: usize = 0;
+    for (threads) |*t| {
+        t.* = std.Thread.spawn(.{}, segWorker, .{&ctx}) catch break;
+        spawned += 1;
+    }
+    // The calling thread participates too (progress even if no worker spawned).
+    segWorker(&ctx);
+    for (threads[0..spawned]) |t| t.join();
+
+    // Aggregate: lowest-index failing segment wins; sum decoded frame counts.
+    var total: u32 = 0;
+    for (results) |r| {
+        if (!r.valid) {
+            return VpxDecodeResult.invalid(r.error_message orelse "VP9 segment decode failed", total, r.vpx_errno);
+        }
+        total +|= r.frames_decoded;
+    }
+    return VpxDecodeResult.ok(total);
 }
 
 // ============ Tests ============
