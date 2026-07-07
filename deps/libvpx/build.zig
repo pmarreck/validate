@@ -70,6 +70,7 @@ pub fn build(b: *std.Build) void {
 		"vp8/decoder/decodemv.c",
 		"vp8/decoder/detokenize.c",
 		"vp8/decoder/onyxd_if.c",
+		"vp8/decoder/threading.c", // multithreaded VP8 decode (CONFIG_MULTITHREAD=1)
 		"vp8/vp8_dx_iface.c",
 		// vp9 common
 		"vp9/common/vp9_alloccommon.c",

@@ -97,7 +97,13 @@ pub fn validateFrames(codec: VpxCodec, frames: []const []const u8) VpxDecodeResu
     };
 
     var cfg: vpx_c.vpx_codec_dec_cfg_t = std.mem.zeroes(vpx_c.vpx_codec_dec_cfg_t);
-    cfg.threads = 1;
+    // Decode across cores. With CONFIG_MULTITHREAD=1, libvpx runs the loop filter
+    // on a worker thread and parallelizes tile columns; the useful thread count is
+    // stream-bounded, so cap it (beyond ~8 gives diminishing returns for a single
+    // stream while each worker allocates frame buffers). File-level parallelism
+    // (many files at once) is handled by the caller's worker pool.
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    cfg.threads = @intCast(@min(cpu_count, 8));
 
     var ctx: vpx_c.vpx_codec_ctx_t = std.mem.zeroes(vpx_c.vpx_codec_ctx_t);
     // Use the _ver entry point directly so we don't depend on the
