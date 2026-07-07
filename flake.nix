@@ -206,6 +206,9 @@
 					# Only cross-compile for targets without native Garnix builders
 					# Linux x86_64/aarch64 are built natively by Garnix on those platforms
 					windows-x86_64 = mkValidate { targetSystem = "x86_64-windows"; cross = true; };
+					# aarch64-linux CROSS output (Garnix retiring → Thelio x86_64 is THE build
+					# machine; aarch64-linux must cross-compile here, no native ARM builder).
+					linux-aarch64 = mkValidate { targetSystem = "aarch64-linux"; cross = true; };
 					# NOTE: windows-aarch64 is intentionally NOT built — blocked by an
 					# UPSTREAM nixpkgs bug. pkgsCross.ucrtAarch64's compiler-rt builds its
 					# standalone libatomic with -DCOMPILER_RT_LIBATOMIC_USE_PTHREAD, so
