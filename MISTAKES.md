@@ -162,3 +162,19 @@ before the tail aborted — I got lucky. **Lesson:** never edit a script (or any
 file) that a running process is reading. Wait for it to finish, copy it to a
 new path and edit the copy, or stop the process first. The on-disk file being
 valid does NOT mean a mid-flight interpreter is reading valid bytes.
+
+## 2026-07-07 — Dispatched a port agent on an unverified "which decoder" claim
+An analysis subagent reported validate's `validateTiffDeep` "decodes TIFF via
+zigimg" and lacked CCITT-G4. I dispatched a second agent to port a G4 decoder
+into zigimg (branch `tiff-ccitt-g4`, ~17 min) BEFORE verifying the claim.
+Reality: `validateTiffDeep` → `tiffz_shim.validateTiffDeepBuffer` → **tiffz**
+(zigimg is used only for BMP V4/V5, `bmp_decoder.zig` — the sole
+`zigimg.Image.fromMemory` call). validate's pinned tiffz (9a2c18e, 2026-07-02)
+already has `src/compressions/ccitt_t6.zig` (16.7 KB, more complete than the
+263-line zigimg port) wired via `compression_ccitt_t6 = 4`. The zigimg bump was
+a no-op for validate.
+**Lesson:** before dispatching implementation work that hinges on "component X
+uses library Y", VERIFY the actual call path (grep the dispatch, don't trust a
+subagent's one-line characterization). A 30-second `rg`/codescan on
+`validateTiffDeep` would have caught it. The zigimg branch remains a valid
+upstream contribution to Peter's fork, just irrelevant to validate.
