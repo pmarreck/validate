@@ -93,8 +93,8 @@
             .hash = "bzip2z-0.1.0-m5NdlsYYCACrnvOCZyqsVmJYY84BRf1XPFi08RfbnWPW",
         },
         .zstdz = .{
-            .url = "https://github.com/pmarreck/zstdz/archive/f5a61699f1958c7bc152a417ff86336a6efa4689.tar.gz",
-            .hash = "zstdz-1.6.0-yDWjziFdNAAbdfO9bwVKQyiOTmFFNnuIVlFD00msI-t3",
+            .url = "https://github.com/pmarreck/zstdz/archive/46a916ab3bb24c2298f1559a1b36691caab53ffa.tar.gz",
+            .hash = "zstdz-1.6.0-yDWjzjJvNADuXVquo1ire6azJM7pPcP-DIqOXWGsLr6G",
         },
         .par2z = .{
             .url = "https://github.com/pmarreck/par2z/archive/6c97a8e7d60067f81001afe7634836c2cb2c10ab.tar.gz",
