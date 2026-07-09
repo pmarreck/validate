@@ -2,7 +2,10 @@
 	description = "Validate - Deterministic file format validation";
 
 	inputs = {
-		nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+		# Temporary pin for NixOS/nixpkgs#539430: fixes pkgsCross.ucrtAarch64
+		# compiler-rt/libatomic bootstrap. Revert to
+		# github:NixOS/nixpkgs/nixpkgs-unstable after the fix reaches unstable.
+		nixpkgs.url = "github:pmarreck/nixpkgs/a7a4d71bff5de2da3924b6893ed95dbf4ac1e7aa";
 	};
 
 	outputs = { self, nixpkgs }:
@@ -29,7 +32,7 @@
 
 			# Pre-fetched Zig dependencies (fixed-output derivation)
 			# This hash must be updated when build.zig.zon changes
-			zigDepsHash = "sha256-C1o+I+5shI/8pWFl9cYsenUSZUQ9dJDUc/TTJaGndvg=";
+			zigDepsHash = "sha256-kuybHWyHdhbF2bxSiexE+gSnRWbyHJsMwpAJLsuEVFs=";
 		in {
 			# Packages for Garnix/Nix builds
 			packages = forBuildSystems (buildSystem:
@@ -209,16 +212,7 @@
 					# aarch64-linux CROSS output (Garnix retiring → Thelio x86_64 is THE build
 					# machine; aarch64-linux must cross-compile here, no native ARM builder).
 					linux-aarch64 = mkValidate { targetSystem = "aarch64-linux"; cross = true; };
-					# NOTE: windows-aarch64 is intentionally NOT built — blocked by an
-					# UPSTREAM nixpkgs bug. pkgsCross.ucrtAarch64's compiler-rt builds its
-					# standalone libatomic with -DCOMPILER_RT_LIBATOMIC_USE_PTHREAD, so
-					# compiler-rt/lib/builtins/atomic.c does `#include <pthread.h>`, which the
-					# bare aarch64-w64-mingw32 cross sysroot lacks at that bootstrap stage
-					# ("fatal error: 'pthread.h' file not found"). Reproduced on nixpkgs-unstable
-					# 8a1b0127 AND 3e41b24a (compiler-rt 21.1.8); a top-level compiler-rt overlay
-					# does NOT reach the cross llvmPackages fixpoint. x86_64-windows is full-parity
-					# and unaffected. Re-add when nixpkgs fixes the aarch64-mingw compiler-rt
-					# libatomic config. See validate #64 + NixOS/nixpkgs#534236.
+					windows-aarch64 = mkValidate { targetSystem = "aarch64-windows"; cross = true; };
 					# NOTE: macos-aarch64 is intentionally NOT cross-built from Linux.
 					# Garnix builds it NATIVELY (the green `macos-aarch64` check), which is
 					# the supported path; cross-compiling a Darwin target from Linux drags
@@ -437,8 +431,14 @@
 					default = pkgs.mkShell {
 						packages = with pkgs; [
 							zig
+							bash
+							coreutils
 							git
 							ripgrep
+							brotli
+							luajit
+							tmux
+							qpdf
 							pcre2Static
 							pcre2Static.dev
 							libjpegStatic

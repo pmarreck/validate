@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+result_dir="${1:-result}"
+out_dir="${2:-zig-out/bin}"
+shift $(( $# > 0 ? 1 : 0 ))
+shift $(( $# > 0 ? 1 : 0 ))
+
+if [[ ! -d "$result_dir/bin" ]]; then
+	echo "sync-nix-result-to-zig-out: missing $result_dir/bin" >&2
+	exit 1
+fi
+
+mkdir -p "$out_dir"
+
+sources=()
+if [[ "$#" -gt 0 ]]; then
+	for name in "$@"; do
+		sources+=("$result_dir/bin/$name")
+	done
+else
+	shopt -s nullglob
+	sources=("$result_dir"/bin/*)
+	shopt -u nullglob
+fi
+
+if [[ "${#sources[@]}" -eq 0 ]]; then
+	echo "sync-nix-result-to-zig-out: no binaries in $result_dir/bin" >&2
+	exit 1
+fi
+
+for src in "${sources[@]}"; do
+	if [[ ! -e "$src" ]]; then
+		echo "sync-nix-result-to-zig-out: missing $src" >&2
+		exit 1
+	fi
+	name="${src##*/}"
+	tmp="$out_dir/.$name.tmp.$$"
+	cp -fL "$src" "$tmp"
+	chmod 755 "$tmp"
+	mv -f "$tmp" "$out_dir/$name"
+	echo "  -> $out_dir/$name"
+done

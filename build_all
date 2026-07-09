@@ -37,7 +37,7 @@ echo "=== Pre-build hashes ==="
 declare -A PRE_HASHES
 for p in "${all_paths[@]}"; do
 	if [[ -f "$p" ]]; then
-		hash=$(shasum -a 256 "$p" | awk '{print $1}')
+		hash=$(sha256sum "$p" | awk '{print $1}')
 		PRE_HASHES["$p"]="$hash"
 		echo "  $hash  $p"
 	else
@@ -56,11 +56,9 @@ fi
 # Step B: Build native via nix build
 echo "=== Building native ==="
 nix build || { echo "Native build failed."; exit 1; }
-mkdir -p zig-out/bin
-cp -f result/bin/$EXEC_NAME zig-out/bin/$EXEC_NAME
+"$SCRIPT_DIR/scripts/sync-nix-result-to-zig-out" result zig-out/bin "$EXEC_NAME"
 # Bundle the third-party license notices alongside the binary (required for redistribution).
 mkdir -p zig-out/share && cp -rf result/share/licenses zig-out/share/ 2>/dev/null || true
-echo "  -> zig-out/bin/$EXEC_NAME"
 
 # Cross-compile targets via nix build flake outputs.
 # The flake defines cross-compile packages built from x86_64-linux.
@@ -112,10 +110,9 @@ for dir_name in $(echo "${!CROSS_ATTRS[@]} ${!NATIVE_ATTRS[@]}" | tr ' ' '\n' | 
 	echo "=== Building: $dir_name (nix build .#$attr) ==="
 	mkdir -p "$out_dir"
 	if nix build ".#$attr" -o "result-$dir_name" 2>&1; then
-		cp "result-$dir_name/bin/$exec_name" "$out_dir/$exec_name"
+		"$SCRIPT_DIR/scripts/sync-nix-result-to-zig-out" "result-$dir_name" "$out_dir" "$exec_name"
 		cp -rf "result-$dir_name/share/licenses" "zig-out/$dir_name/share/" 2>/dev/null || mkdir -p "zig-out/$dir_name/share" && cp -rf "result-$dir_name/share/licenses" "zig-out/$dir_name/share/" 2>/dev/null || true
 		rm -f "result-$dir_name"
-		echo "  -> $out_dir/$exec_name"
 	else
 		rm -f "result-$dir_name"
 		echo "  SKIPPED: $dir_name (no builder available — CI will handle this)"
@@ -137,7 +134,7 @@ echo "=== Post-build hashes ==="
 any_changed=0
 for p in "${all_paths[@]}"; do
 	if [[ -f "$p" ]]; then
-		hash=$(shasum -a 256 "$p" | awk '{print $1}')
+		hash=$(sha256sum "$p" | awk '{print $1}')
 		pre="${PRE_HASHES["$p"]}"
 		if [[ "$pre" == "(not found)" ]]; then
 			echo "  NEW       $hash  $p"

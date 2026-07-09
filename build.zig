@@ -311,7 +311,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = deps_optimize,
     });
-    const z7z_lib = z7z_dep.artifact("libz7z");
+    const z7z_mod = z7z_dep.module("z7z");
 
     // rarz for in-memory RAR validation (clean-room Zig implementation)
     const rarz_dep = b.dependency("rarz", .{
@@ -410,6 +410,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "rarz", .module = rarz_mod }, // RAR clean-room parser/validator
             .{ .name = "bzip2z", .module = bzip2z_mod }, // bzip2 clean-room decoder/encoder
             .{ .name = "zstd", .module = zstdz_mod }, // zstd via zstdz (Peter-controlled fork of Facebook BSD zstd)
+            .{ .name = "z7z", .module = z7z_mod }, // 7-Zip clean-room Zig verifier
             .{ .name = "par2_core", .module = par2z_core_mod }, // PAR2 packet parser via par2z
             .{ .name = "progrez", .module = progrez_module }, // Progress bar rendering (pure-Zig)
             .{ .name = "mini_blar", .module = mini_blar_mod }, // BLIP archive reader/verifier
@@ -479,9 +480,6 @@ pub fn build(b: *std.Build) void {
     // Add libraw include path (for camera RAW validation)
     core_mod.addIncludePath(libraw_lib.getEmittedIncludeTree());
 
-    // Add z7z include path (for sevenz_validator.zig @cImport)
-    core_mod.addIncludePath(z7z_dep.path("include"));
-
     // Add compact_pro C FFI headers
     core_mod.addIncludePath(compact_pro_dep.path("include"));
 
@@ -524,7 +522,6 @@ pub fn build(b: *std.Build) void {
         libopenmpt_lib, // tracker format (MOD/XM/IT/S3M) deep validation
         cj5_lib,       // JSON5 validation (C library)
         libraw_lib,    // camera RAW format validation (LGPL-2.1)
-        z7z_lib,       // 7-Zip archive deep validation (z7z cleanroom)
         compact_pro_lib, // Compact Pro archive validation
         uchardetz_lib,   // Mozilla uchardet — charset detection for plain-text validators
     };
@@ -583,7 +580,6 @@ pub fn build(b: *std.Build) void {
             libopenmpt_lib.getEmittedBin(),
             cj5_lib.getEmittedBin(),
             compact_pro_lib.getEmittedBin(),
-            z7z_lib.getEmittedBin(),
             sqlite3_lib.getEmittedBin(),
             libraw_lib.getEmittedBin(),
         };

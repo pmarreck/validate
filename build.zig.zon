@@ -81,8 +81,8 @@
             .hash = "libraw-0.21.4-c166SQR6AADQHFPUvMe5mMpjqLf6XAFFu5x9N1KjGSN8",
         },
         .z7z = .{
-            .url = "git+https://github.com/pmarreck/z7z#91fa1d3ddeede630decf33d16b3602dacde04674",
-            .hash = "z7z-0.1.0-rkKuF6vKBgBABoiu3SBYBwKgjVARX7AK9OId3azwZAle",
+            .url = "git+https://github.com/pmarreck/z7z#f4a9a1b55e4480eab90638d9398558448cec937c",
+            .hash = "z7z-0.1.0-rkKuF9tyBwD1lyoZDPebBcQ8VM9hUEtwAycyIA0Nueyk",
         },
         .rarz = .{
             .url = "https://github.com/pmarreck/rarz/archive/a29b2b3b071fca30e7955b966bcb2d6551e6acfd.tar.gz",

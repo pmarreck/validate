@@ -1,17 +1,12 @@
 //! Deep 7-Zip validation module.
 //!
-//! Validates 7z archives by opening them with z7z (cleanroom LZMA2 decoder)
-//! and iterating every file entry to verify decompression + CRC integrity.
-//! No external executable dependency — uses linked z7z static library.
+//! Validates 7z archives with z7z's Zig-native verifier.
+//! No external executable dependency.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const errmsg = @import("error_messages.zig");
-
-// z7z C FFI
-const c = @cImport({
-	@cInclude("z7z.h");
-});
+const z7z = @import("z7z");
 
 /// Result of 7z deep validation
 pub const SevenZValidationResult = struct {
@@ -92,18 +87,26 @@ pub fn parseStartHeader(data: []const u8) ?StartHeader {
 	return header;
 }
 
-/// z7z error code to human-readable string
-fn z7zErrorString(code: c_int) []const u8 {
-	const msg = c.z7z_error_string(code);
-	if (msg) |m| {
-		return std.mem.span(m);
-	}
-	return "Unknown error";
+const MAX_TOTAL_UNPACK_SIZE: u64 = 64 * 1024 * 1024 * 1024;
+const MAX_EXPANSION_RATIO: u64 = 256;
+
+fn z7zErrorString(err: z7z.archive.ArchiveError) []const u8 {
+	return switch (err) {
+		error.NotArchive => "Not a 7-Zip archive",
+		error.ChecksumError => "7-Zip checksum mismatch",
+		error.TruncatedInput => "7-Zip archive truncated",
+		error.StructuralError => "7-Zip archive structure invalid",
+		error.UnsupportedFeature => errmsg.unsupported("7z feature"),
+		error.EndOfStream => "7-Zip archive ended unexpectedly",
+		error.OutOfMemory => "Out of memory validating 7-Zip archive",
+		error.PasswordRequired => "7-Zip archive requires a password",
+		error.ResourceLimitExceeded => "7-Zip archive exceeds validation resource limits",
+	};
 }
 
 /// Deep validate a 7z file using z7z (cleanroom LZMA2 decoder).
-/// Reads the file into memory, opens with z7z, and iterates every
-/// file entry — decompression + CRC verification happens on open/access.
+/// Streams decoded bytes into z7z's verification sink, checks payload CRCs,
+/// and never materializes extracted file or folder payloads.
 pub fn validateSevenZDeep(allocator: Allocator, source: *@import("file_source.zig").FileSource) SevenZValidationResult {
 
 	const file_size = source.getEndPos() catch {
@@ -112,10 +115,6 @@ pub fn validateSevenZDeep(allocator: Allocator, source: *@import("file_source.zi
 
 	if (file_size < 32) {
 		return SevenZValidationResult.invalid("File too small for 7z header");
-	}
-
-	if (file_size > 4 * 1024 * 1024 * 1024) {
-		return SevenZValidationResult.invalid("File too large for in-memory validation");
 	}
 
 	const slurp_7z = source.getMappedOrSlurp(allocator, 256 << 20) catch
@@ -128,44 +127,16 @@ pub fn validateSevenZDeep(allocator: Allocator, source: *@import("file_source.zi
 		.too_large => return SevenZValidationResult.invalid("7-Zip too large for non-mmap deep validation"),
 	};
 
-	// Open with z7z — this parses headers, decompresses all folders,
-	// and verifies CRCs internally
-	var archive: ?*c.z7z_archive = null;
-	const open_res = c.z7z_open(data.ptr, data.len, &archive);
-	if (open_res != c.Z7Z_OK) {
-		return SevenZValidationResult.invalid(z7zErrorString(open_res));
-	}
-	defer c.z7z_close(archive);
+	const stats = z7z.archive.verify(data, .{
+		.max_total_unpack_size = MAX_TOTAL_UNPACK_SIZE,
+		.max_expansion_ratio = MAX_EXPANSION_RATIO,
+	}, allocator) catch |err| {
+		return SevenZValidationResult.invalid(z7zErrorString(err));
+	};
 
-	const num_files = c.z7z_file_count(archive);
-	if (num_files == 0) {
-		return SevenZValidationResult.ok(0, 0);
-	}
-
-	// Iterate every file entry — accessing data triggers decompression
-	// and CRC verification for each file
-	var files_checked: u32 = 0;
-	var bytes_verified: u64 = 0;
-
-	for (0..num_files) |i| {
-		// Skip directories
-		if (c.z7z_file_is_dir(archive, i) != 0) continue;
-
-		const entry_size = c.z7z_file_size(archive, i);
-
-		// Access the data to force decompression/CRC verification
-		if (entry_size > 0) {
-			const entry_data = c.z7z_file_data(archive, i);
-			if (entry_data == null) {
-				return SevenZValidationResult.invalid("Failed to decompress file entry");
-			}
-		}
-
-		files_checked += 1;
-		bytes_verified += entry_size;
-	}
-
-	return SevenZValidationResult.ok(files_checked, bytes_verified);
+	const data_file_count: u32 = @intCast(@min(stats.data_file_count, std.math.maxInt(u32)));
+	const file_count: u32 = @intCast(@min(stats.file_count, std.math.maxInt(u32)));
+	return SevenZValidationResult.okPartial(data_file_count, file_count, stats.total_unpack_size);
 }
 
 /// Validate a 7z file from a buffer (for embedded archives).

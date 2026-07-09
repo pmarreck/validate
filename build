@@ -4,6 +4,9 @@ set -E
 
 trap 'echo "ERR at ${BASH_SOURCE[0]}:${LINENO}: $BASH_COMMAND" >&2' ERR
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 run() {
   "$@" || {
     echo "FAILED: $*" >&2
@@ -22,8 +25,7 @@ if [[ "$optimize" != "ReleaseFast" ]]; then
   run zig build "-Doptimize=$optimize" "$@"
 elif command -v nix >/dev/null 2>&1; then
   run nix build "$@"
-  mkdir -p zig-out/bin
-  run install -m755 result/bin/* zig-out/bin/
+  run "$SCRIPT_DIR/scripts/sync-nix-result-to-zig-out" result zig-out/bin
 else
   run zig build "-Doptimize=$optimize" "$@"
 fi
