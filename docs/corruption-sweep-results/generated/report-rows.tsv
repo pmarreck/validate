@@ -11,8 +11,8 @@ Image & Photo	GIF	gif	2026-05-27	LZW decode (shotgun desyncs state); larger anim
 Image & Photo	JPEG	jpeg	2026-05-27	jpegz wrapperDecode (062393f); most single-byte tamper lands in entropy-coded data, which JPEG tolerates by design	w3c_exif_420.jpg	768000	4		100
 Image & Photo	EXR	exr	2026-04-23	ZIP-compressed EXR — zlib decompress path runs on every scanline block. Shotgun detection perfect; sniper lower than the 26 KB NONE-compressed sample (6%) because structural bytes are a smaller fraction on the larger file. Both paths validated.	zip_plasma.exr	397312	1		100
 Image & Photo	PSD	psd	2026-04-23	RLE-compressed PSD — `validatePsdDeep` decodes every scanline. The old RAW-compressed `sample.psd` (0%/7%) is retained; sweep picks the larger RLE one. Measures the strong path that the RAW sample couldn't exercise.	rle_plasma.psd	1887437	2		50
-Image & Photo	HEIC	heic	2026-03-06	H.265 CABAC per tile — **arithmetic coding absorbs single-bit errors by design**	sample.heic	3040870	0		4
-Image & Photo	AVIF	avif	2026-03-06	AV1 OBU + CABAC — same limitation	butterfly.avif	89088	0		1
+Image & Photo	HEIC	heic	2026-03-06	H.265 CABAC per tile; no content checksum, so many entropy-payload flips decode as different valid pixels. Structural, NAL, RBSP, and decoder-state violations are still detectable.	sample.heic	3040870	0		4
+Image & Photo	AVIF	avif	2026-03-06	AV1 OBUs with entropy-coded tile data; no image-content checksum, so many payload flips can remain syntactically valid. Container/OBU structure and decoder errors are still detectable.	butterfly.avif	89088	0		1
 Image & Photo	BMP	bmp	2026-04-23	BMP spec has no data checksums — `bmp_decoder.validateBmp` walks every pixel row proving accessibility but cannot detect bit-flips in pixel bytes. 0/400 at ±0.5% CI. Fundamental format limit.	sample.bmp	943104	0		0
 Image & Photo	DPX	dpx	2026-03-06	Raw pixel; SMPTE 268M spec has no checksum	sample.dpx	1887437	0		0
 Image & Photo	PAM/PPM	pam	2026-03-06	Raw pixel; Netpbm spec has no checksum	sample.ppm	1887437	0		0

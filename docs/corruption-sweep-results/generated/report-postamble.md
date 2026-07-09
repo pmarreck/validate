@@ -56,7 +56,7 @@ All larger samples landed on 2026-04-23 from the following sources:
 
 **Why shotgun often beats sniper by a huge margin** (JPEG 0%/93%, GIF 2%/94%, AV1 5%/100%, MPEG-TS 4%/100%, etc.): entropy coding (Huffman, LZW, arithmetic) is robust against single-bit errors — the decoder produces wrong-but-valid output. A 4 KB overwrite destroys synchronization and quickly hits invalid state. This is fundamental to lossy compression without integrity metadata.
 
-**Why HEIC/AVIF are worse than JPEG for corruption detection:** CABAC arithmetic coding uses a continuous probability range that adapts smoothly to any input — there are no bit boundaries to desynchronize. JPEG's Huffman VLC *does* desynchronize, which is why JPEG shotgun beats HEIC/AVIF shotgun by ~23×.
+**Why HEIC/AVIF are hard to validate byte-for-byte:** HEIC and AVIF carry entropy-coded image payloads without a whole-image checksum. A byte flip inside that payload may become different-but-valid pixels rather than a syntax error. That is not the same as "any byte is permitted": containers, NAL/OBU headers, forbidden RBSP byte sequences, lengths, and decoder-state failures can still expose corruption. JPEG's Huffman VLC often desynchronizes on larger overwrites, which is why JPEG shotgun beats HEIC/AVIF shotgun by a wide margin in this corpus.
 
 **Why sample size matters:** Shotgun coverage density = 4096 / file_size. On a 4 KB ACCDB file that's 100% coverage per trial, and detection climbs to 73%. On a 600 KB DOC the same 4 KB is ~0.7% of the file — most shots land in document body bytes the validator can't cross-check. Numbers alone don't tell you validator power; always read the sample column.
 

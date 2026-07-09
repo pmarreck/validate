@@ -36,8 +36,8 @@
 | JPEG | 4% | 8% | **100%** | w3c_exif_420.jpg | 750 KB | 2026-05-27 | jpegz wrapperDecode (062393f); most single-byte tamper lands in entropy-coded data, which JPEG tolerates by design |
 | EXR | 1% | 0% | **100%** | zip_plasma.exr | 388 KB | 2026-04-23 | ZIP-compressed EXR — zlib decompress path runs on every scanline block. Shotgun detection perfect; sniper lower than the 26 KB NONE-compressed sample (6%) because structural bytes are a smaller fraction on the larger file. Both paths validated. |
 | PSD | 2% | 2% | 50% | rle_plasma.psd | 1.8 MB | 2026-04-23 | RLE-compressed PSD — `validatePsdDeep` decodes every scanline. The old RAW-compressed `sample.psd` (0%/7%) is retained; sweep picks the larger RLE one. Measures the strong path that the RAW sample couldn't exercise. |
-| HEIC | 0% | 0% | 4% | sample.heic | 2.9 MB | 2026-03-06 | H.265 CABAC per tile — **arithmetic coding absorbs single-bit errors by design** |
-| AVIF | 0% | 0% | 1% | butterfly.avif | 85 KB | 2026-03-06 | AV1 OBU + CABAC — same limitation |
+| HEIC | 0% | 0% | 4% | sample.heic | 2.9 MB | 2026-03-06 | H.265 CABAC per tile; no content checksum, so many entropy-payload flips decode as different valid pixels. Structural, NAL, RBSP, and decoder-state violations are still detectable. |
+| AVIF | 0% | 0% | 1% | butterfly.avif | 85 KB | 2026-03-06 | AV1 OBUs with entropy-coded tile data; no image-content checksum, so many payload flips can remain syntactically valid. Container/OBU structure and decoder errors are still detectable. |
 | BMP | 0% | 0% | 0% | sample.bmp | 900 KB | 2026-04-23 | BMP spec has no data checksums — `bmp_decoder.validateBmp` walks every pixel row proving accessibility but cannot detect bit-flips in pixel bytes. 0/400 at ±0.5% CI. Fundamental format limit. |
 | DPX | 0% | 0% | 0% | sample.dpx | 1.8 MB | 2026-03-06 | Raw pixel; SMPTE 268M spec has no checksum |
 | PAM/PPM | 0% | 0% | 0% | sample.ppm | 1.8 MB | 2026-03-06 | Raw pixel; Netpbm spec has no checksum |
@@ -414,7 +414,7 @@ All larger samples landed on 2026-04-23 from the following sources:
 
 **Why shotgun often beats sniper by a huge margin** (JPEG 0%/93%, GIF 2%/94%, AV1 5%/100%, MPEG-TS 4%/100%, etc.): entropy coding (Huffman, LZW, arithmetic) is robust against single-bit errors — the decoder produces wrong-but-valid output. A 4 KB overwrite destroys synchronization and quickly hits invalid state. This is fundamental to lossy compression without integrity metadata.
 
-**Why HEIC/AVIF are worse than JPEG for corruption detection:** CABAC arithmetic coding uses a continuous probability range that adapts smoothly to any input — there are no bit boundaries to desynchronize. JPEG's Huffman VLC *does* desynchronize, which is why JPEG shotgun beats HEIC/AVIF shotgun by ~23×.
+**Why HEIC/AVIF are hard to validate byte-for-byte:** HEIC and AVIF carry entropy-coded image payloads without a whole-image checksum. A byte flip inside that payload may become different-but-valid pixels rather than a syntax error. That is not the same as "any byte is permitted": containers, NAL/OBU headers, forbidden RBSP byte sequences, lengths, and decoder-state failures can still expose corruption. JPEG's Huffman VLC often desynchronizes on larger overwrites, which is why JPEG shotgun beats HEIC/AVIF shotgun by a wide margin in this corpus.
 
 **Why sample size matters:** Shotgun coverage density = 4096 / file_size. On a 4 KB ACCDB file that's 100% coverage per trial, and detection climbs to 73%. On a 600 KB DOC the same 4 KB is ~0.7% of the file — most shots land in document body bytes the validator can't cross-check. Numbers alone don't tell you validator power; always read the sample column.
 
