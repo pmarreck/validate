@@ -159,6 +159,7 @@ const CHECKSUM_FALLBACK_TABLE_OOB = "Table checksum mismatch; parsing fallback: 
 const CHECKSUM_FALLBACK_HEAD_MISSING = "Table checksum mismatch; parsing fallback: Missing head table";
 const CHECKSUM_FALLBACK_HEAD_TOO_SMALL = "Table checksum mismatch; parsing fallback: head table too small";
 const CHECKSUM_FALLBACK_OTHER = "Table checksum mismatch; parsing fallback revealed structural errors";
+const FONT_PROGRAM_COMPLEXITY_WARNING = "Font contains unusually complex executable or shaping tables (security-adjacent advisory)";
 
 fn checksumMismatchMessage(fallback_error: ?[]const u8) []const u8 {
 	if (fallback_error == null) return CHECKSUM_FALLBACK_OK;
@@ -171,6 +172,222 @@ fn checksumMismatchMessage(fallback_error: ?[]const u8) []const u8 {
 	if (std.mem.eql(u8, msg, "head table too small")) return CHECKSUM_FALLBACK_HEAD_TOO_SMALL;
 	return CHECKSUM_FALLBACK_OTHER;
 }
+
+const FontProgramComplexity = struct {
+	const KiB = 1024;
+	const MiB = 1024 * KiB;
+
+	score: u16 = 0,
+	fpgm_len: u32 = 0,
+	prep_len: u32 = 0,
+	graphite_len: u64 = 0,
+	glyph_instruction_bytes: u64 = 0,
+	max_glyph_instruction_bytes: u32 = 0,
+	head_offset: ?u32 = null,
+	head_length: ?u32 = null,
+	maxp_offset: ?u32 = null,
+	maxp_length: ?u32 = null,
+	loca_offset: ?u32 = null,
+	loca_length: ?u32 = null,
+	glyf_offset: ?u32 = null,
+	glyf_length: ?u32 = null,
+
+	fn observeTable(self: *FontProgramComplexity, tag: []const u8, offset: u32, length: u32) void {
+		if (std.mem.eql(u8, tag, "head")) {
+			self.head_offset = offset;
+			self.head_length = length;
+			return;
+		}
+		if (std.mem.eql(u8, tag, "maxp")) {
+			self.maxp_offset = offset;
+			self.maxp_length = length;
+			return;
+		}
+		if (std.mem.eql(u8, tag, "loca")) {
+			self.loca_offset = offset;
+			self.loca_length = length;
+			return;
+		}
+		if (std.mem.eql(u8, tag, "glyf")) {
+			self.glyf_offset = offset;
+			self.glyf_length = length;
+			self.addScore(scoreTableLength(length, 1 * MiB, 4 * MiB, 1, 2));
+			return;
+		}
+		if (std.mem.eql(u8, tag, "fpgm")) {
+			self.fpgm_len = length;
+			self.addScore(scoreTableLength(length, 16 * KiB, 64 * KiB, 2, 5));
+			return;
+		}
+		if (std.mem.eql(u8, tag, "prep")) {
+			self.prep_len = length;
+			self.addScore(scoreTableLength(length, 4 * KiB, 16 * KiB, 1, 4));
+			return;
+		}
+		if (std.mem.eql(u8, tag, "CFF ") or std.mem.eql(u8, tag, "CFF2")) {
+			self.addScore(scoreTableLength(length, 512 * KiB, 2 * MiB, 1, 4));
+			return;
+		}
+		if (std.mem.eql(u8, tag, "GSUB") or std.mem.eql(u8, tag, "GPOS")) {
+			self.addScore(scoreTableLength(length, 512 * KiB, 2 * MiB, 1, 3));
+			return;
+		}
+		if (std.mem.eql(u8, tag, "mort") or std.mem.eql(u8, tag, "morx") or std.mem.eql(u8, tag, "kerx")) {
+			self.addScore(scoreTableLength(length, 128 * KiB, 512 * KiB, 1, 3));
+			return;
+		}
+		if (std.mem.eql(u8, tag, "Silf") or std.mem.eql(u8, tag, "Glat") or
+			std.mem.eql(u8, tag, "Gloc") or std.mem.eql(u8, tag, "Feat") or
+			std.mem.eql(u8, tag, "Sill"))
+		{
+			self.graphite_len += length;
+			self.addScore(if (length >= 512 * KiB) 4 else 1);
+		}
+	}
+
+	fn analyzeSfntTables(self: *FontProgramComplexity, data: []const u8) void {
+		self.analyzeGlyfInstructions(data);
+
+		if (self.glyph_instruction_bytes >= 256 * KiB) {
+			self.addScore(6);
+		} else if (self.glyph_instruction_bytes >= 64 * KiB) {
+			self.addScore(3);
+		}
+
+		if (self.max_glyph_instruction_bytes >= 4096) {
+			self.addScore(3);
+		} else if (self.max_glyph_instruction_bytes >= 1024) {
+			self.addScore(1);
+		}
+	}
+
+	fn warning(self: *const FontProgramComplexity) ?[]const u8 {
+		if (self.glyph_instruction_bytes >= 256 * KiB) return FONT_PROGRAM_COMPLEXITY_WARNING;
+		if (self.fpgm_len >= 64 * KiB and self.prep_len >= 16 * KiB) return FONT_PROGRAM_COMPLEXITY_WARNING;
+		if (self.graphite_len >= 512 * KiB and self.score >= 5) return FONT_PROGRAM_COMPLEXITY_WARNING;
+		if (self.score >= 8) return FONT_PROGRAM_COMPLEXITY_WARNING;
+		return null;
+	}
+
+	fn analyzeGlyfInstructions(self: *FontProgramComplexity, data: []const u8) void {
+		const head_offset = self.head_offset orelse return;
+		const head_length = self.head_length orelse return;
+		const maxp_offset = self.maxp_offset orelse return;
+		const maxp_length = self.maxp_length orelse return;
+		const loca_offset = self.loca_offset orelse return;
+		const loca_length = self.loca_length orelse return;
+		const glyf_offset = self.glyf_offset orelse return;
+		const glyf_length = self.glyf_length orelse return;
+
+		if (@as(u64, head_offset) + @as(u64, head_length) > data.len or head_length < 54) return;
+		if (@as(u64, maxp_offset) + @as(u64, maxp_length) > data.len or maxp_length < 6) return;
+		if (@as(u64, loca_offset) + @as(u64, loca_length) > data.len) return;
+		if (@as(u64, glyf_offset) + @as(u64, glyf_length) > data.len) return;
+
+		const head_start: usize = @intCast(head_offset);
+		const maxp_start: usize = @intCast(maxp_offset);
+		const loca_start: usize = @intCast(loca_offset);
+		const glyf_start: usize = @intCast(glyf_offset);
+		const loca = data[loca_start..][0..loca_length];
+		const glyf = data[glyf_start..][0..glyf_length];
+		const index_to_loc_format = std.mem.readInt(i16, data[head_start + 50 ..][0..2], .big);
+		if (index_to_loc_format != 0 and index_to_loc_format != 1) return;
+
+		const num_glyphs = std.mem.readInt(u16, data[maxp_start + 4 ..][0..2], .big);
+		if (num_glyphs == 0) return;
+
+		const loca_entry_size: usize = if (index_to_loc_format == 0) 2 else 4;
+		const required_loca_len = (@as(usize, num_glyphs) + 1) * loca_entry_size;
+		if (loca.len < required_loca_len) return;
+
+		for (0..num_glyphs) |glyph_index| {
+			const glyph_start = readLocaOffset(loca, glyph_index, index_to_loc_format) orelse return;
+			const glyph_end = readLocaOffset(loca, glyph_index + 1, index_to_loc_format) orelse return;
+			if (glyph_end <= glyph_start) continue;
+			if (glyph_end > glyf.len) continue;
+			self.observeGlyfGlyphInstructions(glyf[glyph_start..glyph_end]);
+		}
+	}
+
+	fn observeGlyfGlyphInstructions(self: *FontProgramComplexity, glyph: []const u8) void {
+		if (glyph.len < 10) return;
+		const number_of_contours = std.mem.readInt(i16, glyph[0..2], .big);
+		if (number_of_contours >= 0) {
+			const contour_count: usize = @intCast(number_of_contours);
+			const instruction_len_offset = 10 + contour_count * 2;
+			if (instruction_len_offset + 2 > glyph.len) return;
+			const instruction_len = std.mem.readInt(u16, glyph[instruction_len_offset..][0..2], .big);
+			if (instruction_len_offset + 2 + @as(usize, instruction_len) > glyph.len) return;
+			self.observeInstructionBytes(instruction_len);
+			return;
+		}
+
+		const ARG_1_AND_2_ARE_WORDS: u16 = 0x0001;
+		const WE_HAVE_A_SCALE: u16 = 0x0008;
+		const MORE_COMPONENTS: u16 = 0x0020;
+		const WE_HAVE_AN_X_AND_Y_SCALE: u16 = 0x0040;
+		const WE_HAVE_A_TWO_BY_TWO: u16 = 0x0080;
+		const WE_HAVE_INSTRUCTIONS: u16 = 0x0100;
+
+		var pos: usize = 10;
+		var flags: u16 = 0;
+		var component_count: usize = 0;
+		while (true) {
+			if (pos + 4 > glyph.len) return;
+			flags = std.mem.readInt(u16, glyph[pos..][0..2], .big);
+			pos += 4; // flags + glyphIndex
+
+			pos += if ((flags & ARG_1_AND_2_ARE_WORDS) != 0) 4 else 2;
+			if ((flags & WE_HAVE_A_SCALE) != 0) {
+				pos += 2;
+			} else if ((flags & WE_HAVE_AN_X_AND_Y_SCALE) != 0) {
+				pos += 4;
+			} else if ((flags & WE_HAVE_A_TWO_BY_TWO) != 0) {
+				pos += 8;
+			}
+			if (pos > glyph.len) return;
+
+			component_count += 1;
+			if (component_count > 1024) return;
+			if ((flags & MORE_COMPONENTS) == 0) break;
+		}
+
+		if ((flags & WE_HAVE_INSTRUCTIONS) != 0) {
+			if (pos + 2 > glyph.len) return;
+			const instruction_len = std.mem.readInt(u16, glyph[pos..][0..2], .big);
+			if (pos + 2 + @as(usize, instruction_len) > glyph.len) return;
+			self.observeInstructionBytes(instruction_len);
+		}
+	}
+
+	fn observeInstructionBytes(self: *FontProgramComplexity, instruction_len: u32) void {
+		self.glyph_instruction_bytes += instruction_len;
+		self.max_glyph_instruction_bytes = @max(self.max_glyph_instruction_bytes, instruction_len);
+	}
+
+	fn readLocaOffset(loca: []const u8, index: usize, index_to_loc_format: i16) ?usize {
+		if (index_to_loc_format == 0) {
+			const pos = index * 2;
+			if (pos + 2 > loca.len) return null;
+			return @as(usize, std.mem.readInt(u16, loca[pos..][0..2], .big)) * 2;
+		}
+
+		const pos = index * 4;
+		if (pos + 4 > loca.len) return null;
+		return @intCast(std.mem.readInt(u32, loca[pos..][0..4], .big));
+	}
+
+	fn scoreTableLength(length: u32, medium: u32, high: u32, medium_score: u16, high_score: u16) u16 {
+		if (length >= high) return high_score;
+		if (length >= medium) return medium_score;
+		return 0;
+	}
+
+	fn addScore(self: *FontProgramComplexity, points: u16) void {
+		const total = @as(u32, self.score) + @as(u32, points);
+		self.score = @intCast(@min(total, std.math.maxInt(u16)));
+	}
+};
 
 /// Validate a TrueType or OpenType font from memory.
 /// Uses strict validation by default.
@@ -225,6 +442,7 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 	var head_offset: ?u32 = null;
 	var head_length: ?u32 = null;
 	var head_checksum: ?u32 = null;
+	var complexity = FontProgramComplexity{};
 
 	for (0..num_tables) |i| {
 		const record_start = 12 + i * 16;
@@ -235,6 +453,7 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 		if (table_end > data.len) {
 			return FontValidationResult.invalid("Table extends beyond file");
 		}
+		complexity.observeTable(&record.tag, record.offset, record.length);
 
 		// Remember head table location and its stored checksum
 		if (std.mem.eql(u8, &record.tag, "head")) {
@@ -357,6 +576,11 @@ pub fn validateTtfOtfWithOptions(data: []const u8, options: ValidationOptions) F
 		}
 	}
 
+	complexity.analyzeSfntTables(data);
+	if (complexity.warning()) |warning| {
+		return FontValidationResult.okWithWarning(font_type, num_tables, tables_verified, warning);
+	}
+
 	return FontValidationResult.ok(font_type, num_tables, tables_verified);
 }
 
@@ -414,6 +638,7 @@ pub fn validateWoffWithAllocator(data: []const u8, allocator: Allocator) FontVal
 
 	// Verify each table's checksum by decompressing
 	var tables_verified: u16 = 0;
+	var complexity = FontProgramComplexity{};
 	for (0..num_tables) |i| {
 		const entry_start = 44 + i * 20;
 		const entry = data[entry_start..][0..20];
@@ -431,6 +656,7 @@ pub fn validateWoffWithAllocator(data: []const u8, allocator: Allocator) FontVal
 		if (table_end > data.len) {
 			return FontValidationResult.invalid("WOFF table extends beyond file");
 		}
+		complexity.observeTable(tag, offset, orig_length);
 
 		const table_data = data[offset..][0..comp_length];
 
@@ -466,6 +692,10 @@ pub fn validateWoffWithAllocator(data: []const u8, allocator: Allocator) FontVal
 		}
 
 		tables_verified += 1;
+	}
+
+	if (complexity.warning()) |warning| {
+		return FontValidationResult.okWithWarning(.woff, num_tables, tables_verified, warning);
 	}
 
 	return FontValidationResult.ok(.woff, num_tables, tables_verified);
@@ -564,6 +794,7 @@ pub fn validateWoff2WithAllocator(data: []const u8, allocator: Allocator) FontVa
 		return FontValidationResult.invalid("WOFF2 memory allocation failed");
 	};
 	defer allocator.free(entries);
+	var complexity = FontProgramComplexity{};
 
 	for (0..num_tables) |i| {
 		if (pos >= data.len) {
@@ -593,6 +824,7 @@ pub fn validateWoff2WithAllocator(data: []const u8, allocator: Allocator) FontVa
 		const orig_length = readUIntBase128(data, &pos) orelse {
 			return FontValidationResult.invalid("WOFF2 invalid UIntBase128 in table directory");
 		};
+		complexity.observeTable(&tag, 0, orig_length);
 
 		// Read transformLength if transform is applied, or if tag is glyf/loca
 		// (glyf and loca always have transformLength, even with transform version 0)
@@ -714,6 +946,10 @@ pub fn validateWoff2WithAllocator(data: []const u8, allocator: Allocator) FontVa
 			tables_verified,
 			"WOFF2 totalSfntSize mismatch (may have non-standard padding)",
 		);
+	}
+
+	if (complexity.warning()) |warning| {
+		return FontValidationResult.okWithWarning(.woff2, num_tables, tables_verified, warning);
 	}
 
 	return FontValidationResult.ok(.woff2, num_tables, tables_verified);
@@ -987,6 +1223,13 @@ pub fn validateCff(data: []const u8) FontValidationResult {
 
 // ============ Tests ============
 
+fn writeTableRecordForFontTest(data: []u8, index: usize, tag: []const u8, offset: u32, length: u32) void {
+	const start = 12 + index * 16;
+	@memcpy(data[start..][0..4], tag[0..4]);
+	std.mem.writeInt(u32, data[start + 8 ..][0..4], offset, .big);
+	std.mem.writeInt(u32, data[start + 12 ..][0..4], length, .big);
+}
+
 test "calcChecksum simple" {
 	const data = [_]u8{ 0x00, 0x00, 0x00, 0x01 };
 	const sum = calcChecksum(&data);
@@ -1138,6 +1381,43 @@ test "validateTtfOtf minimal valid structure" {
 	try std.testing.expect(result.valid);
 	try std.testing.expectEqual(FontType.truetype, result.font_type.?);
 	try std.testing.expectEqual(@as(u16, 1), result.num_tables);
+	try std.testing.expect(result.warning_message == null);
+}
+
+test "validateTtfOtf warns on unusually complex TrueType programs" {
+	const fpgm_len: usize = 70 * 1024;
+	const prep_len: usize = 20 * 1024;
+	const head_offset: usize = 12 + 3 * 16;
+	const fpgm_offset: usize = head_offset + 56;
+	const prep_offset: usize = fpgm_offset + fpgm_len;
+	const total_len: usize = prep_offset + prep_len;
+
+	const data = try std.testing.allocator.alloc(u8, total_len);
+	defer std.testing.allocator.free(data);
+	@memset(data, 0);
+
+	data[0] = 0x00;
+	data[1] = 0x01;
+	data[2] = 0x00;
+	data[3] = 0x00;
+	std.mem.writeInt(u16, data[4..6], 3, .big);
+	std.mem.writeInt(u16, data[6..8], 32, .big);
+	std.mem.writeInt(u16, data[8..10], 1, .big);
+
+	writeTableRecordForFontTest(data, 0, "head", @intCast(head_offset), 54);
+	writeTableRecordForFontTest(data, 1, "fpgm", @intCast(fpgm_offset), @intCast(fpgm_len));
+	writeTableRecordForFontTest(data, 2, "prep", @intCast(prep_offset), @intCast(prep_len));
+
+	data[head_offset] = 0;
+	data[head_offset + 1] = 1;
+	data[head_offset + 12] = 0x5F;
+	data[head_offset + 13] = 0x0F;
+	data[head_offset + 14] = 0x3C;
+	data[head_offset + 15] = 0xF5;
+
+	const result = validateTtfOtfWithOptions(data, .{ .skip_checksums = true });
+	try std.testing.expect(result.valid);
+	try std.testing.expectEqualStrings(FONT_PROGRAM_COMPLEXITY_WARNING, result.warning_message.?);
 }
 
 test "validateTtfOtf checksum mismatch reports fallback detail" {
