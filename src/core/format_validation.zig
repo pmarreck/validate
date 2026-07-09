@@ -7091,8 +7091,6 @@ pub fn checkMemoryAvailable(size: usize) bool {
 /// This is the buffer-first entry point for format validation.
 /// Detects format and routes to appropriate buffer-based validator.
 pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResult {
-    _ = allocator; // Will be used for validators that need allocation
-
     if (data.len == 0) {
         return ValidationResult.unknown();
     }
@@ -7145,7 +7143,7 @@ pub fn validateDataBuffer(data: []const u8, allocator: Allocator) ValidationResu
         .cpt => archive_validators.validateCptFromBuffer(data),
         .sit => stuffit_validator.validateSitFromBuffer(data),
         .sitx => stuffit_validator.validateSitxFromBuffer(data),
-        .sevenz => archive_validators.validate7zFromBuffer(data),
+        .sevenz => archive_validators.validate7zFromBuffer(allocator, data),
         .wim, .esd => wim_validator.validateWimFromBuffer(data),
         // Network capture formats
         .pcap => network_validators.validatePcapFromBuffer(data),

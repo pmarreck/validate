@@ -140,53 +140,22 @@ pub fn validateSevenZDeep(allocator: Allocator, source: *@import("file_source.zi
 }
 
 /// Validate a 7z file from a buffer (for embedded archives).
-/// Uses Zig-native header CRC validation only (no decompression).
+/// Uses the same z7z streaming verifier as file-backed deep validation.
 pub fn validateSevenZFromBuffer(allocator: Allocator, data: []const u8) SevenZValidationResult {
-	_ = allocator;
 	if (data.len < 32) {
 		return SevenZValidationResult.invalid("Data too small for 7z header");
 	}
 
-	// Parse and validate start header
-	const start_header = parseStartHeader(data) orelse {
-		return SevenZValidationResult.invalid("Invalid start header or CRC mismatch");
+	const stats = z7z.archive.verify(data, .{
+		.max_total_unpack_size = MAX_TOTAL_UNPACK_SIZE,
+		.max_expansion_ratio = MAX_EXPANSION_RATIO,
+	}, allocator) catch |err| {
+		return SevenZValidationResult.invalid(z7zErrorString(err));
 	};
 
-	// Validate version
-	if (start_header.version_major != 0 or start_header.version_minor > 4) {
-		return SevenZValidationResult.invalid(errmsg.unsupported("7z version"));
-	}
-
-	// Validate data size
-	const expected_min_size = 32 + start_header.next_header_offset + start_header.next_header_size;
-	if (data.len < expected_min_size) {
-		return SevenZValidationResult.invalid("Data truncated");
-	}
-
-	// Verify next header CRC
-	if (start_header.next_header_size > 0) {
-		const next_header_start: usize = @intCast(32 + start_header.next_header_offset);
-		const next_header_end: usize = @intCast(next_header_start + start_header.next_header_size);
-
-		if (next_header_end > data.len) {
-			return SevenZValidationResult.invalid("Next header extends beyond data");
-		}
-
-		const next_header_data = data[next_header_start..next_header_end];
-		const computed_crc = std.hash.Crc32.hash(next_header_data);
-
-		if (computed_crc != start_header.next_header_crc) {
-			return SevenZValidationResult.invalid("Next header CRC mismatch");
-		}
-	}
-
-	return SevenZValidationResult{
-		.valid = true,
-		.error_message = null,
-		.files_checked = 0,
-		.total_files = 0,
-		.bytes_verified = 0,
-	};
+	const data_file_count: u32 = @intCast(@min(stats.data_file_count, std.math.maxInt(u32)));
+	const file_count: u32 = @intCast(@min(stats.file_count, std.math.maxInt(u32)));
+	return SevenZValidationResult.okPartial(data_file_count, file_count, stats.total_unpack_size);
 }
 
 // Tests

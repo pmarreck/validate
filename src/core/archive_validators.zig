@@ -2847,7 +2847,7 @@ pub fn validateZstdDeep(allocator: Allocator, source: *FileSource) ValidationRes
 
 /// Deep 7-Zip validation via z7z (Peter's cleanroom LZMA2 decoder).
 /// No external `7z` command dependency — z7z is linked as a static
-/// library and called through its C FFI from `sevenz_validator.zig`.
+/// library and called as a Zig module from `sevenz_validator.zig`.
 pub fn validate7zDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const result = sevenz_validator.validateSevenZDeep(allocator, source);
 
@@ -3066,13 +3066,18 @@ pub fn validateCptFromBuffer(data: []const u8) ValidationResult {
     return validateCptWithCompactPro(data);
 }
 
-pub fn validate7zFromBuffer(data: []const u8) ValidationResult {
-    if (data.len < 6) return ValidationResult.invalid(.sevenz, "File too small");
-    const sig_7z = [_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C };
-    if (std.mem.eql(u8, data[0..6], &sig_7z)) {
-        return ValidationResult.ok(.sevenz);
+pub fn validate7zFromBuffer(allocator: Allocator, data: []const u8) ValidationResult {
+    const result = sevenz_validator.validateSevenZFromBuffer(allocator, data);
+
+    if (!result.valid) {
+        return ValidationResult.invalidWithDepth(.sevenz, result.error_message orelse "7z validation failed", .full);
     }
-    return ValidationResult.invalidCode(.sevenz, .invalid_signature, "7z");
+
+    if (result.files_checked > 0) {
+        return ValidationResult.okWithDepth(.sevenz, .full);
+    }
+
+    return ValidationResult.okWithDepth(.sevenz, .structural);
 }
 
 // ============ Tests ============
@@ -3400,11 +3405,38 @@ test "validateRarFromBuffer: valid RAR from ground truth" {
     try testing.expectEqual(FileFormat.rar, result.format);
 }
 
-test "validate7zFromBuffer: valid 7z signature" {
-    const sig_7z = [_]u8{ 0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0x00, 0x00 };
-    const result = validate7zFromBuffer(&sig_7z);
+test "validate7zFromBuffer: valid 7z ground truth" {
+    var file = try openGroundTruth("ground_truth_examples/7z/valid.7z");
+    defer file.close();
+    const size = try file.getEndPos();
+    var buf = try testing.allocator.alloc(u8, @intCast(size));
+    defer testing.allocator.free(buf);
+    const read = try file.readAll(buf);
+    const result = validate7zFromBuffer(testing.allocator, buf[0..read]);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.sevenz, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validate7z: checksum corruption fails from file and buffer" {
+    var file = try openGroundTruth("ground_truth_examples/corrupted/7z/sample_corrupt_2.7z");
+    defer file.close();
+
+    const file_result = validate7zDeep(testing.allocator, &file);
+    try testing.expect(!file_result.is_valid);
+    try testing.expectEqual(FileFormat.sevenz, file_result.format);
+    try testing.expectEqual(ValidationDepth.full, file_result.validation_depth);
+
+    try file.seekTo(0);
+    const size = try file.getEndPos();
+    var buf = try testing.allocator.alloc(u8, @intCast(size));
+    defer testing.allocator.free(buf);
+    const read = try file.readAll(buf);
+
+    const buffer_result = validate7zFromBuffer(testing.allocator, buf[0..read]);
+    try testing.expect(!buffer_result.is_valid);
+    try testing.expectEqual(FileFormat.sevenz, buffer_result.format);
+    try testing.expectEqual(ValidationDepth.full, buffer_result.validation_depth);
 }
 
 test "validateCptFromBuffer: valid CPT from ground truth" {
@@ -3804,13 +3836,13 @@ test "validateZstdFromBuffer: wrong magic rejected" {
 
 test "validate7zFromBuffer: truncated data rejected" {
     const truncated = [_]u8{ 0x37, 0x7A, 0xBC };
-    const result = validate7zFromBuffer(&truncated);
+    const result = validate7zFromBuffer(testing.allocator, &truncated);
     try testing.expect(!result.is_valid);
 }
 
 test "validate7zFromBuffer: wrong magic rejected" {
     const bad = [_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    const result = validate7zFromBuffer(&bad);
+    const result = validate7zFromBuffer(testing.allocator, &bad);
     try testing.expect(!result.is_valid);
 }
 
@@ -4004,7 +4036,7 @@ test "validateZstdFromBuffer: empty data rejected" {
 }
 
 test "validate7zFromBuffer: empty data rejected" {
-    const result = validate7zFromBuffer(&[_]u8{});
+    const result = validate7zFromBuffer(testing.allocator, &[_]u8{});
     try testing.expect(!result.is_valid);
 }
 
