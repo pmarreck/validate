@@ -4407,7 +4407,7 @@ fn detectTextFormatUtf8(header: []const u8) ?FileFormat {
     }
 
     // Check for EML headers only (removed overly-broad TOML key=value detection)
-    // The key=value pattern matches too many formats: shell scripts, Elixir, Python, etc.
+    // The key=value pattern matches too many formats: shell scripts, Elixir, package metadata, etc.
     if ((first_char >= 'a' and first_char <= 'z') or
         (first_char >= 'A' and first_char <= 'Z'))
     {
@@ -6640,7 +6640,7 @@ pub const FormatValidator = struct {
 
         if (header_bytes < 4) {
             // Tiny/empty files are unidentifiable, not corrupt.
-            // Empty __init__.py, .fetch markers, .gitkeep, etc. are legitimate.
+            // Empty package markers, .fetch markers, .gitkeep, etc. are legitimate.
             return ValidationResult.okWithDepth(.unknown, .structural);
         }
 
@@ -7615,6 +7615,148 @@ test "FormatValidator enable/disable" {
     try std.testing.expectEqual(FileFormat.unknown, result.format);
 }
 
+fn expectDiskAndMemoryDeepVerdict(
+    allocator: Allocator,
+    tmp: *std.testing.TmpDir,
+    name: []const u8,
+    format: FileFormat,
+    bytes: []const u8,
+    expected_valid: bool,
+) !void {
+    {
+        const file = try tmp.dir.createFile(runtime.io(), name, .{ .truncate = true });
+        defer file.close(runtime.io());
+        try file.writePositionalAll(runtime.io(), bytes, 0);
+    }
+
+    const path = try runtime.tmpRealpathAlloc(tmp, allocator, name);
+    defer allocator.free(path);
+
+    var disk_validator = FormatValidator.initDeep();
+    defer disk_validator.deinit();
+    const disk_result = disk_validator.validateFileDeep(allocator, path);
+
+    var memory_source = FileSource.fromBuffer(bytes);
+    defer memory_source.close();
+    var memory_validator = FormatValidator.initDeep();
+    defer memory_validator.deinit();
+    const memory_result = memory_validator.validateDeepFromSource(allocator, format, &memory_source);
+
+    if (disk_result.is_valid != expected_valid or memory_result.is_valid != expected_valid) {
+        std.debug.print(
+            "\n{s}: expected valid={any}, disk valid={any} ({s}), memory valid={any} ({s})\n",
+            .{
+                name,
+                expected_valid,
+                disk_result.is_valid,
+                disk_result.error_message orelse disk_result.warning_message orelse "no message",
+                memory_result.is_valid,
+                memory_result.error_message orelse memory_result.warning_message orelse "no message",
+            },
+        );
+    }
+    try std.testing.expectEqual(expected_valid, disk_result.is_valid);
+    try std.testing.expectEqual(expected_valid, memory_result.is_valid);
+    try std.testing.expectEqual(disk_result.format, memory_result.format);
+    try std.testing.expectEqual(disk_result.validation_depth, memory_result.validation_depth);
+}
+
+const SyntheticPdf = struct {
+    bytes: []u8,
+    flate_offset: usize,
+    flate_len: usize,
+};
+
+fn buildSyntheticFlatePdf(allocator: Allocator) !SyntheticPdf {
+    const flate_payload =
+        "BT\n" ++
+        "/F1 12 Tf\n" ++
+        "72 720 Td\n" ++
+        "(validate memory parity) Tj\n" ++
+        "ET\n";
+    const compressed = try zlib.deflateZlib(allocator, flate_payload);
+    defer allocator.free(compressed);
+
+    var pdf: std.ArrayListUnmanaged(u8) = .empty;
+    errdefer pdf.deinit(allocator);
+
+    try pdf.appendSlice(allocator, "%PDF-1.4\n");
+
+    const obj1: usize = pdf.items.len;
+    try pdf.appendSlice(allocator,
+        "1 0 obj\n" ++
+        "<< /Type /Catalog /Pages 2 0 R >>\n" ++
+        "endobj\n",
+    );
+
+    const obj2: usize = pdf.items.len;
+    try pdf.appendSlice(allocator,
+        "2 0 obj\n" ++
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>\n" ++
+        "endobj\n",
+    );
+
+    const obj3: usize = pdf.items.len;
+    try pdf.appendSlice(allocator,
+        "3 0 obj\n" ++
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>\n" ++
+        "endobj\n",
+    );
+
+    const obj4: usize = pdf.items.len;
+    try pdf.print(allocator,
+        "4 0 obj\n" ++
+        "<< /Length {d} /Filter /FlateDecode >>\n" ++
+        "stream\n",
+        .{compressed.len},
+    );
+    const flate_offset = pdf.items.len;
+    try pdf.appendSlice(allocator, compressed);
+    try pdf.appendSlice(allocator, "\nendstream\nendobj\n");
+
+    const xref: usize = pdf.items.len;
+    try pdf.print(allocator,
+        "xref\n" ++
+        "0 5\n" ++
+        "0000000000 65535 f \n" ++
+        "{d:0>10} 00000 n \n" ++
+        "{d:0>10} 00000 n \n" ++
+        "{d:0>10} 00000 n \n" ++
+        "{d:0>10} 00000 n \n" ++
+        "trailer\n" ++
+        "<< /Size 5 /Root 1 0 R >>\n" ++
+        "startxref\n" ++
+        "{d}\n" ++
+        "%%EOF\n",
+        .{ obj1, obj2, obj3, obj4, xref },
+    );
+
+    return .{
+        .bytes = try pdf.toOwnedSlice(allocator),
+        .flate_offset = flate_offset,
+        .flate_len = compressed.len,
+    };
+}
+
+test "deep validation detects same PDF Flate corruption from disk and memory" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const fixture = try buildSyntheticFlatePdf(allocator);
+    defer allocator.free(fixture.bytes);
+
+    try expectDiskAndMemoryDeepVerdict(allocator, &tmp, "clean.pdf", .pdf, fixture.bytes, true);
+
+    const corrupted = try allocator.dupe(u8, fixture.bytes);
+    defer allocator.free(corrupted);
+    try std.testing.expect(fixture.flate_len > 8);
+    corrupted[fixture.flate_offset + (fixture.flate_len / 2)] ^= 0xff;
+
+    try expectDiskAndMemoryDeepVerdict(allocator, &tmp, "corrupt.pdf", .pdf, corrupted, false);
+}
+
 
 test "FormatValidator deep validates real OLE2 XLS from ground truth" {
     const allocator = std.testing.allocator;
@@ -8522,7 +8664,7 @@ test "git_repository: real ground truth sample validates at full depth" {
 }
 
 test "false positive: RECORD file should NOT be detected as INI" {
-    // Python dist-info RECORD files have key=value-like lines but are NOT INI
+    // Wheel dist-info RECORD files have key=value-like lines but are NOT INI
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     const content = "anyio/METADATA,sha256=abc123,4277\nanyio/RECORD,,\n";
