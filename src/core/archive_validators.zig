@@ -2776,20 +2776,6 @@ pub fn validateZstdDeep(allocator: Allocator, source: *FileSource) ValidationRes
         return ValidationResult.invalidWithDepth(.zstd, "File too small", .structural);
     }
 
-    const slurp_zstd = source.getMappedOrSlurp(allocator, 256 << 20) catch
-        return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
-    var heap_zstd: ?[]u8 = null;
-    defer if (heap_zstd) |b| allocator.free(b);
-    const bytes: []const u8 = switch (slurp_zstd) {
-        .mapped => |m| m,
-        .heap => |b| blk: { heap_zstd = b; break :blk b; },
-        .too_large => return ValidationResult.okWithDepthAndWarning(.zstd, .structural, "Zstd too large for non-mmap deep validation"),
-    };
-
-    if (bytes.len < 5) {
-        return ValidationResult.invalidWithDepth(.zstd, "File too small for frame header", .structural);
-    }
-
     const dctx = zstdz.c.ZSTD_createDCtx();
     if (dctx == null) {
         return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_allocate, "zstd context", .structural);
@@ -2802,35 +2788,58 @@ pub fn validateZstdDeep(allocator: Allocator, source: *FileSource) ValidationRes
     };
     defer allocator.free(out_buf);
 
-    var input = zstdz.c.ZSTD_inBuffer{
-        .src = bytes.ptr,
-        .size = bytes.len,
-        .pos = 0,
+    const in_size: usize = zstdz.c.ZSTD_DStreamInSize();
+    const in_buf = allocator.alloc(u8, in_size) catch {
+        return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_allocate, "input buffer", .structural);
+    };
+    defer allocator.free(in_buf);
+
+    source.seekTo(0) catch {
+        return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_seek, "file", .structural);
     };
 
     var total_decompressed: u64 = 0;
     var last_ret: usize = 0;
-    while (input.pos < input.size) {
-        var output = zstdz.c.ZSTD_outBuffer{
-            .dst = out_buf.ptr,
-            .size = out_size,
+    var saw_input = false;
+    while (true) {
+        const bytes_read = source.readAll(in_buf) catch {
+            return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
+        };
+        if (bytes_read == 0) break;
+        saw_input = true;
+
+        var input = zstdz.c.ZSTD_inBuffer{
+            .src = in_buf.ptr,
+            .size = bytes_read,
             .pos = 0,
         };
 
-        const ret = zstdz.c.ZSTD_decompressStream(dctx, &output, &input);
-        if (zstdz.c.ZSTD_isError(ret) != 0) {
-            // The library returns a unique error code for checksum mismatches;
-            // we map all decompression errors to a generic FAIL since the
-            // file's content is corrupt regardless of the specific reason.
-            return ValidationResult.invalidWithDepth(.zstd, "Decompression failed - corrupt data", .full);
-        }
-        last_ret = ret;
-        total_decompressed += output.pos;
+        while (input.pos < input.size) {
+            var output = zstdz.c.ZSTD_outBuffer{
+                .dst = out_buf.ptr,
+                .size = out_size,
+                .pos = 0,
+            };
 
-        // Zip-bomb protection
-        if (total_decompressed > format_validation.MAX_DECOMPRESSED_SIZE) {
-            return ValidationResult.invalidCodeMsgWithDepth(.zstd, .exceeds_bounds, "Decompressed size", "Decompressed size exceeds limit", .structural);
+            const ret = zstdz.c.ZSTD_decompressStream(dctx, &output, &input);
+            if (zstdz.c.ZSTD_isError(ret) != 0) {
+                // The library returns a unique error code for checksum mismatches;
+                // we map all decompression errors to a generic FAIL since the
+                // file's content is corrupt regardless of the specific reason.
+                return ValidationResult.invalidWithDepth(.zstd, "Decompression failed - corrupt data", .full);
+            }
+            last_ret = ret;
+            total_decompressed += output.pos;
+
+            // Zip-bomb protection
+            if (total_decompressed > format_validation.MAX_DECOMPRESSED_SIZE) {
+                return ValidationResult.invalidCodeMsgWithDepth(.zstd, .exceeds_bounds, "Decompressed size", "Decompressed size exceeds limit", .structural);
+            }
         }
+    }
+
+    if (!saw_input) {
+        return ValidationResult.invalidCodeWithDepth(.zstd, .failed_to_read, "file", .structural);
     }
 
     // last_ret == 0 means a complete frame was decoded; non-zero means
