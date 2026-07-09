@@ -4464,27 +4464,23 @@ pub fn validateIcoDeep(allocator: Allocator, source: *FileSource) ValidationResu
             return ValidationResult.invalidCodeMsgWithDepth(.ico, .exceeds_bounds, "Image data", "Image data exceeds file bounds", .structural);
         }
 
-        // Read image data
-        const img_data = allocator.alloc(u8, data_size) catch {
-            return ValidationResult.invalidCodeWithDepth(.ico, .out_of_memory, "for ICO image", .structural);
-        };
-        defer allocator.free(img_data);
-
         source.seekTo(data_offset) catch {
             return ValidationResult.invalidCodeWithDepth(.ico, .failed_to_seek, "to image data", .structural);
         };
-        const img_read = source.readAll(img_data) catch {
+        var img_header: [8]u8 = undefined;
+        const img_header_len: usize = if (data_size < img_header.len) @intCast(data_size) else img_header.len;
+        const img_read = source.readAll(img_header[0..img_header_len]) catch {
             return ValidationResult.invalidCodeWithDepth(.ico, .failed_to_read, "image data", .structural);
         };
-        if (img_read < data_size) {
+        if (img_read < img_header_len) {
             return ValidationResult.invalidCodeWithDepth(.ico, .truncated, "image data", .structural);
         }
 
         // Check if PNG
         const png_sig = [_]u8{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
-        if (data_size >= 8 and std.mem.eql(u8, img_data[0..8], &png_sig)) {
-            // Validate PNG with CRC-32 checking
-            const png_result = validatePngFromBufferDeep(img_data);
+        if (data_size >= png_sig.len and std.mem.eql(u8, img_header[0..png_sig.len], &png_sig)) {
+            // Validate PNG with CRC-32 checking directly from the ICO file range.
+            const png_result = validateEmbeddedPngCrcs(source, data_offset, data_size);
             if (!png_result.is_valid) {
                 return ValidationResult.invalidWithDepth(.ico, "Embedded PNG validation failed", .full);
             }
@@ -4492,8 +4488,8 @@ pub fn validateIcoDeep(allocator: Allocator, source: *FileSource) ValidationResu
             // BMP/DIB entry — no checksums available
             all_png = false;
             // Still validate DIB header structure
-            if (data_size >= 4) {
-                const dib_size = std.mem.readInt(u32, img_data[0..4], .little);
+            if (img_header_len >= 4) {
+                const dib_size = std.mem.readInt(u32, img_header[0..4], .little);
                 if (dib_size != 40 and dib_size != 108 and dib_size != 124 and dib_size != 12) {
                     return ValidationResult.invalidCodeWithDepth(.ico, .invalid_value, "DIB header size", .structural);
                 }
@@ -4525,13 +4521,22 @@ fn validateEmbeddedPngCrcs(file: *FileSource, png_offset: u64, png_size: u64) Em
     // PNG signature is 8 bytes, minimum chunk is 12 bytes (len + type + crc, zero data)
     if (png_size < 20) return invalid;
 
+    var signature: [8]u8 = undefined;
+    file.seekTo(png_offset) catch return invalid;
+    const sig_read = file.readAll(&signature) catch return invalid;
+    if (sig_read < signature.len) return invalid;
+    const png_sig = [_]u8{ 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+    if (!std.mem.eql(u8, &signature, &png_sig)) return invalid;
+
     // Skip 8-byte PNG signature
     var chunk_offset = png_offset + 8;
     const png_end = png_offset + png_size;
     var chunks_checked: u32 = 0;
+    var found_ihdr = false;
+    var found_iend = false;
     var read_buf: [8192]u8 = undefined;
 
-    while (chunk_offset + 12 <= png_end) {
+    while (chunk_offset <= png_end and png_end - chunk_offset >= 12) {
         // Read chunk length (4) + type (4)
         file.seekTo(chunk_offset) catch return invalid;
         var chunk_hdr: [8]u8 = undefined;
@@ -4543,7 +4548,7 @@ fn validateEmbeddedPngCrcs(file: *FileSource, png_offset: u64, png_size: u64) Em
 
         // chunk_offset + 8 (header) + chunk_len (data) + 4 (crc) must fit
         const chunk_total: u64 = 8 + @as(u64, chunk_len) + 4;
-        if (chunk_offset + chunk_total > png_end) return invalid;
+        if (chunk_total > png_end - chunk_offset) return invalid;
 
         // CRC covers type (4 bytes) + data (chunk_len bytes)
         var crc = std.hash.Crc32.init();
@@ -4571,17 +4576,30 @@ fn validateEmbeddedPngCrcs(file: *FileSource, png_offset: u64, png_size: u64) Em
         if (crc_read < 4) return invalid;
         const stored_crc = std.mem.readInt(u32, &stored_crc_buf, .big);
 
-        if (computed_crc != stored_crc)
-            return EmbeddedPngCrcResult{ .is_valid = false, .chunks_checked = chunks_checked };
+        if (computed_crc != stored_crc) {
+            const is_ancillary = (chunk_type[0] & 0x20) != 0;
+            if (!is_ancillary)
+                return EmbeddedPngCrcResult{ .is_valid = false, .chunks_checked = chunks_checked };
+        }
+
+        if (std.mem.eql(u8, chunk_type, "IHDR")) {
+            if (chunks_checked != 0) return invalid;
+            found_ihdr = true;
+        } else if (chunks_checked == 0) {
+            return invalid;
+        } else if (std.mem.eql(u8, chunk_type, "IEND")) {
+            found_iend = true;
+        }
 
         chunks_checked += 1;
         chunk_offset += chunk_total;
 
         // Stop after IEND
-        if (std.mem.eql(u8, chunk_type, "IEND")) break;
+        if (found_iend) break;
+        if (chunks_checked > 10000) return invalid;
     }
 
-    return EmbeddedPngCrcResult{ .is_valid = true, .chunks_checked = chunks_checked };
+    return EmbeddedPngCrcResult{ .is_valid = found_ihdr and found_iend, .chunks_checked = chunks_checked };
 }
 
 /// Deep ICNS validation: entry type codes, embedded PNG/ARGB/JP2 magic, entry coverage.
@@ -6129,6 +6147,86 @@ test "validateIco rejects zero image count" {
     defer source.close();
     const result = validateIco(&source);
     try testing.expect(!result.is_valid);
+}
+
+const ico_png_fixture = [_]u8{
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+    0x00, 0x00, 0x00, 0x0D,
+    'I', 'H', 'D', 'R',
+    0x00, 0x00, 0x00, 0x01,
+    0x00, 0x00, 0x00, 0x01,
+    0x08,
+    0x02,
+    0x00,
+    0x00,
+    0x00,
+    0x90, 0x77, 0x53, 0xDE,
+    0x00, 0x00, 0x00, 0x0C,
+    'I', 'D', 'A', 'T',
+    0x08, 0xD7, 0x63, 0xF8,
+    0xFF, 0xFF, 0x3F, 0x00,
+    0x05, 0xFE, 0x02, 0xFE,
+    0xDC, 0xCC, 0x59, 0xE7,
+    0x00, 0x00, 0x00, 0x00,
+    'I', 'E', 'N', 'D',
+    0xAE, 0x42, 0x60, 0x82,
+};
+
+fn writeIcoWithPng(tmp: *std.testing.TmpDir, name: []const u8, png: []const u8) !void {
+    var header = [_]u8{0} ** 22;
+    header[6] = 1; // width
+    header[7] = 1; // height
+    std.mem.writeInt(u16, header[2..4], 1, .little); // icon type
+    std.mem.writeInt(u16, header[4..6], 1, .little); // image count
+    std.mem.writeInt(u16, header[10..12], 1, .little); // color planes
+    std.mem.writeInt(u16, header[12..14], 32, .little); // bits per pixel
+    std.mem.writeInt(u32, header[14..18], @as(u32, @intCast(png.len)), .little);
+    std.mem.writeInt(u32, header[18..22], @as(u32, @intCast(header.len)), .little);
+
+    const file = try tmp.dir.createFile(runtime.io(), name, .{});
+    defer file.close(runtime.io());
+    try file.writePositionalAll(runtime.io(), &header, 0);
+    try file.writePositionalAll(runtime.io(), png, header.len);
+}
+
+test "validateIcoDeep streams embedded PNG CRCs" {
+    const allocator = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeIcoWithPng(&tmp, "png.ico", &ico_png_fixture);
+
+    const path = runtime.tmpRealpathAlloc(&tmp, allocator, "png.ico") catch return;
+    defer allocator.free(path);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+
+    const result = validateIcoDeep(allocator, &source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(FileFormat.ico, result.format);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateIcoDeep matches in-memory PNG CRC rejection" {
+    const allocator = testing.allocator;
+    var corrupted_png = ico_png_fixture;
+    corrupted_png[32] = 0xFF; // IHDR CRC last byte: was 0xDE
+
+    const png_result = validatePngFromBufferDeep(&corrupted_png);
+    try testing.expect(!png_result.is_valid);
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try writeIcoWithPng(&tmp, "corrupt.ico", &corrupted_png);
+
+    const path = runtime.tmpRealpathAlloc(&tmp, allocator, "corrupt.ico") catch return;
+    defer allocator.free(path);
+    var source = FileSource.open(path) catch return;
+    defer source.close();
+
+    const ico_result = validateIcoDeep(allocator, &source);
+    try testing.expect(!ico_result.is_valid);
+    try testing.expectEqual(FileFormat.ico, ico_result.format);
+    try testing.expectEqual(ValidationDepth.full, ico_result.validation_depth);
 }
 
 // ---- QOI ----
