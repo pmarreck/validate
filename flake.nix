@@ -477,6 +477,24 @@
 							fi
 						'';
 					};
+					cli-tests = pkgs.mkShell {
+						packages = with pkgs; [
+							bash
+							coreutils
+							diffutils
+							findutils
+							gawk
+							git
+							gnugrep
+							gnused
+							brotli
+							ffmpeg
+							luajit
+							openssl
+							qpdf
+							zip
+						];
+					};
 				});
 		};
 }

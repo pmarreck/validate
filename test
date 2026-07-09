@@ -86,8 +86,8 @@ nix build 2>&1 || { echo "Build failed"; exit 1; }
 mkdir -p zig-out/bin
 cp -f result/bin/validate zig-out/bin/validate
 
-echo "=== Running CLI tests via nix develop toolchain ==="
-VALIDATE_BIN="$SCRIPT_DIR/zig-out/bin/validate" nix develop --ignore-env \
+echo "=== Running CLI tests via nix develop .#cli-tests toolchain ==="
+VALIDATE_BIN="$SCRIPT_DIR/zig-out/bin/validate" nix develop .#cli-tests --ignore-env \
 	--keep-env-var VALIDATE_BIN \
 	--keep-env-var TMPDIR \
 	-c bash "$SCRIPT_DIR/test" --cli-only
