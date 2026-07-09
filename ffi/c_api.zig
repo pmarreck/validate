@@ -637,8 +637,10 @@ export fn validate_interrupt() void {
 }
 
 /// Check if interrupt was requested.
-export fn validate_is_interrupted() bool {
-    return g_interrupt_flag.load(.seq_cst);
+/// Returns `c_int` (0/1) to match the C header's `int` prototype — see
+/// `validate_is_rtl` for why a Zig `bool` return across this ABI is unsafe.
+export fn validate_is_interrupted() c_int {
+    return @intFromBool(g_interrupt_flag.load(.seq_cst));
 }
 
 /// Reset interrupt flag (call before starting a new batch).
@@ -871,8 +873,12 @@ export fn validate_set_locale(lang: ?[*:0]const u8) void {
 }
 
 /// Check if the current locale is a right-to-left language.
-export fn validate_is_rtl() bool {
-    return i18n.getLocale().isRtl();
+/// Returns `c_int` (0/1) — NOT Zig `bool` — because the C header prototypes this
+/// as `int`. A 1-byte Zig `bool` return leaves the upper bytes of the return
+/// register undefined; a C caller reading a full `int` then saw stale nonzero
+/// garbage and treated every locale as RTL. Match the C ABI exactly.
+export fn validate_is_rtl() c_int {
+    return @intFromBool(i18n.getLocale().isRtl());
 }
 
 /// Get a translated string by numeric ID.

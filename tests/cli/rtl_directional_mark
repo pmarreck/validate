@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Regression: the U+200F RIGHT-TO-LEFT MARK (RLM) prefix on result lines must
+# appear ONLY for RTL locales, never for LTR ones.
+#
+# Root cause of the original bug: `validate_is_rtl()` was declared `export fn
+# ... bool` in Zig but prototyped `int validate_is_rtl(void)` in the C header.
+# Zig's 1-byte bool return leaves the upper bytes of the return register
+# undefined; the C CLI read a full `int`, saw stale nonzero garbage, and treated
+# EVERY locale as RTL — so every OK/FAIL line got an RLM prefix, breaking every
+# downstream tool (and test) that anchors on `^OK` / `^FAIL`.
+#
+# This is a classifier-over-sets test: the mark is a function of locale
+# directionality, so we assert it across a SET of LTR locales (must be absent)
+# and a SET of RTL locales (must be present) — not a single example.
+set -u
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+if [[ ! -x "$BIN" && -x "./zig-out/bin/validate.exe" ]]; then BIN="./zig-out/bin/validate.exe"; fi
+if [[ ! -x "$BIN" ]]; then
+	echo "FAIL: validate binary not found at $BIN"
+	exit 1
+fi
+
+PASS=0
+FAIL=0
+pass() { printf '  PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
+fail() { printf 'FAIL: %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_rtl_test.XXXXXX")"
+trap 'mv "$tmpdir" ~/.Trash/ 2>/dev/null || rm -rf "$tmpdir"' EXIT
+
+sample="$tmpdir/hermetic.txt"
+printf 'hello world\nthis is a plain text file\n' > "$sample"
+
+RLM_HEX="e2808f" # U+200F in UTF-8
+
+# leading_is_rlm LANG_ARGS...  -> echoes "yes" if the status line for $sample
+# begins with the RLM, "no" otherwise. Isolates the result line by matching the
+# sample's basename (skips the "# validate sha256:" and "Checking:" lines).
+leading_is_rlm() {
+	local hex
+	hex="$(MUTE_DEBUG_STATUS=1 "$BIN" "$@" --no-color "$sample" 2>/dev/null \
+		| grep -a 'hermetic.txt' | grep -aE 'OK|WARN|FAIL' | head -1 \
+		| head -c3 | od -An -tx1 -v | tr -d '[:space:]')"
+	if [[ "$hex" == "$RLM_HEX" ]]; then echo yes; else echo no; fi
+}
+
+# LTR set: the RLM must be ABSENT. Includes the default (no --lang → env
+# detection under the test harness's en_US locale) plus explicit LTR locales.
+echo "LTR locales must NOT emit the RLM prefix:"
+# default (env detection)
+if [[ "$(leading_is_rlm)" == "no" ]]; then
+	pass "default locale (LTR) — no RLM"
+else
+	fail "default locale emitted an RLM prefix (validate_is_rtl bool/int ABI bug?)"
+fi
+for L in en de ja fr es zh_hans; do
+	if [[ "$(leading_is_rlm --lang "$L")" == "no" ]]; then
+		pass "--lang $L (LTR) — no RLM"
+	else
+		fail "--lang $L (LTR) emitted an RLM prefix"
+	fi
+done
+
+# RTL set: the RLM must be PRESENT (the feature genuinely helps mixed-direction
+# rendering in a right-to-left terminal). All five baseline RTL locales.
+echo "RTL locales MUST emit the RLM prefix:"
+for L in ar he fa ps ur; do
+	if [[ "$(leading_is_rlm --lang "$L")" == "yes" ]]; then
+		pass "--lang $L (RTL) — RLM present"
+	else
+		fail "--lang $L (RTL) missing the RLM prefix"
+	fi
+done
+
+# NO_BIDI must suppress the mark even for an RTL locale. Export it into a
+# subshell so it reaches the $BIN child process unambiguously.
+echo "NO_BIDI overrides RTL:"
+nobidi_ar="$(export NO_BIDI=1; leading_is_rlm --lang ar)"
+if [[ "$nobidi_ar" == "no" ]]; then
+	pass "NO_BIDI=1 --lang ar — RLM suppressed"
+else
+	fail "NO_BIDI=1 did not suppress the RLM for --lang ar"
+fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"
