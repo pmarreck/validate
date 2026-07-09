@@ -1210,8 +1210,16 @@ pub fn validateCsv(file: *FileSource) ValidationResult {
     const content = getFileContent(file, max_sample_size, &heap_buf) orelse blk: {
         // File larger than sample — use mmap range or read sample
         if (file.getMappedRange(0, max_sample_size)) |mapped| break :blk mapped;
-        return ValidationResult.invalidCode(.csv, .failed_to_read, "file");
+        const sample = heap.validateAllocator().alloc(u8, @intCast(max_sample_size)) catch {
+            return ValidationResult.invalidCode(.csv, .failed_to_allocate, "sample buffer");
+        };
+        heap_buf = sample;
+        file.seekTo(0) catch return ValidationResult.invalidCode(.csv, .failed_to_read, "file");
+        const n = file.readAll(sample) catch return ValidationResult.invalidCode(.csv, .failed_to_read, "file");
+        if (n == 0) return ValidationResult.invalidCode(.csv, .failed_to_read, "file");
+        break :blk sample[0..n];
     };
+    const sampled_prefix = file_sz > content.len;
 
     // Handle UTF-16/BOM
     var conv_buf: []u8 = undefined;
@@ -1299,6 +1307,9 @@ pub fn validateCsv(file: *FileSource) ValidationResult {
 
     // Check for unclosed quote
     if (in_quotes) {
+        if (sampled_prefix and row_count > 0) {
+            return ValidationResult.okWithDepth(.csv, .structural);
+        }
         return ValidationResult.invalid(.csv, "Unclosed quoted field");
     }
 

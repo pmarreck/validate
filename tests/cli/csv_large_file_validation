@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Regression: CSV files larger than the 1 MiB structural sample must still be
+# readable when FileSource falls back to regular file I/O instead of mmap.
+set -u
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_csv_large.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+sample="$tmpdir/large.csv"
+i=0
+while [ "$i" -lt 120000 ]; do
+	printf '%s,"row %s"\n' "$i" "$i"
+	i=$((i + 1))
+done > "$sample"
+
+if [ "$(wc -c < "$sample" | tr -d ' ')" -le 1048576 ]; then
+	echo "FAIL: generated CSV did not exceed 1 MiB"
+	exit 1
+fi
+
+output="$(MUTE_DEBUG_STATUS=1 "$BIN" --no-color "$sample" 2>&1)"
+if printf '%s\n' "$output" | grep -q '^OK .*CSV Data'; then
+	echo "PASS: large CSV validates"
+	exit 0
+fi
+
+echo "FAIL: large CSV did not validate"
+printf '%s\n' "$output"
+exit 1
