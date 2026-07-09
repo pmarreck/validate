@@ -40,6 +40,10 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
 	echo "SKIP: ffmpeg not available, cannot generate Theora samples"
 	exit 0
 fi
+if ! command -v luajit >/dev/null 2>&1; then
+	echo "SKIP: luajit not available, cannot locate Theora codec_private"
+	exit 0
+fi
 
 # Generate Theora OGV + MKV samples (~3 seconds, DCT-rich testsrc input).
 OGV="$tmpdir/theora_sample.ogv"
@@ -88,15 +92,14 @@ rc=$?
 # the info-header packet that holds the format-version major number).
 # Theora rejects any version != 3.x with TH_EBADHEADER.
 # Locate the Theora info-header magic "\x80theora" in the file.
-# perl -ne is a more portable way to search for binary patterns than grep.
-codec_priv_off_in_file=$(perl -e '
-	open(my $fh, "<", $ARGV[0]) or die;
-	binmode($fh);
-	local $/;
-	my $data = <$fh>;
-	my $i = index($data, "\x80theora");
-	exit 1 if $i < 0;
-	print $i;
+codec_priv_off_in_file=$(luajit -e '
+	local path = arg[1]
+	local fh = assert(io.open(path, "rb"))
+	local data = fh:read("*a")
+	fh:close()
+	local i = data:find("\128theora", 1, true)
+	if not i then os.exit(1) end
+	io.write(tostring(i - 1))
 ' "$MKV" 2>/dev/null)
 if [[ -n "$codec_priv_off_in_file" ]]; then
 	# Theora info header packet layout:

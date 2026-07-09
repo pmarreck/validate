@@ -9,7 +9,7 @@ const std = @import("std");
 //             --disable-multithread
 // The pre-generated config/*.h and vpx_config.c were produced by that
 // configure+make and are vendored in deps/libvpx/config/ so the Zig build
-// needs neither perl nor a configure step at build time.
+// needs neither ad-hoc generators nor a configure step at build time.
 
 pub fn build(b: *std.Build) void {
 	const target = b.standardTargetOptions(.{});

@@ -27,7 +27,7 @@ random_blob() {
 	local name="$1"
 	local nbytes="$2"
 	local key
-	key=$(printf '%s' "numbers-ground-truth-$name" | shasum -a 256 | awk '{print $1}')
+	key=$(printf '%s' "numbers-ground-truth-$name" | sha256sum | awk '{print $1}')
 	head -c "$nbytes" /dev/zero \
 		| openssl enc -aes-256-ctr -K "$key" \
 			-iv 00000000000000000000000000000000 -nopad 2>/dev/null

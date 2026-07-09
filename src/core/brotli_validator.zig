@@ -213,7 +213,7 @@ test "validate minimal Brotli stream" {
 
 test "validate simple Brotli stream" {
 	// Pre-compressed "Hello" using brotli at quality 0
-	// Generated with: echo -n "Hello" | brotli -q 0 | xxd -i
+	// Generated with brotli -q 0 and recorded as byte literals.
 	const hello_brotli = [_]u8{
 		0x0b, 0x02, 0x80, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x03,
 	};

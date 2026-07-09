@@ -1,10 +1,53 @@
 #!/usr/bin/env bash
 # Run the full test suite via Nix (sandboxed, deterministic).
-# Does NOT use `nix develop` to avoid host OS version detection issues.
+# Zig build/test phases use `nix build`; CLI tests run under `nix develop
+# --ignore-env` so test tools come from the flake, not the host profile.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+run_cli_tests() {
+	local cli_failures=0
+	local cli_skipped=0
+
+	if [[ -d tests/cli ]]; then
+		echo "=== Running CLI tests ==="
+		for test_script in tests/cli/*; do
+			if [[ -x "$test_script" ]]; then
+				test_name="$(basename "$test_script")"
+				VALIDATE_BIN="${VALIDATE_BIN:-./zig-out/bin/validate}" "$test_script" > /dev/null 2>&1
+				rc=$?
+				if [[ $rc -eq 0 ]]; then
+					echo "  PASS: $test_name"
+				elif [[ $rc -eq 77 ]]; then
+					# Exit 77 = loud SKIP (e.g. ground-truth fixture not provisioned).
+					echo "  SKIP: $test_name (fixture unavailable)"
+					((cli_skipped++)) || true
+				else
+					echo "  FAIL: $test_name"
+					((cli_failures++)) || true
+				fi
+			fi
+		done
+	fi
+
+	if [[ $cli_skipped -gt 0 ]]; then
+		echo "=== $cli_skipped CLI test(s) SKIPPED (provision ../validate_gui for full coverage) ==="
+	fi
+
+	if [[ $cli_failures -gt 0 ]]; then
+		echo "=== $cli_failures CLI test(s) FAILED ==="
+		return "$cli_failures"
+	fi
+
+	echo "=== All tests passed ==="
+}
+
+if [[ "${1:-}" == "--cli-only" ]]; then
+	run_cli_tests
+	exit $?
+fi
 
 # Detect system
 system=$(nix eval --raw 'nixpkgs#system' 2>/dev/null || echo "aarch64-darwin")
@@ -43,36 +86,8 @@ nix build 2>&1 || { echo "Build failed"; exit 1; }
 mkdir -p zig-out/bin
 cp -f result/bin/validate zig-out/bin/validate
 
-cli_failures=0
-cli_skipped=0
-if [[ -d tests/cli ]]; then
-	echo "=== Running CLI tests ==="
-	for test_script in tests/cli/*; do
-		if [[ -x "$test_script" ]]; then
-			test_name="$(basename "$test_script")"
-			VALIDATE_BIN=./zig-out/bin/validate "$test_script" > /dev/null 2>&1
-			rc=$?
-			if [[ $rc -eq 0 ]]; then
-				echo "  PASS: $test_name"
-			elif [[ $rc -eq 77 ]]; then
-				# Exit 77 = loud SKIP (e.g. ground-truth fixture not provisioned).
-				echo "  SKIP: $test_name (fixture unavailable)"
-				((cli_skipped++)) || true
-			else
-				echo "  FAIL: $test_name"
-				((cli_failures++)) || true
-			fi
-		fi
-	done
-fi
-
-if [[ $cli_skipped -gt 0 ]]; then
-	echo "=== $cli_skipped CLI test(s) SKIPPED (provision ../validate_gui for full coverage) ==="
-fi
-
-if [[ $cli_failures -gt 0 ]]; then
-	echo "=== $cli_failures CLI test(s) FAILED ==="
-	exit $cli_failures
-fi
-
-echo "=== All tests passed ==="
+echo "=== Running CLI tests via nix develop toolchain ==="
+VALIDATE_BIN="$SCRIPT_DIR/zig-out/bin/validate" nix develop --ignore-env \
+	--keep-env-var VALIDATE_BIN \
+	--keep-env-var TMPDIR \
+	-c bash "$SCRIPT_DIR/test" --cli-only

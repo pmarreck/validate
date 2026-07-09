@@ -32,8 +32,7 @@
 //! Options for future deep content validation:
 //! 1. libgsf (GNOME Structured File Library) - C, full OLE2 + content
 //! 2. Apache POI (Java) - comprehensive but heavy
-//! 3. python-oletools - good for analysis, not validation
-//! 4. Native Zig implementation - significant effort (~2000+ lines per format)
+//! 3. Native Zig implementation - significant effort (~2000+ lines per format)
 //!
 //! References:
 //! - [MS-CFB]: Compound File Binary File Format

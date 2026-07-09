@@ -83,32 +83,52 @@ if [[ "${sz:-0}" -lt 12288 ]]; then
 	exit "$FAIL"
 fi
 
+read_byte() {
+	local file="$1" off="$2" byte
+	byte=$(od -An -tu1 -j "$off" -N1 "$file" | tr -d '[:space:]')
+	if [[ -z "$byte" ]]; then
+		printf 'read_byte failed at offset %s in %s\n' "$off" "$file" >&2
+		return 1
+	fi
+	printf '%s\n' "$byte"
+}
+
+write_byte() {
+	local file="$1" off="$2" val="$3" oct
+	printf -v oct '%03o' "$((val & 0xff))"
+	printf "\\$oct" | dd of="$file" bs=1 seek="$off" conv=notrunc 2>/dev/null
+}
+
+flip_byte() {
+	local file="$1" off="$2" orig
+	orig=$(read_byte "$file" "$off") || return 1
+	write_byte "$file" "$off" "$((orig ^ 0xff))"
+}
+
 # Helper: write a u32 LE at given offset in a copy.
 write_u32_le() {
 	local file="$1" off="$2" val="$3"
-	python3 -c "
-import struct, sys
-data = bytearray(open('${file}','rb').read())
-data[${off}:${off}+4] = struct.pack('<I', ${val} & 0xFFFFFFFF)
-open('${file}','wb').write(data)
-"
+	write_byte "$file" "$off" "$val" || return 1
+	write_byte "$file" "$((off + 1))" "$((val >> 8))" || return 1
+	write_byte "$file" "$((off + 2))" "$((val >> 16))" || return 1
+	write_byte "$file" "$((off + 3))" "$((val >> 24))"
 }
 
 write_u16_le() {
 	local file="$1" off="$2" val="$3"
-	python3 -c "
-import struct, sys
-data = bytearray(open('${file}','rb').read())
-data[${off}:${off}+2] = struct.pack('<H', ${val} & 0xFFFF)
-open('${file}','wb').write(data)
-"
+	write_byte "$file" "$off" "$val" || return 1
+	write_byte "$file" "$((off + 1))" "$((val >> 8))"
+}
+
+read_u16_le() {
+	local file="$1" off="$2" b0 b1
+	b0=$(read_byte "$file" "$off") || return 1
+	b1=$(read_byte "$file" "$((off + 1))") || return 1
+	printf '%d\n' "$((b0 | (b1 << 8)))"
 }
 
 # Detect file version to pick correct field offsets.
-version=$(python3 -c "
-import struct
-print(struct.unpack('<H', open('${SAMPLE}','rb').read()[4:6])[0])
-")
+version=$(read_u16_le "$SAMPLE" 4)
 
 if [[ "$version" -ge 3980 ]]; then
 	echo "  detected modern APE (v${version})"
@@ -167,11 +187,7 @@ fi
 # 5. Magic byte corruption — must be rejected
 bad_magic="$tmpdir/bad_magic.ape"
 cp "$SAMPLE" "$bad_magic"
-python3 -c "
-data = bytearray(open('${bad_magic}','rb').read())
-data[1] = ord('X')
-open('${bad_magic}','wb').write(data)
-"
+write_byte "$bad_magic" 1 88
 if ! "$BIN" "$bad_magic" >/dev/null 2>&1; then
 	pass "MAC magic byte corruption rejected"
 else
@@ -193,13 +209,7 @@ fi
 mid_flip="$tmpdir/mid_flip.ape"
 cp "$SAMPLE" "$mid_flip"
 flip_off=$((sz - 2000))
-python3 -c "
-with open('$mid_flip', 'r+b') as f:
-    f.seek($flip_off)
-    b = f.read(1)
-    f.seek($flip_off)
-    f.write(bytes([b[0] ^ 0xff]))
-"
+flip_byte "$mid_flip" "$flip_off"
 if ! "$BIN" "$mid_flip" >/dev/null 2>&1; then
 	pass "mid-frame bit flip detected (per-frame CRC32-over-PCM)"
 else

@@ -5,14 +5,14 @@ set -u
 VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
 
 # Get validate's self-reported hash from its first line of output
-reported_hash=$("$VALIDATE" --help 2>&1 | head -1 | grep -oP 'sha256:\K[0-9a-f]{64}')
+reported_hash=$("$VALIDATE" --help 2>&1 | sed -n '1s/^# validate sha256:\([0-9a-f]\{64\}\)$/\1/p')
 if [[ -z "$reported_hash" ]]; then
 	echo "FAIL: validate did not output self-hash"
 	exit 1
 fi
 
 # Compute the actual hash
-actual_hash=$(shasum -a 256 "$VALIDATE" | awk '{print $1}')
+actual_hash=$(sha256sum "$VALIDATE" | awk '{print $1}')
 
 if [[ "$reported_hash" == "$actual_hash" ]]; then
 	echo "PASS: self-hash matches ($reported_hash)"

@@ -85,19 +85,43 @@ if [[ "${sz:-0}" -lt 12288 ]]; then
 	exit "$FAIL"
 fi
 
+read_byte() {
+	local file="$1" off="$2" byte
+	byte=$(od -An -tu1 -j "$off" -N1 "$file" | tr -d '[:space:]')
+	if [[ -z "$byte" ]]; then
+		printf 'read_byte failed at offset %s in %s\n' "$off" "$file" >&2
+		return 1
+	fi
+	printf '%s\n' "$byte"
+}
+
+read_u32_le() {
+	local file="$1" off="$2" b0 b1 b2 b3
+	b0=$(read_byte "$file" "$off") || return 1
+	b1=$(read_byte "$file" "$((off + 1))") || return 1
+	b2=$(read_byte "$file" "$((off + 2))") || return 1
+	b3=$(read_byte "$file" "$((off + 3))") || return 1
+	printf '%d\n' "$((b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)))"
+}
+
+write_byte() {
+	local file="$1" off="$2" val="$3" oct
+	printf -v oct '%03o' "$((val & 0xff))"
+	printf "\\$oct" | dd of="$file" bs=1 seek="$off" conv=notrunc 2>/dev/null
+}
+
+flip_byte() {
+	local file="$1" off="$2" orig
+	orig=$(read_byte "$file" "$off") || return 1
+	write_byte "$file" "$off" "$((orig ^ 0xff))"
+}
+
 # 2. Mid-stream single-byte flip in the bitstream payload of block 3
 #    (offset ~50 KB in the corpus) must be caught.
 mid_flip="$tmpdir/mid_flip.wv"
 cp "$SAMPLE" "$mid_flip"
 flip_off=$((sz / 2 + 100))
-python3 -c "
-import sys
-with open('$mid_flip', 'r+b') as f:
-    f.seek($flip_off)
-    b = f.read(1)
-    f.seek($flip_off)
-    f.write(bytes([b[0] ^ 0xff]))
-" 2>/dev/null
+flip_byte "$mid_flip" "$flip_off"
 if ! "$BIN" "$mid_flip" >/dev/null 2>&1; then
 	pass "mid-block byte flip detected"
 else
@@ -111,21 +135,10 @@ hdr_tamper="$tmpdir/hdr_tamper.wv"
 cp "$SAMPLE" "$hdr_tamper"
 # Find second block start. Block 1 is at offset 0; block_size is at offset 4 (u32 LE)
 # so block 2 starts at 8 + block_size.
-block2_start=$(python3 -c "
-import struct
-with open('$hdr_tamper', 'rb') as f:
-    data = f.read()
-bs = struct.unpack('<I', data[4:8])[0]
-print(8 + bs)
-")
+block_size=$(read_u32_le "$hdr_tamper" 4)
+block2_start=$((8 + block_size))
 crc_off=$((block2_start + 28))
-python3 -c "
-with open('$hdr_tamper', 'r+b') as f:
-    f.seek($crc_off)
-    b = f.read(4)
-    f.seek($crc_off)
-    f.write(bytes([b[0] ^ 0xff, b[1], b[2], b[3]]))
-"
+flip_byte "$hdr_tamper" "$crc_off"
 if ! "$BIN" "$hdr_tamper" >/dev/null 2>&1; then
 	pass "block-header CRC field tamper detected"
 else

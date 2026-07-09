@@ -12,7 +12,8 @@
 > or superpowers:executing-plans. Steps use checkbox (`- [ ]`) tracking.
 > **Hard rule (see MISTAKES.md):** gate EVERY commit on a green
 > `nix build .#checks.aarch64-darwin.test` (exit 0) BEFORE `git commit`. Use
-> assert-gated exact-match edits (python `count==1` replace), not multi-sub perl.
+> assert-gated exact-match edits (checked `count==1` replacement), not
+> multi-substitution one-liners.
 
 ---
 
@@ -144,7 +145,7 @@ actual LFH extra bytes to the CD extra bytes.
 
 - [ ] Locate where the loop currently skips the LFH extra (search for the `seekBy`/skip of `local_extra_len`). Replace with: read `local_extra_len` LFH bytes into a stack buffer (cap ~256; fall back to skip if larger), compare to the CD extra bytes (capture CD extra into a buffer when the CD entry is parsed — verify whether CD extra is currently read or skipped; it may need capturing).
 - [ ] On mismatch (lengths equal, bytes differ): set `deferred_warning` (same mechanism as Phase 3) with `"ZIP extra-field content mismatch (central vs local)"`.
-- [ ] Fixture `lfh_extra_byte_flip.zip`: needs an entry WITH an extra field present in both LFH and CD of equal length (use python `zipfile` or `zip` with a UID/GID `0x7875` extra), then flip one byte inside the LFH extra only.
+- [ ] Fixture `lfh_extra_byte_flip.zip`: needs an entry WITH an extra field present in both LFH and CD of equal length (for example, `zip` with a UID/GID `0x7875` extra), then flip one byte inside the LFH extra only.
 - [ ] Default-mode WARN test + ground-truth no-regress. Commit.
 
 ---

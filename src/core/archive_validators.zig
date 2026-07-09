@@ -5403,7 +5403,7 @@ test "FormatValidator accepts valid gzip file" {
     defer tmp_dir.cleanup();
 
     // Minimal valid gzip file containing "Hello" (deflated)
-    // Created with: echo -n "Hello" | gzip | xxd -i
+    // Created with gzip and recorded as byte literals.
     const valid_gzip = [_]u8{
         0x1f, 0x8b, // magic number
         0x08, // compression method (deflate)

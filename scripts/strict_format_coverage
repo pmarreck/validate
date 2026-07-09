@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 
 if [[ -z "${VALIDATE_NIX:-}" ]]; then
-	exec env VALIDATE_NIX=1 nix develop -c "$0" "$@"
+	exec nix develop --ignore-env \
+		--keep-env-var VALIDATE_BIN \
+		--keep-env-var GT_DIR \
+		--keep-env-var RESULTS_FILE \
+		--keep-env-var REPORT_FILE \
+		--keep-env-var OPACITY_FILE \
+		--keep-env-var STRICT \
+		--keep-env-var TMPDIR \
+		-c env VALIDATE_NIX=1 "$0" "$@"
 fi
 
 set -euo pipefail

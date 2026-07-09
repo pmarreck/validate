@@ -25,11 +25,17 @@ for binary in "$@"; do
 	fi
 
 	# Compute SHA-256 of the binary
-	hash_hex=$(shasum -a 256 "$binary" | awk '{print $1}')
+	hash_hex=$(sha256sum "$binary" | awk '{print $1}')
 
 	# Convert hex to raw bytes and append marker + hash
 	printf '%s' "$MARKER" >> "$binary"
-	echo -n "$hash_hex" | xxd -r -p >> "$binary"
+	printf '%s' "$hash_hex" | luajit -e '
+local hex = io.read("*a"):gsub("%s+", "")
+assert(#hex % 2 == 0, "hex input must have an even number of digits")
+for i = 1, #hex, 2 do
+	io.write(string.char(assert(tonumber(hex:sub(i, i + 1), 16))))
+end
+' >> "$binary"
 
 	echo "SIGNED: $binary (sha256:$hash_hex)"
 done

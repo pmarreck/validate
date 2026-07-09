@@ -41,7 +41,7 @@ reassemble_one() {
 	# Fast path: target exists and matches — nothing to do.
 	if [ -f "$target" ]; then
 		local have
-		have="$(shasum -a 256 "$target" | awk '{print $1}')"
+		have="$(sha256sum "$target" | awk '{print $1}')"
 		if [ "$have" = "$expected" ]; then
 			printf 'ok:      %s (already reassembled)\n' "$target"
 			return 0
@@ -61,7 +61,7 @@ reassemble_one() {
 
 	cat "${chunks[@]}" > "$target"
 	local got
-	got="$(shasum -a 256 "$target" | awk '{print $1}')"
+	got="$(sha256sum "$target" | awk '{print $1}')"
 	if [ "$got" != "$expected" ]; then
 		printf 'error:   %s reassembly hash mismatch\n         expected %s\n         got      %s\n' \
 			"$target" "$expected" "$got" >&2

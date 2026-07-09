@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regenerate encrypted PDF fixtures used by Bug #64 (per-stream decryption) tests.
-# Requires qpdf on PATH (qpdf 12.x). Empty user+owner password (the common
+# Requires flake-provided qpdf. Empty user+owner password (the common
 # owner-protected case that opens without prompting).
 #
 # Fixtures land in src/core/fixtures/ and are @embedFile'd by
@@ -14,7 +14,7 @@ SRC="$ROOT/ground_truth_examples/pdf/alice_in_wonderland_illustrated.pdf"
 DST="$ROOT/src/core/fixtures"
 
 if ! command -v qpdf >/dev/null 2>&1; then
-	echo "ERROR: qpdf not on PATH (need qpdf 12.x). Try: nix shell nixpkgs#qpdf" >&2
+	echo "ERROR: qpdf not on PATH (need qpdf 12.x). Run via: nix develop --ignore-env -c $0" >&2
 	exit 1
 fi
 if [ ! -f "$SRC" ]; then

@@ -195,7 +195,7 @@ test "validateOrfBitstream: first pixel from E-PL1 matches reference" {
 	const data = [_]u8{ 0x67, 0x08, 0x81, 0x86, 0x52, 0xe9, 0x68, 0x76, 0xc6, 0xcd, 0x47, 0x5d, 0x2e, 0x08, 0xdb, 0x26 };
 
 	// Decode a 1-pixel image to check the first value
-	// Python reference: col=0 → pixel=179 (sign=0, high=2, low=3, diff=44, pred=0)
+	// Reference decode: col=0 -> pixel=179 (sign=0, high=2, low=3, diff=44, pred=0)
 	// This should NOT overflow at 12-bit (179 < 4096)
 	const result = validateOrfBitstream(&data, 1, 1, 12);
 	// Should succeed for a single pixel

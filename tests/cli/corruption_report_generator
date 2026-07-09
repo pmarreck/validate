@@ -58,7 +58,7 @@ post="$rd/generated/report-postamble.md"; printf '## Postamble\n\nEnd.\n' > "$po
 # Case 1: explicit flags, write to an --out file
 # ===========================================================================
 out="$work/out.md"
-nix develop -c luajit "$GEN" --rows "$rows" --results-dir "$rd" --preamble "$pre" --postamble "$post" --out "$out" 2>"$work/err"
+luajit "$GEN" --rows "$rows" --results-dir "$rd" --preamble "$pre" --postamble "$post" --out "$out" 2>"$work/err"
 rc=$?
 [ $rc -eq 0 ] || { fail "generator exited $rc; stderr: $(cat "$work/err")"; echo "$fails"; exit "$fails"; }
 [ -f "$out" ] || fail "--out did not write the report file"
@@ -81,7 +81,7 @@ grep -qF '### Image & Photo' "$out" && pass "section heading" || fail "section h
 # ===========================================================================
 envout="$work/env-report.md"
 VALIDATE_SWEEP_RESULTS_DIR="$rd" VALIDATE_CORRUPTION_REPORT="$envout" \
-	nix develop -c luajit "$GEN" 2>"$work/enverr"
+	luajit "$GEN" 2>"$work/enverr"
 rc=$?
 [ $rc -eq 0 ] || fail "env-var run exited $rc; stderr: $(cat "$work/enverr")"
 [ -f "$envout" ] || fail "VALIDATE_CORRUPTION_REPORT path not written"
@@ -90,11 +90,11 @@ grep -qF '| Format | Sniper | Bolter | Shotgun | Sample | Size | Run | Mechanism
 # flag must override env: --out beats $VALIDATE_CORRUPTION_REPORT
 flagout="$work/flag-wins.md"
 VALIDATE_CORRUPTION_REPORT="$work/should-not-exist.md" \
-	nix develop -c luajit "$GEN" --rows "$rows" --results-dir "$rd" --preamble "$pre" --postamble "$post" --out "$flagout" 2>/dev/null
+	luajit "$GEN" --rows "$rows" --results-dir "$rd" --preamble "$pre" --postamble "$post" --out "$flagout" 2>/dev/null
 { [ -f "$flagout" ] && [ ! -f "$work/should-not-exist.md" ]; } && pass "--out overrides env var" || fail "flag did not override env var"
 
 # stdout sink
-VALIDATE_SWEEP_RESULTS_DIR="$rd" nix develop -c luajit "$GEN" --out - 2>/dev/null | grep -qF '### Image & Photo' \
+VALIDATE_SWEEP_RESULTS_DIR="$rd" luajit "$GEN" --out - 2>/dev/null | grep -qF '### Image & Photo' \
 	&& pass "--out - writes to stdout" || fail "--out - did not write to stdout"
 
 if [ "$fails" -gt 0 ]; then echo "=== $fails assertion(s) failed ==="; exit 1; fi

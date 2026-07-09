@@ -204,12 +204,13 @@ non-draining work set"** — is a reusable signature for *any* rotation/journal/
 cd ~/Library/Metadata/CoreSpotlight
 for dom in */index.spotlightV3; do
   for f in "$dom"/*.ivf-vector-indexes; do
-    python3 - "$f" <<'PY'
-import sys,struct
-b=open(sys.argv[1],'rb').read(); v=list(struct.unpack('<%dI'%(len(b)//4), b[:len(b)//4*4]))
-gen=v[0]; ids=[v[i] for i in range(2,len(v)-1,2) if v[i]!=0]
-print(f"{sys.argv[1]:70s} gen={gen:4d} live_ids={ids}")
-PY
+    od -An -tu4 -v "$f" | awk -v path="$f" '
+      { for (i = 1; i <= NF; i++) v[++n] = $i }
+      END {
+        printf "%-70s gen=%4d live_ids=", path, v[1]
+        for (i = 3; i < n; i += 2) if (v[i] != 0) printf "%s%d", sep, v[i]; sep=","
+        printf "\n"
+      }'
   done
 done
 ```

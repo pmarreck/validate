@@ -62,13 +62,13 @@ A running log of mistakes made while working on `validate`, so future sessions
 ## 2026-05-30 — Never trust `git commit` exit code as proof of correctness
 
 **What happened:** While wiring V=5 AES-256 decryption into the PDF font and
-image deep validators, I edited the files with fragile multi-substitution perl
-(a heredoc with an unbalanced `}` terminator for the font file; a perl with 9
-chained `s///` for the image file where only 3 matched). Both **silently
-corrupted** the source — the font file was emptied to 0 lines, the image file
-truncated to 13 — yet `git commit` returned **exit 0** for both, because git
-will happily commit a broken/empty file. I saw `commit=0`, assumed success,
-and moved on. The breakage only surfaced on the next `nix build`:
+image deep validators, I edited the files with fragile multi-substitution
+one-liners (an unbalanced heredoc terminator for the font file; another edit
+with 9 chained substitutions where only 3 matched). Both **silently corrupted**
+the source — the font file was emptied to 0 lines, the image file truncated to
+13 — yet `git commit` returned **exit 0** for both, because git will happily
+commit a broken/empty file. I saw `commit=0`, assumed success, and moved on.
+The breakage only surfaced on the next `nix build`:
 `pdf_font_validator has no member validatePdfFonts`,
 `pdf_image_validator has no member ImageValidationResult`.
 
@@ -82,12 +82,13 @@ non-compiling commits to `yolo`.
    0 *before* `git add`/`git commit`. If the build fails, do not commit.
 2. For TDD steps, also red-proof: break the new assertion, confirm the build
    FAILS, restore, confirm it passes — *then* commit.
-3. **Prefer `python3` exact-string replace with a `count == 1` assertion** over
-   multi-substitution perl. The assertion aborts the write if the anchor isn't
-   uniquely present, so a bad anchor leaves the file untouched instead of
-   silently mangling it. One edit → one build → one commit.
-4. Avoid bash heredocs embedded in perl `-e`; quoting/terminator errors there
-   fail in ways that still produce output and a zero-ish exit.
+3. **Prefer single-purpose, checked edits over multi-substitution one-liners.** Use
+   `apply_patch` for manual changes, or a flake-provided lightweight tool with
+   an explicit "exactly one match" guard for mechanical edits. The guard should
+   abort before writing if the anchor isn't unique. One edit → one build → one
+   commit.
+4. Avoid shell heredocs embedded inside ad-hoc edit programs; quoting/terminator
+   errors there fail in ways that still produce output and a zero-ish exit.
 
 **Recovery that worked:** `git reset --hard <last-known-good-commit>` (the two
 broken commits were the two HEAD commits, nothing good above them), verify the

@@ -16,12 +16,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 tmp="$(mktemp "${TMPDIR:-/tmp}/report-regen.XXXXXX.md")"
 trap 'rm -f "$tmp"' EXIT
 
-# luajit is in the nix dev shell; prefer it directly, fall back to nix develop.
-if command -v luajit >/dev/null 2>&1; then
-	( cd "$ROOT" && luajit scripts/generate-corruption-report --out "$tmp" ) >/dev/null 2>&1
-else
-	( cd "$ROOT" && nix develop -c luajit scripts/generate-corruption-report --out "$tmp" ) >/dev/null 2>&1
-fi
+( cd "$ROOT" && luajit scripts/generate-corruption-report --out "$tmp" ) >/dev/null 2>&1
 rc=$?
 if [ $rc -ne 0 ]; then
 	echo "FAIL: generate-corruption-report exited $rc" >&2

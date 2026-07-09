@@ -25,7 +25,7 @@ split_dir="${file}.split"
 chunk_size="40m"
 
 # Compute current sha256 of the original
-new_hash=$(shasum -a 256 "$file" | awk '{print $1}')
+new_hash=$(sha256sum "$file" | awk '{print $1}')
 if [ -z "$new_hash" ]; then
 	printf 'error: failed to hash %s\n' "$file" >&2
 	exit 1

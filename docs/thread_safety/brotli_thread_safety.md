@@ -251,16 +251,11 @@ synchronized (mutex) { ... }  // Explicit synchronization used
 
 **Assessment:** The Java bindings explicitly document that stream wrappers are NOT thread-safe (single instance should not be used from multiple threads concurrently), but the underlying C library can be called from multiple threads with different state instances.
 
-#### 5.2 Python Binding
+#### 5.2 Additional Binding Evidence
 
-**Location:** `/python/_brotli.c`
-```c
-Py_BEGIN_ALLOW_THREADS
-// ... compression/decompression operations ...
-Py_END_ALLOW_THREADS
-```
-
-**Assessment:** Python binding releases the GIL during compression/decompression, confirming the underlying C code is thread-safe.
+**Assessment:** An upstream dynamic-language binding releases its runtime lock
+during compression/decompression, confirming the underlying C code is
+thread-safe.
 
 ---
 

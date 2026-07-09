@@ -6,7 +6,7 @@
 
 - The C CLI (`cli/main.c`)
 - Future Swift GUI
-- Python/Rust/Node bindings
+- Rust/Node bindings
 - The sibling project `entropy_shield`
 - Any other consumer
 
@@ -14,7 +14,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                         CLIENTS                                 │
 │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────────────┐    │
-│  │  C CLI  │  │  Swift  │  │ Python  │  │ entropy_shield  │    │
+│  │  C CLI  │  │  Swift  │  │  Rust   │  │ entropy_shield  │    │
 │  │         │  │   GUI   │  │ binding │  │   (Zig->C->Zig) │    │
 │  └────┬────┘  └────┬────┘  └────┬────┘  └────────┬────────┘    │
 │       │            │            │                │              │
