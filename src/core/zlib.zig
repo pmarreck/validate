@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const heap = @import("heap.zig");
+const FileSource = @import("file_source.zig").FileSource;
 const Allocator = std.mem.Allocator;
 
 const c = @cImport({
@@ -740,6 +741,106 @@ pub fn validateGzip(allocator: Allocator, file_data: []const u8, max_decompresse
     }
 
     return true;
+}
+
+/// Validate the raw deflate body of a gzip stream from a FileSource, compute
+/// CRC32/ISIZE while discarding decoded bytes, then verify the 8-byte gzip
+/// trailer immediately following the deflate stream.
+pub fn validateGzipBodyStream(source: *FileSource, deflate_start: u64, max_decompressed: u64) ZlibError!bool {
+    source.seekTo(deflate_start) catch return ZlibError.DataError;
+
+    var stream: c.z_stream = .{
+        .next_in = undefined,
+        .avail_in = 0,
+        .next_out = undefined,
+        .avail_out = 0,
+        .zalloc = null,
+        .zfree = null,
+        .@"opaque" = null,
+        .total_in = 0,
+        .total_out = 0,
+        .msg = null,
+        .state = null,
+        .data_type = 0,
+        .adler = 0,
+        .reserved = 0,
+    };
+
+    const init_ret = c.inflateInit2(&stream, -15);
+    if (init_ret != c.Z_OK) return ZlibError.InitFailed;
+    defer _ = c.inflateEnd(&stream);
+
+    const input_buf = heap.validateAllocator().alloc(u8, 65536) catch return ZlibError.OutOfMemory;
+    defer heap.validateAllocator().free(input_buf);
+    const output_buf = heap.validateAllocator().alloc(u8, 65536) catch return ZlibError.OutOfMemory;
+    defer heap.validateAllocator().free(output_buf);
+
+    var crc: std.hash.Crc32 = .init();
+    var total: u64 = 0;
+    var trailer: [8]u8 = undefined;
+    var trailer_len: usize = 0;
+    var reached_end = false;
+
+    while (true) {
+        const n = source.read(input_buf) catch return ZlibError.ZlibError;
+        if (n == 0) return ZlibError.UnexpectedEof;
+
+        stream.next_in = input_buf.ptr;
+        stream.avail_in = @intCast(n);
+
+        input_loop: while (stream.avail_in > 0) {
+            stream.next_out = output_buf.ptr;
+            stream.avail_out = @intCast(output_buf.len);
+
+            const ret = c.inflate(&stream, c.Z_NO_FLUSH);
+            const produced = output_buf.len - @as(usize, @intCast(stream.avail_out));
+            if (produced > 0) {
+                crc.update(output_buf[0..produced]);
+                total += @as(u64, @intCast(produced));
+                if (total > max_decompressed) return ZlibError.BufferError;
+            }
+
+            switch (ret) {
+                c.Z_STREAM_END => {
+                    const consumed = n - @as(usize, @intCast(stream.avail_in));
+                    const leftover = input_buf[consumed..n];
+                    if (leftover.len > trailer.len) return ZlibError.DataError;
+                    @memcpy(trailer[0..leftover.len], leftover);
+                    trailer_len = leftover.len;
+                    reached_end = true;
+                    break :input_loop;
+                },
+                c.Z_OK => {
+                    if (stream.avail_in == 0 and stream.avail_out > 0) break :input_loop;
+                },
+                c.Z_BUF_ERROR => {
+                    if (stream.avail_in == 0) break :input_loop;
+                    return ZlibError.BufferError;
+                },
+                c.Z_DATA_ERROR => return ZlibError.DataError,
+                c.Z_MEM_ERROR => return ZlibError.OutOfMemory,
+                else => return ZlibError.ZlibError,
+            }
+        }
+
+        if (reached_end) break;
+    }
+
+    while (trailer_len < trailer.len) {
+        const n = source.read(trailer[trailer_len..]) catch return ZlibError.ZlibError;
+        if (n == 0) return ZlibError.UnexpectedEof;
+        trailer_len += n;
+    }
+
+    var extra: [1]u8 = undefined;
+    const extra_n = source.read(&extra) catch return ZlibError.ZlibError;
+    if (extra_n != 0) return ZlibError.DataError;
+
+    const stored_crc = std.mem.readInt(u32, trailer[0..4], .little);
+    const stored_isize = std.mem.readInt(u32, trailer[4..8], .little);
+    const computed_isize: u32 = @truncate(total);
+
+    return crc.final() == stored_crc and computed_isize == stored_isize;
 }
 
 /// Check if zlib is available and working

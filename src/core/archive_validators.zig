@@ -2318,6 +2318,7 @@ pub fn validateZipDeflatedEntry(allocator: Allocator, file: *FileSource, stored_
 /// - CRC32 of decompressed data matches trailer
 /// - ISIZE (uncompressed size mod 2^32) matches
 pub fn validateGzipDeep(allocator: Allocator, source: *FileSource) ValidationResult {
+    _ = allocator;
     const file = source;
 
     // Get file size
@@ -2329,39 +2330,99 @@ pub fn validateGzipDeep(allocator: Allocator, source: *FileSource) ValidationRes
         return ValidationResult.invalidWithDepth(.gzip, "File too small", .structural);
     }
 
-    // Limit file size to prevent memory exhaustion (1GB max for gzip validation)
-    const max_gzip_size: u64 = 1024 * 1024 * 1024;
-    if (file_size > max_gzip_size) {
-        return ValidationResult.invalidCodeWithDepth(.gzip, .file_too_large, "validation", .structural);
-    }
-
-    // Read entire file
-    const file_data = allocator.alloc(u8, file_size) catch {
-        return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_allocate, "read buffer", .structural);
-    };
-    defer allocator.free(file_data);
-
-    const bytes_read = file.readAll(file_data) catch {
-        return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_read, "file", .structural);
-    };
-    if (bytes_read != file_size) {
-        return ValidationResult.invalidCodeWithDepth(.gzip, .incomplete, "file read", .structural);
-    }
-
     // Validate header
-    if (file_data[0] != 0x1F or file_data[1] != 0x8B) {
+    file.seekTo(0) catch return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_seek, "to header", .structural);
+    var header: [10]u8 = undefined;
+    const header_read = file.readAll(&header) catch {
+        return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_read, "gzip header", .structural);
+    };
+    if (header_read != header.len) {
+        return ValidationResult.invalidWithDepth(.gzip, "File too small", .structural);
+    }
+
+    if (header[0] != 0x1F or header[1] != 0x8B) {
         return ValidationResult.invalidCodeWithDepth(.gzip, .invalid_value, "magic number", .structural);
     }
-    if (file_data[2] != 8) {
+    if (header[2] != 8) {
         return ValidationResult.invalidCodeWithDepth(.gzip, .invalid_value, "compression method", .structural);
     }
-    if (file_data[3] & 0xE0 != 0) {
+    if (header[3] & 0xE0 != 0) {
         return ValidationResult.invalidWithDepth(.gzip, "Reserved flag bits set", .structural);
     }
 
-    // Use zlib to validate (robust, handles all edge cases)
+    const flags = header[3];
+    var header_crc: std.hash.Crc32 = .init();
+    header_crc.update(header[0..]);
+    var pos: u64 = 10;
+    const trailer_start_min = file_size - 8;
+
+    if (flags & GZIP_FEXTRA != 0) {
+        if (pos + 2 > trailer_start_min) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "extra field length", .structural);
+        file.seekTo(pos) catch return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_seek, "to extra field", .structural);
+        var xlen_buf: [2]u8 = undefined;
+        const xlen_read = file.readAll(&xlen_buf) catch return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_read, "extra field length", .structural);
+        if (xlen_read != xlen_buf.len) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "extra field length", .structural);
+        header_crc.update(xlen_buf[0..]);
+        const xlen = std.mem.readInt(u16, &xlen_buf, .little);
+        pos += 2;
+        if (pos + @as(u64, xlen) > trailer_start_min) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "extra field", .structural);
+        var remaining_extra: u64 = xlen;
+        var extra_buf: [512]u8 = undefined;
+        while (remaining_extra > 0) {
+            const chunk_len: usize = @intCast(@min(remaining_extra, @as(u64, extra_buf.len)));
+            const extra_read = file.readAll(extra_buf[0..chunk_len]) catch return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_read, "extra field", .structural);
+            if (extra_read != chunk_len) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "extra field", .structural);
+            header_crc.update(extra_buf[0..extra_read]);
+            remaining_extra -= extra_read;
+            pos += extra_read;
+        }
+        if (pos > trailer_start_min) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "extra field", .structural);
+    }
+
+    if (flags & GZIP_FNAME != 0) {
+        file.seekTo(pos) catch return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_seek, "to filename", .structural);
+        var byte: [1]u8 = undefined;
+        while (true) {
+            if (pos >= trailer_start_min) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "filename field", .structural);
+            const n = file.read(&byte) catch return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_read, "filename", .structural);
+            if (n == 0) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "filename field", .structural);
+            header_crc.update(byte[0..1]);
+            pos += 1;
+            if (byte[0] == 0) break;
+            if (pos > 65536) return ValidationResult.invalidWithDepth(.gzip, "Filename too long", .structural);
+        }
+    }
+
+    if (flags & GZIP_FCOMMENT != 0) {
+        file.seekTo(pos) catch return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_seek, "to comment", .structural);
+        var byte: [1]u8 = undefined;
+        while (true) {
+            if (pos >= trailer_start_min) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "comment field", .structural);
+            const n = file.read(&byte) catch return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_read, "comment", .structural);
+            if (n == 0) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "comment field", .structural);
+            header_crc.update(byte[0..1]);
+            pos += 1;
+            if (byte[0] == 0) break;
+            if (pos > 1048576) return ValidationResult.invalidWithDepth(.gzip, "Comment too long", .structural);
+        }
+    }
+
+    if (flags & GZIP_FHCRC != 0) {
+        if (pos + 2 > trailer_start_min) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "header CRC", .structural);
+        file.seekTo(pos) catch return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_seek, "to header CRC", .structural);
+        var stored_hcrc_buf: [2]u8 = undefined;
+        const hcrc_read = file.readAll(&stored_hcrc_buf) catch return ValidationResult.invalidCodeWithDepth(.gzip, .failed_to_read, "header CRC", .structural);
+        if (hcrc_read != stored_hcrc_buf.len) return ValidationResult.invalidCodeWithDepth(.gzip, .truncated, "header CRC", .structural);
+        const stored_hcrc = std.mem.readInt(u16, &stored_hcrc_buf, .little);
+        const computed_hcrc: u16 = @truncate(header_crc.final());
+        if (stored_hcrc != computed_hcrc) {
+            return ValidationResult.invalidCodeMsgWithDepth(.gzip, .checksum_mismatch, "header CRC", "Header CRC mismatch", .structural);
+        }
+        pos += 2;
+    }
+
     const max_decompressed = format_validation.MAX_DECOMPRESSED_SIZE;
-    const valid = zlib.validateGzip(allocator, file_data, max_decompressed) catch |err| {
+    const valid = zlib.validateGzipBodyStream(file, pos, max_decompressed) catch |err| {
         return switch (err) {
             zlib.ZlibError.DataError => ValidationResult.invalidWithDepth(.gzip, "Decompression failed - corrupt data", .full),
             zlib.ZlibError.BufferError => ValidationResult.invalidWithDepth(.gzip, "Decompressed data too large", .full),
@@ -5909,6 +5970,98 @@ test "validateGzipDeep accepts valid gzip and verifies trailer" {
     try std.testing.expectEqual(FileFormat.gzip, result.format);
     try std.testing.expect(result.is_valid);
     try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateGzipDeep streams without caller proportional allocation" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const valid_gzip = [_]u8{
+        0x1f, 0x8b,
+        0x08,
+        0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00,
+        0x03,
+        0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00,
+        0x82, 0x89, 0xd1, 0xf7,
+        0x05, 0x00, 0x00, 0x00,
+    };
+
+    const file = try tmp_dir.dir.createFile(runtime.io(), "valid_streaming.gz", .{});
+    try file.writePositionalAll(runtime.io(), &valid_gzip, 0);
+    file.close(runtime.io());
+
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_streaming.gz");
+    defer allocator.free(path);
+
+    var source = try FileSource.open(path);
+    defer source.close();
+
+    var no_storage: [0]u8 = .{};
+    var fixed = std.heap.FixedBufferAllocator.init(&no_storage);
+    const result = validateGzipDeep(fixed.allocator(), &source);
+
+    try std.testing.expectEqual(FileFormat.gzip, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "validateGzipDeep checks header CRC" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var hcrc_gzip = [_]u8{
+        0x1f, 0x8b,
+        0x08,
+        GZIP_FHCRC,
+        0x00, 0x00, 0x00, 0x00,
+        0x00,
+        0x03,
+        0x00, 0x00,
+        0xf3, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00,
+        0x82, 0x89, 0xd1, 0xf7,
+        0x05, 0x00, 0x00, 0x00,
+    };
+    const valid_hcrc: u16 = @truncate(std.hash.Crc32.hash(hcrc_gzip[0..10]));
+    std.mem.writeInt(u16, hcrc_gzip[10..12], valid_hcrc, .little);
+
+    const valid_file = try tmp_dir.dir.createFile(runtime.io(), "valid_hcrc.gz", .{});
+    try valid_file.writePositionalAll(runtime.io(), &hcrc_gzip, 0);
+    valid_file.close(runtime.io());
+
+    const valid_path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "valid_hcrc.gz");
+    defer allocator.free(valid_path);
+
+    var valid_source = try FileSource.open(valid_path);
+    defer valid_source.close();
+
+    const valid_result = validateGzipDeep(allocator, &valid_source);
+    try std.testing.expectEqual(FileFormat.gzip, valid_result.format);
+    try std.testing.expect(valid_result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.full, valid_result.validation_depth);
+
+    std.mem.writeInt(u16, hcrc_gzip[10..12], valid_hcrc ^ 0x0001, .little);
+
+    const bad_file = try tmp_dir.dir.createFile(runtime.io(), "bad_hcrc.gz", .{});
+    try bad_file.writePositionalAll(runtime.io(), &hcrc_gzip, 0);
+    bad_file.close(runtime.io());
+
+    const bad_path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bad_hcrc.gz");
+    defer allocator.free(bad_path);
+
+    var bad_source = try FileSource.open(bad_path);
+    defer bad_source.close();
+
+    const result = validateGzipDeep(allocator, &bad_source);
+
+    try std.testing.expectEqual(FileFormat.gzip, result.format);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "validateGzipDeep detects CRC corruption" {
