@@ -22,6 +22,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const errmsg = @import("error_messages.zig");
+const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 
@@ -37,19 +38,24 @@ const c = @cImport({
 /// Result of deep JPEG-XL validation
 pub const JxlValidationResult = struct {
     valid: bool,
+    structural_only: bool = false,
     error_message: ?[]const u8,
     warning_message: ?[]const u8 = null,
 
     pub fn ok() JxlValidationResult {
-        return .{ .valid = true, .error_message = null, .warning_message = null };
+        return .{ .valid = true, .error_message = null, .warning_message = null, .structural_only = false };
     }
 
     pub fn okWithWarning(warning: []const u8) JxlValidationResult {
-        return .{ .valid = true, .error_message = null, .warning_message = warning };
+        return .{ .valid = true, .error_message = null, .warning_message = warning, .structural_only = false };
+    }
+
+    pub fn structuralWithWarning(warning: []const u8) JxlValidationResult {
+        return .{ .valid = true, .error_message = null, .warning_message = warning, .structural_only = true };
     }
 
     pub fn invalid(message: []const u8) JxlValidationResult {
-        return .{ .valid = false, .error_message = message, .warning_message = null };
+        return .{ .valid = false, .error_message = message, .warning_message = null, .structural_only = false };
     }
 };
 
@@ -68,18 +74,18 @@ pub fn validateJxlDeep(source: *FileSource) JxlValidationResult {
         return JxlValidationResult.invalid("File too small");
     }
 
-    // Allocate buffer
-    const buffer = std.c.malloc(file_size) orelse {
-        return JxlValidationResult.invalid("Memory allocation failed");
-    };
-    defer std.c.free(buffer);
-
-    // Read entire file
-    const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
-    const bytes_read = source.readAll(buf_slice) catch {
+    const allocator = heap.validateAllocator();
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch {
         return JxlValidationResult.invalid(errmsg.failedToRead("file"));
     };
-    if (bytes_read != file_size) {
+    var heap_jxl: ?[]u8 = null;
+    defer if (heap_jxl) |buf| allocator.free(buf);
+    const buf_slice: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_jxl = b; break :blk b; },
+        .too_large => return JxlValidationResult.structuralWithWarning("JPEG XL too large for non-mmap deep decode"),
+    };
+    if (buf_slice.len != file_size) {
         return JxlValidationResult.invalid(errmsg.incomplete("file read"));
     }
 

@@ -64,6 +64,17 @@ pub const AvifValidationResult = struct {
         };
     }
 
+    pub fn structuralWithWarning(warning: []const u8) AvifValidationResult {
+        return .{
+            .valid = true,
+            .structural_only = true,
+            .error_message = null,
+            .warning_message = warning,
+            .width = 0,
+            .height = 0,
+        };
+    }
+
     pub fn invalid(msg: []const u8) AvifValidationResult {
         return .{
             .valid = false,
@@ -96,15 +107,17 @@ pub fn validateAvifDeep(source: *FileSource) AvifValidationResult {
     }
 
     const allocator = heap.validateAllocator();
-    const data = allocator.alloc(u8, file_size) catch {
-        return AvifValidationResult.invalid("Memory allocation failed");
-    };
-    defer allocator.free(data);
-
-    const bytes_read = source.readAll(data) catch {
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch {
         return AvifValidationResult.invalid(errmsg.failedToRead("file"));
     };
-    if (bytes_read != file_size) {
+    var heap_avif: ?[]u8 = null;
+    defer if (heap_avif) |buf| allocator.free(buf);
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_avif = b; break :blk b; },
+        .too_large => return AvifValidationResult.structuralWithWarning("AVIF too large for non-mmap deep decode"),
+    };
+    if (data.len != file_size) {
         return AvifValidationResult.invalid(errmsg.incomplete("file read"));
     }
 

@@ -92,6 +92,17 @@ pub const HeicValidationResult = struct {
         };
     }
 
+    pub fn structuralWithWarning(warning: []const u8) HeicValidationResult {
+        return .{
+            .valid = true,
+            .structural_only = true,
+            .error_message = null,
+            .warning_message = warning,
+            .width = 0,
+            .height = 0,
+        };
+    }
+
     pub fn invalid(msg: []const u8) HeicValidationResult {
         return .{
             .valid = false,
@@ -124,15 +135,17 @@ pub fn validateHeicDeep(source: *FileSource) HeicValidationResult {
     }
 
     const allocator = heap.validateAllocator();
-    const data = allocator.alloc(u8, file_size) catch {
-        return HeicValidationResult.invalid("Memory allocation failed");
-    };
-    defer allocator.free(data);
-
-    const bytes_read = source.readAll(data) catch {
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch {
         return HeicValidationResult.invalid(errmsg.failedToRead("file"));
     };
-    if (bytes_read != file_size) {
+    var heap_heic: ?[]u8 = null;
+    defer if (heap_heic) |buf| allocator.free(buf);
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_heic = b; break :blk b; },
+        .too_large => return HeicValidationResult.structuralWithWarning("HEIC too large for non-mmap deep decode"),
+    };
+    if (data.len != file_size) {
         return HeicValidationResult.invalid(errmsg.incomplete("file read"));
     }
 
@@ -630,4 +643,3 @@ test "HEIC corruption: single-byte flip deep in H.265 data must not silent-pass"
     }
     try std.testing.expect(surfaced);
 }
-
