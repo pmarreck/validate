@@ -139,6 +139,14 @@
 								            -Dzlib-include=$ZLIB_DEV/include \
 								            -Dzlib-lib=$ZLIB_OUT/lib"
 								'' else ''
+								${if targetSystem == "aarch64-windows" then ''
+								# pkgsCross.ucrtAarch64.zlib currently fails before validate builds:
+								# its MinGW Makefile calls aarch64-w64-mingw32-gcc, but that driver
+								# is not present in the derivation PATH. Do not force optional
+								# jpegz/tiffz system-library paths for this target; validate still
+								# builds its own Zig-managed zlib/openjpeg artifacts.
+								JPEGZ_OPTS=""
+								'' else ''
 								# Forward libjpeg + openjpeg + zlib paths to jpegz/tiffz.
 								# openjpeg.h is nested under include/openjpeg-2.5/.
 								# Cross: forward only libjpeg + zlib (both cross-build clean).
@@ -155,6 +163,7 @@
 								            -Dlibjpeg-lib=$LIBJPEG_OUT/lib \
 								            -Dzlib-include=$ZLIB_DEV/include \
 								            -Dzlib-lib=$ZLIB_OUT/lib"
+								''}
 								''}
 								zig build $JPEGZ_OPTS -Doptimize=ReleaseFast --release=fast ${if cross then "-Dtarget=${zigTarget}" else ""}
 							'';

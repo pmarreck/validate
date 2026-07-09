@@ -283,6 +283,9 @@ pub fn build(b: *std.Build) void {
         .optimize = deps_optimize,
     });
     const zlib_lib = zlib_dep.artifact("z");
+    const zig_zlib_lib_dir = zlib_lib.getEmittedBinDirectory();
+    tiffz_mod.addIncludePath(zlib_lib.getEmittedIncludeTree());
+    tiffz_mod.addLibraryPath(zig_zlib_lib_dir);
 
     // sqlite3 for deep database validation (public domain, allyourcodebase/sqlite3)
     const sqlite3_dep = b.dependency("sqlite3", .{
@@ -430,6 +433,9 @@ pub fn build(b: *std.Build) void {
     if (opt_libjpeg_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
     if (opt_openjpeg_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
     if (opt_zlib_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_zlib_lib });
+    // tiffz links system "z"; when no external zlib path is supplied for a
+    // cross target, satisfy that -lz from validate's Zig-built zlib artifact.
+    core_mod.addLibraryPath(zig_zlib_lib_dir);
 
     // Add libwebp include path (from Zig-built dependency)
     core_mod.addIncludePath(libwebp_lib.getEmittedIncludeTree());
@@ -545,6 +551,7 @@ pub fn build(b: *std.Build) void {
     if (opt_libjpeg_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
     if (opt_openjpeg_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
     if (opt_zlib_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib });
+    lib.root_module.addLibraryPath(zig_zlib_lib_dir);
     // On Windows, LibRaw uses ntohs/htons/htonl/ntohl from ws2_32
     if (target.result.os.tag == .windows) {
         lib.root_module.linkSystemLibrary("ws2_32", .{});
@@ -647,6 +654,7 @@ pub fn build(b: *std.Build) void {
     for (all_c_deps) |dep| lib_shared.root_module.linkLibrary(dep);
     lib_shared.root_module.link_libc = true;
     lib_shared.root_module.link_libcpp = true; // Required for libjxl, libopenmpt (C++ libraries)
+    lib_shared.root_module.addLibraryPath(zig_zlib_lib_dir);
 
     lib_shared.installHeadersDirectory(b.path("ffi"), "", .{
         .include_extensions = &.{".h"},
@@ -679,6 +687,7 @@ pub fn build(b: *std.Build) void {
     if (opt_libjpeg_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
     if (opt_openjpeg_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
     if (opt_zlib_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib });
+    cli_c.root_module.addLibraryPath(zig_zlib_lib_dir);
 
 
     const install_cli = b.addInstallArtifact(cli_c, .{});
