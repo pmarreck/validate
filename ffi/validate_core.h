@@ -226,7 +226,7 @@ uint64_t validate_system_memory(void);
 /**
  * Set maximum memory budget for validation in bytes.
  * Workers will throttle when RSS approaches this limit.
- * Pass 0 to use default (system_memory / 2).
+ * Pass 0 to use the clamped default (RAM/3, bounded to 1-8 GiB).
  * Must be called BEFORE validate_batch().
  */
 void validate_set_max_memory(uint64_t bytes);
@@ -268,6 +268,64 @@ typedef struct {
  *             batch is currently running.
  */
 int validate_get_memory_usage(validate_memory_usage_t* out);
+
+/**
+ * Heap/debug snapshot for long-running CLI diagnostics. This is intentionally
+ * separate from validate_memory_usage_t so GUI callers using the stable memory
+ * meter ABI are not forced to grow their struct just to get debug counters.
+ *
+ * The allocator counters cover validate's per-task DivertingAllocator path:
+ * small allocations through the per-file arena and large allocations diverted
+ * to page_allocator/mmap. They do not include C library malloc users, decoder
+ * internals, or the CLI's path-list mallocs; the CLI's HEAP_FRAG_DEBUG mode
+ * adds libc mallinfo2 data on glibc Linux when available.
+ */
+typedef struct {
+    uint64_t current_rss;
+    uint64_t vm_size;
+    uint64_t vm_data;
+    uint64_t budget_total_bytes;
+    uint64_t budget_available_bytes;
+    uint64_t active_tasks;
+    uint64_t alloc_current_bytes;
+    uint64_t alloc_peak_bytes;
+    uint64_t small_current_bytes;
+    uint64_t small_peak_bytes;
+    uint64_t big_current_bytes;
+    uint64_t big_peak_bytes;
+    uint64_t total_alloc_bytes;
+    uint64_t total_free_bytes;
+    uint64_t arena_reset_bytes;
+    uint64_t alloc_count;
+    uint64_t free_count;
+    uint64_t resize_count;
+    uint64_t remap_count;
+    uint64_t arena_reset_count;
+} validate_heap_debug_snapshot_t;
+
+void validate_reset_heap_debug_counters(void);
+int validate_get_heap_debug_snapshot(validate_heap_debug_snapshot_t* out);
+
+#define VALIDATE_HEAP_DEBUG_MAX_TASKS 256
+
+typedef struct {
+    uint32_t active;
+    uint32_t slot;
+    uint32_t id;
+    uint64_t index;
+    uint64_t file_size;
+    uint64_t reserved_bytes;
+    uint64_t elapsed_ns;
+    uint64_t phase_elapsed_ns;
+    uint64_t start_rss;
+    uint64_t current_rss;
+    const char* path;
+    const char* format_hint;
+    const char* phase;
+} validate_heap_debug_task_t;
+
+void validate_set_heap_debug_task_tracking(int enabled);
+size_t validate_get_heap_debug_tasks(validate_heap_debug_task_t* out, size_t capacity);
 /* ========== Single File Validation ========== */
 
 /**

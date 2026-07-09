@@ -19,6 +19,143 @@
 
 const std = @import("std");
 
+const AtomicU64 = std.atomic.Value(u64);
+
+pub const AllocStats = extern struct {
+    current_bytes: u64,
+    peak_bytes: u64,
+    small_current_bytes: u64,
+    small_peak_bytes: u64,
+    big_current_bytes: u64,
+    big_peak_bytes: u64,
+    total_alloc_bytes: u64,
+    total_free_bytes: u64,
+    arena_reset_bytes: u64,
+    alloc_count: u64,
+    free_count: u64,
+    resize_count: u64,
+    remap_count: u64,
+    arena_reset_count: u64,
+};
+
+const GlobalAllocStats = struct {
+    current_bytes: AtomicU64 = AtomicU64.init(0),
+    peak_bytes: AtomicU64 = AtomicU64.init(0),
+    small_current_bytes: AtomicU64 = AtomicU64.init(0),
+    small_peak_bytes: AtomicU64 = AtomicU64.init(0),
+    big_current_bytes: AtomicU64 = AtomicU64.init(0),
+    big_peak_bytes: AtomicU64 = AtomicU64.init(0),
+    total_alloc_bytes: AtomicU64 = AtomicU64.init(0),
+    total_free_bytes: AtomicU64 = AtomicU64.init(0),
+    arena_reset_bytes: AtomicU64 = AtomicU64.init(0),
+    alloc_count: AtomicU64 = AtomicU64.init(0),
+    free_count: AtomicU64 = AtomicU64.init(0),
+    resize_count: AtomicU64 = AtomicU64.init(0),
+    remap_count: AtomicU64 = AtomicU64.init(0),
+    arena_reset_count: AtomicU64 = AtomicU64.init(0),
+};
+
+var g_alloc_stats: GlobalAllocStats = .{};
+
+fn atomicMax(counter: *AtomicU64, value: u64) void {
+    var old = counter.load(.monotonic);
+    while (value > old) {
+        if (counter.cmpxchgWeak(old, value, .monotonic, .monotonic)) |actual| {
+            old = actual;
+        } else {
+            return;
+        }
+    }
+}
+
+fn addLive(current: *AtomicU64, peak: *AtomicU64, amount: u64) void {
+    if (amount == 0) return;
+    const new = current.fetchAdd(amount, .monotonic) + amount;
+    atomicMax(peak, new);
+}
+
+fn subLive(current: *AtomicU64, amount: u64) void {
+    if (amount == 0) return;
+    var old = current.load(.monotonic);
+    while (true) {
+        const new = if (old > amount) old - amount else 0;
+        if (counterUpdate(current, old, new)) |actual| {
+            old = actual;
+        } else {
+            return;
+        }
+    }
+}
+
+fn counterUpdate(counter: *AtomicU64, old: u64, new: u64) ?u64 {
+    return counter.cmpxchgWeak(old, new, .monotonic, .monotonic);
+}
+
+fn noteGlobalAlloc(amount: u64, big: bool) void {
+    addLive(&g_alloc_stats.current_bytes, &g_alloc_stats.peak_bytes, amount);
+    if (big) {
+        addLive(&g_alloc_stats.big_current_bytes, &g_alloc_stats.big_peak_bytes, amount);
+    } else {
+        addLive(&g_alloc_stats.small_current_bytes, &g_alloc_stats.small_peak_bytes, amount);
+    }
+    _ = g_alloc_stats.total_alloc_bytes.fetchAdd(amount, .monotonic);
+    _ = g_alloc_stats.alloc_count.fetchAdd(1, .monotonic);
+}
+
+fn noteGlobalFree(amount: u64, big: bool) void {
+    subLive(&g_alloc_stats.current_bytes, amount);
+    if (big) {
+        subLive(&g_alloc_stats.big_current_bytes, amount);
+    } else {
+        subLive(&g_alloc_stats.small_current_bytes, amount);
+    }
+    _ = g_alloc_stats.total_free_bytes.fetchAdd(amount, .monotonic);
+    _ = g_alloc_stats.free_count.fetchAdd(1, .monotonic);
+}
+
+fn noteArenaReset(amount: u64) void {
+    subLive(&g_alloc_stats.current_bytes, amount);
+    subLive(&g_alloc_stats.small_current_bytes, amount);
+    _ = g_alloc_stats.arena_reset_bytes.fetchAdd(amount, .monotonic);
+    _ = g_alloc_stats.arena_reset_count.fetchAdd(1, .monotonic);
+}
+
+pub fn resetStats() void {
+    g_alloc_stats.current_bytes.store(0, .monotonic);
+    g_alloc_stats.peak_bytes.store(0, .monotonic);
+    g_alloc_stats.small_current_bytes.store(0, .monotonic);
+    g_alloc_stats.small_peak_bytes.store(0, .monotonic);
+    g_alloc_stats.big_current_bytes.store(0, .monotonic);
+    g_alloc_stats.big_peak_bytes.store(0, .monotonic);
+    g_alloc_stats.total_alloc_bytes.store(0, .monotonic);
+    g_alloc_stats.total_free_bytes.store(0, .monotonic);
+    g_alloc_stats.arena_reset_bytes.store(0, .monotonic);
+    g_alloc_stats.alloc_count.store(0, .monotonic);
+    g_alloc_stats.free_count.store(0, .monotonic);
+    g_alloc_stats.resize_count.store(0, .monotonic);
+    g_alloc_stats.remap_count.store(0, .monotonic);
+    g_alloc_stats.arena_reset_count.store(0, .monotonic);
+}
+
+pub fn snapshotStats() AllocStats {
+    return .{
+        .current_bytes = g_alloc_stats.current_bytes.load(.monotonic),
+        .peak_bytes = g_alloc_stats.peak_bytes.load(.monotonic),
+        .small_current_bytes = g_alloc_stats.small_current_bytes.load(.monotonic),
+        .small_peak_bytes = g_alloc_stats.small_peak_bytes.load(.monotonic),
+        .big_current_bytes = g_alloc_stats.big_current_bytes.load(.monotonic),
+        .big_peak_bytes = g_alloc_stats.big_peak_bytes.load(.monotonic),
+        .total_alloc_bytes = g_alloc_stats.total_alloc_bytes.load(.monotonic),
+        .total_free_bytes = g_alloc_stats.total_free_bytes.load(.monotonic),
+        .arena_reset_bytes = g_alloc_stats.arena_reset_bytes.load(.monotonic),
+        .alloc_count = g_alloc_stats.alloc_count.load(.monotonic),
+        .free_count = g_alloc_stats.free_count.load(.monotonic),
+        .resize_count = g_alloc_stats.resize_count.load(.monotonic),
+        .remap_count = g_alloc_stats.remap_count.load(.monotonic),
+        .arena_reset_count = g_alloc_stats.arena_reset_count.load(.monotonic),
+    };
+}
+
 /// Per-thread arena override. When set (typically by the FFI batch task
 /// dispatcher at the start of each file's validation, cleared on exit),
 /// `validateAllocator()` returns this instead of the shared smp allocator.
@@ -83,6 +220,9 @@ pub fn setBigAllocThreshold(bytes: usize) void {
 pub const DivertingAllocator = struct {
     parent: std.mem.Allocator,
     threshold: usize,
+    small_live_bytes: usize = 0,
+    big_live_bytes: usize = 0,
+    finished: bool = false,
 
     pub fn init(parent: std.mem.Allocator, threshold: usize) DivertingAllocator {
         return .{ .parent = parent, .threshold = threshold };
@@ -95,6 +235,72 @@ pub const DivertingAllocator = struct {
         };
     }
 
+    /// Account for small allocations still owned by the per-task arena before
+    /// `ArenaAllocator.deinit()` releases them wholesale. Big allocations are
+    /// deliberately not cleared here: they bypass the arena, so an outstanding
+    /// big allocation at task end is a real leak signal.
+    pub fn finishTask(self: *DivertingAllocator) void {
+        if (self.finished) return;
+        self.finished = true;
+        if (self.small_live_bytes > 0) {
+            noteArenaReset(@intCast(self.small_live_bytes));
+            self.small_live_bytes = 0;
+        }
+    }
+
+    fn noteAlloc(self: *DivertingAllocator, len: usize, big: bool) void {
+        if (len == 0) return;
+        if (big) {
+            self.big_live_bytes += len;
+        } else {
+            self.small_live_bytes += len;
+        }
+        noteGlobalAlloc(@intCast(len), big);
+    }
+
+    fn noteFree(self: *DivertingAllocator, len: usize, big: bool) void {
+        if (len == 0) return;
+        if (big) {
+            if (self.big_live_bytes >= len) self.big_live_bytes -= len else self.big_live_bytes = 0;
+        } else {
+            if (self.small_live_bytes >= len) self.small_live_bytes -= len else self.small_live_bytes = 0;
+        }
+        noteGlobalFree(@intCast(len), big);
+    }
+
+    fn noteResize(self: *DivertingAllocator, old_len: usize, new_len: usize, big: bool) void {
+        _ = g_alloc_stats.resize_count.fetchAdd(1, .monotonic);
+        if (new_len > old_len) {
+            const delta = new_len - old_len;
+            if (big) {
+                self.big_live_bytes += delta;
+            } else {
+                self.small_live_bytes += delta;
+            }
+            addLive(&g_alloc_stats.current_bytes, &g_alloc_stats.peak_bytes, @intCast(delta));
+            if (big) {
+                addLive(&g_alloc_stats.big_current_bytes, &g_alloc_stats.big_peak_bytes, @intCast(delta));
+            } else {
+                addLive(&g_alloc_stats.small_current_bytes, &g_alloc_stats.small_peak_bytes, @intCast(delta));
+            }
+            _ = g_alloc_stats.total_alloc_bytes.fetchAdd(@intCast(delta), .monotonic);
+        } else if (old_len > new_len) {
+            const delta = old_len - new_len;
+            if (big) {
+                if (self.big_live_bytes >= delta) self.big_live_bytes -= delta else self.big_live_bytes = 0;
+            } else {
+                if (self.small_live_bytes >= delta) self.small_live_bytes -= delta else self.small_live_bytes = 0;
+            }
+            subLive(&g_alloc_stats.current_bytes, @intCast(delta));
+            if (big) {
+                subLive(&g_alloc_stats.big_current_bytes, @intCast(delta));
+            } else {
+                subLive(&g_alloc_stats.small_current_bytes, @intCast(delta));
+            }
+            _ = g_alloc_stats.total_free_bytes.fetchAdd(@intCast(delta), .monotonic);
+        }
+    }
+
     const vtable = std.mem.Allocator.VTable{
         .alloc = alloc,
         .resize = resize,
@@ -105,36 +311,56 @@ pub const DivertingAllocator = struct {
     fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
         const self: *DivertingAllocator = @ptrCast(@alignCast(ctx));
         if (len >= self.threshold) {
-            return std.heap.page_allocator.rawAlloc(len, alignment, ret_addr);
+            const ptr = std.heap.page_allocator.rawAlloc(len, alignment, ret_addr);
+            if (ptr != null) self.noteAlloc(len, true);
+            return ptr;
         }
-        return self.parent.rawAlloc(len, alignment, ret_addr);
+        const ptr = self.parent.rawAlloc(len, alignment, ret_addr);
+        if (ptr != null) self.noteAlloc(len, false);
+        return ptr;
     }
 
     fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
         const self: *DivertingAllocator = @ptrCast(@alignCast(ctx));
-        // If either the current or new size crosses the threshold, refuse to
-        // resize in place — caller will alloc + copy + free, which routes
-        // each correctly.
-        if (memory.len >= self.threshold or new_len >= self.threshold) {
-            return std.heap.page_allocator.rawResize(memory, alignment, new_len, ret_addr);
+        const was_big = memory.len >= self.threshold;
+        const becomes_big = new_len >= self.threshold;
+        if (was_big != becomes_big) {
+            return false;
         }
-        return self.parent.rawResize(memory, alignment, new_len, ret_addr);
+        const ok = if (was_big)
+            std.heap.page_allocator.rawResize(memory, alignment, new_len, ret_addr)
+        else
+            self.parent.rawResize(memory, alignment, new_len, ret_addr);
+        if (ok) self.noteResize(memory.len, new_len, was_big);
+        return ok;
     }
 
     fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
         const self: *DivertingAllocator = @ptrCast(@alignCast(ctx));
-        if (memory.len >= self.threshold or new_len >= self.threshold) {
-            return std.heap.page_allocator.rawRemap(memory, alignment, new_len, ret_addr);
+        const was_big = memory.len >= self.threshold;
+        const becomes_big = new_len >= self.threshold;
+        if (was_big != becomes_big) {
+            return null;
         }
-        return self.parent.rawRemap(memory, alignment, new_len, ret_addr);
+        const ptr = if (was_big)
+            std.heap.page_allocator.rawRemap(memory, alignment, new_len, ret_addr)
+        else
+            self.parent.rawRemap(memory, alignment, new_len, ret_addr);
+        if (ptr != null) {
+            _ = g_alloc_stats.remap_count.fetchAdd(1, .monotonic);
+            self.noteResize(memory.len, new_len, was_big);
+        }
+        return ptr;
     }
 
     fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
         const self: *DivertingAllocator = @ptrCast(@alignCast(ctx));
         if (memory.len >= self.threshold) {
+            self.noteFree(memory.len, true);
             std.heap.page_allocator.rawFree(memory, alignment, ret_addr);
             return;
         }
+        self.noteFree(memory.len, false);
         self.parent.rawFree(memory, alignment, ret_addr);
     }
 };

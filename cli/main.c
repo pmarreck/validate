@@ -27,6 +27,10 @@
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <pthread.h>
+#if defined(__linux__) && defined(__GLIBC__)
+#include <malloc.h>
+#define VALIDATE_HAVE_MALLINFO2 1
+#endif
 #define PATH_SEP '/'
 #define IS_PATH_SEP(c) ((c) == '/')
 #endif
@@ -661,6 +665,8 @@ static void finish_enum_progress(void) {
 	g_last_progress_count = 0;
 }
 
+static void heap_frag_debug_maybe_report_count(size_t processed, const char* label);
+
 static int path_list_add(path_list_t* list, const char* path, size_t file_size) {
 	if (list->max_files > 0 && list->count >= list->max_files) {
 		return 0;  /* Silently stop adding (hit limit) */
@@ -692,6 +698,7 @@ static int path_list_add(path_list_t* list, const char* path, size_t file_size) 
 	list->total_bytes += file_size;
 	list->count++;
 	show_enum_progress(list->count);
+	heap_frag_debug_maybe_report_count(list->count, " enum");
 	return 0;
 }
 
@@ -984,6 +991,253 @@ typedef struct {
 	size_t invalid_count;
 	size_t unknown_count;
 } validation_counts_t;
+
+static uint64_t get_monotonic_ms(void);
+static void output_lock(void);
+static void output_unlock(void);
+
+static int g_heap_frag_debug_enabled = 0;
+static size_t g_heap_frag_debug_interval = 1000;
+static uint64_t g_heap_frag_debug_period_ms = 5000;
+static size_t g_heap_frag_debug_last_processed = 0;
+static uint64_t g_heap_frag_debug_last_ms = 0;
+static atomic_size_t g_heap_frag_debug_processed;
+#if !defined(_WIN32)
+static pthread_t g_heap_frag_debug_thread;
+static atomic_int g_heap_frag_debug_thread_running;
+static atomic_int g_heap_frag_debug_thread_stop;
+#endif
+
+static int heap_frag_env_truthy(const char* value) {
+	if (!value || value[0] == '\0') return 0;
+	if (strcmp(value, "0") == 0) return 0;
+	if (strcmp(value, "false") == 0 || strcmp(value, "FALSE") == 0) return 0;
+	if (strcmp(value, "no") == 0 || strcmp(value, "NO") == 0) return 0;
+	if (strcmp(value, "off") == 0 || strcmp(value, "OFF") == 0) return 0;
+	return 1;
+}
+
+static uint64_t heap_frag_parse_env_u64(const char* name, uint64_t fallback) {
+	const char* value = getenv(name);
+	if (!value || value[0] == '\0') return fallback;
+	char* end = NULL;
+	errno = 0;
+	unsigned long long parsed = strtoull(value, &end, 10);
+	if (errno != 0 || end == value || parsed == 0) return fallback;
+	return (uint64_t)parsed;
+}
+
+static double heap_frag_mib(uint64_t bytes) {
+	return (double)bytes / (1024.0 * 1024.0);
+}
+
+static double heap_frag_signed_mib(uint64_t current, uint64_t baseline) {
+	if (current >= baseline) {
+		return heap_frag_mib(current - baseline);
+	}
+	return -heap_frag_mib(baseline - current);
+}
+
+static void heap_frag_fprint_escaped(FILE* out, const char* text) {
+	fputc('"', out);
+	if (text) {
+		for (const unsigned char* p = (const unsigned char*)text; *p; p++) {
+			switch (*p) {
+			case '\\':
+				fputs("\\\\", out);
+				break;
+			case '"':
+				fputs("\\\"", out);
+				break;
+			case '\n':
+				fputs("\\n", out);
+				break;
+			case '\r':
+				fputs("\\r", out);
+				break;
+			case '\t':
+				fputs("\\t", out);
+				break;
+			default:
+				if (*p < 32 || *p == 127) {
+					fprintf(out, "\\x%02x", (unsigned int)*p);
+				} else {
+					fputc((int)*p, out);
+				}
+				break;
+			}
+		}
+	}
+	fputc('"', out);
+}
+
+static void heap_frag_debug_report_tasks(void) {
+	validate_heap_debug_task_t tasks[VALIDATE_HEAP_DEBUG_MAX_TASKS];
+	size_t count = validate_get_heap_debug_tasks(tasks, VALIDATE_HEAP_DEBUG_MAX_TASKS);
+	for (size_t i = 0; i < count; i++) {
+		const validate_heap_debug_task_t* task = &tasks[i];
+		double elapsed_s = (double)task->elapsed_ns / 1000000000.0;
+		double phase_elapsed_s = (double)task->phase_elapsed_ns / 1000000000.0;
+		fprintf(stderr,
+			"[HEAP task] slot=%u phase=%s phase_elapsed=%.2fs id=%u idx=%llu elapsed=%.2fs fmt=%s "
+			"size=%.1fMiB reserve=%.1fMiB start_rss=%.1fMiB rss_delta=%+.1fMiB path=",
+			task->slot,
+			task->phase ? task->phase : "?",
+			phase_elapsed_s,
+			task->id,
+			(unsigned long long)task->index,
+			elapsed_s,
+			task->format_hint ? task->format_hint : "?",
+			heap_frag_mib(task->file_size),
+			heap_frag_mib(task->reserved_bytes),
+			heap_frag_mib(task->start_rss),
+			heap_frag_signed_mib(task->current_rss, task->start_rss)
+		);
+		heap_frag_fprint_escaped(stderr, task->path);
+		fputc('\n', stderr);
+	}
+}
+
+static void heap_frag_debug_init(void) {
+	g_heap_frag_debug_enabled = heap_frag_env_truthy(getenv("HEAP_FRAG_DEBUG"));
+	validate_set_heap_debug_task_tracking(g_heap_frag_debug_enabled ? 1 : 0);
+	if (!g_heap_frag_debug_enabled) return;
+
+	uint64_t interval = heap_frag_parse_env_u64("HEAP_FRAG_INTERVAL", 1000);
+	if (interval > (uint64_t)((size_t)-1)) interval = (uint64_t)((size_t)-1);
+	g_heap_frag_debug_interval = (size_t)interval;
+	g_heap_frag_debug_period_ms = heap_frag_parse_env_u64("HEAP_FRAG_SECONDS", 5) * 1000;
+	g_heap_frag_debug_last_processed = 0;
+	g_heap_frag_debug_last_ms = 0;
+	atomic_store(&g_heap_frag_debug_processed, 0);
+}
+
+static void heap_frag_debug_report(size_t processed, const char* label) {
+	if (!g_heap_frag_debug_enabled) return;
+
+	validate_heap_debug_snapshot_t snap;
+	if (validate_get_heap_debug_snapshot(&snap) != 0) return;
+
+	uint64_t libc_arena = 0;
+	uint64_t libc_uord = 0;
+	uint64_t libc_ford = 0;
+	uint64_t libc_hblkhd = 0;
+#if defined(VALIDATE_HAVE_MALLINFO2)
+	struct mallinfo2 mi = mallinfo2();
+	libc_arena = (uint64_t)mi.arena;
+	libc_uord = (uint64_t)mi.uordblks;
+	libc_ford = (uint64_t)mi.fordblks;
+	libc_hblkhd = (uint64_t)mi.hblkhd;
+#endif
+
+	uint64_t tracked = snap.alloc_current_bytes + libc_uord + libc_hblkhd;
+	uint64_t rss_over_tracked = (snap.current_rss > tracked) ? (snap.current_rss - tracked) : 0;
+	uint64_t budget_used = (snap.budget_total_bytes > snap.budget_available_bytes)
+		? (snap.budget_total_bytes - snap.budget_available_bytes)
+		: 0;
+
+	fprintf(stderr,
+		"[HEAP%s] files=%zu active=%llu rss=%.1fMiB vm=%.1fMiB data=%.1fMiB "
+		"budget_used=%.1f/%.1fMiB zig_live=%.1fMiB zig_peak=%.1fMiB "
+		"zig_small=%.1fMiB zig_big=%.1fMiB alloc=%.1fMiB free=%.1fMiB arena_reset=%.1fMiB "
+		"ops=%llu/%llu resize=%llu remap=%llu libc_uord=%.1fMiB libc_free=%.1fMiB "
+		"libc_arena=%.1fMiB libc_mmap=%.1fMiB rss_over_tracked=%.1fMiB\n",
+		label ? label : "",
+		processed,
+		(unsigned long long)snap.active_tasks,
+		heap_frag_mib(snap.current_rss),
+		heap_frag_mib(snap.vm_size),
+		heap_frag_mib(snap.vm_data),
+		heap_frag_mib(budget_used),
+		heap_frag_mib(snap.budget_total_bytes),
+		heap_frag_mib(snap.alloc_current_bytes),
+		heap_frag_mib(snap.alloc_peak_bytes),
+		heap_frag_mib(snap.small_current_bytes),
+		heap_frag_mib(snap.big_current_bytes),
+		heap_frag_mib(snap.total_alloc_bytes),
+		heap_frag_mib(snap.total_free_bytes),
+		heap_frag_mib(snap.arena_reset_bytes),
+		(unsigned long long)snap.alloc_count,
+		(unsigned long long)snap.free_count,
+		(unsigned long long)snap.resize_count,
+		(unsigned long long)snap.remap_count,
+		heap_frag_mib(libc_uord),
+		heap_frag_mib(libc_ford),
+		heap_frag_mib(libc_arena),
+		heap_frag_mib(libc_hblkhd),
+		heap_frag_mib(rss_over_tracked)
+	);
+	heap_frag_debug_report_tasks();
+	fflush(stderr);
+}
+
+static void heap_frag_debug_maybe_report_count(size_t processed, const char* label) {
+	if (!g_heap_frag_debug_enabled) return;
+	atomic_store(&g_heap_frag_debug_processed, processed);
+	uint64_t now_ms = get_monotonic_ms();
+	int first = (g_heap_frag_debug_last_processed == 0);
+	int count_due = (processed >= g_heap_frag_debug_last_processed + g_heap_frag_debug_interval);
+	int time_due = (g_heap_frag_debug_last_ms == 0 || now_ms >= g_heap_frag_debug_last_ms + g_heap_frag_debug_period_ms);
+	if (!first && !count_due && !time_due) return;
+	heap_frag_debug_report(processed, label);
+	g_heap_frag_debug_last_processed = processed;
+	g_heap_frag_debug_last_ms = now_ms;
+}
+
+static void heap_frag_debug_maybe_report(const validation_counts_t* counts) {
+	if (!counts) return;
+	size_t processed = counts->valid_count + counts->invalid_count + counts->unknown_count;
+	heap_frag_debug_maybe_report_count(processed, "");
+}
+
+#if !defined(_WIN32)
+static void heap_frag_debug_sleep_ms(uint64_t ms) {
+	while (ms > 0 && !atomic_load(&g_heap_frag_debug_thread_stop)) {
+		uint64_t chunk = ms > 250 ? 250 : ms;
+		struct timespec ts;
+		ts.tv_sec = (time_t)(chunk / 1000);
+		ts.tv_nsec = (long)((chunk % 1000) * 1000000ULL);
+		nanosleep(&ts, NULL);
+		ms -= chunk;
+	}
+}
+
+static void* heap_frag_debug_monitor_main(void* unused) {
+	(void)unused;
+	while (!atomic_load(&g_heap_frag_debug_thread_stop)) {
+		uint64_t period_ms = g_heap_frag_debug_period_ms > 0 ? g_heap_frag_debug_period_ms : 5000;
+		heap_frag_debug_sleep_ms(period_ms);
+		if (atomic_load(&g_heap_frag_debug_thread_stop)) break;
+
+		size_t processed = atomic_load(&g_heap_frag_debug_processed);
+		output_lock();
+		heap_frag_debug_report(processed, " timer");
+		output_unlock();
+	}
+	atomic_store(&g_heap_frag_debug_thread_running, 0);
+	return NULL;
+}
+#endif
+
+static void heap_frag_debug_start_monitor(void) {
+	if (!g_heap_frag_debug_enabled) return;
+#if !defined(_WIN32)
+	if (atomic_load(&g_heap_frag_debug_thread_running)) return;
+	atomic_store(&g_heap_frag_debug_thread_stop, 0);
+	if (pthread_create(&g_heap_frag_debug_thread, NULL, heap_frag_debug_monitor_main, NULL) == 0) {
+		atomic_store(&g_heap_frag_debug_thread_running, 1);
+	}
+#endif
+}
+
+static void heap_frag_debug_stop_monitor(void) {
+#if !defined(_WIN32)
+	if (!atomic_load(&g_heap_frag_debug_thread_running)) return;
+	atomic_store(&g_heap_frag_debug_thread_stop, 1);
+	pthread_join(g_heap_frag_debug_thread, NULL);
+	atomic_store(&g_heap_frag_debug_thread_running, 0);
+#endif
+}
 
 /* ========== Result Printing ========== */
 
@@ -1481,6 +1735,8 @@ static void on_validation_result(
 		write_colored_line(&g_slow_out, COLOR_YELLOW, validate_tr(VALIDATE_STR_LABEL_SLOW), rest_buf);
 	}
 
+	heap_frag_debug_maybe_report(counts);
+
 	/* Now render progress bar AFTER output (in the fixed bottom area) */
 	if (g_tui_enabled) {
 		progress_render_new();
@@ -1960,7 +2216,7 @@ static void print_usage(const char* program) {
 	printf("    --json             Output results as a JSON array\n");
 	printf("    --ndjson           Output results as newline-delimited JSON (one object per line)\n");
 	printf("    --about            Print version and platform info\n");
-	printf("    --max-memory SIZE  Memory budget (e.g., 4G, 2048M). Default: half of system RAM\n");
+	printf("    --max-memory SIZE  Memory budget (e.g., 4G, 2048M). Default: clamp(RAM/3, 1-8 GiB)\n");
 	printf("    --lang CODE        Set output language (e.g., en, de)\n");
 	printf("    --test-coverage N  Run up to N corruption rounds against a file, report detection rate (default 1000)\n");
 	printf("    --modes LIST       Corruption modes for --test-coverage (comma-sep; default = sniper,shotgun)\n");
@@ -1994,6 +2250,9 @@ static void print_usage(const char* program) {
 	printf("    BEGIN_OUT     Output when files start validation (default: @null)\n");
 	printf("                  Useful for debugging crashes - shows 'in-flight' files\n");
 	printf("    MAX_FILES     Limit number of files to validate\n");
+	printf("    HEAP_FRAG_DEBUG=1       Periodic heap/RSS diagnostics to stderr\n");
+	printf("    HEAP_FRAG_INTERVAL=N    Heap debug cadence in completed files (default: 1000)\n");
+	printf("    HEAP_FRAG_SECONDS=N     Heap debug cadence in seconds (default: 5)\n");
 	printf("    LANG          Locale for output language (e.g., de_DE.UTF-8)\n");
 	printf("    LC_MESSAGES   Locale for output language (overrides LANG)\n");
 	printf("    NO_BIDI       Disable bidirectional text marks for RTL languages\n");
@@ -2238,13 +2497,13 @@ int main(int argc, char* argv[]) {
 	 *   Override with --no-strict for legacy semantics.
 	 *
 	 * See README "test coverage" section. */
-	int global_strict_mode = 0;
 	int test_coverage_strict = 1;
 	int test_coverage_no_progress = 0; /* --no-progress: suppress live coverage progress */
 	int shuffle = 0;
 	size_t stress_iterations = 0;
 	int no_frontload = 0;
 	int simple_progress = 0;
+	int max_memory_explicit = 0;
 
 	/* Auto-detect locale from environment (--lang overrides this) */
 	validate_set_locale(NULL);
@@ -2366,6 +2625,7 @@ int main(int argc, char* argv[]) {
 				else if (*endptr == 'M' || *endptr == 'm') mem *= 1024ULL * 1024;
 				else if (*endptr == 'K' || *endptr == 'k') mem *= 1024ULL;
 				validate_set_max_memory(mem);
+				max_memory_explicit = 1;
 				continue;
 			}
 			case VALIDATE_ARG_TEST_COVERAGE: {
@@ -2507,7 +2767,6 @@ int main(int argc, char* argv[]) {
 				continue;
 			}
 			case VALIDATE_ARG_STRICT: {
-				global_strict_mode = 1;
 				g_global_strict_mode = 1;
 				test_coverage_strict = 1;  /* idempotent — default is already 1 */
 				continue;
@@ -2797,10 +3056,12 @@ int main(int argc, char* argv[]) {
 		validate_set_begin_callback(on_validation_begin, NULL);
 	}
 
+	heap_frag_debug_init();
+
 	const size_t max_files = get_env_max_files();
 
 	/* Check VALIDATE_MAX_MEMORY / MAX_MEMORY env var (--max-memory override takes precedence) */
-	if (validate_get_max_memory() == validate_system_memory() / 2) {
+	if (!max_memory_explicit) {
 		/* No explicit --max-memory was set, check env var */
 		const char* mem_env = validate_getenv(VALIDATE_ENV_MAX_MEMORY);
 		if (mem_env && mem_env[0] != '\0') {
@@ -2897,6 +3158,9 @@ int main(int argc, char* argv[]) {
 	validation_counts_t total_counts = {0};
 	int failures = 0;
 	uint64_t batch_start_ms = get_monotonic_ms();
+	/* Reset cadence after enumeration so validation gets its own first sample. */
+	heap_frag_debug_init();
+	heap_frag_debug_start_monitor();
 
 	const size_t iterations = (stress_iterations > 0) ? stress_iterations : 1;
 
@@ -2948,6 +3212,7 @@ int main(int argc, char* argv[]) {
 			}
 			fprintf(stderr, "%sError: Validation failed: %s\n%s", COLOR_RED,
 				validate_last_error() ? validate_last_error() : "unknown error", COLOR_RESET);
+			heap_frag_debug_stop_monitor();
 			progress_cleanup_new();
 			path_list_free(&file_list);
 			shutdown_output_destinations();
@@ -2962,6 +3227,7 @@ int main(int argc, char* argv[]) {
 			failures = 1;
 		}
 	}
+	heap_frag_debug_stop_monitor();
 
 	/* Check if we were interrupted */
 #if defined(_WIN32)
@@ -2978,14 +3244,16 @@ int main(int argc, char* argv[]) {
 	progress_cleanup_new();
 	g_file_list_ptr = NULL;
 
-	path_list_free(&file_list);
-
 	/* Use total_counts for summary in stress mode, otherwise use last counts */
 	validation_counts_t* summary_counts = (stress_iterations > 1) ? &total_counts : &counts;
+	size_t total_processed = summary_counts->valid_count + summary_counts->invalid_count + summary_counts->unknown_count;
+	heap_frag_debug_report(total_processed, " final");
+
+	path_list_free(&file_list);
+	heap_frag_debug_report(total_processed, " postfree");
 
 	/* Show summary only when multiple files were validated (single file needs no summary) */
 	/* Skip summary in JSON mode — output is machine-readable */
-	size_t total_processed = summary_counts->valid_count + summary_counts->invalid_count + summary_counts->unknown_count;
 	if (!g_json_mode && (total_processed > 1 || was_interrupted)) {
 		const char* rlm = g_rtl_enabled ? RLM : "";
 		if (was_interrupted) {

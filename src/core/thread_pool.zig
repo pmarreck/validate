@@ -395,10 +395,12 @@ pub fn getDefaultJobCount() usize {
 }
 
 /// Get the recommended job count for the outer/batch level.
-/// Uses 2/3 of CPUs to leave room for inner parallelism (e.g., PDF image validation).
+/// Uses 2/3 of CPUs to leave room for inner parallelism (e.g., PDF image
+/// validation). Memory admission is handled by MemoryBudget; do not cap
+/// workers here or CPU-heavy batches will leave cores idle even when memory
+/// is available. `--jobs N` remains the explicit override.
 pub fn getOuterJobCount() usize {
     const cpus = getCpuCount();
-    // 2/3 of CPUs, minimum 2
     return @max(2, (cpus * 2) / 3);
 }
 

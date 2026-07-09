@@ -37,7 +37,7 @@
 //!   - No escaping needed (US/RS never appear in normal text or file paths)
 //!   - Zero-copy parsing possible (just find delimiters)
 //!   - Forward compatible (ignore unknown keys)
-//!   - Works across any FFI boundary (C, Lua, Python, Swift, etc.)
+//!   - Works across any FFI boundary (C, LuaJIT FFI, Swift, Rust, etc.)
 //!   - Human-debuggable (keys are readable, delimiters are invisible)
 //!
 //! ============================================================================
@@ -401,6 +401,45 @@ pub const MemoryUsage = extern struct {
     current_rss: u64,
 };
 
+pub const HeapDebugSnapshot = extern struct {
+    current_rss: u64,
+    vm_size: u64,
+    vm_data: u64,
+    budget_total_bytes: u64,
+    budget_available_bytes: u64,
+    active_tasks: u64,
+    alloc_current_bytes: u64,
+    alloc_peak_bytes: u64,
+    small_current_bytes: u64,
+    small_peak_bytes: u64,
+    big_current_bytes: u64,
+    big_peak_bytes: u64,
+    total_alloc_bytes: u64,
+    total_free_bytes: u64,
+    arena_reset_bytes: u64,
+    alloc_count: u64,
+    free_count: u64,
+    resize_count: u64,
+    remap_count: u64,
+    arena_reset_count: u64,
+};
+
+pub const HeapDebugTaskSnapshot = extern struct {
+    active: u32,
+    slot: u32,
+    id: u32,
+    index: u64,
+    file_size: u64,
+    reserved_bytes: u64,
+    elapsed_ns: u64,
+    phase_elapsed_ns: u64,
+    start_rss: u64,
+    current_rss: u64,
+    path: [*:0]const u8,
+    format_hint: [*:0]const u8,
+    phase: [*:0]const u8,
+};
+
 /// Get a snapshot of the current memory budget state.
 ///
 /// Returns 0 (VALIDATE_OK) if a batch is running and `out` was populated;
@@ -424,13 +463,215 @@ export fn validate_get_memory_usage(out: ?*MemoryUsage) c_int {
     return 0;
 }
 
+export fn validate_reset_heap_debug_counters() void {
+    core.heap.resetStats();
+}
+
+export fn validate_get_heap_debug_snapshot(out: ?*HeapDebugSnapshot) c_int {
+    const dst = out orelse return 1;
+    dst.* = HeapDebugSnapshot{
+        .current_rss = 0,
+        .vm_size = 0,
+        .vm_data = 0,
+        .budget_total_bytes = 0,
+        .budget_available_bytes = 0,
+        .active_tasks = 0,
+        .alloc_current_bytes = 0,
+        .alloc_peak_bytes = 0,
+        .small_current_bytes = 0,
+        .small_peak_bytes = 0,
+        .big_current_bytes = 0,
+        .big_peak_bytes = 0,
+        .total_alloc_bytes = 0,
+        .total_free_bytes = 0,
+        .arena_reset_bytes = 0,
+        .alloc_count = 0,
+        .free_count = 0,
+        .resize_count = 0,
+        .remap_count = 0,
+        .arena_reset_count = 0,
+    };
+
+    const mem = getProcessMemory();
+    dst.current_rss = mem.rss;
+    dst.vm_size = mem.vm_size;
+    dst.vm_data = mem.vm_data;
+
+    if (g_active_budget.load(.seq_cst)) |budget_ptr| {
+        const snap = budget_ptr.snapshot();
+        dst.budget_total_bytes = snap.total;
+        dst.budget_available_bytes = snap.available;
+        dst.active_tasks = snap.active;
+    }
+
+    const alloc = core.heap.snapshotStats();
+    dst.alloc_current_bytes = alloc.current_bytes;
+    dst.alloc_peak_bytes = alloc.peak_bytes;
+    dst.small_current_bytes = alloc.small_current_bytes;
+    dst.small_peak_bytes = alloc.small_peak_bytes;
+    dst.big_current_bytes = alloc.big_current_bytes;
+    dst.big_peak_bytes = alloc.big_peak_bytes;
+    dst.total_alloc_bytes = alloc.total_alloc_bytes;
+    dst.total_free_bytes = alloc.total_free_bytes;
+    dst.arena_reset_bytes = alloc.arena_reset_bytes;
+    dst.alloc_count = alloc.alloc_count;
+    dst.free_count = alloc.free_count;
+    dst.resize_count = alloc.resize_count;
+    dst.remap_count = alloc.remap_count;
+    dst.arena_reset_count = alloc.arena_reset_count;
+    return 0;
+}
+
+const HEAP_DEBUG_MAX_TASKS: usize = 256;
+const empty_cstr: [*:0]const u8 = "";
+const phase_start: [*:0]const u8 = "start";
+const phase_large_wait: [*:0]const u8 = "large_wait";
+const phase_rss_wait: [*:0]const u8 = "rss_wait";
+const phase_validate: [*:0]const u8 = "validate";
+const phase_callback: [*:0]const u8 = "callback";
+
+const HeapDebugTaskSlot = struct {
+    active: bool = false,
+    id: u32 = 0,
+    index: u64 = 0,
+    file_size: u64 = 0,
+    reserved_bytes: u64 = 0,
+    start_ns: u64 = 0,
+    phase_start_ns: u64 = 0,
+    start_rss: u64 = 0,
+    path: [*:0]const u8 = empty_cstr,
+    format_hint: [*:0]const u8 = empty_cstr,
+    phase: [*:0]const u8 = phase_start,
+};
+
+var g_heap_debug_task_tracking = std.atomic.Value(bool).init(false);
+var g_heap_debug_tasks_mutex: std.Io.Mutex = .init;
+var g_heap_debug_tasks: [HEAP_DEBUG_MAX_TASKS]HeapDebugTaskSlot = .{HeapDebugTaskSlot{}} ** HEAP_DEBUG_MAX_TASKS;
+
+fn heapDebugNowNs() u64 {
+    const now = nanoTimestamp();
+    return if (now > 0) @intCast(now) else 0;
+}
+
+fn heapDebugLock() void {
+    g_heap_debug_tasks_mutex.lockUncancelable(runtime.io());
+}
+
+fn heapDebugUnlock() void {
+    g_heap_debug_tasks_mutex.unlock(runtime.io());
+}
+
+export fn validate_set_heap_debug_task_tracking(enabled: c_int) void {
+    g_heap_debug_task_tracking.store(enabled != 0, .seq_cst);
+    if (enabled == 0) {
+        heapDebugLock();
+        defer heapDebugUnlock();
+        for (&g_heap_debug_tasks) |*slot| {
+            slot.* = HeapDebugTaskSlot{};
+        }
+    }
+}
+
+fn heapDebugTaskBegin(
+    index: usize,
+    id: u32,
+    path: [*:0]const u8,
+    format_hint: [*:0]const u8,
+    file_size: u64,
+    reserved_bytes: u64,
+) ?usize {
+    if (!g_heap_debug_task_tracking.load(.seq_cst)) return null;
+    const start_ns = heapDebugNowNs();
+    const start_rss = getCurrentRss();
+    heapDebugLock();
+    defer heapDebugUnlock();
+    for (&g_heap_debug_tasks, 0..) |*slot, slot_index| {
+        if (!slot.active) {
+            slot.* = HeapDebugTaskSlot{
+                .active = true,
+                .id = id,
+                .index = @intCast(index),
+                .file_size = file_size,
+                .reserved_bytes = reserved_bytes,
+                .start_ns = start_ns,
+                .phase_start_ns = start_ns,
+                .start_rss = start_rss,
+                .path = path,
+                .format_hint = format_hint,
+                .phase = phase_start,
+            };
+            return slot_index;
+        }
+    }
+    return null;
+}
+
+fn heapDebugTaskSetPhase(slot_index: ?usize, phase: [*:0]const u8) void {
+    const i = slot_index orelse return;
+    if (!g_heap_debug_task_tracking.load(.seq_cst)) return;
+    const now_ns = heapDebugNowNs();
+    heapDebugLock();
+    defer heapDebugUnlock();
+    if (i < g_heap_debug_tasks.len and g_heap_debug_tasks[i].active) {
+        if (g_heap_debug_tasks[i].phase != phase) {
+            g_heap_debug_tasks[i].phase = phase;
+            g_heap_debug_tasks[i].phase_start_ns = now_ns;
+        }
+    }
+}
+
+fn heapDebugTaskEnd(slot_index: ?usize) void {
+    const i = slot_index orelse return;
+    if (!g_heap_debug_task_tracking.load(.seq_cst)) return;
+    heapDebugLock();
+    defer heapDebugUnlock();
+    if (i < g_heap_debug_tasks.len) {
+        g_heap_debug_tasks[i] = HeapDebugTaskSlot{};
+    }
+}
+
+export fn validate_get_heap_debug_tasks(out: ?[*]HeapDebugTaskSnapshot, capacity: usize) usize {
+    const dst = out orelse return 0;
+    if (capacity == 0) return 0;
+    const now_ns = heapDebugNowNs();
+    const current_rss = getCurrentRss();
+    var written: usize = 0;
+
+    heapDebugLock();
+    defer heapDebugUnlock();
+
+    for (g_heap_debug_tasks, 0..) |slot, slot_index| {
+        if (!slot.active) continue;
+        if (written >= capacity) break;
+        const elapsed_ns = if (now_ns >= slot.start_ns) now_ns - slot.start_ns else 0;
+        const phase_elapsed_ns = if (now_ns >= slot.phase_start_ns) now_ns - slot.phase_start_ns else 0;
+        dst[written] = HeapDebugTaskSnapshot{
+            .active = 1,
+            .slot = @intCast(slot_index),
+            .id = slot.id,
+            .index = slot.index,
+            .file_size = slot.file_size,
+            .reserved_bytes = slot.reserved_bytes,
+            .elapsed_ns = elapsed_ns,
+            .phase_elapsed_ns = phase_elapsed_ns,
+            .start_rss = slot.start_rss,
+            .current_rss = current_rss,
+            .path = slot.path,
+            .format_hint = slot.format_hint,
+            .phase = slot.phase,
+        };
+        written += 1;
+    }
+    return written;
+}
+
 /// Get total system memory in bytes. Returns 0 if detection fails.
 export fn validate_system_memory() u64 {
     return getSystemMemory();
 }
 
 /// Set maximum memory budget for validation in bytes.
-/// Pass 0 to reset to default (system_memory / 2).
+/// Pass 0 to reset to the clamped default from `validate_get_max_memory`.
 export fn validate_set_max_memory(bytes: u64) void {
     g_max_memory = bytes;
 }
@@ -491,29 +732,100 @@ fn getSystemMemory() u64 {
     }
 }
 
+const ProcessMemory = struct {
+    rss: u64 = 0,
+    vm_size: u64 = 0,
+    vm_data: u64 = 0,
+};
+
+fn parseProcStatusKbLine(line: []const u8, key: []const u8) ?u64 {
+    if (!std.mem.startsWith(u8, line, key)) return null;
+    var i: usize = key.len;
+    while (i < line.len and (line[i] == ' ' or line[i] == '\t')) : (i += 1) {}
+    var kb: u64 = 0;
+    var saw_digit = false;
+    while (i < line.len and line[i] >= '0' and line[i] <= '9') : (i += 1) {
+        saw_digit = true;
+        kb = kb * 10 + @as(u64, line[i] - '0');
+    }
+    return if (saw_digit) kb * 1024 else null;
+}
+
+fn getProcessMemory() ProcessMemory {
+    if (comptime @import("builtin").os.tag == .macos) {
+        return getMacProcessMemory();
+    } else if (comptime @import("builtin").os.tag == .linux) {
+        var result = ProcessMemory{ .rss = getCurrentRss() };
+        var buf: [4096]u8 = undefined;
+        const linux = std.os.linux;
+        const fd_raw = linux.open("/proc/self/status", .{ .ACCMODE = .RDONLY }, 0);
+        const fd_signed: isize = @bitCast(fd_raw);
+        if (fd_signed < 0) return result;
+        const fd: i32 = @intCast(fd_raw);
+        defer _ = linux.close(fd);
+        const n_raw = linux.read(fd, &buf, buf.len);
+        const n_signed: isize = @bitCast(n_raw);
+        if (n_signed <= 0) return result;
+        const n: usize = @intCast(n_raw);
+        var lines = std.mem.splitScalar(u8, buf[0..n], '\n');
+        while (lines.next()) |line| {
+            if (parseProcStatusKbLine(line, "VmRSS:")) |v| {
+                result.rss = v;
+            } else if (parseProcStatusKbLine(line, "VmSize:")) |v| {
+                result.vm_size = v;
+            } else if (parseProcStatusKbLine(line, "VmData:")) |v| {
+                result.vm_data = v;
+            }
+        }
+        return result;
+    }
+    return .{};
+}
+
+fn getMacProcessMemory() ProcessMemory {
+    const darwin = struct {
+        extern "c" fn getpid() c_int;
+        extern "c" fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: *anyopaque, buffersize: c_int) c_int;
+    };
+    const PROC_PIDTASKINFO: c_int = 4;
+    const ProcTaskInfo = extern struct {
+        pti_virtual_size: u64,
+        pti_resident_size: u64,
+        pti_total_user: u64,
+        pti_total_system: u64,
+        pti_threads_user: u64,
+        pti_threads_system: u64,
+        pti_policy: i32,
+        pti_faults: i32,
+        pti_pageins: i32,
+        pti_cow_faults: i32,
+        pti_messages_sent: i32,
+        pti_messages_received: i32,
+        pti_syscalls_mach: i32,
+        pti_syscalls_unix: i32,
+        pti_csw: i32,
+        pti_threadnum: i32,
+        pti_numrunning: i32,
+        pti_priority: i32,
+    };
+    var info: ProcTaskInfo = std.mem.zeroes(ProcTaskInfo);
+    const expected: c_int = @intCast(@sizeOf(ProcTaskInfo));
+    const n = darwin.proc_pidinfo(darwin.getpid(), PROC_PIDTASKINFO, 0, @ptrCast(&info), expected);
+    if (n < expected) return .{};
+    return .{
+        .rss = info.pti_resident_size,
+        // Darwin virtual_size is dominated by
+        // address-space reservations and is too noisy for these perf logs.
+        .vm_size = 0,
+        .vm_data = 0,
+    };
+}
+
 /// Get current process RSS (resident set size) in bytes.
 /// Returns 0 if the OS API fails or is unavailable.
 fn getCurrentRss() u64 {
     if (comptime @import("builtin").os.tag == .macos) {
-        // macOS: task_info(TASK_BASIC_INFO)
-        const mach = struct {
-            extern "c" fn mach_task_self() c_uint;
-            extern "c" fn task_info(target: c_uint, flavor: c_uint, info: *anyopaque, count: *u32) c_int;
-        };
-        const TASK_BASIC_INFO_64: c_uint = 5;
-        const TaskBasicInfo64 = extern struct {
-            suspend_count: i32,
-            virtual_size: u64,
-            resident_size: u64,
-            user_time: extern struct { seconds: i32, microseconds: i32 },
-            system_time: extern struct { seconds: i32, microseconds: i32 },
-            policy: i32,
-        };
-        var info: TaskBasicInfo64 = undefined;
-        var count: u32 = @sizeOf(TaskBasicInfo64) / @sizeOf(u32);
-        const rc = mach.task_info(mach.mach_task_self(), TASK_BASIC_INFO_64, @ptrCast(&info), &count);
-        if (rc == 0) return info.resident_size;
-        return 0;
+        return getMacProcessMemory().rss;
     } else if (comptime @import("builtin").os.tag == .linux) {
         // Linux: /proc/self/statm (second field = resident pages)
         // 0.16: std.fs.openFileAbsolute moved to std.Io.Dir and requires an io
@@ -684,12 +996,37 @@ export fn validate_set_begin_callback(callback: BeginCallback, ctx: ?*anyopaque)
 /// (PDF stream blowup, libavif internal threading); the existing
 /// large-file semaphore + RSS pressure throttle remain as belt-and-
 /// suspenders against the upside.
+fn statFileSize(path_slice: []const u8) ?u64 {
+    const stat = runtime.statFile(path_slice) catch return null;
+    return @intCast(stat.size);
+}
+
+fn estimatePathBudget(path_slice: []const u8) usize {
+    const size = statFileSize(path_slice) orelse return 1024 * 1024;
+    return @intCast(size);
+}
+
+fn pathEndsWithCaseless(path_slice: []const u8, suffix: []const u8) bool {
+    if (path_slice.len < suffix.len) return false;
+    return std.ascii.eqlIgnoreCase(path_slice[path_slice.len - suffix.len ..], suffix);
+}
+
+fn heapDebugFormatHint(path_slice: []const u8) [*:0]const u8 {
+    if (pathEndsWithCaseless(path_slice, ".heic")) return "heic";
+    if (pathEndsWithCaseless(path_slice, ".heif")) return "heif";
+    if (pathEndsWithCaseless(path_slice, ".avif")) return "avif";
+    if (pathEndsWithCaseless(path_slice, ".7z")) return "7z";
+    if (pathEndsWithCaseless(path_slice, ".zip")) return "zip";
+    if (pathEndsWithCaseless(path_slice, ".flac")) return "flac";
+    if (pathEndsWithCaseless(path_slice, ".tar")) return "tar";
+    return @tagName(format_validation.detectFormatFromExtension(path_slice)).ptr;
+}
+
 fn estimateBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) usize {
     const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return 1024 * 1024));
     const path_ptr = ctx.paths[task.index] orelse return 1024 * 1024;
     const path_slice = std.mem.span(path_ptr);
-    const stat = runtime.statFile(path_slice) catch return 1024 * 1024;
-    return @intCast(stat.size);
+    return estimatePathBudget(path_slice);
 }
 fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     // Check interrupt flag before starting
@@ -703,13 +1040,17 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     const path_ptr = ctx.paths[task.index] orelse return;
     const id = ctx.ids[task.index];
     const path_slice = std.mem.span(path_ptr);
+    const file_size_opt = statFileSize(path_slice);
+    const file_size: u64 = file_size_opt orelse 0;
+    const reserved_bytes: u64 = @intCast(file_size_opt orelse 1024 * 1024);
+    const format_hint = heapDebugFormatHint(path_slice);
+    const heap_task_slot = heapDebugTaskBegin(task.index, id, path_ptr, format_hint, file_size, reserved_bytes);
+    defer heapDebugTaskEnd(heap_task_slot);
 
     // Large-file semaphore: files above threshold block until a slot is free,
     // preventing N workers all simultaneously validating huge files.
-    const is_large = blk: {
-        const stat = runtime.statFile(path_slice) catch break :blk false;
-        break :blk stat.size > LARGE_FILE_THRESHOLD;
-    };
+    const is_large = if (file_size_opt) |size| size > LARGE_FILE_THRESHOLD else false;
+    if (is_large) heapDebugTaskSetPhase(heap_task_slot, phase_large_wait);
     if (is_large) g_large_file_sem.wait(runtime.io()) catch |err| std.debug.panic("sem wait failed: {s}", .{@errorName(err)});
     defer if (is_large) g_large_file_sem.post(runtime.io());
 
@@ -718,6 +1059,7 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     // to avoid livelock on genuinely tight systems.
     const budget = validate_get_max_memory();
     if (budget > 0) {
+        heapDebugTaskSetPhase(heap_task_slot, phase_rss_wait);
         var wait_ms: u64 = 0;
         while (wait_ms < 500) {
             const rss = getCurrentRss();
@@ -742,10 +1084,12 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     var diverter = core.heap.DivertingAllocator.init(arena.allocator(), 16 * 1024 * 1024);
+    defer diverter.finishTask();
     const task_alloc = diverter.allocator();
     core.heap.setThreadArena(task_alloc);
     defer core.heap.clearThreadArena();
 
+    heapDebugTaskSetPhase(heap_task_slot, phase_validate);
     const start_ns = nanoTimestamp();
     var validator = format_validation.FormatValidator.initDeep();
     const result = validator.validateFileDeep(task_alloc, path_slice);
@@ -755,6 +1099,7 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     const result_str = buildValidationResult(std.heap.page_allocator, result, elapsed_ns) catch return;
 
     // Call user callback
+    heapDebugTaskSetPhase(heap_task_slot, phase_callback);
     callback(ctx.user_ctx, id, path_ptr, result_str.ptr);
 }
 
@@ -780,6 +1125,8 @@ export fn validate_batch(
     if (count == 0) {
         return 0; // VALIDATE_OK
     }
+
+    core.heap.resetStats();
 
     const actual_threads: usize = if (num_threads <= 0)
         thread_pool.getOuterJobCount()
