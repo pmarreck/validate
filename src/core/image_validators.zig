@@ -3595,7 +3595,6 @@ pub fn validateWebpDeep(allocator: Allocator, source: *FileSource) ValidationRes
 /// This catches ANS entropy coding errors, squeeze transform errors,
 /// and corrupted data that structural validation would miss.
 pub fn validateJxlDeep(allocator: Allocator, source: *FileSource) ValidationResult {
-    _ = allocator;
     const file_size = source.getEndPos() catch {
         return ValidationResult.invalidWithDepth(.jxl, errmsg.failedToGet("file size"), .full);
     };
@@ -3604,19 +3603,17 @@ pub fn validateJxlDeep(allocator: Allocator, source: *FileSource) ValidationResu
     }
     const is_large_file = file_size > 200 * 1024 * 1024;
 
-    const buffer = std.c.malloc(file_size) orelse {
-        return ValidationResult.invalidWithDepth(.jxl, "Memory allocation failed", .full);
-    };
-    defer std.c.free(buffer);
-
-    const buf_slice: []u8 = @as([*]u8, @ptrCast(buffer))[0..file_size];
-    source.seekTo(0) catch {
-        return ValidationResult.invalidWithDepth(.jxl, errmsg.failedToSeek("to start"), .full);
-    };
-    const bytes_read = source.readAll(buf_slice) catch {
+    const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch {
         return ValidationResult.invalidWithDepth(.jxl, errmsg.failedToRead("file"), .full);
     };
-    if (bytes_read != file_size) {
+    var heap_jxl: ?[]u8 = null;
+    defer if (heap_jxl) |buf| allocator.free(buf);
+    const buf_slice: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: { heap_jxl = b; break :blk b; },
+        .too_large => return ValidationResult.okWithDepthAndWarning(.jxl, .structural, "JPEG XL too large for non-mmap deep decode"),
+    };
+    if (buf_slice.len != file_size) {
         return ValidationResult.invalidWithDepth(.jxl, errmsg.incomplete("file read"), .full);
     }
 
