@@ -24,6 +24,107 @@ const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 const runtime = @import("runtime.zig");
 
+/// DEBUG-only scheduler wait accounting for distinguishing exhausted work,
+/// memory admission, and RSS-pressure backpressure. Counters are monotonic
+/// nanoseconds so a polling consumer can derive a stable interval delta.
+pub const SchedulerDebugStats = struct {
+    pub const Snapshot = struct {
+        worker_count: u64,
+        queue_empty_wait_ns: u64,
+        queue_empty_wait_events: u64,
+        queue_empty_waiters: u64,
+        memory_budget_wait_ns: u64,
+        memory_budget_wait_events: u64,
+        memory_budget_waiters: u64,
+        rss_pressure_wait_ns: u64,
+        rss_pressure_wait_events: u64,
+        rss_pressure_waiters: u64,
+    };
+
+    worker_count: std.atomic.Value(u64) = .init(0),
+    queue_empty_wait_ns: std.atomic.Value(u64) = .init(0),
+    queue_empty_wait_events: std.atomic.Value(u64) = .init(0),
+    queue_empty_waiters: std.atomic.Value(u64) = .init(0),
+    memory_budget_wait_ns: std.atomic.Value(u64) = .init(0),
+    memory_budget_wait_events: std.atomic.Value(u64) = .init(0),
+    memory_budget_waiters: std.atomic.Value(u64) = .init(0),
+    rss_pressure_wait_ns: std.atomic.Value(u64) = .init(0),
+    rss_pressure_wait_events: std.atomic.Value(u64) = .init(0),
+    rss_pressure_waiters: std.atomic.Value(u64) = .init(0),
+
+    pub fn init() SchedulerDebugStats {
+        return .{};
+    }
+
+    pub fn setWorkerCount(self: *SchedulerDebugStats, worker_count: usize) void {
+        self.worker_count.store(@intCast(worker_count), .seq_cst);
+    }
+
+    pub fn recordQueueEmptyWait(self: *SchedulerDebugStats, elapsed_ns: u64) void {
+        _ = self.queue_empty_wait_ns.fetchAdd(elapsed_ns, .seq_cst);
+        _ = self.queue_empty_wait_events.fetchAdd(1, .seq_cst);
+    }
+
+    pub fn recordMemoryBudgetWait(self: *SchedulerDebugStats, elapsed_ns: u64) void {
+        _ = self.memory_budget_wait_ns.fetchAdd(elapsed_ns, .seq_cst);
+        _ = self.memory_budget_wait_events.fetchAdd(1, .seq_cst);
+    }
+
+    pub fn recordRssPressureWait(self: *SchedulerDebugStats, elapsed_ns: u64) void {
+        _ = self.rss_pressure_wait_ns.fetchAdd(elapsed_ns, .seq_cst);
+        _ = self.rss_pressure_wait_events.fetchAdd(1, .seq_cst);
+    }
+
+    fn beginQueueEmptyWait(self: *SchedulerDebugStats) void {
+        _ = self.queue_empty_waiters.fetchAdd(1, .seq_cst);
+    }
+
+    fn endQueueEmptyWait(self: *SchedulerDebugStats, elapsed_ns: u64) void {
+        _ = self.queue_empty_waiters.fetchSub(1, .seq_cst);
+        self.recordQueueEmptyWait(elapsed_ns);
+    }
+
+    pub fn memoryBudgetWaitBegin(context: ?*anyopaque) void {
+        const self: *SchedulerDebugStats = @ptrCast(@alignCast(context orelse return));
+        _ = self.memory_budget_waiters.fetchAdd(1, .seq_cst);
+    }
+
+    pub fn memoryBudgetWaitEnd(context: ?*anyopaque, elapsed_ns: u64) void {
+        const self: *SchedulerDebugStats = @ptrCast(@alignCast(context orelse return));
+        _ = self.memory_budget_waiters.fetchSub(1, .seq_cst);
+        self.recordMemoryBudgetWait(elapsed_ns);
+    }
+
+    pub fn beginRssPressureWait(self: *SchedulerDebugStats) void {
+        _ = self.rss_pressure_waiters.fetchAdd(1, .seq_cst);
+    }
+
+    pub fn endRssPressureWait(self: *SchedulerDebugStats, elapsed_ns: u64) void {
+        _ = self.rss_pressure_waiters.fetchSub(1, .seq_cst);
+        self.recordRssPressureWait(elapsed_ns);
+    }
+
+    pub fn snapshot(self: *const SchedulerDebugStats) Snapshot {
+        return .{
+            .worker_count = self.worker_count.load(.seq_cst),
+            .queue_empty_wait_ns = self.queue_empty_wait_ns.load(.seq_cst),
+            .queue_empty_wait_events = self.queue_empty_wait_events.load(.seq_cst),
+            .queue_empty_waiters = self.queue_empty_waiters.load(.seq_cst),
+            .memory_budget_wait_ns = self.memory_budget_wait_ns.load(.seq_cst),
+            .memory_budget_wait_events = self.memory_budget_wait_events.load(.seq_cst),
+            .memory_budget_waiters = self.memory_budget_waiters.load(.seq_cst),
+            .rss_pressure_wait_ns = self.rss_pressure_wait_ns.load(.seq_cst),
+            .rss_pressure_wait_events = self.rss_pressure_wait_events.load(.seq_cst),
+            .rss_pressure_waiters = self.rss_pressure_waiters.load(.seq_cst),
+        };
+    }
+};
+
+fn elapsedNanoseconds(start_ns: i128) u64 {
+    const end_ns = runtime.nanoTimestamp();
+    return if (end_ns > start_ns) @intCast(end_ns - start_ns) else 0;
+}
+
 /// Generic thread pool for parallel task execution.
 /// TaskData: The input type for each task
 /// ResultData: The output type for each task (use void if no results needed)
@@ -63,6 +164,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         // both set, workers acquire bytes before task_fn and release after.
         budget: ?*@import("memory_budget.zig").MemoryBudget,
         estimate_fn: ?EstimateFn,
+        scheduler_debug: ?*SchedulerDebugStats,
 
         // Result handling (only when has_results)
         result_callback: if (has_results) ?ResultCallback else void,
@@ -107,11 +209,18 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                 self.cond.signal(runtime.io());
             }
 
-            pub fn pop(self: *WorkQueue) ?TaskData {
+            pub fn pop(self: *WorkQueue, scheduler_debug: ?*SchedulerDebugStats) ?TaskData {
                 self.mutex.lockUncancelable(runtime.io());
                 defer self.mutex.unlock(runtime.io());
                 while (self.len == 0 and !self.closed) {
-                    self.cond.waitUncancelable(runtime.io(), &self.mutex);
+                    if (scheduler_debug) |debug| {
+                        debug.beginQueueEmptyWait();
+                        const wait_start_ns = runtime.nanoTimestamp();
+                        self.cond.waitUncancelable(runtime.io(), &self.mutex);
+                        debug.endQueueEmptyWait(elapsedNanoseconds(wait_start_ns));
+                    } else {
+                        self.cond.waitUncancelable(runtime.io(), &self.mutex);
+                    }
                 }
                 if (self.len == 0) {
                     return null;
@@ -232,6 +341,32 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
             budget: ?*@import("memory_budget.zig").MemoryBudget,
             estimate_fn: ?EstimateFn,
         ) !*Self {
+            return createWithBudgetAndDebug(
+                allocator,
+                job_count,
+                task_fn,
+                task_context,
+                result_callback,
+                result_context,
+                budget,
+                estimate_fn,
+                null,
+            );
+        }
+
+        /// Same as `createWithBudget`, with optional DEBUG-only wait counters.
+        /// A null counter keeps the queue and budget admission hot paths unchanged.
+        pub fn createWithBudgetAndDebug(
+            allocator: Allocator,
+            job_count: usize,
+            task_fn: TaskFn,
+            task_context: ?*anyopaque,
+            result_callback: if (has_results) ?ResultCallback else void,
+            result_context: if (has_results) ?*anyopaque else void,
+            budget: ?*@import("memory_budget.zig").MemoryBudget,
+            estimate_fn: ?EstimateFn,
+            scheduler_debug: ?*SchedulerDebugStats,
+        ) !*Self {
             const actual_jobs = @max(@as(usize, 1), job_count);
 
             // Allocate pool on heap
@@ -248,6 +383,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                 .task_context = task_context,
                 .budget = budget,
                 .estimate_fn = estimate_fn,
+                .scheduler_debug = scheduler_debug,
                 .result_callback = if (has_results) result_callback else {},
                 .result_context = if (has_results) result_context else {},
                 .result_thread = if (has_results) null else {},
@@ -333,7 +469,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
 
         fn workerMain(self: *Self) void {
             while (true) {
-                const task = self.work_queue.pop() orelse break;
+                const task = self.work_queue.pop(self.scheduler_debug) orelse break;
 
                 // Optional budget gate: estimate, then acquire before task_fn.
                 // Released after task_fn returns regardless of how it exited.
@@ -342,7 +478,17 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                 else
                     0;
                 if (self.budget) |b| {
-                    if (reserved > 0) b.acquire(reserved);
+                    if (reserved > 0) {
+                        if (self.scheduler_debug) |debug| {
+                            b.acquireObserved(reserved, .{
+                                .context = debug,
+                                .on_wait_begin = SchedulerDebugStats.memoryBudgetWaitBegin,
+                                .on_wait_end = SchedulerDebugStats.memoryBudgetWaitEnd,
+                            });
+                        } else {
+                            b.acquire(reserved);
+                        }
+                    }
                 }
                 defer if (self.budget) |b| {
                     if (reserved > 0) b.release(reserved);
@@ -525,7 +671,7 @@ test "WorkQueue FIFO order preserved with 10K items" {
 
     // Dequeue and verify FIFO order
     for (0..count) |i| {
-        const val = wq.pop() orelse return error.UnexpectedNull;
+        const val = wq.pop(null) orelse return error.UnexpectedNull;
         try std.testing.expectEqual(@as(u32, @intCast(i)), val);
     }
 }
@@ -547,7 +693,7 @@ test "WorkQueue interleaved push/pop" {
         }
         // Pop 2
         for (0..2) |_| {
-            const val = wq.pop() orelse return error.UnexpectedNull;
+            const val = wq.pop(null) orelse return error.UnexpectedNull;
             try std.testing.expectEqual(next_pop, val);
             next_pop += 1;
         }
@@ -557,7 +703,7 @@ test "WorkQueue interleaved push/pop" {
     while (true) {
         // Close to allow non-blocking pop
         wq.close();
-        const val = wq.pop() orelse break;
+        const val = wq.pop(null) orelse break;
         try std.testing.expectEqual(next_pop, val);
         next_pop += 1;
     }
@@ -601,4 +747,20 @@ test "ThreadPool batch submit" {
     pool.wait();
 
     try std.testing.expectEqual(@as(usize, 5), count.load(.seq_cst));
+}
+
+test "SchedulerDebugStats keeps wait reasons independent" {
+    var stats = SchedulerDebugStats.init();
+    stats.recordQueueEmptyWait(17);
+    stats.recordMemoryBudgetWait(23);
+    stats.recordRssPressureWait(29);
+    stats.recordQueueEmptyWait(5);
+
+    const snapshot = stats.snapshot();
+    try std.testing.expectEqual(@as(u64, 22), snapshot.queue_empty_wait_ns);
+    try std.testing.expectEqual(@as(u64, 23), snapshot.memory_budget_wait_ns);
+    try std.testing.expectEqual(@as(u64, 29), snapshot.rss_pressure_wait_ns);
+    try std.testing.expectEqual(@as(u64, 2), snapshot.queue_empty_wait_events);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.memory_budget_wait_events);
+    try std.testing.expectEqual(@as(u64, 1), snapshot.rss_pressure_wait_events);
 }

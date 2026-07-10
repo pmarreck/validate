@@ -30,6 +30,20 @@ inline fn condWaitOrPanic(c: *std.Io.Condition, m: *std.Io.Mutex) void {
 	c.wait(runtime.io(), m) catch |err| std.debug.panic("Io.Condition.wait failed: {s}", .{@errorName(err)});
 }
 
+/// Optional observer for a worker blocked on memory admission. This avoids a
+/// dependency on ThreadPool while letting its DEBUG diagnostics attribute the
+/// complete condvar wait interval to memory-budget backpressure.
+pub const WaitObserver = struct {
+	context: ?*anyopaque,
+	on_wait_begin: *const fn (context: ?*anyopaque) void,
+	on_wait_end: *const fn (context: ?*anyopaque, elapsed_ns: u64) void,
+};
+
+fn elapsedNanoseconds(start_ns: i128) u64 {
+	const end_ns = runtime.nanoTimestamp();
+	return if (end_ns > start_ns) @intCast(end_ns - start_ns) else 0;
+}
+
 pub const MemoryBudget = struct {
 	mutex: std.Io.Mutex = .init,
 	cond: std.Io.Condition = .init,
@@ -48,17 +62,39 @@ pub const MemoryBudget = struct {
 	/// Block until `bytes` can be reserved against the budget. Tasks larger
 	/// than the total budget are admitted alone (when active_count == 0).
 	pub fn acquire(self: *MemoryBudget, bytes: usize) void {
+		self.acquireObserved(bytes, null);
+	}
+
+	/// Same as `acquire`, with optional wait observation for scheduler
+	/// diagnostics. The no-observer path avoids clock reads and callbacks.
+	pub fn acquireObserved(self: *MemoryBudget, bytes: usize, observer: ?WaitObserver) void {
 		lockOrPanic(&self.mutex);
 		defer self.mutex.unlock(runtime.io());
+		var wait_start_ns: ?i128 = null;
+		defer if (wait_start_ns) |start_ns| {
+			if (observer) |o| o.on_wait_end(o.context, elapsedNanoseconds(start_ns));
+		};
+
+		const beginWait = struct {
+			fn call(start: *?i128, maybe_observer: ?WaitObserver) void {
+				if (start.* != null) return;
+				start.* = runtime.nanoTimestamp();
+				if (maybe_observer) |o| o.on_wait_begin(o.context);
+			}
+		}.call;
 
 		if (bytes > self.total_bytes) {
-			while (self.active_count > 0) condWaitOrPanic(&self.cond, &self.mutex);
+			while (self.active_count > 0) {
+				beginWait(&wait_start_ns, observer);
+				condWaitOrPanic(&self.cond, &self.mutex);
+			}
 			self.active_count += 1;
 			self.available_bytes = 0; // oversized task drains the budget so no peer admits
 			return;
 		}
 
 		while (self.available_bytes < bytes) {
+			beginWait(&wait_start_ns, observer);
 			condWaitOrPanic(&self.cond, &self.mutex);
 		}
 		self.available_bytes -= bytes;
@@ -243,6 +279,53 @@ test "MemoryBudget acquire blocks then unblocks on release" {
 	// Release frees enough budget for the waiter to proceed.
 	b.release(800);
 	t.join();
+	try std.testing.expectEqual(@as(u32, 1), latch.load(.seq_cst));
+	b.release(500);
+}
+
+test "MemoryBudget observed acquire reports one real admission wait" {
+	var b = MemoryBudget.init(1024);
+	b.acquire(800);
+
+	const Recorder = struct {
+		begins: std.atomic.Value(u32) = .init(0),
+		ends: std.atomic.Value(u32) = .init(0),
+
+		fn begin(context: ?*anyopaque) void {
+			const recorder: *@This() = @ptrCast(@alignCast(context orelse return));
+			_ = recorder.begins.fetchAdd(1, .seq_cst);
+		}
+
+		fn end(context: ?*anyopaque, _: u64) void {
+			const recorder: *@This() = @ptrCast(@alignCast(context orelse return));
+			_ = recorder.ends.fetchAdd(1, .seq_cst);
+		}
+	};
+
+	const Worker = struct {
+		fn run(budget: *MemoryBudget, recorder: *Recorder, latch: *std.atomic.Value(u32)) void {
+			budget.acquireObserved(500, .{
+				.context = recorder,
+				.on_wait_begin = Recorder.begin,
+				.on_wait_end = Recorder.end,
+			});
+			latch.store(1, .seq_cst);
+		}
+	};
+
+	var recorder = Recorder{};
+	var latch = std.atomic.Value(u32).init(0);
+	var t = try std.Thread.spawn(.{}, Worker.run, .{ &b, &recorder, &latch });
+
+	var spins: usize = 0;
+	while (spins < 1_000_000 and recorder.begins.load(.seq_cst) == 0) : (spins += 1) {}
+	try std.testing.expectEqual(@as(u32, 1), recorder.begins.load(.seq_cst));
+	try std.testing.expectEqual(@as(u32, 0), recorder.ends.load(.seq_cst));
+	try std.testing.expectEqual(@as(u32, 0), latch.load(.seq_cst));
+
+	b.release(800);
+	t.join();
+	try std.testing.expectEqual(@as(u32, 1), recorder.ends.load(.seq_cst));
 	try std.testing.expectEqual(@as(u32, 1), latch.load(.seq_cst));
 	b.release(500);
 }

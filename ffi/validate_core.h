@@ -306,6 +306,30 @@ typedef struct {
 void validate_reset_heap_debug_counters(void);
 int validate_get_heap_debug_snapshot(validate_heap_debug_snapshot_t* out);
 
+/**
+ * DEBUG-only scheduler wait counters for the active validate_batch() call.
+ * Values are cumulative nanoseconds/events, letting a polling consumer derive
+ * a per-window delta without relying on wall-clock alignment. The reasons are
+ * intentionally exclusive: queue_empty means no task was ready; memory budget
+ * means a dequeued task could not yet be admitted; RSS pressure means an
+ * admitted task was throttled while the process exceeded its RSS limit.
+ */
+typedef struct {
+    uint64_t worker_count;
+    uint64_t queue_empty_wait_ns;
+    uint64_t queue_empty_wait_events;
+    uint64_t queue_empty_waiters;
+    uint64_t memory_budget_wait_ns;
+    uint64_t memory_budget_wait_events;
+    uint64_t memory_budget_waiters;
+    uint64_t rss_pressure_wait_ns;
+    uint64_t rss_pressure_wait_events;
+    uint64_t rss_pressure_waiters;
+} validate_scheduler_debug_snapshot_t;
+
+void validate_set_scheduler_debug_tracking(int enabled);
+int validate_get_scheduler_debug_snapshot(validate_scheduler_debug_snapshot_t* out);
+
 #define VALIDATE_HEAP_DEBUG_MAX_TASKS 256
 
 typedef struct {

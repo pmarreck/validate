@@ -57,6 +57,11 @@ inline fn nanoTimestamp() i128 {
     return std.Io.Timestamp.now(runtime.io(), .awake).nanoseconds;
 }
 
+inline fn elapsedNanoseconds(start_ns: i128) u64 {
+    const end_ns = nanoTimestamp();
+    return if (end_ns > start_ns) @intCast(end_ns - start_ns) else 0;
+}
+
 /// 0.16: std.fs.cwd() → std.Io.Dir.cwd(). Cwd itself doesn't take io;
 /// the io parameter enters at the method calls on the returned Dir
 /// (openFile, statFile, etc).
@@ -391,6 +396,12 @@ var g_max_memory: u64 = 0;
 /// validate_batch's lifecycle and only the batch thread touches them.
 var g_active_budget: std.atomic.Value(?*core.memory_budget.MemoryBudget) = .init(null);
 
+/// Scheduler wait diagnostics are activated only by the CLI's explicit debug
+/// mode. The pointer is valid for one `validate_batch` invocation and lets a
+/// concurrent polling consumer observe monotonically increasing wait counters.
+var g_scheduler_debug_tracking = std.atomic.Value(bool).init(false);
+var g_active_scheduler_debug: std.atomic.Value(?*thread_pool.SchedulerDebugStats) = .init(null);
+
 /// Snapshot of memory budget state. Mirrored to a C struct in
 /// validate_core.h. All fields are bytes / counts. `current_rss` is
 /// best-effort and may be 0 on platforms where we can't query process RSS.
@@ -440,6 +451,19 @@ pub const HeapDebugTaskSnapshot = extern struct {
     phase: [*:0]const u8,
 };
 
+pub const SchedulerDebugSnapshot = extern struct {
+    worker_count: u64,
+    queue_empty_wait_ns: u64,
+    queue_empty_wait_events: u64,
+    queue_empty_waiters: u64,
+    memory_budget_wait_ns: u64,
+    memory_budget_wait_events: u64,
+    memory_budget_waiters: u64,
+    rss_pressure_wait_ns: u64,
+    rss_pressure_wait_events: u64,
+    rss_pressure_waiters: u64,
+};
+
 /// Get a snapshot of the current memory budget state.
 ///
 /// Returns 0 (VALIDATE_OK) if a batch is running and `out` was populated;
@@ -465,6 +489,45 @@ export fn validate_get_memory_usage(out: ?*MemoryUsage) c_int {
 
 export fn validate_reset_heap_debug_counters() void {
     core.heap.resetStats();
+}
+
+/// Enable or clear DEBUG-only scheduler wait accounting for the next batch.
+/// Disabled by default so validation never reads clocks for scheduler metrics.
+export fn validate_set_scheduler_debug_tracking(enabled: c_int) void {
+    g_scheduler_debug_tracking.store(enabled != 0, .seq_cst);
+}
+
+/// Snapshot cumulative scheduler wait counters for the active batch. Counters
+/// are nanoseconds and never reset mid-batch, so callers can compute deltas.
+export fn validate_get_scheduler_debug_snapshot(out: ?*SchedulerDebugSnapshot) c_int {
+    const dst = out orelse return 1;
+    dst.* = .{
+        .worker_count = 0,
+        .queue_empty_wait_ns = 0,
+        .queue_empty_wait_events = 0,
+        .queue_empty_waiters = 0,
+        .memory_budget_wait_ns = 0,
+        .memory_budget_wait_events = 0,
+        .memory_budget_waiters = 0,
+        .rss_pressure_wait_ns = 0,
+        .rss_pressure_wait_events = 0,
+        .rss_pressure_waiters = 0,
+    };
+    const stats = g_active_scheduler_debug.load(.seq_cst) orelse return 2;
+    const snap = stats.snapshot();
+    dst.* = .{
+        .worker_count = snap.worker_count,
+        .queue_empty_wait_ns = snap.queue_empty_wait_ns,
+        .queue_empty_wait_events = snap.queue_empty_wait_events,
+        .queue_empty_waiters = snap.queue_empty_waiters,
+        .memory_budget_wait_ns = snap.memory_budget_wait_ns,
+        .memory_budget_wait_events = snap.memory_budget_wait_events,
+        .memory_budget_waiters = snap.memory_budget_waiters,
+        .rss_pressure_wait_ns = snap.rss_pressure_wait_ns,
+        .rss_pressure_wait_events = snap.rss_pressure_wait_events,
+        .rss_pressure_waiters = snap.rss_pressure_waiters,
+    };
+    return 0;
 }
 
 export fn validate_get_heap_debug_snapshot(out: ?*HeapDebugSnapshot) c_int {
@@ -1061,12 +1124,26 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     if (budget > 0) {
         heapDebugTaskSetPhase(heap_task_slot, phase_rss_wait);
         var wait_ms: u64 = 0;
-        while (wait_ms < 500) {
-            const rss = getCurrentRss();
-            if (rss == 0 or rss < budget) break;
-            runtime.sleep(50 * std.time.ns_per_ms);
-            wait_ms += 50;
-            if (g_interrupt_flag.load(.seq_cst)) return;
+        {
+            var scheduler_debug: ?*thread_pool.SchedulerDebugStats = null;
+            var scheduler_wait_start_ns: ?i128 = null;
+            defer if (scheduler_wait_start_ns) |start_ns| {
+                if (scheduler_debug) |stats| stats.endRssPressureWait(elapsedNanoseconds(start_ns));
+            };
+            while (wait_ms < 500) {
+                const rss = getCurrentRss();
+                if (rss == 0 or rss < budget) break;
+                if (scheduler_wait_start_ns == null) {
+                    scheduler_debug = g_active_scheduler_debug.load(.seq_cst);
+                    if (scheduler_debug) |stats| {
+                        scheduler_wait_start_ns = nanoTimestamp();
+                        stats.beginRssPressureWait();
+                    }
+                }
+                runtime.sleep(50 * std.time.ns_per_ms);
+                wait_ms += 50;
+                if (g_interrupt_flag.load(.seq_cst)) return;
+            }
         }
     }
     // Call begin callback if set (useful for debugging crashes)
@@ -1163,9 +1240,15 @@ export fn validate_batch(
     g_active_budget.store(&mem_budget, .seq_cst);
     defer g_active_budget.store(null, .seq_cst);
 
+    var scheduler_debug = thread_pool.SchedulerDebugStats.init();
+    scheduler_debug.setWorkerCount(actual_threads);
+    const scheduler_debug_ptr: ?*thread_pool.SchedulerDebugStats = if (g_scheduler_debug_tracking.load(.seq_cst)) &scheduler_debug else null;
+    g_active_scheduler_debug.store(scheduler_debug_ptr, .seq_cst);
+    defer g_active_scheduler_debug.store(null, .seq_cst);
+
     // Use ThreadPool for parallel execution
     const Pool = thread_pool.ThreadPool(BatchTask, void);
-    const pool = Pool.createWithBudget(
+    const pool = Pool.createWithBudgetAndDebug(
         allocator,
         actual_threads,
         executeBatchTask,
@@ -1174,6 +1257,7 @@ export fn validate_batch(
         {},
         &mem_budget,
         estimateBatchTask,
+        scheduler_debug_ptr,
     ) catch {
         errors.setLastError(.internal_out_of_memory, "Failed to create thread pool", .{});
         return 3; // VALIDATE_ERR_OUT_OF_MEMORY
@@ -1758,6 +1842,14 @@ test "validate single file returns KV-US-RS format" {
 test "validate_default_threads" {
     const threads = validate_default_threads();
     try std.testing.expect(threads >= 1);
+}
+
+test "scheduler debug snapshot is unavailable without an active batch" {
+    var snapshot: SchedulerDebugSnapshot = undefined;
+    try std.testing.expectEqual(@as(c_int, 2), validate_get_scheduler_debug_snapshot(&snapshot));
+    try std.testing.expectEqual(@as(u64, 0), snapshot.queue_empty_wait_ns);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.memory_budget_wait_ns);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.rss_pressure_wait_ns);
 }
 
 test "KvBuilder produces correct format" {

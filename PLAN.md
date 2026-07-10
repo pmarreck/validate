@@ -14,6 +14,13 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+### Scheduler evidence on complete Mac Documents corpus (2026-07-09)
+
+- [x] Add DEBUG-only thread-pool snapshots: cumulative and per-report-window wait time in ns for `queue_empty`, `memory_budget`, and the FFI RSS-pressure throttle; surface them through `HEAP_FRAG_DEBUG` without default hot-loop clock reads. TDD green. Completed 2026-07-09 22:05 EDT.
+- [x] Run a fresh ReleaseFast `validate --jobs 0` sample against `/home/pmarreck/perf-corpora/mac-documents` with 5-second scheduler/heap diagnostics and independent process sampling. The intentionally terminated 185-second sample is preserved in `~/perf-results/validate/20260709T215239EDT-mac-documents-rss-scheduler`. Completed 2026-07-09 22:05 EDT.
+- [x] Analyze the sample before proposing allocator, arena, or queue changes: queue-empty time stayed at a 1.16s startup total; RSS-pressure throttling reached 5.15e12 aggregate ns (about 86 worker-minutes) with 70/85 waiters; memory admission was only 2.19s. Completed 2026-07-09 22:05 EDT.
+- [ ] Choose a remediation for RSS-pressure backpressure before changing behavior. Curiosity poke: avoid replacing a safe hard limit with unbounded decoded-object memory, and distinguish work admission from throttling already-admitted work.
+
 ### Fuzzing — Tier-1 whole-surface suite LIVE, grinding crashers (2026-06-24)
 Built per `docs/FUZZ_PLAN.md`: `tests/fuzz/` harnesses (dispatch + stdin +
 deterministic seeded sweep), two-tier oracle (robustness always; gzip-CRC
