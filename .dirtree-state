@@ -7,8 +7,11 @@ close=[
 ]
 
 annotate=[
+	bench/results/scheduler_backpressure.jsonl = Source-controlled ReleaseFast RSS/backpressure benchmark history with accepted and rejected runs
+	cli/process_allocator_policy.h = Pure CLI policy: glibc defaults to two arenas unless MALLOC_ARENA_MAX is explicit
 	docs/FUZZ_PLAN.md = Approved two-tier fuzz-suite design (robustness+detection oracle, mutation operators, ReleaseSafe sweep, committed-crasher CI corpus) — build spec, not yet implemented
 	docs/corruption-sweep-results/generated = Generator inputs (canonical source): report-rows.tsv sidecar + report-preamble/postamble.md + appendix-*.md; consumed by scripts/generate-corruption-report
+	docs/performance/scheduler-backpressure-2026-07-10.md = Reproducible Mac Documents scheduler/RSS A-B report and Zig-vs-C allocator analysis
 	scripts/generate-corruption-report = Generates the canonical 8-col corruption-detection report (Format|Sniper|Bolter|Shotgun|Sample|Size|Run|Mechanism) from sweep TSVs + sidecar; flag>env>default paths (VALIDATE_CORRUPTION_REPORT / VALIDATE_SWEEP_RESULTS_DIR); n/a never blank
 	scripts/migrate-report-to-sidecar = One-shot bootstrap: parses the old hand-maintained report into generator inputs (sidecar rows.tsv + preamble/postamble/appendix); resolves slug via Sample-filename+sniper% join; dissolves the Wave section + reassigns CPT→Archive
 	site = validate.pics static-site generator (LuaJIT) — emits docs/ for GitHub Pages, 50 locales
@@ -22,5 +25,7 @@ annotate=[
 	src/core/license.zig = Offline Ed25519 license-token verifier — contract v1 (b64url.b64url token, sign-over-left, email-only gate, kid-selected pubkeys, injected today, ErrorCode enum for i18n)
 	tests/cli/corruption_report_generator = Tests generate-corruption-report: 8-col contract header, n/a-never-blank, frozen fallbacks, flag/env/default path precedence, --out - stdout
 	tests/cli/master_report_drift = Regeneration-idempotence guard: committed corruption-detection-report.md must be byte-identical to scripts/generate-corruption-report output (replaces old hand-audit)
+	tests/cli/process_allocator_policy = Classifier test for glibc/non-glibc allocator-policy and override behavior
 	tests/cli/utf8_required_formats_reject = MFIC set-classifier: every UTF-8-required format (json/csv/toml/xml/html) must reject invalid UTF-8 through the real CLI dispatch (caught CSV silent-pass)
+	tests/fixtures/process_allocator_policy.c = C fixture exercising CLI allocator policy as a set of environment cases
 ]

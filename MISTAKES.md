@@ -179,3 +179,23 @@ uses library Y", VERIFY the actual call path (grep the dispatch, don't trust a
 subagent's one-line characterization). A 30-second `rg`/codescan on
 `validateTiffDeep` would have caught it. The zigimg branch remains a valid
 upstream contribution to Peter's fork, just irrelevant to validate.
+
+## 2026-07-10 — Started a second flake formatting check while the first was evaluating
+
+`nix develop -c zig fmt --check ...` was still materializing the dev shell and
+had detached from the short tool-output window. I mistook the lack of output for
+completion and launched it again, creating two competing Nix evaluations and a
+busy eval-cache warning. I stopped both processes; neither reached `zig fmt` or
+modified source. **Lesson:** after an apparently incomplete long Nix command,
+check its PID before retrying. For a formatting-only check, prefer the already
+realized project toolchain or rely on the successful sandboxed Zig compilation
+until the dev shell is known ready.
+
+## 2026-07-10 — Put a fixture directory inside an executable-test directory
+
+I initially placed a C fixture under `tests/cli/fixtures/`. The master runner
+iterates every `tests/cli/*` entry and uses `-x`; directories satisfy `-x`, so it
+tried to execute the fixture directory and reported `FAIL: fixtures`. I stopped
+the run and moved the source to the existing `tests/fixtures/` tree. **Lesson:**
+inspect a directory-driven test runner's entry contract before adding any new
+subdirectory; executable-only filtering does not exclude directories.

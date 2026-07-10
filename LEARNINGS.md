@@ -71,3 +71,20 @@ On the Thelio migration, the desired seal is stricter than "flake tools first in
 PATH": `./test` now runs CLI tests under `nix develop --ignore-env`, keeping only
 `VALIDATE_BIN` and `TMPDIR`. The sole expected local filesystem exception is the
 `ground_truth_examples -> ../validate_gui/ground_truth_examples` symlink.
+
+## 2026-07-10 — RSS backpressure exposed libc arena retention
+
+The copied 595,792-file Mac Documents corpus made the allocator boundary
+measurable. Per-task Zig arenas were releasing correctly, but glibc sometimes
+held 6–10 GiB of free arenas after C-codec work ended. A strict RSS hysteresis
+gate then had no safe headroom and could stall despite almost no live Zig data.
+`malloc_trim(0)` helped transiently but could not consistently dismantle those
+thread-created arenas.
+
+An A/B pilot with `MALLOC_ARENA_MAX=2` restored 75.3% of baseline completed-file
+throughput while reducing peak RSS 64.4%. The shipped standalone glibc CLI now
+applies the same two-arena default via `mallopt` unless the environment
+explicitly overrides it. The linkable library intentionally does not: allocator
+configuration is process-global and would be an unsafe surprise for GUI hosts.
+For C-codec ownership, prefer incremental allocator callbacks into the existing
+task arena where a library exposes a correct alignment/realloc/threading API.

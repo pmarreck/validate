@@ -38,6 +38,7 @@
 #include <mach/mach.h>
 #endif
 #include "validate_core.h"
+#include "process_allocator_policy.h"
 
 /* ========== Self-Hash: SHA-256 of the running binary ========== */
 /* Computed at startup, written as the first line of every output file
@@ -2468,6 +2469,16 @@ static uint8_t parse_cli_arg(const char* arg) {
 }
 
 int main(int argc, char* argv[]) {
+	/* glibc otherwise creates many per-thread arenas for outer and nested PDF
+	 * workers, retaining gigabytes after tasks free their C-codec allocations.
+	 * Keep this CLI-only: the public library must not silently reconfigure a
+	 * host GUI's process allocator. Respect an explicit environment override. */
+#if VALIDATE_HAVE_GLIBC
+	{
+		const int arena_limit = validate_cli_default_arena_limit(getenv("MALLOC_ARENA_MAX"));
+		if (arena_limit > 0) (void)mallopt(M_ARENA_MAX, arena_limit);
+	}
+#endif
 	/* Cap C-codec internal thread pools so they don't bypass our work queue's
 	 * memory budget. Several decoders (libheif/libavif via libdav1d, OpenJPEG,
 	 * libpng's optional pthread mode, OpenMP-using libs) spawn their own

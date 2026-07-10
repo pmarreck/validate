@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+
+set -u
+
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_allocator_policy.XXXXXX")"
+trap 'rm -f "$tmpdir/policy"; rmdir "$tmpdir"' EXIT
+cc_bin="${CC:-cc}"
+fixture="$root_dir/tests/fixtures/process_allocator_policy.c"
+
+check_policy() {
+	local have_glibc="$1"
+	local expected="$2"
+	local build_output
+	build_output=$("$cc_bin" -std=c11 -Wall -Wextra -Werror \
+		-DVALIDATE_HAVE_GLIBC="$have_glibc" \
+		-I "$root_dir/cli" "$fixture" -o "$tmpdir/policy" 2>&1)
+	local build_rc=$?
+	if [[ $build_rc -ne 0 ]]; then
+		printf 'FAIL: allocator policy fixture did not compile for VALIDATE_HAVE_GLIBC=%s\n%s\n' \
+			"$have_glibc" "$build_output" >&2
+		return 1
+	fi
+
+	local actual
+	actual=$("$tmpdir/policy")
+	local run_rc=$?
+	if [[ $run_rc -ne 0 || "$actual" != "$expected" ]]; then
+		printf 'FAIL: allocator policy mismatch for VALIDATE_HAVE_GLIBC=%s\nexpected:\n%s\nactual:\n%s\n' \
+			"$have_glibc" "$expected" "$actual" >&2
+		return 1
+	fi
+	return 0
+}
+
+failures=0
+check_policy 1 $'2\n0\n0' || failures=$((failures + 1))
+check_policy 0 $'0\n0\n0' || failures=$((failures + 1))
+
+exit "$failures"

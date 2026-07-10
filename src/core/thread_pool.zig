@@ -145,6 +145,15 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         /// when null, the queue ignores memory budgeting entirely.
         pub const EstimateFn = *const fn (TaskData, ?*anyopaque) usize;
 
+        /// Optional task-admission hook. It runs only when queued work exists,
+        /// before that work is dequeued or reserved against the memory budget.
+        /// Implementations may block to coordinate an external resource such as
+        /// process RSS without making the generic pool depend on that resource.
+        pub const AdmissionGate = struct {
+            context: ?*anyopaque,
+            wait: *const fn (context: ?*anyopaque) void,
+        };
+
         // Internal queues
         work_queue: WorkQueue,
         result_queue: if (has_results) ResultQueue else void,
@@ -165,6 +174,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         budget: ?*@import("memory_budget.zig").MemoryBudget,
         estimate_fn: ?EstimateFn,
         scheduler_debug: ?*SchedulerDebugStats,
+        admission_gate: ?AdmissionGate,
 
         // Result handling (only when has_results)
         result_callback: if (has_results) ?ResultCallback else void,
@@ -209,26 +219,44 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                 self.cond.signal(runtime.io());
             }
 
-            pub fn pop(self: *WorkQueue, scheduler_debug: ?*SchedulerDebugStats) ?TaskData {
-                self.mutex.lockUncancelable(runtime.io());
-                defer self.mutex.unlock(runtime.io());
-                while (self.len == 0 and !self.closed) {
-                    if (scheduler_debug) |debug| {
-                        debug.beginQueueEmptyWait();
-                        const wait_start_ns = runtime.nanoTimestamp();
-                        self.cond.waitUncancelable(runtime.io(), &self.mutex);
-                        debug.endQueueEmptyWait(elapsedNanoseconds(wait_start_ns));
-                    } else {
-                        self.cond.waitUncancelable(runtime.io(), &self.mutex);
+            pub fn pop(
+                self: *WorkQueue,
+                scheduler_debug: ?*SchedulerDebugStats,
+                admission_gate: ?AdmissionGate,
+            ) ?TaskData {
+                while (true) {
+                    self.mutex.lockUncancelable(runtime.io());
+                    while (self.len == 0 and !self.closed) {
+                        if (scheduler_debug) |debug| {
+                            debug.beginQueueEmptyWait();
+                            const wait_start_ns = runtime.nanoTimestamp();
+                            self.cond.waitUncancelable(runtime.io(), &self.mutex);
+                            debug.endQueueEmptyWait(elapsedNanoseconds(wait_start_ns));
+                        } else {
+                            self.cond.waitUncancelable(runtime.io(), &self.mutex);
+                        }
                     }
+                    if (self.len == 0) {
+                        self.mutex.unlock(runtime.io());
+                        return null;
+                    }
+                    self.mutex.unlock(runtime.io());
+
+                    if (admission_gate) |gate| gate.wait(gate.context);
+
+                    self.mutex.lockUncancelable(runtime.io());
+                    if (self.len == 0) {
+                        const closed = self.closed;
+                        self.mutex.unlock(runtime.io());
+                        if (closed) return null;
+                        continue;
+                    }
+                    const item = self.buf[self.head];
+                    self.head = (self.head + 1) % self.buf.len;
+                    self.len -= 1;
+                    self.mutex.unlock(runtime.io());
+                    return item;
                 }
-                if (self.len == 0) {
-                    return null;
-                }
-                const item = self.buf[self.head];
-                self.head = (self.head + 1) % self.buf.len;
-                self.len -= 1;
-                return item;
             }
 
             pub fn close(self: *WorkQueue) void {
@@ -367,6 +395,35 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
             estimate_fn: ?EstimateFn,
             scheduler_debug: ?*SchedulerDebugStats,
         ) !*Self {
+            return createWithBudgetAndDebugAndAdmission(
+                allocator,
+                job_count,
+                task_fn,
+                task_context,
+                result_callback,
+                result_context,
+                budget,
+                estimate_fn,
+                scheduler_debug,
+                null,
+            );
+        }
+
+        /// Same as `createWithBudgetAndDebug`, with a pre-dequeue admission
+        /// hook for external backpressure. A null hook leaves worker behavior
+        /// unchanged.
+        pub fn createWithBudgetAndDebugAndAdmission(
+            allocator: Allocator,
+            job_count: usize,
+            task_fn: TaskFn,
+            task_context: ?*anyopaque,
+            result_callback: if (has_results) ?ResultCallback else void,
+            result_context: if (has_results) ?*anyopaque else void,
+            budget: ?*@import("memory_budget.zig").MemoryBudget,
+            estimate_fn: ?EstimateFn,
+            scheduler_debug: ?*SchedulerDebugStats,
+            admission_gate: ?AdmissionGate,
+        ) !*Self {
             const actual_jobs = @max(@as(usize, 1), job_count);
 
             // Allocate pool on heap
@@ -384,6 +441,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                 .budget = budget,
                 .estimate_fn = estimate_fn,
                 .scheduler_debug = scheduler_debug,
+                .admission_gate = admission_gate,
                 .result_callback = if (has_results) result_callback else {},
                 .result_context = if (has_results) result_context else {},
                 .result_thread = if (has_results) null else {},
@@ -469,7 +527,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
 
         fn workerMain(self: *Self) void {
             while (true) {
-                const task = self.work_queue.pop(self.scheduler_debug) orelse break;
+                const task = self.work_queue.pop(self.scheduler_debug, self.admission_gate) orelse break;
 
                 // Optional budget gate: estimate, then acquire before task_fn.
                 // Released after task_fn returns regardless of how it exited.
@@ -671,7 +729,7 @@ test "WorkQueue FIFO order preserved with 10K items" {
 
     // Dequeue and verify FIFO order
     for (0..count) |i| {
-        const val = wq.pop(null) orelse return error.UnexpectedNull;
+        const val = wq.pop(null, null) orelse return error.UnexpectedNull;
         try std.testing.expectEqual(@as(u32, @intCast(i)), val);
     }
 }
@@ -693,7 +751,7 @@ test "WorkQueue interleaved push/pop" {
         }
         // Pop 2
         for (0..2) |_| {
-            const val = wq.pop(null) orelse return error.UnexpectedNull;
+            const val = wq.pop(null, null) orelse return error.UnexpectedNull;
             try std.testing.expectEqual(next_pop, val);
             next_pop += 1;
         }
@@ -703,7 +761,7 @@ test "WorkQueue interleaved push/pop" {
     while (true) {
         // Close to allow non-blocking pop
         wq.close();
-        const val = wq.pop(null) orelse break;
+        const val = wq.pop(null, null) orelse break;
         try std.testing.expectEqual(next_pop, val);
         next_pop += 1;
     }
@@ -747,6 +805,60 @@ test "ThreadPool batch submit" {
     pool.wait();
 
     try std.testing.expectEqual(@as(usize, 5), count.load(.seq_cst));
+}
+
+test "ThreadPool admission hook runs before reserving memory" {
+    const Pool = ThreadPool(u32, void);
+    const Context = struct {
+        gate_calls: std.atomic.Value(u32) = .init(0),
+        task_calls: std.atomic.Value(u32) = .init(0),
+        available_at_gate: std.atomic.Value(usize) = .init(0),
+        budget: *@import("memory_budget.zig").MemoryBudget,
+
+        fn waitForAdmission(ctx_ptr: ?*anyopaque) void {
+            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr orelse return));
+            _ = ctx.gate_calls.fetchAdd(1, .seq_cst);
+            ctx.available_at_gate.store(ctx.budget.available_bytes, .seq_cst);
+        }
+
+        fn runTask(_: u32, ctx_ptr: ?*anyopaque) void {
+            const ctx: *@This() = @ptrCast(@alignCast(ctx_ptr orelse return));
+            _ = ctx.task_calls.fetchAdd(1, .seq_cst);
+        }
+
+        fn estimate(_: u32, _: ?*anyopaque) usize {
+            return 1;
+        }
+    };
+
+    var budget = @import("memory_budget.zig").MemoryBudget.init(1);
+    var context = Context{ .budget = &budget };
+    const gate = Pool.AdmissionGate{
+        .context = @ptrCast(&context),
+        .wait = Context.waitForAdmission,
+    };
+    const pool = try Pool.createWithBudgetAndDebugAndAdmission(
+        std.testing.allocator,
+        1,
+        Context.runTask,
+        @ptrCast(&context),
+        {},
+        {},
+        &budget,
+        Context.estimate,
+        null,
+        gate,
+    );
+    defer pool.destroy();
+
+    try pool.submit(7);
+    pool.shutdown();
+    pool.wait();
+
+    try std.testing.expectEqual(@as(u32, 1), context.gate_calls.load(.seq_cst));
+    try std.testing.expectEqual(@as(u32, 1), context.task_calls.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 1), context.available_at_gate.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 1), budget.available_bytes);
 }
 
 test "SchedulerDebugStats keeps wait reasons independent" {

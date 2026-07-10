@@ -674,6 +674,7 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=c11", "-Wall", "-Wextra" },
     });
     cli_c_mod.addIncludePath(b.path("ffi"));
+    cli_c_mod.addIncludePath(b.path("cli"));
 
     const cli_c = b.addExecutable(.{
         .name = "validate",

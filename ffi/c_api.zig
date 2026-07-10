@@ -589,7 +589,6 @@ const HEAP_DEBUG_MAX_TASKS: usize = 256;
 const empty_cstr: [*:0]const u8 = "";
 const phase_start: [*:0]const u8 = "start";
 const phase_large_wait: [*:0]const u8 = "large_wait";
-const phase_rss_wait: [*:0]const u8 = "rss_wait";
 const phase_validate: [*:0]const u8 = "validate";
 const phase_callback: [*:0]const u8 = "callback";
 
@@ -1004,6 +1003,187 @@ const BatchTask = struct {
 /// Global interrupt flag - set by validate_interrupt(), checked by workers
 var g_interrupt_flag = std.atomic.Value(bool).init(false);
 
+/// Conservative working-set allowance per newly admitted outer task. The first
+/// heavy wave uses 1 GiB/task; after pressure proves the feedback loop is active,
+/// 256 MiB recovery units restore throughput without waking every worker.
+const RSS_ADMISSION_INITIAL_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
+const RSS_ADMISSION_RECOVERY_RESERVE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Polling cadence for the single RSS sampler. Only the sampling leader reads
+/// process RSS; the other workers sleep on a condition variable.
+const RSS_ADMISSION_SAMPLE_NS: u64 = 50 * std.time.ns_per_ms;
+
+extern fn malloc_trim(pad: usize) c_int;
+extern fn malloc_zone_pressure_relief(zone: ?*anyopaque, goal: usize) usize;
+
+/// Ask the platform allocator to return free arenas after RSS closes admission.
+/// This targets resident-but-unused codec allocations; unsupported allocators
+/// fall back to the policy's single-task forward-progress escape.
+fn releaseUnusedProcessMemory() void {
+    const builtin = @import("builtin");
+    if (comptime builtin.os.tag == .linux and builtin.abi.isGnu()) {
+        _ = malloc_trim(0);
+    } else if (comptime builtin.os.tag == .macos) {
+        _ = malloc_zone_pressure_relief(null, 0);
+    }
+}
+
+/// Pure hysteretic policy for process-RSS backpressure. Crossing the high
+/// watermark closes admission until RSS reaches 75% of budget, then releases a
+/// bounded batch sized from measured headroom rather than waking every worker.
+const RssAdmissionPolicy = struct {
+    pressured: bool = false,
+    has_seen_pressure: bool = false,
+
+    fn admissionCount(
+        self: *RssAdmissionPolicy,
+        rss: u64,
+        budget: u64,
+        max_admissions: usize,
+        active_tasks: usize,
+    ) usize {
+        if (max_admissions == 0) return 0;
+        if (rss == 0 or budget == 0) {
+            self.pressured = false;
+            return max_admissions -| active_tasks;
+        }
+
+        const low_watermark = budget - budget / 4;
+        if (self.pressured) {
+            if (rss > low_watermark) return @intFromBool(active_tasks == 0);
+            self.pressured = false;
+        }
+
+        if (rss >= budget) {
+            self.pressured = true;
+            self.has_seen_pressure = true;
+            return @intFromBool(active_tasks == 0);
+        }
+
+        const headroom = budget - rss;
+        const reserve_bytes = if (self.has_seen_pressure)
+            RSS_ADMISSION_RECOVERY_RESERVE_BYTES
+        else
+            RSS_ADMISSION_INITIAL_RESERVE_BYTES;
+        const headroom_admissions = @max(@as(u64, 1), headroom / reserve_bytes);
+        const target_active = @min(max_admissions, @as(usize, @intCast(headroom_admissions)));
+        return target_active -| active_tasks;
+    }
+};
+
+/// Central RSS admission gate. A single leader samples process RSS while all
+/// other workers sleep; each sample creates only as many permits as conservative
+/// headroom can support. Admission happens before dequeue and memory reservation.
+const RssAdmissionGate = struct {
+    mutex: std.Io.Mutex = .init,
+    cond: std.Io.Condition = .init,
+    budget: u64,
+    max_admissions: usize,
+    memory_budget: *core.memory_budget.MemoryBudget,
+    scheduler_debug: ?*thread_pool.SchedulerDebugStats,
+    policy: RssAdmissionPolicy = .{},
+    available_admissions: usize = 0,
+    sampling_leader: bool = false,
+    sampled_once: bool = false,
+
+    fn init(
+        budget: u64,
+        max_admissions: usize,
+        memory_budget: *core.memory_budget.MemoryBudget,
+        scheduler_debug: ?*thread_pool.SchedulerDebugStats,
+    ) RssAdmissionGate {
+        return .{
+            .budget = budget,
+            .max_admissions = max_admissions,
+            .memory_budget = memory_budget,
+            .scheduler_debug = scheduler_debug,
+        };
+    }
+
+    fn wait(context: ?*anyopaque) void {
+        const self: *RssAdmissionGate = @ptrCast(@alignCast(context orelse return));
+        self.waitForAdmission();
+    }
+
+    fn waitForAdmission(self: *RssAdmissionGate) void {
+        var debug_wait_start_ns: ?i128 = null;
+        defer if (debug_wait_start_ns) |start_ns| {
+            if (self.scheduler_debug) |stats| stats.endRssPressureWait(elapsedNanoseconds(start_ns));
+        };
+
+        self.mutex.lockUncancelable(runtime.io());
+        while (true) {
+            if (g_interrupt_flag.load(.seq_cst)) {
+                self.mutex.unlock(runtime.io());
+                return;
+            }
+            if (self.available_admissions > 0) {
+                self.available_admissions -= 1;
+                self.mutex.unlock(runtime.io());
+                return;
+            }
+            if (!self.sampling_leader) {
+                self.sampling_leader = true;
+                const delay_first_sample = self.sampled_once;
+                self.mutex.unlock(runtime.io());
+                self.pollAsLeader(delay_first_sample, &debug_wait_start_ns);
+                return;
+            }
+
+            self.beginDebugWait(&debug_wait_start_ns);
+            self.cond.waitUncancelable(runtime.io(), &self.mutex);
+        }
+    }
+
+    fn pollAsLeader(self: *RssAdmissionGate, delay_first_sample: bool, debug_wait_start_ns: *?i128) void {
+        var should_delay = delay_first_sample;
+        while (true) {
+            if (should_delay) {
+                self.beginDebugWait(debug_wait_start_ns);
+                runtime.sleep(RSS_ADMISSION_SAMPLE_NS);
+            }
+
+            if (g_interrupt_flag.load(.seq_cst)) {
+                self.releaseLeader();
+                return;
+            }
+
+            const rss = getCurrentRss();
+            const active_tasks = self.memory_budget.snapshot().active;
+            self.mutex.lockUncancelable(runtime.io());
+            self.sampled_once = true;
+            const admissions = self.policy.admissionCount(rss, self.budget, self.max_admissions, active_tasks);
+            if (admissions > 0) {
+                self.available_admissions = admissions - 1;
+                self.sampling_leader = false;
+                self.cond.broadcast(runtime.io());
+                self.mutex.unlock(runtime.io());
+                return;
+            }
+            self.mutex.unlock(runtime.io());
+
+            if (self.policy.pressured) releaseUnusedProcessMemory();
+            self.beginDebugWait(debug_wait_start_ns);
+            should_delay = true;
+        }
+    }
+
+    fn beginDebugWait(self: *RssAdmissionGate, start_ns: *?i128) void {
+        if (start_ns.* != null) return;
+        if (self.scheduler_debug) |stats| {
+            stats.beginRssPressureWait();
+            start_ns.* = nanoTimestamp();
+        }
+    }
+
+    fn releaseLeader(self: *RssAdmissionGate) void {
+        self.mutex.lockUncancelable(runtime.io());
+        self.sampling_leader = false;
+        self.cond.broadcast(runtime.io());
+        self.mutex.unlock(runtime.io());
+    }
+};
+
 /// Signal batch validation to stop.
 /// Workers will finish their current file and then stop.
 /// Call this from signal handlers (async-signal-safe: just sets an atomic flag).
@@ -1056,9 +1236,8 @@ export fn validate_set_begin_callback(callback: BeginCallback, ctx: ?*anyopaque)
 /// can't stat get a conservative 1 MB estimate so they don't escape the
 /// gate. The estimate is intentionally simple — it caps *intent*, not
 /// *fact*. Real usage may be smaller (mmap'd zero-copy paths) or larger
-/// (PDF stream blowup, libavif internal threading); the existing
-/// large-file semaphore + RSS pressure throttle remain as belt-and-
-/// suspenders against the upside.
+/// (PDF stream blowup, libavif internal threading); the large-file semaphore
+/// and centralized RSS admission gate remain as guards against the upside.
 fn statFileSize(path_slice: []const u8) ?u64 {
     const stat = runtime.statFile(path_slice) catch return null;
     return @intCast(stat.size);
@@ -1117,35 +1296,6 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     if (is_large) g_large_file_sem.wait(runtime.io()) catch |err| std.debug.panic("sem wait failed: {s}", .{@errorName(err)});
     defer if (is_large) g_large_file_sem.post(runtime.io());
 
-    // Memory pressure throttle: if RSS is approaching budget, yield briefly
-    // so other workers can finish and free memory. Caps at 500ms total wait
-    // to avoid livelock on genuinely tight systems.
-    const budget = validate_get_max_memory();
-    if (budget > 0) {
-        heapDebugTaskSetPhase(heap_task_slot, phase_rss_wait);
-        var wait_ms: u64 = 0;
-        {
-            var scheduler_debug: ?*thread_pool.SchedulerDebugStats = null;
-            var scheduler_wait_start_ns: ?i128 = null;
-            defer if (scheduler_wait_start_ns) |start_ns| {
-                if (scheduler_debug) |stats| stats.endRssPressureWait(elapsedNanoseconds(start_ns));
-            };
-            while (wait_ms < 500) {
-                const rss = getCurrentRss();
-                if (rss == 0 or rss < budget) break;
-                if (scheduler_wait_start_ns == null) {
-                    scheduler_debug = g_active_scheduler_debug.load(.seq_cst);
-                    if (scheduler_debug) |stats| {
-                        scheduler_wait_start_ns = nanoTimestamp();
-                        stats.beginRssPressureWait();
-                    }
-                }
-                runtime.sleep(50 * std.time.ns_per_ms);
-                wait_ms += 50;
-                if (g_interrupt_flag.load(.seq_cst)) return;
-            }
-        }
-    }
     // Call begin callback if set (useful for debugging crashes)
     if (g_begin_callback) |begin_cb| {
         begin_cb(g_begin_callback_ctx, id, path_ptr);
@@ -1248,7 +1398,12 @@ export fn validate_batch(
 
     // Use ThreadPool for parallel execution
     const Pool = thread_pool.ThreadPool(BatchTask, void);
-    const pool = Pool.createWithBudgetAndDebug(
+    var rss_admission_gate = RssAdmissionGate.init(budget, actual_threads, &mem_budget, scheduler_debug_ptr);
+    const admission_gate = Pool.AdmissionGate{
+        .context = @ptrCast(&rss_admission_gate),
+        .wait = RssAdmissionGate.wait,
+    };
+    const pool = Pool.createWithBudgetAndDebugAndAdmission(
         allocator,
         actual_threads,
         executeBatchTask,
@@ -1258,6 +1413,7 @@ export fn validate_batch(
         &mem_budget,
         estimateBatchTask,
         scheduler_debug_ptr,
+        admission_gate,
     ) catch {
         errors.setLastError(.internal_out_of_memory, "Failed to create thread pool", .{});
         return 3; // VALIDATE_ERR_OUT_OF_MEMORY
@@ -1850,6 +2006,18 @@ test "scheduler debug snapshot is unavailable without an active batch" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.queue_empty_wait_ns);
     try std.testing.expectEqual(@as(u64, 0), snapshot.memory_budget_wait_ns);
     try std.testing.expectEqual(@as(u64, 0), snapshot.rss_pressure_wait_ns);
+}
+
+test "RSS admission policy holds pressure until the low watermark" {
+    const gib: u64 = 1024 * 1024 * 1024;
+    var policy = RssAdmissionPolicy{};
+
+    try std.testing.expectEqual(@as(usize, 1), policy.admissionCount(7 * gib, 8 * gib, 85, 0));
+    try std.testing.expectEqual(@as(usize, 0), policy.admissionCount(7 * gib, 8 * gib, 85, 1));
+    try std.testing.expectEqual(@as(usize, 0), policy.admissionCount(8 * gib, 8 * gib, 85, 1));
+    try std.testing.expectEqual(@as(usize, 0), policy.admissionCount(7 * gib, 8 * gib, 85, 1));
+    try std.testing.expectEqual(@as(usize, 1), policy.admissionCount(7 * gib, 8 * gib, 85, 0));
+    try std.testing.expectEqual(@as(usize, 8), policy.admissionCount(6 * gib, 8 * gib, 85, 0));
 }
 
 test "KvBuilder produces correct format" {
