@@ -14,6 +14,8 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] Replace the retired Garnix and hard-coded Mechatron README badges with the public dynamic `validate` Mechatron Prime endpoint. Completed 2026-07-10 19:44 EDT.
+
 ### Deep-validation performance continuation (2026-07-10)
 
 - [x] Close the pushed backpressure commit's CI run: macOS aarch64 and both Linux targets passed build + full tests; Windows failed before compilation while fetching pinned PCRE2 (`HttpConnectionClosing`). Leave code unchanged and use the final push as the clean retry. Completed 2026-07-10 13:35 EDT.
