@@ -608,26 +608,67 @@ pub fn getOuterJobCount() usize {
     return @max(2, (cpus * 2) / 3);
 }
 
+/// Upper bound for one nested pool. Standalone validation uses CPU/3 while an
+/// explicit environment setting can request a still-smaller ceiling.
+fn recommendedInnerJobCount(cpus: usize, explicit_cap: ?usize) usize {
+    var jobs = @max(@as(usize, 2), cpus / 3);
+    if (explicit_cap) |cap| {
+        if (cap > 0) jobs = @min(jobs, cap);
+    }
+    return @max(@as(usize, 1), jobs);
+}
+
+fn ceilSquareRoot(value: usize) usize {
+    var root: usize = 1;
+    while (root * root < value) root += 1;
+    return root;
+}
+
+/// Balance two-level file/image parallelism around sqrt(CPUs) outer nested
+/// contenders. Very wide batches use half that contender count because RSS
+/// admission empirically keeps only a small heavy-file wave active; this
+/// restores CPU use without returning to the original `outer × CPU/3` blast.
+fn balancedInnerJobCount(cpus: usize, outer_jobs: usize, explicit_cap: ?usize) usize {
+    const standalone_ceiling = recommendedInnerJobCount(cpus, explicit_cap);
+    const root = ceilSquareRoot(cpus);
+    const contender_ceiling = if (outer_jobs > root)
+        @max(@as(usize, 1), (root + 1) / 2)
+    else
+        root;
+    const balanced_outer = @min(@max(@as(usize, 1), outer_jobs), contender_ceiling);
+    const balanced_jobs = @max(@as(usize, 1), cpus / balanced_outer);
+    return @min(standalone_ceiling, balanced_jobs);
+}
+
+threadlocal var batch_outer_job_count: ?usize = null;
+
+pub fn setBatchOuterJobCount(job_count: usize) void {
+    batch_outer_job_count = @max(@as(usize, 1), job_count);
+}
+
+pub fn clearBatchOuterJobCount() void {
+    batch_outer_job_count = null;
+}
+
 /// Get the recommended job count for inner/nested parallelism.
 ///
-/// Resolution order:
-///   1. `VALIDATE_INNER_JOBS` env var (when set to a positive integer) wins —
-///      lets a top-level CLI flag (e.g. `--coverage-jobs 1`) cap the budget
-///      that nested decoders (PDF image fan-out, libwebp, etc.) consume so
-///      `outer × inner` doesn't explode past total CPU count.
-///   2. Otherwise: 1/3 of CPUs (min 2), designed so outer + inner ≈ total CPUs.
+/// Standalone validation uses 1/3 of CPUs (min 2). `VALIDATE_INNER_JOBS` can
+/// impose a lower explicit cap (for example truly single-threaded coverage).
 pub fn getInnerJobCount() usize {
+    var explicit_cap: ?usize = null;
     if (comptime @import("builtin").os.tag != .windows) {
         if (std.c.getenv("VALIDATE_INNER_JOBS")) |s| {
             const slice = std.mem.span(s);
             if (std.fmt.parseInt(usize, slice, 10)) |n| {
-                if (n > 0) return n;
+                if (n > 0) explicit_cap = n;
             } else |_| {}
         }
     }
     const cpus = getCpuCount();
-    // 1/3 of CPUs, minimum 2
-    return @max(2, cpus / 3);
+    if (batch_outer_job_count) |outer_jobs| {
+        return balancedInnerJobCount(cpus, outer_jobs, explicit_cap);
+    }
+    return recommendedInnerJobCount(cpus, explicit_cap);
 }
 
 // ============ Tests ============
@@ -875,4 +916,48 @@ test "SchedulerDebugStats keeps wait reasons independent" {
     try std.testing.expectEqual(@as(u64, 2), snapshot.queue_empty_wait_events);
     try std.testing.expectEqual(@as(u64, 1), snapshot.memory_budget_wait_events);
     try std.testing.expectEqual(@as(u64, 1), snapshot.rss_pressure_wait_events);
+}
+
+test "nested job ceiling preserves standalone and explicit limits" {
+    const cases = [_]struct {
+        cpus: usize,
+        explicit_cap: ?usize,
+        expected: usize,
+    }{
+        .{ .cpus = 128, .explicit_cap = null, .expected = 42 },
+        .{ .cpus = 128, .explicit_cap = 4, .expected = 4 },
+        .{ .cpus = 128, .explicit_cap = 64, .expected = 42 },
+        .{ .cpus = 4, .explicit_cap = null, .expected = 2 },
+        .{ .cpus = 2, .explicit_cap = 1, .expected = 1 },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(
+            case.expected,
+            recommendedInnerJobCount(case.cpus, case.explicit_cap),
+        );
+    }
+}
+
+test "balanced nested jobs use the square-root outer concurrency ceiling" {
+    const cases = [_]struct {
+        cpus: usize,
+        outer_jobs: usize,
+        explicit_cap: ?usize,
+        expected: usize,
+    }{
+        .{ .cpus = 128, .outer_jobs = 1, .explicit_cap = null, .expected = 42 },
+        .{ .cpus = 128, .outer_jobs = 12, .explicit_cap = null, .expected = 10 },
+        .{ .cpus = 128, .outer_jobs = 85, .explicit_cap = null, .expected = 21 },
+        .{ .cpus = 128, .outer_jobs = 85, .explicit_cap = 4, .expected = 4 },
+        .{ .cpus = 64, .outer_jobs = 42, .explicit_cap = null, .expected = 16 },
+        .{ .cpus = 4, .outer_jobs = 3, .explicit_cap = null, .expected = 2 },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(
+            case.expected,
+            balancedInnerJobCount(case.cpus, case.outer_jobs, case.explicit_cap),
+        );
+    }
 }

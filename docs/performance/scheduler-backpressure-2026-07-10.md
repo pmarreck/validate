@@ -63,3 +63,61 @@ and lifetime contracts; arena `free` is intentionally deferred and can raise a
 task's within-run peak. The safe follow-up is to profile the largest C-codec
 owners and adapt clean callback surfaces incrementally, not interpose `malloc`
 process-wide from a linkable library.
+
+## Nested PDF parallelism continuation
+
+The next measured bottleneck was multiplicative concurrency. Each outer batch
+worker validating a PDF could create an inner image pool sized to one third of
+all CPUs. With many PDFs in flight, the old policy could therefore create
+hundreds of runnable threads even though outer RSS and memory admission already
+limited useful concurrency.
+
+The accepted policy communicates the actual batch width to each worker and
+balances PDF image fan-out around a square-root CPU contender ceiling. Very
+wide auto-sized batches use half that contender count because the RSS gate
+empirically admits only a small wave of heavy files. One-file library calls
+retain the original CPU/3 inner fan-out, caller-specified `VALIDATE_INNER_JOBS`
+remains a lower ceiling, and a batch never creates more outer workers than
+queued files. No image parser, decoder, corruption check, or verdict path was
+removed.
+
+### Storage-independent 42-file A/B
+
+The fixed 14.446-GiB workload contains the two giant SQLite files and 40
+long-lived PDF/EPUB tasks observed in the full-corpus trace. Both runs read
+clean copies from `/dev/shm`, had zero major page faults, used 12 outer workers,
+and emitted 42 normalized path/verdict/depth records. A sorted differential of
+those records was empty.
+
+| ReleaseFast run | Wall | CPU time (user + system) | Peak RSS | Peak threads | Result parity |
+|---|---:|---:|---:|---:|---:|
+| `d2e6ab05` control | 95.27 s | 5,980.30 s | 14.43 GiB | 401 | reference |
+| Balanced nested PDF pools | 82.19 s | 2,827.54 s | 7.37 GiB | 69 | exact |
+| Improvement | −13.73% | −52.72% | −48.92% | −82.79% | unchanged |
+
+### Full-corpus fixed-window A/B
+
+The final candidate and contemporary control used the same corpus order and
+155-second run + 25-second interrupt-grace protocol. This comparison is more
+relevant than the earlier historical run because it was performed minutes
+apart against the same storage state.
+
+| ReleaseFast run | Files | Avg CPU | Peak RSS | Peak threads | Physical reads |
+|---|---:|---:|---:|---:|---:|
+| Contemporary `d2e6ab05` control | 9,308 | 1,557.9% | 9.57 GiB | 216 | 51.48 GiB |
+| Tuned nested PDF policy | 11,677 | 1,797.3% | 9.06 GiB | 175 | 45.69 GiB |
+| Change | +25.45% | +15.37% | −5.33% | −18.98% | −11.25% |
+
+Files completed per peak GiB improved 32.51% versus the contemporary control
+and 53.89% versus the earlier accepted arena-policy run. Aggregate memory wait
+rose from 38.77e9 ns to 1.268e12 ns because the faster PDF wave reaches the two
+multi-GiB SQLite reservations sooner; throughput, CPU utilization, RSS, and
+thread count all improved. This is why wait time is a diagnostic signal rather
+than an objective to minimize in isolation.
+
+Rejected alternatives are retained in the experiment notes and raw logs:
+format-aware SQLite reservation worsened RSS, static `CPU / outer_jobs`
+underutilized wide batches, and both first-claimer and fair shared-token pools
+serialized critical-path files. Machine-readable accepted records are appended
+to `bench/results/scheduler_backpressure.jsonl`; raw logs remain in
+`/home/pmarreck/perf-results/validate/`.

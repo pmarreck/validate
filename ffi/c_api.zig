@@ -993,6 +993,7 @@ const BatchContext = struct {
     user_ctx: ?*anyopaque,
     paths: [*]const ?[*:0]const u8,
     ids: [*]const u32,
+    outer_job_count: usize,
 };
 
 /// Task for thread pool
@@ -1278,6 +1279,8 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
 
     const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return));
     const callback = ctx.callback orelse return;
+    thread_pool.setBatchOuterJobCount(ctx.outer_job_count);
+    defer thread_pool.clearBatchOuterJobCount();
 
     const path_ptr = ctx.paths[task.index] orelse return;
     const id = ctx.ids[task.index];
@@ -1330,6 +1333,12 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     callback(ctx.user_ctx, id, path_ptr, result_str.ptr);
 }
 
+/// Avoid idle outer workers and preserve standalone nested parallelism when a
+/// batch contains fewer files than the caller's requested thread count.
+fn capBatchThreadCount(queued_tasks: usize, requested_threads: usize) usize {
+    return @max(@as(usize, 1), @min(queued_tasks, requested_threads));
+}
+
 /// Validate multiple files in parallel.
 export fn validate_batch(
     paths: ?[*]const ?[*:0]const u8,
@@ -1355,10 +1364,11 @@ export fn validate_batch(
 
     core.heap.resetStats();
 
-    const actual_threads: usize = if (num_threads <= 0)
+    const requested_threads: usize = if (num_threads <= 0)
         thread_pool.getOuterJobCount()
     else
         @intCast(num_threads);
+    const actual_threads = capBatchThreadCount(count, requested_threads);
 
     // Configure large-file semaphore: scale with memory budget.
     // Reserve 256MB headroom per large file slot (covers typical decompression peaks).
@@ -1381,6 +1391,7 @@ export fn validate_batch(
         .user_ctx = ctx,
         .paths = paths.?,
         .ids = ids orelse &[_]u32{}, // Use empty array if null, tasks will use index
+        .outer_job_count = actual_threads,
     };
 
     // Memory budget: gates worker dequeue. estimate_fn returns stat.size,
@@ -2018,6 +2029,26 @@ test "RSS admission policy holds pressure until the low watermark" {
     try std.testing.expectEqual(@as(usize, 0), policy.admissionCount(7 * gib, 8 * gib, 85, 1));
     try std.testing.expectEqual(@as(usize, 1), policy.admissionCount(7 * gib, 8 * gib, 85, 0));
     try std.testing.expectEqual(@as(usize, 8), policy.admissionCount(6 * gib, 8 * gib, 85, 0));
+}
+
+test "batch worker count never exceeds queued work" {
+    const cases = [_]struct {
+        queued_tasks: usize,
+        requested_threads: usize,
+        expected: usize,
+    }{
+        .{ .queued_tasks = 1, .requested_threads = 85, .expected = 1 },
+        .{ .queued_tasks = 3, .requested_threads = 12, .expected = 3 },
+        .{ .queued_tasks = 42, .requested_threads = 12, .expected = 12 },
+        .{ .queued_tasks = 42, .requested_threads = 85, .expected = 42 },
+    };
+
+    for (cases) |case| {
+        try std.testing.expectEqual(
+            case.expected,
+            capBatchThreadCount(case.queued_tasks, case.requested_threads),
+        );
+    }
 }
 
 test "KvBuilder produces correct format" {

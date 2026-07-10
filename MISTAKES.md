@@ -199,3 +199,12 @@ tried to execute the fixture directory and reported `FAIL: fixtures`. I stopped
 the run and moved the source to the existing `tests/fixtures/` tree. **Lesson:**
 inspect a directory-driven test runner's entry contract before adding any new
 subdirectory; executable-only filtering does not exclude directories.
+
+## 2026-07-10 — Lost track of yielded long-running build sessions
+
+I treated a short tool yield as command completion and launched duplicate Nix /
+Wine work while the original processes were still alive. I stopped only the
+processes I had launched, but the duplicate work wasted time and muddied status
+reporting. **Lesson:** start long commands with a short yield, retain the
+returned session identifier, and poll that exact session until it reports an
+exit code. Before retrying any apparently silent build, check the owning PID.

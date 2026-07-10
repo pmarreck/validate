@@ -14,6 +14,18 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+### Deep-validation performance continuation (2026-07-10)
+
+- [x] Close the pushed backpressure commit's CI run: macOS aarch64 and both Linux targets passed build + full tests; Windows failed before compilation while fetching pinned PCRE2 (`HttpConnectionClosing`). Leave code unchanged and use the final push as the clean retry. Completed 2026-07-10 13:35 EDT.
+- [x] Evaluate format-aware SQLite admission on a fixed 42-file / 14.446-GiB deep workload. Rejected despite exact verdict/depth parity: memory wait fell 136.6e9→0 ns, but wall improved only 0.96%, RSS wait rose 212.4e9→244.5e9 ns, and peak RSS worsened 5.5%. Implementation removed. Completed 2026-07-10 11:51 EDT.
+- [x] Evaluate a static `CPU / outer_jobs` PDF inner cap. It was excellent on the 12-worker 42-file stress workload (wall −11.1%, CPU −53.6%, RSS −54.4%, exact deep-result parity) but rejected on the full auto workload: only 4–7 sequential PDFs ran, files fell 9,958→4,276 and bytes 17.69→0.41 GiB despite RSS 11.89→2.05 GiB. Completed 2026-07-10 12:20 EDT.
+- [x] Evaluate shared nested-token variants. Both preserved exact results but serialized long PDFs or starved the two giant SQLite tasks: first-claimer wall 222.41s; fair-waiting wall 146.52s versus 95.27s control. Implementations removed. Completed 2026-07-10 12:43 EDT.
+- [x] TDD a batch-aware nested PDF policy: cap outer workers to queued files, bind the actual batch width to each worker, retain standalone CPU/3 fan-out, and balance nested fan-out against a measured square-root contender ceiling. Keep the sequential deep image path when only one inner job is available. Completed 2026-07-10 13:05 EDT.
+- [x] Measure the identical RAM-resident 42-file workload and full 595,792-file fixed window with CPU/wall, peak RSS, threads, bytes, all scheduler wait ns, and exact verdict/depth differential comparison. The 42 normalized result sets were identical; wall −13.73%, CPU time −52.72%, peak RSS −48.92%, peak threads −82.79%. Completed 2026-07-10 13:10 EDT.
+- [x] Re-run the fixed Mac Documents window and retain only the multi-metric winner. Versus the contemporary control: files +25.45%, average CPU +15.37%, peak RSS −5.33%, peak threads −18.98%, physical reads −11.25%; deep-validation behavior is unchanged. Completed 2026-07-10 13:27 EDT.
+- [ ] Run `./test` and `./build_all`, commit/push the known-good optimization, update `validate_gui`, run its full suite, push, and watch the fresh CI retry. Curiosity poke: distinguish another dependency fetch failure from a compile/runtime regression.
+- [ ] Profile the next dominant validator/allocator owner from measured task time and memory, then repeat the TDD + differential + benchmark cycle. Curiosity poke: prefer asymptotic/I/O reductions over allocator micro-tuning, and verify that C-library shortcuts do not reduce decode depth.
+
 ### Scheduler evidence on complete Mac Documents corpus (2026-07-09)
 
 - [x] Add DEBUG-only thread-pool snapshots: cumulative and per-report-window wait time in ns for `queue_empty`, `memory_budget`, and the FFI RSS-pressure throttle; surface them through `HEAP_FRAG_DEBUG` without default hot-loop clock reads. TDD green. Completed 2026-07-09 22:05 EDT.

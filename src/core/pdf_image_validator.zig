@@ -1023,8 +1023,10 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
         }
     }
 
-    // Use parallel validation for PDFs with many images
-    if (images.len >= PARALLEL_IMAGE_THRESHOLD) {
+    // Use parallel validation for PDFs with many images when the process-wide
+    // CPU budget leaves room beyond the already-active outer batch worker.
+    const inner_job_count = thread_pool.getInnerJobCount();
+    if (images.len >= PARALLEL_IMAGE_THRESHOLD and inner_job_count > 1) {
         const parallel_start = if (timing_debug) runtime.nanoTimestamp() else 0;
         const result = try validatePdfImagesParallel(
             allocator,
@@ -1036,6 +1038,7 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
             use_aes,
             decryption_succeeded,
             is_encrypted,
+            inner_job_count,
         );
         if (timing_debug) {
             const parallel_end = runtime.nanoTimestamp();
@@ -1554,12 +1557,8 @@ fn validatePdfImagesParallel(
     use_aes: bool,
     decryption_succeeded: bool,
     is_encrypted: bool,
+    job_count: usize,
 ) !PdfImageValidationResult {
-    // Use inner job count (1/3 of CPUs) to avoid over-subscription
-    // when already running in parallel at the batch level (2/3 of CPUs).
-    // This way, outer + inner ≈ total CPUs when one PDF is being validated.
-    const job_count = thread_pool.getInnerJobCount();
-
     // Shared context for all workers
     var ctx = ParallelContext{
         .images = images,

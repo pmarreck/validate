@@ -88,3 +88,31 @@ explicitly overrides it. The linkable library intentionally does not: allocator
 configuration is process-global and would be an unsafe surprise for GUI hosts.
 For C-codec ownership, prefer incremental allocator callbacks into the existing
 task arena where a library exposes a correct alignment/realloc/threading API.
+
+## 2026-07-10 — Nested pools need a measured multiplicative CPU budget
+
+The old intuition that outer workers plus inner workers should approximately
+equal CPU count was dimensionally wrong when *each* active outer PDF worker can
+create an inner pool. The dangerous bound is active nested contenders times
+inner jobs. On 128 CPUs, 12 outer workers each creating 42 image workers drove a
+42-file workload to 401 sampled threads, 5,980 CPU-seconds, and 14.43 GiB peak
+RSS. A batch-aware balanced policy reduced those to 69 threads, 2,828
+CPU-seconds, and 7.37 GiB while finishing 13.73% sooner with exact result parity.
+
+Static `CPU / configured_outer_jobs` is also insufficient: RSS admission means
+the configured width can greatly exceed the number of heavy files actually
+running. It looked excellent at 12 outer jobs but starved the 85-worker full
+corpus. Use a measured active-contender ceiling, preserve standalone fan-out,
+and validate both a fixed CPU-heavy set and the real mixed workload.
+
+Aggregate wait nanoseconds are explanatory counters, not optimization targets.
+The winning full-corpus run had more memory-budget wait because faster PDF work
+reached multi-GiB SQLite reservations sooner, yet it validated 25.45% more files
+with lower RSS, fewer threads, and fewer physical reads.
+
+## 2026-07-10 — `/tmp` is not RAM-backed on this Linux host
+
+Despite the general environment guidance that `TMPDIR` is RAM-backed, `/tmp`
+on this machine is part of the ZFS root filesystem. `/dev/shm` is the actual
+tmpfs. The clean `/dev/shm` A/B eliminated disk-cache order as an explanation
+for the nested-parallelism improvement and recorded zero major page faults.
