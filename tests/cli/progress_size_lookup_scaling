@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Classifies the progress-size lookup after default large-file scattering. The
+# probe count is a deterministic complexity oracle: one lookup per completion,
+# never a scan through every collected path. The byte total proves each immutable
+# ID still resolves to the correct size after the execution queue is reordered.
+. "$(dirname "$0")/_lib.sh"
+set -u
+
+VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_progress_lookup.XXXXXX")"
+# The fixture is freshly generated under the test TMPDIR; use only coreutils so
+# ./test remains hermetic under `nix develop --ignore-env`.
+cleanup() { rm -rf "$tmpdir"; }
+trap cleanup EXIT
+fixture_dir="$tmpdir/files"
+mkdir "$fixture_dir"
+
+files=64
+expected_bytes=$((files * (files + 1) / 2))
+i=0
+while [ "$i" -lt "$files" ]; do
+	size=$((i + 1))
+	printf -v payload '%*s' "$size" ''
+	payload=${payload// /x}
+	printf '%s' "$payload" > "$fixture_dir/file-$i.txt"
+	i=$((i + 1))
+done
+
+env \
+	VALIDATE_PROGRESS_DEBUG_PROBES=1 \
+	MUTE_DEBUG_STATUS=1 \
+	OK_OUT=@null WARN_OUT=@null FAIL_OUT=@null UNKNOWN_OUT=@null \
+	SLOW_OUT=@null DEBUG_OUT=@null BEGIN_OUT=@null \
+	"$VALIDATE" --jobs 1 "$fixture_dir" \
+	> "$tmpdir/stdout.log" 2> "$tmpdir/stderr.log"
+rc=$?
+err="$(< "$tmpdir/stderr.log")"
+
+failures=0
+if [ "$rc" -ne 0 ]; then
+	printf 'FAIL: reordered progress fixture exited %s\n%s\n' "$rc" "$err" >&2
+	failures=$((failures + 1))
+fi
+
+expected="[PROGRESS] size_lookup_probes=$files expected=$files size_lookup_bytes=$expected_bytes expected_bytes=$expected_bytes"
+if [[ $'\n'"$err"$'\n' != *$'\n'"$expected"$'\n'* ]]; then
+	printf 'FAIL: expected exactly one size lookup per completion: %s\n' "$expected" >&2
+	printf 'stderr:\n%s\n' "$err" >&2
+	failures=$((failures + 1))
+else
+	printf 'PASS: reordered progress size lookup stays O(1) per completion\n'
+fi
+
+if [ "$failures" -gt 0 ]; then
+	exit "$failures"
+fi

@@ -1,5 +1,30 @@
 # MISTAKES.md
 
+## 2026-07-11 — A complexity counter must count the costly primitive
+
+**What happened:** My first progress-lookup diagnostic incremented once per
+helper call. A linear scan still made exactly one helper call per completion, so
+the proposed O(1) gate could have passed with the O(n²) implementation intact.
+I caught this before shipping, rebuilt a scan-control variant, and observed
+2,080 ID comparisons for the 64-file fixture versus the direct map's 64.
+
+**Rule:** A deterministic complexity test must count the expensive primitive
+(here, each ID comparison), not a higher-level operation that can hide it. Make
+the intentionally bad control fail before accepting the optimized path.
+
+## 2026-07-10 — Never scan `/nix/store` while the host is I/O-bound
+
+**What happened:** While a GUI Nix build was already active, I used a broad
+`fd` search under `/nix/store` to locate the resident Zig compiler. The
+host-pressure recorder immediately showed I/O PSI at about 85%; the scan itself
+was consuming a core and issuing broad metadata reads. I stopped only the
+processes I started.
+
+**Rule:** Treat `/nix/store` as a large corpus, not a directory to browse during
+contention. Ask Nix for an exact path before load begins, retain a known toolchain
+path, or wait for the existing build. Check PSI before and during any repository-
+or store-wide traversal; a small diagnostic command can be the last straw.
+
 ## 2026-06-05 — A cached Nix FOD masks dependency-hash changes; local green != CI green
 
 **What happened:** A dep (`sqlite3`) drifted (pinned to a moving `heads/main`

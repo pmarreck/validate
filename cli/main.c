@@ -605,6 +605,7 @@ typedef struct {
 	char** paths;
 	uint32_t* ids;
 	size_t* sizes;      /* File sizes in bytes */
+	size_t* sizes_by_id; /* File sizes indexed by immutable callback ID */
 	size_t count;
 	size_t capacity;
 	size_t max_files;   /* 0 = unlimited */
@@ -615,10 +616,12 @@ static int path_list_init(path_list_t* list, size_t initial_capacity, size_t max
 	list->paths = (char**)malloc(initial_capacity * sizeof(char*));
 	list->ids = (uint32_t*)malloc(initial_capacity * sizeof(uint32_t));
 	list->sizes = (size_t*)malloc(initial_capacity * sizeof(size_t));
-	if (!list->paths || !list->ids || !list->sizes) {
+	list->sizes_by_id = (size_t*)malloc(initial_capacity * sizeof(size_t));
+	if (!list->paths || !list->ids || !list->sizes || !list->sizes_by_id) {
 		free(list->paths);
 		free(list->ids);
 		free(list->sizes);
+		free(list->sizes_by_id);
 		return -1;
 	}
 	list->count = 0;
@@ -635,9 +638,11 @@ static void path_list_free(path_list_t* list) {
 	free(list->paths);
 	free(list->ids);
 	free(list->sizes);
+	free(list->sizes_by_id);
 	list->paths = NULL;
 	list->ids = NULL;
 	list->sizes = NULL;
+	list->sizes_by_id = NULL;
 	list->count = 0;
 	list->capacity = 0;
 	list->total_bytes = 0;
@@ -690,12 +695,16 @@ static int path_list_add(path_list_t* list, const char* path, size_t file_size) 
 		size_t* new_sizes = (size_t*)realloc(list->sizes, new_capacity * sizeof(size_t));
 		if (!new_sizes) return -1;
 		list->sizes = new_sizes;
+		size_t* new_sizes_by_id = (size_t*)realloc(list->sizes_by_id, new_capacity * sizeof(size_t));
+		if (!new_sizes_by_id) return -1;
+		list->sizes_by_id = new_sizes_by_id;
 		list->capacity = new_capacity;
 	}
 	list->paths[list->count] = strdup(path);
 	if (!list->paths[list->count]) return -1;
 	list->ids[list->count] = (uint32_t)list->count;
 	list->sizes[list->count] = file_size;
+	list->sizes_by_id[list->count] = file_size;
 	list->total_bytes += file_size;
 	list->count++;
 	show_enum_progress(list->count);
@@ -1009,6 +1018,9 @@ static uint64_t g_scheduler_debug_last_memory_budget_wait_events = 0;
 static uint64_t g_scheduler_debug_last_rss_pressure_wait_ns = 0;
 static uint64_t g_scheduler_debug_last_rss_pressure_wait_events = 0;
 static atomic_size_t g_heap_frag_debug_processed;
+static int g_progress_debug_probes = 0;
+static atomic_size_t g_progress_size_lookup_probes;
+static atomic_size_t g_progress_size_lookup_bytes;
 #if !defined(_WIN32)
 static pthread_t g_heap_frag_debug_thread;
 static atomic_int g_heap_frag_debug_thread_running;
@@ -1694,6 +1706,18 @@ static void print_validation_result(const char* path, const char* result) {
 /* Global file list pointer for callback to access file sizes */
 static path_list_t* g_file_list_ptr = NULL;
 
+/* Progress size lookup is O(1) after queue scattering/shuffling: immutable IDs
+ * index their own dense map while paths and execution-order `sizes` are reordered. */
+static size_t path_list_size_for_id(const path_list_t* list, uint32_t file_id) {
+	if (!list || (size_t)file_id >= list->count) return 0;
+	size_t file_size = list->sizes_by_id[file_id];
+	if (g_progress_debug_probes) {
+		atomic_fetch_add(&g_progress_size_lookup_probes, 1);
+		atomic_fetch_add(&g_progress_size_lookup_bytes, file_size);
+	}
+	return file_size;
+}
+
 /* Progress state — backed by progrez library via validate_progress_* FFI */
 /* g_tui_enabled forward-declared above write_colored_line */
 static int g_term_width = 80;
@@ -1736,15 +1760,10 @@ static void on_validation_result(
 	/* Get elapsed time in nanoseconds */
 	int64_t elapsed_ns = kv_get_i64(result, "elapsed_ns_u64");
 
-	/* Look up file size for progress tracking (read-only on file list, no lock needed) */
+	/* Look up file size for interactive progress tracking (read-only on file list). */
 	size_t file_size = 0;
-	if (g_file_list_ptr) {
-		for (size_t i = 0; i < g_file_list_ptr->count; i++) {
-			if (g_file_list_ptr->ids[i] == file_id) {
-				file_size = g_file_list_ptr->sizes[i];
-				break;
-			}
-		}
+	if (g_tui_enabled || g_progress_debug_probes) {
+		file_size = path_list_size_for_id(g_file_list_ptr, file_id);
 	}
 
 	/* Check if unknown */
@@ -3139,6 +3158,9 @@ int main(int argc, char* argv[]) {
 	}
 
 	heap_frag_debug_init();
+	g_progress_debug_probes = heap_frag_env_truthy(getenv("VALIDATE_PROGRESS_DEBUG_PROBES"));
+	atomic_store(&g_progress_size_lookup_probes, 0);
+	atomic_store(&g_progress_size_lookup_bytes, 0);
 
 	const size_t max_files = get_env_max_files();
 
@@ -3310,6 +3332,12 @@ int main(int argc, char* argv[]) {
 		}
 	}
 	heap_frag_debug_stop_monitor();
+	if (g_progress_debug_probes) {
+		fprintf(stderr,
+			"[PROGRESS] size_lookup_probes=%zu expected=%zu size_lookup_bytes=%zu expected_bytes=%zu\n",
+			atomic_load(&g_progress_size_lookup_probes), file_list.count * iterations,
+			atomic_load(&g_progress_size_lookup_bytes), file_list.total_bytes * iterations);
+	}
 
 	/* Check if we were interrupted */
 #if defined(_WIN32)
