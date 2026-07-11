@@ -54,7 +54,9 @@ local function load_current_releases(path)
 	local f, err, errno = io.open(path, "r")
 	if not f then
 		if errno == 2 then return { available = {}, expired = {} } end
-		error("cannot open current release manifest " .. path .. ": " .. tostring(err))
+		io.stderr:write("generate: WARN: current release manifest unavailable; prerelease downloads omitted ("
+			.. tostring(err) .. ")\n")
+		return { available = {}, expired = {} }
 	end
 	local source = f:read("*a")
 	f:close()
