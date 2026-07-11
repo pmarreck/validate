@@ -41,6 +41,10 @@ return {
 	footer_source = "மூலக்குறியீடு",
 	footer_mecha = "Mecha, LLC தயாரிப்பு",
 
+	release_title = "இலவச முன்வெளியீட்டு பதிவிறக்கங்கள்",
+	release_intro = "Mecha Validate இன் அடுத்த வெளியீட்டை முயற்சிக்கவும்.",
+	release_expires = "%s அன்று காலாவதியாகும்",
+
 	banner_available = "இந்தப் பக்கம் %s மொழியிலும் கிடைக்கிறது.",
 	banner_switch = "மாறு",
 	banner_dismiss = "வேண்டாம், நன்றி",

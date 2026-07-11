@@ -41,6 +41,10 @@ return {
 	footer_source = "ምንጭ ኮድ",
 	footer_mecha = "የ Mecha, LLC ምርት",
 
+	release_title = "ነፃ የቅድመ-ልቀት ማውረጃዎች",
+	release_intro = "የሚቀጥለውን Mecha Validate ልቀት ይሞክሩ።",
+	release_expires = "%s ላይ ያበቃል",
+
 	banner_available = "ይህ ገጽ በ%s ጭምር ይገኛል።",
 	banner_switch = "ቀይር",
 	banner_dismiss = "አይ፣ አመሰግናለሁ",

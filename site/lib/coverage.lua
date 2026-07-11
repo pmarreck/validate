@@ -42,7 +42,7 @@ local function parse_cell(raw)
 	return v, pct, strong
 end
 
--- Parse every 7-column table row under ###-level sections, skipping
+-- Parse every legacy 7-column or current 8-column table row under ###-level sections, skipping
 -- #### sub-tables (e.g. the PDF stream-filter breakout) and non-results
 -- tables (they have different column counts).
 function M.parse_report_string(md)
@@ -69,17 +69,23 @@ function M.parse_report_string(md)
 			end
 			-- drop trailing empty edge cell if present
 			if #cells > 0 and cells[#cells] == "" then cells[#cells] = nil end
-			if #cells == 7 and cells[1] ~= "Format" and not cells[1]:match("^[-: ]*$") then
+			if (#cells == 7 or #cells == 8) and cells[1] ~= "Format" and not cells[1]:match("^[-: ]*$") then
+				local has_bolter = #cells == 8
+				local shotgun_index = has_bolter and 4 or 3
+				local sample_index = shotgun_index + 1
 				local sniper, sniper_pct, strong_sniper = parse_cell(cells[2])
-				local shotgun, shotgun_pct, strong_shotgun = parse_cell(cells[3])
+				local bolter, bolter_pct, strong_bolter
+				if has_bolter then bolter, bolter_pct, strong_bolter = parse_cell(cells[3]) end
+				local shotgun, shotgun_pct, strong_shotgun = parse_cell(cells[shotgun_index])
 				rows[#rows + 1] = {
 					name = cells[1],
 					sniper = sniper, sniper_pct = sniper_pct, strong_sniper = strong_sniper,
+					bolter = bolter, bolter_pct = bolter_pct, strong_bolter = strong_bolter,
 					shotgun = shotgun, shotgun_pct = shotgun_pct, strong_shotgun = strong_shotgun,
-					sample = cells[4],
-					size = cells[5],
-					run = cells[6],
-					mechanism = cells[7],
+					sample = cells[sample_index],
+					size = cells[sample_index + 1],
+					run = cells[sample_index + 2],
+					mechanism = cells[sample_index + 3],
 					category = category,
 				}
 			end
@@ -168,6 +174,17 @@ local APP_KEY_ALIASES = {
 	["RPM Package (.rpm)"] = "rpm",
 }
 
+-- The standalone tests run from site/, while the publisher invokes the
+-- generator from a clean worktree root. Make the catalog location injectable
+-- so normalized format-name lookup never depends on process cwd.
+M._app_catalog_path = "../src/core/i18n/en.zig"
+
+function M.set_app_catalog_path(path)
+	assert(type(path) == "string" and #path > 0, "app catalog path must be non-empty")
+	M._app_catalog_path = path
+	M._key_index = nil
+end
+
 -- Report rows with no honest app i18n format key. Aliasing these to a
 -- nearby key would mislabel them (e.g. "MPEG-4 Part 2" is a codec measured
 -- inside an AVI sample; "Opus" was measured in a WebM; NRW/JSON5 simply
@@ -188,7 +205,7 @@ function M.app_key_for(name, en_catalog)
 	-- lazy-build normalized index of app keys on first use
 	if not M._key_index then
 		local zc = require("zig_catalog")
-		local en = en_catalog or zc.load_format_descriptions("../src/core/i18n/en.zig")
+		local en = en_catalog or zc.load_format_descriptions(M._app_catalog_path)
 		local idx = {}
 		for key in pairs(en) do
 			idx[normalize(key)] = key

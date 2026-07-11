@@ -41,6 +41,10 @@ return {
 	footer_source = "Msimbo chanzo",
 	footer_mecha = "Bidhaa ya Mecha, LLC",
 
+	release_title = "Vipakuliwa vya toleo la mapema bila malipo",
+	release_intro = "Jaribu toleo lijalo la Mecha Validate.",
+	release_expires = "Muda unaisha %s",
+
 	banner_available = "Ukurasa huu unapatikana pia kwa %s.",
 	banner_switch = "Badilisha",
 	banner_dismiss = "Hapana, asante",

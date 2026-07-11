@@ -1,0 +1,36 @@
+#!/usr/bin/env luajit
+-- Validate the GUI publisher's atomic current_releases.toml contract without
+-- rendering or writing anything. Used by publish-validate-pics before Git work.
+
+local SITE = arg[0]:match("^(.*)/[^/]+$") or "."
+package.path = SITE .. "/lib/?.lua;" .. package.path
+
+local releases = require("releases")
+local ROOT = SITE .. "/.."
+local path = os.getenv("VALIDATE_GUI_RELEASES_FILE")
+		or (ROOT .. "/../validate_gui/current_releases.toml")
+
+local f, err = io.open(path, "r")
+if not f then
+	io.stderr:write("current releases: cannot read " .. path .. ": " .. tostring(err) .. "\n")
+	os.exit(1)
+end
+local source = f:read("*a")
+f:close()
+
+local parsed, parse_err = releases.parse_toml(source)
+if not parsed then
+	io.stderr:write("current releases: invalid manifest: " .. tostring(parse_err) .. "\n")
+	os.exit(1)
+end
+if not releases.publishable(parsed) then
+	if #parsed.expired > 0 then
+		io.stderr:write(("current releases: %d expired platform link(s); refusing to publish stale URLs\n")
+			:format(#parsed.expired))
+	else
+		io.stderr:write("current releases: no fresh platform links; refusing to publish an empty release section\n")
+	end
+	os.exit(1)
+end
+
+io.write(("current releases: %d fresh platform link(s)\n"):format(#parsed.available))

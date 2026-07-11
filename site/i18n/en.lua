@@ -44,6 +44,10 @@ return {
 	footer_source = "Source",
 	footer_mecha = "A Mecha, LLC product",
 
+	release_title = "Free prerelease downloads",
+	release_intro = "Try the next Mecha Validate release.",
+	release_expires = "Expires %s",
+
 	banner_available = "This page is also available in %s.",
 	banner_switch = "Switch",
 	banner_dismiss = "No, thanks",

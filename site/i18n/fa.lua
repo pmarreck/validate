@@ -41,6 +41,10 @@ return {
 	footer_source = "کد منبع",
 	footer_mecha = "محصولی از Mecha, LLC",
 
+	release_title = "دانلودهای رایگان پیش‌انتشار",
+	release_intro = "نسخهٔ بعدی Mecha Validate را امتحان کنید.",
+	release_expires = "منقضی می‌شود: %s",
+
 	banner_available = "این صفحه به زبان %s هم در دسترس است.",
 	banner_switch = "تغییر",
 	banner_dismiss = "نه، ممنون",

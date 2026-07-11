@@ -41,6 +41,10 @@ return {
 	footer_source = "Sursă",
 	footer_mecha = "Un produs Mecha, LLC",
 
+	release_title = "Descărcări gratuite ale versiunii preliminare",
+	release_intro = "Încearcă următoarea versiune Mecha Validate.",
+	release_expires = "Expiră la %s",
+
 	banner_available = "Această pagină este disponibilă și în %s.",
 	banner_switch = "Schimbă",
 	banner_dismiss = "Nu, mulțumesc",

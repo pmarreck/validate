@@ -1,0 +1,1 @@
+windows-x86_64 = "https://downloads.example.invalid/mecha-validate-windows-x86_64.zip?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20200102T030405Z&X-Amz-Expires=60&X-Amz-Signature=expiredfixture"

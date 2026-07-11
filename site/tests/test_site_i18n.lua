@@ -46,6 +46,10 @@ for _, l in ipairs(locales.list) do
 			ok(cat.banner_available:find("%%s") ~= nil,
 				l.code .. ".banner_available lost its %s slot")
 		end
+		if cat.release_expires then
+			ok(cat.release_expires:find("%%s") ~= nil,
+				l.code .. ".release_expires lost its %s slot")
+		end
 		-- Brand must not be translated away.
 		if cat.meta_title then
 			ok(cat.meta_title:find("Mecha Validate", 1, true) ~= nil,

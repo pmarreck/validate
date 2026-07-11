@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Publish fresh GUI prerelease links to validate.pics without involving ./build.
+# A clean worktree protects the caller's checkout and the only committed output
+# is docs/, which GitHub Pages serves for this repository.
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST="${VALIDATE_GUI_RELEASES_FILE:-$ROOT/../validate_gui/current_releases.toml}"
+
+fail() {
+	echo "publish-validate-pics: $*" >&2
+	exit 1
+}
+
+usage() {
+	cat <<'EOF'
+Usage: ./publish-validate-pics [--check]
+
+Reads ../validate_gui/current_releases.toml, rejects stale or malformed
+presigned URLs, generates validate.pics in a clean worktree, runs site tests,
+commits only docs/, and pushes yolo. --check validates the manifest only.
+EOF
+}
+
+case "${1:-}" in
+	"") ;;
+	--check)
+		VALIDATE_GUI_RELEASES_FILE="$MANIFEST" "$ROOT/site/check_current_releases"
+		exit $?
+		;;
+	-h|--help)
+		usage
+		exit 0
+		;;
+	*)
+		usage >&2
+		exit 2
+		;;
+esac
+
+if ! VALIDATE_GUI_RELEASES_FILE="$MANIFEST" "$ROOT/site/check_current_releases"; then
+	fail "release manifest is not publishable"
+fi
+
+if ! git -C "$ROOT" fetch origin yolo; then
+	fail "could not refresh origin/yolo"
+fi
+
+worktree="$(mktemp -d "${TMPDIR:-/tmp}/validate-pics-publish.XXXXXX")" || fail "could not create temporary worktree path"
+worktree_added=0
+cleanup() {
+	if [ "$worktree_added" -eq 1 ]; then
+		git -C "$ROOT" worktree remove --force "$worktree" >/dev/null 2>&1
+	fi
+}
+trap cleanup EXIT INT TERM
+
+if ! git -C "$ROOT" worktree add --detach "$worktree" origin/yolo; then
+	fail "could not create clean worktree at origin/yolo"
+fi
+worktree_added=1
+
+if ! "$worktree/site/test"; then
+	fail "site tests failed"
+fi
+if ! VALIDATE_GUI_RELEASES_FILE="$MANIFEST" "$worktree/site/generate"; then
+	fail "site generation failed"
+fi
+
+if git -C "$worktree" diff --quiet -- docs; then
+	echo "publish-validate-pics: docs already contain the current release links"
+	exit 0
+fi
+if ! git -C "$worktree" add -- docs; then
+	fail "could not stage generated docs"
+fi
+if ! git -C "$worktree" commit -m "site: publish current GUI prereleases"; then
+	fail "could not commit generated docs"
+fi
+if ! git -C "$worktree" push origin HEAD:refs/heads/yolo; then
+	fail "could not push yolo"
+fi
+
+echo "publish-validate-pics: published fresh GUI prerelease links"

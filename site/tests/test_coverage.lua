@@ -58,8 +58,8 @@ end
 local doc_small = by["DOC (small)"]
 ok(doc_small ~= nil, "DOC (small) row present")
 if doc_small then
-	eq(doc_small.sniper, "—", "em-dash sniper cell preserved")
-	eq(doc_small.sniper_pct, nil, "em-dash has no pct")
+	eq(doc_small.sniper, "n/a", "unmeasured sniper cell preserved")
+	eq(doc_small.sniper_pct, nil, "unmeasured sniper has no pct")
 	eq(doc_small.shotgun_pct, 52, "DOC (small) shotgun pct")
 end
 

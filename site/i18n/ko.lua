@@ -41,6 +41,10 @@ return {
 	footer_source = "소스 코드",
 	footer_mecha = "Mecha, LLC 제품",
 
+	release_title = "무료 사전 릴리스 다운로드",
+	release_intro = "다음 Mecha Validate 릴리스를 사용해 보세요.",
+	release_expires = "만료: %s",
+
 	banner_available = "이 페이지는 %s로도 볼 수 있습니다.",
 	banner_switch = "전환",
 	banner_dismiss = "괜찮습니다",

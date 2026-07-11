@@ -41,6 +41,10 @@ return {
 	footer_source = "源代码",
 	footer_mecha = "Mecha, LLC 出品",
 
+	release_title = "免费下载预发布版本",
+	release_intro = "试用下一个 Mecha Validate 版本。",
+	release_expires = "于 %s 到期",
+
 	banner_available = "本页面还有%s版本。",
 	banner_switch = "切换",
 	banner_dismiss = "不用了",

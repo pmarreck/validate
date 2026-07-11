@@ -71,6 +71,16 @@ local CAT_ORDER = {
 	"executable", "crypto", "email", "text", "network", "game",
 }
 
+-- The publisher manifest uses machine-oriented keys. These identifiers are
+-- industry-standard platform names (not natural-language copy); keeping the
+-- architecture literal prevents ARM Linux from looking like x86_64 Linux.
+local RELEASE_LABELS = {
+	["macos-aarch64"] = "macOS (aarch64)",
+	["windows-x86_64"] = "Windows (x86_64)",
+	["linux-x86_64"] = "Linux (x86_64)",
+	["linux-aarch64"] = "Linux (aarch64)",
+}
+
 local M = {}
 
 function M.render(ctx)
@@ -128,6 +138,24 @@ function M.render(ctx)
 
 	out[#out + 1] = ('<a class="coverage-link" href="%s">%s → </a>'):format(
 		esc(shared.page_path(ctx.locale, "coverage")), esc(t.cov_subtitle))
+
+	local available_releases = ctx.releases and ctx.releases.available or {}
+	if #available_releases > 0 then
+		out[#out + 1] = '<section class="release-downloads" aria-labelledby="release-downloads-title">'
+		out[#out + 1] = ('<h2 id="release-downloads-title">%s</h2>'):format(esc(t.release_title))
+		out[#out + 1] = ('<p class="release-intro">%s</p>'):format(esc(t.release_intro))
+		out[#out + 1] = '<ul class="release-list">'
+		for _, release in ipairs(available_releases) do
+			local label = assert(RELEASE_LABELS[release.key], "unknown release platform: " .. release.key)
+			out[#out + 1] = '<li class="release-item">'
+			out[#out + 1] = ('<a class="release-link" href="%s" rel="noopener noreferrer">%s <span aria-hidden="true">↓</span></a>')
+				:format(esc(release.url), esc(label))
+			out[#out + 1] = ('<span class="release-expiry">%s</span>'):format(esc(t.release_expires:format(release.expires_utc)))
+			out[#out + 1] = '</li>'
+		end
+		out[#out + 1] = '</ul>'
+		out[#out + 1] = '</section>'
+	end
 	out[#out + 1] = "</div>"
 
 	out[#out + 1] = shared.footer(ctx)

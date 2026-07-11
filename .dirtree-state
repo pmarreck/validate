@@ -14,13 +14,16 @@ annotate=[
 	docs/corruption-sweep-results/generated = Generator inputs (canonical source): report-rows.tsv sidecar + report-preamble/postamble.md + appendix-*.md; consumed by scripts/generate-corruption-report
 	docs/performance/scheduler-backpressure-2026-07-10.md = Measured Mac Documents RSS-backpressure and nested-PDF concurrency decisions, including accepted/rejected A/B evidence
 	ffi/c_api.zig = C FFI batch adapter; bounds worker count by queued paths and propagates batch width to nested validators
+	publish-validate-pics = Clean-worktree release-site publisher: validates sibling GUI links, tests/regenerates docs, commits docs only, and pushes yolo.
 	scripts/generate-corruption-report = Generates the canonical 8-col corruption-detection report (Format|Sniper|Bolter|Shotgun|Sample|Size|Run|Mechanism) from sweep TSVs + sidecar; flag>env>default paths (VALIDATE_CORRUPTION_REPORT / VALIDATE_SWEEP_RESULTS_DIR); n/a never blank
 	scripts/migrate-report-to-sidecar = One-shot bootstrap: parses the old hand-maintained report into generator inputs (sidecar rows.tsv + preamble/postamble/appendix); resolves slug via Sample-filename+sniper% join; dissolves the Wave section + reassigns CPT→Archive
 	site = validate.pics static-site generator (LuaJIT) — emits docs/ for GitHub Pages, 50 locales
+	site/check_current_releases = No-write CLI guard that validates a fresh GUI release manifest before any website or Git publish work.
 	site/generate = SSG entry point: renders home+coverage per locale into docs/, assets, sitemap
 	site/i18n = site string catalogs ×50 (Lua); enforce-phase key parity vs en.lua
 	site/lib/coverage.lua = parses corruption-detection-report tables + raw TSVs; per-OS honesty flags; app-key join
 	site/lib/locales.lua = canonical 50-locale registry (slug/hreflang/native/rtl); test cross-checks vs app catalogs
+	site/lib/releases.lua = Strict pure parser for GUI current_releases.toml; derives UTC expiry and fails closed on malformed or stale SigV4 links.
 	site/lib/zig_catalog.lua = extracts .key="value" pairs from app Zig i18n catalogs incl. \xNN and @"..." keys
 	site/test = site test runner (Bash, set -u, accumulates failures)
 	src/core/fixtures/license_vectors.json = Vendored differential oracle (18 cases) from mecha-commerce; pins license.zig verifier to issuer-authored {valid,error_code} vectors

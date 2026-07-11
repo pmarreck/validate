@@ -41,6 +41,10 @@ return {
 	footer_source = "Lähdekoodi",
 	footer_mecha = "Mecha, LLC:n tuote",
 
+	release_title = "Ilmaiset esijulkaisulataukset",
+	release_intro = "Kokeile Mecha Validaten seuraavaa julkaisua.",
+	release_expires = "Vanhenee %s",
+
 	banner_available = "Tämä sivu on saatavilla myös kielellä %s.",
 	banner_switch = "Vaihda",
 	banner_dismiss = "Ei kiitos",

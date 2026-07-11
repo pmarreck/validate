@@ -41,6 +41,10 @@ return {
 	footer_source = "سورس کوڈ",
 	footer_mecha = "Mecha, LLC کی ایک پروڈکٹ",
 
+	release_title = "مفت قبل از ریلیز ڈاؤن لوڈز",
+	release_intro = "Mecha Validate کی اگلی ریلیز آزمائیں۔",
+	release_expires = "میعاد ختم: %s",
+
 	banner_available = "یہ صفحہ %s میں بھی دستیاب ہے۔",
 	banner_switch = "بدلیں",
 	banner_dismiss = "نہیں، شکریہ",

@@ -41,6 +41,10 @@ return {
 	footer_source = "Forráskód",
 	footer_mecha = "A Mecha, LLC terméke",
 
+	release_title = "Ingyenes előzetes kiadások letöltése",
+	release_intro = "Próbáld ki a Mecha Validate következő kiadását.",
+	release_expires = "Lejár: %s",
+
 	banner_available = "Ez az oldal %s nyelven is elérhető.",
 	banner_switch = "Váltás",
 	banner_dismiss = "Nem, köszönöm",

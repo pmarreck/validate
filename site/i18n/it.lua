@@ -41,6 +41,10 @@ return {
 	footer_source = "Codice sorgente",
 	footer_mecha = "Un prodotto Mecha, LLC",
 
+	release_title = "Download gratuiti della versione preliminare",
+	release_intro = "Prova la prossima versione di Mecha Validate.",
+	release_expires = "Scade il %s",
+
 	banner_available = "Questa pagina è disponibile anche in %s.",
 	banner_switch = "Cambia",
 	banner_dismiss = "No, grazie",

@@ -41,6 +41,10 @@ return {
 	footer_source = "Izvorna koda",
 	footer_mecha = "Izdelek podjetja Mecha, LLC",
 
+	release_title = "Brezplačni prenosi predizdaje",
+	release_intro = "Preizkusite naslednjo izdajo Mecha Validate.",
+	release_expires = "Poteče %s",
+
 	banner_available = "Ta stran je na voljo tudi v jeziku %s.",
 	banner_switch = "Preklopi",
 	banner_dismiss = "Ne, hvala",

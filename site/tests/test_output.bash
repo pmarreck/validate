@@ -5,6 +5,7 @@ set -u
 
 SITE_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DOCS="$SITE_DIR/../docs"
+RELEASE_FIXTURE="$SITE_DIR/tests/fixtures/current_releases.toml"
 source "$HOME/dotfiles/bin/src/capture.bash"
 
 failures=0
@@ -22,7 +23,9 @@ assert_not_contains() {
 
 # ── Generator runs clean ─────────────────────────────────────────
 declare out err rc
+export VALIDATE_GUI_RELEASES_FILE="$RELEASE_FIXTURE"
 capture "$SITE_DIR/generate"
+unset VALIDATE_GUI_RELEASES_FILE
 if [ "$rc" -ne 0 ]; then
 	fail "generate exited $rc: $err"
 	echo "site output tests: ABORT (generator failed)"
@@ -43,6 +46,14 @@ assert_contains "$IDX" 'rel="canonical" href="https://validate.pics/"' "root can
 assert_contains "$IDX" 'id="lang-banner"' "banner mount present"
 assert_contains "$IDX" 'https://mecha.llc/validate/' "buy CTA points at mecha.llc/validate/"
 assert_contains "$IDX" 'A Mecha, LLC product' "Mecha LLC footer credit"
+assert_contains "$IDX" 'class="release-downloads"' "current GUI releases render a download section"
+assert_contains "$IDX" 'Free prerelease downloads' "English prerelease heading"
+assert_contains "$IDX" 'macOS (aarch64)' "macOS platform label is unambiguous"
+assert_contains "$IDX" 'Linux (x86_64)' "Linux x86_64 platform label is unambiguous"
+assert_contains "$IDX" 'Linux (aarch64)' "Linux aarch64 platform label is unambiguous"
+assert_contains "$IDX" 'X-Amz-Algorithm=AWS4-HMAC-SHA256&amp;X-Amz-Date=20400102T030405Z' "presigned release URL is escaped"
+assert_contains "$DOCS/de/index.html" 'Kostenlose Vorabversionen' "German prerelease copy is localized"
+assert_contains "$DOCS/ar/index.html" 'تنزيلات تجريبية مجانية' "Arabic prerelease copy is localized"
 
 # ── Every locale emits both pages ────────────────────────────────
 slugs=$(luajit -e 'package.path="'"$SITE_DIR"'/lib/?.lua;"..package.path

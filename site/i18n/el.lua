@@ -41,6 +41,10 @@ return {
 	footer_source = "Πηγαίος κώδικας",
 	footer_mecha = "Ένα προϊόν της Mecha, LLC",
 
+	release_title = "Δωρεάν λήψεις προέκδοσης",
+	release_intro = "Δοκιμάστε την επόμενη έκδοση του Mecha Validate.",
+	release_expires = "Λήγει στις %s",
+
 	banner_available = "Αυτή η σελίδα είναι διαθέσιμη και στα %s.",
 	banner_switch = "Αλλαγή",
 	banner_dismiss = "Όχι, ευχαριστώ",

@@ -41,6 +41,10 @@ return {
 	footer_source = "Izvorni kod",
 	footer_mecha = "Proizvod kompanije Mecha, LLC",
 
+	release_title = "Besplatna preuzimanja predizdanja",
+	release_intro = "Isprobajte sljedeće izdanje Mecha Validate.",
+	release_expires = "Ističe %s",
+
 	banner_available = "Ova stranica je dostupna i na jeziku: %s.",
 	banner_switch = "Prebaci",
 	banner_dismiss = "Ne, hvala",

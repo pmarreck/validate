@@ -1,0 +1,4 @@
+linux-x86_64 = "https://downloads.example.invalid/mecha-validate-linux-x86_64.AppImage?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20400102T030405Z&X-Amz-Expires=604800&X-Amz-Signature=fixturelinuxx64"
+windows-x86_64 = "https://downloads.example.invalid/mecha-validate-windows-x86_64.zip?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20400102T030405Z&X-Amz-Expires=604800&X-Amz-Signature=fixturewinx64"
+macos-aarch64 = "https://downloads.example.invalid/mecha-validate-macos-aarch64.zip?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20400102T030405Z&X-Amz-Expires=604800&X-Amz-Signature=fixturemacarm"
+linux-aarch64 = "https://downloads.example.invalid/mecha-validate-linux-aarch64.AppImage?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20400102T030405Z&X-Amz-Expires=604800&X-Amz-Signature=fixturelinuxarm"

@@ -41,6 +41,10 @@ return {
 	footer_source = "Mənbə kodu",
 	footer_mecha = "Mecha, LLC məhsulu",
 
+	release_title = "Pulsuz ilkin buraxılış yükləmələri",
+	release_intro = "Növbəti Mecha Validate buraxılışını sınayın.",
+	release_expires = "Etibarlılıq müddəti: %s",
+
 	banner_available = "Bu səhifə %s dilində də mövcuddur.",
 	banner_switch = "Keç",
 	banner_dismiss = "Xeyr, təşəkkürlər",

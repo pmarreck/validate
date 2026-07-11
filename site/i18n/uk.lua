@@ -41,6 +41,10 @@ return {
 	footer_source = "Вихідний код",
 	footer_mecha = "Продукт Mecha, LLC",
 
+	release_title = "Безкоштовні завантаження попередньої версії",
+	release_intro = "Спробуйте наступний випуск Mecha Validate.",
+	release_expires = "Термін дії спливає %s",
+
 	banner_available = "Ця сторінка також доступна мовою %s.",
 	banner_switch = "Перейти",
 	banner_dismiss = "Ні, дякую",

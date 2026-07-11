@@ -41,6 +41,10 @@ return {
 	footer_source = "Orísun",
 	footer_mecha = "Ọjà láti ọwọ́ Mecha, LLC",
 
+	release_title = "Àwọn ìgbàsílẹ̀ ṣáájú-ìtẹ̀jáde ọ̀fẹ́",
+	release_intro = "Gbìyànjú ìtẹ̀jáde Mecha Validate tó kàn.",
+	release_expires = "Yóò parí ní %s",
+
 	banner_available = "Ojú-ìwé yìí tún wà ní èdè %s.",
 	banner_switch = "Yí padà",
 	banner_dismiss = "Rárá, ẹ ṣé",
