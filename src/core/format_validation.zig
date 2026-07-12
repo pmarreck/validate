@@ -1238,12 +1238,22 @@ pub const ValidationErrorCode = enum(u8) {
     }
 };
 
+/// Whether validation could obtain the file bytes needed for a verdict.
+/// This deliberately remains independent of `is_valid`: permission denial is
+/// unvalidated, not evidence that content is corrupt.
+pub const AccessOutcome = enum {
+    available,
+    no_permission,
+};
+
 /// Result of format validation.
 pub const ValidationResult = struct {
     /// The detected file format.
     format: FileFormat,
     /// Whether the format is valid (structurally correct).
     is_valid: bool,
+    /// OS-level ability to read the requested path for validation.
+    access: AccessOutcome = .available,
     /// Human-readable error message if invalid.
     error_message: ?[]const u8,
     /// Symbolic error code (null for legacy callers using bare string literals).
@@ -1470,6 +1480,17 @@ pub const ValidationResult = struct {
         };
     }
 };
+
+/// Convert normalized filesystem errors into validation results without
+/// conflating access control with corrupt content. Platform adapters surface
+/// POSIX and Windows denial codes as `AccessDenied` or `PermissionDenied`.
+fn resultForFileAccessError(err: anyerror) ValidationResult {
+    var result = ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
+    if (err == error.AccessDenied or err == error.PermissionDenied) {
+        result.access = .no_permission;
+    }
+    return result;
+}
 
 pub const VideoDecodeTolerance = struct {
     malformation: MalformationType,
@@ -5325,8 +5346,8 @@ pub const FormatValidator = struct {
         }
 
         // Check if path is a directory (but not a known bundle)
-        const stat = runtime.statFile(path) catch {
-            return ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
+        const stat = runtime.statFile(path) catch |err| {
+            return resultForFileAccessError(err);
         };
         if (stat.kind == .directory) {
             // Check for BagIt bag (directory containing bagit.txt)
@@ -5343,8 +5364,8 @@ pub const FormatValidator = struct {
         }
 
         // Open the file
-        const file = runtime.openFile(path, .{}) catch {
-            return ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
+        const file = runtime.openFile(path, .{}) catch |err| {
+            return resultForFileAccessError(err);
         };
         defer file.close(runtime.io());
 
@@ -8567,6 +8588,20 @@ test "git_repository format has correct description" {
 
 test "git_repository format has validator" {
     try std.testing.expect(FileFormat.git_repository.hasValidator());
+}
+
+test "only permission denial becomes the NOPERM access outcome" {
+    const denied = resultForFileAccessError(error.AccessDenied);
+    try std.testing.expectEqual(AccessOutcome.no_permission, denied.access);
+    try std.testing.expect(!denied.is_valid);
+
+    const permission_denied = resultForFileAccessError(error.PermissionDenied);
+    try std.testing.expectEqual(AccessOutcome.no_permission, permission_denied.access);
+    try std.testing.expect(!permission_denied.is_valid);
+
+    const absent = resultForFileAccessError(error.FileNotFound);
+    try std.testing.expectEqual(AccessOutcome.available, absent.access);
+    try std.testing.expect(!absent.is_valid);
 }
 
 test "validateFileDeep routes git directories to git validator" {

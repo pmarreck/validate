@@ -71,6 +71,7 @@ pub const EnvVar = enum(u8) {
     validate_debug = 8,
     no_bidi = 9,
     max_memory = 10,
+    no_perm_out = 11,
 };
 
 /// Locale-specific environment variable aliases (full name, e.g. "FEHLER_AUS").
@@ -86,4 +87,6 @@ pub const EnvAliases = struct {
     validate_debug: [:0]const u8,
     no_bidi: [:0]const u8,
     max_memory: [:0]const u8,
+    // Stable technical output selector; do not translate protocol tokens.
+    no_perm_out: [:0]const u8 = "NOPERM_OUT",
 };

@@ -596,6 +596,7 @@ pub const StringId = enum(u32) {
     malform_pdf_jbig2_decode_failed = 40,
     help_entropy_shield = 41,
     label_info = 42,
+    label_no_perm = 43,
 };
 
 /// Look up a translated string by its numeric ID.
@@ -607,6 +608,7 @@ pub fn getStringById(string_id: u32) ?[:0]const u8 {
         .label_fail => s.label_fail,
         .label_notice => s.label_notice,
         .label_unknown => s.label_unknown,
+        .label_no_perm => s.label_no_perm,
         .label_slow => s.label_slow,
         .summary_title => s.summary_title,
         .summary_interrupted => s.summary_interrupted,

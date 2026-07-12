@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+
+set -u
+
+VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_noperm.XXXXXX")"
+locked="$tmpdir/locked.txt"
+noperm_out="$tmpdir/noperm.out"
+
+cleanup() {
+	chmod 600 "$locked" 2>/dev/null || true
+	rm -rf "$tmpdir"
+}
+trap cleanup EXIT
+
+printf 'this file is deliberately unreadable\n' > "$locked"
+chmod 000 "$locked"
+
+combined="$("$VALIDATE" --no-color "$locked" 2>&1)"
+rc=$?
+
+if [ "$rc" -ne 0 ]; then
+	printf 'FAIL: NOPERM must not set a validation-failure exit status (got %s)\n' "$rc" >&2
+	printf 'output:\n%s\n' "$combined" >&2
+	exit 1
+fi
+
+if ! printf '%s\n' "$combined" | grep -Fq 'NOPERM'; then
+	printf 'FAIL: expected NOPERM verdict for unreadable file\noutput:\n%s\n' "$combined" >&2
+	exit 1
+fi
+if printf '%s\n' "$combined" | grep -Fq 'FAIL'; then
+	printf 'FAIL: permission denial must not render as FAIL\noutput:\n%s\n' "$combined" >&2
+	exit 1
+fi
+
+combined="$(env NOPERM_OUT="$noperm_out" "$VALIDATE" --no-color "$locked" 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	printf 'FAIL: NOPERM_OUT routing must retain the non-failure exit status\n' >&2
+	exit 1
+fi
+if [ ! -f "$noperm_out" ] || ! grep -Fq 'NOPERM' "$noperm_out"; then
+	printf 'FAIL: NOPERM_OUT must receive the NOPERM result\n' >&2
+	exit 1
+fi
+if grep -q $'\033\[' "$noperm_out"; then
+	printf 'FAIL: NOPERM_OUT must not contain ANSI sequences\n' >&2
+	exit 1
+fi
+
+combined="$("$VALIDATE" --json "$locked" 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ] || ! printf '%s\n' "$combined" | grep -Fq '"access":"NOPERM"'; then
+	printf 'FAIL: JSON NOPERM result must preserve access=NOPERM and exit 0\noutput:\n%s\n' "$combined" >&2
+	exit 1
+fi
+
+printf 'PASS: permission-denied files are NOPERM, not FAIL\n'

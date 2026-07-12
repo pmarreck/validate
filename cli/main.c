@@ -296,6 +296,7 @@ static output_dest_t g_ok_out;
 static output_dest_t g_warn_out;
 static output_dest_t g_fail_out;
 static output_dest_t g_unknown_out;
+static output_dest_t g_no_perm_out;
 static output_dest_t g_slow_out;
 static output_dest_t g_debug_out;
 static output_dest_t g_begin_out;
@@ -870,6 +871,7 @@ static const char* COLOR_GREEN = "\033[0;32m";
 static const char* COLOR_RED = "\033[0;31m";
 static const char* COLOR_YELLOW = "\033[1;33m";
 static const char* COLOR_CYAN = "\033[0;36m";
+static const char* COLOR_GRAY = "\033[0;90m";
 static const char* COLOR_RESET = "\033[0m";
 #define SLOW_THRESHOLD_NS (5LL * 1000000000LL)  /* 5 seconds in nanoseconds */
 
@@ -926,6 +928,7 @@ static void disable_colors(void) {
 	COLOR_RED = "";
 	COLOR_YELLOW = "";
 	COLOR_CYAN = "";
+	COLOR_GRAY = "";
 	COLOR_RESET = "";
 }
 
@@ -934,6 +937,7 @@ static void enable_colors(void) {
 	COLOR_RED = "\033[0;31m";
 	COLOR_YELLOW = "\033[1;33m";
 	COLOR_CYAN = "\033[0;36m";
+	COLOR_GRAY = "\033[0;90m";
 	COLOR_RESET = "\033[0m";
 	g_colors_enabled = 1;
 }
@@ -953,6 +957,7 @@ static void init_output_destinations(void) {
 		{ &g_warn_out,    VALIDATE_ENV_WARN_OUT,     stdout, 0 },
 		{ &g_fail_out,    VALIDATE_ENV_FAIL_OUT,     stderr, 0 },
 		{ &g_unknown_out, VALIDATE_ENV_UNKNOWN_OUT,  stdout, 0 },
+		{ &g_no_perm_out, VALIDATE_ENV_NO_PERM_OUT,  stdout, 0 },
 		{ &g_slow_out,    VALIDATE_ENV_SLOW_OUT,     stdout, 0 },
 		{ &g_debug_out,   VALIDATE_ENV_DEBUG_OUT,    NULL,   1 },
 		{ &g_begin_out,   VALIDATE_ENV_BEGIN_OUT,    NULL,   1 },
@@ -976,6 +981,7 @@ static void shutdown_output_destinations(void) {
 	output_dest_close(&g_warn_out);
 	output_dest_close(&g_fail_out);
 	output_dest_close(&g_unknown_out);
+	output_dest_close(&g_no_perm_out);
 	output_dest_close(&g_slow_out);
 	output_dest_close(&g_debug_out);
 	output_dest_close(&g_begin_out);
@@ -1000,6 +1006,7 @@ typedef struct {
 	size_t valid_count;
 	size_t invalid_count;
 	size_t unknown_count;
+	size_t no_perm_count;
 } validation_counts_t;
 
 static uint64_t get_monotonic_ms(void);
@@ -1270,7 +1277,7 @@ static void heap_frag_debug_maybe_report_count(size_t processed, const char* lab
 
 static void heap_frag_debug_maybe_report(const validation_counts_t* counts) {
 	if (!counts) return;
-	size_t processed = counts->valid_count + counts->invalid_count + counts->unknown_count;
+	size_t processed = counts->valid_count + counts->invalid_count + counts->unknown_count + counts->no_perm_count;
 	heap_frag_debug_maybe_report_count(processed, "");
 }
 
@@ -1497,6 +1504,7 @@ static void emit_json_result(const char* path, const char* result) {
 	char warn_msg[1024] = "";
 	char depth_desc[128] = "";
 	char err_code[64] = "";
+	char access[32] = "";
 	char depth_ceiling_reason[256] = "";
 
 	kv_get_str(result, "fmt_desc", fmt_desc, sizeof(fmt_desc));
@@ -1506,6 +1514,7 @@ static void emit_json_result(const char* path, const char* result) {
 	kv_get_str(result, "warn", warn_msg, sizeof(warn_msg));
 	kv_get_str(result, "depth_desc", depth_desc, sizeof(depth_desc));
 	kv_get_str(result, "err_code", err_code, sizeof(err_code));
+	kv_get_str(result, "access", access, sizeof(access));
 	kv_get_str(result, "depth_ceiling_reason", depth_ceiling_reason, sizeof(depth_ceiling_reason));
 
 	int is_valid = kv_get_bool(result, "valid");
@@ -1525,6 +1534,7 @@ static void emit_json_result(const char* path, const char* result) {
 	fputs("{", stdout);
 	fputs("\"path\":\"", stdout); json_escape(stdout, path); fputs("\"", stdout);
 	fputs(",\"valid\":", stdout); fputs(is_valid ? "true" : "false", stdout);
+	if (access[0]) { fputs(",\"access\":\"", stdout); json_escape(stdout, access); fputs("\"", stdout); }
 	fputs(",\"format\":\"", stdout); json_escape(stdout, fmt_id); fputs("\"", stdout);
 	fputs(",\"format_description\":\"", stdout); json_escape(stdout, fmt_desc); fputs("\"", stdout);
 	if (fmt_cat[0]) { fputs(",\"category\":\"", stdout); json_escape(stdout, fmt_cat); fputs("\"", stdout); }
@@ -1766,6 +1776,11 @@ static void on_validation_result(
 		file_size = path_list_size_for_id(g_file_list_ptr, file_id);
 	}
 
+	/* Access outcomes take precedence over legacy Boolean status fields. */
+	char access[32] = "";
+	kv_get_str(result, "access", access, sizeof(access));
+	int is_no_perm = strcmp(access, "NOPERM") == 0;
+
 	/* Check if unknown */
 	int is_unknown = kv_get_bool(result, "unknown");
 	int is_valid = kv_get_bool(result, "valid");
@@ -1799,7 +1814,9 @@ static void on_validation_result(
 	}
 
 	/* Update counts */
-	if (is_unknown) {
+	if (is_no_perm) {
+		if (counts) counts->no_perm_count++;
+	} else if (is_unknown) {
 		if (counts) counts->unknown_count++;
 	} else if (is_valid) {
 		if (counts) counts->valid_count++;
@@ -1810,6 +1827,13 @@ static void on_validation_result(
 	/* Print result line(s) */
 	if (g_json_mode) {
 		emit_json_result(path, result);
+	} else if (is_no_perm) {
+		char err_msg[1024] = "";
+		char rest_buf[2048];
+		kv_get_str(result, "err", err_msg, sizeof(err_msg));
+		snprintf(rest_buf, sizeof(rest_buf), " %s: %s", path,
+			err_msg[0] ? err_msg : "permission denied");
+		write_colored_line(&g_no_perm_out, COLOR_GRAY, validate_tr(VALIDATE_STR_LABEL_NO_PERM), rest_buf);
 	} else if (is_unknown) {
 		char rest_buf[2048];
 		snprintf(rest_buf, sizeof(rest_buf), " %s: Unknown", path);
@@ -3326,6 +3350,7 @@ int main(int argc, char* argv[]) {
 		total_counts.valid_count += counts.valid_count;
 		total_counts.invalid_count += counts.invalid_count;
 		total_counts.unknown_count += counts.unknown_count;
+		total_counts.no_perm_count += counts.no_perm_count;
 
 		if (counts.invalid_count > 0) {
 			failures = 1;
@@ -3356,7 +3381,7 @@ int main(int argc, char* argv[]) {
 
 	/* Use total_counts for summary in stress mode, otherwise use last counts */
 	validation_counts_t* summary_counts = (stress_iterations > 1) ? &total_counts : &counts;
-	size_t total_processed = summary_counts->valid_count + summary_counts->invalid_count + summary_counts->unknown_count;
+	size_t total_processed = summary_counts->valid_count + summary_counts->invalid_count + summary_counts->unknown_count + summary_counts->no_perm_count;
 	heap_frag_debug_report(total_processed, " final");
 
 	path_list_free(&file_list);
@@ -3384,6 +3409,7 @@ int main(int argc, char* argv[]) {
 			printf("%s  %-8s %zu\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_INVALID), summary_counts->invalid_count);
 		}
 		printf("%s  %-8s %zu\n", rlm, validate_tr(VALIDATE_STR_SUMMARY_UNKNOWN), summary_counts->unknown_count);
+		printf("%s  %-8s %s%zu%s\n", rlm, validate_tr(VALIDATE_STR_LABEL_NO_PERM), COLOR_GRAY, summary_counts->no_perm_count, COLOR_RESET);
 
 		/* Elapsed time and throughput */
 		uint64_t elapsed_ms = get_monotonic_ms() - batch_start_ms;

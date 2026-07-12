@@ -250,7 +250,11 @@ fn buildValidationResult(
 
     // Validation status
     try builder.addBool("valid", result.is_valid);
-    try builder.addBool("unknown", result.format == .unknown);
+    try builder.addBool("unknown", result.format == .unknown and result.access == .available);
+    try builder.add("access", switch (result.access) {
+        .available => "",
+        .no_permission => "NOPERM",
+    });
 
     // Messages (translated for current locale)
     try builder.add("err", i18n.translateError(result.error_message orelse ""));
@@ -323,6 +327,7 @@ fn buildGitResult(
     // Validation status
     try builder.addBool("valid", result.is_valid);
     try builder.addBool("unknown", false);
+    try builder.add("access", "");
 
     // Error message
     try builder.add("err", result.error_message orelse "");
@@ -1517,6 +1522,7 @@ export fn validate_getenv(env_id: u8) ?[*:0]const u8 {
         .validate_debug => i18n.getEnvLocalized(.validate_debug),
         .no_bidi => i18n.getEnvLocalized(.no_bidi),
         .max_memory => i18n.getEnvLocalized(.max_memory),
+        .no_perm_out => i18n.getEnvLocalized(.no_perm_out),
     };
 }
 
@@ -2004,6 +2010,19 @@ test "validate single file returns KV-US-RS format" {
         try std.testing.expect(std.mem.indexOf(u8, result_slice, "fmt_id") != null);
         try std.testing.expect(std.mem.indexOf(u8, result_slice, "valid") != null);
     }
+}
+
+test "FFI result carries NOPERM without corrupting Boolean status fields" {
+    var result = format_validation.ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
+    result.access = .no_permission;
+
+    const encoded = try buildValidationResult(std.testing.allocator, result, 0);
+    defer std.testing.allocator.free(encoded);
+    const result_slice = encoded[0..encoded.len];
+
+    try std.testing.expect(std.mem.indexOf(u8, result_slice, "access\x1fNOPERM") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result_slice, "valid\x1fF") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result_slice, "unknown\x1fF") != null);
 }
 
 test "validate_default_threads" {

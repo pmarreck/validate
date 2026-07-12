@@ -11,6 +11,9 @@ pub const Strings = struct {
     label_info: [:0]const u8,
     label_notice: [:0]const u8,
     label_unknown: [:0]const u8,
+    // Stable protocol token, intentionally not translated. The human detail
+    // remains the localized failed-to-open error message.
+    label_no_perm: [:0]const u8 = "NOPERM",
     label_slow: [:0]const u8,
 
     // Summary

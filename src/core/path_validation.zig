@@ -40,6 +40,7 @@ pub const ValidationCounts = struct {
 	valid: usize = 0,
 	invalid: usize = 0,
 	unknown: usize = 0,
+	no_permission: usize = 0,
 };
 
 pub const ValidationCallback = *const fn (
@@ -55,8 +56,13 @@ const SharedCounts = struct {
 	valid: AtomicUsize = .init(0),
 	invalid: AtomicUsize = .init(0),
 	unknown: AtomicUsize = .init(0),
+	no_permission: AtomicUsize = .init(0),
 
 	fn add(self: *SharedCounts, result: ValidationResult) void {
+		if (result.access == .no_permission) {
+			_ = self.no_permission.fetchAdd(1, .monotonic);
+			return;
+		}
 		if (result.format == .unknown) {
 			_ = self.unknown.fetchAdd(1, .monotonic);
 			return;
@@ -73,6 +79,7 @@ const SharedCounts = struct {
 			.valid = self.valid.load(.monotonic),
 			.invalid = self.invalid.load(.monotonic),
 			.unknown = self.unknown.load(.monotonic),
+			.no_permission = self.no_permission.load(.monotonic),
 		};
 	}
 };
@@ -88,6 +95,7 @@ const ResultItem = struct {
 	display_path: []u8,
 	format: format_validation.FileFormat,
 	is_valid: bool,
+	access: format_validation.AccessOutcome,
 	error_message: ?[]u8,
 	warning_message: ?[]u8,
 	malformations: std.EnumSet(format_validation.MalformationType),
@@ -344,6 +352,7 @@ fn workerMain(shared: *Shared) void {
 				.display_path = display_copy,
 				.format = result.format,
 				.is_valid = result.is_valid,
+				.access = result.access,
 				.error_message = if (result.error_message) |m| shared.allocator.dupe(u8, m) catch null else null,
 				.warning_message = if (result.warning_message) |m| shared.allocator.dupe(u8, m) catch null else null,
 				.malformations = result.malformations,
@@ -375,6 +384,7 @@ fn outputMain(shared: *Shared) void {
 		const result = ValidationResult{
 			.format = item.format,
 			.is_valid = item.is_valid,
+			.access = item.access,
 			.error_message = item.error_message,
 			.warning_message = item.warning_message,
 			.malformations = item.malformations,
@@ -407,7 +417,9 @@ fn validateSingleFile(
 	const elapsed_seconds = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0;
 
 	var counts = ValidationCounts{};
-	if (result.format == .unknown) {
+	if (result.access == .no_permission) {
+		counts.no_permission += 1;
+	} else if (result.format == .unknown) {
 		counts.unknown += 1;
 	} else if (result.is_valid) {
 		counts.valid += 1;
@@ -597,6 +609,13 @@ pub fn validatePathParallel(
 	}, callback, callback_ctx);
 }
 
+/// Decide whether a root-path stat failure should still flow through the core.
+/// Permission denial has a first-class NOPERM verdict; absent and broken paths
+/// remain caller-visible errors because they do not identify a readable item.
+fn retryAsSingleValidation(err: anyerror) bool {
+	return err == error.AccessDenied or err == error.PermissionDenied;
+}
+
 /// Validates a file or directory tree using parallel workers with extended options.
 pub fn validatePathParallelEx(
 	allocator: Allocator,
@@ -606,10 +625,14 @@ pub fn validatePathParallelEx(
 	callback: ?ValidationCallback,
 	callback_ctx: ?*anyopaque,
 ) !ValidationCounts {
-	const stat = statPath(path) catch |err| switch (err) {
-		error.FileNotFound => return error.FileNotFound,
-		error.AccessDenied => return error.AccessDenied,
-		else => return err,
+	const stat = statPath(path) catch |err| {
+		if (retryAsSingleValidation(err)) {
+			return validateSingleFile(allocator, validator_template, path, callback, callback_ctx);
+		}
+		return switch (err) {
+			error.FileNotFound => error.FileNotFound,
+			else => err,
+		};
 	};
 
 	if (stat.kind == .file) {
@@ -716,6 +739,24 @@ pub fn validatePathParallelEx(
 	}
 
 	return shared.counts.toCounts();
+}
+
+test "only access denial is retried as a single validation result" {
+	try std.testing.expect(retryAsSingleValidation(error.AccessDenied));
+	try std.testing.expect(retryAsSingleValidation(error.PermissionDenied));
+	try std.testing.expect(!retryAsSingleValidation(error.FileNotFound));
+}
+
+test "permission-denied results are counted separately from unknown formats" {
+	var counts = SharedCounts{};
+	var result = ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
+	result.access = .no_permission;
+	counts.add(result);
+
+	const snapshot = counts.toCounts();
+	try std.testing.expectEqual(@as(usize, 1), snapshot.no_permission);
+	try std.testing.expectEqual(@as(usize, 0), snapshot.unknown);
+	try std.testing.expectEqual(@as(usize, 0), snapshot.invalid);
 }
 
 test "statPath handles current directory" {

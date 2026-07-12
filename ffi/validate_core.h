@@ -13,6 +13,7 @@
  *   fmt_desc      - Human-readable description
  *   valid         - Boolean: validation passed
  *   unknown       - Boolean: format not recognized
+ *   access        - Access outcome ("NOPERM" only when OS permission denied)
  *   err           - Error message (empty if none)
  *   err_code      - Symbolic error code (e.g., "failed_to_read", empty if none)
  *   err_detail    - Technical detail string (e.g., "PNG signature", empty if none)
@@ -149,6 +150,7 @@ typedef enum {
     VALIDATE_STR_CHECKING = 18,
     VALIDATE_STR_HELP_ENTROPY_SHIELD = 41,
     VALIDATE_STR_LABEL_INFO = 42,
+    VALIDATE_STR_LABEL_NO_PERM = 43,
 } validate_string_id_t;
 
 /* CLI argument IDs (returned by validate_match_arg) */
@@ -195,6 +197,7 @@ typedef enum {
     VALIDATE_ENV_VALIDATE_DEBUG = 8,
     VALIDATE_ENV_NO_BIDI = 9,
     VALIDATE_ENV_MAX_MEMORY = 10,
+    VALIDATE_ENV_NO_PERM_OUT = 11,
 } validate_env_t;
 
 /* ========== Core Functions ========== */
