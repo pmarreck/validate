@@ -41,6 +41,7 @@ return {
 	footer_source = "Изходен код",
 	footer_mecha = "Продукт на Mecha, LLC",
 
+	try_it = "Опитайте!",
 	release_title = "Безплатни предварителни изтегляния",
 	release_intro = "Изпробвайте следващото издание на Mecha Validate.",
 	release_expires = "Изтича на %s",

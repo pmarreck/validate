@@ -41,6 +41,7 @@ return {
 	footer_source = "Frumkóði",
 	footer_mecha = "Vara frá Mecha, LLC",
 
+	try_it = "Prófaðu!",
 	release_title = "Ókeypis forskoðunarhal",
 	release_intro = "Prófaðu næstu útgáfu af Mecha Validate.",
 	release_expires = "Rennur út %s",

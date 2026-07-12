@@ -35,6 +35,11 @@ local rendered = home.render({
 })
 
 ok(contains(rendered, 'class="release-downloads"'), "fresh links render a dedicated download section")
+ok(contains(rendered, 'class="stat stat-formats" href="#format-list"'), "formats stat is a direct anchor to the full format list")
+ok(contains(rendered, 'class="stat stat-try" href="#release-downloads"'), "fresh links render a stat-card anchor to downloads")
+ok(contains(rendered, "TRY IT!"), "try-it stat copy is localized through the catalog")
+ok(contains(rendered, 'class="format-list" id="format-list"'), "full format list has a stable scroll destination")
+ok(not contains(rendered, 'format-tooltip'), "format list replaces the overlapping hover tooltip")
 ok(contains(rendered, "Free prerelease downloads"), "download heading is localized through the catalog")
 ok(contains(rendered, "macOS (aarch64)"), "macOS architecture is clear")
 ok(contains(rendered, "Linux (aarch64)"), "Linux ARM architecture is clear")
@@ -51,6 +56,8 @@ local hidden = home.render({
 	releases = { available = {}, expired = {} },
 })
 ok(not contains(hidden, 'class="release-downloads"'), "no current links means no empty download section")
+ok(not contains(hidden, 'class="stat stat-try"'), "no current links means no dead try-it anchor")
+ok(contains(hidden, 'class="format-list" id="format-list"'), "format list is useful even without a prerelease")
 
 if failed > 0 then
 	io.stderr:write(failed .. " assertion(s) failed\n")

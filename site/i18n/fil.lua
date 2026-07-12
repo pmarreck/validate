@@ -41,6 +41,7 @@ return {
 	footer_source = "Source",
 	footer_mecha = "Isang produkto ng Mecha, LLC",
 
+	try_it = "Subukan!",
 	release_title = "Mga libreng download ng paunang paglabas",
 	release_intro = "Subukan ang susunod na paglabas ng Mecha Validate.",
 	release_expires = "Mag-e-expire sa %s",

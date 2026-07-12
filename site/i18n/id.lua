@@ -41,6 +41,7 @@ return {
 	footer_source = "Sumber",
 	footer_mecha = "Produk Mecha, LLC",
 
+	try_it = "Coba!",
 	release_title = "Unduhan prarilis gratis",
 	release_intro = "Coba rilis Mecha Validate berikutnya.",
 	release_expires = "Kedaluwarsa %s",

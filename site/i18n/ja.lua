@@ -41,6 +41,7 @@ return {
 	footer_source = "ソースコード",
 	footer_mecha = "Mecha, LLC の製品",
 
+	try_it = "試す！",
 	release_title = "無料プレリリースのダウンロード",
 	release_intro = "次の Mecha Validate リリースをお試しください。",
 	release_expires = "有効期限: %s",

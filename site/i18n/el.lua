@@ -41,6 +41,7 @@ return {
 	footer_source = "Πηγαίος κώδικας",
 	footer_mecha = "Ένα προϊόν της Mecha, LLC",
 
+	try_it = "Δοκίμασέ το!",
 	release_title = "Δωρεάν λήψεις προέκδοσης",
 	release_intro = "Δοκιμάστε την επόμενη έκδοση του Mecha Validate.",
 	release_expires = "Λήγει στις %s",

@@ -90,44 +90,6 @@
 	}
 	setInterval(cycle, 500);
 
-	// Format tooltip grouped by category.
-	var byCategory = {};
-	formats.forEach(function (f) {
-		(byCategory[f[1]] = byCategory[f[1]] || []).push(f[0]);
-	});
-	// build via DOM to avoid HTML-escaping concerns with localized labels
-	var tooltip = document.getElementById('format-tooltip');
-	tooltip.textContent = '';
-	SITE.catOrder.forEach(function (cat) {
-		if (!byCategory[cat]) return;
-		var h = document.createElement('div');
-		h.className = 'tooltip-category';
-		h.textContent = SITE.cats[cat];
-		tooltip.appendChild(h);
-		var wrap = document.createElement('div');
-		wrap.className = 'tooltip-exts';
-		byCategory[cat].forEach(function (ext) {
-			var s = document.createElement('span');
-			s.className = 'tooltip-ext';
-			s.textContent = '.' + ext;
-			wrap.appendChild(s);
-		});
-		tooltip.appendChild(wrap);
-	});
-	var note = document.createElement('div');
-	note.className = 'tooltip-note';
-	note.textContent = SITE.tooltipNote;
-	tooltip.appendChild(note);
-
-	// Forward mousewheel from the stat card into the scrollable tooltip.
-	var formatStat = document.getElementById('format-stat');
-	formatStat.addEventListener('wheel', function (e) {
-		if (tooltip.offsetParent !== null) {
-			tooltip.scrollTop += e.deltaY;
-			e.preventDefault();
-		}
-	}, { passive: false });
-
 	/* "How many files?" → "ALL OF THEM!" impact (port of the original). */
 	var taglineArea = document.getElementById('tagline-area');
 	var originalTagline = taglineArea.innerHTML;

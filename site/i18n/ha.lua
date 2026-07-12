@@ -41,6 +41,7 @@ return {
 	footer_source = "Tushe",
 	footer_mecha = "Samfurin Mecha, LLC ne",
 
+	try_it = "Gwada shi!",
 	release_title = "Zazzagewar gwaji kyauta",
 	release_intro = "Gwada fitowa ta gaba ta Mecha Validate.",
 	release_expires = "Zai ƙare %s",

@@ -41,6 +41,7 @@ return {
 	footer_source = "Изворни код",
 	footer_mecha = "Производ компаније Mecha, LLC",
 
+	try_it = "Пробајте!",
 	release_title = "Бесплатна преузимања претходног издања",
 	release_intro = "Испробајте следеће издање Mecha Validate.",
 	release_expires = "Истиче %s",

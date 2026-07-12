@@ -41,6 +41,7 @@ return {
 	footer_source = "קוד מקור",
 	footer_mecha = "מוצר של Mecha, LLC",
 
+	try_it = "נסו!",
 	release_title = "הורדות טרום-הפצה בחינם",
 	release_intro = "נסו את הגרסה הבאה של Mecha Validate.",
 	release_expires = "יפוג בתאריך %s",

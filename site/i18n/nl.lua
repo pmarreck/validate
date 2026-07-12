@@ -41,6 +41,7 @@ return {
 	footer_source = "Broncode",
 	footer_mecha = "Een product van Mecha, LLC",
 
+	try_it = "Probeer het!",
 	release_title = "Gratis prerelease-downloads",
 	release_intro = "Probeer de volgende Mecha Validate-release.",
 	release_expires = "Verloopt op %s",

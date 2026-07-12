@@ -72,9 +72,7 @@ locales: {"am":{slug:"am",native:"አማርኛ"},"ar":{slug:"ar",native:"الع�
 <script>
 SITE.formats = [["png","image"],["jpg","image"],["gif","image"],["bmp","image"],["webp","image"],["tiff","image"],["heic","image"],["avif","image"],["exr","image"],["jxl","image"],["svg","image"],["apng","image"],["qoi","image"],["psd","image"],["dng","image"],["ico","image"],["icns","image"],["dpx","image"],["tga","image"],["pam","image"],["cr2","image"],["nef","image"],["arw","image"],["mp4","video"],["mkv","video"],["mov","video"],["avi","video"],["webm","video"],["flv","video"],["mpg","video"],["m2ts","video"],["ts","video"],["3gp","video"],["wmv","video"],["swf","video"],["dv","video"],["ivf","video"],["rm","video"],["asf","video"],["vob","video"],["mp3","audio"],["flac","audio"],["wav","audio"],["m4a","audio"],["aiff","audio"],["ogg","audio"],["opus","audio"],["mid","audio"],["ape","audio"],["wv","audio"],["aac","audio"],["ac3","audio"],["dts","audio"],["dsf","audio"],["mp2","audio"],["caf","audio"],["wma","audio"],["amr","audio"],["mod","audio"],["xm","audio"],["s3m","audio"],["zip","archive"],["gz","archive"],["bz2","archive"],["xz","archive"],["zst","archive"],["7z","archive"],["rar","archive"],["tar","archive"],["cab","archive"],["iso","archive"],["dmg","archive"],["rpm","archive"],["sit","archive"],["wim","archive"],["vmdk","archive"],["msi","archive"],["br","archive"],["kmz","archive"],["pdf","document"],["docx","document"],["xlsx","document"],["pptx","document"],["doc","document"],["xls","document"],["ppt","document"],["odt","document"],["epub","document"],["rtf","document"],["pages","document"],["sqlite","document"],["mdb","document"],["dbf","document"],["ai","creative"],["eps","creative"],["sketch","creative"],["aep","creative"],["prproj","creative"],["indd","creative"],["idml","creative"],["fcpxml","creative"],["drp","creative"],["flp","daw"],["als","daw"],["rpp","daw"],["cpr","daw"],["ptx","daw"],["band","daw"],["reason","daw"],["logicx","daw"],["song","daw"],["stl","3d_cad"],["obj","3d_cad"],["glb","3d_cad"],["gltf","3d_cad"],["ply","3d_cad"],["3mf","3d_cad"],["blend","3d_cad"],["dwg","3d_cad"],["step","3d_cad"],["dxf","3d_cad"],["dcm","medical"],["dicom","medical"],["nii","medical"],["hdf5","scientific"],["parquet","scientific"],["netcdf","scientific"],["fits","scientific"],["fasta","scientific"],["fastq","scientific"],["shp","scientific"],["pdb","scientific"],["cif","scientific"],["qbw","financial"],["qbb","financial"],["ofx","financial"],["qif","financial"],["nacha","financial"],["mt940","financial"],["bai2","financial"],["ttf","font"],["otf","font"],["woff","font"],["woff2","font"],["exe","executable"],["elf","executable"],["wasm","executable"],["class","executable"],["dll","executable"],["so","executable"],["beam","executable"],["pem","crypto"],["der","crypto"],["crt","crypto"],["eml","email"],["mbox","email"],["json","text"],["xml","text"],["csv","text"],["toml","text"],["html","text"],["md","text"],["kml","text"],["pcap","network"],["pcapng","network"],["nes","game"],["sfc","game"],["n64","game"],["gb","game"],["gba","game"],["nds","game"],["gen","game"],["chd","game"],["wad","game"],["bsp","game"],["vpk","game"]];
 SITE.cats = {"image":"انځور","video":"ویډیو","audio":"غږ","archive":"ارشیف","document":"سند","creative":"تخلیقي","daw":"daw","3d_cad":"3d/cad","medical":"طبي","scientific":"علمي","financial":"مالي","font":"فونټ","executable":"اجرایي","crypto":"کریپټو","email":"برېښنالیک","text":"متن","network":"شبکه","game":"لوبه"};
-SITE.catOrder = ["image","video","audio","archive","document","creative","daw","3d_cad","medical","scientific","financial","font","executable","crypto","email","text","network","game"];
 SITE.impact = { allOfThem: "د ټولو لپاره!", goal: "(خو ښه… په هر حال، موخه همدا ده.)" };
-SITE.tooltipNote = "دا لړۍ غځونې (اکستنشنونه) ښيي، نه داخلي فارمټونه. ډېرې غځونې څو بشپړ اعتبارسنجي شوي کوډېکونه لري — د بېلګې په توګه .mp4/.mkv د H.264، H.265، VP9 او AV1 پوښښ کوي؛ .tiff د کامرې RAW فارمټونه DNG، CR2، NEF، ARW، ORF او PEF پوښي؛ .ogg د Vorbis، Opus او Theora پوښښ کوي. د فارمټونو ریښتینی شمېر د غځونو له شمېر څخه لوړ دی.";
 </script>
 <div class="clouds"><div class="cloud cloud-1"></div><div class="cloud cloud-2"></div><div class="cloud cloud-3"></div><div class="cloud cloud-4"></div></div>
 <header class="site-header">
@@ -152,11 +150,265 @@ SITE.tooltipNote = "دا لړۍ غځونې (اکستنشنونه) ښيي، نه 
 </div>
 <div class="stats">
 <div class="stat"><div class="stat-number">0</div><div class="stat-label">بهرني انحصارونه</div></div>
-<div class="stat" id="format-stat"><div class="stat-number" id="format-count">240+</div><div class="stat-label">فارمټونه</div><div class="stat-tooltip" id="format-tooltip"></div></div>
+<a class="stat stat-formats" href="#format-list"><div class="stat-number" id="format-count">240+</div><div class="stat-label">فارمټونه</div></a>
 <div class="stat"><div class="stat-number">50</div><div class="stat-label">ژبې</div></div>
+<a class="stat stat-try" href="#release-downloads"><div class="stat-number">وآزمایئ!</div></a>
 </div>
 <a class="coverage-link" href="/ps/coverage/">اندازه شوی، نه یوازې ادعا شوی. → </a>
-<section class="release-downloads" aria-labelledby="release-downloads-title">
+<section class="format-list" id="format-list" aria-labelledby="format-list-title">
+<h2 id="format-list-title">فارمټونه</h2>
+<p class="format-list-note">دا لړۍ غځونې (اکستنشنونه) ښيي، نه داخلي فارمټونه. ډېرې غځونې څو بشپړ اعتبارسنجي شوي کوډېکونه لري — د بېلګې په توګه .mp4/.mkv د H.264، H.265، VP9 او AV1 پوښښ کوي؛ .tiff د کامرې RAW فارمټونه DNG، CR2، NEF، ARW، ORF او PEF پوښي؛ .ogg د Vorbis، Opus او Theora پوښښ کوي. د فارمټونو ریښتینی شمېر د غځونو له شمېر څخه لوړ دی.</p>
+<div class="format-grid">
+<div class="format-category">
+<h3>انځور</h3>
+<div class="format-extensions">
+<span class="format-extension">.png</span>
+<span class="format-extension">.jpg</span>
+<span class="format-extension">.gif</span>
+<span class="format-extension">.bmp</span>
+<span class="format-extension">.webp</span>
+<span class="format-extension">.tiff</span>
+<span class="format-extension">.heic</span>
+<span class="format-extension">.avif</span>
+<span class="format-extension">.exr</span>
+<span class="format-extension">.jxl</span>
+<span class="format-extension">.svg</span>
+<span class="format-extension">.apng</span>
+<span class="format-extension">.qoi</span>
+<span class="format-extension">.psd</span>
+<span class="format-extension">.dng</span>
+<span class="format-extension">.ico</span>
+<span class="format-extension">.icns</span>
+<span class="format-extension">.dpx</span>
+<span class="format-extension">.tga</span>
+<span class="format-extension">.pam</span>
+<span class="format-extension">.cr2</span>
+<span class="format-extension">.nef</span>
+<span class="format-extension">.arw</span>
+</div></div>
+<div class="format-category">
+<h3>ویډیو</h3>
+<div class="format-extensions">
+<span class="format-extension">.mp4</span>
+<span class="format-extension">.mkv</span>
+<span class="format-extension">.mov</span>
+<span class="format-extension">.avi</span>
+<span class="format-extension">.webm</span>
+<span class="format-extension">.flv</span>
+<span class="format-extension">.mpg</span>
+<span class="format-extension">.m2ts</span>
+<span class="format-extension">.ts</span>
+<span class="format-extension">.3gp</span>
+<span class="format-extension">.wmv</span>
+<span class="format-extension">.swf</span>
+<span class="format-extension">.dv</span>
+<span class="format-extension">.ivf</span>
+<span class="format-extension">.rm</span>
+<span class="format-extension">.asf</span>
+<span class="format-extension">.vob</span>
+</div></div>
+<div class="format-category">
+<h3>غږ</h3>
+<div class="format-extensions">
+<span class="format-extension">.mp3</span>
+<span class="format-extension">.flac</span>
+<span class="format-extension">.wav</span>
+<span class="format-extension">.m4a</span>
+<span class="format-extension">.aiff</span>
+<span class="format-extension">.ogg</span>
+<span class="format-extension">.opus</span>
+<span class="format-extension">.mid</span>
+<span class="format-extension">.ape</span>
+<span class="format-extension">.wv</span>
+<span class="format-extension">.aac</span>
+<span class="format-extension">.ac3</span>
+<span class="format-extension">.dts</span>
+<span class="format-extension">.dsf</span>
+<span class="format-extension">.mp2</span>
+<span class="format-extension">.caf</span>
+<span class="format-extension">.wma</span>
+<span class="format-extension">.amr</span>
+<span class="format-extension">.mod</span>
+<span class="format-extension">.xm</span>
+<span class="format-extension">.s3m</span>
+</div></div>
+<div class="format-category">
+<h3>ارشیف</h3>
+<div class="format-extensions">
+<span class="format-extension">.zip</span>
+<span class="format-extension">.gz</span>
+<span class="format-extension">.bz2</span>
+<span class="format-extension">.xz</span>
+<span class="format-extension">.zst</span>
+<span class="format-extension">.7z</span>
+<span class="format-extension">.rar</span>
+<span class="format-extension">.tar</span>
+<span class="format-extension">.cab</span>
+<span class="format-extension">.iso</span>
+<span class="format-extension">.dmg</span>
+<span class="format-extension">.rpm</span>
+<span class="format-extension">.sit</span>
+<span class="format-extension">.wim</span>
+<span class="format-extension">.vmdk</span>
+<span class="format-extension">.msi</span>
+<span class="format-extension">.br</span>
+<span class="format-extension">.kmz</span>
+</div></div>
+<div class="format-category">
+<h3>سند</h3>
+<div class="format-extensions">
+<span class="format-extension">.pdf</span>
+<span class="format-extension">.docx</span>
+<span class="format-extension">.xlsx</span>
+<span class="format-extension">.pptx</span>
+<span class="format-extension">.doc</span>
+<span class="format-extension">.xls</span>
+<span class="format-extension">.ppt</span>
+<span class="format-extension">.odt</span>
+<span class="format-extension">.epub</span>
+<span class="format-extension">.rtf</span>
+<span class="format-extension">.pages</span>
+<span class="format-extension">.sqlite</span>
+<span class="format-extension">.mdb</span>
+<span class="format-extension">.dbf</span>
+</div></div>
+<div class="format-category">
+<h3>تخلیقي</h3>
+<div class="format-extensions">
+<span class="format-extension">.ai</span>
+<span class="format-extension">.eps</span>
+<span class="format-extension">.sketch</span>
+<span class="format-extension">.aep</span>
+<span class="format-extension">.prproj</span>
+<span class="format-extension">.indd</span>
+<span class="format-extension">.idml</span>
+<span class="format-extension">.fcpxml</span>
+<span class="format-extension">.drp</span>
+</div></div>
+<div class="format-category">
+<h3>daw</h3>
+<div class="format-extensions">
+<span class="format-extension">.flp</span>
+<span class="format-extension">.als</span>
+<span class="format-extension">.rpp</span>
+<span class="format-extension">.cpr</span>
+<span class="format-extension">.ptx</span>
+<span class="format-extension">.band</span>
+<span class="format-extension">.reason</span>
+<span class="format-extension">.logicx</span>
+<span class="format-extension">.song</span>
+</div></div>
+<div class="format-category">
+<h3>3d/cad</h3>
+<div class="format-extensions">
+<span class="format-extension">.stl</span>
+<span class="format-extension">.obj</span>
+<span class="format-extension">.glb</span>
+<span class="format-extension">.gltf</span>
+<span class="format-extension">.ply</span>
+<span class="format-extension">.3mf</span>
+<span class="format-extension">.blend</span>
+<span class="format-extension">.dwg</span>
+<span class="format-extension">.step</span>
+<span class="format-extension">.dxf</span>
+</div></div>
+<div class="format-category">
+<h3>طبي</h3>
+<div class="format-extensions">
+<span class="format-extension">.dcm</span>
+<span class="format-extension">.dicom</span>
+<span class="format-extension">.nii</span>
+</div></div>
+<div class="format-category">
+<h3>علمي</h3>
+<div class="format-extensions">
+<span class="format-extension">.hdf5</span>
+<span class="format-extension">.parquet</span>
+<span class="format-extension">.netcdf</span>
+<span class="format-extension">.fits</span>
+<span class="format-extension">.fasta</span>
+<span class="format-extension">.fastq</span>
+<span class="format-extension">.shp</span>
+<span class="format-extension">.pdb</span>
+<span class="format-extension">.cif</span>
+</div></div>
+<div class="format-category">
+<h3>مالي</h3>
+<div class="format-extensions">
+<span class="format-extension">.qbw</span>
+<span class="format-extension">.qbb</span>
+<span class="format-extension">.ofx</span>
+<span class="format-extension">.qif</span>
+<span class="format-extension">.nacha</span>
+<span class="format-extension">.mt940</span>
+<span class="format-extension">.bai2</span>
+</div></div>
+<div class="format-category">
+<h3>فونټ</h3>
+<div class="format-extensions">
+<span class="format-extension">.ttf</span>
+<span class="format-extension">.otf</span>
+<span class="format-extension">.woff</span>
+<span class="format-extension">.woff2</span>
+</div></div>
+<div class="format-category">
+<h3>اجرایي</h3>
+<div class="format-extensions">
+<span class="format-extension">.exe</span>
+<span class="format-extension">.elf</span>
+<span class="format-extension">.wasm</span>
+<span class="format-extension">.class</span>
+<span class="format-extension">.dll</span>
+<span class="format-extension">.so</span>
+<span class="format-extension">.beam</span>
+</div></div>
+<div class="format-category">
+<h3>کریپټو</h3>
+<div class="format-extensions">
+<span class="format-extension">.pem</span>
+<span class="format-extension">.der</span>
+<span class="format-extension">.crt</span>
+</div></div>
+<div class="format-category">
+<h3>برېښنالیک</h3>
+<div class="format-extensions">
+<span class="format-extension">.eml</span>
+<span class="format-extension">.mbox</span>
+</div></div>
+<div class="format-category">
+<h3>متن</h3>
+<div class="format-extensions">
+<span class="format-extension">.json</span>
+<span class="format-extension">.xml</span>
+<span class="format-extension">.csv</span>
+<span class="format-extension">.toml</span>
+<span class="format-extension">.html</span>
+<span class="format-extension">.md</span>
+<span class="format-extension">.kml</span>
+</div></div>
+<div class="format-category">
+<h3>شبکه</h3>
+<div class="format-extensions">
+<span class="format-extension">.pcap</span>
+<span class="format-extension">.pcapng</span>
+</div></div>
+<div class="format-category">
+<h3>لوبه</h3>
+<div class="format-extensions">
+<span class="format-extension">.nes</span>
+<span class="format-extension">.sfc</span>
+<span class="format-extension">.n64</span>
+<span class="format-extension">.gb</span>
+<span class="format-extension">.gba</span>
+<span class="format-extension">.nds</span>
+<span class="format-extension">.gen</span>
+<span class="format-extension">.chd</span>
+<span class="format-extension">.wad</span>
+<span class="format-extension">.bsp</span>
+<span class="format-extension">.vpk</span>
+</div></div>
+</div></section>
+<section class="release-downloads" id="release-downloads" aria-labelledby="release-downloads-title">
 <h2 id="release-downloads-title">وړیا د مخکینۍ خپرونې ښکته کول</h2>
 <p class="release-intro">د Mecha Validate راتلونکې خپرونه وازمویئ.</p>
 <ul class="release-list">

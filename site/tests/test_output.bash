@@ -47,6 +47,11 @@ assert_contains "$IDX" 'id="lang-banner"' "banner mount present"
 assert_contains "$IDX" 'https://mecha.llc/validate/' "buy CTA points at mecha.llc/validate/"
 assert_contains "$IDX" 'A Mecha, LLC product' "Mecha LLC footer credit"
 assert_contains "$IDX" 'class="release-downloads"' "current GUI releases render a download section"
+assert_contains "$IDX" 'class="stat stat-formats" href="#format-list"' "formats stat links to the full format list"
+assert_contains "$IDX" 'class="stat stat-try" href="#release-downloads"' "try-it stat links directly to prerelease downloads"
+assert_contains "$IDX" 'TRY IT!' "English try-it copy is rendered"
+assert_contains "$IDX" 'class="format-list" id="format-list"' "full format list has a stable scroll destination"
+assert_not_contains "$IDX" 'format-tooltip' "overlapping format tooltip is removed"
 assert_contains "$IDX" 'Free prerelease downloads' "English prerelease heading"
 assert_contains "$IDX" 'macOS (aarch64)' "macOS platform label is unambiguous"
 assert_contains "$IDX" 'Linux (x86_64)' "Linux x86_64 platform label is unambiguous"
@@ -92,9 +97,20 @@ assert_contains "$ENCOV" 'Measured, not claimed' "candor framing present"
 # ── Suggestion banner is suggestion-only ─────────────────────────
 JS="$DOCS/assets/site.js"
 [ -f "$JS" ] || fail "site.js not emitted"
-[ -f "$DOCS/assets/site.css" ] || fail "site.css not emitted"
+CSS="$DOCS/assets/site.css"
+[ -f "$CSS" ] || fail "site.css not emitted"
+assert_contains "$CSS" 'scroll-behavior: smooth;' "download anchor scrolls smoothly"
+assert_contains "$CSS" '@media (prefers-reduced-motion: reduce)' "reduced-motion users can opt out of smooth scrolling"
+assert_contains "$CSS" '.format-grid' "full format list is laid out wider than the former tooltip"
 if grep -E 'location\.(href|replace|assign)' "$JS" >/dev/null 2>&1; then
 	fail "site.js must never navigate on its own (hard redirect found)"
+fi
+assert_not_contains "$JS" 'format-tooltip' "format tooltip behavior is removed"
+
+format_line=$(grep -nF 'id="format-list"' "$IDX" | cut -d: -f1)
+release_line=$(grep -nF 'id="release-downloads"' "$IDX" | cut -d: -f1)
+if [ -z "$format_line" ] || [ -z "$release_line" ] || [ "$format_line" -ge "$release_line" ]; then
+	fail "the full format list must precede prerelease downloads"
 fi
 
 # ── Sitemap ──────────────────────────────────────────────────────

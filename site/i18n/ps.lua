@@ -41,6 +41,7 @@ return {
 	footer_source = "سرچینه",
 	footer_mecha = "د Mecha, LLC محصول",
 
+	try_it = "وآزمایئ!",
 	release_title = "وړیا د مخکینۍ خپرونې ښکته کول",
 	release_intro = "د Mecha Validate راتلونکې خپرونه وازمویئ.",
 	release_expires = "په %s پای ته رسېږي",

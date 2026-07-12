@@ -41,6 +41,7 @@ return {
 	footer_source = "Kildekode",
 	footer_mecha = "Et produkt fra Mecha, LLC",
 
+	try_it = "Prøv det!",
 	release_title = "Gratis forhåndsutgivelsesnedlastinger",
 	release_intro = "Prøv neste utgivelse av Mecha Validate.",
 	release_expires = "Utløper %s",

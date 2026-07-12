@@ -14,6 +14,7 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] TDD replace the overlapping 240+ formats rollover with an in-page, wide categorized format list; make 240+ and conditional TRY IT! stat cards smooth-scroll anchors to that list and the fresh prerelease downloads beneath it. Curiosity poke answered: no tooltip or hover reflow remains; missing or expired releases render no dead TRY IT! anchor, and 50-locale parity stays enforced. Completed 2026-07-12 16:09 EDT.
 - [x] Replace the retired Garnix and hard-coded Mechatron README badges with the public dynamic `validate` Mechatron Prime endpoint, linking clicks to the Mechatron image/about page. Completed 2026-07-11 22:59 EDT.
 
 ### validate.pics GUI prerelease publishing (2026-07-11)

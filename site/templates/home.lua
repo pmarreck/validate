@@ -93,8 +93,12 @@ function M.render(ctx)
 
 	-- localized data for site.js
 	local fmt_entries = {}
+	local formats_by_category = {}
 	for _, f in ipairs(FORMATS) do
 		fmt_entries[#fmt_entries + 1] = ('["%s","%s"]'):format(f[1], f[2])
+		local category = formats_by_category[f[2]] or {}
+		category[#category + 1] = f[1]
+		formats_by_category[f[2]] = category
 	end
 	local cat_entries = {}
 	for _, c in ipairs(CAT_ORDER) do
@@ -103,14 +107,8 @@ function M.render(ctx)
 	out[#out + 1] = "<script>"
 	out[#out + 1] = "SITE.formats = [" .. table.concat(fmt_entries, ",") .. "];"
 	out[#out + 1] = "SITE.cats = {" .. table.concat(cat_entries, ",") .. "};"
-	out[#out + 1] = "SITE.catOrder = [" .. (function()
-		local q = {}
-		for _, c in ipairs(CAT_ORDER) do q[#q + 1] = html.js_str(c) end
-		return table.concat(q, ",")
-	end)() .. "];"
 	out[#out + 1] = ("SITE.impact = { allOfThem: %s, goal: %s };"):format(
 		html.js_str(t.all_of_them), html.js_str(t.goal_subtext))
-	out[#out + 1] = ("SITE.tooltipNote = %s;"):format(html.js_str(t.tooltip_note))
 	out[#out + 1] = "</script>"
 
 	out[#out + 1] = '<div class="clouds"><div class="cloud cloud-1"></div><div class="cloud cloud-2"></div><div class="cloud cloud-3"></div><div class="cloud cloud-4"></div></div>'
@@ -130,18 +128,39 @@ function M.render(ctx)
 	out[#out + 1] = ("<span> %s</span>"):format(esc(t.files_suffix))
 	out[#out + 1] = "</div>"
 
+	local available_releases = ctx.releases and ctx.releases.available or {}
 	out[#out + 1] = '<div class="stats">'
 	out[#out + 1] = ('<div class="stat"><div class="stat-number">0</div><div class="stat-label">%s</div></div>'):format(esc(t.stat_deps))
-	out[#out + 1] = ('<div class="stat" id="format-stat"><div class="stat-number" id="format-count">240+</div><div class="stat-label">%s</div><div class="stat-tooltip" id="format-tooltip"></div></div>'):format(esc(t.stat_formats))
+	out[#out + 1] = ('<a class="stat stat-formats" href="#format-list"><div class="stat-number" id="format-count">240+</div><div class="stat-label">%s</div></a>'):format(esc(t.stat_formats))
 	out[#out + 1] = ('<div class="stat"><div class="stat-number">50</div><div class="stat-label">%s</div></div>'):format(esc(t.stat_languages))
+	if #available_releases > 0 then
+		out[#out + 1] = ('<a class="stat stat-try" href="#release-downloads"><div class="stat-number">%s</div></a>'):format(esc(t.try_it))
+	end
 	out[#out + 1] = "</div>"
 
 	out[#out + 1] = ('<a class="coverage-link" href="%s">%s → </a>'):format(
 		esc(shared.page_path(ctx.locale, "coverage")), esc(t.cov_subtitle))
 
-	local available_releases = ctx.releases and ctx.releases.available or {}
+	out[#out + 1] = '<section class="format-list" id="format-list" aria-labelledby="format-list-title">'
+	out[#out + 1] = ('<h2 id="format-list-title">%s</h2>'):format(esc(t.stat_formats))
+	out[#out + 1] = ('<p class="format-list-note">%s</p>'):format(esc(t.tooltip_note))
+	out[#out + 1] = '<div class="format-grid">'
+	for _, category in ipairs(CAT_ORDER) do
+		local formats = formats_by_category[category]
+		if formats then
+			out[#out + 1] = '<div class="format-category">'
+			out[#out + 1] = ('<h3>%s</h3>'):format(esc(t["cat_" .. category]))
+			out[#out + 1] = '<div class="format-extensions">'
+			for _, extension in ipairs(formats) do
+				out[#out + 1] = ('<span class="format-extension">.%s</span>'):format(esc(extension))
+			end
+			out[#out + 1] = '</div></div>'
+		end
+	end
+	out[#out + 1] = '</div></section>'
+
 	if #available_releases > 0 then
-		out[#out + 1] = '<section class="release-downloads" aria-labelledby="release-downloads-title">'
+		out[#out + 1] = '<section class="release-downloads" id="release-downloads" aria-labelledby="release-downloads-title">'
 		out[#out + 1] = ('<h2 id="release-downloads-title">%s</h2>'):format(esc(t.release_title))
 		out[#out + 1] = ('<p class="release-intro">%s</p>'):format(esc(t.release_intro))
 		out[#out + 1] = '<ul class="release-list">'

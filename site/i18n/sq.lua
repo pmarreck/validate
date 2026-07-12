@@ -41,6 +41,7 @@ return {
 	footer_source = "Burimi",
 	footer_mecha = "Produkt i Mecha, LLC",
 
+	try_it = "Provoje!",
 	release_title = "Shkarkime falas të versionit paraprak",
 	release_intro = "Provo versionin e ardhshëm të Mecha Validate.",
 	release_expires = "Skadon më %s",

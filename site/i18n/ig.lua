@@ -41,6 +41,7 @@ return {
 	footer_source = "Isi mmalite",
 	footer_mecha = "Ngwaahịa Mecha, LLC",
 
+	try_it = "Nwaa ya!",
 	release_title = "Nbudata nnwale n'efu",
 	release_intro = "Nwalee mwepụta Mecha Validate na-esote.",
 	release_expires = "Ọ ga-agwụ na %s",

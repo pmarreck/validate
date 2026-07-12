@@ -41,6 +41,7 @@ return {
 	footer_source = "Kaynak",
 	footer_mecha = "Bir Mecha, LLC ürünü",
 
+	try_it = "Dene!",
 	release_title = "Ücretsiz ön sürüm indirmeleri",
 	release_intro = "Mecha Validate'in sonraki sürümünü deneyin.",
 	release_expires = "Sona erer: %s",

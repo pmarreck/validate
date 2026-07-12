@@ -41,6 +41,7 @@ return {
 	footer_source = "सोर्स",
 	footer_mecha = "Mecha, LLC का एक उत्पाद",
 
+	try_it = "आजमाएँ!",
 	release_title = "निःशुल्क प्री-रिलीज़ डाउनलोड",
 	release_intro = "Mecha Validate का अगला संस्करण आज़माएँ।",
 	release_expires = "%s को समाप्त होगा",

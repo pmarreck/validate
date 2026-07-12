@@ -44,6 +44,7 @@ return {
 	footer_source = "Source",
 	footer_mecha = "A Mecha, LLC product",
 
+	try_it = "TRY IT!",
 	release_title = "Free prerelease downloads",
 	release_intro = "Try the next Mecha Validate release.",
 	release_expires = "Expires %s",

@@ -41,6 +41,7 @@ return {
 	footer_source = "ซอร์สโค้ด",
 	footer_mecha = "ผลิตภัณฑ์จาก Mecha, LLC",
 
+	try_it = "ลองใช้!",
 	release_title = "ดาวน์โหลดรุ่นก่อนเผยแพร่ฟรี",
 	release_intro = "ลองใช้ Mecha Validate รุ่นถัดไป",
 	release_expires = "หมดอายุ %s",

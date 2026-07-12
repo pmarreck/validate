@@ -41,6 +41,7 @@ return {
 	footer_source = "الكود المصدري",
 	footer_mecha = "منتج من Mecha, LLC",
 
+	try_it = "جرّبه!",
 	release_title = "تنزيلات تجريبية مجانية",
 	release_intro = "جرّب الإصدار القادم من Mecha Validate.",
 	release_expires = "تنتهي الصلاحية في %s",

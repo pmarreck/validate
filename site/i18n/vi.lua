@@ -41,6 +41,7 @@ return {
 	footer_source = "Mã nguồn",
 	footer_mecha = "Một sản phẩm của Mecha, LLC",
 
+	try_it = "Dùng thử!",
 	release_title = "Bản tải xuống bản phát hành trước miễn phí",
 	release_intro = "Hãy thử bản phát hành Mecha Validate tiếp theo.",
 	release_expires = "Hết hạn %s",
