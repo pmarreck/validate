@@ -1,7 +1,7 @@
 # validate
 
 [![CI](https://github.com/pmarreck/validate/actions/workflows/ci.yml/badge.svg?branch=yolo)](https://github.com/pmarreck/validate/actions/workflows/ci.yml)
-[![Mechatron Prime CI](https://img.shields.io/endpoint?url=https%3A%2F%2Fthelio-nixos.tail66c90.ts.net%2Fbadges%2Fvalidate.json&style=for-the-badge)](https://thelio-nixos.tail66c90.ts.net/badges/validate.json)
+[![Mechatron Prime CI](https://img.shields.io/endpoint?url=https%3A%2F%2Fthelio-nixos.tail66c90.ts.net%2Fbadges%2Fvalidate.json&style=for-the-badge)](https://thelio-nixos.tail66c90.ts.net/mechatron-prime/)
 
 Data silently rots.
 

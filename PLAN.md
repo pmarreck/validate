@@ -14,7 +14,7 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
-- [x] Replace the retired Garnix and hard-coded Mechatron README badges with the public dynamic `validate` Mechatron Prime endpoint. Completed 2026-07-10 19:44 EDT.
+- [x] Replace the retired Garnix and hard-coded Mechatron README badges with the public dynamic `validate` Mechatron Prime endpoint, linking clicks to the Mechatron image/about page. Completed 2026-07-11 22:59 EDT.
 
 ### validate.pics GUI prerelease publishing (2026-07-11)
 
