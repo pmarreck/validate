@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [ -n "${VALIDATE_LICENSES_DIR:-}" ]; then
+	LICENSES_DIR="$VALIDATE_LICENSES_DIR"
+elif [ -d "$ROOT/result/share/licenses/validate/LICENSES" ]; then
+	LICENSES_DIR="$ROOT/result/share/licenses/validate/LICENSES"
+else
+	LICENSES_DIR="$ROOT/LICENSES"
+fi
+NOTICES="${VALIDATE_NOTICES_FILE:-$(dirname "$LICENSES_DIR")/THIRD_PARTY_NOTICES.md}"
+LIBRAW_NOTICE="$LICENSES_DIR/libraw.txt"
+CDDL_TEXT="$LICENSES_DIR/CDDL-1.0.txt"
+failures=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	failures=$((failures + 1))
+}
+
+if ! grep -Fq '| LibRaw | CDDL-1.0 (elected)' "$NOTICES"; then
+	fail 'LibRaw must be indexed as the elected CDDL-1.0 dependency'
+fi
+if grep -Fq 'LibRaw CDDL election (legal decision required)' "$NOTICES"; then
+	fail 'LibRaw must not remain marked as awaiting a licensing decision'
+fi
+if ! grep -Fq 'only to LibRaw' "$NOTICES"; then
+	fail 'the election must state that validate remains under its own BSL terms'
+fi
+if ! grep -Fq 'CDDL-1.0.txt' "$LIBRAW_NOTICE"; then
+	fail 'LibRaw notice must point to the bundled CDDL-1.0 text'
+fi
+if ! grep -Fq 'COMMON DEVELOPMENT AND DISTRIBUTION LICENSE (CDDL)' "$CDDL_TEXT"; then
+	fail 'the canonical CDDL-1.0 text must be bundled'
+fi
+if ! grep -Fq '3. Distribution Obligations.' "$CDDL_TEXT"; then
+	fail 'the bundled CDDL text must include its distribution obligations'
+fi
+if [ "$(sha256sum "$CDDL_TEXT" | awk '{print $1}')" != 'fde9ef48461569987d09cac803379245dfda04e7751075f39b578a0ce927d470' ]; then
+	fail 'the bundled CDDL text must match the canonical CDDL-1.0 text'
+fi
+
+if [ "$failures" -ne 0 ]; then
+	exit "$failures"
+fi
+
+printf 'PASS: LibRaw CDDL election is explicit and bundled\n'

@@ -28,7 +28,7 @@ texts are the per-library files in `LICENSES/`.
 | zig-toml | MIT | `LICENSES/zig-toml.txt` |
 | zig-xml | MIT | `LICENSES/zig-xml.txt` |
 | zigimg | MIT | `LICENSES/zigimg.txt` |
-| LibRaw | LGPL-2.1 **or** CDDL-1.0 (see below) | `LICENSES/libraw.txt` |
+| LibRaw | CDDL-1.0 (elected) | `LICENSES/libraw.txt`, `LICENSES/CDDL-1.0.txt` |
 
 ## ⚠️ PENDING — bundled but license text not yet vendored (legal follow-up)
 
@@ -48,14 +48,19 @@ decision (do not treat as compliant yet):
 - **z7z / compact_pro** (Peter's own sibling projects) — confirm their license
   (BSL-1.1 like validate? MIT?) and add the text.
 
-## ⚠️ LibRaw CDDL election (legal decision required)
+## LibRaw CDDL-1.0 election
 
-LibRaw is offered under **LGPL-2.1 OR CDDL-1.0**. validate links it
-**statically**, which is non-compliant under LGPL-2.1 (LGPL static linking
-requires relinkable object distribution). To ship a static binary, validate must
-formally **elect the CDDL-1.0 arm** and record that election here. This election
-has not yet been made — **Peter's call**. Until then, static distribution of the
-LibRaw-linked binary is not license-clean.
+LibRaw is offered under **LGPL-2.1 OR CDDL-1.0**. Peter Marreck, as the
+distributor of validate, elects **CDDL-1.0** for LibRaw in every validate
+binary distribution. The canonical CDDL-1.0 text is bundled at
+`LICENSES/CDDL-1.0.txt`; `LICENSES/libraw.txt` carries the LibRaw attribution
+and election record.
+
+This election applies **only to LibRaw**. validate's own source code and
+interfaces remain licensed under the top-level Business Source License 1.1,
+including its separate restrictions on third-party GUI, API, service, plugin,
+and application use. The LibRaw election grants no rights in validate beyond
+those BSL terms.
 
 — Generated as part of the 2026-06-23 CODE_REVIEW legal remediation. The bundling
 mechanism (installing LICENSE + LICENSES/ + this file alongside the binary) is in

@@ -14,6 +14,12 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] **LibRaw CDDL-1.0 election:** recorded Peter's selected LibRaw license,
+      bundled the canonical CDDL-1.0 text, and made the release inventory
+      reject a missing, ambiguous, or altered election. Curiosity poke
+      answered: the election applies only to LibRaw and does not weaken
+      validate's BSL GUI/API restrictions. Completed 2026-07-12 20:22 EDT.
+
 - [x] **Core NOPERM verdict:** classify only normalized OS
       `AccessDenied`/`PermissionDenied` as `access=NOPERM`; retain
       `valid=F`/`unknown=F` for ABI compatibility; add separate core/CLI

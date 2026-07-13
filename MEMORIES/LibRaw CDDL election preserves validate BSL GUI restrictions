@@ -1,0 +1,9 @@
+LibRaw is dual-licensed LGPL-2.1 or CDDL-1.0. validate statically links it, so
+Peter elected the CDDL-1.0 option and bundles its canonical text at
+`LICENSES/CDDL-1.0.txt`. The election governs only the LibRaw component.
+
+validate's own source remains under the top-level Business Source License 1.1.
+Its Additional Use Grant independently prohibits third-party GUI, API, service,
+plugin, and application use absent a commercial license. Third-party license
+notices must state this boundary rather than imply that the CDDL election grants
+rights in validate.

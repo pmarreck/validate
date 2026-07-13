@@ -7,6 +7,8 @@ close=[
 ]
 
 annotate=[
+	LICENSES/CDDL-1.0.txt = Canonical CDDL-1.0 text bundled for the explicitly elected LibRaw static-link distribution.
+	MEMORIES/LibRaw CDDL election preserves validate BSL GUI restrictions = Durable boundary: LibRaw CDDL static-link election leaves validate's BSL GUI/API restrictions intact.
 	MEMORIES/OS permission denials use access NOPERM as a non-failure outcome = Durable contract for classifying OS access denials as non-failing NOPERM FFI/CLI outcomes.
 	bench/results/scheduler_backpressure.jsonl = Append-only machine-readable scheduler and nested-PDF performance experiment summaries
 	cli/main.c = C FFI CLI: validates collected paths, keeps progress size lookup O(1) by immutable file ID, and reports optional scheduler diagnostics.
@@ -35,6 +37,7 @@ annotate=[
 	src/core/pdf_image_validator.zig = Deep PDF embedded-image validation; skips pool construction when the current CPU budget allows only sequential work
 	src/core/thread_pool.zig = CPU-aware outer scheduler and batch-balanced nested PDF image job policy with deterministic tests
 	tests/cli/corruption_report_generator = Tests generate-corruption-report: 8-col contract header, n/a-never-blank, frozen fallbacks, flag/env/default path precedence, --out - stdout
+	tests/cli/libraw_cddl_election = Artifact-aware gate: LibRaw must elect CDDL-1.0 and bundle its exact canonical text.
 	tests/cli/master_report_drift = Regeneration-idempotence guard: committed corruption-detection-report.md must be byte-identical to scripts/generate-corruption-report output (replaces old hand-audit)
 	tests/cli/no_permission_outcome = CLI integration test: inaccessible paths render and serialize as non-failing NOPERM outcomes.
 	tests/cli/process_allocator_policy = Classifier test for glibc/non-glibc allocator-policy and override behavior

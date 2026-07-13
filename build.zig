@@ -382,7 +382,7 @@ pub fn build(b: *std.Build) void {
     });
     const progrez_module = progrez_dep.module("progrez_core");
 
-    // LibRaw for camera RAW format validation (LGPL-2.1, phcreery/LibRaw-zig)
+    // LibRaw for camera RAW validation (CDDL-1.0 elected from its dual license).
     const libraw_dep = b.dependency("libraw", .{
         .target = target,
         .optimize = deps_optimize,
@@ -409,7 +409,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zigimg", .module = zigimg_mod }, // Image format decoding for deep validation
             .{ .name = "xml", .module = zigxml_mod }, // XML validation (0BSD, ianprime0509/zig-xml)
             .{ .name = "cj5", .module = cj5_mod }, // JSON5 validation (MIT, septag/cj5 fork)
-            .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (LGPL-2.1)
+            .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (CDDL-1.0 elected)
             .{ .name = "rarz", .module = rarz_mod }, // RAR clean-room parser/validator
             .{ .name = "bzip2z", .module = bzip2z_mod }, // bzip2 clean-room decoder/encoder
             .{ .name = "zstd", .module = zstdz_mod }, // zstd via zstdz (Peter-controlled fork of Facebook BSD zstd)
