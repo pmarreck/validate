@@ -38,6 +38,14 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ### validate.pics GUI prerelease publishing (2026-07-11)
 
+- [x] TDD update the five-platform downloads layout: keep the Linux pair
+      together, place both Windows variants together in the final row, retire
+      the dead header purchase CTA, and move Detection Coverage into the main
+      content. Curiosity poke answered: the fixed mobile header now contains
+      only its brand and locale control, so it cannot wrap over the title; the
+      five-card desktop layout remains balanced without hover-driven reflow.
+      Peter approved full desktop and 390px mobile captures. Completed
+      2026-07-14 10:50 EDT.
 - [x] TDD add generated `windows-aarch64` manifest support as a fifth release
       platform, labelled **Windows ARM64**. Curiosity poke answered: the
       site renderer remains strict and dormant until `validate_gui` atomically

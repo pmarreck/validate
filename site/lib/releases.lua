@@ -6,9 +6,9 @@ local M = {}
 
 M.ORDER = {
 	"macos-aarch64",
-	"windows-x86_64",
 	"linux-x86_64",
 	"linux-aarch64",
+	"windows-x86_64",
 	"windows-aarch64",
 }
 

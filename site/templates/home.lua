@@ -139,8 +139,8 @@ function M.render(ctx)
 	end
 	out[#out + 1] = "</div>"
 
-	out[#out + 1] = ('<a class="coverage-link" href="%s">%s → </a>'):format(
-		esc(shared.page_path(ctx.locale, "coverage")), esc(t.cov_subtitle))
+	out[#out + 1] = ('<a class="coverage-link main-coverage-link" href="%s"><span class="coverage-link-title">%s</span><span class="coverage-link-note">%s →</span></a>'):format(
+		esc(shared.page_path(ctx.locale, "coverage")), esc(t.nav_coverage), esc(t.cov_subtitle))
 
 	out[#out + 1] = '<section class="format-list" id="format-list" aria-labelledby="format-list-title">'
 	out[#out + 1] = ('<h2 id="format-list-title">%s</h2>'):format(esc(t.stat_formats))
@@ -164,7 +164,7 @@ function M.render(ctx)
 		out[#out + 1] = '<section class="release-downloads" id="release-downloads" aria-labelledby="release-downloads-title">'
 		out[#out + 1] = ('<h2 id="release-downloads-title">%s</h2>'):format(esc(t.release_title))
 		out[#out + 1] = ('<p class="release-intro">%s</p>'):format(esc(t.release_intro))
-		out[#out + 1] = '<ul class="release-list">'
+		out[#out + 1] = ('<ul class="release-list release-list-count-%d">'):format(#available_releases)
 		for _, release in ipairs(available_releases) do
 			local label = assert(RELEASE_LABELS[release.key], "unknown release platform: " .. release.key)
 			out[#out + 1] = '<li class="release-item">'

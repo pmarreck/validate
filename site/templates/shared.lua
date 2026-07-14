@@ -9,7 +9,6 @@ local esc = html.esc
 local M = {}
 
 M.BASE_URL = "https://validate.pics"
-M.BUY_URL = "https://mecha.llc/validate/"
 M.MECHA_URL = "https://mecha.llc/"
 M.REPO_URL = "https://github.com/pmarreck/validate"
 
@@ -65,13 +64,10 @@ end
 
 function M.header(ctx)
 	local home = M.page_path(ctx.locale, "home")
-	local cov = M.page_path(ctx.locale, "coverage")
 	return table.concat({
 		'<header class="site-header">',
 		('<a class="brand" href="%s"><span class="brand-mecha">MECHA</span> Validate</a>'):format(esc(home)),
 		'<nav class="site-nav">',
-		('<a href="%s">%s</a>'):format(esc(cov), esc(ctx.t.nav_coverage)),
-		('<a class="buy-cta" href="%s">%s</a>'):format(esc(M.BUY_URL), esc(ctx.t.nav_buy)),
 		M.switcher(ctx),
 		"</nav>",
 		"</header>",

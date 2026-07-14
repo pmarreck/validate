@@ -71,16 +71,6 @@ h1, h2 { font-weight: 650; letter-spacing: -0.01em; }
 .brand { color: #fff; text-decoration: none; font-weight: 650; font-size: 1.05rem; text-shadow: 0 1px 6px rgba(0,0,0,0.15); white-space: nowrap; }
 .brand-mecha { font-size: 0.62em; font-weight: 700; letter-spacing: 0.22em; vertical-align: 0.18em; opacity: 0.85; margin-inline-end: 0.45em; }
 .site-nav { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-.site-nav > a { color: rgba(255,255,255,0.95); text-decoration: none; font-size: 0.92rem; text-shadow: 0 1px 4px rgba(0,0,0,0.12); }
-.site-nav > a:hover { text-decoration: underline; }
-.buy-cta {
-	background: var(--accent);
-	padding: 0.35em 0.9em;
-	border-radius: 8px;
-	font-weight: 600;
-	box-shadow: 0 2px 10px rgba(59, 130, 246, 0.4);
-}
-.buy-cta:hover { text-decoration: none !important; filter: brightness(1.08); }
 
 /* ── Language switcher ──────────────────────────────────── */
 .lang-menu { position: relative; }
@@ -269,13 +259,15 @@ h1 .eyebrow {
 .stat-try .stat-number { font-size: 1.35rem; letter-spacing: 0.04em; }
 
 .coverage-link {
-	display: inline-block; margin-top: 2.2rem; color: #fff; font-weight: 600;
+	display: inline-flex; flex-direction: column; gap: 0.1rem; margin-top: 2.2rem; color: #fff; font-weight: 600;
 	text-decoration: none; font-size: 1.05rem;
 	background: var(--accent);
 	padding: 0.55em 1.3em; border-radius: 10px;
 	box-shadow: 0 4px 18px rgba(59, 130, 246, 0.45);
 	transition: filter 0.2s, transform 0.1s;
 }
+.coverage-link-title { font-weight: 700; }
+.coverage-link-note { font-size: 0.78em; font-weight: 600; opacity: 0.9; }
 .coverage-link:hover { filter: brightness(1.08); }
 .coverage-link:active { transform: scale(0.98); }
 
@@ -330,6 +322,13 @@ h1 .eyebrow {
 	grid-template-columns: repeat(2, minmax(0, 1fr));
 	gap: 0.65rem;
 	list-style: none;
+}
+/* Exactly five downloads balance as three cards over two on desktop. Flex
+   lets the second-row pair share the full width; other partial manifests
+   retain the familiar two-column grid. */
+@media (min-width: 641px) {
+	.release-list-count-5 { display: flex; flex-wrap: wrap; }
+	.release-list-count-5 .release-item { flex: 1 1 calc((100% - 1.3rem) / 3); }
 }
 .release-item {
 	display: flex;
