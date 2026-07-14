@@ -16,16 +16,18 @@ local now = 1893456000 -- 2030-01-01 00:00:00 UTC
 local manifest = [[
 linux-x86_64 = "https://downloads.example.invalid/validate-x86_64.AppImage?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20300102T030405Z&X-Amz-Expires=86400&X-Amz-Signature=one"
 windows-x86_64 = "https://downloads.example.invalid/validate-x86_64.zip?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20300102T030405Z&X-Amz-Expires=86400&X-Amz-Signature=two"
+windows-aarch64 = "https://downloads.example.invalid/validate-windows-arm64.zip?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20300102T030405Z&X-Amz-Expires=86400&X-Amz-Signature=windowsarm"
 macos-aarch64 = "https://downloads.example.invalid/validate-aarch64.zip?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20300102T030405Z&X-Amz-Expires=86400&X-Amz-Signature=three"
 linux-aarch64 = "https://downloads.example.invalid/validate-aarch64.AppImage?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20300102T030405Z&X-Amz-Expires=86400&X-Amz-Signature=four"
 ]]
 
 local parsed, err = releases.parse_toml(manifest, now)
-ok(parsed ~= nil, "valid four-platform manifest parses: " .. tostring(err))
+ok(parsed ~= nil, "valid five-platform manifest parses: " .. tostring(err))
 if parsed then
-	ok(#parsed.available == 4, "all four fresh platforms are available")
+	ok(#parsed.available == 5, "all five fresh platforms are available")
 	ok(parsed.available[1].key == "macos-aarch64", "platforms use stable display order")
 	ok(parsed.available[4].key == "linux-aarch64", "Linux ARM64 stays distinct from Linux x86_64")
+	ok(parsed.available[5].key == "windows-aarch64", "Windows ARM64 is a distinct fifth platform")
 	ok(parsed.available[1].expires_utc == "2030-01-03 03:04 UTC", "expiry renders in explicit UTC")
 	ok(#parsed.expired == 0, "fresh manifest has no expired entries")
 	ok(releases.publishable(parsed), "manifest with fresh links is publishable")

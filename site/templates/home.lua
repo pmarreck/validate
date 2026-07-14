@@ -77,6 +77,7 @@ local CAT_ORDER = {
 local RELEASE_LABELS = {
 	["macos-aarch64"] = "macOS (aarch64)",
 	["windows-x86_64"] = "Windows (x86_64)",
+	["windows-aarch64"] = "Windows ARM64",
 	["linux-x86_64"] = "Linux (x86_64)",
 	["linux-aarch64"] = "Linux (aarch64)",
 }

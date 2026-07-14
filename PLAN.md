@@ -38,6 +38,12 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ### validate.pics GUI prerelease publishing (2026-07-11)
 
+- [x] TDD add generated `windows-aarch64` manifest support as a fifth release
+      platform, labelled **Windows ARM64**. Curiosity poke answered: the
+      site renderer remains strict and dormant until `validate_gui` atomically
+      publishes a fresh signed URL; no manual/speculative link was rendered.
+      Also repair the publish gate's test discovery for the deliberately
+      glob-disabled shell environment. Completed 2026-07-13 19:46 EDT.
 - [x] TDD a strict `current_releases.toml` reader: accept only the four published platform keys and fresh HTTPS SigV4 URLs; render only present, unexpired links. Curiosity poke answered: malformed, duplicate, or expired data never becomes an HTML download link. Completed 2026-07-11 16:43 EDT.
 - [x] Add `./publish-validate-pics`: use a clean worktree at current `origin/yolo`, run the site generator and its tests against the sibling release file, commit only generated `docs/`, and push; keep `./build` network-free and independent. Curiosity poke answered: it preserves a developer's dirty checkout and fails before publishing stale links. Completed 2026-07-11 16:43 EDT.
 - [x] Add fully localized homepage download copy across the existing 50 enforce-phase catalogs, regenerate `docs/`, and run focused site plus full project tests. Curiosity poke answered: test English, German, Arabic/RTL, absent platforms, escaped URLs, stale inputs, and root-invocation portability. Completed 2026-07-11 16:43 EDT.

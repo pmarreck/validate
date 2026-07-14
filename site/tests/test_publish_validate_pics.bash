@@ -16,8 +16,8 @@ capture "$ROOT/publish-validate-pics" --check
 if [ "$rc" -ne 0 ]; then
 	fail "fresh manifest check failed ($rc): $err"
 fi
-if ! printf '%s' "$out" | grep -qF '4 fresh platform link(s)'; then
-	fail "fresh manifest check did not report all platforms"
+if ! printf '%s' "$out" | grep -qF '5 fresh platform link(s)'; then
+	fail "fresh manifest check did not report all five platforms"
 fi
 
 export VALIDATE_GUI_RELEASES_FILE="$SITE_DIR/tests/fixtures/expired_releases.toml"

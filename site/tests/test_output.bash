@@ -54,6 +54,7 @@ assert_contains "$IDX" 'class="format-list" id="format-list"' "full format list 
 assert_not_contains "$IDX" 'format-tooltip' "overlapping format tooltip is removed"
 assert_contains "$IDX" 'Free prerelease downloads' "English prerelease heading"
 assert_contains "$IDX" 'macOS (aarch64)' "macOS platform label is unambiguous"
+assert_contains "$IDX" 'Windows ARM64' "Windows ARM64 platform label is explicit"
 assert_contains "$IDX" 'Linux (x86_64)' "Linux x86_64 platform label is unambiguous"
 assert_contains "$IDX" 'Linux (aarch64)' "Linux aarch64 platform label is unambiguous"
 assert_contains "$IDX" 'X-Amz-Algorithm=AWS4-HMAC-SHA256&amp;X-Amz-Date=20400102T030405Z' "presigned release URL is escaped"

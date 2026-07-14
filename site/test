@@ -7,10 +7,13 @@ SITE_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SITE_DIR" || exit 1
 
 failures=0
+lua_tests=0
+bash_tests=0
 
 # Lua unit tests
-for t in tests/test_*.lua; do
-	[ -e "$t" ] || continue
+while IFS= read -r t; do
+	[ -n "$t" ] || continue
+	lua_tests=$((lua_tests + 1))
 	out="$(luajit "$t" 2>&1)"
 	rc=$?
 	if [ $rc -eq 0 ]; then
@@ -20,11 +23,12 @@ for t in tests/test_*.lua; do
 		echo "$out" | sed 's/^/  /'
 		failures=$((failures + 1))
 	fi
-done
+done < <(glob 'tests/test_*.lua')
 
 # Bash integration tests (post-generate output assertions)
-for t in tests/test_*.bash; do
-	[ -e "$t" ] || continue
+while IFS= read -r t; do
+	[ -n "$t" ] || continue
+	bash_tests=$((bash_tests + 1))
 	out="$(bash "$t" 2>&1)"
 	rc=$?
 	if [ $rc -eq 0 ]; then
@@ -34,7 +38,12 @@ for t in tests/test_*.bash; do
 		echo "$out" | sed 's/^/  /'
 		failures=$((failures + 1))
 	fi
-done
+done < <(glob 'tests/test_*.bash')
+
+if [ "$lua_tests" -eq 0 ] || [ "$bash_tests" -eq 0 ]; then
+	echo "FAIL site test discovery (Lua: $lua_tests, Bash: $bash_tests)"
+	failures=$((failures + 1))
+fi
 
 echo ""
 if [ $failures -eq 0 ]; then

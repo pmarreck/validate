@@ -23,6 +23,7 @@ for _, locale in ipairs(locales.list) do by_code[locale.code] = locale end
 local t = assert(loadfile("i18n/en.lua"))()
 local parsed = assert(releases.parse_toml([[macos-aarch64 = "https://downloads.example.invalid/validate.zip?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20300102T030405Z&X-Amz-Expires=86400&X-Amz-Signature=example"
 linux-aarch64 = "https://downloads.example.invalid/validate.AppImage?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20300102T030405Z&X-Amz-Expires=86400&X-Amz-Signature=arm"
+windows-aarch64 = "https://downloads.example.invalid/validate-windows-arm64.zip?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20300102T030405Z&X-Amz-Expires=86400&X-Amz-Signature=windowsarm"
 ]], 1893456000))
 
 local rendered = home.render({
@@ -43,6 +44,7 @@ ok(not contains(rendered, 'format-tooltip'), "format list replaces the overlappi
 ok(contains(rendered, "Free prerelease downloads"), "download heading is localized through the catalog")
 ok(contains(rendered, "macOS (aarch64)"), "macOS architecture is clear")
 ok(contains(rendered, "Linux (aarch64)"), "Linux ARM architecture is clear")
+ok(contains(rendered, "Windows ARM64"), "Windows ARM64 uses the requested consumer-facing label")
 ok(not contains(rendered, "Windows (x86_64)"), "absent platforms do not render")
 ok(contains(rendered, "2030-01-03 03:04 UTC"), "expiry is visibly explicit")
 ok(contains(rendered, "X-Amz-Algorithm=AWS4-HMAC-SHA256&amp;X-Amz-Date=20300102T030405Z"), "presigned query is HTML escaped")

@@ -1,5 +1,5 @@
 -- Short-lived GUI release manifest handling. The publisher owns the atomic
--- TOML replacement; this pure module accepts only its four SigV4 HTTPS links,
+-- TOML replacement; this pure module accepts only its five SigV4 HTTPS links,
 -- derives their expiry, and keeps stale data out of rendered pages.
 
 local M = {}
@@ -9,6 +9,7 @@ M.ORDER = {
 	"windows-x86_64",
 	"linux-x86_64",
 	"linux-aarch64",
+	"windows-aarch64",
 }
 
 local known = {}
