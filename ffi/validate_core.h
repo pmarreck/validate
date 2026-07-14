@@ -261,8 +261,8 @@ typedef struct {
 /**
  * Get a snapshot of memory budget state.
  *
- * Cheap to call (single mutex acquire on the budget + 3 atomic reads +
- * RSS syscall). Intended for GUI memory meters polling at ~500ms
+ * Cheap to call (telemetry lifetime mutex + budget mutex + RSS syscall).
+ * Intended for GUI memory meters polling at ~500ms
  * intervals. Safe to call from any thread, including while
  * validate_batch is running.
  *

@@ -394,18 +394,67 @@ export fn validate_default_threads() c_int {
 /// Global memory budget (0 = use default)
 var g_max_memory: u64 = 0;
 
-/// Pointer to the active MemoryBudget instance, set while `validate_batch` is
-/// running and cleared on exit. Used by `validate_get_memory_usage` to expose
-/// snapshot data to FFI consumers (typically a GUI memory meter polling at
-/// ~500ms intervals). Atomic for thread-safe read; writes are guarded by
-/// validate_batch's lifecycle and only the batch thread touches them.
-var g_active_budget: std.atomic.Value(?*core.memory_budget.MemoryBudget) = .init(null);
+/// Keeps borrowed batch telemetry alive while an FFI poller copies it.
+///
+/// The mutex is a lifetime lease: batch teardown uses the same lock before
+/// clearing its stack-backed pointers, so a poller never dereferences an
+/// object after `validate_batch` returns. Polling is infrequent and does not
+/// run on validation workers.
+const ActiveBatchTelemetry = struct {
+    mutex: std.Io.Mutex = .init,
+    budget: ?*core.memory_budget.MemoryBudget = null,
+    scheduler_debug: ?*thread_pool.SchedulerDebugStats = null,
+
+    const SnapshotLease = struct {
+        owner: *ActiveBatchTelemetry,
+        budget: ?*core.memory_budget.MemoryBudget,
+        scheduler_debug: ?*thread_pool.SchedulerDebugStats,
+
+        /// Releases the telemetry mutex after the caller has copied every
+        /// borrowed batch field it needs.
+        fn release(self: *SnapshotLease) void {
+            self.owner.mutex.unlock(runtime.io());
+        }
+    };
+
+    /// Publishes one batch's stack-backed state while holding the lease mutex.
+    fn publish(
+        self: *ActiveBatchTelemetry,
+        budget: *core.memory_budget.MemoryBudget,
+        scheduler_debug: ?*thread_pool.SchedulerDebugStats,
+    ) void {
+        self.mutex.lockUncancelable(runtime.io());
+        defer self.mutex.unlock(runtime.io());
+        self.budget = budget;
+        self.scheduler_debug = scheduler_debug;
+    }
+
+    /// Acquires a borrow that prevents teardown until the snapshot copy ends.
+    fn acquireLease(self: *ActiveBatchTelemetry) SnapshotLease {
+        self.mutex.lockUncancelable(runtime.io());
+        return .{
+            .owner = self,
+            .budget = self.budget,
+            .scheduler_debug = self.scheduler_debug,
+        };
+    }
+
+    /// Retires published pointers only after every in-flight snapshot lease
+    /// finishes, preventing post-teardown dereferences of batch stack state.
+    fn retire(self: *ActiveBatchTelemetry) void {
+        self.mutex.lockUncancelable(runtime.io());
+        defer self.mutex.unlock(runtime.io());
+        self.budget = null;
+        self.scheduler_debug = null;
+    }
+};
+
+var g_active_batch_telemetry: ActiveBatchTelemetry = .{};
 
 /// Scheduler wait diagnostics are activated only by the CLI's explicit debug
-/// mode. The pointer is valid for one `validate_batch` invocation and lets a
-/// concurrent polling consumer observe monotonically increasing wait counters.
+/// mode. The active-batch state itself is protected by
+/// `g_active_batch_telemetry` rather than atomic raw pointers.
 var g_scheduler_debug_tracking = std.atomic.Value(bool).init(false);
-var g_active_scheduler_debug: std.atomic.Value(?*thread_pool.SchedulerDebugStats) = .init(null);
 
 /// Snapshot of memory budget state. Mirrored to a C struct in
 /// validate_core.h. All fields are bytes / counts. `current_rss` is
@@ -473,8 +522,8 @@ pub const SchedulerDebugSnapshot = extern struct {
 ///
 /// Returns 0 (VALIDATE_OK) if a batch is running and `out` was populated;
 /// returns non-zero (with `out` zero-cleared) if no batch is active or
-/// `out` is null. Cheap (single mutex acquire on the budget + 3 atomic
-/// reads + RSS syscall). Safe to call from any thread.
+/// `out` is null. Cheap (telemetry lifetime mutex + budget mutex + RSS
+/// syscall). Safe to call from any thread.
 export fn validate_get_memory_usage(out: ?*MemoryUsage) c_int {
     const dst = out orelse return 1;
     dst.* = MemoryUsage{
@@ -483,7 +532,9 @@ export fn validate_get_memory_usage(out: ?*MemoryUsage) c_int {
         .active_tasks = 0,
         .current_rss = 0,
     };
-    const budget_ptr = g_active_budget.load(.seq_cst) orelse return 2;
+    var lease = g_active_batch_telemetry.acquireLease();
+    defer lease.release();
+    const budget_ptr = lease.budget orelse return 2;
     const snap = budget_ptr.snapshot();
     dst.total_bytes = snap.total;
     dst.available_bytes = snap.available;
@@ -518,7 +569,9 @@ export fn validate_get_scheduler_debug_snapshot(out: ?*SchedulerDebugSnapshot) c
         .rss_pressure_wait_events = 0,
         .rss_pressure_waiters = 0,
     };
-    const stats = g_active_scheduler_debug.load(.seq_cst) orelse return 2;
+    var lease = g_active_batch_telemetry.acquireLease();
+    defer lease.release();
+    const stats = lease.scheduler_debug orelse return 2;
     const snap = stats.snapshot();
     dst.* = .{
         .worker_count = snap.worker_count,
@@ -565,7 +618,9 @@ export fn validate_get_heap_debug_snapshot(out: ?*HeapDebugSnapshot) c_int {
     dst.vm_size = mem.vm_size;
     dst.vm_data = mem.vm_data;
 
-    if (g_active_budget.load(.seq_cst)) |budget_ptr| {
+    var lease = g_active_batch_telemetry.acquireLease();
+    defer lease.release();
+    if (lease.budget) |budget_ptr| {
         const snap = budget_ptr.snapshot();
         dst.budget_total_bytes = snap.total;
         dst.budget_available_bytes = snap.available;
@@ -1403,14 +1458,12 @@ export fn validate_batch(
     // budget admits up to total bytes worth of work concurrently. Single
     // file > total budget gets admitted alone (starvation rule).
     var mem_budget = core.memory_budget.MemoryBudget.init(@intCast(validate_get_max_memory()));
-    g_active_budget.store(&mem_budget, .seq_cst);
-    defer g_active_budget.store(null, .seq_cst);
 
     var scheduler_debug = thread_pool.SchedulerDebugStats.init();
     scheduler_debug.setWorkerCount(actual_threads);
     const scheduler_debug_ptr: ?*thread_pool.SchedulerDebugStats = if (g_scheduler_debug_tracking.load(.seq_cst)) &scheduler_debug else null;
-    g_active_scheduler_debug.store(scheduler_debug_ptr, .seq_cst);
-    defer g_active_scheduler_debug.store(null, .seq_cst);
+    g_active_batch_telemetry.publish(&mem_budget, scheduler_debug_ptr);
+    defer g_active_batch_telemetry.retire();
 
     // Use ThreadPool for parallel execution
     const Pool = thread_pool.ThreadPool(BatchTask, void);
@@ -2036,6 +2089,59 @@ test "scheduler debug snapshot is unavailable without an active batch" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.queue_empty_wait_ns);
     try std.testing.expectEqual(@as(u64, 0), snapshot.memory_budget_wait_ns);
     try std.testing.expectEqual(@as(u64, 0), snapshot.rss_pressure_wait_ns);
+}
+
+test "active batch telemetry retirement is serialized with snapshot leases" {
+    var budget = core.memory_budget.MemoryBudget.init(1024);
+    var scheduler = thread_pool.SchedulerDebugStats.init();
+    var telemetry: ActiveBatchTelemetry = .{};
+    telemetry.publish(&budget, &scheduler);
+
+    const Context = struct {
+        telemetry: *ActiveBatchTelemetry,
+        lease_held: std.atomic.Value(bool) = .init(false),
+        release_lease: std.atomic.Value(bool) = .init(false),
+        retirement_started: std.atomic.Value(bool) = .init(false),
+        retirement_finished: std.atomic.Value(bool) = .init(false),
+
+        fn holdSnapshotLease(self: *@This()) void {
+            var lease = self.telemetry.acquireLease();
+            defer lease.release();
+            _ = lease.budget orelse @panic("published budget missing from snapshot lease");
+            self.lease_held.store(true, .seq_cst);
+            while (!self.release_lease.load(.seq_cst)) {
+                std.Thread.yield() catch @panic("snapshot lease test yield failed");
+            }
+        }
+
+        fn retire(self: *@This()) void {
+            while (!self.lease_held.load(.seq_cst)) {
+                std.Thread.yield() catch @panic("retirement test yield failed");
+            }
+            self.retirement_started.store(true, .seq_cst);
+            self.telemetry.retire();
+            self.retirement_finished.store(true, .seq_cst);
+        }
+    };
+
+    var context = Context{ .telemetry = &telemetry };
+    var reader = try std.Thread.spawn(.{}, Context.holdSnapshotLease, .{&context});
+    var retirer = try std.Thread.spawn(.{}, Context.retire, .{&context});
+
+    var spins: usize = 0;
+    while (spins < 1_000_000 and !context.retirement_started.load(.seq_cst)) : (spins += 1) {
+        try std.Thread.yield();
+    }
+    try std.testing.expect(context.retirement_started.load(.seq_cst));
+    try std.testing.expect(!context.retirement_finished.load(.seq_cst));
+
+    context.release_lease.store(true, .seq_cst);
+    reader.join();
+    retirer.join();
+    try std.testing.expect(context.retirement_finished.load(.seq_cst));
+    var final_lease = telemetry.acquireLease();
+    defer final_lease.release();
+    try std.testing.expect(final_lease.budget == null);
 }
 
 test "RSS admission policy holds pressure until the low watermark" {

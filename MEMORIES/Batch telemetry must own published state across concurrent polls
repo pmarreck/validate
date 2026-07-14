@@ -1,0 +1,6 @@
+An atomic pointer only makes publication itself atomic; it does not keep the
+pointed-to object alive after a reader loads it. Public active-batch telemetry
+must use state whose lifetime is owned beyond every concurrent poll (for
+example, stable copied snapshots or synchronized reader reclamation), never
+addresses of stack-local batch state. Test the load→batch-teardown→snapshot
+interleaving deterministically whenever telemetry lifecycle code changes.

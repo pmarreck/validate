@@ -14,6 +14,37 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] **Deep code review:** completed a 13-dimension, evidence-based audit of
+      current `yolo`, emphasizing validated performance and backpressure hot
+      paths; consolidated verified findings in `CODE_REVIEW.md`. Curiosity
+      poke answered: critical defects and actual O(n²)/worker-output costs are
+      separated from intentional deep-validation work. Began 2026-07-14 14:13
+      EDT; completed 2026-07-14 14:43 EDT.
+
+- [x] **TDD/review critical #1 — make active-batch telemetry lifetime safe:**
+      replaced raw publication of stack-local budget/debug state with a
+      mutex-backed snapshot lease, so retirement cannot race a polling getter
+      that has borrowed active-batch state. The deterministic regression holds
+      a lease while a second thread attempts retirement, then proves teardown
+      completes and subsequent polling is inactive. Curiosity poke answered:
+      the lock is confined to infrequent telemetry publication/polling and
+      teardown; validation workers retain their hot path and all counters keep
+      their existing exact snapshot semantics. Focused test, sandboxed Nix
+      check, package build, and full CLI sweep green. Completed 2026-07-14
+      15:43 EDT.
+- [ ] **TDD/review critical #2 — reject a live-file short read safely:** make
+      `FileSource.getMappedOrSlurp` retain the allocated slice's true length
+      for cleanup and treat an undersized read as I/O/truncation rather than
+      returning a shortened owning allocation. Curiosity poke: force a
+      truncate between stat and read under a low DivertingAllocator threshold,
+      then prove allocator cleanliness and an explicit non-clean result.
+- [ ] **TDD/review critical #3 — make batch delivery exhaustive or fail:**
+      record a thread-safe terminal task error when result serialization cannot
+      allocate, then return non-OK (or an explicit unvalidated result) rather
+      than silently omitting an input from a successful batch. Curiosity poke:
+      inject result-builder OOM and assert exact callback/input accounting;
+      this must remain true under the highest permitted memory backpressure.
+
 - [x] **LibRaw CDDL-1.0 election:** recorded Peter's selected LibRaw license,
       bundled the canonical CDDL-1.0 text, and made the release inventory
       reject a missing, ambiguous, or altered election. Curiosity poke
@@ -59,6 +90,41 @@ at the bottom. Older completed sections were rolled up — full history lives in
 - [x] TDD permission-tolerant release generation: an inaccessible sibling manifest warns and omits downloads for regular site generation, while `publish-validate-pics --check` still refuses to publish without readable fresh links. Curiosity poke answered: missing input stays silent, denied input emits a warning, malformed input remains fatal, and expired input remains publisher-ineligible. Completed 2026-07-11 18:44 EDT.
 ### Deep-validation performance continuation (2026-07-10)
 
+- [ ] **TDD/review critical #4 — bounded startup selection:**
+      replace default recursive Lomuto P90 selection with iterative three-way
+      introselect, so equal, ascending, and descending size sets have bounded
+      linear work rather than quadratic startup delay. Curiosity poke: prove
+      percentile/scatter membership is unchanged while a 100k-element
+      operation-count test rules out the pathological cases; benchmark queue
+      startup separately from deep validation.
+- [ ] **TDD/review critical #5 — keep completion I/O off
+      validation workers:** retain freely interleaved begin/finish events and
+      one exact result per input, but hand completed results through a bounded
+      queue to a dedicated callback/output executor. Curiosity poke: measure
+      callback-wait ns, queue high-water mark, CPU/wall/RSS, and exact
+      JSON/verdict/depth parity for normal, `@null`, and deliberately slow
+      output destinations; never exchange a worker bottleneck for unbounded
+      result memory.
+- [ ] **TDD/remediate redundant small-file I/O:** route deep validation before
+      reopening a structural-only file, and carry immutable enumeration size
+      metadata into an additive sized-batch FFI entry point so admission,
+      large-file gating, and diagnostics do not re-stat each path. Curiosity
+      poke: retain the validator's own open as authority for changing files;
+      measure syscall count, CPU/wall/RSS/wait-ns, and exact verdict/depth
+      parity on the fixed 100k+ small-file window. Coordinate the additive ABI
+      with `validate_gui`.
+- [ ] **Profile then TDD/remediate repeated deep-PDF work:** eliminate the
+      file-backed mmap→copy where a mapped slice is safe, unify the file/buffer
+      pipelines, and share immutable PDF object/stream discovery (including
+      JBIG2 globals) between image/font/embedded/residual passes. Curiosity
+      poke: preserve every decode and malformed-xref fallback; accept only
+      after differential normal/malformed/encrypted/font-heavy tests and
+      PDF telemetry prove less copying, scanning, and re-inflation.
+- [ ] **Measure platform-specific deep I/O before changing it:** profile real
+      Windows x64/Arm64 `FileSource` positional reads and bounded-slurp depth
+      downgrades; add a correctly-owned Windows mapping adapter only if the
+      evidence warrants its complexity. Curiosity poke: a mapping failure must
+      retain the present bounded fallback and depth parity.
 - [x] TDD the long-run small-file throughput fix: replaced the CLI completion callback's `file_id`→size linear scan with an O(1), ID-indexed size lookup; added a deterministic probe-count classifier over a deliberately reordered set so an N² regression fails without timing dependence. The scan control proved 2,080 ID comparisons for 64 completions; the direct map proves 64 probes and the correct 2,080 bytes. Completed 2026-07-11 14:53 EDT.
 - [ ] After the current local disk contention clears, measure a 100k+ small-file fixed window with scheduler wait ns, process CPU/RSS/threads, and the persistent host-pressure recorder. Curiosity poke: distinguish callback lookup serialization from RSS or memory-budget gating before proposing a resumable batch boundary.
 - [x] Close the pushed backpressure commit's CI run: macOS aarch64 and both Linux targets passed build + full tests; Windows failed before compilation while fetching pinned PCRE2 (`HttpConnectionClosing`). Leave code unchanged and use the final push as the clean retry. Completed 2026-07-10 13:35 EDT.
