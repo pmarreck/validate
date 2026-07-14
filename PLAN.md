@@ -32,12 +32,16 @@ at the bottom. Older completed sections were rolled up — full history lives in
       their existing exact snapshot semantics. Focused test, sandboxed Nix
       check, package build, and full CLI sweep green. Completed 2026-07-14
       15:43 EDT.
-- [ ] **TDD/review critical #2 — reject a live-file short read safely:** make
-      `FileSource.getMappedOrSlurp` retain the allocated slice's true length
-      for cleanup and treat an undersized read as I/O/truncation rather than
-      returning a shortened owning allocation. Curiosity poke: force a
-      truncate between stat and read under a low DivertingAllocator threshold,
-      then prove allocator cleanliness and an explicit non-clean result.
+- [x] **TDD/review critical #2 — reject a live-file short read safely:**
+      `FileSource.getMappedOrSlurp` now returns `UnexpectedEof` on an
+      undersized read, letting its existing cleanup free the original
+      allocation length rather than returning a shortened owning slice. The
+      regression captures 128 bytes, truncates to 8 before the read, uses a
+      64-byte `DivertingAllocator` boundary, and proves both explicit
+      non-clean I/O outcome and zero remaining large allocation. Curiosity
+      poke answered: a growing file still reads its initially bounded prefix;
+      only a shrink violates the established ownership contract. Focused test,
+      full `./test`, and `./build` green. Completed 2026-07-14 16:12 EDT.
 - [ ] **TDD/review critical #3 — make batch delivery exhaustive or fail:**
       record a thread-safe terminal task error when result serialization cannot
       allocate, then return non-OK (or an explicit unvalidated result) rather

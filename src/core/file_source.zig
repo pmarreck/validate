@@ -298,6 +298,8 @@ pub const FileSource = struct {
     ///   2. If file size <= `max_slurp_bytes` → allocate, read fully → return `.heap`.
     ///   3. Otherwise → return `.too_large` so the caller can downgrade gracefully
     ///      (typically: structural-only result with a "too large for non-mmap" note).
+    /// If a live file shrinks after its size is captured, returns
+    /// `error.UnexpectedEof` rather than a shortened owning `.heap` slice.
     ///
     /// This codifies the mmap-or-bounded-slurp pattern that was previously open-coded
     /// across ~10 validators. The `max_slurp_bytes` parameter is the hard ceiling on
@@ -313,7 +315,8 @@ pub const FileSource = struct {
         errdefer allocator.free(buf);
         try self.seekTo(0);
         const n = try self.readAll(buf);
-        return .{ .heap = buf[0..n] };
+        if (n != buf.len) return error.UnexpectedEof;
+        return .{ .heap = buf };
     }
 
 
@@ -515,4 +518,41 @@ test "getMappedOrSlurp returns heap when below ceiling and not mapped" {
         },
         .too_large => try std.testing.expect(false),
     }
+}
+
+test "getMappedOrSlurp rejects a file that shrinks after its size is captured" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const content = "0123456789abcdef" ** 8;
+
+    const file = try tmp.dir.createFile(runtime.io(), "shrinking.bin", .{ .read = true });
+    defer file.close(runtime.io());
+    try file.writePositionalAll(runtime.io(), content, 0);
+
+    // `fromFile` deliberately bypasses mmap, so this records the 128-byte
+    // size that the bounded slurp will allocate before another writer shrinks
+    // the underlying file.
+    var source = FileSource.fromFile(file);
+    try file.setLength(runtime.io(), 8);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var diverter = heap.DivertingAllocator.init(arena.allocator(), 64);
+    defer diverter.finishTask();
+    const allocator = diverter.allocator();
+
+    if (source.getMappedOrSlurp(allocator, content.len)) |result| {
+        switch (result) {
+            .heap => |buf| allocator.free(buf),
+            .mapped, .too_large => {},
+        }
+        // Returning a shortened slice loses the allocation's true length;
+        // freeing it through the low-threshold diverter then cannot reclaim
+        // the original large allocation correctly.
+        try std.testing.expectEqual(@as(usize, 0), diverter.big_live_bytes);
+        return error.ExpectedShortRead;
+    } else |err| {
+        try std.testing.expectEqual(error.UnexpectedEof, err);
+    }
+    try std.testing.expectEqual(@as(usize, 0), diverter.big_live_bytes);
 }
