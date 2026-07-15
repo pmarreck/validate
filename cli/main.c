@@ -3432,9 +3432,10 @@ int main(int argc, char* argv[]) {
 			fputs("[\n", stdout);
 		}
 
-		validate_error_t err = validate_batch(
+		validate_error_t err = validate_batch_sized(
 			(const char* const*)file_list.paths,
 			file_list.ids,
+			file_list.sizes,
 			file_list.count,
 			(int)jobs,
 			on_validation_result,

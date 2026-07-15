@@ -143,13 +143,30 @@ at the bottom. Older completed sections were rolled up — full history lives in
       returned success while path `openat` fell 1,024→512 and path stats
       2,561→2,049: 1,024 fewer path syscalls (−28.6%). Completed 2026-07-15
       02:09 EDT.
-- [ ] **TDD/add immutable enumeration sizes to the batch ABI:** carry
-      best-effort discovery sizes into an additive sized-batch FFI entry point
-      so admission, large-file gating, and diagnostics do not re-stat each
-      path. Curiosity poke: the validator's shared open remains authoritative
-      for a changing file; measure syscall count, CPU/wall/RSS/wait-ns, and
-      exact verdict/depth parity on the fixed 100k+ small-file window.
-      Coordinate the additive ABI with `validate_gui`.
+- [x] **TDD/add immutable enumeration sizes to the batch ABI:** added additive
+      ABI v2.3 `validate_batch_sized()` with positional `size_t` discovery
+      metadata and `SIZE_MAX` unknown sentinel; retained `validate_batch()`
+      unchanged. The CLI passes its already-reordered immutable enumeration
+      sizes, so admission, large-file gating, and diagnostics avoid two extra
+      stats per known path while an actual opened file remains authoritative
+      for validation. The red regression proves a supplied size defeats the
+      missing-path 1 MiB stat fallback, and the bounded-callback test exercises
+      the public entry point. On the fixed 512-file RAM fixture, old/current
+      JSON results were byte-identical; `openat` stayed 547 while path stats
+      fell 3,091→2,067, exactly −1,024 (−28.1% total path syscalls).
+      Single-worker CPU/wall/RSS sample was 0.65/0.48/26.91s/5,160KiB before
+      and 0.64/0.49/26.81s/3,116KiB after—metadata counts are the accepted
+      stable evidence, not the noisy wall-time difference. Curiosity poke
+      answered: the sample revealed a separate 50ms-per-task admission delay,
+      queued next. Completed 2026-07-15 08:29 EDT.
+- [ ] **TDD/remove single-worker RSS-admission cadence tax:** when one worker
+      has exhausted a one-permit admission batch, the gate delays its next RSS
+      sample by 50ms even with no pressure, producing ~25.6s idle wall time
+      for 512 tiny files. Permit a non-pressured, no-waiter lone worker to
+      sample immediately while retaining the centralized/hysteretic gate for
+      concurrent workers and all pressure recovery. Curiosity poke: prove a
+      multi-worker low-RSS batch cannot stampede and an already-pressured gate
+      retains the existing 50ms cadence and one-task forward-progress escape.
 - [ ] **Profile then TDD/remediate repeated deep-PDF work:** eliminate the
       file-backed mmap→copy where a mapped slice is safe, unify the file/buffer
       pipelines, and share immutable PDF object/stream discovery (including

@@ -54,7 +54,10 @@ extern "C" {
 
 /* ABI version */
 #define VALIDATE_ABI_VERSION_MAJOR 2
-#define VALIDATE_ABI_VERSION_MINOR 2
+#define VALIDATE_ABI_VERSION_MINOR 3
+
+/* `validate_batch_sized()` entry value that requests a best-effort stat. */
+#define VALIDATE_BATCH_SIZE_UNKNOWN SIZE_MAX
 
 /* Error codes (returned by validate_batch) */
 typedef enum {
@@ -526,6 +529,36 @@ void validate_set_begin_callback(validate_begin_callback_t callback, void* ctx);
 validate_error_t validate_batch(
     const char* const* paths,
     const uint32_t* ids,
+    size_t count,
+    int num_threads,
+    validate_callback_t callback,
+    void* ctx
+);
+
+/**
+ * Validate multiple files in parallel using immutable enumeration sizes for
+ * scheduling. This is an additive alternative to validate_batch().
+ *
+ * `discovery_sizes` is positional with `paths`. Pass NULL when no sizes are
+ * available; pass VALIDATE_BATCH_SIZE_UNKNOWN for an individual unknown size.
+ * Values are best-effort admission, large-file-gate, and diagnostic metadata:
+ * they never decide the validation verdict, for which the opened file remains
+ * authoritative. The array must remain valid until this synchronous call
+ * returns.
+ *
+ * @param paths Array of file paths (null-terminated UTF-8 strings)
+ * @param ids Array of caller-provided IDs (echoed in callbacks)
+ * @param discovery_sizes Best-effort byte sizes from enumeration, or NULL
+ * @param count Number of files
+ * @param num_threads Thread count (0 = auto-detect)
+ * @param callback Called once per file with result
+ * @param ctx User context passed to callback
+ * @return VALIDATE_OK on success, error code on failure
+ */
+validate_error_t validate_batch_sized(
+    const char* const* paths,
+    const uint32_t* ids,
+    const size_t* discovery_sizes,
     size_t count,
     int num_threads,
     validate_callback_t callback,

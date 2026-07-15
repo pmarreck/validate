@@ -1131,8 +1131,13 @@ const BatchContext = struct {
 };
 
 /// Task for thread pool
+/// `discovery_size` is immutable, best-effort enumeration metadata. The
+/// validator's open file remains authoritative for the validation verdict.
+const BATCH_DISCOVERY_SIZE_UNKNOWN = std.math.maxInt(usize);
+
 const BatchTask = struct {
     index: usize,
+    discovery_size: usize = BATCH_DISCOVERY_SIZE_UNKNOWN,
 };
 
 /// Transfers one serialized result from a validation worker to the dedicated
@@ -1392,6 +1397,10 @@ fn estimatePathBudget(path_slice: []const u8) usize {
     return @intCast(size);
 }
 
+fn batchTaskDiscoverySize(task: BatchTask) ?usize {
+    return if (task.discovery_size == BATCH_DISCOVERY_SIZE_UNKNOWN) null else task.discovery_size;
+}
+
 fn pathEndsWithCaseless(path_slice: []const u8, suffix: []const u8) bool {
     if (path_slice.len < suffix.len) return false;
     return std.ascii.eqlIgnoreCase(path_slice[path_slice.len - suffix.len ..], suffix);
@@ -1409,6 +1418,7 @@ fn heapDebugFormatHint(path_slice: []const u8) [*:0]const u8 {
 }
 
 fn estimateBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) usize {
+    if (batchTaskDiscoverySize(task)) |size| return size;
     const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return 1024 * 1024));
     const path_ptr = ctx.paths[task.index] orelse return 1024 * 1024;
     const path_slice = std.mem.span(path_ptr);
@@ -1428,7 +1438,10 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) BatchCompletion {
     const path_ptr = ctx.paths[task.index] orelse return .{};
     const id = ctx.ids[task.index];
     const path_slice = std.mem.span(path_ptr);
-    const file_size_opt = statFileSize(path_slice);
+    const file_size_opt: ?u64 = if (batchTaskDiscoverySize(task)) |size|
+        @intCast(size)
+    else
+        statFileSize(path_slice);
     const file_size: u64 = file_size_opt orelse 0;
     const reserved_bytes: u64 = @intCast(file_size_opt orelse 1024 * 1024);
     const format_hint = heapDebugFormatHint(path_slice);
@@ -1513,6 +1526,33 @@ fn capBatchThreadCount(queued_tasks: usize, requested_threads: usize) usize {
 export fn validate_batch(
     paths: ?[*]const ?[*:0]const u8,
     ids: ?[*]const u32,
+    count: usize,
+    num_threads: c_int,
+    callback: ValidateCallback,
+    ctx: ?*anyopaque,
+) c_int {
+    return validateBatch(paths, ids, null, count, num_threads, callback, ctx);
+}
+
+/// Validate multiple files in parallel using immutable enumeration sizes for
+/// scheduling. A NULL array or BATCH_DISCOVERY_SIZE_UNKNOWN entry falls back
+/// to a best-effort stat; sizes never determine a validation verdict.
+export fn validate_batch_sized(
+    paths: ?[*]const ?[*:0]const u8,
+    ids: ?[*]const u32,
+    discovery_sizes: ?[*]const usize,
+    count: usize,
+    num_threads: c_int,
+    callback: ValidateCallback,
+    ctx: ?*anyopaque,
+) c_int {
+    return validateBatch(paths, ids, discovery_sizes, count, num_threads, callback, ctx);
+}
+
+fn validateBatch(
+    paths: ?[*]const ?[*:0]const u8,
+    ids: ?[*]const u32,
+    discovery_sizes: ?[*]const usize,
     count: usize,
     num_threads: c_int,
     callback: ValidateCallback,
@@ -1603,7 +1643,8 @@ export fn validate_batch(
 
     // Submit all tasks
     for (0..count) |i| {
-        pool.submit(.{ .index = i }) catch {
+        const discovery_size = if (discovery_sizes) |sizes| sizes[i] else BATCH_DISCOVERY_SIZE_UNKNOWN;
+        pool.submit(.{ .index = i, .discovery_size = discovery_size }) catch {
             pool.shutdown();
             pool.wait();
             errors.setLastError(.internal_out_of_memory, "Failed to submit task", .{});
@@ -2218,6 +2259,27 @@ test "completion queue debug snapshot is unavailable without an active batch" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.high_water);
 }
 
+test "batch task uses supplied enumeration size without restatting its path" {
+    const missing: [:0]const u8 = "/validate-test-missing-enumeration-size";
+    var paths = [_]?[*:0]const u8{missing.ptr};
+    var ids = [_]u32{7};
+    var delivery = BatchResultDelivery.init(std.testing.allocator);
+    var context = BatchContext{
+        .callback = null,
+        .user_ctx = null,
+        .paths = &paths,
+        .ids = &ids,
+        .outer_job_count = 1,
+        .delivery = &delivery,
+    };
+
+    const task = BatchTask{ .index = 0, .discovery_size = 4096 };
+    try std.testing.expectEqual(@as(usize, 4096), estimateBatchTask(task, @ptrCast(&context)));
+
+    const unknown = BatchTask{ .index = 0 };
+    try std.testing.expectEqual(@as(usize, 1024 * 1024), estimateBatchTask(unknown, @ptrCast(&context)));
+}
+
 test "batch completion executor bounds callback I/O and delivers every result" {
     const Context = struct {
         mutex: std.Io.Mutex = .init,
@@ -2228,6 +2290,7 @@ test "batch completion executor bounds callback I/O and delivers every result" {
         status: c_int = -1,
         paths: [*]const ?[*:0]const u8,
         ids: [*]const u32,
+        discovery_sizes: [*]const usize,
 
         fn callback(
             context_ptr: ?*anyopaque,
@@ -2250,14 +2313,15 @@ test "batch completion executor bounds callback I/O and delivers every result" {
         }
 
         fn run(self: *@This()) void {
-            self.status = validate_batch(self.paths, self.ids, 4, 1, callback, self);
+            self.status = validate_batch_sized(self.paths, self.ids, self.discovery_sizes, 4, 1, callback, self);
         }
     };
 
     const missing: [:0]const u8 = "/validate-test-missing-completion-queue";
     var paths = [_]?[*:0]const u8{ missing.ptr, missing.ptr, missing.ptr, missing.ptr };
     var ids = [_]u32{ 10, 11, 12, 13 };
-    var context = Context{ .paths = &paths, .ids = &ids };
+    var discovery_sizes = [_]usize{ 4096, 4096, 4096, 4096 };
+    var context = Context{ .paths = &paths, .ids = &ids, .discovery_sizes = &discovery_sizes };
     validate_set_scheduler_debug_tracking(1);
     defer validate_set_scheduler_debug_tracking(0);
     var batch = try std.Thread.spawn(.{}, Context.run, .{&context});
