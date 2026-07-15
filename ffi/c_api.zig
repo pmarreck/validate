@@ -1047,6 +1047,46 @@ const ValidateCallback = ?*const fn (
     result: [*:0]u8,
 ) callconv(.c) void;
 
+const BatchResultDeliveryFailure = enum(u8) {
+    none,
+    result_out_of_memory,
+};
+
+/// Keeps result serialization separate from validation so an OOM cannot make a
+/// worker silently omit an input while the enclosing batch reports success.
+const BatchResultDelivery = struct {
+    allocator: std.mem.Allocator,
+    terminal_failure: std.atomic.Value(BatchResultDeliveryFailure) = .init(.none),
+
+    fn init(allocator: std.mem.Allocator) BatchResultDelivery {
+        return .{ .allocator = allocator };
+    }
+
+    /// Serializes a callback result and records allocation failure for the
+    /// batch owner, which converts it to a non-successful terminal status.
+    fn buildResult(
+        self: *BatchResultDelivery,
+        result: format_validation.ValidationResult,
+        elapsed_ns: i64,
+    ) ?[:0]u8 {
+        return buildValidationResult(self.allocator, result, elapsed_ns) catch {
+            self.terminal_failure.store(.result_out_of_memory, .seq_cst);
+            return null;
+        };
+    }
+
+    fn failure(self: *const BatchResultDelivery) BatchResultDeliveryFailure {
+        return self.terminal_failure.load(.seq_cst);
+    }
+
+    fn statusCode(self: *const BatchResultDelivery) c_int {
+        return switch (self.failure()) {
+            .none => 0,
+            .result_out_of_memory => 3, // VALIDATE_ERR_OUT_OF_MEMORY
+        };
+    }
+};
+
 /// Batch context
 const BatchContext = struct {
     callback: ValidateCallback,
@@ -1054,6 +1094,7 @@ const BatchContext = struct {
     paths: [*]const ?[*:0]const u8,
     ids: [*]const u32,
     outer_job_count: usize,
+    delivery: *BatchResultDelivery,
 };
 
 /// Task for thread pool
@@ -1385,8 +1426,10 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     const result = validator.validateFileDeep(task_alloc, path_slice);
     const elapsed_ns: i64 = @intCast(nanoTimestamp() - start_ns);
 
-    // Build result string
-    const result_str = buildValidationResult(std.heap.page_allocator, result, elapsed_ns) catch return;
+    // A worker may only omit its callback when it has atomically made the
+    // enclosing batch non-successful; otherwise success means every task was
+    // delivered to the caller's callback.
+    const result_str = ctx.delivery.buildResult(result, elapsed_ns) orelse return;
 
     // Call user callback
     heapDebugTaskSetPhase(heap_task_slot, phase_callback);
@@ -1446,12 +1489,14 @@ export fn validate_batch(
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    var result_delivery = BatchResultDelivery.init(std.heap.page_allocator);
     var batch_ctx = BatchContext{
         .callback = callback,
         .user_ctx = ctx,
         .paths = paths.?,
         .ids = ids orelse &[_]u32{}, // Use empty array if null, tasks will use index
         .outer_job_count = actual_threads,
+        .delivery = &result_delivery,
     };
 
     // Memory budget: gates worker dequeue. estimate_fn returns stat.size,
@@ -1501,6 +1546,12 @@ export fn validate_batch(
 
     pool.shutdown();
     pool.wait();
+
+    const delivery_status = batch_ctx.delivery.statusCode();
+    if (delivery_status != 0) {
+        errors.setLastError(.internal_out_of_memory, "Failed to allocate batch result", .{});
+        return delivery_status;
+    }
 
     return 0; // VALIDATE_OK
 }
@@ -2089,6 +2140,16 @@ test "scheduler debug snapshot is unavailable without an active batch" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.queue_empty_wait_ns);
     try std.testing.expectEqual(@as(u64, 0), snapshot.memory_budget_wait_ns);
     try std.testing.expectEqual(@as(u64, 0), snapshot.rss_pressure_wait_ns);
+}
+
+test "batch result serialization OOM becomes a terminal batch failure" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var delivery = BatchResultDelivery.init(failing.allocator());
+    const result = format_validation.ValidationResult.invalidCode(.unknown, .failed_to_open, "fixture");
+
+    try std.testing.expect(delivery.buildResult(result, 0) == null);
+    try std.testing.expectEqual(.result_out_of_memory, delivery.failure());
+    try std.testing.expectEqual(@as(c_int, 3), delivery.statusCode());
 }
 
 test "active batch telemetry retirement is serialized with snapshot leases" {

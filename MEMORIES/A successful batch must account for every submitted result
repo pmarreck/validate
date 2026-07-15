@@ -1,0 +1,6 @@
+When result serialization for a C callback fails independently of deep
+validation, the worker must atomically record a terminal delivery failure.
+After draining workers, `validate_batch` returns a non-success status instead
+of claiming a successful batch whose caller received fewer results than it
+submitted. Keep serialization allocation injectable in tests so a failing
+allocator can prove this contract without weakening the production allocator.

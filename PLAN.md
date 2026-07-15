@@ -42,12 +42,16 @@ at the bottom. Older completed sections were rolled up — full history lives in
       poke answered: a growing file still reads its initially bounded prefix;
       only a shrink violates the established ownership contract. Focused test,
       full `./test`, and `./build` green. Completed 2026-07-14 16:12 EDT.
-- [ ] **TDD/review critical #3 — make batch delivery exhaustive or fail:**
-      record a thread-safe terminal task error when result serialization cannot
-      allocate, then return non-OK (or an explicit unvalidated result) rather
-      than silently omitting an input from a successful batch. Curiosity poke:
-      inject result-builder OOM and assert exact callback/input accounting;
-      this must remain true under the highest permitted memory backpressure.
+- [x] **TDD/review critical #3 — make batch delivery exhaustive or fail:**
+      result serialization now atomically records terminal OOM in the shared
+      batch delivery state; workers may skip a callback only after doing so,
+      and the waiting caller returns `VALIDATE_ERR_OUT_OF_MEMORY` rather than
+      successful completion. The injected failing-allocator regression proves
+      the non-success terminal status. Curiosity poke answered: the new
+      atomic is written only on the OOM branch and read only after pool drain,
+      retaining the deep-validation and successful-callback hot paths.
+      Focused test, full `./test`, and `./build` green. Completed 2026-07-14
+      22:56 EDT.
 
 - [x] **LibRaw CDDL-1.0 election:** recorded Peter's selected LibRaw license,
       bundled the canonical CDDL-1.0 text, and made the release inventory
