@@ -39,6 +39,10 @@ pub const SchedulerDebugStats = struct {
         rss_pressure_wait_ns: u64,
         rss_pressure_wait_events: u64,
         rss_pressure_waiters: u64,
+        completion_queue_wait_ns: u64,
+        completion_queue_wait_events: u64,
+        completion_queue_waiters: u64,
+        completion_queue_high_water: u64,
     };
 
     worker_count: std.atomic.Value(u64) = .init(0),
@@ -51,6 +55,10 @@ pub const SchedulerDebugStats = struct {
     rss_pressure_wait_ns: std.atomic.Value(u64) = .init(0),
     rss_pressure_wait_events: std.atomic.Value(u64) = .init(0),
     rss_pressure_waiters: std.atomic.Value(u64) = .init(0),
+    completion_queue_wait_ns: std.atomic.Value(u64) = .init(0),
+    completion_queue_wait_events: std.atomic.Value(u64) = .init(0),
+    completion_queue_waiters: std.atomic.Value(u64) = .init(0),
+    completion_queue_high_water: std.atomic.Value(u64) = .init(0),
 
     pub fn init() SchedulerDebugStats {
         return .{};
@@ -104,6 +112,28 @@ pub const SchedulerDebugStats = struct {
         self.recordRssPressureWait(elapsed_ns);
     }
 
+    fn beginCompletionQueueWait(self: *SchedulerDebugStats) void {
+        _ = self.completion_queue_waiters.fetchAdd(1, .seq_cst);
+    }
+
+    fn endCompletionQueueWait(self: *SchedulerDebugStats, elapsed_ns: u64) void {
+        _ = self.completion_queue_waiters.fetchSub(1, .seq_cst);
+        _ = self.completion_queue_wait_ns.fetchAdd(elapsed_ns, .seq_cst);
+        _ = self.completion_queue_wait_events.fetchAdd(1, .seq_cst);
+    }
+
+    fn recordCompletionQueueDepth(self: *SchedulerDebugStats, depth: usize) void {
+        const value: u64 = @intCast(depth);
+        var prior = self.completion_queue_high_water.load(.monotonic);
+        while (value > prior) {
+            if (self.completion_queue_high_water.cmpxchgWeak(prior, value, .monotonic, .monotonic)) |actual| {
+                prior = actual;
+            } else {
+                return;
+            }
+        }
+    }
+
     pub fn snapshot(self: *const SchedulerDebugStats) Snapshot {
         return .{
             .worker_count = self.worker_count.load(.seq_cst),
@@ -116,6 +146,10 @@ pub const SchedulerDebugStats = struct {
             .rss_pressure_wait_ns = self.rss_pressure_wait_ns.load(.seq_cst),
             .rss_pressure_wait_events = self.rss_pressure_wait_events.load(.seq_cst),
             .rss_pressure_waiters = self.rss_pressure_waiters.load(.seq_cst),
+            .completion_queue_wait_ns = self.completion_queue_wait_ns.load(.seq_cst),
+            .completion_queue_wait_events = self.completion_queue_wait_events.load(.seq_cst),
+            .completion_queue_waiters = self.completion_queue_waiters.load(.seq_cst),
+            .completion_queue_high_water = self.completion_queue_high_water.load(.seq_cst),
         };
     }
 };
@@ -297,35 +331,61 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         const ResultQueue = if (has_results) struct {
             mutex: std.Io.Mutex = .init,
             cond: std.Io.Condition = .init,
-            items: std.ArrayListUnmanaged(ResultData) = .empty,
+            buf: []ResultData,
+            head: usize = 0,
+            len: usize = 0,
             closed: bool = false,
             alloc: Allocator,
 
-            pub fn init(allocator: Allocator) @This() {
-                return .{ .alloc = allocator };
+            pub fn init(allocator: Allocator, capacity: usize) !@This() {
+                return .{
+                    .buf = try allocator.alloc(ResultData, @max(@as(usize, 1), capacity)),
+                    .alloc = allocator,
+                };
             }
 
             pub fn deinit(self: *@This()) void {
-                self.items.deinit(self.alloc);
+                self.alloc.free(self.buf);
             }
 
-            pub fn push(self: *@This(), item: ResultData) !void {
+            /// Enqueues a completion without allocating. A full queue blocks
+            /// producers until the dedicated callback thread drains one item,
+            /// bounding result memory instead of silently dropping callbacks.
+            pub fn push(self: *@This(), item: ResultData, scheduler_debug: ?*SchedulerDebugStats) void {
                 self.mutex.lockUncancelable(runtime.io());
                 defer self.mutex.unlock(runtime.io());
-                try self.items.append(self.alloc, item);
+                while (self.len == self.buf.len and !self.closed) {
+                    if (scheduler_debug) |debug| {
+                        debug.beginCompletionQueueWait();
+                        const wait_start_ns = runtime.nanoTimestamp();
+                        self.cond.waitUncancelable(runtime.io(), &self.mutex);
+                        debug.endCompletionQueueWait(elapsedNanoseconds(wait_start_ns));
+                    } else {
+                        self.cond.waitUncancelable(runtime.io(), &self.mutex);
+                    }
+                }
+                if (self.closed) return;
+                const tail = (self.head + self.len) % self.buf.len;
+                self.buf[tail] = item;
+                self.len += 1;
+                if (scheduler_debug) |debug| debug.recordCompletionQueueDepth(self.len);
                 self.cond.signal(runtime.io());
             }
 
             pub fn pop(self: *@This()) ?ResultData {
                 self.mutex.lockUncancelable(runtime.io());
                 defer self.mutex.unlock(runtime.io());
-                while (self.items.items.len == 0 and !self.closed) {
+                while (self.len == 0 and !self.closed) {
                     self.cond.waitUncancelable(runtime.io(), &self.mutex);
                 }
-                if (self.items.items.len == 0) {
+                if (self.len == 0) {
                     return null;
                 }
-                return self.items.pop();
+                const item = self.buf[self.head];
+                self.head = (self.head + 1) % self.buf.len;
+                self.len -= 1;
+                self.cond.signal(runtime.io());
+                return item;
             }
 
             pub fn close(self: *@This()) void {
@@ -425,6 +485,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
             admission_gate: ?AdmissionGate,
         ) !*Self {
             const actual_jobs = @max(@as(usize, 1), job_count);
+            const result_queue_capacity = @max(@as(usize, 2), actual_jobs * 2);
 
             // Allocate pool on heap
             const self = try allocator.create(Self);
@@ -432,7 +493,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
 
             self.* = Self{
                 .work_queue = WorkQueue.init(allocator),
-                .result_queue = if (has_results) ResultQueue.init(allocator) else {},
+                .result_queue = if (has_results) try ResultQueue.init(allocator, result_queue_capacity) else {},
                 .workers = try allocator.alloc(std.Thread, actual_jobs),
                 .pending_count = std.atomic.Value(usize).init(0),
                 .shutdown_flag = std.atomic.Value(bool).init(false),
@@ -558,9 +619,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
 
                     // Push result (if we have a result callback)
                     if (self.result_callback != null) {
-                        self.result_queue.push(result) catch {
-                            // If we can't push result, still decrement pending
-                        };
+                        self.result_queue.push(result, self.scheduler_debug);
                     }
                 } else {
                     // void result - just execute the task
@@ -722,6 +781,74 @@ test "ThreadPool basic functionality" {
     pool.wait();
 
     try std.testing.expectEqual(@as(usize, 3), results_collected);
+}
+
+test "ThreadPool bounds completion delivery and records worker backpressure" {
+    const Pool = ThreadPool(u32, u32);
+    const Context = struct {
+        mutex: std.Io.Mutex = .init,
+        cond: std.Io.Condition = .init,
+        task_calls: usize = 0,
+        callback_calls: usize = 0,
+        callback_blocked: bool = false,
+        release_callback: bool = false,
+    };
+
+    var context: Context = .{};
+    var debug = SchedulerDebugStats.init();
+    const pool = try Pool.createWithBudgetAndDebugAndAdmission(
+        std.testing.allocator,
+        1,
+        struct {
+            fn exec(value: u32, context_ptr: ?*anyopaque) u32 {
+                const ctx: *Context = @ptrCast(@alignCast(context_ptr));
+                ctx.mutex.lockUncancelable(runtime.io());
+                ctx.task_calls += 1;
+                ctx.cond.broadcast(runtime.io());
+                ctx.mutex.unlock(runtime.io());
+                return value;
+            }
+        }.exec,
+        &context,
+        struct {
+            fn callback(_: u32, context_ptr: ?*anyopaque) void {
+                const ctx: *Context = @ptrCast(@alignCast(context_ptr));
+                ctx.mutex.lockUncancelable(runtime.io());
+                defer ctx.mutex.unlock(runtime.io());
+                ctx.callback_calls += 1;
+                if (ctx.callback_calls == 1) {
+                    ctx.callback_blocked = true;
+                    ctx.cond.broadcast(runtime.io());
+                    while (!ctx.release_callback) {
+                        ctx.cond.waitUncancelable(runtime.io(), &ctx.mutex);
+                    }
+                }
+            }
+        }.callback,
+        &context,
+        null,
+        null,
+        &debug,
+        null,
+    );
+    defer pool.destroy();
+
+    for (0..4) |value| try pool.submit(@intCast(value));
+    pool.shutdown();
+
+    context.mutex.lockUncancelable(runtime.io());
+    while (!context.callback_blocked or context.task_calls < 4) {
+        context.cond.waitUncancelable(runtime.io(), &context.mutex);
+    }
+    const snapshot = debug.snapshot();
+    try std.testing.expect(snapshot.completion_queue_wait_events > 0);
+    try std.testing.expectEqual(@as(u64, 2), snapshot.completion_queue_high_water);
+    context.release_callback = true;
+    context.cond.broadcast(runtime.io());
+    context.mutex.unlock(runtime.io());
+
+    pool.wait();
+    try std.testing.expectEqual(@as(usize, 4), context.callback_calls);
 }
 
 test "ThreadPool without result callback" {

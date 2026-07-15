@@ -1,0 +1,6 @@
+Dedicated callback executors only solve worker-side I/O backpressure when their
+handoff queue is bounded and cannot allocate per completion. Preallocate a
+FIFO relative to worker width, block producers only when it fills, and expose
+cumulative producer wait nanoseconds, wait events/waiters, and high-water
+depth. Test the full condition with a condition-variable latch, not a sleep,
+and prove every queued completion is delivered after release.

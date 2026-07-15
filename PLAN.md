@@ -118,6 +118,14 @@ at the bottom. Older completed sections were rolled up — full history lives in
       JSON/verdict/depth parity for normal, `@null`, and deliberately slow
       output destinations; never exchange a worker bottleneck for unbounded
       result memory.
+- [x] **TDD foundation for critical #5 — bounded generic completion queue:**
+      replaced the generic pool's allocating, LIFO result list with a
+      preallocated FIFO capped at `max(2, 2 × workers)`. A latch-driven test
+      blocks its callback, fills the two-slot queue, observes a producer wait
+      event and high-water mark of two, then releases it and proves all four
+      results arrive. This establishes bounded memory and worker wait-ns
+      telemetry before `validate_batch` adopts the result type. Focused test,
+      full `./test`, and `./build` green. Completed 2026-07-15 01:18 EDT.
 - [ ] **TDD/remediate redundant small-file I/O:** route deep validation before
       reopening a structural-only file, and carry immutable enumeration size
       metadata into an additive sized-batch FFI entry point so admission,
