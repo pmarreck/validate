@@ -25,7 +25,11 @@ pub const FileSource = struct {
 
     const Backing = union(enum) {
         mapped: MappedData,
+        /// Owning file handle, created by `open` and released by `close`.
         file: std.Io.File,
+        /// Borrowed file handle, created by `fromFile`; only the caller may
+        /// close it. This keeps structural and deep validation on one handle.
+        borrowed_file: std.Io.File,
         /// Borrowed in-memory buffer (caller owns the data). close() is a no-op.
         buffer: []const u8,
     };
@@ -131,9 +135,35 @@ pub const FileSource = struct {
         runtime.ensureInit();
         const file_size = file.length(runtime.io()) catch 0;
         return .{
-            .backing = .{ .file = file },
+            .backing = .{ .borrowed_file = file },
             .file_size = file_size,
         };
+    }
+
+    /// Builds a zero-copy source from a caller-owned file when mapping is safe.
+    /// It preserves the source's borrowed-handle contract: `close` unmaps a
+    /// successful mapping but never closes the original descriptor on fallback.
+    pub fn fromFilePreferMapped(file: std.Io.File) FileSource {
+        runtime.ensureInit();
+        const file_size = file.length(runtime.io()) catch 0;
+        if (file_size == 0 or file_size > 8 * 1024 * 1024 * 1024) {
+            return .{ .backing = .{ .borrowed_file = file }, .file_size = file_size };
+        }
+        if (comptime @import("builtin").os.tag != .windows) {
+            const mapped = std.posix.mmap(
+                null,
+                @intCast(file_size),
+                .{ .READ = true },
+                .{ .TYPE = .SHARED },
+                file.handle,
+                0,
+            ) catch {
+                return .{ .backing = .{ .borrowed_file = file }, .file_size = file_size };
+            };
+            std.posix.madvise(@constCast(mapped.ptr), mapped.len, std.posix.MADV.RANDOM) catch {};
+            return .{ .backing = .{ .mapped = .{ .data = mapped } }, .file_size = file_size };
+        }
+        return .{ .backing = .{ .borrowed_file = file }, .file_size = file_size };
     }
 
     /// Wrap an existing in-memory buffer as a FileSource. Zero-copy — the caller
@@ -156,6 +186,7 @@ pub const FileSource = struct {
                 }
             },
             .file => |f| f.close(runtime.io()),
+            .borrowed_file => {},
             .buffer => {}, // no-op, caller owns the buffer
         }
     }
@@ -207,6 +238,12 @@ pub const FileSource = struct {
                 self.pos += n;
                 return n;
             },
+            .borrowed_file => |f| {
+                runtime.ensureInit();
+                const n = try f.readPositional(runtime.io(), &.{dest}, self.pos);
+                self.pos += n;
+                return n;
+            },
         }
     }
 
@@ -237,6 +274,12 @@ pub const FileSource = struct {
                 self.pos += n;
                 return n;
             },
+            .borrowed_file => |f| {
+                runtime.ensureInit();
+                const n = try f.readPositionalAll(runtime.io(), dest, self.pos);
+                self.pos += n;
+                return n;
+            },
         }
     }
 
@@ -256,7 +299,7 @@ pub const FileSource = struct {
     pub fn isMapped(self: *const FileSource) bool {
         return switch (self.backing) {
             .mapped, .buffer => true,
-            .file => false,
+            .file, .borrowed_file => false,
         };
     }
 
@@ -267,7 +310,7 @@ pub const FileSource = struct {
         return switch (self.backing) {
             .mapped => |m| m.data,
             .buffer => |b| b,
-            .file => null,
+            .file, .borrowed_file => null,
         };
     }
 
@@ -318,8 +361,6 @@ pub const FileSource = struct {
         if (n != buf.len) return error.UnexpectedEof;
         return .{ .heap = buf };
     }
-
-
     /// Error type for FileSource reader — covers all backing variants.
     pub const ReaderError = std.Io.File.ReadPositionalError || error{Unseekable};
 
@@ -377,6 +418,28 @@ test "FileSource mmap read and seek" {
     // getEndPos
     const end = try source.getEndPos();
     try std.testing.expectEqual(@as(u64, content.len), end);
+}
+
+test "FileSource borrowed sources leave the caller handle open after close" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(runtime.io(), .{ .sub_path = "borrowed.bin", .data = "borrowed handle" });
+
+    const file = try tmp.dir.openFile(runtime.io(), "borrowed.bin", .{});
+    defer file.close(runtime.io());
+    var source = FileSource.fromFile(file);
+    source.close();
+
+    var byte: [1]u8 = undefined;
+    const read = try file.readPositional(runtime.io(), &.{&byte}, 0);
+    try std.testing.expectEqual(@as(usize, 1), read);
+    try std.testing.expectEqual(@as(u8, 'b'), byte[0]);
+
+    var preferred = FileSource.fromFilePreferMapped(file);
+    preferred.close();
+    const second_read = try file.readPositional(runtime.io(), &.{&byte}, 0);
+    try std.testing.expectEqual(@as(usize, 1), second_read);
+    try std.testing.expectEqual(@as(u8, 'b'), byte[0]);
 }
 
 test "FileSource read past end returns partial" {

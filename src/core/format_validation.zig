@@ -5314,20 +5314,12 @@ pub const FormatValidator = struct {
         self.check_resource_forks = enabled;
     }
 
-    /// Validate a file at the given path (structural validation only).
-    /// Returns validation result with detected format and validity.
-    /// Note: For bundle directories (.git, etc.), use validateFileDeep which
-    /// has an allocator and can perform full bundle validation.
-    pub fn validateFile(self: *Self, path: []const u8) ValidationResult {
-        if (!self.enabled) {
-            return ValidationResult.unknown();
-        }
-
-        // Check for bundle directories - these require deep validation
+    /// Classifies paths that cannot share a regular-file descriptor with deep
+    /// validation. Bundle and directory routes deliberately remain path-based;
+    /// regular files return null so structural and deep passes can share one FD.
+    fn preflightNonRegularPath(path: []const u8) ?ValidationResult {
         const bundle_type = detectBundleType(path);
         if (bundle_type != .none) {
-            // Bundle directories require allocator for validation.
-            // Return a result indicating this is a bundle that needs deep validation.
             return switch (bundle_type) {
                 .git => ValidationResult.okWithDepth(.git_repository, .structural),
                 .macos_app => ValidationResult.okWithDepth(.macos_app, .structural),
@@ -5339,36 +5331,49 @@ pub const FormatValidator = struct {
         }
 
         // SQLite companion files (.sqlite-wal, .sqlite-shm, .sqlite-journal)
-        // These are ephemeral files used by SQLite WAL/journal mode. They're
-        // not independently meaningful but should be recognized rather than UNKNOWN.
+        // are ephemeral and intentionally remain structural-only.
         if (isSqliteCompanionFile(path)) {
             return ValidationResult.okWithDepth(.sqlite, .structural);
         }
 
-        // Check if path is a directory (but not a known bundle)
         const stat = runtime.statFile(path) catch |err| {
             return resultForFileAccessError(err);
         };
-        if (stat.kind == .directory) {
-            // Check for BagIt bag (directory containing bagit.txt)
-            var bagit_path_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const bagit_txt_path = std.fmt.bufPrint(&bagit_path_buf, "{s}/bagit.txt", .{path}) catch {
-                return ValidationResult.invalidCode(.unknown, .unknown_element, "directory type (not a recognized bundle)");
-            };
-            if (runtime.access(bagit_txt_path, .{})) |_| {
-                return ValidationResult.okWithDepth(.bagit, .structural);
-            } else |_| {}
+        if (stat.kind != .directory) return null;
 
-            // Directory that is not a known bundle type - return continuable error
+        var bagit_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const bagit_txt_path = std.fmt.bufPrint(&bagit_path_buf, "{s}/bagit.txt", .{path}) catch {
             return ValidationResult.invalidCode(.unknown, .unknown_element, "directory type (not a recognized bundle)");
+        };
+        if (runtime.access(bagit_txt_path, .{})) |_| {
+            return ValidationResult.okWithDepth(.bagit, .structural);
+        } else |_| {}
+        return ValidationResult.invalidCode(.unknown, .unknown_element, "directory type (not a recognized bundle)");
+    }
+
+    /// Validate a file at the given path (structural validation only).
+    /// Returns validation result with detected format and validity.
+    /// Note: For bundle directories (.git, etc.), use validateFileDeep which
+    /// has an allocator and can perform full bundle validation.
+    pub fn validateFile(self: *Self, path: []const u8) ValidationResult {
+        if (!self.enabled) {
+            return ValidationResult.unknown();
         }
 
-        // Open the file
+        if (preflightNonRegularPath(path)) |result| return result;
+
         const file = runtime.openFile(path, .{}) catch |err| {
             return resultForFileAccessError(err);
         };
         defer file.close(runtime.io());
 
+        return self.validateOpenRegularFile(path, file);
+    }
+
+    /// Applies content/extension structural checks after a caller has opened a
+    /// regular file. Keeping this separate lets `validateFileDeep` reuse that
+    /// same descriptor for mmap-backed deep validation without a second open.
+    fn validateOpenRegularFile(self: *Self, path: []const u8, file: std.Io.File) ValidationResult {
         var result = self.validateFileHandle(file);
 
         // Bidi overrides are normal in subtitle files (RTL languages like Hebrew, Arabic)
@@ -5872,8 +5877,20 @@ pub const FormatValidator = struct {
             return ValidationResult.okWithDepth(.sqlite, .structural);
         }
 
-        // First do structural validation
-        var result = self.validateFile(path);
+        // Open regular files once, preserving the descriptor for the deep
+        // source. Bundle/directory routes remain path-based and use a harmless
+        // empty source only when their deep validator needs no file bytes.
+        var regular_file: ?std.Io.File = null;
+        var result = if (preflightNonRegularPath(path)) |preflight|
+            preflight
+        else blk: {
+            const file = runtime.openFile(path, .{}) catch |err| {
+                break :blk resultForFileAccessError(err);
+            };
+            regular_file = file;
+            break :blk self.validateOpenRegularFile(path, file);
+        };
+        defer if (regular_file) |file| file.close(runtime.io());
 
         // If structural validation failed, return early
         if (!result.is_valid) {
@@ -5906,16 +5923,11 @@ pub const FormatValidator = struct {
                 // Preserve malformations and format from structural validation
                 const structural_malformations = result.malformations;
                 const structural_format = result.format;
-                // Open a FileSource once and pass to all deep validators.
-                // Some arms (sqlite, bagit, git, macos bundles) use `path` instead of
-                // the source — and those formats may refer to directories where
-                // open() would succeed on the dir handle and then mmap would panic.
-                // Gate opening on whether the path is a regular file.
-                const is_regular_file = if (runtime.statFile(path)) |st|
-                    st.kind == .file
-                else |_| false;
-                var source = if (is_regular_file)
-                    FileSource.open(path) catch FileSource.fromBuffer(&.{})
+                // Reuse the structural descriptor. POSIX keeps its mmap fast
+                // path; a fallback remains borrowed file I/O and never opens
+                // or stats the path a second time.
+                var source = if (regular_file) |file|
+                    FileSource.fromFilePreferMapped(file)
                 else
                     FileSource.fromBuffer(&.{});
                 defer source.close();
@@ -8831,6 +8843,30 @@ test "text file without magic bytes is not flagged as corrupted" {
         else => false,
     };
     try std.testing.expect(has_no_magic);
+}
+
+test "deep regular text validation preserves the structural verdict" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(runtime.io(), .{
+        .sub_path = "notes.txt",
+        .data = "A structural-only UTF-8 note.\n",
+    });
+    const path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "notes.txt");
+    defer std.testing.allocator.free(path);
+
+    var structural_validator = FormatValidator.init();
+    defer structural_validator.deinit();
+    const structural = structural_validator.validateFile(path);
+
+    var deep_validator = FormatValidator.initDeep();
+    defer deep_validator.deinit();
+    const deep = deep_validator.validateFileDeep(std.testing.allocator, path);
+
+    try std.testing.expect(structural.is_valid);
+    try std.testing.expectEqual(structural.format, deep.format);
+    try std.testing.expectEqual(structural.is_valid, deep.is_valid);
+    try std.testing.expectEqual(structural.validation_depth, deep.validation_depth);
 }
 
 test "isPlainTextOrUnknown covers all plain_text variants" {

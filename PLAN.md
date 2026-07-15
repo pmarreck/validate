@@ -133,14 +133,23 @@ at the bottom. Older completed sections were rolled up — full history lives in
       results arrive. This establishes bounded memory and worker wait-ns
       telemetry before `validate_batch` adopts the result type. Focused test,
       full `./test`, and `./build` green. Completed 2026-07-15 01:18 EDT.
-- [ ] **TDD/remediate redundant small-file I/O:** route deep validation before
-      reopening a structural-only file, and carry immutable enumeration size
-      metadata into an additive sized-batch FFI entry point so admission,
-      large-file gating, and diagnostics do not re-stat each path. Curiosity
-      poke: retain the validator's own open as authority for changing files;
-      measure syscall count, CPU/wall/RSS/wait-ns, and exact verdict/depth
-      parity on the fixed 100k+ small-file window. Coordinate the additive ABI
-      with `validate_gui`.
+- [x] **TDD/review redundant deep re-open:** structural and deep validation
+      now share one regular-file descriptor. `FileSource` explicitly models
+      borrowed ownership, preserving POSIX mmap while a non-mmap fallback never
+      closes the caller's FD. A regression proves both borrowed source modes
+      leave the descriptor open; a text parity test and disk-vs-memory corrupt
+      PDF differential retain verdict/depth behavior. On the identical
+      512-file RAM-resident text fixture, canonical ReleaseFast binaries both
+      returned success while path `openat` fell 1,024→512 and path stats
+      2,561→2,049: 1,024 fewer path syscalls (−28.6%). Completed 2026-07-15
+      02:09 EDT.
+- [ ] **TDD/add immutable enumeration sizes to the batch ABI:** carry
+      best-effort discovery sizes into an additive sized-batch FFI entry point
+      so admission, large-file gating, and diagnostics do not re-stat each
+      path. Curiosity poke: the validator's shared open remains authoritative
+      for a changing file; measure syscall count, CPU/wall/RSS/wait-ns, and
+      exact verdict/depth parity on the fixed 100k+ small-file window.
+      Coordinate the additive ABI with `validate_gui`.
 - [ ] **Profile then TDD/remediate repeated deep-PDF work:** eliminate the
       file-backed mmap→copy where a mapped slice is safe, unify the file/buffer
       pipelines, and share immutable PDF object/stream discovery (including
