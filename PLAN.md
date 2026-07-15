@@ -159,14 +159,19 @@ at the bottom. Older completed sections were rolled up — full history lives in
       stable evidence, not the noisy wall-time difference. Curiosity poke
       answered: the sample revealed a separate 50ms-per-task admission delay,
       queued next. Completed 2026-07-15 08:29 EDT.
-- [ ] **TDD/remove single-worker RSS-admission cadence tax:** when one worker
-      has exhausted a one-permit admission batch, the gate delays its next RSS
-      sample by 50ms even with no pressure, producing ~25.6s idle wall time
-      for 512 tiny files. Permit a non-pressured, no-waiter lone worker to
-      sample immediately while retaining the centralized/hysteretic gate for
-      concurrent workers and all pressure recovery. Curiosity poke: prove a
-      multi-worker low-RSS batch cannot stampede and an already-pressured gate
-      retains the existing 50ms cadence and one-task forward-progress escape.
+- [x] **TDD/remove single-worker RSS-admission cadence tax:** added the pure
+      sampler-delay policy: after a first sample, only a pressured batch or a
+      batch with more than one potential worker retains the 50ms cadence. An
+      unpressured lone worker instead samples immediately, while the policy
+      regression explicitly retains both pressure and concurrent-worker
+      delays. On the fixed 512-file RAM fixture, byte-identical results went
+      from 26.58s wall / 0.65s user / 0.25s system to 0.88s / 0.67s / 0.16s:
+      wall −96.7% with no validation work removed. `HEAP_FRAG_DEBUG` confirmed
+      the false `rss_pressure` total fell 24,998,974,773ns / 499 events → 0,
+      with every other scheduler wait category remaining zero. Curiosity poke
+      answered: one-worker immediate samples are bounded cheap RSS reads;
+      pressured and concurrent paths keep centralized cadence. Completed
+      2026-07-15 08:40 EDT.
 - [ ] **Profile then TDD/remediate repeated deep-PDF work:** eliminate the
       file-backed mmap→copy where a mapped slice is safe, unify the file/buffer
       pipelines, and share immutable PDF object/stream discovery (including

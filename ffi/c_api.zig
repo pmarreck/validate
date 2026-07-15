@@ -1184,6 +1184,13 @@ const RssAdmissionPolicy = struct {
     pressured: bool = false,
     has_seen_pressure: bool = false,
 
+    /// Keeps the periodic sampler from busy-polling concurrent or pressured
+    /// batches, but lets a lone unpressured worker begin its next task without
+    /// paying an otherwise useless full sampling interval.
+    fn shouldDelayNextSample(self: RssAdmissionPolicy, sampled_once: bool, max_admissions: usize) bool {
+        return sampled_once and (self.pressured or max_admissions > 1);
+    }
+
     fn admissionCount(
         self: *RssAdmissionPolicy,
         rss: u64,
@@ -1273,7 +1280,7 @@ const RssAdmissionGate = struct {
             }
             if (!self.sampling_leader) {
                 self.sampling_leader = true;
-                const delay_first_sample = self.sampled_once;
+                const delay_first_sample = self.policy.shouldDelayNextSample(self.sampled_once, self.max_admissions);
                 self.mutex.unlock(runtime.io());
                 self.pollAsLeader(delay_first_sample, &debug_wait_start_ns);
                 return;
@@ -2428,6 +2435,15 @@ test "RSS admission policy holds pressure until the low watermark" {
     try std.testing.expectEqual(@as(usize, 0), policy.admissionCount(7 * gib, 8 * gib, 85, 1));
     try std.testing.expectEqual(@as(usize, 1), policy.admissionCount(7 * gib, 8 * gib, 85, 0));
     try std.testing.expectEqual(@as(usize, 8), policy.admissionCount(6 * gib, 8 * gib, 85, 0));
+}
+
+test "RSS admission cadence skips only an unpressured lone worker" {
+    const unpressured = RssAdmissionPolicy{};
+    try std.testing.expect(!unpressured.shouldDelayNextSample(true, 1));
+    try std.testing.expect(unpressured.shouldDelayNextSample(true, 2));
+
+    const pressured = RssAdmissionPolicy{ .pressured = true };
+    try std.testing.expect(pressured.shouldDelayNextSample(true, 1));
 }
 
 test "batch worker count never exceeds queued work" {
