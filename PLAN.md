@@ -172,13 +172,25 @@ at the bottom. Older completed sections were rolled up — full history lives in
       answered: one-worker immediate samples are bounded cheap RSS reads;
       pressured and concurrent paths keep centralized cadence. Completed
       2026-07-15 08:40 EDT.
-- [ ] **Profile then TDD/remediate repeated deep-PDF work:** eliminate the
-      file-backed mmap→copy where a mapped slice is safe, unify the file/buffer
-      pipelines, and share immutable PDF object/stream discovery (including
-      JBIG2 globals) between image/font/embedded/residual passes. Curiosity
-      poke: preserve every decode and malformed-xref fallback; accept only
-      after differential normal/malformed/encrypted/font-heavy tests and
-      PDF telemetry prove less copying, scanning, and re-inflation.
+- [x] **TDD/remove mapped deep-PDF document copy:** `validatePdfDeep()` now
+      reuses `FileSource.getMappedSlice()` for POSIX mmap and caller-owned
+      buffers, retaining the existing bounded allocation/read/short-read path
+      for non-mappable and Windows sources. A counting-allocator regression
+      requires zero document-sized allocations while a corrupt Flate stream
+      still FAILs. Normal/corrupt disk-vs-buffer, encrypted/font unit paths,
+      and the full suite remain green. The canonical 22.8 MiB NASA PDF,
+      100 rounds/mode, seed 42, strict single-worker coverage gate kept exact
+      Sniper/Bolter/Shotgun sensitivity (21/100, 33/100, 74/100) while peak
+      RSS fell 27.5%, 28.1%, and 26.0% respectively; wall time stayed flat
+      because every deep decode remains intact. Curiosity poke answered: the
+      slice lifetime is tied to `FileSource`, and fallback behavior retains
+      the previous complete-read contract. Completed 2026-07-15 10:11 EDT.
+- [ ] **Profile then TDD/unify repeated deep-PDF discovery:** share immutable
+      PDF object/stream discovery (including JBIG2 globals) between
+      image/font/embedded/residual passes. Curiosity poke: preserve every
+      decode and malformed-xref fallback; accept only after differential
+      normal/malformed/encrypted/font-heavy tests and PDF telemetry prove less
+      scanning and re-inflation.
 - [ ] **Measure platform-specific deep I/O before changing it:** profile real
       Windows x64/Arm64 `FileSource` positional reads and bounded-slurp depth
       downgrades; add a correctly-owned Windows mapping adapter only if the

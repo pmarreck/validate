@@ -582,18 +582,25 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	const safe_size = std.math.cast(usize, file_size) orelse {
 		return ValidationResult.okWithDepth(.pdf, .full);
 	};
-	const pdf_data = allocator.alloc(u8, safe_size) catch {
-		return ValidationResult.okWithDepth(.pdf, .full);
-	};
-	defer allocator.free(pdf_data);
+	// A mapped or caller-owned buffer already has a lifetime extending through
+	// every deep pass below. Reuse it rather than faulting and copying the whole
+	// document; regular-file and Windows fallbacks retain the bounded read path.
+	var copied_pdf_data: ?[]u8 = null;
+	defer if (copied_pdf_data) |data| allocator.free(data);
+	const pdf_data: []const u8 = source.getMappedSlice() orelse blk: {
+		const owned = allocator.alloc(u8, safe_size) catch {
+			return ValidationResult.okWithDepth(.pdf, .full);
+		};
+		copied_pdf_data = owned;
 
-	const read_bytes = source.readAll(pdf_data) catch {
-		return ValidationResult.okWithDepth(.pdf, .full);
+		const read_bytes = source.readAll(owned) catch {
+			return ValidationResult.okWithDepth(.pdf, .full);
+		};
+		if (read_bytes != file_size) {
+			return ValidationResult.invalidCodeWithDepth(.pdf, .incomplete, "read of PDF", .full);
+		}
+		break :blk owned;
 	};
-
-	if (read_bytes != file_size) {
-		return ValidationResult.invalidCodeWithDepth(.pdf, .incomplete, "read of PDF", .full);
-	}
 
 	// Validate embedded images
 	const image_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
@@ -1196,4 +1203,3 @@ test "FormatValidator detects MIME-wrapped PDF and warns loudly" {
     // Should have at least one malformation
     try std.testing.expect(result.hasMalformations());
 }
-

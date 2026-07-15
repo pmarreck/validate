@@ -7698,6 +7698,56 @@ const SyntheticPdf = struct {
     flate_len: usize,
 };
 
+/// Records allocations of one document-sized buffer while otherwise delegating
+/// unchanged. This makes the mapped-PDF no-copy invariant deterministic.
+const AllocationSizeCounter = struct {
+    inner: Allocator,
+    watched_size: usize,
+    watched_allocations: usize = 0,
+
+    fn init(inner: Allocator, watched_size: usize) AllocationSizeCounter {
+        return .{
+            .inner = inner,
+            .watched_size = watched_size,
+        };
+    }
+
+    fn allocator(self: *AllocationSizeCounter) Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &vtable,
+        };
+    }
+
+    const vtable: Allocator.VTable = .{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, return_address: usize) ?[*]u8 {
+        const self: *AllocationSizeCounter = @ptrCast(@alignCast(ctx));
+        if (len == self.watched_size) self.watched_allocations += 1;
+        return self.inner.rawAlloc(len, alignment, return_address);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, return_address: usize) bool {
+        const self: *AllocationSizeCounter = @ptrCast(@alignCast(ctx));
+        return self.inner.rawResize(memory, alignment, new_len, return_address);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, return_address: usize) ?[*]u8 {
+        const self: *AllocationSizeCounter = @ptrCast(@alignCast(ctx));
+        return self.inner.rawRemap(memory, alignment, new_len, return_address);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, return_address: usize) void {
+        const self: *AllocationSizeCounter = @ptrCast(@alignCast(ctx));
+        self.inner.rawFree(memory, alignment, return_address);
+    }
+};
+
 fn buildSyntheticFlatePdf(allocator: Allocator) !SyntheticPdf {
     const flate_payload =
         "BT\n" ++
@@ -7786,6 +7836,24 @@ test "deep validation detects same PDF Flate corruption from disk and memory" {
     corrupted[fixture.flate_offset + (fixture.flate_len / 2)] ^= 0xff;
 
     try expectDiskAndMemoryDeepVerdict(allocator, &tmp, "corrupt.pdf", .pdf, corrupted, false);
+}
+
+test "mapped PDF deep validation does not copy the full document" {
+    const allocator = std.testing.allocator;
+    const fixture = try buildSyntheticFlatePdf(allocator);
+    defer allocator.free(fixture.bytes);
+
+    const corrupted = try allocator.dupe(u8, fixture.bytes);
+    defer allocator.free(corrupted);
+    corrupted[fixture.flate_offset + (fixture.flate_len / 2)] ^= 0xff;
+
+    var source = FileSource.fromBuffer(corrupted);
+    defer source.close();
+    var counted = AllocationSizeCounter.init(allocator, corrupted.len);
+
+    const result = pdf_validator.validatePdfDeep(counted.allocator(), &source);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqual(@as(usize, 0), counted.watched_allocations);
 }
 
 
