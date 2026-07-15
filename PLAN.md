@@ -14,6 +14,22 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [ ] **Framework Regis corpus verdict audit:** analyze the 2026-07-15
+      validation TSV in place on `framework-nixos`; aggregate every FAIL/WARN,
+      then differentially inspect deterministic representative FAIL/WARN/PASS
+      samples with independent format readers. Curiosity poke: a PASS is not
+      evidence by itself—separate validator blind spots from formats for which
+      no independent oracle exists, and never copy confidential documents or
+      paths into the repository. First-pass evidence: qpdf + Ghostscript
+      accept sampled PDF JBIG2-global, missing-EOF, and recoverable-Flate
+      defects; libjpeg-turbo accepts missing-EOI JPEGs; LibreOffice accepts
+      DBFs without their terminal marker; DCMTK and GDCM accept sampled DICOM
+      VR cases. These belong to narrow WARN classifications, while malformed
+      ZIP CRCs, PNGs, corrupt-Huffman JPEGs, and unsupported WPD type 17 stay
+      FAIL. The inverse check found valid-labelled MP4s with H.264 decode and
+      missing external-media failures, plus valid-labelled ZIPs with malformed
+      extra-field lengths: both are priority false-negative remediations.
+
 - [x] **Deep code review:** completed a 13-dimension, evidence-based audit of
       current `yolo`, emphasizing validated performance and backpressure hot
       paths; consolidated verified findings in `CODE_REVIEW.md`. Curiosity

@@ -20,6 +20,7 @@ annotate=[
 	MEMORIES/Queue startup complexity needs an operation-count oracle = Project lesson: measure queue-selection complexity with actual-code comparator counts and preserve separate result-membership coverage.
 	MEMORIES/Reusing validation file descriptors requires explicit borrowed ownership = Project memory: shared structural/deep file descriptors require a non-closing borrowed source wrapper.
 	MEMORIES/Site test scripts must use glob helper with glob-disabled Bash = Project lesson: disabled Bash globbing can silently skip a test class; site test drivers use glob and require nonempty discovery.
+	PLAN.md = Active implementation and evidence queue; now records the in-place Framework corpus oracle audit.
 	bench/results/scheduler_backpressure.jsonl = Append-only machine-readable scheduler and nested-PDF performance experiment summaries
 	cli/main.c = C CLI adapter: enumeration, queue selection, progress, diagnostics, and passes discovered sizes to the sized core batch ABI.
 	cli/process_allocator_policy.h = Pure CLI policy: glibc defaults to two arenas unless MALLOC_ARENA_MAX is explicit
