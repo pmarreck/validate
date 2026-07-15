@@ -2,62 +2,75 @@
 
 set -u
 
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	exit 1
+}
+
 tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_frontload.XXXXXX")"
 trap 'rm -rf "$tmpdir"' EXIT
+mkdir "$tmpdir/in"
 
-# Create files of varying sizes
-# Small files (100 bytes)
-for i in 1 2 3 4 5 6 7 8 9; do
-	dd if=/dev/zero of="$tmpdir/small_$i.bin" bs=100 count=1 2>/dev/null
+# Fourteen valid text files ensure the default scatter path executes (>10),
+# with an unambiguous top-size group at P90: twelve 100-byte files and two
+# 100-KiB files. Keep result output outside the scanned tree.
+for i in $(seq 1 12); do
+	head -c 100 /dev/zero | tr '\0' 'a' >"$tmpdir/in/small_$i.txt"
+done
+for i in $(seq 1 2); do
+	head -c 102400 /dev/zero | tr '\0' 'b' >"$tmpdir/in/large_$i.txt"
 done
 
-# Large file (100KB) - should be processed first
-dd if=/dev/zero of="$tmpdir/large_1.bin" bs=1024 count=100 2>/dev/null
+extract_paths() {
+	sed -nE 's@^OK .*/(small|large)_([0-9]+)\.txt:.*@\1_\2@p' "$1"
+}
 
-# Run validation and capture order of processing
-# Note: OK_OUT captures the order files are completed (may vary due to parallel processing)
-# So we use --jobs 1 to get deterministic order
-order_file="$tmpdir/order.out"
-output=$(OK_OUT="$order_file" ./zig-out/bin/validate --jobs 1 "$tmpdir" 2>&1) || true
-
-# The large file should be processed first (frontloading)
-first_file=$(head -1 "$order_file" | grep -o 'large_1\|small_[0-9]' || echo "unknown")
-
-if [ "$first_file" != "large_1" ]; then
-	# This test is informational - frontloading means large files go first,
-	# but with only 10 files, the 10% threshold may not kick in
-	# (need >10 files for frontloading to activate)
-	printf 'Note: Large file was not first (expected with <10 files or --no-frontload)\n'
+# Jobs=1 makes callback completion order equal the selected queue order.
+default_order="$tmpdir/default-order.out"
+if ! VALIDATE_DEBUG=1 OK_OUT="$default_order" "$VALIDATE_BIN" --jobs 1 "$tmpdir/in" \
+	>"$tmpdir/default.stdout" 2>"$tmpdir/default.stderr"; then
+	fail 'default scattered validation returned non-zero'
 fi
 
-# Test --no-frontload flag doesn't cause errors
-output2=$(./zig-out/bin/validate --no-frontload "$tmpdir" 2>&1) || true
-if echo "$output2" | grep -qi "error"; then
-	printf 'FAIL: --no-frontload caused an error\n' >&2
-	printf 'output:\n%s\n' "$output2" >&2
-	exit 1
+if ! grep -q '\[DEBUG\] Scatter: 2 large files' "$tmpdir/default.stderr"; then
+	fail 'default run did not enter the two-large-file scatter path'
 fi
 
-# Verify help text includes the new options
-help_output=$(./zig-out/bin/validate --help 2>&1)
-if ! echo "$help_output" | grep -q "no-frontload"; then
-	printf 'FAIL: --no-frontload not in help text\n' >&2
-	exit 1
+default_paths="$(extract_paths "$default_order")"
+if [ "$(printf '%s\n' "$default_paths" | sed '/^$/d' | wc -l)" -ne 14 ]; then
+	fail 'default scatter did not emit one result for every input'
+fi
+if [ "$(printf '%s\n' "$default_paths" | sort -u | wc -l)" -ne 14 ]; then
+	fail 'default scatter emitted a duplicate or omitted a path'
 fi
 
-if ! echo "$help_output" | grep -q "simple-progress"; then
-	printf 'FAIL: --simple-progress not in help text\n' >&2
-	exit 1
+large_lines="$(printf '%s\n' "$default_paths" | grep -n '^large_' | cut -d: -f1)"
+if [ "$(printf '%s\n' "$large_lines" | sed '/^$/d' | wc -l)" -ne 2 ]; then
+	fail 'default scatter did not preserve both large-file memberships'
+fi
+first_large="$(printf '%s\n' "$large_lines" | sed -n '1p')"
+second_large="$(printf '%s\n' "$large_lines" | sed -n '2p')"
+if [ $((second_large - first_large)) -le 1 ]; then
+	fail 'default scatter placed the two large files adjacently'
 fi
 
-if ! echo "$help_output" | grep -q "OK_OUT"; then
-	printf 'FAIL: OK_OUT not in help text\n' >&2
-	exit 1
+# --no-frontload must preserve exact validation coverage even though it leaves
+# discovery order untouched.
+plain_order="$tmpdir/plain-order.out"
+if ! OK_OUT="$plain_order" "$VALIDATE_BIN" --jobs 1 --no-frontload "$tmpdir/in" \
+	>"$tmpdir/plain.stdout" 2>"$tmpdir/plain.stderr"; then
+	fail '--no-frontload validation returned non-zero'
+fi
+plain_paths="$(extract_paths "$plain_order")"
+if [ "$(printf '%s\n' "$plain_paths" | sort -u)" != "$(printf '%s\n' "$default_paths" | sort -u)" ]; then
+	fail '--no-frontload changed result membership'
 fi
 
-if ! echo "$help_output" | grep -q "WARN_OUT"; then
-	printf 'FAIL: WARN_OUT not in help text\n' >&2
-	exit 1
-fi
+help_output=$("$VALIDATE_BIN" --help 2>&1) || fail '--help returned non-zero'
+for token in no-frontload simple-progress OK_OUT WARN_OUT; do
+	if ! printf '%s\n' "$help_output" | grep -q "$token"; then
+		fail "--help is missing $token"
+	fi
+done
 
-printf 'PASS: Frontloading and new CLI options work correctly\n'
+printf 'PASS: default scatter and --no-frontload preserve all 14 results\n'

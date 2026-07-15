@@ -98,13 +98,18 @@ at the bottom. Older completed sections were rolled up — full history lives in
 - [x] TDD permission-tolerant release generation: an inaccessible sibling manifest warns and omits downloads for regular site generation, while `publish-validate-pics --check` still refuses to publish without readable fresh links. Curiosity poke answered: missing input stays silent, denied input emits a warning, malformed input remains fatal, and expired input remains publisher-ineligible. Completed 2026-07-11 18:44 EDT.
 ### Deep-validation performance continuation (2026-07-10)
 
-- [ ] **TDD/review critical #4 — bounded startup selection:**
-      replace default recursive Lomuto P90 selection with iterative three-way
-      introselect, so equal, ascending, and descending size sets have bounded
-      linear work rather than quadratic startup delay. Curiosity poke: prove
-      percentile/scatter membership is unchanged while a 100k-element
-      operation-count test rules out the pathological cases; benchmark queue
-      startup separately from deep validation.
+- [x] **TDD/review critical #4 — bounded startup selection:**
+      replaced recursive last-element Lomuto P90 selection with iterative
+      three-way introselect: median-of-three normal pivots, equal-value middle
+      partitioning, and a median-of-medians fallback after the depth budget.
+      The actual CLI translation unit is compiled into a deterministic 100k
+      ascending/descending/equal operation-count oracle. Its ascending case
+      fell from 949,995,000 to 3,561,387 comparisons (99.625% fewer), with a
+      40N cap that rejects the former ~9,500N path without timing dependence.
+      The repaired 14-file CLI regression proves default scattering executes,
+      keeps both large files separated, and preserves exact result membership
+      against `--no-frontload`. Focused Nix checks, full `./test`, and
+      `./build` green. Completed 2026-07-15 01:00 EDT.
 - [ ] **TDD/review critical #5 — keep completion I/O off
       validation workers:** retain freely interleaved begin/finish events and
       one exact result per input, but hand completed results through a bounded

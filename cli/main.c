@@ -1899,34 +1899,122 @@ static void path_list_swap(path_list_t* list, size_t i, size_t j) {
 	list->sizes[j] = tmp_size;
 }
 
-/* Quickselect partition - returns pivot index */
-static size_t quickselect_partition(size_t* arr, size_t* indices, size_t left, size_t right) {
-	size_t pivot = arr[right];
-	size_t i = left;
-	for (size_t j = left; j < right; j++) {
-		if (arr[j] <= pivot) {
-			size_t tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
-			size_t tmp_idx = indices[i]; indices[i] = indices[j]; indices[j] = tmp_idx;
-			i++;
-		}
-	}
-	size_t tmp = arr[i]; arr[i] = arr[right]; arr[right] = tmp;
-	size_t tmp_idx = indices[i]; indices[i] = indices[right]; indices[right] = tmp_idx;
-	return i;
+/* Test-only comparison accounting turns the pathological input regression into
+ * a deterministic complexity check without adding production hot-path work. */
+#ifdef VALIDATE_QUEUE_SELECTION_TEST
+static size_t g_queue_selection_comparisons = 0;
+
+static void queue_selection_reset_comparisons(void) {
+	g_queue_selection_comparisons = 0;
 }
 
-/* Quickselect to find the k-th smallest element */
-static size_t quickselect(size_t* arr, size_t* indices, size_t left, size_t right, size_t k) {
-	if (left == right) return arr[left];
+static size_t queue_selection_comparisons(void) {
+	return g_queue_selection_comparisons;
+}
 
-	size_t pivot_index = quickselect_partition(arr, indices, left, right);
-	if (k == pivot_index) {
-		return arr[k];
-	} else if (k < pivot_index) {
-		return quickselect(arr, indices, left, pivot_index - 1, k);
-	} else {
-		return quickselect(arr, indices, pivot_index + 1, right, k);
+#define QUEUE_SELECTION_LT(left, right) (g_queue_selection_comparisons++, (left) < (right))
+#define QUEUE_SELECTION_GT(left, right) (g_queue_selection_comparisons++, (left) > (right))
+#else
+#define QUEUE_SELECTION_LT(left, right) ((left) < (right))
+#define QUEUE_SELECTION_GT(left, right) ((left) > (right))
+#endif
+
+static void quickselect_swap(size_t* arr, size_t* indices, size_t i, size_t j) {
+	if (i == j) return;
+	size_t value = arr[i]; arr[i] = arr[j]; arr[j] = value;
+	size_t index = indices[i]; indices[i] = indices[j]; indices[j] = index;
+}
+
+/// Selects a resilient pivot by reducing groups of five to their medians.
+/// This BFPRT fallback prevents an adversarial pivot pattern from restoring
+/// the quadratic work that normal median-of-three avoids on common queues.
+static size_t quickselect_median_of_medians(size_t* arr, size_t* indices, size_t left, size_t right) {
+	while (right - left + 1 > 5) {
+		size_t write = left;
+		for (size_t group = left; group <= right; group += 5) {
+			const size_t group_end = group + 4 < right ? group + 4 : right;
+			for (size_t i = group + 1; i <= group_end; i++) {
+				size_t j = i;
+				while (j > group && QUEUE_SELECTION_LT(arr[j], arr[j - 1])) {
+					quickselect_swap(arr, indices, j, j - 1);
+					j--;
+				}
+			}
+			quickselect_swap(arr, indices, write, group + (group_end - group) / 2);
+			write++;
+		}
+		right = write - 1;
 	}
+
+	for (size_t i = left + 1; i <= right; i++) {
+		size_t j = i;
+		while (j > left && QUEUE_SELECTION_LT(arr[j], arr[j - 1])) {
+			quickselect_swap(arr, indices, j, j - 1);
+			j--;
+		}
+	}
+	return arr[left + (right - left) / 2];
+}
+
+static size_t quickselect_median_of_three(size_t first, size_t middle, size_t last) {
+	if (QUEUE_SELECTION_LT(first, middle)) {
+		if (QUEUE_SELECTION_LT(middle, last)) return middle;
+		return QUEUE_SELECTION_LT(first, last) ? last : first;
+	}
+	if (QUEUE_SELECTION_LT(first, last)) return first;
+	return QUEUE_SELECTION_LT(middle, last) ? last : middle;
+}
+
+static size_t quickselect_log2(size_t value) {
+	size_t result = 0;
+	while (value > 1) {
+		value >>= 1;
+		result++;
+	}
+	return result;
+}
+
+/// Finds the k-th queue size using iterative three-way introselect. Equal
+/// sizes leave in one pass, while the deterministic BFPRT fallback caps work
+/// for adversarial orderings without recursive task-startup depth.
+static size_t quickselect(size_t* arr, size_t* indices, size_t left, size_t right, size_t k) {
+	size_t depth_limit = 2 * quickselect_log2(right - left + 1);
+
+	while (left < right) {
+		const size_t middle = left + (right - left) / 2;
+		const size_t pivot = depth_limit == 0
+			? quickselect_median_of_medians(arr, indices, left, right)
+			: quickselect_median_of_three(arr[left], arr[middle], arr[right]);
+		if (depth_limit > 0) depth_limit--;
+
+		/* Dutch-national-flag partition: equal sizes form a complete middle
+		 * range, so a uniform 100k file queue finishes in one linear pass. */
+		size_t lower = left;
+		size_t scan = left;
+		size_t upper = right;
+		while (scan <= upper) {
+			if (QUEUE_SELECTION_LT(arr[scan], pivot)) {
+				quickselect_swap(arr, indices, lower, scan);
+				lower++;
+				scan++;
+			} else if (QUEUE_SELECTION_GT(arr[scan], pivot)) {
+				quickselect_swap(arr, indices, scan, upper);
+				upper--;
+			} else {
+				scan++;
+			}
+		}
+
+		if (k < lower) {
+			right = lower - 1;
+		} else if (k > upper) {
+			left = upper + 1;
+		} else {
+			return arr[k];
+		}
+	}
+
+	return arr[left];
 }
 
 /* Find the file size at the given percentile (0-100) */

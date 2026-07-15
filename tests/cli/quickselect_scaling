@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Compiles the deterministic 100k input complexity oracle against the actual
+# CLI translation unit. This keeps a selection regression independent of disk,
+# wall-clock timing, and validation throughput.
+set -u
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_quickselect.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+case "$(uname -s)" in
+	Darwin) gc_flag="-Wl,-dead_strip" ;;
+	*) gc_flag="-Wl,--gc-sections" ;;
+esac
+
+if ! cc -std=c11 -O2 -w -ffunction-sections -fdata-sections \
+	-I"$script_dir/../../ffi" -I"$script_dir/../../cli" \
+	"$script_dir/quickselect_scaling.c" -o "$tmpdir/quickselect_scaling" \
+	"$gc_flag" -lm; then
+	printf 'FAIL: could not compile queue-selection complexity oracle\n' >&2
+	exit 1
+fi
+
+"$tmpdir/quickselect_scaling"
