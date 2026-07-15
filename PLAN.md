@@ -110,14 +110,21 @@ at the bottom. Older completed sections were rolled up — full history lives in
       keeps both large files separated, and preserves exact result membership
       against `--no-frontload`. Focused Nix checks, full `./test`, and
       `./build` green. Completed 2026-07-15 01:00 EDT.
-- [ ] **TDD/review critical #5 — keep completion I/O off
-      validation workers:** retain freely interleaved begin/finish events and
-      one exact result per input, but hand completed results through a bounded
-      queue to a dedicated callback/output executor. Curiosity poke: measure
-      callback-wait ns, queue high-water mark, CPU/wall/RSS, and exact
-      JSON/verdict/depth parity for normal, `@null`, and deliberately slow
-      output destinations; never exchange a worker bottleneck for unbounded
-      result memory.
+- [x] **TDD/review critical #5 — keep completion I/O off
+      validation workers:** completed results now cross a preallocated bounded
+      FIFO (`max(2, 2 × workers)`) to one dedicated completion executor; begin
+      callbacks remain freely concurrent and no begin/result pairing or
+      cross-file ordering is implied. A latch-driven ABI test blocks the first
+      completion callback, proves the queue reaches capacity two with a worker
+      waiting, then releases it and verifies all four owned results and an OK
+      batch status. The additive ABI v2.2 snapshot and `HEAP_FRAG_DEBUG`
+      `[SCHED]` line expose cumulative/per-window worker wait ns/events,
+      current waiters, and high-water without overwriting an older caller's
+      scheduler struct. Curiosity poke answered: result memory is bounded and
+      exact delivery remains mandatory; a separate real-corpus normal/@null/
+      slow-sink measurement remains queued once local disk contention clears.
+      Focused tests, full `./test`, and `./build` green. Completed 2026-07-15
+      01:30 EDT.
 - [x] **TDD foundation for critical #5 — bounded generic completion queue:**
       replaced the generic pool's allocating, LIFO result list with a
       preallocated FIFO capped at `max(2, 2 × workers)`. A latch-driven test

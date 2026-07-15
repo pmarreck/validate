@@ -54,7 +54,7 @@ extern "C" {
 
 /* ABI version */
 #define VALIDATE_ABI_VERSION_MAJOR 2
-#define VALIDATE_ABI_VERSION_MINOR 1
+#define VALIDATE_ABI_VERSION_MINOR 2
 
 /* Error codes (returned by validate_batch) */
 typedef enum {
@@ -333,6 +333,21 @@ typedef struct {
 void validate_set_scheduler_debug_tracking(int enabled);
 int validate_get_scheduler_debug_snapshot(validate_scheduler_debug_snapshot_t* out);
 
+/**
+ * Additive completion-delivery telemetry for the active validate_batch() call.
+ * `wait_*` records validation workers blocked because the bounded callback
+ * queue is full; `high_water` is the peak queued completions. This separate
+ * struct preserves the binary layout of validate_scheduler_debug_snapshot_t.
+ */
+typedef struct {
+    uint64_t wait_ns;
+    uint64_t wait_events;
+    uint64_t waiters;
+    uint64_t high_water;
+} validate_completion_queue_debug_snapshot_t;
+
+int validate_get_completion_queue_debug_snapshot(validate_completion_queue_debug_snapshot_t* out);
+
 #define VALIDATE_HEAP_DEBUG_MAX_TASKS 256
 
 typedef struct {
@@ -456,7 +471,10 @@ char* validate_test_coverage(const char* path, uint32_t rounds, uint64_t seed,
 
 /**
  * Batch validation callback.
- * Called once per file when validation completes.
+ * Called exactly once per completed file by a single dedicated completion
+ * executor. Validation workers do not execute this callback or its I/O.
+ * Begin callbacks can still arrive concurrently from workers; no begin/result
+ * pairing or cross-file ordering is implied.
  * Caller takes ownership of result and MUST call validate_free().
  *
  * @param ctx User-provided context

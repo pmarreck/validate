@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+
+set -u
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	exit 1
+}
+
+validate_bin="${VALIDATE_BIN:-./zig-out/bin/validate}"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_completion_queue_debug.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+mkdir "$tmpdir/input"
+
+# Enough independent files to exercise the batch completion path. The test
+# asserts the diagnostic schema rather than a timing threshold: an idle sink
+# may correctly have zero queue wait.
+for id in 1 2 3 4; do
+	printf 'completion queue diagnostic fixture %s\n' "$id" > "$tmpdir/input/$id.txt"
+done
+
+env \
+	HEAP_FRAG_DEBUG=1 \
+	HEAP_FRAG_INTERVAL=1 \
+	HEAP_FRAG_SECONDS=3600 \
+	OK_OUT=@null WARN_OUT=@null FAIL_OUT=@null UNKNOWN_OUT=@null \
+	SLOW_OUT=@null DEBUG_OUT=@null BEGIN_OUT=@null \
+	"$validate_bin" --jobs 1 "$tmpdir/input" \
+	> "$tmpdir/stdout.log" 2> "$tmpdir/stderr.log"
+rc=$?
+
+if [ "$rc" -ne 0 ]; then
+	fail "debug fixture exited $rc: $(< "$tmpdir/stderr.log")"
+fi
+
+scheduler_lines="$(grep '^\[SCHED' "$tmpdir/stderr.log")"
+if [ -z "$scheduler_lines" ]; then
+	fail 'HEAP_FRAG_DEBUG produced no scheduler diagnostic'
+fi
+
+for field in \
+	completion_queue_wait_ns= \
+	completion_queue_wait_delta_ns= \
+	completion_queue_wait_events= \
+	completion_queue_wait_events_delta= \
+	completion_queue_waiters= \
+	completion_queue_high_water=; do
+	if [[ "$scheduler_lines" != *"$field"* ]]; then
+		fail "scheduler diagnostic is missing $field"
+	fi
+done
+
+printf 'PASS: scheduler diagnostics expose bounded completion-queue telemetry\n'

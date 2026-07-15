@@ -518,6 +518,16 @@ pub const SchedulerDebugSnapshot = extern struct {
     rss_pressure_waiters: u64,
 };
 
+/// Additive callback-delivery telemetry. Kept separate from the established
+/// scheduler snapshot so old C callers never receive writes past their ABI
+/// struct allocation when completion backpressure diagnostics evolve.
+pub const CompletionQueueDebugSnapshot = extern struct {
+    wait_ns: u64,
+    wait_events: u64,
+    waiters: u64,
+    high_water: u64,
+};
+
 /// Get a snapshot of the current memory budget state.
 ///
 /// Returns 0 (VALIDATE_OK) if a batch is running and `out` was populated;
@@ -588,6 +598,29 @@ export fn validate_get_scheduler_debug_snapshot(out: ?*SchedulerDebugSnapshot) c
     return 0;
 }
 
+/// Snapshots bounded completion-queue backpressure for the active batch.
+/// Returns the same 0/1/2 status convention as scheduler debug snapshots.
+export fn validate_get_completion_queue_debug_snapshot(out: ?*CompletionQueueDebugSnapshot) c_int {
+    const dst = out orelse return 1;
+    dst.* = .{
+        .wait_ns = 0,
+        .wait_events = 0,
+        .waiters = 0,
+        .high_water = 0,
+    };
+    var lease = g_active_batch_telemetry.acquireLease();
+    defer lease.release();
+    const stats = lease.scheduler_debug orelse return 2;
+    const snap = stats.snapshot();
+    dst.* = .{
+        .wait_ns = snap.completion_queue_wait_ns,
+        .wait_events = snap.completion_queue_wait_events,
+        .waiters = snap.completion_queue_waiters,
+        .high_water = snap.completion_queue_high_water,
+    };
+    return 0;
+}
+
 export fn validate_get_heap_debug_snapshot(out: ?*HeapDebugSnapshot) c_int {
     const dst = out orelse return 1;
     dst.* = HeapDebugSnapshot{
@@ -650,7 +683,7 @@ const empty_cstr: [*:0]const u8 = "";
 const phase_start: [*:0]const u8 = "start";
 const phase_large_wait: [*:0]const u8 = "large_wait";
 const phase_validate: [*:0]const u8 = "validate";
-const phase_callback: [*:0]const u8 = "callback";
+const phase_completion_queue: [*:0]const u8 = "completion_queue";
 
 const HeapDebugTaskSlot = struct {
     active: bool = false,
@@ -1102,6 +1135,15 @@ const BatchTask = struct {
     index: usize,
 };
 
+/// Transfers one serialized result from a validation worker to the dedicated
+/// callback executor. A null payload is an intentional non-delivery after the
+/// shared terminal failure state has already made the batch non-successful.
+const BatchCompletion = struct {
+    id: u32 = 0,
+    path: ?[*:0]const u8 = null,
+    result: ?[:0]u8 = null,
+};
+
 /// Global interrupt flag - set by validate_interrupt(), checked by workers
 var g_interrupt_flag = std.atomic.Value(bool).init(false);
 
@@ -1372,18 +1414,18 @@ fn estimateBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) usize {
     const path_slice = std.mem.span(path_ptr);
     return estimatePathBudget(path_slice);
 }
-fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
+fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) BatchCompletion {
     // Check interrupt flag before starting
     if (g_interrupt_flag.load(.seq_cst)) {
-        return; // Don't process this file, just exit
+        return .{}; // Don't process this file, just exit
     }
 
-    const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return));
-    const callback = ctx.callback orelse return;
+    const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return .{}));
+    _ = ctx.callback orelse return .{};
     thread_pool.setBatchOuterJobCount(ctx.outer_job_count);
     defer thread_pool.clearBatchOuterJobCount();
 
-    const path_ptr = ctx.paths[task.index] orelse return;
+    const path_ptr = ctx.paths[task.index] orelse return .{};
     const id = ctx.ids[task.index];
     const path_slice = std.mem.span(path_ptr);
     const file_size_opt = statFileSize(path_slice);
@@ -1429,11 +1471,36 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) void {
     // A worker may only omit its callback when it has atomically made the
     // enclosing batch non-successful; otherwise success means every task was
     // delivered to the caller's callback.
-    const result_str = ctx.delivery.buildResult(result, elapsed_ns) orelse return;
+    const result_str = ctx.delivery.buildResult(result, elapsed_ns) orelse return .{};
 
-    // Call user callback
-    heapDebugTaskSetPhase(heap_task_slot, phase_callback);
-    callback(ctx.user_ctx, id, path_ptr, result_str.ptr);
+    // The bounded result queue may block here, but no validation worker runs
+    // C callback/output I/O. The dedicated executor invokes it after dequeue.
+    heapDebugTaskSetPhase(heap_task_slot, phase_completion_queue);
+    return .{
+        .id = id,
+        .path = path_ptr,
+        .result = result_str,
+    };
+}
+
+/// Calls the consumer callback only from the dedicated completion executor.
+/// The queue owns FIFO handoff; the C callback retains ownership of non-null
+/// result strings exactly as it did when workers invoked it inline.
+fn deliverBatchCompletion(completion: BatchCompletion, ctx_ptr: ?*anyopaque) void {
+    const result = completion.result orelse return;
+    const path = completion.path orelse {
+        std.heap.page_allocator.free(result);
+        return;
+    };
+    const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse {
+        std.heap.page_allocator.free(result);
+        return;
+    }));
+    const callback = ctx.callback orelse {
+        std.heap.page_allocator.free(result);
+        return;
+    };
+    callback(ctx.user_ctx, completion.id, path, result.ptr);
 }
 
 /// Avoid idle outer workers and preserve standalone nested parallelism when a
@@ -1511,7 +1578,7 @@ export fn validate_batch(
     defer g_active_batch_telemetry.retire();
 
     // Use ThreadPool for parallel execution
-    const Pool = thread_pool.ThreadPool(BatchTask, void);
+    const Pool = thread_pool.ThreadPool(BatchTask, BatchCompletion);
     var rss_admission_gate = RssAdmissionGate.init(budget, actual_threads, &mem_budget, scheduler_debug_ptr);
     const admission_gate = Pool.AdmissionGate{
         .context = @ptrCast(&rss_admission_gate),
@@ -1522,8 +1589,8 @@ export fn validate_batch(
         actual_threads,
         executeBatchTask,
         @ptrCast(&batch_ctx),
-        {},
-        {},
+        deliverBatchCompletion,
+        @ptrCast(&batch_ctx),
         &mem_budget,
         estimateBatchTask,
         scheduler_debug_ptr,
@@ -2140,6 +2207,88 @@ test "scheduler debug snapshot is unavailable without an active batch" {
     try std.testing.expectEqual(@as(u64, 0), snapshot.queue_empty_wait_ns);
     try std.testing.expectEqual(@as(u64, 0), snapshot.memory_budget_wait_ns);
     try std.testing.expectEqual(@as(u64, 0), snapshot.rss_pressure_wait_ns);
+}
+
+test "completion queue debug snapshot is unavailable without an active batch" {
+    var snapshot: CompletionQueueDebugSnapshot = undefined;
+    try std.testing.expectEqual(@as(c_int, 2), validate_get_completion_queue_debug_snapshot(&snapshot));
+    try std.testing.expectEqual(@as(u64, 0), snapshot.wait_ns);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.wait_events);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.waiters);
+    try std.testing.expectEqual(@as(u64, 0), snapshot.high_water);
+}
+
+test "batch completion executor bounds callback I/O and delivers every result" {
+    const Context = struct {
+        mutex: std.Io.Mutex = .init,
+        cond: std.Io.Condition = .init,
+        callback_count: usize = 0,
+        callback_blocked: bool = false,
+        release_callback: bool = false,
+        status: c_int = -1,
+        paths: [*]const ?[*:0]const u8,
+        ids: [*]const u32,
+
+        fn callback(
+            context_ptr: ?*anyopaque,
+            _: u32,
+            _: [*:0]const u8,
+            result: [*:0]u8,
+        ) callconv(.c) void {
+            const self: *@This() = @ptrCast(@alignCast(context_ptr));
+            defer validate_free(result);
+            self.mutex.lockUncancelable(runtime.io());
+            defer self.mutex.unlock(runtime.io());
+            self.callback_count += 1;
+            if (self.callback_count == 1) {
+                self.callback_blocked = true;
+                self.cond.broadcast(runtime.io());
+                while (!self.release_callback) {
+                    self.cond.waitUncancelable(runtime.io(), &self.mutex);
+                }
+            }
+        }
+
+        fn run(self: *@This()) void {
+            self.status = validate_batch(self.paths, self.ids, 4, 1, callback, self);
+        }
+    };
+
+    const missing: [:0]const u8 = "/validate-test-missing-completion-queue";
+    var paths = [_]?[*:0]const u8{ missing.ptr, missing.ptr, missing.ptr, missing.ptr };
+    var ids = [_]u32{ 10, 11, 12, 13 };
+    var context = Context{ .paths = &paths, .ids = &ids };
+    validate_set_scheduler_debug_tracking(1);
+    defer validate_set_scheduler_debug_tracking(0);
+    var batch = try std.Thread.spawn(.{}, Context.run, .{&context});
+
+    context.mutex.lockUncancelable(runtime.io());
+    while (!context.callback_blocked) {
+        context.cond.waitUncancelable(runtime.io(), &context.mutex);
+    }
+    context.mutex.unlock(runtime.io());
+
+    var observed_full_queue = false;
+    for (0..1_000_000) |_| {
+        var snapshot: CompletionQueueDebugSnapshot = undefined;
+        if (validate_get_completion_queue_debug_snapshot(&snapshot) == 0 and
+            snapshot.high_water == 2 and snapshot.waiters > 0)
+        {
+            observed_full_queue = true;
+            break;
+        }
+        try std.Thread.yield();
+    }
+    try std.testing.expect(observed_full_queue);
+
+    context.mutex.lockUncancelable(runtime.io());
+    context.release_callback = true;
+    context.cond.broadcast(runtime.io());
+    context.mutex.unlock(runtime.io());
+    batch.join();
+
+    try std.testing.expectEqual(@as(c_int, 0), context.status);
+    try std.testing.expectEqual(@as(usize, 4), context.callback_count);
 }
 
 test "batch result serialization OOM becomes a terminal batch failure" {

@@ -1024,6 +1024,8 @@ static uint64_t g_scheduler_debug_last_queue_empty_wait_events = 0;
 static uint64_t g_scheduler_debug_last_memory_budget_wait_events = 0;
 static uint64_t g_scheduler_debug_last_rss_pressure_wait_ns = 0;
 static uint64_t g_scheduler_debug_last_rss_pressure_wait_events = 0;
+static uint64_t g_completion_queue_debug_last_wait_ns = 0;
+static uint64_t g_completion_queue_debug_last_wait_events = 0;
 static atomic_size_t g_heap_frag_debug_processed;
 static int g_progress_debug_probes = 0;
 static atomic_size_t g_progress_size_lookup_probes;
@@ -1142,6 +1144,8 @@ static void heap_frag_debug_init(void) {
 	g_scheduler_debug_last_memory_budget_wait_events = 0;
 	g_scheduler_debug_last_rss_pressure_wait_ns = 0;
 	g_scheduler_debug_last_rss_pressure_wait_events = 0;
+	g_completion_queue_debug_last_wait_ns = 0;
+	g_completion_queue_debug_last_wait_events = 0;
 	atomic_store(&g_heap_frag_debug_processed, 0);
 }
 
@@ -1170,12 +1174,16 @@ static void heap_frag_debug_report(size_t processed, const char* label) {
 		: 0;
 	validate_scheduler_debug_snapshot_t scheduler = {0};
 	int has_scheduler = validate_get_scheduler_debug_snapshot(&scheduler) == 0;
+	validate_completion_queue_debug_snapshot_t completion_queue = {0};
+	int has_completion_queue = validate_get_completion_queue_debug_snapshot(&completion_queue) == 0;
 	uint64_t queue_empty_wait_delta_ns = 0;
 	uint64_t memory_budget_wait_delta_ns = 0;
 	uint64_t rss_pressure_wait_delta_ns = 0;
+	uint64_t completion_queue_wait_delta_ns = 0;
 	uint64_t queue_empty_wait_events_delta = 0;
 	uint64_t memory_budget_wait_events_delta = 0;
 	uint64_t rss_pressure_wait_events_delta = 0;
+	uint64_t completion_queue_wait_events_delta = 0;
 	if (has_scheduler) {
 		queue_empty_wait_delta_ns = scheduler.queue_empty_wait_ns >= g_scheduler_debug_last_queue_empty_wait_ns
 			? scheduler.queue_empty_wait_ns - g_scheduler_debug_last_queue_empty_wait_ns
@@ -1201,6 +1209,16 @@ static void heap_frag_debug_report(size_t processed, const char* label) {
 		g_scheduler_debug_last_memory_budget_wait_events = scheduler.memory_budget_wait_events;
 		g_scheduler_debug_last_rss_pressure_wait_ns = scheduler.rss_pressure_wait_ns;
 		g_scheduler_debug_last_rss_pressure_wait_events = scheduler.rss_pressure_wait_events;
+	}
+	if (has_completion_queue) {
+		completion_queue_wait_delta_ns = completion_queue.wait_ns >= g_completion_queue_debug_last_wait_ns
+			? completion_queue.wait_ns - g_completion_queue_debug_last_wait_ns
+			: 0;
+		completion_queue_wait_events_delta = completion_queue.wait_events >= g_completion_queue_debug_last_wait_events
+			? completion_queue.wait_events - g_completion_queue_debug_last_wait_events
+			: 0;
+		g_completion_queue_debug_last_wait_ns = completion_queue.wait_ns;
+		g_completion_queue_debug_last_wait_events = completion_queue.wait_events;
 	}
 
 	fprintf(stderr,
@@ -1238,7 +1256,8 @@ static void heap_frag_debug_report(size_t processed, const char* label) {
 		fprintf(stderr,
 			"[SCHED%s] workers=%llu queue_empty_wait_ns=%llu queue_empty_wait_delta_ns=%llu queue_empty_wait_events=%llu queue_empty_wait_events_delta=%llu queue_empty_waiters=%llu "
 			"memory_budget_wait_ns=%llu memory_budget_wait_delta_ns=%llu memory_budget_wait_events=%llu memory_budget_wait_events_delta=%llu memory_budget_waiters=%llu "
-			"rss_pressure_wait_ns=%llu rss_pressure_wait_delta_ns=%llu rss_pressure_wait_events=%llu rss_pressure_wait_events_delta=%llu rss_pressure_waiters=%llu\n",
+			"rss_pressure_wait_ns=%llu rss_pressure_wait_delta_ns=%llu rss_pressure_wait_events=%llu rss_pressure_wait_events_delta=%llu rss_pressure_waiters=%llu "
+			"completion_queue_wait_ns=%llu completion_queue_wait_delta_ns=%llu completion_queue_wait_events=%llu completion_queue_wait_events_delta=%llu completion_queue_waiters=%llu completion_queue_high_water=%llu\n",
 			label ? label : "",
 			(unsigned long long)scheduler.worker_count,
 			(unsigned long long)scheduler.queue_empty_wait_ns,
@@ -1255,7 +1274,13 @@ static void heap_frag_debug_report(size_t processed, const char* label) {
 			(unsigned long long)rss_pressure_wait_delta_ns,
 			(unsigned long long)scheduler.rss_pressure_wait_events,
 			(unsigned long long)rss_pressure_wait_events_delta,
-			(unsigned long long)scheduler.rss_pressure_waiters
+			(unsigned long long)scheduler.rss_pressure_waiters,
+			(unsigned long long)completion_queue.wait_ns,
+			(unsigned long long)completion_queue_wait_delta_ns,
+			(unsigned long long)completion_queue.wait_events,
+			(unsigned long long)completion_queue_wait_events_delta,
+			(unsigned long long)completion_queue.waiters,
+			(unsigned long long)completion_queue.high_water
 		);
 	}
 	heap_frag_debug_report_tasks();
