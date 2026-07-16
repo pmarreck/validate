@@ -14,6 +14,13 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] **Restore Windows ARM64 GitHub Actions coverage:** prove the forked
+      `windows-aarch64` Nix package builds from Linux, then add it to the CI
+      matrix as an artifact-build target. Curiosity poke: Windows binaries are
+      not executable on the Linux runner, so the workflow must not pretend to
+      run the native test suite there. The forked package produced a PE32+
+      Windows ARM64 binary in 2m43s. Completed 2026-07-16 08:55 EDT.
+
 - [x] **TDD keep the format round-trip oracle runnable in its clean Nix shell:**
       enumerate the private corpus with a symlink-following, sorted `find`,
       reject zero scanned formats, and exclude reader-audit namespaces from the

@@ -7,6 +7,7 @@ close=[
 ]
 
 annotate=[
+	.github/workflows/ci.yml = Five-target GitHub Actions matrix: native Linux/macOS plus cross-built Windows x86_64 and ARM64 artifacts; native tests run only for default packages.
 	CODE_REVIEW.md = 13-dimension evidence-based audit of correctness, tests, FFI, memory safety, and performance.
 	LICENSES/CDDL-1.0.txt = Canonical CDDL-1.0 text bundled for the explicitly elected LibRaw static-link distribution.
 	MEMORIES/A successful batch must account for every submitted result = Project lesson: a successful C callback batch must never silently omit an input after result serialization OOM.

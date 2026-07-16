@@ -36,8 +36,11 @@ jobs:
             name: windows-x86_64
             package: windows-x86_64
             binary: validate.exe
-          # windows-aarch64 omitted: blocked by an upstream nixpkgs aarch64-w64-mingw32
-          # compiler-rt libatomic/pthread.h bug (not validate code). See validate #64.
+          - runner: ubuntu-latest
+            system: x86_64-linux
+            name: windows-aarch64
+            package: windows-aarch64
+            binary: validate.exe
 
     runs-on: ${{ matrix.runner }}
     name: ${{ matrix.name }}
