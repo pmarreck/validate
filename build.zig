@@ -824,7 +824,17 @@ pub fn build(b: *std.Build) void {
         run.addFileArg(core_tests.getEmittedBin());
         run.setEnvironmentVariable("WINEDEBUG", "-all");
         break :blk run;
-    } else b.addRunArtifact(core_tests);
+    } else if (host_is_windows) b.addRunArtifact(core_tests) else blk: {
+        // Zig 0.16's --listen test adapter can label an otherwise passing
+        // native test executable as "failed command" while returning success
+        // to the build graph. Execute the emitted test binary directly so its
+        // real exit status is the test-step result.
+        // `env` executes the emitted binary directly while accepting its lazy
+        // build path as an argument (SystemCommand requires argv[0] upfront).
+        const run = b.addSystemCommand(&.{"env"});
+        run.addFileArg(core_tests.getEmittedBin());
+        break :blk run;
+    };
 
     const ffi_tests = b.addTest(.{
         .root_module = ffi_mod,
@@ -847,7 +857,11 @@ pub fn build(b: *std.Build) void {
         run.addFileArg(ffi_tests.getEmittedBin());
         run.setEnvironmentVariable("WINEDEBUG", "-all");
         break :blk run;
-    } else b.addRunArtifact(ffi_tests);
+    } else if (host_is_windows) b.addRunArtifact(ffi_tests) else blk: {
+        const run = b.addSystemCommand(&.{"env"});
+        run.addFileArg(ffi_tests.getEmittedBin());
+        break :blk run;
+    };
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_core_tests.step);

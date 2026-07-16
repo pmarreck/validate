@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Regression coverage for independently reader-accepted PDF JBIG2 globals.
+#
+# These private fixtures are supplied by ../validate_gui.  Their SHA-256
+# values bind this test to the exact reader-audited bytes without recording
+# their original case-file names or paths in this public repository.
+
+set -u
+
+. "$(dirname "$0")/_lib.sh"
+
+BIN="./zig-out/bin/validate"
+if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
+	BIN="./zig-out/bin/validate.exe"
+fi
+
+AUDIT_DIR="ground_truth_examples/audit_20260715"
+TRUNCATED="$AUDIT_DIR/pdf_jbig2_globals_truncated_reader_accepted.pdf"
+FLATE_GLOBALS="$AUDIT_DIR/pdf_jbig2_globals_process_reader_accepted.pdf"
+
+skip_if_missing "$TRUNCATED" "$FLATE_GLOBALS"
+
+PASS=0
+FAIL=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	FAIL=$((FAIL + 1))
+}
+
+pass() {
+	printf '  PASS: %s\n' "$1"
+	PASS=$((PASS + 1))
+}
+
+sha256_file() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	else
+		shasum -a 256 "$1" | awk '{print $1}'
+	fi
+}
+
+expect_hash() {
+	local path="$1"
+	local expected="$2"
+	local actual
+	actual="$(sha256_file "$path")"
+	if [[ "$actual" == "$expected" ]]; then
+		pass "$(basename "$path") matches audited bytes"
+	else
+		fail "$(basename "$path") hash drifted (got $actual)"
+	fi
+}
+
+expect_reader_accepted_warning() {
+	local path="$1"
+	local out rc
+	out=$("$BIN" --no-color "$path" 2>&1)
+	rc=$?
+	if [[ "$rc" != "0" ]]; then
+		fail "$(basename "$path") must warn, not fail (rc=$rc; out=$out)"
+		return
+	fi
+	if [[ "$out" != *"WARN "* ]] ||
+		[[ "$out" != *"JBIG2 global segment"* ]] ||
+		[[ "$out" != *"embedded-stream byte 0x"* ]] ||
+		[[ "$out" != *"PDF byte 0x"* ]]; then
+		fail "$(basename "$path") warning lacks stable cause + both offsets (out=$out)"
+		return
+	fi
+	pass "$(basename "$path") warns with cause and both offsets"
+}
+
+expect_reader_accepted_decoded_warning() {
+	local path="$1"
+	local out rc
+	out=$("$BIN" --no-color "$path" 2>&1)
+	rc=$?
+	if [[ "$rc" == "0" ]] &&
+		[[ "$out" == *"WARN "* ]] &&
+		[[ "$out" == *"JBIG2 global segment"* ]] &&
+		[[ "$out" == *"decoded-globals byte 0x"* ]]; then
+		pass "$(basename "$path") warns with decoded-stream cause"
+	else
+		fail "$(basename "$path") must warn with decoded-stream cause (rc=$rc; out=$out)"
+	fi
+}
+
+expect_hash "$TRUNCATED" "3a9963c214b5f0da4d2c16fa4358f0c9f6a582060c24ab66e22bc758235fce63"
+expect_hash "$FLATE_GLOBALS" "ab3def68309d40c1139ebf0cbf259878c98c929660ae4f7717124debb51cefa9"
+expect_reader_accepted_warning "$TRUNCATED"
+expect_reader_accepted_decoded_warning "$FLATE_GLOBALS"
+
+printf '\nResults: %s passed, %s failed\n' "$PASS" "$FAIL"
+exit "$FAIL"

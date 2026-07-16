@@ -50,13 +50,41 @@ const testing = std.testing;
 /// 0xHHHHHHHH-0xHHHHHHHH" string. Each thread gets its own copy; one validator
 /// call writes then the caller reads, so single-thread reuse is safe.
 threadlocal var flate_failure_msg_buf: [256]u8 = undefined;
+threadlocal var jbig2_globals_warning_buf: [256]u8 = undefined;
 
 // ============ PDF Image Tolerance ============
+
+pub const PdfImageFailureDisposition = enum {
+    strict_failure,
+    warn,
+};
 
 pub const PdfImageTolerance = struct {
 	malformations: std.EnumSet(MalformationType),
 	warning: []const u8,
+    disposition: PdfImageFailureDisposition,
 };
+
+/// Formats the stable warning detail that reaches C/GUI callers through the
+/// existing `warn` field. Offsets are zero-based. An unfiltered stream can
+/// name both its embedded-stream and absolute-PDF byte; a prefiltered stream
+/// can name only the post-filter decoded-globals byte without lying about it.
+fn formatJbig2GlobalsWarning(result: pdf_image_validator.ImageValidationResult) []const u8 {
+    const issue = result.jbig2_globals_issue.?;
+    if (result.jbig2_globals_pdf_stream_start) |stream_start| {
+        const pdf_offset = stream_start +| issue.stream_offset;
+        return std.fmt.bufPrint(
+            &jbig2_globals_warning_buf,
+            "JBIG2 global segment declares {d} bytes at embedded-stream byte 0x{x}, but only {d} byte(s) remain (PDF byte 0x{x}); mainstream readers accepted this malformed global stream",
+            .{ issue.declared_data_length, issue.stream_offset, issue.available_data_length, pdf_offset },
+        ) catch "JBIG2 global segment declaration exceeds its PDF stream; mainstream readers accepted it";
+    }
+    return std.fmt.bufPrint(
+        &jbig2_globals_warning_buf,
+        "JBIG2 global segment declares {d} bytes at decoded-globals byte 0x{x}, but only {d} byte(s) remain; the PDF preprocessing filter prevents an exact raw-PDF byte offset; mainstream readers accepted this malformed global stream",
+        .{ issue.declared_data_length, issue.stream_offset, issue.available_data_length },
+    ) catch "JBIG2 global segment declaration exceeds its decoded globals stream; mainstream readers accepted it";
+}
 
 /// Categorize embedded image validation errors for potential future repair.
 /// Returns tolerance info if all failures are known-recoverable types, null otherwise.
@@ -65,14 +93,20 @@ pub fn toleratedPdfImageFailures(result: pdf_image_validator.PdfImageValidationR
 
 	var malformations: std.EnumSet(MalformationType) = .{};
 	var first_warning: ?[]const u8 = null;
+    var all_failures_reader_recoverable = true;
 
 	for (result.results) |res| {
 		if (res.valid) continue;
 		const msg = res.error_message orelse return null;
+        const recoverable_jbig2_global = res.jbig2_globals_issue != null;
+        if (!recoverable_jbig2_global) all_failures_reader_recoverable = false;
 
 		// Categorize the error for potential future repair
 		// Each category represents a specific type of corruption that could be fixed
 		const malformation_type: ?MalformationType = blk: {
+            if (recoverable_jbig2_global) {
+                break :blk .pdf_jbig2_truncated;
+            }
 			// JBIG2 errors
 			if (std.mem.indexOf(u8, msg, "Truncated JBIG2") != null) {
 				break :blk .pdf_jbig2_truncated;
@@ -135,7 +169,10 @@ pub fn toleratedPdfImageFailures(result: pdf_image_validator.PdfImageValidationR
 		}
 
 		if (first_warning == null) {
-			first_warning = msg;
+            first_warning = if (recoverable_jbig2_global)
+                formatJbig2GlobalsWarning(res)
+            else
+                msg;
 		}
 	}
 
@@ -144,6 +181,7 @@ pub fn toleratedPdfImageFailures(result: pdf_image_validator.PdfImageValidationR
 	return .{
 		.malformations = malformations,
 		.warning = first_warning orelse "Embedded images failed strict validation; accepted with warning",
+        .disposition = if (all_failures_reader_recoverable) .warn else .strict_failure,
 	};
 }
 
@@ -427,7 +465,6 @@ fn applyFlateStreamCheck(
 	return .{ .hard_fail_message = reason_str };
 }
 
-
 pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResult {
 	const telemetry = PdfTelemetry.init();
 	const total_start_ns = if (telemetry.enabled) runtime.nanoTimestamp() else 0;
@@ -621,7 +658,7 @@ pub fn validatePdfDeep(allocator: Allocator, source: *FileSource) ValidationResu
 			// Strict (default) mode: detected corruption surfaces as FAIL.
 			// Tolerant mode (VALIDATE_PDF_TOLERANT=1) keeps the legacy behavior
 			// of accepting the file so future repair workflows can consume it.
-			if (!pdfTolerantMode()) {
+            if (tolerated.disposition == .strict_failure and !pdfTolerantMode()) {
 				return ValidationResult.invalidWithDepth(.pdf, tolerated.warning, .full);
 			}
 		} else {
@@ -840,7 +877,7 @@ pub fn validatePdfDeepFromBuffer(allocator: Allocator, pdf_data: []const u8) Val
 			}
 			// Strict (default) mode: detected corruption surfaces as FAIL.
 			// Tolerant mode (VALIDATE_PDF_TOLERANT=1) keeps the legacy behavior.
-			if (!pdfTolerantMode()) {
+            if (tolerated.disposition == .strict_failure and !pdfTolerantMode()) {
 				return ValidationResult.invalidWithDepth(.pdf, tolerated.warning, .full);
 			}
 		} else {
@@ -981,7 +1018,7 @@ pub fn parseStartxrefValue(data: []const u8) !u64 {
 
 // ============ Tests ============
 
-test "toleratedPdfImageFailures accepts truncated JBIG2 failures" {
+test "toleratedPdfImageFailures keeps generic truncated JBIG2 strict" {
 	const results = [_]pdf_image_validator.ImageValidationResult{
 		.{
 			.object_num = 1,
@@ -1006,6 +1043,41 @@ test "toleratedPdfImageFailures accepts truncated JBIG2 failures" {
 	const tolerated = toleratedPdfImageFailures(image_result);
 	try std.testing.expect(tolerated != null);
 	try std.testing.expect(tolerated.?.malformations.contains(.pdf_jbig2_truncated));
+    try std.testing.expectEqual(PdfImageFailureDisposition.strict_failure, tolerated.?.disposition);
+}
+
+test "toleratedPdfImageFailures warning-routes located JBIG2 globals overrun" {
+    const results = [_]pdf_image_validator.ImageValidationResult{
+        .{
+            .object_num = 9,
+            .filter = .jbig2_decode,
+            .valid = false,
+            .error_message = errmsg.truncated("JBIG2 globals"),
+            .jbig2_globals_issue = .{
+                .stream_offset = 0x28,
+                .declared_data_length = 0x80,
+                .available_data_length = 0x12,
+            },
+            .jbig2_globals_pdf_stream_start = 0x400,
+            .width = 0,
+            .height = 0,
+        },
+    };
+
+    const image_result = pdf_image_validator.PdfImageValidationResult{
+        .valid = false,
+        .total_images = 1,
+        .validated_images = 0,
+        .failed_images = 1,
+        .skipped_images = 0,
+        .results = &results,
+        .error_message = "Some images failed validation",
+    };
+
+    const tolerated = toleratedPdfImageFailures(image_result).?;
+    try std.testing.expectEqual(PdfImageFailureDisposition.warn, tolerated.disposition);
+    try std.testing.expect(std.mem.indexOf(u8, tolerated.warning, "embedded-stream byte 0x28") != null);
+    try std.testing.expect(std.mem.indexOf(u8, tolerated.warning, "PDF byte 0x428") != null);
 }
 
 // ============================================================

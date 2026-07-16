@@ -76,8 +76,21 @@ pub const ImageValidationResult = struct {
     filter: ImageFilter,
     valid: bool,
     error_message: ?[]const u8,
+    /// Structured only for the one JBIG2 global-stream discrepancy that may
+    /// be warning-routed after the PDF adapter verifies its source location.
+    jbig2_globals_issue: ?jbig2_decoder.Jbig2GlobalsIssue = null,
+    /// Absolute PDF offset of the first raw byte in the JBIG2Globals stream.
+    jbig2_globals_pdf_stream_start: ?usize = null,
     width: u32,
     height: u32,
+};
+
+/// Borrowed PDF stream metadata. `dictionary` ends at the `stream` keyword;
+/// it lets callers honor preprocessing filters and report absolute offsets.
+pub const PdfObjectStream = struct {
+    data: []const u8,
+    stream_start: usize,
+    dictionary: []const u8,
 };
 
 pub const PdfImageValidationResult = struct {
@@ -244,6 +257,61 @@ pub fn applyFilterChain(allocator: Allocator, data: []const u8, filters: []const
     }
 
     return allocated_data;
+}
+
+const DecodedObjectStream = union(enum) {
+    borrowed: []const u8,
+    owned: []u8,
+    failed,
+
+    fn bytes(self: DecodedObjectStream) ?[]const u8 {
+        return switch (self) {
+            .borrowed, .owned => |data| data,
+            .failed => null,
+        };
+    }
+
+    fn deinit(self: DecodedObjectStream, allocator: Allocator) void {
+        switch (self) {
+            .owned => |data| allocator.free(data),
+            .borrowed, .failed => {},
+        }
+    }
+};
+
+/// Decode a referenced stream's PDF preprocessing filters before a consumer
+/// interprets its bytes. This avoids feeding compressed JBIG2Globals into the
+/// JBIG2 parser while keeping ownership explicit at the adapter boundary.
+fn decodeObjectStream(allocator: Allocator, stream: PdfObjectStream) DecodedObjectStream {
+    const filter_marker = std.mem.indexOf(u8, stream.dictionary, "/Filter") orelse {
+        return .{ .borrowed = stream.data };
+    };
+
+    var filters: std.ArrayListUnmanaged(ImageFilter) = .empty;
+    defer filters.deinit(allocator);
+    var cursor = skipWhitespace(stream.dictionary, filter_marker + "/Filter".len);
+
+    if (cursor >= stream.dictionary.len) return .failed;
+    if (stream.dictionary[cursor] == '/') {
+        const parsed = parseName(stream.dictionary, cursor) orelse return .failed;
+        filters.append(allocator, filterFromName(parsed.name)) catch return .failed;
+    } else if (stream.dictionary[cursor] == '[') {
+        cursor += 1;
+        while (cursor < stream.dictionary.len and stream.dictionary[cursor] != ']') {
+            cursor = skipWhitespace(stream.dictionary, cursor);
+            if (cursor >= stream.dictionary.len or stream.dictionary[cursor] == ']') break;
+            if (stream.dictionary[cursor] != '/') return .failed;
+            const parsed = parseName(stream.dictionary, cursor) orelse return .failed;
+            filters.append(allocator, filterFromName(parsed.name)) catch return .failed;
+            cursor = parsed.end;
+        }
+    } else {
+        return .failed;
+    }
+
+    if (filters.items.len == 0) return .failed;
+    const decoded = applyFilterChain(allocator, stream.data, filters.items) orelse return .failed;
+    return .{ .owned = decoded };
 }
 
 // ============ PDF Parsing ============
@@ -832,9 +900,9 @@ fn parseObjectForImage(allocator: Allocator, data: []const u8, offset: usize, ob
     return null;
 }
 
-/// Find an object's stream data by object number
-/// Returns the raw stream data (between "stream" and "endstream")
-pub fn findObjectStream(data: []const u8, obj_num: u32, gen_num: u32) ?[]const u8 {
+/// Find an object's raw stream, favoring a direct /Length so binary payload
+/// bytes resembling `endstream` cannot truncate the borrowed slice early.
+pub fn findObjectStream(data: []const u8, obj_num: u32, gen_num: u32) ?PdfObjectStream {
     // Build the object definition pattern: "obj_num gen_num obj"
     var pattern_buf: [64]u8 = undefined;
     const pattern = std.fmt.bufPrint(&pattern_buf, "{d} {d} obj", .{ obj_num, gen_num }) catch return null;
@@ -847,6 +915,7 @@ pub fn findObjectStream(data: []const u8, obj_num: u32, gen_num: u32) ?[]const u
             var j = i + pattern.len;
             while (j + 6 < data.len) : (j += 1) {
                 if (std.mem.startsWith(u8, data[j..], "stream")) {
+                    const dictionary = data[i + pattern.len .. j];
                     j += 6;
                     // Skip line ending after "stream"
                     if (j < data.len and data[j] == '\r') j += 1;
@@ -854,11 +923,39 @@ pub fn findObjectStream(data: []const u8, obj_num: u32, gen_num: u32) ?[]const u
 
                     const stream_start = j;
 
+                    if (std.mem.indexOf(u8, dictionary, "/Length")) |length_marker| {
+                        const length_start = skipWhitespace(dictionary, length_marker + "/Length".len);
+                        if (parseDirectInt(dictionary, length_start)) |length_result| {
+                            if (length_result.value >= 0) {
+                                const declared_length: usize = @intCast(length_result.value);
+                                if (declared_length <= data.len - stream_start) {
+                                    const stream_end = stream_start + declared_length;
+                                    var endstream_start = stream_end;
+                                    if (endstream_start < data.len and data[endstream_start] == '\r') endstream_start += 1;
+                                    if (endstream_start < data.len and data[endstream_start] == '\n') endstream_start += 1;
+                                    if (endstream_start + "endstream".len <= data.len and
+                                        std.mem.startsWith(u8, data[endstream_start..], "endstream"))
+                                    {
+                                        return .{
+                                            .data = data[stream_start..stream_end],
+                                            .stream_start = stream_start,
+                                            .dictionary = dictionary,
+                                        };
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Find endstream
                     // Don't trim EOL before endstream - it might be part of the data
                     while (j + 9 <= data.len) : (j += 1) {
                         if (std.mem.startsWith(u8, data[j..], "endstream")) {
-                            return data[stream_start..j];
+                            return .{
+                                .data = data[stream_start..j],
+                                .stream_start = stream_start,
+                                .dictionary = dictionary,
+                            };
                         }
                     }
                     return null; // endstream not found
@@ -871,6 +968,65 @@ pub fn findObjectStream(data: []const u8, obj_num: u32, gen_num: u32) ?[]const u
         }
     }
     return null;
+}
+
+/// Validate a JBIG2 image after resolving and decoding its optional globals.
+/// Only an unfiltered globals stream has a 1:1 embedded-stream→PDF offset;
+/// compressed globals retain their decoded-stream offset for diagnostics.
+fn validateJbig2Image(
+    allocator: Allocator,
+    pdf_data: []const u8,
+    img: PdfImageInfo,
+    image_data: []const u8,
+) ImageValidationResult {
+    if (image_data.len < 5) {
+        return .{
+            .object_num = img.object_num,
+            .filter = .jbig2_decode,
+            .valid = false,
+            .error_message = "JBIG2 stream too short",
+            .width = 0,
+            .height = 0,
+        };
+    }
+
+    var decoded_globals: ?DecodedObjectStream = null;
+    defer if (decoded_globals) |globals| globals.deinit(allocator);
+
+    var globals_data: ?[]const u8 = null;
+    var globals_pdf_stream_start: ?usize = null;
+    if (img.jbig2_globals_obj) |globals_obj| {
+        if (findObjectStream(pdf_data, globals_obj, img.jbig2_globals_gen orelse 0)) |stream| {
+            decoded_globals = decodeObjectStream(allocator, stream);
+            switch (decoded_globals.?) {
+                .borrowed => |decoded| {
+                    globals_data = decoded;
+                    globals_pdf_stream_start = stream.stream_start;
+                },
+                .owned => |decoded| globals_data = decoded,
+                .failed => return .{
+                    .object_num = img.object_num,
+                    .filter = .jbig2_decode,
+                    .valid = false,
+                    .error_message = "Failed to decode JBIG2 globals preprocessing filters",
+                    .width = 0,
+                    .height = 0,
+                },
+            }
+        }
+    }
+
+    const jbig2_result = jbig2_decoder.validatePdfJbig2(allocator, globals_data, image_data, img.width, img.height);
+    return .{
+        .object_num = img.object_num,
+        .filter = .jbig2_decode,
+        .valid = jbig2_result.valid,
+        .error_message = jbig2_result.error_message orelse jbig2_result.warning_message,
+        .jbig2_globals_issue = jbig2_result.global_issue,
+        .jbig2_globals_pdf_stream_start = globals_pdf_stream_start,
+        .width = jbig2_result.width,
+        .height = jbig2_result.height,
+    };
 }
 
 // ============ Image Validation ============
@@ -1123,44 +1279,9 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
         // Validate based on filter type
         switch (primary_filter) {
             .jbig2_decode => {
-                // Special handling for JBIG2 with globals
-                // Try to find JBIG2Globals if referenced
-                const globals_data: ?[]const u8 = if (img.jbig2_globals_obj) |globals_obj|
-                    findObjectStream(pdf_data, globals_obj, img.jbig2_globals_gen orelse 0)
-                else
-                    null;
-                if (image_data.len < 5) {
-                    try results.append(allocator, .{
-                        .object_num = img.object_num,
-                        .filter = primary_filter,
-                        .valid = false,
-                        .error_message = "JBIG2 stream too short",
-                        .width = 0,
-                        .height = 0,
-                    });
-                    failed += 1;
-                } else {
-                    const jbig2_result = jbig2_decoder.validatePdfJbig2(allocator, globals_data, image_data, img.width, img.height);
-                    var result = ImageValidationResult{
-                        .object_num = img.object_num,
-                        .filter = primary_filter,
-                        .valid = jbig2_result.valid,
-                        .error_message = jbig2_result.error_message,
-                        .width = jbig2_result.width,
-                        .height = jbig2_result.height,
-                    };
-
-                    if (jbig2_result.valid) {
-                        validated += 1;
-                        if (jbig2_result.warning_message) |warn| {
-                            result.error_message = warn;
-                        }
-                    } else {
-                        failed += 1;
-                    }
-
-                    try results.append(allocator, result);
-                }
+                const result = validateJbig2Image(allocator, pdf_data, img, image_data);
+                if (result.valid) validated += 1 else failed += 1;
+                try results.append(allocator, result);
             },
             .dct_decode, .jpx_decode, .ccitt_fax_decode => {
                 var result = validateExtractedImage(allocator, image_data, primary_filter);
@@ -1389,36 +1510,10 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
     // Validate based on filter type
     const validation_result: ImageTaskResult = switch (primary_filter) {
         .jbig2_decode => blk: {
-            const globals_data: ?[]const u8 = if (img.jbig2_globals_obj) |globals_obj|
-                findObjectStream(ctx.pdf_data, globals_obj, img.jbig2_globals_gen orelse 0)
-            else
-                null;
-
-            if (image_data.len < 5) {
-                break :blk .{
-                    .result = .{
-                        .object_num = img.object_num,
-                        .filter = primary_filter,
-                        .valid = false,
-                        .error_message = "JBIG2 stream too short",
-                        .width = 0,
-                        .height = 0,
-                    },
-                    .status = .failed,
-                };
-            }
-
-            const jbig2_result = jbig2_decoder.validatePdfJbig2(allocator, globals_data, image_data, img.width, img.height);
+            const result = validateJbig2Image(allocator, ctx.pdf_data, img, image_data);
             break :blk .{
-                .result = .{
-                    .object_num = img.object_num,
-                    .filter = primary_filter,
-                    .valid = jbig2_result.valid,
-                    .error_message = jbig2_result.error_message orelse jbig2_result.warning_message,
-                    .width = jbig2_result.width,
-                    .height = jbig2_result.height,
-                },
-                .status = if (jbig2_result.valid) .validated else .failed,
+                .result = result,
+                .status = if (result.valid) .validated else .failed,
             };
         },
         .dct_decode, .jpx_decode, .ccitt_fax_decode => blk: {
@@ -1717,6 +1812,20 @@ test "parseInt parses integers" {
 
     const neg = parseInt("-42", 0).?;
     try std.testing.expectEqual(@as(i64, -42), neg.value);
+}
+
+test "findObjectStream honors direct Length over an embedded endstream token" {
+    const pdf =
+        "9 0 obj\n" ++
+        "<< /Length 13 >>\n" ++
+        "stream\n" ++
+        "abcendstreamX\n" ++
+        "endstream\n" ++
+        "endobj\n";
+
+    const stream = findObjectStream(pdf, 9, 0).?;
+    try std.testing.expectEqualStrings("abcendstreamX", stream.data);
+    try std.testing.expectEqual(std.mem.indexOf(u8, pdf, "stream\n").? + "stream\n".len, stream.stream_start);
 }
 
 test "skipWhitespace skips spaces and newlines" {

@@ -18,6 +18,10 @@
  *   err_code      - Symbolic error code (e.g., "failed_to_read", empty if none)
  *   err_detail    - Technical detail string (e.g., "PNG signature", empty if none)
  *   warn          - Warning message (empty if none)
+ *                   PDF JBIG2-global recovery includes a cause and a
+ *                   zero-based byte coordinate: `embedded-stream byte` plus
+ *                   `PDF byte` when raw mapping is exact, otherwise only
+ *                   `decoded-globals byte` after a preprocessing filter.
  *   depth_u8      - Validation depth (0=structural, 1=full)
  *   malform_u64   - Malformation bitset (see malformation constants)
  *   bypass_prot   - Boolean: circumvented trivial protection

@@ -26,9 +26,38 @@ at the bottom. Older completed sections were rolled up — full history lives in
       DBFs without their terminal marker; DCMTK and GDCM accept sampled DICOM
       VR cases. These belong to narrow WARN classifications, while malformed
       ZIP CRCs, PNGs, corrupt-Huffman JPEGs, and unsupported WPD type 17 stay
-      FAIL. The inverse check found valid-labelled MP4s with H.264 decode and
-      missing external-media failures, plus valid-labelled ZIPs with malformed
-      extra-field lengths: both are priority false-negative remediations.
+      FAIL. The inverse check found valid-labelled MP4s with H.264 decode
+      failures plus valid-labelled ZIPs with malformed extra-field lengths:
+      both are priority false-negative remediations. An apparent
+      external-media MP4 failure was only an unavailable source path and needs
+      a self-contained fixture before it can motivate a rule.
+  - [x] Preserve a minimal, neutral-named private fixture set in
+        `../validate_gui/ground_truth_examples/` with checksums and an
+        independent-reader evidence manifest. Curiosity poke: the manifest
+        must never reveal case-file paths or names, and a copied byte stream
+        must hash-identically to the observed original. Completed 2026-07-15
+        21:08 EDT.
+  - [x] TDD classify only externally reader-accepted, specifically diagnosed
+        PDF JBIG2-global discrepancies as WARN, retaining physically
+        truncated/unreadable global streams as FAIL. Curiosity poke: no
+        broad `"JBIG2"` string match may demote an unrelated decoder error.
+        Completed 2026-07-15 21:08 EDT.
+  - [x] TDD surface a stable, optional PDF diagnostic cause and byte offset to
+        C/GUI callers without extending a caller-owned ABI struct. Curiosity
+        poke: an offset must identify its coordinate system (PDF byte versus
+        embedded-stream byte) and absent offsets must be representable.
+        Completed 2026-07-15 21:08 EDT.
+  - [x] Document evidence-backed false-positive candidates and priority
+        false-negative gaps (MP4 semantic decode/external media; ZIP extra
+        field lengths), then add one regression at a time before remediation.
+        Completed 2026-07-15 21:08 EDT.
+
+- [x] **TDD make the canonical Zig test gate report native test failures:**
+      replace the Zig 0.16 `--listen` adapter only if direct emitted-binary
+      execution proves it preserves test filtering and propagates real exits.
+      Curiosity poke: retain the existing Wine path for Windows cross-tests
+      and never turn a test-runner diagnostic into a false-green CI result.
+      Completed 2026-07-15 21:34 EDT.
 
 - [x] **Deep code review:** completed a 13-dimension, evidence-based audit of
       current `yolo`, emphasizing validated performance and backpressure hot

@@ -1667,6 +1667,9 @@ pub const Jbig2ValidateResult = struct {
     valid: bool,
     error_message: ?[]const u8,
     warning_message: ?[]const u8, // Warning for non-fatal issues (e.g., truncation at end)
+    /// Exact globals-stream defect when PDF readers can recover. The PDF
+    /// adapter converts this into a caller-visible cause plus byte offsets.
+    global_issue: ?Jbig2GlobalsIssue,
     width: u32,
     height: u32,
     page_count: u32,
@@ -1676,6 +1679,7 @@ pub const Jbig2ValidateResult = struct {
             .valid = true,
             .error_message = null,
             .warning_message = null,
+            .global_issue = null,
             .width = w,
             .height = h,
             .page_count = pages,
@@ -1687,6 +1691,7 @@ pub const Jbig2ValidateResult = struct {
             .valid = true,
             .error_message = null,
             .warning_message = warning,
+            .global_issue = null,
             .width = w,
             .height = h,
             .page_count = pages,
@@ -1698,11 +1703,33 @@ pub const Jbig2ValidateResult = struct {
             .valid = false,
             .error_message = msg,
             .warning_message = null,
+            .global_issue = null,
             .width = 0,
             .height = 0,
             .page_count = 0,
         };
     }
+
+    pub fn failureWithGlobalIssue(msg: []const u8, issue: Jbig2GlobalsIssue) Jbig2ValidateResult {
+        var result = failure(msg);
+        result.global_issue = issue;
+        return result;
+    }
+};
+
+/// A recoverable structural discrepancy inside a PDF JBIG2Globals stream.
+/// `stream_offset` is measured from the first byte after the PDF `stream` EOL.
+pub const Jbig2GlobalsIssue = struct {
+    stream_offset: usize,
+    declared_data_length: usize,
+    available_data_length: usize,
+};
+
+/// Preserves the decoder error while retaining the precise segment boundary
+/// needed to distinguish a reader-tolerated globals declaration from damage.
+pub const Jbig2GlobalsFailure = struct {
+    err: Jbig2Error,
+    issue: ?Jbig2GlobalsIssue = null,
 };
 
 /// Check if data has JBIG2 file signature
@@ -3632,8 +3659,9 @@ pub const Jbig2Decoder = struct {
         self.pages.deinit(self.allocator);
     }
 
-    /// Process globals stream (PDF JBIG2Globals)
-    pub fn processGlobals(self: *Self, data: []const u8) Jbig2Error!void {
+    /// Process a PDF JBIG2Globals stream while retaining a segment-data offset
+    /// when its declared length overruns an otherwise complete PDF stream.
+    pub fn processGlobals(self: *Self, data: []const u8) ?Jbig2GlobalsFailure {
         var offset: usize = 0;
 
         // PDF JBIG2 globals have no file header - just segments
@@ -3641,7 +3669,7 @@ pub const Jbig2Decoder = struct {
             const seg_result = parseSegmentHeader(self.allocator, data[offset..]) catch |err| {
                 // If we can't parse any more segments, we're done
                 if (err == Jbig2Error.UnexpectedEndOfData and offset > 0) break;
-                return err;
+                return .{ .err = err };
             };
 
             var header = seg_result.header;
@@ -3655,15 +3683,24 @@ pub const Jbig2Decoder = struct {
                 seg_length = @intCast(findUnknownSegmentLength(self.allocator, data[offset..]));
             }
 
-            if (offset + seg_length > data.len) {
-                return Jbig2Error.UnexpectedEndOfData;
+            if (seg_length > data.len - offset) {
+                return .{
+                    .err = Jbig2Error.UnexpectedEndOfData,
+                    .issue = .{
+                        .stream_offset = offset,
+                        .declared_data_length = seg_length,
+                        .available_data_length = data.len - offset,
+                    },
+                };
             }
 
             const seg_data = data[offset..][0..seg_length];
 
             switch (header.segment_type) {
                 .symbol_dictionary => {
-                    try self.processSymbolDictionary(seg_data, true);
+                    self.processSymbolDictionary(seg_data, true) catch |err| {
+                        return .{ .err = err };
+                    };
                 },
                 .extension => {
                     // Skip extension segments in globals
@@ -3678,6 +3715,8 @@ pub const Jbig2Decoder = struct {
 
             offset += seg_length;
         }
+
+        return null;
     }
 
     /// Process page data stream
@@ -4016,13 +4055,17 @@ pub fn validatePdfJbig2(
 
     // Process globals if present
     if (globals) |g| {
-        decoder.processGlobals(g) catch |err| {
-            return Jbig2ValidateResult.failure(switch (err) {
+        if (decoder.processGlobals(g)) |failure| {
+            const message = switch (failure.err) {
                 Jbig2Error.InvalidSymbolDictionary => "Invalid symbol dictionary in globals",
                 Jbig2Error.UnexpectedEndOfData => errmsg.truncated("JBIG2 globals"),
                 else => "Failed to process JBIG2 globals",
-            });
-        };
+            };
+            if (failure.issue) |issue| {
+                return Jbig2ValidateResult.failureWithGlobalIssue(message, issue);
+            }
+            return Jbig2ValidateResult.failure(message);
+        }
     }
 
     // Process page data
