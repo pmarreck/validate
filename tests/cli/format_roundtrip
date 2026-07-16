@@ -184,9 +184,14 @@ try_shotgun_detection() {
 }
 
 count=0
-for d in $(glob ground_truth_examples/*/); do
+while IFS= read -r d; do
 	fmt=$(basename "$d")
-	[ "$fmt" = "corrupted" ] && continue
+	# Reader-audit namespaces contain deliberately malformed candidates and use
+	# their own targeted regressions; this clean-sample sweep must never treat
+	# them as a format family.
+	case "$fmt" in
+		corrupted|audit_*) continue ;;
+	esac
 
 	sample="$(pick_sample "$d")"
 	if [ -z "$sample" ]; then
@@ -222,10 +227,14 @@ for d in $(glob ground_truth_examples/*/); do
 	fi
 
 	PASS=$((PASS + 1))
-done
+done < <(find -L ground_truth_examples -mindepth 1 -maxdepth 1 -type d -print | sort)
 
 echo ""
 echo "format_roundtrip: scanned $count format(s), $PASS passed, $FAIL failed, $SKIP no-sample, $SKIP_SMALL too-small"
+
+if [ "$count" -eq 0 ]; then
+	fail "no ground-truth format directories were scanned"
+fi
 
 if [ "$FAIL" -gt 0 ]; then
 	exit 1

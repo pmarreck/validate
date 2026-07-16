@@ -28,6 +28,14 @@ const runtime = @import("runtime.zig");
 /// memory admission, and RSS-pressure backpressure. Counters are monotonic
 /// nanoseconds so a polling consumer can derive a stable interval delta.
 pub const SchedulerDebugStats = struct {
+    /// Optional notification emitted immediately before a worker blocks on a
+    /// full completion queue. Diagnostics and tests configure it before pool
+    /// startup to synchronize on real backpressure without clock polling.
+    pub const CompletionQueueWaitObserver = struct {
+        context: ?*anyopaque,
+        on_wait_begin: *const fn (context: ?*anyopaque) void,
+    };
+
     pub const Snapshot = struct {
         worker_count: u64,
         queue_empty_wait_ns: u64,
@@ -59,9 +67,17 @@ pub const SchedulerDebugStats = struct {
     completion_queue_wait_events: std.atomic.Value(u64) = .init(0),
     completion_queue_waiters: std.atomic.Value(u64) = .init(0),
     completion_queue_high_water: std.atomic.Value(u64) = .init(0),
+    completion_queue_wait_observer: ?CompletionQueueWaitObserver = null,
 
     pub fn init() SchedulerDebugStats {
         return .{};
+    }
+
+    /// Installs an optional full-queue wait observer before workers start.
+    /// The observer is off the normal completion path and runs only when a
+    /// producer must block, preserving normal throughput accounting.
+    pub fn setCompletionQueueWaitObserver(self: *SchedulerDebugStats, observer: ?CompletionQueueWaitObserver) void {
+        self.completion_queue_wait_observer = observer;
     }
 
     pub fn setWorkerCount(self: *SchedulerDebugStats, worker_count: usize) void {
@@ -114,6 +130,9 @@ pub const SchedulerDebugStats = struct {
 
     fn beginCompletionQueueWait(self: *SchedulerDebugStats) void {
         _ = self.completion_queue_waiters.fetchAdd(1, .seq_cst);
+        if (self.completion_queue_wait_observer) |observer| {
+            observer.on_wait_begin(observer.context);
+        }
     }
 
     fn endCompletionQueueWait(self: *SchedulerDebugStats, elapsed_ns: u64) void {
@@ -791,11 +810,28 @@ test "ThreadPool bounds completion delivery and records worker backpressure" {
         task_calls: usize = 0,
         callback_calls: usize = 0,
         callback_blocked: bool = false,
+        completion_wait_observer_entered: bool = false,
+        release_completion_wait_observer: bool = false,
         release_callback: bool = false,
     };
 
     var context: Context = .{};
     var debug = SchedulerDebugStats.init();
+    debug.setCompletionQueueWaitObserver(.{
+        .context = &context,
+        .on_wait_begin = struct {
+            fn observe(context_ptr: ?*anyopaque) void {
+                const ctx: *Context = @ptrCast(@alignCast(context_ptr orelse return));
+                ctx.mutex.lockUncancelable(runtime.io());
+                defer ctx.mutex.unlock(runtime.io());
+                ctx.completion_wait_observer_entered = true;
+                ctx.cond.broadcast(runtime.io());
+                while (!ctx.release_completion_wait_observer) {
+                    ctx.cond.waitUncancelable(runtime.io(), &ctx.mutex);
+                }
+            }
+        }.observe,
+    });
     const pool = try Pool.createWithBudgetAndDebugAndAdmission(
         std.testing.allocator,
         1,
@@ -837,17 +873,28 @@ test "ThreadPool bounds completion delivery and records worker backpressure" {
     pool.shutdown();
 
     context.mutex.lockUncancelable(runtime.io());
-    while (!context.callback_blocked or context.task_calls < 4) {
+    while (!context.completion_wait_observer_entered) {
         context.cond.waitUncancelable(runtime.io(), &context.mutex);
     }
-    const snapshot = debug.snapshot();
-    try std.testing.expect(snapshot.completion_queue_wait_events > 0);
-    try std.testing.expectEqual(@as(u64, 2), snapshot.completion_queue_high_water);
+    const active_snapshot = debug.snapshot();
+    try std.testing.expectEqual(@as(u64, 1), active_snapshot.completion_queue_waiters);
+    try std.testing.expectEqual(@as(u64, 2), active_snapshot.completion_queue_high_water);
+    context.release_completion_wait_observer = true;
+    context.cond.broadcast(runtime.io());
+    context.mutex.unlock(runtime.io());
+
+    context.mutex.lockUncancelable(runtime.io());
+    while (!context.callback_blocked) {
+        context.cond.waitUncancelable(runtime.io(), &context.mutex);
+    }
     context.release_callback = true;
     context.cond.broadcast(runtime.io());
     context.mutex.unlock(runtime.io());
 
     pool.wait();
+    const completed_snapshot = debug.snapshot();
+    try std.testing.expect(completed_snapshot.completion_queue_wait_events > 0);
+    try std.testing.expectEqual(@as(u64, 0), completed_snapshot.completion_queue_waiters);
     try std.testing.expectEqual(@as(usize, 4), context.callback_calls);
 }
 

@@ -14,6 +14,21 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] **TDD keep the format round-trip oracle runnable in its clean Nix shell:**
+      enumerate the private corpus with a symlink-following, sorted `find`,
+      reject zero scanned formats, and exclude reader-audit namespaces from the
+      clean-format contract. Curiosity poke answered: deliberate malformed
+      audit fixtures remain targeted regressions, while the independent
+      normal-corpus shotgun gate scanned 236 families with zero failures.
+      Completed 2026-07-15 23:09 EDT.
+
+- [x] **TDD make the completion-backpressure test deterministic on all hosts:**
+      hold the producer at the observed full-queue boundary, prove the active
+      waiter/high-water state, then release it for a real condition-variable
+      wait and verify the completed-wait accounting. Curiosity poke: completed
+      wait events increment only after resumption, so no assertion may mistake
+      an active wait for a completed one. Completed 2026-07-15 22:25 EDT.
+
 - [ ] **Framework Regis corpus verdict audit:** analyze the 2026-07-15
       validation TSV in place on `framework-nixos`; aggregate every FAIL/WARN,
       then differentially inspect deterministic representative FAIL/WARN/PASS
