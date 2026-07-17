@@ -1,7 +1,5 @@
 # Dirtree: Stateful directory trees in the CLI for humans and LLMs. https://github.com/pmarreck/dirtree
 ver=1.2
-depth=2
-
 close=[
 	deps/*
 ]
@@ -14,6 +12,7 @@ annotate=[
 	MEMORIES/Additive FFI diagnostics must not extend caller-owned snapshots = Project memory: add FFI diagnostics through sibling snapshots, never extend caller-owned C output structs.
 	MEMORIES/Batch telemetry must own published state across concurrent polls = Project lesson: atomic publication does not retain active-batch telemetry lifetime for concurrent pollers.
 	MEMORIES/Completion delivery queues must be bounded and observable = Project lesson: callback handoff requires a preallocated bounded FIFO plus deterministic wait/high-water telemetry.
+	MEMORIES/Coverage measurements require signed binaries and source parity = Use signed artifacts for corruption sweeps and assert disk/in-memory deep-dispatch parity.
 	MEMORIES/LibRaw CDDL election preserves validate BSL GUI restrictions = Durable boundary: LibRaw CDDL static-link election leaves validate's BSL GUI/API restrictions intact.
 	MEMORIES/Live files that shrink during bounded slurp must fail before ownership narrows = Project lesson: bounded slurp must reject a live-file short read before an owning allocation slice is narrowed.
 	MEMORIES/Mapped PDF deep validation reuses source slices = Mapped-PDF no-copy lifetime and corruption-coverage acceptance lesson.
@@ -33,7 +32,7 @@ annotate=[
 	ffi/c_api.zig = C ABI batch scheduler and active telemetry: additive sized metadata avoids duplicate stats; RSS admission avoids lone-worker cadence sleeps.
 	ffi/validate_core.h = Public stable C ABI (v2.3): legacy and sized batch entry points plus scheduler/completion telemetry contracts.
 	publish-validate-pics = Clean-worktree release-site publisher: validates sibling GUI links, tests/regenerates docs, commits docs only, and pushes yolo.
-	scripts/generate-corruption-report = Generates the canonical 8-col corruption-detection report (Format|Sniper|Bolter|Shotgun|Sample|Size|Run|Mechanism) from sweep TSVs + sidecar; flag>env>default paths (VALIDATE_CORRUPTION_REPORT / VALIDATE_SWEEP_RESULTS_DIR); n/a never blank
+	scripts/generate-corruption-report = Canonical coverage report generator; sample-qualified corpus TSVs override obsolete generic fixtures.
 	scripts/migrate-report-to-sidecar = One-shot bootstrap: parses the old hand-maintained report into generator inputs (sidecar rows.tsv + preamble/postamble/appendix); resolves slug via Sample-filename+sniper% join; dissolves the Wave section + reassigns CPT→Archive
 	site = validate.pics static-site generator (LuaJIT) — emits docs/ for GitHub Pages, 50 locales
 	site/assets/site.css = Responsive validate.pics styles including stable five-release card layout.
@@ -48,12 +47,14 @@ annotate=[
 	site/templates/home.lua = Pure localized homepage renderer with stats, format navigation, coverage callout, and downloads.
 	site/templates/shared.lua = Renders shared static-site chrome with compact mobile-safe header and locale switcher.
 	site/test = Discovers Lua and Bash site tests through the glob helper because Peter environment deliberately disables Bash glob expansion.
+	site/tests/test_coverage.lua = Independent coverage-report/TSV oracle covering measured PCAPNG and clean LZW TIFF rates.
 	site/tests/test_output.bash = Generated-site output assertions for header links, anchors, releases, and locale parity.
 	site/tests/test_releases.lua = Lua parser tests covering strict signed release manifests and platform display order.
 	src/core/file_source.zig = Uniform mmap/file/buffer reader with explicit borrowed-handle ownership; reuses structural FDs safely and preserves mapped deep validation.
 	src/core/fixtures/license_vectors.json = Vendored differential oracle (18 cases) from mecha-commerce; pins license.zig verifier to issuer-authored {valid,error_code} vectors
-	src/core/format_validation.zig = Format detection/deep-validation dispatcher; structural/deep regular-file passes share one mmap-capable descriptor, with a counting-allocator regression for no-copy mapped PDF deep validation.
+	src/core/format_validation.zig = Format validation and deep-source dispatcher, including PCAPNG disk/in-memory parity for corruption coverage.
 	src/core/license.zig = Offline Ed25519 license-token verifier — contract v1 (b64url.b64url token, sign-over-left, email-only gate, kid-selected pubkeys, injected today, ErrorCode enum for i18n)
+	src/core/network_validators.zig = Network validators; PCAPNG now walks full endian-aware block framing with duplicate-length checks in bounded memory.
 	src/core/pdf_image_validator.zig = Deep PDF embedded-image validation; skips pool construction when the current CPU budget allows only sequential work
 	src/core/pdf_validator.zig = Deep PDF structural and decode validation; mapped or caller-owned sources reuse their lifetime-safe document slice before all image/font/attachment/Flate passes.
 	src/core/thread_pool.zig = Generic CPU-aware worker pool with FIFO work, bounded preallocated completion delivery, a dedicated result executor, per-reason wait/high-water telemetry, and deterministic full-queue backpressure test synchronization.

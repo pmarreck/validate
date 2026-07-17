@@ -140,7 +140,6 @@ FUNDAMENTAL_NO_DETECT[ivf]=1          # raw VP8 in IVF: structural until libvpx 
 FUNDAMENTAL_NO_DETECT[llvm_diag]=1    # LLVM serialized diagnostics: magic + bitcode signature only
 FUNDAMENTAL_NO_DETECT[llvm_pch]=1     # LLVM precompiled header: magic + bitcode signature only
 FUNDAMENTAL_NO_DETECT[msgpack]=1      # type-tagged binary; spec has no checksum
-FUNDAMENTAL_NO_DETECT[pcapng]=1       # validator checks magic + BOM only; per-block CRC32 not yet wired
 FUNDAMENTAL_NO_DETECT[sitx]=1         # StuffIt X: validator checks magic + structural header only
 FUNDAMENTAL_NO_DETECT[wavpack]=1      # MD5 + per-block CRC defined but not yet verified
 

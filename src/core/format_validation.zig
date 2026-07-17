@@ -6183,6 +6183,12 @@ pub const FormatValidator = struct {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.wavpack, .failed_to_seek, "file", .structural);
                 break :blk music_validators.validateWavPack(source);
             },
+            // Structural capture validation still has to run here: coverage
+            // experiments use this in-memory dispatch rather than validateFile.
+            .pcapng => blk: {
+                source.seekTo(0) catch break :blk ValidationResult.invalidCodeWithDepth(.pcapng, .failed_to_seek, "file", .structural);
+                break :blk network_validators.validatePcapng(source);
+            },
             .midi => blk: {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCode(.midi, .failed_to_seek, "MIDI file");
                 break :blk music_validators.validateMidiDeep(source);
@@ -7690,6 +7696,30 @@ fn expectDiskAndMemoryDeepVerdict(
     try std.testing.expectEqual(expected_valid, memory_result.is_valid);
     try std.testing.expectEqual(disk_result.format, memory_result.format);
     try std.testing.expectEqual(disk_result.validation_depth, memory_result.validation_depth);
+}
+
+test "PCAPNG deep validation matches disk and in-memory sources" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // A little-endian Section Header Block plus an opaque extension block.
+    // The latter's corrupt duplicate length must be caught through the same
+    // in-memory path that --test-coverage uses, not only during file scanning.
+    var capture: [40]u8 = [_]u8{0} ** 40;
+    std.mem.writeInt(u32, capture[0..4], 0x0A0D0D0A, .big);
+    std.mem.writeInt(u32, capture[4..8], 28, .little);
+    std.mem.writeInt(u32, capture[8..12], 0x1A2B3C4D, .little);
+    std.mem.writeInt(u16, capture[12..14], 1, .little);
+    std.mem.writeInt(i64, capture[16..24], -1, .little);
+    std.mem.writeInt(u32, capture[24..28], 28, .little);
+    std.mem.writeInt(u32, capture[28..32], 0x0000BEEF, .little);
+    std.mem.writeInt(u32, capture[32..36], 12, .little);
+    std.mem.writeInt(u32, capture[36..40], 12, .little);
+    try expectDiskAndMemoryDeepVerdict(std.testing.allocator, &tmp, "valid.pcapng", .pcapng, &capture, true);
+
+    var corrupt = capture;
+    std.mem.writeInt(u32, corrupt[36..40], 8, .little);
+    try expectDiskAndMemoryDeepVerdict(std.testing.allocator, &tmp, "bad-trailer.pcapng", .pcapng, &corrupt, false);
 }
 
 const SyntheticPdf = struct {

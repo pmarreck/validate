@@ -14,6 +14,27 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
+      sniper/bolter/shotgun rates against the published `pc260001.tif` corpus
+      fixture using a signed build. Curiosity poke: uncompressed pixels have no
+      intrinsic checksum, but every IFD, strip/tile index, and compressed codec
+      stream must still be walked without calling ordinary photographs corrupt.
+      Completed 2026-07-17 14:42 EDT: replaced the mislabelled Olympus RAW
+      fixture with clean LZW TIFF `bali.tif`; independent 100-trial,
+      seed-42 sweeps measured 7% / 45% / 100%. The report generator now
+      prefers sample-qualified evidence over stale generic fixture TSVs.
+
+- [x] **TDD deepen PCAPNG structural validation and remeasure coverage:** walk
+      every block through its declared size and duplicated trailing length,
+      including byte-order changes at subsequent Section Header Blocks, without
+      buffering capture payloads. Curiosity poke: extension blocks and a
+      multi-section capture are valid, but a corrupt length must never cause an
+      overflow, a partial read, or a false PASS. Record fresh deterministic
+      sniper/bolter/shotgun rates before updating the public coverage claim.
+      Completed 2026-07-17 13:26 EDT: 10% / 8% / 100% over three independent
+      100-trial, seed-42 sweeps of the 9,648-byte corpus capture; coverage's
+      in-memory dispatch is regression-tested against disk validation.
+
 - [x] **Restore Windows ARM64 GitHub Actions coverage:** prove the forked
       `windows-aarch64` Nix package builds from Linux, then add it to the CI
       matrix as an artifact-build target. Curiosity poke: Windows binaries are

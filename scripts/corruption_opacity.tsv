@@ -149,5 +149,5 @@ der	mixed	ASN.1 TLV recursive parsing catches structural corruption; payload byt
 dts	mixed	Frame header cross-validation (sample rate, channels, AMODE, VERNUM, PCMR, NBLKS consistency) + sync word chaining; no CRC in most streams (CPF=0 is standard); body corruption within frames is undetectable without CRC
 dbf	mixed	dBASE cross-validation (field sum vs record length, file size vs header+records) catches structural corruption; no checksums so payload byte flips are undetectable
 pcap	mixed	Structural packet walking (incl_len/orig_len/snaplen constraints) catches truncation and framing errors; no checksums so payload byte flips within packet bodies are undetectable
-pcapng	opaque	Minimal SHB magic + byte-order detection only; deep block structure not yet validated
+pcapng	mixed	Walks every block's declared and trailing lengths across sections; packet payload bytes have no universal checksum
 rpm	transparent	Header structure walk + SHA-1/SHA-256 of main header section provides strong hash coverage

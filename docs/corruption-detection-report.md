@@ -42,7 +42,7 @@
 | DPX | 0% | 0% | 0% | sample.dpx | 1.8 MB | 2026-03-06 | Raw pixel; SMPTE 268M spec has no checksum |
 | PAM/PPM | 0% | 0% | 0% | sample.ppm | 1.8 MB | 2026-03-06 | Raw pixel; Netpbm spec has no checksum |
 | TGA | 25% | 27% | **100%** | sample.tga | 11 KB | 2026-05-27 | Header + image-spec validation catches malformed-byte tamper; tiny 11 KB fixture pushes structural-byte density up |
-| TIFF | 0% | 0% | 0% | pc260001.tif | 914 KB | 2026-03-06 | IFD structural only — no per-strip checksum |
+| TIFF | 7% | 45% | **100%** | bali.tif | 175 KB | 2026-07-17 | Every IFD plus every LZW-compressed strip/tile is decoded with tiffz. TIFF/LZW has no decoded-pixel checksum, so some small mutations remain valid streams; destructive 4 KiB sector loss is detected in all 100 seeded trials. Measured on clean standard TIFF `bali.tif`, replacing an Olympus RAW file mislabeled `.tif`. |
 | JBIG2 | 0% | n/a | n/a | annex-h-truncated.jbig2 | 860 B | 2026-04-25 | Bi-level image stream walk; sniper 0% on truncated sample. Shotgun N/A (sample < 4 KB). |
 
 ### RAW Camera
@@ -351,7 +351,7 @@ For PDF, the realistic top tier per filter dominance becomes:
 | LLVM Precompiled Header (.pch) | 0% | 0% | 0% | sample.pch | 16 KB | 2026-04-25 | Magic ("CPCH") + LLVM bitcode signature only. Bitcode contents are version-specific; structural only. |
 | LLVM Serialized Diagnostics (.dia) | 0% | 0% | 0% | sample.dia | 16 KB | 2026-04-25 | Magic ("DIAG") + LLVM bitcode signature only. Same limit as .pch. |
 | PCAP | 4% | 3% | **100%** | sample.pcap | 13 KB | 2026-04-25 | Hand-authored (no sudo for tcpdump in nix sandbox). Walks every packet record's incl_len/orig_len; shotgun lands in valid trailer bytes that fail length checks. Fixed 64 MiB-stack-overflow bug in `validatePcap` while landing the sample. |
-| PCAPNG | 0% | 0% | 0% | sample.pcapng | 9 KB | 2026-04-25 | Section Header Block + IDB + EPBs structural walk; pcapng-validator checks magic and BOM only (no block-level CRC verification yet — pcapng has optional CRC32 per block). |
+| PCAPNG | 10% | 8% | **100%** | sample.pcapng | 9 KB | 2026-07-17 | Walks every PCAPNG block's declared length and matching trailing length across every section. Unknown packet payloads remain opaque, so this is structural—not a per-packet checksum guarantee. |
 | G-code | 27% | **99%** | **98%** | sample.gcode | 20 KB | 2026-04-25 | Text format; line-grammar walk catches 27% sniper (most flips break a coordinate or G/M code prefix). Shotgun 98% — large overwrite breaks too many lines to ignore. Hand-authored CC0. |
 | MessagePack (.msgpack) | 0% | 0% | 0% | sample.msgpack | 19 KB | 2026-04-25 | Type-tagged binary; validator walks tag stream but spec has no checksum. Most flips land in payload bytes that decode to different-but-valid values. Fundamental limit per RFC. Hand-authored CC0. |
 | RPM Package (.rpm) | 3% | 7% | 30% | sample.rpm | 22 KB | 2026-04-25 | RPM v3 lead + signature header + main header. Validator computes SHA-1 over main header (when sig tag 269 present). Shotgun 30% reflects header dominance vs payload mass. Built via rpmbuild (CC0 spec). Fixed 16 MiB-stack-overflow bug in `validateRpm` while landing the sample. |

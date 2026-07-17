@@ -39,6 +39,15 @@ mk_tsv "$rd/foo_shotgun.tsv" shotgun foo.bin 200000 100 100
 # bar: sniper + shotgun only (NO bolter) -> bolter cell must be n/a, never blank
 mk_tsv "$rd/bar_sniper.tsv"  sniper  bar.bin 9000 0 100
 mk_tsv "$rd/bar_shotgun.tsv" shotgun bar.bin 9000 7 100
+# tiff: a historical generic file is present, but the sidecar declares a
+# canonical sample.  Its sample-qualified evidence must win so report rows
+# never silently mix an old/mislabelled corpus fixture with current rates.
+mk_tsv "$rd/tiff_sniper.tsv"       sniper  pc260001.tif 900000 0 100
+mk_tsv "$rd/tiff_bolter.tsv"       bolter  pc260001.tif 900000 0 100
+mk_tsv "$rd/tiff_shotgun.tsv"      shotgun pc260001.tif 900000 0 100
+mk_tsv "$rd/tiff_bali_sniper.tsv"  sniper  bali.tif 179378 7 100
+mk_tsv "$rd/tiff_bali_bolter.tsv"  bolter  bali.tif 179378 45 100
+mk_tsv "$rd/tiff_bali_shotgun.tsv" shotgun bali.tif 179378 100 100
 
 # --- synthetic sidecar -----------------------------------------------------
 # columns (tab): section, display, slug, run, mechanism, fb_sample, fb_size, fb_sniper, fb_bolter, fb_shotgun
@@ -47,6 +56,7 @@ rows="$rd/generated/report-rows.tsv"
 {
 	printf 'Image & Photo\tFoo\tfoo\t2026-06-22\tCRC per chunk\t\t\t\t\t\n'
 	printf 'Image & Photo\tBar\tbar\t2026-06-22\tStructural only\t\t\t\t\t\n'
+	printf 'Image & Photo\tTIFF\ttiff\t2026-07-17\tLZW strips\tbali.tif\t179378\t\t\t\n'
 	# baz: NO tsv at all -> falls back to sidecar frozen numbers
 	printf 'Archive\tBaz\tbaz\t2026-03-06\tFrozen row\tbaz.q\t40960\t12\tn/a\t99\n'
 } > "$rows"
@@ -74,6 +84,10 @@ bazline="$(grep -E '^\| .*Baz.* \|' "$out")"
 grep -qF 'Preamble.' "$out" && pass "preamble included" || fail "preamble missing"
 grep -qF 'Postamble' "$out" && pass "postamble included" || fail "postamble missing"
 grep -qF '### Image & Photo' "$out" && pass "section heading" || fail "section heading missing"
+tiffline="$(grep -F '| TIFF |' "$out")"
+printf '%s' "$tiffline" | grep -qF '| TIFF | 7% | 45% | **100%** | bali.tif | 175 KB |' \
+	&& pass "sample-qualified TIFF evidence overrides generic fixture" \
+	|| fail "sample-qualified TIFF evidence was not used: $tiffline"
 
 # ===========================================================================
 # Case 2: env-var override (no path flags) — the testability ask. Defaults for

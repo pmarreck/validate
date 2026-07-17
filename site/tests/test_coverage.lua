@@ -80,6 +80,28 @@ if jpeg then
 	eq(jpeg.run, "2026-05-27", "JPEG run date")
 end
 
+local pcapng = by["PCAPNG"]
+ok(pcapng ~= nil, "PCAPNG row present")
+if pcapng then
+	eq(pcapng.sniper_pct, 10, "PCAPNG sniper_pct")
+	eq(pcapng.bolter_pct, 8, "PCAPNG bolter_pct")
+	eq(pcapng.shotgun_pct, 100, "PCAPNG shotgun_pct")
+	eq(pcapng.run, "2026-07-17", "PCAPNG run date")
+end
+
+-- TIFF must be measured on a clean, ordinary TIFF—not a camera RAW file
+-- wearing a .tif extension.  Lossless LZW detects destructive sector damage
+-- reliably, while some bit/byte mutations still form a valid LZW stream.
+local tiff = by["TIFF"]
+ok(tiff ~= nil, "TIFF row present")
+if tiff then
+	eq(tiff.sample, "bali.tif", "TIFF canonical sample")
+	eq(tiff.sniper_pct, 7, "TIFF sniper_pct")
+	eq(tiff.bolter_pct, 45, "TIFF bolter_pct")
+	eq(tiff.shotgun_pct, 100, "TIFF shotgun_pct")
+	eq(tiff.run, "2026-07-17", "TIFF run date")
+end
+
 -- ── MFIC: recompute rates from raw TSVs, compare to report claims ──
 local function tsv_pct(path)
 	local t = cov.parse_tsv_string(slurp(path))
@@ -90,6 +112,13 @@ eq(tsv_pct(d .. "png_sniper.tsv"), png and png.sniper_pct, "TSV vs report: png s
 eq(tsv_pct(d .. "png_shotgun.tsv"), png and png.shotgun_pct, "TSV vs report: png shotgun")
 eq(tsv_pct(d .. "jpeg_sniper.tsv"), jpeg and jpeg.sniper_pct, "TSV vs report: jpeg sniper")
 eq(tsv_pct(d .. "jpeg_shotgun.tsv"), jpeg and jpeg.shotgun_pct, "TSV vs report: jpeg shotgun")
+local pcapng_d = "../docs/corruption-sweep-results/"
+eq(tsv_pct(pcapng_d .. "pcapng_sniper.tsv"), pcapng and pcapng.sniper_pct, "TSV vs report: PCAPNG sniper")
+eq(tsv_pct(pcapng_d .. "pcapng_bolter.tsv"), pcapng and pcapng.bolter_pct, "TSV vs report: PCAPNG bolter")
+eq(tsv_pct(pcapng_d .. "pcapng_shotgun.tsv"), pcapng and pcapng.shotgun_pct, "TSV vs report: PCAPNG shotgun")
+eq(tsv_pct(pcapng_d .. "tiff_bali_sniper.tsv"), tiff and tiff.sniper_pct, "TSV vs report: TIFF sniper")
+eq(tsv_pct(pcapng_d .. "tiff_bali_bolter.tsv"), tiff and tiff.bolter_pct, "TSV vs report: TIFF bolter")
+eq(tsv_pct(pcapng_d .. "tiff_bali_shotgun.tsv"), tiff and tiff.shotgun_pct, "TSV vs report: TIFF shotgun")
 
 local _, meta = tsv_pct(d .. "png_sniper.tsv")
 eq(meta.mode, "sniper", "TSV mode parsed")

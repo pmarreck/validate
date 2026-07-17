@@ -76,16 +76,31 @@ local function parse_tsv(path)
 	return { n = n, k = k, filesize = filesize, file = file_name }
 end
 
--- Locate a TSV for (slug,mode): flat results dir first, then known dated
--- subdirs (newest-looking last wins). Returns parsed table or nil.
+-- Locate a TSV for (slug,mode): a sidecar's canonical sample may have its own
+-- qualified corpus file (`slug_sample_mode.tsv`), which takes precedence over
+-- a generic historical `slug_mode.tsv`. Within each naming form, flat results
+-- come first and known dated subdirs (newest-looking last) override them.
 local SUBDIRS = { "", "2026-05-27/" }
-local function find_tsv(slug, mode)
-	local found = nil
-	for _, sub in ipairs(SUBDIRS) do
-		local p = opts.results .. "/" .. sub .. slug .. "_" .. mode .. ".tsv"
-		if file_exists(p) then found = parse_tsv(p) end
+local function find_tsv(slug, mode, canonical_sample)
+	local candidates = {}
+	if canonical_sample and canonical_sample ~= "" then
+		local base = canonical_sample:gsub(".*/", "")
+		local stem = base:match("^(.*)%.[^%.]+$") or base
+		if stem ~= "" then
+			candidates[#candidates + 1] = slug .. "_" .. stem .. "_" .. mode .. ".tsv"
+		end
 	end
-	return found
+	candidates[#candidates + 1] = slug .. "_" .. mode .. ".tsv"
+
+	for _, name in ipairs(candidates) do
+		local found = nil
+		for _, sub in ipairs(SUBDIRS) do
+			local p = opts.results .. "/" .. sub .. name
+			if file_exists(p) then found = parse_tsv(p) end
+		end
+		if found then return found end
+	end
+	return nil
 end
 
 local function round(x) return math.floor(x + 0.5) end
@@ -169,9 +184,9 @@ for _, section in ipairs(section_order) do
 	w("| Format | Sniper | Bolter | Shotgun | Sample | Size | Run | Mechanism |\n")
 	w("|--------|-------:|-------:|--------:|--------|-----:|-----|-----------|\n")
 	for _, r in ipairs(by_section[section]) do
-		local sniper = find_tsv(r.slug, "sniper")
-		local bolter = find_tsv(r.slug, "bolter")
-		local shotgun = find_tsv(r.slug, "shotgun")
+		local sniper = find_tsv(r.slug, "sniper", r.fb_sample)
+		local bolter = find_tsv(r.slug, "bolter", r.fb_sample)
+		local shotgun = find_tsv(r.slug, "shotgun", r.fb_sample)
 		-- sample/size from any present TSV header, else frozen fallback
 		local any = sniper or bolter or shotgun
 		local sample = (any and any.file ~= "" and any.file) or r.fb_sample

@@ -1,0 +1,5 @@
+Raw `zig build` output intentionally lacks Validate's integrity trailer and
+exits before scanning.  Subprocess corruption sweeps must therefore use the
+signed `./build` or `nix build` artifact; otherwise they can report artificial
+detection.  `validateDeepFromSource` has its own dispatch from file scanning,
+so every newly wired deep validator needs a disk-versus-in-memory parity test.

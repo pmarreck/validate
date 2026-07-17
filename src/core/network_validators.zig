@@ -2,7 +2,7 @@
 //!
 //! Supports:
 //!   - PCAP (classic libpcap format, all 4 magic variants)
-//!   - PCAPNG (next-generation pcap, Section Header Block detection only)
+//!   - PCAPNG (next-generation pcap, full block framing walk)
 
 const std = @import("std");
 const heap = @import("heap.zig");
@@ -36,6 +36,13 @@ const pcap_magic_le_nsec: u32 = 0x4D3CB2A1;
 
 /// PCAPNG Section Header Block magic (first 4 bytes of the file).
 const pcapng_magic: u32 = 0x0A0D0D0A;
+/// Every PCAPNG block has a type, total length, and duplicate trailing length.
+const pcapng_min_block_size: usize = 12;
+/// A Section Header Block adds BOM, version, and section-length fields.
+const pcapng_min_section_header_size: usize = 28;
+/// Byte-order magic interpreted as a big-endian integer.
+const pcapng_byte_order_magic: u32 = 0x1A2B3C4D;
+const pcapng_byte_order_magic_swapped: u32 = 0x4D3C2B1A;
 
 // ============================================================
 // Buffer-based validators
@@ -114,26 +121,71 @@ pub fn validatePcapFromBuffer(data: []const u8) ValidationResult {
     return ValidationResult.okWithDepth(.pcap, .structural);
 }
 
-/// Validate a PCAPNG file from a memory buffer.
-/// For now, just confirms the Section Header Block magic and minimum size.
+/// Maps a PCAPNG byte-order magic to the endianness of its containing section.
+/// Section Header Blocks are self-describing, so multi-section captures may
+/// deliberately switch byte order without making their following blocks invalid.
+fn pcapngEndianFromBom(bom: []const u8) ?std.builtin.Endian {
+    const bom_be = std.mem.readInt(u32, bom[0..4], .big);
+    return switch (bom_be) {
+        pcapng_byte_order_magic => .big,
+        pcapng_byte_order_magic_swapped => .little,
+        else => null,
+    };
+}
+
+/// Validates all PCAPNG block framing in a buffer.
+/// It verifies every declared block size and its duplicated trailing length,
+/// while intentionally leaving opaque packet payload bytes to packet dissectors.
 pub fn validatePcapngFromBuffer(data: []const u8) ValidationResult {
-    // Minimum: 4-byte SHB type (0x0A0D0D0A) + 4-byte block length + 4-byte byte-order magic
-    if (data.len < 12) {
+    if (data.len < pcapng_min_section_header_size) {
         return ValidationResult.invalidCode(.pcapng, .file_too_small, "PCAPNG format");
     }
 
-    // Block type is always 0x0A0D0D0A regardless of endianness.
-    // Block type is always 0x0A0D0D0A regardless of endianness.
-    const block_type = std.mem.readInt(u32, data[0..4][0..4], .big);
-    if (block_type != pcapng_magic) {
-        return ValidationResult.invalidCode(.pcapng, .invalid_magic, "PCAPNG Section Header Block");
-    }
+    var offset: usize = 0;
+    var endian: std.builtin.Endian = undefined;
+    var is_first_block = true;
 
-    // Byte-order magic at offset 8: 0x1A2B3C4D (BE) or 0x4D3C2B1A (LE).
-    // Both are valid; we just confirm it's one of them.
-    const bom_be = std.mem.readInt(u32, data[8..12][0..4], .big);
-    if (bom_be != 0x1A2B3C4D and bom_be != 0x4D3C2B1A) {
-        return ValidationResult.invalid(.pcapng, "PCAPNG invalid byte-order magic");
+    while (offset < data.len) {
+        const remaining = data.len - offset;
+        if (remaining < 8) {
+            return ValidationResult.invalid(.pcapng, "PCAPNG truncated block header");
+        }
+
+        // Section Header Block type is byte-order invariant because all four
+        // bytes are symmetric. A subsequent SHB begins a new section.
+        const is_section_header = std.mem.readInt(u32, data[offset..][0..4], .big) == pcapng_magic;
+        if (is_first_block and !is_section_header) {
+            return ValidationResult.invalidCode(.pcapng, .invalid_magic, "PCAPNG Section Header Block");
+        }
+
+        if (is_section_header) {
+            if (remaining < pcapng_min_section_header_size) {
+                return ValidationResult.invalid(.pcapng, "PCAPNG truncated Section Header Block");
+            }
+            endian = pcapngEndianFromBom(data[offset + 8 .. offset + 12]) orelse
+                return ValidationResult.invalid(.pcapng, "PCAPNG invalid byte-order magic");
+        }
+
+        const total_length = std.mem.readInt(u32, data[offset + 4 .. offset + 8][0..4], endian);
+        const total_length_usize: usize = total_length;
+        const minimum_length = if (is_section_header) pcapng_min_section_header_size else pcapng_min_block_size;
+        if (total_length_usize < minimum_length or total_length_usize % 4 != 0) {
+            return ValidationResult.invalid(.pcapng, "PCAPNG invalid block total length");
+        }
+
+        const block_end = std.math.add(usize, offset, total_length_usize) catch
+            return ValidationResult.invalid(.pcapng, "PCAPNG block total length overflows file");
+        if (block_end > data.len) {
+            return ValidationResult.invalid(.pcapng, "PCAPNG truncated block body");
+        }
+
+        const trailing_length = std.mem.readInt(u32, data[block_end - 4 .. block_end][0..4], endian);
+        if (trailing_length != total_length) {
+            return ValidationResult.invalid(.pcapng, "PCAPNG block length does not match trailing length");
+        }
+
+        offset = block_end;
+        is_first_block = false;
     }
 
     return ValidationResult.okWithDepth(.pcapng, .structural);
@@ -158,16 +210,85 @@ pub fn validatePcap(file: *FileSource) ValidationResult {
     return validatePcapFromBuffer(buf[0..bytes_read]);
 }
 
-/// File-source entry point for PCAPNG.
+/// Walks PCAPNG block framing across an entire file without buffering capture
+/// payloads. Each block costs its header, possible Section Header BOM, and
+/// trailing length: bounded memory even for multi-gigabyte captures.
 pub fn validatePcapng(file: *FileSource) ValidationResult {
     file.seekTo(0) catch return ValidationResult.invalidCode(.pcapng, .failed_to_seek, "to start");
 
-    var buf: [4096]u8 = undefined;
-    const bytes_read = file.read(&buf) catch {
-        return ValidationResult.invalidCode(.pcapng, .failed_to_read, "PCAPNG file");
-    };
+    if (file.file_size < pcapng_min_section_header_size) {
+        return ValidationResult.invalidCode(.pcapng, .file_too_small, "PCAPNG format");
+    }
 
-    return validatePcapngFromBuffer(buf[0..bytes_read]);
+    var header: [12]u8 = undefined;
+    var trailer: [4]u8 = undefined;
+    var offset: u64 = 0;
+    var endian: std.builtin.Endian = undefined;
+    var is_first_block = true;
+
+    while (offset < file.file_size) {
+        const remaining = file.file_size - offset;
+        if (remaining < 8) {
+            return ValidationResult.invalid(.pcapng, "PCAPNG truncated block header");
+        }
+
+        file.seekTo(offset) catch return ValidationResult.invalidCode(.pcapng, .failed_to_seek, "PCAPNG block header");
+        const header_bytes_read = file.readAll(header[0..8]) catch {
+            return ValidationResult.invalidCode(.pcapng, .failed_to_read, "PCAPNG block header");
+        };
+        if (header_bytes_read != 8) {
+            return ValidationResult.invalid(.pcapng, "PCAPNG truncated block header");
+        }
+
+        const is_section_header = std.mem.readInt(u32, header[0..4], .big) == pcapng_magic;
+        if (is_first_block and !is_section_header) {
+            return ValidationResult.invalidCode(.pcapng, .invalid_magic, "PCAPNG Section Header Block");
+        }
+
+        if (is_section_header) {
+            if (remaining < pcapng_min_section_header_size) {
+                return ValidationResult.invalid(.pcapng, "PCAPNG truncated Section Header Block");
+            }
+            const bom_bytes_read = file.readAll(header[8..12]) catch {
+                return ValidationResult.invalidCode(.pcapng, .failed_to_read, "PCAPNG byte-order magic");
+            };
+            if (bom_bytes_read != 4) {
+                return ValidationResult.invalid(.pcapng, "PCAPNG truncated Section Header Block");
+            }
+            endian = pcapngEndianFromBom(header[8..12]) orelse
+                return ValidationResult.invalid(.pcapng, "PCAPNG invalid byte-order magic");
+        }
+
+        const total_length = std.mem.readInt(u32, header[4..8], endian);
+        const total_length_u64: u64 = total_length;
+        const minimum_length: u64 = if (is_section_header) pcapng_min_section_header_size else pcapng_min_block_size;
+        if (total_length_u64 < minimum_length or total_length_u64 % 4 != 0) {
+            return ValidationResult.invalid(.pcapng, "PCAPNG invalid block total length");
+        }
+
+        const block_end = std.math.add(u64, offset, total_length_u64) catch
+            return ValidationResult.invalid(.pcapng, "PCAPNG block total length overflows file");
+        if (block_end > file.file_size) {
+            return ValidationResult.invalid(.pcapng, "PCAPNG truncated block body");
+        }
+
+        file.seekTo(block_end - 4) catch return ValidationResult.invalidCode(.pcapng, .failed_to_seek, "PCAPNG trailing block length");
+        const trailer_bytes_read = file.readAll(&trailer) catch {
+            return ValidationResult.invalidCode(.pcapng, .failed_to_read, "PCAPNG trailing block length");
+        };
+        if (trailer_bytes_read != trailer.len) {
+            return ValidationResult.invalid(.pcapng, "PCAPNG truncated trailing block length");
+        }
+        const trailing_length = std.mem.readInt(u32, &trailer, endian);
+        if (trailing_length != total_length) {
+            return ValidationResult.invalid(.pcapng, "PCAPNG block length does not match trailing length");
+        }
+
+        offset = block_end;
+        is_first_block = false;
+    }
+
+    return ValidationResult.okWithDepth(.pcapng, .structural);
 }
 
 // ============================================================
@@ -369,14 +490,45 @@ test "PCAP: file too small rejected" {
 
 // ---- PCAPNG tests ----
 
+/// Appends a standards-shaped Section Header Block for framing tests.
+fn appendPcapngSectionHeader(buf: []u8, offset: usize, endian: std.builtin.Endian) usize {
+    const end = offset + pcapng_min_section_header_size;
+    std.mem.writeInt(u32, buf[offset..][0..4], pcapng_magic, .big);
+    std.mem.writeInt(u32, buf[offset + 4 ..][0..4], pcapng_min_section_header_size, endian);
+    std.mem.writeInt(u32, buf[offset + 8 ..][0..4], pcapng_byte_order_magic, endian);
+    std.mem.writeInt(u16, buf[offset + 12 ..][0..2], 1, endian);
+    std.mem.writeInt(u16, buf[offset + 14 ..][0..2], 0, endian);
+    std.mem.writeInt(i64, buf[offset + 16 ..][0..8], -1, endian);
+    std.mem.writeInt(u32, buf[end - 4 ..][0..4], pcapng_min_section_header_size, endian);
+    return end;
+}
+
+/// Appends an opaque extension block; only universal PCAPNG framing is asserted.
+fn appendPcapngBlock(buf: []u8, offset: usize, block_type: u32, total_length: u32, endian: std.builtin.Endian) usize {
+    const end = offset + total_length;
+    std.mem.writeInt(u32, buf[offset..][0..4], block_type, endian);
+    std.mem.writeInt(u32, buf[offset + 4 ..][0..4], total_length, endian);
+    std.mem.writeInt(u32, buf[end - 4 ..][0..4], total_length, endian);
+    return end;
+}
+
+test "PCAPNG: mismatched trailing block length rejected" {
+    // A complete little-endian Section Header Block followed by a complete
+    // Interface Description Block.  The duplicate length at the end of the
+    // IDB is deliberately corrupt; the former magic/BOM-only validator
+    // accepted it, but full framing must reject it.
+    var capture: [48]u8 = [_]u8{0} ** 48;
+    _ = appendPcapngSectionHeader(&capture, 0, .little);
+    _ = appendPcapngBlock(&capture, 28, 1, 20, .little);
+    std.mem.writeInt(u32, capture[44..48], 16, .little); // should be 20
+
+    const result = validatePcapngFromBuffer(&capture);
+    try testing.expect(!result.is_valid);
+}
+
 test "PCAPNG: valid Section Header Block (LE)" {
-    var hdr: [12]u8 = undefined;
-    // Block type: 0x0A0D0D0A (always stored as this byte sequence)
-    std.mem.writeInt(u32, hdr[0..4], pcapng_magic, .big);
-    // Block total length (not deeply validated)
-    std.mem.writeInt(u32, hdr[4..8], 28, .little);
-    // Byte-order magic (LE): 0x4D3C2B1A stored LE = bytes 1A 2B 3C 4D
-    std.mem.writeInt(u32, hdr[8..12], 0x1A2B3C4D, .big);
+    var hdr: [pcapng_min_section_header_size]u8 = undefined;
+    _ = appendPcapngSectionHeader(&hdr, 0, .little);
 
     const result = validatePcapngFromBuffer(&hdr);
     try testing.expect(result.is_valid);
@@ -384,22 +536,43 @@ test "PCAPNG: valid Section Header Block (LE)" {
 }
 
 test "PCAPNG: valid Section Header Block (BE byte-order magic)" {
-    var hdr: [12]u8 = undefined;
-    std.mem.writeInt(u32, hdr[0..4], pcapng_magic, .big);
-    std.mem.writeInt(u32, hdr[4..8], 28, .big);
-    // BE byte-order magic: 0x1A2B3C4D stored as bytes 1A 2B 3C 4D
-    std.mem.writeInt(u32, hdr[8..12], 0x1A2B3C4D, .big);
+    var hdr: [pcapng_min_section_header_size]u8 = undefined;
+    _ = appendPcapngSectionHeader(&hdr, 0, .big);
 
     const result = validatePcapngFromBuffer(&hdr);
     try testing.expect(result.is_valid);
     try testing.expectEqual(FileFormat.pcapng, result.format);
 }
 
+test "PCAPNG: extension blocks and a later section may change byte order" {
+    var capture: [28 + 12 + 28]u8 = [_]u8{0} ** (28 + 12 + 28);
+    var offset = appendPcapngSectionHeader(&capture, 0, .little);
+    offset = appendPcapngBlock(&capture, offset, 0x0000BEEF, pcapng_min_block_size, .little);
+    offset = appendPcapngSectionHeader(&capture, offset, .big);
+
+    try testing.expectEqual(capture.len, offset);
+    const result = validatePcapngFromBuffer(&capture);
+    try testing.expect(result.is_valid);
+}
+
+test "PCAPNG: file source reaches corrupt framing beyond its old 4 KiB window" {
+    const extension_length = 4096;
+    var capture: [pcapng_min_section_header_size + extension_length]u8 = [_]u8{0} ** (pcapng_min_section_header_size + extension_length);
+    const extension_offset = appendPcapngSectionHeader(&capture, 0, .little);
+    _ = appendPcapngBlock(&capture, extension_offset, 0x0000BEEF, extension_length, .little);
+    std.mem.writeInt(u32, capture[capture.len - 4 .. capture.len], extension_length - 4, .little);
+
+    var source = FileSource.fromBuffer(&capture);
+    const result = validatePcapng(&source);
+    try testing.expect(!result.is_valid);
+}
+
 test "PCAPNG: wrong block type rejected" {
-    var hdr: [12]u8 = undefined;
+    var hdr: [pcapng_min_section_header_size]u8 = [_]u8{0} ** pcapng_min_section_header_size;
     std.mem.writeInt(u32, hdr[0..4], 0xDEADBEEF, .big); // wrong type
     std.mem.writeInt(u32, hdr[4..8], 28, .little);
-    std.mem.writeInt(u32, hdr[8..12], 0x1A2B3C4D, .big);
+    std.mem.writeInt(u32, hdr[8..12], pcapng_byte_order_magic, .little);
+    std.mem.writeInt(u32, hdr[24..28], 28, .little);
 
     const result = validatePcapngFromBuffer(&hdr);
     try testing.expect(!result.is_valid);
@@ -412,10 +585,11 @@ test "PCAPNG: too small rejected" {
 }
 
 test "PCAPNG: invalid byte-order magic rejected" {
-    var hdr: [12]u8 = undefined;
+    var hdr: [pcapng_min_section_header_size]u8 = [_]u8{0} ** pcapng_min_section_header_size;
     std.mem.writeInt(u32, hdr[0..4], pcapng_magic, .big);
     std.mem.writeInt(u32, hdr[4..8], 28, .little);
     std.mem.writeInt(u32, hdr[8..12], 0xDEADBEEF, .big); // invalid BOM
+    std.mem.writeInt(u32, hdr[24..28], 28, .little);
 
     const result = validatePcapngFromBuffer(&hdr);
     try testing.expect(!result.is_valid);

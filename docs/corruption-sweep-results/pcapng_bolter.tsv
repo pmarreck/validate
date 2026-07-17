@@ -17,9 +17,9 @@ trial	mode	filesize	off	bit	span	detected
 14	bolter	9648	881	-	1	false
 15	bolter	9648	1323	-	1	false
 16	bolter	9648	7930	-	1	false
-17	bolter	9648	1204	-	1	false
+17	bolter	9648	1204	-	1	true
 18	bolter	9648	8867	-	1	false
-19	bolter	9648	2740	-	1	false
+19	bolter	9648	2740	-	1	true
 20	bolter	9648	7032	-	1	false
 21	bolter	9648	615	-	1	false
 22	bolter	9648	1200	-	1	false
@@ -43,8 +43,8 @@ trial	mode	filesize	off	bit	span	detected
 40	bolter	9648	9506	-	1	false
 41	bolter	9648	7851	-	1	false
 42	bolter	9648	3855	-	1	false
-43	bolter	9648	8012	-	1	false
-44	bolter	9648	1006	-	1	false
+43	bolter	9648	8012	-	1	true
+44	bolter	9648	1006	-	1	true
 45	bolter	9648	2042	-	1	false
 46	bolter	9648	3482	-	1	false
 47	bolter	9648	8288	-	1	false
@@ -55,7 +55,7 @@ trial	mode	filesize	off	bit	span	detected
 52	bolter	9648	9506	-	1	false
 53	bolter	9648	6661	-	1	false
 54	bolter	9648	7762	-	1	false
-55	bolter	9648	724	-	1	false
+55	bolter	9648	724	-	1	true
 56	bolter	9648	4527	-	1	false
 57	bolter	9648	1564	-	1	false
 58	bolter	9648	9295	-	1	false
@@ -75,7 +75,7 @@ trial	mode	filesize	off	bit	span	detected
 72	bolter	9648	1044	-	1	false
 73	bolter	9648	2006	-	1	false
 74	bolter	9648	3908	-	1	false
-75	bolter	9648	3605	-	1	false
+75	bolter	9648	3605	-	1	true
 76	bolter	9648	7499	-	1	false
 77	bolter	9648	2038	-	1	false
 78	bolter	9648	8208	-	1	false
@@ -86,12 +86,12 @@ trial	mode	filesize	off	bit	span	detected
 83	bolter	9648	3727	-	1	false
 84	bolter	9648	4177	-	1	false
 85	bolter	9648	9382	-	1	false
-86	bolter	9648	525	-	1	false
+86	bolter	9648	525	-	1	true
 87	bolter	9648	7416	-	1	false
 88	bolter	9648	8978	-	1	false
 89	bolter	9648	2216	-	1	false
 90	bolter	9648	7982	-	1	false
-91	bolter	9648	1014	-	1	false
+91	bolter	9648	1014	-	1	true
 92	bolter	9648	7929	-	1	false
 93	bolter	9648	2291	-	1	false
 94	bolter	9648	2049	-	1	false
