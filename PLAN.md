@@ -14,6 +14,23 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [ ] **TDD archive and codec strictness audit:** inventory every archive and
+      embedded compression decoder, document its terminal-marker, decoded-size,
+      checksum, and trailing-byte invariants, then tighten any path that accepts
+      a malformed stream as successful. The first remediation is the bold
+      `lzwz` extraction: one strict, profile-configured decoder shared by PDF,
+      GIF, and `tiffz`; delete Validate's TIFF fallback and every private LZW
+      dictionary implementation after consumer tests are green. The oracle
+      records the discovered contradiction: PDF, TIFF fallback, and `tiffz`
+      all advertise an incomplete-stream error but treat physical EOF before
+      EOD/EOI as success. Require terminator proof and require every TIFF
+      strip/tile to produce its exact declared pixel-byte extent before
+      remeasuring sniper/bolter/shotgun coverage. Curiosity poke: a byte
+      mutation can legitimately form a different valid stream, but a decoder
+      must never turn a missing required invariant into a PASS merely because
+      it reached physical EOF. Record each accepted compatibility exception
+      separately as WARN rather than silently weakening FAIL logic.
+
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus
       fixture using a signed build. Curiosity poke: uncompressed pixels have no

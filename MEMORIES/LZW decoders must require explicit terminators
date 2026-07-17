@@ -1,0 +1,15 @@
+Validate contained three copies of its LZW state machine and tiffz contained a
+fourth adapted copy.  Their APIs/docs advertised incomplete-source errors, but
+each decode loop treated `reader.readCode(...) == null` as successful EOF even
+when the required EOD/EOI code had never appeared.  A decoder therefore cannot
+claim deep validation merely by reaching physical EOF.
+
+The remedy is the shared `lzwz` core, whose profile makes bit order, code
+width, clear/end codes, growth timing, and terminator policy explicit.  Every
+profile must regression-test a stream with ordinary data codes but no EOD/EOI
+and return the incomplete-source error.  Preserve the distinction between
+this malformed case and a bit flip that forms another syntactically valid LZW
+stream; the latter cannot be detected absent an independent checksum or
+declared-output invariant.  Container adapters must compare the decoded extent
+when their format declares it, and compatibility exceptions must be narrow
+WARNs with a cause.

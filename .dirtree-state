@@ -6,6 +6,7 @@ close=[
 
 annotate=[
 	.github/workflows/ci.yml = Five-target GitHub Actions matrix: native Linux/macOS plus cross-built Windows x86_64 and ARM64 artifacts; native tests run only for default packages.
+	ARCHIVE_STRICTNESS_AUDIT.md = Evidence ledger for archive and embedded-codec terminator, decoded-size, checksum, and trailing-byte strictness.
 	CODE_REVIEW.md = 13-dimension evidence-based audit of correctness, tests, FFI, memory safety, and performance.
 	LICENSES/CDDL-1.0.txt = Canonical CDDL-1.0 text bundled for the explicitly elected LibRaw static-link distribution.
 	MEMORIES/A successful batch must account for every submitted result = Project lesson: a successful C callback batch must never silently omit an input after result serialization OOM.
@@ -13,6 +14,7 @@ annotate=[
 	MEMORIES/Batch telemetry must own published state across concurrent polls = Project lesson: atomic publication does not retain active-batch telemetry lifetime for concurrent pollers.
 	MEMORIES/Completion delivery queues must be bounded and observable = Project lesson: callback handoff requires a preallocated bounded FIFO plus deterministic wait/high-water telemetry.
 	MEMORIES/Coverage measurements require signed binaries and source parity = Use signed artifacts for corruption sweeps and assert disk/in-memory deep-dispatch parity.
+	MEMORIES/LZW decoders must require explicit terminators = Durable lesson: LZW deep validation must prove explicit EOD/EOI, not merely reach EOF.
 	MEMORIES/LibRaw CDDL election preserves validate BSL GUI restrictions = Durable boundary: LibRaw CDDL static-link election leaves validate's BSL GUI/API restrictions intact.
 	MEMORIES/Live files that shrink during bounded slurp must fail before ownership narrows = Project lesson: bounded slurp must reject a live-file short read before an owning allocation slice is narrowed.
 	MEMORIES/Mapped PDF deep validation reuses source slices = Mapped-PDF no-copy lifetime and corruption-coverage acceptance lesson.
