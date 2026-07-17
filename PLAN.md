@@ -30,6 +30,10 @@ at the bottom. Older completed sections were rolled up — full history lives in
       must never turn a missing required invariant into a PASS merely because
       it reached physical EOF. Record each accepted compatibility exception
       separately as WARN rather than silently weakening FAIL logic.
+  - [x] Pin the strict `tiffz` terminator fix and add the downstream 1-bit
+        TIFF missing-EOD regression, so the Validate-to-`tiffz` deep path
+        proves incomplete LZW strips are invalid. Full suite green 2026-07-17
+        18:20 EDT.
 
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus

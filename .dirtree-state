@@ -60,6 +60,7 @@ annotate=[
 	src/core/pdf_image_validator.zig = Deep PDF embedded-image validation; skips pool construction when the current CPU budget allows only sequential work
 	src/core/pdf_validator.zig = Deep PDF structural and decode validation; mapped or caller-owned sources reuse their lifetime-safe document slice before all image/font/attachment/Flate passes.
 	src/core/thread_pool.zig = Generic CPU-aware worker pool with FIFO work, bounded preallocated completion delivery, a dedicated result executor, per-reason wait/high-water telemetry, and deterministic full-queue backpressure test synchronization.
+	src/core/tiffz_shim.zig = Bridges deep TIFF validation to tiffz and locks the missing-LZW-EOD rejection contract.
 	tests/cli/completion_queue_debug_contract = Deterministic CLI schema regression: HEAP_FRAG_DEBUG must expose cumulative/delta bounded completion-queue wait telemetry.
 	tests/cli/corruption_report_generator = Tests generate-corruption-report: 8-col contract header, n/a-never-blank, frozen fallbacks, flag/env/default path precedence, --out - stdout
 	tests/cli/format_roundtrip = Clean-Nix-shell exhaustive format corpus gate: sorted symlink-following discovery, reader-audit exclusion, and clean-versus-shotgun checks.

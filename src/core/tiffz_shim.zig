@@ -294,3 +294,31 @@ test "tiffz_shim: invalid TIFF magic returns invalid" {
     const result = validateTiffDeepBuffer(std.testing.allocator, &[_]u8{ 0x00, 0x00, 0x00, 0x00 }, FileFormat.tiff);
     try std.testing.expect(!result.is_valid);
 }
+
+test "tiffz_shim: LZW strip without EOD returns invalid" {
+    // 8×1 1-bit TIFF, one LZW strip. Its bitstream contains CLEAR + literal
+    // 0xAA, then only byte-alignment padding: TIFF 6.0 requires EOD before
+    // the physical end of the strip. This guards the validate-to-tiffz deep
+    // path as well as tiffz's codec unit test.
+    const bytes = [_]u8{
+        'I', 'I', 42, 0, 8, 0, 0, 0,
+        8, 0,
+        // ImageWidth = 8, ImageLength = 1, BitsPerSample = 1.
+        0x00, 0x01, 0x04, 0x00, 1, 0, 0, 0, 8, 0, 0, 0,
+        0x01, 0x01, 0x04, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        0x02, 0x01, 0x03, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        // Compression = LZW, PhotometricInterpretation = MinisBlack.
+        0x03, 0x01, 0x03, 0x00, 1, 0, 0, 0, 5, 0, 0, 0,
+        0x06, 0x01, 0x03, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        // StripOffsets = 110, RowsPerStrip = 1, StripByteCounts = 3.
+        0x11, 0x01, 0x04, 0x00, 1, 0, 0, 0, 110, 0, 0, 0,
+        0x16, 0x01, 0x04, 0x00, 1, 0, 0, 0, 1, 0, 0, 0,
+        0x17, 0x01, 0x04, 0x00, 1, 0, 0, 0, 3, 0, 0, 0,
+        0, 0, 0, 0, // no next IFD
+        // CLEAR(256), literal 0xAA, no EOD(257).
+        0x80, 0x2A, 0x80,
+    };
+
+    const result = validateTiffDeepBuffer(std.testing.allocator, &bytes, .tiff);
+    try std.testing.expect(!result.is_valid);
+}
