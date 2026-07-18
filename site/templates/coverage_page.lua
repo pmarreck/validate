@@ -2,8 +2,8 @@
 -- category, one row per measured format. Format names localize via the app's
 -- own i18n catalogs; mechanism notes stay English by design (deep technical
 -- prose kept verbatim from the measurement report) with a localized
--- disclaimer. Per-OS column carries the Einstein MFIC condition: Windows
--- cells never claim numbers that were only measured on Linux/macOS.
+-- disclaimer. All three mutation modes and the exact measurement date render
+-- separately; platform parity is a release requirement, not a table footnote.
 
 local html = require("html")
 local shared = require("shared")
@@ -85,9 +85,9 @@ function M.render(ctx)
 		end
 		out[#out + 1] = ('<h2 class="cov-section">%s</h2>'):format(esc(t[key]))
 		out[#out + 1] = '<div class="cov-card cov-table-wrap"><table class="cov-table">'
-		out[#out + 1] = ('<thead><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr></thead><tbody>')
-			:format(esc(t.cov_col_format), esc(t.cov_col_sniper), esc(t.cov_col_shotgun),
-				esc(t.cov_col_platforms), esc(t.cov_col_mechanism))
+		out[#out + 1] = ('<thead><tr><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th><th>%s</th></tr></thead><tbody>')
+			:format(esc(t.cov_col_format), esc(t.cov_col_sniper), esc("Bolter"),
+				esc(t.cov_col_shotgun), esc(t.cov_measured), esc(t.cov_col_mechanism))
 		for _, r in ipairs(sec.rows) do
 			local app_key = coverage.app_key_for(r.name)
 			local display = app_key and ctx.names[app_key] or r.name
@@ -97,18 +97,15 @@ function M.render(ctx)
 			else
 				name_cell = ('<th scope="row">%s</th>'):format(esc(display))
 			end
-			local platforms
-			if coverage.windows_structural_only(r.name) then
-				platforms = ('<td class="os os-partial">%s</td>'):format(esc(t.cov_os_windows_note))
-			else
-				platforms = ('<td class="os"><bdi dir="ltr">%s</bdi></td>'):format(esc(t.cov_os_all))
-			end
-			local mech = ('<td class="mech"><span class="mech-note" lang="en" dir="ltr">%s</span><span class="mech-meta"><bdi dir="ltr">%s · %s</bdi> · %s <bdi dir="ltr">%s</bdi></span></td>')
-				:format(esc(r.mechanism), esc(r.sample), esc(r.size), esc(t.cov_measured), esc(r.run))
+			local checked = ('<td class="checked"><time datetime="%s"><bdi dir="ltr">%s</bdi></time></td>')
+				:format(esc(r.run), esc(r.run))
+			local mech = ('<td class="mech"><span class="mech-note" lang="en" dir="ltr">%s</span><span class="mech-meta"><bdi dir="ltr">%s · %s</bdi></span></td>')
+				:format(esc(r.mechanism), esc(r.sample), esc(r.size))
 			out[#out + 1] = "<tr>" .. name_cell
 				.. rate_cell(r.sniper, r.sniper_pct, r.strong_sniper)
+				.. rate_cell(r.bolter or "n/a", r.bolter_pct, r.strong_bolter)
 				.. rate_cell(r.shotgun, r.shotgun_pct, r.strong_shotgun)
-				.. platforms .. mech .. "</tr>"
+				.. checked .. mech .. "</tr>"
 		end
 		out[#out + 1] = "</tbody></table></div>"
 	end

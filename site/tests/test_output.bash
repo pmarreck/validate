@@ -87,16 +87,20 @@ assert_contains "$DOCS/de/index.html" '<html lang="de"' "de lang attr"
 DECOV="$DOCS/de/coverage/index.html"
 assert_contains "$DECOV" 'PNG-Bild' "de coverage uses app catalog format name"
 assert_contains "$DECOV" 'CRC32 per chunk' "mechanism notes stay English"
-assert_contains "$DECOV" 'Linux · macOS · Windows' "all-platforms cell present"
 
-# ── Per-OS honesty: JPEG-family Windows phrasing ─────────────────
+# ── Coverage-table evidence contract ─────────────────────────────
 ENCOV="$DOCS/coverage/index.html"
-assert_contains "$ENCOV" 'deep JPEG decode is Linux/macOS-only at launch' "EN windows note"
-# the note must appear exactly as many times as flagged rows
-# (JPEG, JPEG2K, AVI, CR2, DNG, RAF — per validate's 2026-06-11 trace)
-note_count=$(grep -o 'os-partial' "$ENCOV" | wc -l | tr -d ' ')
-[ "$note_count" -eq 6 ] || fail "expected 6 os-partial cells, got $note_count"
 assert_contains "$ENCOV" 'Measured, not claimed' "candor framing present"
+
+# ── Coverage-column contract ─────────────────────────────────────
+# A rate is only interpretable with its mutation mode and measurement date.
+# Platform is intentionally absent: Mecha Validate promises parity, so a
+# divergence is an engineering blocker rather than an evergreen table note.
+assert_contains "$ENCOV" '<th>Bolter</th>' "Bolter column is public"
+assert_contains "$ENCOV" '<th>measured</th>' "measurement date has its own column"
+assert_not_contains "$ENCOV" '<th>Platforms</th>' "platform promise is not a coverage column"
+assert_not_contains "$ENCOV" 'class="os' "per-platform coverage cells are absent"
+assert_contains "$ENCOV" '<time datetime="2026-07-17"><bdi dir="ltr">2026-07-17</bdi></time>' "measurement date renders semantically"
 
 # ── Suggestion banner is suggestion-only ─────────────────────────
 JS="$DOCS/assets/site.js"

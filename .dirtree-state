@@ -42,6 +42,7 @@ annotate=[
 	site/check_current_releases = No-write CLI guard that validates a fresh GUI release manifest before any website or Git publish work.
 	site/generate = SSG entry point: emits 50-locale pages and reads optional sibling GUI release links; absent/denied manifests omit downloads safely while malformed readable data fails.
 	site/i18n = site string catalogs ×50 (Lua); enforce-phase key parity vs en.lua
+	site/lib/composite_coverage.lua = Evidence-led candidate registry for composite-format coverage; unmeasured paths never carry rates.
 	site/lib/coverage.lua = parses corruption-detection-report tables + raw TSVs; per-OS honesty flags; app-key join
 	site/lib/locales.lua = canonical 50-locale registry (slug/hreflang/native/rtl); test cross-checks vs app catalogs
 	site/lib/releases.lua = Parses and orders fresh GUI prerelease links: macOS, Linux pair, then Windows pair.

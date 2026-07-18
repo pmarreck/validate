@@ -48,6 +48,20 @@ at the bottom. Older completed sections were rolled up — full history lives in
         decoder rewrites/wrappers rather than reader-tolerant libraries, using
         the shared LZW repair and measured sensitivity change as evidence.
         Completed 2026-07-18 01:27 EDT.
+  - [ ] Define a machine-readable composite-format coverage matrix and render
+        it as separate public coverage sections: TIFF, PDF, ISO BMFF,
+        Matroska/WebM, ZIP-derived documents, and DICOM. Keep email/web
+        containers out of scope. ZIP-derived document rows must show inherited
+        ZIP container evidence separately from any future recursive document
+        semantics; candidate cells may never masquerade as measured coverage.
+        Curiosity poke: a kitchen-sink fixture finds composition faults but
+        cannot replace per-path fixtures or stratified mutation evidence.
+  - [ ] Restore deep-validation parity across all five release targets, or
+        reduce the product claim before a differing target ships. The public
+        coverage table now reports mutation mode and date, not a misleading
+        generic platform column. Curiosity poke: a platform-specific library
+        omission is a product defect, not a footnote to a supposedly portable
+        integrity verdict.
 
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus

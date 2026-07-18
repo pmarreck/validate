@@ -397,6 +397,7 @@ h1 .eyebrow {
 .cov-table tbody th { font-weight: 600; white-space: nowrap; }
 .fmt-en { display: block; font-weight: 400; font-size: 0.78em; color: rgba(26, 42, 58, 0.55); direction: ltr; }
 .rate { white-space: nowrap; font-variant-numeric: tabular-nums; min-width: 6.5em; }
+.checked { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .meter { display: block; width: 5.5em; height: 4px; border-radius: 99px; background: rgba(26, 42, 58, 0.15); margin-bottom: 3px; overflow: hidden; direction: ltr; }
 .meter-fill { display: block; height: 100%; border-radius: 99px; background: var(--accent); }
 .rate-strong .meter-fill { background: #16a34a; }
