@@ -62,6 +62,16 @@ at the bottom. Older completed sections were rolled up — full history lives in
         generic platform column. Curiosity poke: a platform-specific library
         omission is a product defect, not a footnote to a supposedly portable
         integrity verdict.
+  - [ ] Replace the coverage report's latest-TSV/frozen-fallback model with
+        immutable, section-owned evidence manifests and append-only run history.
+        Each published rate must name its fixture identity/hash, raw trial TSV,
+        seed/count/mode, signed binary hash, source commit, host/target, and
+        date; a candidate, inherited-container result, structural-only path,
+        or missing measurement must render as such rather than as a percentage.
+        Re-sweep the full corpus after the three-month implementation interval,
+        retain prior comparable runs, and display only evidence-backed deltas.
+        Curiosity poke: a changed fixture or mutation policy creates a new
+        series, never an apparent improvement over an incomparable baseline.
 
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus
