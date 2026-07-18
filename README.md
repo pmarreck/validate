@@ -40,6 +40,38 @@ Without that query, validate's VP8 sniper detection sat at **0%**. With it, the 
 
 This is exactly the silent-corruption pattern validate exists to catch — the reader said OK, but the bytes were not OK.
 
+### Why Validate rewrites decoders instead of trusting reader libraries
+
+Many established decoders are optimized to **recover a viewable file**, not to
+prove that every encoded byte is intact. That is sensible for a photo viewer,
+PDF reader, or browser: accepting a missing LZW terminator, stopping at a
+physical EOF, concealing a damaged video frame, or quietly ignoring excess
+decoded data may let a person recover useful content. For corruption detection,
+the same recovery is a false clean bill of health.
+
+Validate therefore sometimes replaces or wraps otherwise capable decoders with
+small, format-specific strict paths. The strict path makes each format's
+invariants explicit: required end markers, dictionary/code validity, declared
+decoded length, checksums, and container boundaries. A file only passes deep
+validation when the applicable invariant is actually proved — not merely when
+a mainstream reader can display something from it.
+
+The LZW rewrite is a concrete example. The previous TIFF, PDF, and GIF
+implementations could reach physical EOF before their required EOD/EOI marker
+and still report success. The shared `lzwz` core now rejects that case; TIFF
+also proves each strip/tile's declared decoded extent, and GIF proves its frame
+pixel extent without allocating a full frame buffer. This raised the measured
+one-bit-flip detection rate for the `bali.tif` LZW sample from **7% to 63%**
+and one-byte-flip detection from **45% to 93%**, while retaining **100%**
+shotgun detection.
+
+Strictness is not a license to invent failures. When a malformed construct is
+known to be deliberately tolerated by mainstream readers, Validate records the
+specific cause and can classify that narrow compatibility case as a WARN. When
+an encoding is genuinely corruption-opaque without a checksum or declared
+extent, Validate reports that limit honestly rather than pretending a stricter
+decoder can prove the impossible.
+
 ## Components
 - Zig library (core validation)
 - C FFI (stable-enough for integration, but not yet 1.0)

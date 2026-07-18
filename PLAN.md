@@ -44,6 +44,10 @@ at the bottom. Older completed sections were rolled up — full history lives in
         one-worker ReleaseFast mean was statistically neutral (804.8 ms →
         808.7 ms, 20 runs). Full `./test` and `./build` green.
         Completed 2026-07-17 19:35 EDT.
+  - [x] Explain in the README why corruption validation sometimes needs strict
+        decoder rewrites/wrappers rather than reader-tolerant libraries, using
+        the shared LZW repair and measured sensitivity change as evidence.
+        Completed 2026-07-18 01:27 EDT.
 
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus
