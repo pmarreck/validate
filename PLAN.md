@@ -34,6 +34,16 @@ at the bottom. Older completed sections were rolled up — full history lives in
         TIFF missing-EOD regression, so the Validate-to-`tiffz` deep path
         proves incomplete LZW strips are invalid. Full suite green 2026-07-17
         18:20 EDT.
+  - [x] Move TIFF, PDF, and GIF onto the one profile-configured `lzwz` core;
+        delete Validate's private LZW decoders; require EOD/EOI and exact
+        declared extent where available. Curiosity poke answered: physical EOF
+        cannot substitute for a required terminator, while a different
+        structurally valid stream remains an honest limit without a checksum.
+        Signed `bali.tif` 100-trial seed-42 evidence improved 7% → 63%
+        sniper and 45% → 93% bolter, retaining 100% shotgun; clean
+        one-worker ReleaseFast mean was statistically neutral (804.8 ms →
+        808.7 ms, 20 runs). Full `./test` and `./build` green.
+        Completed 2026-07-17 19:35 EDT.
 
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus

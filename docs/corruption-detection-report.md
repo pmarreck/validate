@@ -42,7 +42,7 @@
 | DPX | 0% | 0% | 0% | sample.dpx | 1.8 MB | 2026-03-06 | Raw pixel; SMPTE 268M spec has no checksum |
 | PAM/PPM | 0% | 0% | 0% | sample.ppm | 1.8 MB | 2026-03-06 | Raw pixel; Netpbm spec has no checksum |
 | TGA | 25% | 27% | **100%** | sample.tga | 11 KB | 2026-05-27 | Header + image-spec validation catches malformed-byte tamper; tiny 11 KB fixture pushes structural-byte density up |
-| TIFF | 7% | 45% | **100%** | bali.tif | 175 KB | 2026-07-17 | Every IFD plus every LZW-compressed strip/tile is decoded with tiffz. TIFF/LZW has no decoded-pixel checksum, so some small mutations remain valid streams; destructive 4 KiB sector loss is detected in all 100 seeded trials. Measured on clean standard TIFF `bali.tif`, replacing an Olympus RAW file mislabeled `.tif`. |
+| TIFF | 63% | **93%** | **100%** | bali.tif | 175 KB | 2026-07-17 | Every IFD plus every LZW-compressed strip/tile is decoded with tiffz's shared strict lzwz core. Required EOD plus exact decoded strip/tile extent reject truncation and excess output; valid-but-different LZW streams still have no pixel checksum. Deterministic 100-trial seed-42 sweep: 63% sniper, 93% bolter, 100% shotgun. |
 | JBIG2 | 0% | n/a | n/a | annex-h-truncated.jbig2 | 860 B | 2026-04-25 | Bi-level image stream walk; sniper 0% on truncated sample. Shotgun N/A (sample < 4 KB). |
 
 ### RAW Camera

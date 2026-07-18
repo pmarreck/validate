@@ -33,8 +33,8 @@ For the complex in-house bitstream / decompression / structured-parse engines
 where Tier-1's coverage is shallow and the CRITICALs lived. Round-trip oracle
 (`decode(encode(x)) == x`) where an encoder exists; crash-only oracle otherwise.
 Priority (all our code, all untrusted-path):
-- Decompressors (round-trip): bzip2 (harness exists), LZW (`lzw_decoder`,
-  `tiff_lzw_decoder`), run-length, ASCII85, ASCII-hex, brotli.
+- Decompressors (round-trip): bzip2 (harness exists), shared LZW (`tiffz.lzwz`
+  profiles for PDF, GIF, and TIFF), run-length, ASCII85, ASCII-hex, brotli.
 - Bitstream/entropy (crash-only): H.264 + H.265 CABAC, VP8, `codec_utils` bit
   readers, JBIG2 / CCITT-G4, MPEG-1/2 + MPEG-4p2.
 - Structured parsers (crash-only): PDF xref/object (`pdf_xref_parser`), OLE2 FAT

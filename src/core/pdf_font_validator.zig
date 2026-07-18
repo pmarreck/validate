@@ -14,9 +14,11 @@ const pdf_image_validator = @import("pdf_image_validator.zig");
 const ascii_hex_decoder = @import("ascii_hex_decoder.zig");
 const ascii85_decoder = @import("ascii85_decoder.zig");
 const run_length_decoder = @import("run_length_decoder.zig");
-const lzw_decoder = @import("lzw_decoder.zig");
+const lzw_adapter = @import("lzw_adapter.zig");
 const zlib = @import("zlib.zig");
 const pdf_decryptor = @import("pdf_decryptor.zig");
+
+const MAX_FONT_DECODE_BYTES: usize = 64 * 1024 * 1024;
 
 pub const PdfFontType = enum {
     type1, // /FontFile - Type1 PFB/PFA
@@ -649,7 +651,7 @@ pub fn validatePdfFonts(allocator: Allocator, pdf_data: []const u8) FontValidati
                 const decoded: ?[]u8 = switch (filter) {
                     .ascii_hex_decode => ascii_hex_decoder.decode(allocator, stream_data) catch null,
                     .ascii85_decode => ascii85_decoder.decode(allocator, stream_data) catch null,
-                    .lzw_decode => lzw_decoder.decode(allocator, stream_data) catch null,
+                    .lzw_decode => lzw_adapter.decodePdf(allocator, stream_data, MAX_FONT_DECODE_BYTES) catch null,
                     .run_length_decode => run_length_decoder.decode(allocator, stream_data) catch null,
                     else => null,
                 };
@@ -718,7 +720,7 @@ const DecompressFlateResult = union(enum) {
 /// Tolerates Adobe-InDesign-style truncated-Adler-32 streams via the lenient
 /// decoder (see zlib.inflateZlibLenientAllocWithRatio).
 fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlateResult {
-    const max_output: usize = 64 * 1024 * 1024; // 64MB max for fonts
+    const max_output = MAX_FONT_DECODE_BYTES;
 
     switch (zlib.inflateZlibLenientAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },

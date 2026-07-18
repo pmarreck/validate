@@ -5,6 +5,7 @@
 const std = @import("std");
 const jpeg_validator = @import("jpeg_validator.zig");
 const tiffz_shim = @import("tiffz_shim.zig");
+const lzwz = @import("tiffz").lzwz;
 const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const Allocator = std.mem.Allocator;
@@ -20,7 +21,6 @@ const bmp_decoder = @import("bmp_decoder.zig");
 const jpeg2000_validator = @import("jpeg2000_validator.zig");
 const jbig2_decoder = @import("jbig2_decoder.zig");
 const ccitt_fax_decoder = @import("ccitt_fax_decoder.zig");
-const tiff_lzw_decoder = @import("tiff_lzw_decoder.zig");
 const heic_validator = @import("heic_validator.zig");
 const avif_validator = @import("avif_validator.zig");
 const zlib = @import("zlib.zig");
@@ -2047,197 +2047,24 @@ pub fn validateJpegDeep(allocator: Allocator, source: *FileSource) ValidationRes
 
 // ============ GIF Deep Validation (pure LZW stream validation) ============
 
-/// Validate a GIF LZW bitstream without reconstructing pixels.
-
-/// Walks the variable-width code stream, maintaining a code table (sizes only).
-
-/// Returns null on success, or an error message if the stream is corrupt.
-
-/// This catches invalid codes (referencing undefined table entries), truncated
-
-/// bitstreams, and decompressed-size mismatches — all indicators of corruption.
-
+/// Validates GIF's LZW stream against its Image Descriptor pixel extent.
+///
+/// The shared core runs its single strict decoder state machine in count-only
+/// mode: EOI is mandatory, dictionary references are checked, and the output
+/// length must equal the frame's width × height without allocating a
+/// decompressed-frame-sized buffer.
 fn validateGifLzwStream(lzw_data: []const u8, min_code_size: u8, expected_pixels: usize) ?[]const u8 {
-
-    if (min_code_size < 1 or min_code_size > 11) return "LZW minimum code size out of range";
-
-    const clear_code: u16 = @as(u16, 1) << @intCast(min_code_size);
-
-    const eoi_code: u16 = clear_code + 1;
-
-    const first_available: u16 = clear_code + 2;
-
-    // Code table: only track the decoded string length for each entry.
-
-    // Max table size is 4097 (some encoders emit one extra code at 4096 before CLEAR).
-
-    var table_sizes: [4097]u16 = undefined;
-
-    // Initialize literal entries
-
-    var i: u16 = 0;
-
-    while (i < clear_code) : (i += 1) {
-
-        table_sizes[i] = 1;
-
-    }
-
-    table_sizes[clear_code] = 0; // CLEAR
-
-    table_sizes[eoi_code] = 0; // EOI
-
-    var next_code: u16 = first_available;
-
-    var code_width: u5 = @intCast(@as(u8, min_code_size) + 1);
-
-    // Bitstream reader state
-
-    var byte_pos: usize = 0;
-
-    var bit_buf: u64 = 0;
-
-    var bits_in_buf: u6 = 0;
-
-    var prev_code: ?u16 = null;
-
-    var pixels_decoded: usize = 0;
-
-    var saw_eoi = false;
-
-    while (true) {
-
-        // Refill bit buffer (LSB first)
-
-        while (bits_in_buf < code_width) {
-
-            if (byte_pos >= lzw_data.len) {
-
-                // Ran out of data. If we've decoded enough pixels, accept it.
-
-                // Some encoders omit EOI at the end.
-
-                if (pixels_decoded >= expected_pixels) return null;
-
-                return "LZW bitstream truncated";
-
-            }
-
-            bit_buf |= @as(u64, lzw_data[byte_pos]) << @intCast(bits_in_buf);
-
-            byte_pos += 1;
-
-            bits_in_buf += 8;
-
-        }
-
-        // Read code of current width
-
-        const code_mask: u64 = (@as(u64, 1) << code_width) - 1;
-
-        const code: u16 = @intCast(bit_buf & code_mask);
-
-        bit_buf >>= @intCast(code_width);
-
-        bits_in_buf -= code_width;
-
-        if (code == clear_code) {
-
-            // Reset table
-
-            next_code = first_available;
-
-            code_width = @intCast(@as(u8, min_code_size) + 1);
-
-            prev_code = null;
-
-            continue;
-
-        }
-
-        if (code == eoi_code) {
-
-            saw_eoi = true;
-
-            break;
-
-        }
-
-        // Validate code is in table
-
-        if (code > next_code) {
-
-            return "LZW code references undefined table entry";
-
-        }
-
-        // The special case: code == next_code (KwKwK)
-
-        // This is valid — the string is prev_string + first_char_of_prev_string
-
-        if (code == next_code) {
-
-            if (prev_code == null) return "LZW KwKwK code with no previous code";
-
-            // String length = prev_string_length + 1
-
-            const new_len = table_sizes[prev_code.?] + 1;
-
-            pixels_decoded += new_len;
-
-            // Add to table
-
-            if (next_code < 4097) {
-
-                table_sizes[next_code] = @intCast(new_len);
-
-                next_code += 1;
-
-            }
-
-        } else {
-
-            // Normal case: code is already in table
-
-            pixels_decoded += table_sizes[code];
-
-            // Add new entry: prev_string + first_char_of_current_string
-
-            if (prev_code != null and next_code < 4097) {
-
-                table_sizes[next_code] = table_sizes[prev_code.?] + 1;
-
-                next_code += 1;
-
-            }
-
-        }
-
-        prev_code = code;
-
-        // Increase code width when table reaches the next power of 2
-
-        // (but cap at 12 bits)
-
-        if (next_code >= (@as(u16, 1) << @as(u4, @intCast(code_width))) and code_width < 12) {
-            code_width += 1;
-
-        }
-
-    }
-
-    // Accept if EOI was found or we decoded enough pixels
-
-    if (saw_eoi or pixels_decoded >= expected_pixels) return null;
-
-    // If we decoded some but not enough, still accept — some GIFs have
-
-    // frames that don't cover the full logical screen
-
-    if (pixels_decoded > 0) return null;
-
-    return "LZW stream produced no output";
-
+	if (min_code_size < 1 or min_code_size > 11) return "LZW minimum code size out of range";
+
+	const profile = lzwz.Profile.gif(@intCast(min_code_size));
+	_ = lzwz.decodeExactExtent(profile, lzw_data, expected_pixels) catch |err| switch (err) {
+		error.MalformedCode => return "LZW code references undefined table entry",
+		error.IncompleteSource => return "LZW bitstream truncated (missing required EOI)",
+		error.DecodedLengthMismatch => return "LZW decoded pixel count does not match frame extent",
+		error.DestTooSmall => return "LZW count-only decoder destination invariant failed",
+	};
+
+	return null;
 }
 
 /// Parse GIF frame structure and validate each frame's LZW stream.
@@ -2751,12 +2578,6 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
     }
     // Note: has_unsupported_tags no longer forces structural-only validation
     // Our forked zigimg now skips unknown tags gracefully instead of panicking
-    if (tag_check.has_1bit_lzw) {
-        // 1-bit image with LZW compression - zigimg's LZW decoder can't handle these
-        // Use our pure Zig LZW decoder instead
-        return validateTiff1BitLzw(allocator, source);
-    }
-
     // Feed tiffz from the source. mmap zero-copy when available, else
     // bounded heap slurp (64 MB cap). tiffz operates on a flat buffer.
     const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
@@ -2776,7 +2597,6 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
 pub const TiffTagCheckResult = struct {
     has_dng_tags: bool, // Has DNG proprietary tags (0xC612-0xC7FF)
     has_unsupported_tags: bool, // Has other unsupported tags (deprecated, vendor, etc.)
-    has_1bit_lzw: bool, // Has 1-bit samples with LZW compression (zigimg can't decode)
 };
 
 /// Check if a TIFF file contains tags that zigimg can't handle.
@@ -2785,11 +2605,7 @@ pub const TiffTagCheckResult = struct {
 /// - Deprecated TIFF tags that aren't in zigimg's enum (e.g., 0xFF SubfileType)
 /// - Other non-standard tags
 pub fn checkTiffTagSupport(source: *FileSource) TiffTagCheckResult {
-    var result = TiffTagCheckResult{ .has_dng_tags = false, .has_unsupported_tags = false, .has_1bit_lzw = false };
-
-    // Track compression and bits per sample to detect 1-bit LZW
-    var compression: u16 = 0;
-    var bits_per_sample: u16 = 0;
+    var result = TiffTagCheckResult{ .has_dng_tags = false, .has_unsupported_tags = false };
 
     source.seekTo(0) catch return result;
 
@@ -2832,35 +2648,6 @@ pub fn checkTiffTagSupport(source: *FileSource) TiffTagCheckResult {
             std.mem.readInt(u16, entry[0..2], .big)
         else
             std.mem.readInt(u16, entry[0..2], .little);
-
-        // Get the tag value for SHORT/LONG type entries (value is inline if count*size <= 4)
-        const tag_type = if (is_big_endian)
-            std.mem.readInt(u16, entry[2..4], .big)
-        else
-            std.mem.readInt(u16, entry[2..4], .little);
-        const tag_count = if (is_big_endian)
-            std.mem.readInt(u32, entry[4..8], .big)
-        else
-            std.mem.readInt(u32, entry[4..8], .little);
-
-        // For small values, they're stored inline in the value offset field
-        var tag_value: u16 = 0;
-        if (tag_count == 1 and (tag_type == 3 or tag_type == 4)) { // SHORT or LONG
-            tag_value = if (is_big_endian)
-                std.mem.readInt(u16, entry[8..10], .big)
-            else
-                std.mem.readInt(u16, entry[8..10], .little);
-        }
-
-        // Track BitsPerSample (tag 0x0102)
-        if (tag == 0x0102) {
-            bits_per_sample = tag_value;
-        }
-
-        // Track Compression (tag 0x0103)
-        if (tag == 0x0103) {
-            compression = tag_value;
-        }
 
         // DNG detection: specifically check for DNGVersion tag (0xC612).
         // Other tags in the 0xC612-0xC7FF range are used by various manufacturers
@@ -2912,231 +2699,6 @@ pub fn checkTiffTagSupport(source: *FileSource) TiffTagCheckResult {
         if (!zigimg_supported and tag < 0xC612) {
             // Tag not in zigimg's enum and not a DNG tag (already handled above)
             result.has_unsupported_tags = true;
-        }
-    }
-
-    // Check for 1-bit images with LZW compression (zigimg LZW decoder doesn't handle these)
-    // Compression = 5 is LZW, BitsPerSample = 1 is 1-bit (bilevel) image
-    if (bits_per_sample == 1 and compression == 5) {
-        result.has_1bit_lzw = true;
-    }
-
-    return result;
-}
-
-/// Validate 1-bit TIFF with LZW compression using our pure Zig LZW decoder.
-/// zigimg's LZW decoder can't handle 1-bit images, so we do it ourselves.
-pub fn validateTiff1BitLzw(allocator: Allocator, source: *FileSource) ValidationResult {
-    source.seekTo(0) catch {
-        return ValidationResult.invalidCode(.tiff, .failed_to_seek, "TIFF file");
-    };
-
-    const file_size = source.getEndPos() catch {
-        return ValidationResult.invalidCode(.tiff, .failed_to_stat, "TIFF file");
-    };
-
-    // Read TIFF header to determine byte order
-    var header: [8]u8 = undefined;
-    _ = source.readAll(&header) catch {
-        return ValidationResult.invalidCode(.tiff, .failed_to_read, "TIFF header");
-    };
-
-    // Determine byte order
-    const is_big_endian = std.mem.eql(u8, header[0..2], "MM");
-    const is_little_endian = std.mem.eql(u8, header[0..2], "II");
-    if (!is_big_endian and !is_little_endian) {
-        return ValidationResult.invalidCode(.tiff, .invalid_value, "TIFF byte order");
-    }
-
-    // Determine endianness for value reading
-    const endian: std.builtin.Endian = if (is_big_endian) .big else .little;
-
-    // Read IFD offset
-    const ifd_offset = std.mem.readInt(u32, header[4..8], endian);
-
-    // Seek to IFD and read entry count
-    source.seekTo(ifd_offset) catch {
-        return ValidationResult.invalidCode(.tiff, .failed_to_seek, "to TIFF IFD");
-    };
-
-    var count_bytes: [2]u8 = undefined;
-    _ = source.readAll(&count_bytes) catch {
-        return ValidationResult.invalidCode(.tiff, .failed_to_read, "IFD entry count");
-    };
-    const entry_count = std.mem.readInt(u16, &count_bytes, endian);
-
-    // Initialize tag values (use optionals to detect missing required tags)
-    var image_width: ?u32 = null;
-    var image_length: ?u32 = null;
-    var rows_per_strip: u32 = 0xFFFFFFFF; // Default per spec if not present
-    var strip_offsets: ?[]u32 = null;
-    var strip_byte_counts: ?[]u32 = null;
-    defer if (strip_offsets) |s| allocator.free(s);
-    defer if (strip_byte_counts) |s| allocator.free(s);
-
-    // Parse IFD entries
-    const max_entries = @min(entry_count, 200);
-    var entry: [12]u8 = undefined;
-
-    for (0..max_entries) |_| {
-        _ = source.readAll(&entry) catch {
-            return ValidationResult.invalidCode(.tiff, .failed_to_read, "IFD entry");
-        };
-
-        const tag = std.mem.readInt(u16, entry[0..2], endian);
-        const field_type = std.mem.readInt(u16, entry[2..4], endian);
-        const count = std.mem.readInt(u32, entry[4..8], endian);
-
-        // Get value (inline for small values, offset for large arrays)
-        // Type 3 = SHORT (2 bytes), Type 4 = LONG (4 bytes)
-        const single_value: u32 = if (field_type == 3)
-            std.mem.readInt(u16, entry[8..10], endian)
-        else
-            std.mem.readInt(u32, entry[8..12], endian);
-
-        switch (tag) {
-            256 => image_width = single_value, // ImageWidth
-            257 => image_length = single_value, // ImageLength
-            278 => rows_per_strip = single_value, // RowsPerStrip
-            273 => { // StripOffsets
-                strip_offsets = readTiffTagArray(allocator, source, entry[0..12], field_type, count, endian, file_size) catch {
-                    return ValidationResult.invalidCode(.tiff, .failed_to_read, "StripOffsets");
-                };
-            },
-            279 => { // StripByteCounts
-                strip_byte_counts = readTiffTagArray(allocator, source, entry[0..12], field_type, count, endian, file_size) catch {
-                    return ValidationResult.invalidCode(.tiff, .failed_to_read, "StripByteCounts");
-                };
-            },
-            else => {},
-        }
-    }
-
-    // Verify required tags are present
-    const width = image_width orelse {
-        return ValidationResult.invalidCode(.tiff, .missing, "ImageWidth tag");
-    };
-    const height = image_length orelse {
-        return ValidationResult.invalidCode(.tiff, .missing, "ImageLength tag");
-    };
-    const offsets = strip_offsets orelse {
-        return ValidationResult.invalidCode(.tiff, .missing, "StripOffsets tag");
-    };
-    const byte_counts = strip_byte_counts orelse {
-        return ValidationResult.invalidCode(.tiff, .missing, "StripByteCounts tag");
-    };
-
-    if (offsets.len != byte_counts.len) {
-        return ValidationResult.invalid(.tiff, "StripOffsets/StripByteCounts count mismatch");
-    }
-
-    // Calculate expected decompressed row size (1-bit, byte-aligned)
-    const bytes_per_row = (width + 7) / 8;
-
-    // Clamp rows_per_strip to actual remaining rows for each strip
-    const num_strips = offsets.len;
-    var remaining_rows: u32 = height;
-
-    // Validate each strip by decompressing with LZW
-    for (0..num_strips) |i| {
-        const strip_offset = offsets[i];
-        const compressed_size = byte_counts[i];
-
-        // Sanity check strip offset/size
-        if (strip_offset + compressed_size > file_size) {
-            return ValidationResult.invalid(.tiff, "Strip extends beyond file end");
-        }
-
-        // Calculate expected decompressed size for this strip
-        const rows_in_strip = @min(rows_per_strip, remaining_rows);
-        const expected_size = bytes_per_row * rows_in_strip;
-        remaining_rows -|= rows_in_strip;
-
-        // Read compressed strip data
-        source.seekTo(strip_offset) catch {
-            return ValidationResult.invalidCode(.tiff, .failed_to_seek, "to strip");
-        };
-
-        const compressed_data = allocator.alloc(u8, compressed_size) catch {
-            return ValidationResult.okWithWarning(.tiff, errmsg.outOfMemory("for strip decompression"));
-        };
-        defer allocator.free(compressed_data);
-
-        const bytes_read = source.readAll(compressed_data) catch {
-            return ValidationResult.invalidCode(.tiff, .failed_to_read, "strip data");
-        };
-        if (bytes_read != compressed_size) {
-            return ValidationResult.invalidCode(.tiff, .incomplete, "strip read");
-        }
-
-        // Decompress with TIFF LZW decoder
-        const decompressed = tiff_lzw_decoder.decode(allocator, compressed_data) catch {
-            return ValidationResult.invalidCode(.tiff, .decompression_failed, "LZW");
-        };
-        defer allocator.free(decompressed);
-
-        // Verify decompressed size matches expected
-        if (decompressed.len != expected_size) {
-            return ValidationResult.invalid(.tiff, "Decompressed size mismatch");
-        }
-    }
-
-    return ValidationResult.okWithDepth(.tiff, .full);
-}
-
-/// Read a TIFF tag array value (StripOffsets or StripByteCounts).
-pub fn readTiffTagArray(
-    allocator: Allocator,
-    file: *FileSource,
-    entry: *const [12]u8,
-    field_type: u16,
-    count: u32,
-    endian: std.builtin.Endian,
-    file_size: u64,
-) ![]u32 {
-    const result = try allocator.alloc(u32, count);
-    errdefer allocator.free(result);
-
-    const type_size: u32 = if (field_type == 3) 2 else 4; // SHORT or LONG
-    const total_size = count * type_size;
-
-    if (total_size <= 4) {
-        // Value fits in entry (inline)
-        if (field_type == 3 and count == 1) {
-            result[0] = std.mem.readInt(u16, entry[8..10], endian);
-        } else if (field_type == 4 and count == 1) {
-            result[0] = std.mem.readInt(u32, entry[8..12], endian);
-        } else if (field_type == 3 and count == 2) {
-            result[0] = std.mem.readInt(u16, entry[8..10], endian);
-            result[1] = std.mem.readInt(u16, entry[10..12], endian);
-        } else {
-            // Unexpected inline format
-            return error.InvalidData;
-        }
-    } else {
-        // Value is offset to array data
-        const offset = std.mem.readInt(u32, entry[8..12], endian);
-
-        if (offset + total_size > file_size) {
-            return error.InvalidData;
-        }
-
-        try file.seekTo(offset);
-
-        if (field_type == 3) {
-            // SHORT array
-            var buf: [2]u8 = undefined;
-            for (0..count) |i| {
-                _ = try file.readAll(&buf);
-                result[i] = std.mem.readInt(u16, &buf, endian);
-            }
-        } else {
-            // LONG array
-            var buf: [4]u8 = undefined;
-            for (0..count) |i| {
-                _ = try file.readAll(&buf);
-                result[i] = std.mem.readInt(u32, &buf, endian);
-            }
         }
     }
 
@@ -8421,6 +7983,28 @@ test "validateGifLzwStream detects truncated bitstream" {
 
     try std.testing.expect(std.mem.indexOf(u8, result.?, "truncated") != null);
 
+}
+
+test "validateGifLzwStream rejects a frame with pixels but no EOI" {
+    // The valid 2×2 vector below is CLEAR, 0, 1, 0, 1, EOI. Dropping the
+    // final EOI leaves four decoded pixels plus byte padding. The old private
+    // loop accepted that EOF merely because `expected_pixels` was reached.
+    const lzw_data = [_]u8{ 0x44, 0x10 };
+
+    const result = validateGifLzwStream(&lzw_data, 2, 4);
+
+    try std.testing.expect(result != null);
+}
+
+test "validateGifLzwStream rejects EOI before the declared pixel extent" {
+    // The same complete LZW stream yields four pixels, not five. Frame
+    // geometry is an integrity invariant; EOI alone must not validate a
+    // short image payload.
+    const lzw_data = [_]u8{ 0x44, 0x10, 0x05 };
+
+    const result = validateGifLzwStream(&lzw_data, 2, 5);
+
+    try std.testing.expect(result != null);
 }
 
 test "validateGifDeep fully validates minimal synthetic GIF" {

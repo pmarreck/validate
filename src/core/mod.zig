@@ -54,8 +54,7 @@ pub const bzip2 = @import("bzip2.zig");
 pub const ascii_hex_decoder = @import("ascii_hex_decoder.zig");
 pub const ascii85_decoder = @import("ascii85_decoder.zig");
 pub const run_length_decoder = @import("run_length_decoder.zig");
-pub const lzw_decoder = @import("lzw_decoder.zig");
-pub const tiff_lzw_decoder = @import("tiff_lzw_decoder.zig");
+pub const lzw_adapter = @import("lzw_adapter.zig");
 pub const bmp_decoder = @import("bmp_decoder.zig");
 pub const bagit_validator = @import("bagit_validator.zig");
 pub const midi_validator = @import("midi_validator.zig");
@@ -217,8 +216,7 @@ test {
     _ = @import("ascii_hex_decoder.zig");
     _ = @import("ascii85_decoder.zig");
     _ = @import("run_length_decoder.zig");
-    _ = @import("lzw_decoder.zig");
-    _ = @import("tiff_lzw_decoder.zig");
+    _ = @import("lzw_adapter.zig");
     // Font validator
     _ = @import("font_validator.zig");
     _ = @import("pdf_font_validator.zig");

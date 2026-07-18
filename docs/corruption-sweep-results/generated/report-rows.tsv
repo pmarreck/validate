@@ -17,7 +17,7 @@ Image & Photo	BMP	bmp	2026-04-23	BMP spec has no data checksums — `bmp_decoder
 Image & Photo	DPX	dpx	2026-03-06	Raw pixel; SMPTE 268M spec has no checksum	sample.dpx	1887437	0		0
 Image & Photo	PAM/PPM	pam	2026-03-06	Raw pixel; Netpbm spec has no checksum	sample.ppm	1887437	0		0
 Image & Photo	TGA	tga	2026-05-27	Header + image-spec validation catches malformed-byte tamper; tiny 11 KB fixture pushes structural-byte density up	sample.tga	11264	25		100
-Image & Photo	TIFF	tiff	2026-07-17	Every IFD plus every LZW-compressed strip/tile is decoded with tiffz. TIFF/LZW has no decoded-pixel checksum, so some small mutations remain valid streams; destructive 4 KiB sector loss is detected in all 100 seeded trials. Measured on clean standard TIFF `bali.tif`, replacing an Olympus RAW file mislabeled `.tif`.	bali.tif	179378	7	45	100
+Image & Photo	TIFF	tiff	2026-07-17	Every IFD plus every LZW-compressed strip/tile is decoded with tiffz's shared strict lzwz core. Required EOD plus exact decoded strip/tile extent reject truncation and excess output; valid-but-different LZW streams still have no pixel checksum. Deterministic 100-trial seed-42 sweep: 63% sniper, 93% bolter, 100% shotgun.	bali.tif	179378	63	93	100
 Image & Photo	JBIG2	jbig2	2026-04-25	Bi-level image stream walk; sniper 0% on truncated sample. Shotgun N/A (sample < 4 KB).	annex-h-truncated.jbig2	860	0		
 RAW Camera	DNG	dng	2026-05-27	TIFF-based via tiffz strip+tile decode loop + jpegz preview decode; 77 MB sensor dump dilutes detection density per byte	L1006922_leica_M11.DNG	80740352	3		3
 RAW Camera	CR2	cr2	2026-04-25	TIFF-based; IFD-walked preview JPEG decoded via libjpeg-turbo (sRAW2 lossless strip filtered out so heuristic keeps the real preview)	canon_eos_40d_sraw2.cr2	6081741	1		6

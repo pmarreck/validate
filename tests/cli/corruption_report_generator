@@ -45,8 +45,8 @@ mk_tsv "$rd/bar_shotgun.tsv" shotgun bar.bin 9000 7 100
 mk_tsv "$rd/tiff_sniper.tsv"       sniper  pc260001.tif 900000 0 100
 mk_tsv "$rd/tiff_bolter.tsv"       bolter  pc260001.tif 900000 0 100
 mk_tsv "$rd/tiff_shotgun.tsv"      shotgun pc260001.tif 900000 0 100
-mk_tsv "$rd/tiff_bali_sniper.tsv"  sniper  bali.tif 179378 7 100
-mk_tsv "$rd/tiff_bali_bolter.tsv"  bolter  bali.tif 179378 45 100
+mk_tsv "$rd/tiff_bali_sniper.tsv"  sniper  bali.tif 179378 63 100
+mk_tsv "$rd/tiff_bali_bolter.tsv"  bolter  bali.tif 179378 93 100
 mk_tsv "$rd/tiff_bali_shotgun.tsv" shotgun bali.tif 179378 100 100
 
 # --- synthetic sidecar -----------------------------------------------------
@@ -85,7 +85,7 @@ grep -qF 'Preamble.' "$out" && pass "preamble included" || fail "preamble missin
 grep -qF 'Postamble' "$out" && pass "postamble included" || fail "postamble missing"
 grep -qF '### Image & Photo' "$out" && pass "section heading" || fail "section heading missing"
 tiffline="$(grep -F '| TIFF |' "$out")"
-printf '%s' "$tiffline" | grep -qF '| TIFF | 7% | 45% | **100%** | bali.tif | 175 KB |' \
+printf '%s' "$tiffline" | grep -qF '| TIFF | 63% | **93%** | **100%** | bali.tif | 175 KB |' \
 	&& pass "sample-qualified TIFF evidence overrides generic fixture" \
 	|| fail "sample-qualified TIFF evidence was not used: $tiffline"
 

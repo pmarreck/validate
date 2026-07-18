@@ -23,7 +23,7 @@ const ccitt_fax_decoder = @import("ccitt_fax_decoder.zig");
 const ascii_hex_decoder = @import("ascii_hex_decoder.zig");
 const ascii85_decoder = @import("ascii85_decoder.zig");
 const run_length_decoder = @import("run_length_decoder.zig");
-const lzw_decoder = @import("lzw_decoder.zig");
+const lzw_adapter = @import("lzw_adapter.zig");
 const pdf_decryptor = @import("pdf_decryptor.zig");
 const zlib = @import("zlib.zig");
 const thread_pool = @import("thread_pool.zig");
@@ -32,6 +32,7 @@ const errmsg = @import("error_messages.zig");
 
 /// Minimum number of images to trigger parallel validation
 const PARALLEL_IMAGE_THRESHOLD: usize = 10;
+const MAX_IMAGE_DECODE_BYTES: usize = 512 * 1024 * 1024;
 
 // ============ Types ============
 
@@ -148,7 +149,7 @@ pub fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressF
     // decoder transparently recovers from missing-Adler-32 streams emitted
     // by some Adobe producers — these are accepted by every major PDF
     // reader and represent producer convention rather than corruption.
-    const max_output: usize = 512 * 1024 * 1024; // 512MB max decompressed size
+    const max_output = MAX_IMAGE_DECODE_BYTES;
 
     switch (zlib.inflateZlibLenientAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },
@@ -223,7 +224,7 @@ pub fn applyFilterChain(allocator: Allocator, data: []const u8, filters: []const
                 .ok_lenient => |decompressed| decompressed,
                 .exceeded_limit, .corrupt, .data_error, .alloc_error => null,
             },
-            .lzw_decode => lzw_decoder.decode(allocator, current_data) catch null,
+            .lzw_decode => lzw_adapter.decodePdf(allocator, current_data, MAX_IMAGE_DECODE_BYTES) catch null,
             .ascii85_decode => ascii85_decoder.decode(allocator, current_data) catch null,
             .ascii_hex_decode => ascii_hex_decoder.decode(allocator, current_data) catch null,
             .run_length_decode => run_length_decoder.decode(allocator, current_data) catch null,
@@ -1354,7 +1355,7 @@ pub fn validatePdfImages(allocator: Allocator, pdf_data: []const u8) !PdfImageVa
             },
             .lzw_decode => {
                 // LZW as terminal filter
-                if (lzw_decoder.decode(allocator, image_data)) |decompressed| {
+                if (lzw_adapter.decodePdf(allocator, image_data, MAX_IMAGE_DECODE_BYTES)) |decompressed| {
                     defer allocator.free(decompressed);
 
                     if (detectDecompressedFormat(decompressed)) |nested_format| {
@@ -1600,7 +1601,7 @@ fn executeImageTask(task: ImageTask, ctx_ptr: ?*anyopaque) ImageTaskResult {
             }
         },
         .lzw_decode => blk: {
-            if (lzw_decoder.decode(allocator, image_data)) |decompressed| {
+            if (lzw_adapter.decodePdf(allocator, image_data, MAX_IMAGE_DECODE_BYTES)) |decompressed| {
                 if (detectDecompressedFormat(decompressed)) |nested_format| {
                     var result = validateExtractedImage(allocator, decompressed, nested_format);
                     result.object_num = img.object_num;

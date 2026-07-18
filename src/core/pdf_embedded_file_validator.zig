@@ -11,8 +11,10 @@ const pdf_image_validator = @import("pdf_image_validator.zig");
 const ascii_hex_decoder = @import("ascii_hex_decoder.zig");
 const ascii85_decoder = @import("ascii85_decoder.zig");
 const run_length_decoder = @import("run_length_decoder.zig");
-const lzw_decoder = @import("lzw_decoder.zig");
+const lzw_adapter = @import("lzw_adapter.zig");
 const zlib = @import("zlib.zig");
+
+const MAX_EMBEDDED_FILE_DECODE_BYTES: usize = 256 * 1024 * 1024;
 
 pub const PdfEmbeddedFile = struct {
     object_num: u32,
@@ -277,7 +279,7 @@ pub fn validatePdfEmbeddedFiles(
                     .flate_decode => unreachable,
                     .ascii_hex_decode => ascii_hex_decoder.decode(allocator, stream_data) catch null,
                     .ascii85_decode => ascii85_decoder.decode(allocator, stream_data) catch null,
-                    .lzw_decode => lzw_decoder.decode(allocator, stream_data) catch null,
+                    .lzw_decode => lzw_adapter.decodePdf(allocator, stream_data, MAX_EMBEDDED_FILE_DECODE_BYTES) catch null,
                     .run_length_decode => run_length_decoder.decode(allocator, stream_data) catch null,
                     else => null,
                 };
@@ -376,7 +378,7 @@ pub fn validatePdfEmbeddedFilesBasic(allocator: Allocator, pdf_data: []const u8)
                 const decoded: ?[]u8 = switch (filter) {
                     .ascii_hex_decode => ascii_hex_decoder.decode(allocator, stream_data) catch null,
                     .ascii85_decode => ascii85_decoder.decode(allocator, stream_data) catch null,
-                    .lzw_decode => lzw_decoder.decode(allocator, stream_data) catch null,
+                    .lzw_decode => lzw_adapter.decodePdf(allocator, stream_data, MAX_EMBEDDED_FILE_DECODE_BYTES) catch null,
                     .run_length_decode => run_length_decoder.decode(allocator, stream_data) catch null,
                     else => null,
                 };
@@ -406,7 +408,7 @@ pub fn validatePdfEmbeddedFilesBasic(allocator: Allocator, pdf_data: []const u8)
 /// union distinguishing successful decompression, size limit exceeded,
 /// suspected zip bomb (corrupt), and data/alloc errors.
 fn decompressFlate(allocator: Allocator, compressed: []const u8) DecompressFlateResult {
-    const max_output: usize = 256 * 1024 * 1024; // 256MB max for embedded files
+    const max_output = MAX_EMBEDDED_FILE_DECODE_BYTES;
 
     switch (zlib.inflateZlibLenientAllocWithRatio(allocator, compressed, max_output)) {
         .ok => |data| return .{ .ok = data },

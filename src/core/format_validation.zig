@@ -164,10 +164,6 @@ const pdf_embedded_file_validator = @import("pdf_embedded_file_validator.zig");
 // Import zlib wrapper for robust deflate decompression (replaces buggy std.compress.flate)
 const zlib = @import("zlib.zig");
 
-// Import TIFF LZW decoder for 1-bit TIFF validation (zigimg can't handle these)
-// Note: TIFF LZW uses different early-change semantics than PDF LZW
-const tiff_lzw_decoder = @import("tiff_lzw_decoder.zig");
-
 // Import WavPack decoder for deep validation with MD5 sub-block detection
 const wavpack_decoder = @import("wavpack_decoder.zig");
 

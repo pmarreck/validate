@@ -96,8 +96,8 @@ local tiff = by["TIFF"]
 ok(tiff ~= nil, "TIFF row present")
 if tiff then
 	eq(tiff.sample, "bali.tif", "TIFF canonical sample")
-	eq(tiff.sniper_pct, 7, "TIFF sniper_pct")
-	eq(tiff.bolter_pct, 45, "TIFF bolter_pct")
+	eq(tiff.sniper_pct, 63, "TIFF sniper_pct")
+	eq(tiff.bolter_pct, 93, "TIFF bolter_pct")
 	eq(tiff.shotgun_pct, 100, "TIFF shotgun_pct")
 	eq(tiff.run, "2026-07-17", "TIFF run date")
 end

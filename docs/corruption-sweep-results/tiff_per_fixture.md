@@ -1,7 +1,7 @@
 # TIFF corruption-sweep — per-fixture breakdown
 
-**Latest run:** 2026-05-21 against validate at HEAD post the
-`Malformed → FAIL` routing fix in `tiffz_shim.zig`.
+**Latest Bali LZW run:** 2026-07-17 against the signed shared-`lzwz`
+ReleaseFast build. It requires EOD and exact decoded strip/tile extent.
 **Methodology:** for each fixture, `scripts/corruption-experiment`
 sniper (1-bit flip × 100 trials) and shotgun (4 KB overwrite ×
 100 trials), seed=42. Detection = validate exits non-zero (FAIL).
@@ -10,7 +10,7 @@ sniper (1-bit flip × 100 trials) and shotgun (4 KB overwrite ×
 fixture                       sniper%   shotgun%   codec / variant
 --------                      -------   --------   ----------------
 at3_1m4_01_rgb.tif                  0         57   PackBits RGB
-bali.tif                            7        100   LZW palette (BE)
+bali.tif                           63        100   LZW palette (BE, strict EOD + exact extent)
 cramps-tile.tif                     0          1   uncompressed tiled
 cramps.tif                          0         91   PackBits MinIsWhite
 deflate-last-strip.tiff            94         71   Deflate
@@ -37,9 +37,9 @@ ycbcr-cat.tif                      11        100   YCbCr (JPEG-in-TIFF)
   near-0%. RLE control bytes are robust to single bit flips but 4
   KB sector wipes break the codec's framing.
 - **LZW** (lzw-single-strip / bali / quad-lzw / quad-tile /
-  strike): shotgun 99-100%, sniper 7-80% depending on dictionary
-  fragility. The codec's forward-reference check catches
-  corruption reliably.
+  strike): shotgun 99-100%; Bali's sniper rate rose 7% → 63% after
+  mandatory EOD and exact decoded-extent checks. A mutation can still form a
+  different valid LZW stream because TIFF has no decoded-pixel checksum.
 - **Deflate** (deflate-last-strip): 94 / 71. zlib's CRC32 catches
   almost everything — the only misses are when the corruption
   lands inside a region the CRC doesn't cover.

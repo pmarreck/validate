@@ -129,8 +129,8 @@
         // rejects ("file exists in modules 'jpegz' and 'jpegz0'") and the nix
         // sandbox SEGVs on during the Debug test compile. See validate #32.
         .tiffz = .{
-            .url = "git+https://github.com/pmarreck/tiffz#2c02083dc55258148fe85db226fb8350fa460140",
-            .hash = "tiffz-0.1.0-qutJAYUHYwEjpxlSKDeih9qKgW17hUTkBOCyn3_WLbii",
+            .url = "git+https://github.com/pmarreck/tiffz#b012cfc139b34800a03da4232c0c2d5423d0db41",
+            .hash = "tiffz-0.1.0-qutJAb4AYwEIKq5-ZXOCbOAmgh_Rqgeh8K3Cgbu6Ng6V",
         },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",

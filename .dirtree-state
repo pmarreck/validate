@@ -56,6 +56,7 @@ annotate=[
 	src/core/fixtures/license_vectors.json = Vendored differential oracle (18 cases) from mecha-commerce; pins license.zig verifier to issuer-authored {valid,error_code} vectors
 	src/core/format_validation.zig = Format validation and deep-source dispatcher, including PCAPNG disk/in-memory parity for corruption coverage.
 	src/core/license.zig = Offline Ed25519 license-token verifier — contract v1 (b64url.b64url token, sign-over-left, email-only gate, kid-selected pubkeys, injected today, ErrorCode enum for i18n)
+	src/core/lzw_adapter.zig = Bounded PDF LZWDecode adapter over shared tiffz.lzwz with strict EOD and per-consumer caps.
 	src/core/network_validators.zig = Network validators; PCAPNG now walks full endian-aware block framing with duplicate-length checks in bounded memory.
 	src/core/pdf_image_validator.zig = Deep PDF embedded-image validation; skips pool construction when the current CPU budget allows only sequential work
 	src/core/pdf_validator.zig = Deep PDF structural and decode validation; mapped or caller-owned sources reuse their lifetime-safe document slice before all image/font/attachment/Flate passes.

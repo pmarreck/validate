@@ -28,7 +28,7 @@ tightened.
 
 | Component | Required invariants | Current evidence and next check |
 |---|---|---|
-| TIFF LZW (`tiffz`) | EOD code; exact decoded extent for each strip/tile | **Open / first remediation.** PDF, TIFF fallback, and `tiffz` all treat EOF before EOD as success despite advertising an incomplete-source error. The `lzwz` oracle requires that regression across TIFF/PDF/GIF, then `tiffz` will compare decoded chunk extent where geometry is unambiguous. |
+| LZW (TIFF/PDF/GIF via `lzwz`) | EOD/EOI code; exact decoded extent where the container declares one | **Completed 2026-07-17.** One profile-configured `lzwz` state machine now rejects physical EOF before EOD/EOI for TIFF, PDF, and GIF. `tiffz` proves each strip/tile's exact geometry-derived extent; GIF uses allocation-free exact count; bounded PDF decode keeps its cap. Validate's private TIFF/PDF/GIF dictionary implementations are deleted. Signed Bali evidence: sniper 7% → 63%, bolter 45% → 93%, shotgun 100% → 100%; clean one-worker ReleaseFast validation is statistically neutral (804.8 ms → 808.7 ms over 20 runs). |
 | ZIP (`archive_validators.zig`) | EOCD, central/local header agreement, entry bounds, decompression end, CRC-32 and sizes | Deep path walks central directory and stream-verifies stored/Deflate entries. **Open:** make unsupported/encrypted/compressed-method policy and any legal trailing-data rule explicit per entry. |
 | GZip / Deflate (`archive_validators.zig`, `zlib.zig`) | Deflate terminator, optional header CRC, trailer CRC-32 and ISIZE | Deep path checks FHCRC, streams the Deflate body, then checks trailer CRC/ISIZE without caller-proportional allocation. **Open:** test concatenated-member and trailing-byte policy as deliberate cases. |
 | BZip2 (`bzip2.zig`) | Block markers, block CRCs, stream terminator and stream CRC | `validateStream` validates decompressed blocks while discarding output and returns specific block/stream-CRC and EOF errors. **Next:** mutation evidence and multi-stream policy. |
@@ -42,7 +42,8 @@ tightened.
 
 ## Audit order
 
-1. `lzwz` extraction and TIFF declared-extent proof (shared decoder bug).
+1. [x] `lzwz` extraction and TIFF declared-extent proof (shared decoder bug;
+   completed 2026-07-17).
 2. TAR second-end-block regression (small, deterministic container invariant).
 3. XZ multi-block and SHA-256 Check classification (current depth claim needs
    sharper evidence).
