@@ -72,6 +72,11 @@ at the bottom. Older completed sections were rolled up — full history lives in
         retain prior comparable runs, and display only evidence-backed deltas.
         Curiosity poke: a changed fixture or mutation policy creates a new
         series, never an apparent improvement over an incomparable baseline.
+    - [x] Lock the append-only run-ledger schema before writing a new sweep:
+          require exact raw-TSV location/hash, fixture identity/hash, mutation
+          policy, signed-binary identity/hash, source commit, target, host,
+          and UTC timestamp; reject duplicate run/series/mode rows. Completed
+          2026-07-18 19:54 EDT.
 
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus
