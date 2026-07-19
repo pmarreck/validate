@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# A sweep writes raw trials into a new immutable run directory, then appends
+# complete provenance rows. Reusing a run ID without --resume must fail rather
+# than overwrite evidence or make a second measurement look like the first.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/validate-corruption-sweep.XXXXXX")"
+corpus="$work/corpus"
+evidence="$work/evidence"
+binary="$work/validate"
+experiment="$work/fake-experiment"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$corpus/tiff"
+head -c 4096 /dev/zero > "$corpus/tiff/fixture.tif"
+
+# Make a syntactically signed but deliberately non-executable fixture. The
+# injected experiment records whether the sweep supplied this exact path; the
+# sweep itself must verify the integrity trailer before it will begin.
+printf '%s' 'fixture validate binary' > "$binary"
+printf '%s' 'VALIDATE_INTEGRITY' >> "$binary"
+# `openssl` is already in the declared CLI shell; unlike `xxd`, it is not a
+# host-profile accident. Append the exact 32 raw SHA-256 bytes that the
+# integrity trailer contract expects.
+openssl dgst -sha256 -binary <(printf '%s' 'fixture validate binary') >> "$binary"
+
+cat > "$experiment" <<'EOF'
+#!/usr/bin/env bash
+set -u
+mode="$1"
+input="$2"
+shift 2
+out=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--output) out="$2"; shift 2 ;;
+		*) shift ;;
+	esac
+done
+[ -n "$out" ] || exit 2
+printf '# seed=7 mode=%s file=%s filesize=4096\n' "$mode" "$(basename "$input")" > "$out"
+printf 'trial\tmode\tfilesize\toff\tbit\tspan\tdetected\n' >> "$out"
+printf '0\t%s\t4096\t0\t0\t1\ttrue\n' "$mode" >> "$out"
+printf '1\t%s\t4096\t1\t0\t1\tfalse\n' "$mode" >> "$out"
+EOF
+chmod +x "$experiment"
+
+run_id="2026-07-18T201500Z-test-run"
+
+# A default source-commit claim is only honest for a clean tracked tree. This
+# checkout is intentionally dirty while this regression runs; without the
+# test-only provenance override below, the sweep must refuse to publish it.
+VALIDATE_GROUND_TRUTH_DIR="$corpus" \
+	VALIDATE_COVERAGE_EVIDENCE_DIR="$evidence" \
+	VALIDATE_CORRUPTION_EXPERIMENT="$experiment" \
+	VALIDATE_SIGNED_BINARY="$binary" \
+	"$PROJECT_DIR/scripts/corruption-sweep" --count 2 --seed 7 --run-id "dirty-source-must-refuse" >"$work/dirty-out" 2>"$work/dirty-err"
+dirty_rc=$?
+if [ "$dirty_rc" -eq 0 ]; then
+	echo "FAIL: sweep claimed HEAD provenance from a dirty tracked tree" >&2
+	exit 1
+fi
+
+VALIDATE_GROUND_TRUTH_DIR="$corpus" \
+	VALIDATE_COVERAGE_EVIDENCE_DIR="$evidence" \
+	VALIDATE_CORRUPTION_EXPERIMENT="$experiment" \
+	VALIDATE_SIGNED_BINARY="$binary" \
+	VALIDATE_SOURCE_COMMIT="0123456789012345678901234567890123456789" \
+	VALIDATE_TARGET="x86_64-linux" \
+	VALIDATE_HOST="test-host" \
+	"$PROJECT_DIR/scripts/corruption-sweep" --count 2 --seed 7 --run-id "$run_id" >"$work/out" 2>"$work/err"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	echo "FAIL: sweep failed: $(cat "$work/err")" >&2
+	exit 1
+fi
+
+ledger="$evidence/runs.tsv"
+[ -f "$ledger" ] || { echo "FAIL: missing append-only ledger" >&2; exit 1; }
+[ -f "$evidence/runs/$run_id/tiff_sniper.tsv" ] || { echo "FAIL: raw sniper TSV not stored under run ID" >&2; exit 1; }
+[ -f "$evidence/runs/$run_id/tiff_bolter.tsv" ] || { echo "FAIL: raw bolter TSV not stored under run ID" >&2; exit 1; }
+[ -f "$evidence/runs/$run_id/tiff_shotgun.tsv" ] || { echo "FAIL: raw shotgun TSV not stored under run ID" >&2; exit 1; }
+
+header="$(head -n 1 "$ledger")"
+expected_header=$'timestamp_utc\trun_id\tseries\tmode\tseed\ttrials\tdetected\tmutation_policy\tfixture_id\tfixture_sha256\traw_tsv_relpath\traw_tsv_sha256\tsigned_binary_id\tsigned_binary_sha256\tsource_commit\ttarget\thost'
+[ "$header" = "$expected_header" ] || { echo "FAIL: ledger schema mismatch" >&2; exit 1; }
+records="$(awk 'NR > 1 { count++ } END { print count + 0 }' "$ledger")"
+[ "$records" -eq 3 ] || { echo "FAIL: expected three provenance records, got $records" >&2; exit 1; }
+awk -F '\t' 'NR > 1 && ($2 != "2026-07-18T201500Z-test-run" || $5 != 7 || $6 != 2 || $7 != 1 || $15 != "0123456789012345678901234567890123456789") { exit 1 }' "$ledger" \
+	|| { echo "FAIL: ledger record lost run provenance or trial evidence" >&2; exit 1; }
+
+(
+	cd "$PROJECT_DIR/site" || exit 1
+	luajit - "$ledger" <<'LUA'
+package.path = "./?.lua;./lib/?.lua;" .. package.path
+local evidence = require("coverage_evidence")
+local f = assert(io.open(arg[1], "r"))
+local ledger = f:read("*a")
+f:close()
+assert(evidence.validate_ledger(evidence.parse_ledger_tsv_string(ledger)))
+LUA
+) || { echo "FAIL: sweep output is not publishable coverage evidence" >&2; exit 1; }
+
+VALIDATE_GROUND_TRUTH_DIR="$corpus" VALIDATE_COVERAGE_EVIDENCE_DIR="$evidence" \
+	VALIDATE_CORRUPTION_EXPERIMENT="$experiment" VALIDATE_SIGNED_BINARY="$binary" \
+	"$PROJECT_DIR/scripts/corruption-sweep" --count 2 --seed 7 --run-id "$run_id" >"$work/retry-out" 2>"$work/retry-err"
+retry_rc=$?
+if [ "$retry_rc" -eq 0 ]; then
+	echo "FAIL: sweep accepted an existing run ID without --resume" >&2
+	exit 1
+fi
+
+echo "PASS: corruption sweep preserves immutable raw evidence and ledger provenance"

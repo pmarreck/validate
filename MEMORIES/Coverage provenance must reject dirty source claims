@@ -1,0 +1,6 @@
+An integrity-trailered binary hash identifies the executable used for a
+corruption sweep, but `git rev-parse HEAD` identifies source only when tracked
+source is clean.  In-tree sweep defaults must reject staged and unstaged
+tracked changes before writing a HEAD provenance row.  An external signed
+release or isolated test may supply its source identity explicitly; that
+override must never be mistaken for a clean-worktree guarantee.

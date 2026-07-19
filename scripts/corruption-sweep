@@ -1,22 +1,38 @@
 #!/usr/bin/env bash
-# corruption-sweep: Run corruption-experiment on all ground-truth samples >= 4096 bytes.
-# Usage: corruption-sweep [--count N] [--seed N] [--batch BATCH_NUM] [--batches TOTAL]
-# Results go to docs/corruption-sweep-results/
+# corruption-sweep: record deterministic corruption trials as immutable,
+# provenance-complete evidence.  Each invocation owns a new run directory;
+# `--resume` is the sole exception and only completes a previously interrupted
+# run without replacing an existing raw TSV.
+#
+# Run `./build` first.  The resulting signed binary is verified before a single
+# trial begins, then its full-file SHA-256 is recorded beside every result.
 
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-EXPERIMENT="$SCRIPT_DIR/corruption-experiment"
-# Results dir and corpus are env-overridable so the full pipeline can be run
-# against a small fixture corpus in tests (see tests/cli/corruption_report_generator).
-RESULTS_DIR="${VALIDATE_SWEEP_RESULTS_DIR:-$PROJECT_DIR/docs/corruption-sweep-results}"
+EXPERIMENT="${VALIDATE_CORRUPTION_EXPERIMENT:-$SCRIPT_DIR/corruption-experiment}"
 GROUND_TRUTH="${VALIDATE_GROUND_TRUTH_DIR:-$PROJECT_DIR/ground_truth_examples}"
+EVIDENCE_DIR="${VALIDATE_COVERAGE_EVIDENCE_DIR:-$PROJECT_DIR/docs/coverage-evidence}"
+EVIDENCE_RELATIVE_ROOT="${VALIDATE_COVERAGE_EVIDENCE_RELATIVE_ROOT:-docs/coverage-evidence}"
+SIGNED_BINARY="${VALIDATE_SIGNED_BINARY:-$PROJECT_DIR/zig-out/bin/validate}"
 
 COUNT=100
 SEED=42
 BATCH_NUM=0
 TOTAL_BATCHES=1
+RUN_ID=""
+RESUME=0
+
+usage() {
+	cat <<'EOF' >&2
+Usage: scripts/corruption-sweep [--count N] [--seed N] [--batch N] [--batches N]
+                                  [--run-id ID] [--resume]
+
+Writes immutable raw TSVs and docs/coverage-evidence/runs.tsv. Build first with
+./build; the sweep refuses an unsigned or hash-mismatched validator binary.
+EOF
+}
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -24,16 +40,153 @@ while [ $# -gt 0 ]; do
 		--seed) SEED="$2"; shift 2 ;;
 		--batch) BATCH_NUM="$2"; shift 2 ;;
 		--batches) TOTAL_BATCHES="$2"; shift 2 ;;
-		*) echo "Unknown arg: $1" >&2; exit 1 ;;
+		--run-id) RUN_ID="$2"; shift 2 ;;
+		--resume) RESUME=1; shift ;;
+		-h|--help) usage; exit 0 ;;
+		*) echo "Unknown arg: $1" >&2; usage; exit 2 ;;
 	esac
 done
 
-mkdir -p "$RESULTS_DIR"
+sha256_file() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	else
+		shasum -a 256 "$1" | awk '{print $1}'
+	fi
+}
 
-# Collect all testable format/file pairs (largest non-corrupted file per format, >= 4096 bytes)
+sha256_stdin() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum | awk '{print $1}'
+	else
+		shasum -a 256 | awk '{print $1}'
+	fi
+}
+
+verify_signed_binary() {
+	if [ ! -f "$SIGNED_BINARY" ]; then
+		echo "ERROR: signed validator not found: $SIGNED_BINARY (run ./build first)" >&2
+		return 1
+	fi
+	local size body_size marker expected_hex actual_hex
+	size="$(wc -c < "$SIGNED_BINARY" | tr -d '[:space:]')"
+	if [ -z "$size" ] || [ "$size" -lt 50 ]; then
+		echo "ERROR: validator is too small to carry an integrity trailer: $SIGNED_BINARY" >&2
+		return 1
+	fi
+	body_size=$((size - 50))
+	marker="$(dd if="$SIGNED_BINARY" bs=1 skip="$body_size" count=18 2>/dev/null)"
+	if [ "$marker" != "VALIDATE_INTEGRITY" ]; then
+		echo "ERROR: validator is unsigned (missing VALIDATE_INTEGRITY trailer): $SIGNED_BINARY" >&2
+		return 1
+	fi
+	expected_hex="$(tail -c 32 "$SIGNED_BINARY" | od -An -tx1 | tr -d '[:space:]')"
+	actual_hex="$(dd if="$SIGNED_BINARY" bs=1 count="$body_size" 2>/dev/null | sha256_stdin)"
+	if [ "$expected_hex" != "$actual_hex" ]; then
+		echo "ERROR: validator integrity trailer does not match its body: $SIGNED_BINARY" >&2
+		return 1
+	fi
+	return 0
+}
+
+normalize_identifier() {
+	printf '%s' "$1" | tr -c '[:alnum:]_.-' '_'
+}
+
+mutation_policy() {
+	case "$1" in
+		sniper) printf '%s' 'single-bit-v1' ;;
+		bolter) printf '%s' 'contiguous-byte-span-v1' ;;
+		shotgun) printf '%s' 'random-4096-byte-overwrite-v1' ;;
+		esac
+}
+
+tsv_stats() {
+	awk -F '\t' '
+		/^#/ || /^trial/ || NF == 0 { next }
+		{ trials++; if ($NF == "true") detected++ }
+		END { if (trials == 0) exit 1; printf "%d %d\n", trials, detected }
+	' "$1"
+}
+
+if ! [[ "$COUNT" =~ ^[1-9][0-9]*$ && "$SEED" =~ ^[0-9]+$ && "$BATCH_NUM" =~ ^[0-9]+$ && "$TOTAL_BATCHES" =~ ^[1-9][0-9]*$ ]]; then
+	echo "ERROR: count must be positive and seed/batch values must be non-negative integers" >&2
+	exit 2
+fi
+if [ "$BATCH_NUM" -ge "$TOTAL_BATCHES" ]; then
+	echo "ERROR: --batch must be smaller than --batches" >&2
+	exit 2
+fi
+if ! verify_signed_binary; then exit 2; fi
+
+if [ -n "${VALIDATE_SOURCE_COMMIT:-}" ]; then
+	# Explicit injection supports an externally built signed release and the
+	# isolated ledger regression. Normal in-tree sweeps take the guarded path
+	# below so an ordinary dirty checkout can never masquerade as HEAD.
+	source_commit="$VALIDATE_SOURCE_COMMIT"
+else
+	if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+		echo "ERROR: cannot establish source provenance outside a Git worktree; set VALIDATE_SOURCE_COMMIT only for an externally built signed release" >&2
+		exit 2
+	fi
+	if ! git -C "$PROJECT_DIR" diff --quiet -- || ! git -C "$PROJECT_DIR" diff --cached --quiet --; then
+		echo "ERROR: refusing to claim HEAD provenance from a dirty tracked worktree; commit or stash tracked changes first" >&2
+		exit 2
+	fi
+	source_commit="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+fi
+if ! [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
+	echo "ERROR: source commit must be a 40-character lowercase SHA-1" >&2
+	exit 2
+fi
+host="${VALIDATE_HOST:-$(hostname -s)}"
+target="${VALIDATE_TARGET:-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]')}"
+timestamp_utc="${VALIDATE_TIMESTAMP_UTC:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+if ! [[ "$timestamp_utc" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+	echo "ERROR: timestamp must be UTC ISO-8601 (YYYY-MM-DDTHH:MM:SSZ)" >&2
+	exit 2
+fi
+
+if [ -z "$RUN_ID" ]; then
+	RUN_ID="${timestamp_utc//[:-]/}-${source_commit:0:12}-b${BATCH_NUM}of${TOTAL_BATCHES}"
+fi
+if ! [[ "$RUN_ID" =~ ^[A-Za-z0-9._:-]+$ ]]; then
+	echo "ERROR: run ID may contain only letters, numbers, dot, underscore, colon, and dash" >&2
+	exit 2
+fi
+
+mkdir -p "$EVIDENCE_DIR/runs"
+RUN_DIR="$EVIDENCE_DIR/runs/$RUN_ID"
+LEDGER="$EVIDENCE_DIR/runs.tsv"
+LEDGER_HEADER=$'timestamp_utc\trun_id\tseries\tmode\tseed\ttrials\tdetected\tmutation_policy\tfixture_id\tfixture_sha256\traw_tsv_relpath\traw_tsv_sha256\tsigned_binary_id\tsigned_binary_sha256\tsource_commit\ttarget\thost'
+
+if [ -e "$RUN_DIR" ]; then
+	if [ "$RESUME" -ne 1 ]; then
+		echo "ERROR: run already exists; refusing to overwrite evidence: $RUN_DIR (use --resume only after an interrupted run)" >&2
+		exit 2
+	fi
+elif [ "$RESUME" -eq 1 ]; then
+	echo "ERROR: cannot resume a run directory that does not exist: $RUN_DIR" >&2
+	exit 2
+else
+	mkdir "$RUN_DIR" || exit 2
+fi
+
+if [ ! -e "$LEDGER" ]; then
+	printf '%s\n' "$LEDGER_HEADER" > "$LEDGER"
+elif [ "$(head -n 1 "$LEDGER")" != "$LEDGER_HEADER" ]; then
+	echo "ERROR: existing evidence ledger has an incompatible schema: $LEDGER" >&2
+	exit 2
+fi
+
+signed_binary_sha256="$(sha256_file "$SIGNED_BINARY")"
+signed_binary_id="validate-${target}-releasefast"
+
+# Collect one largest non-corrupted fixture for every format family. The record
+# stores a deterministic identifier + hash, not a private corpus pathname.
 PAIRS=()
-while IFS='	' read -r sz fmt path; do
-	PAIRS+=("$fmt	$path	$sz")
+while IFS=$'\t' read -r sz fmt path; do
+	PAIRS+=("$fmt"$'\t'"$path"$'\t'"$sz")
 done < <(
 	find -L "$GROUND_TRUTH" -maxdepth 2 -type f \
 		-not -name '*corrupted*' -not -name 'README*' -not -name '*.txt' -not -name '.DS_Store' \
@@ -43,31 +196,70 @@ done < <(
 		if [ "$fmt" = "corrupted" ] || [ "$fmt" = "ground_truth_examples" ]; then continue; fi
 		sz=$(stat -f%z "$f" 2>/dev/null || stat -c%s "$f" 2>/dev/null)
 		printf '%s\t%s\t%s\n' "$sz" "$fmt" "$f"
-	done | sort -t'	' -k2,2 -k1,1rn | awk -F'\t' 'x[$2]++==0{print}' | sort -t'	' -k2,2
+	done | sort -t$'\t' -k2,2 -k1,1rn | awk -F'\t' 'x[$2]++==0{print}' | sort -t$'\t' -k2,2
 )
 
 TOTAL=${#PAIRS[@]}
+if [ "$TOTAL" -eq 0 ]; then
+	echo "ERROR: no eligible ground-truth fixtures in $GROUND_TRUTH" >&2
+	exit 2
+fi
 PER_BATCH=$(( (TOTAL + TOTAL_BATCHES - 1) / TOTAL_BATCHES ))
 START=$(( BATCH_NUM * PER_BATCH ))
 END=$(( START + PER_BATCH ))
 if [ "$END" -gt "$TOTAL" ]; then END=$TOTAL; fi
 
-echo "=== Batch $BATCH_NUM of $TOTAL_BATCHES: formats $START-$((END-1)) of $TOTAL ===" >&2
+ledger_has_record() {
+	awk -F '\t' -v run="$1" -v series="$2" -v mode="$3" '
+		NR > 1 && $2 == run && $3 == series && $4 == mode { found = 1 }
+		END { exit found ? 0 : 1 }
+	' "$LEDGER"
+}
 
-for i in $(seq $START $((END - 1))); do
-	IFS='	' read -r fmt path sz <<< "${PAIRS[$i]}"
-	echo "--- $fmt ($sz bytes): $path ---" >&2
+append_record() {
+	local mode="$1" outfile="$2" series="$3" fixture_id="$4" fixture_sha256="$5"
+	if ledger_has_record "$RUN_ID" "$series" "$mode"; then return 0; fi
+	local stats trials detected raw_tsv_sha256 raw_tsv_relpath policy
+	stats="$(tsv_stats "$outfile")" || {
+		echo "ERROR: raw TSV contains no trials: $outfile" >&2
+		return 1
+	}
+	read -r trials detected <<< "$stats"
+	raw_tsv_sha256="$(sha256_file "$outfile")"
+	raw_tsv_relpath="$EVIDENCE_RELATIVE_ROOT/runs/$RUN_ID/$(basename "$outfile")"
+	policy="$(mutation_policy "$mode")"
+	printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+		"$timestamp_utc" "$RUN_ID" "$series" "$mode" "$SEED" "$trials" "$detected" "$policy" \
+		"$fixture_id" "$fixture_sha256" "$raw_tsv_relpath" "$raw_tsv_sha256" "$signed_binary_id" \
+		"$signed_binary_sha256" "$source_commit" "$target" "$host" >> "$LEDGER"
+}
+
+echo "=== Run $RUN_ID, batch $BATCH_NUM of $TOTAL_BATCHES: formats $START-$((END - 1)) of $TOTAL ===" >&2
+for ((i = START; i < END; i++)); do
+	IFS=$'\t' read -r fmt path sz <<< "${PAIRS[$i]}"
+	format_id="$(normalize_identifier "$fmt")"
+	fixture_sha256="$(sha256_file "$path")"
+	fixture_id="$format_id/${fixture_sha256:0:16}"
+	series="$fixture_id"
+	echo "--- $fmt ($sz bytes; fixture $fixture_id) ---" >&2
 
 	for mode in sniper bolter shotgun; do
-		outfile="$RESULTS_DIR/${fmt}_${mode}.tsv"
+		outfile="$RUN_DIR/${format_id}_${mode}.tsv"
 		if [ -f "$outfile" ]; then
-			echo "  $mode: already done, skipping" >&2
-			continue
+			echo "  $mode: raw TSV already present; verifying/recording only" >&2
+		else
+			partial="$RUN_DIR/.${format_id}_${mode}.partial-$$"
+			echo "  $mode..." >&2
+			if ! VALIDATE_BIN="$SIGNED_BINARY" "$EXPERIMENT" "$mode" "$path" --count "$COUNT" --seed "$SEED" --output "$partial"; then
+				echo "ERROR: experiment failed; retained incomplete output at $partial" >&2
+				exit 1
+			fi
+			mv "$partial" "$outfile"
 		fi
-		echo "  $mode..." >&2
-		"$EXPERIMENT" "$mode" "$path" --count "$COUNT" --seed "$SEED" --output "$outfile" 2>&1 | grep -E '(Results|Detection|Early)' >&2
+		if ! append_record "$mode" "$outfile" "$series" "$fixture_id" "$fixture_sha256"; then
+			exit 1
+		fi
 	done
 done
 
-echo "" >&2
-echo "=== Batch $BATCH_NUM complete. Results in $RESULTS_DIR ===" >&2
+echo "=== Batch complete. Raw evidence: $RUN_DIR; ledger: $LEDGER ===" >&2
