@@ -29,6 +29,7 @@ texts are the per-library files in `LICENSES/`.
 | zig-xml | MIT | `LICENSES/zig-xml.txt` |
 | zigimg | MIT | `LICENSES/zigimg.txt` |
 | LibRaw | CDDL-1.0 (elected) | `LICENSES/libraw.txt`, `LICENSES/CDDL-1.0.txt` |
+| lercz | Apache-2.0 | `LICENSES/lercz.txt` |
 
 ## ⚠️ PENDING — bundled but license text not yet vendored (legal follow-up)
 

@@ -1059,7 +1059,9 @@ test "IFF deep validation - valid ILBM ByteRun1 sample" {
 	defer source.close();
 	const result = validateIffDeep(testing.allocator, &source);
 	try testing.expect(result.is_valid);
-	try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+	// ByteRun1 is decoded completely, but generic IFF carries no checksum that
+	// can distinguish every raw-data mutation from valid content.
+	try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "IFF deep validation - corrupted ByteRun1 stream detected" {

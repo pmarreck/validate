@@ -168,16 +168,25 @@ pub fn validateTiffDeepBuffer(
         result.warning_message = "TIFF strip/tile decode hit unsupported codec or malformed data; structural validation only (likely tiffz coverage gap such as LZWFixupTags-style old-style LZW codes)";
     }
     var first_warning: ?[]const u8 = null;
+    var first_info: ?[]const u8 = null;
     for (acc.findings.items) |entry| {
         const routed = routeInfoFinding(entry.code);
         switch (routed) {
-            .info => {}, // PASS-tier observation; no slot in flat ValidationResult today.
+            .info => |msg| if (first_info == null) {
+                first_info = msg;
+            },
             .warning => |msg| if (first_warning == null) {
                 first_warning = msg;
             },
         }
     }
-    if (first_warning) |w| result.warning_message = w;
+    if (first_warning) |warning| {
+        // WARN describes a tolerated deviation and intentionally takes
+        // precedence over a normal-format observation.
+        result.warning_message = warning;
+    } else if (result.warning_message == null) {
+        if (first_info) |info| result.info_message = info;
+    }
     return result;
 }
 
@@ -223,11 +232,8 @@ fn routeError(err: tiffz.Error, format: FileFormat) ValidationResult {
 }
 
 /// Routing for INFO-tier findings. Some get promoted to WARN per
-/// validate's policy (e.g. `old_style_lzw_codes`). The flat
-/// `ValidationResult` doesn't have a dynamic info_message slot today,
-/// so PASS-tier observations are silently dropped — but the typed
-/// finding still flows through the accumulator so future enhancements
-/// can plumb them.
+/// validate's policy (e.g. `old_style_lzw_codes`). The first INFO is
+/// surfaced through `ValidationResult.info_message` unless a WARN is present.
 fn routeInfoFinding(code: tiffz.findings.InfoFinding) RoutedFinding {
     return switch (code) {
         .bigtiff_format => .{ .info = "BigTIFF (64-bit offsets)" },
@@ -239,6 +245,7 @@ fn routeInfoFinding(code: tiffz.findings.InfoFinding) RoutedFinding {
         .pre_multiplied_alpha => .{ .info = "associated alpha (ExtraSamples=1)" },
         .predictor_applied => .{ .info = "TIFF Predictor applied" },
         .geotiff_tags_present => .{ .info = "GeoTIFF tags present" },
+        .lerc_compression => .{ .info = "LERC-in-TIFF (Compression=34887)" },
         .cfa_pattern_present => .{ .info = "CFA mosaic raw (DNG / TIFF-EP)" },
         .opcode_list_present => .{ .info = "DNG opcode list" },
         .jpeg_in_tiff => .{ .info = "JPEG-in-TIFF (Compression=7)" },
@@ -321,4 +328,39 @@ test "tiffz_shim: LZW strip without EOD returns invalid" {
 
     const result = validateTiffDeepBuffer(std.testing.allocator, &bytes, .tiff);
     try std.testing.expect(!result.is_valid);
+}
+
+test "tiffz_shim: LERC strip reaches full validation" {
+    // Independent tiffz fixture: 16×16 8-bit grayscale LERC2 v4 with no
+    // post-filter. The older tiffz pin reports Compression=34887 as
+    // unsupported; this proves validate actually walks the new codec rather
+    // than merely accepting its TIFF header.
+    const fixture_base64 =
+        "SUkqAAgAAAANAAABAwABAAAAEAAAAAEBAwABAAAAEAAAAAIBAwABAAAACAAAAAMBAwABAAAAR4gA" ++
+        "AAYBAwABAAAAAQAAABEBBAABAAAAJAEAABUBAwABAAAAAQAAABYBAwABAAAAEAAAABcBBAABAAAA" ++
+        "MgEAABwBAwABAAAAAQAAAFMBAwABAAAAAQAAAICkAgByAAAAsgAAAPLFBAACAAAAqgAAAAAAAAAE" ++
+        "AAAAAAAAADxHREFMTWV0YWRhdGE+CiAgPEl0ZW0gbmFtZT0iQ09NUFJFU1NJT05fUkVWRVJTSUJJ" ++
+        "TElUWSIgZG9tYWluPSJJTUFHRV9TVFJVQ1RVUkUiPkxPU1NMRVNTPC9JdGVtPgo8L0dEQUxNZXRh" ++
+        "ZGF0YT4KAExlcmMyIAQAAAACg6A8EAAAABAAAAABAAAAAAEAAAgAAAAyAQAAAQAAAAAAAAAAAOA/" ++
+        "AAAAAAAAAAAAAAAAAEBoQAAAAAAAwgAAAQCHQICAYEAoGA6QiGRCqVguoJBoRCqZTrCYbEar2W7A" ++
+        "oHBILBqP0Kh0Sq1ar+CweEwum8/wuHxOr9vvBQiHQICAYEAoGA6QiGRCqVguoJBoRCqZTrCYbEar" ++
+        "2W7AoHBILBqP0Kh0Sq1ar+CweEwum8/wuHxOr9vvAYCHQEKAMCAUCAdChDAhVAgXQogwIpQIJ0KM" ++
+        "MCPUCDdCkDAkFAlHQpQwJVQJV0KYMCaUCWdCnDAn1Al3BYSGQD7gB77gDz7iJ77iLz7kR77kTz7m" ++
+        "Z77mbz7oh77ojz7qp77qrz7sx77szz7u577u7w=="
+    ;
+    var bytes: [598]u8 = undefined;
+    try std.base64.standard.Decoder.decode(&bytes, fixture_base64);
+
+    const result = validateTiffDeepBuffer(std.testing.allocator, &bytes, .tiff);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+    try std.testing.expectEqualStrings("LERC-in-TIFF (Compression=34887)", result.info_message orelse return error.TestExpectedEqual);
+}
+
+test "tiffz_shim: LERC compression finding is informational" {
+    const routed = routeInfoFinding(.lerc_compression);
+    switch (routed) {
+        .info => |message| try std.testing.expectEqualStrings("LERC-in-TIFF (Compression=34887)", message),
+        .warning => return error.TestUnexpectedResult,
+    }
 }

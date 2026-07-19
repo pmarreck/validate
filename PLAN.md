@@ -44,6 +44,14 @@ at the bottom. Older completed sections were rolled up — full history lives in
         one-worker ReleaseFast mean was statistically neutral (804.8 ms →
         808.7 ms, 20 runs). Full `./test` and `./build` green.
         Completed 2026-07-17 19:35 EDT.
+  - [x] Pin `tiffz` M12 LERC support and exercise an independent LERC2 TIFF
+        through the existing full strip/tile decode path. Route its per-IFD
+        `Compression=34887` finding as the approved INFO observation, never a
+        WARN/FAIL; bundle lercz's Apache-2.0 text and Esri patent NOTICE.
+        Fresh signed one-worker ReleaseFast `bali.tif` timing: 790.6 ms ± 2.2
+        ms (20 runs), versus the prior comparable 808.7 ms sample; this is a
+        regression check, not a causal LERC speed claim.
+        Completed 2026-07-19 11:54 EDT.
   - [x] Explain in the README why corruption validation sometimes needs strict
         decoder rewrites/wrappers rather than reader-tolerant libraries, using
         the shared LZW repair and measured sensitivity change as evidence.
@@ -81,6 +89,15 @@ at the bottom. Older completed sections were rolled up — full history lives in
           signed artifact can be both executed and recorded rather than a
           PATH/default binary being measured by accident. Completed 2026-07-18
           20:00 EDT.
+    - [x] Replace flat, overwrite-prone sweep outputs with signed-binary
+          verified `runs/<run-id>/` raw TSVs and an append-only provenance
+          ledger. An interrupted run may only be resumed without replacing a
+          raw TSV; duplicate run IDs otherwise fail. Completed 2026-07-18
+          20:15 EDT.
+    - [x] Make the sweep writer create an immutable per-run raw-evidence
+          directory and append only complete, hash-bound provenance rows;
+          reject accidental run-ID reuse while allowing an interrupted run to
+          resume without replacing trials. Completed 2026-07-19 10:59 EDT.
 
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus

@@ -32,7 +32,7 @@
 
 			# Pre-fetched Zig dependencies (fixed-output derivation)
 			# This hash must be updated when build.zig.zon changes
-			zigDepsHash = "sha256-y4VN3Xx2wiUt9oZid/0FlYf5o4jODjcIe26t574HRSg=";
+			zigDepsHash = "sha256-MaVt/kdiagTsAO40R9WzMBioDqSCI6gOwkrS3Notw+M=";
 		in {
 			# Packages for Garnix/Nix builds
 			packages = forBuildSystems (buildSystem:

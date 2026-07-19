@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+if [ -n "${VALIDATE_LICENSES_DIR:-}" ]; then
+	LICENSES_DIR="$VALIDATE_LICENSES_DIR"
+elif [ -d "$ROOT/result/share/licenses/validate/LICENSES" ]; then
+	LICENSES_DIR="$ROOT/result/share/licenses/validate/LICENSES"
+else
+	LICENSES_DIR="$ROOT/LICENSES"
+fi
+NOTICES="${VALIDATE_NOTICES_FILE:-$(dirname "$LICENSES_DIR")/THIRD_PARTY_NOTICES.md}"
+LERCZ_TEXT="$LICENSES_DIR/lercz.txt"
+failures=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	failures=$((failures + 1))
+}
+
+if ! grep -Fq '| lercz | Apache-2.0 | `LICENSES/lercz.txt` |' "$NOTICES"; then
+	fail 'lercz must be indexed as the Apache-2.0 LERC decoder'
+fi
+if [ ! -f "$LERCZ_TEXT" ]; then
+	fail 'the LERC Apache-2.0 text and upstream NOTICE must be bundled'
+else
+	if ! grep -Fq 'Apache License - 2.0' "$LERCZ_TEXT"; then
+		fail 'the bundled lercz text must include Apache-2.0'
+	fi
+	if ! grep -Fq 'Copyright 2015-2026 Esri' "$LERCZ_TEXT"; then
+		fail 'the bundled lercz text must retain the upstream Esri NOTICE'
+	fi
+	if ! grep -Fq 'United States Patent 9,002,126' "$LERCZ_TEXT"; then
+		fail 'the bundled lercz text must retain the upstream patent notice'
+	fi
+fi
+
+if [ "$failures" -ne 0 ]; then
+	exit "$failures"
+fi
+
+printf 'PASS: LERC Apache-2.0 license and Esri NOTICE are bundled\n'

@@ -5119,9 +5119,12 @@ test "FormatValidator deep validates Brotli from ground truth" {
 
     const result = validator.validateFileDeep(allocator, path);
 
-    try std.testing.expectEqual(FileFormat.br, result.format);
-    try std.testing.expect(result.is_valid);
-    try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+	try std.testing.expectEqual(FileFormat.br, result.format);
+	try std.testing.expect(result.is_valid);
+	// A complete decode validates Brotli's structure, but raw Brotli has no
+	// checksum or equivalent integrity mechanism, so depth is intentionally
+	// capped at the format's structural ceiling.
+	try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
 }
 
 test "FormatValidator detects Brotli by extension" {
