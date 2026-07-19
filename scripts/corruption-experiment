@@ -201,29 +201,46 @@ local function wilson_ci(k, n)
 end
 
 -- ===== Validate =====
--- Locate validate binary: check ./zig-out/bin/ first, then PATH
+-- Locate validate binary: an explicit VALIDATE_BIN binds every trial to the
+-- signed artifact recorded by corruption-sweep; otherwise preserve the local
+-- developer fallback of ./zig-out/bin then PATH.
 local validate_bin
 do
-	local f = io.open("./zig-out/bin/validate", "r")
-	if f then
-		f:close()
-		validate_bin = "./zig-out/bin/validate"
-	else
-		-- Try PATH
-		local ret = os.execute("which validate > /dev/null 2>/dev/null")
-		if ret == 0 then
-			validate_bin = "validate"
-		else
-			io.stderr:write("Error: Cannot find validate binary (tried ./zig-out/bin/validate and PATH)\n")
+	local requested = os.getenv("VALIDATE_BIN")
+	if requested and #requested > 0 then
+		local f = io.open(requested, "r")
+		if not f then
+			io.stderr:write("Error: VALIDATE_BIN does not exist: " .. requested .. "\n")
 			os.exit(2)
 		end
+		f:close()
+		validate_bin = requested
+	else
+		local f = io.open("./zig-out/bin/validate", "r")
+		if f then
+			f:close()
+			validate_bin = "./zig-out/bin/validate"
+		else
+			-- Try PATH
+			local ret = os.execute("which validate > /dev/null 2>/dev/null")
+			if ret == 0 then
+				validate_bin = "validate"
+			else
+				io.stderr:write("Error: Cannot find validate binary (tried VALIDATE_BIN, ./zig-out/bin/validate, and PATH)\n")
+				os.exit(2)
+			end
+		end
 	end
+end
+
+local function shell_quote(value)
+	return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
 local function validate_file(path)
 	-- LuaJIT os.execute returns raw wait status: 0=success, 256=exit(1)
 	local ret = os.execute(string.format(
-		'%s "%s" > /dev/null 2>/dev/null', validate_bin, path))
+		"%s %s > /dev/null 2>/dev/null", shell_quote(validate_bin), shell_quote(path)))
 	return ret == 0 -- true = valid (NOT detected), false = detected
 end
 

@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# A coverage sweep must be able to bind its trials to one explicit signed
+# validator instead of whichever `validate` happens to be first on PATH.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+work="$(mktemp -d "${TMPDIR:-/tmp}/validate-corruption-experiment.XXXXXX")"
+
+fixture="$work/fixture.bin"
+validator="$work/signed-validate"
+out="$work/out.tsv"
+
+head -c 4096 /dev/zero > "$fixture"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$validator"
+chmod +x "$validator"
+
+VALIDATE_BIN="$validator" TMPDIR="$work" \
+	"$PROJECT_DIR/scripts/corruption-experiment" sniper "$fixture" \
+	--count 2 --seed 42 --no-stop --output "$out" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	echo "FAIL: corruption-experiment did not accept explicit VALIDATE_BIN" >&2
+	exit 1
+fi
+
+detected_rows="$(awk -F '\t' 'NR > 2 && $NF == "true" { count++ } END { print count + 0 }' "$out")"
+if [ "$detected_rows" -ne 2 ]; then
+	echo "FAIL: explicit validator was not used; expected two detected trials, got $detected_rows" >&2
+	exit 1
+fi
+
+echo "PASS: corruption-experiment binds trials to VALIDATE_BIN"

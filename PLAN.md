@@ -77,6 +77,10 @@ at the bottom. Older completed sections were rolled up — full history lives in
           policy, signed-binary identity/hash, source commit, target, host,
           and UTC timestamp; reject duplicate run/series/mode rows. Completed
           2026-07-18 19:54 EDT.
+    - [x] Bind each corruption trial to an explicit `VALIDATE_BIN`, so a
+          signed artifact can be both executed and recorded rather than a
+          PATH/default binary being measured by accident. Completed 2026-07-18
+          20:00 EDT.
 
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus
