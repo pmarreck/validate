@@ -1,3 +1,8 @@
+---
+description: "Reusing validation file descriptors requires explicit borrowed ownership."
+datetime: 2026-07-15T02:10:34-04:00 # America/New_York (EDT)
+tags: [reusing, validation, file, descriptors, explicit, borrowed, ownership]
+---
 Structural and deep validation can share a regular-file descriptor, but the
 source wrapper must explicitly distinguish borrowed and owning handle lifetime.
 

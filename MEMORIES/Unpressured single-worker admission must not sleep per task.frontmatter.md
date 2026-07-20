@@ -1,3 +1,8 @@
+---
+description: "Unpressured single worker admission must not sleep per task."
+datetime: 2026-07-15T08:41:31-04:00 # America/New_York (EDT)
+tags: [unpressured, single, worker, admission, sleep, task]
+---
 The RSS admission gate's 50ms sampling cadence prevents concurrent workers
 from busy-polling and remains necessary once pressure is observed. Applying it
 to an unpressured one-worker batch instead adds a deterministic sleep after

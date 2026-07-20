@@ -1,3 +1,8 @@
+---
+description: "LZW decoders must require explicit terminators."
+datetime: 2026-07-17T17:54:14-04:00 # America/New_York (EDT)
+tags: [lzw, decoders, explicit, terminators]
+---
 Validate contained three copies of its LZW state machine and tiffz contained a
 fourth adapted copy.  Their APIs/docs advertised incomplete-source errors, but
 each decode loop treated `reader.readCode(...) == null` as successful EOF even

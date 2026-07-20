@@ -1,3 +1,8 @@
+---
+description: "Zig 0.16 native addRunArtifact listener can false green."
+datetime: 2026-07-15T21:42:16-04:00 # America/New_York (EDT)
+tags: [zig, ziglang, native, addrunartifact, listener, false, green]
+---
 On Linux with Zig 0.16, `b.addRunArtifact(core_tests)` invokes the test binary
 through the `--listen=-` adapter. A passing direct test executable can then be
 reported as `failed command` while `zig build test` still exits zero, allowing

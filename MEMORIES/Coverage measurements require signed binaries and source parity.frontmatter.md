@@ -1,3 +1,8 @@
+---
+description: "Coverage measurements require signed binaries and source parity."
+datetime: 2026-07-17T13:35:59-04:00 # America/New_York (EDT)
+tags: [coverage, measurements, signed, binaries, source, parity]
+---
 Raw `zig build` output intentionally lacks Validate's integrity trailer and
 exits before scanning.  Subprocess corruption sweeps must therefore use the
 signed `./build` or `nix build` artifact; otherwise they can report artificial

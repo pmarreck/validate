@@ -1,5 +1,0 @@
-Peter's shell disables Bash pathname expansion globally. A `for test in
-tests/test_*.lua` loop consequently sees only the literal pattern and can
-report a green suite while running no tests. Site and release-publishing test
-drivers must discover files through `glob`, and should fail if a required test
-class has no discovered files.

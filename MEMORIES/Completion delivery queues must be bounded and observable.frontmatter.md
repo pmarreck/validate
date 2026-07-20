@@ -1,3 +1,8 @@
+---
+description: "Completion delivery queues must be bounded and observable."
+datetime: 2026-07-15T01:18:33-04:00 # America/New_York (EDT)
+tags: [completion, delivery, queues, bounded, observable]
+---
 Dedicated callback executors only solve worker-side I/O backpressure when their
 handoff queue is bounded and cannot allocate per completion. Preallocate a
 FIFO relative to worker width, block producers only when it fills, and expose

@@ -1,3 +1,8 @@
+---
+description: "Additive FFI diagnostics must not extend caller owned snapshots."
+datetime: 2026-07-15T01:30:56-04:00 # America/New_York (EDT)
+tags: [additive, ffi, diagnostics, extend, caller, owned, snapshots]
+---
 When a stable C ABI needs new optional telemetry, introduce a sibling struct
 and getter rather than appending fields to a caller-owned output struct.
 

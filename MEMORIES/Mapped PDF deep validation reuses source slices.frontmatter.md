@@ -1,3 +1,8 @@
+---
+description: "Mapped PDF deep validation reuses source slices."
+datetime: 2026-07-15T10:12:14-04:00 # America/New_York (EDT)
+tags: [mapped, pdf, deep, validation, reuses, source, slices]
+---
 When `FileSource.getMappedSlice()` is available, deep PDF validation must
 borrow that slice for the whole validation call instead of allocating and
 copying the complete document. The slice is valid for the `FileSource`
