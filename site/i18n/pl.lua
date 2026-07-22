@@ -1,6 +1,6 @@
 -- validate.pics site strings — Polish (LLM-translated)
 return {
-	meta_title = "Mecha Validate — integralność plików, której możesz zaufać",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Głęboka walidacja plików dla ponad 240 formatów. Wykrywaj uszkodzenia, weryfikuj integralność, ufaj swoim danym.",
 
 	nav_coverage = "Pokrycie wykrywania",

@@ -1,6 +1,6 @@
 -- validate.pics site strings — Albanian (LLM-translated)
 return {
-	meta_title = "Mecha Validate — integritet skedarësh që mund t'i besoni",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Validim i thellë skedarësh për mbi 240 formate. Zbuloni dëmtimet, verifikoni integritetin, besojuni të dhënave tuaja.",
 
 	nav_coverage = "Mbulimi i zbulimit",

@@ -1,6 +1,6 @@
 -- validate.pics site strings — Thai (LLM-translated)
 return {
-	meta_title = "Mecha Validate — ความสมบูรณ์ของไฟล์ที่คุณวางใจได้",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "การตรวจสอบไฟล์เชิงลึกสำหรับกว่า 240 รูปแบบ ตรวจจับความเสียหาย ยืนยันความสมบูรณ์ วางใจในข้อมูลของคุณ",
 
 	nav_coverage = "ความครอบคลุมการตรวจจับ",

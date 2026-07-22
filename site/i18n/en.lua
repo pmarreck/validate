@@ -3,7 +3,7 @@
 -- tests/test_site_i18n.lua enforces key parity (site is enforce-phase).
 -- Conventions: %s = substitution slot; keep "Mecha Validate" untranslated.
 return {
-	meta_title = "Mecha Validate — File Integrity You Can Trust",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Deep file validation for 240+ formats. Detect corruption, verify integrity, trust your data.",
 
 	nav_coverage = "Detection coverage",

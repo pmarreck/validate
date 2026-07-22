@@ -1,6 +1,6 @@
 -- validate.pics site strings — Pashto (LLM-translated)
 return {
-	meta_title = "Mecha Validate — د فایلونو بشپړتیا چې تاسو پرې باور کولای شئ",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "د 240+ فارمټونو لپاره د فایلونو ژوره اعتبارسنجي. خرابوالی ومومئ، بشپړتیا تایید کړئ، پر خپلو معلوماتو باور وکړئ.",
 
 	nav_coverage = "د کشف پوښښ",

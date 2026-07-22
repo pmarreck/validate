@@ -1,6 +1,6 @@
 -- validate.pics site strings — Yoruba (LLM-translated)
 return {
-	meta_title = "Mecha Validate — Ìpéye Fáìlì Tí O Lè Gbẹ́kẹ̀lé",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Àyẹ̀wò fáìlì jíjinlẹ̀ fún àwọn fọ́máàtì 240+. Ṣàwárí ìbàjẹ́, ṣàyẹ̀wò ìpéye, gbẹ́kẹ̀lé dátà rẹ.",
 
 	nav_coverage = "Ìwọ̀n ìṣàwárí",

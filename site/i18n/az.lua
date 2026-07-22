@@ -1,6 +1,6 @@
 -- validate.pics site strings — Azerbaijani (LLM-translated)
 return {
-	meta_title = "Mecha Validate — Etibar edə biləcəyiniz fayl bütövlüyü",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "240+ format üçün dərin fayl yoxlaması. Korlanmanı aşkarlayın, bütövlüyü təsdiqləyin, məlumatlarınıza etibar edin.",
 
 	nav_coverage = "Aşkarlama əhatəsi",

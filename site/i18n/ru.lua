@@ -1,6 +1,6 @@
 -- validate.pics site strings — Russian (LLM-translated)
 return {
-	meta_title = "Mecha Validate — целостность файлов, которой можно доверять",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Глубокая проверка файлов более чем 240 форматов. Находите повреждения, проверяйте целостность, доверяйте своим данным.",
 
 	nav_coverage = "Покрытие обнаружения",

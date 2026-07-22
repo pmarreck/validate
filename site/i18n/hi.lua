@@ -1,6 +1,6 @@
 -- validate.pics site strings — Hindi (LLM-translated)
 return {
-	meta_title = "Mecha Validate — फ़ाइल इंटीग्रिटी जिस पर आप भरोसा कर सकें",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "240+ फ़ॉर्मैट के लिए गहन फ़ाइल वैलिडेशन। करप्शन पकड़ें, इंटीग्रिटी सत्यापित करें, अपने डेटा पर भरोसा रखें।",
 
 	nav_coverage = "डिटेक्शन कवरेज",

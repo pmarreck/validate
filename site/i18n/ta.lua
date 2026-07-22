@@ -1,6 +1,6 @@
 -- validate.pics site strings — Tamil (LLM-translated)
 return {
-	meta_title = "Mecha Validate — நம்பத்தக்க கோப்பு ஒருமைப்பாடு",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "240+ வடிவங்களுக்கான ஆழமான கோப்புச் சரிபார்ப்பு. சிதைவைக் கண்டறியுங்கள், ஒருமைப்பாட்டை உறுதிப்படுத்துங்கள், உங்கள் தரவை நம்புங்கள்.",
 
 	nav_coverage = "கண்டறிதல் வரம்பு",

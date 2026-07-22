@@ -1,6 +1,6 @@
 -- validate.pics site strings — Filipino (LLM-translated)
 return {
-	meta_title = "Mecha Validate — Integridad ng File na Mapagkakatiwalaan",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Malalim na pag-validate ng file para sa 240+ na format. Tuklasin ang corruption, i-verify ang integridad, pagkatiwalaan ang iyong data.",
 
 	nav_coverage = "Saklaw ng deteksyon",

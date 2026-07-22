@@ -1,6 +1,6 @@
 -- validate.pics site strings — Finnish (LLM-translated)
 return {
-	meta_title = "Mecha Validate — tiedostojen eheys, johon voit luottaa",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Syvävalidointi yli 240 tiedostomuodolle. Havaitse korruptio, varmista eheys, luota dataasi.",
 
 	nav_coverage = "Havaintokattavuus",

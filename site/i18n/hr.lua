@@ -1,6 +1,6 @@
 -- validate.pics site strings — Croatian (LLM-translated)
 return {
-	meta_title = "Mecha Validate — integritet datoteka kojem možete vjerovati",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Dubinska provjera datoteka za više od 240 formata. Otkrijte oštećenja, provjerite integritet, vjerujte svojim podacima.",
 
 	nav_coverage = "Pokrivenost detekcije",

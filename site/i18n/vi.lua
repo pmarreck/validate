@@ -1,6 +1,6 @@
 -- validate.pics site strings — Vietnamese (LLM-translated)
 return {
-	meta_title = "Mecha Validate — Toàn vẹn tệp bạn có thể tin cậy",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Kiểm tra tệp chuyên sâu cho hơn 240 định dạng. Phát hiện hỏng hóc, xác minh tính toàn vẹn, tin tưởng dữ liệu của bạn.",
 
 	nav_coverage = "Phạm vi phát hiện",

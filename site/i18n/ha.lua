@@ -1,6 +1,6 @@
 -- validate.pics site strings — Hausa (LLM-translated)
 return {
-	meta_title = "Mecha Validate — Amincin Fayil da Za Ka Iya Dogara da Shi",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Zurfafan tantance fayiloli na nau'i fiye da 240. Gano lalacewa, tabbatar da aminci, ka amince da bayananka.",
 
 	nav_coverage = "Faɗin ganowa",

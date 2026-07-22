@@ -1,6 +1,6 @@
 -- validate.pics site strings — Chinese Traditional (LLM-translated)
 return {
-	meta_title = "Mecha Validate — 值得信賴的檔案完整性",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "為 240 多種格式提供深度檔案驗證。偵測損毀、驗證完整性、放心信任你的資料。",
 
 	nav_coverage = "偵測涵蓋率",

@@ -1,6 +1,6 @@
 -- validate.pics site strings — Icelandic (LLM-translated)
 return {
-	meta_title = "Mecha Validate — skráaheilindi sem þú getur treyst",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Djúp staðfesting skráa fyrir yfir 240 snið. Finndu skemmdir, staðfestu heilindi, treystu gögnunum þínum.",
 
 	nav_coverage = "Greiningarþekja",

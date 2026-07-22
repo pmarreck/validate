@@ -1,6 +1,6 @@
 -- validate.pics site strings — Urdu (LLM-translated)
 return {
-	meta_title = "Mecha Validate — فائل کی سالمیت جس پر آپ بھروسا کر سکیں",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "240+ فارمیٹس کے لیے گہری فائل توثیق۔ خرابی پکڑیں، سالمیت کی تصدیق کریں، اپنے ڈیٹا پر بھروسا کریں۔",
 
 	nav_coverage = "شناخت کی کوریج",

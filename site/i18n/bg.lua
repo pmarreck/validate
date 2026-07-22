@@ -1,6 +1,6 @@
 -- validate.pics site strings — Bulgarian (LLM-translated)
 return {
-	meta_title = "Mecha Validate — цялост на файловете, на която можете да се доверите",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Дълбока валидация на файлове за 240+ формата. Откривайте повреди, проверявайте целостта, доверявайте се на данните си.",
 
 	nav_coverage = "Покритие на откриването",

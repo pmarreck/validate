@@ -1,6 +1,6 @@
 -- validate.pics site strings — Arabic (LLM-translated)
 return {
-	meta_title = "Mecha Validate — سلامة ملفات يمكنك الوثوق بها",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "تحقّق عميق من الملفات لأكثر من 240 صيغة. اكتشف التلف، وتحقّق من السلامة، وثِق ببياناتك.",
 
 	nav_coverage = "تغطية الاكتشاف",

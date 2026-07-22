@@ -1,6 +1,6 @@
 -- validate.pics site strings — Swahili (LLM-translated)
 return {
-	meta_title = "Mecha Validate — Uadilifu wa Faili Unaoweza Kuamini",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Uthibitishaji wa kina wa faili kwa fomati zaidi ya 240. Gundua uharibifu, hakiki uadilifu, amini data yako.",
 
 	nav_coverage = "Upeo wa ugunduzi",

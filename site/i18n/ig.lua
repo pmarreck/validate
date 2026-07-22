@@ -1,6 +1,6 @@
 -- validate.pics site strings — Igbo (LLM-translated)
 return {
-	meta_title = "Mecha Validate — Izuoke Faịlụ Ị Nwere Ike Ịtụkwasị Obi",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Nyocha faịlụ miri emi maka ụdị 240+. Chọpụta mmebi, kwado izuoke, tụkwasị data gị obi.",
 
 	nav_coverage = "Mkpuchi nchọpụta",

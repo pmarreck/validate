@@ -1,6 +1,6 @@
 -- validate.pics site strings — Amharic (LLM-translated)
 return {
-	meta_title = "Mecha Validate — ሊታመን የሚችል የፋይል ትክክለኛነት",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "ለ240+ ቅርጸቶች ጥልቅ የፋይል ማረጋገጫ። ብልሽትን ይለዩ፣ ትክክለኛነትን ያረጋግጡ፣ ውሂብዎን ይመኑ።",
 
 	nav_coverage = "የመለየት ሽፋን",

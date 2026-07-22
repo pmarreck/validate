@@ -1,6 +1,6 @@
 -- validate.pics site strings — 한국어 (first-class, hand-translated)
 return {
-	meta_title = "Mecha Validate — 신뢰할 수 있는 파일 무결성 검증",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "240개 이상의 파일 형식을 심층 검증합니다. 손상을 감지하고, 무결성을 확인하고, 데이터를 신뢰하세요.",
 
 	nav_coverage = "탐지 커버리지",

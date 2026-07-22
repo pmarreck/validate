@@ -1,6 +1,6 @@
 -- validate.pics site strings — Romanian (LLM-translated)
 return {
-	meta_title = "Mecha Validate — integritate a fișierelor în care poți avea încredere",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Validare profundă a fișierelor pentru peste 240 de formate. Detectează coruperea, verifică integritatea, ai încredere în datele tale.",
 
 	nav_coverage = "Acoperirea detecției",

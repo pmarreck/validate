@@ -1,6 +1,6 @@
 -- validate.pics site strings — Bengali (LLM-translated)
 return {
-	meta_title = "Mecha Validate — ফাইলের অখণ্ডতা, যাতে আপনি ভরসা রাখতে পারেন",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "২৪০+ ফরম্যাটের জন্য গভীর ফাইল যাচাই। ক্ষতি শনাক্ত করুন, অখণ্ডতা যাচাই করুন, নিজের ডেটায় ভরসা রাখুন।",
 
 	nav_coverage = "শনাক্তকরণ কভারেজ",

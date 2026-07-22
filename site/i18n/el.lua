@@ -1,6 +1,6 @@
 -- validate.pics site strings — Greek (LLM-translated)
 return {
-	meta_title = "Mecha Validate — Ακεραιότητα αρχείων που μπορείτε να εμπιστευτείτε",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Βαθιά επικύρωση αρχείων για 240+ μορφές. Εντοπίστε αλλοιώσεις, επαληθεύστε την ακεραιότητα, εμπιστευτείτε τα δεδομένα σας.",
 
 	nav_coverage = "Κάλυψη ανίχνευσης",

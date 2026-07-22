@@ -1,6 +1,6 @@
 -- validate.pics site strings — 简体中文 (first-class, hand-translated)
 return {
-	meta_title = "Mecha Validate — 值得信赖的文件完整性验证",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "深度验证 240 多种文件格式。检测损坏、核验完整性、信任你的数据。",
 
 	nav_coverage = "检测覆盖率",

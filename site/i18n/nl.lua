@@ -1,6 +1,6 @@
 -- validate.pics site strings — Nederlands (first-class, hand-translated)
 return {
-	meta_title = "Mecha Validate — Bestandsintegriteit die je kunt vertrouwen",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Diepgaande validatie van 240+ bestandsformaten. Detecteer corruptie, verifieer integriteit, vertrouw je data.",
 
 	nav_coverage = "Detectiedekking",

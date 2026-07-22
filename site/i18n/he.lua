@@ -1,6 +1,6 @@
 -- validate.pics site strings — Hebrew (LLM-translated)
 return {
-	meta_title = "Mecha Validate — שלמות קבצים שאפשר לסמוך עליה",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "אימות קבצים מעמיק ליותר מ-240 פורמטים. גלו שיבושים, ודאו שלמות, סמכו על הנתונים שלכם.",
 
 	nav_coverage = "כיסוי זיהוי",

@@ -1,6 +1,6 @@
 -- validate.pics site strings — Hungarian (LLM-translated)
 return {
-	meta_title = "Mecha Validate — fájlintegritás, amiben megbízhatsz",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Mélyreható fájlellenőrzés több mint 240 formátumhoz. Fedezd fel a sérüléseket, ellenőrizd az integritást, bízz az adataidban.",
 
 	nav_coverage = "Észlelési lefedettség",

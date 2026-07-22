@@ -1,6 +1,6 @@
 -- validate.pics site strings — Khmer (LLM-translated)
 return {
-	meta_title = "Mecha Validate — ភាពត្រឹមត្រូវនៃឯកសារដែលអ្នកអាចទុកចិត្តបាន",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "ការផ្ទៀងផ្ទាត់ឯកសារយ៉ាងស៊ីជម្រៅសម្រាប់ទម្រង់ជាង 240។ រកឃើញការខូចខាត ផ្ទៀងផ្ទាត់ភាពត្រឹមត្រូវ ទុកចិត្តលើទិន្នន័យរបស់អ្នក។",
 
 	nav_coverage = "វិសាលភាពនៃការរកឃើញ",

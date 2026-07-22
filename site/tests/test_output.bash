@@ -35,6 +35,7 @@ fi
 # ── Root (en, x-default) ─────────────────────────────────────────
 IDX="$DOCS/index.html"
 assert_contains "$IDX" 'Mecha Validate' "root page rebranded"
+assert_contains "$IDX" '<title>Mecha Validate — File Integrity FTW</title>' "root title uses the canonical FTW tagline"
 assert_contains "$IDX" 'hreflang="x-default"' "x-default present"
 assert_contains "$IDX" '<html lang="en" dir="ltr">' "root lang/dir"
 assert_not_contains "$IDX" 'Validate — File Integrity You Can Trust</title><' "no stale title artifact"

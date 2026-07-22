@@ -1,6 +1,6 @@
 -- validate.pics site strings — Indonesian (LLM-translated)
 return {
-	meta_title = "Mecha Validate — Integritas File yang Bisa Anda Percaya",
+	meta_title = "Mecha Validate — File Integrity FTW",
 	meta_description = "Validasi file mendalam untuk 240+ format. Deteksi kerusakan, verifikasi integritas, percayai data Anda.",
 
 	nav_coverage = "Cakupan deteksi",
