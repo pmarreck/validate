@@ -98,6 +98,15 @@ at the bottom. Older completed sections were rolled up — full history lives in
           directory and append only complete, hash-bound provenance rows;
           reject accidental run-ID reuse while allowing an interrupted run to
           resume without replacing trials. Completed 2026-07-19 10:59 EDT.
+    - [x] **TDD remove byte-at-a-time signed-binary verification:** the
+          96.9 MB integrity preflight must stream the body excluding its
+          50-byte trailer, not issue one `dd bs=1` read per byte. Curiosity
+          poke: preserve exact trailer verification while using a
+          deterministic operation-level regression rather than a flaky timing
+          threshold. Discovered 2026-07-22 14:02 EDT; focused regression
+          and full `./test` green 2026-07-22 14:33 EDT. Measured clean
+          preflight: 517 ms, versus the prior byte-at-a-time implementation
+          still running after more than 2.5 minutes.
 
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus

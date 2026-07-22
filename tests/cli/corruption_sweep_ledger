@@ -11,19 +11,46 @@ corpus="$work/corpus"
 evidence="$work/evidence"
 binary="$work/validate"
 experiment="$work/fake-experiment"
+shim_bin="$work/shim-bin"
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$corpus/tiff"
+mkdir -p "$corpus/tiff" "$shim_bin"
 head -c 4096 /dev/zero > "$corpus/tiff/fixture.tif"
 
 # Make a syntactically signed but deliberately non-executable fixture. The
 # injected experiment records whether the sweep supplied this exact path; the
 # sweep itself must verify the integrity trailer before it will begin.
-printf '%s' 'fixture validate binary' > "$binary"
+# This deliberately exceeds the shim's small-read threshold below. The
+# signature verifier must stream this body in blocks; a `dd bs=1 count=...`
+# implementation turns a sweep preflight into one syscall per binary byte.
+head -c 8192 /dev/zero > "$binary"
 printf '%s' 'VALIDATE_INTEGRITY' >> "$binary"
 # `openssl` is already in the declared CLI shell; unlike `xxd`, it is not a
 # host-profile accident. Append the exact 32 raw SHA-256 bytes that the
 # integrity trailer contract expects.
-openssl dgst -sha256 -binary <(printf '%s' 'fixture validate binary') >> "$binary"
+openssl dgst -sha256 -binary < <(head -c 8192 /dev/zero) >> "$binary"
+
+# Reject only the known pathological operation: a body-sized byte-at-a-time
+# dd read. The 18-byte trailer marker read is intentionally allowed. This
+# makes the throughput requirement deterministic without a timing assertion.
+real_dd="$(command -v dd)"
+cat > "$shim_bin/dd" <<'EOF'
+#!/usr/bin/env bash
+set -u
+has_skip=0
+byte_read=0
+for arg in "$@"; do
+	case "$arg" in
+		skip=*) has_skip=1 ;;
+		bs=1) byte_read=1 ;;
+	esac
+done
+if [ "$has_skip" -eq 0 ] && [ "$byte_read" -eq 1 ]; then
+	echo "FAIL: corruption-sweep attempted a byte-at-a-time body hash" >&2
+	exit 97
+fi
+exec "$REAL_DD" "$@"
+EOF
+chmod +x "$shim_bin/dd"
 
 cat > "$experiment" <<'EOF'
 #!/usr/bin/env bash
@@ -55,10 +82,15 @@ VALIDATE_GROUND_TRUTH_DIR="$corpus" \
 	VALIDATE_COVERAGE_EVIDENCE_DIR="$evidence" \
 	VALIDATE_CORRUPTION_EXPERIMENT="$experiment" \
 	VALIDATE_SIGNED_BINARY="$binary" \
+	REAL_DD="$real_dd" PATH="$shim_bin:$PATH" \
 	"$PROJECT_DIR/scripts/corruption-sweep" --count 2 --seed 7 --run-id "dirty-source-must-refuse" >"$work/dirty-out" 2>"$work/dirty-err"
 dirty_rc=$?
 if [ "$dirty_rc" -eq 0 ]; then
 	echo "FAIL: sweep claimed HEAD provenance from a dirty tracked tree" >&2
+	exit 1
+fi
+if ! grep -Fq 'dirty tracked worktree' "$work/dirty-err"; then
+	echo "FAIL: dirty-source control did not reach the provenance guard: $(cat "$work/dirty-err")" >&2
 	exit 1
 fi
 
@@ -69,6 +101,7 @@ VALIDATE_GROUND_TRUTH_DIR="$corpus" \
 	VALIDATE_SOURCE_COMMIT="0123456789012345678901234567890123456789" \
 	VALIDATE_TARGET="x86_64-linux" \
 	VALIDATE_HOST="test-host" \
+	REAL_DD="$real_dd" PATH="$shim_bin:$PATH" \
 	"$PROJECT_DIR/scripts/corruption-sweep" --count 2 --seed 7 --run-id "$run_id" >"$work/out" 2>"$work/err"
 rc=$?
 if [ "$rc" -ne 0 ]; then
@@ -104,6 +137,7 @@ LUA
 
 VALIDATE_GROUND_TRUTH_DIR="$corpus" VALIDATE_COVERAGE_EVIDENCE_DIR="$evidence" \
 	VALIDATE_CORRUPTION_EXPERIMENT="$experiment" VALIDATE_SIGNED_BINARY="$binary" \
+	REAL_DD="$real_dd" PATH="$shim_bin:$PATH" \
 	"$PROJECT_DIR/scripts/corruption-sweep" --count 2 --seed 7 --run-id "$run_id" >"$work/retry-out" 2>"$work/retry-err"
 retry_rc=$?
 if [ "$retry_rc" -eq 0 ]; then

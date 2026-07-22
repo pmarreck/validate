@@ -75,13 +75,16 @@ verify_signed_binary() {
 		return 1
 	fi
 	body_size=$((size - 50))
-	marker="$(dd if="$SIGNED_BINARY" bs=1 skip="$body_size" count=18 2>/dev/null)"
+	# Read the fixed 50-byte trailer as a stream. In particular, do not use
+	# `dd bs=1 count=$body_size` to hash the body below: on a release-sized
+	# binary that turns evidence preflight into tens of millions of syscalls.
+	marker="$(tail -c 50 "$SIGNED_BINARY" | head -c 18)"
 	if [ "$marker" != "VALIDATE_INTEGRITY" ]; then
 		echo "ERROR: validator is unsigned (missing VALIDATE_INTEGRITY trailer): $SIGNED_BINARY" >&2
 		return 1
 	fi
 	expected_hex="$(tail -c 32 "$SIGNED_BINARY" | od -An -tx1 | tr -d '[:space:]')"
-	actual_hex="$(dd if="$SIGNED_BINARY" bs=1 count="$body_size" 2>/dev/null | sha256_stdin)"
+	actual_hex="$(head -c "$body_size" "$SIGNED_BINARY" | sha256_stdin)"
 	if [ "$expected_hex" != "$actual_hex" ]; then
 		echo "ERROR: validator integrity trailer does not match its body: $SIGNED_BINARY" >&2
 		return 1
