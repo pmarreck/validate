@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# TIFF has no intrinsic checksum over uncompressed samples. These five fixtures
+# deliberately change one RGB sample each, so this contract prevents them from
+# being scored as parser-corruption misses while proving the actual validator
+# accepts the complete, valid-but-different control set.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+VALIDATE="${VALIDATE_BIN:-$PROJECT_DIR/zig-out/bin/validate}"
+CORPUS="$PROJECT_DIR/ground_truth_examples"
+MANIFEST="$CORPUS/corrupted/tiff/fixture-classification.tsv"
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	exit 1
+}
+
+sha256_file() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	else
+		shasum -a 256 "$1" | awk '{print $1}'
+	fi
+}
+
+if [ ! -d "$CORPUS" ]; then
+	exit 77
+fi
+[ -x "$VALIDATE" ] || fail "validate binary not found: $VALIDATE"
+[ -f "$MANIFEST" ] || fail "missing TIFF fixture-classification manifest: $MANIFEST"
+
+expected_header=$'fixture_relpath\tfixture_sha256\tclassification\texpected_verdict\tparser_corruption_recall_eligible\tclean_fixture_relpath\tclean_fixture_sha256\tbyte_offset\tstrip_index\tx\ty\tchannel\toriginal_byte_hex\treplacement_byte_hex\treason\tprior_classification\tprior_expected_verdict'
+header="$(head -n 1 "$MANIFEST")"
+[ "$header" = "$expected_header" ] || fail "TIFF fixture-classification schema mismatch"
+
+declare -A expected_offset=(
+	[corrupted/tiff/rgb-3c-8b_corrupt_1.tiff]=31337
+	[corrupted/tiff/rgb-3c-8b_corrupt_2.tiff]=62674
+	[corrupted/tiff/rgb-3c-8b_corrupt_3.tiff]=22541
+	[corrupted/tiff/rgb-3c-8b_corrupt_4.tiff]=53878
+	[corrupted/tiff/rgb-3c-8b_corrupt_5.tiff]=13745
+)
+declare -A expected_strip=(
+	[corrupted/tiff/rgb-3c-8b_corrupt_1.tiff]=3
+	[corrupted/tiff/rgb-3c-8b_corrupt_2.tiff]=7
+	[corrupted/tiff/rgb-3c-8b_corrupt_3.tiff]=2
+	[corrupted/tiff/rgb-3c-8b_corrupt_4.tiff]=6
+	[corrupted/tiff/rgb-3c-8b_corrupt_5.tiff]=1
+)
+declare -A expected_x=(
+	[corrupted/tiff/rgb-3c-8b_corrupt_1.tiff]=81
+	[corrupted/tiff/rgb-3c-8b_corrupt_2.tiff]=7
+	[corrupted/tiff/rgb-3c-8b_corrupt_3.tiff]=132
+	[corrupted/tiff/rgb-3c-8b_corrupt_4.tiff]=58
+	[corrupted/tiff/rgb-3c-8b_corrupt_5.tiff]=26
+)
+declare -A expected_y=(
+	[corrupted/tiff/rgb-3c-8b_corrupt_1.tiff]=66
+	[corrupted/tiff/rgb-3c-8b_corrupt_2.tiff]=133
+	[corrupted/tiff/rgb-3c-8b_corrupt_3.tiff]=47
+	[corrupted/tiff/rgb-3c-8b_corrupt_4.tiff]=114
+	[corrupted/tiff/rgb-3c-8b_corrupt_5.tiff]=29
+)
+declare -A expected_channel=(
+	[corrupted/tiff/rgb-3c-8b_corrupt_1.tiff]=R
+	[corrupted/tiff/rgb-3c-8b_corrupt_2.tiff]=B
+	[corrupted/tiff/rgb-3c-8b_corrupt_3.tiff]=R
+	[corrupted/tiff/rgb-3c-8b_corrupt_4.tiff]=B
+	[corrupted/tiff/rgb-3c-8b_corrupt_5.tiff]=R
+)
+declare -A expected_original=(
+	[corrupted/tiff/rgb-3c-8b_corrupt_1.tiff]=83
+	[corrupted/tiff/rgb-3c-8b_corrupt_2.tiff]=A4
+	[corrupted/tiff/rgb-3c-8b_corrupt_3.tiff]=8D
+	[corrupted/tiff/rgb-3c-8b_corrupt_4.tiff]=02
+	[corrupted/tiff/rgb-3c-8b_corrupt_5.tiff]=C7
+)
+
+clean_sha256='21a751d4d6cad3903e4833db726c1b645fc88a1161efffcabaf9ce9c8c8f7084'
+declare -A seen=()
+rows=0
+prior_denominator=0
+current_denominator=0
+
+while IFS=$'\t' read -r fixture fixture_sha256 classification expected_verdict recall_eligible clean_fixture clean_sha256_in_manifest byte_offset strip_index x y channel original_hex replacement_hex reason prior_classification prior_expected_verdict; do
+	[ -n "$fixture" ] || continue
+	[ -n "${expected_offset[$fixture]:-}" ] || fail "unexpected TIFF control in manifest: $fixture"
+	[ -z "${seen[$fixture]:-}" ] || fail "duplicate TIFF control in manifest: $fixture"
+	seen[$fixture]=1
+	rows=$((rows + 1))
+
+	[ "$classification" = valid_modified_payload ] || fail "$fixture classification must be valid_modified_payload"
+	[ "$expected_verdict" = PASS ] || fail "$fixture expected verdict must be PASS"
+	[ "$recall_eligible" = false ] || fail "$fixture must be excluded from parser-corruption recall"
+	[ "$prior_classification" = corrupt ] || fail "$fixture must retain prior corrupt classification for audit"
+	[ "$prior_expected_verdict" = FAIL ] || fail "$fixture must retain prior FAIL expectation for audit"
+	[ "$clean_fixture" = tiff/rgb-3c-8b.tiff ] || fail "$fixture clean control mismatch"
+	[ "$clean_sha256_in_manifest" = "$clean_sha256" ] || fail "$fixture clean control SHA-256 mismatch"
+	[ "$byte_offset" = "${expected_offset[$fixture]}" ] || fail "$fixture byte offset mismatch"
+	[ "$strip_index" = "${expected_strip[$fixture]}" ] || fail "$fixture strip index mismatch"
+	[ "$x" = "${expected_x[$fixture]}" ] || fail "$fixture x coordinate mismatch"
+	[ "$y" = "${expected_y[$fixture]}" ] || fail "$fixture y coordinate mismatch"
+	[ "$channel" = "${expected_channel[$fixture]}" ] || fail "$fixture sample channel mismatch"
+	[ "$original_hex" = "${expected_original[$fixture]}" ] || fail "$fixture original byte mismatch"
+	[ "$replacement_hex" = 00 ] || fail "$fixture replacement byte must be 00"
+	[ -n "$reason" ] || fail "$fixture needs an explicit reclassification reason"
+
+	clean_path="$CORPUS/$clean_fixture"
+	fixture_path="$CORPUS/$fixture"
+	[ -f "$clean_path" ] || fail "missing clean TIFF control: $clean_path"
+	[ -f "$fixture_path" ] || fail "missing TIFF control fixture: $fixture_path"
+	[ "$(sha256_file "$clean_path")" = "$clean_sha256" ] || fail "clean TIFF control bytes changed"
+	[ "$(sha256_file "$fixture_path")" = "$fixture_sha256" ] || fail "$fixture SHA-256 does not match manifest"
+
+	# The raw-byte oracle proves this is exactly one changed uncompressed sample,
+	# rather than a loose label attached to an arbitrary corrupted file.
+	diff_output="$(cmp -l "$clean_path" "$fixture_path" 2>&1)"
+	diff_rc=$?
+	[ "$diff_rc" -eq 1 ] || fail "$fixture must differ from its clean control exactly as a cmp mismatch: $diff_output"
+	diff_count="$(printf '%s\n' "$diff_output" | awk 'NF { count++ } END { print count + 0 }')"
+	[ "$diff_count" -eq 1 ] || fail "$fixture must differ at exactly one byte (got $diff_count)"
+	read -r actual_position actual_old_octal actual_new_octal <<< "$diff_output"
+	[ "$actual_position" = "$((byte_offset + 1))" ] || fail "$fixture cmp offset does not match manifest"
+	expected_old_octal="$(printf '%o' "$((16#$original_hex))")"
+	expected_new_octal="$(printf '%o' "$((16#$replacement_hex))")"
+	[ "$actual_old_octal" = "$expected_old_octal" ] || fail "$fixture source byte does not match manifest"
+	[ "$actual_new_octal" = "$expected_new_octal" ] || fail "$fixture replacement byte does not match manifest"
+
+	# Exit 0 is the CLI's PASS verdict. Capture the combined diagnostic so the
+	# hermetic Nix shell stays clean while a failure remains actionable.
+	validate_output="$("$VALIDATE" --no-color "$fixture_path" 2>&1)"
+	validate_rc=$?
+	[ "$validate_rc" -eq 0 ] || fail "$fixture expected PASS, got exit $validate_rc: $validate_output"
+
+	prior_denominator=$((prior_denominator + 1))
+done < <(tail -n +2 "$MANIFEST")
+
+for fixture in "${!expected_offset[@]}"; do
+	[ "${seen[$fixture]:-}" = 1 ] || fail "missing TIFF control classification: $fixture"
+done
+[ "$rows" -eq 5 ] || fail "expected exactly five TIFF pixel controls, got $rows"
+[ "$prior_denominator" -eq 5 ] || fail "prior TIFF corruption denominator must remain auditable as 5"
+[ "$current_denominator" -eq 0 ] || fail "reclassified TIFF controls must leave a zero parser-corruption denominator"
+
+printf 'PASS: five TIFF valid_modified_payload controls PASS and move parser-corruption recall denominator 5 -> 0\n'

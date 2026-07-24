@@ -20,6 +20,7 @@ annotate=[
 	MEMORIES/LibRaw CDDL election preserves validate BSL GUI restrictions = Durable boundary: LibRaw CDDL static-link election leaves validate's BSL GUI/API restrictions intact.
 	MEMORIES/Live files that shrink during bounded slurp must fail before ownership narrows = Project lesson: bounded slurp must reject a live-file short read before an owning allocation slice is narrowed.
 	MEMORIES/Mapped PDF deep validation reuses source slices = Mapped-PDF no-copy lifetime and corruption-coverage acceptance lesson.
+	MEMORIES/Mutation manifests must replay fixture bytes.frontmatter.md = Durable TIFF corpus lesson: bind mutation annotations to fixture hashes and exact byte diffs.
 	MEMORIES/OS permission denials use access NOPERM as a non-failure outcome = Durable contract for classifying OS access denials as non-failing NOPERM FFI/CLI outcomes.
 	MEMORIES/Queue startup complexity needs an operation-count oracle = Project lesson: measure queue-selection complexity with actual-code comparator counts and preserve separate result-membership coverage.
 	MEMORIES/Reusing validation file descriptors requires explicit borrowed ownership = Project memory: shared structural/deep file descriptors require a non-closing borrowed source wrapper.
@@ -88,6 +89,7 @@ annotate=[
 	tests/cli/progress_size_lookup_scaling = Hermetic CLI complexity classifier: reordered 64-file run proves one O(1) progress-size probe and correct bytes per completion.
 	tests/cli/quickselect_scaling = Compiles the actual CLI selector with a test-only comparator counter; rejects 100k sorted/equal P90 quadratic regressions without timing.
 	tests/cli/quickselect_scaling.c = 100k ascending, descending, and uniform-size operation-count oracle for CLI three-way introselect correctness and complexity.
+	tests/cli/tiff_pixel_mutant_controls = Complete-set TIFF negative-control regression: hashes, one-byte diffs, PASS verdicts, and 5→0 recall audit.
 	tests/cli/utf8_required_formats_reject = MFIC set-classifier: every UTF-8-required format (json/csv/toml/xml/html) must reject invalid UTF-8 through the real CLI dispatch (caught CSV silent-pass)
 	tests/fixtures/process_allocator_policy.c = C fixture exercising CLI allocator policy as a set of environment cases
 ]
