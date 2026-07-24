@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Historical coverage raw TSVs remain useful baseline data, but their old
+# provenance cannot be upgraded by assertion. The importer must preserve exact
+# trial counts and raw hashes while marking unavailable binary/source/fixture
+# identities as unknown, and must never fabricate a missing bolter row.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+IMPORTER="$PROJECT_DIR/scripts/import-legacy-coverage-evidence"
+work="$(mktemp -d "${TMPDIR:-/tmp}/validate-historical-evidence.XXXXXX")"
+results="$work/results"
+rows="$work/report-rows.tsv"
+out="$work/historical-runs.tsv"
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$results/2026-05-27"
+
+printf '%s\n' \
+	'# seed=42 mode=sniper file=sample.foo filesize=4096' \
+	$'trial\tmode\tfilesize\toff\tbit\tspan\tdetected' \
+	$'0\tsniper\t4096\t11\t1\t1\ttrue' \
+	$'1\tsniper\t4096\t19\t0\t1\tfalse' \
+	> "$results/2026-05-27/foo_sniper.tsv"
+printf '%s\n' \
+	'# seed=42 mode=shotgun file=sample.foo filesize=4096' \
+	$'trial\tmode\tfilesize\toff\tbit\tspan\tdetected' \
+	$'0\tshotgun\t4096\t0\t0\t4096\ttrue' \
+	$'1\tshotgun\t4096\t0\t0\t4096\ttrue' \
+	> "$results/2026-05-27/foo_shotgun.tsv"
+printf '%s\n' \
+	'# seed=42 mode=bolter file=sample.empty filesize=512' \
+	$'trial\tmode\tfilesize\toff\tbit\tspan\tdetected' \
+	> "$results/2026-05-27/empty_bolter.tsv"
+# The legacy tree contains both dated and root-level byte-identical copies of
+# some runs.  They are one measurement, not two votes in the historical rate.
+cp "$results/2026-05-27/foo_sniper.tsv" "$results/foo_sniper.tsv"
+printf '%s\n' \
+	$'Synthetic\tFoo\tfoo\t2026-05-27\tfixture mechanism\tsample.foo\t4096\t50\t\t100' \
+	$'Synthetic\tEmpty\tempty\t2026-05-27\tno trial rows\tsample.empty\t512\t\t\t' \
+	> "$rows"
+
+"$IMPORTER" --results-dir "$results" --rows "$rows" --out "$out" \
+	--raw-relative-root 'docs/corruption-sweep-results'
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	echo "FAIL: historical importer exited $rc" >&2
+	exit 1
+fi
+
+header="$(head -n 1 "$out")"
+expected_header=$'date\trun_id\tseries\tmode\tseed\ttrials\tdetected\tmutation_policy\tfixture_name\tfixture_size\tfixture_sha256\traw_tsv_relpath\traw_tsv_sha256\tsigned_binary_sha256\tsource_commit\ttarget\thost\tprovenance'
+[ "$header" = "$expected_header" ] || { echo "FAIL: historical ledger schema mismatch" >&2; exit 1; }
+
+records="$(awk 'NR > 1 { count++ } END { print count + 0 }' "$out")"
+[ "$records" -eq 3 ] || { echo "FAIL: expected two measured rows plus one empty historical row, got $records" >&2; exit 1; }
+
+sniper="$(awk -F '\t' 'NR > 1 && $4 == "sniper" { print }' "$out")"
+[ -n "$sniper" ] || { echo "FAIL: historical sniper row missing" >&2; exit 1; }
+printf '%s\n' "$sniper" | awk -F '\t' '
+	$1 == "2026-05-27" && $3 == "foo/sample.foo/4096" && $5 == 42 &&
+	$6 == 2 && $7 == 1 && $8 == "single-bit-v1" && $11 == "unknown" &&
+	$14 == "unknown" && $15 == "unknown" && $16 == "unknown" && $17 == "unknown" &&
+	$18 == "historical-raw-incomplete" { ok = 1 }
+	END { exit ok ? 0 : 1 }
+' || { echo "FAIL: raw history lost evidence or invented provenance" >&2; exit 1; }
+
+expected_raw_hash="$(sha256sum "$results/2026-05-27/foo_sniper.tsv" | awk '{print $1}')"
+actual_raw_hash="$(printf '%s\n' "$sniper" | awk -F '\t' '{print $13}')"
+[ "$actual_raw_hash" = "$expected_raw_hash" ] || { echo "FAIL: historical row did not bind its raw TSV hash" >&2; exit 1; }
+
+actual_raw_path="$(printf '%s\n' "$sniper" | awk -F '\t' '{print $12}')"
+[ "$actual_raw_path" = 'docs/corruption-sweep-results/2026-05-27/foo_sniper.tsv' ] \
+	|| { echo "FAIL: duplicate historical raw TSV did not retain its canonical dated path" >&2; exit 1; }
+
+if awk -F '\t' 'NR > 1 && $3 == "foo/sample.foo/4096" && $4 == "bolter" { found = 1 } END { exit found ? 0 : 1 }' "$out"; then
+	echo "FAIL: importer fabricated an absent Foo bolter measurement" >&2
+	exit 1
+fi
+
+empty="$(awk -F '\t' 'NR > 1 && $3 == "empty/sample.empty/512" && $4 == "bolter" { print }' "$out")"
+printf '%s\n' "$empty" | awk -F '\t' '$6 == 0 && $7 == 0 && $18 == "historical-raw-empty" { ok = 1 } END { exit ok ? 0 : 1 }' \
+	|| { echo "FAIL: header-only historical TSV was not preserved as an explicit no-trial record" >&2; exit 1; }
+
+echo "PASS: historical raw coverage ledger preserves data without invented provenance"

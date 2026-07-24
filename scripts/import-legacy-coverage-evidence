@@ -1,0 +1,231 @@
+#!/usr/bin/env luajit
+-- import-legacy-coverage-evidence: preserve old corruption trial TSVs as
+-- historical data without inventing the signed-artifact provenance introduced
+-- by the current append-only coverage ledger.
+
+local function usage()
+	io.stderr:write([[Usage: import-legacy-coverage-evidence --results-dir DIR --rows FILE --out FILE
+       [--raw-relative-root PATH]
+
+Reads legacy *_sniper.tsv, *_bolter.tsv, and *_shotgun.tsv files and writes a
+typed historical ledger. Trial-derived fields are exact; unavailable fixture,
+binary, source, target, and host identities remain literally "unknown".
+]])
+end
+
+local options = {
+	results_dir = nil,
+	rows = nil,
+	out = nil,
+	raw_relative_root = "docs/corruption-sweep-results",
+}
+
+local index = 1
+while index <= #arg do
+	local option = arg[index]
+	if option == "--results-dir" then
+		options.results_dir = arg[index + 1]
+		index = index + 2
+	elseif option == "--rows" then
+		options.rows = arg[index + 1]
+		index = index + 2
+	elseif option == "--out" then
+		options.out = arg[index + 1]
+		index = index + 2
+	elseif option == "--raw-relative-root" then
+		options.raw_relative_root = arg[index + 1]
+		index = index + 2
+	elseif option == "-h" or option == "--help" then
+		usage()
+		os.exit(0)
+	else
+		io.stderr:write("ERROR: unknown argument: " .. tostring(option) .. "\n")
+		usage()
+		os.exit(2)
+	end
+end
+
+if not options.results_dir or not options.rows or not options.out then
+	io.stderr:write("ERROR: --results-dir, --rows, and --out are required\n")
+	usage()
+	os.exit(2)
+end
+
+local function fail(message)
+	io.stderr:write("ERROR: " .. message .. "\n")
+	os.exit(1)
+end
+
+local function shell_quote(value)
+	return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+local function split_tsv(line)
+	local cells, start = {}, 1
+	while true do
+		local separator = line:find("\t", start, true)
+		if not separator then
+			cells[#cells + 1] = line:sub(start)
+			return cells
+		end
+		cells[#cells + 1] = line:sub(start, separator - 1)
+		start = separator + 1
+	end
+end
+
+local function file_lines(path)
+	local file = io.open(path, "r")
+	if not file then fail("cannot open " .. path) end
+	local lines = {}
+	for line in file:lines() do lines[#lines + 1] = line end
+	file:close()
+	return lines
+end
+
+local function sha256_file(path)
+	local command = "sha256sum " .. shell_quote(path) .. " 2>/dev/null || shasum -a 256 " .. shell_quote(path)
+	local handle = io.popen(command, "r")
+	if not handle then fail("cannot hash " .. path) end
+	local output = handle:read("*l") or ""
+	local ok = handle:close()
+	local digest = output:match("^([0-9a-fA-F]+)%s")
+	if not ok or not digest or #digest ~= 64 then fail("cannot hash " .. path) end
+	return digest:lower()
+end
+
+local function legacy_dates(rows_path)
+	local dates = {}
+	for _, line in ipairs(file_lines(rows_path)) do
+		local cells = split_tsv(line)
+		local slug, date = cells[3], cells[4]
+		if slug and slug ~= "" and date and date:match("^%d%d%d%d%-%d%d%-%d%d$") then
+			dates[slug] = date
+		end
+	end
+	return dates
+end
+
+local mutation_policy = {
+	sniper = "single-bit-v1",
+	bolter = "contiguous-byte-span-v1",
+	shotgun = "random-4096-byte-overwrite-v1",
+}
+
+local function read_trial_tsv(path, expected_mode)
+	local lines = file_lines(path)
+	local header = lines[1] or ""
+	local seed = header:match("seed=(%d+)")
+	local mode = header:match("mode=([^%s]+)")
+	local fixture_name, fixture_size = header:match("file=(.-)%s+filesize=(%d+)%s*$")
+	if not seed or mode ~= expected_mode or not fixture_name or not fixture_size then
+		fail("unparseable legacy trial header: " .. path)
+	end
+
+	local trials, detected = 0, 0
+	for line_index = 2, #lines do
+		local line = lines[line_index]
+		if line ~= "" and not line:match("^trial\t") and not line:match("^#") then
+			local cells = split_tsv(line)
+			local result = cells[#cells]
+			if result ~= "true" and result ~= "false" then
+				fail("unparseable detection result in " .. path .. " line " .. line_index)
+			end
+			trials = trials + 1
+			if result == "true" then detected = detected + 1 end
+		end
+	end
+	return {
+		seed = tonumber(seed),
+		fixture_name = fixture_name,
+		fixture_size = tonumber(fixture_size),
+		trials = trials,
+		detected = detected,
+	}
+end
+
+local function legacy_files(results_dir)
+	local command = "find " .. shell_quote(results_dir) .. " -type f \\( -name '*_sniper.tsv' -o -name '*_bolter.tsv' -o -name '*_shotgun.tsv' \\) -print | LC_ALL=C sort"
+	local handle = io.popen(command, "r")
+	if not handle then fail("cannot enumerate " .. results_dir) end
+	local paths = {}
+	for path in handle:lines() do paths[#paths + 1] = path end
+	local ok = handle:close()
+	if not ok then fail("cannot enumerate " .. results_dir) end
+	return paths
+end
+
+local function parse_file_identity(path)
+	local basename = path:match("([^/]+)$") or path
+	local slug, mode = basename:match("^(.*)_(sniper)%.tsv$")
+	if not slug then slug, mode = basename:match("^(.*)_(bolter)%.tsv$") end
+	if not slug then slug, mode = basename:match("^(.*)_(shotgun)%.tsv$") end
+	if not slug or not mode then fail("cannot infer legacy series and mode from " .. path) end
+	return slug, mode
+end
+
+local function relative_to(path, root)
+	if path:sub(1, #root + 1) ~= root .. "/" then fail("path outside results dir: " .. path) end
+	return path:sub(#root + 2)
+end
+
+local function write_row(output, cells)
+	output:write(table.concat(cells, "\t"), "\n")
+end
+
+local dates = legacy_dates(options.rows)
+local records = {}
+local raw_measurements = {}
+for _, path in ipairs(legacy_files(options.results_dir)) do
+	local slug, mode = parse_file_identity(path)
+	local trial = read_trial_tsv(path, mode)
+	local relative_path = relative_to(path, options.results_dir)
+	local dated_path = relative_path:match("(%d%d%d%d%-%d%d%-%d%d)")
+	local date = dated_path or dates[slug] or "unknown"
+	local series = slug .. "/" .. trial.fixture_name .. "/" .. tostring(trial.fixture_size)
+	local raw_tsv_sha256 = sha256_file(path)
+	-- Root-level and date-directory copies can be byte-identical.  Collapse
+	-- only that exact measurement identity so copied files never double-count.
+	local raw_measurement_key = table.concat({ date, series, mode, raw_tsv_sha256 }, "\0")
+	if not raw_measurements[raw_measurement_key] then
+		raw_measurements[raw_measurement_key] = true
+		records[#records + 1] = {
+			date = date,
+			run_id = "legacy-" .. date .. "-" .. slug .. "-" .. raw_tsv_sha256:sub(1, 12),
+			series = series,
+			mode = mode,
+			seed = trial.seed,
+			trials = trial.trials,
+			detected = trial.detected,
+			mutation_policy = mutation_policy[mode],
+			fixture_name = trial.fixture_name,
+			fixture_size = trial.fixture_size,
+			raw_tsv_relpath = options.raw_relative_root .. "/" .. relative_path,
+			raw_tsv_sha256 = raw_tsv_sha256,
+			provenance = trial.trials == 0 and "historical-raw-empty" or "historical-raw-incomplete",
+		}
+	end
+end
+
+if #records == 0 then fail("no legacy trial TSVs under " .. options.results_dir) end
+table.sort(records, function(a, b)
+	local left = table.concat({ a.date, a.series, a.mode }, "\0")
+	local right = table.concat({ b.date, b.series, b.mode }, "\0")
+	return left < right
+end)
+
+local output = io.open(options.out, "w")
+if not output then fail("cannot write " .. options.out) end
+write_row(output, {
+	"date", "run_id", "series", "mode", "seed", "trials", "detected", "mutation_policy",
+	"fixture_name", "fixture_size", "fixture_sha256", "raw_tsv_relpath", "raw_tsv_sha256",
+	"signed_binary_sha256", "source_commit", "target", "host", "provenance",
+})
+for _, record in ipairs(records) do
+	write_row(output, {
+		record.date, record.run_id, record.series, record.mode, tostring(record.seed),
+		tostring(record.trials), tostring(record.detected), record.mutation_policy,
+		record.fixture_name, tostring(record.fixture_size), "unknown", record.raw_tsv_relpath,
+		record.raw_tsv_sha256, "unknown", "unknown", "unknown", "unknown", record.provenance,
+	})
+end
+output:close()

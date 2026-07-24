@@ -107,6 +107,22 @@ at the bottom. Older completed sections were rolled up — full history lives in
           and full `./test` green 2026-07-22 14:33 EDT. Measured clean
           preflight: 517 ms, versus the prior byte-at-a-time implementation
           still running after more than 2.5 minutes.
+    - [ ] **TDD preserve historical raw coverage measurements:** import every
+          recoverable legacy raw TSV into a separately typed historical ledger
+          with exact rate/seed/trial/raw-hash fields and explicit unknown
+          artifact/source/host/fixture-hash provenance. Render it as a dated
+          baseline, including honestly missing bolter cells, never as an
+          equivalent signed-current measurement. Curiosity poke: a reused
+          filename or changed fixture must start a distinct series rather than
+          fabricate a performance or sensitivity delta.
+        - [x] Recover and reproducibly import 655 unique legacy raw
+              measurements: 654 trial-bearing and one explicit no-trials row.
+              Exact root/date-directory copies are deduplicated only when their
+              date, series, mode, and raw SHA-256 agree; all absent provenance
+              remains literal `unknown`. Completed 2026-07-22 16:53 EDT.
+        - [ ] Render the typed historical ledger as a dated baseline with
+              `n/a` for absent mechanisms and no comparison delta unless the
+              current signed fixture and mutation policy are comparable.
 
 - [x] **Remeasure and, if needed, deepen TIFF validation:** establish current
       sniper/bolter/shotgun rates against the published `pc260001.tif` corpus
@@ -645,6 +661,14 @@ Step-by-step queue (in order, easiest / highest-ROI first):
   thread-budget fix. May still be slow due to repeated full xref+stream
   resolution per round — caching the structural parse and only re-decoding
   images would cut cost.
+- [ ] **Profile strict UTF-8 SIMD fast path.** Evaluate simdutf-style
+  ASCII/UTF-8 validation only after recording representative text-validation
+  CPU profiles. A SIMD acceptance may skip the scalar validator; every SIMD
+  rejection must replay the existing scalar path to retain exact first-error
+  offsets and Unicode-warning semantics. Differential malformed-input tests
+  and scalar-vs-SIMD benchmarks are both ship gates. Curiosity poke: files
+  with warning-worthy but valid Unicode must never become a fast-path blind
+  spot.
 - [ ] **Sparkline heatmap mode.** `--heatmap-style {grid|sparkline|none}` —
   one row of unicode block-elements per file, more compact than the grid for
   terminals with limited vertical space.

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# The committed historical ledger is a reproducible transcription of legacy raw
+# trials.  It must never drift from those inputs or silently turn a zero-trial
+# file into a measured zero-percent rate.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+IMPORTER="$PROJECT_DIR/scripts/import-legacy-coverage-evidence"
+CANONICAL="$PROJECT_DIR/docs/coverage-evidence/historical-raw-runs.tsv"
+work="$(mktemp -d "${TMPDIR:-/tmp}/validate-historical-dataset.XXXXXX")"
+actual="$work/historical-raw-runs.tsv"
+trap 'rm -rf "$work"' EXIT
+
+"$IMPORTER" \
+	--results-dir "$PROJECT_DIR/docs/corruption-sweep-results" \
+	--rows "$PROJECT_DIR/docs/corruption-sweep-results/generated/report-rows.tsv" \
+	--out "$actual" \
+	--raw-relative-root 'docs/corruption-sweep-results'
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	echo "FAIL: historical importer exited $rc" >&2
+	exit 1
+fi
+
+if ! cmp -s "$CANONICAL" "$actual"; then
+	echo "FAIL: committed historical ledger differs from reproducible raw import" >&2
+	exit 1
+fi
+
+records="$(awk 'NR > 1 { count++ } END { print count + 0 }' "$actual")"
+[ "$records" -eq 655 ] || { echo "FAIL: expected 655 unique historical records, got $records" >&2; exit 1; }
+
+empty="$(awk -F '\t' 'NR > 1 && $18 == "historical-raw-empty" { count++ } END { print count + 0 }' "$actual")"
+[ "$empty" -eq 1 ] || { echo "FAIL: expected one explicit no-trial historical record, got $empty" >&2; exit 1; }
+
+echo "PASS: committed historical coverage ledger reproduces legacy raw evidence"
