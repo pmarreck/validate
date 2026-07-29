@@ -327,7 +327,22 @@
 							echo "test-discovery floor: $imp module imports, $decl test declarations"
 							if [ "$imp" -lt 140 ]; then echo "FAIL: test-block module imports ($imp) < 140 — modules dropped from discovery"; exit 1; fi
 							if [ "$decl" -lt 2000 ]; then echo "FAIL: test declarations ($decl) < 2000 — tests deleted/disabled"; exit 1; fi
-							timeout 1800 zig build $JPEGZ_OPTS test 2>&1 || {
+							# FLEET FLOOR — tests run ReleaseSafe (fleet finding 2026-07-01,
+							# adopted fleet-wide 2026-07-29 on Peter's instruction).
+							# build.zig uses standardOptimizeOption, which defaults to Debug,
+							# so tests ran Debug: safety checks were ON (good) but
+							# -fsanitize=function was OFF, since only Release modes include it.
+							# Neither Debug nor ReleaseFast alone enables the whole check set.
+							# ReleaseSafe keeps the safety checks AND the sanitizer, and is
+							# optimized — so this should also be faster than Debug was.
+							#
+							# Set HERE, not as a per-module .optimize in build.zig: Zig honours
+							# per-module optimize, so pinning only the test module would leave
+							# imported library code at its own mode. The command line flips the
+							# entire test compilation in one shot.
+							#
+							# Shipped artifact stays ReleaseFast; fuzz already uses ReleaseSafe.
+							timeout 1800 zig build $JPEGZ_OPTS test -Doptimize=ReleaseSafe 2>&1 || {
 							  echo "Tests timed out or failed after 30 minutes"
 							  exit 1
 							}
