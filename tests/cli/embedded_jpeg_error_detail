@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Embedded-JPEG error detail: when a camera RAW's embedded preview JPEG is
+# corrupt, validate must surface jpegz's SPECIFIC cause (e.g. bad marker /
+# Huffman / SOF), not a generic "embedded preview JPEG corrupt".
+#
+# Root cause of the gap (2026-07-30): the RAW/DNG deep validators called
+# `validateJpegBufferForDng() bool`, which discards the `error_message` that
+# `jpeg_validator.validateJpegDeepFromBuffer` (→ jpegz) already produces. Peter:
+# "make sure ... both return good error data."
+#
+# Classifier over a set: a CLEAN preview must PASS (no false positive); a
+# STRUCTURALLY corrupt preview must FAIL *and* name a specific JPEG defect.
+set -u
+
+BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
+if [[ ! -x "$BIN" && -x "./zig-out/bin/validate.exe" ]]; then BIN="./zig-out/bin/validate.exe"; fi
+if [[ ! -x "$BIN" ]]; then echo "FAIL: validate binary not found at $BIN"; exit 1; fi
+
+. "$(dirname "$0")/_lib.sh"
+ARW="ground_truth_examples/arw/sony_ilce_7s.arw"
+skip_if_missing "$ARW"
+
+PASS=0; FAIL=0
+pass() { printf '  PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
+fail() { printf 'FAIL: %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_embjpeg.XXXXXX")"
+trap 'mv "$tmpdir" ~/.Trash/ 2>/dev/null || rm -rf "$tmpdir" 2>/dev/null' EXIT
+
+# Specific jpegz cause vocabulary (findingCodeMessage in jpeg_validator.zig).
+# NONE of these tokens appear in the generic fallbacks
+# ("embedded preview JPEG corrupt" / "DNG: embedded preview image corrupt").
+CAUSE_RE='[Hh]uffman|marker|SOF|SOS|quantization|precision|entropy|restart|DCT|arithmetic|predictor|SOI|EOI|truncated|codestream'
+
+# Merge stderr: OK verdicts print to stdout, but FAIL/WARN print to stderr
+# (Peter's CLI convention — metadata/failures to stderr).
+verdict_line() { MUTE_DEBUG_STATUS=1 "$BIN" --no-color "$1" 2>&1 | grep -aE 'OK|WARN|FAIL|INFO' | head -1; }
+
+# 1) Clean ARW must PASS (no false positive on a valid preview).
+clean_v="$(verdict_line "$ARW")"
+if grep -qaE 'OK|WARN|INFO' <<<"$clean_v" && ! grep -qa 'FAIL' <<<"$clean_v"; then
+	pass "clean ARW preview accepted (no false positive)"
+else
+	fail "clean ARW unexpectedly rejected: $clean_v"
+fi
+
+# 2) Structurally corrupt the big embedded preview's header. ARW's full-size
+#    preview SOI is at 0x232a2 (144034; independently confirmed by jpegz). 64
+#    bytes of 0xFF just past the SOI wreck the marker structure -> jpegz fails.
+corrupt="$tmpdir/arw_corrupt_preview.arw"
+cp "$ARW" "$corrupt"
+printf '%.0s\xFF' $(seq 1 64) | dd of="$corrupt" bs=1 seek=$((144034 + 6)) count=64 conv=notrunc status=none 2>/dev/null
+bad_v="$(verdict_line "$corrupt")"
+
+# 2a) It must be DETECTED (self-checks the fixture recipe; fails loudly if the
+#     preview offset ever drifts).
+if grep -qa 'FAIL' <<<"$bad_v"; then
+	pass "corrupt ARW preview detected (FAIL)"
+else
+	fail "corrupt ARW preview NOT detected: $bad_v"
+fi
+
+# 2b) The FAIL must name a SPECIFIC jpegz cause, not the generic phrase.
+if grep -qaE "$CAUSE_RE" <<<"$bad_v"; then
+	pass "FAIL names a specific jpegz cause: $bad_v"
+else
+	fail "FAIL lacks specific jpegz cause (error detail swallowed): $bad_v"
+fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"

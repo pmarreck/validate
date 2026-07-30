@@ -2546,8 +2546,12 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
             // sensor-data false positives that killed a prior attempt.
             if (findTiffPreviewLocation(buffer, format)) |loc| {
                 const preview_bytes = buffer[@intCast(loc.offset) .. @intCast(loc.offset + loc.length)];
-                if (!validateJpegBufferForDng(preview_bytes)) {
-                    return ValidationResult.invalidWithDepth(format, "embedded preview JPEG corrupt", .full);
+                const preview_check = jpeg_validator.validateJpegDeepFromBuffer(preview_bytes);
+                if (!preview_check.valid) {
+                    // Surface jpegz's specific cause (a 'static message) rather than a
+                    // generic phrase. The old validateJpegBufferForDng() collapsed the
+                    // result to a bool and discarded error_message.
+                    return ValidationResult.invalidWithDepth(format, preview_check.error_message orelse "embedded preview JPEG corrupt", .full);
                 }
             }
             return ValidationResult.okWithDepth(format, .full);
@@ -2740,6 +2744,7 @@ pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResu
     // We fail only on corrupt previews; warn on semantic map issues
     var preview_count: usize = 0;
     var preview_valid: usize = 0;
+    var first_preview_error: ?[]const u8 = null;
     var semantic_count: usize = 0;
     var semantic_valid: usize = 0;
     var i: usize = 0;
@@ -2798,10 +2803,13 @@ pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResu
                             } else {
                                 // Preview JPEG (baseline/progressive)
                                 preview_count += 1;
-                                if (validateJpegBufferForDng(jpeg_data)) {
+                                const preview_check = jpeg_validator.validateJpegDeepFromBuffer(jpeg_data);
+                                if (preview_check.valid) {
                                     preview_valid += 1;
                                     if (debug) std.debug.print("  Preview #{d} @ offset {d}: {d} bytes, VALID\n", .{ preview_count, i, jpeg_data.len });
                                 } else {
+                                    // Keep the first preview's specific jpegz cause for the verdict.
+                                    if (first_preview_error == null) first_preview_error = preview_check.error_message;
                                     if (debug) std.debug.print("  Preview #{d} @ offset {d}: {d} bytes, INVALID\n", .{ preview_count, i, jpeg_data.len });
                                 }
                             }
@@ -2839,8 +2847,9 @@ pub fn validateDngDeep(allocator: Allocator, source: *FileSource) ValidationResu
     }
 
     if (preview_count > 0 and preview_valid < preview_count) {
-        // Corrupt preview JPEG - this is a failure
-        return ValidationResult.invalidWithDepth(.dng, "DNG: embedded preview image corrupt", .full);
+        // Corrupt preview JPEG - this is a failure. Surface jpegz's specific
+        // cause (a 'static message) when we captured one during the scan.
+        return ValidationResult.invalidWithDepth(.dng, first_preview_error orelse "DNG: embedded preview image corrupt", .full);
     }
 
     // Semantic map tiles (10-bit lossless JPEG, Apple iPhone DNG 1.6 feature)
