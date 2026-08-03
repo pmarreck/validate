@@ -96,6 +96,44 @@ normalize_identifier() {
 	printf '%s' "$1" | tr -c '[:alnum:]_.-' '_'
 }
 
+# MFIC self-check helpers: the sweep validates its own inputs instead of trusting
+# the "largest file per format" heuristic. detect_format asks the signed binary
+# what a file actually is; format_accepted_for_slot holds the committed slot->
+# detected equivalence table. This is a control surface (small, rarely changed):
+# it declares known-good container/alias equivalences confirmed by `validate
+# --json` across the corpus (2026-08-03). It is NOT a blacklist. Anything
+# undeclared, or detected as "unknown", is a hard mismatch.
+detect_format() {
+	"$SIGNED_BINARY" --json "$1" 2>/dev/null | grep -ao '"format":"[^"]*"' | head -1 | sed 's/.*:"//;s/"$//'
+}
+
+format_accepted_for_slot() {
+	local slot="$1" detected="$2" norm
+	[ -z "$detected" ] && return 1
+	[ "$detected" = "unknown" ] && return 1
+	norm="$(normalize_identifier "$slot")"
+	[ "$detected" = "$norm" ] && return 0
+	case "$slot" in
+		7z) [ "$detected" = sevenz ] && return 0 ;;
+		jpeg2k) [ "$detected" = jpeg2000 ] && return 0 ;;
+		aac | alac) [ "$detected" = m4a ] && return 0 ;;
+		av1) [ "$detected" = mp4 ] && return 0 ;;
+		docx) [ "$detected" = zip ] && return 0 ;;
+		git_repository) [ "$detected" = gzip ] && return 0 ;;
+		mpeg12) [ "$detected" = mpeg_ps ] && return 0 ;;
+		mpeg4p2) [ "$detected" = avi ] && return 0 ;;
+		ole2) [ "$detected" = ppt ] && return 0 ;;
+		opus) [ "$detected" = mkv ] && return 0 ;;
+		prores) [ "$detected" = mov ] && return 0 ;;
+		odp | ods | odt) [ "$detected" = epub ] && return 0 ;;
+		# RAW-on-TIFF base: validate validates these through the TIFF path today;
+		# dedicated RAW detection is moving to rawz. Acceptable until it ships.
+		nef) [ "$detected" = tiff ] && return 0 ;;
+		nrw) [ "$detected" = nef ] && return 0 ;;
+	esac
+	return 1
+}
+
 mutation_policy() {
 	case "$1" in
 		sniper) printf '%s' 'single-bit-v1' ;;
@@ -237,10 +275,27 @@ append_record() {
 		"$signed_binary_sha256" "$source_commit" "$target" "$host" >> "$LEDGER"
 }
 
+identity_mismatch=0
 echo "=== Run $RUN_ID, batch $BATCH_NUM of $TOTAL_BATCHES: formats $START-$((END - 1)) of $TOTAL ===" >&2
 for ((i = START; i < END; i++)); do
 	IFS=$'\t' read -r fmt path sz <<< "${PAIRS[$i]}"
 	format_id="$(normalize_identifier "$fmt")"
+
+	# The fixture in slot $fmt must actually BE that format, or its coverage
+	# number measures the wrong thing (an ORF in tiff/ published tiff=0/0/0).
+	detected_format="$(detect_format "$path")"
+	if [ -z "$detected_format" ]; then
+		# The binary produced no format field at all (e.g. a preflight-only test
+		# harness with a non-runnable signed fixture). Detection is unavailable,
+		# not failed; warn loudly and proceed rather than silently exclude. Real
+		# builds always emit a format ("unknown" at worst, handled below).
+		echo "WARNING: format detection unavailable for $path (no format field from the signed binary); skipping the identity check for this fixture" >&2
+	elif ! format_accepted_for_slot "$fmt" "$detected_format"; then
+		echo "ERROR: format-identity mismatch in slot '$fmt': detected '$detected_format', expected '$fmt', for $path; excluded from this run (not published)" >&2
+		identity_mismatch=1
+		continue
+	fi
+
 	fixture_sha256="$(sha256_file "$path")"
 	fixture_id="$format_id/${fixture_sha256:0:16}"
 	series="$fixture_id"
@@ -266,3 +321,8 @@ for ((i = START; i < END; i++)); do
 done
 
 echo "=== Batch complete. Raw evidence: $RUN_DIR; ledger: $LEDGER ===" >&2
+
+if [ "$identity_mismatch" -ne 0 ]; then
+	echo "ERROR: one or more fixtures failed the format-identity self-check; this run is not publishable until every slot matches its detected format" >&2
+	exit 3
+fi

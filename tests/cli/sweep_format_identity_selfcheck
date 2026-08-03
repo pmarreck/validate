@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# MFIC self-check on the sweep harness itself: a fixture whose DETECTED format
+# does not match its corpus slot is a broken input, not tolerable coverage. The
+# sweep must ERROR loudly and EXCLUDE that fixture from the published ledger,
+# rather than trusting the "largest file per format" heuristic.
+#
+# Concrete trap this guards (Einstein 2026-08-02, Peter's ruling): pc260001.tif
+# lives in the tiff/ slot but validate detects it as ORF, so the old sweep
+# published tiff = 0/0/0 measuring the wrong format. A control exists to catch
+# exactly this confidently-wrong number.
+#
+# Witnessed-red: without the self-check the sweep records the ORF fixture under
+# the tiff slot with no error. With it, the sweep errors and omits that row while
+# the correctly-slotted control still records.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+. "$SCRIPT_DIR/_lib.sh"
+
+REAL_BIN="${VALIDATE_BIN:-$PROJECT_DIR/zig-out/bin/validate}"
+[ -x "$REAL_BIN" ] || { echo "SKIP: signed validate binary not built at $REAL_BIN (run ./build)"; exit 77; }
+MISFILE="$PROJECT_DIR/ground_truth_examples/tiff/pc260001.tif"   # detected: orf
+CONTROL="$PROJECT_DIR/ground_truth_examples/png/w3c_nurbcup.png" # detected: png
+skip_if_missing "$MISFILE" "$CONTROL"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/validate-sweep-identity.XXXXXX")"
+trap 'mv "$work" ~/.Trash/ 2>/dev/null || rm -rf "$work" 2>/dev/null' EXIT
+corpus="$work/corpus"; evidence="$work/evidence"; experiment="$work/fake-experiment"
+mkdir -p "$corpus/tiff" "$corpus/png"
+cp "$MISFILE" "$corpus/tiff/pc260001.tif"   # ORF sitting in the tiff slot
+cp "$CONTROL" "$corpus/png/control.png"     # correctly-slotted control
+
+# Fast fake experiment: the format-identity check runs during fixture selection,
+# independent of trial measurement, so trial content is irrelevant here.
+cat > "$experiment" <<'EOF'
+#!/usr/bin/env bash
+set -u
+mode="$1"; input="$2"; shift 2; out=""
+while [ "$#" -gt 0 ]; do case "$1" in --output) out="$2"; shift 2 ;; *) shift ;; esac; done
+[ -n "$out" ] || exit 2
+printf '# seed=42 mode=%s file=%s filesize=4096\n' "$mode" "$(basename "$input")" > "$out"
+printf 'trial\tmode\tfilesize\toff\tbit\tspan\tdetected\n' >> "$out"
+printf '0\t%s\t4096\t0\t0\t1\ttrue\n' "$mode" >> "$out"
+EOF
+chmod +x "$experiment"
+
+out="$work/out"; err="$work/err"
+VALIDATE_GROUND_TRUTH_DIR="$corpus" \
+	VALIDATE_COVERAGE_EVIDENCE_DIR="$evidence" \
+	VALIDATE_CORRUPTION_EXPERIMENT="$experiment" \
+	VALIDATE_SIGNED_BINARY="$REAL_BIN" \
+	VALIDATE_SOURCE_COMMIT="0123456789012345678901234567890123456789" \
+	VALIDATE_TARGET="x86_64-linux" VALIDATE_HOST="test-host" \
+	"$PROJECT_DIR/scripts/corruption-sweep" --count 1 --run-id "identity-selfcheck" >"$out" 2>"$err"
+rc=$?
+
+PASS=0; FAIL=0
+pass() { printf '  PASS: %s\n' "$1"; PASS=$((PASS + 1)); }
+fail() { printf 'FAIL: %s\n' "$1" >&2; FAIL=$((FAIL + 1)); }
+
+# 1) A loud format-mismatch ERROR naming the slot and the detected format.
+if grep -qaiE 'format.*mismatch|detected.*format|expected .*tiff.*(got|detected).*orf|orf.*(expected|slot).*tiff' "$err"; then
+	pass "emitted a format-identity ERROR for the tiff/orf mismatch"
+else
+	fail "no format-identity ERROR emitted (self-check absent?): $(tr '\n' ' ' <"$err" | tail -c 300)"
+fi
+
+# 2) Hard error: nonzero exit so publication/CI cannot ignore it.
+if [ "$rc" -ne 0 ]; then pass "sweep exited nonzero on format mismatch (rc=$rc)"; else fail "sweep exited 0 despite a format mismatch"; fi
+
+ledger="$evidence/runs.tsv"
+# 3) The correctly-slotted control still recorded.
+if [ -f "$ledger" ] && grep -qaE '(^|	)png/' "$ledger"; then pass "control png fixture recorded in ledger"; else fail "control png fixture missing from ledger"; fi
+# 4) The misfiled ORF-in-tiff fixture excluded from the published ledger.
+if [ ! -f "$ledger" ] || ! grep -qaE '(^|	)tiff/' "$ledger"; then pass "misfiled tiff/orf fixture excluded from ledger"; else fail "misfiled tiff/orf fixture was published under the tiff slot"; fi
+
+echo ""
+echo "Results: $PASS passed, $FAIL failed"
+exit "$FAIL"
