@@ -1,1 +1,1 @@
-../Obsidian Vaults/Peter Marreck/RULES.md
+../Obsidian Vaults/Peter Marreck/VALIDATION CATEGORY RULES.md

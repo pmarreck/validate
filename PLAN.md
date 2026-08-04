@@ -14,6 +14,17 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [ ] **Drive the four image-parser dependencies to 1.0:** execute
+      [`docs/IMAGE_PARSER_1_0_MASTER_PLAN.md`](docs/IMAGE_PARSER_1_0_MASTER_PLAN.md)
+      for `tiffz`, `libjxlz`, `jp2z`, and `jpegz`. Library correctness,
+      strict findings, bounded embedded inputs, and honest corpus matrices are
+      mandatory; parser CLIs may be deferred. Current red flags include TIFF
+      rejecting 5/15 labeled-good files, jp2z only 22/57 byte-exact
+      conformance fixtures, and libjxlz lacking a strict validation API.
+      Curiosity poke: never improve “corrupt detection” by rejecting valid or
+      unsupported-valid files, and never call valid-but-different entropy
+      mutations detectable without an external integrity primitive.
+
 - [ ] **TDD archive and codec strictness audit:** inventory every archive and
       embedded compression decoder, document its terminal-marker, decoded-size,
       checksum, and trailing-byte invariants, then tighten any path that accepts
