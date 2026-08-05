@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://validate.pics/contracts/v1-capabilities.schema.json",
+  "title": "Mecha Validate v1 capability and result contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schema_version",
+    "scope",
+    "formats",
+    "result_examples"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "minLength": 1 },
+    "schema_version": { "const": 1 },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inventory_complete", "description", "claim_policy"],
+      "properties": {
+        "inventory_complete": { "type": "boolean" },
+        "description": { "type": "string", "minLength": 1 },
+        "claim_policy": { "type": "string", "minLength": 1 }
+      }
+    },
+    "formats": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/formatCapability" }
+    },
+    "result_examples": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["valid", "corrupt", "indeterminate"],
+      "properties": {
+        "valid": { "$ref": "#/$defs/validationResult" },
+        "corrupt": { "$ref": "#/$defs/validationResult" },
+        "indeterminate": { "$ref": "#/$defs/validationResult" }
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["component", "role", "commit", "api", "production"],
+      "properties": {
+        "component": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+        "role": {
+          "enum": ["validator", "adapter", "coordinator", "oracle"]
+        },
+        "commit": {
+          "oneOf": [
+            { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+            { "type": "null" }
+          ]
+        },
+        "api": { "type": "string", "minLength": 1 },
+        "production": { "type": "boolean" }
+      }
+    },
+    "offset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["space", "exact"],
+      "properties": {
+        "space": {
+          "enum": ["host_file", "source_view", "decoded", "unknown"]
+        },
+        "value": { "type": "integer", "minimum": 0 },
+        "exact": { "type": "boolean" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "exact": { "const": true } } },
+          "then": { "required": ["value"] }
+        }
+      ]
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "classification", "severity", "source", "offset"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]*$" },
+        "classification": { "enum": ["valid", "corrupt", "indeterminate"] },
+        "severity": { "enum": ["info", "warn", "fail"] },
+        "source": { "$ref": "#/$defs/source" },
+        "offset": { "$ref": "#/$defs/offset" },
+        "message": { "type": "string" },
+        "details": { "type": "object" }
+      }
+    },
+    "validationResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format_id", "verdict", "findings"],
+      "properties": {
+        "format_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+        "verdict": { "enum": ["valid", "corrupt", "indeterminate"] },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" }
+        }
+      }
+    },
+    "mutationMeasurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["detected", "trials"],
+      "properties": {
+        "detected": { "type": "integer", "minimum": 0 },
+        "trials": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "mutationEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "scope"],
+      "properties": {
+        "metric": { "const": "mutation_sensitivity" },
+        "scope": { "type": "string", "minLength": 1 },
+        "sniper": {
+          "oneOf": [
+            { "$ref": "#/$defs/mutationMeasurement" },
+            { "type": "null" }
+          ]
+        },
+        "bolter": {
+          "oneOf": [
+            { "$ref": "#/$defs/mutationMeasurement" },
+            { "type": "null" }
+          ]
+        },
+        "shotgun": {
+          "oneOf": [
+            { "$ref": "#/$defs/mutationMeasurement" },
+            { "type": "null" }
+          ]
+        },
+        "qualification": { "type": "string", "minLength": 1 }
+      }
+    },
+    "closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "first_party_only", "evidence"],
+      "properties": {
+        "status": { "enum": ["passed", "failed", "blocked"] },
+        "first_party_only": { "type": "boolean" },
+        "evidence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "formatCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "display_name",
+        "extensions",
+        "capability",
+        "production_ready",
+        "claim",
+        "sources",
+        "blockers",
+        "closure",
+        "mutation_evidence"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
+        "display_name": { "type": "string", "minLength": 1 },
+        "extensions": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^\\.[a-z0-9]+$" },
+          "uniqueItems": true
+        },
+        "capability": {
+          "enum": ["strict", "partial", "structural", "unsupported", "blocked"]
+        },
+        "production_ready": { "type": "boolean" },
+        "claim": { "type": "string", "minLength": 1 },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/source" }
+        },
+        "blockers": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "closure": { "$ref": "#/$defs/closure" },
+        "mutation_evidence": {
+          "oneOf": [
+            { "$ref": "#/$defs/mutationEvidence" },
+            { "type": "null" }
+          ]
+        }
+      }
+    }
+  }
+}

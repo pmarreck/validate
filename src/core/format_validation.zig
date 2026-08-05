@@ -1242,12 +1242,47 @@ pub const AccessOutcome = enum {
     no_permission,
 };
 
+/// Stable terminal meaning for machine consumers. `is_valid` remains in the
+/// ABI for compatibility, while this enum distinguishes a proven-valid result
+/// from a structurally acceptable result whose payload could not be verified.
+pub const ResultVerdict = enum {
+    valid,
+    corrupt,
+    indeterminate,
+};
+
+/// Lossless archive-level evidence preserved from an entry verifier. The
+/// accounting equality prevents unsupported or failed entries from vanishing
+/// behind an archive-wide Boolean.
+pub const ArchiveVerificationSummary = struct {
+    entry_count: u32,
+    verified_entry_count: u32,
+    damaged_entry_count: u32,
+    unsupported_entry_count: u32,
+    no_checksum_entry_count: u32,
+    error_entry_count: u32,
+    directory_count: u32,
+    format_supported: bool,
+
+    pub fn accountedEntryCount(self: ArchiveVerificationSummary) u32 {
+        return self.verified_entry_count +
+            self.damaged_entry_count +
+            self.unsupported_entry_count +
+            self.no_checksum_entry_count +
+            self.error_entry_count +
+            self.directory_count;
+    }
+};
+
 /// Result of format validation.
 pub const ValidationResult = struct {
     /// The detected file format.
     format: FileFormat,
     /// Whether the format is valid (structurally correct).
     is_valid: bool,
+    /// Machine-readable terminal meaning; unlike `is_valid`, this can express
+    /// that no corruption was proved because required checks could not run.
+    verdict: ResultVerdict = .valid,
     /// OS-level ability to read the requested path for validation.
     access: AccessOutcome = .available,
     /// Human-readable error message if invalid.
@@ -1283,6 +1318,12 @@ pub const ValidationResult = struct {
     circumvented_trivial_protection: bool = false,
     /// Whether validation was performed via external ffmpeg CLI (for video formats).
     validated_via_ffmpeg: bool = false,
+    /// Entry-accounting evidence for archive validators that expose it.
+    archive_verification: ?ArchiveVerificationSummary = null,
+    /// The file reached a syntactically valid feature outside the promoted
+    /// validator surface. Its terminal verdict remains indeterminate, but
+    /// callers can distinguish this from resource or infrastructure failure.
+    validation_unsupported: bool = false,
 
     /// Check if there are any malformations (warnings)
     pub fn hasMalformations(self: ValidationResult) bool {
@@ -1376,6 +1417,7 @@ pub const ValidationResult = struct {
         return .{
             .format = format,
             .is_valid = true,
+            .verdict = .indeterminate,
             .error_message = null,
             .warning_message = i18n.tr().full_validation_unavailable,
             .validation_depth = .structural,
@@ -1409,6 +1451,7 @@ pub const ValidationResult = struct {
         return .{
             .format = format,
             .is_valid = false,
+            .verdict = .corrupt,
             .error_message = message,
         };
     }
@@ -1417,6 +1460,7 @@ pub const ValidationResult = struct {
         return .{
             .format = format,
             .is_valid = false,
+            .verdict = .corrupt,
             .error_message = message,
             .validation_depth = depth,
         };
@@ -1427,6 +1471,7 @@ pub const ValidationResult = struct {
         return .{
             .format = format,
             .is_valid = false,
+            .verdict = .corrupt,
             .error_message = comptime code.message(detail),
             .error_code = code,
             .error_detail = detail,
@@ -1438,6 +1483,7 @@ pub const ValidationResult = struct {
         return .{
             .format = format,
             .is_valid = false,
+            .verdict = .corrupt,
             .error_message = comptime code.message(detail),
             .error_code = code,
             .error_detail = detail,
@@ -1450,6 +1496,7 @@ pub const ValidationResult = struct {
         return .{
             .format = format,
             .is_valid = false,
+            .verdict = .corrupt,
             .error_message = msg,
             .error_code = code,
             .error_detail = detail,
@@ -1461,6 +1508,7 @@ pub const ValidationResult = struct {
         return .{
             .format = format,
             .is_valid = false,
+            .verdict = .corrupt,
             .error_message = msg,
             .error_code = code,
             .error_detail = detail,
@@ -1472,6 +1520,7 @@ pub const ValidationResult = struct {
         return .{
             .format = .unknown,
             .is_valid = true, // Unknown formats pass (we can't validate them)
+            .verdict = .indeterminate,
             .error_message = null,
         };
     }
@@ -1484,6 +1533,7 @@ fn resultForFileAccessError(err: anyerror) ValidationResult {
     var result = ValidationResult.invalidCode(.unknown, .failed_to_open, "file");
     if (err == error.AccessDenied or err == error.PermissionDenied) {
         result.access = .no_permission;
+        result.verdict = .indeterminate;
     }
     return result;
 }

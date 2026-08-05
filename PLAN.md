@@ -14,6 +14,32 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [x] **Publish the Mecha Validate v1 integration contract:** define a
+      machine-readable capability/result schema with the exact capability
+      states `strict`, `partial`, `structural`, `unsupported`, and `blocked`,
+      plus terminal `valid`, `corrupt`, and `indeterminate` semantics. Require
+      stable nested source/finding/offset evidence and provide a mechanically
+      validated matrix that GUI and sales consumers can ingest without
+      turning pending format work into a launch claim. Curiosity poke: a
+      schema can validate shape while still permitting an unsupported format
+      to masquerade as strict, so semantic cross-field invariants must bite.
+      Completed 2026-08-05 02:42 EDT.
+  - [x] Consume rarz's exact promoted archive-summary API at
+        `1ce99ef9da3d382efc2bfbb918408674082a311d`, preserve its accounting
+        counts, and map incomplete evidence to `indeterminate`/WARN rather
+        than OK or FAIL.
+  - [x] Record jp2z's promoted pure-Zig strict leaf without bypassing the
+        jpegz facade; promote it only when the exact consumer dependency path
+        is closure-safe. Keep rawz blocked on tiffz's parser-only module and
+        jpegz pending until exact promotion. Consume libjxlz's promoted exact
+        strict API, but keep JPEG XL non-claimable until the existing valid
+        `bicycles.jxl` fixture stops returning indeterminate.
+  - [x] Add a first-party production-closure audit and aggregate public
+        sniper/bolter/shotgun evidence with exact source commits and honest
+        denominators. Curiosity poke: mutation survival can represent a valid
+        alternate codestream, so sensitivity is not automatically a false
+        negative count.
+
 - [ ] **Drive the four image-parser dependencies to 1.0:** execute
       [`docs/IMAGE_PARSER_1_0_MASTER_PLAN.md`](docs/IMAGE_PARSER_1_0_MASTER_PLAN.md)
       for `tiffz`, `libjxlz`, `jp2z`, and `jpegz`. Library correctness,

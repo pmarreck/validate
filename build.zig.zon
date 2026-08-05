@@ -45,8 +45,9 @@
         .openjpeg = .{
             .path = "deps/openjpeg",
         },
-        .libjxl = .{
-            .path = "deps/libjxl",
+        .libjxlz = .{
+            .url = "https://github.com/pmarreck/libjxlz/archive/5e8f9d68152ae8a70cb823061f4b6c733eb09166.tar.gz",
+            .hash = "libjxlz-0.1.0-H-8wm8uGFwCaw6ZEz37LxZX_7_UMPqRBcUWQrnQ-ONRq",
         },
         .brotli = .{
             .path = "deps/brotli",
@@ -85,8 +86,8 @@
             .hash = "z7z-0.1.0-rkKuF4J_BwDeaEBGvV26pV2BfpcZNenxMb9pXgvIvIRi",
         },
         .rarz = .{
-            .url = "https://github.com/pmarreck/rarz/archive/2073063cebb67184e5465de41916db9683e34d4e.tar.gz",
-            .hash = "rarz-0.1.0-BNfrfs1ZDABVouLB057nMMEBIFmLzyl8GUxPdTPxh_i6",
+            .url = "https://github.com/pmarreck/rarz/archive/1ce99ef9da3d382efc2bfbb918408674082a311d.tar.gz",
+            .hash = "rarz-0.1.0-BNfrfgarDAAGWRGzt0D6jQjtmgChfv9JFyyTI0Py9Re9",
         },
         .bzip2z = .{
             .url = "https://github.com/pmarreck/bzip2z/archive/9b9e28dafb8dc3d34a88d43b7359b6ca9efd78f1.tar.gz",

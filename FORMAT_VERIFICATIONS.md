@@ -96,7 +96,7 @@ Every format that caps at **Structure** rather than **Checksum** or **Full Decod
 |--------|------------|------------------|-----------------|-----------|-----|
 | **PNG** | .png | Signature, chunk structure, IEND terminator | CRC32 per chunk | Checksum | — |
 | **JPEG** | .jpg, .jpeg | SOI/EOI markers, segment structure | Full decode via libjpeg-turbo | Full Decode | — |
-| **JPEG XL** | .jxl | Codestream (FF 0A) or container signature | Full decode via libjxl | Full Decode | 1 |
+| **JPEG XL** | .jxl | Codestream (FF 0A) or container signature | First-party strict validation via exact-pinned libjxlz; preserves valid/corrupt/unsupported/indeterminate. The current `bicycles.jxl` fixture remains indeterminate, so no full-family claim is permitted yet. | Partial (blocked) | 1 |
 | **GIF** | .gif | Header (GIF87a/89a), trailer (0x3B), block structure | Full LZW decode via zigimg | Full Decode | 1 |
 | **BMP** | .bmp | Header, DIB header, pixel data bounds | Row-by-row pixel data bounds traversal (proves all rows readable). **BMP spec has no data checksums — pixel-data bit flips are fundamentally undetectable.** | Structure | 1 |
 | **WebP** | .webp | RIFF container, VP8/VP8L/VP8X chunks | Full decode via libwebp | Full Decode | 1 |
@@ -641,7 +641,7 @@ Formats with built-in integrity verification:
 
 **Pure Zig (no external dependencies):** FLAC, WAV, AIFF, ALAC, AC-3, DTS, E-AC-3, AMR, AU/SND, TTA, CAF, ProRes, MPEG-1/2, MPEG-4 Part 2, VP8, VP9, Theora, DV, H.264, H.265/HEVC, AV1, AAC, HEIC, AVIF, PNG, QOI, DPX, TGA, PBM/PGM/PPM/PAM, ZIP, GZIP, BZIP2, 7-Zip, BagIt, X12 EDI, EDIFACT, iCalendar, vCard, PEM, DER, all container parsing
 
-**BSD/MIT Licensed Libraries:** libopus, libvorbis, libjpeg-turbo, OpenJPEG, zigimg (GIF, BMP, TIFF, RAW), libwebp (WebP), libjxl (JPEG XL), libbrotli (Brotli)
+**BSD/MIT Licensed Libraries:** libopus, libvorbis, libjpeg-turbo, OpenJPEG, zigimg (GIF, BMP, TIFF, RAW), libwebp (WebP), exact-pinned first-party libjxlz (JPEG XL), libbrotli (Brotli)
 
 **GPL Blocked:** WMV/VC-1, RealVideo/Audio - would require optional plugin architecture (DTS was previously blocked, now implemented in pure Zig)
 

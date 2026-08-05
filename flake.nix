@@ -32,7 +32,7 @@
 
 			# Pre-fetched Zig dependencies (fixed-output derivation)
 			# This hash must be updated when build.zig.zon changes
-			zigDepsHash = "sha256-KY9z9nf265PvxhvL2oOaedSXemEun2AKEicuBWiTU/I=";
+			zigDepsHash = "sha256-D6l+Jy7g94hteKfuGQm6GVpetZNQbRxxszuFuIDSmHU=";
 		in {
 			# Packages for Garnix/Nix builds
 			packages = forBuildSystems (buildSystem:
@@ -360,13 +360,21 @@
 					# Excludes fixture-dependent tests (ground_truth_examples is absent in the
 					# sandbox) and ones that hardcode `nix develop` (unavailable in-sandbox).
 					cli = pkgs.runCommandLocal "validate-cli-mfic" {
-						nativeBuildInputs = [ pkgs.bash pkgs.luajit pkgs.coreutils ];
+						nativeBuildInputs = [
+							pkgs.bash
+							pkgs.luajit
+							pkgs.coreutils
+							pkgs.gnugrep
+							pkgs.gnused
+							pkgs.jq
+							pkgs.ripgrep
+						];
 					} ''
 						export VALIDATE_BIN=${self.packages.${system}.default}/bin/validate
 						export TMPDIR=$(mktemp -d)
 						root=${./.}
 						fail=0
-						for t in master_report_drift utf8_required_formats_reject symlink_loop_termination no_tmp_debug_log_in_release; do
+						for t in master_report_drift utf8_required_formats_reject symlink_loop_termination no_tmp_debug_log_in_release v1_capability_contract first_party_closure_audit; do
 							echo "=== CLI check: $t ==="
 							if ! bash "$root/tests/cli/$t"; then echo "FAIL: $t"; fail=1; fi
 						done
@@ -463,6 +471,7 @@
 							luajit
 							tmux
 							qpdf
+							jq
 							pcre2Static
 							pcre2Static.dev
 							libjpegStatic
@@ -516,6 +525,8 @@
 							luajit
 							openssl
 							qpdf
+							jq
+							ripgrep
 							zip
 						];
 					};

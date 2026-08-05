@@ -3160,14 +3160,54 @@ pub fn validateWebpDeep(allocator: Allocator, source: *FileSource) ValidationRes
     }
 }
 
-// ============ JPEG-XL Deep Validation (libjxl) ============
+// ============ JPEG-XL Deep Validation (libjxlz strict API) ============
 
-/// Deep JPEG-XL validation by fully decoding the image using libjxl.
-/// This catches ANS entropy coding errors, squeeze transform errors,
-/// and corrupted data that structural validation would miss.
+/// Map libjxlz's four-way verdict without turning unsupported syntax or an
+/// incomplete check into evidence that the file is corrupt.
+fn mapJxlValidationResult(result: jxl_validator.JxlValidationResult, is_large_file: bool) ValidationResult {
+    switch (result.verdict) {
+        .valid => {
+            if (is_large_file) {
+                return ValidationResult.okWithDepthAndWarning(.jxl, .full, "Large image file (>200MB)");
+            }
+            if (result.warning_message) |warning| {
+                return ValidationResult.okWithDepthAndWarning(.jxl, .full, warning);
+            }
+            return ValidationResult.okWithDepth(.jxl, .full);
+        },
+        .corrupt => return ValidationResult.invalidWithDepth(
+            .jxl,
+            result.error_message orelse "JPEG XL strict validation found corruption",
+            .full,
+        ),
+        .unsupported => {
+            var mapped = ValidationResult.okWithDepthAndWarning(
+                .jxl,
+                .structural,
+                result.warning_message orelse "JPEG XL feature is unsupported",
+            );
+            mapped.verdict = .indeterminate;
+            mapped.validation_unsupported = true;
+            return mapped;
+        },
+        .indeterminate => {
+            var mapped = ValidationResult.okWithDepthAndWarning(
+                .jxl,
+                .structural,
+                result.warning_message orelse "JPEG XL validation was incomplete",
+            );
+            mapped.verdict = .indeterminate;
+            return mapped;
+        },
+    }
+}
+
+/// Deep JPEG-XL validation through the exact promoted libjxlz strict API.
 pub fn validateJxlDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file_size = source.getEndPos() catch {
-        return ValidationResult.invalidWithDepth(.jxl, errmsg.failedToGet("file size"), .full);
+        var result = ValidationResult.okWithDepthAndWarning(.jxl, .structural, errmsg.failedToGet("file size"));
+        result.verdict = .indeterminate;
+        return result;
     };
     if (file_size < 2) {
         return ValidationResult.invalidWithDepth(.jxl, "File too small", .full);
@@ -3175,31 +3215,28 @@ pub fn validateJxlDeep(allocator: Allocator, source: *FileSource) ValidationResu
     const is_large_file = file_size > 200 * 1024 * 1024;
 
     const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch {
-        return ValidationResult.invalidWithDepth(.jxl, errmsg.failedToRead("file"), .full);
+        var result = ValidationResult.okWithDepthAndWarning(.jxl, .structural, errmsg.failedToRead("file"));
+        result.verdict = .indeterminate;
+        return result;
     };
     var heap_jxl: ?[]u8 = null;
     defer if (heap_jxl) |buf| allocator.free(buf);
     const buf_slice: []const u8 = switch (slurp) {
         .mapped => |m| m,
         .heap => |b| blk: { heap_jxl = b; break :blk b; },
-        .too_large => return ValidationResult.okWithDepthAndWarning(.jxl, .structural, "JPEG XL too large for non-mmap deep decode"),
+        .too_large => {
+            var result = ValidationResult.okWithDepthAndWarning(.jxl, .structural, "JPEG XL too large for non-mmap deep validation");
+            result.verdict = .indeterminate;
+            return result;
+        },
     };
     if (buf_slice.len != file_size) {
-        return ValidationResult.invalidWithDepth(.jxl, errmsg.incomplete("file read"), .full);
+        var result = ValidationResult.okWithDepthAndWarning(.jxl, .structural, errmsg.incomplete("file read"));
+        result.verdict = .indeterminate;
+        return result;
     }
 
-    const result = jxl_validator.validateJxlDeepFromBuffer(buf_slice);
-    if (result.valid) {
-        if (is_large_file) {
-            return ValidationResult.okWithDepthAndWarning(.jxl, .full, "Large image file (>200MB)");
-        }
-        if (result.warning_message) |warning| {
-            return ValidationResult.okWithDepthAndWarning(.jxl, .full, warning);
-        }
-        return ValidationResult.okWithDepth(.jxl, .full);
-    } else {
-        return ValidationResult.invalidWithDepth(.jxl, result.error_message orelse "JPEG-XL decode failed", .full);
-    }
+    return mapJxlValidationResult(jxl_validator.validateJxlDeepFromBuffer(buf_slice), is_large_file);
 }
 
 // ============ JPEG2000 Deep Validation ============
@@ -5617,6 +5654,19 @@ test "validateJxl accepts valid JXL from ground truth" {
     try testing.expectEqual(FileFormat.jxl, result.format);
 }
 
+test "libjxlz indeterminate result does not condemn a valid promoted fixture" {
+    var source = FileSource.open("ground_truth_examples/jxl/bicycles.jxl") catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer source.close();
+    const result = validateJxlDeep(testing.allocator, &source);
+    try testing.expect(result.is_valid);
+    try testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+    try testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+    try testing.expect(result.warning_message != null);
+}
+
 test "validateJxl rejects invalid signature" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -5630,6 +5680,32 @@ test "validateJxl rejects invalid signature" {
     defer source.close();
     const result = validateJxl(&source);
     try testing.expect(!result.is_valid);
+}
+
+test "libjxlz unsupported and indeterminate outcomes remain non-corrupt" {
+    const unsupported = mapJxlValidationResult(.{
+        .valid = true,
+        .structural_only = true,
+        .verdict = .unsupported,
+        .finding_code = .unsupported_feature,
+        .error_message = null,
+        .warning_message = "unsupported test feature",
+    }, false);
+    try testing.expect(unsupported.is_valid);
+    try testing.expectEqual(format_validation.ResultVerdict.indeterminate, unsupported.verdict);
+    try testing.expect(unsupported.validation_unsupported);
+
+    const incomplete = mapJxlValidationResult(.{
+        .valid = true,
+        .structural_only = true,
+        .verdict = .indeterminate,
+        .finding_code = .resource_limit,
+        .error_message = null,
+        .warning_message = "bounded test",
+    }, false);
+    try testing.expect(incomplete.is_valid);
+    try testing.expectEqual(format_validation.ResultVerdict.indeterminate, incomplete.verdict);
+    try testing.expect(!incomplete.validation_unsupported);
 }
 
 // ---- EXR ----

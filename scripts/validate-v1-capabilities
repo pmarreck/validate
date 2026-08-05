@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Validate the public v1 JSON contract's required shape and cross-field rules.
+# The schema remains the portable consumer contract; these semantic checks add
+# policy that ordinary JSON Schema shape validation cannot express concisely.
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+matrix="${1:-$ROOT/docs/v1-capabilities.json}"
+schema="${2:-$ROOT/docs/v1-capabilities.schema.json}"
+errors=0
+
+check() {
+	local description="$1"
+	local file="$2"
+	local filter="$3"
+
+	if ! jq -e "$filter" "$file" >/dev/null 2>&1; then
+		printf 'v1 capability contract: %s\n' "$description" >&2
+		errors=$((errors + 1))
+	fi
+}
+
+if ! command -v jq >/dev/null 2>&1; then
+	printf 'v1 capability contract: jq is required\n' >&2
+	exit 1
+fi
+if [ ! -r "$matrix" ] || [ ! -r "$schema" ]; then
+	printf 'v1 capability contract: matrix or schema is unreadable\n' >&2
+	exit 1
+fi
+
+check "schema must declare the exact five capability states" "$schema" '
+  [.["$defs"].formatCapability.properties.capability.enum[]] |
+  sort == (["strict", "partial", "structural", "unsupported", "blocked"] | sort)'
+check "schema must declare the exact three result verdicts" "$schema" '
+  [.["$defs"].validationResult.properties.verdict.enum[]] |
+  sort == (["valid", "corrupt", "indeterminate"] | sort)'
+check "schema version and bounded inventory marker are required" "$matrix" '
+  (.["$schema"] | type == "string" and length > 0) and
+  .schema_version == 1 and
+  (.scope.inventory_complete | type == "boolean") and
+  (.formats | type == "array" and length > 0)'
+check "unknown root fields are forbidden" "$matrix" '
+  ([keys[]] - ["$schema", "schema_version", "scope", "formats", "result_examples"]) |
+  length == 0'
+check "format IDs must be unique" "$matrix" '
+  ([.formats[].id] | length) == ([.formats[].id] | unique | length)'
+check "every format must satisfy the published scalar shape" "$matrix" '
+  all(.formats[];
+    (.id | type == "string" and test("^[a-z0-9][a-z0-9_-]*$")) and
+    (.display_name | type == "string" and length > 0) and
+    (.extensions | type == "array") and
+    (.capability | IN("strict", "partial", "structural", "unsupported", "blocked")) and
+    (.production_ready | type == "boolean") and
+    (.claim | type == "string" and length > 0) and
+    (.sources | type == "array" and length > 0) and
+    (.blockers | type == "array") and
+    (.closure.status | IN("passed", "failed", "blocked")) and
+    (.closure.first_party_only | type == "boolean")
+  )'
+check "blocked and unsupported rows cannot be production claims" "$matrix" '
+  all(.formats[];
+    if (.capability == "blocked" or .capability == "unsupported")
+    then .production_ready == false
+    else true
+    end
+  )'
+check "production-ready rows require a passed first-party closure" "$matrix" '
+  all(.formats[];
+    if .production_ready
+    then .closure.status == "passed" and .closure.first_party_only == true
+    else true
+    end
+  )'
+check "strict rows require an exact validator commit" "$matrix" '
+  all(.formats[];
+    if .capability == "strict"
+    then any(.sources[];
+      .role == "validator" and
+      (.commit | type == "string" and test("^[0-9a-f]{40}$"))
+    )
+    else true
+    end
+  )'
+check "production sources require exact commits" "$matrix" '
+  all(.formats[].sources[];
+    if .production
+    then (.commit | type == "string" and test("^[0-9a-f]{40}$"))
+    else true
+    end
+  )'
+check "mutation measurements require 0 <= detected <= trials" "$matrix" '
+  all(.formats[] | select(.mutation_evidence != null) | .mutation_evidence;
+    .metric == "mutation_sensitivity" and
+    all([.sniper, .bolter, .shotgun][] | select(. != null);
+      (.detected | type == "number") and
+      (.trials | type == "number") and
+      .trials > 0 and .detected >= 0 and .detected <= .trials
+    )
+  )'
+check "result examples must bind verdict and finding classifications" "$matrix" '
+  .result_examples.valid.verdict == "valid" and
+  .result_examples.corrupt.verdict == "corrupt" and
+  .result_examples.indeterminate.verdict == "indeterminate" and
+  all(.result_examples | to_entries[];
+    (.value.findings | type == "array") and
+    (.value.verdict as $verdict |
+      all(.value.findings[]; .classification == $verdict))
+  )'
+check "exact offsets require a non-negative value" "$matrix" '
+  all(.result_examples[] .findings[] .offset;
+    (.space | IN("host_file", "source_view", "decoded", "unknown")) and
+    (.exact | type == "boolean") and
+    (if .exact then has("value") and (.value | type == "number" and . >= 0) else true end)
+  )'
+check "every finding must carry a stable nested source" "$matrix" '
+  all(.result_examples[] .findings[];
+    (.code | type == "string" and test("^[a-z0-9][a-z0-9_.-]*$")) and
+    (.classification | IN("valid", "corrupt", "indeterminate")) and
+    (.severity | IN("info", "warn", "fail")) and
+    (.source.component | type == "string" and length > 0) and
+    (.source.api | type == "string" and length > 0) and
+    (if .source.production
+      then (.source.commit | type == "string" and test("^[0-9a-f]{40}$"))
+      else true
+      end)
+  )'
+
+if [ "$errors" -ne 0 ]; then
+	printf 'v1 capability contract: %d check(s) failed\n' "$errors" >&2
+	exit 1
+fi
+
+printf 'v1 capability contract: valid (%d explicit rows; inventory_complete=%s)\n' \
+	"$(jq '.formats | length' "$matrix")" \
+	"$(jq -r '.scope.inventory_complete' "$matrix")"

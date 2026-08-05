@@ -1,0 +1,279 @@
+{
+  "$schema": "./v1-capabilities.schema.json",
+  "schema_version": 1,
+  "scope": {
+    "inventory_complete": false,
+    "description": "Promoted integration leaves and immediate blockers only; this is not the complete Mecha Validate v1 format inventory.",
+    "claim_policy": "A consumer may make a production claim only for an explicit row whose production_ready is true. Missing rows and blocked or unsupported rows are not supported-format claims."
+  },
+  "formats": [
+    {
+      "id": "rar5",
+      "display_name": "RAR 5 archive verification",
+      "extensions": [".rar"],
+      "capability": "strict",
+      "production_ready": true,
+      "claim": "RAR5 stored and compressed entries covered by the committed corpus are decoded and checked against stored CRC32 or BLAKE2sp evidence; unsupported entries remain indeterminate.",
+      "sources": [
+        {
+          "component": "rarz",
+          "role": "validator",
+          "commit": "1ce99ef9da3d382efc2bfbb918408674082a311d",
+          "api": "rarz_verify_archive",
+          "production": true
+        }
+      ],
+      "blockers": [],
+      "closure": {
+        "status": "passed",
+        "first_party_only": true,
+        "evidence": "rarz invokes no external RAR decoder; Validate consumes its in-process implementation through the stable C archive-summary API."
+      },
+      "mutation_evidence": {
+        "metric": "mutation_sensitivity",
+        "scope": "RAR5 stored non-empty payloads in the promoted rarz classifier",
+        "sniper": { "detected": 25, "trials": 25 },
+        "bolter": null,
+        "shotgun": null,
+        "qualification": "The promoted archive-summary gate classifies all 25 deterministic sniper mutations as damaged. Bolter and shotgun results have not yet been published under this exact aggregation contract."
+      }
+    },
+    {
+      "id": "rar-family",
+      "display_name": "RAR archive family",
+      "extensions": [".rar"],
+      "capability": "partial",
+      "production_ready": true,
+      "claim": "Verified generations and methods use exact checksum evidence; RAR 1.4, header encryption, RAR4 split volumes, and unproven filters return indeterminate rather than valid.",
+      "sources": [
+        {
+          "component": "rarz",
+          "role": "validator",
+          "commit": "1ce99ef9da3d382efc2bfbb918408674082a311d",
+          "api": "rarz_verify_archive",
+          "production": true
+        }
+      ],
+      "blockers": [
+        "RAR 1.4 parser absent",
+        "header-encrypted archives lack a password-provider API",
+        "RAR4 split-volume and several VM-filter variants lack independent corpus gates"
+      ],
+      "closure": {
+        "status": "passed",
+        "first_party_only": true,
+        "evidence": "The promoted rarz production path is a Peter-owned in-process implementation."
+      },
+      "mutation_evidence": null
+    },
+    {
+      "id": "jpeg-family",
+      "display_name": "JPEG image family",
+      "extensions": [".jpg", ".jpeg", ".jpe"],
+      "capability": "blocked",
+      "production_ready": false,
+      "claim": "Current JPEG validation remains useful, but no first-party-only v1 claim is permitted until Validate consumes the promoted jpegz facade and removes libjpeg-turbo from its production closure.",
+      "sources": [
+        {
+          "component": "jpegz",
+          "role": "validator",
+          "commit": "fb72045459be7dc2c73337e321096ed3e1eedb0f",
+          "api": "jpegz_validate",
+          "production": false
+        }
+      ],
+      "blockers": [
+        "promoted jpegz facade is not yet pinned in Validate's tiffz-owned dependency path",
+        "Validate production closure still includes libjpeg-turbo"
+      ],
+      "closure": {
+        "status": "failed",
+        "first_party_only": false,
+        "evidence": "The mechanical Nix runtime-closure audit finds libjpeg-turbo."
+      },
+      "mutation_evidence": null
+    },
+    {
+      "id": "jpeg2000-strict-leaf",
+      "display_name": "JPEG 2000 strict leaf validator",
+      "extensions": [".jp2", ".j2k", ".j2c"],
+      "capability": "strict",
+      "production_ready": false,
+      "claim": "The jp2z pure-Zig strict leaf and jpegz facade are promoted, but Validate has not aligned the exact facade path and still ships an OpenJPEG consumer path.",
+      "sources": [
+        {
+          "component": "jp2z",
+          "role": "validator",
+          "commit": "d3754cfcfe3980daecb90de12d82ef4bdf100ce6",
+          "api": "deepValidate(allocator, data, strict)",
+          "production": false
+        }
+      ],
+      "blockers": [
+        "promoted jpegz facade fb72045459be7dc2c73337e321096ed3e1eedb0f is not yet aligned in Validate's tiffz-owned dependency path",
+        "Validate production closure still includes OpenJPEG"
+      ],
+      "closure": {
+        "status": "blocked",
+        "first_party_only": false,
+        "evidence": "jp2z's pure-Zig strict module is clean, but the current Validate consumer and Nix closure still link OpenJPEG."
+      },
+      "mutation_evidence": {
+        "metric": "mutation_sensitivity",
+        "scope": "14 promoted jp2z entropy fixtures",
+        "sniper": { "detected": 10, "trials": 14 },
+        "bolter": { "detected": 11, "trials": 14 },
+        "shotgun": { "detected": 14, "trials": 14 },
+        "qualification": "These are sensitivity counts. A surviving entropy mutation may form a different valid codestream and is not automatically a false negative."
+      }
+    },
+    {
+      "id": "professional-raw",
+      "display_name": "Professional camera RAW family",
+      "extensions": [".dng", ".pef", ".nef", ".nrw", ".cr2", ".cr3", ".arw", ".raf"],
+      "capability": "blocked",
+      "production_ready": false,
+      "claim": "No complete RAW family has earned strict validation. DNG and one PEF private-Huffman slice have bounded partial evidence; rawz's parser-only closure is promoted upstream but not yet integrated into Validate.",
+      "sources": [
+        {
+          "component": "rawz",
+          "role": "validator",
+          "commit": "2d030cf71075f5e126e07eaa2ad0c1377798b946",
+          "api": "tiff_adapter.classifySubrange plus vendor classifiers",
+          "production": false
+        }
+      ],
+      "blockers": [
+        "Validate has not yet aligned tiffz c57166db87132742c7591c34161c5549133bd09a and rawz 2d030cf71075f5e126e07eaa2ad0c1377798b946 as one shared parser-module graph",
+        "sensor-corruption validators remain unsupported for most RAW families"
+      ],
+      "closure": {
+        "status": "blocked",
+        "first_party_only": false,
+        "evidence": "The promoted rawz closure is clean upstream. Validate's current dependency graph has not yet consumed it, so no production claim is allowed."
+      },
+      "mutation_evidence": {
+        "metric": "mutation_sensitivity",
+        "scope": "PEF private-Huffman slice only, not PEF container dispatch or the RAW family",
+        "sniper": { "detected": 2048, "trials": 2048 },
+        "bolter": { "detected": 16, "trials": 16 },
+        "shotgun": { "detected": 1, "trials": 1 },
+        "qualification": "The independent sparse-Huffman oracle proves this bounded slice only. It must not be promoted into a family-wide RAW claim."
+      }
+    },
+    {
+      "id": "jpeg-xl",
+      "display_name": "JPEG XL",
+      "extensions": [".jxl"],
+      "capability": "partial",
+      "production_ready": false,
+      "claim": "Validate consumes the promoted first-party libjxlz strict API and preserves valid, corrupt, unsupported, and indeterminate outcomes. The adapter remains non-claimable because one existing valid fixture is currently indeterminate.",
+      "sources": [
+        {
+          "component": "libjxlz",
+          "role": "validator",
+          "commit": "5e8f9d68152ae8a70cb823061f4b6c733eb09166",
+          "api": "libjxlz.validation.validate",
+          "production": true
+        }
+      ],
+      "blockers": [
+        "ground_truth_examples/jxl/bicycles.jxl returns indeterminate with an unclassified decoder error"
+      ],
+      "closure": {
+        "status": "passed",
+        "first_party_only": true,
+        "evidence": "Validate pins libjxlz at 5e8f9d68152ae8a70cb823061f4b6c733eb09166; the direct upstream libjxl build dependency is removed."
+      },
+      "mutation_evidence": null
+    },
+    {
+      "id": "tiff-family",
+      "display_name": "TIFF and TIFF-derived image family",
+      "extensions": [".tif", ".tiff", ".dng", ".nef", ".nrw", ".cr2", ".arw"],
+      "capability": "blocked",
+      "production_ready": false,
+      "claim": "Current TIFF validation has substantial bounded evidence, but Validate has not aligned the promoted tiffz parser boundary and jpegz facade into its production graph.",
+      "sources": [
+        {
+          "component": "tiffz",
+          "role": "validator",
+          "commit": "c57166db87132742c7591c34161c5549133bd09a",
+          "api": "validateAllStripsAndTiles",
+          "production": false
+        }
+      ],
+      "blockers": [
+        "promoted tiffz parser module is not yet aligned in Validate's production dependency graph",
+        "promoted jpegz facade and nested JPEG/JPEG2000 consumer path are not yet aligned in Validate"
+      ],
+      "closure": {
+        "status": "blocked",
+        "first_party_only": false,
+        "evidence": "The upstream parser-only boundary is promoted, but Validate still pins an older full tiffz graph with codec dependencies."
+      },
+      "mutation_evidence": null
+    }
+  ],
+  "result_examples": {
+    "valid": {
+      "format_id": "rar5",
+      "verdict": "valid",
+      "findings": []
+    },
+    "corrupt": {
+      "format_id": "rar5",
+      "verdict": "corrupt",
+      "findings": [
+        {
+          "code": "rarz.archive.damaged",
+          "classification": "corrupt",
+          "severity": "fail",
+          "source": {
+            "component": "rarz",
+            "role": "validator",
+            "commit": "1ce99ef9da3d382efc2bfbb918408674082a311d",
+            "api": "rarz_verify_archive",
+            "production": true
+          },
+          "offset": {
+            "space": "unknown",
+            "exact": false
+          },
+          "details": {
+            "verified_entries": 4,
+            "damaged_entries": 1,
+            "unsupported_entries": 0
+          }
+        }
+      ]
+    },
+    "indeterminate": {
+      "format_id": "rar-family",
+      "verdict": "indeterminate",
+      "findings": [
+        {
+          "code": "rarz.archive.incomplete",
+          "classification": "indeterminate",
+          "severity": "warn",
+          "source": {
+            "component": "rarz",
+            "role": "validator",
+            "commit": "1ce99ef9da3d382efc2bfbb918408674082a311d",
+            "api": "rarz_verify_archive",
+            "production": true
+          },
+          "offset": {
+            "space": "unknown",
+            "exact": false
+          },
+          "details": {
+            "verified_entries": 1,
+            "damaged_entries": 0,
+            "unsupported_entries": 1
+          }
+        }
+      ]
+    }
+  }
+}

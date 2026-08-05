@@ -157,19 +157,27 @@ pub fn build(b: *std.Build) void {
     });
     const openjpeg_lib = openjpeg_dep.artifact("openjp2");
 
-    // libjxl for JPEG-XL decode validation (BSD-3, Google reference implementation)
-    const libjxl_dep = b.dependency("libjxl", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const libjxl_lib = libjxl_dep.artifact("jxl");
-
     // Brotli for .br file decompression validation (MIT, Google)
     const brotli_dep = b.dependency("brotli", .{
         .target = target,
         .optimize = deps_optimize,
     });
     const brotli_lib = brotli_dep.artifact("brotli");
+
+    // Exact Peter-owned JPEG XL strict validator through its public Zig API.
+    // This avoids freezing a copied C header while libjxlz's package manifest
+    // is being fixed to include its public header tree.
+    const libjxlz_dep = b.dependency("libjxlz", .{
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    const libjxlz_validation_mod = b.createModule(.{
+        .root_source_file = libjxlz_dep.path("src/validation.zig"),
+        .target = target,
+        .optimize = deps_optimize,
+        .link_libc = true,
+    });
+    libjxlz_validation_mod.addIncludePath(brotli_lib.getEmittedIncludeTree());
 
     // PCRE2 for regex/glob pattern matching (BSD, renerocksai/pcre2 Zig build)
     const pcre2_dep = b.dependency("pcre2", .{
@@ -316,7 +324,9 @@ pub fn build(b: *std.Build) void {
     });
     const z7z_mod = z7z_dep.module("z7z");
 
-    // rarz for in-memory RAR validation (clean-room Zig implementation)
+    // rarz for in-memory RAR validation through its stable C ABI. The public
+    // header keeps Validate off rarz's private Zig types and exposes the
+    // lossless archive-summary contract from include/rarz.h.
     const rarz_dep = b.dependency("rarz", .{
         .target = target,
         .optimize = deps_optimize,
@@ -325,9 +335,16 @@ pub fn build(b: *std.Build) void {
         .root_source_file = rarz_dep.path("src/lib/root.zig"),
         .target = target,
         .optimize = deps_optimize,
+        .link_libc = true,
     });
-    // rarz needs ARM hardware CRC32 C helper on aarch64 with CRC extension
-    // (baseline aarch64 cross-compilation targets don't have CRC; -mcpu overrides -march)
+    // The dependency installs both a library and executable named `rarz`, so
+    // dependency.artifact("rarz") is ambiguous. Build the public C-ABI library
+    // from its canonical root module under a consumer-local artifact name.
+    const rarz_lib = b.addLibrary(.{
+        .name = "rarz_validate_consumer",
+        .linkage = .static,
+        .root_module = rarz_mod,
+    });
     if (target.result.cpu.arch == .aarch64 and
         std.Target.aarch64.featureSetHas(target.result.cpu.features, .crc))
     {
@@ -410,7 +427,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "xml", .module = zigxml_mod }, // XML validation (0BSD, ianprime0509/zig-xml)
             .{ .name = "cj5", .module = cj5_mod }, // JSON5 validation (MIT, septag/cj5 fork)
             .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (CDDL-1.0 elected)
-            .{ .name = "rarz", .module = rarz_mod }, // RAR clean-room parser/validator
+            .{ .name = "libjxlz_validation", .module = libjxlz_validation_mod }, // strict JPEG XL four-way verifier
             .{ .name = "bzip2z", .module = bzip2z_mod }, // bzip2 clean-room decoder/encoder
             .{ .name = "zstd", .module = zstdz_mod }, // zstd via zstdz (Peter-controlled fork of Facebook BSD zstd)
             .{ .name = "z7z", .module = z7z_mod }, // 7-Zip clean-room Zig verifier
@@ -468,9 +485,6 @@ pub fn build(b: *std.Build) void {
     // Add OpenJPEG include path (for jpeg2000_validator.zig @cImport)
     core_mod.addIncludePath(openjpeg_lib.getEmittedIncludeTree());
 
-    // Add libjxl include path (for jxl_validator.zig @cImport)
-    core_mod.addIncludePath(libjxl_lib.getEmittedIncludeTree());
-
     // Add brotli include path (for brotli_validator.zig @cImport)
     core_mod.addIncludePath(brotli_lib.getEmittedIncludeTree());
 
@@ -488,6 +502,8 @@ pub fn build(b: *std.Build) void {
 
     // Add compact_pro C FFI headers
     core_mod.addIncludePath(compact_pro_dep.path("include"));
+    // Stable rarz archive-summary C ABI.
+    core_mod.addIncludePath(rarz_dep.path("include"));
 
     // uchardetz: header is `src/uchardet.h`. Add the dep's `src/` so
     // `@cInclude("uchardet.h")` finds it; we don't use the installed
@@ -523,13 +539,13 @@ pub fn build(b: *std.Build) void {
         libape_lib,     // Monkey's Audio (APE) deep decode validation
         minimp3_lib,   // MP3 audio deep validation
         openjpeg_lib,  // JPEG2000 decode validation
-        libjxl_lib,    // JPEG-XL decode validation
         brotli_lib,    // .br file decompression validation
         libopenmpt_lib, // tracker format (MOD/XM/IT/S3M) deep validation
         cj5_lib,       // JSON5 validation (C library)
         libraw_lib,    // camera RAW format validation (LGPL-2.1)
         compact_pro_lib, // Compact Pro archive validation
         uchardetz_lib,   // Mozilla uchardet — charset detection for plain-text validators
+        rarz_lib,        // clean-room RAR archive verification through stable C ABI
     };
 
     // Static library for FFI
@@ -582,11 +598,11 @@ pub fn build(b: *std.Build) void {
             libape_lib.getEmittedBin(),
             minimp3_lib.getEmittedBin(),
             openjpeg_lib.getEmittedBin(),
-            libjxl_lib.getEmittedBin(),
             brotli_lib.getEmittedBin(),
             libopenmpt_lib.getEmittedBin(),
             cj5_lib.getEmittedBin(),
             compact_pro_lib.getEmittedBin(),
+            rarz_lib.getEmittedBin(),
             sqlite3_lib.getEmittedBin(),
             libraw_lib.getEmittedBin(),
         };

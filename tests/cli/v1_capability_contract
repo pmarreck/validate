@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Consumer-boundary contract for the public v1 capability matrix. The test
+# drives the same validator that GUI and sales tooling can run, then mutates
+# independent copies to prove semantic constraints reject dishonest claims.
+set -u
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+VALIDATOR="$ROOT/scripts/validate-v1-capabilities"
+MATRIX="$ROOT/docs/v1-capabilities.json"
+SCHEMA="$ROOT/docs/v1-capabilities.schema.json"
+
+pass=0
+fail=0
+pass_case() { printf '  PASS: %s\n' "$1"; pass=$((pass + 1)); }
+fail_case() { printf 'FAIL: %s\n' "$1" >&2; fail=$((fail + 1)); }
+
+if ! command -v jq >/dev/null 2>&1; then
+	printf 'FAIL: jq is required to validate the public v1 JSON contract\n' >&2
+	exit 1
+fi
+
+if bash "$VALIDATOR" "$MATRIX" "$SCHEMA" >/dev/null 2>&1; then
+	pass_case "canonical matrix satisfies shape and semantic invariants"
+else
+	fail_case "canonical matrix did not validate"
+fi
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/validate-v1-contract.XXXXXX")"
+cleanup() {
+	mkdir -p "$HOME/.Trash/validate-tests" 2>/dev/null
+	mv "$work" "$HOME/.Trash/validate-tests/" 2>/dev/null
+}
+trap cleanup EXIT
+
+expect_rejected() {
+	local name="$1"
+	local filter="$2"
+	local candidate="$work/$name.json"
+
+	jq "$filter" "$MATRIX" > "$candidate"
+	local mutation_rc=$?
+	if [ "$mutation_rc" -ne 0 ] || [ ! -s "$candidate" ]; then
+		fail_case "$name mutation fixture could not be constructed"
+		return
+	fi
+	if bash "$VALIDATOR" "$candidate" "$SCHEMA" >/dev/null 2>&1; then
+		fail_case "$name mutation was accepted"
+	else
+		pass_case "$name mutation was rejected"
+	fi
+}
+
+expect_rejected "unknown-status" \
+	'.formats[0].capability = "nearly-strict"'
+expect_rejected "unknown-root-field" \
+	'.surprise = true'
+expect_rejected "blocked-production-claim" \
+	'(.formats[] | select(.capability == "blocked") | .production_ready) = true'
+expect_rejected "strict-without-exact-source" \
+	'(.formats[] | select(.capability == "strict") | .sources[0].commit) = null'
+expect_rejected "impossible-mutation-count" \
+	'(.formats[] | select(.mutation_evidence != null) | .mutation_evidence.sniper.detected) = 999999'
+expect_rejected "exact-offset-without-value" \
+	'.result_examples.corrupt.findings[0].offset |= (.exact = true | del(.value))'
+expect_rejected "indeterminate-labelled-corrupt" \
+	'.result_examples.indeterminate.findings[0].classification = "corrupt"'
+
+printf '\nResults: %d passed, %d failed\n' "$pass" "$fail"
+exit "$fail"

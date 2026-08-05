@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Fail when the production Nix closure contains decoder implementations that
+# are approved only as development oracles for the v1 first-party claim.
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+closure_file=""
+source_file=""
+
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--closure-file)
+			closure_file="${2:-}"
+			if [ -z "$closure_file" ] || [ ! -r "$closure_file" ]; then
+				printf 'first-party closure audit: --closure-file requires a readable path\n' >&2
+				exit 2
+			fi
+			shift 2
+			;;
+		--source-file)
+			source_file="${2:-}"
+			if [ -z "$source_file" ] || [ ! -r "$source_file" ]; then
+				printf 'first-party closure audit: --source-file requires a readable path\n' >&2
+				exit 2
+			fi
+			shift 2
+			;;
+		*)
+			printf 'usage: %s [--closure-file PATH] [--source-file PATH]\n' "$(basename "$0")" >&2
+			exit 2
+			;;
+	esac
+done
+
+read_closure() {
+	if [ -n "$closure_file" ]; then
+		command cat "$closure_file"
+	else
+		cd "$ROOT" || return 1
+		out_path="$(nix build --no-link --print-out-paths .#default)" || return 1
+		nix path-info --recursive "$out_path"
+	fi
+}
+
+closure="$(read_closure)"
+closure_rc=$?
+if [ "$closure_rc" -ne 0 ]; then
+	printf 'first-party closure audit: could not resolve the production closure\n' >&2
+	exit 2
+fi
+
+blockers=""
+while IFS= read -r path; do
+	name="${path##*/}"
+	case "$name" in
+		*-openjpeg-*|*-libjxl-*|*-libraw-*|*-libjpeg-turbo-*)
+			blockers="${blockers}${path}"$'\n'
+			;;
+	esac
+done <<< "$closure"
+
+# A Nix runtime closure cannot name decoder code absorbed into a static
+# archive. Inspect the build declarations as a second independent view so
+# those implementations cannot disappear merely because the linker copied
+# their objects into Validate's binary.
+source_blockers=""
+scan_source() {
+	rg -n -i 'dependency\("(openjpeg|libjxl|libraw)"|pkgs\.(openjpeg|libjpeg_turbo)' "$@" 2>/dev/null
+	local scan_rc=$?
+	if [ "$scan_rc" -eq 1 ]; then
+		return 0
+	fi
+	return "$scan_rc"
+}
+if [ -n "$source_file" ]; then
+	source_blockers="$(scan_source "$source_file")"
+else
+	# build.zig is the production compile graph. flake.nix also contains dev
+	# shells and oracle-only checks, which must remain allowed and therefore
+	# cannot be classified by a context-free text scan.
+	source_blockers="$(scan_source "$ROOT/build.zig")"
+fi
+source_scan_rc=$?
+if [ "$source_scan_rc" -ne 0 ]; then
+	printf 'first-party closure audit: source dependency scan failed\n' >&2
+	exit 2
+fi
+
+if [ -n "$blockers" ] || [ -n "$source_blockers" ]; then
+	printf 'first-party closure audit: forbidden production validator dependencies found:\n' >&2
+	if [ -n "$blockers" ]; then
+		printf '%s' "$blockers" | sort -u | sed 's/^/  runtime: /' >&2
+	fi
+	if [ -n "$source_blockers" ]; then
+		printf '%s\n' "$source_blockers" | sort -u | sed 's/^/  source: /' >&2
+	fi
+	exit 1
+fi
+
+printf 'first-party closure audit: pass\n'

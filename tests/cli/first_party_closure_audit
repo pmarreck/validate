@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Mechanical closure classifier for validator dependencies that are permitted
+# as development oracles but cannot support a first-party production claim.
+set -u
+
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+AUDIT="$ROOT/scripts/audit-first-party-closure"
+work="$(mktemp -d "${TMPDIR:-/tmp}/validate-closure-audit.XXXXXX")"
+cleanup() {
+	mkdir -p "$HOME/.Trash/validate-tests" 2>/dev/null
+	mv "$work" "$HOME/.Trash/validate-tests/" 2>/dev/null
+}
+trap cleanup EXIT
+
+clean="$work/clean"
+blocked="$work/blocked"
+clean_source="$work/clean-build.zig"
+blocked_source="$work/build.zig"
+printf '%s\n' \
+	'/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-validate-0.1.0' \
+	'/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-glibc-2.42' > "$clean"
+printf '%s\n' \
+	'/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-validate-0.1.0' \
+	'/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-openjpeg-2.5.4' \
+	'/nix/store/cccccccccccccccccccccccccccccccc-libjxl-0.11.1' > "$blocked"
+printf '%s\n' 'const clean_dependency_graph = true;' > "$clean_source"
+printf '%s\n' \
+	'const libjxl_dep = b.dependency("libjxl", .{});' > "$blocked_source"
+
+fail=0
+if bash "$AUDIT" --closure-file "$clean" --source-file "$clean_source" >/dev/null 2>&1; then
+	printf '  PASS: clean synthetic closure accepted\n'
+else
+	printf 'FAIL: clean synthetic closure rejected\n' >&2
+	fail=$((fail + 1))
+fi
+
+out="$work/out"
+err="$work/err"
+bash "$AUDIT" --closure-file "$blocked" --source-file "$clean_source" >"$out" 2>"$err"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	printf '  PASS: oracle-bearing synthetic closure rejected\n'
+else
+	printf 'FAIL: oracle-bearing synthetic closure accepted\n' >&2
+	fail=$((fail + 1))
+fi
+if grep -q 'openjpeg' "$err" && grep -q 'libjxl' "$err"; then
+	printf '  PASS: blocker report names every forbidden validator dependency\n'
+else
+	printf 'FAIL: blocker report omitted openjpeg or libjxl\n' >&2
+	fail=$((fail + 1))
+fi
+
+bash "$AUDIT" --closure-file "$clean" --source-file "$blocked_source" >"$out" 2>"$err"
+rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'libjxl' "$err"; then
+	printf '  PASS: statically linked source dependency rejected\n'
+else
+	printf 'FAIL: source-declared libjxl escaped the closure audit\n' >&2
+	fail=$((fail + 1))
+fi
+
+exit "$fail"

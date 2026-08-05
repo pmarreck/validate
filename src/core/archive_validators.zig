@@ -24,10 +24,12 @@ const bzip2 = @import("bzip2.zig");
 const sevenz_validator = @import("sevenz_validator.zig");
 const errmsg = @import("error_messages.zig");
 const zstdz = @import("zstd");
-const rarz = @import("rarz");
 const par2_core = @import("par2_core");
 const c_compact_pro = @cImport({
     @cInclude("compact_pro.h");
+});
+const c_rarz = @cImport({
+    @cInclude("rarz.h");
 });
 
 const FormatValidator = format_validation.FormatValidator;
@@ -2936,30 +2938,156 @@ pub fn validate7zDeep(allocator: Allocator, source: *FileSource) ValidationResul
 
 // ============ RAR Deep Validation ============
 
+const rarz_archive_verify_verified: i32 = c_rarz.RARZ_ARCHIVE_VERIFY_VERIFIED;
+const rarz_archive_verify_damaged: i32 = c_rarz.RARZ_ARCHIVE_VERIFY_DAMAGED;
+const rarz_archive_verify_incomplete: i32 = c_rarz.RARZ_ARCHIVE_VERIFY_INCOMPLETE;
+const rarz_archive_verify_error: i32 = c_rarz.RARZ_ARCHIVE_VERIFY_ERROR;
+
+/// Convert rarz's exact public C type into Validate's stable result evidence.
+/// Using the imported type makes a future upstream ABI change fail at compile
+/// time instead of silently drifting from a copied layout.
+fn rarzSummaryToPublic(summary: c_rarz.rarz_verify_archive_summary) format_validation.ArchiveVerificationSummary {
+	return .{
+		.entry_count = summary.entry_count,
+		.verified_entry_count = summary.verified_entry_count,
+		.damaged_entry_count = summary.damaged_entry_count,
+		.unsupported_entry_count = summary.unsupported_entry_count,
+		.no_checksum_entry_count = summary.no_checksum_entry_count,
+		.error_entry_count = summary.error_entry_count,
+		.directory_count = summary.directory_count,
+		.format_supported = summary.format_supported != 0,
+	};
+}
+
+fn emptyRarzArchiveSummary() c_rarz.rarz_verify_archive_summary {
+	var summary = std.mem.zeroes(c_rarz.rarz_verify_archive_summary);
+	summary.status = rarz_archive_verify_error;
+	return summary;
+}
+
+/// Map the complete rarz accounting record without collapsing incomplete
+/// evidence into either valid or corrupt.
+fn mapRarzArchiveSummary(summary: c_rarz.rarz_verify_archive_summary) ValidationResult {
+	const public = rarzSummaryToPublic(summary);
+	if (public.accountedEntryCount() != public.entry_count) {
+		var result = ValidationResult.okWithDepthAndWarning(
+			.rar,
+			.structural,
+			"RAR verifier returned inconsistent entry accounting",
+		);
+		result.verdict = .indeterminate;
+		result.archive_verification = public;
+		return result;
+	}
+
+	var result = switch (summary.status) {
+		rarz_archive_verify_verified => ValidationResult.okWithDepth(
+			.rar,
+			if (public.verified_entry_count > 0) .full else .structural,
+		),
+		rarz_archive_verify_damaged => ValidationResult.invalidWithDepth(
+			.rar,
+			"RAR archive payload integrity verification failed",
+			if (public.entry_count > 0) .full else .structural,
+		),
+		rarz_archive_verify_incomplete => blk: {
+			var incomplete = ValidationResult.okWithDepthAndWarning(
+				.rar,
+				.structural,
+				"RAR archive contains entries that could not be verified",
+			);
+			incomplete.verdict = .indeterminate;
+			break :blk incomplete;
+		},
+		else => blk: {
+			var api_error = ValidationResult.okWithDepthAndWarning(
+				.rar,
+				.structural,
+				"RAR verifier could not produce an archive verdict",
+			);
+			api_error.verdict = .indeterminate;
+			break :blk api_error;
+		},
+	};
+	result.archive_verification = public;
+	return result;
+}
+
 fn validateRarWithRarz(data: []const u8) ValidationResult {
     if (data.len == 0) {
         return ValidationResult.invalidWithDepth(.rar, "File too small", .structural);
     }
 
-    const result = rarz.policy.validate(data);
+    const archive = c_rarz.rarz_open(data.ptr, data.len) orelse {
+        return ValidationResult.invalidWithDepth(.rar, "RAR archive could not be opened", .structural);
+    };
+    defer c_rarz.rarz_close(archive);
 
-    if (!result.is_valid) {
-        const message = result.error_message orelse "RAR validation failed";
-        // rarz verified CRC/BLAKE2sp to detect the mismatch → .full depth on failure too
-        const depth: ValidationDepth = if (result.file_count > 0) .full else .structural;
-        return ValidationResult.invalidWithDepth(.rar, message, depth);
-    }
+    var summary = emptyRarzArchiveSummary();
+    _ = c_rarz.rarz_verify_archive(archive, &summary);
+    return mapRarzArchiveSummary(summary);
+}
 
-    if (result.has_encrypted_content) {
-        var warning_result = ValidationResult.okWithDepthAndWarning(.rar, .structural, "Encrypted archive content; integrity verification unavailable");
-        warning_result.has_encrypted_content = true;
-        return warning_result;
-    }
+test "rarz archive summary preserves verified evidence" {
+	var summary = emptyRarzArchiveSummary();
+	summary.status = rarz_archive_verify_verified;
+	summary.entry_count = 3;
+	summary.verified_entry_count = 2;
+	summary.directory_count = 1;
+	const result = mapRarzArchiveSummary(summary);
 
-    // rarz now decompresses + verifies CRC32/BLAKE2sp for all files (stored and compressed).
-    // If validation passed with files present, content integrity is verified → .full
-    const depth: ValidationDepth = if (result.file_count > 0) .full else .structural;
-    return ValidationResult.okWithDepth(.rar, depth);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expectEqual(format_validation.ResultVerdict.valid, result.verdict);
+	try std.testing.expectEqual(ValidationDepth.full, result.validation_depth);
+	const public_summary = result.archive_verification orelse return error.TestExpectedEqual;
+	try std.testing.expectEqual(@as(u32, 3), public_summary.entry_count);
+	try std.testing.expectEqual(@as(u32, 2), public_summary.verified_entry_count);
+}
+
+test "rarz incomplete summary is indeterminate and keeps every count" {
+	var summary = emptyRarzArchiveSummary();
+	summary.status = rarz_archive_verify_incomplete;
+	summary.entry_count = 3;
+	summary.verified_entry_count = 1;
+	summary.unsupported_entry_count = 1;
+	summary.directory_count = 1;
+	const result = mapRarzArchiveSummary(summary);
+
+	try std.testing.expect(result.is_valid);
+	try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+	try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+	try std.testing.expect(result.warning_message != null);
+	const public_summary = result.archive_verification orelse return error.TestExpectedEqual;
+	try std.testing.expectEqual(@as(u32, 1), public_summary.verified_entry_count);
+	try std.testing.expectEqual(@as(u32, 1), public_summary.unsupported_entry_count);
+}
+
+test "rarz damaged summary wins while incomplete counts remain visible" {
+	var summary = emptyRarzArchiveSummary();
+	summary.status = rarz_archive_verify_damaged;
+	summary.entry_count = 3;
+	summary.verified_entry_count = 1;
+	summary.damaged_entry_count = 1;
+	summary.unsupported_entry_count = 1;
+	const result = mapRarzArchiveSummary(summary);
+
+	try std.testing.expect(!result.is_valid);
+	try std.testing.expectEqual(format_validation.ResultVerdict.corrupt, result.verdict);
+	const public_summary = result.archive_verification orelse return error.TestExpectedEqual;
+	try std.testing.expectEqual(@as(u32, 1), public_summary.damaged_entry_count);
+	try std.testing.expectEqual(@as(u32, 1), public_summary.unsupported_entry_count);
+}
+
+test "rarz broken accounting cannot become a valid archive" {
+	var summary = emptyRarzArchiveSummary();
+	summary.status = rarz_archive_verify_verified;
+	summary.entry_count = 2;
+	summary.verified_entry_count = 1;
+	const result = mapRarzArchiveSummary(summary);
+
+	try std.testing.expect(result.is_valid);
+	try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+	try std.testing.expect(result.warning_message != null);
 }
 
 /// Deep RAR validation using rarz (in-memory clean-room implementation).
@@ -2977,6 +3105,13 @@ pub fn validateRarDeep(allocator: Allocator, source: *FileSource) ValidationResu
     if (file_size > max_size) {
         return ValidationResult.invalidCodeWithDepth(.rar, .file_too_large, "validation", .structural);
     }
+
+    // rarz owns entry payload verification, while Validate's independent
+    // header walk catches archive-header CRC damage before payload decoding.
+    const header_result = validateRar(file);
+    if (!header_result.is_valid) return header_result;
+    file.seekTo(0) catch
+        return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_seek, "file", .structural);
 
     const slurp_rar = file.getMappedOrSlurp(allocator, 256 << 20) catch
         return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_read, "RAR file", .structural);

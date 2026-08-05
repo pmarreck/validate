@@ -1,223 +1,163 @@
-//! Deep JPEG-XL validation using libjxl.
+//! Deep JPEG-XL validation through libjxlz's stable strict-validation API.
 //!
-//! This module provides comprehensive JPEG-XL validation by decoding the
-//! compressed bitstream to verify integrity, but discarding pixel output.
-//!
-//! Uses libjxl's JxlDecoder API which validates:
-//! - Container format (BMFF box structure or naked codestream)
-//! - Modular/VarDCT bitstream integrity
-//! - ANS entropy coding correctness
-//! - Squeeze/transform validity
-//! - ICC profile integrity
-//! - Image dimension consistency
-//!
-//! Performance optimization: Uses JxlDecoderSetImageOutCallback with a no-op
-//! callback to decode and validate pixel data without allocating a massive
-//! output buffer. The decode happens (validating the compressed data), but
-//! decoded rows are immediately discarded rather than stored.
-//!
-//! Single-threaded decode avoids thread explosion when validating many files
-//! concurrently.
+//! The adapter preserves libjxlz's four-way verdict and stable evidence so an
+//! unsupported feature or incomplete check can never masquerade as corruption.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const errmsg = @import("error_messages.zig");
 const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
+const libjxlz_validation = @import("libjxlz_validation");
 
 /// Threshold for warning about large image files (200MB)
 const large_image_threshold: u64 = 200 * 1024 * 1024;
 
-const c = @cImport({
-    @cInclude("jxl/decode.h");
-    @cInclude("jxl/types.h");
-    @cInclude("jxl/thread_parallel_runner.h");
-});
+pub const JxlVerdict = enum {
+    valid,
+    corrupt,
+    unsupported,
+    indeterminate,
+};
+
+pub const JxlFindingCode = enum {
+    none,
+    invalid_signature,
+    truncated,
+    malformed,
+    unsupported_feature,
+    resource_limit,
+    out_of_memory,
+    invalid_argument,
+    unclassified_decoder_error,
+};
+
+pub const JxlValidationLimits = struct {
+    host_byte_offset: u64 = 0,
+    max_input_bytes: usize = 512 * 1024 * 1024,
+    max_pixels: u64 = 268_435_456,
+    max_frames: u32 = 65_535,
+};
 
 /// Result of deep JPEG-XL validation
 pub const JxlValidationResult = struct {
+    /// Legacy compatibility bit: true means "not proven corrupt." Callers
+    /// making support claims must inspect `verdict` instead.
     valid: bool,
     structural_only: bool = false,
+    verdict: JxlVerdict,
+    finding_code: JxlFindingCode,
     error_message: ?[]const u8,
     warning_message: ?[]const u8 = null,
-
-    pub fn ok() JxlValidationResult {
-        return .{ .valid = true, .error_message = null, .warning_message = null, .structural_only = false };
-    }
-
-    pub fn okWithWarning(warning: []const u8) JxlValidationResult {
-        return .{ .valid = true, .error_message = null, .warning_message = warning, .structural_only = false };
-    }
-
-    pub fn structuralWithWarning(warning: []const u8) JxlValidationResult {
-        return .{ .valid = true, .error_message = null, .warning_message = warning, .structural_only = true };
-    }
-
-    pub fn invalid(message: []const u8) JxlValidationResult {
-        return .{ .valid = false, .error_message = message, .warning_message = null, .structural_only = false };
-    }
+    byte_offset: u64 = 0,
+    host_byte_offset: u64 = 0,
+    offset_is_exact: bool = false,
+    frames_validated: u32 = 0,
 };
+
+fn indeterminate(message: []const u8, code: JxlFindingCode) JxlValidationResult {
+    return .{
+        .valid = true,
+        .structural_only = true,
+        .verdict = .indeterminate,
+        .finding_code = code,
+        .error_message = null,
+        .warning_message = message,
+    };
+}
 
 /// Validate a JPEG-XL file by attempting full decompression.
 /// Returns validation result with error details if invalid.
 pub fn validateJxlDeep(source: *FileSource) JxlValidationResult {
-    // Get file size
     const file_size = source.getEndPos() catch {
-        return JxlValidationResult.invalid(errmsg.failedToGet("file size"));
+        return indeterminate(errmsg.failedToGet("file size"), .unclassified_decoder_error);
     };
-
-    // Track large files for warning (but don't reject them)
     const is_large_file = file_size > large_image_threshold;
-
-    if (file_size < 2) {
-        return JxlValidationResult.invalid("File too small");
-    }
 
     const allocator = heap.validateAllocator();
     const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch {
-        return JxlValidationResult.invalid(errmsg.failedToRead("file"));
+        return indeterminate(errmsg.failedToRead("file"), .unclassified_decoder_error);
     };
     var heap_jxl: ?[]u8 = null;
     defer if (heap_jxl) |buf| allocator.free(buf);
     const buf_slice: []const u8 = switch (slurp) {
         .mapped => |m| m,
         .heap => |b| blk: { heap_jxl = b; break :blk b; },
-        .too_large => return JxlValidationResult.structuralWithWarning("JPEG XL too large for non-mmap deep decode"),
+        .too_large => return indeterminate("JPEG XL too large for non-mmap deep validation", .resource_limit),
     };
     if (buf_slice.len != file_size) {
-        return JxlValidationResult.invalid(errmsg.incomplete("file read"));
+        return indeterminate(errmsg.incomplete("file read"), .unclassified_decoder_error);
     }
 
-    const result = validateJxlDeepFromBuffer(buf_slice);
-
-    // Add warning for large files if validation passed
-    if (result.valid and is_large_file) {
-        return JxlValidationResult.okWithWarning("Large image file (>200MB)");
+    var result = validateJxlDeepFromBuffer(buf_slice);
+    if (result.verdict == .valid and is_large_file) {
+        result.warning_message = "Large image file (>200MB)";
     }
     return result;
 }
 
 /// Validate JPEG-XL from memory buffer.
 pub fn validateJxlDeepFromBuffer(data: []const u8) JxlValidationResult {
-    if (data.len < 2) {
-        return JxlValidationResult.invalid("File too small");
-    }
-
-    // Create parallel runner - use single thread to avoid thread explosion
-    // when validating many files concurrently from the main thread pool
-    const runner = c.JxlThreadParallelRunnerCreate(null, 1);
-    if (runner == null) {
-        return JxlValidationResult.invalid("Failed to create parallel runner");
-    }
-    defer c.JxlThreadParallelRunnerDestroy(runner);
-
-    // Create decoder
-    const dec = c.JxlDecoderCreate(null);
-    if (dec == null) {
-        return JxlValidationResult.invalid("Failed to create JXL decoder");
-    }
-    defer c.JxlDecoderDestroy(dec);
-
-    // Set parallel runner for multithreaded decoding
-    if (c.JxlDecoderSetParallelRunner(dec, c.JxlThreadParallelRunner, runner) != c.JXL_DEC_SUCCESS) {
-        return JxlValidationResult.invalid("Failed to set parallel runner");
-    }
-
-    // Subscribe to events we need to handle for validation
-    // We need FULL_IMAGE to validate that all compressed data decodes correctly
-    const events_wanted: c_int = c.JXL_DEC_BASIC_INFO | c.JXL_DEC_FULL_IMAGE;
-    if (c.JxlDecoderSubscribeEvents(dec, events_wanted) != c.JXL_DEC_SUCCESS) {
-        return JxlValidationResult.invalid("Failed to subscribe to decoder events");
-    }
-
-    // Set input buffer
-    if (c.JxlDecoderSetInput(dec, data.ptr, data.len) != c.JXL_DEC_SUCCESS) {
-        return JxlValidationResult.invalid("Failed to set input buffer");
-    }
-    c.JxlDecoderCloseInput(dec);
-
-    // Process the decoding - decode to validate but discard output via callback
-    var basic_info: c.JxlBasicInfo = undefined;
-    var have_basic_info = false;
-
-    while (true) {
-        const status = c.JxlDecoderProcessInput(dec);
-
-        switch (status) {
-            c.JXL_DEC_ERROR => {
-                return JxlValidationResult.invalid("JXL decode error - corrupted data");
-            },
-            c.JXL_DEC_NEED_MORE_INPUT => {
-                return JxlValidationResult.invalid("JXL decode incomplete - truncated file");
-            },
-            c.JXL_DEC_BASIC_INFO => {
-                if (c.JxlDecoderGetBasicInfo(dec, &basic_info) != c.JXL_DEC_SUCCESS) {
-                    return JxlValidationResult.invalid(errmsg.failedToGet("basic info"));
-                }
-                have_basic_info = true;
-
-                // Validate dimensions
-                if (basic_info.xsize == 0 or basic_info.ysize == 0) {
-                    return JxlValidationResult.invalid("Invalid image dimensions (zero)");
-                }
-                if (basic_info.xsize > 65535 or basic_info.ysize > 65535) {
-                    return JxlValidationResult.invalid("Image dimensions too large");
-                }
-            },
-            c.JXL_DEC_NEED_IMAGE_OUT_BUFFER => {
-                // Decoder needs output - use callback to discard rows immediately
-                // This validates decode without allocating huge output buffer
-                // Pixel format: grayscale 8-bit (smallest possible, still validates decode)
-                const pixel_format = c.JxlPixelFormat{
-                    .num_channels = 1, // Grayscale - smaller than RGBA
-                    .data_type = c.JXL_TYPE_UINT8,
-                    .endianness = c.JXL_NATIVE_ENDIAN,
-                    .@"align" = 0,
-                };
-
-                // Set callback that discards decoded rows immediately
-                // The decode still happens (validating the data), but output is thrown away
-                if (c.JxlDecoderSetImageOutCallback(
-                    dec,
-                    &pixel_format,
-                    discardPixelCallback,
-                    null, // No userdata needed
-                ) != c.JXL_DEC_SUCCESS) {
-                    return JxlValidationResult.invalid("Failed to set output callback");
-                }
-            },
-            c.JXL_DEC_FULL_IMAGE => {
-                // Successfully decoded and validated entire image
-                // Continue to get JXL_DEC_SUCCESS (for multi-frame images)
-            },
-            c.JXL_DEC_SUCCESS => {
-                // All done successfully - every byte validated as renderable
-                if (!have_basic_info) {
-                    return JxlValidationResult.invalid("Decode succeeded but no image info");
-                }
-                return JxlValidationResult.ok();
-            },
-            else => {
-                // Other events we don't care about (color encoding, preview, etc.)
-                // Just continue processing
-            },
-        }
-    }
+    return validateJxlDeepFromBufferWithLimits(data, .{});
 }
 
-/// Callback that discards decoded pixel rows.
-/// libjxl calls this for each decoded row - we simply do nothing with the data.
-/// This validates the decode (compressed data is processed) but avoids memory allocation.
-fn discardPixelCallback(
-    _: ?*anyopaque, // opaque userdata (unused)
-    _: usize, // x position
-    _: usize, // y position
-    _: usize, // num_pixels
-    _: ?*const anyopaque, // pixel data pointer (discarded)
-) callconv(.c) void {
-    // Intentionally empty - discard all decoded pixels
-    // The important thing is that the decode happened and validated the data
+/// Validate one bounded memory view while preserving strict four-way evidence.
+pub fn validateJxlDeepFromBufferWithLimits(data: []const u8, limits: JxlValidationLimits) JxlValidationResult {
+    const options = libjxlz_validation.Options{
+        .struct_size = @sizeOf(libjxlz_validation.Options),
+        .host_byte_offset = limits.host_byte_offset,
+        .max_input_bytes = limits.max_input_bytes,
+        .max_pixels = limits.max_pixels,
+        .max_frames = limits.max_frames,
+    };
+    return mapWireResult(libjxlz_validation.validate(data, options));
+}
+
+fn mapWireResult(wire: libjxlz_validation.Result) JxlValidationResult {
+    const verdict: JxlVerdict = switch (wire.verdict) {
+        .JXL_VALIDATION_VALID => .valid,
+        .JXL_VALIDATION_CORRUPT => .corrupt,
+        .JXL_VALIDATION_UNSUPPORTED => .unsupported,
+        else => .indeterminate,
+    };
+    const code: JxlFindingCode = switch (wire.code) {
+        .JXL_VALIDATION_FINDING_NONE => .none,
+        .JXL_VALIDATION_FINDING_INVALID_SIGNATURE => .invalid_signature,
+        .JXL_VALIDATION_FINDING_TRUNCATED => .truncated,
+        .JXL_VALIDATION_FINDING_MALFORMED => .malformed,
+        .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE => .unsupported_feature,
+        .JXL_VALIDATION_FINDING_RESOURCE_LIMIT => .resource_limit,
+        .JXL_VALIDATION_FINDING_OUT_OF_MEMORY => .out_of_memory,
+        .JXL_VALIDATION_FINDING_INVALID_ARGUMENT => .invalid_argument,
+        else => .unclassified_decoder_error,
+    };
+    const message = findingMessage(code);
+    return .{
+        .valid = verdict != .corrupt,
+        .structural_only = verdict == .unsupported or verdict == .indeterminate,
+        .verdict = verdict,
+        .finding_code = code,
+        .error_message = if (verdict == .corrupt) message else null,
+        .warning_message = if (verdict == .unsupported or verdict == .indeterminate) message else null,
+        .byte_offset = wire.byte_offset,
+        .host_byte_offset = wire.host_byte_offset,
+        .offset_is_exact = wire.offset_is_exact != 0,
+        .frames_validated = wire.frames_validated,
+    };
+}
+
+fn findingMessage(code: JxlFindingCode) ?[]const u8 {
+    return switch (code) {
+        .none => null,
+        .invalid_signature => "Invalid JPEG XL signature",
+        .truncated => "Truncated JPEG XL input",
+        .malformed => "Malformed JPEG XL bitstream",
+        .unsupported_feature => "JPEG XL feature is not supported by the strict validator",
+        .resource_limit => "JPEG XL validation resource limit reached",
+        .out_of_memory => "JPEG XL validation ran out of memory",
+        .invalid_argument => "Invalid JPEG XL validation argument",
+        .unclassified_decoder_error => "JPEG XL validator could not classify the decoder error",
+    };
 }
 
 // Tests
@@ -226,16 +166,50 @@ test "reject invalid data with expected stderr" {
     const invalid_data = [_]u8{ 0x00, 0x00, 0x00, 0x00 };
     const result = validateJxlDeepFromBuffer(&invalid_data);
     try std.testing.expect(!result.valid);
+    try std.testing.expectEqual(JxlVerdict.corrupt, result.verdict);
+    try std.testing.expect(result.offset_is_exact);
     // Note: stderr message checking removed - libjxl doesn't output messages in release mode
 }
 
-test "reject truncated JXL with expected stderr" {
+test "resource-limited JXL validation is indeterminate, not corrupt" {
+    const data = [_]u8{ 0xFF, 0x0A, 0x00, 0x00 };
+    const result = validateJxlDeepFromBufferWithLimits(&data, .{
+        .max_input_bytes = 2,
+        .max_pixels = 1,
+        .max_frames = 1,
+    });
+
+    try std.testing.expectEqual(JxlVerdict.indeterminate, result.verdict);
+    try std.testing.expectEqual(JxlFindingCode.resource_limit, result.finding_code);
+}
+
+test "libjxlz wire unsupported verdict remains distinct" {
+    const result = mapWireResult(.{
+        .verdict = .JXL_VALIDATION_UNSUPPORTED,
+        .code = .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE,
+        .byte_offset = 17,
+        .host_byte_offset = 117,
+        .offset_is_exact = 1,
+        .frames_validated = 2,
+    });
+
+    try std.testing.expectEqual(JxlVerdict.unsupported, result.verdict);
+    try std.testing.expect(result.valid);
+    try std.testing.expectEqual(@as(u64, 17), result.byte_offset);
+    try std.testing.expectEqual(@as(u64, 117), result.host_byte_offset);
+    try std.testing.expect(result.offset_is_exact);
+    try std.testing.expectEqual(@as(u32, 2), result.frames_validated);
+}
+
+test "truncated JXL is never accepted even when libjxlz cannot type the decoder error" {
     // JXL signature but nothing else
     // JPEG-XL codestream starts with 0xFF 0x0A
     const truncated = [_]u8{ 0xFF, 0x0A, 0x00, 0x00 };
     const result = validateJxlDeepFromBuffer(&truncated);
-    try std.testing.expect(!result.valid);
-    // Note: stderr message checking removed - libjxl doesn't output messages in release mode
+    try std.testing.expect(result.verdict == .corrupt or result.verdict == .indeterminate);
+    if (result.verdict == .indeterminate) {
+        try std.testing.expectEqual(JxlFindingCode.unclassified_decoder_error, result.finding_code);
+    }
 }
 
 test "reject container with truncated box and expected stderr" {

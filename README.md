@@ -80,6 +80,12 @@ decoder can prove the impossible.
 ## Status
 The C FFI mirrors the current Zig validation API for ease of integration. It is expected to evolve before a 1.0 release.
 
+GUI and sales consumers must read the bounded
+[v1 capability matrix](docs/v1-capabilities.json) through its
+[JSON Schema](docs/v1-capabilities.schema.json). Only rows marked
+`production_ready: true` are public support claims; the matrix declares when
+its inventory is incomplete.
+
 ## Build
 ```bash
 ./build

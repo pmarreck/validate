@@ -1,0 +1,10 @@
+# Native production artifact and the three supported cross-built artifacts.
+packages.x86_64-linux.default
+packages.x86_64-linux.linux-aarch64
+packages.x86_64-linux.windows-x86_64
+packages.x86_64-linux.windows-aarch64
+
+# Independent unit/integration, CLI contract, and saved-fuzz regression gates.
+checks.x86_64-linux.test
+checks.x86_64-linux.cli
+checks.x86_64-linux.fuzz
