@@ -45,10 +45,11 @@
         .openjpeg = .{
             .path = "deps/openjpeg",
         },
-        .libjxlz = .{
-            .url = "https://github.com/pmarreck/libjxlz/archive/5e8f9d68152ae8a70cb823061f4b6c733eb09166.tar.gz",
-            .hash = "libjxlz-0.1.0-H-8wm8uGFwCaw6ZEz37LxZX_7_UMPqRBcUWQrnQ-ONRq",
-        },
+        // libjxlz: no longer a direct dep. jpegz (via tiffz) pins the same
+        // libjxlz commit and re-exposes strict JXL validation through
+        // `tiffz.jpegz.jpegxl` — a second direct pin here created two module
+        // instances of the same root file, which Zig 0.16 rejects (same class
+        // of failure as jpegz itself, see the tiffz comment below / #32).
         .brotli = .{
             .path = "deps/brotli",
         },
@@ -130,8 +131,8 @@
         // rejects ("file exists in modules 'jpegz' and 'jpegz0'") and the nix
         // sandbox SEGVs on during the Debug test compile. See validate #32.
         .tiffz = .{
-            .url = "git+https://github.com/pmarreck/tiffz#bcbe83b4616a67fa099c98463dafaad907491589",
-            .hash = "tiffz-0.1.0-qutJAZ-QYwFxnlFO2HvVrvOZdVLRliDK0BKM8p5cH9cx",
+            .url = "git+https://github.com/pmarreck/tiffz#99deeb892f5b2beeb66979fbf0ea63c8a6533498",
+            .hash = "tiffz-0.1.0-qutJAfiZdgGjBg5qJBm_FPybjwLmhpSc6g-lFxSyvpPk",
         },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",

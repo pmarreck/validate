@@ -164,20 +164,10 @@ pub fn build(b: *std.Build) void {
     });
     const brotli_lib = brotli_dep.artifact("brotli");
 
-    // Exact Peter-owned JPEG XL strict validator through its public Zig API.
-    // This avoids freezing a copied C header while libjxlz's package manifest
-    // is being fixed to include its public header tree.
-    const libjxlz_dep = b.dependency("libjxlz", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const libjxlz_validation_mod = b.createModule(.{
-        .root_source_file = libjxlz_dep.path("src/validation.zig"),
-        .target = target,
-        .optimize = deps_optimize,
-        .link_libc = true,
-    });
-    libjxlz_validation_mod.addIncludePath(brotli_lib.getEmittedIncludeTree());
+    // JPEG XL strict validation is reached through `tiffz.jpegz.jpegxl` —
+    // jpegz pins the same libjxlz commit and a direct dep here created a
+    // second module instance of the same root file (Zig 0.16 rejects it,
+    // same failure class as the jpegz double-pin, see #32).
 
     // PCRE2 for regex/glob pattern matching (BSD, renerocksai/pcre2 Zig build)
     const pcre2_dep = b.dependency("pcre2", .{
@@ -427,7 +417,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "xml", .module = zigxml_mod }, // XML validation (0BSD, ianprime0509/zig-xml)
             .{ .name = "cj5", .module = cj5_mod }, // JSON5 validation (MIT, septag/cj5 fork)
             .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (CDDL-1.0 elected)
-            .{ .name = "libjxlz_validation", .module = libjxlz_validation_mod }, // strict JPEG XL four-way verifier
+            // JPEG XL strict validation via tiffz.jpegz.jpegxl (single libjxlz instance) — see #32.
             .{ .name = "bzip2z", .module = bzip2z_mod }, // bzip2 clean-room decoder/encoder
             .{ .name = "zstd", .module = zstdz_mod }, // zstd via zstdz (Peter-controlled fork of Facebook BSD zstd)
             .{ .name = "z7z", .module = z7z_mod }, // 7-Zip clean-room Zig verifier

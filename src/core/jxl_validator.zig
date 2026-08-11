@@ -1,14 +1,18 @@
-//! Deep JPEG-XL validation through libjxlz's stable strict-validation API.
+//! Deep JPEG-XL validation through the jpegz strict facade (`tiffz.jpegz`),
+//! which runs the same libjxlz strict validator underneath.
 //!
-//! The adapter preserves libjxlz's four-way verdict and stable evidence so an
+//! The adapter preserves the four-way verdict and stable evidence so an
 //! unsupported feature or incomplete check can never masquerade as corruption.
+//! jpegz is reached through tiffz's re-export so the build graph holds exactly
+//! ONE libjxlz module instance (a direct dep here collided with jpegz's own
+//! libjxlz pin — same failure class as the jpegz double-pin, see #32).
 
 const std = @import("std");
 const errmsg = @import("error_messages.zig");
 const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
-const libjxlz_validation = @import("libjxlz_validation");
+const jpegz = @import("tiffz").jpegz;
 
 /// Threshold for warning about large image files (200MB)
 const large_image_threshold: u64 = 200 * 1024 * 1024;
@@ -30,6 +34,10 @@ pub const JxlFindingCode = enum {
     out_of_memory,
     invalid_argument,
     unclassified_decoder_error,
+    /// This build carries no JXL validator (e.g. Windows, where Brotli is
+    /// unavailable). Indeterminate, never corrupt: "could not check" is not
+    /// evidence of damage.
+    validator_unavailable,
 };
 
 pub const JxlValidationLimits = struct {
@@ -102,35 +110,70 @@ pub fn validateJxlDeepFromBuffer(data: []const u8) JxlValidationResult {
 }
 
 /// Validate one bounded memory view while preserving strict four-way evidence.
+/// Routes through jpegz's JXL facade; `jpegz.jpegxl.Options` IS libjxlz's
+/// Options on JXL-capable builds, so the resource limits pass through 1:1. On
+/// builds without a JXL validator (Windows/no-Brotli) the facade's Options
+/// stub only carries `host_byte_offset` — the @hasField guards keep this file
+/// compiling there, and the facade answers indeterminate/validator_unavailable.
 pub fn validateJxlDeepFromBufferWithLimits(data: []const u8, limits: JxlValidationLimits) JxlValidationResult {
-    const options = libjxlz_validation.Options{
-        .struct_size = @sizeOf(libjxlz_validation.Options),
-        .host_byte_offset = limits.host_byte_offset,
-        .max_input_bytes = limits.max_input_bytes,
-        .max_pixels = limits.max_pixels,
-        .max_frames = limits.max_frames,
+    // On JXL-capable builds `jpegz.jpegxl.Options` IS libjxlz's C-ABI Options
+    // (no field defaults — every field must be named); the no-Brotli stub
+    // carries only `host_byte_offset`. Branch at comptime on the ABI marker.
+    const options: jpegz.jpegxl.Options = if (comptime @hasField(jpegz.jpegxl.Options, "struct_size"))
+        .{
+            .struct_size = @sizeOf(jpegz.jpegxl.Options),
+            .host_byte_offset = limits.host_byte_offset,
+            .max_input_bytes = limits.max_input_bytes,
+            .max_pixels = limits.max_pixels,
+            .max_frames = limits.max_frames,
+        }
+    else
+        .{ .host_byte_offset = limits.host_byte_offset };
+    const allocator = heap.validateAllocator();
+    var strict = jpegz.jpegxl.validate(allocator, data, options) catch {
+        return indeterminate(findingMessage(.out_of_memory).?, .out_of_memory);
     };
-    return mapWireResult(libjxlz_validation.validate(data, options));
+    defer strict.deinit(allocator);
+    return mapStrictResult(&strict);
 }
 
-fn mapWireResult(wire: libjxlz_validation.Result) JxlValidationResult {
-    const verdict: JxlVerdict = switch (wire.verdict) {
-        .JXL_VALIDATION_VALID => .valid,
-        .JXL_VALIDATION_CORRUPT => .corrupt,
-        .JXL_VALIDATION_UNSUPPORTED => .unsupported,
-        else => .indeterminate,
-    };
-    const code: JxlFindingCode = switch (wire.code) {
-        .JXL_VALIDATION_FINDING_NONE => .none,
-        .JXL_VALIDATION_FINDING_INVALID_SIGNATURE => .invalid_signature,
-        .JXL_VALIDATION_FINDING_TRUNCATED => .truncated,
-        .JXL_VALIDATION_FINDING_MALFORMED => .malformed,
-        .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE => .unsupported_feature,
-        .JXL_VALIDATION_FINDING_RESOURCE_LIMIT => .resource_limit,
-        .JXL_VALIDATION_FINDING_OUT_OF_MEMORY => .out_of_memory,
-        .JXL_VALIDATION_FINDING_INVALID_ARGUMENT => .invalid_argument,
+/// Map a jpegz FindingCode (the 180..188 JXL band) onto validate's local enum.
+fn codeFromJpegz(code: ?jpegz.FindingCode) JxlFindingCode {
+    const c = code orelse return .unclassified_decoder_error;
+    return switch (c) {
+        .jxl_invalid_signature => .invalid_signature,
+        .jxl_truncated => .truncated,
+        .jxl_malformed => .malformed,
+        .jxl_unsupported_feature => .unsupported_feature,
+        .jxl_resource_limit => .resource_limit,
+        .jxl_out_of_memory => .out_of_memory,
+        .jxl_invalid_argument => .invalid_argument,
+        .jxl_validator_unavailable => .validator_unavailable,
         else => .unclassified_decoder_error,
     };
+}
+
+/// Flatten jpegz's StrictValidationResult (verdict + findings list) into
+/// validate's stable JxlValidationResult. The scalar copies happen before the
+/// caller deinits the strict result; messages are static strings owned here.
+fn mapStrictResult(strict: *const jpegz.StrictValidationResult) JxlValidationResult {
+    const verdict: JxlVerdict = switch (strict.verdict) {
+        .valid => .valid,
+        .corrupt => .corrupt,
+        .unsupported => .unsupported,
+        .indeterminate => .indeterminate,
+    };
+    var code: JxlFindingCode = if (verdict == .valid) .none else .unclassified_decoder_error;
+    var byte_offset: u64 = 0;
+    var host_byte_offset: u64 = 0;
+    var offset_is_exact = false;
+    if (strict.findings.items.len > 0) {
+        const finding = strict.findings.items[0];
+        if (verdict != .valid) code = codeFromJpegz(finding.code);
+        byte_offset = finding.offset orelse 0;
+        host_byte_offset = finding.host_offset orelse 0;
+        offset_is_exact = finding.offset_is_exact;
+    }
     const message = findingMessage(code);
     return .{
         .valid = verdict != .corrupt,
@@ -139,10 +182,10 @@ fn mapWireResult(wire: libjxlz_validation.Result) JxlValidationResult {
         .finding_code = code,
         .error_message = if (verdict == .corrupt) message else null,
         .warning_message = if (verdict == .unsupported or verdict == .indeterminate) message else null,
-        .byte_offset = wire.byte_offset,
-        .host_byte_offset = wire.host_byte_offset,
-        .offset_is_exact = wire.offset_is_exact != 0,
-        .frames_validated = wire.frames_validated,
+        .byte_offset = byte_offset,
+        .host_byte_offset = host_byte_offset,
+        .offset_is_exact = offset_is_exact,
+        .frames_validated = strict.frames_validated,
     };
 }
 
@@ -157,6 +200,7 @@ fn findingMessage(code: JxlFindingCode) ?[]const u8 {
         .out_of_memory => "JPEG XL validation ran out of memory",
         .invalid_argument => "Invalid JPEG XL validation argument",
         .unclassified_decoder_error => "JPEG XL validator could not classify the decoder error",
+        .validator_unavailable => "JPEG XL validator not available in this build",
     };
 }
 
@@ -183,22 +227,60 @@ test "resource-limited JXL validation is indeterminate, not corrupt" {
     try std.testing.expectEqual(JxlFindingCode.resource_limit, result.finding_code);
 }
 
-test "libjxlz wire unsupported verdict remains distinct" {
-    const result = mapWireResult(.{
-        .verdict = .JXL_VALIDATION_UNSUPPORTED,
-        .code = .JXL_VALIDATION_FINDING_UNSUPPORTED_FEATURE,
-        .byte_offset = 17,
-        .host_byte_offset = 117,
-        .offset_is_exact = 1,
-        .frames_validated = 2,
+test "jpegz strict unsupported verdict remains distinct" {
+    var findings: std.ArrayList(jpegz.StrictFinding) = .empty;
+    defer findings.deinit(std.testing.allocator);
+    try findings.append(std.testing.allocator, .{
+        .source = .libjxlz,
+        .leaf_code = 4,
+        .code = .jxl_unsupported_feature,
+        .severity = .warn,
+        .offset = 17,
+        .host_offset = 117,
+        .offset_is_exact = true,
     });
+    const strict = jpegz.StrictValidationResult{
+        .verdict = .unsupported,
+        .format = .jpeg_xl,
+        .frames_validated = 2,
+        .findings = findings,
+    };
+
+    const result = mapStrictResult(&strict);
 
     try std.testing.expectEqual(JxlVerdict.unsupported, result.verdict);
     try std.testing.expect(result.valid);
+    try std.testing.expectEqual(JxlFindingCode.unsupported_feature, result.finding_code);
+    try std.testing.expect(result.warning_message != null);
     try std.testing.expectEqual(@as(u64, 17), result.byte_offset);
     try std.testing.expectEqual(@as(u64, 117), result.host_byte_offset);
     try std.testing.expect(result.offset_is_exact);
     try std.testing.expectEqual(@as(u32, 2), result.frames_validated);
+}
+
+test "jpegz validator_unavailable maps to indeterminate, never corrupt" {
+    var findings: std.ArrayList(jpegz.StrictFinding) = .empty;
+    defer findings.deinit(std.testing.allocator);
+    try findings.append(std.testing.allocator, .{
+        .source = .libjxlz,
+        .leaf_code = 188,
+        .code = .jxl_validator_unavailable,
+        .severity = .warn,
+    });
+    const strict = jpegz.StrictValidationResult{
+        .verdict = .indeterminate,
+        .format = .jpeg_xl,
+        .findings = findings,
+    };
+
+    const result = mapStrictResult(&strict);
+
+    try std.testing.expectEqual(JxlVerdict.indeterminate, result.verdict);
+    try std.testing.expect(result.valid); // "not proven corrupt" legacy bit
+    try std.testing.expect(result.structural_only);
+    try std.testing.expectEqual(JxlFindingCode.validator_unavailable, result.finding_code);
+    try std.testing.expect(result.warning_message != null);
+    try std.testing.expect(result.error_message == null);
 }
 
 test "truncated JXL is never accepted even when libjxlz cannot type the decoder error" {

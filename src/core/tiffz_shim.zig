@@ -133,6 +133,10 @@ pub fn validateTiffDeepBuffer(
             // `error.Malformed` is the latter — codec saw input it
             // genuinely couldn't make sense of.
             error.Malformed,
+            // A Compression=7 strip whose embedded JPEG failed strict jpegz
+            // validation: byte corruption inside the payload, not a coverage
+            // gap — a normal decoder would render it visibly wrong. FAIL.
+            error.JpegInTiffPayload,
             error.OutOfMemory,
             error.LimitExceededIfdCount,
             error.LimitExceededTagCount,
@@ -203,6 +207,10 @@ fn routeError(err: tiffz.Error, format: FileFormat) ValidationResult {
         error.SourceShortRead => ValidationResult.invalidCodeWithDepth(format, .truncated, "TIFF strip/tile data", .full),
         error.SourceSeekTooFarBack => ValidationResult.invalidCodeWithDepth(format, .failed_to_seek, "TIFF source", .full),
         error.Io => ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "TIFF source", .full),
+        // Strict jpegz validation rejected an embedded JPEG strip/tile
+        // (Compression=7). Corruption inside the payload, distinct from a
+        // malformed TIFF container.
+        error.JpegInTiffPayload => ValidationResult.invalidCodeWithDepth(format, .invalid_value, "embedded JPEG payload (Compression=7 strip)", .full),
 
         // ── Decoder-level FAIL ──
         error.UnsupportedCompression => ValidationResult.invalidCodeWithDepth(format, .unsupported, "TIFF Compression", .full),
@@ -251,6 +259,13 @@ fn routeInfoFinding(code: tiffz.findings.InfoFinding) RoutedFinding {
         .jpeg_in_tiff => .{ .info = "JPEG-in-TIFF (Compression=7)" },
         .tiled_layout => .{ .info = "tiled layout" },
         .planar_separate => .{ .info = "separate planar configuration" },
+        // libtiff-tolerated deviations (codes 13-15, Peter's 2026-08-01
+        // ruling): readable but non-spec → accept with WARN, never silent
+        // validity. Code 13 carries a u32 LE excess-byte payload; rendering
+        // the exact N is a recorded follow-up (messages here are static).
+        .final_strip_padding_tolerated => .{ .warning = "final TIFF strip padded beyond image rows (libtiff-tolerated)" },
+        .lzw_missing_eod_tolerated => .{ .warning = "TIFF LZW stream ends at exact extent without EOD terminator (libtiff-tolerated)" },
+        .tiled_geometry_via_strip_tags_tolerated => .{ .warning = "tiled TIFF stores geometry via strip tags (libtiff-tolerated)" },
         _ => .{ .info = "unknown tiffz finding code" },
     };
 }
@@ -278,19 +293,39 @@ const FindingAccumulator = struct {
         self.findings.deinit(self.allocator);
     }
 
-    /// C-callable callback wired to `Decoder.setFindingCallback`. The
-    /// `userdata` is a `*FindingAccumulator`; `finding_id` is the
-    /// `InfoFinding` enum value cast to `i32`.
+    /// C-callable callback wired to `Decoder.setFindingCallback` (the
+    /// 99deeb89 nested-findings ABI: identity is `(source_decoder,
+    /// finding_code)`, offsets/mapped-code are presence-flagged).
+    ///
+    /// Only tiffz-source findings (source_decoder == 1) enter the
+    /// InfoFinding routing table — a jpegz/jp2z/libjxlz leaf code shares
+    /// numeric space with nothing here, so treating it as an InfoFinding
+    /// would fabricate meaning. Embedded-decoder corruption still FAILs
+    /// through `error.JpegInTiffPayload`; surfacing the nested finding's
+    /// specific cause text is a recorded follow-up.
     pub fn callback(
         userdata: ?*anyopaque,
-        finding_id: i32,
+        source_decoder: i32,
+        finding_code: i32,
+        mapped_finding_code: i32,
+        verdict: i32,
+        byte_offset: u64,
+        host_byte_offset: u64,
+        metadata_flags: u32,
         payload: ?[*]const u8,
         payload_len: usize,
     ) callconv(.c) void {
+        _ = mapped_finding_code;
+        _ = verdict;
+        _ = byte_offset;
+        _ = host_byte_offset;
+        _ = metadata_flags;
         _ = payload;
         _ = payload_len;
+        const tiffz_source: i32 = 1; // TIFFZ_SOURCE_TIFFZ
+        if (source_decoder != tiffz_source) return;
         const self: *FindingAccumulator = @ptrCast(@alignCast(userdata.?));
-        const code: tiffz.findings.InfoFinding = @enumFromInt(@as(u32, @intCast(finding_id)));
+        const code: tiffz.findings.InfoFinding = @enumFromInt(@as(u32, @intCast(finding_code)));
         // OOM during accumulation is silent — the decode itself is
         // unaffected, we just lose that one INFO finding.
         self.findings.append(self.allocator, .{ .code = code }) catch {};
@@ -302,11 +337,15 @@ test "tiffz_shim: invalid TIFF magic returns invalid" {
     try std.testing.expect(!result.is_valid);
 }
 
-test "tiffz_shim: LZW strip without EOD returns invalid" {
+test "tiffz_shim: LZW strip without EOD is accepted with libtiff-tolerated WARN" {
     // 8×1 1-bit TIFF, one LZW strip. Its bitstream contains CLEAR + literal
     // 0xAA, then only byte-alignment padding: TIFF 6.0 requires EOD before
-    // the physical end of the strip. This guards the validate-to-tiffz deep
-    // path as well as tiffz's codec unit test.
+    // the physical end of the strip, but the stream produces exactly the
+    // bounded extent before clean EOF — the case libtiff tolerates. Peter's
+    // 2026-08-01 ruling: readable-but-nonconformant data libtiff allows →
+    // accept + WARN (tiffz finding 14), never FAIL and never silent validity.
+    // (History: pre-ruling this asserted invalid; tiffz@99deeb89 implements
+    // the tolerated classifier and this test asserts the WARN routing.)
     const bytes = [_]u8{
         'I', 'I', 42, 0, 8, 0, 0, 0,
         8, 0,
@@ -327,7 +366,11 @@ test "tiffz_shim: LZW strip without EOD returns invalid" {
     };
 
     const result = validateTiffDeepBuffer(std.testing.allocator, &bytes, .tiff);
-    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqualStrings(
+        "TIFF LZW stream ends at exact extent without EOD terminator (libtiff-tolerated)",
+        result.warning_message orelse return error.TestExpectedEqual,
+    );
 }
 
 test "tiffz_shim: LERC strip reaches full validation" {

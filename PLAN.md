@@ -69,19 +69,32 @@ at the bottom. Older completed sections were rolled up — full history lives in
       is first-party only (Einstein item 6). Ordered, green-gated increments —
       dep removal cannot precede the code that uses those libs, so the code
       reroute leads each removal:
-  - [ ] **A. Bump tiffz `bcbe83b4` → `8fe6524`** (brings strict jpegz facade
-        `fb72045`, lzwz `5dba5c4`, WARN codes 13/14/15). Package hash
-        `tiffz-0.1.0-qutJAUWOdgHWMCVBEQvJCqiABplL1xi5XbTJG2IQnbLz`, new
-        zigDepsHash `sha256-wvN8HtEdN4K/7DpRF3dV2eVrnPySLVpuKQlROAaWYpY=`.
-        8fe6524 still accepts `-Dopenjpeg-*`/`-Dlibjpeg-*`, so this is
-        additive; compile is the drift oracle.
+  - [x] **A. Bump tiffz `bcbe83b4` → `99deeb89`** (completed 2026-08-11 ~15:50
+        EDT, full suite green; witnessed-red: the pin flipped the missing-EOD
+        TIFF case from FAIL to accept+WARN exactly per Peter's 2026-08-01
+        libtiff-tolerance ruling, and the old strict test caught it before the
+        contract update). (Supersedes the
+        abandoned 8fe6524 WIP; tiffz-requested 2026-08-11). Brings code-13 u32
+        excess-byte payload AND jpegz `98824e7b` with `validateAny` whole-family
+        facade. NOT additive: jpegz's internal libjxlz pin (same commit
+        `5e8f9d6` we pinned directly) collides as a duplicate module instance,
+        so this increment atomically: bumps tiffz, reroutes
+        `jxl_validator.zig` through `tiffz.jpegz.jpegxl` (Options passes
+        through 1:1; @hasField guards cover the Windows no-Brotli stub;
+        `jxl_validator_unavailable`→indeterminate), and deletes the direct
+        `.libjxlz` zon dep + build.zig module. Package hash
+        `tiffz-0.1.0-qutJAfiZdgGjBg5qJBm_FPybjwLmhpSc6g-lFxSyvpPk`.
   - [ ] **B. JP2 openjpeg → jpegz strict.** Reroute
         `image_validators.validateJpeg2000Deep` (currently calls the
-        openjpeg-`@cImport` `jpeg2000_validator.zig`) to
-        `tiffz.jpegz.jpeg2000.strictValidate` (pure-Zig via jp2z `d3754cf`).
-        TDD: JP2 known-good/known-bad through the public API. Then delete the
-        `openjpeg` zon dep, all build.zig openjpeg wiring, `deps/openjpeg`, and
-        the flake openjpeg inputs.
+        openjpeg-`@cImport` `jpeg2000_validator.zig`) and the PDF JPX path to
+        `tiffz.jpegz.jpeg2000.strictValidate` (pure-Zig via jp2z; jpegz's
+        `jpeg2000.decode` still routes to openjpeg but lazy analysis keeps it
+        unlinked once nothing calls it). TDD: JP2 known-good/known-bad through
+        the public API. Then delete the `openjpeg` zon dep, all build.zig
+        openjpeg wiring, `deps/openjpeg`, and the flake openjpeg inputs.
+        jpegz also offered a caller-supplied format hint for
+        destroyed-signature JP2s (sniff can't route them) — request it when
+        wiring this.
   - [ ] **C. RAW libraw → rawz + tiffz-structural.** Add rawz `2d030cf7`
         (hash `rawz-0.1.0-sAg3Opc2AQByM2uPDUcILtbUC0hqym4oFQnXet4xu8CJ`),
         inject `tiffz_dep.module("tiffz-parser")` from the SAME tiffz instance

@@ -32,7 +32,7 @@
 
 			# Pre-fetched Zig dependencies (fixed-output derivation)
 			# This hash must be updated when build.zig.zon changes
-			zigDepsHash = "sha256-5nFw7cdticHYlOBfo+BanRVE0dyOxy8wjkvOwOOEtZc=";
+			zigDepsHash = "sha256-sQfLZjDjFCYmGbrZtdJXIiAOApV2TDSq+wf46+qYsmw=";
 		in {
 			# Packages for Garnix/Nix builds
 			packages = forBuildSystems (buildSystem:
@@ -122,6 +122,12 @@
 								mkdir -p $ZIG_GLOBAL_CACHE_DIR
 								cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
 								chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+								# Brotli HEADERS for jpegz→libjxlz @cImport (jpegz's builder
+								# reads BROTLI_INCLUDE_DIR). Header-only and arch-independent:
+								# symbols come from validate's Zig-built deps/brotli archive,
+								# so nixpkgs brotli never enters the link line — safe for
+								# native and cross alike.
+								export BROTLI_INCLUDE_DIR=${pkgs.brotli.dev}/include
 								${if cross then "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS" else ""}
 								${if !cross then ''
 								# Forward libjpeg + openjpeg + zlib paths to jpegz/tiffz.
@@ -303,6 +309,8 @@
 							mkdir -p $ZIG_GLOBAL_CACHE_DIR
 							cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
 							chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+							# Brotli headers for jpegz→libjxlz @cImport (see packages note).
+							export BROTLI_INCLUDE_DIR=${pkgs.brotli.dev}/include
 							# Force non-interactive: Zig's test runner emits terminal escape
 							# sequences when stderr is a TTY, which can hang in CI.
 							export TERM=dumb
@@ -404,6 +412,8 @@
 							mkdir -p $ZIG_GLOBAL_CACHE_DIR
 							cp -r ${zigDeps}/* $ZIG_GLOBAL_CACHE_DIR/
 							chmod -R u+w $ZIG_GLOBAL_CACHE_DIR
+							# Brotli headers for jpegz→libjxlz @cImport (see packages note).
+							export BROTLI_INCLUDE_DIR=${pkgs.brotli.dev}/include
 							export TERM=dumb MUTE_DEBUG_STATUS=1
 							LIBJPEG_DEV=${pkgs.libjpeg_turbo.dev}
 							LIBJPEG_OUT=${pkgs.libjpeg_turbo.out}
@@ -503,6 +513,8 @@
 							# include/openjpeg-2.5/ in nixpkgs.
 							export OPENJPEG_INC="${pkgs.openjpeg.dev}/include/openjpeg-2.5"
 							export OPENJPEG_LIB="${pkgs.openjpeg}/lib"
+							# Brotli headers for jpegz→libjxlz @cImport (see packages note).
+							export BROTLI_INCLUDE_DIR="${pkgs.brotli.dev}/include"
 							export LIBOPENMPT_STATIC_ROOT="${libopenmptStatic.out}"
 							export LIBOPENMPT_INCLUDE_ROOT="${libopenmptStatic.dev}"
 							if [ -d /Applications/Xcode.app/Contents/Developer ]; then
