@@ -40,6 +40,78 @@ at the bottom. Older completed sections were rolled up — full history lives in
         alternate codestream, so sensitivity is not automatically a false
         negative count.
 
+- [x] **RAW coverage + nomenclature doc (Peter, 2026-08-05):** authored
+      `~/Code/rawz/docs/RAW_COVERAGE_AND_NOMENCLATURE.md` — container-vs-payload
+      two-layer model (answers "is RAW a child of TIFF?": neither), shared
+      `<container>/<payload>/<depth>@<source>` nomenclature with a 0-5 depth
+      ladder, per-format gap matrix (hypothetical ceiling | first-party now |
+      third-party delta), licensing analysis (libraw/rawspeed oracle-only; RE
+      legal; Nikon WB-encryption + patent caveats), and a leverage-ordered
+      roadmap. Notified rawz. Completed 2026-08-05 13:11 EDT. Open decisions for
+      Peter recorded in §7 (launch RAW posture; libraw transition; CR3 priority).
+
+- [x] **URGENT re-pin rarz `1ce99ef` → `bf6840c` (rarz, 2026-08-05):** fixes
+      FOUR false-positive classes — x86 program archives, RAR4 >4MB, RAR4
+      multi-volume, encrypted RAR4 store entries — that make validate condemn
+      GOOD archives. Recompile-only: `rarz_verify_archive_summary` gained
+      `uint32_t encrypted_entry_count` at END (do NOT add to accounting sum —
+      it's a property, counted separately in one outcome bucket). Post-fix
+      unrar agreement 21/21 (was 2/18). Ships correctness; prioritize over the
+      codec cutover. Completed 2026-08-11 15:20 EDT: full `./test` green, no
+      consumer code change needed (validate ignores the appended
+      `encrypted_entry_count` tail; accounting invariant untouched). rarz has
+      newer commits (`71ff42d` unpack20 fixes) with no verification note yet —
+      candidate for the NEXT bump, not this one.
+
+- [ ] **v1 codec production-closure cutover (Peter, 2026-08-05):** repin
+      jpegz/tiffz/rawz and remove the non-Peter-owned `openjpeg`,
+      `libjpeg-turbo`, and `libraw` runtime/build paths so the shipped closure
+      is first-party only (Einstein item 6). Ordered, green-gated increments —
+      dep removal cannot precede the code that uses those libs, so the code
+      reroute leads each removal:
+  - [ ] **A. Bump tiffz `bcbe83b4` → `8fe6524`** (brings strict jpegz facade
+        `fb72045`, lzwz `5dba5c4`, WARN codes 13/14/15). Package hash
+        `tiffz-0.1.0-qutJAUWOdgHWMCVBEQvJCqiABplL1xi5XbTJG2IQnbLz`, new
+        zigDepsHash `sha256-wvN8HtEdN4K/7DpRF3dV2eVrnPySLVpuKQlROAaWYpY=`.
+        8fe6524 still accepts `-Dopenjpeg-*`/`-Dlibjpeg-*`, so this is
+        additive; compile is the drift oracle.
+  - [ ] **B. JP2 openjpeg → jpegz strict.** Reroute
+        `image_validators.validateJpeg2000Deep` (currently calls the
+        openjpeg-`@cImport` `jpeg2000_validator.zig`) to
+        `tiffz.jpegz.jpeg2000.strictValidate` (pure-Zig via jp2z `d3754cf`).
+        TDD: JP2 known-good/known-bad through the public API. Then delete the
+        `openjpeg` zon dep, all build.zig openjpeg wiring, `deps/openjpeg`, and
+        the flake openjpeg inputs.
+  - [ ] **C. RAW libraw → rawz + tiffz-structural.** Add rawz `2d030cf7`
+        (hash `rawz-0.1.0-sAg3Opc2AQByM2uPDUcILtbUC0hqym4oFQnXet4xu8CJ`),
+        inject `tiffz_dep.module("tiffz-parser")` from the SAME tiffz instance
+        (one-instance rule). Cut PEF per Einstein M3 (Compression 32773 →
+        tiffz; 65535 → rawz Huffman). Then delete `libraw` zon dep,
+        `libraw_validator.zig`, build.zig libraw wiring, flake libraw. MEASURE
+        the RAW verdict delta (which families drop libraw-structural →
+        tiffz-structural or unsupported) and record it honestly; STOP+report if
+        a family loses all validation unexpectedly.
+  - [ ] **D. Drop libjpeg-turbo forwarding** once nothing needs the libjpeg
+        oracle (jpegz `-Dwith-libjpeg-oracle=false`); remove flake
+        libjpeg_turbo inputs across the 4 dev-shells.
+  - [ ] **E. Prove the Nix production closure** excludes openjpeg/libraw/
+        libjpeg artifacts (matches rawz/jpegz closure gates).
+  - [ ] **F. v1.0 hard-gate (Peter, 2026-08-06, "physics over policy"):**
+        `src/core/v1_closure.zig` comptime `@compileError` on any oracle-only
+        decoder in the production module graph (libraw, openjpeg, libjpeg-turbo,
+        rawspeed, …), flags set by build.zig from the real graph; `-Doracle=true`
+        is the only (non-shippable) way to pull them in. Layer 2 = Nix
+        runtime-closure grep. Forbidden set is a blessed-hash CONTROL FILE (MFIC);
+        it GROWS as first-party replacements land. Design in rawz doc §8.
+  - Note: tiffz code 13 (`final_strip_padding_tolerated`) ships PRESENCE-ONLY in
+    `8fe6524`; render "excess unknown" until tiffz's u32-payload follow-up pin.
+
+- [ ] **Tier-0 RAW deep via jpegz (Peter-approved 2026-08-06):** wire DNG + CR2
+      lossless-JPEG sensor payloads through jpegz (DNG `partial`→`deep`, CR2
+      `unsupported`→`deep`), zero RE, zero licensing risk. Cross-project
+      (tiffz owns DNG container; CR2 = tiffz container + Canon lossless JPEG →
+      jpegz). Coordinate seam with tiffz/jpegz. See rawz doc §6 Tier 0.
+
 - [ ] **Drive the four image-parser dependencies to 1.0:** execute
       [`docs/IMAGE_PARSER_1_0_MASTER_PLAN.md`](docs/IMAGE_PARSER_1_0_MASTER_PLAN.md)
       for `tiffz`, `libjxlz`, `jp2z`, and `jpegz`. Library correctness,
