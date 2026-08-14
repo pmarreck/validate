@@ -63,6 +63,26 @@ at the bottom. Older completed sections were rolled up — full history lives in
       newer commits (`71ff42d` unpack20 fixes) with no verification note yet —
       candidate for the NEXT bump, not this one.
 
+- [x] **2026-08-14 landing day — ALL PUSHED** (`e5b6b28ad` on origin/yolo;
+      combined gate green 16:41). Two operational discoveries: harness-tracked
+      background tasks were being reaped mid-run (detached-subshell + Monitor
+      pattern survives — use it for long gates), and `corruption_sweep_ledger`
+      flaked ONCE in-sequence under build-storm load (passes isolated + in
+      dev-shell + in the gate4 rerun; joins the order/load-nondeterminism
+      investigation with memory_budget/racetrack, task #21's session).
+      Landed: `1cf47fb07` JP2 cutover via tiffz `388dee45`→jpegz `919571df`→
+      jp2z `1b29e0c` + lzwz 0.3.0, openjpeg 100% removed (-Dwith-jp2-decode=
+      false; balloon fixture valid/fully-validated matching oracle);
+      `ec14e2003` TrueHD/MLP validator (agent-built, witnessed red, 1909/0,
+      caught a cmp-proven bit-flip ffmpeg misses; Iron Man WARN closed);
+      `e5b6b28ad` merge of mutation-hardening (28 dd sites → self-verifying
+      mutate_bytes; rm_safe shadows truncate too — witnessed red). Earlier,
+      pushed: `816037f8f` rarz bf6840c (ACK to rarz sent 08-14 — was pinned
+      all along), `240228dcf` DTS-HD EXSS fix, `ade1e0c46` lockfile+PE.
+      rarz `71ff42d`+ unpack20 fixes = next-bump candidate awaiting their
+      verification note. libjpeg-turbo removal (old task D) + closure proof
+      (E) + hard-gate (F) fold into #15's hard-gate work.
+
 - [ ] **v1 codec production-closure cutover (Peter, 2026-08-05):** repin
       jpegz/tiffz/rawz and remove the non-Peter-owned `openjpeg`,
       `libjpeg-turbo`, and `libraw` runtime/build paths so the shipped closure
