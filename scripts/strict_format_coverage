@@ -17,6 +17,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# mutate_bytes / mutate_bytes_from — dd-free, self-verifying fixture mutation.
+. "$ROOT_DIR/tests/cli/_lib.sh"
+
 VALIDATE_BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
 GT_DIR="${GT_DIR:-ground_truth_examples}"
 RESULTS_FILE="${RESULTS_FILE:-inbox/strict_format_coverage.tsv}"
@@ -151,15 +154,14 @@ corrupt_copy_at_pos() {
 		return 1
 	fi
 
-	local payload=""
-	local i byte hex
+	local -a bytes=()
+	local i byte
 	for ((i=0; i<width; i++)); do
 		byte=$(( (seed * 73 + i * 29 + 17) % 256 ))
-		hex="$(printf '%02x' "$byte")"
-		payload+="\\x${hex}"
+		bytes+=("$(printf '%02x' "$byte")")
 	done
 
-	printf '%b' "$payload" | dd of="$dst" bs=1 seek="$pos" count="$width" conv=notrunc 2>/dev/null
+	mutate_bytes "$dst" "$pos" "${bytes[@]}"
 }
 
 seeded_corruption_pos() {

@@ -17,6 +17,8 @@
 
 set -u
 
+. "$(dirname "$0")/_lib.sh"
+
 BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
 	if [[ ! -x "$BIN" ]]; then BIN="./zig-out/bin/validate.exe"; fi
@@ -105,9 +107,9 @@ read_u32_le() {
 }
 
 write_byte() {
-	local file="$1" off="$2" val="$3" oct
-	printf -v oct '%03o' "$((val & 0xff))"
-	printf "\\$oct" | dd of="$file" bs=1 seek="$off" conv=notrunc 2>/dev/null
+	local file="$1" off="$2" val="$3" hex
+	printf -v hex '%02x' "$((val & 0xff))"
+	mutate_bytes "$file" "$off" "$hex"
 }
 
 flip_byte() {
@@ -149,7 +151,7 @@ fi
 mid=$((sz / 2))
 shotgun="$tmpdir/shotgun.wv"
 cp "$SAMPLE" "$shotgun"
-dd if=/dev/urandom of="$shotgun" bs=1 seek="$mid" count=4096 conv=notrunc 2>/dev/null
+mutate_bytes_from "$shotgun" "$mid" /dev/urandom 4096
 if ! "$BIN" "$shotgun" >/dev/null 2>&1; then
 	pass "4 KB shotgun-corrupted WavPack detected"
 else

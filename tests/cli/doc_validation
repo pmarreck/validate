@@ -74,7 +74,7 @@ echo "Test 6: Corrupted FIB magic detected"
 cp "$SAMPLE" "$tmpdir/corrupt_magic.doc"
 # Flip first 2 bytes of WordDocument stream
 # WordDocument is at sector 0 (offset 512 in the file for v3 OLE2)
-printf '\x00\x00' | dd of="$tmpdir/corrupt_magic.doc" bs=1 seek=512 count=2 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/corrupt_magic.doc" 512 00 00
 output=$("$BIN" "$tmpdir/corrupt_magic.doc" 2>&1) || true
 if echo "$output" | grep -q "FAIL\|Invalid FIB signature"; then
 	pass "Corrupted FIB magic detected"
@@ -85,7 +85,7 @@ fi
 echo "Test 7: Corrupted nFibBack detected"
 cp "$SAMPLE" "$tmpdir/corrupt_nfibback.doc"
 # nFibBack is at offset 0x0C within WordDocument stream = file offset 512+0x0C=524
-printf '\xFF\xFF' | dd of="$tmpdir/corrupt_nfibback.doc" bs=1 seek=524 count=2 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/corrupt_nfibback.doc" 524 ff ff
 output=$("$BIN" "$tmpdir/corrupt_nfibback.doc" 2>&1) || true
 if echo "$output" | grep -q "FAIL\|nFibBack"; then
 	pass "Corrupted nFibBack detected"
@@ -96,7 +96,7 @@ fi
 echo "Test 8: Corrupted csw detected"
 cp "$SAMPLE" "$tmpdir/corrupt_csw.doc"
 # csw is at offset 0x20 within WordDocument stream = file offset 512+0x20=544
-printf '\xFF\xFF' | dd of="$tmpdir/corrupt_csw.doc" bs=1 seek=544 count=2 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/corrupt_csw.doc" 544 ff ff
 output=$("$BIN" "$tmpdir/corrupt_csw.doc" 2>&1) || true
 if echo "$output" | grep -q "FAIL\|csw"; then
 	pass "Corrupted csw detected"
@@ -109,9 +109,9 @@ cp "$SAMPLE" "$tmpdir/corrupt_fclcb.doc"
 # fc/lcb pair at index 1: offset 0x9A + 1*8 = 0xA2 within WordDocument stream
 # File offset = 512 + 0xA2 = 674
 # Set fc to a huge value that exceeds table stream
-printf '\xFF\xFF\xFF\x7F' | dd of="$tmpdir/corrupt_fclcb.doc" bs=1 seek=674 count=4 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/corrupt_fclcb.doc" 674 ff ff ff 7f
 # Set lcb to non-zero so it triggers the check
-printf '\x01\x00\x00\x00' | dd of="$tmpdir/corrupt_fclcb.doc" bs=1 seek=678 count=4 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/corrupt_fclcb.doc" 678 01 00 00 00
 output=$("$BIN" "$tmpdir/corrupt_fclcb.doc" 2>&1) || true
 if echo "$output" | grep -q "FAIL\|beyond Table stream"; then
 	pass "Corrupted fc/lcb pair detected"

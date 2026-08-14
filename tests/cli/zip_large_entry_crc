@@ -23,6 +23,8 @@ case "$VALIDATE_BIN" in
 	*) VALIDATE_BIN="$(cd "$(dirname "$VALIDATE_BIN")" && pwd)/$(basename "$VALIDATE_BIN")" ;;
 esac
 
+. "$SCRIPT_DIR/_lib.sh"
+
 # `zip` is TOOLING that flake.nix (checks.test nativeBuildInputs) is designed to
 # provide. A missing tool is a misconfiguration, not a legitimately-absent fixture
 # — so FAIL LOUD (exit 1), never skip. (exit 77 / skip is reserved for optional
@@ -56,9 +58,10 @@ fi
 # Corrupt a payload byte deep inside the large stored entry (~100 MiB in).
 cp big.zip big_corrupt.zip
 off=$(( 100 * 1024 * 1024 ))
-orig=$(dd if=big_corrupt.zip bs=1 skip=$off count=1 2>/dev/null | od -An -tu1 | tr -d ' ')
+orig=$(od -An -tu1 -j "$off" -N1 big_corrupt.zip | tr -d ' ')
 new=$(( orig ^ 0xFF ))
-printf "$(printf '\\%03o' "$new")" | dd of=big_corrupt.zip bs=1 seek=$off count=1 conv=notrunc 2>/dev/null
+printf -v newhex '%02x' "$new"
+mutate_bytes big_corrupt.zip "$off" "$newhex"
 
 # Corrupt large zip → MUST be detected (valid:false). This is the bug: the entry
 # was skipped for exceeding 512 MiB and the archive claimed "fully validated".

@@ -95,8 +95,7 @@ else
 	# Overwrite 4 KB at the file midpoint — same shotgun pattern as
 	# format_roundtrip uses. A ZIP-CRC32 validator must catch this.
 	mid=$((size / 2))
-	dd if=/dev/urandom of="$corrupt_keynote" bs=1 count=4096 seek="$mid" \
-		conv=notrunc 2>/dev/null
+	mutate_bytes_from "$corrupt_keynote" "$mid" /dev/urandom 4096
 	if "$BIN" --no-color "$corrupt_keynote" >/dev/null 2>&1; then
 		echo "  FAIL: corrupted Keynote was accepted"
 		((failures++)) || true
@@ -114,8 +113,7 @@ if [[ "$size" -lt 100 ]]; then
 	((failures++)) || true
 else
 	mid=$((size / 2))
-	dd if=/dev/urandom of="$corrupt_numbers" bs=1 count=4096 seek="$mid" \
-		conv=notrunc 2>/dev/null
+	mutate_bytes_from "$corrupt_numbers" "$mid" /dev/urandom 4096
 	if "$BIN" --no-color "$corrupt_numbers" >/dev/null 2>&1; then
 		echo "  FAIL: corrupted Numbers was accepted"
 		((failures++)) || true

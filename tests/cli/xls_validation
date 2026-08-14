@@ -66,9 +66,8 @@ fi
 SAMPLE="ground_truth_examples/xls/sample.xls"
 
 echo "Test 5: Truncated file detected"
-cp "$SAMPLE" "$tmpdir/truncated.xls"
 # Truncate to 256 bytes (too small for valid OLE2 + Workbook)
-dd if="$SAMPLE" of="$tmpdir/truncated.xls" bs=1 count=256 2>/dev/null
+head -c 256 "$SAMPLE" > "$tmpdir/truncated.xls"
 output=$("$BIN" "$tmpdir/truncated.xls" 2>&1) || true
 if echo "$output" | grep -q "FAIL"; then
 	pass "Truncated file detected"
@@ -79,7 +78,7 @@ fi
 echo "Test 6: Corrupted OLE2 header magic detected"
 cp "$SAMPLE" "$tmpdir/corrupt_ole2.xls"
 # OLE2 magic is first 8 bytes: D0 CF 11 E0 A1 B1 1A E1
-printf '\x00\x00\x00\x00' | dd of="$tmpdir/corrupt_ole2.xls" bs=1 seek=0 count=4 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/corrupt_ole2.xls" 0 00 00 00 00
 output=$("$BIN" "$tmpdir/corrupt_ole2.xls" 2>&1) || true
 if echo "$output" | grep -q "FAIL\|Unknown"; then
 	pass "Corrupted OLE2 header detected"
@@ -91,7 +90,7 @@ echo "Test 7: Corrupted sector size detected"
 cp "$SAMPLE" "$tmpdir/corrupt_sector.xls"
 # Sector size power is at offset 30 (u16 LE), normally 9 (=512) or 12 (=4096)
 # Set to 0xFF 0xFF which is invalid
-printf '\xFF\xFF' | dd of="$tmpdir/corrupt_sector.xls" bs=1 seek=30 count=2 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/corrupt_sector.xls" 30 ff ff
 output=$("$BIN" "$tmpdir/corrupt_sector.xls" 2>&1) || true
 if echo "$output" | grep -q "FAIL"; then
 	pass "Corrupted sector size detected"
@@ -102,7 +101,7 @@ fi
 echo "Test 8: Corrupted directory entry count detected"
 cp "$SAMPLE" "$tmpdir/corrupt_dir.xls"
 # Directory sector start at offset 48 (u32 LE), set to invalid sector
-printf '\xFE\xFF\xFF\x7F' | dd of="$tmpdir/corrupt_dir.xls" bs=1 seek=48 count=4 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/corrupt_dir.xls" 48 fe ff ff 7f
 output=$("$BIN" "$tmpdir/corrupt_dir.xls" 2>&1) || true
 if echo "$output" | grep -q "FAIL"; then
 	pass "Corrupted directory entry detected"

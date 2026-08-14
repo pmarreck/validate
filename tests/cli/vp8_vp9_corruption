@@ -21,6 +21,8 @@
 
 set -u
 
+. "$(dirname "$0")/_lib.sh"
+
 BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
 	if [[ ! -x "$BIN" ]]; then BIN="./zig-out/bin/validate.exe"; fi
@@ -69,11 +71,13 @@ try_corrupt_offsets() {
 	shift 2
 	local offsets=("$@")
 	local any_caught=0
+	local -a burst_bytes=()
+	local i
+	for ((i = 0; i < 64; i++)); do burst_bytes+=(aa); done
 	for off in "${offsets[@]}"; do
 		local corrupt="$tmpdir/${label}_${off}.webm"
 		cp "$fixture" "$corrupt"
-		printf '%*s' 64 '' | tr ' ' '\252' | \
-			dd of="$corrupt" bs=1 seek="$off" count=64 conv=notrunc 2>/dev/null
+		mutate_bytes "$corrupt" "$off" "${burst_bytes[@]}"
 		if ! "$BIN" "$corrupt" >/dev/null 2>&1; then
 			any_caught=1
 			break

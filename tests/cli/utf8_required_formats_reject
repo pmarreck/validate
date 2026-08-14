@@ -9,6 +9,8 @@
 # set -u only (NOT set -e): we assert exit codes explicitly.
 set -u
 
+. "$(dirname "$0")/_lib.sh"
+
 VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
 [ -x "$VALIDATE" ] || { echo "SKIP: validate binary not built ($VALIDATE)"; exit 77; }
 
@@ -48,7 +50,7 @@ for ext in json csv toml xml html; do
 	# corrupt a mid-file byte to 0xFF (invalid UTF-8)
 	sz=$(wc -c < "$f")
 	off=$(( sz / 2 ))
-	printf '\377' | dd of="$f" bs=1 seek="$off" count=1 conv=notrunc 2>/dev/null
+	mutate_bytes "$f" "$off" ff
 	if "$VALIDATE" "$f" >/dev/null 2>&1; then
 		fail "$ext: invalid UTF-8 NOT detected (validator returned OK)"
 	else

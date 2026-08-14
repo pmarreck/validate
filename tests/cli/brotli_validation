@@ -20,6 +20,8 @@
 
 set -u
 
+. "$(dirname "$0")/_lib.sh"
+
 BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
 	if [[ ! -x "$BIN" ]]; then BIN="./zig-out/bin/validate.exe"; fi
@@ -95,11 +97,13 @@ try_burst_offsets() {
 	shift 2
 	local offsets=("$@")
 	local any_caught=0
+	local -a burst_bytes=()
+	local i
+	for ((i = 0; i < burst_len; i++)); do burst_bytes+=(aa); done
 	for off in "${offsets[@]}"; do
 		local corrupt="$tmpdir/burst_${off}_${burst_len}.br"
 		cp "$fixture" "$corrupt"
-		printf '%*s' "$burst_len" '' | tr ' ' '\252' | \
-			dd of="$corrupt" bs=1 seek="$off" count="$burst_len" conv=notrunc 2>/dev/null
+		mutate_bytes "$corrupt" "$off" "${burst_bytes[@]}"
 		if ! "$BIN" "$corrupt" >/dev/null 2>&1; then
 			any_caught=1
 		fi
@@ -122,7 +126,7 @@ fi
 # 3. Shotgun: 4 KB random-byte overwrite at midpoint must be caught.
 shotgun="$tmpdir/shotgun.br"
 cp "$SAMPLE" "$shotgun"
-dd if=/dev/urandom of="$shotgun" bs=1 seek="$mid" count=4096 conv=notrunc 2>/dev/null
+mutate_bytes_from "$shotgun" "$mid" /dev/urandom 4096
 if ! "$BIN" "$shotgun" >/dev/null 2>&1; then
 	pass "4 KB shotgun-corrupted Brotli detected"
 else

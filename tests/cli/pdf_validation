@@ -13,6 +13,8 @@
 
 set -u
 
+. "$(dirname "$0")/_lib.sh"
+
 BIN="./zig-out/bin/validate"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
 	BIN="./zig-out/bin/validate.exe"
@@ -59,7 +61,7 @@ echo "Test 2: corrupted embedded JPEG is detected (non-zero exit)"
 cp "$SAMPLE" "$tmpdir/corrupt_middle.pdf"
 # Flip a byte near the middle of the file — very likely to land in an
 # embedded image stream for this sample (it has inline JPEG images).
-printf '\xFF' | dd of="$tmpdir/corrupt_middle.pdf" bs=1 seek=$((sz / 2)) count=1 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/corrupt_middle.pdf" $((sz / 2)) ff
 "$BIN" "$tmpdir/corrupt_middle.pdf" >/dev/null 2>&1
 rc=$?
 if [[ "$rc" != "0" ]]; then
@@ -88,7 +90,7 @@ CONTENT_STREAM_OFFSET=658851
 
 echo "Test 4: corrupted non-image FlateDecode content stream is detected (non-zero exit)"
 cp "$SAMPLE" "$tmpdir/corrupt_content.pdf"
-printf '\xFF' | dd of="$tmpdir/corrupt_content.pdf" bs=1 seek="$CONTENT_STREAM_OFFSET" count=1 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/corrupt_content.pdf" "$CONTENT_STREAM_OFFSET" ff
 "$BIN" "$tmpdir/corrupt_content.pdf" >/dev/null 2>&1
 rc=$?
 if [[ "$rc" != "0" ]]; then
