@@ -15,6 +15,8 @@
 
 set -u
 
+. "$(dirname "$0")/_lib.sh"
+
 BIN="./zig-out/bin/validate"
 
 # Determine binary extension for Windows
@@ -91,7 +93,7 @@ mkdir -p "$tmpdir/corrupt_repo"
 			# Corrupt the object by overwriting a byte in the middle
 			size=$(stat -f%z "$object_file" 2>/dev/null || stat -c%s "$object_file")
 			if [[ $size -gt 10 ]]; then
-				printf '\xff' | dd of="$object_file" bs=1 seek=5 count=1 conv=notrunc 2>/dev/null
+				mutate_bytes "$object_file" 5 ff
 			fi
 		fi
 	fi

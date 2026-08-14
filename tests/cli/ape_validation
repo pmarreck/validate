@@ -18,6 +18,8 @@
 
 set -u
 
+. "$(dirname "$0")/_lib.sh"
+
 BIN="${VALIDATE_BIN:-./zig-out/bin/validate}"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
 	if [[ ! -x "$BIN" ]]; then BIN="./zig-out/bin/validate.exe"; fi
@@ -94,9 +96,9 @@ read_byte() {
 }
 
 write_byte() {
-	local file="$1" off="$2" val="$3" oct
-	printf -v oct '%03o' "$((val & 0xff))"
-	printf "\\$oct" | dd of="$file" bs=1 seek="$off" conv=notrunc 2>/dev/null
+	local file="$1" off="$2" val="$3" hex
+	printf -v hex '%02x' "$((val & 0xff))"
+	mutate_bytes "$file" "$off" "$hex"
 }
 
 flip_byte() {
@@ -105,19 +107,23 @@ flip_byte() {
 	write_byte "$file" "$off" "$((orig ^ 0xff))"
 }
 
-# Helper: write a u32 LE at given offset in a copy.
+# Helper: write a u32 LE at given offset in a copy. One mutate_bytes call for
+# the whole field: the changed-vs-original proof must span the field, since
+# individual bytes (e.g. high bytes of small values) often already match.
 write_u32_le() {
-	local file="$1" off="$2" val="$3"
-	write_byte "$file" "$off" "$val" || return 1
-	write_byte "$file" "$((off + 1))" "$((val >> 8))" || return 1
-	write_byte "$file" "$((off + 2))" "$((val >> 16))" || return 1
-	write_byte "$file" "$((off + 3))" "$((val >> 24))"
+	local file="$1" off="$2" val="$3" b0 b1 b2 b3
+	printf -v b0 '%02x' "$((val & 0xff))"
+	printf -v b1 '%02x' "$(((val >> 8) & 0xff))"
+	printf -v b2 '%02x' "$(((val >> 16) & 0xff))"
+	printf -v b3 '%02x' "$(((val >> 24) & 0xff))"
+	mutate_bytes "$file" "$off" "$b0" "$b1" "$b2" "$b3"
 }
 
 write_u16_le() {
-	local file="$1" off="$2" val="$3"
-	write_byte "$file" "$off" "$val" || return 1
-	write_byte "$file" "$((off + 1))" "$((val >> 8))"
+	local file="$1" off="$2" val="$3" b0 b1
+	printf -v b0 '%02x' "$((val & 0xff))"
+	printf -v b1 '%02x' "$(((val >> 8) & 0xff))"
+	mutate_bytes "$file" "$off" "$b0" "$b1"
 }
 
 read_u16_le() {
@@ -220,7 +226,7 @@ fi
 shotgun="$tmpdir/shotgun.ape"
 cp "$SAMPLE" "$shotgun"
 mid=$((sz / 2))
-dd if=/dev/urandom of="$shotgun" bs=1 seek="$mid" count=4096 conv=notrunc 2>/dev/null
+mutate_bytes_from "$shotgun" "$mid" /dev/urandom 4096
 if ! "$BIN" "$shotgun" >/dev/null 2>&1; then
 	pass "4 KB shotgun-corrupted APE detected"
 else

@@ -14,6 +14,8 @@
 
 set -u
 
+. "$(dirname "$0")/_lib.sh"
+
 BIN="./zig-out/bin/validate"
 if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" || "$OSTYPE" == "win32" ]]; then
 	BIN="./zig-out/bin/validate.exe"
@@ -70,7 +72,7 @@ ffmpeg -loglevel error -f lavfi -i testsrc=duration=3:size=320x240:rate=30 \
 # libtheora decode to catch non-framing corruption.
 ogv_sz=$(stat -f%z "$OGV" 2>/dev/null || stat -c%s "$OGV" 2>/dev/null)
 cp "$OGV" "$tmpdir/ogv_corrupt.ogv"
-printf '\xAA' | dd of="$tmpdir/ogv_corrupt.ogv" bs=1 seek=$((ogv_sz / 2)) count=1 conv=notrunc 2>/dev/null
+mutate_bytes "$tmpdir/ogv_corrupt.ogv" $((ogv_sz / 2)) aa
 "$BIN" "$tmpdir/ogv_corrupt.ogv" >/dev/null 2>&1
 rc=$?
 [[ "$rc" != "0" ]] && pass "mid-file OGV corruption -> non-zero exit" \
@@ -109,7 +111,7 @@ if [[ -n "$codec_priv_off_in_file" ]]; then
 	version_off=$((codec_priv_off_in_file + 7))
 	cp "$MKV" "$tmpdir/version_corrupt.mkv"
 	# Force version major to 4 (invalid; theora rejects).
-	printf '\x04' | dd of="$tmpdir/version_corrupt.mkv" bs=1 seek="$version_off" count=1 conv=notrunc 2>/dev/null
+	mutate_bytes "$tmpdir/version_corrupt.mkv" "$version_off" 04
 	"$BIN" "$tmpdir/version_corrupt.mkv" >/dev/null 2>&1
 	rc=$?
 	if [[ "$rc" != "0" ]]; then

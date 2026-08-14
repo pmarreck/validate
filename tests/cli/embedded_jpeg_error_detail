@@ -49,7 +49,9 @@ fi
 #    bytes of 0xFF just past the SOI wreck the marker structure -> jpegz fails.
 corrupt="$tmpdir/arw_corrupt_preview.arw"
 cp "$ARW" "$corrupt"
-printf '%.0s\xFF' $(seq 1 64) | dd of="$corrupt" bs=1 seek=$((144034 + 6)) count=64 conv=notrunc status=none 2>/dev/null
+ff_burst=()
+for _i in $(seq 1 64); do ff_burst+=(ff); done
+mutate_bytes "$corrupt" $((144034 + 6)) "${ff_burst[@]}"
 bad_v="$(verdict_line "$corrupt")"
 
 # 2a) It must be DETECTED (self-checks the fixture recipe; fails loudly if the

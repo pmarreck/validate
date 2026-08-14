@@ -3,6 +3,8 @@
 # Copies the binary, corrupts it in various ways, and verifies FATAL exit.
 set -u
 
+. "$(dirname "$0")/_lib.sh"
+
 VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
 PASS=0
 FAIL=0
@@ -28,7 +30,9 @@ write_byte() {
 	local file="$1"
 	local offset="$2"
 	local value="$3"
-	printf '%b' "$(printf '\\x%02x' "$value")" | dd of="$file" bs=1 seek="$offset" conv=notrunc 2>/dev/null
+	local hex
+	printf -v hex '%02x' "$((value & 0xff))"
+	mutate_bytes "$file" "$offset" "$hex"
 }
 
 # Prerequisite: signed binary must work
@@ -87,8 +91,10 @@ cp "$VALIDATE" "$WORKDIR/validate-truncated"
 chmod 755 "$WORKDIR/validate-truncated"
 file_size=$(wc -c < "$WORKDIR/validate-truncated" | tr -d ' ')
 truncated_size=$((file_size - 50))  # Remove the 50-byte trailer
-cp "$WORKDIR/validate-truncated" "$WORKDIR/validate-truncated2"
-truncate -s "$truncated_size" "$WORKDIR/validate-truncated2"
+# head -c rebuild, not `truncate -s`: interactive shells shadow truncate with a
+# safety wrapper that refuses to shrink without --confirm (same wrapper class
+# that motivated mutate_bytes — see tests/cli/_lib.sh).
+head -c "$truncated_size" "$WORKDIR/validate-truncated" > "$WORKDIR/validate-truncated2"
 chmod 755 "$WORKDIR/validate-truncated2"
 output=$(run_help_output "$WORKDIR/validate-truncated2")
 if echo "$output" | grep -q "FATAL"; then
@@ -106,7 +112,7 @@ cp "$VALIDATE" "$WORKDIR/validate-zeroed"
 chmod 755 "$WORKDIR/validate-zeroed"
 file_size=$(wc -c < "$WORKDIR/validate-zeroed" | tr -d ' ')
 trailer_offset=$((file_size - 50))
-dd if=/dev/zero of="$WORKDIR/validate-zeroed" bs=1 seek="$trailer_offset" count=50 conv=notrunc 2>/dev/null
+mutate_bytes_from "$WORKDIR/validate-zeroed" "$trailer_offset" /dev/zero 50
 output=$(run_help_output "$WORKDIR/validate-zeroed")
 if echo "$output" | grep -q "FATAL"; then
 	pass "zeroed trailer detected"
