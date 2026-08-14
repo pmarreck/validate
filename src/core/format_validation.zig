@@ -1324,6 +1324,12 @@ pub const ValidationResult = struct {
     /// validator surface. Its terminal verdict remains indeterminate, but
     /// callers can distinguish this from resource or infrastructure failure.
     validation_unsupported: bool = false,
+    /// Locale-invariant sub-type token refining the format for display.
+    /// Writers append it to the localized description as " (token)" —
+    /// e.g. PE sets "dll"/"exe"/"drv" from COFF Characteristics + subsystem,
+    /// rendering "Windows PE (dll)". Static strings only; never localized
+    /// prose (keeps the 50-locale i18n tables untouched).
+    format_variant: ?[]const u8 = null,
 
     /// Check if there are any malformations (warnings)
     pub fn hasMalformations(self: ValidationResult) bool {
@@ -3192,9 +3198,12 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "htm", .html },
     .{ "xhtml", .html },
     // Erlang/Elixir
+    // NOTE: "lock" is deliberately NOT here — .lock is an overloaded
+    // extension (Cargo.lock=TOML, flake.lock=JSON, rebar.lock=Erlang…);
+    // lockfile_basename_map below claims the known ones by basename and
+    // unknown .lock files fall through to content detection.
     .{ "app", .erlang_term },
     .{ "config", .erlang_term },
-    .{ "lock", .erlang_term },
     .{ "beam", .beam },
     .{ "eex", .eex },
     .{ "leex", .eex },
@@ -3479,10 +3488,10 @@ const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "xml", .xml },
     .{ "yaml", .yaml },
     .{ "yml", .yaml },
-    // Erlang term format files
+    // Erlang term format files ("lock" intentionally absent — see
+    // lockfile_basename_map)
     .{ "app", .erlang_term },
     .{ "config", .erlang_term },
-    .{ "lock", .erlang_term },
     // EEx/ERB template files
     .{ "eex", .eex },
     .{ "leex", .eex },
@@ -3538,6 +3547,36 @@ const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "msi", .msi },
 });
 
+/// Ecosystem lockfiles sharing the overloaded ".lock" extension, keyed by
+/// LOWERCASED basename. rebar.lock is the only common one that is actually
+/// Erlang terms; mapping bare ".lock" to erlang_term made Cargo.lock (TOML)
+/// validate as Erlang (found 2026-08-13). Basenames not listed fall through
+/// to content detection.
+const lockfile_basename_map = std.StaticStringMap(FileFormat).initComptime(.{
+    .{ "cargo.lock", .toml },
+    .{ "poetry.lock", .toml },
+    .{ "flake.lock", .json },
+    .{ "composer.lock", .json },
+    .{ "pipfile.lock", .json },
+    .{ "yarn.lock", .plain_text },
+    .{ "gemfile.lock", .plain_text },
+    .{ "rebar.lock", .erlang_term },
+});
+
+/// Resolve a "*.lock" path by its (lowercased) basename, or null when the
+/// path is not a .lock file / the basename is unclaimed.
+fn lockfileBasenameFormat(path: []const u8) ?FileFormat {
+    var ext_buf: [16]u8 = undefined;
+    const ext = lowercaseExtension(path, &ext_buf) orelse return null;
+    if (!std.mem.eql(u8, ext, "lock")) return null;
+    const base_start = if (std.mem.lastIndexOfAny(u8, path, "/\\")) |i| i + 1 else 0;
+    const base = path[base_start..];
+    var buf: [32]u8 = undefined;
+    if (base.len > buf.len) return null;
+    const base_lower = std.ascii.lowerString(&buf, base);
+    return lockfile_basename_map.get(base_lower);
+}
+
 /// Detect format from file extension.
 /// Used as fallback for formats without magic bytes (e.g., Brotli .br files).
 /// Only returns formats that need extension-based detection; formats with reliable
@@ -3545,6 +3584,7 @@ const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
 pub fn detectFormatFromExtension(path: []const u8) FileFormat {
     var buf: [16]u8 = undefined;
     const ext_lower = lowercaseExtension(path, &buf) orelse return .unknown;
+    if (std.mem.eql(u8, ext_lower, "lock")) return lockfileBasenameFormat(path) orelse .unknown;
     return ext_detect_map.get(ext_lower) orelse .unknown;
 }
 
@@ -3611,6 +3651,7 @@ fn isExcludedTextExtension(path: []const u8) bool {
 fn getExpectedFormatForExtension(path: []const u8) FileFormat {
     var buf: [16]u8 = undefined;
     const ext_lower = lowercaseExtension(path, &buf) orelse return .unknown;
+    if (std.mem.eql(u8, ext_lower, "lock")) return lockfileBasenameFormat(path) orelse .unknown;
     return ext_format_map.get(ext_lower) orelse .unknown;
 }
 
@@ -8938,6 +8979,32 @@ test "detectFormat CR3 ftyp brand" {
     @memcpy(header[8..12], "crx ");
     @memset(header[12..], 0);
     try std.testing.expectEqual(FileFormat.cr3, detectFormat(&header));
+}
+
+test "lockfile basenames classify by ecosystem, never bare-extension erlang" {
+    // Classifier over a SET (both must-match and must-not-match sides).
+    // Witnessed red: the bare "lock" -> erlang_term extension mapping made
+    // Cargo.lock (TOML) report as valid Erlang terms (Peter, 2026-08-13).
+    // rebar.lock is the ONLY common lockfile that is actually Erlang terms.
+    const cases = [_]struct { path: []const u8, expect: FileFormat }{
+        .{ .path = "/x/futures-channel-0.3.32/Cargo.lock", .expect = .toml },
+        .{ .path = "poetry.lock", .expect = .toml },
+        .{ .path = "some/dir/flake.lock", .expect = .json },
+        .{ .path = "composer.lock", .expect = .json },
+        .{ .path = "Pipfile.lock", .expect = .json },
+        .{ .path = "yarn.lock", .expect = .plain_text },
+        .{ .path = "Gemfile.lock", .expect = .plain_text },
+        .{ .path = "proj/rebar.lock", .expect = .erlang_term },
+        // Unknown .lock: no basename claim -> content detection decides.
+        .{ .path = "mystery.lock", .expect = .unknown },
+    };
+    for (cases) |case| {
+        try std.testing.expectEqual(case.expect, getExpectedFormatForExtension(case.path));
+        try std.testing.expectEqual(case.expect, detectFormatFromExtension(case.path));
+    }
+    // Non-lock Erlang extensions keep their mapping (regression side).
+    try std.testing.expectEqual(FileFormat.erlang_term, getExpectedFormatForExtension("myapp.app"));
+    try std.testing.expectEqual(FileFormat.erlang_term, getExpectedFormatForExtension("sys.config"));
 }
 
 test "extension mapping for new RAW formats" {

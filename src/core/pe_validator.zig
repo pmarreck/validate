@@ -128,6 +128,7 @@ pub fn validatePe(file: *FileSource) ValidationResult {
         // Neither executable nor DLL - unusual but maybe valid
         // Don't fail, just note it's unusual
     }
+    const is_dll = (characteristics & IMAGE_FILE_DLL) != 0;
 
     // Parse optional header (starts at offset 24)
     if (pe_bytes < 26) {
@@ -215,7 +216,24 @@ pub fn validatePe(file: *FileSource) ValidationResult {
     // For deep validation, we could parse data directories (imports, exports, resources, etc.)
     // For now, structural validation is sufficient
 
-    return ValidationResult.okWithDepth(.pe, .structural);
+    // PE sub-type token for display ("Windows PE (dll|exe|drv)", Peter
+    // 2026-08-13): the DLL bit is authoritative for dll; a non-DLL image
+    // with the NATIVE subsystem (kernel drivers, .sys) is drv; else exe.
+    // Subsystem is a u16 at optional-header offset 68 for both PE32 and
+    // PE32+; guard on the declared optional-header size and read extent.
+    const IMAGE_SUBSYSTEM_NATIVE: u16 = 1;
+    var subsystem: u16 = 0;
+    if (optional_header_size >= 70 and pe_bytes >= 24 + 70) {
+        subsystem = @as(u16, opt_header[68]) | (@as(u16, opt_header[69]) << 8);
+    }
+    var ok = ValidationResult.okWithDepth(.pe, .structural);
+    ok.format_variant = if (is_dll)
+        "dll"
+    else if (subsystem == IMAGE_SUBSYSTEM_NATIVE)
+        "drv"
+    else
+        "exe";
+    return ok;
 }
 
 // -- Tests ------------------------------------------------------------------
@@ -259,4 +277,67 @@ test "validatePe with invalid magic" {
     defer source.close();
     const result = validatePe(&source);
     try std.testing.expect(!result.is_valid);
+}
+
+// ── PE sub-type (dll/exe/drv) tests ─────────────────────────────────
+
+/// Build a minimal valid PE32 image in `buf` (must be >= 256 bytes):
+/// MZ stub, e_lfanew=64, PE sig, COFF (i386, 1 section, 96-byte optional
+/// header), PE32 optional header, one zeroed section header.
+fn testMakeMinimalPe(buf: []u8, characteristics: u16, subsystem: u16) void {
+    std.debug.assert(buf.len >= 256);
+    @memset(buf, 0);
+    buf[0] = 'M';
+    buf[1] = 'Z';
+    buf[0x3C] = 64; // e_lfanew
+    // PE signature at 64
+    buf[64] = 'P';
+    buf[65] = 'E';
+    // COFF header at 68
+    std.mem.writeInt(u16, buf[68..70], 0x014c, .little); // machine i386
+    std.mem.writeInt(u16, buf[70..72], 1, .little); // 1 section
+    std.mem.writeInt(u16, buf[84..86], 96, .little); // optional header size
+    std.mem.writeInt(u16, buf[86..88], characteristics, .little);
+    // PE32 optional header at 88
+    std.mem.writeInt(u16, buf[88..90], 0x010b, .little); // PE32 magic
+    std.mem.writeInt(u16, buf[156..158], subsystem, .little); // subsystem at +68
+    // Section header at 184: all zeros is acceptable (no raw data)
+}
+
+const IMAGE_FILE_EXECUTABLE: u16 = 0x0002;
+const TEST_IMAGE_FILE_DLL: u16 = 0x2000;
+const IMAGE_SUBSYSTEM_NATIVE_T: u16 = 1;
+const IMAGE_SUBSYSTEM_WINDOWS_CUI: u16 = 3;
+
+fn testValidateMinimalPe(characteristics: u16, subsystem: u16) !ValidationResult {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var buf: [256]u8 = undefined;
+    testMakeMinimalPe(&buf, characteristics, subsystem);
+    const file = try tmp_dir.dir.createFile(runtime.io(), "variant_test.bin", .{});
+    try file.writePositionalAll(runtime.io(), &buf, 0);
+    file.close(runtime.io());
+    const full_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "variant_test.bin");
+    defer std.testing.allocator.free(full_path);
+    var source = FileSource.open(full_path) catch return error.SkipZigTest;
+    defer source.close();
+    return validatePe(&source);
+}
+
+test "PE variant: DLL bit yields dll token" {
+    const result = try testValidateMinimalPe(IMAGE_FILE_EXECUTABLE | TEST_IMAGE_FILE_DLL, IMAGE_SUBSYSTEM_WINDOWS_CUI);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqualStrings("dll", result.format_variant orelse "MISSING");
+}
+
+test "PE variant: native subsystem without DLL bit yields drv token" {
+    const result = try testValidateMinimalPe(IMAGE_FILE_EXECUTABLE, IMAGE_SUBSYSTEM_NATIVE_T);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqualStrings("drv", result.format_variant orelse "MISSING");
+}
+
+test "PE variant: plain executable yields exe token" {
+    const result = try testValidateMinimalPe(IMAGE_FILE_EXECUTABLE, IMAGE_SUBSYSTEM_WINDOWS_CUI);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqualStrings("exe", result.format_variant orelse "MISSING");
 }

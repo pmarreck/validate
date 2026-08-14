@@ -246,7 +246,15 @@ fn buildValidationResult(
     // Format info
     try builder.add("fmt_id", getFormatId(result.format));
     try builder.add("fmt_cat", getFormatCategory(result.format));
-    try builder.add("fmt_desc", result.format.description());
+    // Compose the locale-invariant sub-type token into the description
+    // ("Windows PE (dll)"); builder.add copies, so the stack buffer is safe.
+    if (result.format_variant) |variant| {
+        var desc_buf: [192]u8 = undefined;
+        const composed = std.fmt.bufPrint(&desc_buf, "{s} ({s})", .{ result.format.description(), variant }) catch result.format.description();
+        try builder.add("fmt_desc", composed);
+    } else {
+        try builder.add("fmt_desc", result.format.description());
+    }
 
     // Validation status
     try builder.addBool("valid", result.is_valid);
