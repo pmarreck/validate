@@ -9,7 +9,9 @@ const ValidationResult = format_validation.ValidationResult;
 const ValidationDepth = format_validation.ValidationDepth;
 const jpeg_validator = @import("jpeg_validator.zig");
 const jpeg_lossless_decoder = @import("jpeg_lossless_decoder.zig");
-const jpeg2000_validator = @import("jpeg2000_validator.zig");
+// JPEG2000 strict validation via the jpegz facade (jp2z, pure Zig) — replaced
+// the openjpeg-@cImport jpeg2000_validator.zig (v1 closure cutover).
+const jpegz_strict = @import("tiffz").jpegz;
 const errmsg = @import("error_messages.zig");
 const zlib = @import("zlib.zig");
 
@@ -1220,9 +1222,12 @@ fn validateDicomJpegFragment(allocator: Allocator, file: *FileSource, offset: u6
         if (std.mem.eql(u8, data[0..4], &[_]u8{ 0x00, 0x00, 0x00, 0x0C }) or
             std.mem.eql(u8, data[0..4], &[_]u8{ 0xFF, 0x4F, 0xFF, 0x51 }))
         {
-            // JPEG 2000 - validate it
-            const jp2_result = jpeg2000_validator.validateJpeg2000(data);
-            return jp2_result.valid;
+            // JPEG 2000 — strict validation via the jpegz facade. Boolean
+            // consumer: only a corrupt verdict condemns the fragment
+            // (unsupported/indeterminate = could-not-check, not damage).
+            var jp2_strict = jpegz_strict.jpeg2000.strictValidate(allocator, data) catch return true;
+            defer jp2_strict.deinit(allocator);
+            return jp2_strict.verdict != .corrupt;
         }
     }
 

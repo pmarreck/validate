@@ -17,7 +17,9 @@ const runtime = @import("runtime.zig");
 const heap = @import("heap.zig");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
-const jpeg2000_validator = @import("jpeg2000_validator.zig");
+// JPEG2000 strict validation via the jpegz facade (jp2z, pure Zig) — replaced
+// the openjpeg-@cImport jpeg2000_validator.zig (v1 closure cutover).
+const jpegz_strict = @import("tiffz").jpegz;
 const jbig2_decoder = @import("jbig2_decoder.zig");
 const ccitt_fax_decoder = @import("ccitt_fax_decoder.zig");
 const ascii_hex_decoder = @import("ascii_hex_decoder.zig");
@@ -1048,15 +1050,41 @@ pub fn validateExtractedImage(allocator: Allocator, data: []const u8, filter: Im
             };
         },
         .jpx_decode => {
-            // JPEG2000 validation via OpenJPEG
-            const result = jpeg2000_validator.validateJpeg2000(data);
+            // JPEG2000 strict validation via the jpegz facade (jp2z).
+            // Four-way discipline: only `corrupt` condemns the stream;
+            // unsupported/indeterminate are "could not check", not damage.
+            // Known interim gap: a JPX stream whose signature bytes are
+            // themselves destroyed sniffs as unknown → indeterminate (the
+            // jpegz caller-supplied format hint is the planned fix).
+            var strict = jpegz_strict.jpeg2000.strictValidate(allocator, data) catch {
+                return .{
+                    .object_num = 0,
+                    .filter = filter,
+                    .valid = true, // OOM: not proven corrupt
+                    .error_message = null,
+                    .width = 0,
+                    .height = 0,
+                };
+            };
+            defer strict.deinit(allocator);
+            // Static @tagName strings only — `strict` (incl. finding.detail)
+            // is freed on return. Surface the verdict-DRIVING finding (first
+            // .fail), not the first finding (jpegz 2026-08-12 correction).
+            const fail_code: ?jpegz_strict.FindingCode = for (strict.findings.items) |f| {
+                if (f.severity == .fail) {
+                    if (f.code) |c| break c;
+                }
+            } else null;
             return .{
                 .object_num = 0,
                 .filter = filter,
-                .valid = result.valid,
-                .error_message = result.error_message,
-                .width = result.width,
-                .height = result.height,
+                .valid = strict.verdict != .corrupt,
+                .error_message = if (strict.verdict == .corrupt)
+                    (if (fail_code) |c| @tagName(c) else "JPX failed strict validation")
+                else
+                    null,
+                .width = strict.width orelse 0,
+                .height = strict.height orelse 0,
             };
         },
         .jbig2_decode => {

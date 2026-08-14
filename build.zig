@@ -150,12 +150,10 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
     const libape_lib = libape_dep.artifact("ape");
-    // OpenJPEG for JPEG2000 decode validation (BSD-2, used in PDFs and DCPs)
-    const openjpeg_dep = b.dependency("openjpeg", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const openjpeg_lib = openjpeg_dep.artifact("openjp2");
+    // OpenJPEG is fully out (v1 closure cutover): JPEG2000 validation routes
+    // through tiffz.jpegz.jpeg2000.strictValidate (jp2z, pure Zig) and the
+    // decode-path linkage is gated off via -Dwith-jp2-decode=false below
+    // (jpegz ships 0 opj_ symbols with the gate off).
 
     // Brotli for .br file decompression validation (MIT, Google)
     const brotli_dep = b.dependency("brotli", .{
@@ -205,16 +203,8 @@ pub fn build(b: *std.Build) void {
         const v = b.graph.environ_map.get("LIBJPEG_STATIC_ROOT") orelse break :blk "";
         break :blk b.fmt("{s}/lib", .{v});
     };
-    const opt_openjpeg_inc = b.option(
-        []const u8,
-        "openjpeg-include",
-        "Path to openjpeg headers (incl. version subdir, forwarded to jpegz)",
-    ) orelse (b.graph.environ_map.get("OPENJPEG_INC") orelse "");
-    const opt_openjpeg_lib = b.option(
-        []const u8,
-        "openjpeg-lib",
-        "Path to openjpeg library directory (forwarded to jpegz)",
-    ) orelse (b.graph.environ_map.get("OPENJPEG_LIB") orelse "");
+    // (openjpeg include/lib options removed — JP2 decode is gated off via
+    // -Dwith-jp2-decode=false; strict JP2 validation is pure-Zig jp2z.)
     // System zlib paths — forwarded to tiffz (its `linkSystemLibrary("z")`
     // call needs them on hosts where libz isn't in libSystem, i.e. all
     // non-Apple targets and Nix sandbox).
@@ -244,18 +234,21 @@ pub fn build(b: *std.Build) void {
     // validator. Consumes jpegz.decode for Compression=7 + lossless
     // JPEG. Same option-cascade as jpegz to forward system library
     // paths in the no-libpaths/libpaths-only/full cases.
+    // JP2 DECODE is disabled fleet-wide (v1 closure): jpegz drops OpenJPEG
+    // entirely (0 opj_ symbols), jpeg2000.decode returns error.NotImplemented,
+    // and strict JP2 validation (jp2z, pure Zig) is unaffected. tiffz forwards
+    // the option verbatim since 388dee45. With the gate off, the openjpeg
+    // include/lib forwarding became dead and was removed.
     const tiffz_dep = blk: {
         if (opt_libjpeg_inc.len > 0 and opt_libjpeg_lib.len > 0 and
-            opt_openjpeg_inc.len > 0 and opt_openjpeg_lib.len > 0 and
             opt_zlib_inc.len > 0 and opt_zlib_lib.len > 0)
         {
             break :blk b.dependency("tiffz", .{
                 .target = target,
                 .optimize = deps_optimize,
+                .@"with-jp2-decode" = false,
                 .@"libjpeg-include" = opt_libjpeg_inc,
                 .@"libjpeg-lib" = opt_libjpeg_lib,
-                .@"openjpeg-include" = opt_openjpeg_inc,
-                .@"openjpeg-lib" = opt_openjpeg_lib,
                 .@"zlib-include" = opt_zlib_inc,
                 .@"zlib-lib" = opt_zlib_lib,
             });
@@ -264,6 +257,7 @@ pub fn build(b: *std.Build) void {
             break :blk b.dependency("tiffz", .{
                 .target = target,
                 .optimize = deps_optimize,
+                .@"with-jp2-decode" = false,
                 .@"zlib-include" = opt_zlib_inc,
                 .@"zlib-lib" = opt_zlib_lib,
             });
@@ -271,6 +265,7 @@ pub fn build(b: *std.Build) void {
         break :blk b.dependency("tiffz", .{
             .target = target,
             .optimize = deps_optimize,
+            .@"with-jp2-decode" = false,
         });
     };
     const tiffz_mod = tiffz_dep.module("tiffz");
@@ -438,7 +433,6 @@ pub fn build(b: *std.Build) void {
     // consumer side. Skipped when paths are empty (cross-build or system-PATH
     // fallback).
     if (opt_libjpeg_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
-    if (opt_openjpeg_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
     if (opt_zlib_lib.len > 0) core_mod.addLibraryPath(.{ .cwd_relative = opt_zlib_lib });
     // tiffz links system "z"; when no external zlib path is supplied for a
     // cross target, satisfy that -lz from validate's Zig-built zlib artifact.
@@ -472,9 +466,6 @@ pub fn build(b: *std.Build) void {
 
     // Add libape include path (for ape_decode_validator.zig @cImport)
     core_mod.addIncludePath(libape_lib.getEmittedIncludeTree());
-    // Add OpenJPEG include path (for jpeg2000_validator.zig @cImport)
-    core_mod.addIncludePath(openjpeg_lib.getEmittedIncludeTree());
-
     // Add brotli include path (for brotli_validator.zig @cImport)
     core_mod.addIncludePath(brotli_lib.getEmittedIncludeTree());
 
@@ -528,7 +519,6 @@ pub fn build(b: *std.Build) void {
         libwavpack_lib, // WavPack lossless audio deep validation
         libape_lib,     // Monkey's Audio (APE) deep decode validation
         minimp3_lib,   // MP3 audio deep validation
-        openjpeg_lib,  // JPEG2000 decode validation
         brotli_lib,    // .br file decompression validation
         libopenmpt_lib, // tracker format (MOD/XM/IT/S3M) deep validation
         cj5_lib,       // JSON5 validation (C library)
@@ -555,7 +545,6 @@ pub fn build(b: *std.Build) void {
     // search paths on the actual link target (Module addLibraryPath doesn't
     // propagate through the import graph to the final compile step's linker).
     if (opt_libjpeg_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
-    if (opt_openjpeg_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
     if (opt_zlib_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib });
     lib.root_module.addLibraryPath(zig_zlib_lib_dir);
     // On Windows, LibRaw uses ntohs/htons/htonl/ntohl from ws2_32
@@ -587,7 +576,6 @@ pub fn build(b: *std.Build) void {
             libwavpack_lib.getEmittedBin(),
             libape_lib.getEmittedBin(),
             minimp3_lib.getEmittedBin(),
-            openjpeg_lib.getEmittedBin(),
             brotli_lib.getEmittedBin(),
             libopenmpt_lib.getEmittedBin(),
             cj5_lib.getEmittedBin(),
@@ -692,7 +680,6 @@ pub fn build(b: *std.Build) void {
     // jpegz brings -ljpeg / -lopenjp2 to the link line; the final exe needs
     // the corresponding -L paths so those system libs resolve.
     if (opt_libjpeg_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
-    if (opt_openjpeg_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_openjpeg_lib });
     if (opt_zlib_lib.len > 0) cli_c.root_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib });
     cli_c.root_module.addLibraryPath(zig_zlib_lib_dir);
 
@@ -755,7 +742,6 @@ pub fn build(b: *std.Build) void {
             c_deps: []const *std.Build.Step.Compile,
             sqlite_lib: *std.Build.Step.Compile,
             jpeg_path: []const u8,
-            openjpeg_path: []const u8,
             zlib_path: []const u8,
         ) *std.Build.Step.Compile {
             const m = bld.createModule(.{
@@ -770,17 +756,16 @@ pub fn build(b: *std.Build) void {
             exe.root_module.link_libc = true;
             exe.root_module.link_libcpp = true; // libjxl, libopenmpt are C++
             if (jpeg_path.len > 0) exe.root_module.addLibraryPath(.{ .cwd_relative = jpeg_path });
-            if (openjpeg_path.len > 0) exe.root_module.addLibraryPath(.{ .cwd_relative = openjpeg_path });
             if (zlib_path.len > 0) exe.root_module.addLibraryPath(.{ .cwd_relative = zlib_path });
             if (tgt.result.os.tag == .windows) exe.root_module.linkSystemLibrary("ws2_32", .{});
             return exe;
         }
     }.make;
 
-    const fuzz_dispatch = fuzzExe(b, "fuzz-dispatch", "tests/fuzz/fuzz_dispatch.zig", core_mod, target, optimize, all_c_deps, sqlite3_lib, opt_libjpeg_lib, opt_openjpeg_lib, opt_zlib_lib);
+    const fuzz_dispatch = fuzzExe(b, "fuzz-dispatch", "tests/fuzz/fuzz_dispatch.zig", core_mod, target, optimize, all_c_deps, sqlite3_lib, opt_libjpeg_lib, opt_zlib_lib);
     fuzz_step.dependOn(&b.addInstallArtifact(fuzz_dispatch, .{}).step);
 
-    const fuzz_sweep = fuzzExe(b, "fuzz-sweep", "tests/fuzz/fuzz_sweep.zig", core_mod, target, optimize, all_c_deps, sqlite3_lib, opt_libjpeg_lib, opt_openjpeg_lib, opt_zlib_lib);
+    const fuzz_sweep = fuzzExe(b, "fuzz-sweep", "tests/fuzz/fuzz_sweep.zig", core_mod, target, optimize, all_c_deps, sqlite3_lib, opt_libjpeg_lib, opt_zlib_lib);
     fuzz_step.dependOn(&b.addInstallArtifact(fuzz_sweep, .{}).step);
     // Tests
     const test_filter = b.option([]const u8, "test-filter", "Run only tests containing this text");

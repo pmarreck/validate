@@ -136,7 +136,6 @@ const video_audio_validator = @import("video_audio_validator.zig");
 const bzip2 = @import("bzip2.zig");
 
 // Import JPEG2000 validator for deep validation of encapsulated DICOM pixel data
-const jpeg2000_validator = @import("jpeg2000_validator.zig");
 
 // Import AC3/EAC3 validators for Dolby Digital audio validation
 const ac3_validator = @import("ac3_validator.zig");

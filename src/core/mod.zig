@@ -44,7 +44,6 @@ pub const opus_validator = @import("opus_validator.zig");
 pub const vorbis_validator = @import("vorbis_validator.zig");
 pub const mp3_decode_validator = @import("mp3_decode_validator.zig");
 pub const vp9_validator = @import("vp9_syntax_validator.zig");
-pub const jpeg2000_validator = @import("jpeg2000_validator.zig");
 pub const jxl_validator = @import("jxl_validator.zig");
 pub const jbig2_decoder = @import("jbig2_decoder.zig");
 pub const ccitt_fax_decoder = @import("ccitt_fax_decoder.zig");
@@ -410,7 +409,6 @@ test {
     // ~71 tests and the codec/decoder engines that carry the most parser risk.
     _ = @import("format_validation.zig");
     _ = @import("jpeg_validator.zig");
-    _ = @import("jpeg2000_validator.zig");
     _ = @import("jbig2_decoder.zig");
     _ = @import("ccitt_fax_decoder.zig");
     _ = @import("webp_validator.zig");

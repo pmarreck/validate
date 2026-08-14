@@ -32,7 +32,7 @@
 
 			# Pre-fetched Zig dependencies (fixed-output derivation)
 			# This hash must be updated when build.zig.zon changes
-			zigDepsHash = "sha256-sQfLZjDjFCYmGbrZtdJXIiAOApV2TDSq+wf46+qYsmw=";
+			zigDepsHash = "sha256-rPNAZEM0OuWuzr64REhXJKa0nktKlK+Kkrli5lJxG2k=";
 		in {
 			# Packages for Garnix/Nix builds
 			packages = forBuildSystems (buildSystem:
@@ -101,17 +101,13 @@
 									apple-sdk
 								];
 
-							# libjpeg-turbo + openjpeg are required by jpegz (Phase 1
-							# wrapper around the system C libs). Forwarded to the
-							# jpegz Zig dep via -Dlibjpeg-* / -Dopenjpeg-* options
-							# in buildPhase below. Native builds only — cross builds
-							# would need cross-compiled libjpeg/openjpeg which is
-							# orthogonal and lands separately.
+							# libjpeg-turbo is still forwarded to jpegz (dev/test oracle
+							# tier); openjpeg is GONE — JP2 decode is gated off
+							# (-Dwith-jp2-decode=false via tiffz) and strict JP2
+							# validation is pure-Zig jp2z. Native builds only.
 							buildInputs = pkgs.lib.optionals (!cross) [
 								pkgs.libjpeg_turbo
 								pkgs.libjpeg_turbo.dev
-								pkgs.openjpeg
-								pkgs.openjpeg.dev
 								pkgs.zlib
 								pkgs.zlib.dev
 							];
@@ -130,18 +126,14 @@
 								export BROTLI_INCLUDE_DIR=${pkgs.brotli.dev}/include
 								${if cross then "unset NIX_CFLAGS_COMPILE NIX_LDFLAGS" else ""}
 								${if !cross then ''
-								# Forward libjpeg + openjpeg + zlib paths to jpegz/tiffz.
-								# openjpeg.h is nested under include/openjpeg-2.5/.
+								# Forward libjpeg + zlib paths to jpegz/tiffz (openjpeg
+								# is gone — JP2 decode gated off, jp2z is pure Zig).
 								LIBJPEG_DEV=${pkgs.libjpeg_turbo.dev}
 								LIBJPEG_OUT=${pkgs.libjpeg_turbo.out}
-								OPENJPEG_DEV=${pkgs.openjpeg.dev}
-								OPENJPEG_OUT=${pkgs.openjpeg}
 								ZLIB_DEV=${pkgs.zlib.dev}
 								ZLIB_OUT=${pkgs.zlib.out}
 								JPEGZ_OPTS="-Dlibjpeg-include=$LIBJPEG_DEV/include \
 								            -Dlibjpeg-lib=$LIBJPEG_OUT/lib \
-								            -Dopenjpeg-include=$OPENJPEG_DEV/include/openjpeg-2.5 \
-								            -Dopenjpeg-lib=$OPENJPEG_OUT/lib \
 								            -Dzlib-include=$ZLIB_DEV/include \
 								            -Dzlib-lib=$ZLIB_OUT/lib"
 								'' else ''
@@ -153,14 +145,10 @@
 								# builds its own Zig-managed zlib/openjpeg artifacts.
 								JPEGZ_OPTS=""
 								'' else ''
-								# Forward libjpeg + openjpeg + zlib paths to jpegz/tiffz.
-								# openjpeg.h is nested under include/openjpeg-2.5/.
-								# Cross: forward only libjpeg + zlib (both cross-build clean).
-								# NOT openjpeg: nix pkgsCross openjpeg drags libtiff->libwebp
-								# whose img2webp.exe fails to cross-link under mingw. jpegz/tiffz
-								# fall back to their libjpeg-only tier; validate's CORE builds its
-								# OWN openjpeg (deps/openjpeg, Zig-cross-compiled) for the
-								# jpeg2000_validator @cImport, so JP2 validation is unaffected.
+								# Cross: forward libjpeg + zlib (both cross-build clean).
+								# openjpeg is gone everywhere — JP2 decode is gated off
+								# (-Dwith-jp2-decode=false) and strict JP2 validation is
+								# pure-Zig jp2z through tiffz.jpegz.
 								LIBJPEG_DEV=${crossPkgs.libjpeg_turbo.dev}
 								LIBJPEG_OUT=${crossPkgs.libjpeg_turbo.out}
 								ZLIB_DEV=${crossPkgs.zlib.dev}
@@ -291,14 +279,13 @@
 								apple-sdk
 							];
 
-						# Same system libs that the main build uses — jpegz needs libjpeg/openjpeg,
-						# tiffz needs zlib. Test derivation is a fresh nix sandbox so it can't
-						# rely on host PATH or the dev shell's env exports.
+						# Same system libs that the main build uses — jpegz needs libjpeg
+						# (oracle tier), tiffz needs zlib; openjpeg is gone (JP2 decode
+						# gated off, jp2z pure Zig). Test derivation is a fresh nix
+						# sandbox so it can't rely on host PATH or dev-shell exports.
 						buildInputs = [
 							pkgs.libjpeg_turbo
 							pkgs.libjpeg_turbo.dev
-							pkgs.openjpeg
-							pkgs.openjpeg.dev
 							pkgs.zlib
 							pkgs.zlib.dev
 						];
@@ -316,14 +303,10 @@
 							export TERM=dumb
 							LIBJPEG_DEV=${pkgs.libjpeg_turbo.dev}
 							LIBJPEG_OUT=${pkgs.libjpeg_turbo.out}
-							OPENJPEG_DEV=${pkgs.openjpeg.dev}
-							OPENJPEG_OUT=${pkgs.openjpeg}
 							ZLIB_DEV=${pkgs.zlib.dev}
 							ZLIB_OUT=${pkgs.zlib.out}
 							JPEGZ_OPTS="-Dlibjpeg-include=$LIBJPEG_DEV/include \
 							            -Dlibjpeg-lib=$LIBJPEG_OUT/lib \
-							            -Dopenjpeg-include=$OPENJPEG_DEV/include/openjpeg-2.5 \
-							            -Dopenjpeg-lib=$OPENJPEG_OUT/lib \
 							            -Dzlib-include=$ZLIB_DEV/include \
 							            -Dzlib-lib=$ZLIB_OUT/lib"
 							# Test-discovery floor (CI-honesty MFIC): zig build test is silent on
@@ -403,7 +386,6 @@
 							++ pkgs.lib.optionals isDarwin [ darwin.cctools apple-sdk ];
 						buildInputs = [
 							pkgs.libjpeg_turbo pkgs.libjpeg_turbo.dev
-							pkgs.openjpeg pkgs.openjpeg.dev
 							pkgs.zlib pkgs.zlib.dev
 						];
 						buildPhase = ''
@@ -417,14 +399,10 @@
 							export TERM=dumb MUTE_DEBUG_STATUS=1
 							LIBJPEG_DEV=${pkgs.libjpeg_turbo.dev}
 							LIBJPEG_OUT=${pkgs.libjpeg_turbo.out}
-							OPENJPEG_DEV=${pkgs.openjpeg.dev}
-							OPENJPEG_OUT=${pkgs.openjpeg}
 							ZLIB_DEV=${pkgs.zlib.dev}
 							ZLIB_OUT=${pkgs.zlib.out}
 							JPEGZ_OPTS="-Dlibjpeg-include=$LIBJPEG_DEV/include \
 							            -Dlibjpeg-lib=$LIBJPEG_OUT/lib \
-							            -Dopenjpeg-include=$OPENJPEG_DEV/include/openjpeg-2.5 \
-							            -Dopenjpeg-lib=$OPENJPEG_OUT/lib \
 							            -Dzlib-include=$ZLIB_DEV/include \
 							            -Dzlib-lib=$ZLIB_OUT/lib"
 							timeout 1800 zig build $JPEGZ_OPTS fuzz -Doptimize=ReleaseSafe || {
@@ -488,9 +466,6 @@
 							libjpegStatic.dev
 							libopenmptStatic
 							libopenmptStatic.dev
-							# openjpeg for jpegz Phase 1 wrapper (JPEG 2000 decode).
-							pkgs.openjpeg
-							pkgs.openjpeg.dev
 							sqlite
 							zlib
 							ffmpeg  # For testing ffmpeg fallback validation paths
@@ -508,11 +483,6 @@
 							export PCRE2_INCLUDE_ROOT="${pcre2Static.dev}"
 							export LIBJPEG_STATIC_ROOT="${libjpegStatic.out}"
 							export LIBJPEG_INCLUDE_ROOT="${libjpegStatic.dev}"
-							# jpegz consumes these via build.zig's -Dopenjpeg-include /
-							# -Dopenjpeg-lib options. openjpeg.h is nested under
-							# include/openjpeg-2.5/ in nixpkgs.
-							export OPENJPEG_INC="${pkgs.openjpeg.dev}/include/openjpeg-2.5"
-							export OPENJPEG_LIB="${pkgs.openjpeg}/lib"
 							# Brotli headers for jpegz→libjxlz @cImport (see packages note).
 							export BROTLI_INCLUDE_DIR="${pkgs.brotli.dev}/include"
 							export LIBOPENMPT_STATIC_ROOT="${libopenmptStatic.out}"

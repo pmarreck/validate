@@ -42,9 +42,9 @@
         .libape = .{
             .path = "deps/libape",
         },
-        .openjpeg = .{
-            .path = "deps/openjpeg",
-        },
+        // openjpeg removed (v1 closure cutover): JP2 validation is pure-Zig
+        // via tiffz.jpegz (jp2z). jpegz's decode path still references
+        // openjpeg until it gates that linkage; that copy is jpegz's own.
         // libjxlz: no longer a direct dep. jpegz (via tiffz) pins the same
         // libjxlz commit and re-exposes strict JXL validation through
         // `tiffz.jpegz.jpegxl` — a second direct pin here created two module
@@ -131,8 +131,8 @@
         // rejects ("file exists in modules 'jpegz' and 'jpegz0'") and the nix
         // sandbox SEGVs on during the Debug test compile. See validate #32.
         .tiffz = .{
-            .url = "git+https://github.com/pmarreck/tiffz#99deeb892f5b2beeb66979fbf0ea63c8a6533498",
-            .hash = "tiffz-0.1.0-qutJAfiZdgGjBg5qJBm_FPybjwLmhpSc6g-lFxSyvpPk",
+            .url = "git+https://github.com/pmarreck/tiffz#388dee457c73f462ea685dc7dd90037623951329",
+            .hash = "tiffz-0.1.0-qutJASXfdgGeS2uEdgwXE8BPEniq6jsbJcJbV1lgOofW",
         },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",

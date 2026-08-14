@@ -84,7 +84,27 @@ at the bottom. Older completed sections were rolled up — full history lives in
         `jxl_validator_unavailable`→indeterminate), and deletes the direct
         `.libjxlz` zon dep + build.zig module. Package hash
         `tiffz-0.1.0-qutJAfiZdgGjBg5qJBm_FPybjwLmhpSc6g-lFxSyvpPk`.
-  - [ ] **B. JP2 openjpeg → jpegz strict.** Reroute
+  - [ ] **B. (STAGED, BLOCKED on jpegz) JP2 openjpeg → jpegz strict.** All
+        three call sites rerouted (image deep, PDF JPX, DICOM fragments);
+        jpeg2000_validator.zig + deps/openjpeg Trashed; ported fixture tests
+        pass; Zig units fully green (1892/0 on the quiet run). BLOCKED
+        uncommitted: format_roundtrip caught jpegz mapping
+        `jp2_uses_9x7_wavelet` (standard lossy CDF 9/7) to CORRUPT — a clean
+        labeled-good JP2 false-rejected (`balloon_eciRGB_icc.jp2`). Escalated
+        to jpegz 2026-08-11 with reproducer + ask (map capability-gap leaves
+        to `unsupported`); ALSO asked jpegz for a `-Dwith-jp2-decode=false`
+        gate on their unconditional openjp2 module linkage (needed for
+        closure task E/F). Lands on the fixed jpegz→tiffz→validate pin chain.
+        THE ONE RE-PIN NOW BUNDLES (2026-08-14): jp2z `1b29e0c`
+        (entropy_under_read fix; our balloon fixture is now a must-accept
+        control in their gate) + jpegz ≥`a8b79dab` (-Dwith-jp2-decode=false,
+        18→0 opj_ symbols) + lzwz `0.3.0`/`c8f1c9a4` (consume ONLY through
+        tiffz — no second direct dep; retain strict PDF/GIF IncompleteSource
+        coverage, allocation-free GIF exact extent, TIFF warning 14, single
+        shared decoder identity). Wait for tiffz's new SHA, pin once, full
+        suite, land #14 same day.
+        Original plan follows:
+  - [ ] **B-orig. JP2 openjpeg → jpegz strict.** Reroute
         `image_validators.validateJpeg2000Deep` (currently calls the
         openjpeg-`@cImport` `jpeg2000_validator.zig`) and the PDF JPX path to
         `tiffz.jpegz.jpeg2000.strictValidate` (pure-Zig via jp2z; jpegz's
@@ -124,6 +144,44 @@ at the bottom. Older completed sections were rolled up — full history lives in
       `unsupported`→`deep`), zero RE, zero licensing risk. Cross-project
       (tiffz owns DNG container; CR2 = tiffz container + Canon lossless JPEG →
       jpegz). Coordinate seam with tiffz/jpegz. See rawz doc §6 Tier 0.
+
+- [x] **DTS-HD EXSS false positive FIXED (`240228dcf`, 2026-08-14 ~10:55 EDT):**
+      the walker knew only core sync 0x7FFE8001; every DTS-HD MA stream's EXSS
+      substreams (0x64582025) read as "frame boundary mismatch" — 4/4 of
+      Peter's DTS-HD MA movies condemned, all healthy (ffmpeg oracle clean on
+      a 10MB carve). Fixed via EXSS header walk (ETSI TS 102 114 E.4 size
+      fields); witnessed red + corrupted-size must-reject + roundtrip 236/236.
+      Follow-ups: TrueHD/MLP validation (task #20), scan-parallelism
+      starvation (task #21).
+
+- [x] **Cargo.lock + PE subtype LANDED (`ade1e0c46`, 2026-08-14 ~14:40 EDT,
+      pushed):** lockfile basename dispatch (Cargo.lock→toml etc., rebar.lock
+      keeps erlang_term, unclaimed .lock→content detection) + PE
+      `format_variant` token rendering "Windows PE Executable (dll|exe|drv)"
+      (Peter: keep long i18n base). Witnessed reds + 236/236 roundtrip +
+      real-world spot checks in the commit message. Original diagnosis:
+
+- [ ] (superseded) **Cargo.lock misdetected as erlang_term (Peter, 2026-08-13):** the bare
+      extension tables at `format_validation.zig:3196`/`:3484` map `lock` →
+      erlang_term — right for rebar.lock only; Cargo.lock (TOML), flake.lock
+      (JSON), yarn.lock, Gemfile.lock all mis-classify. Reproduced:
+      `--json` gives `format:"erlang_term", valid:true` on Peter's
+      futures-channel Cargo.lock. Fix with basename-aware/content-first .lock
+      dispatch; TDD as classifier over a lockfile SET (must-match AND
+      must-not-match sides), witnessed red. Standalone commit once the tree
+      unblocks (same file as the held JP2 cutover).
+
+- [ ] **Concurrency-test nondeterminism under load (observed 2026-08-11):**
+      two DIFFERENT timing-flavored tests failed on consecutive full-suite
+      runs — `memory_budget.test "observed acquire reports one real admission
+      wait"` (TestExpectedEqual), then `racetrack.test "acquire blocks then
+      unblocks on head advance"` (TestUnexpectedResult) — each passing in the
+      other run; both runs shared the box with parallel nix builds. Our own
+      testing principles forbid timing-dependent tests (inject clocks, use
+      callbacks). Root-cause both: either the tests encode a real race (smash
+      it per debugging philosophy) or they depend on wall-clock scheduling and
+      need deterministic synchronization. Not caused by the codec cutover
+      (neither module touched).
 
 - [ ] **Drive the four image-parser dependencies to 1.0:** execute
       [`docs/IMAGE_PARSER_1_0_MASTER_PLAN.md`](docs/IMAGE_PARSER_1_0_MASTER_PLAN.md)

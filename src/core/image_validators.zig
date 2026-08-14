@@ -18,7 +18,10 @@ const MalformationType = format_validation.MalformationType;
 const jxl_validator = @import("jxl_validator.zig");
 const webp_validator = @import("webp_validator.zig");
 const bmp_decoder = @import("bmp_decoder.zig");
-const jpeg2000_validator = @import("jpeg2000_validator.zig");
+// JPEG2000 strict validation via the jpegz facade (jp2z underneath, pure
+// Zig). Replaced the openjpeg-@cImport jpeg2000_validator.zig (v1 first-party
+// production-closure cutover, Peter 2026-08-05).
+const jpegz_strict = @import("tiffz").jpegz;
 const jbig2_decoder = @import("jbig2_decoder.zig");
 const ccitt_fax_decoder = @import("ccitt_fax_decoder.zig");
 const heic_validator = @import("heic_validator.zig");
@@ -3262,12 +3265,104 @@ pub fn validateJpeg2000Deep(allocator: Allocator, source: *FileSource) Validatio
         .too_large => return ValidationResult.okWithDepthAndWarning(.jpeg2000, .structural, "JPEG2000 too large for non-mmap deep decode"),
     };
 
-    const result = jpeg2000_validator.validateJpeg2000(data);
-    if (result.valid) {
-        return ValidationResult.okWithDepth(.jpeg2000, .full);
-    } else {
-        return ValidationResult.invalidWithDepth(.jpeg2000, result.error_message orelse "JPEG2000 decode failed", .full);
+    return validateJpeg2000DeepFromBuffer(allocator, data);
+}
+
+/// Strict JPEG2000 validation of one memory buffer through the jpegz facade
+/// (jp2z). Preserves the four-way verdict: unsupported and indeterminate are
+/// non-corrupt but non-claimable (WARN at structural depth), never FAIL.
+pub fn validateJpeg2000DeepFromBuffer(allocator: Allocator, data: []const u8) ValidationResult {
+    var strict = jpegz_strict.jpeg2000.strictValidate(allocator, data) catch {
+        return ValidationResult.okWithDepthAndWarning(.jpeg2000, .structural, "JPEG2000 strict validation ran out of memory");
+    };
+    defer strict.deinit(allocator);
+    // Messages must outlive `strict` (ValidationResult carries unowned
+    // slices), so use @tagName static strings, never finding.detail.
+    //
+    // Surface the finding that DROVE the verdict (first .fail), never merely
+    // the first finding: an INFO like jp2_uses_9x7_wavelet can precede the
+    // FAIL and the message then blames the wrong thing (jpegz 2026-08-12
+    // correction after exactly that misread).
+    var fail_code: ?jpegz_strict.FindingCode = null;
+    var saw_fail = false;
+    for (strict.findings.items) |f| {
+        if (f.severity == .fail) {
+            saw_fail = true;
+            if (f.code) |c| {
+                fail_code = c;
+                break;
+            }
+        }
     }
+    return switch (strict.verdict) {
+        .valid => ValidationResult.okWithDepth(.jpeg2000, .full),
+        .corrupt => ValidationResult.invalidWithDepth(
+            .jpeg2000,
+            if (fail_code) |c|
+                @tagName(c)
+            else if (saw_fail)
+                "JPEG2000 failed strict validation (unmapped leaf finding)"
+            else
+                "JPEG2000 failed strict validation",
+            .full,
+        ),
+        .unsupported => ValidationResult.okWithDepthAndWarning(.jpeg2000, .structural, "JPEG2000 uses a feature outside strict validator coverage"),
+        .indeterminate => ValidationResult.okWithDepthAndWarning(.jpeg2000, .structural, "JPEG2000 strict validation was inconclusive"),
+    };
+}
+
+test "validateJpeg2000DeepFromBuffer accepts real JP2 container fixture" {
+    // Ported from the retired openjpeg-based jpeg2000_validator.zig; same
+    // ground-truth fixture, now through the jpegz/jp2z strict facade.
+    const allocator = std.testing.allocator;
+    const file = runtime.openFile("ground_truth_examples/jpeg2k/balloon.jp2", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer file.close(runtime.io());
+
+    const size = file.length(runtime.io()) catch return;
+    if (size > 10 * 1024 * 1024) return;
+    const data = allocator.alloc(u8, @intCast(size)) catch return;
+    defer allocator.free(data);
+    _ = file.readPositionalAll(runtime.io(), data, 0) catch return;
+
+    const result = validateJpeg2000DeepFromBuffer(allocator, data);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateJpeg2000DeepFromBuffer accepts real J2K codestream fixture" {
+    const allocator = std.testing.allocator;
+    const file = runtime.openFile("ground_truth_examples/jpeg2k/balloon.j2c", .{}) catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer file.close(runtime.io());
+
+    const size = file.length(runtime.io()) catch return;
+    if (size > 10 * 1024 * 1024) return;
+    const data = allocator.alloc(u8, @intCast(size)) catch return;
+    defer allocator.free(data);
+    _ = file.readPositionalAll(runtime.io(), data, 0) catch return;
+
+    const result = validateJpeg2000DeepFromBuffer(allocator, data);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+}
+
+test "validateJpeg2000DeepFromBuffer rejects garbage as corrupt" {
+    // Unlike jpegz.validateAny (which sniffs and answers indeterminate for
+    // unrecognized bytes), jpeg2000.strictValidate ASSERTS the format — the
+    // caller reached this path via signature detection, so non-JP2 content
+    // here is judged corrupt with a specific finding, not shrugged at.
+    // (Observed contract, witnessed red on the first draft of this test.)
+    const allocator = std.testing.allocator;
+    const garbage = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33 };
+    const result = validateJpeg2000DeepFromBuffer(allocator, &garbage);
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expect(result.error_message != null);
+    try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
 }
 
 // ============ JBIG2 Deep Validation ============
