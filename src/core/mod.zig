@@ -33,6 +33,7 @@ pub const alac_validator = @import("alac_validator.zig");
 pub const ac3_validator = @import("ac3_validator.zig");
 pub const dts_validator = @import("dts_validator.zig");
 pub const eac3_validator = @import("eac3_validator.zig");
+pub const truehd_validator = @import("truehd_validator.zig");
 pub const prores_validator = @import("prores_validator.zig");
 pub const prores_decoder = @import("prores_decoder.zig");
 pub const video_validator = @import("video_validator.zig");
@@ -417,6 +418,7 @@ test {
     _ = @import("ebml_parser.zig");
     _ = @import("ac3_validator.zig");
     _ = @import("eac3_validator.zig");
+    _ = @import("truehd_validator.zig");
     _ = @import("mp3_validator.zig");
     _ = @import("mp3_decode_validator.zig");
     _ = @import("alac_validator.zig");

@@ -25,6 +25,7 @@ const aac_syntax_validator = @import("aac_syntax_validator.zig");
 const alac_validator = @import("alac_validator.zig");
 const ac3_validator = @import("ac3_validator.zig");
 const dts_validator = @import("dts_validator.zig");
+const truehd_validator = @import("truehd_validator.zig");
 const eac3_validator = @import("eac3_validator.zig");
 const mp3_validator = @import("mp3_decode_validator.zig");
 const opus_validator = @import("opus_validator.zig");
@@ -42,6 +43,7 @@ pub const AudioCodec = enum {
     ac3,
     eac3,
     dts,
+    truehd,
     alac,
     pcm,
     unknown,
@@ -1589,6 +1591,54 @@ fn validateMkvDtsTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track
     return AudioValidationResult.ok(.dts, result.frames_validated);
 }
 
+/// Validate a TrueHD/MLP track from an MKV container (codec ID A_TRUEHD or
+/// A_MLP). Matroska blocks carry whole access units with their headers
+/// intact, so the blocks are concatenated verbatim and validated as a raw
+/// TrueHD bitstream (frame-boundary + header-integrity checks).
+fn validateMkvTrueHdTrack(allocator: Allocator, parser: *ebml.MatroskaParser, track: ebml.VideoTrackInfo) AudioValidationResult {
+    // Collect audio frames (audio blocks may not have the keyframe flag set)
+    const frames = parser.collectAllFrames(track.track_number, 100) orelse {
+        return AudioValidationResult.invalid("Failed to collect TrueHD frames", .truehd);
+    };
+    defer {
+        for (frames) |*kf| {
+            var mutable_kf = @constCast(kf);
+            mutable_kf.deinit();
+        }
+        allocator.free(frames);
+    }
+
+    if (frames.len == 0) {
+        return AudioValidationResult.invalid("No TrueHD frames found", .truehd);
+    }
+
+    var total_size: usize = 0;
+    for (frames) |kf| {
+        total_size += kf.data.len;
+    }
+    if (total_size == 0) {
+        return AudioValidationResult.invalid("No TrueHD data found", .truehd);
+    }
+
+    const combined = allocator.alloc(u8, total_size) catch {
+        return AudioValidationResult.invalid("Memory allocation failed", .truehd);
+    };
+    defer allocator.free(combined);
+
+    var offset: usize = 0;
+    for (frames) |kf| {
+        @memcpy(combined[offset..][0..kf.data.len], kf.data);
+        offset += kf.data.len;
+    }
+
+    const result = truehd_validator.validateTrueHdStream(combined[0..offset], 100);
+    if (!result.valid) {
+        return AudioValidationResult.invalid(result.error_message orelse "TrueHD validation failed", .truehd);
+    }
+
+    return AudioValidationResult.ok(.truehd, result.units_validated);
+}
+
 /// Validate audio track from MKV file
 fn validateMkvAudio(allocator: Allocator, source: *FileSource) AudioValidationResult {
     source.seekTo(0) catch {
@@ -1654,6 +1704,7 @@ fn validateMkvAudio(allocator: Allocator, source: *FileSource) AudioValidationRe
         .ac3 => validateMkvAc3Track(allocator, &parser, audio_track.?),
         .eac3 => validateMkvEac3Track(allocator, &parser, audio_track.?),
         .dts => validateMkvDtsTrack(allocator, &parser, audio_track.?),
+        .truehd => validateMkvTrueHdTrack(allocator, &parser, audio_track.?),
         .pcm => AudioValidationResult.pcmUnverifiable(),
         else => AudioValidationResult.unsupported(.unknown),
     };
@@ -1677,6 +1728,8 @@ fn detectMkvAudioCodec(codec_id: ?[]const u8) AudioCodec {
         return if (std.mem.eql(u8, id, "A_AC3")) .ac3 else .dts;
     } else if (std.mem.eql(u8, id, "A_EAC3")) {
         return .eac3;
+    } else if (std.mem.eql(u8, id, "A_TRUEHD") or std.mem.eql(u8, id, "A_MLP")) {
+        return .truehd;
     } else if (std.mem.startsWith(u8, id, "A_PCM")) {
         return .pcm;
     }
