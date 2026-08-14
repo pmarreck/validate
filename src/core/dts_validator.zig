@@ -14,6 +14,37 @@ const errmsg = @import("error_messages.zig");
 
 /// DTS Core sync word (big-endian 14-bit packing)
 const DTS_SYNC_WORD: u32 = 0x7FFE8001;
+/// DTS-HD extension substream (EXSS) sync word. DTS-HD MA/HRA streams
+/// legitimately interleave EXSS blocks (XLL lossless, XCH, XXCH, X96 …)
+/// between core frames; they are part of the stream, not corruption.
+const DTS_EXSS_SYNC_WORD: u32 = 0x64582025;
+
+/// Parse a DTS-HD EXSS header far enough to learn the substream's total
+/// byte size (uExtSSFsize, stored minus one, size includes the sync word).
+/// Layout per ETSI TS 102 114 E.4: sync(32), UserDefinedBits(8),
+/// nExtSSIndex(2), bHeaderSizeType(1), then uHeaderSize and uExtSSFsize
+/// whose widths are 8/16 bits (type 0) or 12/20 bits (type 1).
+/// Returns null when the header is malformed or the size is implausible —
+/// the caller treats that as the corruption it is.
+fn parseExssFrameSize(data: []const u8) ?u32 {
+    if (data.len < 10) return null;
+    const b5 = data[5];
+    const b6 = data[6];
+    const b7 = data[7];
+    const b8 = data[8];
+    const b9 = data[9];
+    const header_size_type: u1 = @truncate(b5 >> 5);
+    if (header_size_type == 0) {
+        // uHeaderSize: b5[4:0] + b6[7:5]; uExtSSFsize(16): b6[4:0] b7 b8[7:5]
+        const fsize = ((((@as(u32, b6) & 0x1F) << 11) | (@as(u32, b7) << 3) | (@as(u32, b8) >> 5))) + 1;
+        if (fsize < 16) return null;
+        return fsize;
+    }
+    // uHeaderSize: b5[4:0] + b6[7:1]; uExtSSFsize(20): b6[0] b7 b8 b9[7:5]
+    const fsize = ((((@as(u32, b6) & 0x01) << 19) | (@as(u32, b7) << 11) | (@as(u32, b8) << 3) | (@as(u32, b9) >> 5))) + 1;
+    if (fsize < 16) return null;
+    return fsize;
+}
 
 /// DTS sample rate table (SFREQ field, 4 bits)
 const sample_rate_table = [16]u32{
@@ -302,8 +333,27 @@ pub fn validateDtsStream(data: []const u8, max_frames: u32) DtsValidationResult 
             return DtsValidationResult.invalid("DTS sample rate changed mid-stream", frames_validated);
         }
 
-        // Verify next frame starts with sync word (if not at end)
-        const next_pos = pos + frame_info.frame_size;
+        // Advance past the core frame, then past any DTS-HD EXSS extension
+        // substreams (XLL lossless payload etc.) that legitimately follow it.
+        // A damaged EXSS header (bad sync tail or implausible size) either
+        // fails parseExssFrameSize or lands the walk on a non-sync offset —
+        // both still classified as corruption below.
+        var next_pos = pos + frame_info.frame_size;
+        while (next_pos + 4 <= data.len and
+            std.mem.readInt(u32, data[next_pos..][0..4], .big) == DTS_EXSS_SYNC_WORD)
+        {
+            const exss_size = parseExssFrameSize(data[next_pos..]) orelse
+                return DtsValidationResult.invalid("DTS extension substream header invalid (data corruption)", frames_validated);
+            if (next_pos + exss_size > data.len) {
+                // Truncated final EXSS block — tolerated like a truncated
+                // final core frame: stop the walk after this frame.
+                next_pos = data.len;
+                break;
+            }
+            next_pos += exss_size;
+        }
+
+        // Verify the next frame starts with a core sync word (if not at end)
         if (next_pos + 4 <= data.len) {
             const next_sync = std.mem.readInt(u32, data[next_pos..][0..4], .big);
             if (next_sync != DTS_SYNC_WORD) {
@@ -417,4 +467,63 @@ test "DTS frame header parsing" {
         try std.testing.expectEqual(@as(u8, 8), frame.nblks);
         try std.testing.expectEqual(@as(u3, 0), frame.pcmr);
     }
+}
+
+// ── DTS-HD (EXSS) tests ─────────────────────────────────────────────
+
+/// Build one minimal valid DTS core frame (512 bytes) from the documented
+/// header in "DTS frame header parsing", body filled with varied bytes so
+/// the zero-entropy heuristic never fires.
+fn testMakeCoreFrame(buf: []u8) void {
+    std.debug.assert(buf.len == 512);
+    const header = [_]u8{
+        0x7F, 0xFE, 0x80, 0x01,
+        0x00, 0x1C, 0x1F, 0xF2,
+        0x76, 0xC0, 0x04, 0x00,
+    };
+    @memcpy(buf[0..12], &header);
+    for (buf[12..], 0..) |*b, i| b.* = @truncate(i *% 37 +% 11);
+}
+
+/// Build a 32-byte EXSS substream: sync + bHeaderSizeType=0,
+/// uHeaderSize=12 (stored 11), uExtSSFsize=32 (stored 31).
+fn testMakeExssBlock(buf: []u8) void {
+    std.debug.assert(buf.len == 32);
+    buf[0] = 0x64; buf[1] = 0x58; buf[2] = 0x20; buf[3] = 0x25;
+    buf[4] = 0x00; // UserDefinedBits
+    buf[5] = 0x01; // nExtSSIndex=0, bHeaderSizeType=0, hdr[7:3]=00001
+    buf[6] = 0x60; // hdr[2:0]=011 (=> 11+1=12), fsize[15:11]=00000
+    buf[7] = 0x03; // fsize[10:3]=00000011
+    buf[8] = 0xE0; // fsize[2:0]=111 => raw 31 => 32 bytes
+    for (buf[9..], 0..) |*b, i| b.* = @truncate(i *% 53 +% 7);
+}
+
+test "DTS-HD: EXSS substreams between core frames are not corruption" {
+    // [core 512][EXSS 32][core 512][EXSS 32] — the layout every DTS-HD MA
+    // stream uses. Witnessed red: the pre-fix walker called this "DTS frame
+    // boundary mismatch (data corruption)" (confirmed against a real
+    // DTS-HD MA carve that ffmpeg decodes cleanly, 2026-08-14).
+    var stream: [512 + 32 + 512 + 32]u8 = undefined;
+    testMakeCoreFrame(stream[0..512]);
+    testMakeExssBlock(stream[512..544]);
+    testMakeCoreFrame(stream[544..1056]);
+    testMakeExssBlock(stream[1056..1088]);
+
+    const result = validateDtsStream(&stream, 10);
+    try std.testing.expect(result.valid);
+    try std.testing.expectEqual(@as(u32, 2), result.frames_validated);
+}
+
+test "DTS-HD: corrupt EXSS size field still detected" {
+    // Same stream, EXSS size field shrunk (32 -> 24): the walk lands inside
+    // EXSS filler, which is neither core nor EXSS sync -> boundary mismatch.
+    var stream: [512 + 32 + 512 + 32]u8 = undefined;
+    testMakeCoreFrame(stream[0..512]);
+    testMakeExssBlock(stream[512..544]);
+    stream[512 + 7] = 0x02; // fsize raw 23 => 24 bytes (was 31 => 32)
+    testMakeCoreFrame(stream[544..1056]);
+    testMakeExssBlock(stream[1056..1088]);
+
+    const result = validateDtsStream(&stream, 10);
+    try std.testing.expect(!result.valid);
 }
