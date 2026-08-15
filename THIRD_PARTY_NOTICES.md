@@ -28,7 +28,6 @@ texts are the per-library files in `LICENSES/`.
 | zig-toml | MIT | `LICENSES/zig-toml.txt` |
 | zig-xml | MIT | `LICENSES/zig-xml.txt` |
 | zigimg | MIT | `LICENSES/zigimg.txt` |
-| LibRaw | CDDL-1.0 (elected) | `LICENSES/libraw.txt`, `LICENSES/CDDL-1.0.txt` |
 | lercz | Apache-2.0 | `LICENSES/lercz.txt` |
 
 ## ⚠️ PENDING — bundled but license text not yet vendored (legal follow-up)
@@ -49,19 +48,14 @@ decision (do not treat as compliant yet):
 - **z7z / compact_pro** (Peter's own sibling projects) — confirm their license
   (BSL-1.1 like validate? MIT?) and add the text.
 
-## LibRaw CDDL-1.0 election
+## LibRaw — removed 2026-08-15
 
-LibRaw is offered under **LGPL-2.1 OR CDDL-1.0**. Peter Marreck, as the
-distributor of validate, elects **CDDL-1.0** for LibRaw in every validate
-binary distribution. The canonical CDDL-1.0 text is bundled at
-`LICENSES/CDDL-1.0.txt`; `LICENSES/libraw.txt` carries the LibRaw attribution
-and election record.
-
-This election applies **only to LibRaw**. validate's own source code and
-interfaces remain licensed under the top-level Business Source License 1.1,
-including its separate restrictions on third-party GUI, API, service, plugin,
-and application use. The LibRaw election grants no rights in validate beyond
-those BSL terms.
+LibRaw (and its CDDL-1.0 election) was removed from every validate build as
+part of the v1 first-party production-closure cutover: ARW/CR2/NEF validation
+routes through Peter-owned tiffz + jpegz, and vendor sensor payloads are
+rawz milestones. LibRaw, rawspeed, and darktable remain **dev/test oracles
+outside the build graph** and are not distributed with validate; no license
+text is bundled for tools that are not shipped.
 
 — Generated as part of the 2026-06-23 CODE_REVIEW legal remediation. The bundling
 mechanism (installing LICENSE + LICENSES/ + this file alongside the binary) is in

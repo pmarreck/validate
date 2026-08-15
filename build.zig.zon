@@ -78,10 +78,10 @@
             .url = "git+https://github.com/pmarreck/cj5#b70941c4fe022df55a4177f696b0474ba3ef8125",
             .hash = "cj5-1.0.0-wO-em1zcAADAeO71NFuI_Z-cmq7BT-0YSVegGQ2q8SCe",
         },
-        .libraw = .{
-            .url = "git+https://github.com/phcreery/LibRaw-zig#d6a01722b2f702b1bd41811cc588b69c63210a63",
-            .hash = "libraw-0.21.4-c166SQR6AADQHFPUvMe5mMpjqLf6XAFFu5x9N1KjGSN8",
-        },
+        // libraw removed (v1 closure, 2026-08-15): oracle-only per Peter's
+        // ruling — ARW/CR2/NEF route tiffz+jpegz; vendor sensor payloads are
+        // rawz milestones. darktable/rawspeed/libraw remain dev/test oracles
+        // OUTSIDE the build graph.
         .z7z = .{
             .url = "git+https://github.com/pmarreck/z7z#b3812b7ab100600c79d795a16c22a75801b88bce",
             .hash = "z7z-0.1.0-rkKuF4J_BwDeaEBGvV26pV2BfpcZNenxMb9pXgvIvIRi",

@@ -27,7 +27,6 @@ const ccitt_fax_decoder = @import("ccitt_fax_decoder.zig");
 const heic_validator = @import("heic_validator.zig");
 const avif_validator = @import("avif_validator.zig");
 const zlib = @import("zlib.zig");
-const libraw_validator = @import("libraw_validator.zig");
 const orf_decoder = @import("orf_decoder.zig");
 // PEF vendor semantics moved to rawz (Einstein M3 cutover); the local
 // pef_decoder.zig copy is deleted. PackBits (32773) is decoded by tiffz
@@ -2527,12 +2526,14 @@ fn skipSubBlockChain(data: []const u8, pos: *usize) ?[]const u8 {
 /// This catches decompression errors in LZW/Deflate/PackBits/etc and corrupted IFD data
 /// that structural validation would miss.
 pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileFormat) ValidationResult {
-    // For camera RAW formats (ARW, CR2, NEF), try LibRaw first.
-    // LibRaw handles proprietary vendor compression that zigimg can't decode.
+    // Camera RAW TIFF containers (ARW, CR2, NEF): first-party path (v1
+    // closure — LibRaw removed 2026-08-15, Peter's ruling: oracle-only until
+    // v1, then cut). tiffz walks the container (IFDs, strips, offsets — a
+    // stronger structural check than LibRaw's accept), then the embedded
+    // preview JPEG is deep-validated via jpegz. The vendor sensor payload is
+    // NOT yet verified (rawz owns those milestones per family), so depth
+    // stays honest: tiffz reports structural/WARN for codec-gap strips.
     if (format == .arw or format == .cr2 or format == .nef) {
-        // Feed libraw from the source. mmap zero-copy when available, else
-        // bounded heap slurp (64 MB cap). Larger files on non-mmap paths fall
-        // back to structural-only with a warning.
         const slurp = source.getMappedOrSlurp(allocator, 64 << 20) catch
             return ValidationResult.okWithDepthAndWarning(format, .structural, "I/O error reading RAW buffer");
         var heap_ref: ?[]u8 = null;
@@ -2543,31 +2544,39 @@ pub fn validateTiffDeep(allocator: Allocator, source: *FileSource, format: FileF
             .too_large => return ValidationResult.okWithDepthAndWarning(format, .structural, "RAW file too large for non-mmap deep decode"),
         };
 
-        const libraw_result = libraw_validator.validateRawBuffer(buffer);
-        if (libraw_result.valid) {
-            // LibRaw accepted the file structurally. Now deep-validate the
-            // embedded preview JPEG by parsing the TIFF IFD to find its exact
-            // offset/length, then decoding via libjpeg-turbo. This catches bit
-            // flips inside the preview region (typically 5–30% of the file)
-            // which LibRaw does not detect. Skipping blind SOI-scanning avoids
-            // sensor-data false positives that killed a prior attempt.
+        // CR2 INTERIM (2026-08-15): tiffz's container walk false-rejects a
+        // labeled-good sRAW2 CR2 as Malformed (exiftool -validate: OK;
+        // escalated to tiffz with the fixture). Until their fix lands, CR2
+        // gets signature-trust + the preview-JPEG deep check below, at
+        // honest structural depth — never a false reject. Regression test:
+        // "labeled-good CR2 stays valid without libraw".
+        if (format == .cr2) {
             if (findTiffPreviewLocation(buffer, format)) |loc| {
                 const preview_bytes = buffer[@intCast(loc.offset) .. @intCast(loc.offset + loc.length)];
                 const preview_check = jpeg_validator.validateJpegDeepFromBuffer(preview_bytes);
                 if (!preview_check.valid) {
-                    // Surface jpegz's specific cause (a 'static message) rather than a
-                    // generic phrase. The old validateJpegBufferForDng() collapsed the
-                    // result to a bool and discarded error_message.
                     return ValidationResult.invalidWithDepth(format, preview_check.error_message orelse "embedded preview JPEG corrupt", .full);
                 }
             }
-            return ValidationResult.okWithDepth(format, .full);
+            return ValidationResult.okWithDepthAndWarning(format, .structural, "CR2 container walk pending tiffz CR2 fix (tracked); preview JPEG deep-validated");
         }
-        // LibRaw failed - return its specific error
-        if (libraw_result.error_message) |msg| {
-            return ValidationResult.invalidWithDepth(format, msg, .full);
+
+        const tiffz_result = tiffz_shim.validateTiffDeepBuffer(allocator, buffer, format);
+        if (!tiffz_result.is_valid) {
+            return tiffz_result;
         }
-        return ValidationResult.invalidWithDepth(format, "LibRaw decode failed", .full);
+        // Deep-validate the embedded preview JPEG at its exact IFD-declared
+        // offset/length (bit flips in the preview region — typically 5-30%
+        // of the file — are real corruption a container walk cannot see).
+        // Blind SOI-scanning is avoided: sensor data false-positives.
+        if (findTiffPreviewLocation(buffer, format)) |loc| {
+            const preview_bytes = buffer[@intCast(loc.offset) .. @intCast(loc.offset + loc.length)];
+            const preview_check = jpeg_validator.validateJpegDeepFromBuffer(preview_bytes);
+            if (!preview_check.valid) {
+                return ValidationResult.invalidWithDepth(format, preview_check.error_message orelse "embedded preview JPEG corrupt", .full);
+            }
+        }
+        return tiffz_result;
     }
 
     // Olympus ORF: decode Huffman-compressed RAW data (pure Zig, no zigimg)
@@ -8602,4 +8611,18 @@ test "validateWebp: u32-overflow declared RIFF size must not bypass the truncati
 	// Specific truncation error, not just any failure (avoid a vacuous pass if the
 	// wrap bypasses the guard and the validator fails later for another reason).
 	try std.testing.expect(!r.is_valid and r.error_code != null and r.error_code.? == .exceeds_bounds);
+}
+
+test "labeled-good CR2 stays valid without libraw (tiffz CR2 false-Malformed interim)" {
+    // Control for the 2026-08-15 escalation: exiftool -validate says OK on
+    // this fixture; tiffz's walk said Malformed. Until tiffz's fix, CR2 is
+    // signature+preview validated at structural depth. When tiffz lands the
+    // fix, re-enable the walk and tighten this to assert their acceptance.
+    var source = FileSource.open("ground_truth_examples/cr2/canon_eos_40d_sraw2.cr2") catch |err| {
+        if (err == error.FileNotFound or err == error.AccessDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer source.close();
+    const result = validateTiffDeep(std.testing.allocator, &source, .cr2);
+    try testing.expect(result.is_valid);
 }

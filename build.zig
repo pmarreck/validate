@@ -398,13 +398,6 @@ pub fn build(b: *std.Build) void {
     });
     const progrez_module = progrez_dep.module("progrez_core");
 
-    // LibRaw for camera RAW validation (CDDL-1.0 elected from its dual license).
-    const libraw_dep = b.dependency("libraw", .{
-        .target = target,
-        .optimize = deps_optimize,
-    });
-    const libraw_lib = libraw_dep.artifact("libraw_clib");
-    const libraw_mod = libraw_dep.module("libraw");
 
     // mini_blar extracted from BLIP to its own repo (2026-05). validate
     // only ever consumed the archive reader/verifier; the rest of BLIP
@@ -425,7 +418,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zigimg", .module = zigimg_mod }, // Image format decoding for deep validation
             .{ .name = "xml", .module = zigxml_mod }, // XML validation (0BSD, ianprime0509/zig-xml)
             .{ .name = "cj5", .module = cj5_mod }, // JSON5 validation (MIT, septag/cj5 fork)
-            .{ .name = "libraw", .module = libraw_mod }, // Camera RAW validation (CDDL-1.0 elected)
             // JPEG XL strict validation via tiffz.jpegz.jpegxl (single libjxlz instance) — see #32.
             .{ .name = "bzip2z", .module = bzip2z_mod }, // bzip2 clean-room decoder/encoder
             .{ .name = "zstd", .module = zstdz_mod }, // zstd via zstdz (Peter-controlled fork of Facebook BSD zstd)
@@ -493,8 +485,6 @@ pub fn build(b: *std.Build) void {
     // Add zlib include path (Zig-built dependency, used in zlib.zig wrapper)
     core_mod.addIncludePath(zlib_lib.getEmittedIncludeTree());
 
-    // Add libraw include path (for camera RAW validation)
-    core_mod.addIncludePath(libraw_lib.getEmittedIncludeTree());
 
     // Add compact_pro C FFI headers
     core_mod.addIncludePath(compact_pro_dep.path("include"));
@@ -537,7 +527,6 @@ pub fn build(b: *std.Build) void {
         brotli_lib,    // .br file decompression validation
         libopenmpt_lib, // tracker format (MOD/XM/IT/S3M) deep validation
         cj5_lib,       // JSON5 validation (C library)
-        libraw_lib,    // camera RAW format validation (LGPL-2.1)
         compact_pro_lib, // Compact Pro archive validation
         uchardetz_lib,   // Mozilla uchardet — charset detection for plain-text validators
         rarz_lib,        // clean-room RAR archive verification through stable C ABI
@@ -562,7 +551,7 @@ pub fn build(b: *std.Build) void {
     if (opt_libjpeg_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_libjpeg_lib });
     if (opt_zlib_lib.len > 0) lib.root_module.addLibraryPath(.{ .cwd_relative = opt_zlib_lib });
     lib.root_module.addLibraryPath(zig_zlib_lib_dir);
-    // On Windows, LibRaw uses ntohs/htons/htonl/ntohl from ws2_32
+    // On Windows, ws2_32 supplies ntohs/htonl for byte-order helpers in C deps
     if (target.result.os.tag == .windows) {
         lib.root_module.linkSystemLibrary("ws2_32", .{});
     }
@@ -597,7 +586,6 @@ pub fn build(b: *std.Build) void {
             compact_pro_lib.getEmittedBin(),
             rarz_lib.getEmittedBin(),
             sqlite3_lib.getEmittedBin(),
-            libraw_lib.getEmittedBin(),
         };
 
         const libtool = LibtoolStep.create(b, .{

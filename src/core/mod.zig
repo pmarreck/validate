@@ -135,7 +135,7 @@ pub const thread_pool = @import("thread_pool.zig");
 pub const heic_validator = @import("heic_validator.zig");
 pub const avif_validator = @import("avif_validator.zig");
 pub const webp_validator = @import("webp_validator.zig");
-pub const libraw_validator = @import("libraw_validator.zig");
+// libraw removed (v1 closure, 2026-08-15): ARW/CR2/NEF go tiffz+jpegz; vendor payloads are rawz milestones.
 pub const h265_validator = @import("h265_validator.zig");
 pub const h264_syntax_validator = @import("h264_syntax_validator.zig");
 pub const aac_syntax_validator = @import("aac_syntax_validator.zig");
@@ -426,7 +426,6 @@ test {
     _ = @import("opus_validator.zig");
     _ = @import("vorbis_validator.zig");
     _ = @import("libopenmpt.zig");
-    _ = @import("libraw_validator.zig");
     _ = @import("pdf_image_validator.zig");
     _ = @import("bzip2.zig");
     // NOTE: resource_fork.zig is intentionally NOT imported here. The

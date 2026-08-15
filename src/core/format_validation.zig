@@ -124,7 +124,6 @@ const heic_validator = @import("heic_validator.zig");
 const avif_validator = @import("avif_validator.zig");
 
 // Import LibRaw validator for camera RAW format deep validation (ARW, CR2, NEF)
-const libraw_validator = @import("libraw_validator.zig");
 
 // Import video validator for video stream deep validation (MP4/MKV with HEVC/AV1)
 const video_validator = @import("video_validator.zig");
