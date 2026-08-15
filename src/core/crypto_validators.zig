@@ -1,5 +1,6 @@
 const std = @import("std");
 const runtime = @import("runtime.zig");
+const heap = @import("heap.zig");
 const format_validation = @import("format_validation.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
@@ -316,6 +317,155 @@ pub fn validatePemDeep(allocator: Allocator, source: *FileSource) ValidationResu
 	}
 
 	return ValidationResult.okWithDepth(.pem, .full);
+}
+
+// ========== PGP ASCII Armor Validator (RFC 4880 §6.2) ==========
+
+/// Validate PGP ASCII-armored data: key blocks, detached signatures, armored
+/// messages. Checks the BEGIN/END label pair, armor headers, base64 body, an
+/// OpenPGP packet-tag sanity bit on the decoded payload, and — when the
+/// optional "=XXXX" line is present — verifies the CRC-24 over the decoded
+/// bytes (full depth). GnuPG ≥ 2.4 omits the CRC line; such files validate at
+/// structural depth. Distinct from validatePgpSigned (clearsigned messages).
+pub fn validatePgpArmor(source: *FileSource) ValidationResult {
+	const alloc = heap.validateAllocator();
+
+	const file_sz = source.getEndPos() catch {
+		return ValidationResult.invalidCode(.pgp_armor, .failed_to_get, "file size");
+	};
+	if (file_sz < 30) {
+		return ValidationResult.invalid(.pgp_armor, "File too small for PGP armor");
+	}
+	if (file_sz > 32 * 1024 * 1024) {
+		// Resource cap, not damage evidence.
+		var capped = ValidationResult.okWithDepthAndWarning(.pgp_armor, .structural, "PGP armor too large for full validation");
+		capped.verdict = .indeterminate;
+		return capped;
+	}
+
+	var heap_buf: ?[]u8 = null;
+	defer if (heap_buf) |buf| alloc.free(buf);
+	const data: []const u8 = if (source.getMappedSlice()) |mapped|
+		mapped
+	else blk: {
+		const buf = alloc.alloc(u8, @intCast(file_sz)) catch return ValidationResult.invalidCode(.pgp_armor, .out_of_memory, "PGP armor file");
+		heap_buf = buf;
+		source.seekTo(0) catch return ValidationResult.invalidCode(.pgp_armor, .failed_to_seek, "to start");
+		const n = source.readAll(buf) catch return ValidationResult.invalidCode(.pgp_armor, .failed_to_read, "PGP armor file");
+		break :blk buf[0..n];
+	};
+
+	return validatePgpArmorBuffer(alloc, data);
+}
+
+fn validatePgpArmorBuffer(allocator: Allocator, data: []const u8) ValidationResult {
+	const begin_prefix = "-----BEGIN ";
+	if (!std.mem.startsWith(u8, data, begin_prefix) or !std.mem.startsWith(u8, data[begin_prefix.len..], "PGP ")) {
+		return ValidationResult.invalid(.pgp_armor, "Missing PGP armor BEGIN marker");
+	}
+
+	// Label runs to the closing dashes: "PGP PUBLIC KEY BLOCK", "PGP SIGNATURE", ...
+	const after_begin = data[begin_prefix.len..];
+	const label_end = std.mem.indexOf(u8, after_begin, "-----") orelse {
+		return ValidationResult.invalid(.pgp_armor, "Malformed PGP armor BEGIN line");
+	};
+	const label = after_begin[0..label_end];
+
+	// Matching END marker with the SAME label.
+	var end_buf: [256]u8 = undefined;
+	const end_marker_start = "-----END ";
+	if (end_marker_start.len + label.len + 5 > end_buf.len) {
+		return ValidationResult.invalid(.pgp_armor, "PGP armor label too long");
+	}
+	@memcpy(end_buf[0..end_marker_start.len], end_marker_start);
+	@memcpy(end_buf[end_marker_start.len..][0..label.len], label);
+	@memcpy(end_buf[end_marker_start.len + label.len ..][0..5], "-----");
+	const expected_end = end_buf[0 .. end_marker_start.len + label.len + 5];
+
+	const content_start = begin_prefix.len + label_end + 5;
+	if (content_start >= data.len) {
+		return ValidationResult.invalid(.pgp_armor, "No content after PGP armor BEGIN marker");
+	}
+	const end_pos = std.mem.indexOf(u8, data[content_start..], expected_end) orelse {
+		return ValidationResult.invalid(.pgp_armor, "Missing matching PGP armor END marker");
+	};
+	const content = data[content_start .. content_start + end_pos];
+
+	// Collect base64 body and the optional CRC-24 line.
+	var b64_buf = allocator.alloc(u8, content.len) catch {
+		return ValidationResult.invalidCode(.pgp_armor, .out_of_memory, "PGP armor base64 buffer");
+	};
+	defer allocator.free(b64_buf);
+	var b64_len: usize = 0;
+	var declared_crc: ?[]const u8 = null;
+
+	var lines_iter = std.mem.splitScalar(u8, content, '\n');
+	while (lines_iter.next()) |raw_line| {
+		var line = raw_line;
+		if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
+		if (line.len == 0) continue;
+		// Armor headers (Version:, Comment:, Charset:, Hash:) contain ": ".
+		if (std.mem.indexOf(u8, line, ": ") != null) continue;
+
+		if (line[0] == '=') {
+			// CRC-24 line: '=' followed by exactly 4 base64 chars.
+			if (line.len != 5) {
+				return ValidationResult.invalid(.pgp_armor, "PGP armor: invalid CRC-24 line format");
+			}
+			for (line[1..5]) |b| {
+				if (!isBase64Byte(b) or b == '=' or b == ' ' or b == '\t') {
+					return ValidationResult.invalid(.pgp_armor, "PGP armor: invalid CRC-24 line format");
+				}
+			}
+			declared_crc = line[1..5];
+		} else {
+			for (line) |b| {
+				if (!isBase64Byte(b)) {
+					return ValidationResult.invalid(.pgp_armor, "PGP armor: invalid base64 content");
+				}
+			}
+			@memcpy(b64_buf[b64_len..][0..line.len], line);
+			b64_len += line.len;
+		}
+	}
+
+	if (b64_len == 0) {
+		return ValidationResult.invalid(.pgp_armor, "PGP armor: no base64 content found");
+	}
+
+	// Decode the body; base64 damage surfaces here even without a CRC line.
+	const decoded_size = std.base64.standard.Decoder.calcSizeForSlice(b64_buf[0..b64_len]) catch {
+		return ValidationResult.invalid(.pgp_armor, "PGP armor: invalid base64 length");
+	};
+	const decoded = allocator.alloc(u8, decoded_size) catch {
+		return ValidationResult.invalidCode(.pgp_armor, .out_of_memory, "PGP armor decoded buffer");
+	};
+	defer allocator.free(decoded);
+	std.base64.standard.Decoder.decode(decoded, b64_buf[0..b64_len]) catch {
+		return ValidationResult.invalid(.pgp_armor, "PGP armor: invalid base64 encoding");
+	};
+
+	// RFC 4880 §4.2: every OpenPGP packet header has bit 7 set.
+	if (decoded.len == 0 or (decoded[0] & 0x80) == 0) {
+		return ValidationResult.invalid(.pgp_armor, "PGP armor: decoded data is not an OpenPGP packet stream");
+	}
+
+	if (declared_crc) |crc_str| {
+		const computed_crc = computeCrc24(decoded);
+		var crc_decoded: [3]u8 = undefined;
+		std.base64.standard.Decoder.decode(&crc_decoded, crc_str) catch {
+			return ValidationResult.invalid(.pgp_armor, "PGP armor: invalid CRC-24 base64 encoding");
+		};
+		const declared_value: u24 = @intCast((@as(u32, crc_decoded[0]) << 16) | (@as(u32, crc_decoded[1]) << 8) | @as(u32, crc_decoded[2]));
+		if (computed_crc != declared_value) {
+			return ValidationResult.invalid(.pgp_armor, "PGP armor: CRC-24 checksum mismatch");
+		}
+		// CRC verified over every decoded byte: full depth.
+		return ValidationResult.okWithDepth(.pgp_armor, .full);
+	}
+
+	// Modern armor without the (deprecated) CRC line: structure verified only.
+	return ValidationResult.okWithDepth(.pgp_armor, .structural);
 }
 
 // ========== DER Validator ==========
@@ -1363,4 +1513,88 @@ test "SSH signature: bad inner magic fails deep validation" {
 	const result = validateSshSignatureDeep(allocator, &source2);
 	try std.testing.expect(!result.is_valid);
 	try std.testing.expectEqual(FileFormat.ssh_signature, result.format);
+}
+
+test "PGP armored key with valid CRC-24 validates full; corruption is caught" {
+	const allocator = std.testing.allocator;
+
+	// Synthesize a minimal armored block: BEGIN line, armor header, blank
+	// line, base64 body, CRC-24 line, matching END line (RFC 4880 §6.2).
+	// First byte 0x98 = old-format public-key packet tag (bit 7 set, §4.2).
+	const payload = "\x98\x28not-a-real-key-but-crc-covers-these-bytes";
+	var b64_buf: [128]u8 = undefined;
+	const b64 = std.base64.standard.Encoder.encode(&b64_buf, payload);
+	const crc = computeCrc24(payload);
+	const crc_bytes = [3]u8{ @intCast((crc >> 16) & 0xFF), @intCast((crc >> 8) & 0xFF), @intCast(crc & 0xFF) };
+	var crc_b64_buf: [8]u8 = undefined;
+	const crc_b64 = std.base64.standard.Encoder.encode(&crc_b64_buf, &crc_bytes);
+
+	var armor_buf: [512]u8 = undefined;
+	const armor = try std.fmt.bufPrint(&armor_buf,
+		"-----BEGIN PGP PUBLIC KEY BLOCK-----\nVersion: test\n\n{s}\n={s}\n-----END PGP PUBLIC KEY BLOCK-----\n",
+		.{ b64, crc_b64 });
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	{
+		const f = try tmp_dir.dir.createFile(runtime.io(), "key.asc", .{});
+		try f.writePositionalAll(runtime.io(), armor, 0);
+		f.close(runtime.io());
+		const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "key.asc");
+		defer allocator.free(path);
+		var src = try FileSource.open(path);
+		defer src.close();
+		const result = validatePgpArmor(&src);
+		try std.testing.expect(result.is_valid);
+		try std.testing.expectEqual(FileFormat.pgp_armor, result.format);
+		try std.testing.expectEqual(format_validation.ValidationDepth.full, result.validation_depth);
+	}
+	{
+		// Flip one base64 body byte: CRC-24 must catch it.
+		var corrupt_buf: [512]u8 = undefined;
+		@memcpy(corrupt_buf[0..armor.len], armor);
+		const body_off = std.mem.indexOf(u8, armor, "\n\n").? + 2;
+		corrupt_buf[body_off] = if (corrupt_buf[body_off] == 'A') 'B' else 'A';
+		const f = try tmp_dir.dir.createFile(runtime.io(), "corrupt.asc", .{});
+		try f.writePositionalAll(runtime.io(), corrupt_buf[0..armor.len], 0);
+		f.close(runtime.io());
+		const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "corrupt.asc");
+		defer allocator.free(path);
+		var src = try FileSource.open(path);
+		defer src.close();
+		try std.testing.expect(!validatePgpArmor(&src).is_valid);
+	}
+	{
+		// END label must match the BEGIN label.
+		var mismatch_buf: [640]u8 = undefined;
+		const mismatched = try std.fmt.bufPrint(&mismatch_buf,
+			"-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n{s}\n={s}\n-----END PGP PRIVATE KEY BLOCK-----\n",
+			.{ b64, crc_b64 });
+		const f = try tmp_dir.dir.createFile(runtime.io(), "mismatch.asc", .{});
+		try f.writePositionalAll(runtime.io(), mismatched, 0);
+		f.close(runtime.io());
+		const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "mismatch.asc");
+		defer allocator.free(path);
+		var src = try FileSource.open(path);
+		defer src.close();
+		try std.testing.expect(!validatePgpArmor(&src).is_valid);
+	}
+	{
+		// GnuPG >= 2.4 omits the CRC line: still valid, structural depth.
+		var nocrc_buf: [512]u8 = undefined;
+		const nocrc = try std.fmt.bufPrint(&nocrc_buf,
+			"-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n{s}\n-----END PGP PUBLIC KEY BLOCK-----\n",
+			.{b64});
+		const f = try tmp_dir.dir.createFile(runtime.io(), "nocrc.asc", .{});
+		try f.writePositionalAll(runtime.io(), nocrc, 0);
+		f.close(runtime.io());
+		const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "nocrc.asc");
+		defer allocator.free(path);
+		var src = try FileSource.open(path);
+		defer src.close();
+		const result = validatePgpArmor(&src);
+		try std.testing.expect(result.is_valid);
+		try std.testing.expectEqual(format_validation.ValidationDepth.structural, result.validation_depth);
+	}
 }

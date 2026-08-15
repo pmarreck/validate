@@ -300,7 +300,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .edifact = "UN/EDIFACT",
     .pem = "Takardar Shaida/Maɓalli na PEM",
     .der = "Takardar Shaida/Maɓalli na DER",
-    .pgp_signed = "Saƙon da PGP ya Sa Hannu",
+    .pgp_signed = "Saƙon da PGP ya Sa Hannu", .pgp_armor = "PGP Armored Data", .torrent = "BitTorrent Metadata",
     .ssh_signature = "Sa Hannu na SSH",
     .cab = "Tarihin Microsoft Cabinet",
     .sit = "Tarihin StuffIt",

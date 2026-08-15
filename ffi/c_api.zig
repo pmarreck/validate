@@ -172,7 +172,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .epub => "ebook",
 
         // Code/Data
-        .json, .toml, .ini, .xml, .yaml, .erlang_term, .eex, .csv, .msgpack, .sqlite, .plist, .apple_media_db => "data",
+        .json, .toml, .ini, .xml, .yaml, .erlang_term, .eex, .csv, .msgpack, .sqlite, .plist, .apple_media_db, .torrent => "data",
         // Fonts
         .ttf, .otf, .woff, .woff2, .type1 => "font",
 
@@ -207,7 +207,7 @@ fn getFormatCategory(format: format_validation.FileFormat) []const u8 {
         .qbw, .qbb, .qdf, .ofx, .qif, .txf, .nacha, .mt940, .bai2, .x12_edi, .edifact => "financial",
 
         // Crypto/certificates
-        .pem, .der, .pgp_signed, .ssh_signature => "crypto",
+        .pem, .der, .pgp_signed, .pgp_armor, .ssh_signature => "crypto",
 
         // PIM (Personal Information Management)
         .icalendar, .vcard => "pim",

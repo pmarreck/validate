@@ -710,6 +710,9 @@ pub fn validateRiffAudio(file: *FileSource, format: FileFormat) ValidationResult
     var header: [12]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(format, .failed_to_read, "audio header");
 
+    // Big-endian RIFX WAV: legitimate byte-order variant, not corruption.
+    if (format == .wav and isRifxWav(&header)) return rifxWavUnsupported();
+
     // AIFF uses "FORM" instead of "RIFF"
     const is_riff = std.mem.eql(u8, header[0..4], "RIFF");
     const is_form = std.mem.eql(u8, header[0..4], "FORM");
@@ -2423,6 +2426,16 @@ test "RIFX big-endian WAV is unsupported-WARN naming the variant, not corrupt" {
         const result = validateWavDeep(std.testing.allocator, &src);
         try std.testing.expect(result.is_valid);
         try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+        try std.testing.expect(result.validation_unsupported);
+    }
+    {
+        // The pipeline dispatches detected WAVs through validateRiffAudio —
+        // it must apply the same unsupported-WARN tier (regression: it was
+        // reporting "Invalid container signature").
+        var src = try FileSource.open(path);
+        defer src.close();
+        const result = validateRiffAudio(&src, .wav);
+        try std.testing.expect(result.is_valid);
         try std.testing.expect(result.validation_unsupported);
     }
 

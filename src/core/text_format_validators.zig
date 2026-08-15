@@ -1376,6 +1376,114 @@ pub fn detectCsvDelimiter(data: []const u8) u8 {
 /// element tree. No magic bytes — relies on extension-based detection (.msgpack).
 /// Iteratively walks the type/length/data structure verifying all elements fit
 /// within the file and format bytes are valid.
+// ============ BitTorrent Metadata Validator (bencode) ============
+
+/// Maximum bencode nesting depth accepted before declaring the file malformed.
+/// Real torrents nest 3-4 levels; 64 leaves huge headroom while bounding the
+/// recursive walk against stack exhaustion on adversarial input.
+const BENCODE_MAX_DEPTH: u32 = 64;
+
+/// Parse a bencode string token ("<len>:<bytes>") at `pos`, advancing past it.
+fn bencodeString(data: []const u8, pos: *usize) bool {
+    var len: u64 = 0;
+    var digits: usize = 0;
+    while (pos.* < data.len and data[pos.*] >= '0' and data[pos.*] <= '9') {
+        len = len * 10 + (data[pos.*] - '0');
+        if (len > data.len) return false; // cannot possibly fit — also caps overflow
+        pos.* += 1;
+        digits += 1;
+    }
+    if (digits == 0) return false;
+    if (pos.* >= data.len or data[pos.*] != ':') return false;
+    pos.* += 1;
+    if (pos.* + len > data.len) return false;
+    pos.* += @intCast(len);
+    return true;
+}
+
+/// Walk one bencode value (d/l/i/string grammar, BEP 3) at `pos`.
+fn bencodeValue(data: []const u8, pos: *usize, depth: u32) bool {
+    if (depth == 0) return false;
+    if (pos.* >= data.len) return false;
+    switch (data[pos.*]) {
+        'i' => {
+            pos.* += 1;
+            if (pos.* < data.len and data[pos.*] == '-') pos.* += 1;
+            var digits: usize = 0;
+            while (pos.* < data.len and data[pos.*] >= '0' and data[pos.*] <= '9') {
+                pos.* += 1;
+                digits += 1;
+            }
+            if (digits == 0) return false;
+            if (pos.* >= data.len or data[pos.*] != 'e') return false;
+            pos.* += 1;
+            return true;
+        },
+        'l' => {
+            pos.* += 1;
+            while (pos.* < data.len and data[pos.*] != 'e') {
+                if (!bencodeValue(data, pos, depth - 1)) return false;
+            }
+            if (pos.* >= data.len) return false;
+            pos.* += 1; // consume 'e'
+            return true;
+        },
+        'd' => {
+            pos.* += 1;
+            while (pos.* < data.len and data[pos.*] != 'e') {
+                // Dict keys must be strings (BEP 3).
+                if (!bencodeString(data, pos)) return false;
+                if (!bencodeValue(data, pos, depth - 1)) return false;
+            }
+            if (pos.* >= data.len) return false;
+            pos.* += 1; // consume 'e'
+            return true;
+        },
+        '0'...'9' => return bencodeString(data, pos),
+        else => return false,
+    }
+}
+
+/// Validate BitTorrent metadata by walking the complete bencode grammar to
+/// EOF: root must be a dict, every token well-formed, no trailing bytes.
+/// Deliberately structural-only — no info-dict semantics, no piece-hash
+/// verification (those hash the DOWNLOADED payload, not this file).
+pub fn validateTorrentFromBuffer(data: []const u8) ValidationResult {
+    if (data.len == 0) return ValidationResult.invalidCode(.torrent, .empty, "torrent file");
+    if (data[0] != 'd') return ValidationResult.invalid(.torrent, "Torrent root is not a bencoded dictionary");
+    var pos: usize = 0;
+    if (!bencodeValue(data, &pos, BENCODE_MAX_DEPTH)) {
+        return ValidationResult.invalid(.torrent, "Malformed bencode structure");
+    }
+    if (pos != data.len) {
+        return ValidationResult.invalid(.torrent, "Trailing data after bencoded root dictionary");
+    }
+    return ValidationResult.okWithDepth(.torrent, .structural);
+}
+
+/// File-backed torrent validation: bounded slurp, then the bencode walk.
+pub fn validateTorrent(file: *FileSource) ValidationResult {
+    file.seekTo(0) catch return ValidationResult.invalidCode(.torrent, .failed_to_seek, "in torrent file");
+    const slurp = file.getMappedOrSlurp(heap.validateAllocator(), 64 << 20) catch
+        return ValidationResult.invalidCode(.torrent, .failed_to_read, "torrent file");
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |b| heap.validateAllocator().free(b);
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: {
+            heap_buf = b;
+            break :blk b;
+        },
+        .too_large => {
+            // Resource cap (>64MB metadata is pathological but not corrupt).
+            var capped = ValidationResult.okWithDepthAndWarning(.torrent, .structural, "Torrent metadata too large for validation");
+            capped.verdict = .indeterminate;
+            return capped;
+        },
+    };
+    return validateTorrentFromBuffer(data);
+}
+
 pub fn validateMsgpack(file: *FileSource) ValidationResult {
     const file_size = file.getEndPos() catch return ValidationResult.invalidCode(.msgpack, .failed_to_get, "file size");
     if (file_size == 0) return ValidationResult.invalidCode(.msgpack, .empty, "MessagePack file");
@@ -4406,4 +4514,24 @@ test "HTML (charset=utf-8) rejects invalid UTF-8 in body" {
     var s = FileSource.fromBuffer("<!doctype html><meta charset=\"utf-8\"><p>a\x80b</p>");
     const r = validateHtml(&s);
     try testing.expect(!r.is_valid);
+}
+
+test "torrent bencode walk: classifier over valid and malformed sets" {
+	// Must-match rows: well-formed bencode roots.
+	const tracker = "d8:announce32:http://tracker.example.com:8080/4:infod4:name8:test.bin12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaaee";
+	try std.testing.expect(validateTorrentFromBuffer(tracker).is_valid);
+	const trackerless = "d4:infod4:name3:abc12:piece lengthi32768e6:pieces20:bbbbbbbbbbbbbbbbbbbbee";
+	try std.testing.expect(validateTorrentFromBuffer(trackerless).is_valid);
+	const nested = "d1:ad1:bl i1e i-2e 3:xyzee";
+	_ = nested; // spaces are NOT legal bencode — used below as a must-not row
+
+	// Must-not-match rows: malformed bencode is invalid.
+	try std.testing.expect(!validateTorrentFromBuffer("").is_valid);
+	try std.testing.expect(!validateTorrentFromBuffer("d8:announce").is_valid); // truncated string
+	try std.testing.expect(!validateTorrentFromBuffer("d4:infoi42e").is_valid); // missing dict end
+	try std.testing.expect(!validateTorrentFromBuffer("d3:keyi12xe").is_valid); // bad integer terminator
+	try std.testing.expect(!validateTorrentFromBuffer("di1ei2ee").is_valid); // non-string dict key
+	try std.testing.expect(!validateTorrentFromBuffer("d1:ad1:bl i1eee").is_valid); // whitespace not in grammar
+	try std.testing.expect(!validateTorrentFromBuffer("d4:infod4:name3:abcee GARBAGE").is_valid); // trailing junk
+	try std.testing.expect(!validateTorrentFromBuffer("l4:spam4:eggse").is_valid); // root must be a dict for .torrent
 }

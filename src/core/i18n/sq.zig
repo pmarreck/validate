@@ -300,7 +300,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .edifact = "UN/EDIFACT",
     .pem = "Certifikat\xc3\xab/\xc3\x87el\xc3\xabs PEM",
     .der = "Certifikat\xc3\xab/\xc3\x87el\xc3\xabs DER",
-    .pgp_signed = "Mesazh i N\xc3\xabnshkruar PGP",
+    .pgp_signed = "Mesazh i N\xc3\xabnshkruar PGP", .pgp_armor = "PGP Armored Data", .torrent = "BitTorrent Metadata",
     .ssh_signature = "N\xc3\xabnshkrim SSH",
     .cab = "Arkiv Microsoft Cabinet",
     .sit = "Arkiv StuffIt",

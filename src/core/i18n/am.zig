@@ -300,7 +300,7 @@ pub const format_descriptions = i18n.FormatDescriptions.init(.{
     .edifact = "UN/EDIFACT",
     .pem = "PEM የምስክር ወረቀት/ቁልፍ",
     .der = "DER የምስክር ወረቀት/ቁልፍ",
-    .pgp_signed = "PGP የተፈረመ መልእክት",
+    .pgp_signed = "PGP የተፈረመ መልእክት", .pgp_armor = "PGP Armored Data", .torrent = "BitTorrent Metadata",
     .ssh_signature = "SSH ፊርማ",
     .cab = "Microsoft Cabinet መዝገብ",
     .sit = "StuffIt መዝገብ",

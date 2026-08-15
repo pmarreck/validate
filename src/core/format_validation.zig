@@ -671,6 +671,7 @@ pub const FileFormat = enum {
     pem, // PEM-encoded certificate/key (-----BEGIN ... -----)
     der, // DER-encoded ASN.1 certificate/key (binary)
     pgp_signed, // PGP clearsigned message (RFC 4880 section 7)
+    pgp_armor, // PGP ASCII-armored data (RFC 4880 section 6.2: keys, signatures, messages)
     ssh_signature, // SSH signature (OpenSSH PROTOCOL.sshsig)
     // Additional archive formats
     cab, // Microsoft Cabinet archive (.cab)
@@ -709,6 +710,8 @@ pub const FileFormat = enum {
     rpm, // RPM Package (.rpm, .srpm)
     // Disk images (additional)
     gpt_disk_image, // GPT-partitioned disk image (UEFI 2.x §5.3.2). Often misnamed .iso (Apple installers, hybrid disks)
+    // Metadata formats
+    torrent, // BitTorrent metadata (.torrent, bencoded dictionary)
 
     pub fn description(self: FileFormat) [:0]const u8 {
         return i18n.getFormatDescription(self);
@@ -791,7 +794,9 @@ pub const FileFormat = enum {
             .x12_edi, .edifact => true, // EDI formats
             .pem, .der => true, // Crypto/certificate formats
             .pgp_signed => true, // PGP clearsigned message
+            .pgp_armor => true, // PGP ASCII armor (base64 + CRC-24)
             .ssh_signature => true, // SSH signature
+            .torrent => true, // BitTorrent metadata (bencode grammar walk)
             .cab => true, // Microsoft Cabinet archive
             .sit, .sitx => true, // StuffIt archives
             .mp2 => true, // MPEG Audio Layer II (reuses MP3 validator)
@@ -866,7 +871,7 @@ pub const FileFormat = enum {
             .heic, .avif, .tga, .exr, .docx, .xlsx, .pptx, .odt, .ods, .odp,
             .epub, .pages, .keynote, .numbers, .java_class, .pe, .elf, .macho, .macho_fat, .wasm,
             .cab, .rpm, .sit, .sitx, .bagit, .warc, .gpt_disk_image,
-            .pem, .der, .pgp_signed, .ssh_signature,
+            .pem, .der, .pgp_signed, .pgp_armor, .ssh_signature,
             .nes, .snes, .n64, .gb, .gba, .nds, .genesis, .chd,
             .cr2, .nef, .arw, // via LibRaw
             .hdf5, .dicom, .parquet, .netcdf, .fits,
@@ -899,7 +904,7 @@ pub const FileFormat = enum {
             .obj, .ply, .stl, .step, .dxf, // text/raw geometry, no checksums
             .dwg, .blend, // proprietary, structural parse only
             .fasta, .fastq, .shapefile, .pdb_struct, .cif, .nifti, .matlab,
-            .eml, .mbox,
+            .eml, .mbox, .torrent,
             .icalendar, .vcard,
             .qbb, .qdf, .ofx, .qif, .txf,
             .orf, .pef, .raf, .rw2, .cr3, // camera RAW without checksums
@@ -2582,6 +2587,30 @@ pub fn detectFormat(header: []const u8) FileFormat {
         }
     }
 
+    // BitTorrent metadata: bencoded dict whose first keys are the canonical
+    // torrent fields. Requiring a "<len>:announce"/":info" token near the
+    // start keeps ordinary prose that begins with 'd' from matching.
+    if (header.len >= 12 and header[0] == 'd' and header[1] >= '0' and header[1] <= '9') {
+        const window = header[0..@min(header.len, 64)];
+        if (std.mem.indexOf(u8, window, "8:announce") != null or
+            std.mem.indexOf(u8, window, "13:announce-list") != null or
+            std.mem.indexOf(u8, window, "4:info") != null or
+            std.mem.indexOf(u8, window, "7:comment") != null)
+        {
+            return .torrent;
+        }
+    }
+
+    // PGP ASCII armor (keys, detached signatures, messages) — before generic
+    // PEM so armored data stops failing PEM's ASN.1 expectations. Clearsigned
+    // messages ("-----BEGIN PGP SIGNED MESSAGE-----") match the magic table
+    // first and keep their pgp_signed identity.
+    if (header.len >= 20 and std.mem.startsWith(u8, header, "-----BEGIN PGP ") and
+        !std.mem.startsWith(u8, header, "-----BEGIN PGP SIGNED MESSAGE"))
+    {
+        return .pgp_armor;
+    }
+
     // PEM: starts with "-----BEGIN "
     if (header.len >= 20 and std.mem.startsWith(u8, header, "-----BEGIN ")) {
         return .pem;
@@ -3243,7 +3272,9 @@ const ext_format_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "key", .pem },
     .{ "der", .der },
     .{ "cer", .der },
-    .{ "asc", .pgp_signed },
+    .{ "asc", .pgp_armor }, // armored keys/sigs; clearsigned .asc still detects as pgp_signed by content
+    // Metadata formats
+    .{ "torrent", .torrent },
     // GIS
     .{ "kml", .kml },
     .{ "kmz", .kmz },
@@ -3564,7 +3595,9 @@ const ext_detect_map = std.StaticStringMap(FileFormat).initComptime(.{
     .{ "key", .pem },
     .{ "der", .der },
     .{ "cer", .der },
-    .{ "asc", .pgp_signed },
+    .{ "asc", .pgp_armor }, // armored keys/sigs; clearsigned .asc still detects as pgp_signed by content
+    // Metadata formats
+    .{ "torrent", .torrent },
     // Adobe — extension needed to distinguish from underlying container format
     .{ "ai", .ai },
     .{ "prproj", .prproj },
@@ -4012,6 +4045,11 @@ fn isFormatCompatibleWithExtension(detected: FileFormat, extension_format: FileF
     // file is a Keynote ZIP, magic-byte detection produces .keynote; that is
     // still a legitimate match for the .key extension.
     if (extension_format == .pem and detected == .keynote) return true;
+
+    // .asc maps to pgp_armor, but the extension is also used for clearsigned
+    // messages (content-detected as pgp_signed) and occasionally plain PEM;
+    // all three are legitimate for .asc.
+    if (extension_format == .pgp_armor and (detected == .pgp_signed or detected == .pem)) return true;
 
     // Plain text encoding variants are all compatible (UTF-8, UTF-16, Latin-1, CP437)
     const ext_is_plaintext = switch (extension_format) {
@@ -6632,6 +6670,15 @@ pub const FormatValidator = struct {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCode(.pgp_signed, .failed_to_seek, "PGP clearsigned file");
                 break :blk crypto_validators.validatePgpSignedDeep(allocator, source);
             },
+            .pgp_armor => blk: {
+                // validatePgpArmor already verifies CRC-24 when present (full depth).
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.pgp_armor, .failed_to_seek, "PGP armor file");
+                break :blk crypto_validators.validatePgpArmor(source);
+            },
+            .torrent => blk: {
+                source.seekTo(0) catch break :blk ValidationResult.invalidCode(.torrent, .failed_to_seek, "torrent file");
+                break :blk text_format_validators.validateTorrent(source);
+            },
             .ssh_signature => blk: {
                 source.seekTo(0) catch break :blk ValidationResult.invalidCode(.ssh_signature, .failed_to_seek, "SSH signature file");
                 break :blk crypto_validators.validateSshSignatureDeep(allocator, source);
@@ -7223,6 +7270,8 @@ pub const FormatValidator = struct {
             .pem => crypto_validators.validatePem(file_src_ptr),
             .der => crypto_validators.validateDer(file_src_ptr),
             .pgp_signed => crypto_validators.validatePgpSigned(file_src_ptr),
+            .pgp_armor => crypto_validators.validatePgpArmor(file_src_ptr),
+            .torrent => text_format_validators.validateTorrent(file_src_ptr),
             .ssh_signature => crypto_validators.validateSshSignature(file_src_ptr),
             // PIM formats
             .icalendar => pim_validators.validateICalendar(file_src_ptr),
@@ -7818,6 +7867,40 @@ test "detectFormat rejects tiny files as BMP" {
     tiny_bmp[0] = 'B';
     tiny_bmp[1] = 'M';
     try std.testing.expectEqual(FileFormat.unknown, detectFormat(&tiny_bmp));
+}
+
+test "PGP armor routes to pgp_armor; PEM and clearsigned keep their identities" {
+    var pgp_key = [_]u8{'\n'} ** 64;
+    @memcpy(pgp_key[0..37], "-----BEGIN PGP PUBLIC KEY BLOCK-----\n");
+    try std.testing.expectEqual(FileFormat.pgp_armor, detectFormat(&pgp_key));
+
+    var pgp_sig = [_]u8{'\n'} ** 64;
+    @memcpy(pgp_sig[0..30], "-----BEGIN PGP SIGNATURE-----\n");
+    try std.testing.expectEqual(FileFormat.pgp_armor, detectFormat(&pgp_sig));
+
+    var pem_cert = [_]u8{'\n'} ** 64;
+    @memcpy(pem_cert[0..28], "-----BEGIN CERTIFICATE-----\n");
+    try std.testing.expectEqual(FileFormat.pem, detectFormat(&pem_cert));
+
+    var clearsigned = [_]u8{'\n'} ** 64;
+    @memcpy(clearsigned[0..35], "-----BEGIN PGP SIGNED MESSAGE-----\n");
+    try std.testing.expectEqual(FileFormat.pgp_signed, detectFormat(&clearsigned));
+
+    // Extension fallback: .asc means armor, not clearsigned-only.
+    try std.testing.expectEqual(FileFormat.pgp_armor, detectFormatFromExtension("key.asc"));
+}
+
+test "torrent detection: bencode dict with canonical keys, extension mapped" {
+    const tracker = "d8:announce32:http://tracker.example.com:8080/4:infodee";
+    try std.testing.expectEqual(FileFormat.torrent, detectFormat(tracker));
+    const trackerless = "d4:infod4:name3:abc12:piece lengthi32768eee";
+    try std.testing.expectEqual(FileFormat.torrent, detectFormat(trackerless));
+
+    // A text file that merely starts with 'd' must not match.
+    const prose = "dictionaries are sorted collections of words and definitions...";
+    try std.testing.expect(detectFormat(prose) != .torrent);
+
+    try std.testing.expectEqual(FileFormat.torrent, detectFormatFromExtension("eXoDOS.torrent"));
 }
 
 test "template .in files validate as plain text, never as the templated syntax" {
