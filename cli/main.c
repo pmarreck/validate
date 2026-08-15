@@ -802,7 +802,21 @@ static int enumerate_path(const char* path, path_list_t* list, int depth) {
 		}
 		return enumerate_directory(path, list, depth + 1);
 	}
-	/* Skip other types (symlinks, devices, etc.) */
+#if !defined(_WIN32)
+	else if (S_ISLNK(st.st_mode)) {
+		/* Symlinks are never FOLLOWED during enumeration (loop/escape safety —
+		 * see the lstat comment above). But a DANGLING symlink deserves a WARN
+		 * row, not a silent skip: hand it to validation, which classifies it
+		 * as broken_symlink. A working symlink stays skipped (its target is
+		 * enumerated on its own if it lives in the scanned tree). */
+		struct stat tst;
+		if (stat(path, &tst) != 0 && (errno == ENOENT || errno == ENOTDIR)) {
+			return path_list_add(list, path, 0);
+		}
+		return 0;
+	}
+#endif
+	/* Skip other types (devices, sockets, working symlinks, etc.) */
 	return 0;
 }
 
@@ -1806,8 +1820,15 @@ static void on_validation_result(
 	kv_get_str(result, "access", access, sizeof(access));
 	int is_no_perm = strcmp(access, "NOPERM") == 0;
 
+	/* Broken symlinks carry err_code=broken_symlink with format "unknown".
+	 * They must render as WARN rows (valid + warning), so they bypass the
+	 * UNKNOWN routing below that would otherwise swallow the warning. */
+	char err_code[64] = "";
+	kv_get_str(result, "err_code", err_code, sizeof(err_code));
+	int is_broken_symlink = strcmp(err_code, "broken_symlink") == 0;
+
 	/* Check if unknown */
-	int is_unknown = kv_get_bool(result, "unknown");
+	int is_unknown = kv_get_bool(result, "unknown") && !is_broken_symlink;
 	int is_valid = kv_get_bool(result, "valid");
 
 	/* Lock for output + progress update + render to prevent race conditions.
@@ -3327,6 +3348,20 @@ int main(int argc, char* argv[]) {
 	for (size_t i = 0; i < path_count; i++) {
 		struct stat st;
 		if (stat(paths[i], &st) != 0) {
+#if !defined(_WIN32)
+			/* stat() follows symlinks, so a DANGLING symlink lands here with
+			 * ENOENT even though the link itself exists. Hand it to validation
+			 * (which classifies it as a broken_symlink WARN) instead of the
+			 * scary generic access error. ELOOP and genuinely missing paths
+			 * keep the existing error path. */
+			int stat_errno = errno;
+			struct stat lst;
+			if ((stat_errno == ENOENT || stat_errno == ENOTDIR) &&
+			    lstat(paths[i], &lst) == 0 && S_ISLNK(lst.st_mode)) {
+				path_list_add(&file_list, paths[i], 0);
+				continue;
+			}
+#endif
 			fprintf(stderr, "%sError: Cannot access path: %s\n%s", COLOR_RED, paths[i], COLOR_RESET);
 			continue;
 		}

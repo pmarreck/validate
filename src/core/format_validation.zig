@@ -1178,9 +1178,15 @@ pub const ValidationErrorCode = enum(u8) {
     invalid_value = 25,
     checksum_mismatch = 26,
     exceeds_bounds = 27,
+    /// The path is a symbolic link whose target does not exist (dangling).
+    /// WARN-tier classification, not corruption: there are no file bytes to
+    /// validate. Message is composed at runtime (embeds the readlink target),
+    /// so this variant is NOT template-backed and sits outside template_count.
+    broken_symlink = 28,
     other = 255,
 
-    /// Number of template-backed variants (excludes `other`).
+    /// Number of template-backed variants (excludes `other` and the
+    /// runtime-composed `broken_symlink`).
     pub const template_count: u8 = 28;
 
     /// Produce the full English error message by delegating to the matching
@@ -1217,6 +1223,9 @@ pub const ValidationErrorCode = enum(u8) {
             // Two-param templates — use message2() instead.
             .invalid_signature_expected, .invalid_signature_not => @compileError(
                 "Use message2() for two-param templates (invalidSignatureExpected/Not)",
+            ),
+            .broken_symlink => @compileError(
+                "broken_symlink messages are composed at runtime (they embed the readlink target)",
             ),
             .other => @compileError("No template for 'other'; use invalidCodeMsg()"),
         };
@@ -1540,6 +1549,55 @@ fn resultForFileAccessError(err: anyerror) ValidationResult {
         result.verdict = .indeterminate;
     }
     return result;
+}
+
+/// Per-thread storage for the broken-symlink readlink target and composed
+/// WARN message. The ValidationResult borrows these slices, so they must
+/// outlive the classification's stack frame; thread-local matches the
+/// `flate_failure_msg_buf` precedent in pdf_validator.zig — each worker
+/// writes-then-copies (the FFI's buildResult runs on the validating thread)
+/// before its next validation reuses the buffers. No allocator needed, so
+/// the structural (allocator-free) validateFile path gets the full message.
+threadlocal var broken_symlink_target_buf: [std.fs.max_path_bytes]u8 = undefined;
+threadlocal var broken_symlink_msg_buf: [std.fs.max_path_bytes + 64]u8 = undefined;
+
+/// Classify a dangling symbolic link as a WARN-tier observation instead of
+/// corruption: there are no file bytes to validate, so "invalid" would be a
+/// false condemnation (conda -dev packages ship dangling .so links routinely).
+/// Detection technique: the failed open/stat FOLLOWED the link (ENOENT), while
+/// readlink succeeds only for an actual symlink — one syscall distinguishing
+/// "missing file" from "present link whose target is missing", and it also
+/// yields the target name for the message. Returns null when the path is not
+/// a symlink (plain missing file keeps its failed-to-open classification).
+fn brokenSymlinkResult(path: []const u8) ?ValidationResult {
+    const n = runtime.readLink(path, &broken_symlink_target_buf) catch return null;
+    const target = broken_symlink_target_buf[0..n];
+    const msg: []const u8 = std.fmt.bufPrint(
+        &broken_symlink_msg_buf,
+        "broken symbolic link (target missing: {s})",
+        .{target},
+    ) catch "broken symbolic link (target missing)";
+    return .{
+        .format = .unknown,
+        .is_valid = true, // WARN tier: a passing row with a warning, like other tolerated observations
+        .verdict = .indeterminate, // no payload was (or could be) verified
+        .access = .available,
+        .error_message = null,
+        .error_code = .broken_symlink, // machine-readable signal (JSON "error_code")
+        .error_detail = target,
+        .warning_message = msg,
+    };
+}
+
+/// Path-aware wrapper over `resultForFileAccessError`: ENOENT/ENOTDIR gets a
+/// second look via readlink so dangling symlinks classify as broken_symlink
+/// WARNs. Symlink loops (error.SymLinkLoop) deliberately never match the gate
+/// and keep the failed-to-open classification, as do plain missing files.
+fn resultForPathAccessError(path: []const u8, err: anyerror) ValidationResult {
+    if (err == error.FileNotFound or err == error.NotDir) {
+        if (brokenSymlinkResult(path)) |result| return result;
+    }
+    return resultForFileAccessError(err);
 }
 
 pub const VideoDecodeTolerance = struct {
@@ -5422,7 +5480,7 @@ pub const FormatValidator = struct {
         }
 
         const stat = runtime.statFile(path) catch |err| {
-            return resultForFileAccessError(err);
+            return resultForPathAccessError(path, err);
         };
         if (stat.kind != .directory) return null;
 
@@ -5448,7 +5506,7 @@ pub const FormatValidator = struct {
         if (preflightNonRegularPath(path)) |result| return result;
 
         const file = runtime.openFile(path, .{}) catch |err| {
-            return resultForFileAccessError(err);
+            return resultForPathAccessError(path, err);
         };
         defer file.close(runtime.io());
 
@@ -5970,12 +6028,19 @@ pub const FormatValidator = struct {
             preflight
         else blk: {
             const file = runtime.openFile(path, .{}) catch |err| {
-                break :blk resultForFileAccessError(err);
+                break :blk resultForPathAccessError(path, err);
             };
             regular_file = file;
             break :blk self.validateOpenRegularFile(path, file);
         };
         defer if (regular_file) |file| file.close(runtime.io());
+
+        // Broken symlinks have no bytes to validate: the WARN classification
+        // is terminal. Skip deep dispatch and the extension-mismatch check
+        // (both assume an underlying regular file, which does not exist here).
+        if (result.error_code) |code| {
+            if (code == .broken_symlink) return result;
+        }
 
         // If structural validation failed, return early
         if (!result.is_valid) {
@@ -8797,6 +8862,90 @@ test "only permission denial becomes the NOPERM access outcome" {
     const absent = resultForFileAccessError(error.FileNotFound);
     try std.testing.expectEqual(AccessOutcome.available, absent.access);
     try std.testing.expect(!absent.is_valid);
+}
+
+test "dangling symlink classifies as broken_symlink WARN, not corruption (deep)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.symLink(runtime.io(), "missing_target_xyz.bin", "dangling.bin", .{});
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const path = try runtime.tmpRealpathAlloc(&tmp, arena.allocator(), "dangling.bin");
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+    const result = validator.validateFileDeep(arena.allocator(), path);
+
+    // WARN tier: passing row with a warning, never a false "invalid".
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ResultVerdict.indeterminate, result.verdict);
+    try std.testing.expectEqual(AccessOutcome.available, result.access);
+    try std.testing.expectEqual(ValidationErrorCode.broken_symlink, result.error_code.?);
+    try std.testing.expect(result.error_message == null);
+    const warn = result.warning_message orelse return error.TestExpectedWarning;
+    try std.testing.expect(std.mem.indexOf(u8, warn, "broken symbolic link") != null);
+    try std.testing.expect(std.mem.indexOf(u8, warn, "missing_target_xyz.bin") != null);
+    try std.testing.expectEqualStrings("missing_target_xyz.bin", result.error_detail.?);
+}
+
+test "dangling symlink classifies as broken_symlink WARN (structural, no allocator)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.symLink(runtime.io(), "gone_structural.dat", "dangling_structural.dat", .{});
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const path = try runtime.tmpRealpathAlloc(&tmp, arena.allocator(), "dangling_structural.dat");
+
+    var validator = FormatValidator.init();
+    defer validator.deinit();
+    const result = validator.validateFile(path);
+
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(ResultVerdict.indeterminate, result.verdict);
+    try std.testing.expectEqual(ValidationErrorCode.broken_symlink, result.error_code.?);
+    const warn = result.warning_message orelse return error.TestExpectedWarning;
+    try std.testing.expect(std.mem.indexOf(u8, warn, "gone_structural.dat") != null);
+}
+
+test "plain missing file keeps the failed-to-open invalid classification" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const path = try runtime.tmpRealpathAlloc(&tmp, arena.allocator(), "definitely_absent.bin");
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+    const result = validator.validateFileDeep(arena.allocator(), path);
+
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqual(ResultVerdict.corrupt, result.verdict);
+    try std.testing.expectEqual(AccessOutcome.available, result.access);
+    try std.testing.expectEqual(ValidationErrorCode.failed_to_open, result.error_code.?);
+    try std.testing.expect(result.warning_message == null);
+}
+
+test "symlink loop keeps the failed-to-open classification (no broken_symlink)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // a -> a: open/stat fails with SymLinkLoop, which must NOT be softened
+    // into a broken-symlink WARN (the link exists but can never resolve).
+    try tmp.dir.symLink(runtime.io(), "loop_self.lnk", "loop_self.lnk", .{});
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const path = try runtime.tmpRealpathAlloc(&tmp, arena.allocator(), "loop_self.lnk");
+
+    var validator = FormatValidator.initDeep();
+    defer validator.deinit();
+    const result = validator.validateFileDeep(arena.allocator(), path);
+
+    try std.testing.expect(!result.is_valid);
+    try std.testing.expectEqual(ValidationErrorCode.failed_to_open, result.error_code.?);
+    try std.testing.expect(result.warning_message == null);
 }
 
 test "validateFileDeep routes git directories to git validator" {

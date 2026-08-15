@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# TDD guard for honest dangling-symlink classification (2026-08-15).
+# A dangling symlink has no bytes to validate: condemning it as invalid was a
+# false positive (conda -dev packages ship them routinely, e.g. libnppisu.so ->
+# libnppisu.so.11.7.3.21 with the versioned target absent). It must surface as
+# a WARN row carrying error_code=broken_symlink and the missing target's name —
+# never FAIL, never "Cannot access path", never a silent skip during scans.
+#
+# set -u only; exit codes asserted explicitly (never set -e in test scripts).
+set -u
+
+VALIDATE="${VALIDATE_BIN:-./zig-out/bin/validate}"
+[ -x "$VALIDATE" ] || { echo "SKIP: validate binary not built ($VALIDATE)"; exit 77; }
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/validate_cli_symlink.XXXXXX")"
+cleanup() { rm -rf "$tmpdir"; }
+trap cleanup EXIT
+
+dangling="$tmpdir/dangling.bin"
+ln -s "gone_target_e4q.bin" "$dangling"
+
+# --- Direct path arg: WARN row, exit 0, names the target --------------------
+combined="$("$VALIDATE" --no-color "$dangling" 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	printf 'FAIL: dangling symlink must not set a failure exit status (got %s)\noutput:\n%s\n' "$rc" "$combined" >&2
+	exit 1
+fi
+if ! printf '%s\n' "$combined" | grep -Fq 'broken symbolic link (target missing: gone_target_e4q.bin)'; then
+	printf 'FAIL: expected broken-symlink warning naming the missing target\noutput:\n%s\n' "$combined" >&2
+	exit 1
+fi
+if ! printf '%s\n' "$combined" | grep -q 'WARN'; then
+	printf 'FAIL: dangling symlink must render as a WARN row\noutput:\n%s\n' "$combined" >&2
+	exit 1
+fi
+if printf '%s\n' "$combined" | grep -q 'FAIL'; then
+	printf 'FAIL: dangling symlink must not render as FAIL\noutput:\n%s\n' "$combined" >&2
+	exit 1
+fi
+if printf '%s\n' "$combined" | grep -Fq 'Cannot access path'; then
+	printf 'FAIL: dangling symlink must reach validation, not the access error\noutput:\n%s\n' "$combined" >&2
+	exit 1
+fi
+
+# --- NDJSON: machine-readable classification, and NOT invalid ---------------
+ndjson="$("$VALIDATE" --ndjson "$dangling" 2>/dev/null)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	printf 'FAIL: --ndjson on dangling symlink must exit 0 (got %s)\n' "$rc" >&2
+	exit 1
+fi
+if ! printf '%s\n' "$ndjson" | grep -Fq '"valid":true'; then
+	printf 'FAIL: ndjson must carry "valid":true for a dangling symlink\noutput:\n%s\n' "$ndjson" >&2
+	exit 1
+fi
+if printf '%s\n' "$ndjson" | grep -Fq '"valid":false'; then
+	printf 'FAIL: ndjson must not condemn a dangling symlink as invalid\noutput:\n%s\n' "$ndjson" >&2
+	exit 1
+fi
+if ! printf '%s\n' "$ndjson" | grep -Fq '"error_code":"broken_symlink"'; then
+	printf 'FAIL: ndjson must carry error_code broken_symlink\noutput:\n%s\n' "$ndjson" >&2
+	exit 1
+fi
+if ! printf '%s\n' "$ndjson" | grep -Fq '"warning":"broken symbolic link (target missing: gone_target_e4q.bin)"'; then
+	printf 'FAIL: ndjson warning must name the missing target\noutput:\n%s\n' "$ndjson" >&2
+	exit 1
+fi
+
+# --- Directory scan: dangling symlink is a WARN row, not a silent skip; -----
+# --- working symlinks stay skipped (loop-safety behavior unchanged). --------
+mkdir "$tmpdir/scan"
+printf 'plain text content\n' > "$tmpdir/scan/real.txt"
+ln -s "real.txt" "$tmpdir/scan/working.lnk"
+ln -s "nope_missing_z9k.txt" "$tmpdir/scan/dangling.lnk"
+
+scan_out="$("$VALIDATE" --no-color "$tmpdir/scan" 2>&1)"
+rc=$?
+if [ "$rc" -ne 0 ]; then
+	printf 'FAIL: scan containing a dangling symlink must exit 0 (got %s)\noutput:\n%s\n' "$rc" "$scan_out" >&2
+	exit 1
+fi
+if ! printf '%s\n' "$scan_out" | grep -q 'real\.txt'; then
+	printf 'FAIL: in-tree regular file was not validated (setup/output mismatch)\noutput:\n%s\n' "$scan_out" >&2
+	exit 1
+fi
+if ! printf '%s\n' "$scan_out" | grep -Fq 'nope_missing_z9k.txt'; then
+	printf 'FAIL: scan must surface the dangling symlink as a WARN naming its target\noutput:\n%s\n' "$scan_out" >&2
+	exit 1
+fi
+if printf '%s\n' "$scan_out" | grep -q 'working\.lnk'; then
+	printf 'FAIL: working symlinks must remain skipped during scans\noutput:\n%s\n' "$scan_out" >&2
+	exit 1
+fi
+
+# --- Must-not-change: plain missing file keeps the access error -------------
+missing_out="$("$VALIDATE" --no-color "$tmpdir/definitely_absent.bin" 2>&1)"
+if ! printf '%s\n' "$missing_out" | grep -Fq 'Cannot access path'; then
+	printf 'FAIL: plain missing file must keep the existing access error\noutput:\n%s\n' "$missing_out" >&2
+	exit 1
+fi
+if printf '%s\n' "$missing_out" | grep -Fq 'broken symbolic link'; then
+	printf 'FAIL: plain missing file must not classify as a broken symlink\noutput:\n%s\n' "$missing_out" >&2
+	exit 1
+fi
+
+# --- Must-not-change: symlink loops are not softened into WARN --------------
+ln -s "$tmpdir/loop.lnk" "$tmpdir/loop.lnk"
+loop_out="$("$VALIDATE" --no-color "$tmpdir/loop.lnk" 2>&1)"
+if printf '%s\n' "$loop_out" | grep -Fq 'broken symbolic link'; then
+	printf 'FAIL: symlink loop must not classify as a broken symlink\noutput:\n%s\n' "$loop_out" >&2
+	exit 1
+fi
+
+printf 'PASS: dangling symlinks are WARN broken_symlink, never invalid or silent\n'

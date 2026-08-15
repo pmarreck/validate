@@ -93,6 +93,15 @@ pub fn statFile(path: []const u8) std.Io.Dir.StatFileError!std.Io.Dir.Stat {
     return std.Io.Dir.cwd().statFile(g_io.?, path, .{});
 }
 
+/// 0.16 replacement for the old `std.fs.cwd().readLink(path, buf)`; returns
+/// bytes written into `buf` (slice it yourself: `buf[0..n]`). Fails with
+/// `error.NotLink` when the path exists but is not a symbolic link — the
+/// property broken-symlink classification relies on.
+pub fn readLink(path: []const u8, buf: []u8) std.Io.Dir.ReadLinkError!usize {
+    ensureInit();
+    return std.Io.Dir.cwd().readLink(g_io.?, path, buf);
+}
+
 /// 0.16 replacement for `std.Io.Dir.cwd()` but ensures init first so the
 /// returned handle is usable for io-taking method calls.
 pub fn cwd() std.Io.Dir {
