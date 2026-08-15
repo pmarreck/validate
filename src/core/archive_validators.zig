@@ -668,12 +668,12 @@ pub fn validate7z(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCode(.sevenz, .invalid_signature, "7z");
     }
 
-    // Check version (we support 0.x where x <= 4)
+    // Version check (every 7z ever shipped is 0.x, x <= 4). A different value
+    // is a future/unknown format revision — a capability gap, not proof of
+    // corruption — so note it and keep running the structural checks below.
     const major_version = header[6];
     const minor_version = header[7];
-    if (major_version != 0 or minor_version > 4) {
-        return ValidationResult.invalidCode(.sevenz, .unsupported, "7z version");
-    }
+    const version_unsupported = major_version != 0 or minor_version > 4;
 
     // Read next header offset and size
     const next_header_offset = std.mem.readInt(u64, header[12..20], .little);
@@ -686,6 +686,13 @@ pub fn validate7z(file: *FileSource) ValidationResult {
     const expected_min_size = 32 + next_header_offset + next_header_size;
     if (file_size < expected_min_size) {
         return ValidationResult.invalid(.sevenz, "File truncated (next header beyond EOF)");
+    }
+
+    if (version_unsupported) {
+        var result = ValidationResult.okWithDepthAndWarning(.sevenz, .structural, errmsg.unsupported("7z version"));
+        result.verdict = .indeterminate;
+        result.validation_unsupported = true;
+        return result;
     }
 
     return ValidationResult.ok(.sevenz);
@@ -2966,13 +2973,37 @@ pub fn validateZstdDeep(allocator: Allocator, source: *FileSource) ValidationRes
 /// No external `7z` command dependency — z7z is linked as a static
 /// library and called as a Zig module from `sevenz_validator.zig`.
 pub fn validate7zDeep(allocator: Allocator, source: *FileSource) ValidationResult {
-    const result = sevenz_validator.validateSevenZDeep(allocator, source);
+    return mapSevenZResult(sevenz_validator.validateSevenZDeep(allocator, source));
+}
 
+/// Map z7z's four-way outcome into Validate's verdict tiers without letting
+/// capability gaps (unsupported codec/feature) or self-imposed resource caps
+/// masquerade as corruption. Only genuine damage evidence yields `invalid`.
+fn mapSevenZResult(result: sevenz_validator.SevenZValidationResult) ValidationResult {
     if (!result.valid) {
+        if (result.unsupported) {
+            var mapped = ValidationResult.okWithDepthAndWarning(
+                .sevenz,
+                .structural,
+                result.error_message orelse errmsg.unsupported("7z feature"),
+            );
+            mapped.verdict = .indeterminate;
+            mapped.validation_unsupported = true;
+            return mapped;
+        }
+        if (result.resource_limited) {
+            var mapped = ValidationResult.okWithDepthAndWarning(
+                .sevenz,
+                .structural,
+                result.error_message orelse "7-Zip archive exceeds validation resource limits",
+            );
+            mapped.verdict = .indeterminate;
+            return mapped;
+        }
         return ValidationResult.invalidWithDepth(.sevenz, result.error_message orelse "7z validation failed", .full);
     }
 
-    // If files were checked via 7z command, report full validation
+    // Payload CRCs verified through z7z's streaming decoder: full depth.
     if (result.files_checked > 0) {
         return ValidationResult.okWithDepth(.sevenz, .full);
     }
@@ -3073,6 +3104,75 @@ fn validateRarWithRarz(data: []const u8) ValidationResult {
     return mapRarzArchiveSummary(summary);
 }
 
+test "7z unsupported feature maps to WARN-unsupported, not corrupt" {
+	const r = sevenz_validator.SevenZValidationResult.unsupportedFeature("Unsupported 7z feature");
+	const mapped = mapSevenZResult(r);
+	try std.testing.expect(mapped.is_valid);
+	try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, mapped.verdict);
+	try std.testing.expect(mapped.validation_unsupported);
+	try std.testing.expectEqualStrings("Unsupported 7z feature", mapped.warning_message.?);
+	try std.testing.expectEqual(ValidationDepth.structural, mapped.validation_depth);
+}
+
+test "7z resource limit maps to WARN-indeterminate, not corrupt" {
+	const r = sevenz_validator.SevenZValidationResult.resourceLimited("7-Zip too large for non-mmap deep validation");
+	const mapped = mapSevenZResult(r);
+	try std.testing.expect(mapped.is_valid);
+	try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, mapped.verdict);
+	try std.testing.expect(!mapped.validation_unsupported);
+	try std.testing.expect(mapped.warning_message != null);
+}
+
+test "7z corruption still maps to invalid" {
+	const r = sevenz_validator.SevenZValidationResult.invalid("7-Zip checksum mismatch");
+	const mapped = mapSevenZResult(r);
+	try std.testing.expect(!mapped.is_valid);
+	try std.testing.expectEqual(format_validation.ResultVerdict.corrupt, mapped.verdict);
+}
+
+test "7z unknown version is unsupported-WARN while truncation stays invalid" {
+	const allocator = std.testing.allocator;
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	// 32-byte start header: signature + version 9.9 + zero next-header fields.
+	var header: [32]u8 = undefined;
+	@memset(&header, 0);
+	@memcpy(header[0..6], &SEVENZ_SIGNATURE);
+	header[6] = 9; // future major version
+	header[7] = 9;
+
+	{
+		const f = try tmp_dir.dir.createFile(runtime.io(), "future.7z", .{});
+		try f.writePositionalAll(runtime.io(), &header, 0);
+		f.close(runtime.io());
+		const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "future.7z");
+		defer allocator.free(path);
+		var src = try file_source.FileSource.open(path);
+		defer src.close();
+		const result = validate7z(&src);
+		try std.testing.expect(result.is_valid);
+		try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+		try std.testing.expect(result.validation_unsupported);
+		try std.testing.expect(result.warning_message != null);
+	}
+
+	// Same unknown version but next-header bounds exceed EOF: corruption wins.
+	{
+		std.mem.writeInt(u64, header[12..20], 4096, .little); // next header offset beyond EOF
+		std.mem.writeInt(u64, header[20..28], 32, .little);
+		const f = try tmp_dir.dir.createFile(runtime.io(), "future_truncated.7z", .{});
+		try f.writePositionalAll(runtime.io(), &header, 0);
+		f.close(runtime.io());
+		const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "future_truncated.7z");
+		defer allocator.free(path);
+		var src = try file_source.FileSource.open(path);
+		defer src.close();
+		const result = validate7z(&src);
+		try std.testing.expect(!result.is_valid);
+	}
+}
+
 test "rarz archive summary preserves verified evidence" {
 	var summary = emptyRarzArchiveSummary();
 	summary.status = rarz_archive_verify_verified;
@@ -3135,6 +3235,73 @@ test "rarz broken accounting cannot become a valid archive" {
 	try std.testing.expect(result.warning_message != null);
 }
 
+/// Build a minimal structurally valid RAR5 archive (main header + end-of-archive
+/// header, both with correct CRC32) into `buf`. Returns the byte length used.
+fn writeMinimalRar5(buf: []u8) usize {
+	const RAR5_SIG = [_]u8{ 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07, 0x01, 0x00 };
+	@memcpy(buf[0..8], &RAR5_SIG);
+	var pos: usize = 8;
+	// Each header: CRC32 | size-vint (1 byte) | type | flags
+	const headers = [_][2]u8{ .{ 0x01, 0x00 }, .{ 0x05, 0x00 } }; // main, end-of-archive
+	for (headers) |h| {
+		const body = [_]u8{ 0x02, h[0], h[1] }; // size vint (2) + type + flags
+		const crc = std.hash.Crc32.hash(&body);
+		std.mem.writeInt(u32, buf[pos..][0..4], crc, .little);
+		@memcpy(buf[pos + 4 ..][0..3], &body);
+		pos += 7;
+	}
+	return pos;
+}
+
+test "RAR over deep-validation size cap is WARN-indeterminate after header walk, not invalid" {
+	const allocator = std.testing.allocator;
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	var rar_bytes: [64]u8 = undefined;
+	const used = writeMinimalRar5(&rar_bytes);
+
+	const f = try tmp_dir.dir.createFile(runtime.io(), "big.rar", .{});
+	try f.writePositionalAll(runtime.io(), rar_bytes[0..used], 0);
+	// Sparse-extend past the 1 GiB deep-validation cap (holes cost nothing on tmpfs).
+	try f.writePositionalAll(runtime.io(), &[_]u8{0}, (1024 * 1024 * 1024) + 4096);
+	f.close(runtime.io());
+
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "big.rar");
+	defer allocator.free(path);
+	var src = try file_source.FileSource.open(path);
+	defer src.close();
+
+	const result = validateRarDeep(allocator, &src);
+	try std.testing.expect(result.is_valid);
+	try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+	try std.testing.expectEqual(ValidationDepth.structural, result.validation_depth);
+	try std.testing.expect(result.warning_message != null);
+}
+
+test "oversized RAR with corrupt header CRC stays invalid" {
+	const allocator = std.testing.allocator;
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	var rar_bytes: [64]u8 = undefined;
+	const used = writeMinimalRar5(&rar_bytes);
+	rar_bytes[9] ^= 0xFF; // corrupt the first header's CRC32
+
+	const f = try tmp_dir.dir.createFile(runtime.io(), "bigbad.rar", .{});
+	try f.writePositionalAll(runtime.io(), rar_bytes[0..used], 0);
+	try f.writePositionalAll(runtime.io(), &[_]u8{0}, (1024 * 1024 * 1024) + 4096);
+	f.close(runtime.io());
+
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "bigbad.rar");
+	defer allocator.free(path);
+	var src = try file_source.FileSource.open(path);
+	defer src.close();
+
+	const result = validateRarDeep(allocator, &src);
+	try std.testing.expect(!result.is_valid);
+}
+
 /// Deep RAR validation using rarz (in-memory clean-room implementation).
 pub fn validateRarDeep(allocator: Allocator, source: *FileSource) ValidationResult {
     const file = source;
@@ -3146,15 +3313,25 @@ pub fn validateRarDeep(allocator: Allocator, source: *FileSource) ValidationResu
         return ValidationResult.invalidWithDepth(.rar, "File too small", .structural);
     }
 
-    const max_size: u64 = 1024 * 1024 * 1024;
-    if (file_size > max_size) {
-        return ValidationResult.invalidCodeWithDepth(.rar, .file_too_large, "validation", .structural);
-    }
-
     // rarz owns entry payload verification, while Validate's independent
     // header walk catches archive-header CRC damage before payload decoding.
     const header_result = validateRar(file);
     if (!header_result.is_valid) return header_result;
+
+    // Above this cap we decline to slurp/decode payloads. That is a resource
+    // decision, not damage evidence: the header walk above already verified
+    // structure, so the honest verdict is WARN/indeterminate, never invalid.
+    const max_size: u64 = 1024 * 1024 * 1024;
+    if (file_size > max_size) {
+        var capped = ValidationResult.okWithDepthAndWarning(
+            .rar,
+            .structural,
+            "RAR too large for deep validation; header CRCs verified, payloads not checked",
+        );
+        capped.verdict = .indeterminate;
+        return capped;
+    }
+
     file.seekTo(0) catch
         return ValidationResult.invalidCodeWithDepth(.rar, .failed_to_seek, "file", .structural);
 
@@ -3165,7 +3342,11 @@ pub fn validateRarDeep(allocator: Allocator, source: *FileSource) ValidationResu
     const data: []const u8 = switch (slurp_rar) {
         .mapped => |m| m,
         .heap => |b| blk: { heap_rar = b; break :blk b; },
-        .too_large => return ValidationResult.okWithDepthAndWarning(.rar, .structural, "RAR too large for non-mmap deep validation"),
+        .too_large => {
+            var capped = ValidationResult.okWithDepthAndWarning(.rar, .structural, "RAR too large for non-mmap deep validation");
+            capped.verdict = .indeterminate; // payloads unverified — same tier as the size cap above
+            return capped;
+        },
     };
 
     return validateRarWithRarz(data);
@@ -3270,7 +3451,14 @@ pub fn validateCpt(file: *FileSource) ValidationResult {
 
     const max_size: u64 = 1024 * 1024 * 1024;
     if (file_size > max_size) {
-        return ValidationResult.invalidCodeWithDepth(.cpt, .file_too_large, "validation", .structural);
+        // Resource cap ("we chose not to"), not damage evidence: WARN, never invalid.
+        var capped = ValidationResult.okWithDepthAndWarning(
+            .cpt,
+            .structural,
+            "CPT too large for deep validation; payload not verified",
+        );
+        capped.verdict = .indeterminate;
+        return capped;
     }
 
     const slurp_cpt1 = file.getMappedOrSlurp(heap.validateAllocator(), 256 << 20) catch
@@ -3280,7 +3468,11 @@ pub fn validateCpt(file: *FileSource) ValidationResult {
     const data: []const u8 = switch (slurp_cpt1) {
         .mapped => |m| m,
         .heap => |b| blk: { cpt_heap = b; break :blk b; },
-        .too_large => return ValidationResult.okWithDepthAndWarning(.cpt, .structural, "CPT too large for non-mmap deep validation"),
+        .too_large => {
+            var capped = ValidationResult.okWithDepthAndWarning(.cpt, .structural, "CPT too large for non-mmap deep validation");
+            capped.verdict = .indeterminate; // payload unverified — same tier as the size cap above
+            return capped;
+        },
     };
 
     return validateCptWithCompactPro(data);
@@ -3296,7 +3488,14 @@ pub fn validateCptDeep(allocator: Allocator, source: *FileSource) ValidationResu
 
     const max_size: u64 = 1024 * 1024 * 1024;
     if (file_size > max_size) {
-        return ValidationResult.invalidCodeWithDepth(.cpt, .file_too_large, "validation", .structural);
+        // Resource cap ("we chose not to"), not damage evidence: WARN, never invalid.
+        var capped = ValidationResult.okWithDepthAndWarning(
+            .cpt,
+            .structural,
+            "CPT too large for deep validation; payload not verified",
+        );
+        capped.verdict = .indeterminate;
+        return capped;
     }
 
     const slurp_cpt2 = file.getMappedOrSlurp(allocator, 256 << 20) catch
@@ -3306,7 +3505,11 @@ pub fn validateCptDeep(allocator: Allocator, source: *FileSource) ValidationResu
     const data: []const u8 = switch (slurp_cpt2) {
         .mapped => |m| m,
         .heap => |b| blk: { heap_cpt2 = b; break :blk b; },
-        .too_large => return ValidationResult.okWithDepthAndWarning(.cpt, .structural, "CPT too large for non-mmap deep validation"),
+        .too_large => {
+            var capped = ValidationResult.okWithDepthAndWarning(.cpt, .structural, "CPT too large for non-mmap deep validation");
+            capped.verdict = .indeterminate; // payload unverified — same tier as the size cap above
+            return capped;
+        },
     };
 
     return validateCptWithCompactPro(data);
@@ -3316,18 +3519,39 @@ pub fn validateCptFromBuffer(data: []const u8) ValidationResult {
     return validateCptWithCompactPro(data);
 }
 
+test "CPT over validation size cap is WARN-indeterminate, not invalid" {
+	const allocator = std.testing.allocator;
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+
+	const f = try tmp_dir.dir.createFile(runtime.io(), "big.cpt", .{});
+	// Sparse file past the 1 GiB cap; content is irrelevant — the cap fires on size.
+	try f.writePositionalAll(runtime.io(), &[_]u8{1}, 0);
+	try f.writePositionalAll(runtime.io(), &[_]u8{0}, (1024 * 1024 * 1024) + 4096);
+	f.close(runtime.io());
+
+	const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "big.cpt");
+	defer allocator.free(path);
+
+	{
+		var src = try file_source.FileSource.open(path);
+		defer src.close();
+		const result = validateCpt(&src);
+		try std.testing.expect(result.is_valid);
+		try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+		try std.testing.expect(result.warning_message != null);
+	}
+	{
+		var src = try file_source.FileSource.open(path);
+		defer src.close();
+		const result = validateCptDeep(allocator, &src);
+		try std.testing.expect(result.is_valid);
+		try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+	}
+}
+
 pub fn validate7zFromBuffer(allocator: Allocator, data: []const u8) ValidationResult {
-    const result = sevenz_validator.validateSevenZFromBuffer(allocator, data);
-
-    if (!result.valid) {
-        return ValidationResult.invalidWithDepth(.sevenz, result.error_message orelse "7z validation failed", .full);
-    }
-
-    if (result.files_checked > 0) {
-        return ValidationResult.okWithDepth(.sevenz, .full);
-    }
-
-    return ValidationResult.okWithDepth(.sevenz, .structural);
+    return mapSevenZResult(sevenz_validator.validateSevenZFromBuffer(allocator, data));
 }
 
 // ============ Tests ============

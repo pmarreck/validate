@@ -8,13 +8,23 @@ const Allocator = std.mem.Allocator;
 const errmsg = @import("error_messages.zig");
 const z7z = @import("z7z");
 
-/// Result of 7z deep validation
+/// Result of 7z deep validation.
+///
+/// Four-way outcome discipline: `valid=false` alone means corruption evidence.
+/// The two flags below mark the non-corrupt failure classes so callers can
+/// keep capability gaps and resource caps out of the "invalid" tier.
 pub const SevenZValidationResult = struct {
 	valid: bool,
 	error_message: ?[]const u8,
 	files_checked: u32,
 	total_files: u32,
 	bytes_verified: u64,
+	/// Archive uses a syntactically valid feature outside the promoted
+	/// verifier surface (capability gap, not corruption evidence).
+	unsupported: bool = false,
+	/// Verification stopped at a self-imposed resource cap (size or
+	/// expansion-ratio limit), not because damage was found.
+	resource_limited: bool = false,
 
 	pub fn ok(files: u32, bytes: u64) SevenZValidationResult {
 		return .{
@@ -44,6 +54,18 @@ pub const SevenZValidationResult = struct {
 			.total_files = 0,
 			.bytes_verified = 0,
 		};
+	}
+
+	pub fn unsupportedFeature(message: []const u8) SevenZValidationResult {
+		var result = invalid(message);
+		result.unsupported = true;
+		return result;
+	}
+
+	pub fn resourceLimited(message: []const u8) SevenZValidationResult {
+		var result = invalid(message);
+		result.resource_limited = true;
+		return result;
 	}
 };
 
@@ -124,14 +146,18 @@ pub fn validateSevenZDeep(allocator: Allocator, source: *@import("file_source.zi
 	const data: []const u8 = switch (slurp_7z) {
 		.mapped => |m| m,
 		.heap => |b| blk: { heap_7z = b; break :blk b; },
-		.too_large => return SevenZValidationResult.invalid("7-Zip too large for non-mmap deep validation"),
+		.too_large => return SevenZValidationResult.resourceLimited("7-Zip too large for non-mmap deep validation"),
 	};
 
 	const stats = z7z.archive.verify(data, .{
 		.max_total_unpack_size = MAX_TOTAL_UNPACK_SIZE,
 		.max_expansion_ratio = MAX_EXPANSION_RATIO,
 	}, allocator) catch |err| {
-		return SevenZValidationResult.invalid(z7zErrorString(err));
+		return switch (err) {
+			error.UnsupportedFeature => SevenZValidationResult.unsupportedFeature(z7zErrorString(err)),
+			error.ResourceLimitExceeded => SevenZValidationResult.resourceLimited(z7zErrorString(err)),
+			else => SevenZValidationResult.invalid(z7zErrorString(err)),
+		};
 	};
 
 	const data_file_count: u32 = @intCast(@min(stats.data_file_count, std.math.maxInt(u32)));
@@ -150,7 +176,11 @@ pub fn validateSevenZFromBuffer(allocator: Allocator, data: []const u8) SevenZVa
 		.max_total_unpack_size = MAX_TOTAL_UNPACK_SIZE,
 		.max_expansion_ratio = MAX_EXPANSION_RATIO,
 	}, allocator) catch |err| {
-		return SevenZValidationResult.invalid(z7zErrorString(err));
+		return switch (err) {
+			error.UnsupportedFeature => SevenZValidationResult.unsupportedFeature(z7zErrorString(err)),
+			error.ResourceLimitExceeded => SevenZValidationResult.resourceLimited(z7zErrorString(err)),
+			else => SevenZValidationResult.invalid(z7zErrorString(err)),
+		};
 	};
 
 	const data_file_count: u32 = @intCast(@min(stats.data_file_count, std.math.maxInt(u32)));

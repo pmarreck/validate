@@ -2365,12 +2365,41 @@ fn checkSpecialCases(sig: MagicSignature, header: []const u8) ?FileFormat {
             return null;
         }
     }
-    // RIFX-based formats (After Effects AEP)
+    // RIFX-based formats (big-endian RIFF): After Effects AEP, big-endian WAV
     if (sig.format == .aep) {
         if (header.len >= 12) {
             if (std.mem.eql(u8, header[8..12], "Egg!")) return .aep;
+            // Big-endian RIFX WAVs are a legitimate byte-order variant; route
+            // them to the WAV validator (which reports them unsupported-WARN)
+            // instead of letting them decay into "magic bytes corrupted".
+            if (std.mem.eql(u8, header[8..12], "WAVE")) return .wav;
         }
         return null;
+    }
+    // BMP: 'BM' alone is two ASCII letters — require a plausible DIB header
+    // size so text/binary files like pocketsphinx's "BMDF" mdef can't match.
+    if (sig.format == .bmp) {
+        if (header.len >= 18) {
+            const dib_size = std.mem.readInt(u32, header[14..18], .little);
+            switch (dib_size) {
+                // CORE(12), OS22X(16/64), INFO(40), V2(52), V3(56), V4(108), V5(124)
+                12, 16, 40, 52, 56, 64, 108, 124 => {},
+                else => return null,
+            }
+        }
+        return .bmp;
+    }
+    // Quake PAK: "PACK" is also an English word at the start of many text
+    // files (e.g. an .rst titled "PACKAGING"). Directory entries are exactly
+    // 64 bytes and ASCII pseudo-fields decode to >512MB sizes, so bound them.
+    if (sig.format == .pak) {
+        if (header.len < 12) return null;
+        const dir_offset = std.mem.readInt(u32, header[4..8], .little);
+        const dir_size = std.mem.readInt(u32, header[8..12], .little);
+        if (dir_size % 64 != 0) return null;
+        if (dir_size > 256 * 1024 * 1024) return null;
+        if (dir_offset < 12) return null;
+        return .pak;
     }
     // ICO format needs additional validation
     if (sig.format == .ico) {
@@ -3419,6 +3448,10 @@ const excluded_text_exts = std.StaticStringMap(void).initComptime(.{
     // Qt project files (qmake)
     .{ "pro", {} },
     .{ "pri", {} },
+    // Autoconf/CMake configure templates (config.h.in, metainfo.xml.in, ...):
+    // @VAR@ / #cmakedefine placeholders make the inner syntax unparseable by
+    // design — validate as plain text, never as the templated format.
+    .{ "in", {} },
 });
 
 /// Known filenames (case-insensitive, no extension) excluded from text validation.
@@ -3699,6 +3732,21 @@ fn isExcludedTextExtension(path: []const u8) bool {
     var ext_buf: [16]u8 = undefined;
     const ext_lower = lowercaseExtension(path, &ext_buf) orelse return false;
     return excluded_text_exts.has(ext_lower);
+}
+
+/// NVIDIA PTX assembly sniffer for the .ptx extension collision with Pro Tools.
+/// PTX modules are ASCII: an optional '//' comment banner followed by
+/// `.version` / `.target` directives (PTX ISA spec). Pro Tools sessions are
+/// binary (0x03 + BITCODE marker), so requiring both the text opener AND a
+/// PTX directive keeps generic C-family sources and binaries out.
+fn looksLikeNvidiaPtx(data: []const u8) bool {
+    var i: usize = 0;
+    while (i < data.len and (data[i] == ' ' or data[i] == '\t' or data[i] == '\r' or data[i] == '\n')) : (i += 1) {}
+    const rest = data[i..];
+    const starts_comment = rest.len >= 2 and rest[0] == '/' and rest[1] == '/';
+    const starts_directive = std.mem.startsWith(u8, rest, ".version") or std.mem.startsWith(u8, rest, ".target");
+    if (!starts_comment and !starts_directive) return false;
+    return std.mem.indexOf(u8, data, ".version") != null or std.mem.indexOf(u8, data, ".target") != null;
 }
 
 /// Get expected format for a file extension (for mismatch detection).
@@ -5598,7 +5646,19 @@ pub const FormatValidator = struct {
                         .hqx => archive_validators.validateHqx(reopen_ext_ptr),
                         .cpt => archive_validators.validateCpt(reopen_ext_ptr),
                         .bwproject => daw_validators.validateBwproject(reopen_ext_ptr),
-                        .ptx => daw_validators.validateProTools(reopen_ext_ptr),
+                        // .ptx is two unrelated formats: NVIDIA PTX assembly
+                        // (ASCII) and Pro Tools sessions (binary). The extension
+                        // alone must never force the Pro Tools judgment onto
+                        // ASCII PTX text — keep the content-based plain-text
+                        // verdict for those.
+                        .ptx => blk: {
+                            var ptx_probe: [4096]u8 = undefined;
+                            reopen_ext_ptr.seekTo(0) catch break :blk ValidationResult.ok(.ptx);
+                            const probe_len = reopen_ext_ptr.read(&ptx_probe) catch 0;
+                            if (looksLikeNvidiaPtx(ptx_probe[0..probe_len])) break :blk result;
+                            reopen_ext_ptr.seekTo(0) catch break :blk ValidationResult.ok(.ptx);
+                            break :blk daw_validators.validateProTools(reopen_ext_ptr);
+                        },
                         .band => daw_validators.validateGarageBand(reopen_ext_ptr),
                         .reason => daw_validators.validateReason(reopen_ext_ptr),
                         .cpr => daw_validators.validateCubase(reopen_ext_ptr),
@@ -7758,6 +7818,146 @@ test "detectFormat rejects tiny files as BMP" {
     tiny_bmp[0] = 'B';
     tiny_bmp[1] = 'M';
     try std.testing.expectEqual(FileFormat.unknown, detectFormat(&tiny_bmp));
+}
+
+test "template .in files validate as plain text, never as the templated syntax" {
+    // Classifier rows over the extension filter itself.
+    try std.testing.expect(isExcludedTextExtension("config.h.in"));
+    try std.testing.expect(isExcludedTextExtension("/some/path/metainfo.xml.in"));
+    try std.testing.expect(isExcludedTextExtension("conf_vars.in"));
+    try std.testing.expect(!isExcludedTextExtension("real.xml"));
+    try std.testing.expect(!isExcludedTextExtension("notes.ini"));
+
+    // End-to-end: template placeholders make the inner syntax unparseable,
+    // but a template is not a corrupt document.
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const templated_xml = "<?xml version=\"1.0\"?>\n<component>\n  <id>@PROJECT_ID@</id>\n  <mismatched></component>\n";
+
+    {
+        const f = try tmp_dir.dir.createFile(runtime.io(), "metainfo.xml.in", .{});
+        try f.writePositionalAll(runtime.io(), templated_xml, 0);
+        f.close(runtime.io());
+        const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "metainfo.xml.in");
+        defer allocator.free(path);
+        var validator = FormatValidator.init();
+        defer validator.deinit();
+        const result = validator.validateFile(path);
+        try std.testing.expect(result.is_valid);
+        try std.testing.expect(result.format == .plain_text);
+    }
+    {
+        // Must-not row: the same bytes under a real .xml extension keep
+        // failing XML validation — the tolerance is extension-scoped.
+        const f = try tmp_dir.dir.createFile(runtime.io(), "broken.xml", .{});
+        try f.writePositionalAll(runtime.io(), templated_xml, 0);
+        f.close(runtime.io());
+        const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "broken.xml");
+        defer allocator.free(path);
+        var validator = FormatValidator.init();
+        defer validator.deinit();
+        const result = validator.validateFile(path);
+        try std.testing.expect(!result.is_valid);
+    }
+}
+
+test "ptx extension disambiguates NVIDIA PTX text from Pro Tools binary" {
+    // Pure-sniffer classifier rows.
+    const nvidia_head = "//\n// Generated by NVIDIA NVVM Compiler\n//\n\n.version 6.5\n.target sm_50\n.address_size 64\n";
+    try std.testing.expect(looksLikeNvidiaPtx(nvidia_head));
+    try std.testing.expect(looksLikeNvidiaPtx(".version 8.0\n.target sm_90\n"));
+    // '//' alone is any C-family source; without PTX directives it is not PTX.
+    try std.testing.expect(!looksLikeNvidiaPtx("// just a comment\nint main() { return 0; }\n"));
+    try std.testing.expect(!looksLikeNvidiaPtx(&[_]u8{0x03} ++ "0010111100101011".*));
+
+    // End-to-end: ASCII PTX under .ptx must not be condemned by the Pro Tools
+    // validator; binary Pro Tools content keeps its existing identity.
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    {
+        const f = try tmp_dir.dir.createFile(runtime.io(), "jitlink.ptx", .{});
+        try f.writePositionalAll(runtime.io(), nvidia_head, 0);
+        f.close(runtime.io());
+        const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "jitlink.ptx");
+        defer allocator.free(path);
+        var validator = FormatValidator.init();
+        defer validator.deinit();
+        const result = validator.validateFile(path);
+        try std.testing.expect(result.is_valid);
+        try std.testing.expect(result.format != .ptx);
+    }
+}
+
+test "detectFormat BMP magic requires a plausible DIB header size" {
+    // pocketsphinx binary mdef starts "BMDF" + ASCII — the 'BM' prefix alone
+    // must not classify it as BMP (it was then condemned as a corrupt image).
+    var mdef = [_]u8{0} ** 64;
+    const mdef_head = "BMDF\x01\x00\x00\x00\x1c\x04\x00\x00BEGIN FILE FORMAT DESC\n";
+    @memcpy(mdef[0..mdef_head.len], mdef_head);
+    try std.testing.expect(detectFormat(&mdef) != .bmp);
+
+    // Generic 'BM'-leading text must not match either.
+    var bm_text = [_]u8{' '} ** 64;
+    @memcpy(bm_text[0..14], "BMW production");
+    try std.testing.expect(detectFormat(&bm_text) != .bmp);
+
+    // Must-match set: real BMPs across DIB header generations.
+    const dib_sizes = [_]u32{ 12, 40, 108, 124 };
+    for (dib_sizes) |dib| {
+        var bmp = [_]u8{0} ** 64;
+        bmp[0] = 'B';
+        bmp[1] = 'M';
+        std.mem.writeInt(u32, bmp[10..14], 14 + dib, .little); // pixel data offset
+        std.mem.writeInt(u32, bmp[14..18], dib, .little); // DIB header size
+        try std.testing.expectEqual(FileFormat.bmp, detectFormat(&bmp));
+    }
+}
+
+test "detectFormat PAK magic requires plausible directory fields" {
+    // reStructuredText titled "PACKAGING" begins with the PACK magic; the
+    // following ASCII bytes decode as absurd directory offset/size values.
+    var rst = [_]u8{' '} ** 128;
+    const rst_head = "PACKAGING\n=========\n\nHow to package this project.\n";
+    @memcpy(rst[0..rst_head.len], rst_head);
+    try std.testing.expect(detectFormat(&rst) != .pak);
+
+    // Must-match: a real Quake PAK directory header (64-byte entries).
+    var pak = [_]u8{0} ** 64;
+    @memcpy(pak[0..4], "PACK");
+    std.mem.writeInt(u32, pak[4..8], 12, .little); // dir offset right after header
+    std.mem.writeInt(u32, pak[8..12], 64, .little); // one 64-byte entry
+    try std.testing.expectEqual(FileFormat.pak, detectFormat(&pak));
+
+    // Empty PAK (zero directory) is still a PAK.
+    var empty_pak = [_]u8{0} ** 64;
+    @memcpy(empty_pak[0..4], "PACK");
+    std.mem.writeInt(u32, empty_pak[4..8], 12, .little);
+    try std.testing.expectEqual(FileFormat.pak, detectFormat(&empty_pak));
+}
+
+test "detectFormat routes RIFX WAVE to wav and keeps RIFX Egg! as aep" {
+    // Big-endian RIFX WAV (e.g. scipy's test-*-be.wav) must identify as WAV,
+    // not fall through to "magic bytes corrupted" via the unknown path.
+    var rifx_wav = [_]u8{0} ** 64;
+    @memcpy(rifx_wav[0..4], "RIFX");
+    @memcpy(rifx_wav[8..12], "WAVE");
+    try std.testing.expectEqual(FileFormat.wav, detectFormat(&rifx_wav));
+
+    // After Effects projects keep their identity.
+    var rifx_aep = [_]u8{0} ** 64;
+    @memcpy(rifx_aep[0..4], "RIFX");
+    @memcpy(rifx_aep[8..12], "Egg!");
+    try std.testing.expectEqual(FileFormat.aep, detectFormat(&rifx_aep));
+
+    // Unknown RIFX form type stays unknown (no false WAV identity).
+    var rifx_other = [_]u8{0} ** 64;
+    @memcpy(rifx_other[0..4], "RIFX");
+    @memcpy(rifx_other[8..12], "ABCD");
+    try std.testing.expectEqual(FileFormat.unknown, detectFormat(&rifx_other));
 }
 
 test "detectFormat rejects sub-512-byte tar" {

@@ -3213,9 +3213,6 @@ pub fn validateMatlab(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCode(.matlab, .file_too_small, "MATLAB");
     }
 
-    // Version field at offset 124: 0x0100 for v5
-    const version = std.mem.readInt(u16, header[124..126], .little);
-
     // Endian indicator at offset 126: "IM" (little-endian) or "MI" (big-endian)
     const endian = header[126..128];
     const is_little_endian = std.mem.eql(u8, endian, "IM");
@@ -3225,8 +3222,25 @@ pub fn validateMatlab(file: *FileSource) ValidationResult {
         return ValidationResult.invalidCode(.matlab, .invalid_value, "MATLAB endian indicator");
     }
 
+    // Version field at offset 124 is stored in the file's own byte order.
+    // Big-endian (SOL2-era) files write 0x0100 as {0x01,0x00}; forcing a
+    // little-endian read turned every valid BE file into "unknown version".
+    const version = if (is_big_endian)
+        std.mem.readInt(u16, header[124..126], .big)
+    else
+        std.mem.readInt(u16, header[124..126], .little);
+
     if (version != 0x0100) {
-        return ValidationResult.invalidCode(.matlab, .unknown_element, "MATLAB version");
+        // Unknown format revision — a capability gap, not corruption evidence.
+        // Four-way verdict discipline: unsupported is never "invalid".
+        var unsupported_version = ValidationResult.okWithDepthAndWarning(
+            .matlab,
+            .structural,
+            errmsg.unknown("MATLAB version"),
+        );
+        unsupported_version.verdict = .indeterminate;
+        unsupported_version.validation_unsupported = true;
+        return unsupported_version;
     }
 
     // Parse data elements
@@ -4547,6 +4561,76 @@ test "FormatValidator accepts valid MATLAB v5" {
 
     try std.testing.expectEqual(FileFormat.matlab, result.format);
     try std.testing.expect(result.is_valid);
+}
+
+test "MATLAB big-endian (SOL2-era) v5 file validates; version field honors endianness" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var matlab_data: [152]u8 = undefined;
+    @memset(&matlab_data, 0);
+    @memset(matlab_data[0..116], ' ');
+    @memcpy(matlab_data[0..19], "MATLAB 5.0 MAT-file");
+    @memset(matlab_data[116..124], 0);
+    // Version 0x0100 stored BIG-endian, endian indicator "MI" (big-endian file)
+    std.mem.writeInt(u16, matlab_data[124..126], 0x0100, .big);
+    @memcpy(matlab_data[126..128], "MI");
+    // One data element in big-endian byte order
+    std.mem.writeInt(u32, matlab_data[128..132], 14, .big); // Type = miMATRIX
+    std.mem.writeInt(u32, matlab_data[132..136], 16, .big); // Size = 16 bytes
+    @memset(matlab_data[136..152], 0);
+
+    const file = try tmp_dir.dir.createFile(runtime.io(), "sol2.mat", .{});
+    try file.writePositionalAll(runtime.io(), &matlab_data, 0);
+    file.close(runtime.io());
+
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "sol2.mat");
+    defer allocator.free(path);
+
+    var src = try FileSource.open(path);
+    defer src.close();
+    const result = validateMatlab(&src);
+
+    try std.testing.expectEqual(FileFormat.matlab, result.format);
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(format_validation.ResultVerdict.valid, result.verdict);
+}
+
+test "unknown MATLAB version is unsupported-WARN, not invalid" {
+    const allocator = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var matlab_data: [152]u8 = undefined;
+    @memset(&matlab_data, 0);
+    @memset(matlab_data[0..116], ' ');
+    @memcpy(matlab_data[0..19], "MATLAB 9.9 MAT-file");
+    @memset(matlab_data[116..124], 0);
+    // Version 0x0200: no such revision exists yet — capability gap, not corruption
+    std.mem.writeInt(u16, matlab_data[124..126], 0x0200, .little);
+    @memcpy(matlab_data[126..128], "IM");
+    std.mem.writeInt(u32, matlab_data[128..132], 14, .little);
+    std.mem.writeInt(u32, matlab_data[132..136], 16, .little);
+    @memset(matlab_data[136..152], 0);
+
+    const file = try tmp_dir.dir.createFile(runtime.io(), "future.mat", .{});
+    try file.writePositionalAll(runtime.io(), &matlab_data, 0);
+    file.close(runtime.io());
+
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "future.mat");
+    defer allocator.free(path);
+
+    var src = try FileSource.open(path);
+    defer src.close();
+    const result = validateMatlab(&src);
+
+    try std.testing.expect(result.is_valid);
+    try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+    try std.testing.expect(result.validation_unsupported);
+    try std.testing.expect(result.warning_message != null);
 }
 
 test "FormatValidator accepts valid NIfTI" {

@@ -126,10 +126,31 @@ pub fn validateFlac(file: *FileSource) ValidationResult {
 
 // ============ WAV Validator ============
 
+/// WARN-tier result for big-endian RIFX WAVs: a legitimate byte-order variant
+/// (SGI/big-endian tooling; scipy ships them as test data) that this parser
+/// does not read. Capability gap, never corruption.
+fn rifxWavUnsupported() ValidationResult {
+    var result = ValidationResult.okWithDepthAndWarning(
+        .wav,
+        .structural,
+        "RIFX (big-endian) WAV: byte-order variant not parsed by this validator",
+    );
+    result.verdict = .indeterminate;
+    result.validation_unsupported = true;
+    result.format_variant = "rifx";
+    return result;
+}
+
+fn isRifxWav(header: []const u8) bool {
+    return header.len >= 12 and std.mem.eql(u8, header[0..4], "RIFX") and std.mem.eql(u8, header[8..12], "WAVE");
+}
+
 /// Validate WAV file structure (RIFF container).
 pub fn validateWav(file: *FileSource) ValidationResult {
     var header: [12]u8 = undefined;
     _ = file.read(&header) catch return ValidationResult.invalidCode(.wav, .failed_to_read, "WAV header");
+
+    if (isRifxWav(&header)) return rifxWavUnsupported();
 
     // Check RIFF signature
     if (!std.mem.eql(u8, header[0..4], "RIFF")) {
@@ -188,6 +209,7 @@ pub fn validateWavDeep(allocator: Allocator, source: *FileSource) ValidationResu
     }
 
     // Verify RIFF/WAVE signature
+    if (isRifxWav(&header)) return rifxWavUnsupported();
     if (!std.mem.eql(u8, header[0..4], "RIFF") or !std.mem.eql(u8, header[8..12], "WAVE")) {
         return ValidationResult.invalidCodeWithDepth(.wav, .invalid_value, "WAV header", .structural);
     }
@@ -2359,10 +2381,59 @@ pub fn validateFlacFromBuffer(data: []const u8) ValidationResult {
 
 pub fn validateWavFromBuffer(data: []const u8) ValidationResult {
     if (data.len < 12) return ValidationResult.invalid(.wav, "File too small");
+    if (isRifxWav(data)) return rifxWavUnsupported();
     if (std.mem.eql(u8, data[0..4], "RIFF") and std.mem.eql(u8, data[8..12], "WAVE")) {
         return ValidationResult.ok(.wav);
     }
     return ValidationResult.invalidCode(.wav, .invalid_signature, "WAV");
+}
+
+test "RIFX big-endian WAV is unsupported-WARN naming the variant, not corrupt" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Big-endian RIFX WAV header (scipy test-*-be.wav shape): RIFX + BE size + WAVE + fmt
+    var wav_data: [64]u8 = undefined;
+    @memset(&wav_data, 0);
+    @memcpy(wav_data[0..4], "RIFX");
+    std.mem.writeInt(u32, wav_data[4..8], 56, .big);
+    @memcpy(wav_data[8..12], "WAVE");
+    @memcpy(wav_data[12..16], "fmt ");
+
+    const file = try tmp_dir.dir.createFile(runtime.io(), "be.wav", .{});
+    try file.writePositionalAll(runtime.io(), &wav_data, 0);
+    file.close(runtime.io());
+
+    const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "be.wav");
+    defer allocator.free(path);
+
+    {
+        var src = try FileSource.open(path);
+        defer src.close();
+        const result = validateWav(&src);
+        try std.testing.expect(result.is_valid);
+        try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+        try std.testing.expect(result.validation_unsupported);
+        try std.testing.expect(std.mem.indexOf(u8, result.warning_message.?, "RIFX") != null);
+    }
+    {
+        var src = try FileSource.open(path);
+        defer src.close();
+        const result = validateWavDeep(std.testing.allocator, &src);
+        try std.testing.expect(result.is_valid);
+        try std.testing.expectEqual(format_validation.ResultVerdict.indeterminate, result.verdict);
+        try std.testing.expect(result.validation_unsupported);
+    }
+
+    // Classifier must-not rows: plain corrupt magic stays invalid.
+    const bad = [_]u8{ 'R', 'I', 'F', 'Q', 0, 0, 0, 0, 'W', 'A', 'V', 'E' };
+    try std.testing.expect(!validateWavFromBuffer(&bad).is_valid);
+    // RIFX from buffer follows the same unsupported-WARN tier.
+    const rifx_buf = [_]u8{ 'R', 'I', 'F', 'X', 0, 0, 0, 0, 'W', 'A', 'V', 'E' };
+    const buf_result = validateWavFromBuffer(&rifx_buf);
+    try std.testing.expect(buf_result.is_valid);
+    try std.testing.expect(buf_result.validation_unsupported);
 }
 
 pub fn validateAiffFromBuffer(data: []const u8) ValidationResult {

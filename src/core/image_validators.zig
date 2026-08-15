@@ -571,15 +571,59 @@ pub fn validateGifWithOptions(file: *FileSource, skip_magic: bool) ValidationRes
             }
             // Allow null bytes (padding) but nothing else after trailer
             if (chunk[i] != 0x00) {
-                // Found non-null, non-trailer byte - file is corrupt
-                return ValidationResult.invalidCode(.gif, .missing, "GIF trailer (truncated file)");
+                // No trailer before data bytes — decide truncation vs tolerated
+                // trailerless file with a forward walk.
+                return gifMissingTrailerVerdict(file, skip_magic);
             }
         }
 
         scanned += bytes_read;
     }
 
-    return ValidationResult.invalidCode(.gif, .missing, "GIF trailer (truncated file)");
+    return gifMissingTrailerVerdict(file, skip_magic);
+}
+
+/// The Peter-tolerance ruling for GIFs whose ONLY defect is the absent 0x3B
+/// terminator: browsers, tk, and giflib all render them, so condemning them
+/// as corrupt is a false positive (tk 8.6.12 ships demos/images/earth.gif
+/// in exactly this state).
+const gif_missing_trailer_tolerated_warning = "GIF missing trailer byte (widely tolerated)";
+
+/// Distinguish "complete GIF merely lacking its 0x3B trailer" (accept + WARN)
+/// from genuine mid-frame truncation (invalid). The backward padding scan alone
+/// cannot tell them apart — a complete stream also ends in non-null LZW bytes —
+/// so walk the block/sub-block chain forward over a bounded slurp.
+fn gifMissingTrailerVerdict(file: *FileSource, skip_magic: bool) ValidationResult {
+    // With corrupted magic the walk would report the (deliberately ignored)
+    // signature, not the trailer question — keep the historical verdict there.
+    if (skip_magic) {
+        return ValidationResult.invalidCode(.gif, .missing, "GIF trailer (truncated file)");
+    }
+
+    const alloc = heap.validateAllocator();
+    file.seekTo(0) catch
+        return ValidationResult.invalidCode(.gif, .missing, "GIF trailer (truncated file)");
+    const slurp = file.getMappedOrSlurp(alloc, 100 * 1024 * 1024) catch
+        return ValidationResult.invalidCode(.gif, .missing, "GIF trailer (truncated file)");
+    var heap_buf: ?[]u8 = null;
+    defer if (heap_buf) |b| alloc.free(b);
+    const data: []const u8 = switch (slurp) {
+        .mapped => |m| m,
+        .heap => |b| blk: {
+            heap_buf = b;
+            break :blk b;
+        },
+        .too_large => return ValidationResult.invalidCode(.gif, .missing, "GIF trailer (truncated file)"),
+    };
+
+    if (validateGifStructure(data)) |err_msg| {
+        if (std.mem.eql(u8, err_msg, gif_missing_trailer_msg)) {
+            return ValidationResult.okWithDepthAndWarning(.gif, .structural, gif_missing_trailer_tolerated_warning);
+        }
+        return ValidationResult.invalidWithDepth(.gif, err_msg, .structural);
+    }
+    // Walk found a trailer the 64KB backward scan missed (very deep padding).
+    return ValidationResult.okWithDepth(.gif, .structural);
 }
 
 // ============ BMP Validator ============
@@ -2363,10 +2407,16 @@ pub fn validateGifDeep(allocator: Allocator, source: *FileSource) ValidationResu
 
     const gif_data = data[0..bytes_read];
 
+    var trailer_missing_tolerated = false;
     if (validateGifStructure(gif_data)) |err_msg| {
-
-        return ValidationResult.invalidWithDepth(.gif, err_msg, .full);
-
+        // A complete block chain that merely lacks the final 0x3B is the
+        // browser-tolerated case — WARN below instead of condemning, but only
+        // after the LZW streams also prove intact.
+        if (std.mem.eql(u8, err_msg, gif_missing_trailer_msg)) {
+            trailer_missing_tolerated = true;
+        } else {
+            return ValidationResult.invalidWithDepth(.gif, err_msg, .full);
+        }
     }
 
     // Phase 2: LZW stream validation for every frame.
@@ -2377,12 +2427,23 @@ pub fn validateGifDeep(allocator: Allocator, source: *FileSource) ValidationResu
 
     }
 
+    if (trailer_missing_tolerated) {
+        return ValidationResult.okWithDepthAndWarning(.gif, .full, gif_missing_trailer_tolerated_warning);
+    }
+
     return ValidationResult.okWithDepth(.gif, .full);
 
 }
 
+/// Sentinel message for "all blocks complete, only the 0x3B terminator absent".
+/// Callers compare against this to re-tier the verdict to accept+WARN; every
+/// other message from the walk is genuine structural damage.
+const gif_missing_trailer_msg: []const u8 = "Missing GIF trailer (0x3B)";
+
 /// Walk the GIF block structure and validate sub-block chains.
 /// Returns null if valid, or an error message string if corruption is detected.
+/// The distinguished `gif_missing_trailer_msg` means the chain parsed cleanly
+/// to EOF and only the trailer byte is absent (tolerated by callers).
 /// GIF structure: Header(6) + LSD(7) + [GCT] + blocks... + Trailer(0x3B)
 fn validateGifStructure(data: []const u8) ?[]const u8 {
     if (data.len < 13) return "GIF too small for header + LSD";
@@ -2502,7 +2563,7 @@ fn validateGifStructure(data: []const u8) ?[]const u8 {
     }
 
     if (image_count == 0) return "No image data found in GIF";
-    if (!found_trailer) return "Missing GIF trailer (0x3B)";
+    if (!found_trailer) return gif_missing_trailer_msg;
 
     return null; // Valid
 }
@@ -7290,6 +7351,67 @@ test "FormatValidator rejects truncated GIF" {
 
     try std.testing.expectEqual(FileFormat.gif, result.format);
     try std.testing.expect(!result.is_valid);
+}
+
+test "trailerless-but-complete GIF is tolerated with WARN; mid-frame truncation stays invalid" {
+    const allocator = std.testing.allocator;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Complete GIF89a (header + LSD + image descriptor + finished LZW data +
+    // sub-block terminator) with ONLY the 0x3B trailer absent — tk 8.6.12's
+    // demos/images/earth.gif has exactly this shape and every browser renders it.
+    const gif_no_trailer = [_]u8{
+        'G',  'I',  'F',  '8',  '9',  'a',
+        0x01, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x00,
+        0x2C, 0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x01, 0x00, 0x00,
+        0x02,
+        0x02, 0x44, 0x01, 0x00,
+        // no 0x3B
+    };
+    // Same stream cut mid-sub-block (declared 2 data bytes, only 1 present).
+    const gif_truncated_mid_frame = gif_no_trailer[0 .. gif_no_trailer.len - 2];
+
+    {
+        const f = try tmp_dir.dir.createFile(runtime.io(), "no_trailer.gif", .{});
+        try f.writePositionalAll(runtime.io(), &gif_no_trailer, 0);
+        f.close(runtime.io());
+        const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "no_trailer.gif");
+        defer allocator.free(path);
+
+        // Structural path tolerates it with the ruling's WARN message...
+        var src = try FileSource.open(path);
+        defer src.close();
+        const structural = validateGif(&src);
+        try std.testing.expect(structural.is_valid);
+        try std.testing.expect(std.mem.indexOf(u8, structural.warning_message.?, "widely tolerated") != null);
+
+        // ...and the deep path agrees after LZW verification.
+        var src2 = try FileSource.open(path);
+        defer src2.close();
+        const deep = validateGifDeep(allocator, &src2);
+        try std.testing.expect(deep.is_valid);
+        try std.testing.expect(std.mem.indexOf(u8, deep.warning_message.?, "widely tolerated") != null);
+    }
+
+    {
+        const f = try tmp_dir.dir.createFile(runtime.io(), "cut_mid_frame.gif", .{});
+        try f.writePositionalAll(runtime.io(), gif_truncated_mid_frame, 0);
+        f.close(runtime.io());
+        const path = try runtime.tmpRealpathAlloc(&tmp_dir, allocator, "cut_mid_frame.gif");
+        defer allocator.free(path);
+
+        // Regression fence: trailer tolerance must NOT leak to real truncation.
+        var src = try FileSource.open(path);
+        defer src.close();
+        try std.testing.expect(!validateGif(&src).is_valid);
+
+        var src2 = try FileSource.open(path);
+        defer src2.close();
+        try std.testing.expect(!validateGifDeep(allocator, &src2).is_valid);
+    }
 }
 
 test "FormatValidator deep validates real GIF from ground truth" {
