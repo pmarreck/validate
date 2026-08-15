@@ -119,7 +119,8 @@ pub const stuffit_validator = @import("stuffit_validator.zig");
 pub const realmedia_validator = @import("realmedia_validator.zig");
 pub const network_validators = @import("network_validators.zig");
 pub const orf_decoder = @import("orf_decoder.zig");
-pub const pef_decoder = @import("pef_decoder.zig");
+// PEF vendor semantics live in rawz (M3 cutover); re-export preserved.
+pub const pef_decoder = @import("rawz").pef_decoder;
 pub const macos_bundle_validator = @import("macos_bundle_validator.zig");
 pub const cdg_validator = @import("cdg_validator.zig");
 pub const toast_validator = @import("toast_validator.zig");
@@ -395,7 +396,6 @@ test {
     _ = @import("pdf_decryptor.zig");
     // Camera RAW decoders
     _ = @import("orf_decoder.zig");
-    _ = @import("pef_decoder.zig");
     // macOS bundle validator
     _ = @import("macos_bundle_validator.zig");
     // i18n (internationalization)

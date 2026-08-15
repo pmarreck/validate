@@ -29,7 +29,11 @@ const avif_validator = @import("avif_validator.zig");
 const zlib = @import("zlib.zig");
 const libraw_validator = @import("libraw_validator.zig");
 const orf_decoder = @import("orf_decoder.zig");
-const pef_decoder = @import("pef_decoder.zig");
+// PEF vendor semantics moved to rawz (Einstein M3 cutover); the local
+// pef_decoder.zig copy is deleted. PackBits (32773) is decoded by tiffz
+// before rawz's packed-12 extent check — see the 32773 branch.
+const pef_decoder = @import("rawz").pef_decoder;
+const tiffz_packbits = @import("tiffz").compressions.packbits;
 const zigimg = @import("zigimg");
 const xml = @import("xml");
 const jpeg_lossless_decoder = @import("jpeg_lossless_decoder.zig");
@@ -5358,10 +5362,30 @@ fn validatePefDeepImpl(allocator: Allocator, source: *FileSource) ValidationResu
 
     // Dispatch based on compression type
     if (info.compression == 32773) {
-        // Packed 12-bit RAW (K100D etc.) — size check only.
-        // Every byte pattern produces valid 12-bit values, so corruption in pixel
-        // data is undetectable without checksums. Honest depth: structural.
-        if (pef_decoder.validatePefPacked12(strip_data, info.width, info.height)) |err| {
+        // Compression 32773 is PackBits RLE: tiffz decodes the RLE layer
+        // FIRST, then rawz's packed-12 extent check runs over the DECODED
+        // bytes. The encoded strip length says nothing about pixel
+        // completeness (a replicate run shrinks 12 pixels to 2 bytes) — the
+        // pre-cutover local decoder skipped the decode and false-positived
+        // exactly there (witnessed red). Corruption in decoded pixel data
+        // stays undetectable without checksums; honest depth: structural.
+        const row_bits = @as(u64, info.width) * 12;
+        const expected_bytes = ((row_bits + 7) / 8) * @as(u64, info.height);
+        if (expected_bytes == 0 or expected_bytes > 256 * 1024 * 1024) {
+            return ValidationResult.okWithDepthAndWarning(.pef, .structural, "image dimensions out of range for decode");
+        }
+        const decoded = allocator.alloc(u8, @intCast(expected_bytes)) catch {
+            return ValidationResult.okWithDepthAndWarning(.pef, .structural, "out of memory for decoded strip");
+        };
+        defer allocator.free(decoded);
+        const written = tiffz_packbits.decode(strip_data, decoded) catch |err| switch (err) {
+            // More decoded data than the pixel extent needs: the padded-
+            // final-strip family libtiff tolerates. The extent is satisfied.
+            error.DestTooSmall => decoded.len,
+            // Ran out of source mid-run: genuinely short/corrupt stream.
+            else => return ValidationResult.invalidCodeWithDepth(.pef, .truncated, "PackBits strip", .structural),
+        };
+        if (pef_decoder.validatePefPacked12(decoded[0..written], info.width, info.height)) |err| {
             return switch (err) {
                 pef_decoder.PefDecodeError.Truncated => ValidationResult.invalidCodeWithDepth(.pef, .truncated, "packed RAW data", .structural),
                 pef_decoder.PefDecodeError.DimensionsTooLarge => ValidationResult.okWithDepthAndWarning(.pef, .structural, "image dimensions exceed decoder limits"),
@@ -5382,6 +5406,92 @@ fn validatePefDeepImpl(allocator: Allocator, source: *FileSource) ValidationResu
 // ============ Tests ============
 
 const testing = std.testing;
+
+// ---- PEF cutover (Einstein M3) ----
+
+test "PEF decoder is rawz's, not a local copy (cutover identity)" {
+    // Physics-adjacent identity check: the module this file dispatches to must
+    // BE rawz's pef_decoder namespace. Fails while the local pef_decoder.zig
+    // copy is imported; passes only after the cutover swap.
+    try testing.expect(pef_decoder == @import("rawz").pef_decoder);
+}
+
+/// Minimal little-endian PEF-shaped TIFF: 5-entry IFD (width=4, height=2,
+/// Compression=32773 PackBits, strip at byte 74), strip payload supplied by
+/// the caller. Buffer is sized by the caller to 74 + strip.len.
+fn testMakeMinimalPef(buf: []u8, strip: []const u8) void {
+    std.debug.assert(buf.len == 74 + strip.len);
+    @memset(buf, 0);
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 42, .little);
+    std.mem.writeInt(u32, buf[4..8], 8, .little); // IFD0 at 8
+    std.mem.writeInt(u16, buf[8..10], 5, .little); // 5 entries
+    const entries = [_]struct { tag: u16, typ: u16, val: u32 }{
+        .{ .tag = 0x0100, .typ = 3, .val = 4 }, // ImageWidth
+        .{ .tag = 0x0101, .typ = 3, .val = 2 }, // ImageLength
+        .{ .tag = 0x0103, .typ = 3, .val = 32773 }, // Compression = PackBits
+        .{ .tag = 0x0111, .typ = 4, .val = 74 }, // StripOffsets
+        .{ .tag = 0x0117, .typ = 4, .val = @intCast(strip.len) }, // StripByteCounts
+    };
+    var off: usize = 10;
+    for (entries) |e| {
+        std.mem.writeInt(u16, buf[off..][0..2], e.tag, .little);
+        std.mem.writeInt(u16, buf[off + 2 ..][0..2], e.typ, .little);
+        std.mem.writeInt(u32, buf[off + 4 ..][0..4], 1, .little); // count
+        std.mem.writeInt(u32, buf[off + 8 ..][0..4], e.val, .little);
+        off += 12;
+    }
+    std.mem.writeInt(u32, buf[70..74], 0, .little); // no next IFD
+    @memcpy(buf[74..], strip);
+}
+
+test "PEF Compression 32773 is PackBits-decoded by tiffz before the packed-12 extent check" {
+    // 4x2 @12bpp decodes to exactly 12 bytes. The strip is a PackBits
+    // REPLICATE run (0xF5 = repeat next byte 12 times, then 0xAB): 2 encoded
+    // bytes -> 12 decoded bytes. A checker that skips the PackBits decode
+    // sees 2 < 12 and false-positives "Truncated" — which is exactly what the
+    // pre-cutover local decoder did (witnessed red). Decoding first, the file
+    // is valid.
+    const strip = [_]u8{ 0xF5, 0xAB };
+    var buf: [74 + strip.len]u8 = undefined;
+    testMakeMinimalPef(&buf, &strip);
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "packbits_test.pef", .{});
+    try file.writePositionalAll(runtime.io(), &buf, 0);
+    file.close(runtime.io());
+    const full_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "packbits_test.pef");
+    defer std.testing.allocator.free(full_path);
+    var source = FileSource.open(full_path) catch return error.SkipZigTest;
+    defer source.close();
+
+    const result = validatePefDeepImpl(std.testing.allocator, &source);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.error_message == null);
+}
+
+test "PEF PackBits strip decoding to LESS than the packed-12 extent is truncation" {
+    // Detection preserved: replicate run of only 6 bytes (0xFB, 0xAB) decodes
+    // to half the required extent -> Truncated, invalid.
+    const strip = [_]u8{ 0xFB, 0xAB };
+    var buf: [74 + strip.len]u8 = undefined;
+    testMakeMinimalPef(&buf, &strip);
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile(runtime.io(), "packbits_short.pef", .{});
+    try file.writePositionalAll(runtime.io(), &buf, 0);
+    file.close(runtime.io());
+    const full_path = try runtime.tmpRealpathAlloc(&tmp_dir, std.testing.allocator, "packbits_short.pef");
+    defer std.testing.allocator.free(full_path);
+    var source = FileSource.open(full_path) catch return error.SkipZigTest;
+    defer source.close();
+
+    const result = validatePefDeepImpl(std.testing.allocator, &source);
+    try testing.expect(!result.is_valid);
+}
 
 // ---- PNG ----
 

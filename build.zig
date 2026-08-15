@@ -270,6 +270,20 @@ pub fn build(b: *std.Build) void {
     };
     const tiffz_mod = tiffz_dep.module("tiffz");
 
+    // rawz: vendor-RAW semantics (PEF cutover per Einstein M3; more families
+    // as rawz lands them). Built as a source module so we can inject the
+    // "tiffz-parser" module from the SAME tiffz_dep instance as the full
+    // validator above — Zig 0.16 one-file-one-module rule; accepting rawz's
+    // named module would drag in a second tiffz instance. Recipe from
+    // tiffz's 2026-08-05 parser-integration note.
+    const rawz_dep = b.dependency("rawz", .{});
+    const rawz_mod = b.createModule(.{
+        .root_source_file = rawz_dep.path("src/lib.zig"),
+        .target = target,
+        .optimize = deps_optimize,
+    });
+    rawz_mod.addImport("tiffz", tiffz_dep.module("tiffz-parser"));
+
     // zlib for deflate compression/decompression (zlib license, allyourcodebase/zlib)
     const zlib_dep = b.dependency("zlib", .{
         .target = target,
@@ -421,6 +435,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "mini_blar", .module = mini_blar_mod }, // BLIP archive reader/verifier
             // jpegz reached via tiffz re-export (single instance) — see #32.
             .{ .name = "tiffz", .module = tiffz_mod }, // TIFF family validator (MIT, pmarreck/tiffz)
+            .{ .name = "rawz", .module = rawz_mod }, // vendor-RAW semantics (PEF et al., pmarreck/rawz)
         },
     });
 

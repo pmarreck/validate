@@ -134,6 +134,15 @@
             .url = "git+https://github.com/pmarreck/tiffz#388dee457c73f462ea685dc7dd90037623951329",
             .hash = "tiffz-0.1.0-qutJASXfdgGeS2uEdgwXE8BPEniq6jsbJcJbV1lgOofW",
         },
+        // rawz: proprietary camera-RAW vendor semantics (PEF private Huffman,
+        // packed-12, vendor classifiers). Consumed as a source module with
+        // OUR tiffz_dep's "tiffz-parser" injected (one-instance rule — see
+        // rawz's docs/validate_integration.md); rawz's own tiffz pin is
+        // bypassed at module level and only fetched in the FOD.
+        .rawz = .{
+            .url = "https://github.com/pmarreck/rawz/archive/2d030cf71075f5e126e07eaa2ad0c1377798b946.tar.gz",
+            .hash = "rawz-0.1.0-sAg3Opc2AQByM2uPDUcILtbUC0hqym4oFQnXet4xu8CJ",
+        },
         .wavpack_src = .{
             .url = "https://github.com/dbry/WavPack/archive/refs/tags/5.9.0.tar.gz",
             .hash = "N-V-__8AAAZvRACqqks-KAMLJ7bhK0Ei0r-c4ox4dym2esGj",
