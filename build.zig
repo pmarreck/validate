@@ -431,6 +431,14 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // v1 production-closure hard-gate: v1_closure.zig comptime-scans the
+    // REAL manifest for forbidden dependency declarations. The zon is mapped
+    // in as an embeddable module so the gate reads the actual file, not a
+    // copy that could drift.
+    core_mod.addAnonymousImport("build_manifest", .{
+        .root_source_file = b.path("build.zig.zon"),
+    });
+
     // Add PCRE2 include path (from Zig-built dependency)
     core_mod.addIncludePath(pcre2_lib.getEmittedIncludeTree());
 

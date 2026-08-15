@@ -13,6 +13,13 @@
 //! C ABI surface and tests that enforce behavior at the core level.
 
 const std = @import("std");
+
+// v1 production-closure hard-gate: analyzed in EVERY build of the core (not
+// just tests), so a forbidden dependency in build.zig.zon is a compile error
+// everywhere. See v1_closure.zig (a blessed-hash control file).
+comptime {
+    _ = @import("v1_closure.zig");
+}
 const builtin = @import("builtin");
 
 // Re-export submodules
@@ -388,6 +395,8 @@ test {
     _ = @import("creative_validators.zig");
     // Error message templates
     _ = @import("error_messages.zig");
+    // v1 production-closure hard-gate (control file)
+    _ = @import("v1_closure.zig");
     // Shared codec utilities (CRC, RBSP, LEB128, etc.)
     _ = @import("codec_utils.zig");
     // Statistical corruption heuristics for raw PCM audio (mono s16 in Phase 1)

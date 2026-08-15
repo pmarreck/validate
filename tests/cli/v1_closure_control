@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# MFIC control-file check: src/core/v1_closure.zig (the v1 production-closure
+# hard-gate's forbidden list) must match its blessing in blessed_hashes.txt.
+# ANY edit to the gate without a deliberate re-blessing fails CI, so changes
+# to the forbidden set are always a conspicuous two-file diff for Peter's
+# review. See the control-files section of the canonical brief.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+CONTROL="$ROOT/src/core/v1_closure.zig"
+BLESSING="$ROOT/blessed_hashes.txt"
+
+fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+
+[ -f "$CONTROL" ] || fail "control file missing: $CONTROL (the hard-gate was deleted?)"
+[ -f "$BLESSING" ] || fail "blessing file missing: $BLESSING"
+
+actual="$(sha256sum "$CONTROL" | cut -d' ' -f1)"
+blessed="$(grep ' src/core/v1_closure.zig$' "$BLESSING" | cut -d' ' -f1)"
+
+[ -n "$blessed" ] || fail "no blessing recorded for src/core/v1_closure.zig in blessed_hashes.txt"
+
+if [ "$actual" != "$blessed" ]; then
+	fail "v1_closure.zig hash $actual != blessed $blessed — if this change is deliberate, update blessed_hashes.txt in the SAME commit (two-file diff for human review)"
+fi
+
+echo "PASS: v1_closure.zig matches its blessing"
+exit 0
