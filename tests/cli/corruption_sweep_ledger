@@ -75,15 +75,34 @@ chmod +x "$experiment"
 
 run_id="2026-07-18T201500Z-test-run"
 
-# A default source-commit claim is only honest for a clean tracked tree. This
-# checkout is intentionally dirty while this regression runs; without the
-# test-only provenance override below, the sweep must refuse to publish it.
+# A default source-commit claim is only honest for a clean tracked tree.
+# HERMETIC provenance controls (2026-08-15): the old form used the REAL
+# checkout's dirtiness as an implicit fixture — it failed whenever the tree
+# happened to be clean and flipped under mid-suite index changes (the
+# root-caused "ledger flake"). The sweep derives PROJECT_DIR from its own
+# path, so a scratch git repo holding a copy of the script gives the guard a
+# tree whose state THIS test controls. Classifier over both sides: a dirty
+# scratch repo must REFUSE; a clean one must claim ITS OWN HEAD.
+make_scratch_repo() {
+	local dir="$1"
+	mkdir -p "$dir/scripts"
+	cp "$PROJECT_DIR/scripts/corruption-sweep" "$dir/scripts/"
+	printf 'tracked\n' > "$dir/marker.txt"
+	git -C "$dir" init -q
+	git -C "$dir" -c user.email=ledger@test -c user.name=ledger-test add -A
+	git -C "$dir" -c user.email=ledger@test -c user.name=ledger-test commit -qm "scratch"
+}
+
+scratch_dirty="$work/scratch-dirty"
+make_scratch_repo "$scratch_dirty"
+printf 'dirt\n' >> "$scratch_dirty/marker.txt" # tracked modification -> dirty
+
 VALIDATE_GROUND_TRUTH_DIR="$corpus" \
 	VALIDATE_COVERAGE_EVIDENCE_DIR="$evidence" \
 	VALIDATE_CORRUPTION_EXPERIMENT="$experiment" \
 	VALIDATE_SIGNED_BINARY="$binary" \
 	REAL_DD="$real_dd" PATH="$shim_bin:$PATH" \
-	"$PROJECT_DIR/scripts/corruption-sweep" --count 2 --seed 7 --run-id "dirty-source-must-refuse" >"$work/dirty-out" 2>"$work/dirty-err"
+	"$scratch_dirty/scripts/corruption-sweep" --count 2 --seed 7 --run-id "dirty-source-must-refuse" >"$work/dirty-out" 2>"$work/dirty-err"
 dirty_rc=$?
 if [ "$dirty_rc" -eq 0 ]; then
 	echo "FAIL: sweep claimed HEAD provenance from a dirty tracked tree" >&2
@@ -91,6 +110,30 @@ if [ "$dirty_rc" -eq 0 ]; then
 fi
 if ! grep -Fq 'dirty tracked worktree' "$work/dirty-err"; then
 	echo "FAIL: dirty-source control did not reach the provenance guard: $(cat "$work/dirty-err")" >&2
+	exit 1
+fi
+
+# Clean side of the classifier: same scratch shape, clean tree -> the sweep
+# must SUCCEED and record that repo's own HEAD as source_commit.
+scratch_clean="$work/scratch-clean"
+make_scratch_repo "$scratch_clean"
+scratch_clean_head="$(git -C "$scratch_clean" rev-parse HEAD)"
+clean_evidence="$work/clean-evidence"
+
+VALIDATE_GROUND_TRUTH_DIR="$corpus" \
+	VALIDATE_COVERAGE_EVIDENCE_DIR="$clean_evidence" \
+	VALIDATE_CORRUPTION_EXPERIMENT="$experiment" \
+	VALIDATE_SIGNED_BINARY="$binary" \
+	VALIDATE_TARGET="x86_64-linux" \
+	VALIDATE_HOST="test-host" \
+	REAL_DD="$real_dd" PATH="$shim_bin:$PATH" \
+	"$scratch_clean/scripts/corruption-sweep" --count 2 --seed 7 --run-id "clean-source-claims-own-head" >"$work/clean-out" 2>"$work/clean-err"
+if [ $? -ne 0 ]; then
+	echo "FAIL: sweep refused a clean scratch tree: $(cat "$work/clean-err")" >&2
+	exit 1
+fi
+if ! awk -F '\t' -v head="$scratch_clean_head" 'NR > 1 && $15 == head { found = 1 } END { exit(found ? 0 : 1) }' "$clean_evidence/runs.tsv"; then
+	echo "FAIL: clean scratch sweep did not record its own HEAD as source_commit" >&2
 	exit 1
 fi
 
