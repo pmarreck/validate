@@ -83,7 +83,24 @@ at the bottom. Older completed sections were rolled up — full history lives in
       verification note. libjpeg-turbo removal (old task D) + closure proof
       (E) + hard-gate (F) fold into #15's hard-gate work.
 
-- [ ] **v1 codec production-closure cutover (Peter, 2026-08-05):** repin
+- [x] **#15 RAW cutover + hard-gate COMPLETE (2026-08-15, pushed through
+      `94f630e9d`):** rawz `2d030cf7` integrated (one-instance tiffz-parser
+      injection); PEF cut over TDD (PackBits-decode-before-extent-check fixed
+      a real false-positive class, witnessed red `b31d2bbf4`); LibRaw removed
+      from every build with measured per-family delta — zero false rejects,
+      one honest CR2 full→structural interim (tiffz false-Malformed escalated
+      with exiftool oracle evidence, regression-pinned) — `90a4dd7f7`; comptime
+      manifest hard-gate + blessed-hash control file + closure audit
+      (`94f630e9d`, witnessed red via present-pattern probe; two bring-up
+      lessons recorded: eval-branch quota, flake untracked-file invisibility).
+      Task #10 (RAW analysis) closed as absorbed by rawz ownership + the
+      RAW_COVERAGE_AND_NOMENCLATURE doc. Remaining RAW work lives with rawz
+      (per-family milestones) and the capability matrix.
+      NOTE: local bare `zig build` (Debug, devcache incremental) SEGVs on this
+      tree while all nix builds pass — separate investigation, likely stale
+      incremental cache or Debug-mode compiler bug; nix is the gate authority.
+
+- [ ] (superseded — completed above as #15) **v1 codec production-closure cutover (Peter, 2026-08-05):** repin
       jpegz/tiffz/rawz and remove the non-Peter-owned `openjpeg`,
       `libjpeg-turbo`, and `libraw` runtime/build paths so the shipped closure
       is first-party only (Einstein item 6). Ordered, green-gated increments —
