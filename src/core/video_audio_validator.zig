@@ -1890,3 +1890,23 @@ test "detectMkvAudioCodec recognizes MP3" {
     const codec = detectMkvAudioCodec("A_MPEG/L3");
     try std.testing.expectEqual(AudioCodec.mp3, codec);
 }
+
+test "M4A AAC: ffmpeg 7.1/twoloop/768k first access unit parses (deep-leaf Huffman regression)" {
+    // Deterministic real-encoder fixture: ffmpeg native AAC, 7.1 layout,
+    // default twoloop coder, 768 kbps, 0.25 s white noise. Its FIRST access
+    // unit encodes large-magnitude spectral tuples whose cb9/cb10 codewords
+    // hit hand-built Huffman tree leaves that drifted from ISO 14496-3 —
+    // producing "1 of N AAC access units could not be parsed" on files
+    // ffmpeg itself decodes cleanly (rc=0). Same failure class as Peter's
+    // Watchmen/Furiosa MKV featurettes ("1 of 50", "1 of 56").
+    const allocator = std.testing.allocator;
+    const m4a = @embedFile("fixtures/aac_ffmpeg_71_first_au.m4a");
+    var src = FileSource.fromBuffer(m4a);
+    defer src.close();
+    const result = validateMp4Audio(allocator, &src);
+    if (result.error_message) |msg| {
+        std.debug.print("unexpected M4A audio error: {s}\n", .{msg});
+    }
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.frames_decoded > 0);
+}

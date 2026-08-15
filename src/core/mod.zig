@@ -423,6 +423,7 @@ test {
     _ = @import("ccitt_fax_decoder.zig");
     _ = @import("webp_validator.zig");
     _ = @import("video_validator.zig");
+    _ = @import("video_audio_validator.zig");
     _ = @import("prores_validator.zig");
     _ = @import("ebml_parser.zig");
     _ = @import("ac3_validator.zig");

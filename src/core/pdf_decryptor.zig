@@ -81,11 +81,26 @@ pub const DecryptResult = struct {
     }
 };
 
-/// Parse encryption parameters from PDF data
+/// Parse encryption parameters from PDF data.
+/// Anchor recovery for the bank-statement false-positive class: the FIRST
+/// "/Encrypt" byte match may be the encryption dictionary's own
+/// "/Type /Encrypt" key (some generators emit that object at the head of the
+/// file, before any trailer) or a chance match inside stream data. Scan every
+/// occurrence until one parses as a trailer-style "/Encrypt N G R" indirect
+/// reference whose target object yields a complete encryption dictionary.
 pub fn parseEncryptionParams(data: []const u8) ?EncryptionParams {
-    // Find /Encrypt reference
-    const encrypt_idx = std.mem.indexOf(u8, data, "/Encrypt") orelse return null;
+    var search_from: usize = 0;
+    while (std.mem.indexOfPos(u8, data, search_from, "/Encrypt")) |encrypt_idx| {
+        search_from = encrypt_idx + 8;
+        if (parseEncryptionParamsAtRef(data, encrypt_idx)) |params| return params;
+    }
+    return null;
+}
 
+/// Parse one "/Encrypt" candidate as an "N G R" indirect reference and, on
+/// success, the referenced encryption dictionary. Null means this candidate
+/// is not a usable trailer /Encrypt reference; the caller keeps scanning.
+fn parseEncryptionParamsAtRef(data: []const u8, encrypt_idx: usize) ?EncryptionParams {
     // Parse the object reference: /Encrypt N G R
     var i = encrypt_idx + 8;
     while (i < data.len and (data[i] == ' ' or data[i] == '\n' or data[i] == '\r')) : (i += 1) {}
@@ -104,7 +119,13 @@ pub fn parseEncryptionParams(data: []const u8) ?EncryptionParams {
     var pattern_buf: [32]u8 = undefined;
     const pattern = std.fmt.bufPrint(&pattern_buf, "{d} {d} obj", .{ obj_num.value, gen_num.value }) catch return null;
 
-    const obj_idx = std.mem.indexOf(u8, data, pattern) orelse return null;
+    // Find the target object. Guard against binding inside a longer object
+    // number: "4 0 obj" must not match the tail of "14 0 obj".
+    var obj_search: usize = 0;
+    const obj_idx = while (std.mem.indexOfPos(u8, data, obj_search, pattern)) |idx| {
+        obj_search = idx + 1;
+        if (idx == 0 or !(data[idx - 1] >= '0' and data[idx - 1] <= '9')) break idx;
+    } else return null;
     const obj_end = std.mem.indexOfPos(u8, data, obj_idx, "endobj") orelse return null;
     const enc_dict = data[obj_idx..obj_end];
 
@@ -1144,4 +1165,120 @@ test "parseEncryptionParams: V4/AES-128 uses top-level /Length 128, not /CF subd
     try std.testing.expect(params.use_aes);
     // Pre-fix: 5 (40-bit). Correct: 128 bits / 8 = 16 bytes.
     try std.testing.expectEqual(@as(u8, 16), params.key_length);
+}
+
+test "parseEncryptionParams: encryption dict object precedes trailer /Encrypt ref (bank-statement layout)" {
+    // Real-world false-positive class (12/12 bank statements, one generator):
+    // the /Encrypt dictionary is emitted as object 4 at the HEAD of the file
+    // and contains "/Type /Encrypt"; the only "/Encrypt N G R" indirect
+    // reference lives in the trailer at EOF. Anchoring on the FIRST "/Encrypt"
+    // byte match finds the dict's own /Type value, fails the "N G R" parse,
+    // and must NOT bail — it must keep scanning to the trailer reference.
+    const pdf =
+        "%PDF-1.7\n" ++
+        "4 0 obj\n<<\n/V 1\n" ++
+        "/U <00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff>\n" ++
+        "/Filter /Standard\n/Type /Encrypt\n/Length 40\n/R 2\n" ++
+        "/O <ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100>\n" ++
+        "/P -12\n>>\nendobj\n" ++
+        "1 0 obj\n<< /Type /Catalog >>\nendobj\n" ++
+        "trailer\n<< /Size 5 /Root 1 0 R /Encrypt 4 0 R /ID [<0123456789abcdef0123456789abcdef> <0123456789abcdef0123456789abcdef>] >>\n" ++
+        "startxref\n0\n%%EOF\n";
+    const params = parseEncryptionParams(pdf) orelse return error.EncryptDictNotFound;
+    try std.testing.expectEqual(@as(u8, 1), params.version);
+    try std.testing.expectEqual(@as(u8, 2), params.revision);
+    try std.testing.expectEqual(@as(u8, 5), params.key_length);
+    try std.testing.expectEqual(@as(i32, -12), params.permissions);
+    try std.testing.expect(!params.use_aes);
+}
+
+test "parseEncryptionParams: encrypt object lookup must not bind inside a longer object number" {
+    // "14 0 obj" precedes "4 0 obj"; a substring search for "4 0 obj" binds
+    // to the tail of "14 0 obj" and parses the wrong dictionary.
+    const pdf =
+        "%PDF-1.7\n" ++
+        "14 0 obj\n<< /Type /Catalog >>\nendobj\n" ++
+        "4 0 obj\n<< /V 1 /R 2 /Length 40 /Filter /Standard\n" ++
+        "/U <00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff>\n" ++
+        "/O <ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100>\n" ++
+        "/P -44 >>\nendobj\n" ++
+        "trailer\n<< /Size 15 /Root 14 0 R /Encrypt 4 0 R /ID [<0123456789abcdef0123456789abcdef> <0123456789abcdef0123456789abcdef>] >>\n" ++
+        "startxref\n0\n%%EOF\n";
+    const params = parseEncryptionParams(pdf) orelse return error.EncryptDictNotFound;
+    try std.testing.expectEqual(@as(i32, -44), params.permissions);
+    try std.testing.expectEqual(@as(u8, 2), params.revision);
+}
+
+test "validatePdfImages: RC4-40 bank-statement-layout PDF validates its encrypted FlateDecode image" {
+    // End-to-end reproduction of the bank-statement false positive:
+    // an R2/V1 40-bit-RC4 PDF whose /Encrypt dict sits at the head of the
+    // file. Before the anchor fix, parseEncryptionParams returned null, the
+    // image validator treated the file as UNENCRYPTED, fed raw RC4 bytes to
+    // inflate, and reported "FlateDecode decompression failed" on a file
+    // every real reader renders (ghostscript oracle: rc=0, all pages).
+    const allocator = std.testing.allocator;
+    const pdf_image_validator = @import("pdf_image_validator.zig");
+    const zlib = @import("zlib.zig");
+
+    // Forge self-consistent R2 credentials: O and ID are arbitrary; the file
+    // key derives from them; U := RC4(key, PDF_PADDING) per Algorithm 4.
+    var params = EncryptionParams{
+        .version = 1,
+        .revision = 2,
+        .key_length = 5,
+        .permissions = -12,
+        .owner_key = [_]u8{0xAB} ** 32,
+        .user_key = undefined,
+        .document_id = [_]u8{0xCD} ** 16,
+        .use_aes = false,
+    };
+    const computed = computeEncryptionKey(params, "");
+    var rc4_state: [256]u8 = undefined;
+    rc4Init(&rc4_state, computed.slice());
+    var u_val: [32]u8 = undefined;
+    rc4Crypt(&rc4_state, &PDF_PADDING, &u_val);
+    params.user_key = u_val;
+    try std.testing.expect(verifyUserPassword(params, computed.slice()));
+
+    // Image payload: deflate 64 gray pixels, then encrypt with the
+    // per-object key for obj 5 gen 0 (RC4 is symmetric; decryptStream
+    // doubles as the encryptor).
+    const pixels = [_]u8{0x80} ** 64;
+    const compressed = try zlib.deflateZlib(allocator, &pixels);
+    defer allocator.free(compressed);
+    const encrypted = try decryptStream(allocator, compressed, computed.slice(), 5, 0, false);
+    defer allocator.free(encrypted);
+
+    const u_hex = std.fmt.bytesToHex(u_val, .lower);
+    const o_hex = std.fmt.bytesToHex(params.owner_key, .lower);
+    const id_hex = std.fmt.bytesToHex(params.document_id, .lower);
+
+    var pdf: std.ArrayListUnmanaged(u8) = .empty;
+    defer pdf.deinit(allocator);
+    try pdf.appendSlice(allocator, "%PDF-1.7\n4 0 obj\n<<\n/V 1\n/U <");
+    try pdf.appendSlice(allocator, &u_hex);
+    try pdf.appendSlice(allocator, ">\n/Filter /Standard\n/Type /Encrypt\n/Length 40\n/R 2\n/O <");
+    try pdf.appendSlice(allocator, &o_hex);
+    try pdf.appendSlice(allocator, ">\n/P -12\n>>\nendobj\n");
+    try pdf.appendSlice(allocator, "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    try pdf.print(
+        allocator,
+        "5 0 obj\n<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length {d} >>\nstream\n",
+        .{encrypted.len},
+    );
+    try pdf.appendSlice(allocator, encrypted);
+    try pdf.appendSlice(allocator, "\nendstream\nendobj\n");
+    try pdf.appendSlice(allocator, "trailer\n<< /Size 6 /Root 1 0 R /Encrypt 4 0 R /ID [<");
+    try pdf.appendSlice(allocator, &id_hex);
+    try pdf.appendSlice(allocator, "> <");
+    try pdf.appendSlice(allocator, &id_hex);
+    try pdf.appendSlice(allocator, ">] >>\nstartxref\n0\n%%EOF\n");
+
+    var result = try pdf_image_validator.validatePdfImages(allocator, pdf.items);
+    defer result.deinit(allocator);
+    try std.testing.expect(result.is_encrypted);
+    try std.testing.expect(result.decryption_succeeded);
+    try std.testing.expectEqual(@as(u32, 1), result.total_images);
+    try std.testing.expectEqual(@as(u32, 0), result.failed_images);
+    try std.testing.expectEqual(@as(u32, 1), result.validated_images);
 }
