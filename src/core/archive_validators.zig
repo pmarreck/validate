@@ -1592,6 +1592,24 @@ pub fn readZip64Extra(
     };
 }
 
+/// Per-side structural sanity for a ZIP extra field (APPNOTE 4.5.1): walks
+/// the subfield chain (u16 header ID + u16 data size) and verifies no
+/// declared subfield overruns the field's declared length. Central and local
+/// extras are independent chains, so each side is checked on its own —
+/// cross-side length equality is deliberately NOT required (OOXML/EPUB/ZIP64
+/// writers legitimately place different subfields in each). Trailing bytes
+/// too short to form a subfield header (< 4) are tolerated as padding.
+fn zipExtraFieldStructureOk(extra: []const u8) bool {
+    var pos: usize = 0;
+    while (pos + 4 <= extra.len) {
+        const data_size = readLe(u16, extra[pos + 2 .. pos + 4]);
+        pos += 4;
+        if (pos + data_size > extra.len) return false;
+        pos += data_size;
+    }
+    return true;
+}
+
 pub fn validateZipDeepWithCentralDirectory(
     allocator: Allocator,
     file: *FileSource,
@@ -1608,7 +1626,8 @@ pub fn validateZipDeepWithCentralDirectory(
     }
 
     var entry_count: u64 = 0;
-    var extra_len_mismatch = false;
+    var extra_malformed_central = false;
+    var extra_malformed_local = false;
     var extra_content_mismatch = false;
     var encrypted_entry_count: u64 = 0;
     var cdir_pos = central.offset;
@@ -1616,10 +1635,6 @@ pub fn validateZipDeepWithCentralDirectory(
 
     while (entry_count < central.entries and entry_count < max_entries) : (entry_count += 1) {
         file.seekTo(cdir_pos) catch return ValidationResult.invalidCodeWithDepth(format, .failed_to_seek, "to central directory", .full);
-        // Phase 4: per-entry capture of the CD extra bytes (cap 256) so the
-        // local-header extra can be byte-compared below. Reset each iteration.
-        var cd_extra_cap: [256]u8 = undefined;
-        var cd_extra_capn: usize = 0;
 
         var header: [46]u8 = undefined;
         const header_read = file.readAll(&header) catch {
@@ -1687,9 +1702,6 @@ pub fn validateZipDeepWithCentralDirectory(
             if (extra_read != extra_len_usize) {
                 return ValidationResult.invalidCodeWithDepth(format, .truncated, "central directory extra", .full);
             }
-            const cap_n = @min(extra_len_usize, cd_extra_cap.len);
-            @memcpy(cd_extra_cap[0..cap_n], extra_buf[0..cap_n]);
-            cd_extra_capn = cap_n;
         }
 
         if (comment_len_usize > 0) {
@@ -1768,34 +1780,6 @@ pub fn validateZipDeepWithCentralDirectory(
             return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP general-purpose-flag mismatch (central vs local)", .full);
         }
 
-        // LFH vs CD extra-field length: OOXML/EPUB legitimately differ;
-        // record a non-fatal WARN (CLI --strict promotes to FAIL).
-        if (local_extra_len != extra_len) extra_len_mismatch = true;
-
-        // CRC/sizes may be zero in local header if data descriptor flag (bit 3) is set
-        const has_data_descriptor = (local_flags & 0x0008) != 0;
-        if (!has_data_descriptor) {
-            const stored_crc_u32 = @as(u32, @intCast(stored_crc & 0xFFFFFFFF));
-            // Fail on any CRC mismatch. The only legal both-zero case is a
-            // genuinely empty entry; otherwise a zeroed field is tamper. (Was a
-            // short-circuit that skipped the check whenever either side was 0.)
-            if (local_crc != stored_crc_u32 and !(local_crc == 0 and stored_crc_u32 == 0 and compressed_size == 0)) {
-                return ValidationResult.invalidCodeWithDepth(format, .checksum_mismatch, "ZIP CRC-32 mismatch (central vs local header)", .full);
-            }
-            if (local_compressed_size != 0 and compressed_size != 0 and
-                local_compressed_size != 0xFFFFFFFF and
-                local_compressed_size != @as(u32, @intCast(@min(compressed_size, std.math.maxInt(u32)))))
-            {
-                return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP compressed size mismatch (central vs local)", .full);
-            }
-            if (local_uncompressed_size != 0 and uncompressed_size != 0 and
-                local_uncompressed_size != 0xFFFFFFFF and
-                local_uncompressed_size != @as(u32, @intCast(@min(uncompressed_size, std.math.maxInt(u32)))))
-            {
-                return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP uncompressed size mismatch (central vs local)", .full);
-            }
-        }
-
         // Cross-validate filename length
         if (local_filename_len != filename_len) {
             return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP filename length mismatch (central vs local)", .full);
@@ -1830,26 +1814,84 @@ pub fn validateZipDeepWithCentralDirectory(
                 return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "local filename", .full);
             };
         }
-        // Phase 4: when LFH and CD extra lengths match (length mismatch is
-        // Phase 3), byte-compare the extras; a content difference is a WARN.
-        if (local_extra_len == extra_len and local_extra_len > 0 and
-            local_extra_len <= cd_extra_cap.len and cd_extra_capn == local_extra_len)
-        {
-            var lfh_extra_cap: [256]u8 = undefined;
-            const lfh_n = file.readAll(lfh_extra_cap[0..local_extra_len]) catch {
+
+        // Read the LFH extra field in full BEFORE any size comparison: a
+        // ZIP64 LFH stores 0xFFFFFFFF sentinels whose real values live in its
+        // own 0x0001 extra (APPNOTE 4.5.3), and the per-side structural
+        // checks below examine the raw bytes. Reading also leaves the file
+        // position at the entry data, which the CRC pass depends on.
+        var lfh_extra_buf: []u8 = &[_]u8{};
+        defer if (lfh_extra_buf.len > 0) allocator.free(lfh_extra_buf);
+        if (local_extra_len > 0) {
+            lfh_extra_buf = allocator.alloc(u8, local_extra_len) catch {
+                return ValidationResult.invalidCodeWithDepth(format, .out_of_memory, "reading local extra", .full);
+            };
+            const lfh_extra_read = file.readAll(lfh_extra_buf) catch {
                 return ValidationResult.invalidCodeWithDepth(format, .failed_to_read, "local extra", .full);
             };
-            if (lfh_n != local_extra_len) {
+            if (lfh_extra_read != local_extra_len) {
                 return ValidationResult.invalidCodeWithDepth(format, .truncated, "local extra", .full);
             }
-            if (!std.mem.eql(u8, lfh_extra_cap[0..local_extra_len], cd_extra_cap[0..local_extra_len])) {
-                extra_content_mismatch = true;
+        }
+
+        // Resolve ZIP64 sentinels on the LOCAL side from the LFH's own 0x0001
+        // extra. Central-side resolution happened above (entry.*); each record
+        // uses ZIP64 independently (APPNOTE 4.5.3), so BOTH sides must be
+        // resolved before any cross-comparison. The LFH extra never carries an
+        // offset field, hence the 0 (non-sentinel) third argument.
+        var local_compressed: u64 = local_compressed_size;
+        var local_uncompressed: u64 = local_uncompressed_size;
+        if (local_compressed_size == 0xFFFFFFFF or local_uncompressed_size == 0xFFFFFFFF) {
+            if (readZip64Extra(lfh_extra_buf, local_compressed_size, local_uncompressed_size, 0)) |zip64| {
+                local_compressed = zip64.compressed_size;
+                local_uncompressed = zip64.uncompressed_size;
             }
-        } else {
-            const skip_local_extra: i64 = @intCast(local_extra_len);
-            file.seekBy(skip_local_extra) catch {
-                return ValidationResult.invalidCodeWithDepth(format, .failed_to_skip, "local extra", .full);
-            };
+        }
+
+        // CRC/sizes may be zero in local header if data descriptor flag (bit 3) is set
+        const has_data_descriptor = (local_flags & 0x0008) != 0;
+        if (!has_data_descriptor) {
+            const stored_crc_u32 = @as(u32, @intCast(stored_crc & 0xFFFFFFFF));
+            // Fail on any CRC mismatch. The only legal both-zero case is a
+            // genuinely empty entry; otherwise a zeroed field is tamper. (Was a
+            // short-circuit that skipped the check whenever either side was 0.)
+            if (local_crc != stored_crc_u32 and !(local_crc == 0 and stored_crc_u32 == 0 and entry.compressed_size == 0)) {
+                return ValidationResult.invalidCodeWithDepth(format, .checksum_mismatch, "ZIP CRC-32 mismatch (central vs local header)", .full);
+            }
+            // Compare ZIP64-RESOLVED u64 sizes on both sides. Comparing raw
+            // 32-bit fields manufactured false positives on >2GiB archives
+            // whose writers sentinel the CD fields (0xFFFFFFFF + 0x0001
+            // extra) while the LFH keeps real 32-bit values — `unzip -tq`
+            // accepts those. A side still at the 0xFFFFFFFF sentinel (extra
+            // missing or unparseable) or at zero is skipped, not compared.
+            if (local_compressed != 0 and entry.compressed_size != 0 and
+                local_compressed != 0xFFFFFFFF and entry.compressed_size != 0xFFFFFFFF and
+                local_compressed != entry.compressed_size)
+            {
+                return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP compressed size mismatch (central vs local)", .full);
+            }
+            if (local_uncompressed != 0 and entry.uncompressed_size != 0 and
+                local_uncompressed != 0xFFFFFFFF and entry.uncompressed_size != 0xFFFFFFFF and
+                local_uncompressed != entry.uncompressed_size)
+            {
+                return ValidationResult.invalidCodeWithDepth(format, .invalid_value, "ZIP uncompressed size mismatch (central vs local)", .full);
+            }
+        }
+
+        // Per-side structural sanity of the extra fields (APPNOTE 4.5.1): the
+        // CD and LFH extras are INDEPENDENT subfield chains — different IDs
+        // legitimately appear in each (OOXML/EPUB timestamps, ZIP64), so
+        // cross-side length equality is deliberately NOT compared. A subfield
+        // overrunning its side's declared length is a non-fatal WARN (7-Zip
+        // accepts such archives, unzip rejects them; CLI --strict promotes).
+        if (!zipExtraFieldStructureOk(extra_buf)) extra_malformed_central = true;
+        if (!zipExtraFieldStructureOk(lfh_extra_buf)) extra_malformed_local = true;
+        // Equal-length extras that differ byte-for-byte remain a WARN: no
+        // known writer produces that shape, so it stays a tamper signal.
+        if (local_extra_len == extra_len and local_extra_len > 0 and
+            !std.mem.eql(u8, lfh_extra_buf, extra_buf))
+        {
+            extra_content_mismatch = true;
         }
 
         if (entry_telemetry.encrypted) {
@@ -1942,8 +1984,11 @@ pub fn validateZipDeepWithCentralDirectory(
         };
     }
 
-    if (extra_len_mismatch) {
-        return ValidationResult.okWithDepthAndWarning(format, .full, "ZIP extra-field length mismatch (central vs local)");
+    if (extra_malformed_central) {
+        return ValidationResult.okWithDepthAndWarning(format, .full, "ZIP extra field malformed (central directory)");
+    }
+    if (extra_malformed_local) {
+        return ValidationResult.okWithDepthAndWarning(format, .full, "ZIP extra field malformed (local header)");
     }
     if (extra_content_mismatch) {
         return ValidationResult.okWithDepthAndWarning(format, .full, "ZIP extra-field content mismatch (central vs local)");
@@ -7092,17 +7137,20 @@ test "ZIP: LFH general-purpose-flag mismatch with central directory must fail" {
     if (result.error_code) |ec| try testing.expect(ec == .invalid_value);
 }
 
-test "ZIP: asymmetric LFH/CD extra-field length is WARN, not FAIL (OOXML-style)" {
+test "ZIP: asymmetric LFH/CD extra-field length is clean — no WARN, no FAIL" {
     // lfh_cd_extra_mismatch.zip is a fully valid archive from `zip` (no -X):
     // the local header carries a 28-byte UT+ux extra, the central directory a
-    // 24-byte UT-only extra. Office (OOXML) and EPUB produce the same legitimate
-    // divergence, so it must be a non-fatal WARN (CLI --strict promotes it to a
-    // FAIL), never an outright failure.
+    // 24-byte UT-only extra. APPNOTE 4.5.1 treats the two extras as
+    // independent subfield chains — length equality is NOT a spec
+    // requirement, and OOXML/EPUB/ZIP64 writers legitimately diverge (a
+    // >2GiB ZIP64 CD extra vs an empty LFH extra is the same shape). Both
+    // sides here are structurally sound, so no warning may be raised; only a
+    // side whose subfields overrun its declared length warrants a WARN.
     const zip = @embedFile("fixtures/zip_tamper/lfh_cd_extra_mismatch.zip");
     var src = FileSource.fromBuffer(zip);
     const result = validateZipDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
-    try testing.expect(result.warning_message != null);
+    try testing.expect(result.warning_message == null);
 }
 
 test "ZIP: LFH/CD extra-field content byte-flip is WARN, not FAIL" {
@@ -7140,4 +7188,231 @@ test "ZIP64: CD extra with sentinel offset must validate (no use-after-free)" {
     var src = FileSource.fromBuffer(zip);
     const result = validateZipDeep(testing.allocator, &src);
     try testing.expect(result.is_valid);
+}
+
+// ---------------------------------------------------------------------------
+// ZIP central-vs-local cross-validation under ZIP64 sentinels, streaming
+// (general-purpose bit 3), and extra-field independence (APPNOTE.TXT 4.4.4,
+// 4.5.1, 4.5.3). Single-entry archives are comptime-assembled by the helpers
+// below so each test states only the header fields it exercises.
+// ---------------------------------------------------------------------------
+
+/// Little-endian byte encoding for the comptime ZIP assembler below.
+fn tzLe(comptime T: type, comptime v: T) [@sizeOf(T)]u8 {
+    var b: [@sizeOf(T)]u8 = undefined;
+    std.mem.writeInt(T, &b, v, .little);
+    return b;
+}
+
+/// Comptime single-entry stored-method ZIP assembler: local file header
+/// (+optional PK\x07\x08 data descriptor), central directory record, EOCD.
+/// Tests place ZIP64 0xFFFFFFFF sentinels, 0x0001 extras, and bit-3 flags
+/// exactly per APPNOTE.TXT to model real-world writer shapes byte-for-byte.
+fn tzBuildZip(comptime opts: struct {
+    flags: u16 = 0,
+    lfh_crc: u32,
+    lfh_csize: u32,
+    lfh_usize: u32,
+    lfh_extra: []const u8 = "",
+    data: []const u8,
+    descriptor: bool = false,
+    cd_crc: u32,
+    cd_csize: u32,
+    cd_usize: u32,
+    cd_offset: u32 = 0,
+    cd_extra: []const u8 = "",
+}) []const u8 {
+    const name = "hello.txt";
+    const lfh = "PK\x03\x04" ++
+        tzLe(u16, 45) ++ // version needed to extract
+        tzLe(u16, opts.flags) ++
+        tzLe(u16, 0) ++ // compression method: stored
+        tzLe(u16, 0) ++ tzLe(u16, 0) ++ // mod time/date
+        tzLe(u32, opts.lfh_crc) ++
+        tzLe(u32, opts.lfh_csize) ++
+        tzLe(u32, opts.lfh_usize) ++
+        tzLe(u16, @intCast(name.len)) ++
+        tzLe(u16, @intCast(opts.lfh_extra.len)) ++
+        name ++ opts.lfh_extra;
+    const descriptor: []const u8 = if (opts.descriptor)
+        &("PK\x07\x08".* ++ tzLe(u32, opts.cd_crc) ++ tzLe(u32, opts.cd_csize) ++ tzLe(u32, opts.cd_usize))
+    else
+        "";
+    const cd = "PK\x01\x02" ++
+        tzLe(u16, 45) ++ // version made by
+        tzLe(u16, 45) ++ // version needed to extract
+        tzLe(u16, opts.flags) ++
+        tzLe(u16, 0) ++ // compression method: stored
+        tzLe(u16, 0) ++ tzLe(u16, 0) ++ // mod time/date
+        tzLe(u32, opts.cd_crc) ++
+        tzLe(u32, opts.cd_csize) ++
+        tzLe(u32, opts.cd_usize) ++
+        tzLe(u16, @intCast(name.len)) ++
+        tzLe(u16, @intCast(opts.cd_extra.len)) ++
+        tzLe(u16, 0) ++ // comment length
+        tzLe(u16, 0) ++ // disk number start
+        tzLe(u16, 0) ++ // internal attributes
+        tzLe(u32, 0) ++ // external attributes
+        tzLe(u32, opts.cd_offset) ++
+        name ++ opts.cd_extra;
+    const eocd = "PK\x05\x06" ++
+        tzLe(u16, 0) ++ tzLe(u16, 0) ++ // disk numbers
+        tzLe(u16, 1) ++ tzLe(u16, 1) ++ // entry counts
+        tzLe(u32, @intCast(cd.len)) ++
+        tzLe(u32, @intCast(lfh.len + opts.data.len + descriptor.len)) ++
+        tzLe(u16, 0); // comment length
+    return lfh ++ opts.data ++ descriptor ++ cd ++ eocd;
+}
+
+/// CRC-32 of "Hello" (matches the hand-built fixtures earlier in this file).
+const TZ_HELLO_CRC: u32 = 0xF7D18982;
+
+test "ZIP64: CD sentinel sizes+offset with real 32-bit LFH values must validate (>2GiB writer shape)" {
+    // Real-world shape of >2GiB zips (e.g. the 2.2GB Cars.3 PSA rip): the
+    // writer sentinels compressed/uncompressed/offset in the CD (0xFFFFFFFF)
+    // with real values in a 24-byte 0x0001 ZIP64 extra, while the LFH keeps
+    // real 32-bit sizes and NO extra. APPNOTE 4.5.3 lets each record use
+    // ZIP64 independently. Comparing the raw CD sentinel against the real
+    // LFH size manufactured "ZIP compressed size mismatch (central vs
+    // local)"; the asymmetric extra lengths (28 vs 0) additionally raised a
+    // bogus WARN. `unzip -tq` reports no errors on such archives.
+    const zip = comptime tzBuildZip(.{
+        .lfh_crc = TZ_HELLO_CRC,
+        .lfh_csize = 5,
+        .lfh_usize = 5,
+        .data = "Hello",
+        .cd_crc = TZ_HELLO_CRC,
+        .cd_csize = 0xFFFFFFFF,
+        .cd_usize = 0xFFFFFFFF,
+        .cd_offset = 0xFFFFFFFF,
+        .cd_extra = &(tzLe(u16, 0x0001) ++ tzLe(u16, 24) ++
+            tzLe(u64, 5) ++ tzLe(u64, 5) ++ tzLe(u64, 0)),
+    });
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    if (!result.is_valid) {
+        std.debug.print("\nunexpected INVALID: {s}\n", .{result.error_message orelse "?"});
+    }
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message == null);
+    try testing.expectEqual(ValidationDepth.full, result.validation_depth);
+}
+
+test "ZIP streaming: bit-3 data descriptor with zeroed LFH sizes must validate" {
+    // APPNOTE 4.4.4: with general-purpose bit 3 set, LFH crc/sizes are
+    // legitimately ZERO and the real values follow the entry data in a
+    // PK\x07\x08 data descriptor; authoritative values live in the CD. A raw
+    // local-vs-central comparison must not manufacture a mismatch here.
+    const zip = comptime tzBuildZip(.{
+        .flags = 0x0008,
+        .lfh_crc = 0,
+        .lfh_csize = 0,
+        .lfh_usize = 0,
+        .data = "Hello",
+        .descriptor = true,
+        .cd_crc = TZ_HELLO_CRC,
+        .cd_csize = 5,
+        .cd_usize = 5,
+    });
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    if (!result.is_valid) {
+        std.debug.print("\nunexpected INVALID: {s}\n", .{result.error_message orelse "?"});
+    }
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message == null);
+}
+
+test "ZIP64: sentinel sizes with 0x0001 extras on BOTH sides must validate" {
+    // ZIP64 form is legal regardless of actual entry size (APPNOTE 4.5.3).
+    // The 0x0001 extra's field SET differs by side: the CD carries only the
+    // sentinel'd fields (here the size pair; offset stays real), the LFH
+    // always carries both sizes. Both sides must be resolved from their own
+    // extra before any cross-comparison.
+    const zip64_sizes = comptime tzLe(u16, 0x0001) ++ tzLe(u16, 16) ++
+        tzLe(u64, 5) ++ tzLe(u64, 5);
+    const zip = comptime tzBuildZip(.{
+        .lfh_crc = TZ_HELLO_CRC,
+        .lfh_csize = 0xFFFFFFFF,
+        .lfh_usize = 0xFFFFFFFF,
+        .lfh_extra = &zip64_sizes,
+        .data = "Hello",
+        .cd_crc = TZ_HELLO_CRC,
+        .cd_csize = 0xFFFFFFFF,
+        .cd_usize = 0xFFFFFFFF,
+        .cd_extra = &zip64_sizes,
+    });
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    if (!result.is_valid) {
+        std.debug.print("\nunexpected INVALID: {s}\n", .{result.error_message orelse "?"});
+    }
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message == null);
+}
+
+test "ZIP: genuine LFH/CD compressed-size divergence must stay FAIL" {
+    // Detection preserved: bit 3 clear, no ZIP64 sentinels, LFH claims 6
+    // bytes compressed while the CD says 5. This is real divergence and must
+    // remain INVALID with the exact pre-existing message.
+    const zip = comptime tzBuildZip(.{
+        .lfh_crc = TZ_HELLO_CRC,
+        .lfh_csize = 6,
+        .lfh_usize = 5,
+        .data = "Hello",
+        .cd_crc = TZ_HELLO_CRC,
+        .cd_csize = 5,
+        .cd_usize = 5,
+    });
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    try testing.expect(!result.is_valid);
+    if (result.error_code) |ec| try testing.expect(ec == .invalid_value);
+    try testing.expectEqualStrings("Invalid ZIP compressed size mismatch (central vs local)", result.error_message.?);
+}
+
+test "ZIP64: LFH size contradicting CD ZIP64 extra must stay FAIL" {
+    // The CD sentinel resolves to 5 via its 0x0001 extra; the LFH claims 6.
+    // Divergence must be caught against the RESOLVED value, not silently
+    // excused because the raw CD field is a sentinel.
+    const zip = comptime tzBuildZip(.{
+        .lfh_crc = TZ_HELLO_CRC,
+        .lfh_csize = 6,
+        .lfh_usize = 5,
+        .data = "Hello",
+        .cd_crc = TZ_HELLO_CRC,
+        .cd_csize = 0xFFFFFFFF,
+        .cd_usize = 0xFFFFFFFF,
+        .cd_offset = 0xFFFFFFFF,
+        .cd_extra = &(tzLe(u16, 0x0001) ++ tzLe(u16, 24) ++
+            tzLe(u64, 5) ++ tzLe(u64, 5) ++ tzLe(u64, 0)),
+    });
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    try testing.expect(!result.is_valid);
+    if (result.error_code) |ec| try testing.expect(ec == .invalid_value);
+}
+
+test "ZIP: extra-field subfield overrunning declared length is a structural WARN" {
+    // APPNOTE 4.5.1: an extra field is a chain of (id, size, data) subfields.
+    // A subfield size overrunning the field's declared length is structurally
+    // malformed (7-Zip accepts such files, unzip rejects them —
+    // docs/READER_AUDIT_20260715.md). Per-side structural sanity replaces the
+    // old cross-side length-equality WARN, which APPNOTE never required.
+    const zip = comptime tzBuildZip(.{
+        .lfh_crc = TZ_HELLO_CRC,
+        .lfh_csize = 5,
+        .lfh_usize = 5,
+        .data = "Hello",
+        .cd_crc = TZ_HELLO_CRC,
+        .cd_csize = 5,
+        .cd_usize = 5,
+        // id 0x5455 ("UT") declares 16 data bytes but only 2 remain.
+        .cd_extra = &(tzLe(u16, 0x5455) ++ tzLe(u16, 16) ++ [_]u8{ 0x41, 0x42 }),
+    });
+    var src = FileSource.fromBuffer(zip);
+    const result = validateZipDeep(testing.allocator, &src);
+    try testing.expect(result.is_valid);
+    try testing.expect(result.warning_message != null);
+    try testing.expect(std.mem.indexOf(u8, result.warning_message.?, "malformed") != null);
 }
