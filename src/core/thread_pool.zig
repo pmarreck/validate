@@ -51,6 +51,9 @@ pub const SchedulerDebugStats = struct {
         completion_queue_wait_events: u64,
         completion_queue_waiters: u64,
         completion_queue_high_water: u64,
+        work_queue_space_wait_ns: u64,
+        work_queue_space_wait_events: u64,
+        work_queue_space_waiters: u64,
     };
 
     worker_count: std.atomic.Value(u64) = .init(0),
@@ -67,6 +70,9 @@ pub const SchedulerDebugStats = struct {
     completion_queue_wait_events: std.atomic.Value(u64) = .init(0),
     completion_queue_waiters: std.atomic.Value(u64) = .init(0),
     completion_queue_high_water: std.atomic.Value(u64) = .init(0),
+    work_queue_space_wait_ns: std.atomic.Value(u64) = .init(0),
+    work_queue_space_wait_events: std.atomic.Value(u64) = .init(0),
+    work_queue_space_waiters: std.atomic.Value(u64) = .init(0),
     completion_queue_wait_observer: ?CompletionQueueWaitObserver = null,
 
     pub fn init() SchedulerDebugStats {
@@ -141,6 +147,16 @@ pub const SchedulerDebugStats = struct {
         _ = self.completion_queue_wait_events.fetchAdd(1, .seq_cst);
     }
 
+    fn beginWorkQueueSpaceWait(self: *SchedulerDebugStats) void {
+        _ = self.work_queue_space_waiters.fetchAdd(1, .seq_cst);
+    }
+
+    fn endWorkQueueSpaceWait(self: *SchedulerDebugStats, elapsed_ns: u64) void {
+        _ = self.work_queue_space_waiters.fetchSub(1, .seq_cst);
+        _ = self.work_queue_space_wait_ns.fetchAdd(elapsed_ns, .seq_cst);
+        _ = self.work_queue_space_wait_events.fetchAdd(1, .seq_cst);
+    }
+
     fn recordCompletionQueueDepth(self: *SchedulerDebugStats, depth: usize) void {
         const value: u64 = @intCast(depth);
         var prior = self.completion_queue_high_water.load(.monotonic);
@@ -169,6 +185,9 @@ pub const SchedulerDebugStats = struct {
             .completion_queue_wait_events = self.completion_queue_wait_events.load(.seq_cst),
             .completion_queue_waiters = self.completion_queue_waiters.load(.seq_cst),
             .completion_queue_high_water = self.completion_queue_high_water.load(.seq_cst),
+            .work_queue_space_wait_ns = self.work_queue_space_wait_ns.load(.seq_cst),
+            .work_queue_space_wait_events = self.work_queue_space_wait_events.load(.seq_cst),
+            .work_queue_space_waiters = self.work_queue_space_waiters.load(.seq_cst),
         };
     }
 };
@@ -244,6 +263,8 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         const WorkQueue = struct {
             mutex: std.Io.Mutex = .init,
             cond: std.Io.Condition = .init,
+            space_cond: std.Io.Condition = .init,
+            max_len: ?usize = null,
             buf: []TaskData = &.{},
             head: usize = 0, // index of next item to dequeue
             len: usize = 0, // number of items currently in the queue
@@ -260,9 +281,26 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                 }
             }
 
-            pub fn push(self: *WorkQueue, item: TaskData) !void {
+            /// Appends a task, honoring the optional queue bound: when
+            /// `max_len` is set and the queue is full, blocks until a worker
+            /// dequeues an item (or the queue closes). Submission-side memory
+            /// therefore stays O(max_len) no matter how many tasks a batch
+            /// feeds through. complexity: O(1) amortized
+            pub fn push(self: *WorkQueue, item: TaskData, scheduler_debug: ?*SchedulerDebugStats) !void {
                 self.mutex.lockUncancelable(runtime.io());
                 defer self.mutex.unlock(runtime.io());
+                while (!self.closed) {
+                    const cap = self.max_len orelse break;
+                    if (self.len < cap) break;
+                    if (scheduler_debug) |debug| {
+                        debug.beginWorkQueueSpaceWait();
+                        const wait_start_ns = runtime.nanoTimestamp();
+                        self.space_cond.waitUncancelable(runtime.io(), &self.mutex);
+                        debug.endWorkQueueSpaceWait(elapsedNanoseconds(wait_start_ns));
+                    } else {
+                        self.space_cond.waitUncancelable(runtime.io(), &self.mutex);
+                    }
+                }
                 if (self.len == self.buf.len) {
                     try self.growLocked();
                 }
@@ -307,6 +345,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                     const item = self.buf[self.head];
                     self.head = (self.head + 1) % self.buf.len;
                     self.len -= 1;
+                    self.space_cond.signal(runtime.io());
                     self.mutex.unlock(runtime.io());
                     return item;
                 }
@@ -317,6 +356,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
                 self.closed = true;
                 self.mutex.unlock(runtime.io());
                 self.cond.broadcast(runtime.io());
+                self.space_cond.broadcast(runtime.io());
             }
 
             /// Double buffer capacity (or allocate initial 16 slots).
@@ -547,7 +587,7 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
         /// Can be called from any thread, including worker threads (for sub-tasks).
         pub fn submit(self: *Self, task: TaskData) !void {
             _ = self.pending_count.fetchAdd(1, .seq_cst);
-            try self.work_queue.push(task);
+            try self.work_queue.push(task, self.scheduler_debug);
         }
 
         /// Submit multiple tasks at once.
@@ -555,6 +595,18 @@ pub fn ThreadPool(comptime TaskData: type, comptime ResultData: type) type {
             for (tasks) |task| {
                 try self.submit(task);
             }
+        }
+
+        /// Bound queued-but-undequeued tasks. At `capacity` queued items,
+        /// `submit` blocks until a worker frees a slot, keeping batch
+        /// bookkeeping O(capacity) instead of O(total submitted) — the fix
+        /// for upfront whole-batch submission holding O(N) task records.
+        /// Configure once between create and the first submit. Do not submit
+        /// from a worker of the same bounded pool (self-deadlock).
+        pub fn setQueueCapacity(self: *Self, capacity: usize) void {
+            self.work_queue.mutex.lockUncancelable(runtime.io());
+            defer self.work_queue.mutex.unlock(runtime.io());
+            self.work_queue.max_len = @max(@as(usize, 1), capacity);
         }
 
         /// Signal that no more tasks will be submitted.
@@ -939,7 +991,7 @@ test "WorkQueue FIFO order preserved with 10K items" {
 
     // Enqueue 10K items
     for (0..count) |i| {
-        try wq.push(@intCast(i));
+        try wq.push(@intCast(i), null);
     }
 
     // Dequeue and verify FIFO order
@@ -961,7 +1013,7 @@ test "WorkQueue interleaved push/pop" {
     for (0..100) |_| {
         // Push 3
         for (0..3) |_| {
-            try wq.push(next_push);
+            try wq.push(next_push, null);
             next_push += 1;
         }
         // Pop 2
@@ -1134,4 +1186,93 @@ test "balanced nested jobs use the square-root outer concurrency ceiling" {
             balancedInnerJobCount(case.cpus, case.outer_jobs, case.explicit_cap),
         );
     }
+}
+
+test "ThreadPool bounded work queue blocks submit at capacity and drains without loss" {
+    const Pool = ThreadPool(u32, void);
+    const Context = struct {
+        mutex: std.Io.Mutex = .init,
+        cond: std.Io.Condition = .init,
+        first_task_started: bool = false,
+        release_first_task: bool = false,
+        executed: std.atomic.Value(u32) = .init(0),
+    };
+
+    var context: Context = .{};
+    var debug = SchedulerDebugStats.init();
+    const pool = try Pool.createWithBudgetAndDebug(
+        std.testing.allocator,
+        1,
+        struct {
+            fn exec(value: u32, ctx_ptr: ?*anyopaque) void {
+                const ctx: *Context = @ptrCast(@alignCast(ctx_ptr));
+                if (value == 0) {
+                    ctx.mutex.lockUncancelable(runtime.io());
+                    ctx.first_task_started = true;
+                    ctx.cond.broadcast(runtime.io());
+                    while (!ctx.release_first_task) {
+                        ctx.cond.waitUncancelable(runtime.io(), &ctx.mutex);
+                    }
+                    ctx.mutex.unlock(runtime.io());
+                }
+                _ = ctx.executed.fetchAdd(1, .seq_cst);
+            }
+        }.exec,
+        &context,
+        {},
+        {},
+        null,
+        null,
+        &debug,
+    );
+    defer pool.destroy();
+    pool.setQueueCapacity(2);
+
+    // Task 0 occupies the lone worker (FIFO guarantees it runs first); wait
+    // on the task's own latch, never on scheduling luck.
+    try pool.submit(0);
+    context.mutex.lockUncancelable(runtime.io());
+    while (!context.first_task_started) {
+        context.cond.waitUncancelable(runtime.io(), &context.mutex);
+    }
+    context.mutex.unlock(runtime.io());
+
+    // Queue is empty again; these two fill it to capacity without blocking.
+    try pool.submit(1);
+    try pool.submit(2);
+
+    const Submitter = struct {
+        fn run(p: *Pool, done: *std.atomic.Value(bool)) void {
+            p.submit(3) catch {};
+            done.store(true, .seq_cst);
+        }
+    };
+    var submitted = std.atomic.Value(bool).init(false);
+    const submitter = try std.Thread.spawn(.{}, Submitter.run, .{ pool, &submitted });
+
+    // Deterministic dichotomy: the submitter either parks on the space
+    // condvar (bound enforced) or completes the push (bound violated).
+    // No spin budget, no timing assumption — one of the two MUST happen.
+    while (debug.snapshot().work_queue_space_waiters == 0) {
+        if (submitted.load(.seq_cst)) return error.SubmitDidNotBlock;
+        std.Thread.yield() catch {};
+    }
+    try std.testing.expect(!submitted.load(.seq_cst));
+
+    // Release the worker; draining frees space, unblocking the submitter.
+    context.mutex.lockUncancelable(runtime.io());
+    context.release_first_task = true;
+    context.cond.broadcast(runtime.io());
+    context.mutex.unlock(runtime.io());
+
+    submitter.join();
+    try std.testing.expect(submitted.load(.seq_cst));
+
+    pool.shutdown();
+    pool.wait();
+    try std.testing.expectEqual(@as(u32, 4), context.executed.load(.seq_cst));
+
+    const snap = debug.snapshot();
+    try std.testing.expect(snap.work_queue_space_wait_events >= 1);
+    try std.testing.expectEqual(@as(u64, 0), snap.work_queue_space_waiters);
 }

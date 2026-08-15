@@ -1148,6 +1148,12 @@ const BatchTask = struct {
     discovery_size: usize = BATCH_DISCOVERY_SIZE_UNKNOWN,
 };
 
+/// Queued-task ceiling per worker for the batch pool. Small enough that
+/// in-flight BatchTask bookkeeping stays O(workers) for any batch size,
+/// large enough that a worker finishing a file always finds the next task
+/// already queued instead of stalling on the submitting thread.
+const BATCH_QUEUE_TASKS_PER_WORKER: usize = 4;
+
 /// Transfers one serialized result from a validation worker to the dedicated
 /// callback executor. A null payload is an intentional non-delivery after the
 /// shared terminal failure state has already made the batch non-successful.
@@ -1655,6 +1661,11 @@ fn validateBatch(
         return 3; // VALIDATE_ERR_OUT_OF_MEMORY
     };
     defer pool.destroy();
+
+    // Bound in-flight task state by workers, not batch size: once the queue
+    // holds a few tasks per worker, submit parks until a worker drains one,
+    // so a multi-million-file batch never materializes O(N) task records.
+    pool.setQueueCapacity(actual_threads * BATCH_QUEUE_TASKS_PER_WORKER);
 
     // Submit all tasks
     for (0..count) |i| {
