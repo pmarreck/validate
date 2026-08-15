@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# streaming_ladder — leak/retention regression guard: validating the SAME
+# mid-size fixture N times in ONE process must keep peak RSS flat once the
+# streaming conversions land. Peak RSS is measured exactly via
+# getrusage(RUSAGE_CHILDREN).ru_maxrss from a LuaJIT FFI wrapper (race-free,
+# unlike /proc polling: the kernel accumulates the max over reaped children).
+#
+# BASELINE WITNESSED 2026-08-15 (binary 864c97fd1): GROWING — peak RSS rises
+# ~linearly with N (N=1 ~278MiB -> N=4 ~1101MiB on the ~275MiB mp3 fixture),
+# i.e. today's validate keeps each file's memory resident for the whole
+# batch instead of releasing it between files.
+#
+# Claim-implies-proof: EXPECTED_LADDER below is the manifest for this guard.
+# The test FAILS on divergence in either direction. When the batch-memory
+# work lands and the ladder flattens, flip EXPECTED_LADDER to `flat` IN THE
+# SAME COMMIT — from then on this test is the permanent leak regression gate.
+EXPECTED_LADDER=growing
+
+# flat = maxrss(N=4) <= maxrss(N=1) * FLAT_RATIO_PCT/100 + FLAT_SLACK_KIB
+FLAT_RATIO_PCT=130
+FLAT_SLACK_KIB=65536
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BIN="${VALIDATE_BIN:-$ROOT/zig-out/bin/validate}"
+SYNTH="$ROOT/scripts/synth-av-fixtures"
+
+fails=0
+fail() { printf 'FAIL: %s\n' "$1" >&2; fails=$((fails + 1)); }
+
+[ -x "$BIN" ] || { printf 'FAIL: validate binary not found/executable: %s\n' "$BIN" >&2; exit 1; }
+[ -x "$SYNTH" ] || { printf 'FAIL: fixture synthesizer missing: %s\n' "$SYNTH" >&2; exit 1; }
+
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+	printf 'SKIP: streaming_ladder — ffmpeg/ffprobe not on PATH; cannot synthesize the fixture\n' >&2
+	exit 77
+fi
+if ! command -v luajit >/dev/null 2>&1; then
+	printf 'SKIP: streaming_ladder — luajit not on PATH; cannot measure child ru_maxrss exactly\n' >&2
+	exit 77
+fi
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/streaming_ladder.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+echo "=== synthesizing/verifying mp3 ladder fixture (cached after first run) ==="
+if ! "$SYNTH" --only mp3 --tsv >"$tmpdir/synth.tsv" 2>"$tmpdir/synth.log"; then
+	printf 'SKIP: streaming_ladder — fixture synthesis FAILED; reasons follow:\n' >&2
+	cat "$tmpdir/synth.log" >&2
+	exit 77
+fi
+FIX="$(awk -F'\t' '$1 == "mp3" && $2 == "ok" { print $4 }' "$tmpdir/synth.tsv")"
+if [ -z "$FIX" ] || [ ! -f "$FIX" ]; then
+	printf 'SKIP: streaming_ladder — mp3 fixture unavailable:\n' >&2
+	cat "$tmpdir/synth.log" >&2
+	exit 77
+fi
+
+# Exact peak-RSS-of-children measurement: getrusage(RUSAGE_CHILDREN) after
+# system(); ru_maxrss is in KiB on Linux and folds in reaped descendants.
+cat > "$tmpdir/maxrss.lua" <<'EOF'
+local ffi = require("ffi")
+ffi.cdef[[
+typedef struct { long tv_sec; long tv_usec; } timeval_t;
+typedef struct {
+	timeval_t ru_utime; timeval_t ru_stime;
+	long ru_maxrss; long ru_ixrss; long ru_idrss; long ru_isrss;
+	long ru_minflt; long ru_majflt; long ru_nswap;
+	long ru_inblock; long ru_oublock; long ru_msgsnd; long ru_msgrcv;
+	long ru_nsignals; long ru_nvcsw; long ru_nivcsw;
+} rusage_t;
+int getrusage(int who, rusage_t *usage);
+]]
+local outfile, shellcmd = arg[1], arg[2]
+os.execute(shellcmd)
+local ru = ffi.new("rusage_t")
+ffi.C.getrusage(-1, ru) -- -1 == RUSAGE_CHILDREN
+local f = assert(io.open(outfile, "w"))
+f:write(tonumber(ru.ru_maxrss), "\n")
+f:close()
+EOF
+
+echo "=== N-ladder: validate --ndjson <mp3 fixture> xN in one process ==="
+printf '  %-4s %-14s %-6s\n' N MAXRSS_KIB RC
+declare -a RSS
+for n in 1 2 3 4; do
+	args=""
+	i=0
+	while [ "$i" -lt "$n" ]; do
+		args="$args '$FIX'"
+		i=$((i + 1))
+	done
+	luajit "$tmpdir/maxrss.lua" "$tmpdir/rss.$n" \
+		"'$BIN' --ndjson$args > '$tmpdir/run.$n.log' 2>&1; echo \$? > '$tmpdir/rc.$n'"
+	rc="$(cat "$tmpdir/rc.$n" 2>/dev/null)"
+	rss="$(cat "$tmpdir/rss.$n" 2>/dev/null)"
+	printf '  %-4s %-14s %-6s\n' "$n" "${rss:-?}" "${rc:-?}"
+	if [ "${rc:-1}" != 0 ]; then
+		fail "N=$n validate run exited rc=${rc:-unknown} — ladder unmeasurable; log tail:"
+		tail -3 "$tmpdir/run.$n.log" >&2
+	fi
+	if ! [ "${rss:-x}" -gt 0 ] 2>/dev/null; then
+		fail "N=$n maxrss measurement missing/non-numeric ('${rss:-}')"
+	fi
+	RSS[$n]="${rss:-0}"
+done
+
+if [ "$fails" -gt 0 ]; then
+	printf 'FAIL: streaming_ladder — %d failure(s) before classification\n' "$fails" >&2
+	exit 1
+fi
+
+limit=$((RSS[1] * FLAT_RATIO_PCT / 100 + FLAT_SLACK_KIB))
+if [ "${RSS[4]}" -le "$limit" ]; then
+	observed=flat
+else
+	observed=growing
+fi
+echo ""
+echo "  flatness limit: N=1 (${RSS[1]} KiB) * ${FLAT_RATIO_PCT}% + ${FLAT_SLACK_KIB} KiB = $limit KiB"
+echo "  observed: $observed (N=4 peak ${RSS[4]} KiB) — expected: $EXPECTED_LADDER"
+if [ "$observed" = growing ]; then
+	printf 'WARNING: batch peak RSS grows with N — per-file memory is retained for the whole batch (known baseline; streaming conversions must flatten this)\n' >&2
+fi
+
+if [ "$observed" != "$EXPECTED_LADDER" ]; then
+	fail "ladder observed '$observed' but EXPECTED_LADDER='$EXPECTED_LADDER' — if the batch-memory conversion landed, flip EXPECTED_LADDER in the SAME commit"
+	printf 'FAIL: streaming_ladder\n' >&2
+	exit 1
+fi
+echo "=== streaming_ladder: reality matches EXPECTED_LADDER=$EXPECTED_LADDER ==="
+exit 0

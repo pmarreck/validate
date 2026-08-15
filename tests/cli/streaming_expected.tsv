@@ -1,0 +1,49 @@
+# streaming_expected.tsv — per-family expected class under the memory-ceiling
+# gate (tests/cli/streaming_ceiling). Columns: family<TAB>expected.
+#
+#   streams  = validate --ndjson <fixture> completes rc=0 inside the ceiling
+#              (video: 2GiB+ fixture / 512MiB ceiling; audio: 256MiB+ / 64MiB;
+#              cgroup MemoryMax + MemorySwapMax=0, systemd-run --user --scope)
+#   resident = validate is OOM-killed (or allocator-fails) at the ceiling —
+#              it holds ~the whole file in anonymous memory
+#
+# THE CLAIM-IMPLIES-PROOF MECHANISM: this file is the honest record of
+# observed reality, and the gate FAILS on divergence in EITHER direction.
+# When a codec family is converted to true streaming, flip its row to
+# `streams` IN THE SAME COMMIT as the conversion — the gate is the proof the
+# claim needs. The capability matrix consumes this manifest.
+#
+# Baseline witnessed 2026-08-15, binary 864c97fd1, NixOS x86_64 (Thelio),
+# cgroup mode (observed class, rc, wall secs at the ceiling):
+#   h264_mp4   streams   rc=0    6s     h265_mp4   resident  rc=137  83s
+#   h265_mkv   streams   rc=0    121s   vp9_webm   resident  rc=137  41s
+#   theora_ogv resident  rc=137  117s   mkv_cc     (skipped: no mkvmerge)
+#   mp3        streams   rc=0    23s    flac       streams   rc=0    21s
+#   aac_m4a    streams   rc=0    1s     opus_ogg   resident  rc=137  15s
+#   vorbis_ogg resident  rc=137  13s    wav        streams   rc=0    1s
+#
+# CAVEAT on today's `streams` rows: they certify BOUNDED RESIDENT MEMORY,
+# not an architected incremental decode — validate's file pages stay
+# clean/evictable, so the kernel reclaims them under cgroup pressure and the
+# run completes slowly (h264_mp4: ~80s cold cache vs ~6s warm; user CPU ~1s).
+# The N-ladder (tests/cli/streaming_ladder) separately witnesses that this
+# memory is NOT released between files in a batch (peak RSS grows ~linearly
+# with N) — the streaming conversions must flip that baseline to `flat`.
+#
+# mkv_cc is UNWITNESSED on the baseline box (mkvmerge absent; the family is
+# loudly SKIPPED there). `streams` is inferred from its sibling matroska
+# demux path (h265_mkv, witnessed). The first run on a box with mkvmerge
+# will witness it for real — if this guess is wrong the gate goes red and
+# the row must be corrected to the observed truth.
+h264_mp4	streams
+h265_mp4	resident
+h265_mkv	streams
+vp9_webm	resident
+theora_ogv	resident
+mkv_cc	streams
+mp3	streams
+flac	streams
+aac_m4a	streams
+opus_ogg	resident
+vorbis_ogg	resident
+wav	streams

@@ -1,0 +1,473 @@
+#!/usr/bin/env bash
+# synth-av-fixtures — deterministic, cached synthesis of LARGE A/V fixtures
+# for the streaming-validation proof harness (tests/cli/streaming_ceiling,
+# tests/cli/streaming_ladder). NEVER commit the media these produce.
+#
+# Why synthesis: the streaming ceiling gate needs fixtures whose size dwarfs
+# the memory ceiling (video >=2GiB vs a 512MiB ceiling, audio >=256MiB vs
+# 64MiB — the 4:1+ RATIO is what proves streaming, not absolute size).
+# Committing multi-GiB media is out of the question, so each fixture is
+# synthesized on demand from a fixed recipe (fixed seed/duration/bitrate)
+# and cached under ${TMPDIR:-/tmp}/validate-av-fixtures/.
+#
+# Key technique: encode a short deterministic base segment (testsrc2 /
+# mandelbrot video, sine / anoisesrc audio), then `-stream_loop N -c copy`
+# remux it to target size — remuxing is I/O-bound, so a 2GiB fixture costs
+# seconds, not an hour of encoding. Families whose codec embeds absolute
+# stream positions or whole-stream digests (FLAC STREAMINFO MD5) or whose
+# copy-looped output trips AU parsing (ffmpeg native AAC) are encoded
+# directly at full length instead (mode=direct).
+#
+# Cache verification is NOT trust-based: every cache hit is re-verified by
+# size >= target AND a live ffprobe stream signature (codec_name + container
+# format_name) derived from the RECIPE, plus a recipe-hash match so changed
+# recipes resynthesize. Fresh syntheses additionally get a full ffprobe
+# packet sweep (demux end-to-end) to prove the looped stream is well-formed.
+#
+# ffmpeg native AAC quirk (observed 2026-08-15, ffmpeg on NixOS host): some
+# encoder configurations emit access units today's `validate` cannot parse
+# ("1 of 10 AAC access units could not be parsed"): sine@48k with the
+# default twoloop coder, stereo white noise with -aac_coder fast, and
+# 8-channel (7.1) layouts all FAIL; pink/white stereo twoloop and 5.1 with
+# -aac_coder fast PASS. The aac_m4a recipe below (5.1 white noise, fast
+# coder) is chosen from the passing set. If the recipe is ever changed,
+# re-verify against validate before trusting the streaming gate's rc for it.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+VERSION="1.0.0"
+ABOUT="synth-av-fixtures $VERSION — deterministic cached A/V fixture synthesis for the validate streaming harness ($(uname -s)/$(uname -m))"
+
+CACHE_ROOT="${VALIDATE_AV_FIXTURE_DIR:-${TMPDIR:-/tmp}/validate-av-fixtures}"
+TSV=0
+LIST=0
+ONLY=""
+FORCE=0
+
+# Sizes. Slack above the round power-of-two so ">= 2GiB / >= 256MiB" holds
+# with margin even if a remux trims container overhead.
+VIDEO_TARGET=$((2 * 1024 * 1024 * 1024 + 16 * 1024 * 1024))
+AUDIO_TARGET=$((256 * 1024 * 1024 + 8 * 1024 * 1024))
+
+# Ordered so mkv_cc's dependency (h264_mp4) is synthesized first.
+ALL_FAMILIES="h264_mp4 h265_mp4 h265_mkv vp9_webm theora_ogv mkv_cc mp3 flac aac_m4a opus_ogg vorbis_ogg wav"
+
+usage() {
+	cat <<EOF
+Usage: synth-av-fixtures [OPTIONS]
+
+Synthesize (or verify cached) large A/V fixtures for the streaming harness.
+
+Options:
+  --tsv             Print ONLY the machine-readable result table to stdout
+                    (family<TAB>status<TAB>category<TAB>path<TAB>size<TAB>detail);
+                    human progress goes to stderr.
+  --only FAMS       Comma-separated subset of families (deps auto-included).
+  --list            List known families and exit.
+  --cache-dir DIR   Override cache root (default: \$VALIDATE_AV_FIXTURE_DIR or
+                    \${TMPDIR:-/tmp}/validate-av-fixtures).
+  --force           Ignore cache, resynthesize.
+  --about           One-line description and version.
+  -h, --help        This help.
+
+Families: $ALL_FAMILIES
+
+Exit code: 0 if every requested family is ok or skipped-with-reason;
+non-zero if any synthesis or verification FAILED.
+EOF
+}
+
+log() { printf '%s\n' "$*" >&2; }
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--tsv) TSV=1 ;;
+		--only) shift; ONLY="${1:-}" ;;
+		--only=*) ONLY="${1#--only=}" ;;
+		--list) LIST=1 ;;
+		--cache-dir) shift; CACHE_ROOT="${1:-}" ;;
+		--cache-dir=*) CACHE_ROOT="${1#--cache-dir=}" ;;
+		--force) FORCE=1 ;;
+		--about) printf '%s\n' "$ABOUT"; exit 0 ;;
+		-h|--help|/h|/help) usage; exit 0 ;;
+		*) log "synth-av-fixtures: unknown argument: $1 (see --help)"; exit 2 ;;
+	esac
+	shift
+done
+
+if [ "$LIST" -eq 1 ]; then
+	printf '%s\n' $ALL_FAMILIES
+	exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Recipes. recipe <family> sets:
+#   R_CAT      video|audio
+#   R_EXT      container extension
+#   R_MODE     loop | direct | mkvcc
+#   R_TARGET   target size in bytes
+#   R_CODEC    expected ffprobe codec_name
+#   R_FMT      substring expected in ffprobe format_name
+#   R_SRC      lavfi source expression for the base encode
+#   R_ENC      encoder args (single string, word-split deliberately)
+#   R_DUR      direct mode: initial duration seconds (retried +15% once if short)
+#   R_DEP      family this recipe consumes as input (mkvcc only)
+recipe() {
+	R_DEP=""
+	R_DUR=""
+	case "$1" in
+		h264_mp4)
+			R_CAT=video R_EXT=mp4 R_MODE=loop R_TARGET=$VIDEO_TARGET
+			R_CODEC=h264 R_FMT=mp4
+			R_SRC="testsrc2=size=1920x1080:rate=30:duration=60"
+			R_ENC="-c:v libx264 -preset ultrafast -b:v 16M -maxrate 20M -bufsize 32M"
+			;;
+		h265_mp4)
+			R_CAT=video R_EXT=mp4 R_MODE=loop R_TARGET=$VIDEO_TARGET
+			R_CODEC=hevc R_FMT=mp4
+			R_SRC="testsrc2=size=1920x1080:rate=30:duration=60"
+			R_ENC="-c:v libx265 -preset ultrafast -x265-params log-level=error -b:v 16M -tag:v hvc1"
+			;;
+		h265_mkv)
+			R_CAT=video R_EXT=mkv R_MODE=loop R_TARGET=$VIDEO_TARGET
+			R_CODEC=hevc R_FMT=matroska
+			R_SRC="testsrc2=size=1920x1080:rate=30:duration=60"
+			R_ENC="-c:v libx265 -preset ultrafast -x265-params log-level=error -b:v 16M"
+			;;
+		vp9_webm)
+			R_CAT=video R_EXT=webm R_MODE=loop R_TARGET=$VIDEO_TARGET
+			R_CODEC=vp9 R_FMT=matroska
+			R_SRC="testsrc2=size=1920x1080:rate=30:duration=60"
+			R_ENC="-c:v libvpx-vp9 -deadline realtime -cpu-used 8 -row-mt 1 -b:v 16M"
+			;;
+		theora_ogv)
+			# mandelbrot is high-entropy: theora q8 emits ~11.5 MB/s, so a
+			# 24 s base is already ~276 MB and loops to 2 GiB in 8 copies.
+			R_CAT=video R_EXT=ogv R_MODE=loop R_TARGET=$VIDEO_TARGET
+			R_CODEC=theora R_FMT=ogg
+			R_SRC="mandelbrot=size=1280x720:rate=30"
+			R_ENC="-t 24 -c:v libtheora -q:v 8"
+			;;
+		mkv_cc)
+			# Matroska ContentCompression (zlib track compression). ffmpeg
+			# cannot WRITE ContentCompression, and copy-remuxing a CC mkv
+			# through ffmpeg silently inflates it away — so this must be
+			# produced by mkvmerge from the full-size h264_mp4 fixture.
+			R_CAT=video R_EXT=mkv R_MODE=mkvcc R_TARGET=$VIDEO_TARGET
+			R_CODEC=h264 R_FMT=matroska
+			R_SRC="" R_ENC=""
+			R_DEP=h264_mp4
+			;;
+		mp3)
+			R_CAT=audio R_EXT=mp3 R_MODE=loop R_TARGET=$AUDIO_TARGET
+			R_CODEC=mp3 R_FMT=mp3
+			R_SRC="anoisesrc=color=pink:seed=42:duration=300:sample_rate=44100"
+			R_ENC="-ac 2 -c:a libmp3lame -b:a 320k"
+			;;
+		flac)
+			# direct: FLAC STREAMINFO carries an MD5 of the whole decoded
+			# stream and frame headers carry absolute sample numbers — a
+			# copy-loop cannot update either (validate rightly flags the
+			# MD5 mismatch), so encode the full length in one pass. FLAC
+			# encodes white noise at ~645x realtime; this is cheap.
+			R_CAT=audio R_EXT=flac R_MODE=direct R_TARGET=$AUDIO_TARGET
+			R_CODEC=flac R_FMT=flac
+			R_SRC="anoisesrc=color=white:seed=43:sample_rate=48000"
+			R_ENC="-ac 2 -c:a flac"
+			R_DUR=1980
+			;;
+		aac_m4a)
+			# direct: copy-looped native-AAC m4a trips validate's AU parse.
+			# 5.1 white noise + -aac_coder fast hits ~770 kbps at ~59x
+			# realtime AND sits in the validate-parseable subset (see the
+			# header comment for the observed pass/fail matrix).
+			R_CAT=audio R_EXT=m4a R_MODE=direct R_TARGET=$AUDIO_TARGET
+			R_CODEC=aac R_FMT=m4a
+			R_SRC="anoisesrc=color=white:seed=48:sample_rate=48000"
+			R_ENC="-af channelmap=0|0|0|0|0|0:channel_layout=5.1 -c:a aac -aac_coder fast -b:a 768k"
+			R_DUR=2900
+			;;
+		opus_ogg)
+			R_CAT=audio R_EXT=ogg R_MODE=loop R_TARGET=$AUDIO_TARGET
+			R_CODEC=opus R_FMT=ogg
+			R_SRC="anoisesrc=color=pink:seed=44:duration=300:sample_rate=48000"
+			R_ENC="-ac 2 -c:a libopus -b:a 320k"
+			;;
+		vorbis_ogg)
+			R_CAT=audio R_EXT=ogg R_MODE=loop R_TARGET=$AUDIO_TARGET
+			R_CODEC=vorbis R_FMT=ogg
+			R_SRC="anoisesrc=color=pink:seed=45:duration=300:sample_rate=48000"
+			R_ENC="-ac 2 -c:a libvorbis -b:a 320k"
+			;;
+		wav)
+			R_CAT=audio R_EXT=wav R_MODE=loop R_TARGET=$AUDIO_TARGET
+			R_CODEC=pcm_s16le R_FMT=wav
+			R_SRC="anoisesrc=color=white:seed=46:duration=300:sample_rate=48000"
+			R_ENC="-ac 2 -c:a pcm_s16le"
+			;;
+		*)
+			return 1
+			;;
+	esac
+	return 0
+}
+
+recipe_hash() {
+	# Canonical recipe identity: everything that determines the bytes.
+	recipe "$1" || return 1
+	printf 'v1|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+		"$1" "$R_CAT" "$R_EXT" "$R_MODE" "$R_TARGET" "$R_SRC" "$R_ENC" "$R_DUR" \
+		| sha256sum | cut -c1-16
+}
+
+# ---------------------------------------------------------------------------
+# Verification (works on cached AND fresh fixtures; derives truth from the
+# recipe + ffprobe, never from stored metadata).
+file_size() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null; }
+
+verify_signature() {
+	# verify_signature FILE FAMILY -> 0 ok / 1 mismatch (reason on stderr)
+	local f="$1" fam="$2" sz probe codec_ok fmt_line
+	recipe "$fam" || return 1
+	sz="$(file_size "$f")" || return 1
+	if [ -z "$sz" ] || [ "$sz" -lt "$R_TARGET" ]; then
+		log "  verify($fam): size $sz < target $R_TARGET"
+		return 1
+	fi
+	probe="$(ffprobe -v error -show_entries format=format_name -show_entries stream=codec_name,codec_type -of default=noprint_wrappers=1 "$f" 2>&1)"
+	if [ $? -ne 0 ]; then
+		log "  verify($fam): ffprobe failed: $probe"
+		return 1
+	fi
+	codec_ok=0
+	if printf '%s\n' "$probe" | grep -q "^codec_name=$R_CODEC$"; then
+		codec_ok=1
+	fi
+	fmt_line="$(printf '%s\n' "$probe" | grep '^format_name=')"
+	if [ "$codec_ok" -ne 1 ]; then
+		log "  verify($fam): expected codec_name=$R_CODEC not found in: $(printf '%s' "$probe" | tr '\n' ' ')"
+		return 1
+	fi
+	case "$fmt_line" in
+		*"$R_FMT"*) : ;;
+		*)
+			log "  verify($fam): container '$fmt_line' lacks expected token '$R_FMT'"
+			return 1
+			;;
+	esac
+	return 0
+}
+
+deep_verify() {
+	# Full demux sweep (fresh syntheses only): every packet must demux, which
+	# catches truncated/corrupt loop joins that a header probe cannot see.
+	local f="$1" fam="$2" out
+	out="$(ffprobe -v error -count_packets -show_entries stream=nb_read_packets -of default=noprint_wrappers=1 "$f" 2>&1)"
+	if [ $? -ne 0 ]; then
+		log "  deep-verify($fam): packet sweep FAILED: $out"
+		return 1
+	fi
+	case "$out" in
+		*nb_read_packets=*) return 0 ;;
+		*)
+			log "  deep-verify($fam): no packet counts in ffprobe output: $out"
+			return 1
+			;;
+	esac
+}
+
+# ---------------------------------------------------------------------------
+# Synthesis
+synth_loop() {
+	# base encode once, then stream_loop -c copy up to target size
+	local fam="$1" work="$2" out="$3" base bsize loops try
+	base="$work/base.$R_EXT"
+	log "  [$fam] encoding base segment..."
+	# shellcheck disable=SC2086
+	if ! ffmpeg -hide_banner -loglevel error -y -f lavfi -i "$R_SRC" $R_ENC "$base" 2>"$work/ffmpeg-base.log"; then
+		log "  [$fam] base encode FAILED:"
+		sed 's/^/    /' "$work/ffmpeg-base.log" >&2
+		return 1
+	fi
+	bsize="$(file_size "$base")"
+	if [ -z "$bsize" ] || [ "$bsize" -lt 1000 ]; then
+		log "  [$fam] base segment suspiciously small ($bsize bytes)"
+		return 1
+	fi
+	loops=$(( (R_TARGET + bsize - 1) / bsize ))
+	for try in 1 2; do
+		log "  [$fam] remuxing $loops copies of $bsize-byte base (-c copy)..."
+		if ! ffmpeg -hide_banner -loglevel error -y -stream_loop "$((loops - 1))" -i "$base" -c copy "$out" 2>"$work/ffmpeg-loop.log"; then
+			log "  [$fam] loop remux FAILED:"
+			sed 's/^/    /' "$work/ffmpeg-loop.log" >&2
+			return 1
+		fi
+		if [ "$(file_size "$out")" -ge "$R_TARGET" ]; then
+			return 0
+		fi
+		log "  [$fam] remux came up short ($(file_size "$out") < $R_TARGET); retrying with more loops"
+		loops=$(( loops + (loops / 8) + 2 ))
+	done
+	log "  [$fam] could not reach target size after retry"
+	return 1
+}
+
+synth_direct() {
+	local fam="$1" work="$2" out="$3" dur="$R_DUR" try
+	for try in 1 2; do
+		log "  [$fam] direct encoding ${dur}s..."
+		# shellcheck disable=SC2086
+		if ! ffmpeg -hide_banner -loglevel error -y -f lavfi -i "${R_SRC}:duration=${dur}" $R_ENC "$out" 2>"$work/ffmpeg-direct.log"; then
+			log "  [$fam] direct encode FAILED:"
+			sed 's/^/    /' "$work/ffmpeg-direct.log" >&2
+			return 1
+		fi
+		if [ "$(file_size "$out")" -ge "$R_TARGET" ]; then
+			return 0
+		fi
+		log "  [$fam] direct encode short ($(file_size "$out") < $R_TARGET); retrying +15% duration"
+		dur=$(( dur + dur * 15 / 100 + 1 ))
+	done
+	log "  [$fam] could not reach target size after retry"
+	return 1
+}
+
+synth_mkvcc() {
+	# mkvmerge remux of the (already-synthesized) h264_mp4 fixture with zlib
+	# track ContentCompression. Returns 2 => skip (mkvmerge missing / dep
+	# missing), 1 => hard failure, 0 => ok.
+	local fam="$1" work="$2" out="$3" dep_path
+	if ! command -v mkvmerge >/dev/null 2>&1; then
+		SKIP_REASON="mkvmerge not on PATH — cannot author Matroska ContentCompression (ffmpeg cannot write it)"
+		return 2
+	fi
+	dep_path="$CACHE_ROOT/$R_DEP/fixture.mp4"
+	if [ ! -f "$dep_path" ]; then
+		SKIP_REASON="dependency fixture $R_DEP absent at $dep_path"
+		return 2
+	fi
+	log "  [$fam] mkvmerge --compression 0:zlib remux of $R_DEP fixture..."
+	if ! mkvmerge -q --compression 0:zlib "$dep_path" -o "$out" >"$work/mkvmerge.log" 2>&1; then
+		log "  [$fam] mkvmerge FAILED:"
+		sed 's/^/    /' "$work/mkvmerge.log" >&2
+		return 1
+	fi
+	if [ "$(file_size "$out")" -lt "$R_TARGET" ]; then
+		log "  [$fam] mkv_cc output below target ($(file_size "$out") < $R_TARGET) — zlib shrank the track too far"
+		return 1
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# Driver
+RESULTS=""    # accumulated TSV lines
+FAILURES=0
+
+emit() {
+	# emit family status category path size detail
+	RESULTS="${RESULTS}$1	$2	$3	$4	$5	$6
+"
+}
+
+process_family() {
+	local fam="$1" hash dir out work rc t0 t1 skip_reason
+	if ! recipe "$fam"; then
+		log "UNKNOWN family: $fam"
+		FAILURES=$((FAILURES + 1))
+		emit "$fam" fail unknown - 0 "unknown family"
+		return
+	fi
+	hash="$(recipe_hash "$fam")"
+	dir="$CACHE_ROOT/$fam"
+	out="$dir/fixture.$R_EXT"
+
+	if [ "$FORCE" -eq 0 ] && [ -f "$out" ] && [ -f "$dir/recipe.sha" ] \
+		&& [ "$(cat "$dir/recipe.sha" 2>/dev/null)" = "$hash" ]; then
+		if verify_signature "$out" "$fam"; then
+			log "[$fam] cache HIT (verified size+signature): $out ($(file_size "$out") bytes)"
+			emit "$fam" ok "$R_CAT" "$out" "$(file_size "$out")" "cache-hit"
+			return
+		fi
+		log "[$fam] cache entry FAILED verification — resynthesizing"
+	fi
+
+	mkdir -p "$dir"
+	work="$(mktemp -d "$dir/work.XXXXXX")" || { FAILURES=$((FAILURES + 1)); emit "$fam" fail "$R_CAT" - 0 "mktemp failed"; return; }
+	t0=$(date +%s)
+	SKIP_REASON=""
+	case "$R_MODE" in
+		loop)   synth_loop "$fam" "$work" "$work/fixture.$R_EXT"; rc=$? ;;
+		direct) synth_direct "$fam" "$work" "$work/fixture.$R_EXT"; rc=$? ;;
+		mkvcc)  synth_mkvcc "$fam" "$work" "$work/fixture.$R_EXT"; rc=$? ;;
+		*)      rc=1 ;;
+	esac
+	if [ "$rc" -eq 2 ]; then
+		skip_reason="${SKIP_REASON:-unspecified}"
+		log ""
+		log "########################################################################"
+		log "## SKIPPED family '$fam': $skip_reason"
+		log "########################################################################"
+		log ""
+		emit "$fam" skip "$R_CAT" - 0 "$skip_reason"
+		rm -rf "$work"
+		return
+	fi
+	if [ "$rc" -ne 0 ]; then
+		FAILURES=$((FAILURES + 1))
+		emit "$fam" fail "$R_CAT" - 0 "synthesis failed (see stderr)"
+		rm -rf "$work"
+		return
+	fi
+	if ! verify_signature "$work/fixture.$R_EXT" "$fam" || ! deep_verify "$work/fixture.$R_EXT" "$fam"; then
+		FAILURES=$((FAILURES + 1))
+		emit "$fam" fail "$R_CAT" - 0 "fresh fixture failed verification (see stderr)"
+		rm -rf "$work"
+		return
+	fi
+	mv "$work/fixture.$R_EXT" "$out" || { FAILURES=$((FAILURES + 1)); emit "$fam" fail "$R_CAT" - 0 "finalize mv failed"; rm -rf "$work"; return; }
+	printf '%s\n' "$hash" > "$dir/recipe.sha"
+	rm -rf "$work"
+	t1=$(date +%s)
+	log "[$fam] synthesized in $((t1 - t0))s: $out ($(file_size "$out") bytes)"
+	emit "$fam" ok "$R_CAT" "$out" "$(file_size "$out")" "synthesized-$((t1 - t0))s"
+}
+
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+	log "synth-av-fixtures: ffmpeg/ffprobe not on PATH — cannot synthesize anything"
+	exit 3
+fi
+
+mkdir -p "$CACHE_ROOT" || { log "cannot create cache root $CACHE_ROOT"; exit 3; }
+
+# Build the work list (deps auto-included, order preserved from ALL_FAMILIES).
+if [ -n "$ONLY" ]; then
+	want=" $(printf '%s' "$ONLY" | tr ',' ' ') "
+	# auto-include mkv_cc's dependency
+	case "$want" in
+		*" mkv_cc "*) case "$want" in *" h264_mp4 "*) : ;; *) want=" h264_mp4$want" ;; esac ;;
+	esac
+	FAMS=""
+	for f in $ALL_FAMILIES; do
+		case "$want" in
+			*" $f "*) FAMS="$FAMS $f" ;;
+		esac
+	done
+else
+	FAMS="$ALL_FAMILIES"
+fi
+
+for fam in $FAMS; do
+	process_family "$fam"
+done
+
+if [ "$TSV" -eq 1 ]; then
+	printf '%s' "$RESULTS"
+else
+	log ""
+	log "family	status	category	path	size	detail"
+	printf '%s' "$RESULTS" >&2
+fi
+
+exit $((FAILURES > 0 ? 1 : 0))

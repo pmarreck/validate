@@ -1,0 +1,340 @@
+#!/usr/bin/env bash
+# streaming_ceiling — MFIC gate: every claimed A/V codec family must validate
+# its fixture inside a hard memory ceiling that is a small fraction of the
+# fixture size (video: 2GiB+ file vs 512MiB ceiling; audio: 256MiB+ file vs
+# 64MiB ceiling). The 4:1+ ratio — not absolute size — is what proves the
+# validator streams instead of holding the file resident.
+#
+# Mechanism (primary): systemd-run --user --scope -p MemoryMax=<ceiling>
+# -p MemorySwapMax=0. A validator that keeps the whole file in anonymous
+# memory is OOM-killed (observed class: resident); one that bounds resident
+# memory — true streaming, or mmap whose clean file pages the kernel can
+# evict — completes rc=0 (observed class: streams). Fallback when the user
+# systemd manager is unreachable: a /proc poller that sums RssAnon over the
+# process tree and kills it past the same ceiling (~size/4) — anonymous
+# memory only, because that is precisely what forces the cgroup OOM kill
+# when swap is off, keeping the two modes' verdicts aligned.
+#
+# Claim-implies-proof: tests/cli/streaming_expected.tsv records the expected
+# class per family. This test FAILS on any divergence in EITHER direction —
+# a family that regresses to resident goes red, and a family that starts
+# streaming goes red until its manifest row is flipped to `streams` in the
+# SAME commit as the conversion. The capability matrix consumes that manifest.
+#
+# Harness self-checks (so the gate itself is falsifiable, not blanket-pass or
+# blanket-fail):
+#   streamer-control:     head -c on the 2GiB fixture under the 512M ceiling
+#                         must COMPLETE (ceiling permits true streaming);
+#   slurper-control:      sort -S 1G over 200MiB under a 64M ceiling must be
+#                         KILLED (ceiling actually bites);
+#   high-ceiling control: validate under an absurd 16G ceiling must COMPLETE
+#                         rc=0 (gate distinguishes; not failing everything).
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BIN="${VALIDATE_BIN:-$ROOT/zig-out/bin/validate}"
+MANIFEST="$SCRIPT_DIR/streaming_expected.tsv"
+SYNTH="$ROOT/scripts/synth-av-fixtures"
+
+VIDEO_CEILING=$((512 * 1024 * 1024))
+AUDIO_CEILING=$((64 * 1024 * 1024))
+VIDEO_TIMEOUT=600
+AUDIO_TIMEOUT=300
+
+fails=0
+note() { printf '%s\n' "$*"; }
+fail() { printf 'FAIL: %s\n' "$1" >&2; fails=$((fails + 1)); }
+
+[ -x "$BIN" ] || { printf 'FAIL: validate binary not found/executable: %s\n' "$BIN" >&2; exit 1; }
+[ -f "$MANIFEST" ] || { printf 'FAIL: expectations manifest missing: %s\n' "$MANIFEST" >&2; exit 1; }
+[ -x "$SYNTH" ] || { printf 'FAIL: fixture synthesizer missing: %s\n' "$SYNTH" >&2; exit 1; }
+
+if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
+	printf 'SKIP: streaming_ceiling — ffmpeg/ffprobe not on PATH; cannot synthesize A/V fixtures\n' >&2
+	exit 77
+fi
+
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/streaming_ceiling.XXXXXX")"
+trap 'rm -rf "$tmpdir"' EXIT
+
+# --- fixtures ---------------------------------------------------------------
+note "=== synthesizing/verifying A/V fixtures (cached after first run) ==="
+synth_tsv="$tmpdir/synth.tsv"
+if ! "$SYNTH" --tsv >"$synth_tsv" 2>"$tmpdir/synth.log"; then
+	printf 'SKIP: streaming_ceiling — fixture synthesis FAILED; reasons follow:\n' >&2
+	cat "$tmpdir/synth.log" >&2
+	exit 77
+fi
+sed 's/^/  synth: /' "$tmpdir/synth.log"
+
+# --- gate mode --------------------------------------------------------------
+# Under `nix develop --ignore-env` (the ./test CLI stage) systemd-run is off
+# PATH and the DBus env is stripped; reconstruct both, then PROBE with a real
+# scope run — never assume.
+SDRUN=""
+SCTL=""
+for c in "$(command -v systemd-run 2>/dev/null)" /run/current-system/sw/bin/systemd-run /usr/bin/systemd-run; do
+	if [ -n "$c" ] && [ -x "$c" ]; then SDRUN="$c"; break; fi
+done
+if [ -n "$SDRUN" ]; then
+	for c in "$(command -v systemctl 2>/dev/null)" /run/current-system/sw/bin/systemctl /usr/bin/systemctl; do
+		if [ -n "$c" ] && [ -x "$c" ]; then SCTL="$c"; break; fi
+	done
+fi
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
+MODE=vmhwm
+if [ -n "$SDRUN" ] && [ -n "$SCTL" ] \
+	&& "$SDRUN" --user --scope -q --collect -p MemoryMax=32M -p MemorySwapMax=0 -- true >/dev/null 2>&1; then
+	MODE=cgroup
+fi
+note "=== gate mode: $MODE ==="
+if [ "$MODE" = vmhwm ]; then
+	note "  (systemd user manager unreachable — falling back to /proc RSS-tree poller, kill at size/4)"
+fi
+
+# --- vmhwm fallback machinery ----------------------------------------------
+rss_tree_kib() {
+	# Sum RssAnon (KiB) over pid + descendants via /proc children lists.
+	# RssAnon — NOT VmRSS — is deliberate: with MemorySwapMax=0 the cgroup
+	# OOM killer can only be forced by unreclaimable ANONYMOUS memory (clean
+	# file-backed pages are simply evicted), so anonymous residency is what
+	# the primary gate actually measures. Without cgroup pressure nothing
+	# evicts clean file pages, so a total-RSS poller would misclassify an
+	# mmap-based bounded-memory validator as a slurper. Same threshold as
+	# the ceiling (= fixture size / 4+), per the harness contract.
+	local pid="$1" total=0 stack p kids k v line
+	stack="$pid"
+	while [ -n "$stack" ]; do
+		p="${stack%% *}"
+		if [ "$p" = "$stack" ]; then stack=""; else stack="${stack#* }"; fi
+		if [ -r "/proc/$p/status" ]; then
+			while IFS= read -r line; do
+				case "$line" in
+					RssAnon:*)
+						v="${line#RssAnon:}"
+						v="${v% kB}"
+						total=$((total + v))
+						break
+						;;
+				esac
+			done < "/proc/$p/status"
+		fi
+		if [ -r "/proc/$p/task/$p/children" ]; then
+			kids="$(cat "/proc/$p/task/$p/children" 2>/dev/null)"
+			for k in $kids; do stack="$stack $k"; done
+		fi
+	done
+	printf '%s\n' "$total"
+}
+
+kill_tree() {
+	local pid="$1" stack p kids k list=""
+	stack="$pid"
+	while [ -n "$stack" ]; do
+		p="${stack%% *}"
+		if [ "$p" = "$stack" ]; then stack=""; else stack="${stack#* }"; fi
+		list="$list $p"
+		if [ -r "/proc/$p/task/$p/children" ]; then
+			kids="$(cat "/proc/$p/task/$p/children" 2>/dev/null)"
+			for k in $kids; do stack="$stack $k"; done
+		fi
+	done
+	for p in $list; do kill -KILL "$p" 2>/dev/null; done
+}
+
+# --- gated runner -----------------------------------------------------------
+# run_gated CEILING_BYTES TIMEOUT_S LOGFILE CMD...
+# Sets: GATED_CLASS (streams|resident|error-*), GATED_RC, GATED_SECS
+run_gated() {
+	local ceiling="$1" tmo="$2" log="$3" rc unit result t0 t1
+	shift 3
+	t0=$(date +%s)
+	if [ "$MODE" = cgroup ]; then
+		unit="vstream-$$-$RANDOM.scope"
+		# Subshell wrap: bash prints a "Killed"/"Terminated" job notice to its
+		# stderr when a foreground child dies by signal (the expected outcome
+		# for slurpers — systemd-run propagates the payload's fatal signal by
+		# re-raising it on itself). The trailing `exit $?` keeps the subshell
+		# a real shell (defeats bash's single-command exec optimization, which
+		# would otherwise make the subshell process itself die by the signal),
+		# so the notice lands in $log and test output stays clean.
+		(
+			timeout -k 10 "$tmo" \
+				"$SDRUN" --user --scope --unit="$unit" -q \
+				-p MemoryMax="$ceiling" -p MemorySwapMax=0 -- "$@"
+			exit $?
+		) >"$log" 2>&1
+		rc=$?
+		result="$("$SCTL" --user show "$unit" -p Result --value 2>/dev/null)"
+		if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+			"$SCTL" --user stop "$unit" >/dev/null 2>&1
+		fi
+		"$SCTL" --user reset-failed "$unit" >/dev/null 2>&1
+		t1=$(date +%s)
+		GATED_RC=$rc
+		GATED_SECS=$((t1 - t0))
+		if [ "$result" = "oom-kill" ]; then
+			GATED_CLASS=resident
+		elif [ "$rc" -eq 0 ]; then
+			GATED_CLASS=streams
+		elif [ "$rc" -eq 124 ]; then
+			GATED_CLASS=error-timeout
+		elif grep -qi 'OutOfMemory' "$log" 2>/dev/null; then
+			# allocator-failure path: hit the ceiling but exited instead of
+			# being OOM-killed — still resident behavior
+			GATED_CLASS=resident
+		else
+			GATED_CLASS="error-rc$rc"
+		fi
+	else
+		local ceiling_kib=$((ceiling / 1024)) pid peak=0 cur tripped=0 waited=0
+		# bash -c 'exec ...' keeps the pid identity; stderr of the wrapping
+		# shell (async kill notices) goes into $log, keeping output clean.
+		bash -c 'exec "$@"' _ "$@" >"$log" 2>&1 &
+		pid=$!
+		while kill -0 "$pid" 2>/dev/null; do
+			cur="$(rss_tree_kib "$pid")"
+			[ "$cur" -gt "$peak" ] && peak=$cur
+			if [ "$peak" -gt "$ceiling_kib" ]; then
+				tripped=1
+				kill_tree "$pid"
+				break
+			fi
+			waited=$((waited + 1))
+			if [ "$waited" -gt $((tmo * 20)) ]; then
+				tripped=2
+				kill_tree "$pid"
+				break
+			fi
+			sleep 0.05
+		done
+		wait "$pid" 2>/dev/null
+		rc=$?
+		t1=$(date +%s)
+		GATED_RC=$rc
+		GATED_SECS=$((t1 - t0))
+		if [ "$tripped" -eq 1 ]; then
+			GATED_CLASS=resident
+		elif [ "$tripped" -eq 2 ]; then
+			GATED_CLASS=error-timeout
+		elif [ "$rc" -eq 0 ]; then
+			GATED_CLASS=streams
+		elif grep -qi 'OutOfMemory' "$log" 2>/dev/null; then
+			GATED_CLASS=resident
+		else
+			GATED_CLASS="error-rc$rc"
+		fi
+	fi
+}
+
+fixture_path() { awk -F'\t' -v f="$1" '$1 == f { print $4 }' "$synth_tsv"; }
+fixture_status() { awk -F'\t' -v f="$1" '$1 == f { print $2 }' "$synth_tsv"; }
+fixture_cat() { awk -F'\t' -v f="$1" '$1 == f { print $3 }' "$synth_tsv"; }
+fixture_detail() { awk -F'\t' -v f="$1" '$1 == f { print $6 }' "$synth_tsv"; }
+fsize() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1" 2>/dev/null; }
+
+# --- harness self-checks (MFIC: the gate must be falsifiable) ---------------
+note "=== harness self-checks ==="
+big_fix="$(fixture_path h264_mp4)"
+small_fix="$(fixture_path wav)"
+if [ -z "$big_fix" ] || [ ! -f "$big_fix" ] || [ -z "$small_fix" ] || [ ! -f "$small_fix" ]; then
+	printf 'SKIP: streaming_ceiling — control fixtures (h264_mp4, wav) unavailable\n' >&2
+	exit 77
+fi
+
+big_size="$(fsize "$big_fix")"
+run_gated "$VIDEO_CEILING" 120 "$tmpdir/ctl-streamer.log" \
+	bash -c "head -c $big_size '$big_fix' > /dev/null"
+if [ "$GATED_CLASS" = streams ]; then
+	note "  PASS: streamer-control — head -c over $big_size bytes completed under $((VIDEO_CEILING / 1048576))M ceiling (${GATED_SECS}s)"
+else
+	fail "streamer-control: genuine streamer classed '$GATED_CLASS' (rc=$GATED_RC) — ceiling mechanism broken"
+fi
+
+run_gated "$AUDIO_CEILING" 120 "$tmpdir/ctl-slurper.log" \
+	bash -c "head -c 209715200 '$big_fix' | sort -S 1G > /dev/null"
+if [ "$GATED_CLASS" = resident ]; then
+	note "  PASS: slurper-control — 200MiB in-memory sort killed under $((AUDIO_CEILING / 1048576))M ceiling (${GATED_SECS}s)"
+else
+	fail "slurper-control: known slurper classed '$GATED_CLASS' (rc=$GATED_RC) — ceiling does not bite"
+fi
+
+run_gated $((16 * 1024 * 1024 * 1024)) "$AUDIO_TIMEOUT" "$tmpdir/ctl-high.log" \
+	"$BIN" --ndjson "$small_fix"
+if [ "$GATED_CLASS" = streams ]; then
+	note "  PASS: high-ceiling control — validate completed rc=0 under 16G ceiling (${GATED_SECS}s)"
+else
+	fail "high-ceiling control: validate classed '$GATED_CLASS' (rc=$GATED_RC) under 16G — gate blanket-fails; log tail:"
+	tail -5 "$tmpdir/ctl-high.log" >&2
+fi
+
+if [ "$fails" -gt 0 ]; then
+	printf 'FAIL: streaming_ceiling harness self-checks failed (%d) — family results would be meaningless\n' "$fails" >&2
+	exit 1
+fi
+
+# --- per-family sweep -------------------------------------------------------
+note ""
+note "=== per-family ceiling sweep ==="
+printf '  %-12s %-8s %-9s %-5s %-14s %-9s %s\n' FAMILY CEILING OBSERVED RC SECS EXPECTED VERDICT
+
+seen_families=" "
+while IFS=$'\t' read -r fam expected; do
+	case "$fam" in ''|'#'*) continue ;; esac
+	seen_families="$seen_families$fam "
+	if [ "$expected" != streams ] && [ "$expected" != resident ]; then
+		fail "manifest row '$fam' has invalid expectation '$expected' (want streams|resident)"
+		continue
+	fi
+	status="$(fixture_status "$fam")"
+	if [ -z "$status" ]; then
+		fail "family '$fam' in manifest but unknown to synth-av-fixtures (drift)"
+		continue
+	fi
+	if [ "$status" = skip ]; then
+		printf '  %-12s %-8s %-9s %-5s %-14s %-9s %s\n' "$fam" - SKIPPED - - "$expected" "-"
+		printf 'SKIP(family): %s — %s\n' "$fam" "$(fixture_detail "$fam")" >&2
+		continue
+	fi
+	if [ "$status" != ok ]; then
+		fail "family '$fam' fixture status '$status' — synthesis failed"
+		continue
+	fi
+	fix="$(fixture_path "$fam")"
+	cat="$(fixture_cat "$fam")"
+	if [ "$cat" = video ]; then
+		ceiling=$VIDEO_CEILING; tmo=$VIDEO_TIMEOUT
+	else
+		ceiling=$AUDIO_CEILING; tmo=$AUDIO_TIMEOUT
+	fi
+	run_gated "$ceiling" "$tmo" "$tmpdir/fam-$fam.log" "$BIN" --ndjson "$fix"
+	if [ "$GATED_CLASS" = "$expected" ]; then
+		verdict=MATCH
+	else
+		verdict=MISMATCH
+		fail "family '$fam': observed '$GATED_CLASS' (rc=$GATED_RC) but manifest expects '$expected' — if a conversion landed, flip the manifest row in the SAME commit; log tail:"
+		tail -3 "$tmpdir/fam-$fam.log" >&2
+	fi
+	printf '  %-12s %-8s %-9s %-5s %-14s %-9s %s\n' \
+		"$fam" "$((ceiling / 1048576))M" "$GATED_CLASS" "$GATED_RC" "${GATED_SECS}s" "$expected" "$verdict"
+done < "$MANIFEST"
+
+# Reverse direction: every synthesized family must carry an expectation row —
+# a fixture without a claim is capability-matrix drift.
+while IFS=$'\t' read -r fam rest; do
+	case "$fam" in ''|'#'*) continue ;; esac
+	case "$seen_families" in
+		*" $fam "*) : ;;
+		*) fail "family '$fam' has a fixture recipe but no row in streaming_expected.tsv (drift)" ;;
+	esac
+done < "$synth_tsv"
+
+note ""
+if [ "$fails" -gt 0 ]; then
+	printf 'FAIL: streaming_ceiling — %d failure(s)\n' "$fails" >&2
+	exit 1
+fi
+note "=== streaming_ceiling: reality matches streaming_expected.tsv ==="
+exit 0
