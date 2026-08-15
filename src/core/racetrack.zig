@@ -133,13 +133,19 @@ pub const Racetrack = struct {
 				if (skip > 0) self.next_logical += skip;
 				break;
 			}
-			blocked = true;
+			if (!blocked) {
+				blocked = true;
+				// Counted when the wait BEGINS (still under the mutex) so an
+				// observer can synchronize on "a waiter exists" instead of
+				// guessing at scheduling; the elapsed-time stats still land
+				// after the wait completes.
+				self.stats.blocked_acquire_count += 1;
+			}
 			self.cond.waitUncancelable(runtime.io(), &self.mutex);
 		}
 
 		if (blocked) {
 			const elapsed: u64 = @intCast(runtime.nanoTimestamp() - start);
-			self.stats.blocked_acquire_count += 1;
 			self.stats.total_blocked_ns += elapsed;
 			if (elapsed > self.stats.max_blocked_ns) self.stats.max_blocked_ns = elapsed;
 		}
@@ -324,9 +330,10 @@ test "Racetrack acquire blocks then unblocks on head advance" {
 	var latch = std.atomic.Value(u32).init(0);
 	var t = try std.Thread.spawn(.{}, Worker.run, .{ &rt, &latch });
 
-	// Bounded spin to confirm worker is blocked (no time-based assertion).
-	var spins: usize = 0;
-	while (spins < 1_000_000 and latch.load(.seq_cst) == 0) : (spins += 1) {}
+	// Deterministic: acquire(100) MUST block (500 + 100 > 512 window), and
+	// the blocked count becomes visible the moment the worker parks. Wait on
+	// that event; a spin budget racing thread scheduling is a flake.
+	while (rt.snapshot().blocked_acquire_count == 0) std.Thread.yield() catch {};
 	try std.testing.expectEqual(@as(u32, 0), latch.load(.seq_cst));
 
 	rt.release(a.token);

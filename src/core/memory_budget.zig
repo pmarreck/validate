@@ -317,8 +317,11 @@ test "MemoryBudget observed acquire reports one real admission wait" {
 	var latch = std.atomic.Value(u32).init(0);
 	var t = try std.Thread.spawn(.{}, Worker.run, .{ &b, &recorder, &latch });
 
-	var spins: usize = 0;
-	while (spins < 1_000_000 and recorder.begins.load(.seq_cst) == 0) : (spins += 1) {}
+	// Deterministic: 500 > 224 available, so the worker MUST enter the
+	// admission wait and fire on_wait_begin exactly once (beginWait latches).
+	// Wait on that event; a bounded spin budget racing thread scheduling is
+	// exactly the flake this replaced.
+	while (recorder.begins.load(.seq_cst) == 0) std.Thread.yield() catch {};
 	try std.testing.expectEqual(@as(u32, 1), recorder.begins.load(.seq_cst));
 	try std.testing.expectEqual(@as(u32, 0), recorder.ends.load(.seq_cst));
 	try std.testing.expectEqual(@as(u32, 0), latch.load(.seq_cst));
