@@ -83,6 +83,33 @@ at the bottom. Older completed sections were rolled up — full history lives in
       verification note. libjpeg-turbo removal (old task D) + closure proof
       (E) + hard-gate (F) fold into #15's hard-gate work.
 
+- [x] **2026-08-15 scan-triage + fanout day — SIX landings pushed through
+      `3b3ea4137`:** Peter's full-scan triage convicted ~125 of ~150 "invalid"
+      rows as false positives via oracles (exiftool/unzip/gs/ffmpeg/file).
+      Landed: `36781c00d` dangling-symlink WARN (~60 rows); `1aaddf082`
+      ZIP64 sentinel resolution — CD sentinels vs real LFH sizes, offsets
+      >2GiB sentinel everything (~35 movie zips un-condemned; extra-field
+      WARN re-grounded in APPNOTE 4.5.1); `516ec190d` hermetic ledger
+      provenance controls (the flake needed a DIRTY tree — died the moment
+      the tree went clean; closes flake 3/3); `aa7086484`+`24c656079`
+      batch-scale (bounded submission O(N)→5.4KB with mutation-controlled
+      test; "55KB/file leak" root-caused as NO-leak — concurrent residency +
+      stat.size under-reservation, starring a 64MB JXL at 2.07GB/12min;
+      event-driven sync tests); `3b3ea4137` A/V streaming proof harness
+      (SPLIT reality: h264/mp4+h265/mkv+most audio stream via evictable
+      pages; h265/mp4, vp9, theora, opus/vorbis-ogg resident; expectations
+      manifest = claim-implies-proof; growing ladder documented).
+      In flight: #26 (PDF flate + AAC 1-of-N, both oracle-convicted),
+      #27 (verdict-tier honesty + detection identity + GIF-trailer WARN
+      under the tolerance doctrine).
+      OPERATIONAL LESSON: long detached gates must run under `setsid`
+      (tty SIGINT reached ordinary detached subshells — the entire
+      kill-mystery lineage was signal propagation; two gate runs died
+      "interrupted by the user" before the fix, third passed clean).
+      Open ship-posture question for Peter: v1 with honest resident-family
+      manifest + ≥2x admission multiplier vs converting codec families
+      pre-ship (#23 conversions).
+
 - [x] **#15 RAW cutover + hard-gate COMPLETE (2026-08-15, pushed through
       `94f630e9d`):** rawz `2d030cf7` integrated (one-instance tiffz-parser
       injection); PEF cut over TDD (PackBits-decode-before-extent-check fixed
