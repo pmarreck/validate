@@ -469,6 +469,7 @@
 							sqlite
 							zlib
 							ffmpeg  # For testing ffmpeg fallback validation paths
+							mkvtoolnix  # mkvmerge: ContentCompression streaming family (mkv_cc) fixture synthesis
 							zip  # For the large-zip CRC gate (tests/cli/zip_large_entry_crc)
 						] ++ pkgs.lib.optionals isDarwin [
 							xcodegen
@@ -504,6 +505,7 @@
 							gnused
 							brotli
 							ffmpeg
+							mkvtoolnix
 							luajit
 							openssl
 							qpdf
