@@ -14,16 +14,54 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [ ] **Give validate_gui a current validate commit to pin (Peter,
+      2026-08-19):** after the active h265 conversion is green, landed, and
+      pushed, send validate_gui the exact `yolo` commit via LLMsend and state
+      that its ancestry includes the encrypted-PDF fix. Curiosity poke:
+      sending an unpushed SHA would leave the consumer unable to fetch it, so
+      verify remote reachability before the handoff.
+
+- [x] **Spot-check `ACES - Extra Slots-44902.zip` WARN validity (Peter,
+      2026-08-19):** inspect the local and central ZIP headers plus an
+      independent reader for the reported extra-field length mismatch;
+      determine whether WARN is evidence-backed or a false positive. Diagnose
+      only unless Peter asks for a fix. Result: stale false positive from a
+      pre-`1aaddf082` binary/scan; LFHs legally carry no extras while CDs
+      carry valid 36-byte NTFS timestamp extras. Current signed old/new review
+      binaries return fully validated with no warning; unzip, 7-Zip, and
+      bsdtar agree. Completed 2026-08-19 17:42 EDT. Curiosity poke: ZIP permits local and
+      central extra fields to carry different field sets, so unequal aggregate
+      lengths alone may be legal even when a same-ID payload mismatch is not.
+
+- [x] **Audit and recoverably clean stale validate sibling directories (Peter,
+      2026-08-19):** inspect `~/Code/validate-archive-streaming`,
+      `validate-image-streaming`, `validate-mac-perf`, `validate-wip-snapshots`,
+      and `validate_pics` for dirty/untracked files, commits unique from `yolo`,
+      remotes, and live erected-agent references. Preserve any useful work;
+      move only proven-redundant directories to system Trash, then prune stale
+      worktree registrations without deleting unique branches. Result: the
+      archive commit is patch-equivalent to `yolo`; image/mac are ancestors
+      with symlink-only dirt; the WIP snapshot reconstructs exactly to commit
+      `af3d2ebe`; every regular `validate_pics` file is already a reachable Git
+      object. All five directories and the three linked-worktree admin records
+      are preserved under
+      `~/.Trash/validate-stale-20260819-1844EDT/`; all three branch refs remain.
+      Completed 2026-08-19 18:44 EDT. Curiosity poke: a clean worktree can still
+      be the sole reference to commits or artifacts absent from `yolo`, so
+      directory cleanliness alone is insufficient evidence.
+
 - [ ] **A/V streaming conversions (Peter ruling 2026-08-19: "relentlessly pursue",
-      sniper/bolter/shotgun no-regression as the FP/FN acceptance bar):** three
-      worktree agents in flight — ogg family (opus/vorbis/theora), h265_mp4
-      (differential vs streaming h264_mp4), vp9_webm (differential vs streaming
-      h265_mkv). Each flips its manifest row in the conversion commit; ceiling
-      gate + family sweep before/after are acceptance. NEW follow-up: mkv_cc
-      first-ever witness (2026-08-19, mkvtoolnix now in dev shell) proved the
-      inferred `streams` guess WRONG — observed resident rc=137@4s (zlib
-      ContentCompression holds file-proportional memory); manifest corrected to
-      observed truth; conversion still owed.
+      sniper/bolter/shotgun no-regression as the FP/FN acceptance bar):**
+      h265_mp4 is complete: MP4 samples now decode through bounded 8MiB Annex-B
+      windows, H.265 scratch uses reclaiming allocation, all 12 real-cgroup
+      ceiling families passed, and 720 seeded old/new corruption trials matched
+      exactly. Remaining worktrees cover the Ogg family and vp9_webm; mkv_cc is
+      also owed after its first witness disproved the inferred `streams` row.
+      Each conversion flips its manifest row in the conversion commit; ceiling
+      gate plus family sweep before/after are acceptance. h265_mp4 completed
+      2026-08-19 19:12 EDT. Curiosity poke: FFI task arenas make `free()` a
+      no-op, so any new per-sample or growable scratch must use the reclaiming
+      allocator or an equivalent bounded custody pattern.
 - [ ] **Batch-scale (#28, agent in flight):** >=2x admission multiplier (first
       commit), decoded-size-aware admission + wedge-class isolation, parallel
       work-stealing directory enumeration. Inputs: validate_gui RSS probes in
