@@ -17,6 +17,7 @@
 #   3. AGREEMENT  — every A/V family row must carry the same streaming class
 #                   as tests/cli/streaming_expected.tsv (independent join).
 #   4. VOCABULARY — status column limited to the honest closed set.
+#   5. TSV HYGIENE — exactly 11 columns and no trailing whitespace.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -102,5 +103,11 @@ done < "$STREAMING"
 # --- 4. VOCABULARY: status column closed set --------------------------------
 bad_status="$(awk -F'\t' 'NR > 1 && $10 != "deep" && $10 != "partial" && $10 != "structural-ceiling" && $10 != "unwitnessed" && $10 != "detection-only" { print $1 ": " $10 }' "$MATRIX")"
 [ -z "$bad_status" ] || fail "invalid status values: $bad_status"
+
+# --- 5. TSV HYGIENE: fixed shape without Git-hostile trailing tabs ----------
+bad_fields="$(awk -F'\t' 'NF != 11 { print NR ": " NF }' "$MATRIX" | head -5)"
+[ -z "$bad_fields" ] || fail "matrix rows must have exactly 11 columns (line: fields): $bad_fields"
+trailing="$(awk '/[ \t]$/ { print NR; if (++n == 5) exit }' "$MATRIX")"
+[ -z "$trailing" ] || fail "matrix has trailing whitespace on line(s): $trailing"
 
 echo "PASS: capability matrix is fresh, complete ($tokens_n formats), streaming-consistent, and honestly labeled"

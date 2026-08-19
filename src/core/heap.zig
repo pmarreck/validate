@@ -184,6 +184,13 @@ pub fn validateAllocator() std.mem.Allocator {
     return thread_arena orelse std.heap.smp_allocator;
 }
 
+/// Returns an allocator whose individual frees reclaim storage even while a
+/// batch task is active. Use it for growable or per-item scratch whose memory
+/// bound depends on releasing superseded buffers before the task ends.
+pub fn reclaimingScratchAllocator() std.mem.Allocator {
+    return std.heap.smp_allocator;
+}
+
 /// Set the per-thread arena override. Call from a task entry, paired
 /// with `clearThreadArena()` on exit (typically via `defer`).
 pub fn setThreadArena(allocator: std.mem.Allocator) void {
@@ -391,4 +398,24 @@ test "validateAllocator round-trips a 64KB allocation" {
     try std.testing.expectEqual(@as(usize, 65536), buf.len);
     @memset(buf, 0xA5);
     try std.testing.expectEqual(@as(u8, 0xA5), buf[12345]);
+}
+
+test "reclaiming scratch allocator bypasses the per-task arena" {
+    var arena_storage: [128]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&arena_storage);
+    var arena = std.heap.ArenaAllocator.init(fixed.allocator());
+    defer arena.deinit();
+
+    const prior_thread_arena = thread_arena;
+    setThreadArena(arena.allocator());
+    defer thread_arena = prior_thread_arena;
+
+    try std.testing.expectError(error.OutOfMemory, validateAllocator().alloc(u8, 4096));
+
+    const scratch = reclaimingScratchAllocator();
+    const first = try scratch.alloc(u8, 4096);
+    scratch.free(first);
+    const grown = try scratch.alloc(u8, 8192);
+    defer scratch.free(grown);
+    try std.testing.expectEqual(@as(usize, 8192), grown.len);
 }

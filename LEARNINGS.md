@@ -6,6 +6,38 @@ maintained_by: agent
 
 # LEARNINGS.md
 
+## 2026-08-19 — `heap.validateAllocator()` is the per-task ARENA under FFI batch: per-item alloc/free churn leaks 1:1
+
+**Symptom:** after converting the MP4 decode pass to a bounded window walk,
+peak RssAnon on the 2GiB HEVC ceiling fixture *rose* to 2.1GiB (whole file
+resident) while the identical walk on H.264 peaked at 12MiB.
+
+**Root cause:** `heap.validateAllocator()` resolves to the FFI dispatcher's
+per-task ArenaAllocator (`thread_arena`), not smp, whenever a file task is
+running. Arena `free()` is a no-op (except for the most recent allocation), so
+any *per-item* alloc/free pattern routed through it — here, the H.265
+validator's two per-slice CABAC RBSP buffers — accumulates until task end,
+~1:1 with the bytes processed. The leak had been masked because the old
+whole-bitstream path stopped decoding at a 256MiB cap; decoding every sample
+exposed it. The `DivertingAllocator` big-alloc bypass (>=16MiB → page
+allocator) does NOT save you: per-slice NALs are KB–MB sized.
+
+**Rule:** scratch that is re-acquired per NAL / per record / per iteration,
+or whose capacity grows during a task, must NOT use `validateAllocator()`.
+Use `heap.reclaimingScratchAllocator()` so individual frees return storage,
+then hoist reusable buffers to function scope and grow only when needed.
+Hoisting alone is insufficient when the function itself is called repeatedly
+inside a streaming window walk: its final arena-backed free is still a no-op,
+and every window strands another allocation. The same reasoning applies to
+per-slice CABAC maps and `ArrayList` growth interleaved with other arena
+allocations: each generation can remain until task end. This is what made the
+old 256MiB bitstream build peak at 542MiB on h265 vs 306MiB on h264.
+
+**How it was found:** RssAnon time-series poller (50ms `/proc/<pid>/status`
+sampling) showed linear ~430MB/s growth exactly tracking the sample-read
+rate; codec bisection (same walk, h264 clean / h265 leaking) pinned it to the
+h265-only per-slice allocations.
+
 ## 2026-07-07 — Zig `export fn ... bool` + C header `int` = garbage-true across the FFI
 
 **Symptom:** `validate` prepended a U+200F RIGHT-TO-LEFT MARK to *every* `OK`/`FAIL`

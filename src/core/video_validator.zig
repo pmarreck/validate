@@ -28,6 +28,7 @@ const std = @import("std");
 const runtime = @import("runtime.zig");
 const builtin = @import("builtin");
 const errmsg = @import("error_messages.zig");
+const heap = @import("heap.zig");
 const file_source = @import("file_source.zig");
 const FileSource = file_source.FileSource;
 
@@ -416,18 +417,191 @@ pub fn validateMp4Video(allocator: Allocator, source: *FileSource, max_frames: u
         }
     }
 
-    // Build combined bitstream: codec private + keyframe samples
+    // Streaming decode: bounded Annex-B window walk (see AnnexBWindow).
+    // Every sample is still decoded — this validates MORE payload than the
+    // old whole-bitstream build, which stopped at a 256MiB cap — but peak
+    // anonymous memory is now O(window + max sample), independent of file
+    // size (the h265_mp4 streaming conversion). Requires codec_private so
+    // each flushed window is self-initializing; without it (out-of-spec for
+    // avc1/hvc1/av01 sample entries) later windows would lose in-band
+    // parameter sets from earlier samples, so fall back to the legacy
+    // capped single-bitstream decode.
+    var result = if (codec_private) |cp| validateMp4SamplesWindowed(
+        allocator,
+        file,
+        sample_table,
+        video_codec,
+        nal_length_size,
+        max_frames,
+        cp.data,
+    ) else validateMp4SamplesLegacy(
+        allocator,
+        file,
+        sample_table,
+        video_codec,
+        nal_length_size,
+        max_frames,
+    );
+
+    result.byte_validated = byte_validated;
+    return result;
+}
+
+/// Nominal decode-window size for the streaming MP4 sample walk. Large enough
+/// that per-flush re-parse of the codec-private prefix (a few KB) is noise,
+/// small enough that anonymous memory stays far under the streaming-ceiling
+/// gate (512MiB for video) regardless of file size.
+const MP4_DECODE_WINDOW_BYTES: usize = 8 * 1024 * 1024;
+
+fn noFramesDecodedResult(video_codec: VideoCodec) VideoValidationResult {
+    const msg = switch (video_codec) {
+        .h264 => "No frames decoded from H.264 stream",
+        .hevc => "No frames decoded from HEVC",
+        .av1 => "No frames decoded from AV1",
+        else => "No frames decoded from video stream",
+    };
+    return VideoValidationResult.invalid(msg, video_codec);
+}
+
+fn decodeBitstreamForCodec(
+    allocator: Allocator,
+    data: []const u8,
+    video_codec: VideoCodec,
+    max_frames: u32,
+) VideoValidationResult {
+    return switch (video_codec) {
+        .hevc => validateHevcStream(data, max_frames),
+        .av1 => validateAv1Stream(allocator, data, max_frames),
+        .h264 => validateH264Stream(data, max_frames),
+        else => VideoValidationResult.skipped(errmsg.unsupported("codec")),
+    };
+}
+
+/// Grows reusable scratch without surrendering the caller's valid buffer
+/// until its replacement has been allocated successfully.
+fn growScratchBuffer(allocator: Allocator, buffer: *[]u8, needed: usize) bool {
+	if (needed <= buffer.*.len) return true;
+	const grown = allocator.alloc(u8, needed) catch return false;
+	allocator.free(buffer.*);
+	buffer.* = grown;
+	return true;
+}
+
+/// Streaming MP4 decode pass: walk every sample, converting to Annex-B into a
+/// bounded window that is decoded and reset whenever the next sample will not
+/// fit. codec_private prefixes every window (parameter sets re-parse
+/// identically), frame counts accumulate across windows, the first window
+/// warning is kept, and the first invalid window fails the file — matching
+/// the legacy single-bitstream verdicts while keeping anonymous memory
+/// independent of file size.
+fn validateMp4SamplesWindowed(
+    allocator: Allocator,
+    file: *FileSource,
+    sample_table: SampleTableInfo,
+    video_codec: VideoCodec,
+    nal_length_size: u8,
+    max_frames: u32,
+    codec_private: []const u8,
+) VideoValidationResult {
+    const max_sample_size: u32 = 50 * 1024 * 1024; // 50MB max per sample
+    const scratch_allocator = heap.reclaimingScratchAllocator();
+
+    const locations = sample_table.getAllSampleLocations(allocator) orelse
+        return noFramesDecodedResult(video_codec);
+    defer allocator.free(locations);
+
+    var window = AnnexBWindow.init(scratch_allocator, MP4_DECODE_WINDOW_BYTES, codec_private) orelse
+        return VideoValidationResult.invalid("Memory allocation failed", video_codec);
+    defer window.deinit();
+
+    var sample_buffer: []u8 = scratch_allocator.alloc(u8, 1024 * 1024) catch
+        return VideoValidationResult.invalid("Memory allocation failed", video_codec);
+    defer scratch_allocator.free(sample_buffer);
+
+    var samples_appended: u32 = 0;
+    var frames_total: u32 = 0;
+    var warning: ?[]const u8 = null;
+
+    for (locations) |location| {
+        if (samples_appended >= max_frames or frames_total >= max_frames) break;
+        if (location.size == 0) continue;
+        if (location.size > max_sample_size) continue;
+
+        if (!growScratchBuffer(scratch_allocator, &sample_buffer, location.size)) break;
+
+        file.seekTo(location.offset) catch continue;
+        const bytes_read = file.read(sample_buffer[0..location.size]) catch continue;
+        if (bytes_read < location.size) continue;
+        const sample = sample_buffer[0..location.size];
+
+        const converted_size: usize = if (video_codec == .av1)
+            sample.len
+        else
+            annexBConvertedSize(sample, nal_length_size) orelse continue;
+
+        if (!window.fits(converted_size)) {
+            if (window.payloadLen() > 0) {
+                const remaining = max_frames - frames_total;
+                var flush = decodeBitstreamForCodec(allocator, window.items(), video_codec, remaining);
+                if (!flush.valid) {
+                    flush.frames_decoded = frames_total +| flush.frames_decoded;
+                    return flush;
+                }
+                frames_total = frames_total +| flush.frames_decoded;
+                if (warning == null) warning = flush.warning_message;
+                window.reset();
+                if (frames_total >= max_frames) break;
+            }
+            if (!window.fits(converted_size)) {
+                if (!window.ensureCapacityForPayload(converted_size)) continue;
+            }
+        }
+
+        const dest = window.appendSpace(converted_size) orelse continue;
+        if (video_codec == .av1) {
+            @memcpy(dest, sample);
+        } else {
+            const written = convertToAnnexBInto(sample, nal_length_size, dest);
+            std.debug.assert(written == converted_size);
+        }
+        samples_appended += 1;
+    }
+
+    if (samples_appended == 0) {
+        return noFramesDecodedResult(video_codec);
+    }
+
+    if (window.payloadLen() > 0 and frames_total < max_frames) {
+        const remaining = max_frames - frames_total;
+        var flush = decodeBitstreamForCodec(allocator, window.items(), video_codec, remaining);
+        if (!flush.valid) {
+            flush.frames_decoded = frames_total +| flush.frames_decoded;
+            return flush;
+        }
+        frames_total = frames_total +| flush.frames_decoded;
+        if (warning == null) warning = flush.warning_message;
+    }
+
+    var ok = VideoValidationResult.okDecoded(video_codec, frames_total);
+    ok.warning_message = warning;
+    return ok;
+}
+
+/// Legacy capped single-bitstream decode, kept ONLY for MP4s whose sample
+/// entry lacks codec_private (out-of-spec): in-band parameter sets from early
+/// samples must stay visible to later ones, which windows cannot guarantee.
+fn validateMp4SamplesLegacy(
+    allocator: Allocator,
+    file: *FileSource,
+    sample_table: SampleTableInfo,
+    video_codec: VideoCodec,
+    nal_length_size: u8,
+    max_frames: u32,
+) VideoValidationResult {
     var bitstream: std.ArrayListUnmanaged(u8) = .empty;
     defer bitstream.deinit(allocator);
 
     const max_bitstream_bytes: usize = 256 * 1024 * 1024; // 256MB safety cap
-
-    // Add codec private data first (SPS/PPS must come before frames)
-    if (codec_private != null) {
-        bitstream.appendSlice(allocator, codec_private.?.data) catch {
-            return VideoValidationResult.invalid("Memory allocation failed", video_codec);
-        };
-    }
 
     // Extract ALL frames (not just keyframes) to ensure full decode validation.
     // A bit error in a P-frame or B-frame would go undetected if we only decode keyframes.
@@ -444,27 +618,10 @@ pub fn validateMp4Video(allocator: Allocator, source: *FileSource, max_frames: u
     );
 
     if (frames_extracted == 0) {
-        const msg = switch (video_codec) {
-            .h264 => "No frames decoded from H.264 stream",
-            .hevc => "No frames decoded from HEVC",
-            .av1 => "No frames decoded from AV1",
-            else => "No frames decoded from video stream",
-        };
-        var no_frames = VideoValidationResult.invalid(msg, video_codec);
-        no_frames.byte_validated = byte_validated;
-        return no_frames;
+        return noFramesDecodedResult(video_codec);
     }
 
-    // Decode the combined bitstream (all frames, not just keyframes)
-    var result = switch (video_codec) {
-        .hevc => validateHevcStream(bitstream.items, max_frames),
-        .av1 => validateAv1Stream(allocator, bitstream.items, max_frames),
-        .h264 => validateH264Stream(bitstream.items, max_frames),
-        else => VideoValidationResult.skipped(errmsg.unsupported("codec")),
-    };
-
-    result.byte_validated = byte_validated;
-    return result;
+    return decodeBitstreamForCodec(allocator, bitstream.items, video_codec, max_frames);
 }
 
 const MkvFrameValidationContext = struct {
@@ -2347,6 +2504,129 @@ pub fn convertToAnnexB(allocator: Allocator, sample_data: []const u8, nal_length
     return output.toOwnedSlice(allocator) catch return null;
 }
 
+/// Exact output size of an MP4 length-prefix -> Annex-B start-code conversion
+/// (4-byte 00 00 00 01 per NAL), mirroring convertToAnnexB byte-for-byte:
+/// truncated trailing NALs are dropped, zero-length NALs still emit a start
+/// code, and null means "no convertible NALs" or an invalid nal_length_size.
+/// Zero-allocation sizing pass for the streaming window walk.
+fn annexBConvertedSize(sample_data: []const u8, nal_length_size: u8) ?usize {
+	if (sample_data.len == 0) return null;
+	if (nal_length_size == 0 or nal_length_size > 4) return null;
+
+	var total: usize = 0;
+	var pos: usize = 0;
+	while (pos + nal_length_size <= sample_data.len) {
+		var nal_len: u32 = 0;
+		for (sample_data[pos .. pos + nal_length_size]) |b| {
+			nal_len = (nal_len << 8) | b;
+		}
+		pos += nal_length_size;
+		if (pos + nal_len > sample_data.len) break;
+		total += 4 + nal_len;
+		pos += nal_len;
+	}
+
+	if (total == 0) return null;
+	return total;
+}
+
+/// Zero-allocation twin of convertToAnnexB: writes the converted stream into
+/// caller-provided `out` (must be at least annexBConvertedSize() bytes) and
+/// returns the byte count written. The streaming MP4 sample walk uses this so
+/// per-sample conversion never allocates (allocations interleaved with a
+/// growing bitstream were what the FFI arena could never reclaim).
+fn convertToAnnexBInto(sample_data: []const u8, nal_length_size: u8, out: []u8) usize {
+	var written: usize = 0;
+	var pos: usize = 0;
+	while (pos + nal_length_size <= sample_data.len) {
+		var nal_len: u32 = 0;
+		for (sample_data[pos .. pos + nal_length_size]) |b| {
+			nal_len = (nal_len << 8) | b;
+		}
+		pos += nal_length_size;
+		if (pos + nal_len > sample_data.len) break;
+
+		@memcpy(out[written .. written + 4], &[_]u8{ 0x00, 0x00, 0x00, 0x01 });
+		written += 4;
+		@memcpy(out[written .. written + nal_len], sample_data[pos .. pos + nal_len]);
+		written += nal_len;
+		pos += nal_len;
+	}
+	return written;
+}
+
+/// Bounded-memory Annex-B accumulation window for the MP4 sample decode walk.
+/// This is the h265_mp4 streaming conversion: instead of concatenating every
+/// sample into one whole-file-proportional bitstream (256MiB cap plus
+/// arena-retained realloc generations -> 542MiB anonymous peak on the 2GiB
+/// HEVC ceiling fixture), samples accumulate into this fixed window; when the
+/// next sample will not fit the caller decodes the window and resets it. The
+/// codec-private prefix (Annex-B VPS/SPS/PPS or AV1 config OBUs) survives
+/// every reset so each flushed window is a self-initializing stream.
+const AnnexBWindow = struct {
+	buf: []u8,
+	len: usize,
+	prefix_len: usize,
+	allocator: Allocator,
+
+	/// `capacity` is a nominal total size; a prefix longer than it still fits
+	/// (the buffer is sized to hold the prefix plus at least one payload byte).
+	fn init(allocator: Allocator, capacity: usize, prefix: []const u8) ?AnnexBWindow {
+		const size = @max(capacity, prefix.len + 1);
+		const buf = allocator.alloc(u8, size) catch return null;
+		@memcpy(buf[0..prefix.len], prefix);
+		return .{
+			.buf = buf,
+			.len = prefix.len,
+			.prefix_len = prefix.len,
+			.allocator = allocator,
+		};
+	}
+
+	fn deinit(self: *AnnexBWindow) void {
+		self.allocator.free(self.buf);
+	}
+
+	/// True if `size` more payload bytes fit without a flush.
+	fn fits(self: *const AnnexBWindow, size: usize) bool {
+		return self.len + size <= self.buf.len;
+	}
+
+	/// Grow the buffer so a single payload of `size` bytes fits after the
+	/// prefix. Only meaningful on an empty (just-reset) window: accumulated
+	/// payload is NOT preserved, the prefix is.
+	fn ensureCapacityForPayload(self: *AnnexBWindow, size: usize) bool {
+		const needed = self.prefix_len + size;
+		if (needed <= self.buf.len) return true;
+		const new_buf = self.allocator.alloc(u8, needed) catch return false;
+		@memcpy(new_buf[0..self.prefix_len], self.buf[0..self.prefix_len]);
+		self.allocator.free(self.buf);
+		self.buf = new_buf;
+		self.len = self.prefix_len;
+		return true;
+	}
+
+	/// Reserve `size` bytes for the caller to fill; null if it doesn't fit.
+	fn appendSpace(self: *AnnexBWindow, size: usize) ?[]u8 {
+		if (!self.fits(size)) return null;
+		const space = self.buf[self.len .. self.len + size];
+		self.len += size;
+		return space;
+	}
+
+	fn payloadLen(self: *const AnnexBWindow) usize {
+		return self.len - self.prefix_len;
+	}
+
+	fn items(self: *const AnnexBWindow) []const u8 {
+		return self.buf[0..self.len];
+	}
+
+	fn reset(self: *AnnexBWindow) void {
+		self.len = self.prefix_len;
+	}
+};
+
 /// Extract codec private data (SPS/PPS for H.264/HEVC) and convert to Annex B
 fn extractCodecPrivate(allocator: Allocator, file: *FileSource, stsd_offset: u64, codec: VideoCodec) ?CodecPrivateData {
     // Skip stsd header (8 bytes) + version/flags (4 bytes) + entry count (4 bytes)
@@ -3626,4 +3906,123 @@ test "getAllSampleLocations matches getSampleLocation" {
         try std.testing.expectEqual(individual.offset, bulk_locations[i].offset);
         try std.testing.expectEqual(individual.size, bulk_locations[i].size);
     }
+}
+
+test "annexBConvertedSize matches convertToAnnexB output length (differential)" {
+	// The allocating convertToAnnexB is the independent oracle for its
+	// zero-allocation streaming twin, including lenient truncated-tail
+	// handling and zero-length NAL passthrough.
+	const cases = [_]struct { data: []const u8, nls: u8 }{
+		// 4-byte prefixes, two NALs
+		.{ .data = &[_]u8{ 0x00, 0x00, 0x00, 0x04, 0x67, 0x64, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x02, 0x68, 0xee }, .nls = 4 },
+		// 3-byte prefix, one NAL (output grows by 1 per NAL)
+		.{ .data = &[_]u8{ 0x00, 0x00, 0x02, 0x65, 0x88 }, .nls = 3 },
+		// 2-byte prefixes (output grows by 2 per NAL)
+		.{ .data = &[_]u8{ 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x01, 0xCC }, .nls = 2 },
+		// 1-byte prefixes (output grows by 3 per NAL)
+		.{ .data = &[_]u8{ 0x02, 0xAA, 0xBB, 0x01, 0xCC }, .nls = 1 },
+		// truncated trailing NAL is dropped
+		.{ .data = &[_]u8{ 0x00, 0x00, 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x00, 0x00, 0x09, 0xCC }, .nls = 4 },
+		// zero-length NAL emits a bare start code (bug-for-bug with oracle)
+		.{ .data = &[_]u8{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xEE }, .nls = 4 },
+	};
+	for (cases) |case| {
+		const oracle = convertToAnnexB(std.testing.allocator, case.data, case.nls);
+		defer if (oracle) |o| std.testing.allocator.free(o);
+		const expected: usize = if (oracle) |o| o.len else 0;
+		try std.testing.expectEqual(expected, annexBConvertedSize(case.data, case.nls) orelse 0);
+	}
+	// invalid nal_length_size mirrors the oracle's null
+	try std.testing.expect(annexBConvertedSize(&[_]u8{ 0x00, 0x01, 0xAA }, 5) == null);
+	try std.testing.expect(annexBConvertedSize(&[_]u8{}, 4) == null);
+}
+
+test "convertToAnnexBInto produces identical bytes to convertToAnnexB (differential)" {
+	const cases = [_]struct { data: []const u8, nls: u8 }{
+		.{ .data = &[_]u8{ 0x00, 0x00, 0x00, 0x04, 0x67, 0x64, 0x00, 0x1f, 0x00, 0x00, 0x00, 0x02, 0x68, 0xee }, .nls = 4 },
+		.{ .data = &[_]u8{ 0x00, 0x00, 0x02, 0x65, 0x88 }, .nls = 3 },
+		.{ .data = &[_]u8{ 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x01, 0xCC }, .nls = 2 },
+		.{ .data = &[_]u8{ 0x02, 0xAA, 0xBB, 0x01, 0xCC }, .nls = 1 },
+		.{ .data = &[_]u8{ 0x00, 0x00, 0x00, 0x02, 0xAA, 0xBB, 0x00, 0x00, 0x00, 0x09, 0xCC }, .nls = 4 },
+	};
+	for (cases) |case| {
+		const oracle = convertToAnnexB(std.testing.allocator, case.data, case.nls).?;
+		defer std.testing.allocator.free(oracle);
+		var out_buf: [64]u8 = undefined;
+		const written = convertToAnnexBInto(case.data, case.nls, out_buf[0..]);
+		try std.testing.expectEqualSlices(u8, oracle, out_buf[0..written]);
+	}
+}
+
+test "AnnexBWindow prefix retained across resets and appends accumulate" {
+	const prefix = [_]u8{ 0x00, 0x00, 0x00, 0x01, 0x67 };
+	var window = AnnexBWindow.init(std.testing.allocator, 16, &prefix).?;
+	defer window.deinit();
+
+	try std.testing.expectEqual(@as(usize, 0), window.payloadLen());
+	try std.testing.expectEqualSlices(u8, &prefix, window.items());
+
+	const dest = window.appendSpace(4).?;
+	@memcpy(dest, &[_]u8{ 0xDE, 0xAD, 0xBE, 0xEF });
+	try std.testing.expectEqual(@as(usize, 4), window.payloadLen());
+	try std.testing.expectEqualSlices(u8, &(prefix ++ [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF }), window.items());
+
+	window.reset();
+	try std.testing.expectEqual(@as(usize, 0), window.payloadLen());
+	try std.testing.expectEqualSlices(u8, &prefix, window.items());
+}
+
+test "AnnexBWindow fits boundary accounting is exact" {
+	const prefix = [_]u8{ 0xAA, 0xBB };
+	// capacity 10, prefix 2 -> payload room is exactly 8
+	var window = AnnexBWindow.init(std.testing.allocator, 10, &prefix).?;
+	defer window.deinit();
+
+	try std.testing.expect(window.fits(8));
+	try std.testing.expect(!window.fits(9));
+	_ = window.appendSpace(5).?;
+	try std.testing.expect(window.fits(3));
+	try std.testing.expect(!window.fits(4));
+	// appendSpace refuses overflow rather than clobbering
+	try std.testing.expect(window.appendSpace(4) == null);
+}
+
+test "AnnexBWindow grows for an oversized payload and keeps the prefix" {
+	const prefix = [_]u8{ 0x01, 0x02, 0x03 };
+	var window = AnnexBWindow.init(std.testing.allocator, 8, &prefix).?;
+	defer window.deinit();
+
+	try std.testing.expect(!window.fits(100));
+	try std.testing.expect(window.ensureCapacityForPayload(100));
+	try std.testing.expect(window.fits(100));
+	try std.testing.expectEqualSlices(u8, &prefix, window.items());
+	const dest = window.appendSpace(100).?;
+	dest[0] = 0x55;
+	dest[99] = 0x66;
+	try std.testing.expectEqual(@as(usize, 100), window.payloadLen());
+	try std.testing.expectEqual(@as(u8, 0x55), window.items()[prefix.len]);
+	try std.testing.expectEqual(@as(u8, 0x66), window.items()[prefix.len + 99]);
+}
+
+test "AnnexBWindow init caps prefix larger than capacity by growing" {
+	// A codec_private larger than the nominal window must still fit: init
+	// sizes the buffer to hold the prefix plus at least one payload byte.
+	const prefix = [_]u8{ 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
+	var window = AnnexBWindow.init(std.testing.allocator, 4, &prefix).?;
+	defer window.deinit();
+	try std.testing.expectEqualSlices(u8, &prefix, window.items());
+	try std.testing.expect(window.fits(1));
+}
+
+test "sample scratch growth preserves the old allocation when allocation fails" {
+	var backing: [16]u8 = undefined;
+	var fixed = std.heap.FixedBufferAllocator.init(&backing);
+	const allocator = fixed.allocator();
+	var scratch = try allocator.alloc(u8, 8);
+	scratch[0] = 0xA5;
+
+	try std.testing.expect(!growScratchBuffer(allocator, &scratch, 32));
+	try std.testing.expectEqual(@as(usize, 8), scratch.len);
+	try std.testing.expectEqual(@as(u8, 0xA5), scratch[0]);
+	allocator.free(scratch);
 }

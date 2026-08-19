@@ -1880,7 +1880,7 @@ pub fn validateH265IntraCabac(
     // Min PU size is always 4x4 in HEVC (log2_min_pu = 2).
     const pic_w_min_pus: u32 = (info.pic_width_in_luma + 3) >> 2;
     const pic_h_min_pus: u32 = (info.pic_height_in_luma + 3) >> 2;
-    const slice_allocator = heap.validateAllocator();
+    const slice_allocator = heap.reclaimingScratchAllocator();
     const depth_map: ?[]u8 = blk: {
         if (pic_w_min_cbs == 0 or pic_h_min_cbs == 0) break :blk null;
         const buf = slice_allocator.alloc(u8, @as(usize, pic_w_min_cbs) * @as(usize, pic_h_min_cbs)) catch break :blk null;

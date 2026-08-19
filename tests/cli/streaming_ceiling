@@ -23,8 +23,9 @@
 #
 # Harness self-checks (so the gate itself is falsifiable, not blanket-pass or
 # blanket-fail):
-#   streamer-control:     head -c on the 2GiB fixture under the 512M ceiling
-#                         must COMPLETE (ceiling permits true streaming);
+#   streamer-control:     head -c 200MiB under the 64M ceiling must COMPLETE
+#                         (ceiling permits true streaming without coupling the
+#                         self-check to a full 2GiB cold-storage read);
 #   slurper-control:      sort -S 1G over 200MiB under a 64M ceiling must be
 #                         KILLED (ceiling actually bites);
 #   high-ceiling control: validate under an absurd 16G ceiling must COMPLETE
@@ -244,11 +245,11 @@ if [ -z "$big_fix" ] || [ ! -f "$big_fix" ] || [ -z "$small_fix" ] || [ ! -f "$s
 	exit 77
 fi
 
-big_size="$(fsize "$big_fix")"
-run_gated "$VIDEO_CEILING" 120 "$tmpdir/ctl-streamer.log" \
-	bash -c "head -c $big_size '$big_fix' > /dev/null"
+STREAMER_CONTROL_BYTES=$((200 * 1024 * 1024))
+run_gated "$AUDIO_CEILING" 120 "$tmpdir/ctl-streamer.log" \
+	bash -c "head -c $STREAMER_CONTROL_BYTES '$big_fix' > /dev/null"
 if [ "$GATED_CLASS" = streams ]; then
-	note "  PASS: streamer-control — head -c over $big_size bytes completed under $((VIDEO_CEILING / 1048576))M ceiling (${GATED_SECS}s)"
+	note "  PASS: streamer-control — head -c over $STREAMER_CONTROL_BYTES bytes completed under $((AUDIO_CEILING / 1048576))M ceiling (${GATED_SECS}s)"
 else
 	fail "streamer-control: genuine streamer classed '$GATED_CLASS' (rc=$GATED_RC) — ceiling mechanism broken"
 fi

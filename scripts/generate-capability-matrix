@@ -204,6 +204,7 @@ for _, tok in ipairs(tokens) do
 		notes = notes .. (notes ~= "" and "; " or "") ..
 			string.format("%d labeled-good fixture(s) rejected", s.good - s.good_valid)
 	end
+	if notes == "" then notes = "-" end
 
 	local stream_col = "-"
 	if streaming[tok] then

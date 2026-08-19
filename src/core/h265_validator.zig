@@ -1132,6 +1132,18 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
     // Allocate RBSP buffer on stack for parameter set parsing.
     var rbsp_buf: [8192]u8 = undefined;
 
+    // Reusable slice-RBSP scratch, grown to the largest slice NAL seen and
+    // shared across all slices. The prior per-slice alloc+copy+free pair went
+    // through validateAllocator(), which resolves to the per-task ARENA under
+    // the FFI batch dispatcher — arena free is a no-op, so slice scratch
+    // accumulated ~1:1 with total slice bytes (2.1GiB anonymous peak on the
+    // 2GiB streaming-ceiling HEVC fixture once the windowed walk decoded
+    // every sample). One monotonically-grown buffer bounds CABAC scratch by
+    // the largest NAL instead of the sum of all NALs.
+    const slice_allocator = heap.reclaimingScratchAllocator();
+    var slice_rbsp_buf: []u8 = &.{};
+    defer if (slice_rbsp_buf.len > 0) slice_allocator.free(slice_rbsp_buf);
+
     while (iterator.next()) |nal| {
         nal_count += 1;
 
@@ -1219,24 +1231,21 @@ pub fn validateH265Stream(data: []const u8, max_frames: u32) H265ValidationResul
                 });
 
                 if (can_cabac) {
-                    // Heap-allocate RBSP buffer sized to the NAL. The prior
-                    // implementation used a 256 KB stack buffer and silently
-                    // returned null for larger NALs — that swallowed CABAC
-                    // for any non-trivial HEIC item (autumn's 282 KB NAL
-                    // was a representative case) and was the primary cause
-                    // of corruption silently passing validation. Per the
-                    // "no silent skip" policy: if we can't run CABAC, the
-                    // result must surface as an anomaly, not as a clean PASS.
-                    const allocator = heap.validateAllocator();
-                    const rbsp_data: ?[]u8 = blk: {
-                        const scratch = allocator.alloc(u8, nal.data.len) catch break :blk null;
-                        defer allocator.free(scratch);
-                        const rbsp_slice = removeEmulationPreventionBytes(nal.data, scratch) orelse break :blk null;
-                        const owned = allocator.alloc(u8, rbsp_slice.len) catch break :blk null;
-                        @memcpy(owned, rbsp_slice);
-                        break :blk owned;
-                    };
-                    defer if (rbsp_data) |r| allocator.free(r);
+                    // Heap RBSP scratch sized to the NAL (a 256 KB stack
+                    // buffer once silently swallowed CABAC for larger NALs —
+                    // autumn's 282 KB HEIC NAL — letting corruption pass; per
+                    // "no silent skip", an unavailable buffer must surface as
+                    // an anomaly, not a clean PASS). The buffer is the
+                    // function-scope reusable scratch above: grow-if-needed,
+                    // de-emulate in place, no per-slice alloc/free churn.
+                    if (nal.data.len > slice_rbsp_buf.len) {
+                        if (slice_rbsp_buf.len > 0) slice_allocator.free(slice_rbsp_buf);
+                        slice_rbsp_buf = slice_allocator.alloc(u8, nal.data.len) catch &.{};
+                    }
+                    const rbsp_data: ?[]u8 = if (nal.data.len <= slice_rbsp_buf.len)
+                        removeEmulationPreventionBytes(nal.data, slice_rbsp_buf)
+                    else
+                        null;
 
                     if (trace.isEnabled(.h265)) trace.print(.h265, "slice_rbsp rbsp_present={} rbsp_len={?}", .{
                         rbsp_data != null,

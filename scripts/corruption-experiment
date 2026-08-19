@@ -303,10 +303,15 @@ local function main()
 	local filesize = #data
 	local rng = pcg.new(opts.seed)
 
-	-- Temp file in RAM-backed tmpdir
+	-- Temp file in RAM-backed tmpdir, PID-namespaced: a fixed name let two
+	-- concurrent experiments on same-extension fixtures clobber each other's
+	-- trial files, silently cross-contaminating both detection counts
+	-- (witnessed 2026-08-19: a concurrent .mp4 experiment dragged a
+	-- jellyfish shotgun sweep from 140/200 to 19/200).
+	ffi.cdef("int getpid(void);")
 	local ext = opts.file:match("%.([^.]+)$") or "bin"
 	local tmpdir = os.getenv("TMPDIR") or "/tmp"
-	local tmpfile = tmpdir .. "/corruption_trial." .. ext
+	local tmpfile = string.format("%s/corruption_trial.%d.%s", tmpdir, tonumber(ffi.C.getpid()), ext)
 
 	-- TSV output
 	local tsv_out = io.stdout

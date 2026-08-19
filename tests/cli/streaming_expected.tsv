@@ -22,7 +22,7 @@
 #   aac_m4a    streams   rc=0    1s     opus_ogg   resident  rc=137  15s
 #   vorbis_ogg resident  rc=137  13s    wav        streams   rc=0    1s
 #
-# CAVEAT on today's `streams` rows: they certify BOUNDED RESIDENT MEMORY,
+# CAVEAT on most `streams` rows: they certify BOUNDED RESIDENT MEMORY,
 # not an architected incremental decode — validate's file pages stay
 # clean/evictable, so the kernel reclaims them under cgroup pressure and the
 # run completes slowly (h264_mp4: ~80s cold cache vs ~6s warm; user CPU ~1s).
@@ -30,14 +30,27 @@
 # memory is NOT released between files in a batch (peak RSS grows ~linearly
 # with N) — the streaming conversions must flip that baseline to `flat`.
 #
-# mkv_cc was UNWITNESSED until 2026-08-19 (mkvmerge absent on the baseline
-# box). Its `streams` guess — inferred from the sibling h265_mkv demux path —
-# was WRONG: first real witness (mkvtoolnix in dev shell, binary 2b021ad3)
-# observed RESIDENT, rc=137 at 4s under the 512MiB ceiling. zlib
-# ContentCompression block decompression holds file-proportional anonymous
-# memory; the honest row below records that. Conversion is #23 follow-up work.
+# EXCEPTION — h264_mp4/h265_mp4 (converted 2026-08-19): the MP4 video decode
+# pass is now an architected bounded-window walk (AnnexBWindow in
+# video_validator.zig): samples convert into a fixed 8MiB Annex-B window
+# that is decoded and reset, codec_private re-prefixed per flush. Uncapped
+# /proc witness on the 2GiB fixtures: peak RssAnon 12.4MiB (h264) /
+# 12.7MiB (h265), versus 306MiB / 542MiB before — the h265 pre-conversion
+# figure is what put it on the wrong side of the 512MiB ceiling. The same
+# change removed per-slice CABAC RBSP/map arena churn in the H.265 validators
+# and routes growable MP4 scratch through a reclaiming allocator (arena free is
+# a no-op under the FFI per-task arena; scratch had accumulated ~1:1 with slice
+# bytes once every sample was decoded).
+#
+# mkv_cc was originally UNWITNESSED (mkvmerge absent on the baseline box);
+# its row was inferred `streams` from the sibling matroska demux path
+# (h265_mkv). The first real witness (2026-08-19, mkvmerge now present,
+# binary 2b021ad3, NixOS x86_64 Thelio) proved that inference WRONG:
+# observed resident, rc=137 under the 512MiB cgroup ceiling, while an uncapped
+# /proc measurement showed peak RssAnon 2.21 GiB on the 2.26 GB fixture. Row
+# corrected to the observed truth; conversion remains follow-up work.
 h264_mp4	streams
-h265_mp4	resident
+h265_mp4	streams
 h265_mkv	streams
 vp9_webm	resident
 theora_ogv	resident

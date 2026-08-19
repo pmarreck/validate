@@ -1,248 +1,248 @@
 format	category	achievable_depth	witnessed_depth	good_valid/total	corrupt_rejected/total	opacity	sweep_evidence	streaming	status	notes
-3mf	3d	full	full	2/2	1/5	transparent	-	-	deep	
-aac_adts	audio	full	full	1/1	1/5	mixed	-	-	deep	
-ac3	audio	full	full	8/8	4/5	transparent	-	-	deep	
+3mf	3d	full	full	2/2	1/5	transparent	-	-	deep	-
+aac_adts	audio	full	full	1/1	1/5	mixed	-	-	deep	-
+ac3	audio	full	full	8/8	4/5	transparent	-	-	deep	-
 accdb	database	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-aep	image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-ai	image	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	
+aep	image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+ai	image	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	-
 aiff	audio	full	structural	1/1	0/5	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
 alac	-	full	-	0/0	0/0	mixed	-	-	unwitnessed	no labeled-good fixture in corpus
-als	project	full	full	1/1	0/0	transparent	-	-	deep	
-amr	audio	structural	structural	1/1	1/6	mixed	-	-	structural-ceiling	
+als	project	full	full	1/1	0/0	transparent	-	-	deep	-
+amr	audio	structural	structural	1/1	1/6	mixed	-	-	structural-ceiling	-
 ape	audio	full	full	2/3	5/5	transparent	-	-	deep	1 labeled-good fixture(s) rejected
 apple_double	-	structural	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
-apple_media_db	data	structural	structural	2/2	0/0	transparent	-	-	structural-ceiling	
+apple_media_db	data	structural	structural	2/2	0/0	transparent	-	-	structural-ceiling	-
 ar	archive	full	structural	1/1	5/5	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-arw	image	full	full	1/1	0/0	mixed	-	-	deep	
-asf	video	full	full	1/1	1/6	mixed	-	-	deep	
-au	audio	structural	structural	1/1	1/6	mixed	-	-	structural-ceiling	
+arw	image	full	full	1/1	0/0	mixed	-	-	deep	-
+asf	video	full	full	1/1	1/6	mixed	-	-	deep	-
+au	audio	structural	structural	1/1	1/6	mixed	-	-	structural-ceiling	-
 av1	-	full	-	0/0	0/0	mixed	-	-	unwitnessed	no labeled-good fixture in corpus
-avi	video	full	full	3/3	5/10	mixed	-	-	deep	
-avif	image	full	full	7/7	0/5	mixed	-	-	deep	
-bagit	bundle	full	full	1/1	0/0	transparent	-	-	deep	
-bai2	financial	full	full	1/1	0/0	mixed	-	-	deep	
+avi	video	full	full	3/3	5/10	mixed	-	-	deep	-
+avif	image	full	full	7/7	0/5	mixed	-	-	deep	-
+bagit	bundle	full	full	1/1	0/0	transparent	-	-	deep	-
+bai2	financial	full	full	1/1	0/0	mixed	-	-	deep	-
 band	-	full	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
-beam	other	structural	structural	1/1	1/5	transparent	-	-	structural-ceiling	
-blar	archive	full	full	1/1	0/0	transparent	-	-	deep	
-blend	3d	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-blorb	game	structural	structural	2/2	0/0	mixed	-	-	structural-ceiling	
-bmp	image	full	full	1/1	0/5	mixed	-	-	deep	
-br	archive	structural	structural	3/3	1/5	transparent	-	-	structural-ceiling	
-bsp	game	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	
-bwproject	project	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-bzip2	archive	full	full	2/2	5/5	transparent	-	-	deep	
-cab	archive	full	full	2/2	0/0	transparent	-	-	deep	
-caf	audio	structural	structural	1/1	1/6	mixed	-	-	structural-ceiling	
-cdg	other	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
+beam	other	structural	structural	1/1	1/5	transparent	-	-	structural-ceiling	-
+blar	archive	full	full	1/1	0/0	transparent	-	-	deep	-
+blend	3d	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+blorb	game	structural	structural	2/2	0/0	mixed	-	-	structural-ceiling	-
+bmp	image	full	full	1/1	0/5	mixed	-	-	deep	-
+br	archive	structural	structural	3/3	1/5	transparent	-	-	structural-ceiling	-
+bsp	game	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	-
+bwproject	project	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+bzip2	archive	full	full	2/2	5/5	transparent	-	-	deep	-
+cab	archive	full	full	2/2	0/0	transparent	-	-	deep	-
+caf	audio	structural	structural	1/1	1/6	mixed	-	-	structural-ceiling	-
+cdg	other	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
 chd	game	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
 chromium_pak	game	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-cif	scientific	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	
+cif	scientific	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
 coff	-	structural	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
 cpr	project	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-cpt	archive	full	full	1/1	5/5	transparent	-	-	deep	
+cpt	archive	full	full	1/1	5/5	transparent	-	-	deep	-
 cr2	image	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-cr3	image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-csv	data	structural	structural	2/2	0/6	opaque	-	-	structural-ceiling	
-cwk	document	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
+cr3	image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+csv	data	structural	structural	2/2	0/6	opaque	-	-	structural-ceiling	-
+cwk	document	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
 dbf	database	full	structural	2/2	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-der	crypto	full	full	1/1	0/0	mixed	-	-	deep	
-dff	audio	structural	structural	1/1	2/5	transparent	-	-	structural-ceiling	
+der	crypto	full	full	1/1	0/0	mixed	-	-	deep	-
+dff	audio	structural	structural	1/1	2/5	transparent	-	-	structural-ceiling	-
 dicom	scientific	full	structural	3/3	0/5	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
 dmg	disk_image	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
 dng	image	full	mixed	3/3	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
 doc	document	full	mixed	6/6	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
 docx	document	full	-	0/0	2/5	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
-dpx	image	structural	structural	1/1	1/6	mixed	-	-	structural-ceiling	
-drp	project	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-ds_store	other	structural	structural	1/1	2/8	opaque	-	-	structural-ceiling	
-dsf	audio	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	
-dts	audio	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	
-dv	video	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	
-dwg	3d	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	
-dxf	3d	structural	structural	1/1	0/5	opaque	-	-	structural-ceiling	
-eac3	audio	full	full	5/5	5/5	transparent	-	-	deep	
-edifact	financial	full	full	1/1	0/0	mixed	-	-	deep	
-eex	data	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	
+dpx	image	structural	structural	1/1	1/6	mixed	-	-	structural-ceiling	-
+drp	project	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+ds_store	other	structural	structural	1/1	2/8	opaque	-	-	structural-ceiling	-
+dsf	audio	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	-
+dts	audio	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	-
+dv	video	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	-
+dwg	3d	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	-
+dxf	3d	structural	structural	1/1	0/5	opaque	-	-	structural-ceiling	-
+eac3	audio	full	full	5/5	5/5	transparent	-	-	deep	-
+edifact	financial	full	full	1/1	0/0	mixed	-	-	deep	-
+eex	data	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	-
 elf	executable	full	structural	1/1	5/5	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-eml	text	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	
-eps	image	structural	structural	2/2	0/5	opaque	-	-	structural-ceiling	
-epub	ebook	full	full	4/4	13/20	transparent	-	-	deep	
-erlang_term	data	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	
-esd	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-exr	image	full	full	2/2	0/0	mixed	-	-	deep	
-fasta	scientific	structural	structural	1/1	4/5	opaque	-	-	structural-ceiling	
-fastq	scientific	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	
+eml	text	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	-
+eps	image	structural	structural	2/2	0/5	opaque	-	-	structural-ceiling	-
+epub	ebook	full	full	4/4	13/20	transparent	-	-	deep	-
+erlang_term	data	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	-
+esd	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+exr	image	full	full	2/2	0/0	mixed	-	-	deep	-
+fasta	scientific	structural	structural	1/1	4/5	opaque	-	-	structural-ceiling	-
+fastq	scientific	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	-
 fcpxml	-	structural	-	0/0	0/0	mixed	-	-	unwitnessed	no labeled-good fixture in corpus
 fits	scientific	full	mixed	2/2	0/5	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-flac	audio	full	full	3/3	5/5	transparent	-	flac:streams	deep	
+flac	audio	full	full	3/3	5/5	transparent	-	flac:streams	deep	-
 flp	project	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
 flv	video	full	structural	1/1	1/5	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-gb	game	full	full	2/2	0/0	transparent	-	-	deep	
+gb	game	full	full	2/2	0/0	transparent	-	-	deep	-
 gba	game	full	structural	2/2	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-gcode	3d	full	full	1/1	0/0	transparent	-	-	deep	
-genesis	game	full	full	2/2	0/0	transparent	-	-	deep	
-gif	image	full	full	2/2	4/6	mixed	-	-	deep	
-git_repository	bundle	full	full	1/1	0/0	transparent	-	-	deep	
+gcode	3d	full	full	1/1	0/0	transparent	-	-	deep	-
+genesis	game	full	full	2/2	0/0	transparent	-	-	deep	-
+gif	image	full	full	2/2	4/6	mixed	-	-	deep	-
+git_repository	bundle	full	full	1/1	0/0	transparent	-	-	deep	-
 glb	3d	full	structural	1/1	1/3	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
 gltf	3d	full	structural	2/2	7/7	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
 gpt_disk_image	-	full	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
-gzip	archive	full	full	3/3	5/5	transparent	-	-	deep	
+gzip	archive	full	full	3/3	5/5	transparent	-	-	deep	-
 hdf5	scientific	full	mixed	2/2	0/5	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-heic	image	full	full	6/6	0/5	mixed	-	-	deep	
-hqx	archive	full	full	2/2	0/0	transparent	-	-	deep	
-html	document	structural	structural	2/2	3/5	opaque	-	-	structural-ceiling	
-icalendar	pim	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	
-icns	image	full	full	1/1	0/0	transparent	-	-	deep	
+heic	image	full	full	6/6	0/5	mixed	-	-	deep	-
+hqx	archive	full	full	2/2	0/0	transparent	-	-	deep	-
+html	document	structural	structural	2/2	3/5	opaque	-	-	structural-ceiling	-
+icalendar	pim	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
+icns	image	full	full	1/1	0/0	transparent	-	-	deep	-
 ico	image	full	structural	1/1	3/5	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-idml	project	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-iff	game	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	
-indd	project	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	
-ini	data	structural	structural	1/1	3/5	opaque	-	-	structural-ceiling	
-iso	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-it	audio	full	full	1/1	0/5	mixed	-	-	deep	
-ivf	video	structural	structural	2/2	0/5	mixed	-	-	structural-ceiling	
+idml	project	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+iff	game	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	-
+indd	project	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	-
+ini	data	structural	structural	1/1	3/5	opaque	-	-	structural-ceiling	-
+iso	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+it	audio	full	full	1/1	0/5	mixed	-	-	deep	-
+ivf	video	structural	structural	2/2	0/5	mixed	-	-	structural-ceiling	-
 java_class	executable	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-jbig2	image	full	full	2/2	0/10	mixed	-	-	deep	
-jpeg	image	full	full	6/6	6/6	mixed	-	-	deep	
-jpeg2000	image	full	full	10/10	5/5	mixed	-	-	deep	
-json	data	full	full	3/3	9/10	opaque	-	-	deep	
+jbig2	image	full	full	2/2	0/10	mixed	-	-	deep	-
+jpeg	image	full	full	6/6	6/6	mixed	-	-	deep	-
+jpeg2000	image	full	full	10/10	5/5	mixed	-	-	deep	-
+json	data	full	full	3/3	9/10	opaque	-	-	deep	-
 jxl	image	full	mixed	8/8	0/5	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-keynote	document	full	full	1/1	0/0	transparent	-	-	deep	
-kml	scientific	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	
-kmz	scientific	full	full	1/1	2/5	transparent	-	-	deep	
+keynote	document	full	full	1/1	0/0	transparent	-	-	deep	-
+kml	scientific	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	-
+kmz	scientific	full	full	1/1	2/5	transparent	-	-	deep	-
 llvm_diag	executable	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
 llvm_pch	executable	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-logicx	project	full	full	1/1	0/0	transparent	-	-	deep	
+logicx	project	full	full	1/1	0/0	transparent	-	-	deep	-
 lspk	game	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-m4a	audio	full	full	2/2	0/11	mixed	-	aac_m4a:streams	deep	
+m4a	audio	full	full	2/2	0/11	mixed	-	aac_m4a:streams	deep	-
 macho	executable	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
 macho_fat	executable	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
 macos_app	bundle	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
 macos_bundle	bundle	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
 macos_framework	bundle	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-markdown	text	structural	structural	58/58	0/5	transparent	-	-	structural-ceiling	
-matlab	scientific	structural	structural	1/1	5/5	transparent	-	-	structural-ceiling	
-mblar	archive	full	full	1/1	0/0	transparent	-	-	deep	
-mbox	text	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	
+markdown	text	structural	structural	58/58	0/5	transparent	-	-	structural-ceiling	-
+matlab	scientific	structural	structural	1/1	5/5	transparent	-	-	structural-ceiling	-
+mblar	archive	full	full	1/1	0/0	transparent	-	-	deep	-
+mbox	text	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	-
 mdb	database	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-midi	audio	full	full	2/2	3/5	transparent	-	-	deep	
-mkv	video	full	full	13/13	10/10	transparent	-	h265_mkv:streams;mkv_cc:resident	deep	
-mod	audio	full	full	1/1	0/5	mixed	-	-	deep	
-mov	video	full	full	8/8	4/9	mixed	-	-	deep	
+midi	audio	full	full	2/2	3/5	transparent	-	-	deep	-
+mkv	video	full	full	13/13	10/10	transparent	-	h265_mkv:streams;mkv_cc:resident	deep	-
+mod	audio	full	full	1/1	0/5	mixed	-	-	deep	-
+mov	video	full	full	8/8	4/9	mixed	-	-	deep	-
 mp2	-	structural	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
-mp3	audio	full	full	2/2	0/5	mixed	-	mp3:streams	deep	
-mp4	video	full	full	9/9	2/6	mixed	-	h264_mp4:streams;h265_mp4:resident	deep	
-mpeg_es	video	full	full	1/1	0/0	mixed	-	-	deep	
-mpeg_ps	video	full	full	3/3	0/10	mixed	-	-	deep	
-mpeg_ts	video	full	full	7/7	0/5	mixed	-	-	deep	
-msgpack	data	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-msi	archive	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-mt940	financial	full	full	1/1	0/0	mixed	-	-	deep	
-mwd	document	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-n64	game	full	full	1/1	0/0	mixed	-	-	deep	
-nacha	financial	full	full	1/1	0/0	mixed	-	-	deep	
+mp3	audio	full	full	2/2	0/5	mixed	-	mp3:streams	deep	-
+mp4	video	full	full	9/9	2/6	mixed	-	h264_mp4:streams;h265_mp4:streams	deep	-
+mpeg_es	video	full	full	1/1	0/0	mixed	-	-	deep	-
+mpeg_ps	video	full	full	3/3	0/10	mixed	-	-	deep	-
+mpeg_ts	video	full	full	7/7	0/5	mixed	-	-	deep	-
+msgpack	data	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+msi	archive	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+mt940	financial	full	full	1/1	0/0	mixed	-	-	deep	-
+mwd	document	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+n64	game	full	full	1/1	0/0	mixed	-	-	deep	-
+nacha	financial	full	full	1/1	0/0	mixed	-	-	deep	-
 nds	game	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-nef	image	full	full	1/1	0/0	mixed	-	-	deep	
+nef	image	full	full	1/1	0/0	mixed	-	-	deep	-
 nes	game	full	structural	2/2	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
 netcdf	scientific	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-nifti	scientific	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	
-numbers	document	full	full	1/1	0/0	transparent	-	-	deep	
-obj	3d	structural	structural	1/1	3/5	opaque	-	-	structural-ceiling	
+nifti	scientific	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	-
+numbers	document	full	full	1/1	0/0	transparent	-	-	deep	-
+obj	3d	structural	structural	1/1	3/5	opaque	-	-	structural-ceiling	-
 odp	-	full	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
 ods	-	full	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
 odt	-	full	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
-ofx	financial	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	
-ogg	audio	full	full	2/2	20/20	transparent	-	opus_ogg:resident;vorbis_ogg:resident	deep	
-ogv	video	full	full	2/2	0/0	transparent	-	theora_ogv:resident	deep	
-orf	image	structural	structural	2/2	0/0	transparent	-	-	structural-ceiling	
-otf	font	full	full	2/2	5/5	transparent	-	-	deep	
-pages	document	full	full	1/1	0/0	transparent	-	-	deep	
+ofx	financial	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
+ogg	audio	full	full	2/2	20/20	transparent	-	opus_ogg:resident;vorbis_ogg:resident	deep	-
+ogv	video	full	full	2/2	0/0	transparent	-	theora_ogv:resident	deep	-
+orf	image	structural	structural	2/2	0/0	transparent	-	-	structural-ceiling	-
+otf	font	full	full	2/2	5/5	transparent	-	-	deep	-
+pages	document	full	full	1/1	0/0	transparent	-	-	deep	-
 pak	game	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-pam	image	structural	structural	1/1	0/5	mixed	-	-	structural-ceiling	
-par2	other	full	full	2/2	5/5	transparent	-	-	deep	
+pam	image	structural	structural	1/1	0/5	mixed	-	-	structural-ceiling	-
+par2	other	full	full	2/2	5/5	transparent	-	-	deep	-
 parquet	scientific	full	structural	1/1	0/0	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-pcap	network	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	
-pcapng	network	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	
-pdb_struct	scientific	structural	structural	2/2	0/0	transparent	-	-	structural-ceiling	
-pdf	document	full	full	6/6	2/6	mixed	-	-	deep	
+pcap	network	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	-
+pcapng	network	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	-
+pdb_struct	scientific	structural	structural	2/2	0/0	transparent	-	-	structural-ceiling	-
+pdf	document	full	full	6/6	2/6	mixed	-	-	deep	-
 pe	executable	full	structural	1/1	0/5	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-pef	image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-pem	crypto	full	full	1/1	0/0	mixed	-	-	deep	
+pef	image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+pem	crypto	full	full	1/1	0/0	mixed	-	-	deep	-
 pgp_armor	-	full	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
-pgp_signed	crypto	full	full	1/1	0/0	transparent	-	-	deep	
-plain_text	text	structural	structural	4/4	0/5	opaque	-	-	structural-ceiling	
-plain_text_cp437	text	structural	structural	2/2	0/0	opaque	-	-	structural-ceiling	
-plain_text_latin1	text	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	
-plain_text_utf16	text	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	
-plist	data	structural	structural	2/2	5/5	opaque	-	-	structural-ceiling	
-ply	3d	structural	structural	1/1	1/5	transparent	-	-	structural-ceiling	
-png	image	full	full	5/5	3/6	transparent	-	-	deep	
+pgp_signed	crypto	full	full	1/1	0/0	transparent	-	-	deep	-
+plain_text	text	structural	structural	4/4	0/5	opaque	-	-	structural-ceiling	-
+plain_text_cp437	text	structural	structural	2/2	0/0	opaque	-	-	structural-ceiling	-
+plain_text_latin1	text	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
+plain_text_utf16	text	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
+plist	data	structural	structural	2/2	5/5	opaque	-	-	structural-ceiling	-
+ply	3d	structural	structural	1/1	1/5	transparent	-	-	structural-ceiling	-
+png	image	full	full	5/5	3/6	transparent	-	-	deep	-
 ppt	document	full	structural	1/1	0/5	mixed	-	-	partial	deep achievable but not witnessed on all fixtures
-pptx	document	full	full	1/1	2/5	transparent	-	-	deep	
+pptx	document	full	full	1/1	2/5	transparent	-	-	deep	-
 prores	-	full	-	0/0	0/0	mixed	-	-	unwitnessed	no labeled-good fixture in corpus
-prproj	project	full	full	1/1	0/0	mixed	-	-	deep	
-psd	image	full	full	2/2	0/0	mixed	-	-	deep	
-ptx	project	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-qbb	financial	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	
-qbw	financial	full	full	1/1	0/0	transparent	-	-	deep	
-qdf	financial	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-qif	financial	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	
-qoi	image	structural	structural	1/1	4/6	transparent	-	-	structural-ceiling	
-raf	image	structural	structural	3/3	0/0	transparent	-	-	structural-ceiling	
-rar	archive	full	full	2/2	5/5	transparent	-	-	deep	
+prproj	project	full	full	1/1	0/0	mixed	-	-	deep	-
+psd	image	full	full	2/2	0/0	mixed	-	-	deep	-
+ptx	project	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+qbb	financial	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	-
+qbw	financial	full	full	1/1	0/0	transparent	-	-	deep	-
+qdf	financial	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+qif	financial	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
+qoi	image	structural	structural	1/1	4/6	transparent	-	-	structural-ceiling	-
+raf	image	structural	structural	3/3	0/0	transparent	-	-	structural-ceiling	-
+rar	archive	full	full	2/2	5/5	transparent	-	-	deep	-
 reason	project	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-rm	video	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-rpm	archive	full	full	1/1	0/0	transparent	-	-	deep	
-rpp	project	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	
-rtf	document	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	
-rw2	image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-s3m	audio	full	full	1/1	0/5	mixed	-	-	deep	
-sevenz	archive	full	full	3/3	2/5	mixed	-	-	deep	
+rm	video	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+rpm	archive	full	full	1/1	0/0	transparent	-	-	deep	-
+rpp	project	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
+rtf	document	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	-
+rw2	image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+s3m	audio	full	full	1/1	0/5	mixed	-	-	deep	-
+sevenz	archive	full	full	3/3	2/5	mixed	-	-	deep	-
 shapefile	scientific	structural	structural	1/2	0/0	transparent	-	-	structural-ceiling	1 labeled-good fixture(s) rejected
-sit	archive	full	full	1/1	0/0	transparent	-	-	deep	
+sit	archive	full	full	1/1	0/0	transparent	-	-	deep	-
 sitx	archive	full	structural	1/1	0/0	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-sketch	image	full	full	1/1	0/0	transparent	-	-	deep	
-snes	game	full	full	2/2	0/0	transparent	-	-	deep	
-song	project	full	full	1/1	0/0	transparent	-	-	deep	
-spotlight	other	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	
-sqlite	data	full	full	2/2	2/6	mixed	-	-	deep	
-ssh_signature	crypto	full	full	1/1	0/0	transparent	-	-	deep	
-step	3d	structural	structural	1/1	0/5	opaque	-	-	structural-ceiling	
-stl	3d	structural	structural	1/1	3/5	transparent	-	-	structural-ceiling	
-svg	image	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	
+sketch	image	full	full	1/1	0/0	transparent	-	-	deep	-
+snes	game	full	full	2/2	0/0	transparent	-	-	deep	-
+song	project	full	full	1/1	0/0	transparent	-	-	deep	-
+spotlight	other	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
+sqlite	data	full	full	2/2	2/6	mixed	-	-	deep	-
+ssh_signature	crypto	full	full	1/1	0/0	transparent	-	-	deep	-
+step	3d	structural	structural	1/1	0/5	opaque	-	-	structural-ceiling	-
+stl	3d	structural	structural	1/1	3/5	transparent	-	-	structural-ceiling	-
+svg	image	structural	structural	1/1	5/5	opaque	-	-	structural-ceiling	-
 swf	video	full	mixed	2/2	2/5	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
-tar	archive	structural	structural	1/1	1/5	mixed	-	-	structural-ceiling	
-tga	image	full	full	1/1	1/5	transparent	-	-	deep	
+tar	archive	structural	structural	1/1	1/5	mixed	-	-	structural-ceiling	-
+tga	image	full	full	1/1	1/5	transparent	-	-	deep	-
 thumbs_db	-	structural	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
-tiff	image	full	full	16/16	0/5	mixed	-	-	deep	
-toast	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-toml	data	structural	structural	2/2	4/5	opaque	-	-	structural-ceiling	
+tiff	image	full	full	16/16	0/5	mixed	-	-	deep	-
+toast	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+toml	data	structural	structural	2/2	4/5	opaque	-	-	structural-ceiling	-
 torrent	-	structural	-	0/0	0/0	transparent	-	-	unwitnessed	no labeled-good fixture in corpus
-tta	audio	full	full	1/1	6/6	transparent	-	-	deep	
-ttf	font	full	full	3/3	3/5	transparent	-	-	deep	
-txf	financial	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	
+tta	audio	full	full	1/1	6/6	transparent	-	-	deep	-
+ttf	font	full	full	3/3	3/5	transparent	-	-	deep	-
+txf	financial	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
 type1	-	full	-	0/0	0/0	mixed	-	-	unwitnessed	no labeled-good fixture in corpus
 unknown	other	structural	structural	5/5	0/0	transparent	-	-	detection-only	fallback classification row
-vcard	pim	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	
-vmdk	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-vpk	game	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-wad	game	structural	structural	1/1	2/5	transparent	-	-	structural-ceiling	
-warc	archive	full	full	1/1	2/5	mixed	-	-	deep	
+vcard	pim	structural	structural	1/1	0/0	opaque	-	-	structural-ceiling	-
+vmdk	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+vpk	game	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+wad	game	structural	structural	1/1	2/5	transparent	-	-	structural-ceiling	-
+warc	archive	full	full	1/1	2/5	mixed	-	-	deep	-
 wasm	executable	full	structural	1/1	5/5	transparent	-	-	partial	deep achievable but not witnessed on all fixtures
 wav	audio	full	structural	1/1	0/5	mixed	-	wav:streams	partial	deep achievable but not witnessed on all fixtures
-wavpack	audio	full	full	2/2	5/5	mixed	-	-	deep	
+wavpack	audio	full	full	2/2	5/5	mixed	-	-	deep	-
 webm	-	full	-	0/0	0/0	mixed	-	vp9_webm:resident	unwitnessed	no labeled-good fixture in corpus
-webp	image	full	full	6/6	0/5	mixed	-	-	deep	
-wim	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	
-woff	font	full	full	2/2	5/5	transparent	-	-	deep	
-woff2	font	full	full	2/2	4/5	transparent	-	-	deep	
-wpd	document	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	
-x12_edi	financial	full	full	1/1	0/0	mixed	-	-	deep	
-xls	document	full	full	5/5	0/10	transparent	-	-	deep	
-xlsx	document	full	full	1/1	3/5	transparent	-	-	deep	
-xm	audio	full	full	1/1	0/10	mixed	-	-	deep	
-xml	data	structural	structural	3/3	5/5	opaque	-	-	structural-ceiling	
-xz	archive	full	full	2/2	5/5	transparent	-	-	deep	
-yaml	data	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	
-zip	archive	full	full	3/3	4/6	transparent	-	-	deep	
-zstd	archive	full	full	2/2	5/5	transparent	-	-	deep	
+webp	image	full	full	6/6	0/5	mixed	-	-	deep	-
+wim	disk_image	structural	structural	1/1	0/0	transparent	-	-	structural-ceiling	-
+woff	font	full	full	2/2	5/5	transparent	-	-	deep	-
+woff2	font	full	full	2/2	4/5	transparent	-	-	deep	-
+wpd	document	structural	structural	1/1	0/0	mixed	-	-	structural-ceiling	-
+x12_edi	financial	full	full	1/1	0/0	mixed	-	-	deep	-
+xls	document	full	full	5/5	0/10	transparent	-	-	deep	-
+xlsx	document	full	full	1/1	3/5	transparent	-	-	deep	-
+xm	audio	full	full	1/1	0/10	mixed	-	-	deep	-
+xml	data	structural	structural	3/3	5/5	opaque	-	-	structural-ceiling	-
+xz	archive	full	full	2/2	5/5	transparent	-	-	deep	-
+yaml	data	structural	structural	1/1	0/5	transparent	-	-	structural-ceiling	-
+zip	archive	full	full	3/3	4/6	transparent	-	-	deep	-
+zstd	archive	full	full	2/2	5/5	transparent	-	-	deep	-
