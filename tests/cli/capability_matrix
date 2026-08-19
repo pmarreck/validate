@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# capability_matrix — MFIC gate for the v1 capability matrix (Einstein
+# requirement: a machine-readable form that drives GUI/help/sales claims).
+#
+# The matrix (docs/CAPABILITY_MATRIX.tsv) is GENERATED evidence, not authored
+# prose: scripts/generate-capability-matrix joins the FileFormat enum, the
+# maxAchievableDepth format-property switch, the witnessed per-format verdicts
+# from running the signed binary over ground_truth_examples, the corruption
+# opacity classification, and the A/V streaming manifest. This gate keeps the
+# committed matrix honest in four independent ways:
+#
+#   1. FRESHNESS  — regenerate and diff; any drift between committed claims
+#                   and current reality is a failure in EITHER direction.
+#   2. COMPLETE   — this test extracts the FileFormat token set from source
+#                   ITSELF (independent of the generator's extraction:
+#                   maker != checker) and requires exactly one row per token.
+#   3. AGREEMENT  — every A/V family row must carry the same streaming class
+#                   as tests/cli/streaming_expected.tsv (independent join).
+#   4. VOCABULARY — status column limited to the honest closed set.
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BIN="${VALIDATE_BIN:-$ROOT/zig-out/bin/validate}"
+MATRIX="$ROOT/docs/CAPABILITY_MATRIX.tsv"
+GEN="$ROOT/scripts/generate-capability-matrix"
+SRC="$ROOT/src/core/format_validation.zig"
+STREAMING="$SCRIPT_DIR/streaming_expected.tsv"
+CORPUS="$ROOT/ground_truth_examples"
+
+fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
+
+[ -x "$BIN" ] || fail "validate binary not found/executable: $BIN"
+[ -f "$SRC" ] || fail "source file missing: $SRC"
+[ -x "$GEN" ] || fail "generator missing/not executable: $GEN"
+[ -f "$MATRIX" ] || fail "committed matrix missing: $MATRIX"
+if [ ! -d "$CORPUS/corrupted" ]; then
+	printf 'SKIP: capability_matrix — ground_truth_examples corpus not present\n' >&2
+	exit 77
+fi
+command -v luajit >/dev/null 2>&1 || { printf 'SKIP: capability_matrix — luajit not on PATH\n' >&2; exit 77; }
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/capability_matrix.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+# --- 1. FRESHNESS: regenerate from current binary + corpus + source ---------
+VALIDATE_BIN="$BIN" "$GEN" --out "$work/regen.tsv" >"$work/gen.log" 2>&1 \
+	|| fail "generator failed: $(tail -5 "$work/gen.log")"
+if ! diff -u "$MATRIX" "$work/regen.tsv" > "$work/matrix.diff" 2>&1; then
+	printf 'FAIL: committed capability matrix is stale (claims diverge from witnessed reality):\n' >&2
+	head -40 "$work/matrix.diff" >&2
+	exit 1
+fi
+
+# --- 2. COMPLETENESS: independent enum-token extraction ---------------------
+# Extract every FileFormat member between the enum opener and the first
+# closing of its member list. Members are lowercase identifiers (or @"..."
+# quoted) followed by a comma; pub fn / decls end the member section.
+awk '
+	/^pub const FileFormat = enum \{/ { in_enum = 1; next }
+	in_enum && /^    (pub )?fn / { exit }
+	in_enum && /^\};/ { exit }
+	in_enum {
+		line = $0
+		sub(/\/\/.*/, "", line)                # strip comments
+		gsub(/[ \t]/, "", line)
+		if (line ~ /^@?"?[a-z0-9_]+"?,$/) {
+			gsub(/[@",]/, "", line)
+			print line
+		}
+	}
+' "$SRC" | sort > "$work/enum_tokens.txt"
+[ -s "$work/enum_tokens.txt" ] || fail "independent enum extraction produced nothing (extractor broken?)"
+tokens_n="$(wc -l < "$work/enum_tokens.txt")"
+[ "$tokens_n" -gt 100 ] || fail "independent enum extraction found only $tokens_n tokens — extractor is not seeing the real enum"
+
+awk -F'\t' 'NR > 1 && $1 != "" { print $1 }' "$MATRIX" | sort > "$work/matrix_tokens.txt"
+if ! diff -u "$work/enum_tokens.txt" "$work/matrix_tokens.txt" > "$work/tokens.diff" 2>&1; then
+	printf 'FAIL: matrix rows do not match FileFormat enum members exactly:\n' >&2
+	head -20 "$work/tokens.diff" >&2
+	exit 1
+fi
+dups="$(awk -F'\t' 'NR > 1 { print $1 }' "$MATRIX" | sort | uniq -d)"
+[ -z "$dups" ] || fail "duplicate matrix rows: $dups"
+
+# --- 3. AGREEMENT: A/V streaming classes match the streaming manifest -------
+# streaming_expected.tsv families are container_codec compounds (h264_mp4);
+# the matrix carries per-FORMAT streaming summaries. The generator derives the
+# matrix streaming column from the manifest, so here we verify the reverse
+# join independently: every manifest family must be reflected by at least one
+# matrix row whose streaming column contains that family's class.
+while IFS="$(printf '\t')" read -r family expected; do
+	case "$family" in ''|'#'*) continue ;; esac
+	if ! awk -F'\t' -v fam="$family" -v expcls="$expected" '
+		NR > 1 && index($9, fam ":" expcls) > 0 { found = 1 }
+		END { exit(found ? 0 : 1) }
+	' "$MATRIX"; then
+		fail "streaming manifest family '$family=$expected' not reflected in matrix streaming column"
+	fi
+done < "$STREAMING"
+
+# --- 4. VOCABULARY: status column closed set --------------------------------
+bad_status="$(awk -F'\t' 'NR > 1 && $10 != "deep" && $10 != "partial" && $10 != "structural-ceiling" && $10 != "unwitnessed" && $10 != "detection-only" { print $1 ": " $10 }' "$MATRIX")"
+[ -z "$bad_status" ] || fail "invalid status values: $bad_status"
+
+echo "PASS: capability matrix is fresh, complete ($tokens_n formats), streaming-consistent, and honestly labeled"

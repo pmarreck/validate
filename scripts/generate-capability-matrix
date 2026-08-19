@@ -1,0 +1,230 @@
+#!/usr/bin/env luajit
+-- generate-capability-matrix — build docs/CAPABILITY_MATRIX.tsv, the
+-- machine-readable v1 capability matrix (Einstein requirement) that drives
+-- GUI/help/sales claims. Every row is EVIDENCE-DERIVED, never authored:
+--
+--   format universe + achievable depth : parsed from src/core/format_validation.zig
+--                                        (FileFormat enum + maxAchievableDepth switch)
+--   witnessed behavior                 : the actual binary run over the
+--                                        ground_truth_examples corpus (ndjson)
+--   opacity                            : scripts/corruption_opacity.tsv
+--   streaming class                    : tests/cli/streaming_expected.tsv
+--                                        (itself gated by tests/cli/streaming_ceiling)
+--
+-- Output is DETERMINISTIC (sorted, no timestamps) so the CLI gate
+-- tests/cli/capability_matrix can regenerate and diff. Honest-status rules:
+--   deep               all labeled-good fixtures validated at full depth
+--   partial            witnessed shallower than the format allows (or mixed)
+--   structural-ceiling format has no integrity mechanism; structural IS complete
+--   unwitnessed        no labeled-good fixture in the corpus yet
+--   detection-only     meta rows (unknown)
+--
+-- NDJSON parsing note: records are flat single-line objects and corpus paths
+-- contain no double quotes, so anchored pattern extraction is sufficient here.
+
+local function die(msg)
+	io.stderr:write("generate-capability-matrix: " .. msg .. "\n")
+	os.exit(1)
+end
+
+-- --- locate project root (script lives in ROOT/scripts) --------------------
+local script_path = arg[0]
+local root = script_path:match("^(.*)/scripts/[^/]+$")
+if not root then die("cannot derive project root from " .. script_path) end
+if root == "" then root = "." end
+
+-- --- args -------------------------------------------------------------------
+local opts = {
+	binary = os.getenv("VALIDATE_BIN") or (root .. "/zig-out/bin/validate"),
+	source = root .. "/src/core/format_validation.zig",
+	opacity = root .. "/scripts/corruption_opacity.tsv",
+	streaming = root .. "/tests/cli/streaming_expected.tsv",
+	corpus = root .. "/ground_truth_examples",
+	out = nil,
+}
+do
+	local i = 1
+	while i <= #arg do
+		local a = arg[i]
+		local key = a:match("^%-%-(%w+)$")
+		if key and opts[key] ~= nil or key == "out" then
+			i = i + 1
+			opts[key] = arg[i] or die("missing value for --" .. key)
+		else
+			die("unknown argument: " .. a)
+		end
+		i = i + 1
+	end
+end
+if not opts.out then die("--out PATH is required") end
+
+local function read_all(path)
+	local f = io.open(path, "r") or die("cannot open " .. path)
+	local s = f:read("*a")
+	f:close()
+	return s
+end
+
+-- --- 1. FileFormat enum tokens ----------------------------------------------
+local src = read_all(opts.source)
+local enum_body = src:match("pub const FileFormat = enum %{(.-)\n    pub fn ")
+	or die("FileFormat enum not found in " .. opts.source)
+local tokens, token_set = {}, {}
+for line in enum_body:gmatch("[^\n]+") do
+	local stripped = line:gsub("//.*$", ""):gsub("%s", "")
+	local tok = stripped:match('^@?"?([%l%d_]+)"?,$')
+	if tok then
+		tokens[#tokens + 1] = tok
+		token_set[tok] = true
+	end
+end
+if #tokens < 100 then die("enum extraction found only " .. #tokens .. " tokens — parser broken?") end
+
+-- --- 2. maxAchievableDepth switch -------------------------------------------
+local depth_fn = src:match("pub fn maxAchievableDepth.-return switch %(self%) %{(.-)\n        %};")
+	or die("maxAchievableDepth switch not found")
+local achievable = {}
+for branch, value in depth_fn:gmatch("(.-)=>%s*%.(%w+),") do
+	for tok in branch:gmatch("%.@?\"?([%l%d_]+)\"?") do
+		achievable[tok] = value
+	end
+end
+for _, tok in ipairs(tokens) do
+	if not achievable[tok] then die("no maxAchievableDepth branch covers ." .. tok) end
+end
+
+-- --- 3. witness: run the binary over the corpus ------------------------------
+local corpus_abs = opts.corpus
+local cmd = string.format("'%s' --ndjson '%s' 2>/dev/null", opts.binary, corpus_abs)
+local pipe = io.popen(cmd, "r") or die("cannot run " .. cmd)
+local stats = {}
+local function stat_for(tok)
+	local s = stats[tok]
+	if not s then
+		s = { good = 0, good_valid = 0, corrupt = 0, corrupt_rejected = 0,
+			depth_full = 0, depth_structural = 0, category = nil }
+		stats[tok] = s
+	end
+	return s
+end
+local record_count = 0
+for line in pipe:lines() do
+	if line:sub(1, 1) == "{" then
+		local path = line:match('"path":"([^"]*)"')
+		local fmt = line:match('"format":"([^"]*)"')
+		local valid = line:match('"valid":(%a+)') == "true"
+		local depth = tonumber(line:match('"depth":(%d+)') or "")
+		local category = line:match('"category":"([^"]*)"')
+		if path and fmt then
+			-- classify by corpus-relative location; skip audit snapshots and
+			-- stray top-level files (README etc.)
+			local rel = path:sub(#corpus_abs + 2)
+			local top = rel:match("^([^/]+)/")
+			if top and not top:match("^audit_") then
+				record_count = record_count + 1
+				local s = stat_for(fmt)
+				s.category = s.category or category
+				if top == "corrupted" then
+					s.corrupt = s.corrupt + 1
+					if not valid then s.corrupt_rejected = s.corrupt_rejected + 1 end
+				else
+					s.good = s.good + 1
+					if valid then
+						s.good_valid = s.good_valid + 1
+						if depth == 1 then s.depth_full = s.depth_full + 1
+						else s.depth_structural = s.depth_structural + 1 end
+					end
+				end
+			end
+		end
+	end
+end
+pipe:close()
+if record_count == 0 then die("witness run produced no corpus records — binary or corpus missing?") end
+for fmt in pairs(stats) do
+	if not token_set[fmt] and fmt ~= "" then
+		die("witnessed format token '" .. fmt .. "' is not in the FileFormat enum — extraction broken?")
+	end
+end
+
+-- --- 4. opacity ---------------------------------------------------------------
+local opacity = {}
+for line in read_all(opts.opacity):gmatch("[^\n]+") do
+	if line:sub(1, 1) ~= "#" then
+		local tok, class = line:match("^(%S+)\t(%S+)")
+		if tok then opacity[tok] = class end
+	end
+end
+
+-- --- 5. streaming manifest -----------------------------------------------------
+-- family -> owning container format token (suffix rule; mkv_cc is mkv)
+local streaming = {} -- token -> { "family:class", ... }
+for line in read_all(opts.streaming):gmatch("[^\n]+") do
+	if line:sub(1, 1) ~= "#" and line:find("\t") then
+		local family, class = line:match("^(%S+)\t(%S+)")
+		if family then
+			local container = family == "mkv_cc" and "mkv" or family:match("_([%l%d]+)$") or family
+			if not token_set[container] then
+				die("streaming family '" .. family .. "' maps to unknown format token '" .. container .. "'")
+			end
+			streaming[container] = streaming[container] or {}
+			table.insert(streaming[container], family .. ":" .. class)
+		end
+	end
+end
+
+-- --- 6. emit -------------------------------------------------------------------
+table.sort(tokens)
+local out = io.open(opts.out, "w") or die("cannot write " .. opts.out)
+out:write("format\tcategory\tachievable_depth\twitnessed_depth\tgood_valid/total\tcorrupt_rejected/total\topacity\tsweep_evidence\tstreaming\tstatus\tnotes\n")
+for _, tok in ipairs(tokens) do
+	local s = stats[tok] or { good = 0, good_valid = 0, corrupt = 0, corrupt_rejected = 0,
+		depth_full = 0, depth_structural = 0 }
+	local witnessed
+	if s.good_valid == 0 then witnessed = "-"
+	elseif s.depth_structural == 0 then witnessed = "full"
+	elseif s.depth_full == 0 then witnessed = "structural"
+	else witnessed = "mixed" end
+
+	local status, notes
+	if tok == "unknown" then
+		status, notes = "detection-only", "fallback classification row"
+	elseif s.good == 0 then
+		status, notes = "unwitnessed", "no labeled-good fixture in corpus"
+	elseif s.good_valid == 0 then
+		status, notes = "partial", "ALL labeled-good fixtures rejected — investigate false positives"
+	elseif witnessed == "full" then
+		status, notes = "deep", ""
+	elseif achievable[tok] == "structural" then
+		status, notes = "structural-ceiling", ""
+	else
+		status, notes = "partial", "deep achievable but not witnessed on all fixtures"
+	end
+	if s.good_valid < s.good and s.good_valid > 0 then
+		notes = notes .. (notes ~= "" and "; " or "") ..
+			string.format("%d labeled-good fixture(s) rejected", s.good - s.good_valid)
+	end
+
+	local stream_col = "-"
+	if streaming[tok] then
+		table.sort(streaming[tok])
+		stream_col = table.concat(streaming[tok], ";")
+	end
+
+	out:write(table.concat({
+		tok,
+		s.category or "-",
+		achievable[tok],
+		witnessed,
+		string.format("%d/%d", s.good_valid, s.good),
+		string.format("%d/%d", s.corrupt_rejected, s.corrupt),
+		opacity[tok] or "transparent",
+		"-", -- sweep_evidence: reserved for coverage-ledger join
+		stream_col,
+		status,
+		notes,
+	}, "\t") .. "\n")
+end
+out:close()
+io.stderr:write(string.format("generate-capability-matrix: %d formats, %d corpus records witnessed\n",
+	#tokens, record_count))

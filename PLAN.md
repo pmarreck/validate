@@ -14,6 +14,48 @@ at the bottom. Older completed sections were rolled up — full history lives in
 
 ## Active queue
 
+- [ ] **A/V streaming conversions (Peter ruling 2026-08-19: "relentlessly pursue",
+      sniper/bolter/shotgun no-regression as the FP/FN acceptance bar):** three
+      worktree agents in flight — ogg family (opus/vorbis/theora), h265_mp4
+      (differential vs streaming h264_mp4), vp9_webm (differential vs streaming
+      h265_mkv). Each flips its manifest row in the conversion commit; ceiling
+      gate + family sweep before/after are acceptance. NEW follow-up: mkv_cc
+      first-ever witness (2026-08-19, mkvtoolnix now in dev shell) proved the
+      inferred `streams` guess WRONG — observed resident rc=137@4s (zlib
+      ContentCompression holds file-proportional memory); manifest corrected to
+      observed truth; conversion still owed.
+- [ ] **Batch-scale (#28, agent in flight):** >=2x admission multiplier (first
+      commit), decoded-size-aware admission + wedge-class isolation, parallel
+      work-stealing directory enumeration. Inputs: validate_gui RSS probes in
+      inbox/2026-08-15-attachments-rss-growth/.
+- [ ] **pdfz extraction phase 1 (Peter 2026-08-19: NOW, PRIVATE repo):** agent
+      scaffolding ~/Code/pdfz (local-only, no remote until coordinator review;
+      GitHub repo created private afterwards). Phase 2 (validate re-pins pdfz,
+      deletes in-tree PDF stack) comes after phase-1 review + private-dep
+      fetch design.
+- [x] **Capability matrix v1 (absorbs Image Parser 1.0 plan, task #6):**
+      `docs/CAPABILITY_MATRIX.tsv` is now GENERATED evidence —
+      `scripts/generate-capability-matrix` (LuaJIT) joins the FileFormat enum +
+      maxAchievableDepth (parsed from source), witnessed per-format verdicts
+      from running the binary over the 1157-file ground-truth corpus, opacity
+      classes, and the streaming manifest; 247 formats, honest statuses
+      (deep/partial/structural-ceiling/unwitnessed/detection-only).
+      `tests/cli/capability_matrix` gates freshness (regen+diff), completeness
+      (independent enum extraction), streaming agreement, and status
+      vocabulary; tamper-tested (freshness check witnessed biting).
+      IMAGE_PARSER_1_0_MASTER_PLAN.md banner-marked as historical. Follow-ups:
+      `--capabilities` emitter in the binary for GUI/help (post-integration),
+      sweep_evidence column join to docs/coverage-evidence/runs.tsv, matrix
+      wording review by Peter before sales use. Backlog the matrix surfaced
+      mechanically: ape 2/3 labeled-good (1 rejected — false positive?), avif
+      corrupt 0/5 rejected, aiff/ar/accdb witnessed structural though deep
+      achievable, several unwitnessed formats (alac dir detected as other
+      tokens). Completed 2026-08-19 13:05 EDT.
+- [x] **Watchmen featurette AAC verification (2026-08-19):** all 15 Ultimate
+      Cut featurette MKVs now VALID with the #26 AAC fix — the "1 of 50 AAC
+      access units" false-positive class confirmed dead on its last
+      outstanding real-world cluster. Completed 2026-08-19 12:52 EDT.
+
 - [x] **Publish the Mecha Validate v1 integration contract:** define a
       machine-readable capability/result schema with the exact capability
       states `strict`, `partial`, `structural`, `unsupported`, and `blocked`,

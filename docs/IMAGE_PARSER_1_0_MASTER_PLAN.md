@@ -1,5 +1,19 @@
 # Validate image-parser 1.0 master plan
 
+> **STATUS (2026-08-19): historical snapshot, partially superseded.** The
+> ordered finish-line queue items 2–5 landed after this audit: tiffz good-corpus
+> acceptance restored + WARN-coded findings, jpegz became the product JPEG path
+> (via tiffz single-instance re-export), jp2z replaced OpenJPEG
+> (`tiffz.jpegz.jpeg2000.strictValidate`, deps/openjpeg removed), libjxlz
+> strict API landed and replaced stock libjxl (direct pin dropped; routed via
+> tiffz.jpegz). The v1 production-closure hard-gate (src/core/v1_closure.zig)
+> now makes the forbidden third-party decoders uncompilable. LIVE per-format
+> status is no longer maintained here — it is generated evidence in
+> `docs/CAPABILITY_MATRIX.tsv` (regenerated + diff-gated by
+> `tests/cli/capability_matrix`). Still-open items from this plan (corpus
+> manifest/adjudication provenance, full confusion-matrix sweep records,
+> embedded-input sentinel matrix) remain tracked in PLAN.md.
+
 Last audited: 2026-07-23 EDT  
 Program owner: Einstein / Validate  
 Library owners: `tiffz`, `libjxlz`, `jp2z`, `jpegz`
