@@ -1420,19 +1420,46 @@ fn statFileSize(path_slice: []const u8) ?u64 {
 /// stat.size exactly under-admits and lets concurrent decodes overshoot the
 /// budget. 2x is the interim floor until per-format decoded-size estimates
 /// replace the blanket multiplier.
-const ADMISSION_RESERVE_MULTIPLIER: usize = 2;
+const ADMISSION_RESERVE_MULTIPLIER: usize = core.admission_estimate.DEFAULT_MULTIPLIER;
 
-/// Convert a base size (stat/discovery/fallback) into the bytes actually
-/// reserved against the memory budget. Saturating multiply: a near-maxInt
-/// base clamps instead of wrapping, and the budget's oversized-task rule
-/// (admit alone when reserve > total) handles the clamped value correctly.
+/// Reserve for tasks with no usable path (null ctx/path): the conservative
+/// default multiplier over the base. Path-bearing tasks go through
+/// core.admission_estimate.reserveBytesForPath for per-format estimates.
 fn admissionReserveBytes(base_bytes: usize) usize {
     return base_bytes *| ADMISSION_RESERVE_MULTIPLIER;
 }
 
+/// Wedge-note sink: where "this file's estimate exceeds the whole budget;
+/// running it alone" notes go. stderr by default (metadata about the run per
+/// CLI conventions); tests inject a capture sink. Swapped only while no
+/// batch is running.
+const WedgeNoteSink = *const fn (note: []const u8) void;
+var g_wedge_note_sink: WedgeNoteSink = wedgeNoteToStderr;
+
+fn wedgeNoteToStderr(note: []const u8) void {
+    std.Io.File.stderr().writeStreamingAll(runtime.io(), note) catch {};
+}
+
+/// Notes are only meaningful (and only safe to rate) while a batch is
+/// running with its budget fixed; estimate-only unit tests stay silent.
+var g_wedge_note_enabled: std.atomic.Value(bool) = .init(false);
+
+/// Emit the one-per-task serialization note for a wedge-class file (its
+/// reserve exceeds the total budget, so MemoryBudget will admit it alone).
+/// Called from the estimate path, which runs exactly once per task, before
+/// the acquire that would otherwise look like a silent stall.
+fn maybeNoteWedge(path_slice: []const u8, reserve: usize) void {
+    const total: usize = @intCast(validate_get_max_memory());
+    if (!core.admission_estimate.isWedge(reserve, total)) return;
+    var buf: [4096]u8 = undefined;
+    const note = core.admission_estimate.formatWedgeNote(&buf, path_slice, reserve, total);
+    if (note.len > 0) g_wedge_note_sink(note);
+}
+
 fn estimatePathBudget(path_slice: []const u8) usize {
-    const size = statFileSize(path_slice) orelse return admissionReserveBytes(1024 * 1024);
-    return admissionReserveBytes(@intCast(size));
+    const size = statFileSize(path_slice) orelse
+        return core.admission_estimate.reserveBytesForPath(path_slice, 1024 * 1024);
+    return core.admission_estimate.reserveBytesForPath(path_slice, @intCast(size));
 }
 
 fn batchTaskDiscoverySize(task: BatchTask) ?usize {
@@ -1456,11 +1483,15 @@ fn heapDebugFormatHint(path_slice: []const u8) [*:0]const u8 {
 }
 
 fn estimateBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) usize {
-    if (batchTaskDiscoverySize(task)) |size| return admissionReserveBytes(size);
     const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return admissionReserveBytes(1024 * 1024)));
     const path_ptr = ctx.paths[task.index] orelse return admissionReserveBytes(1024 * 1024);
     const path_slice = std.mem.span(path_ptr);
-    return estimatePathBudget(path_slice);
+    const reserve = if (batchTaskDiscoverySize(task)) |size|
+        core.admission_estimate.reserveBytesForPath(path_slice, size)
+    else
+        estimatePathBudget(path_slice);
+    if (g_wedge_note_enabled.load(.acquire)) maybeNoteWedge(path_slice, reserve);
+    return reserve;
 }
 fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) BatchCompletion {
     // Check interrupt flag before starting
@@ -1481,9 +1512,12 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) BatchCompletion {
     else
         statFileSize(path_slice);
     const file_size: u64 = file_size_opt orelse 0;
-    // Mirror the admission gate's actual reservation (multiplied) so the
-    // heap-debug ledger reports what the budget really charged for this task.
-    const reserved_bytes: u64 = @intCast(admissionReserveBytes(@intCast(file_size_opt orelse 1024 * 1024)));
+    // Mirror the admission gate's actual reservation (per-format multiplied)
+    // so the heap-debug ledger reports what the budget really charged.
+    const reserved_bytes: u64 = @intCast(core.admission_estimate.reserveBytesForPath(
+        path_slice,
+        @intCast(file_size_opt orelse 1024 * 1024),
+    ));
     const format_hint = heapDebugFormatHint(path_slice);
     const heap_task_slot = heapDebugTaskBegin(task.index, id, path_ptr, format_hint, file_size, reserved_bytes);
     defer heapDebugTaskEnd(heap_task_slot);
@@ -1646,12 +1680,16 @@ fn validateBatch(
         .delivery = &result_delivery,
     };
 
-    // Memory budget: gates worker dequeue. estimate_fn returns
-    // ADMISSION_RESERVE_MULTIPLIER * stat.size (decode residency exceeds raw
-    // size; see admissionReserveBytes), budget admits up to total bytes worth
+    // Memory budget: gates worker dequeue. estimate_fn returns a per-format
+    // multiple of stat/discovery size (core.admission_estimate: decode
+    // residency runs 1x-33x raw size), budget admits up to total bytes worth
     // of work concurrently. Single file whose reserve exceeds the total
-    // budget gets admitted alone (starvation rule).
+    // budget gets admitted alone (starvation rule) with a stderr note.
     var mem_budget = core.memory_budget.MemoryBudget.init(@intCast(validate_get_max_memory()));
+
+    // Wedge notes are meaningful only while this budget is live.
+    g_wedge_note_enabled.store(true, .release);
+    defer g_wedge_note_enabled.store(false, .release);
 
     var scheduler_debug = thread_pool.SchedulerDebugStats.init();
     scheduler_debug.setWorkerCount(actual_threads);
@@ -2365,6 +2403,88 @@ test "admission gate reserves at least 2x the discovery/stat size" {
     // Saturation guard: a discovery size near maxInt must not overflow.
     const huge = BatchTask{ .index = 0, .discovery_size = std.math.maxInt(usize) - 1 };
     try std.testing.expectEqual(@as(usize, std.math.maxInt(usize)), estimateBatchTask(huge, @ptrCast(&context)));
+}
+
+test "admission estimates are per-format: JXL reserves 33x via stat and discovery paths" {
+    // JXL decode residency is pixel-buffer proportional (witnessed 33x);
+    // the gate must reserve accordingly from the cheap format signal (extension).
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(runtime.io(), "probe.jxl", .{});
+    try file.writeStreamingAll(runtime.io(), &[_]u8{0xAA} ** 100);
+    file.close(runtime.io());
+    const probe_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "probe.jxl");
+    defer std.testing.allocator.free(probe_path);
+
+    // Stat path: 100-byte .jxl reserves 3300.
+    try std.testing.expectEqual(@as(usize, 100 * 33), estimatePathBudget(probe_path));
+
+    // Discovery path: the enumerated size is also format-multiplied.
+    const probe_z = try std.testing.allocator.dupeZ(u8, probe_path);
+    defer std.testing.allocator.free(probe_z);
+    var paths = [_]?[*:0]const u8{probe_z.ptr};
+    var ids = [_]u32{1};
+    var delivery = BatchResultDelivery.init(std.testing.allocator);
+    var context = BatchContext{
+        .callback = null,
+        .user_ctx = null,
+        .paths = &paths,
+        .ids = &ids,
+        .outer_job_count = 1,
+        .delivery = &delivery,
+    };
+    const task = BatchTask{ .index = 0, .discovery_size = 1000 };
+    try std.testing.expectEqual(@as(usize, 33_000), estimateBatchTask(task, @ptrCast(&context)));
+}
+
+test "wedge-class file is admitted serialized with one stderr note, not refused" {
+    // A file whose reserve exceeds the TOTAL budget can never fit; the
+    // gate must run it alone (MemoryBudget oversized rule) and say so once,
+    // and the batch must still deliver every result (no refusal, no wedge).
+    const Capture = struct {
+        var note_count: std.atomic.Value(usize) = .init(0);
+        var note_len: std.atomic.Value(usize) = .init(0);
+        var note_buf: [4096]u8 = undefined;
+        var callback_count: std.atomic.Value(usize) = .init(0);
+
+        fn sink(note: []const u8) void {
+            _ = note_count.fetchAdd(1, .seq_cst);
+            const n = @min(note.len, note_buf.len);
+            @memcpy(note_buf[0..n], note[0..n]);
+            note_len.store(n, .seq_cst);
+        }
+
+        fn callback(_: ?*anyopaque, _: u32, _: [*:0]const u8, result: [*:0]u8) callconv(.c) void {
+            validate_free(result);
+            _ = callback_count.fetchAdd(1, .seq_cst);
+        }
+    };
+    Capture.note_count.store(0, .seq_cst);
+    Capture.callback_count.store(0, .seq_cst);
+
+    // 1 GiB budget; RSS of the test binary stays far below it, so the RSS
+    // admission gate stays open and only the byte budget is under test.
+    validate_set_max_memory(1 << 30);
+    defer validate_set_max_memory(0);
+    const old_sink = g_wedge_note_sink;
+    g_wedge_note_sink = Capture.sink;
+    defer g_wedge_note_sink = old_sink;
+
+    const wedge: [:0]const u8 = "/validate-test-wedge-class-file";
+    const small: [:0]const u8 = "/validate-test-wedge-peer";
+    var paths = [_]?[*:0]const u8{ wedge.ptr, small.ptr, small.ptr };
+    var ids = [_]u32{ 1, 2, 3 };
+    // 600 MiB enumerated size -> 2x default = 1.2 GiB reserve > 1 GiB budget.
+    var discovery_sizes = [_]usize{ 600 * 1024 * 1024, 4096, 4096 };
+
+    const status = validate_batch_sized(&paths, &ids, &discovery_sizes, 3, 2, Capture.callback, null);
+
+    try std.testing.expectEqual(@as(c_int, 0), status);
+    try std.testing.expectEqual(@as(usize, 3), Capture.callback_count.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 1), Capture.note_count.load(.seq_cst));
+    const note = Capture.note_buf[0..Capture.note_len.load(.seq_cst)];
+    try std.testing.expect(std.mem.indexOf(u8, note, wedge) != null);
+    try std.testing.expect(std.mem.indexOf(u8, note, "alone") != null);
 }
 
 test "batch completion executor bounds callback I/O and delivers every result" {

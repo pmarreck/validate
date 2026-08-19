@@ -30,6 +30,7 @@ pub const heap = @import("heap.zig");
 pub const runtime = @import("runtime.zig");
 pub const trace = @import("trace.zig");
 pub const memory_budget = @import("memory_budget.zig");
+pub const admission_estimate = @import("admission_estimate.zig");
 pub const racetrack = @import("racetrack.zig");
 pub const file_source = @import("file_source.zig");
 pub const format_validation = @import("format_validation.zig");
@@ -214,6 +215,7 @@ test "version" {
 test {
     _ = @import("heap.zig");
     _ = @import("memory_budget.zig");
+    _ = @import("admission_estimate.zig");
     _ = @import("racetrack.zig");
     _ = @import("concurrent_smoke.zig");
     _ = @import("file_source.zig");
