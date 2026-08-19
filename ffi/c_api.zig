@@ -1402,20 +1402,37 @@ export fn validate_set_begin_callback(callback: BeginCallback, ctx: ?*anyopaque)
 
 /// Execute a single validation task
 /// Estimate per-task memory footprint for the budget gate.
-/// Uses stat.size as a baseline (caller's working-set proxy). Files we
-/// can't stat get a conservative 1 MB estimate so they don't escape the
-/// gate. The estimate is intentionally simple — it caps *intent*, not
-/// *fact*. Real usage may be smaller (mmap'd zero-copy paths) or larger
-/// (PDF stream blowup, libavif internal threading); the large-file semaphore
-/// and centralized RSS admission gate remain as guards against the upside.
+/// Uses ADMISSION_RESERVE_MULTIPLIER * stat.size (measured decode residency
+/// exceeds raw file size — see admissionReserveBytes). Files we can't stat
+/// get a conservative 1 MB base so they don't escape the gate. The estimate
+/// is intentionally simple — it caps *intent*, not *fact*. Real usage may be
+/// smaller (mmap'd zero-copy paths) or larger (JXL pixel buffers, PDF stream
+/// blowup, libavif internal threading); the large-file semaphore and
+/// centralized RSS admission gate remain as guards against the upside.
 fn statFileSize(path_slice: []const u8) ?u64 {
     const stat = runtime.statFile(path_slice) catch return null;
     return @intCast(stat.size);
 }
 
+/// Interim admission-reserve multiplier over stat.size. Measured decode
+/// residency on the 2026-08-15 91.7 GB corpus ran 1x-33x stat.size (worst
+/// witnessed: a 64 MB JXL decoding to 2.07 GB anonymous), so reserving
+/// stat.size exactly under-admits and lets concurrent decodes overshoot the
+/// budget. 2x is the interim floor until per-format decoded-size estimates
+/// replace the blanket multiplier.
+const ADMISSION_RESERVE_MULTIPLIER: usize = 2;
+
+/// Convert a base size (stat/discovery/fallback) into the bytes actually
+/// reserved against the memory budget. Saturating multiply: a near-maxInt
+/// base clamps instead of wrapping, and the budget's oversized-task rule
+/// (admit alone when reserve > total) handles the clamped value correctly.
+fn admissionReserveBytes(base_bytes: usize) usize {
+    return base_bytes *| ADMISSION_RESERVE_MULTIPLIER;
+}
+
 fn estimatePathBudget(path_slice: []const u8) usize {
-    const size = statFileSize(path_slice) orelse return 1024 * 1024;
-    return @intCast(size);
+    const size = statFileSize(path_slice) orelse return admissionReserveBytes(1024 * 1024);
+    return admissionReserveBytes(@intCast(size));
 }
 
 fn batchTaskDiscoverySize(task: BatchTask) ?usize {
@@ -1439,9 +1456,9 @@ fn heapDebugFormatHint(path_slice: []const u8) [*:0]const u8 {
 }
 
 fn estimateBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) usize {
-    if (batchTaskDiscoverySize(task)) |size| return size;
-    const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return 1024 * 1024));
-    const path_ptr = ctx.paths[task.index] orelse return 1024 * 1024;
+    if (batchTaskDiscoverySize(task)) |size| return admissionReserveBytes(size);
+    const ctx: *BatchContext = @ptrCast(@alignCast(ctx_ptr orelse return admissionReserveBytes(1024 * 1024)));
+    const path_ptr = ctx.paths[task.index] orelse return admissionReserveBytes(1024 * 1024);
     const path_slice = std.mem.span(path_ptr);
     return estimatePathBudget(path_slice);
 }
@@ -1464,7 +1481,9 @@ fn executeBatchTask(task: BatchTask, ctx_ptr: ?*anyopaque) BatchCompletion {
     else
         statFileSize(path_slice);
     const file_size: u64 = file_size_opt orelse 0;
-    const reserved_bytes: u64 = @intCast(file_size_opt orelse 1024 * 1024);
+    // Mirror the admission gate's actual reservation (multiplied) so the
+    // heap-debug ledger reports what the budget really charged for this task.
+    const reserved_bytes: u64 = @intCast(admissionReserveBytes(@intCast(file_size_opt orelse 1024 * 1024)));
     const format_hint = heapDebugFormatHint(path_slice);
     const heap_task_slot = heapDebugTaskBegin(task.index, id, path_ptr, format_hint, file_size, reserved_bytes);
     defer heapDebugTaskEnd(heap_task_slot);
@@ -1627,9 +1646,11 @@ fn validateBatch(
         .delivery = &result_delivery,
     };
 
-    // Memory budget: gates worker dequeue. estimate_fn returns stat.size,
-    // budget admits up to total bytes worth of work concurrently. Single
-    // file > total budget gets admitted alone (starvation rule).
+    // Memory budget: gates worker dequeue. estimate_fn returns
+    // ADMISSION_RESERVE_MULTIPLIER * stat.size (decode residency exceeds raw
+    // size; see admissionReserveBytes), budget admits up to total bytes worth
+    // of work concurrently. Single file whose reserve exceeds the total
+    // budget gets admitted alone (starvation rule).
     var mem_budget = core.memory_budget.MemoryBudget.init(@intCast(validate_get_max_memory()));
 
     var scheduler_debug = thread_pool.SchedulerDebugStats.init();
@@ -2300,10 +2321,50 @@ test "batch task uses supplied enumeration size without restatting its path" {
     };
 
     const task = BatchTask{ .index = 0, .discovery_size = 4096 };
-    try std.testing.expectEqual(@as(usize, 4096), estimateBatchTask(task, @ptrCast(&context)));
+    try std.testing.expectEqual(@as(usize, 4096 * ADMISSION_RESERVE_MULTIPLIER), estimateBatchTask(task, @ptrCast(&context)));
 
     const unknown = BatchTask{ .index = 0 };
-    try std.testing.expectEqual(@as(usize, 1024 * 1024), estimateBatchTask(unknown, @ptrCast(&context)));
+    try std.testing.expectEqual(@as(usize, 1024 * 1024 * ADMISSION_RESERVE_MULTIPLIER), estimateBatchTask(unknown, @ptrCast(&context)));
+}
+
+test "admission gate reserves at least 2x the discovery/stat size" {
+    // Measured decode residency runs 1x-33x stat.size (worst witnessed: a
+    // 64 MB JXL decoding to 2.07 GB anonymous). stat.size-exact reservation
+    // therefore under-admits; the interim floor is 2x. This test pins the
+    // multiplier through every estimate path: discovery size, stat fallback
+    // (via a real temp file), and the unstattable 1 MiB default.
+    try std.testing.expect(ADMISSION_RESERVE_MULTIPLIER >= 2);
+
+    var delivery = BatchResultDelivery.init(std.testing.allocator);
+
+    // Discovery-size path: reservation is multiplier * enumerated size.
+    const missing: [:0]const u8 = "/validate-test-missing-2x-reserve";
+    var paths = [_]?[*:0]const u8{missing.ptr};
+    var ids = [_]u32{1};
+    var context = BatchContext{
+        .callback = null,
+        .user_ctx = null,
+        .paths = &paths,
+        .ids = &ids,
+        .outer_job_count = 1,
+        .delivery = &delivery,
+    };
+    const discovered = BatchTask{ .index = 0, .discovery_size = 1000 };
+    try std.testing.expectEqual(@as(usize, 2000), estimateBatchTask(discovered, @ptrCast(&context)));
+
+    // Stat path: a real 100-byte file must reserve multiplier * stat.size.
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(runtime.io(), "reserve_probe.bin", .{});
+    try file.writeStreamingAll(runtime.io(), &[_]u8{0xAA} ** 100);
+    file.close(runtime.io());
+    const probe_path = try runtime.tmpRealpathAlloc(&tmp, std.testing.allocator, "reserve_probe.bin");
+    defer std.testing.allocator.free(probe_path);
+    try std.testing.expectEqual(@as(usize, 100 * ADMISSION_RESERVE_MULTIPLIER), estimatePathBudget(probe_path));
+
+    // Saturation guard: a discovery size near maxInt must not overflow.
+    const huge = BatchTask{ .index = 0, .discovery_size = std.math.maxInt(usize) - 1 };
+    try std.testing.expectEqual(@as(usize, std.math.maxInt(usize)), estimateBatchTask(huge, @ptrCast(&context)));
 }
 
 test "batch completion executor bounds callback I/O and delivers every result" {
